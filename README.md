@@ -2,6 +2,37 @@
 
 An enterprise-grade industrial inference system designed for high-performance AI workloads.
 
+## Building
+
+### Prerequisites
+
+- CMake 3.15+
+- C++17/C11 compiler (GCC, Clang, MSVC)
+- NVIDIA CCCL (added as submodule)
+
+### Clone with submodules
+
+```bash
+git clone --recurse-submodules https://github.com/<your-org>/logestix.git
+```
+
+If you already cloned without `--recurse-submodules`, run:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Configure & build
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+The executable `lsxfabric` will be placed in `build/src/`.
+
+---
+
 ## Licensing
 
 This project is dual-licensed to accommodate both open-source development and commercial production environments.
