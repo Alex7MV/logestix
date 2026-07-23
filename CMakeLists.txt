@@ -20,7 +20,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Флаги компилятора ────────────────────────────────────────────────────────
 
 if(MSVC)
-    add_compile_options(/W4 /utf-8 /MP)
+    add_compile_options(/W4 /utf-8 /MP /Zc:preprocessor)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
