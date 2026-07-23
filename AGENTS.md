@@ -6,10 +6,20 @@ B2B inference engine. C++17 / C11. CMake 3.15+. Executable: `lsxfabric`.
 
 ## Build
 
+### Linux (GCC/Clang)
+
 ```bash
 git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
+```
+
+### Windows (Visual Studio 2026)
+
+```powershell
+git submodule update --init --recursive
+cmake -S . -B build -G "Visual Studio 18 2026"
+cmake --build build --config Debug
 ```
 
 ## Test
@@ -19,6 +29,8 @@ cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+На Windows без `-DCMAKE_BUILD_TYPE` (используется `--config Debug`).
 
 ## Structure
 

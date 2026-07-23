@@ -19,6 +19,14 @@ target_include_directories(lsxfabric_objects
         "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include>"
 )
 
+# Линкуем Apache Arrow и spdlog с объектами ядра. Модификатор PUBLIC
+# автоматически делает заголовочные файлы и библиотеки доступными
+# для lsxfabric и test_core.
+target_link_libraries(lsxfabric_objects PUBLIC
+    arrow_shared
+    spdlog::spdlog
+)
+
 # ── Исполняемый файл ─────────────────────────────────────────────────────────
 #
 # main.cpp — единственный файл, уникальный для релизной сборки.

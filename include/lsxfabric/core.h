@@ -1,15 +1,22 @@
-#ifndef LSKFABRIC_CORE_H
-#define LSKFABRIC_CORE_H
+#ifndef LSXFABRIC_CORE_H
+#define LSXFABRIC_CORE_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <string>
 
-int core_init(void);
-const char* core_version(void);
+namespace lsxfabric {
 
-#ifdef __cplusplus
-}
-#endif
+class Core {
+public:
+    // Инициализация инфраструктуры (логирование, аллокаторы памяти)
+    static void Initialize(const std::string& log_file_path = "logestix.log");
+    
+    // Корректное завершение работы (сброс буферов логов на диск)
+    static void Shutdown();
 
-#endif
+    // Пример бизнес-логики инференса для проверки окружения
+    static void ExecuteDummyInference();
+};
+
+} // namespace lsxfabric
+
+#endif // LSXFABRIC_CORE_H

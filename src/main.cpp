@@ -1,19 +1,14 @@
 #include "lsxfabric/core.h"
-#include "lsxfabric/version.h"
+#include <iostream>
 
-#include <cstdio>
-#include <cstdlib>
+int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
+    // Запускаем подсистему логирования и ядра
+    lsxfabric::Core::Initialize("logestix_runtime.log");
 
-int main(int argc, char* argv[])
-{
-    (void)argc;
-    (void)argv;
+    // Вызываем тестовый инференс
+    lsxfabric::Core::ExecuteDummyInference();
 
-    if (core_init() != 0) {
-        std::fprintf(stderr, "core_init failed\n");
-        return EXIT_FAILURE;
-    }
-
-    std::printf("lsxfabric v%s\n", core_version());
-    return EXIT_SUCCESS;
+    // Корректно завершаем работу приложения
+    lsxfabric::Core::Shutdown();
+    return 0;
 }
