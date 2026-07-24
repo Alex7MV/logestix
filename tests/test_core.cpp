@@ -9,6 +9,16 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/ipc/writer.h>
 
+// Google FlatBuffers Zero-Copy Serialization
+#include <flatbuffers/flatbuffers.h>
+#include <flatbuffers/flexbuffers.h>
+#include <flatbuffers/idl.h>
+#include <flatbuffers/util.h>
+#include <flatbuffers/verifier.h>
+
+// ZeroMQ Core Messaging Library (C-API)
+#include <zmq.h>
+
 // NVIDIA CCCL High-Performance Primitives
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>
@@ -20,6 +30,7 @@
 
 #include <vector>
 #include <memory>
+#include <cstring>
 
 TEST_CASE("Apache Arrow deep memory and serialization validation", "[dependencies][arrow]") {
     // 1. Verify Memory Alignment and Buffer Integrity via Primitive Builders
@@ -111,4 +122,178 @@ TEST_CASE("NVIDIA CCCL template compilation and algorithmic sanity", "[dependenc
     
     // Compile-time check to ensure libcu++ types are recognized as safe trivially copyable types
     STATIC_REQUIRE(cuda::std::is_trivially_copyable<cuda::std::complex<double>>::value);
+}
+
+TEST_CASE("FlexBuffers dynamic map and vector round-trip", "[dependencies][flatbuffers]") {
+    flexbuffers::Builder flex_builder(1024);
+
+    // Build a map emulating tensor metadata
+    flex_builder.Map([&]() {
+        flex_builder.String("model", "logestix_transformer");
+        flex_builder.Int("version", 3);
+        flex_builder.Vector("shape", [&]() {
+            flex_builder.UInt(1);
+            flex_builder.UInt(128);
+            flex_builder.UInt(768);
+        });
+        flex_builder.Vector("data", [&]() {
+            flex_builder.Double(0.5);
+            flex_builder.Double(1.5);
+            flex_builder.Double(2.5);
+            flex_builder.Double(3.5);
+        });
+    });
+    flex_builder.Finish();
+
+    auto buf = flex_builder.GetBuffer();
+    auto root = flexbuffers::GetRoot(buf);
+    REQUIRE(root.IsMap());
+
+    auto map = root.AsMap();
+    REQUIRE(map["model"].AsString().str() == "logestix_transformer");
+    REQUIRE(map["version"].AsInt64() == 3);
+
+    auto shape = map["shape"].AsVector();
+    REQUIRE(shape.size() == 3);
+    REQUIRE(shape[0].AsUInt64() == 1);
+    REQUIRE(shape[1].AsUInt64() == 128);
+    REQUIRE(shape[2].AsUInt64() == 768);
+
+    auto data = map["data"].AsVector();
+    REQUIRE(data.size() == 4);
+    REQUIRE(data[0].AsDouble() == 0.5);
+    REQUIRE(data[3].AsDouble() == 3.5);
+
+    REQUIRE(flexbuffers::VerifyBuffer(buf.data(), buf.size()));
+}
+
+TEST_CASE("FlatBuffers IDL schema parsing and buffer generation", "[dependencies][flatbuffers]") {
+    const char* schema = R"(
+table InferenceConfig {
+    model_name: string;
+    batch_size: int;
+    use_fp16: bool = true;
+    priority: float = 1.0;
+}
+root_type InferenceConfig;
+)";
+
+    flatbuffers::Parser parser;
+    REQUIRE(parser.Parse(schema));
+
+    const char* json = R"({ model_name: "bert-base", batch_size: 8, use_fp16: false, priority: 2.5 })";
+    REQUIRE(parser.Parse(json));
+
+    auto* buf = parser.builder_.GetBufferPointer();
+    auto size = parser.builder_.GetSize();
+    REQUIRE(buf != nullptr);
+    REQUIRE(size > 0);
+
+    // Validate buffer alignment and minimum size
+    REQUIRE(reinterpret_cast<uintptr_t>(buf) % alignof(flatbuffers::Table) == 0);
+    REQUIRE(size >= sizeof(flatbuffers::uoffset_t));
+
+    // The root table offset is stored at the start of the buffer (little-endian uoffset_t)
+    auto root_offset = flatbuffers::EndianScalar(
+        *reinterpret_cast<const flatbuffers::uoffset_t*>(buf));
+    REQUIRE(root_offset > 0);
+    REQUIRE(root_offset < size);
+
+    // Re-parse default values
+    flatbuffers::Parser default_parser;
+    REQUIRE(default_parser.Parse(schema));
+    REQUIRE(default_parser.Parse(R"({ model_name: "default", batch_size: 1 })"));
+
+    auto* default_buf = default_parser.builder_.GetBufferPointer();
+    auto default_size = default_parser.builder_.GetSize();
+    REQUIRE(default_buf != nullptr);
+    REQUIRE(default_size > 0);
+    REQUIRE(default_size >= sizeof(flatbuffers::uoffset_t));
+}
+
+TEST_CASE("FlatBuffers type traits and manual buffer construction", "[dependencies][flatbuffers]") {
+    STATIC_REQUIRE(flatbuffers::is_same<float, float>::value);
+    STATIC_REQUIRE_FALSE(flatbuffers::is_same<float, int>::value);
+
+    REQUIRE(flatbuffers::EndianScalar(42) == 42);
+    REQUIRE(flatbuffers::EndianScalar(static_cast<int16_t>(0x0102)) == 0x0102);
+
+    flatbuffers::FlatBufferBuilder builder(128);
+    REQUIRE(builder.GetSize() == 0);
+
+    auto str_off = builder.CreateString("flatbuffer string");
+    auto vec_off = builder.CreateVector(std::vector<float>{1.0f, 2.0f, 3.0f});
+    builder.Finish(str_off);
+
+    auto* buf = builder.GetBufferPointer();
+    auto size = builder.GetSize();
+    REQUIRE(buf != nullptr);
+    REQUIRE(size > 0);
+    REQUIRE(reinterpret_cast<uintptr_t>(buf) % alignof(flatbuffers::Table) == 0);
+
+    // Verify the buffer contains our string via raw access
+    auto root = flatbuffers::GetRoot<flatbuffers::String>(buf);
+    REQUIRE(root != nullptr);
+    REQUIRE(root->str() == "flatbuffer string");
+    REQUIRE(root->size() == 17);
+
+    // Verify buffer validity with the generic flatbuffer verifier
+    flatbuffers::Verifier verifier(buf, size);
+    REQUIRE(verifier.VerifyString(root));
+}
+
+TEST_CASE("ZeroMQ version and context lifecycle", "[dependencies][zeromq]") {
+    int major, minor, patch;
+    zmq_version(&major, &minor, &patch);
+    REQUIRE(major == 4);
+    REQUIRE(minor == 3);
+    REQUIRE(patch == 5);
+
+    void* context = zmq_ctx_new();
+    REQUIRE(context != nullptr);
+
+    int io_threads = zmq_ctx_get(context, ZMQ_IO_THREADS);
+    REQUIRE(io_threads > 0);
+
+    int rc = zmq_ctx_set(context, ZMQ_IO_THREADS, 2);
+    REQUIRE(rc == 0);
+    REQUIRE(zmq_ctx_get(context, ZMQ_IO_THREADS) == 2);
+
+    rc = zmq_ctx_destroy(context);
+    REQUIRE(rc == 0);
+}
+
+TEST_CASE("ZeroMQ in-process PAIR socket send and receive", "[dependencies][zeromq]") {
+    void* context = zmq_ctx_new();
+    REQUIRE(context != nullptr);
+
+    void* push_socket = zmq_socket(context, ZMQ_PAIR);
+    REQUIRE(push_socket != nullptr);
+
+    void* pull_socket = zmq_socket(context, ZMQ_PAIR);
+    REQUIRE(pull_socket != nullptr);
+
+    int rc = zmq_bind(push_socket, "inproc://test_pair");
+    REQUIRE(rc == 0);
+
+    rc = zmq_connect(pull_socket, "inproc://test_pair");
+    REQUIRE(rc == 0);
+
+    const char* message = "ping_from_zmq";
+    int send_rc = zmq_send(push_socket, message, 13, 0);
+    REQUIRE(send_rc == 13);
+
+    char buffer[32] = {};
+    int recv_rc = zmq_recv(pull_socket, buffer, sizeof(buffer) - 1, 0);
+    REQUIRE(recv_rc == 13);
+    REQUIRE(std::strcmp(buffer, "ping_from_zmq") == 0);
+
+    rc = zmq_close(push_socket);
+    REQUIRE(rc == 0);
+
+    rc = zmq_close(pull_socket);
+    REQUIRE(rc == 0);
+
+    rc = zmq_ctx_destroy(context);
+    REQUIRE(rc == 0);
 }

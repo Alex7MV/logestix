@@ -31,6 +31,8 @@ target_include_directories(lsxfabric_objects
 target_link_libraries(lsxfabric_objects PUBLIC
     arrow_shared
     spdlog::spdlog
+    flatbuffers
+    libzmq-static
 )
 
 # ── Исполняемый файл ─────────────────────────────────────────────────────────

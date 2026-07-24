@@ -97,6 +97,27 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+# ── ЗАВИСИМОСТИ: FlatBuffers через submodule (статическая сборка) ────────────
+
+set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")
+set(FLATBUFFERS_BUILD_FLATC OFF CACHE INTERNAL "")
+set(FLATBUFFERS_BUILD_TESTS OFF CACHE INTERNAL "")
+set(FLATBUFFERS_BUILD_BENCHMARKS OFF CACHE INTERNAL "")
+set(FLATBUFFERS_INSTALL OFF CACHE INTERNAL "")
+
+add_subdirectory(third_party/flatbuffers)
+
+# ── ЗАВИСИМОСТИ: libzmq через submodule (статическая сборка) ──────────────────
+
+set(BUILD_SHARED OFF CACHE INTERNAL "")
+set(BUILD_STATIC ON CACHE INTERNAL "")
+set(BUILD_TESTS OFF CACHE INTERNAL "")
+set(WITH_PERF_TOOL OFF CACHE INTERNAL "")
+set(WITH_LIBSODIUM OFF CACHE INTERNAL "")
+set(ENABLE_DRAFTS OFF CACHE INTERNAL "")
+
+add_subdirectory(third_party/libzmq)
+
 # ── Рантайм окружение для Windows ───────────────────────────────────────────
 
 # Должно быть до add_subdirectory, чтобы exe и dll попали в bin/
