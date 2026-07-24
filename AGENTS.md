@@ -12,6 +12,7 @@ B2B inference engine. C++17 / C11. CMake 3.15+. Executable: `lsxfabric`.
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
+| simdjson | v4.4.0 | FetchContent | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
@@ -59,7 +60,7 @@ ctest --test-dir build --output-on-failure -C Debug
 
 - `src/core.cpp` — ядро; объектная библиотека `lsxfabric_objects`
 - `src/main.cpp` — точка входа; исполняемый файл `lsxfabric`
-- `tests/test_core.cpp` — тесты Catch2 v3; 7 test cases, 76 assertions
+- `tests/test_core.cpp` — тесты Catch2 v3; 9 test cases, 90 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -67,7 +68,7 @@ ctest --test-dir build --output-on-failure -C Debug
 
 ## CMake Key Points
 
-- `lsxfabric_objects` — OBJECT library в `src/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`
+- `lsxfabric_objects` — OBJECT library в `src/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` в директорию exe (только Win32)
 - `/Zc:preprocessor` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` + `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` для CCCL/MSVC

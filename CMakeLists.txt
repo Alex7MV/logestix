@@ -97,6 +97,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+# ── ЗАВИСИМОСТИ: simdjson через FetchContent (быстрый JSON-парсер) ──────────
+
+set(SIMDJSON_DEVELOPER_MODE OFF CACHE INTERNAL "")
+set(SIMDJSON_ENABLE_DEPRECATED_API OFF CACHE INTERNAL "")
+
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY "https://github.com/simdjson/simdjson.git"
+  GIT_TAG        "v4.4.2"
+)
+FetchContent_MakeAvailable(simdjson)
+
 # ── ЗАВИСИМОСТИ: FlatBuffers через submodule (статическая сборка) ────────────
 
 set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")

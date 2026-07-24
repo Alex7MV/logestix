@@ -19,6 +19,9 @@
 // ZeroMQ Core Messaging Library (C-API)
 #include <zmq.h>
 
+// simdjson Fast JSON Parser
+#include <simdjson.h>
+
 // NVIDIA CCCL High-Performance Primitives
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>
@@ -296,4 +299,53 @@ TEST_CASE("ZeroMQ in-process PAIR socket send and receive", "[dependencies][zero
 
     rc = zmq_ctx_destroy(context);
     REQUIRE(rc == 0);
+}
+
+TEST_CASE("simdjson parse simple object and access fields", "[dependencies][simdjson]") {
+    auto json = R"({"name": "inference_model", "version": 3, "precision": 1.5})"_padded;
+
+    simdjson::ondemand::parser parser;
+    simdjson::ondemand::document doc;
+    simdjson::error_code error = parser.iterate(json).get(doc);
+    REQUIRE(error == simdjson::SUCCESS);
+
+    std::string_view name;
+    error = doc["name"].get_string().get(name);
+    REQUIRE(error == simdjson::SUCCESS);
+    REQUIRE(name == "inference_model");
+
+    int64_t version;
+    error = doc["version"].get_int64().get(version);
+    REQUIRE(error == simdjson::SUCCESS);
+    REQUIRE(version == 3);
+
+    double precision;
+    error = doc["precision"].get_double().get(precision);
+    REQUIRE(error == simdjson::SUCCESS);
+    REQUIRE(precision == 1.5);
+}
+
+TEST_CASE("simdjson parse nested array and error handling", "[dependencies][simdjson]") {
+    auto json = R"({"layers": [{"type": "dense", "units": 128}, {"type": "relu"}]})"_padded;
+
+    simdjson::ondemand::parser parser;
+    simdjson::ondemand::document doc;
+    REQUIRE(parser.iterate(json).get(doc) == simdjson::SUCCESS);
+
+    simdjson::ondemand::array layers;
+    REQUIRE(doc["layers"].get_array().get(layers) == simdjson::SUCCESS);
+
+    int64_t count = 0;
+    for (auto elem : layers) {
+        simdjson::ondemand::object obj;
+        REQUIRE(elem.get_object().get(obj) == simdjson::SUCCESS);
+        ++count;
+    }
+    REQUIRE(count == 2);
+
+    // Missing key → expected error
+    auto missing_json = R"({"a": 1})"_padded;
+    simdjson::ondemand::document miss_doc;
+    REQUIRE(parser.iterate(missing_json).get(miss_doc) == simdjson::SUCCESS);
+    REQUIRE(miss_doc["nonexistent"].error() == simdjson::NO_SUCH_FIELD);
 }

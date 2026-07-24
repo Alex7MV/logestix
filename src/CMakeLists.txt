@@ -33,6 +33,7 @@ target_link_libraries(lsxfabric_objects PUBLIC
     spdlog::spdlog
     flatbuffers
     libzmq-static
+    simdjson::simdjson
 )
 
 # ── Исполняемый файл ─────────────────────────────────────────────────────────
