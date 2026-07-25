@@ -60,6 +60,7 @@ set(ARROW_PARQUET OFF CACHE INTERNAL "Disable Parquet support")
 
 # Включаем только то, что критично для инференса и работы с данными
 set(ARROW_DEPENDENCY_SOURCE "BUNDLED" CACHE STRING "Use bundled dependencies")
+set(ARROW_CUDA ON CACHE INTERNAL "Enable Arrow CUDA GPU support (requires CUDA Toolkit)")
 set(ARROW_COMPUTE ON CACHE INTERNAL "Enable Arrow Compute Engine (requires Boost)")
 set(ARROW_IPC ON CACHE INTERNAL "Enable Arrow IPC")
 set(ARROW_CSV ON CACHE INTERNAL "Enable CSV parser")

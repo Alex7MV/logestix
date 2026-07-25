@@ -60,7 +60,7 @@ ctest --test-dir build --output-on-failure -C Debug
 
 - `src/core.cpp` — ядро; объектная библиотека `lsxfabric_objects`
 - `src/main.cpp` — точка входа; исполняемый файл `lsxfabric`
-- `tests/test_core.cpp` — тесты Catch2 v3; 9 test cases, 90 assertions
+- `tests/test_core.cpp` — тесты Catch2 v3; 10 test cases, 101 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)

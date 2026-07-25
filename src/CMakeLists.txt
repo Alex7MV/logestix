@@ -30,6 +30,7 @@ target_include_directories(lsxfabric_objects
 # для lsxfabric и test_core.
 target_link_libraries(lsxfabric_objects PUBLIC
     arrow_shared
+    arrow_cuda_shared
     spdlog::spdlog
     flatbuffers
     libzmq-static
@@ -44,13 +45,17 @@ target_link_libraries(lsxfabric_objects PUBLIC
 add_executable(lsxfabric main.cpp)
 target_link_libraries(lsxfabric PRIVATE lsxfabric_objects ${CMAKE_DL_LIBS})
 
-# Копируем arrow.dll в директорию с исполняемым файлом
+# Копируем arrow.dll и arrow_cuda.dll в директорию с исполняемым файлом
 if(WIN32)
     add_custom_command(TARGET lsxfabric POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
             "$<TARGET_FILE_DIR:lsxfabric>"
-        COMMAND_EXPAND_LISTS
+    )
+    add_custom_command(TARGET lsxfabric POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:lsxfabric>"
     )
 endif()
 

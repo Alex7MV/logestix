@@ -9,6 +9,9 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/ipc/writer.h>
 
+// Arrow CUDA — GPU-ускоренные тензоры и NVFP4-конвертация
+#include <arrow/gpu/cuda_api.h>
+
 // Google FlatBuffers Zero-Copy Serialization
 #include <flatbuffers/flatbuffers.h>
 #include <flatbuffers/flexbuffers.h>
@@ -125,6 +128,49 @@ TEST_CASE("NVIDIA CCCL template compilation and algorithmic sanity", "[dependenc
     
     // Compile-time check to ensure libcu++ types are recognized as safe trivially copyable types
     STATIC_REQUIRE(cuda::std::is_trivially_copyable<cuda::std::complex<double>>::value);
+}
+
+TEST_CASE("Arrow CUDA device manager and context API compilation", "[dependencies][arrow][cuda]") {
+    auto maybe_mgr = arrow::cuda::CudaDeviceManager::Instance();
+    REQUIRE(maybe_mgr.ok());
+
+    auto mgr = *maybe_mgr;
+    int num_devices = mgr->num_devices();
+
+    // Context creation. If device exists, verify it; otherwise skip gracefully.
+    if (num_devices > 0) {
+        auto maybe_ctx = mgr->GetContext(0);
+        REQUIRE(maybe_ctx.ok());
+
+        auto ctx = *maybe_ctx;
+        auto dev = ctx->device();
+        REQUIRE(dev != nullptr);
+        REQUIRE(dev->total_memory() > 0);
+
+        // CUDA buffer round-trip (allocate → CopyFromHost → CopyToHost → compare)
+        constexpr int64_t buf_size = 1024;
+        auto maybe_dev_buf = ctx->Allocate(buf_size);
+        REQUIRE(maybe_dev_buf.ok());
+
+        std::unique_ptr<arrow::cuda::CudaBuffer> dev_buf = std::move(maybe_dev_buf).ValueOrDie();
+        REQUIRE(dev_buf->size() == buf_size);
+
+        // Fill host data and copy to device
+        std::vector<uint8_t> host_src(buf_size, 0x42);
+        auto st = dev_buf->CopyFromHost(0, host_src.data(), buf_size);
+        REQUIRE(st.ok());
+
+        // Read back from device
+        std::vector<uint8_t> host_dst(buf_size, 0);
+        st = dev_buf->CopyToHost(0, buf_size, host_dst.data());
+        REQUIRE(st.ok());
+
+        REQUIRE(host_dst[0] == 0x42);
+        REQUIRE(host_dst[buf_size - 1] == 0x42);
+
+        // bytes_allocated should have increased
+        REQUIRE(ctx->bytes_allocated() >= buf_size);
+    }
 }
 
 TEST_CASE("FlexBuffers dynamic map and vector round-trip", "[dependencies][flatbuffers]") {
