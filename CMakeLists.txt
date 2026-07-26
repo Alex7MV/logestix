@@ -18,7 +18,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Флаги компилятора ────────────────────────────────────────────────────────
 
 if(MSVC)
-    add_compile_options(/W4 /utf-8 /MP)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /utf-8 /MP")
     # WIN32_LEAN_AND_MEAN / NOMINMAX: suppress Windows header bloat and min/max macros
     # that conflict with std::numeric_limits::max() in CCCL/Thrust.
     add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
