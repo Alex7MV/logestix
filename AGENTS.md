@@ -12,7 +12,7 @@ Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++17 / C11. CMake 3.15+.
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.4.2 | FetchContent | Static (`.lib`) |
+| simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
@@ -73,6 +73,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
+- `third_party/simdjson/` — simdjson v4.4.2 (сабмодуль)
 
 ## CMake Key Points
 

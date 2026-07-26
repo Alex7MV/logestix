@@ -8,7 +8,7 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.4.2 | FetchContent | Static (`.lib`) |
+| simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
