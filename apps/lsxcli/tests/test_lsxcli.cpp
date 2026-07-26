@@ -3,8 +3,8 @@
 
 #include <fstream>
 
-TEST_CASE("lsxc core initialization and lifecycle", "[lsxc]") {
-    const std::string log_path = "test_lsxc.log";
+TEST_CASE("lsxcli core initialization and lifecycle", "[lsxcli]") {
+    const std::string log_path = "test_lsxcli.log";
 
     lsxcommon::Core::Initialize(log_path);
     lsxcommon::Core::ExecuteDummyInference();

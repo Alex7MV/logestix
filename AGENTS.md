@@ -2,7 +2,7 @@
 
 ## Project
 
-Multi-app monorepo: fabric, forge, taskmosaic, lsxc. C++17 / C11. CMake 3.15+.
+Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++17 / C11. CMake 3.15+.
 
 ## Dependencies
 
@@ -67,8 +67,8 @@ ctest --test-dir build --output-on-failure -C Debug
   - `apps/lsxforge/tests/` — 1 test case, 1 assertion
 - `apps/taskmosaic/` — task orchestrator (placeholder)
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
-- `apps/lsxc/` — CLI client (placeholder)
-  - `apps/lsxc/tests/` — 1 test case, 1 assertion
+- `apps/lsxcli/` — CLI client (placeholder)
+  - `apps/lsxcli/tests/` — 1 test case, 1 assertion
 - `tests/test_core.cpp` — интеграционные тесты; 10 test cases, 101 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)

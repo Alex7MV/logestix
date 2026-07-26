@@ -1,6 +1,6 @@
 # logestix
 
-Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxc** (CLI client). Shared core library `lsxcommon`.
+Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client). Shared core library `lsxcommon`.
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
@@ -71,7 +71,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - `apps/lsxfabric/` — B2B inference engine
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
 - `apps/taskmosaic/` — task orchestrator (placeholder)
-- `apps/lsxc/` — CLI client (placeholder)
+- `apps/lsxcli/` — CLI client (placeholder)
 - `tests/test_core.cpp` — integration tests (Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson)
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
