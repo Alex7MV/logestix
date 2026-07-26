@@ -4,7 +4,7 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
-| Apache Arrow | 24.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
+| Apache Arrow | 25.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
@@ -15,13 +15,14 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 ## Prerequisites
 
 - CMake 3.15+
-- C++17/C11 compiler (GCC 9+, Clang 12+, MSVC 2022+)
+- C++20 / C11 compiler (GCC 9+, Clang 12+, MSVC 2026+)
 - Git
+- NVIDIA CUDA Toolkit 13.3+ (optional, for GPU support)
 
 ## Clone with submodules
 
 ```bash
-git clone --recurse-submodules https://github.com/<your-org>/logestix.git
+git clone --recurse-submodules https://github.com/Alex7MV/logestix.git
 cd logestix
 git submodule update --init --recursive
 ```
@@ -44,7 +45,7 @@ $env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
 cmake --build build --config Debug
 ```
 
-`arrow.dll`, `arrow_cuda.dll`, and all executables land in `build/bin/Debug/`.
+`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD`. All executables land in `build/bin/Debug/`.
 
 ## Test
 
@@ -63,19 +64,27 @@ cmake --build build --config Debug
 ctest --test-dir build --output-on-failure -C Debug
 ```
 
-5 test executables, 105 assertions total.
+15 test cases, ~104 assertions total.
 
 ## Structure
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`
-- `apps/lsxfabric/` — B2B inference engine
+  - `core` — logging and initialization (spdlog)
+  - `common` — version string, CUDA GPU enumeration
+  - `schema` — `ExpertSchema`, `PackedExpert`, `ExpertData` structs
+  - `converter` — NVFP4 packing, expert-to-Arrow IPC serialization
+  - `loader` — Arrow file loading, CUDA pinned memory registration
+  - `safetensors` — safetensors file parser, nvfp4 forecast
+  - `safetensors_gpu` — GPU-accelerated tensor quantization (CUDA + CCCL thrust)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`)
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
 - `apps/taskmosaic/` — task orchestrator (placeholder)
-- `apps/lsxcli/` — CLI client (placeholder)
-- `tests/test_core.cpp` — integration tests (Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson)
+- `apps/lsxcli/` — CLI client (`--model`)
+- `tests/test_core.cpp` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
+- `third_party/simdjson/` — simdjson v4.4.2
 
 ## Licensing
 
