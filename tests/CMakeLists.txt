@@ -15,11 +15,8 @@ FetchContent_MakeAvailable(Catch2)
 
 # ── Исполняемый файл тестов ──────────────────────────────────────────────────
 #
-# Линкуется с объектной библиотекой lsxfabric_objects (core.cpp)
-# и с Catch2::Catch2WithMain (предоставляет main()).
-#
 add_executable(test_core test_core.cpp)
-target_link_libraries(test_core PRIVATE lsxfabric_objects Catch2::Catch2WithMain)
+target_link_libraries(test_core PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # Копируем arrow.dll и arrow_cuda.dll в директорию с тестовым исполняемым файлом
 if(WIN32)
