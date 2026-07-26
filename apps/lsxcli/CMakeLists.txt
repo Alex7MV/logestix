@@ -1,5 +1,5 @@
 add_executable(lsxcli src/main.cpp)
-target_link_libraries(lsxcli PRIVATE lsxcommon ${CMAKE_DL_LIBS})
+target_link_libraries(lsxcli PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson ${CMAKE_DL_LIBS})
 
 if(WIN32)
     add_custom_command(TARGET lsxcli POST_BUILD

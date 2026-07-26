@@ -1,5 +1,5 @@
 add_executable(lsxfabric src/main.cpp)
-target_link_libraries(lsxfabric PRIVATE lsxcommon ${CMAKE_DL_LIBS})
+target_link_libraries(lsxfabric PRIVATE lsxcommon arrow_shared arrow_cuda_shared ${CMAKE_DL_LIBS})
 
 if(WIN32)
     add_custom_command(TARGET lsxfabric POST_BUILD

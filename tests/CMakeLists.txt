@@ -1,6 +1,6 @@
 # ── Исполняемый файл репозиторных тестов ─────────────────────────────────
 add_executable(test_core test_core.cpp)
-target_link_libraries(test_core PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson Catch2::Catch2WithMain)
 
 # Копируем arrow.dll и arrow_cuda.dll в директорию с тестовым исполняемым файлом
 if(WIN32)

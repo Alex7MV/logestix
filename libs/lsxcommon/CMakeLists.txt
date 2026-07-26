@@ -23,10 +23,7 @@ configure_file(
 )
 
 target_link_libraries(lsxcommon PUBLIC
-    arrow_shared
-    arrow_cuda_shared
     spdlog::spdlog
     flatbuffers
     libzmq-static
-    simdjson::simdjson
 )
