@@ -12,6 +12,7 @@
 #include <cstring>
 #include <sstream>
 #include <cmath>
+#include <cstdio>
 #include <iomanip>
 
 namespace lsxcommon {
@@ -258,7 +259,7 @@ std::string pinned_category_name(const std::string &name)
 
 void print_shard(const SafetensorsModel::Shard &shard)
 {
-    spdlog::info("--- {} ({}) ---", shard.filename, format_size(shard.file_size));
+    std::printf("--- %s (%s) ---\n", shard.filename.c_str(), format_size(shard.file_size).c_str());
     for (auto &t : shard.tensors) {
         std::string shape_str = "[";
         for (size_t i = 0; i < t.shape.size(); ++i) {
@@ -267,9 +268,10 @@ void print_shard(const SafetensorsModel::Shard &shard)
         }
         shape_str += "]";
 
-        spdlog::info("  {:<4} {:<50} {:<8} {:<24} {}",
+        std::printf("  %s %-50s %-8s %-24s %s\n",
             is_staged_tensor(t.name) ? "[S]" : "[P]",
-            t.name, t.dtype, shape_str, format_size(t.byte_size()));
+            t.name.c_str(), t.dtype.c_str(), shape_str.c_str(),
+            format_size(t.byte_size()).c_str());
     }
 }
 
@@ -296,16 +298,16 @@ void print_model(const SafetensorsModel &model)
         }
     }
 
-    spdlog::info("=== Model Summary ===");
-    spdlog::info("Shards: {}", model.shards.size());
-    spdlog::info("Tensors: {}", total_tensors);
-    spdlog::info("Total tensor data: {}", format_size(total_bytes));
-    spdlog::info("--- Memory classification ---");
-    spdlog::info("Pinned (always in VRAM): {} tensors, {}",
-        pinned_tensors, format_size(pinned_bytes));
-    spdlog::info("Staged (MoE experts):   {} tensors, {}",
-        staged_tensors, format_size(staged_bytes));
-    spdlog::info("--- Pinned breakdown ---");
+    std::printf("=== Model Summary ===\n");
+    std::printf("Shards: %zu\n", model.shards.size());
+    std::printf("Tensors: %lld\n", (long long)total_tensors);
+    std::printf("Total tensor data: %s\n", format_size(total_bytes).c_str());
+    std::printf("--- Memory classification ---\n");
+    std::printf("Pinned (always in VRAM): %lld tensors, %s\n",
+        (long long)pinned_tensors, format_size(pinned_bytes).c_str());
+    std::printf("Staged (MoE experts):   %lld tensors, %s\n",
+        (long long)staged_tensors, format_size(staged_bytes).c_str());
+    std::printf("--- Pinned breakdown ---\n");
     // Collect pinned tensor categories
     std::map<std::string, int64_t> cat_tensors, cat_bytes;
     for (auto &shard : model.shards) {
@@ -317,11 +319,11 @@ void print_model(const SafetensorsModel &model)
         }
     }
     for (auto &[cat, cnt] : cat_tensors) {
-        spdlog::info("  {:<22} {:>6} tensors, {}",
-            cat, cnt, format_size(cat_bytes[cat]));
+        std::printf("  %-22s %6lld tensors, %s\n",
+            cat.c_str(), (long long)cnt, format_size(cat_bytes[cat]).c_str());
     }
 
-    spdlog::info("--- Runtime memory estimate ---");
+    std::printf("--- Runtime memory estimate ---\n");
 
     // Collect architecture info from tensors
     struct LayerExpertInfo {
@@ -396,20 +398,20 @@ void print_model(const SafetensorsModel &model)
     int64_t workspace = static_cast<int64_t>(batch_size) * seq_len * hidden_dim *
                         num_attn_layers * bytes_per_elem * 2;
 
-    spdlog::info("  Expert Ring Buffer (ring_size={}): {}",
-        ring_buffer_size, format_size(expert_ring_buffer));
-    spdlog::info("  KV Cache ({} layers, seq_len={}):  {}",
-        num_attn_layers, seq_len, format_size(kv_cache));
-    spdlog::info("  Workspace (batch={}, seq_len={}):  {}",
-        batch_size, seq_len, format_size(workspace));
+    std::printf("  Expert Ring Buffer (ring_size=%d): %s\n",
+        ring_buffer_size, format_size(expert_ring_buffer).c_str());
+    std::printf("  KV Cache (%d layers, seq_len=%d):  %s\n",
+        num_attn_layers, seq_len, format_size(kv_cache).c_str());
+    std::printf("  Workspace (batch=%d, seq_len=%d):  %s\n",
+        batch_size, seq_len, format_size(workspace).c_str());
 
     int64_t runtime_total = pinned_bytes + expert_ring_buffer + kv_cache + workspace;
-    spdlog::info("  Total runtime (pinned+ring+cache+ws): {}",
-        format_size(runtime_total));
+    std::printf("  Total runtime (pinned+ring+cache+ws): %s\n",
+        format_size(runtime_total).c_str());
 
     int64_t gpu_min = pinned_bytes + expert_ring_buffer + kv_cache;
-    spdlog::info("  Minimum VRAM (pinned+ring+cache): {}",
-        format_size(gpu_min));
+    std::printf("  Minimum VRAM (pinned+ring+cache): %s\n",
+        format_size(gpu_min).c_str());
 }
 
 void print_nvfp4_forecast(const SafetensorsModel &model)
