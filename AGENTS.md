@@ -2,13 +2,13 @@
 
 ## Project
 
-Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++17 / C11. CMake 3.15+.
+Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C11. CMake 3.15+.
 
 ## Dependencies
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
-| Apache Arrow | 16.1.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
+| Apache Arrow | 25.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
@@ -82,12 +82,13 @@ ctest --test-dir build --output-on-failure -C Debug
 - Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
-- `/Zc:preprocessor` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` + `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` для CCCL/MSVC
+- **MSVC flags**: `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
+- **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
 
 ## Conventions
 
-- C++17, C11
+- C++20, C11
 - `#include` paths без лишних комментариев
 - `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
 - Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в `libs/lsxcommon/`

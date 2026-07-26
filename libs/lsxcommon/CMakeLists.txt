@@ -1,14 +1,25 @@
-add_library(lsxcommon STATIC src/core.cpp)
+add_library(lsxcommon STATIC src/core.cpp src/common.cpp)
+
+find_path(CUDA_INCLUDE_DIR cuda_runtime.h
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/include"
+    REQUIRED
+)
+find_library(CUDA_CUDART_LIBRARY cudart
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+    REQUIRED
+)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
 )
 
 target_include_directories(lsxcommon
     PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
+        "$<BUILD_INTERFACE:${CUDA_INCLUDE_DIR}>"
         "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/thrust>"
         "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/cub>"
         "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include>"
@@ -26,4 +37,5 @@ target_link_libraries(lsxcommon PUBLIC
     spdlog::spdlog
     flatbuffers
     libzmq-static
+    "${CUDA_CUDART_LIBRARY}"
 )

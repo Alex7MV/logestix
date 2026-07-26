@@ -4,7 +4,7 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
-| Apache Arrow | 16.1.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
+| Apache Arrow | 24.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |

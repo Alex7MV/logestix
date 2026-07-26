@@ -8,7 +8,7 @@ project(logestix
 
 # ── Стандарты ────────────────────────────────────────────────────────────────
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -18,7 +18,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Флаги компилятора ────────────────────────────────────────────────────────
 
 if(MSVC)
-    add_compile_options(/W4 /utf-8 /MP /Zc:preprocessor)
+    add_compile_options(/W4 /utf-8 /MP)
+    # WIN32_LEAN_AND_MEAN / NOMINMAX: suppress Windows header bloat and min/max macros
+    # that conflict with std::numeric_limits::max() in CCCL/Thrust.
+    add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
+    # CCCL (CUDA C++ Core Libraries) doesn't work with /Zc:preprocessor on MSVC.
+    # Use CXX standard defines instead to suppress its traditional-preprocessor warning.
+    add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -57,16 +63,17 @@ set(ARROW_CSV ON CACHE INTERNAL "Enable CSV parser")
 set(ARROW_FILESYSTEM ON CACHE INTERNAL "Enable local filesystem support")
 set(ARROW_JEMALLOC OFF CACHE INTERNAL "Use system allocator instead of jemalloc")
 set(ARROW_WITH_SIMD OFF CACHE INTERNAL "Disable SIMD (CMake 4.x compat)")
+set(ARROW_ENABLE_THREADING ON CACHE INTERNAL "Enable threading in Arrow core")
 
 FetchContent_Declare(
   Arrow
   GIT_REPOSITORY "https://github.com/apache/arrow.git"
-  GIT_TAG        "apache-arrow-16.1.0"
+  GIT_TAG        "apache-arrow-25.0.0"
   SOURCE_SUBDIR  "cpp"
   GIT_SHALLOW    TRUE
 )
 
-# Arrow 16.1.0 на Windows не определяет ARROW_SIMD_LEVEL (пустая строка),
+# Arrow на Windows не определяет ARROW_SIMD_LEVEL (пустая строка),
 # из-за чего if(NOT (${VAR} STREQUAL "NONE") ...) ломается в CMake 4.x.
 # Явно задаём уровень, чтобы условие в src/arrow/io/CMakeLists.txt
 # корректно вычислялось как FALSE (бенчмарк memory_benchmark не соберётся).
@@ -74,6 +81,21 @@ set(ARROW_SIMD_LEVEL "NONE" CACHE STRING "Arrow SIMD level")
 set(ARROW_RUNTIME_SIMD_LEVEL "NONE" CACHE STRING "Arrow runtime SIMD level")
 
 FetchContent_MakeAvailable(Arrow)
+
+# Patch Boost 1.88.0 multiprecision literals.hpp for MSVC C++20 compat.
+# The `operator""_cppi` / `_cppui` variadic UDL templates fail with MSVC 2026
+# due to redefinition errors between the unsized and sized (_cppi128 etc)
+# literal operators. Arrow doesn't use these literal suffixes, so we wrap
+# them in an #ifndef guard.
+set(_boost_literals "${arrow_SOURCE_DIR}/../boost-src/libs/multiprecision/include/boost/multiprecision/cpp_int/literals.hpp")
+if(EXISTS "${_boost_literals}")
+  file(READ "${_boost_literals}" _content)
+  string(REGEX REPLACE
+    "BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL\\(128\\)\nBOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL\\(256\\)\nBOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL\\(512\\)\nBOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL\\(1024\\)"
+    ""
+    _content "${_content}")
+  file(WRITE "${_boost_literals}" "${_content}")
+endif()
 
 # ── ЗАВИСИМОСТИ: spdlog через FetchContent ────────────────────────────────────
 

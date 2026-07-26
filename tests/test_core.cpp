@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <lsxcommon/common.h>
 
 // Apache Arrow Core Data Layers
 #include <arrow/api.h>
@@ -394,4 +395,9 @@ TEST_CASE("simdjson parse nested array and error handling", "[dependencies][simd
     simdjson::ondemand::document miss_doc;
     REQUIRE(parser.iterate(missing_json).get(miss_doc) == simdjson::SUCCESS);
     REQUIRE(miss_doc["nonexistent"].error() == simdjson::NO_SUCH_FIELD);
+}
+
+TEST_CASE("lsxcommon common module version and GPU info", "[dependencies][lsxcommon]") {
+    lsxcommon::version();
+    lsxcommon::log_gpu_info();
 }
