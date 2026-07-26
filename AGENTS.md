@@ -2,7 +2,7 @@
 
 ## Project
 
-B2B inference engine. C++17 / C11. CMake 3.15+. Executable: `lsxfabric`.
+Multi-app monorepo: fabric, forge, taskmosaic, lsxc. C++17 / C11. CMake 3.15+.
 
 ## Dependencies
 
@@ -12,7 +12,7 @@ B2B inference engine. C++17 / C11. CMake 3.15+. Executable: `lsxfabric`.
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.4.0 | FetchContent | Static (`.lib`) |
+| simdjson | v4.4.2 | FetchContent | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
@@ -58,28 +58,33 @@ ctest --test-dir build --output-on-failure -C Debug
 
 ## Structure
 
-- `src/core.cpp` — ядро; объектная библиотека `lsxfabric_objects`
-- `src/main.cpp` — точка входа; исполняемый файл `lsxfabric`
+- `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`
+  - `libs/lsxcommon/src/core.cpp` — ядро (логирование, инициализация)
+  - `libs/lsxcommon/include/lsxcommon/core.h` — публичный заголовок
+- `apps/lsxfabric/` — B2B inference engine
+- `apps/lsxforge/` — data preprocessing utility (placeholder)
+- `apps/taskmosaic/` — task orchestrator (placeholder)
+- `apps/lsxc/` — CLI client (placeholder)
 - `tests/test_core.cpp` — тесты Catch2 v3; 10 test cases, 101 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
-- `include/lsxfabric/` — публичные заголовки
 
 ## CMake Key Points
 
-- `lsxfabric_objects` — OBJECT library в `src/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
+- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
+- Each app in `apps/*/` links `lsxcommon` PRIVATE
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
-- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` в директорию exe (только Win32)
+- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32)
 - `/Zc:preprocessor` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` + `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` для CCCL/MSVC
-- Arrow include paths добавлены PUBLIC напрямую к `lsxfabric_objects` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
+- Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
 
 ## Conventions
 
 - C++17, C11
 - `#include` paths без лишних комментариев
 - `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
-- Новые `.cpp` добавлять в `src/CMakeLists.txt` в объектную библиотеку или в `add_executable` в зависимости от принадлежности к ядру
+- Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в `libs/lsxcommon/`
 
 ## Git
 
