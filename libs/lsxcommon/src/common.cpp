@@ -1,4 +1,3 @@
-#include <cstdio>
 #include "lsxcommon/common.h"
 #include <spdlog/spdlog.h>
 
@@ -10,7 +9,7 @@ namespace lsxcommon {
 
 void version()
 {
-    std::fprintf(stdout, "logestix v0.1.0\n");
+    spdlog::info("logestix v0.1.0");
 }
 
 void log_gpu_info()
@@ -38,4 +37,4 @@ void log_gpu_info()
 #endif
 }
 
-} // namespace logestix
+} // namespace lsxcommon

@@ -1,7 +1,7 @@
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
 #include <cstring>
-#include <iostream>
+#include <spdlog/spdlog.h>
 #include <string>
 
 int main(int argc, char* argv[]) {
@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("lsxcli_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    std::cout << "Model path: " << model_path << '\n';
+    spdlog::info("Model path: {}", model_path);
     lsxcommon::Core::ExecuteDummyInference();
     lsxcommon::Core::Shutdown();
     return 0;
