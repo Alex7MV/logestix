@@ -8,8 +8,11 @@ find_library(CUDA_CUDART_LIBRARY cudart
 )
 
 add_library(lsxcommon STATIC
+    src/converter.cpp
     src/core.cpp
     src/common.cpp
+    src/loader.cpp
+    src/schema.cpp
     src/safetensors.cpp
 )
 
