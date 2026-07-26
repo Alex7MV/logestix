@@ -15,3 +15,7 @@ if(WIN32)
 endif()
 
 install(TARGETS taskmosaic RUNTIME DESTINATION bin)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

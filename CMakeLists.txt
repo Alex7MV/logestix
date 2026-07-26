@@ -100,6 +100,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(simdjson)
 
+# ── ЗАВИСИМОСТИ: Catch2 через FetchContent (только тесты) ─────────────────
+if(BUILD_TESTING)
+    set(CATCH_BUILD_TESTING OFF CACHE INTERNAL "")
+    set(CATCH_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY "https://github.com/catchorg/Catch2.git"
+        GIT_TAG        "v3.7.0"
+    )
+    FetchContent_MakeAvailable(Catch2)
+endif()
+
 # ── ЗАВИСИМОСТИ: FlatBuffers через submodule (статическая сборка) ────────────
 
 set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")
@@ -130,11 +142,20 @@ endif()
 
 # ── Поддиректории ────────────────────────────────────────────────────────────
 
+# enable_testing должен быть вызван до add_subdirectory(apps), чтобы
+# add_test() внутри каждого приложения работал корректно.
+# Guard на CMAKE_PROJECT_NAME предотвращает повторный вызов при add_subdirectory
+# из внешнего проекта.
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
+    enable_testing()
+endif()
+
 add_subdirectory(libs)
 add_subdirectory(apps)
 
-if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
-    enable_testing()
+# Общие тесты, не привязанные к конкретному приложению (например, интеграционные
+# проверки зависимостей: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).
+if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 

@@ -62,10 +62,14 @@ ctest --test-dir build --output-on-failure -C Debug
   - `libs/lsxcommon/src/core.cpp` — ядро (логирование, инициализация)
   - `libs/lsxcommon/include/lsxcommon/core.h` — публичный заголовок
 - `apps/lsxfabric/` — B2B inference engine
+  - `apps/lsxfabric/tests/` — 1 test case, 1 assertion
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
+  - `apps/lsxforge/tests/` — 1 test case, 1 assertion
 - `apps/taskmosaic/` — task orchestrator (placeholder)
+  - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
 - `apps/lsxc/` — CLI client (placeholder)
-- `tests/test_core.cpp` — тесты Catch2 v3; 10 test cases, 101 assertions
+  - `apps/lsxc/tests/` — 1 test case, 1 assertion
+- `tests/test_core.cpp` — интеграционные тесты; 10 test cases, 101 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -74,6 +78,7 @@ ctest --test-dir build --output-on-failure -C Debug
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
+- Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32)
 - `/Zc:preprocessor` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` + `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` для CCCL/MSVC

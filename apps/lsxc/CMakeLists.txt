@@ -15,3 +15,7 @@ if(WIN32)
 endif()
 
 install(TARGETS lsxc RUNTIME DESTINATION bin)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

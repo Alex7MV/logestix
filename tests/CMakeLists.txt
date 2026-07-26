@@ -1,20 +1,4 @@
-# ── Catch2 — загрузка через FetchContent ─────────────────────────────────────
-#
-# Catch2 v3.x скачивается и собирается автоматически.
-# Не требуется предустановленных пакетов ни на Ubuntu, ни на Windows.
-#
-include(FetchContent)
-
-FetchContent_Declare(
-    Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG        v3.7.0
-)
-
-FetchContent_MakeAvailable(Catch2)
-
-# ── Исполняемый файл тестов ──────────────────────────────────────────────────
-#
+# ── Исполняемый файл репозиторных тестов ─────────────────────────────────
 add_executable(test_core test_core.cpp)
 target_link_libraries(test_core PRIVATE lsxcommon Catch2::Catch2WithMain)
 
