@@ -38,7 +38,7 @@ $env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
 cmake --build build --config Debug
 ```
 
-`arrow.dll` is auto-copied to the output directory via `POST_BUILD`.
+`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD`.
 
 ## Test
 
@@ -76,11 +76,11 @@ ctest --test-dir build --output-on-failure -C Debug
 
 ## CMake Key Points
 
-- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
+- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `arrow_shared`, `arrow_cuda_shared`, `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `simdjson::simdjson`
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
 - Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
-- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32)
+- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
 - `/Zc:preprocessor` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` + `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` для CCCL/MSVC
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
 
