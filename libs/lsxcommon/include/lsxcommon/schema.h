@@ -2,6 +2,7 @@
 
 #include <arrow/api.h>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,6 +33,13 @@ struct PackedExpert {
     std::vector<int64_t> w3_shape;
 };
 
+struct TensorRecord {
+    std::string name;
+    std::string dtype;
+    std::vector<int64_t> shape;
+    std::vector<uint8_t> data;
+};
+
 class ExpertSchema {
 public:
     static constexpr int kNumFields = 6;
@@ -51,6 +59,29 @@ public:
     static arrow::Result<PackedExpert>
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
 };
+
+class PinnedSchema {
+public:
+    static constexpr int kIdxName  = 0;
+    static constexpr int kIdxShape = 1;
+    static constexpr int kIdxDtype = 2;
+    static constexpr int kIdxData  = 3;
+
+    static std::shared_ptr<arrow::Schema> Make();
+
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatch(const std::vector<TensorRecord> &tensors);
+
+    static arrow::Result<std::vector<TensorRecord>>
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+};
+
+arrow::Status WriteRecordBatchToFile(
+    const std::shared_ptr<arrow::RecordBatch> &batch,
+    const std::filesystem::path &path);
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+ReadRecordBatchFromFile(const std::filesystem::path &path);
 
 constexpr int kArrowAlignment = 256;
 constexpr int kNVFP4BlockSize = 16;

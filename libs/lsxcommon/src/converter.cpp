@@ -4,6 +4,7 @@
 #include <arrow/io/file.h>
 #include <spdlog/spdlog.h>
 #include <fstream>
+#include <iomanip>
 #include <numeric>
 #include <chrono>
 #include <cmath>
@@ -30,11 +31,10 @@ struct ExpertKeyHash {
     }
 };
 
-// Parse "model.layers.<layer>.ffn.experts.<exp>.w<id>.weight"
 struct ParsedName {
     int layer = -1;
     int expert = -1;
-    int weight_id = -1; // 1, 2, or 3
+    int weight_id = -1;
 };
 
 std::optional<ParsedName> parse_expert_name(const std::string &name)
@@ -52,7 +52,7 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
 
 } // anonymous namespace
 
-// ── NVFP4 Packing stub ──────────────────────────────────────────────────────
+// ── NVFP4 Packing ───────────────────────────────────────────────────────────
 
 arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
 {
@@ -119,22 +119,98 @@ arrow::Status SaveExpertToArrow(
         ("exp_" + std::to_string(expert_idx) + ".arrow");
 
     ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatch(expert));
-
-    ARROW_ASSIGN_OR_RAISE(auto outfile,
-        arrow::io::FileOutputStream::Open(out_path.string()));
-
-    ARROW_ASSIGN_OR_RAISE(auto writer,
-        arrow::ipc::MakeFileWriter(outfile.get(), batch->schema()));
-
-    ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
-    ARROW_RETURN_NOT_OK(writer->Close());
-    ARROW_RETURN_NOT_OK(outfile->Close());
+    ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, out_path));
 
     spdlog::info("  wrote layer={:03d} expert={:03d}  {} -> {}",
         layer_idx, expert_idx,
         batch->column(0)->length(),
         out_path.string());
 
+    return arrow::Status::OK();
+}
+
+// ── Save all pinned tensors ────────────────────────────────────────────────
+
+arrow::Status SavePinnedTensors(
+    const std::vector<TensorRecord> &tensors,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+    fs::create_directories(output_root / "pinned");
+
+    std::unordered_map<std::string, std::vector<TensorRecord>> by_layer;
+    std::vector<TensorRecord> global;
+
+    for (auto &t : tensors) {
+        static const std::regex layer_re(R"(layers\.(\d+)\..+)");
+        std::smatch m;
+        if (std::regex_match(t.name, m, layer_re)) {
+            by_layer[std::string("layer_") + m[1].str()].push_back(t);
+        } else {
+            global.push_back(t);
+        }
+    }
+
+    if (!global.empty()) {
+        auto path = output_root / "pinned" / "global.arrow";
+        ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(global));
+        ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
+        spdlog::info("  wrote {} pinned tensors -> {}", global.size(), path.string());
+    }
+
+    for (auto &[layer, tens] : by_layer) {
+        auto path = output_root / "pinned" / (layer + ".arrow");
+        ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(tens));
+        ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
+        spdlog::info("  wrote {} pinned tensors for {} -> {}",
+            tens.size(), layer, path.string());
+    }
+
+    return arrow::Status::OK();
+}
+
+// ── Model index ─────────────────────────────────────────────────────────────
+
+arrow::Status WriteModelIndex(
+    const std::string &model_name,
+    int num_layers,
+    int experts_per_layer,
+    int64_t total_pinned,
+    int64_t total_experts,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+
+    std::ofstream f(output_root / "model.index.json");
+    if (!f)
+        return arrow::Status::IOError("Cannot create model.index.json");
+
+    f << "{\n";
+    f << "  \"format\": \"logestix-v1\",\n";
+    f << "  \"model\": \"" << model_name << "\",\n";
+    f << "  \"num_layers\": " << num_layers << ",\n";
+    f << "  \"experts_per_layer\": " << experts_per_layer << ",\n";
+    f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
+    f << "  \"total_experts\": " << total_experts << ",\n";
+    f << "  \"files\": {\n";
+    f << "    \"pinned\": {\n";
+    f << "      \"global\": \"pinned/global.arrow\"\n";
+    for (int i = 0; i < num_layers; ++i) {
+        f << "      ,\"layer_" << std::setw(3) << std::setfill('0') << i
+          << "\": \"pinned/layer_" << std::setw(3) << std::setfill('0') << i << ".arrow\"\n";
+    }
+    f << "    },\n";
+    f << "    \"experts\": {\n";
+    for (int i = 0; i < num_layers; ++i) {
+        f << "      \"layer_" << std::setw(3) << std::setfill('0') << i
+          << "\": \"experts/layer_" << std::setw(3) << std::setfill('0') << i << "/\"\n";
+    }
+    f << "    }\n";
+    f << "  }\n";
+    f << "}\n";
+    f.close();
+
+    spdlog::info("Wrote model.index.json");
     return arrow::Status::OK();
 }
 
@@ -182,7 +258,6 @@ arrow::Status Converter::Run()
 
     fs::create_directories(impl_->output_path);
 
-    // 1. Scan the safetensors model directory
     auto model = lsxcommon::scan_directory(impl_->input_path);
     if (model.shards.empty())
         return arrow::Status::Invalid("no safetensors shards found in ",
@@ -198,18 +273,22 @@ arrow::Status Converter::Run()
         }(),
         total_shards);
 
-    // 2. Scan shards and process experts incrementally
     std::unordered_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
-    int processed = 0;
+    std::vector<TensorRecord> pinned_tensors;
+    int experts_processed = 0;
+    int pinned_processed = 0;
     int shard_idx = 0;
+    int max_layer = 0;
+    int max_experts_per_layer = 0;
+    std::unordered_map<int, int> experts_per_layer;
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
         auto t0 = std::chrono::steady_clock::now();
 
-        spdlog::info("[{}/{}] Scanning {} (partial={}, processed={})",
+        spdlog::info("[{}/{}] Scanning {} (pinned={}, experts={})",
             shard_idx, total_shards, shard.filename,
-            partial.size(), processed);
+            pinned_processed, partial.size());
 
         std::ifstream sf(
             (fs::path(impl_->input_path) / shard.filename).string(),
@@ -230,7 +309,6 @@ arrow::Status Converter::Run()
         int experts_in_shard = 0;
         for (const auto &tensor : shard.tensors) {
             auto parsed = parse_expert_name(tensor.name);
-            if (!parsed) continue;
 
             int64_t raw_size = tensor.byte_size();
             int64_t raw_start = data_off + tensor.data_begin;
@@ -240,44 +318,57 @@ arrow::Status Converter::Run()
                 continue;
             }
 
-            ExpertKey key{parsed->layer, parsed->expert};
-            auto &exp = partial[key];
             const uint8_t *raw_ptr = shard_buf.data() + raw_start;
             std::vector<uint8_t> raw(raw_ptr, raw_ptr + raw_size);
 
-            switch (parsed->weight_id) {
-            case 1:
-                exp.w1_raw   = std::move(raw);
-                exp.w1_shape = tensor.shape;
-                exp.w1_dtype = tensor.dtype;
-                break;
-            case 2:
-                exp.w2_raw   = std::move(raw);
-                exp.w2_shape = tensor.shape;
-                exp.w2_dtype = tensor.dtype;
-                break;
-            case 3:
-                exp.w3_raw   = std::move(raw);
-                exp.w3_shape = tensor.shape;
-                exp.w3_dtype = tensor.dtype;
-                break;
-            }
+            if (parsed) {
+                ExpertKey key{parsed->layer, parsed->expert};
+                auto &exp = partial[key];
+                max_layer = std::max(max_layer, parsed->layer + 1);
+                experts_per_layer[parsed->layer]++;
 
-            if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty()) {
-                ++experts_in_shard;
-                auto status = [&]() -> arrow::Status {
-                    ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
-                    ARROW_RETURN_NOT_OK(SaveExpertToArrow(
-                        packed, key.layer, key.expert,
-                        fs::path(impl_->output_path)));
-                    return arrow::Status::OK();
-                }();
-                if (!status.ok())
-                    spdlog::error("  Failed to pack expert layer={} expert={}: {}",
-                        key.layer, key.expert, status.ToString());
-                else
-                    ++processed;
-                partial.erase(key);
+                switch (parsed->weight_id) {
+                case 1:
+                    exp.w1_raw   = std::move(raw);
+                    exp.w1_shape = tensor.shape;
+                    exp.w1_dtype = tensor.dtype;
+                    break;
+                case 2:
+                    exp.w2_raw   = std::move(raw);
+                    exp.w2_shape = tensor.shape;
+                    exp.w2_dtype = tensor.dtype;
+                    break;
+                case 3:
+                    exp.w3_raw   = std::move(raw);
+                    exp.w3_shape = tensor.shape;
+                    exp.w3_dtype = tensor.dtype;
+                    break;
+                }
+
+                if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty()) {
+                    ++experts_in_shard;
+                    auto status = [&]() -> arrow::Status {
+                        ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
+                        ARROW_RETURN_NOT_OK(SaveExpertToArrow(
+                            packed, key.layer, key.expert,
+                            fs::path(impl_->output_path)));
+                        return arrow::Status::OK();
+                    }();
+                    if (!status.ok())
+                        spdlog::error("  Failed to pack expert layer={} expert={}: {}",
+                            key.layer, key.expert, status.ToString());
+                    else
+                        ++experts_processed;
+                    partial.erase(key);
+                }
+            } else {
+                TensorRecord t;
+                t.name  = tensor.name;
+                t.dtype = tensor.dtype;
+                t.shape = tensor.shape;
+                t.data  = std::move(raw);
+                pinned_tensors.push_back(std::move(t));
+                ++pinned_processed;
             }
         }
 
@@ -293,8 +384,21 @@ arrow::Status Converter::Run()
             raw.w1_raw.size(), raw.w2_raw.size(), raw.w3_raw.size());
     }
 
-    spdlog::info("Done — processed {} experts, incomplete {}",
-        processed, partial.size());
+    for (auto &[layer, cnt] : experts_per_layer)
+        max_experts_per_layer = std::max(max_experts_per_layer, cnt);
+
+    spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
+    ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, impl_->output_path));
+
+    ARROW_RETURN_NOT_OK(WriteModelIndex(
+        fs::path(impl_->input_path).filename().string(),
+        max_layer, max_experts_per_layer,
+        static_cast<int64_t>(pinned_tensors.size()),
+        static_cast<int64_t>(experts_processed),
+        impl_->output_path));
+
+    spdlog::info("Done — {} pinned tensors, {} experts processed, incomplete {}",
+        pinned_processed, experts_processed, partial.size());
     return arrow::Status::OK();
 }
 

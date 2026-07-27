@@ -8,14 +8,24 @@
 
 namespace lsxcommon {
 
-// NVFP4 packing stub — real implementation would call a CUDA kernel
 arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw);
 
-// Write a single expert to an Arrow IPC file
 arrow::Status SaveExpertToArrow(
     const PackedExpert &expert,
     int layer_idx,
     int expert_idx,
+    const std::filesystem::path &output_root);
+
+arrow::Status SavePinnedTensors(
+    const std::vector<TensorRecord> &tensors,
+    const std::filesystem::path &output_root);
+
+arrow::Status WriteModelIndex(
+    const std::string &model_name,
+    int num_layers,
+    int experts_per_layer,
+    int64_t total_pinned,
+    int64_t total_experts,
     const std::filesystem::path &output_root);
 
 class Converter {

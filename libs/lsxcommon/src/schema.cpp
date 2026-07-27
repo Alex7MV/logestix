@@ -1,6 +1,10 @@
 #include "lsxcommon/schema.h"
 #include <arrow/type_fwd.h>
 #include <arrow/builder.h>
+#include <arrow/ipc/writer.h>
+#include <arrow/ipc/reader.h>
+#include <arrow/io/file.h>
+#include <arrow/io/memory.h>
 #include <cstring>
 
 namespace lsxcommon {
@@ -130,6 +134,129 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
                                         pe.w3_shape, pe.w3_scales, kIdxW3Scale));
 
     return pe;
+}
+
+// ── PinnedSchema ────────────────────────────────────────────────────────────
+
+std::shared_ptr<arrow::Schema> PinnedSchema::Make()
+{
+    return arrow::schema({
+        arrow::field("name",  arrow::utf8()),
+        arrow::field("shape", arrow::list(arrow::int64())),
+        arrow::field("dtype", arrow::utf8()),
+        arrow::field("data",  arrow::binary()),
+    });
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors)
+{
+    auto schema = Make();
+    int64_t n = static_cast<int64_t>(tensors.size());
+
+    arrow::StringBuilder name_builder;
+    arrow::StringBuilder dtype_builder;
+    arrow::BinaryBuilder data_builder;
+
+    auto shape_val_builder = std::make_shared<arrow::Int64Builder>();
+    arrow::ListBuilder shape_builder(arrow::default_memory_pool(), shape_val_builder);
+
+    ARROW_RETURN_NOT_OK(name_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(dtype_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(data_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n));
+
+    for (auto &t : tensors) {
+        ARROW_RETURN_NOT_OK(name_builder.Append(t.name));
+        ARROW_RETURN_NOT_OK(dtype_builder.Append(t.dtype));
+        ARROW_RETURN_NOT_OK(data_builder.Append(t.data.data(),
+            static_cast<int32_t>(t.data.size())));
+        ARROW_RETURN_NOT_OK(shape_builder.Append());
+        for (int64_t d : t.shape)
+            ARROW_RETURN_NOT_OK(shape_val_builder->Append(d));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto name_arr, name_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto shape_arr, shape_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto data_arr, data_builder.Finish());
+
+    return arrow::RecordBatch::Make(schema, n,
+        {name_arr, shape_arr, dtype_arr, data_arr});
+}
+
+arrow::Result<std::vector<TensorRecord>>
+PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+{
+    if (!batch || batch->num_columns() != 4)
+        return arrow::Status::Invalid("Expected 4-column pinned RecordBatch");
+
+    auto names = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxName));
+    auto dtypes = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxDtype));
+    auto datas = std::dynamic_pointer_cast<arrow::BinaryArray>(batch->column(kIdxData));
+    auto shapes = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxShape));
+
+    if (!names || !dtypes || !datas || !shapes)
+        return arrow::Status::Invalid("Pinned batch column type mismatch");
+
+    int64_t n = batch->num_rows();
+    std::vector<TensorRecord> tensors;
+    tensors.reserve(static_cast<size_t>(n));
+
+    for (int64_t i = 0; i < n; ++i) {
+        TensorRecord t;
+        t.name = names->GetString(i);
+        t.dtype = dtypes->GetString(i);
+        auto view = datas->GetView(i);
+        t.data.assign(view.begin(), view.end());
+
+        auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
+        if (!flat_shapes)
+            return arrow::Status::Invalid("Shape array is not int64");
+
+        auto offsets = shapes->offsets();
+        auto offset_arr = std::dynamic_pointer_cast<arrow::Int32Array>(offsets);
+        if (!offset_arr)
+            return arrow::Status::Invalid("Shape offsets not int32");
+
+        int64_t begin = offset_arr->Value(i);
+        int64_t end = offset_arr->Value(i + 1);
+        for (int64_t j = begin; j < end; ++j)
+            t.shape.push_back(flat_shapes->Value(j));
+
+        tensors.push_back(std::move(t));
+    }
+
+    return tensors;
+}
+
+// ── File I/O helpers ────────────────────────────────────────────────────────
+
+arrow::Status WriteRecordBatchToFile(
+    const std::shared_ptr<arrow::RecordBatch> &batch,
+    const std::filesystem::path &path)
+{
+    ARROW_ASSIGN_OR_RAISE(auto outfile,
+        arrow::io::FileOutputStream::Open(path.string()));
+    ARROW_ASSIGN_OR_RAISE(auto writer,
+        arrow::ipc::MakeFileWriter(outfile.get(), batch->schema()));
+    ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
+    ARROW_RETURN_NOT_OK(writer->Close());
+    ARROW_RETURN_NOT_OK(outfile->Close());
+    return arrow::Status::OK();
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+ReadRecordBatchFromFile(const std::filesystem::path &path)
+{
+    ARROW_ASSIGN_OR_RAISE(auto infile,
+        arrow::io::MemoryMappedFile::Open(path.string(),
+            arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(auto reader,
+        arrow::ipc::RecordBatchFileReader::Open(infile.get()));
+    if (reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("No record batches in ", path.string());
+    return reader->ReadRecordBatch(0);
 }
 
 } // namespace lsxcommon
