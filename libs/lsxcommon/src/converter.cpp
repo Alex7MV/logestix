@@ -54,32 +54,136 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
 
 // ── NVFP4 Packing ───────────────────────────────────────────────────────────
 
+namespace {
+
+float bf16_to_float(const uint8_t *p)
+{
+    uint16_t u;
+    std::memcpy(&u, p, sizeof(u));
+    uint32_t bits = static_cast<uint32_t>(u) << 16;
+    float v;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+float f8e4m3_to_float(uint8_t b)
+{
+    if (!b || b == 0x80) return 0.0f;
+    int s = (b >> 7) & 1;
+    int e = (b >> 3) & 0x0F;
+    int m = b & 0x07;
+    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
+                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
+                 | (static_cast<uint32_t>(m) << 20);
+    float v;
+    std::memcpy(&v, &f32, sizeof(v));
+    return v;
+}
+
+float f8e8m0_to_float(uint8_t b)
+{
+    if (!b) return 0.0f;
+    uint32_t bits = static_cast<uint32_t>(b) << 23;
+    float v;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+int dtype_bytes(const std::string &dtype)
+{
+    if (dtype == "BF16") return 2;
+    if (dtype == "F32")  return 4;
+    if (dtype == "F8_E4M3") return 1;
+    if (dtype == "F8_E8M0") return 1;
+    if (dtype == "I8" || dtype == "U8") return 1;
+    return 0;
+}
+
+float read_as_float(const uint8_t *src, const std::string &dtype)
+{
+    if (dtype == "BF16")    return bf16_to_float(src);
+    if (dtype == "F32")     { float v; std::memcpy(&v, src, 4); return v; }
+    if (dtype == "F8_E4M3") return f8e4m3_to_float(src[0]);
+    if (dtype == "F8_E8M0") return f8e8m0_to_float(src[0]);
+    if (dtype == "I8")      return static_cast<float>(static_cast<int8_t>(src[0]));
+    if (dtype == "U8")      return static_cast<float>(src[0]);
+    return 0.0f;
+}
+
+// NVFP4 level table — E2M1 with sign
+// levels[i] for i=0..7: 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0
+static constexpr float kNVFP4Levels[8] = {
+    1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 0.5f,
+    1.0f, 2.0f, 4.0f, 8.0f
+};
+
+uint8_t quantize_nvfp4(float val)
+{
+    if (val == 0.0f) return 0;
+    int sign = val < 0 ? 1 : 0;
+    float abs_val = std::fabs(val);
+    if (abs_val >= 8.0f) abs_val = 7.999f;
+    int best = 0;
+    float best_diff = std::fabs(abs_val - kNVFP4Levels[0]);
+    for (int i = 1; i < 8; ++i) {
+        float d = std::fabs(abs_val - kNVFP4Levels[i]);
+        if (d < best_diff) { best_diff = d; best = i; }
+    }
+    return static_cast<uint8_t>((sign << 3) | best);
+}
+
+} // anonymous namespace
+
 arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
 {
     PackedExpert pe;
     pe.w1_shape = raw.w1_shape;
     pe.w2_shape = raw.w2_shape;
     pe.w3_shape = raw.w3_shape;
+    pe.global_scale = 1.0f;
 
     auto pack_one = [](const std::vector<uint8_t> &src,
+                       const std::string &dtype,
                        int64_t numel,
                        std::vector<uint8_t> &packed,
-                       std::vector<float> &scales)
+                       std::vector<uint8_t> &scales_e4m3)
     {
+        // 1. Convert all source elements to FP32
+        int db = dtype_bytes(dtype);
+        std::vector<float> f32(numel);
+        for (int64_t i = 0; i < numel; ++i) {
+            int64_t off = i * db;
+            if (db > 0 && off + db <= static_cast<int64_t>(src.size()))
+                f32[i] = read_as_float(src.data() + off, dtype);
+        }
+
+        // 2. Compute per-block max_abs → power-of-2 scale → E4M3
+        int64_t nblocks = (numel + kNVFP4BlockSize - 1) / kNVFP4BlockSize;
+        scales_e4m3.assign(nblocks, 0);
+        std::vector<float> block_scales(nblocks);
+
+        for (int64_t b = 0; b < nblocks; ++b) {
+            int64_t begin = b * kNVFP4BlockSize;
+            int64_t end = std::min(begin + kNVFP4BlockSize, numel);
+            float block_max = 0.0f;
+            for (int64_t i = begin; i < end; ++i)
+                block_max = std::max(block_max, std::fabs(f32[i]));
+
+            float scale_needed = (block_max == 0.0f) ? 1.0f / 128.0f
+                                                     : block_max / 8.0f;
+            uint8_t e4 = float_to_e4m3_p2(scale_needed);
+            scales_e4m3[b] = e4;
+            block_scales[b] = e4m3_p2_to_float(e4);
+        }
+
+        // 3. Quantize and pack FP4 values
         int64_t npacked = (numel + 1) / 2;
         packed.assign(npacked, 0);
 
-        int64_t nblocks = (numel + kNVFP4BlockSize - 1) / kNVFP4BlockSize;
-        scales.assign(nblocks, 1.0f);
-
         for (int64_t i = 0; i < numel; ++i) {
-            float v = 0.0f;
-            if (i < static_cast<int64_t>(src.size())) {
-                v = static_cast<float>(static_cast<int8_t>(src[i]))
-                    / 127.0f;
-            }
-            uint8_t q = static_cast<uint8_t>(
-                std::min(15, std::max(0, static_cast<int>(std::round(v * 7.0f)))));
+            int64_t b = i / kNVFP4BlockSize;
+            float scaled = f32[i] / block_scales[b];
+            uint8_t q = quantize_nvfp4(scaled);
             if (i % 2 == 0)
                 packed[i / 2] = (packed[i / 2] & 0xF0) | q;
             else
@@ -94,9 +198,9 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     auto n3 = std::accumulate(raw.w3_shape.begin(), raw.w3_shape.end(),
                                int64_t(1), std::multiplies<>());
 
-    pack_one(raw.w1_raw, n1, pe.w1_packed, pe.w1_scales);
-    pack_one(raw.w2_raw, n2, pe.w2_packed, pe.w2_scales);
-    pack_one(raw.w3_raw, n3, pe.w3_packed, pe.w3_scales);
+    pack_one(raw.w1_raw, raw.w1_dtype, n1, pe.w1_packed, pe.w1_scales);
+    pack_one(raw.w2_raw, raw.w2_dtype, n2, pe.w2_packed, pe.w2_scales);
+    pack_one(raw.w3_raw, raw.w3_dtype, n3, pe.w3_packed, pe.w3_scales);
 
     return pe;
 }

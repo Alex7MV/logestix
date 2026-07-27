@@ -5,22 +5,71 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
+#include <cmath>
 #include <cstring>
 
 namespace lsxcommon {
 
+uint8_t float_to_e4m3_p2(float s)
+{
+    if (s == 0.0f) return 0;
+    uint32_t bits;
+    std::memcpy(&bits, &s, sizeof(bits));
+    int exp8 = (bits >> 23) & 0xFF;
+    if (exp8 == 0) return 0;
+    uint32_t mant = bits & 0x7FFFFF;
+    int p2_exp = exp8 - 127;
+    if (mant != 0) ++p2_exp;
+    int e4 = p2_exp + 7;
+    if (e4 < 1) e4 = 1;
+    if (e4 > 14) e4 = 14;
+    return static_cast<uint8_t>(static_cast<uint8_t>(e4) << 3);
+}
+
+float e4m3_p2_to_float(uint8_t e4m3)
+{
+    if (e4m3 == 0) return 0.0f;
+    int e4_stored = (e4m3 >> 3) & 0x0F;
+    int exp_unb = e4_stored - 7;
+    uint32_t bits = static_cast<uint32_t>(exp_unb + 127) << 23;
+    float f;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+namespace {
+
+arrow::Result<std::shared_ptr<arrow::Array>>
+make_scales_u8(const std::vector<uint8_t> &scales)
+{
+    arrow::UInt8Builder ub;
+    ARROW_RETURN_NOT_OK(ub.Reserve(scales.size()));
+    ARROW_RETURN_NOT_OK(ub.AppendValues(scales.data(), scales.size()));
+    ARROW_ASSIGN_OR_RAISE(auto flat, ub.Finish());
+    auto lb_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
+    arrow::ListBuilder lb(arrow::default_memory_pool(), lb_val);
+    ARROW_RETURN_NOT_OK(lb.Reserve(1));
+    ARROW_RETURN_NOT_OK(lb.Append());
+    auto *vb = static_cast<arrow::UInt8Builder *>(lb.value_builder());
+    ARROW_RETURN_NOT_OK(vb->AppendValues(scales.data(), scales.size()));
+    return lb.Finish();
+}
+
+} // anonymous namespace
+
 std::shared_ptr<arrow::Schema> ExpertSchema::Make()
 {
     auto binary_type = arrow::binary();
-    auto list_float  = arrow::list(arrow::float32());
+    auto list_u8     = arrow::list(arrow::uint8());
 
     return arrow::schema({
         arrow::field("w1_weight", binary_type),
         arrow::field("w2_weight", binary_type),
         arrow::field("w3_weight", binary_type),
-        arrow::field("w1_scale",  list_float),
-        arrow::field("w2_scale",  list_float),
-        arrow::field("w3_scale",  list_float),
+        arrow::field("w1_scale",   list_u8),
+        arrow::field("w2_scale",   list_u8),
+        arrow::field("w3_scale",   list_u8),
+        arrow::field("global_scale", arrow::float32()),
     });
 }
 
@@ -57,43 +106,29 @@ ExpertSchema::MakeBatch(const PackedExpert &expert)
     ARROW_ASSIGN_OR_RAISE(auto w2_arr, make_binary(w2_buf->data(), w2_buf->size()));
     ARROW_ASSIGN_OR_RAISE(auto w3_arr, make_binary(w3_buf->data(), w3_buf->size()));
 
-    auto make_scales = [](const std::vector<float> &scales)
-        -> arrow::Result<std::shared_ptr<arrow::Array>>
-    {
-        arrow::FloatBuilder fb;
-        ARROW_RETURN_NOT_OK(fb.Reserve(scales.size()));
-        ARROW_RETURN_NOT_OK(fb.AppendValues(scales.data(), scales.size()));
-        ARROW_ASSIGN_OR_RAISE(auto flat, fb.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto s1, make_scales_u8(expert.w1_scales));
+    ARROW_ASSIGN_OR_RAISE(auto s2, make_scales_u8(expert.w2_scales));
+    ARROW_ASSIGN_OR_RAISE(auto s3, make_scales_u8(expert.w3_scales));
 
-        auto lb_val = std::make_shared<arrow::FloatBuilder>(arrow::default_memory_pool());
-        arrow::ListBuilder lb(arrow::default_memory_pool(), lb_val);
-        ARROW_RETURN_NOT_OK(lb.Reserve(1));
-        ARROW_RETURN_NOT_OK(lb.Append());
-        auto *vb = static_cast<arrow::FloatBuilder *>(lb.value_builder());
-        ARROW_RETURN_NOT_OK(vb->AppendValues(scales.data(), scales.size()));
-        return lb.Finish();
-    };
-
-    ARROW_ASSIGN_OR_RAISE(auto s1, make_scales(expert.w1_scales));
-    ARROW_ASSIGN_OR_RAISE(auto s2, make_scales(expert.w2_scales));
-    ARROW_ASSIGN_OR_RAISE(auto s3, make_scales(expert.w3_scales));
+    arrow::FloatBuilder gs_builder;
+    ARROW_RETURN_NOT_OK(gs_builder.Reserve(1));
+    ARROW_RETURN_NOT_OK(gs_builder.Append(expert.global_scale));
+    ARROW_ASSIGN_OR_RAISE(auto gs_arr, gs_builder.Finish());
 
     return arrow::RecordBatch::Make(schema, 1,
-        {w1_arr, w2_arr, w3_arr, s1, s2, s3});
+        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs_arr});
 }
 
 arrow::Result<PackedExpert>
 ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 {
     if (!batch || batch->num_columns() != kNumFields)
-        return arrow::Status::Invalid("Expected 6-column expert RecordBatch");
+        return arrow::Status::Invalid("Expected 7-column expert RecordBatch");
 
     PackedExpert pe;
 
     auto extract_binary = [&](int idx, std::vector<uint8_t> &out,
-                              std::vector<int64_t> &shape,
-                              std::vector<float> &scales,
-                              int scale_idx)
+                              std::vector<int64_t> &shape)
         -> arrow::Status
     {
         auto arr = batch->column(idx);
@@ -104,15 +139,21 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         auto view = bin->GetView(0);
         out.assign(view.begin(), view.end());
 
-        auto s_arr = batch->column(scale_idx);
+        return arrow::Status::OK();
+    };
+
+    auto extract_scales = [&](int idx, std::vector<uint8_t> &scales)
+        -> arrow::Status
+    {
+        auto s_arr = batch->column(idx);
         auto lst = std::dynamic_pointer_cast<arrow::ListArray>(s_arr);
         if (!lst)
             return arrow::Status::TypeError("Scale column is not list");
 
         auto flat = lst->values();
-        auto flt = std::dynamic_pointer_cast<arrow::FloatArray>(flat);
-        if (!flt)
-            return arrow::Status::TypeError("Scale list is not float32");
+        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(flat);
+        if (!u8)
+            return arrow::Status::TypeError("Scale list is not uint8");
 
         auto offsets = lst->offsets();
         auto offset_arr = std::dynamic_pointer_cast<arrow::Int32Array>(offsets);
@@ -120,18 +161,25 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
             return arrow::Status::TypeError("Offsets array is not int32");
         int64_t begin = offset_arr->Value(0);
         int64_t end   = offset_arr->Value(1);
-        scales.assign(flt->raw_values() + begin,
-                      flt->raw_values() + end);
+        scales.assign(u8->raw_values() + begin,
+                      u8->raw_values() + end);
 
         return arrow::Status::OK();
     };
 
-    ARROW_RETURN_NOT_OK(extract_binary(kIdxW1Weight, pe.w1_packed,
-                                        pe.w1_shape, pe.w1_scales, kIdxW1Scale));
-    ARROW_RETURN_NOT_OK(extract_binary(kIdxW2Weight, pe.w2_packed,
-                                        pe.w2_shape, pe.w2_scales, kIdxW2Scale));
-    ARROW_RETURN_NOT_OK(extract_binary(kIdxW3Weight, pe.w3_packed,
-                                        pe.w3_shape, pe.w3_scales, kIdxW3Scale));
+    ARROW_RETURN_NOT_OK(extract_binary(kIdxW1Weight, pe.w1_packed, pe.w1_shape));
+    ARROW_RETURN_NOT_OK(extract_binary(kIdxW2Weight, pe.w2_packed, pe.w2_shape));
+    ARROW_RETURN_NOT_OK(extract_binary(kIdxW3Weight, pe.w3_packed, pe.w3_shape));
+
+    ARROW_RETURN_NOT_OK(extract_scales(kIdxW1Scale, pe.w1_scales));
+    ARROW_RETURN_NOT_OK(extract_scales(kIdxW2Scale, pe.w2_scales));
+    ARROW_RETURN_NOT_OK(extract_scales(kIdxW3Scale, pe.w3_scales));
+
+    auto gs_arr = batch->column(kIdxGlobalScale);
+    auto gs_float = std::dynamic_pointer_cast<arrow::FloatArray>(gs_arr);
+    if (!gs_float)
+        return arrow::Status::TypeError("global_scale column is not float32");
+    pe.global_scale = gs_float->Value(0);
 
     return pe;
 }

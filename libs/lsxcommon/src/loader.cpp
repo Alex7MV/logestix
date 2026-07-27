@@ -35,7 +35,7 @@ arrow::Result<LoadedExpert> extract_from_batch(
         return arrow::Status::OK();
     };
 
-    auto get_scales = [&](int idx, const float *&ptr, int64_t &cnt)
+    auto get_scales = [&](int idx, const uint8_t *&ptr, int64_t &cnt)
         -> arrow::Status
     {
         auto arr = exp.batch->column(idx);
@@ -46,11 +46,11 @@ arrow::Result<LoadedExpert> extract_from_batch(
         cnt = lst->raw_value_offsets()[1] - lst->raw_value_offsets()[0];
 
         auto flat = lst->values();
-        auto flt = std::dynamic_pointer_cast<arrow::FloatArray>(flat);
-        if (!flt)
-            return arrow::Status::TypeError("Scale list is not float32");
+        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(flat);
+        if (!u8)
+            return arrow::Status::TypeError("Scale list is not uint8");
 
-        ptr = flt->raw_values() + lst->raw_value_offsets()[0];
+        ptr = u8->raw_values() + lst->raw_value_offsets()[0];
         return arrow::Status::OK();
     };
 
@@ -83,6 +83,14 @@ arrow::Result<LoadedExpert> extract_from_batch(
         auto st = get_scales(ExpertSchema::kIdxW3Scale,
                              exp.w3_scale, exp.w3_scale_count);
         if (!st.ok()) return st;
+    }
+
+    {
+        auto gs_arr = exp.batch->column(ExpertSchema::kIdxGlobalScale);
+        auto gs_float = std::dynamic_pointer_cast<arrow::FloatArray>(gs_arr);
+        if (!gs_float)
+            return arrow::Status::TypeError("global_scale column is not float32");
+        exp.global_scale = gs_float->Value(0);
     }
 
     return exp;

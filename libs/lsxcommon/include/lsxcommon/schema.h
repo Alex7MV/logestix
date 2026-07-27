@@ -25,12 +25,13 @@ struct PackedExpert {
     std::vector<uint8_t> w1_packed;
     std::vector<uint8_t> w2_packed;
     std::vector<uint8_t> w3_packed;
-    std::vector<float> w1_scales;
-    std::vector<float> w2_scales;
-    std::vector<float> w3_scales;
+    std::vector<uint8_t> w1_scales;
+    std::vector<uint8_t> w2_scales;
+    std::vector<uint8_t> w3_scales;
     std::vector<int64_t> w1_shape;
     std::vector<int64_t> w2_shape;
     std::vector<int64_t> w3_shape;
+    float global_scale = 1.0f;
 };
 
 struct TensorRecord {
@@ -42,14 +43,15 @@ struct TensorRecord {
 
 class ExpertSchema {
 public:
-    static constexpr int kNumFields = 6;
+    static constexpr int kNumFields = 7;
 
-    static constexpr int kIdxW1Weight = 0;
-    static constexpr int kIdxW2Weight = 1;
-    static constexpr int kIdxW3Weight = 2;
-    static constexpr int kIdxW1Scale  = 3;
-    static constexpr int kIdxW2Scale  = 4;
-    static constexpr int kIdxW3Scale  = 5;
+    static constexpr int kIdxW1Weight   = 0;
+    static constexpr int kIdxW2Weight   = 1;
+    static constexpr int kIdxW3Weight   = 2;
+    static constexpr int kIdxW1Scale    = 3;
+    static constexpr int kIdxW2Scale    = 4;
+    static constexpr int kIdxW3Scale    = 5;
+    static constexpr int kIdxGlobalScale = 6;
 
     static std::shared_ptr<arrow::Schema> Make();
 
@@ -85,5 +87,8 @@ ReadRecordBatchFromFile(const std::filesystem::path &path);
 
 constexpr int kArrowAlignment = 256;
 constexpr int kNVFP4BlockSize = 16;
+
+uint8_t float_to_e4m3_p2(float s);
+float e4m3_p2_to_float(uint8_t e4m3);
 
 } // namespace lsxcommon

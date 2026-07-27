@@ -14,15 +14,16 @@ struct LoadedExpert {
     const uint8_t *w1_weight = nullptr;
     const uint8_t *w2_weight = nullptr;
     const uint8_t *w3_weight = nullptr;
-    const float   *w1_scale  = nullptr;
-    const float   *w2_scale  = nullptr;
-    const float   *w3_scale  = nullptr;
+    const uint8_t *w1_scale  = nullptr;
+    const uint8_t *w2_scale  = nullptr;
+    const uint8_t *w3_scale  = nullptr;
     int64_t w1_weight_size = 0;
     int64_t w2_weight_size = 0;
     int64_t w3_weight_size = 0;
     int64_t w1_scale_count = 0;
     int64_t w2_scale_count = 0;
     int64_t w3_scale_count = 0;
+    float global_scale = 1.0f;
     bool cuda_registered = false;
 };
 

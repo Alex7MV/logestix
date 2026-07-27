@@ -11,19 +11,29 @@ static lsxcommon::PackedExpert MakeTestExpert()
 {
     lsxcommon::PackedExpert e;
 
+    // w1: 1024 bytes of [0..255] repeated
     e.w1_packed.resize(1024);
-    e.w2_packed.resize(1024);
-    e.w3_packed.resize(512);
-    for (int i = 0; i < 1024; ++i) {
+    for (int i = 0; i < 1024; ++i)
         e.w1_packed[i] = static_cast<uint8_t>(i);
+
+    // w2: 1024 bytes of [255..0] repeated
+    e.w2_packed.resize(1024);
+    for (int i = 0; i < 1024; ++i)
         e.w2_packed[i] = static_cast<uint8_t>(255 - i);
-    }
+
+    // w3: 512 bytes of alternating 0xAA/0xBB
+    e.w3_packed.resize(512);
     for (int i = 0; i < 512; ++i)
         e.w3_packed[i] = (i % 2 == 0) ? uint8_t(0xAA) : uint8_t(0xBB);
 
-    e.w1_scales = {0.5f, 1.0f, 1.5f, 2.0f};
-    e.w2_scales = {0.25f, 0.75f};
-    e.w3_scales = {1.0f};
+    // E4M3-encoded scales (power-of-2): e4 = ceil(log2(s)) + 7, byte = (e4 << 3)
+    // 0.5  → ceil(log2(0.5)) = -1 → e4=6 → 0x30
+    // 1.0  → ceil(log2(1.0)) =  0 → e4=7 → 0x38
+    // 2.0  → ceil(log2(2.0)) =  1 → e4=8 → 0x40
+    e.w1_scales = {0x30, 0x38, 0x40, 0x40};
+    e.w2_scales = {0x28, 0x38};
+    e.w3_scales = {0x38};
+    e.global_scale = 1.0f;
 
     return e;
 }
@@ -63,12 +73,11 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[loader]")
         CHECK(memcmp(loaded.w2_weight, expert.w2_packed.data(), 1024) == 0);
         CHECK(memcmp(loaded.w3_weight, expert.w3_packed.data(), 512) == 0);
 
-        for (int64_t i = 0; i < 4; ++i)
-            CHECK(loaded.w1_scale[i] == expert.w1_scales[static_cast<size_t>(i)]);
-        for (int64_t i = 0; i < 2; ++i)
-            CHECK(loaded.w2_scale[i] == expert.w2_scales[static_cast<size_t>(i)]);
-        for (int64_t i = 0; i < 1; ++i)
-            CHECK(loaded.w3_scale[i] == expert.w3_scales[static_cast<size_t>(i)]);
+        CHECK(memcmp(loaded.w1_scale, expert.w1_scales.data(), 4) == 0);
+        CHECK(memcmp(loaded.w2_scale, expert.w2_scales.data(), 2) == 0);
+        CHECK(memcmp(loaded.w3_scale, expert.w3_scales.data(), 1) == 0);
+
+        CHECK(loaded.global_scale == expert.global_scale);
     }
     fs::remove(path);
 }
@@ -103,6 +112,8 @@ TEST_CASE("Load expert with empty w1 fields", "[loader][edge]")
 
         CHECK(memcmp(loaded.w2_weight, expert.w2_packed.data(), 1024) == 0);
         CHECK(memcmp(loaded.w3_weight, expert.w3_packed.data(), 512) == 0);
+
+        CHECK(loaded.global_scale == expert.global_scale);
     }
     fs::remove(path);
 }
