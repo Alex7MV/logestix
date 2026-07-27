@@ -17,3 +17,22 @@ if(WIN32)
 endif()
 
 add_test(NAME test_core COMMAND test_core)
+
+# ── Тест round-trip загрузчика ──────────────────────────────────────────
+add_executable(test_loader test_loader.cpp)
+target_link_libraries(test_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_loader>"
+    )
+    add_custom_command(TARGET test_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_loader>"
+    )
+endif()
+
+add_test(NAME test_loader COMMAND test_loader)
