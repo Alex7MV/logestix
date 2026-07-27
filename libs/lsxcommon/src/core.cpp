@@ -42,10 +42,4 @@ void Core::Shutdown() {
     spdlog::shutdown();
 }
 
-void Core::ExecuteDummyInference() {
-    spdlog::debug("Starting execution pipeline...");
-    spdlog::info("Processing target inference batch...");
-    spdlog::warn("Hardware allocation high utilization detected, falling back to stream pooling.");
-}
-
 } // namespace lsxcommon

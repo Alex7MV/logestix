@@ -7,7 +7,6 @@ TEST_CASE("lsxforge core initialization and lifecycle", "[lsxforge]") {
     const std::string log_path = "test_lsxforge.log";
 
     lsxcommon::Core::Initialize(log_path);
-    lsxcommon::Core::ExecuteDummyInference();
     lsxcommon::Core::Shutdown();
 
     std::ifstream log_file(log_path);

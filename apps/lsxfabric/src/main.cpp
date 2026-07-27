@@ -17,7 +17,6 @@ int main(int argc, char* argv[]) {
     lsxcommon::version();
     lsxcommon::log_gpu_info();
     spdlog::info("Model path: {}", model_path);
-    lsxcommon::Core::ExecuteDummyInference();
     lsxcommon::Core::Shutdown();
     return 0;
 }

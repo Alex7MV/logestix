@@ -33,7 +33,6 @@ int main(int argc, char* argv[]) {
         lsxcommon::print_model(model);
     }
 
-    lsxcommon::Core::ExecuteDummyInference();
     lsxcommon::Core::Shutdown();
     return 0;
 }

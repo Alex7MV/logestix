@@ -7,7 +7,6 @@ TEST_CASE("taskmosaic core initialization and lifecycle", "[taskmosaic]") {
     const std::string log_path = "test_taskmosaic.log";
 
     lsxcommon::Core::Initialize(log_path);
-    lsxcommon::Core::ExecuteDummyInference();
     lsxcommon::Core::Shutdown();
 
     std::ifstream log_file(log_path);
