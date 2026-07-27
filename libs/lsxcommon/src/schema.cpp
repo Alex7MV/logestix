@@ -10,13 +10,20 @@
 
 namespace lsxcommon {
 
+// E4M3 scale buffers are allocated by Arrow's default memory pool (64-byte aligned).
+// Arrow IPC serialization also pads each buffer to 8-byte boundaries, ensuring
+// that out-of-bounds vector reads (e.g., uint4 loads in CUDA kernels) stay within
+// the allocation. The `raw_values()` pointer from UInt8Array is at least 64-byte aligned.
+
 uint8_t float_to_e4m3_p2(float s)
 {
     if (s == 0.0f) return 0;
     uint32_t bits;
     std::memcpy(&bits, &s, sizeof(bits));
     int exp8 = (bits >> 23) & 0xFF;
-    if (exp8 == 0) return 0;
+    // Subnormals (exp8==0) or tiny values that underflow E4M3: clamp to min E4M3 normal
+    // Returning 0 would cause div-by-zero downstream (e4m3_p2_to_float(0)=0.0f → inf in quantizer)
+    if (exp8 == 0) return 0x08;
     uint32_t mant = bits & 0x7FFFFF;
     int p2_exp = exp8 - 127;
     if (mant != 0) ++p2_exp;
@@ -66,10 +73,12 @@ std::shared_ptr<arrow::Schema> ExpertSchema::Make()
         arrow::field("w1_weight", binary_type),
         arrow::field("w2_weight", binary_type),
         arrow::field("w3_weight", binary_type),
-        arrow::field("w1_scale",   list_u8),
-        arrow::field("w2_scale",   list_u8),
-        arrow::field("w3_scale",   list_u8),
-        arrow::field("global_scale", arrow::float32()),
+        arrow::field("w1_scale",       list_u8),
+        arrow::field("w2_scale",       list_u8),
+        arrow::field("w3_scale",       list_u8),
+        arrow::field("w1_global_scale", arrow::float32()),
+        arrow::field("w2_global_scale", arrow::float32()),
+        arrow::field("w3_global_scale", arrow::float32()),
     });
 }
 
@@ -110,20 +119,25 @@ ExpertSchema::MakeBatch(const PackedExpert &expert)
     ARROW_ASSIGN_OR_RAISE(auto s2, make_scales_u8(expert.w2_scales));
     ARROW_ASSIGN_OR_RAISE(auto s3, make_scales_u8(expert.w3_scales));
 
-    arrow::FloatBuilder gs_builder;
-    ARROW_RETURN_NOT_OK(gs_builder.Reserve(1));
-    ARROW_RETURN_NOT_OK(gs_builder.Append(expert.global_scale));
-    ARROW_ASSIGN_OR_RAISE(auto gs_arr, gs_builder.Finish());
+    auto make_gs = [](float val) -> arrow::Result<std::shared_ptr<arrow::Array>> {
+        arrow::FloatBuilder fb;
+        ARROW_RETURN_NOT_OK(fb.Reserve(1));
+        ARROW_RETURN_NOT_OK(fb.Append(val));
+        return fb.Finish();
+    };
+    ARROW_ASSIGN_OR_RAISE(auto gs1, make_gs(expert.w1_global_scale));
+    ARROW_ASSIGN_OR_RAISE(auto gs2, make_gs(expert.w2_global_scale));
+    ARROW_ASSIGN_OR_RAISE(auto gs3, make_gs(expert.w3_global_scale));
 
     return arrow::RecordBatch::Make(schema, 1,
-        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs_arr});
+        {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3});
 }
 
 arrow::Result<PackedExpert>
 ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 {
     if (!batch || batch->num_columns() != kNumFields)
-        return arrow::Status::Invalid("Expected 7-column expert RecordBatch");
+        return arrow::Status::Invalid("Expected 9-column expert RecordBatch");
 
     PackedExpert pe;
 
@@ -175,11 +189,16 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     ARROW_RETURN_NOT_OK(extract_scales(kIdxW2Scale, pe.w2_scales));
     ARROW_RETURN_NOT_OK(extract_scales(kIdxW3Scale, pe.w3_scales));
 
-    auto gs_arr = batch->column(kIdxGlobalScale);
-    auto gs_float = std::dynamic_pointer_cast<arrow::FloatArray>(gs_arr);
-    if (!gs_float)
-        return arrow::Status::TypeError("global_scale column is not float32");
-    pe.global_scale = gs_float->Value(0);
+    auto read_gs = [&](int idx, float &out) -> arrow::Status {
+        auto arr = batch->column(idx);
+        auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
+        if (!f) return arrow::Status::TypeError("global_scale column not float32");
+        out = f->Value(0);
+        return arrow::Status::OK();
+    };
+    ARROW_RETURN_NOT_OK(read_gs(kIdxW1GlobalScale, pe.w1_global_scale));
+    ARROW_RETURN_NOT_OK(read_gs(kIdxW2GlobalScale, pe.w2_global_scale));
+    ARROW_RETURN_NOT_OK(read_gs(kIdxW3GlobalScale, pe.w3_global_scale));
 
     return pe;
 }

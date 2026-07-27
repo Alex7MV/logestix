@@ -140,7 +140,9 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     pe.w1_shape = raw.w1_shape;
     pe.w2_shape = raw.w2_shape;
     pe.w3_shape = raw.w3_shape;
-    pe.global_scale = 1.0f;
+    pe.w1_global_scale = 1.0f;
+    pe.w2_global_scale = 1.0f;
+    pe.w3_global_scale = 1.0f;
 
     auto pack_one = [](const std::vector<uint8_t> &src,
                        const std::string &dtype,

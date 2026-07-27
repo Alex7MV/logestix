@@ -85,12 +85,24 @@ arrow::Result<LoadedExpert> extract_from_batch(
         if (!st.ok()) return st;
     }
 
+    auto read_gs = [&](int idx, float &out) -> arrow::Status {
+        auto arr = exp.batch->column(idx);
+        auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
+        if (!f) return arrow::Status::TypeError("global_scale column not float32");
+        out = f->Value(0);
+        return arrow::Status::OK();
+    };
     {
-        auto gs_arr = exp.batch->column(ExpertSchema::kIdxGlobalScale);
-        auto gs_float = std::dynamic_pointer_cast<arrow::FloatArray>(gs_arr);
-        if (!gs_float)
-            return arrow::Status::TypeError("global_scale column is not float32");
-        exp.global_scale = gs_float->Value(0);
+        auto st = read_gs(ExpertSchema::kIdxW1GlobalScale, exp.w1_global_scale);
+        if (!st.ok()) return st;
+    }
+    {
+        auto st = read_gs(ExpertSchema::kIdxW2GlobalScale, exp.w2_global_scale);
+        if (!st.ok()) return st;
+    }
+    {
+        auto st = read_gs(ExpertSchema::kIdxW3GlobalScale, exp.w3_global_scale);
+        if (!st.ok()) return st;
     }
 
     return exp;

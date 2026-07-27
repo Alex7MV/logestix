@@ -23,7 +23,9 @@ struct LoadedExpert {
     int64_t w1_scale_count = 0;
     int64_t w2_scale_count = 0;
     int64_t w3_scale_count = 0;
-    float global_scale = 1.0f;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
     bool cuda_registered = false;
 };
 

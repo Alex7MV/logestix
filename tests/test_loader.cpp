@@ -33,7 +33,9 @@ static lsxcommon::PackedExpert MakeTestExpert()
     e.w1_scales = {0x30, 0x38, 0x40, 0x40};
     e.w2_scales = {0x28, 0x38};
     e.w3_scales = {0x38};
-    e.global_scale = 1.0f;
+    e.w1_global_scale = 1.0f;
+    e.w2_global_scale = 1.0f;
+    e.w3_global_scale = 1.0f;
 
     return e;
 }
@@ -77,9 +79,51 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[loader]")
         CHECK(memcmp(loaded.w2_scale, expert.w2_scales.data(), 2) == 0);
         CHECK(memcmp(loaded.w3_scale, expert.w3_scales.data(), 1) == 0);
 
-        CHECK(loaded.global_scale == expert.global_scale);
+        CHECK(loaded.w1_global_scale == expert.w1_global_scale);
+        CHECK(loaded.w2_global_scale == expert.w2_global_scale);
+        CHECK(loaded.w3_global_scale == expert.w3_global_scale);
     }
     fs::remove(path);
+}
+
+TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[schema][e4m3]")
+{
+    SECTION("zero returns 0") {
+        CHECK(lsxcommon::float_to_e4m3_p2(0.0f) == 0);
+        CHECK(lsxcommon::e4m3_p2_to_float(0) == 0.0f);
+    }
+    SECTION("subnormal (exp8=0) returns 0x08 (min E4M3 normal)") {
+        float tiny = 1.4e-45f;
+        uint8_t e4 = lsxcommon::float_to_e4m3_p2(tiny);
+        CHECK(e4 == 0x08);
+        float decoded = lsxcommon::e4m3_p2_to_float(e4);
+        CHECK(decoded > 0.0f);
+        CHECK(decoded == 0x1.0p-6f);
+    }
+    SECTION("normal powers of 2 encode correctly") {
+        CHECK(lsxcommon::float_to_e4m3_p2(0.0625f) == 0x18);
+        CHECK(lsxcommon::float_to_e4m3_p2(0.125f)  == 0x20);
+        CHECK(lsxcommon::float_to_e4m3_p2(0.25f)   == 0x28);
+        CHECK(lsxcommon::float_to_e4m3_p2(0.5f)    == 0x30);
+        CHECK(lsxcommon::float_to_e4m3_p2(1.0f)    == 0x38);
+        CHECK(lsxcommon::float_to_e4m3_p2(2.0f)    == 0x40);
+        CHECK(lsxcommon::float_to_e4m3_p2(4.0f)    == 0x48);
+        CHECK(lsxcommon::float_to_e4m3_p2(8.0f)    == 0x50);
+    }
+    SECTION("non-power-of-2 rounds up") {
+        uint8_t e4 = lsxcommon::float_to_e4m3_p2(3.0f);
+        CHECK(e4 == 0x48);
+        CHECK(lsxcommon::e4m3_p2_to_float(e4) == 4.0f);
+    }
+    SECTION("decode matches encode round-trip") {
+        float vals[] = {0.0f, 1.0e-10f, 1.0e-40f, 0.1f, 0.5f, 1.0f, 10.0f, 100.0f};
+        for (float v : vals) {
+            uint8_t e4 = lsxcommon::float_to_e4m3_p2(v);
+            float dec = lsxcommon::e4m3_p2_to_float(e4);
+            CHECK(dec >= 0.0f);
+            if (v != 0.0f) CHECK(dec > 0.0f);
+        }
+    }
 }
 
 TEST_CASE("Load expert with empty w1 fields", "[loader][edge]")
@@ -113,7 +157,9 @@ TEST_CASE("Load expert with empty w1 fields", "[loader][edge]")
         CHECK(memcmp(loaded.w2_weight, expert.w2_packed.data(), 1024) == 0);
         CHECK(memcmp(loaded.w3_weight, expert.w3_packed.data(), 512) == 0);
 
-        CHECK(loaded.global_scale == expert.global_scale);
+        CHECK(loaded.w1_global_scale == expert.w1_global_scale);
+        CHECK(loaded.w2_global_scale == expert.w2_global_scale);
+        CHECK(loaded.w3_global_scale == expert.w3_global_scale);
     }
     fs::remove(path);
 }
