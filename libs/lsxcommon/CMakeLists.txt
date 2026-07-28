@@ -14,11 +14,16 @@ add_library(lsxcommon STATIC
     src/loader.cpp
     src/schema.cpp
 )
+set_target_properties(lsxcommon PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
 
 enable_language(CUDA)
 add_library(lsxcommon_cu OBJECT src/safetensors_gpu.cu)
 set_target_properties(lsxcommon_cu PROPERTIES
-    CUDA_ARCHITECTURES "75-real;80-real;90-real;120-real;121-real"
+    CUDA_ARCHITECTURES "120-real;121-real"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )

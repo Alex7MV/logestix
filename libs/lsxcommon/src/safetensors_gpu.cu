@@ -42,7 +42,7 @@ arrow::Result<std::shared_ptr<arrow::cuda::CudaContext>> get_cuda_ctx()
     return ctx;
 }
 
-// ── Device helpers for dtype conversion ──────────────────────────────────────
+// ── Device helpers ───────────────────────────────────────────────────────────
 
 __device__ float dev_bf16_to_float(const uint8_t *p)
 {
@@ -81,8 +81,6 @@ __device__ float dev_i8_to_float(uint8_t b)
 {
     return static_cast<float>(static_cast<int8_t>(b));
 }
-
-// ── NVFP4 quantizer (already-scaled value) ────────────────────────────────────
 
 __device__ uint8_t dev_quantize_nvfp4(float val)
 {
@@ -126,17 +124,15 @@ __global__ void convert_kernel(const uint8_t *input, float *output,
 }
 
 __global__ void block_maxabs_kernel(const float *input, float *block_max,
-                                    int64_t nblocks)
+                                     int64_t nblocks, int64_t numel)
 {
-    __shared__ float sdata[32];
+    __shared__ float sdata[16];
 
-    int64_t blk = blockIdx.x; // NVFP4 block index
+    int64_t blk = blockIdx.x;
     int64_t base = blk * kBlockSize;
+    int64_t idx = base + threadIdx.x;
 
-    float val = 0.0f;
-    if (threadIdx.x < kBlockSize && base + threadIdx.x < nblocks * kBlockSize)
-        val = fabsf(input[base + threadIdx.x]);
-    sdata[threadIdx.x] = val;
+    sdata[threadIdx.x] = (idx < numel) ? fabsf(input[idx]) : 0.0f;
     __syncthreads();
 
     for (int s = kBlockSize / 2; s > 0; s >>= 1) {
@@ -231,7 +227,6 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     int64_t npacked = (numel + 1) / 2;
     int64_t nblocks = (numel + kBlockSize - 1) / kBlockSize;
 
-    // Allocate via Arrow CUDA context
     auto maybe_raw = ctx->Allocate(raw_size);
     auto maybe_float = ctx->Allocate(numel * sizeof(float));
     auto maybe_packed = ctx->Allocate(npacked);
@@ -252,31 +247,30 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     uint8_t *d_packed = packed_buf->mutable_data();
     float *d_block_max = reinterpret_cast<float *>(block_max_buf->mutable_data());
     float *d_block_scales = reinterpret_cast<float *>(block_scales_buf->mutable_data());
-
-    // 1. Copy raw input host → device
-    auto st = raw_buf->CopyFromHost(0, raw_data, raw_size);
-    if (!st.ok()) return false;
     uint8_t *d_raw = raw_buf->mutable_data();
 
-    // 2. Convert raw → float32
-    int block_size = 256;
-    unsigned int grid_size = 512;
+    // ── Async stream ────────────────────────────────────────────────────────
+    cudaStream_t stream;
+    if (cudaStreamCreate(&stream) != cudaSuccess) return false;
+    struct StreamGuard { cudaStream_t s; ~StreamGuard() { if (s) cudaStreamDestroy(s); } } sg{stream};
 
-    convert_kernel<<<grid_size, static_cast<unsigned int>(block_size)>>>(
-        d_raw, d_float, numel, dc);
-    cudaError_t err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) return false;
+    // ── Async pipeline on stream ────────────────────────────────────────────
+
+    // 1. Copy raw input host → device
+    cudaMemcpyAsync(d_raw, raw_data, raw_size, cudaMemcpyHostToDevice, stream);
+
+    // 2. Convert raw → float32
+    convert_kernel<<<512, 256, 0, stream>>>(d_raw, d_float, numel, dc);
+    if (cudaGetLastError() != cudaSuccess) return false;
 
     // 3. Per-block max_abs
-    int block_max_grid = static_cast<int>(nblocks);
-    int block_max_block = 32;
+    block_maxabs_kernel<<<static_cast<int>(nblocks), kBlockSize, 0, stream>>>(
+        d_float, d_block_max, nblocks, numel);
+    if (cudaGetLastError() != cudaSuccess) return false;
 
-    block_maxabs_kernel<<<block_max_grid, block_max_block>>>(
-        d_float, d_block_max, nblocks);
-    err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) return false;
-
-    // 4. Global max_abs via Thrust
+    // 4. Global max_abs via Thrust (executes on stream via thrust::device policy)
+    // Note: thrust operations on device pointers use default stream by default.
+    // We synchronize below to ensure data is ready for host readback.
     float global_max_abs = thrust::transform_reduce(
         thrust::device,
         thrust::device_pointer_cast(d_float),
@@ -285,45 +279,46 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
         0.0f,
         thrust::maximum<float>());
 
-    // raw_buf goes out of scope → GPU memory freed
+    // 5. Sync stream to read back block_max and use global_max on host
+    cudaStreamSynchronize(stream);
 
-    if (!isfinite(global_max_abs) || global_max_abs == 0.0f)
+    if (!std::isfinite(global_max_abs) || global_max_abs == 0.0f)
         global_max_abs = 1.0f / 128.0f;
     global_scale = global_max_abs / 8.0f;
 
-    // 5. Copy block max_abs → host, compute E4M3 scales + float scales
-    std::vector<float> host_block_max(nblocks);
-    st = block_max_buf->CopyToHost(0, nblocks * sizeof(float),
-                                    reinterpret_cast<uint8_t*>(host_block_max.data()));
-    if (!st.ok()) return false;
+    // 6. Read back block_max → host, compute E4M3 scales
+    {
+        std::vector<float> host_block_max(static_cast<std::size_t>(nblocks));
+        cudaMemcpy(host_block_max.data(), d_block_max,
+                   nblocks * sizeof(float), cudaMemcpyDeviceToHost);
 
-    scales_e4m3.assign(nblocks, 0);
-    std::vector<float> host_block_scales(nblocks);
-    for (int64_t i = 0; i < nblocks; i++) {
-        float max_val = host_block_max[i];
-        float s = (max_val == 0.0f) ? (1.0f / 128.0f) : (max_val / 8.0f);
-        uint8_t e4 = float_to_e4m3_p2(s);
-        scales_e4m3[i] = e4;
-        host_block_scales[i] = e4m3_p2_to_float(e4);
+        scales_e4m3.assign(static_cast<std::size_t>(nblocks), 0);
+        std::vector<float> host_block_scales(static_cast<std::size_t>(nblocks));
+        for (int64_t i = 0; i < nblocks; i++) {
+            float max_val = host_block_max[static_cast<std::size_t>(i)];
+            float s = (max_val == 0.0f) ? (1.0f / 128.0f) : (max_val / 8.0f);
+            uint8_t e4 = float_to_e4m3_p2(s);
+            scales_e4m3[static_cast<std::size_t>(i)] = e4;
+            host_block_scales[static_cast<std::size_t>(i)] = e4m3_p2_to_float(e4);
+        }
+
+        // Upload float scales to device (async)
+        cudaMemcpyAsync(d_block_scales, host_block_scales.data(),
+                        nblocks * sizeof(float), cudaMemcpyHostToDevice, stream);
     }
 
-    // 6. Upload float scales → device
-    st = block_scales_buf->CopyFromHost(0,
-         reinterpret_cast<const uint8_t*>(host_block_scales.data()),
-         nblocks * sizeof(float));
-    if (!st.ok()) return false;
-
     // 7. Per-block quantize + pack
-    quantize_pack_perblock_kernel<<<grid_size,
-                                     static_cast<unsigned int>(block_size)>>>(
+    quantize_pack_perblock_kernel<<<512, 256, 0, stream>>>(
         d_float, d_packed, d_block_scales, numel);
-    err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return false;
 
-    // 8. Copy packed data device → host
-    packed.resize(npacked);
-    st = packed_buf->CopyToHost(0, npacked, packed.data());
-    if (!st.ok()) return false;
+    // 8. Copy packed data device → host (async)
+    packed.resize(static_cast<std::size_t>(npacked));
+    cudaMemcpyAsync(packed.data(), d_packed, npacked,
+                    cudaMemcpyDeviceToHost, stream);
+
+    // 9. Final sync
+    cudaStreamSynchronize(stream);
 
     return true;
 }
