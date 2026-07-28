@@ -123,3 +123,9 @@ ctest --test-dir build --output-on-failure -C Debug
 
 - Английский язык сообщений коммитов
 - Префиксы: `build:`, `feat:`, `fix:`, `refactor:`, `test:`, `docs:`
+
+## Autonomous Mode
+
+- The AI agent is the sole creator and editor of code files (`.cu`, `.cpp`, `.h`, `CMakeLists.txt`).
+- The operator manages the process exclusively through high-level prompts and changes to instruction files.
+- If manual code changes are detected outside AI sessions, perform a full diff audit and reconcile with the operator before proceeding.
