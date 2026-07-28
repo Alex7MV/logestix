@@ -3,7 +3,8 @@
 ## Project
 
 Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.15+.
-Target architecture: NVIDIA Blackwell (CC 10.0). Active use of 5th-gen Tensor Cores and TMA.
+Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Tensor Cores and TMA.
+Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 
 ## Dependencies
 
@@ -95,22 +96,22 @@ ctest --test-dir build --output-on-failure -C Debug
 - **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
-- CUDA: архитектуры `75-real;80-real;90-real;100-real`, флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
+- CUDA: архитектуры `75-real;80-real;90-real;120-real;121-real`, флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
 
 ## Conventions
 
-- C++20, C11
+- C++20, C23
 - Все логирование через spdlog (никаких `std::cout` / `printf`)
 - `#include` paths без лишних комментариев
 - `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
 - Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в `libs/lsxcommon/`
-- **CUDA async pipeline**: Минимизируй `cudaDeviceSynchronize()`. Весь конвейер на неблокирующих `cudaStream_t`, `cudaEvent_t`, `cudaMemcpyAsync`.
-- **CCCL priority**: Для редукции/сортировки на GPU — `cub::DeviceReduce` / `cub::BlockReduce` вместо кастомных циклов (если не требуется экстремальный тюнинг).
+- **CUDA async pipeline**: Минимизируй `cudaDeviceSynchronize()`. Весь конвейер на неблокирующих `cudaStream_t`, `cudaEvent_t`, `cudaMemcpyAsync`. Используй cooperative groups для синхронизации внутри грида.
+- **CCCL priority**: Для редукции/сортировки на GPU — `cub::DeviceReduce` / `cub::BlockReduce` вместо кастомных циклов (если не требуется экстремальный тюнинг регистров).
 - **Arrow + CUDA**: Используй `arrow::cuda::CudaBuffer`. Избегай лишних Host→Device копий. Zero-Copy через `CudaMemoryManager`.
-- **simdjson + libzmq**: Zero-Copy обёртки — `zmq::message_t` напрямую в `simdjson::onn_demand::parser` без `std::string`.
+- **simdjson + libzmq**: Zero-Copy обёртки — `zmq::message_t` напрямую в `simdjson::onn_demand::parser` без промежуточного `std::string`.
 - **Никаких галлюцинаций**: Не уверен в сигнатуре метода Arrow/CCCL — проверь `.h`/`.cuh` в репозитории или запусти компиляцию.
-- **Alignment**: Проверяй выравнивание данных для CUDA-структур, контролируй Shared Memory на блок (occupancy).
-- **Комментарии**: Сохраняй все Doxygen/JSDoc при рефакторинге.
+- **Alignment**: Проверяй выравнивание данных для CUDA-структур, контролируй Shared Memory на блок (occupancy). Blackwell: 48 warps/SM max.
+- **Комментарии**: Сохраняй все Doxygen/JSDoc при рефакторинге. Адаптируй для проекта.
 
 ## Git
 
