@@ -1,20 +1,49 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/safetensors.h"
+#include "lsxcommon/safetensors_gpu.h"
 #include <arrow/ipc/writer.h>
 #include <arrow/io/file.h>
 #include <spdlog/spdlog.h>
+#include <simdjson.h>
 #include <fstream>
 #include <iomanip>
-#include <numeric>
 #include <chrono>
-#include <cmath>
+#include <cstring>
+#include <algorithm>
 #include <regex>
 #include <unordered_map>
-#include <unordered_set>
+#include <filesystem>
+#include <map>
 
 namespace lsxcommon {
 
 namespace {
+
+// ── Safetensors helpers ──────────────────────────────────────────────────────
+
+int64_t dtype_size(const std::string &dtype)
+{
+    if (dtype == "F8_E8M0") return 1;
+    if (dtype == "F8_E4M3") return 1;
+    if (dtype == "I8" || dtype == "U8") return 1;
+    if (dtype == "BF16" || dtype == "F16") return 2;
+    if (dtype == "F32" || dtype == "I32") return 4;
+    if (dtype == "F64" || dtype == "I64") return 8;
+    return 0;
+}
+
+std::string format_size(int64_t bytes)
+{
+    if (bytes >= 1024LL * 1024 * 1024)
+        return std::to_string(bytes / (1024 * 1024 * 1024)) + " GiB";
+    if (bytes >= 1024 * 1024)
+        return std::to_string(bytes / (1024 * 1024)) + " MiB";
+    if (bytes >= 1024)
+        return std::to_string(bytes / 1024) + " KiB";
+    return std::to_string(bytes) + " B";
+}
+
+// ── Expert name parsing ──────────────────────────────────────────────────────
 
 struct ExpertKey {
     int layer;
@@ -52,87 +81,429 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
 
 } // anonymous namespace
 
-// ── NVFP4 Packing ───────────────────────────────────────────────────────────
+// ── Safetensors public API ───────────────────────────────────────────────────
 
-namespace {
-
-float bf16_to_float(const uint8_t *p)
+bool is_staged_tensor(const std::string &name)
 {
-    uint16_t u;
-    std::memcpy(&u, p, sizeof(u));
-    uint32_t bits = static_cast<uint32_t>(u) << 16;
-    float v;
-    std::memcpy(&v, &bits, sizeof(v));
-    return v;
+    return name.find(".ffn.experts.") != std::string::npos;
 }
 
-float f8e4m3_to_float(uint8_t b)
+static std::string pinned_category_name(const std::string &name)
 {
-    if (!b || b == 0x80) return 0.0f;
-    int s = (b >> 7) & 1;
-    int e = (b >> 3) & 0x0F;
-    int m = b & 0x07;
-    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
-                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
-                 | (static_cast<uint32_t>(m) << 20);
-    float v;
-    std::memcpy(&v, &f32, sizeof(v));
-    return v;
+    if (name == "embed.weight")
+        return "Embedding";
+    if (name == "head.weight")
+        return "LM Head";
+    if (name.rfind("hc_head_", 0) == 0)
+        return "LM Head";
+    if (name.find(".attn.") != std::string::npos || name.find(".attn_norm.") != std::string::npos)
+        return "Attention";
+    if (name.find(".hc_attn") != std::string::npos)
+        return "Attention";
+    if (name.find(".hc_ffn") != std::string::npos)
+        return "HC-FFN";
+    if (name.find(".ffn.gate.") != std::string::npos)
+        return "MoE Router";
+    if (name.find(".ffn.shared_experts.") != std::string::npos)
+        return "Shared Experts";
+    if (name.find(".ffn_norm.") != std::string::npos)
+        return "Layer Norms";
+    if (name.rfind("model.norm.", 0) == 0 || name == "norm.weight")
+        return "Final Norm";
+    if (name.find(".enorm.") != std::string::npos || name.find(".hnorm.") != std::string::npos)
+        return "MTP Norms";
+    if (name.find(".e_proj.") != std::string::npos || name.find(".h_proj.") != std::string::npos)
+        return "MTP Projections";
+    if (name.rfind("mtp.", 0) == 0)
+        return "MTP Norms";
+    return "Other";
 }
 
-float f8e8m0_to_float(uint8_t b)
+void print_shard(const SafetensorsModel::Shard &shard)
 {
-    if (!b) return 0.0f;
-    uint32_t bits = static_cast<uint32_t>(b) << 23;
-    float v;
-    std::memcpy(&v, &bits, sizeof(v));
-    return v;
-}
+    spdlog::info("--- {} ({}) ---", shard.filename, format_size(shard.file_size));
+    for (auto &t : shard.tensors) {
+        std::string shape_str = "[";
+        for (size_t i = 0; i < t.shape.size(); ++i) {
+            if (i > 0) shape_str += ", ";
+            shape_str += std::to_string(t.shape[i]);
+        }
+        shape_str += "]";
 
-int dtype_bytes(const std::string &dtype)
-{
-    if (dtype == "BF16") return 2;
-    if (dtype == "F32")  return 4;
-    if (dtype == "F8_E4M3") return 1;
-    if (dtype == "F8_E8M0") return 1;
-    if (dtype == "I8" || dtype == "U8") return 1;
-    return 0;
-}
-
-float read_as_float(const uint8_t *src, const std::string &dtype)
-{
-    if (dtype == "BF16")    return bf16_to_float(src);
-    if (dtype == "F32")     { float v; std::memcpy(&v, src, 4); return v; }
-    if (dtype == "F8_E4M3") return f8e4m3_to_float(src[0]);
-    if (dtype == "F8_E8M0") return f8e8m0_to_float(src[0]);
-    if (dtype == "I8")      return static_cast<float>(static_cast<int8_t>(src[0]));
-    if (dtype == "U8")      return static_cast<float>(src[0]);
-    return 0.0f;
-}
-
-// NVFP4 level table — E2M1 with sign
-// levels[i] for i=0..7: 0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0
-static constexpr float kNVFP4Levels[8] = {
-    1.0f / 16.0f, 1.0f / 8.0f, 1.0f / 4.0f, 0.5f,
-    1.0f, 2.0f, 4.0f, 8.0f
-};
-
-uint8_t quantize_nvfp4(float val)
-{
-    if (val == 0.0f) return 0;
-    int sign = val < 0 ? 1 : 0;
-    float abs_val = std::fabs(val);
-    if (abs_val >= 8.0f) abs_val = 7.999f;
-    int best = 0;
-    float best_diff = std::fabs(abs_val - kNVFP4Levels[0]);
-    for (int i = 1; i < 8; ++i) {
-        float d = std::fabs(abs_val - kNVFP4Levels[i]);
-        if (d < best_diff) { best_diff = d; best = i; }
+        spdlog::info("  {} {:<50} {:<8} {:<24} {}",
+            is_staged_tensor(t.name) ? "[S]" : "[P]",
+            t.name, t.dtype, shape_str, format_size(t.byte_size()));
     }
-    return static_cast<uint8_t>((sign << 3) | best);
 }
 
-} // anonymous namespace
+void print_model(const SafetensorsModel &model)
+{
+    int64_t total_tensors = 0;
+    int64_t total_bytes = 0;
+    int64_t pinned_tensors = 0;
+    int64_t pinned_bytes = 0;
+    int64_t staged_tensors = 0;
+    int64_t staged_bytes = 0;
+
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            total_tensors++;
+            total_bytes += t.byte_size();
+            if (is_staged_tensor(t.name)) {
+                staged_tensors++;
+                staged_bytes += t.byte_size();
+            } else {
+                pinned_tensors++;
+                pinned_bytes += t.byte_size();
+            }
+        }
+    }
+
+    spdlog::info("=== Model Summary ===");
+    spdlog::info("Shards: {}", model.shards.size());
+    spdlog::info("Tensors: {}", total_tensors);
+    spdlog::info("Total tensor data: {}", format_size(total_bytes));
+    spdlog::info("--- Memory classification ---");
+    spdlog::info("Pinned (always in VRAM): {} tensors, {}",
+        pinned_tensors, format_size(pinned_bytes));
+    spdlog::info("Staged (MoE experts):   {} tensors, {}",
+        staged_tensors, format_size(staged_bytes));
+    spdlog::info("--- Pinned breakdown ---");
+    std::map<std::string, int64_t> cat_tensors, cat_bytes;
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            if (is_staged_tensor(t.name)) continue;
+            auto cat = pinned_category_name(t.name);
+            cat_tensors[cat]++;
+            cat_bytes[cat] += t.byte_size();
+        }
+    }
+    for (auto &[cat, cnt] : cat_tensors) {
+        spdlog::info("  {:<22} {:>6} tensors, {}",
+            cat, cnt, format_size(cat_bytes[cat]));
+    }
+
+    spdlog::info("--- Runtime memory estimate ---");
+
+    struct LayerExpertInfo {
+        int64_t total_expert_bytes = 0;
+        int expert_count = 0;
+    };
+    std::map<int, LayerExpertInfo> moe_layers;
+    std::map<int, bool> layers_with_attention;
+    int hidden_dim = 0;
+    int kv_latent_dim = 0;
+    int total_layers = 0;
+
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            int layer_num = -1;
+            if (t.name.rfind("layers.", 0) == 0) {
+                auto dot = t.name.find('.', 7);
+                if (dot != std::string::npos) {
+                    layer_num = std::stoi(t.name.substr(7, dot - 7));
+                    total_layers = std::max(total_layers, layer_num + 1);
+                }
+            }
+
+            if (is_staged_tensor(t.name) && layer_num >= 0) {
+                moe_layers[layer_num].expert_count++;
+                moe_layers[layer_num].total_expert_bytes += t.byte_size();
+            }
+
+            if (layer_num >= 0 && t.name.find(".attn.") != std::string::npos && t.name.find(".weight") != std::string::npos) {
+                layers_with_attention[layer_num] = true;
+                if (t.name.find("wkv.weight") != std::string::npos) {
+                    kv_latent_dim = static_cast<int>(t.shape[0]);
+                    hidden_dim = static_cast<int>(t.shape[1]);
+                }
+            }
+        }
+    }
+
+    int num_moe_layers = static_cast<int>(moe_layers.size());
+    int num_attn_layers = static_cast<int>(layers_with_attention.size());
+    int experts_per_layer = 0;
+    int64_t per_expert_bytes = 0;
+    if (!moe_layers.empty()) {
+        for (auto &[_, info] : moe_layers) {
+            experts_per_layer = std::max(experts_per_layer, info.expert_count);
+        }
+        int64_t total_expert_bytes = 0;
+        for (auto &[_, info] : moe_layers)
+            total_expert_bytes += info.total_expert_bytes;
+        int64_t total_experts = static_cast<int64_t>(num_moe_layers) * experts_per_layer;
+        if (total_experts > 0)
+            per_expert_bytes = total_expert_bytes / total_experts;
+    }
+
+    if (hidden_dim == 0) hidden_dim = 4096;
+    if (kv_latent_dim == 0) kv_latent_dim = 512;
+    if (num_attn_layers == 0) num_attn_layers = total_layers;
+    if (num_moe_layers == 0) num_moe_layers = total_layers;
+
+    const int ring_buffer_size = 1;
+    const int seq_len = 2048;
+    const int batch_size = 1;
+
+    int64_t expert_ring_buffer = static_cast<int64_t>(ring_buffer_size) *
+                                 per_expert_bytes * num_moe_layers;
+    int bytes_per_elem = 2;
+    int64_t kv_cache = static_cast<int64_t>(seq_len) * num_attn_layers *
+                       kv_latent_dim * 2 * bytes_per_elem;
+    int64_t workspace = static_cast<int64_t>(batch_size) * seq_len * hidden_dim *
+                        num_attn_layers * bytes_per_elem * 2;
+
+    spdlog::info("  Expert Ring Buffer (ring_size={}): {}",
+        ring_buffer_size, format_size(expert_ring_buffer));
+    spdlog::info("  KV Cache ({} layers, seq_len={}):  {}",
+        num_attn_layers, seq_len, format_size(kv_cache));
+    spdlog::info("  Workspace (batch={}, seq_len={}):  {}",
+        batch_size, seq_len, format_size(workspace));
+
+    int64_t runtime_total = pinned_bytes + expert_ring_buffer + kv_cache + workspace;
+    spdlog::info("  Total runtime (pinned+ring+cache+ws): {}",
+        format_size(runtime_total));
+    int64_t gpu_min = pinned_bytes + expert_ring_buffer + kv_cache;
+    spdlog::info("  Minimum VRAM (pinned+ring+cache): {}",
+        format_size(gpu_min));
+}
+
+void print_nvfp4_forecast(const SafetensorsModel &model)
+{
+    struct CatStats {
+        int64_t orig_bytes = 0;
+        int64_t nvfp4_bytes = 0;
+        int count = 0;
+    };
+    std::map<std::string, CatStats> cats;
+
+    int64_t total_orig = 0;
+    int64_t total_nvfp4 = 0;
+
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            auto cat = is_staged_tensor(t.name)
+                ? std::string("MoE Experts")
+                : pinned_category_name(t.name);
+            int64_t orig = t.byte_size();
+            int64_t nvfp4 = t.numel() / 2;
+            cats[cat].orig_bytes += orig;
+            cats[cat].nvfp4_bytes += nvfp4;
+            cats[cat].count++;
+            total_orig += orig;
+            total_nvfp4 += nvfp4;
+        }
+    }
+
+    spdlog::info("=== NVFP4 Quantization Forecast ===");
+    for (auto &[cat, s] : cats) {
+        double ratio = s.nvfp4_bytes > 0
+            ? static_cast<double>(s.orig_bytes) / s.nvfp4_bytes
+            : 0.0;
+        spdlog::info("  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
+            cat, s.count,
+            format_size(s.orig_bytes),
+            format_size(s.nvfp4_bytes),
+            ratio);
+    }
+
+    double total_ratio = total_nvfp4 > 0
+        ? static_cast<double>(total_orig) / total_nvfp4
+        : 0.0;
+    int64_t cat_count = 0;
+    for (auto &[_, s] : cats) cat_count += s.count;
+    spdlog::info("  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
+        "Total", cat_count,
+        format_size(total_orig),
+        format_size(total_nvfp4),
+        total_ratio);
+}
+
+// ── Safetensors file parser ──────────────────────────────────────────────────
+
+SafetensorsModel::Shard read_safetensors_file(const std::string &path)
+{
+    SafetensorsModel::Shard shard;
+    shard.filename = std::filesystem::path(path).filename().string();
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        spdlog::error("Cannot open file: {}", path);
+        return shard;
+    }
+
+    file.seekg(0, std::ios::end);
+    shard.file_size = static_cast<int64_t>(file.tellg());
+    file.seekg(0, std::ios::beg);
+
+    uint64_t header_len = 0;
+    file.read(reinterpret_cast<char*>(&header_len), 8);
+    if (!file || header_len == 0 || header_len > static_cast<uint64_t>(shard.file_size) - 8) {
+        spdlog::error("Invalid safetensors header in {}", path);
+        return shard;
+    }
+
+    std::string json_str(header_len, '\0');
+    file.read(json_str.data(), header_len);
+    if (!file) {
+        spdlog::error("Failed to read safetensors header from {}", path);
+        return shard;
+    }
+
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string padded(json_str.data(), json_str.size());
+    simdjson::ondemand::document doc;
+    auto err = parser.iterate(padded).get(doc);
+    if (err) {
+        spdlog::error("JSON parse error in {}: {}", path, simdjson::error_message(err));
+        return shard;
+    }
+
+    simdjson::ondemand::object obj;
+    err = doc.get_object().get(obj);
+    if (err) {
+        spdlog::error("JSON root not an object in {}", path);
+        return shard;
+    }
+
+    for (auto json_field : obj) {
+        std::string_view key;
+        if (json_field.unescaped_key().get(key) != simdjson::SUCCESS)
+            continue;
+        if (key == "__metadata__")
+            continue;
+
+        simdjson::ondemand::value val;
+        if (json_field.value().get(val) != simdjson::SUCCESS)
+            continue;
+
+        simdjson::ondemand::object tensor_obj;
+        if (val.get_object().get(tensor_obj) != simdjson::SUCCESS)
+            continue;
+
+        TensorInfo info;
+        info.name = std::string(key);
+
+        std::string_view dtype_sv;
+        if (tensor_obj["dtype"].get_string().get(dtype_sv) == simdjson::SUCCESS)
+            info.dtype = std::string(dtype_sv);
+
+        simdjson::ondemand::array shape_arr;
+        if (tensor_obj["shape"].get_array().get(shape_arr) == simdjson::SUCCESS) {
+            for (auto dim_val : shape_arr) {
+                int64_t d = 0;
+                if (dim_val.get_int64().get(d) == simdjson::SUCCESS)
+                    info.shape.push_back(d);
+            }
+        }
+
+        simdjson::ondemand::array offsets_arr;
+        if (tensor_obj["data_offsets"].get_array().get(offsets_arr) == simdjson::SUCCESS) {
+            int count = 0;
+            for (auto off_val : offsets_arr) {
+                int64_t off = 0;
+                if (off_val.get_int64().get(off) == simdjson::SUCCESS) {
+                    if (count == 0) info.data_begin = off;
+                    else if (count == 1) info.data_end = off;
+                    ++count;
+                }
+            }
+        }
+
+        shard.tensors.push_back(std::move(info));
+    }
+
+    return shard;
+}
+
+// ── TensorInfo implementation ─────────────────────────────────────────────────
+
+int64_t TensorInfo::numel() const
+{
+    if (shape.empty()) return 0;
+    int64_t n = 1;
+    for (auto d : shape) n *= d;
+    return n;
+}
+
+int64_t TensorInfo::byte_size() const
+{
+    return numel() * dtype_size(dtype);
+}
+
+// ── Safetensors scanning ─────────────────────────────────────────────────────
+
+SafetensorsModel scan_directory(const std::string &path)
+{
+    SafetensorsModel model;
+
+    namespace fs = std::filesystem;
+    fs::path dir(path);
+
+    if (!fs::exists(dir)) {
+        spdlog::error("Path does not exist: {}", path);
+        return model;
+    }
+
+    if (fs::is_regular_file(dir)) {
+        auto shard = read_safetensors_file(dir.string());
+        if (!shard.tensors.empty())
+            model.shards.push_back(std::move(shard));
+        return model;
+    }
+
+    std::vector<std::string> ordered_files;
+    fs::path index_path = dir / "model.safetensors.index.json";
+
+    if (fs::exists(index_path)) {
+        std::ifstream index_file(index_path);
+        if (index_file) {
+            std::string index_json((std::istreambuf_iterator<char>(index_file)),
+                                    std::istreambuf_iterator<char>());
+
+            simdjson::ondemand::parser parser;
+            simdjson::padded_string padded(index_json.data(), index_json.size());
+            simdjson::ondemand::document doc;
+            if (parser.iterate(padded).get(doc) == simdjson::SUCCESS) {
+                simdjson::ondemand::object root;
+                if (doc.get_object().get(root) == simdjson::SUCCESS) {
+                    simdjson::ondemand::object weight_map;
+                    if (root["weight_map"].get_object().get(weight_map) == simdjson::SUCCESS) {
+                        for (auto entry : weight_map) {
+                            std::string_view shard_name;
+                            if (entry.value().get_string().get(shard_name) == simdjson::SUCCESS) {
+                                std::string fn(shard_name);
+                                if (std::find(ordered_files.begin(), ordered_files.end(), fn) == ordered_files.end())
+                                    ordered_files.push_back(fn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (ordered_files.empty()) {
+        for (auto &entry : fs::directory_iterator(dir)) {
+            if (entry.path().extension() == ".safetensors")
+                ordered_files.push_back(entry.path().filename().string());
+        }
+        std::sort(ordered_files.begin(), ordered_files.end());
+    }
+
+    for (auto &fn : ordered_files) {
+        auto full_path = (dir / fn).string();
+        spdlog::info("Reading: {}", fn);
+        auto shard = read_safetensors_file(full_path);
+        if (!shard.tensors.empty())
+            model.shards.push_back(std::move(shard));
+    }
+
+    return model;
+}
+
+// ── NVFP4 Packing (GPU) ─────────────────────────────────────────────────────
 
 arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
 {
@@ -140,69 +511,37 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     pe.w1_shape = raw.w1_shape;
     pe.w2_shape = raw.w2_shape;
     pe.w3_shape = raw.w3_shape;
-    pe.w1_global_scale = 1.0f;
-    pe.w2_global_scale = 1.0f;
-    pe.w3_global_scale = 1.0f;
 
-    auto pack_one = [](const std::vector<uint8_t> &src,
-                       const std::string &dtype,
-                       int64_t numel,
-                       std::vector<uint8_t> &packed,
-                       std::vector<uint8_t> &scales_e4m3)
-    {
-        // 1. Convert all source elements to FP32
-        int db = dtype_bytes(dtype);
-        std::vector<float> f32(numel);
-        for (int64_t i = 0; i < numel; ++i) {
-            int64_t off = i * db;
-            if (db > 0 && off + db <= static_cast<int64_t>(src.size()))
-                f32[i] = read_as_float(src.data() + off, dtype);
-        }
-
-        // 2. Compute per-block max_abs → power-of-2 scale → E4M3
-        int64_t nblocks = (numel + kNVFP4BlockSize - 1) / kNVFP4BlockSize;
-        scales_e4m3.assign(nblocks, 0);
-        std::vector<float> block_scales(nblocks);
-
-        for (int64_t b = 0; b < nblocks; ++b) {
-            int64_t begin = b * kNVFP4BlockSize;
-            int64_t end = std::min(begin + kNVFP4BlockSize, numel);
-            float block_max = 0.0f;
-            for (int64_t i = begin; i < end; ++i)
-                block_max = std::max(block_max, std::fabs(f32[i]));
-
-            float scale_needed = (block_max == 0.0f) ? 1.0f / 128.0f
-                                                     : block_max / 8.0f;
-            uint8_t e4 = float_to_e4m3_p2(scale_needed);
-            scales_e4m3[b] = e4;
-            block_scales[b] = e4m3_p2_to_float(e4);
-        }
-
-        // 3. Quantize and pack FP4 values
-        int64_t npacked = (numel + 1) / 2;
-        packed.assign(npacked, 0);
-
-        for (int64_t i = 0; i < numel; ++i) {
-            int64_t b = i / kNVFP4BlockSize;
-            float scaled = f32[i] / block_scales[b];
-            uint8_t q = quantize_nvfp4(scaled);
-            if (i % 2 == 0)
-                packed[i / 2] = (packed[i / 2] & 0xF0) | q;
-            else
-                packed[i / 2] = (packed[i / 2] & 0x0F) | (q << 4);
-        }
+    auto product = [](const std::vector<int64_t> &v) -> int64_t {
+        int64_t n = 1;
+        for (auto d : v) n *= d;
+        return n;
     };
 
-    auto n1 = std::accumulate(raw.w1_shape.begin(), raw.w1_shape.end(),
-                               int64_t(1), std::multiplies<>());
-    auto n2 = std::accumulate(raw.w2_shape.begin(), raw.w2_shape.end(),
-                               int64_t(1), std::multiplies<>());
-    auto n3 = std::accumulate(raw.w3_shape.begin(), raw.w3_shape.end(),
-                               int64_t(1), std::multiplies<>());
+    auto process = [&](const std::vector<uint8_t> &src,
+                        const std::string &dtype,
+                        const std::vector<int64_t> &shape,
+                        std::vector<uint8_t> &packed,
+                        std::vector<uint8_t> &scales,
+                        float &global_scale) -> bool
+    {
+        int64_t numel = product(shape);
+        if (numel == 0 || src.empty()) return false;
+        return gpu::quantize_tensor_gpu(src.data(), numel, dtype,
+                                         packed, scales, global_scale);
+    };
 
-    pack_one(raw.w1_raw, raw.w1_dtype, n1, pe.w1_packed, pe.w1_scales);
-    pack_one(raw.w2_raw, raw.w2_dtype, n2, pe.w2_packed, pe.w2_scales);
-    pack_one(raw.w3_raw, raw.w3_dtype, n3, pe.w3_packed, pe.w3_scales);
+    if (!process(raw.w1_raw, raw.w1_dtype, raw.w1_shape,
+                  pe.w1_packed, pe.w1_scales, pe.w1_global_scale))
+        return arrow::Status::ExecutionError("GPU quantize failed for w1");
+
+    if (!process(raw.w2_raw, raw.w2_dtype, raw.w2_shape,
+                  pe.w2_packed, pe.w2_scales, pe.w2_global_scale))
+        return arrow::Status::ExecutionError("GPU quantize failed for w2");
+
+    if (!process(raw.w3_raw, raw.w3_dtype, raw.w3_shape,
+                  pe.w3_packed, pe.w3_scales, pe.w3_global_scale))
+        return arrow::Status::ExecutionError("GPU quantize failed for w3");
 
     return pe;
 }
@@ -235,7 +574,7 @@ arrow::Status SaveExpertToArrow(
     return arrow::Status::OK();
 }
 
-// ── Save all pinned tensors ────────────────────────────────────────────────
+// ── Save all pinned tensors ─────────────────────────────────────────────────
 
 arrow::Status SavePinnedTensors(
     const std::vector<TensorRecord> &tensors,
@@ -401,8 +740,9 @@ arrow::Status Converter::Run()
             std::ios::binary | std::ios::ate);
         if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
         int64_t sz = sf.tellg();
+        if (sz <= 0) { spdlog::warn("  Zero or negative file size, skipping"); continue; }
         sf.seekg(0);
-        std::vector<uint8_t> shard_buf(sz);
+        std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
         sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
         if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
 

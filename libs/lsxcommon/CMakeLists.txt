@@ -13,7 +13,6 @@ add_library(lsxcommon STATIC
     src/common.cpp
     src/loader.cpp
     src/schema.cpp
-    src/safetensors.cpp
 )
 
 enable_language(CUDA)

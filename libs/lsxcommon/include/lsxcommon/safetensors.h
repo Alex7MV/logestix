@@ -34,6 +34,5 @@ bool is_staged_tensor(const std::string &name);
 void print_shard(const SafetensorsModel::Shard &shard);
 void print_model(const SafetensorsModel &model);
 void print_nvfp4_forecast(const SafetensorsModel &model);
-void convert_to_nvfp4(const SafetensorsModel &model, const std::string &model_path);
 
 } // namespace lsxcommon
