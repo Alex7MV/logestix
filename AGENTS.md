@@ -2,7 +2,8 @@
 
 ## Project
 
-Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C11. CMake 3.15+.
+Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.15+.
+Target architecture: NVIDIA Blackwell (CC 10.0). Active use of 5th-gen Tensor Cores and TMA.
 
 ## Dependencies
 
@@ -62,13 +63,13 @@ ctest --test-dir build --output-on-failure -C Debug
   - `libs/lsxcommon/src/core.cpp` — ядро (логирование, инициализация)
   - `libs/lsxcommon/include/lsxcommon/core.h` — публичный заголовок
   - `libs/lsxcommon/src/common.cpp` — version + GPU info (spdlog)
-  - `libs/lsxcommon/src/schema.cpp` — ExpertSchema, PackedExpert структуры
-  - `libs/lsxcommon/src/converter.cpp` — NVFP4 упаковка, сериализация в Arrow IPC
-  - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация
-  - `libs/lsxcommon/src/safetensors.cpp` — парсер safetensors, конвертация в nvfp4
-  - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (CUDA + CCCL thrust)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`)
-  - `apps/lsxfabric/tests/` — 1 test case, 1 assertion
+  - `libs/lsxcommon/src/schema.cpp` — ExpertSchema (9 полей: weights, E4M3 per-block scales uint8[], float32 global_scale), PackedExpert
+  - `libs/lsxcommon/src/converter.cpp` — GPU-only NVFP4 квантизация (per-block E4M3 + global_scale), парсинг safetensors, сериализация в Arrow IPC
+  - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
+  - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`)
+  - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
+  - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
   - `apps/lsxforge/tests/` — 1 test case, 1 assertion
 - `apps/taskmosaic/` — task orchestrator (placeholder)
@@ -76,6 +77,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - `apps/lsxcli/` — CLI client (`--model`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
 - `tests/test_core.cpp` — интеграционные тесты; 11 test cases, ~100 assertions
+- `tests/test_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (69 assertions)
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -93,7 +95,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
-- CUDA: архитектуры `75-real;80-real;90-real`, флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
+- CUDA: архитектуры `75-real;80-real;90-real;100-real`, флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
 
 ## Conventions
 
@@ -102,6 +104,13 @@ ctest --test-dir build --output-on-failure -C Debug
 - `#include` paths без лишних комментариев
 - `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
 - Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в `libs/lsxcommon/`
+- **CUDA async pipeline**: Минимизируй `cudaDeviceSynchronize()`. Весь конвейер на неблокирующих `cudaStream_t`, `cudaEvent_t`, `cudaMemcpyAsync`.
+- **CCCL priority**: Для редукции/сортировки на GPU — `cub::DeviceReduce` / `cub::BlockReduce` вместо кастомных циклов (если не требуется экстремальный тюнинг).
+- **Arrow + CUDA**: Используй `arrow::cuda::CudaBuffer`. Избегай лишних Host→Device копий. Zero-Copy через `CudaMemoryManager`.
+- **simdjson + libzmq**: Zero-Copy обёртки — `zmq::message_t` напрямую в `simdjson::onn_demand::parser` без `std::string`.
+- **Никаких галлюцинаций**: Не уверен в сигнатуре метода Arrow/CCCL — проверь `.h`/`.cuh` в репозитории или запусти компиляцию.
+- **Alignment**: Проверяй выравнивание данных для CUDA-структур, контролируй Shared Memory на блок (occupancy).
+- **Комментарии**: Сохраняй все Doxygen/JSDoc при рефакторинге.
 
 ## Git
 

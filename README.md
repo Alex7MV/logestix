@@ -64,23 +64,23 @@ cmake --build build --config Debug
 ctest --test-dir build --output-on-failure -C Debug
 ```
 
-15 test cases, ~104 assertions total.
+29 test cases across 6 test executables (~200 assertions).
 
 ## Structure
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`
   - `core` — logging and initialization (spdlog)
   - `common` — version string, CUDA GPU enumeration
-  - `schema` — `ExpertSchema`, `PackedExpert`, `ExpertData` structs
-  - `converter` — NVFP4 packing, expert-to-Arrow IPC serialization
-  - `loader` — Arrow file loading, CUDA pinned memory registration
-  - `safetensors` — safetensors file parser, nvfp4 forecast
-  - `safetensors_gpu` — GPU-accelerated tensor quantization (CUDA + CCCL thrust)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`)
+  - `schema` — `ExpertSchema` (9 fields: weights, E4M3 per-block scales, float32 global scales), `PackedExpert`, `ExpertData` structs
+  - `converter` — GPU-only NVFP4 quantization (per-block E4M3 + global scale via CUDA), safetensors parsing, Arrow IPC serialization
+  - `loader` — Arrow file loading, CUDA pinned memory registration, E4M3 scale decoding
+  - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`)
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
 - `apps/taskmosaic/` — task orchestrator (placeholder)
 - `apps/lsxcli/` — CLI client (`--model`)
 - `tests/test_core.cpp` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
+- `tests/test_loader.cpp` — loader round-trip and E4M3 encoding tests
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
