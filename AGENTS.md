@@ -19,6 +19,7 @@ CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.3 (latest) | submodule (`third_party/cccl`) | Header-only |
+| CUDA cuBLAS | 13.3 | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
 ## Build
@@ -71,7 +72,9 @@ ctest --test-dir build --output-on-failure -C Debug
   - `libs/lsxcommon/src/converter.cpp` — GPU-only NVFP4 квантизация (per-block E4M3 + global_scale), парсинг safetensors, сериализация в Arrow IPC
   - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`)
+  - `libs/lsxcommon/src/testmodel_gpu.cu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging)
+  - `libs/lsxcommon/include/lsxcommon/testmodel_gpu.h` — `lsxcommon::gpu::RunTestModel()`, TestModelResult
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
@@ -90,7 +93,8 @@ ctest --test-dir build --output-on-failure -C Debug
 ## CMake Key Points
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файл вынесен в отдельную OBJECT библиотеку `lsxcommon_cu` (линкуется в `lsxcommon` PUBLIC) — это изолирует NVCC от MSVC-флагов
+- CUDA `.cu` файлы вынесены в отдельную OBJECT библиотеку `lsxcommon_cu` (линкуется в `lsxcommon` PUBLIC) — это изолирует NVCC от MSVC-флагов
+- `lsxcommon_cu` линкуется с `cudart` и `cublas` (CUDA Toolkit system libs)
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
 - Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)

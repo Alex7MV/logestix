@@ -6,6 +6,10 @@ find_library(CUDA_CUDART_LIBRARY cudart
     PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
     REQUIRED
 )
+find_library(CUDA_CUBLAS_LIBRARY cublas
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+    REQUIRED
+)
 
 add_library(lsxcommon STATIC
     src/converter.cpp
@@ -21,13 +25,13 @@ set_target_properties(lsxcommon PROPERTIES
 )
 
 enable_language(CUDA)
-add_library(lsxcommon_cu OBJECT src/safetensors_gpu.cu)
+add_library(lsxcommon_cu OBJECT src/safetensors_gpu.cu src/testmodel_gpu.cu)
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
-target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
 target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
@@ -37,14 +41,18 @@ target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/singleheader"
 )
 target_compile_definitions(lsxcommon_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
+    FMT_UNICODE=0
 )
 target_link_libraries(lsxcommon_cu
     "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
 )
