@@ -5,6 +5,9 @@
 Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.15+.
 Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Tensor Cores and TMA.
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
+Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
+No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
+CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
 
 ## Dependencies
 
@@ -96,7 +99,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
-- CUDA: архитектуры `75-real;80-real;90-real;120-real;121-real`, флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
+- CUDA: архитектуры `120-real;121-real` (Blackwell only; Hopper/Ada/Ampere запрещены), флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
 
 ## Conventions
 
@@ -106,6 +109,9 @@ ctest --test-dir build --output-on-failure -C Debug
 - `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
 - Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в `libs/lsxcommon/`
 - **CUDA async pipeline**: Минимизируй `cudaDeviceSynchronize()`. Весь конвейер на неблокирующих `cudaStream_t`, `cudaEvent_t`, `cudaMemcpyAsync`. Используй cooperative groups для синхронизации внутри грида.
+- **CUDA Tile C++**: Для вычислительных ядер используй тайловое программирование (Tile Programming) вместо ручного Shared Memory и явных TMA-интринсиков. Компилятор сам раскладывает тайлы под Blackwell.
+- **CompileIQ**: В CMake активируй фреймворк автотюнинга CompileIQ для подбора агрессивных параметров оптимизации критических ядер.
+- **NVFP4**: Матричные операции реализуй нативно в NVFP4 через CCCL 3.3 + `std::mdspan`.
 - **CCCL priority**: Для редукции/сортировки на GPU — `cub::DeviceReduce` / `cub::BlockReduce` вместо кастомных циклов (если не требуется экстремальный тюнинг регистров).
 - **Arrow + CUDA**: Используй `arrow::cuda::CudaBuffer`. Избегай лишних Host→Device копий. Zero-Copy через `CudaMemoryManager`.
 - **simdjson + libzmq**: Zero-Copy обёртки — `zmq::message_t` напрямую в `simdjson::onn_demand::parser` без промежуточного `std::string`.
