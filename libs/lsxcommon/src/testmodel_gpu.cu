@@ -13,6 +13,7 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <simdjson.h>
@@ -55,7 +56,8 @@ inline void safe_copy(void *dst, const void *src, size_t n)
 
 constexpr int kHiddenDim = 7168;
 constexpr int kNumPinnedSlots = 2;
-constexpr int kDefaultTokenCount = 256;
+constexpr int kDefaultTokenCount = 1024;
+constexpr int kLogInterval = 128;
 
 __global__ void init_hidden_states_kernel(__half *d_hidden, int dim, uint64_t seed)
 {
@@ -382,6 +384,10 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
     int total_layers_processed = 0;
     float alpha = 1.0f, beta = 0.0f;
 
+    int num_checkpoints = num_tokens / kLogInterval;
+    std::vector<cudaEvent_t> checkpoints(static_cast<size_t>(num_checkpoints), nullptr);
+    std::vector<int> checkpoint_counts(static_cast<size_t>(num_checkpoints), 0);
+
     for (int i = 0; i < kNumPinnedSlots; ++i) {
         CUDA_CHECK(cudaMallocHost(&h_pinned_stage[i], stage_sz), result);
     }
@@ -419,6 +425,8 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
     CUBLAS_CHECK(cublasCreate(&cublas_h), result);
     CUDA_CHECK(cudaEventCreate(&t_start), result);
     CUDA_CHECK(cudaEventCreate(&t_stop), result);
+    for (int ci = 0; ci < num_checkpoints; ++ci)
+        CUDA_CHECK(cudaEventCreate(&checkpoints[static_cast<size_t>(ci)]), result);
 
     {
         int exp0 = route_table[0];
@@ -559,6 +567,14 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
 
             ++total_layers_processed;
         }
+
+        int ci = tok / kLogInterval;
+        int cm1 = (tok + 1) % kLogInterval;
+        if (cm1 == 0 && ci < num_checkpoints) {
+            cudaStream_t last_stream = ((topo.num_layers - 1) & 1) ? stream_B : stream_A;
+            CUDA_CHECK(cudaEventRecord(checkpoints[static_cast<size_t>(ci)], last_stream), result);
+            checkpoint_counts[static_cast<size_t>(ci)] = tok + 1;
+        }
     }
 
     CUDA_CHECK(cudaEventRecord(t_stop), result);
@@ -572,6 +588,18 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
             ? elapsed_ms / total_layers_processed : 0.0;
         result.tokens_per_sec = elapsed_ms > 0.0f
             ? (static_cast<double>(num_tokens) / elapsed_ms) * 1000.0 : 0.0;
+
+        std::fprintf(stderr, "\n=== --testmodel Throughput by interval ===\n");
+        for (int ci = 0; ci < num_checkpoints; ++ci) {
+            float cp_ms = 0.0f;
+            cudaEventElapsedTime(&cp_ms, t_start, checkpoints[static_cast<size_t>(ci)]);
+            int ct = checkpoint_counts[static_cast<size_t>(ci)];
+            double tps = ct / static_cast<double>(cp_ms) * 1000.0;
+            std::fprintf(stderr, "  tok=%4d  elapsed=%8.1f ms  %8.1f t/s\n",
+                         ct, static_cast<double>(cp_ms), tps);
+        }
+        std::fprintf(stderr, "  ---\n  total    elapsed=%8.1f ms  %8.1f t/s\n",
+                     static_cast<double>(elapsed_ms), result.tokens_per_sec);
     }
 
     result.num_layers = topo.num_layers;
@@ -601,6 +629,8 @@ cleanup:
     if (stream_B)        cudaStreamDestroy(stream_B);
     if (t_start)         cudaEventDestroy(t_start);
     if (t_stop)          cudaEventDestroy(t_stop);
+    for (auto &cp : checkpoints)
+        if (cp) cudaEventDestroy(cp);
     if (cublas_h)        cublasDestroy(cublas_h);
 
     return result;
