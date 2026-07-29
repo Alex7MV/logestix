@@ -1,6 +1,7 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
+#include "lsxcommon/diagnostics.h"
 #include <arrow/ipc/writer.h>
 #include <arrow/io/file.h>
 #include <spdlog/spdlog.h>
@@ -557,13 +558,14 @@ arrow::Status SaveExpertToArrow(
     namespace fs = std::filesystem;
 
     auto layer_dir = output_root /
-        ("layer_" + std::to_string(layer_idx)) / "experts";
+        "experts" / ("layer_" + std::to_string(layer_idx));
     fs::create_directories(layer_dir);
 
     auto out_path = layer_dir /
         ("exp_" + std::to_string(expert_idx) + ".arrow");
 
     ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatch(expert));
+    diag::ValidateBatchBuffers(*batch, "SaveExpertToArrow pre-write");
     ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, out_path));
 
     spdlog::info("  wrote layer={:03d} expert={:03d}  {} -> {}",
@@ -599,6 +601,7 @@ arrow::Status SavePinnedTensors(
     if (!global.empty()) {
         auto path = output_root / "pinned" / "global.arrow";
         ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(global));
+        diag::ValidateBatchBuffers(*batch, "SavePinnedTensors global");
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
         spdlog::info("  wrote {} pinned tensors -> {}", global.size(), path.string());
     }
@@ -606,6 +609,7 @@ arrow::Status SavePinnedTensors(
     for (auto &[layer, tens] : by_layer) {
         auto path = output_root / "pinned" / (layer + ".arrow");
         ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(tens));
+        diag::ValidateBatchBuffers(*batch, ("SavePinnedTensors " + layer).c_str());
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
         spdlog::info("  wrote {} pinned tensors for {} -> {}",
             tens.size(), layer, path.string());
@@ -648,7 +652,9 @@ arrow::Status WriteModelIndex(
     f << "    \"experts\": {\n";
     for (int i = 0; i < num_layers; ++i) {
         f << "      \"layer_" << std::setw(3) << std::setfill('0') << i
-          << "\": \"experts/layer_" << std::setw(3) << std::setfill('0') << i << "/\"\n";
+          << "\": \"experts/layer_" << std::setw(3) << std::setfill('0') << i << "/\"";
+        if (i < num_layers - 1) f << ",";
+        f << "\n";
     }
     f << "    }\n";
     f << "  }\n";
@@ -771,7 +777,6 @@ arrow::Status Converter::Run()
                 ExpertKey key{parsed->layer, parsed->expert};
                 auto &exp = partial[key];
                 max_layer = std::max(max_layer, parsed->layer + 1);
-                experts_per_layer[parsed->layer]++;
 
                 switch (parsed->weight_id) {
                 case 1:
@@ -793,6 +798,13 @@ arrow::Status Converter::Run()
 
                 if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty()) {
                     ++experts_in_shard;
+                    static bool first_expert = true;
+                    if (first_expert) {
+                        spdlog::debug("[diag] Converter: processing first expert "
+                                      "(CUDA will be initialized here)");
+                        diag::LogArrowSystemState("converter-before-first-expert");
+                        first_expert = false;
+                    }
                     auto status = [&]() -> arrow::Status {
                         ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
                         ARROW_RETURN_NOT_OK(SaveExpertToArrow(
@@ -803,8 +815,10 @@ arrow::Status Converter::Run()
                     if (!status.ok())
                         spdlog::error("  Failed to pack expert layer={} expert={}: {}",
                             key.layer, key.expert, status.ToString());
-                    else
+                    else {
                         ++experts_processed;
+                        ++experts_per_layer[parsed->layer];
+                    }
                     partial.erase(key);
                 }
             } else {

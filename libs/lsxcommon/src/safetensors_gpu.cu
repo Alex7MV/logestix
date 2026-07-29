@@ -1,12 +1,9 @@
 #include "lsxcommon/safetensors_gpu.h"
+#include "lsxcommon/diagnostics.h"
 
 #include <arrow/gpu/cuda_api.h>
 
 #include <cuda_runtime.h>
-#include <thrust/device_ptr.h>
-#include <thrust/transform_reduce.h>
-#include <thrust/functional.h>
-#include <thrust/execution_policy.h>
 
 #include <cstring>
 #include <cstdint>
@@ -31,11 +28,17 @@ arrow::Result<std::shared_ptr<arrow::cuda::CudaContext>> get_cuda_ctx()
     static arrow::Status status;
 
     std::call_once(init, [] {
+        std::fprintf(stderr, "[DIAG] CUDA context init: before CudaDeviceManager::Instance()\n");
+        diag::LogArrowSystemState("pre-cuda-init");
         auto mgr = arrow::cuda::CudaDeviceManager::Instance();
         if (!mgr.ok()) { status = mgr.status(); return; }
+        diag::LogArrowSystemState("post-cuda-init");
         auto result = (*mgr)->GetContext(0);
         if (!result.ok()) { status = result.status(); return; }
-        ctx = *result;
+        auto ctx_ptr = *result;
+        std::fprintf(stderr, "[DIAG] CUDA context initialized: device=%s\n",
+                     ctx_ptr->device()->ToString().c_str());
+        ctx = std::move(ctx_ptr);
     });
 
     if (!ctx) return status;
@@ -222,32 +225,38 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     auto maybe_ctx = get_cuda_ctx();
     if (!maybe_ctx.ok()) return false;
     auto ctx = *maybe_ctx;
+    (void)ctx;
 
     int64_t raw_size = numel * dtype_byte_size(dc);
     int64_t npacked = (numel + 1) / 2;
     int64_t nblocks = (numel + kBlockSize - 1) / kBlockSize;
 
-    auto maybe_raw = ctx->Allocate(raw_size);
-    auto maybe_float = ctx->Allocate(numel * sizeof(float));
-    auto maybe_packed = ctx->Allocate(npacked);
-    auto maybe_block_max = ctx->Allocate(nblocks * sizeof(float));
-    auto maybe_block_scales = ctx->Allocate(nblocks * sizeof(float));
+    uint8_t *d_raw = nullptr;
+    float *d_float = nullptr;
+    uint8_t *d_packed = nullptr;
+    float *d_block_max = nullptr;
+    float *d_block_scales = nullptr;
 
-    if (!maybe_raw.ok() || !maybe_float.ok() || !maybe_packed.ok()
-        || !maybe_block_max.ok() || !maybe_block_scales.ok())
-        return false;
+    auto alloc_dev = [](auto &ptr, int64_t sz) -> bool {
+        if (sz <= 0) { ptr = nullptr; return true; }
+        return cudaMalloc(&ptr, static_cast<size_t>(sz)) == cudaSuccess;
+    };
+    if (!alloc_dev(d_raw, raw_size)) return false;
+    if (!alloc_dev(d_float, numel * sizeof(float))) { cudaFree(d_raw); return false; }
+    if (!alloc_dev(d_packed, npacked)) { cudaFree(d_raw); cudaFree(d_float); return false; }
+    if (!alloc_dev(d_block_max, nblocks * sizeof(float))) { cudaFree(d_raw); cudaFree(d_float); cudaFree(d_packed); return false; }
+    if (!alloc_dev(d_block_scales, nblocks * sizeof(float))) { cudaFree(d_raw); cudaFree(d_float); cudaFree(d_packed); cudaFree(d_block_max); return false; }
 
-    auto raw_buf = std::move(*maybe_raw);
-    auto float_buf = std::move(*maybe_float);
-    auto packed_buf = std::move(*maybe_packed);
-    auto block_max_buf = std::move(*maybe_block_max);
-    auto block_scales_buf = std::move(*maybe_block_scales);
-
-    float *d_float = reinterpret_cast<float *>(float_buf->mutable_data());
-    uint8_t *d_packed = packed_buf->mutable_data();
-    float *d_block_max = reinterpret_cast<float *>(block_max_buf->mutable_data());
-    float *d_block_scales = reinterpret_cast<float *>(block_scales_buf->mutable_data());
-    uint8_t *d_raw = raw_buf->mutable_data();
+    struct CudaMemGuard {
+        uint8_t *&r; float *&f; uint8_t *&p; float *&bm; float *&bs;
+        ~CudaMemGuard() {
+            if (bs) cudaFree(bs);
+            if (bm) cudaFree(bm);
+            if (p) cudaFree(p);
+            if (f) cudaFree(f);
+            if (r) cudaFree(r);
+        }
+    } cmg{d_raw, d_float, d_packed, d_block_max, d_block_scales};
 
     // ── Async stream ────────────────────────────────────────────────────────
     cudaStream_t stream;
@@ -268,29 +277,24 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
         d_float, d_block_max, nblocks, numel);
     if (cudaGetLastError() != cudaSuccess) return false;
 
-    // 4. Global max_abs via Thrust (executes on stream via thrust::device policy)
-    // Note: thrust operations on device pointers use default stream by default.
-    // We synchronize below to ensure data is ready for host readback.
-    float global_max_abs = thrust::transform_reduce(
-        thrust::device,
-        thrust::device_pointer_cast(d_float),
-        thrust::device_pointer_cast(d_float) + numel,
-        [] __host__ __device__ (float x) { return fabsf(x); },
-        0.0f,
-        thrust::maximum<float>());
-
-    // 5. Sync stream to read back block_max and use global_max on host
+    // 4. Sync stream so block_max is ready for host readback
     cudaStreamSynchronize(stream);
 
-    if (!std::isfinite(global_max_abs) || global_max_abs == 0.0f)
-        global_max_abs = 1.0f / 128.0f;
-    global_scale = global_max_abs / 8.0f;
-
-    // 6. Read back block_max → host, compute E4M3 scales
+    // 5. Read back block_max → host, compute E4M3 scales and global max
+    float global_max_abs = 0.0f;
     {
         std::vector<float> host_block_max(static_cast<std::size_t>(nblocks));
         cudaMemcpy(host_block_max.data(), d_block_max,
                    nblocks * sizeof(float), cudaMemcpyDeviceToHost);
+
+        for (int64_t i = 0; i < nblocks; i++) {
+            float v = host_block_max[static_cast<std::size_t>(i)];
+            if (v > global_max_abs) global_max_abs = v;
+        }
+
+        if (!std::isfinite(global_max_abs) || global_max_abs == 0.0f)
+            global_max_abs = 1.0f / 128.0f;
+        global_scale = global_max_abs / 8.0f;
 
         scales_e4m3.assign(static_cast<std::size_t>(nblocks), 0);
         std::vector<float> host_block_scales(static_cast<std::size_t>(nblocks));

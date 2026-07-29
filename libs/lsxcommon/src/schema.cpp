@@ -1,4 +1,5 @@
 #include "lsxcommon/schema.h"
+#include "lsxcommon/diagnostics.h"
 #include <arrow/type_fwd.h>
 #include <arrow/builder.h>
 #include <arrow/ipc/writer.h>
@@ -66,7 +67,7 @@ make_scales_u8(const std::vector<uint8_t> &scales)
 
 std::shared_ptr<arrow::Schema> ExpertSchema::Make()
 {
-    auto binary_type = arrow::binary();
+    auto binary_type = arrow::large_binary();
     auto list_u8     = arrow::list(arrow::uint8());
 
     return arrow::schema({
@@ -94,6 +95,13 @@ ExpertSchema::MakeBatch(const PackedExpert &expert)
     ARROW_ASSIGN_OR_RAISE(auto w3_buf,
         arrow::AllocateBuffer(expert.w3_packed.size(), kArrowAlignment));
 
+    diag::LogBuffer("ExpertSchema::MakeBatch w1", *w1_buf);
+    diag::LogBuffer("ExpertSchema::MakeBatch w2", *w2_buf);
+    diag::LogBuffer("ExpertSchema::MakeBatch w3", *w3_buf);
+    diag::ValidateCpuBuffer(*w1_buf, "ExpertSchema::MakeBatch w1 mutable_data");
+    diag::ValidateCpuBuffer(*w2_buf, "ExpertSchema::MakeBatch w2 mutable_data");
+    diag::ValidateCpuBuffer(*w3_buf, "ExpertSchema::MakeBatch w3 mutable_data");
+
     std::memcpy(w1_buf->mutable_data(), expert.w1_packed.data(),
                 expert.w1_packed.size());
     std::memcpy(w2_buf->mutable_data(), expert.w2_packed.data(),
@@ -104,11 +112,10 @@ ExpertSchema::MakeBatch(const PackedExpert &expert)
     auto make_binary = [](const void *data, int64_t size)
         -> arrow::Result<std::shared_ptr<arrow::Array>>
     {
-        arrow::BinaryBuilder bb;
+        arrow::LargeBinaryBuilder bb;
         ARROW_RETURN_NOT_OK(bb.Reserve(1));
         ARROW_RETURN_NOT_OK(bb.Append(
-            static_cast<const uint8_t *>(data),
-            static_cast<int32_t>(size)));
+            static_cast<const uint8_t *>(data), size));
         return bb.Finish();
     };
     ARROW_ASSIGN_OR_RAISE(auto w1_arr, make_binary(w1_buf->data(), w1_buf->size()));
@@ -129,8 +136,10 @@ ExpertSchema::MakeBatch(const PackedExpert &expert)
     ARROW_ASSIGN_OR_RAISE(auto gs2, make_gs(expert.w2_global_scale));
     ARROW_ASSIGN_OR_RAISE(auto gs3, make_gs(expert.w3_global_scale));
 
-    return arrow::RecordBatch::Make(schema, 1,
+    auto batch = arrow::RecordBatch::Make(schema, 1,
         {w1_arr, w2_arr, w3_arr, s1, s2, s3, gs1, gs2, gs3});
+    diag::ValidateBatchBuffers(*batch, "ExpertSchema::MakeBatch result");
+    return batch;
 }
 
 arrow::Result<PackedExpert>
@@ -139,6 +148,8 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     if (!batch || batch->num_columns() != kNumFields)
         return arrow::Status::Invalid("Expected 9-column expert RecordBatch");
 
+    diag::ValidateBatchBuffers(*batch, "ExpertSchema::UnpackBatch input");
+
     PackedExpert pe;
 
     auto extract_binary = [&](int idx, std::vector<uint8_t> &out,
@@ -146,9 +157,9 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
         -> arrow::Status
     {
         auto arr = batch->column(idx);
-        auto bin = std::dynamic_pointer_cast<arrow::BinaryArray>(arr);
+        auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
         if (!bin)
-            return arrow::Status::TypeError("Column is not binary");
+            return arrow::Status::TypeError("Column is not large_binary");
 
         auto view = bin->GetView(0);
         out.assign(view.begin(), view.end());
@@ -211,7 +222,7 @@ std::shared_ptr<arrow::Schema> PinnedSchema::Make()
         arrow::field("name",  arrow::utf8()),
         arrow::field("shape", arrow::list(arrow::int64())),
         arrow::field("dtype", arrow::utf8()),
-        arrow::field("data",  arrow::binary()),
+        arrow::field("data",  arrow::large_binary()),
     });
 }
 
@@ -223,7 +234,7 @@ PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors)
 
     arrow::StringBuilder name_builder;
     arrow::StringBuilder dtype_builder;
-    arrow::BinaryBuilder data_builder;
+    arrow::LargeBinaryBuilder data_builder;
 
     auto shape_val_builder = std::make_shared<arrow::Int64Builder>();
     arrow::ListBuilder shape_builder(arrow::default_memory_pool(), shape_val_builder);
@@ -236,8 +247,7 @@ PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors)
     for (auto &t : tensors) {
         ARROW_RETURN_NOT_OK(name_builder.Append(t.name));
         ARROW_RETURN_NOT_OK(dtype_builder.Append(t.dtype));
-        ARROW_RETURN_NOT_OK(data_builder.Append(t.data.data(),
-            static_cast<int32_t>(t.data.size())));
+        ARROW_RETURN_NOT_OK(data_builder.Append(t.data.data(), t.data.size()));
         ARROW_RETURN_NOT_OK(shape_builder.Append());
         for (int64_t d : t.shape)
             ARROW_RETURN_NOT_OK(shape_val_builder->Append(d));
@@ -248,8 +258,10 @@ PinnedSchema::MakeBatch(const std::vector<TensorRecord> &tensors)
     ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder.Finish());
     ARROW_ASSIGN_OR_RAISE(auto data_arr, data_builder.Finish());
 
-    return arrow::RecordBatch::Make(schema, n,
+    auto batch = arrow::RecordBatch::Make(schema, n,
         {name_arr, shape_arr, dtype_arr, data_arr});
+    diag::ValidateBatchBuffers(*batch, "PinnedSchema::MakeBatch result");
+    return batch;
 }
 
 arrow::Result<std::vector<TensorRecord>>
@@ -258,9 +270,11 @@ PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     if (!batch || batch->num_columns() != 4)
         return arrow::Status::Invalid("Expected 4-column pinned RecordBatch");
 
+    diag::ValidateBatchBuffers(*batch, "PinnedSchema::UnpackBatch input");
+
     auto names = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxName));
     auto dtypes = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxDtype));
-    auto datas = std::dynamic_pointer_cast<arrow::BinaryArray>(batch->column(kIdxData));
+    auto datas = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxData));
     auto shapes = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxShape));
 
     if (!names || !dtypes || !datas || !shapes)
@@ -303,6 +317,8 @@ arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,
     const std::filesystem::path &path)
 {
+    diag::LogArrowSystemState("WriteRecordBatchToFile");
+    diag::ValidateBatchBuffers(*batch, ("Write " + path.filename().string()).c_str());
     ARROW_ASSIGN_OR_RAISE(auto outfile,
         arrow::io::FileOutputStream::Open(path.string()));
     ARROW_ASSIGN_OR_RAISE(auto writer,
@@ -310,6 +326,10 @@ arrow::Status WriteRecordBatchToFile(
     ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     ARROW_RETURN_NOT_OK(writer->Close());
     ARROW_RETURN_NOT_OK(outfile->Close());
+    std::fprintf(stderr, "[DIAG] wrote batch to %s (%d columns, %lld rows)\n",
+                 path.string().c_str(),
+                 batch->num_columns(),
+                 static_cast<long long>(batch->num_rows()));
     return arrow::Status::OK();
 }
 
@@ -323,7 +343,9 @@ ReadRecordBatchFromFile(const std::filesystem::path &path)
         arrow::ipc::RecordBatchFileReader::Open(infile.get()));
     if (reader->num_record_batches() == 0)
         return arrow::Status::Invalid("No record batches in ", path.string());
-    return reader->ReadRecordBatch(0);
+    ARROW_ASSIGN_OR_RAISE(auto batch, reader->ReadRecordBatch(0));
+    diag::ValidateBatchBuffers(*batch, ("Read " + path.filename().string()).c_str());
+    return batch;
 }
 
 } // namespace lsxcommon

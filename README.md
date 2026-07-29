@@ -96,7 +96,7 @@ The open-source version of **logestix** is licensed under the [GNU Affero Genera
 ### Commercial License (Enterprise)
 For commercial deployments, enterprise infrastructure, closed-source integration, or hosted services, the AGPL-3.0 limitations can be removed.
 
-To obtain a commercial license or request a private evaluation copy (PoC), please contact us at: **<your-sales-email@example.com>**
+To obtain a commercial license or request a private evaluation copy (PoC), please contact us at: **<info@logestix.io>**
 
 ---
 

@@ -150,6 +150,7 @@ ExpertDb load_expert_index(const std::string &model_path,
                 apath.string(), arrow::io::FileMode::READ);
             if (!mmap_res.ok()) {
                 db.error_msg = "Cannot mmap " + apath.string();
+                db.entries.clear();
                 return db;
             }
             auto mmap = *mmap_res;
@@ -168,7 +169,7 @@ ExpertDb load_expert_index(const std::string &model_path,
 
             auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
                 auto arr = batch->column(col);
-                auto bin = std::dynamic_pointer_cast<arrow::BinaryArray>(arr);
+                auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
                 if (!bin) return {nullptr, 0};
                 auto view = bin->GetView(0);
                 return {reinterpret_cast<const uint8_t *>(view.data()),
@@ -236,7 +237,7 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
 
     auto edb = load_expert_index(model_path, topo.num_layers,
                                   topo.experts_per_layer);
-    if (edb.entries.empty()) {
+    if (edb.entries.empty() || !edb.error_msg.empty()) {
         result.error_msg = edb.error_msg.empty()
             ? "No experts loaded" : edb.error_msg;
         return result;
@@ -283,7 +284,11 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
         CUDA_CHECK(cudaMalloc(&d_w2_slot[i], w2_dev_sz), result);
     }
 
-    init_hidden_states_kernel<<<1, kHiddenDim>>>(d_hidden, kHiddenDim, 0xdeadbeefULL);
+    {
+        constexpr int kBlockSize = 256;
+        int grid = (kHiddenDim + kBlockSize - 1) / kBlockSize;
+        init_hidden_states_kernel<<<grid, kBlockSize>>>(d_hidden, kHiddenDim, 0xdeadbeefULL);
+    }
     CUDA_CHECK(cudaGetLastError(), result);
     CUDA_CHECK(cudaDeviceSynchronize(), result);
 

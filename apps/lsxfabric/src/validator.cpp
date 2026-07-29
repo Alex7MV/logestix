@@ -151,7 +151,7 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
 
     auto check_binary = [&](int idx, const char *name) {
         auto arr = rb->column(idx);
-        auto bin = std::static_pointer_cast<arrow::BinaryArray>(arr);
+        auto bin = std::static_pointer_cast<arrow::LargeBinaryArray>(arr);
         if (n > 0) {
             auto view = bin->GetView(0);
             auto data = reinterpret_cast<const uint8_t*>(view.data());

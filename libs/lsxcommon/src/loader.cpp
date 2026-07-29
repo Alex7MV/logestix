@@ -1,4 +1,5 @@
 #include "lsxcommon/loader.h"
+#include "lsxcommon/diagnostics.h"
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
@@ -25,9 +26,9 @@ arrow::Result<LoadedExpert> extract_from_batch(
         -> arrow::Status
     {
         auto arr = exp.batch->column(idx);
-        auto bin = std::dynamic_pointer_cast<arrow::BinaryArray>(arr);
+        auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
         if (!bin)
-            return arrow::Status::TypeError("Column ", idx, " is not binary");
+            return arrow::Status::TypeError("Column ", idx, " is not large_binary");
 
         auto view = bin->GetView(0);
         ptr = reinterpret_cast<const uint8_t *>(view.data());
@@ -143,6 +144,9 @@ Loader::LoadExpertFromArrow(const std::string &arrow_path)
         batch = std::move(result).ValueOrDie();
     }
 
+    diag::LogArrowSystemState("LoadExpertFromArrow");
+    diag::ValidateBatchBuffers(*batch, arrow_path.c_str());
+
     return extract_from_batch(std::move(batch), std::move(mmap));
 }
 
@@ -162,6 +166,10 @@ arrow::Status Loader::RegisterCudaPinned(LoadedExpert &expert)
         for (int b = 0; b < arr->num_buffers(); ++b) {
             auto buf = arr->data()->buffers[b];
             if (buf && buf->size() > 0) {
+                diag::LogBuffer(("RegisterCudaPinned col=" + std::to_string(i) +
+                                       " buf=" + std::to_string(b)).c_str(), *buf);
+                diag::ValidateCpuBuffer(*buf, ("RegisterCudaPinned col=" +
+                    std::to_string(i) + " buf=" + std::to_string(b)).c_str());
                 cudaError_t e = reg(buf->mutable_data(), buf->size());
                 if (e != cudaSuccess) {
                     UnregisterCudaPinned(expert);
@@ -195,6 +203,8 @@ void Loader::UnregisterCudaPinned(LoadedExpert &expert)
         for (int b = 0; b < arr->num_buffers(); ++b) {
             auto buf = arr->data()->buffers[b];
             if (buf && buf->size() > 0) {
+                diag::LogBuffer(("UnregisterCudaPinned col=" + std::to_string(i) +
+                                       " buf=" + std::to_string(b)).c_str(), *buf);
                 cudaError_t e = cudaHostUnregister(buf->mutable_data());
                 if (e != cudaSuccess) {
                     spdlog::warn("cudaHostUnregister failed: {}",
