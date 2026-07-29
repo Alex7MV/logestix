@@ -56,7 +56,7 @@ inline void safe_copy(void *dst, const void *src, size_t n)
 
 constexpr int kHiddenDim = 7168;
 constexpr int kNumPinnedSlots = 2;
-constexpr int kDefaultTokenCount = 1024;
+constexpr int kDefaultTokenCount = 2048;
 constexpr int kLogInterval = 128;
 
 __global__ void init_hidden_states_kernel(__half *d_hidden, int dim, uint64_t seed)

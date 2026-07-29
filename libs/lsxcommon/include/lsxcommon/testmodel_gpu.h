@@ -17,7 +17,7 @@ struct TestModelResult {
     std::string error_msg;
 };
 
-TestModelResult RunTestModel(const std::string &model_path, int num_tokens = 1024);
+TestModelResult RunTestModel(const std::string &model_path, int num_tokens = 2048);
 
 } // namespace gpu
 } // namespace lsxcommon
