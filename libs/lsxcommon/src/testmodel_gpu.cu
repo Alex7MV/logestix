@@ -1,5 +1,6 @@
 #include "lsxcommon/testmodel_gpu.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/converter.h"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -88,7 +89,7 @@ struct ModelTopology {
 ModelTopology load_topology(const std::string &model_path)
 {
     ModelTopology topo;
-    auto ipath = std::filesystem::path(model_path) / "model.safetensors.index.json";
+    auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
     std::ifstream f(ipath);
     if (!f) {
         topo.error_msg = "Cannot open " + ipath.string();
@@ -142,7 +143,7 @@ ExpertDb load_expert_index(const std::string &model_path,
             size_t idx = static_cast<size_t>(layer) * experts_per_layer
                        + static_cast<size_t>(exp);
             auto apath = fs::path(model_path)
-                / ("experts/layer_" + std::to_string(layer))
+                / "logestix" / ("experts/layer_" + std::to_string(layer))
                 / ("exp_" + std::to_string(exp) + ".arrow");
 
             auto mmap_res = arrow::io::MemoryMappedFile::Open(
@@ -208,9 +209,29 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
 
     auto topo = load_topology(model_path);
     if (topo.num_layers == 0 || topo.experts_per_layer == 0) {
-        result.error_msg = topo.error_msg.empty()
-            ? "Invalid model topology" : topo.error_msg;
-        return result;
+        bool created = false;
+        auto logestix_dir = std::filesystem::path(model_path) / "logestix";
+        if (!std::filesystem::exists(logestix_dir)) {
+            arrow::Status st = lsxcommon::Converter{}
+                .SetInputPath(model_path)
+                .SetOutputPath(logestix_dir.string())
+                .SetVerbose(false)
+                .Run();
+            if (!st.ok()) {
+                result.error_msg = "Conversion failed: " + st.ToString();
+                return result;
+            }
+            created = true;
+        }
+        topo = load_topology(model_path);
+        if (topo.num_layers == 0 || topo.experts_per_layer == 0) {
+            result.error_msg = topo.error_msg.empty()
+                ? (created
+                    ? "Conversion created logestix/ but topology still empty"
+                    : "Invalid model topology")
+                : topo.error_msg;
+            return result;
+        }
     }
 
     auto edb = load_expert_index(model_path, topo.num_layers,
