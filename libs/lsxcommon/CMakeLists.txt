@@ -17,6 +17,7 @@ add_library(lsxcommon STATIC
     src/common.cpp
     src/loader.cpp
     src/schema.cpp
+    src/tokenizer.cpp
 )
 set_target_properties(lsxcommon PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
@@ -25,7 +26,15 @@ set_target_properties(lsxcommon PROPERTIES
 )
 
 enable_language(CUDA)
-add_library(lsxcommon_cu OBJECT src/safetensors_gpu.cu src/testmodel_gpu.cu)
+add_library(lsxcommon_cu OBJECT
+    src/safetensors_gpu.cu
+    src/testmodel_gpu.cu
+    src/inference_load.cu
+    src/inference_norm.cu
+    src/inference_moe.cu
+    src/inference_head.cu
+    src/inference_pipeline.cu
+)
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
     CUDA_STANDARD 20
