@@ -1,0 +1,198 @@
+#include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/schema.h"
+#include "inference_load.cuh"
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <arrow/api.h>
+#include <arrow/io/file.h>
+#include <arrow/ipc/reader.h>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <cstdio>
+#include <cstring>
+
+namespace lsxcommon {
+namespace gpu {
+
+namespace {
+
+__global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(__bfloat162float(src[i]));
+}
+
+cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
+                                 __half **d_out, cudaStream_t stream)
+{
+    cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
+    if (e != cudaSuccess) return e;
+    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
+    int block = 256;
+    int grid = (static_cast<int>(numel) + block - 1) / block;
+    bf16_to_half_kernel<<<grid, block, 0, stream>>>(src_u16, *d_out, static_cast<int>(numel));
+    return cudaGetLastError();
+}
+
+const TensorRecord *find_tensor_suffix(
+    const std::vector<TensorRecord> &tensors,
+    const std::string &suffix)
+{
+    for (const auto &t : tensors) {
+        if (t.name.size() >= suffix.size() &&
+            t.name.compare(t.name.size() - suffix.size(), suffix.size(), suffix) == 0)
+            return &t;
+    }
+    return nullptr;
+}
+
+const TensorRecord *find_tensor_substr(
+    const std::vector<TensorRecord> &tensors,
+    const std::string &substr)
+{
+    for (const auto &t : tensors) {
+        if (t.name.find(substr) != std::string::npos)
+            return &t;
+    }
+    return nullptr;
+}
+
+arrow::Result<std::vector<TensorRecord>> load_arrow_file(const std::string &path)
+{
+    auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
+    if (!mmap_res.ok())
+        return mmap_res.status();
+    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
+    if (!reader_res.ok())
+        return reader_res.status();
+    auto batch_res = (*reader_res)->ReadRecordBatch(0);
+    if (!batch_res.ok())
+        return batch_res.status();
+    return PinnedSchema::UnpackBatch(*batch_res);
+}
+
+} // anonymous namespace
+
+void LayerWeights::Free()
+{
+    if (d_ffn_norm)     cudaFree(d_ffn_norm);
+    if (d_gate_weight)  cudaFree(d_gate_weight);
+    if (d_shared_w1)    cudaFree(d_shared_w1);
+    if (d_shared_w2)    cudaFree(d_shared_w2);
+    if (d_shared_w3)    cudaFree(d_shared_w3);
+    if (d_shared_w1_scales) cudaFree(d_shared_w1_scales);
+    if (d_shared_w2_scales) cudaFree(d_shared_w2_scales);
+    if (d_shared_w3_scales) cudaFree(d_shared_w3_scales);
+}
+
+void PinnedWeights::Free()
+{
+    if (d_embed)      cudaFree(d_embed);
+    if (d_head)       cudaFree(d_head);
+    if (d_final_norm) cudaFree(d_final_norm);
+    for (auto &l : layers) l.Free();
+}
+
+cudaError_t load_pinned_weights(
+    const std::string &model_path,
+    PinnedWeights &pw,
+    cudaStream_t stream)
+{
+    namespace fs = std::filesystem;
+    auto pinned_dir = fs::path(model_path) / "logestix" / "pinned";
+
+    auto global_path = pinned_dir / "global.arrow";
+    auto global_tensors_res = load_arrow_file(global_path.string());
+    if (!global_tensors_res.ok())
+        return cudaErrorUnknown;
+    auto &global_tensors = *global_tensors_res;
+
+    auto *embed_t = find_tensor_suffix(global_tensors, "embed.weight");
+    if (embed_t && embed_t->shape.size() >= 2) {
+        pw.vocab_size = static_cast<int>(embed_t->shape[0]);
+        int64_t numel = embed_t->shape[0] * embed_t->shape[1];
+        cudaError_t e = upload_bf16_to_half(embed_t->data.data(), numel,
+                                             &pw.d_embed, stream);
+        if (e != cudaSuccess) return e;
+    }
+
+    auto *head_t = find_tensor_suffix(global_tensors, "head.weight");
+    if (head_t && head_t->shape.size() >= 2) {
+        if (pw.vocab_size == 0)
+            pw.vocab_size = static_cast<int>(head_t->shape[0]);
+        int64_t numel = head_t->shape[0] * head_t->shape[1];
+        cudaError_t e = upload_bf16_to_half(head_t->data.data(), numel,
+                                             &pw.d_head, stream);
+        if (e != cudaSuccess) return e;
+    }
+
+    auto *norm_t = find_tensor_suffix(global_tensors, "norm.weight");
+    if (norm_t && !norm_t->shape.empty()) {
+        int64_t numel = norm_t->shape[0];
+        cudaError_t e = upload_bf16_to_half(norm_t->data.data(), numel,
+                                             &pw.d_final_norm, stream);
+        if (e != cudaSuccess) return e;
+    }
+
+    pw.layers.resize(kNumLayers);
+    for (int l = 0; l < kNumLayers; ++l) {
+        char fn[64];
+        std::snprintf(fn, sizeof(fn), "layer_%03d.arrow", l);
+        auto layer_path = pinned_dir / fn;
+
+        if (!fs::exists(layer_path)) continue;
+
+        auto tensors_res = load_arrow_file(layer_path.string());
+        if (!tensors_res.ok()) continue;
+        auto &lt = *tensors_res;
+        auto &lw = pw.layers[l];
+
+        auto *ffn_norm = find_tensor_substr(lt, "ffn_norm.weight");
+        if (ffn_norm && !ffn_norm->shape.empty())
+            upload_bf16_to_half(ffn_norm->data.data(), ffn_norm->shape[0],
+                                &lw.d_ffn_norm, stream);
+
+        auto *gate = find_tensor_substr(lt, "ffn.gate.weight");
+        if (gate && gate->shape.size() >= 2) {
+            int64_t numel = gate->shape[0] * gate->shape[1];
+            cudaMalloc(&lw.d_gate_weight,
+                       static_cast<size_t>(numel) * sizeof(__half));
+            const uint16_t *src = reinterpret_cast<const uint16_t *>(gate->data.data());
+            int block = 256;
+            int grid = (static_cast<int>(numel) + block - 1) / block;
+            bf16_to_half_kernel<<<grid, block, 0, stream>>>(
+                src, lw.d_gate_weight, static_cast<int>(numel));
+        }
+
+        auto load_shared = [&](const std::string &wname,
+                               uint8_t *&d_buf, uint8_t *&d_scales,
+                               float &gs, int64_t &nbytes)
+        {
+            auto *wt = find_tensor_substr(lt,
+                "ffn.shared_experts." + wname + ".weight");
+            if (!wt) return;
+            nbytes = static_cast<int64_t>(wt->data.size());
+            cudaMalloc(&d_buf, static_cast<size_t>(nbytes));
+            cudaMemcpyAsync(d_buf, wt->data.data(),
+                           static_cast<size_t>(nbytes),
+                           cudaMemcpyHostToDevice, stream);
+            d_scales = nullptr;
+            gs = 1.0f;
+        };
+
+        load_shared("w1", lw.d_shared_w1, lw.d_shared_w1_scales,
+                    lw.shared_w1_global_scale, lw.shared_w1_bytes);
+        load_shared("w2", lw.d_shared_w2, lw.d_shared_w2_scales,
+                    lw.shared_w2_global_scale, lw.shared_w2_bytes);
+        load_shared("w3", lw.d_shared_w3, lw.d_shared_w3_scales,
+                    lw.shared_w3_global_scale, lw.shared_w3_bytes);
+    }
+
+    return cudaSuccess;
+}
+
+} // namespace gpu
+} // namespace lsxcommon
