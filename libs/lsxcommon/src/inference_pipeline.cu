@@ -169,8 +169,6 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_hidden, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_hidden_next, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
 
-    std::fprintf(stderr, "[dbg] test point A\n");
-
     INFER_CHECK(cudaMalloc(&d_shared_int, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_shared_gate, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
@@ -318,9 +316,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             }
         }
 
-        // Store generated token
-        if (step >= static_cast<int>(input_ids.size()))
-            gen_ids.push_back(next_tok);
+        // Store generated token (always — gen_ids[0] used as first gen-step input)
+        gen_ids.push_back(next_tok);
 
         std::fprintf(stderr, "[inference] step=%d tok=%d", step, next_tok);
         std::vector<int32_t> single_tok = {static_cast<int32_t>(next_tok)};
@@ -341,8 +338,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         float elapsed_ms = 0.0f;
         INFER_CHECK(cudaEventElapsedTime(&elapsed_ms, t_start, t_stop));
 
-        int gen_count = static_cast<int>(gen_ids.size());
-        std::vector<int32_t> gen_ids_i32(gen_ids.begin(), gen_ids.end());
+        int prompt_len = static_cast<int>(input_ids.size());
+        int gen_count = static_cast<int>(gen_ids.size()) - prompt_len;
+        // Skip prompt tokens for output decoding
+        auto gen_start = gen_ids.begin() + std::min(prompt_len, static_cast<int>(gen_ids.size()));
+        std::vector<int32_t> gen_ids_i32(gen_start, gen_ids.end());
         std::string output = tok.Decode(gen_ids_i32);
         result.ttft_ms = elapsed_ms / static_cast<double>(total_steps);
         result.tokens_per_sec = elapsed_ms > 0.0f
