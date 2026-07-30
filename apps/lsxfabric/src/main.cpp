@@ -1,6 +1,7 @@
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
 #include "lsxcommon/testmodel_gpu.h"
+#include "lsxcommon/inference_gpu.h"
 #include <cstring>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -9,6 +10,7 @@
 int main(int argc, char* argv[]) {
     bool validate = false;
     bool testmodel = false;
+    bool testprompt = false;
     std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--localmodel") == 0 && i + 1 < argc)
@@ -17,12 +19,26 @@ int main(int argc, char* argv[]) {
             validate = true;
         else if (std::strcmp(argv[i], "--testmodel") == 0)
             testmodel = true;
+        else if (std::strcmp(argv[i], "--testprompt") == 0)
+            testprompt = true;
     }
 
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
     spdlog::info("Model path: {}", model_path);
+    if (testprompt) {
+        spdlog::info("Running prompt inference...");
+        lsxcommon::gpu::InferenceConfig cfg;
+        cfg.model_path = model_path;
+        cfg.max_gen_tokens = 64;
+        auto result = lsxcommon::gpu::RunInference(cfg);
+        if (!result.ok) {
+            spdlog::error("Inference failed: {}", result.error_msg);
+        }
+        lsxcommon::Core::Shutdown();
+        return result.ok ? 0 : 1;
+    }
     if (validate) {
         spdlog::info("Running validation...");
         auto result = lsxfabric::RunValidator(model_path);

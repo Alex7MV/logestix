@@ -1,6 +1,7 @@
 #include "lsxcommon/testmodel_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
+#include "inference_load.cuh"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -20,8 +21,6 @@
 
 namespace lsxcommon {
 namespace gpu {
-
-namespace {
 
 inline void safe_copy(void *dst, const void *src, size_t n)
 {
@@ -54,7 +53,6 @@ inline void safe_copy(void *dst, const void *src, size_t n)
         }                                                \
     } while (0)
 
-constexpr int kHiddenDim = 7168;
 constexpr int kNumPinnedSlots = 2;
 constexpr int kDefaultTokenCount = 2048;
 constexpr int kLogInterval = 128;
@@ -70,34 +68,6 @@ __global__ void init_hidden_states_kernel(__half *d_hidden, int dim, uint64_t se
     float v = (static_cast<float>(h & 0xFFFF) / 65536.0f) * 2.0f - 1.0f;
     d_hidden[i] = __float2half(v);
 }
-
-inline int moe_route(int token_idx, int layer_idx, int experts_per_layer)
-{
-    unsigned h = static_cast<unsigned>(token_idx) * 2654435761U
-               + static_cast<unsigned>(layer_idx) * 314159265U;
-    h ^= h >> 16; h *= 0x85ebca6bU;
-    h ^= h >> 13; h *= 0xc2b2ae35U;
-    h ^= h >> 16;
-    return static_cast<int>(h % static_cast<unsigned>(experts_per_layer));
-}
-
-struct ExpertEntry {
-    const uint8_t *host_w1 = nullptr;
-    const uint8_t *host_w2 = nullptr;
-    const uint8_t *host_w3 = nullptr;
-    const uint8_t *host_w1_scales = nullptr;
-    const uint8_t *host_w2_scales = nullptr;
-    const uint8_t *host_w3_scales = nullptr;
-    float w1_global_scale = 1.0f;
-    float w2_global_scale = 1.0f;
-    float w3_global_scale = 1.0f;
-    int64_t w1_bytes = 0;
-    int64_t w2_bytes = 0;
-    int64_t w3_bytes = 0;
-    int64_t w1_scales_bytes = 0;
-    int64_t w2_scales_bytes = 0;
-    int64_t w3_scales_bytes = 0;
-};
 
 __device__ float nvfp4_to_float(uint8_t nibble)
 {
@@ -137,144 +107,7 @@ __global__ void dequant_nvfp4_to_half_kernel(
     output[i] = __float2half(f32);
 }
 
-struct ModelTopology {
-    int num_layers = 0;
-    int experts_per_layer = 0;
-    int64_t total_experts = 0;
-    std::string error_msg;
-};
 
-ModelTopology load_topology(const std::string &model_path)
-{
-    ModelTopology topo;
-    auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
-    std::ifstream f(ipath);
-    if (!f) {
-        topo.error_msg = "Cannot open " + ipath.string();
-        return topo;
-    }
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-
-    simdjson::ondemand::parser parser;
-    simdjson::padded_string pad(json.data(), json.size());
-    simdjson::ondemand::document doc;
-    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) {
-        topo.error_msg = "JSON parse error in " + ipath.string();
-        return topo;
-    }
-    simdjson::ondemand::object root;
-    if (doc.get_object().get(root) != simdjson::SUCCESS) {
-        topo.error_msg = "Expected JSON object in " + ipath.string();
-        return topo;
-    }
-
-    int64_t nl = 0, epl = 0, te = 0;
-    root["num_layers"].get_int64().get(nl);
-    root["experts_per_layer"].get_int64().get(epl);
-    root["total_experts"].get_int64().get(te);
-    topo.num_layers = static_cast<int>(nl);
-    topo.experts_per_layer = static_cast<int>(epl);
-    topo.total_experts = te;
-    return topo;
-}
-
-struct ExpertDb {
-    std::vector<ExpertEntry> entries;
-    std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
-    std::string error_msg;
-};
-
-ExpertDb load_expert_index(const std::string &model_path,
-                            int num_layers, int experts_per_layer)
-{
-    ExpertDb db;
-    int64_t total = static_cast<int64_t>(num_layers) * experts_per_layer;
-    db.entries.resize(static_cast<size_t>(total));
-    db.mmaps.reserve(static_cast<size_t>(total));
-    db.batches.reserve(static_cast<size_t>(total));
-    namespace fs = std::filesystem;
-
-    for (int layer = 0; layer < num_layers; ++layer) {
-        for (int exp = 0; exp < experts_per_layer; ++exp) {
-            size_t idx = static_cast<size_t>(layer) * experts_per_layer
-                       + static_cast<size_t>(exp);
-            auto apath = fs::path(model_path)
-                / "logestix" / "experts" / ("layer_" + std::to_string(layer))
-                / ("exp_" + std::to_string(exp) + ".arrow");
-
-            auto mmap_res = arrow::io::MemoryMappedFile::Open(
-                apath.string(), arrow::io::FileMode::READ);
-            if (!mmap_res.ok()) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto mmap = *mmap_res;
-
-            auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
-            if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto batch_res = (*reader_res)->ReadRecordBatch(0);
-            if (!batch_res.ok()) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto batch = *batch_res;
-
-            auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-                auto arr = batch->column(col);
-                auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
-                if (!bin) return {nullptr, 0};
-                auto view = bin->GetView(0);
-                return {reinterpret_cast<const uint8_t *>(view.data()),
-                        static_cast<int64_t>(view.size())};
-            };
-
-            auto get_scale_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-                auto lst = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(col));
-                if (!lst) return {nullptr, 0};
-                auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
-                if (!u8) return {nullptr, 0};
-                auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
-                if (!offs) return {nullptr, 0};
-                int64_t begin = offs->Value(0);
-                int64_t end   = offs->Value(1);
-                return {u8->raw_values() + begin, end - begin};
-            };
-
-            auto get_gs = [&](int col) -> float {
-                auto arr = batch->column(col);
-                auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
-                return f ? f->Value(0) : 1.0f;
-            };
-
-            auto [w1p, w1s] = get_bin(ExpertSchema::kIdxW1Weight);
-            auto [w2p, w2s] = get_bin(ExpertSchema::kIdxW2Weight);
-            auto [w3p, w3s] = get_bin(ExpertSchema::kIdxW3Weight);
-            auto [w1sp, w1ss] = get_scale_bin(ExpertSchema::kIdxW1Scale);
-            auto [w2sp, w2ss] = get_scale_bin(ExpertSchema::kIdxW2Scale);
-            auto [w3sp, w3ss] = get_scale_bin(ExpertSchema::kIdxW3Scale);
-            float w1gs = get_gs(ExpertSchema::kIdxW1GlobalScale);
-            float w2gs = get_gs(ExpertSchema::kIdxW2GlobalScale);
-            float w3gs = get_gs(ExpertSchema::kIdxW3GlobalScale);
-
-            db.entries[idx] = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
-                               w1gs, w2gs, w3gs,
-                               w1s, w2s, w3s, w1ss, w2ss, w3ss};
-            db.mmaps.push_back(std::move(mmap));
-            db.batches.push_back(std::move(batch));
-        }
-    }
-    return db;
-}
-
-} // anonymous namespace
 
 TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
 {

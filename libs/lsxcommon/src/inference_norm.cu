@@ -36,5 +36,15 @@ __global__ void rms_norm_kernel(
         out[i] = __float2half(__half2float(x[i]) * rms * __half2float(weight[i]));
 }
 
+cudaError_t run_rmsnorm(
+    cudaStream_t stream, const __half *d_input, const __half *d_weight,
+    __half *d_output, int dim, float eps)
+{
+    constexpr int kBlockSize = 256;
+    size_t shared_sz = static_cast<size_t>(kBlockSize) * sizeof(float);
+    rms_norm_kernel<<<1, kBlockSize, shared_sz, stream>>>(d_input, d_weight, d_output, dim, eps);
+    return cudaGetLastError();
+}
+
 } // namespace gpu
 } // namespace lsxcommon
