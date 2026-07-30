@@ -126,11 +126,12 @@ cudaError_t run_moe_layer(
 {
     // 1. RMSNorm
     {
-        extern __global__ void rms_norm_kernel(const __half*, const __half*, __half*, int, float);
-        int block = 256;
-        int shared_sz = block * sizeof(float);
-        rms_norm_kernel<<<1, block, shared_sz, stream>>>(
-            d_hidden, d_norm_weight, d_normed, hidden_dim, 1e-5f);
+        extern __global__ void rms_norm_kernel(const uint16_t*, const uint16_t*, uint16_t*, int, float);
+        auto _x = reinterpret_cast<const uint16_t *>(d_hidden);
+        auto _w = reinterpret_cast<const uint16_t *>(d_norm_weight);
+        auto _o = reinterpret_cast<uint16_t *>(d_normed);
+        rms_norm_kernel<<<1, 1, 0, stream>>>(_x, _w, _o, hidden_dim, 1e-5f);
+        (void)0;
     }
 
     // 2. Router: gate_logits = normed @ gate_weight^T

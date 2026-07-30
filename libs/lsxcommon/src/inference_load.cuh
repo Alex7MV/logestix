@@ -14,7 +14,7 @@
 namespace lsxcommon {
 namespace gpu {
 
-constexpr int kHiddenDim = 7168;
+constexpr int kHiddenDim = 4096;
 constexpr int kNumLayers = 43;
 constexpr int kNumRouted = 256;
 constexpr int kTopK = 8;

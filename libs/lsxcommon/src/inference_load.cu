@@ -20,6 +20,7 @@ namespace gpu {
 
 namespace {
 
+// BF16 → FP16 conversion kernel (reads from device memory)
 __global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -27,16 +28,32 @@ __global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
     dst[i] = __float2half(__bfloat162float(src[i]));
 }
 
+// Upload BF16 host data → device FP16 via device-side kernel.
+// Two-step: cudaMemcpyAsync raw BF16 → device, then convert kernel.
 cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
                                  __half **d_out, cudaStream_t stream)
 {
+    // Allocate device buffer (BF16 capacity = __half capacity = 2 bytes per element)
     cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
     if (e != cudaSuccess) return e;
+    // Allocate temp device buffer for raw BF16 data
+    uint16_t *d_bf16 = nullptr;
+    e = cudaMalloc(&d_bf16, static_cast<size_t>(numel) * sizeof(uint16_t));
+    if (e != cudaSuccess) { cudaFree(*d_out); *d_out = nullptr; return e; }
+    // Copy host BF16 data → device BF16 buffer
     const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
+    e = cudaMemcpyAsync(d_bf16, src_u16,
+                        static_cast<size_t>(numel) * sizeof(uint16_t),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
+    // Launch conversion kernel
     int block = 256;
     int grid = (static_cast<int>(numel) + block - 1) / block;
-    bf16_to_half_kernel<<<grid, block, 0, stream>>>(src_u16, *d_out, static_cast<int>(numel));
-    return cudaGetLastError();
+    bf16_to_half_kernel<<<grid, block, 0, stream>>>(d_bf16, *d_out, static_cast<int>(numel));
+    e = cudaGetLastError();
+    if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
+    e = cudaFree(d_bf16);
+    return e;
 }
 
 const TensorRecord *find_tensor_suffix(
@@ -231,49 +248,74 @@ cudaError_t load_pinned_weights(
 
     auto global_path = pinned_dir / "global.arrow";
     auto global_tensors_res = load_arrow_file(global_path.string());
-    if (!global_tensors_res.ok())
+    if (!global_tensors_res.ok()) {
+        std::fprintf(stderr, "[load_pinned] ERROR loading global.arrow: %s\n",
+                     global_tensors_res.status().ToString().c_str());
         return cudaErrorUnknown;
+    }
     auto &global_tensors = *global_tensors_res;
 
+    // Debug: print first 10 tensor names
+    for (int di = 0; di < std::min(10, static_cast<int>(global_tensors.size())); ++di) {
+        const auto &t = global_tensors[di];
+        std::fprintf(stderr, "[load_pinned] global tensor[%d] name='%s' shape=[",
+                     di, t.name.c_str());
+        for (size_t si = 0; si < t.shape.size(); ++si)
+            std::fprintf(stderr, "%s%lld", si > 0 ? "," : "", static_cast<long long>(t.shape[si]));
+        std::fprintf(stderr, "] data_sz=%lld\n", static_cast<long long>(t.data.size()));
+    }
+
+    // Upload via upload_bf16_to_half (two-step: host→device copy, then kernel)
     auto *embed_t = find_tensor_suffix(global_tensors, "embed.weight");
+    auto *head_t = find_tensor_suffix(global_tensors, "head.weight");
+    auto *norm_t = find_tensor_suffix(global_tensors, "norm.weight");
+
     if (embed_t && embed_t->shape.size() >= 2) {
         pw.vocab_size = static_cast<int>(embed_t->shape[0]);
         int64_t numel = embed_t->shape[0] * embed_t->shape[1];
         cudaError_t e = upload_bf16_to_half(embed_t->data.data(), numel,
                                              &pw.d_embed, stream);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) { std::fprintf(stderr, "embed upload failed\n"); return e; }
     }
-
-    auto *head_t = find_tensor_suffix(global_tensors, "head.weight");
+    if (norm_t && !norm_t->shape.empty()) {
+        int64_t numel = norm_t->shape[0];
+        cudaError_t e = upload_bf16_to_half(norm_t->data.data(), numel,
+                                             &pw.d_final_norm, stream);
+        if (e != cudaSuccess) { std::fprintf(stderr, "norm upload failed\n"); return e; }
+    }
     if (head_t && head_t->shape.size() >= 2) {
         if (pw.vocab_size == 0)
             pw.vocab_size = static_cast<int>(head_t->shape[0]);
         int64_t numel = head_t->shape[0] * head_t->shape[1];
         cudaError_t e = upload_bf16_to_half(head_t->data.data(), numel,
                                              &pw.d_head, stream);
-        if (e != cudaSuccess) return e;
-    }
-
-    auto *norm_t = find_tensor_suffix(global_tensors, "norm.weight");
-    if (norm_t && !norm_t->shape.empty()) {
-        int64_t numel = norm_t->shape[0];
-        cudaError_t e = upload_bf16_to_half(norm_t->data.data(), numel,
-                                             &pw.d_final_norm, stream);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) { std::fprintf(stderr, "head upload failed\n"); return e; }
     }
 
     pw.layers.resize(kNumLayers);
     for (int l = 0; l < kNumLayers; ++l) {
         char fn[64];
-        std::snprintf(fn, sizeof(fn), "layer_%03d.arrow", l);
+        std::snprintf(fn, sizeof(fn), "layer_%d.arrow", l);
         auto layer_path = pinned_dir / fn;
 
         if (!fs::exists(layer_path)) continue;
 
         auto tensors_res = load_arrow_file(layer_path.string());
-        if (!tensors_res.ok()) continue;
+        if (!tensors_res.ok()) {
+            std::fprintf(stderr, "[load_pinned] ERROR loading %s: %s\n",
+                         fn, tensors_res.status().ToString().c_str());
+            continue;
+        }
         auto &lt = *tensors_res;
         auto &lw = pw.layers[l];
+        for (int di = 0; di < std::min(5, static_cast<int>(lt.size())); ++di) {
+            const auto &t = lt[di];
+            std::fprintf(stderr, "[load_pinned]   layer_%03d tensor[%d] name='%s' shape=[",
+                         l, di, t.name.c_str());
+            for (size_t si = 0; si < t.shape.size(); ++si)
+                std::fprintf(stderr, "%s%lld", si > 0 ? "," : "", static_cast<long long>(t.shape[si]));
+            std::fprintf(stderr, "]\n");
+        }
 
         auto *ffn_norm = find_tensor_substr(lt, "ffn_norm.weight");
         if (ffn_norm && !ffn_norm->shape.empty())
@@ -283,13 +325,9 @@ cudaError_t load_pinned_weights(
         auto *gate = find_tensor_substr(lt, "ffn.gate.weight");
         if (gate && gate->shape.size() >= 2) {
             int64_t numel = gate->shape[0] * gate->shape[1];
-            cudaMalloc(&lw.d_gate_weight,
-                       static_cast<size_t>(numel) * sizeof(__half));
-            const uint16_t *src = reinterpret_cast<const uint16_t *>(gate->data.data());
-            int block = 256;
-            int grid = (static_cast<int>(numel) + block - 1) / block;
-            bf16_to_half_kernel<<<grid, block, 0, stream>>>(
-                src, lw.d_gate_weight, static_cast<int>(numel));
+            // Use upload_bf16_to_half which does proper host→device copy first
+            upload_bf16_to_half(gate->data.data(), numel,
+                                &lw.d_gate_weight, stream);
         }
 
         auto load_shared = [&](const std::string &wname,

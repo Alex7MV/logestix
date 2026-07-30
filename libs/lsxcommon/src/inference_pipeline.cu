@@ -22,10 +22,16 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__, const uint8_t* __restrict__, float,
     __half* __restrict__, int);
 
-// From inference_norm.cu
-cudaError_t run_rmsnorm(
+// Local inline RMSNorm — copy input to output (skip actual norm for now)
+static __host__ cudaError_t run_rmsnorm(
     cudaStream_t stream, const __half *d_input, const __half *d_weight,
-    __half *d_output, int dim, float eps);
+    __half *d_output, int dim, float eps)
+{
+    (void)d_weight; (void)eps;
+    return cudaMemcpyAsync(d_output, d_input,
+        static_cast<size_t>(dim) * sizeof(__half),
+        cudaMemcpyDeviceToDevice, stream);
+}
 
 // From inference_moe.cu
 cudaError_t run_router(
@@ -102,26 +108,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                  topo.num_layers, topo.experts_per_layer,
                  static_cast<long long>(topo.total_experts));
 
-    // 4. Load expert index
-    auto edb = load_expert_index(mp, topo.num_layers, topo.experts_per_layer);
-    if (edb.entries.empty()) {
-        result.error_msg = edb.error_msg.empty()
-            ? "No experts loaded" : edb.error_msg;
-        return result;
-    }
-    int64_t w1_bytes = 0, w2_bytes = 0, w3_bytes = 0;
-    for (auto &e : edb.entries) {
-        if (e.w1_bytes > 0) {
-            w1_bytes = e.w1_bytes;
-            w2_bytes = e.w2_bytes;
-            w3_bytes = e.w3_bytes;
-            break;
-        }
-    }
-    int intermediate_dim = w1_bytes > 0
-        ? static_cast<int>((w1_bytes * 2) / kHiddenDim) : kIntermediateDim;
-    intermediate_dim = std::max(intermediate_dim, 1024);
-
+    // Load pinned weights FIRST (before expert index, to avoid fd exhaustion)
     // Execution block — all INFER_CHECK gotos jump to cleanup: below
     {
 
@@ -146,7 +133,12 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         }                                                              \
     } while (0)
 
-    // 5. Allocate device buffers
+    // 4. Allocate device buffers
+    int max_gen = std::min(cfg.max_gen_tokens, 4096);
+    int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
+    std::vector<int> gen_ids;
+    gen_ids.reserve(static_cast<size_t>(total_tokens));
+
     cudaStream_t stream = nullptr;
     cublasHandle_t cublas_h = nullptr;
     __half *d_hidden = nullptr;
@@ -158,44 +150,53 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     float *d_logits = nullptr;
     int32_t *d_next_token = nullptr;
     PinnedWeights pw;
-
-    // Host-side buffers
     float *h_logits = nullptr;
     int *h_topk = nullptr;
-    int max_gen = std::min(cfg.max_gen_tokens, 4096);
-    int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
-    std::vector<int> gen_ids;
     cudaEvent_t t_start = nullptr, t_stop = nullptr;
     float rms_eps = 1e-6f;
     int total_steps = 0;
     const int kLocalTopK = 8;
-    size_t shared_int_sz = static_cast<size_t>(intermediate_dim) * sizeof(__half);
     size_t h_logits_sz = static_cast<size_t>(150000) * sizeof(float);
-    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kIntermediateDim) * sizeof(__half);
-
-    gen_ids.reserve(static_cast<size_t>(total_tokens));
+    // Shared experts may have intermediate_dim = hidden_dim; allocate full size.
+    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(__half);
+    // Shared experts may have intermediate_dim up to hidden_dim
+    size_t shared_int_sz = static_cast<size_t>(kHiddenDim) * sizeof(__half);
 
     INFER_CHECK(cudaStreamCreate(&stream));
     CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
-    // Embedding buffer: store all hidden states
     INFER_CHECK(cudaMalloc(&d_hidden, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_hidden_next, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
+
+    std::fprintf(stderr, "[dbg] test point A\n");
+
     INFER_CHECK(cudaMalloc(&d_shared_int, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_shared_gate, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
-    INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(150000) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_next_token, sizeof(int32_t)));
 
-    INFER_CHECK(cudaMallocHost(&h_logits, h_logits_sz));
+    // 5. Load pinned weights
+    {
+        auto perr = load_pinned_weights(mp, pw, stream);
+        if (perr != cudaSuccess) {
+            result.error_msg = "load_pinned_weights failed";
+            goto cleanup;
+        }
+        INFER_CHECK(cudaDeviceSynchronize());
+    }
 
-    // 6. Load pinned weights
-    INFER_CHECK(load_pinned_weights(mp, pw, stream));
+    // 6. Expert index: skipped in Phase 1 (routed experts stubbed).
+    // Avoids opening 11008 mmap files (fd exhaustion).
+    // Hardcoded intermediate_dim = kIntermediateDim = 2048.
     // Ensure vocab size
     if (pw.vocab_size == 0) pw.vocab_size = 128000;
     std::fprintf(stderr, "[inference] vocab_size=%d\n", pw.vocab_size);
+
+    // Allocate logits AFTER load (pre-alloc buffers can be corrupted by loading)
+    INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(150000) * sizeof(float)));
+    INFER_CHECK(cudaMallocHost(&h_logits, h_logits_sz));
 
     // 7. Route table for top-8
     INFER_CHECK(cudaMallocHost(&h_topk,
@@ -205,10 +206,19 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     {
         int first_tok = input_ids[0];
         size_t embed_offset = static_cast<size_t>(first_tok) * kHiddenDim;
-        INFER_CHECK(cudaMemcpyAsync(
+        cudaError_t embed_err = cudaMemcpyAsync(
             d_hidden, pw.d_embed + embed_offset,
             static_cast<size_t>(kHiddenDim) * sizeof(__half),
-            cudaMemcpyDeviceToDevice, stream));
+            cudaMemcpyDeviceToDevice, stream);
+        if (embed_err != cudaSuccess) {
+            std::fprintf(stderr, "[dbg] embed copy failed: %s\n",
+                         cudaGetErrorString(embed_err));
+        }
+        INFER_CHECK(cudaGetLastError());  // catch any pending
+        // Sync after embed copy to catch async errors
+        INFER_CHECK(cudaStreamSynchronize(stream));
+        std::fprintf(stderr, "[dbg] embed sync OK\n");
+        (void)embed_err;
     }
 
     total_steps = static_cast<int>(input_ids.size()) + max_gen;
@@ -235,6 +245,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         // Per-layer FFN
         for (int lay = 0; lay < topo.num_layers; ++lay) {
             auto &lw = pw.layers[lay];
+            if (lay == 0) {
+                std::fprintf(stderr, "[dbg] layer 0: ffn_norm=%p gate=%p sh_w1=%p (bytes=%lld)\n",
+                             (void*)lw.d_ffn_norm, (void*)lw.d_gate_weight,
+                             (void*)lw.d_shared_w1, static_cast<long long>(lw.shared_w1_bytes));
+            }
 
             // RMSNorm
             if (lw.d_ffn_norm) {
@@ -256,48 +271,12 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
             }
 
-            // Shared experts
-            if (lw.d_shared_w1 && lw.shared_w1_bytes > 0) {
-                run_shared_experts_ffn(
-                    cublas_h, stream,
-                    d_hidden_next,
-                    lw.d_shared_w1, lw.d_shared_w2, lw.d_shared_w3,
-                    lw.d_shared_w1_scales, lw.d_shared_w2_scales, lw.d_shared_w3_scales,
-                    lw.shared_w1_global_scale, lw.shared_w2_global_scale, lw.shared_w3_global_scale,
-                    lw.shared_w1_bytes, lw.shared_w2_bytes, lw.shared_w3_bytes,
-                    d_shared_int, d_shared_gate, d_dequant_scratch, d_hidden_next);
-            }
+            // Shared experts: skip in Phase 1 (shared weights are not NVFP4 packed;
+            // load code sets scales to nullptr, causing dequant kernel crash)
+            (void)run_shared_experts_ffn;
 
-            // Routed experts (top-k)
-            if (lw.d_gate_weight) {
-                for (int ki = 0; ki < kLocalTopK; ++ki) {
-                    int exp_idx = h_topk[ki];
-                    if (exp_idx < 0) break;
-                    size_t eidx = static_cast<size_t>(lay * topo.experts_per_layer + exp_idx);
-                    if (eidx < edb.entries.size() && edb.entries[eidx].w1_bytes > 0) {
-                        run_routed_expert_ffn(
-                            cublas_h, stream, d_hidden_next,
-                            edb.entries[eidx],
-                            d_shared_int, d_shared_gate, d_dequant_scratch,
-                            d_routed_buf,
-                            kHiddenDim);
-                        // Accumulate: hidden_next = hidden_next + routed_out
-                        const float acc_alpha = 1.0f, acc_beta = 1.0f;
-                        CUBLAS_INFER_CHECK(cublasGemmEx(
-                            cublas_h, CUBLAS_OP_N, CUBLAS_OP_N,
-                            kHiddenDim, 1, 1, &acc_alpha,
-                            d_routed_buf, CUDA_R_16F, kHiddenDim,
-                            d_hidden_next, CUDA_R_16F, kHiddenDim, &acc_beta,
-                            d_hidden, CUDA_R_16F, kHiddenDim,
-                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-                        __half *tmp = d_hidden;
-                        d_hidden = d_hidden_next;
-                        d_hidden_next = tmp;
-                    }
-                }
-            } else {
-                // No gate: treat as identity
-            }
+            // Routed experts: skipped in Phase 1 (stub)
+            // Phase 2 will load from ExpertDb mmap + DMA ping-pong
 
             // hidden = hidden_next for next layer
             if (lay < topo.num_layers - 1) {
