@@ -1,6 +1,7 @@
 #pragma once
 
 #include <arrow/api.h>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -120,5 +121,53 @@ constexpr int kNVFP4BlockSize = 16;
 
 uint8_t float_to_e4m3_p2(float s);
 float e4m3_p2_to_float(uint8_t e4m3);
+
+struct VocabRow {
+    int32_t token_id = 0;
+    std::vector<uint8_t> token_bytes;
+    int8_t is_special = 0;
+};
+
+struct TokenizerVocabMeta {
+    int32_t bos_id = -1;
+    int32_t eos_id = -1;
+    int32_t pad_id = -1;
+    int32_t vocab_size = 0;
+    std::array<int32_t, 256> byte_to_token_id{};
+};
+
+class TokenizerVocabSchema {
+public:
+    static constexpr int kIdxTokenId = 0;
+    static constexpr int kIdxTokenBytes = 1;
+    static constexpr int kIdxIsSpecial = 2;
+
+    static std::shared_ptr<arrow::Schema> Make(const TokenizerVocabMeta &meta);
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatch(const std::vector<VocabRow> &rows, const TokenizerVocabMeta &meta);
+    static arrow::Result<std::vector<VocabRow>>
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+};
+
+struct MergeRow {
+    int32_t merge_left = 0;
+    int32_t merge_right = 0;
+    int32_t merge_rank = 0;
+    int32_t merge_token_id = 0;
+};
+
+class TokenizerMergesSchema {
+public:
+    static constexpr int kIdxMergeLeft = 0;
+    static constexpr int kIdxMergeRight = 1;
+    static constexpr int kIdxMergeRank = 2;
+    static constexpr int kIdxMergeTokenId = 3;
+
+    static std::shared_ptr<arrow::Schema> Make(int32_t merge_count);
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatch(const std::vector<MergeRow> &rows, int32_t merge_count);
+    static arrow::Result<std::vector<MergeRow>>
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+};
 
 } // namespace lsxcommon

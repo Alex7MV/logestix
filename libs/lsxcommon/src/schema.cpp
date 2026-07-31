@@ -6,7 +6,9 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
+#include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace lsxcommon {
@@ -453,6 +455,177 @@ PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 }
 
 // ── File I/O helpers ────────────────────────────────────────────────────────
+
+// ── Tokenizer schemas ───────────────────────────────────────────────────────
+
+namespace {
+
+std::string SerializeByteToTokenId(const std::array<int32_t, 256> &b)
+{
+    std::string s;
+    s.reserve(256 * 8);
+    for (int i = 0; i < 256; ++i) {
+        if (i) s.push_back(',');
+        s += std::to_string(b[static_cast<size_t>(i)]);
+    }
+    return s;
+}
+
+std::array<int32_t, 256> DeserializeByteToTokenId(const std::string &s)
+{
+    std::array<int32_t, 256> out{};
+    const char *p = s.c_str();
+    for (int i = 0; i < 256; ++i) {
+        char *end = nullptr;
+        long v = std::strtol(p, &end, 10);
+        out[static_cast<size_t>(i)] = static_cast<int32_t>(v);
+        p = end;
+        if (i < 255 && *p == ',') ++p;
+    }
+    return out;
+}
+
+} // namespace
+
+std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMeta &meta)
+{
+    auto kv = arrow::KeyValueMetadata::Make({
+        "bos_id", "eos_id", "pad_id", "vocab_size", "byte_to_token_id"
+    }, {
+        std::to_string(meta.bos_id),
+        std::to_string(meta.eos_id),
+        std::to_string(meta.pad_id),
+        std::to_string(meta.vocab_size),
+        SerializeByteToTokenId(meta.byte_to_token_id)
+    });
+    return arrow::schema({
+        arrow::field("token_id", arrow::int32()),
+        arrow::field("token_bytes", arrow::large_binary()),
+        arrow::field("is_special", arrow::int8()),
+    }, kv);
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+TokenizerVocabSchema::MakeBatch(const std::vector<VocabRow> &rows,
+                                const TokenizerVocabMeta &meta)
+{
+    auto schema = Make(meta);
+    const int64_t n = static_cast<int64_t>(rows.size());
+
+    arrow::Int32Builder id_builder;
+    arrow::LargeBinaryBuilder bytes_builder;
+    arrow::Int8Builder spec_builder;
+    ARROW_RETURN_NOT_OK(id_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(bytes_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(spec_builder.Reserve(n));
+
+    for (const auto &r : rows) {
+        ARROW_RETURN_NOT_OK(id_builder.Append(r.token_id));
+        ARROW_RETURN_NOT_OK(bytes_builder.Append(
+            r.token_bytes.data(), static_cast<int64_t>(r.token_bytes.size())));
+        ARROW_RETURN_NOT_OK(spec_builder.Append(r.is_special));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto id_arr, id_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto bytes_arr, bytes_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto spec_arr, spec_builder.Finish());
+
+    auto batch = arrow::RecordBatch::Make(schema, n, {id_arr, bytes_arr, spec_arr});
+    diag::ValidateBatchBuffers(*batch, "TokenizerVocabSchema::MakeBatch result");
+    return batch;
+}
+
+arrow::Result<std::vector<VocabRow>>
+TokenizerVocabSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+{
+    if (!batch || batch->num_columns() != 3)
+        return arrow::Status::Invalid("Expected 3-column tokenizer vocab RecordBatch");
+
+    auto ids = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(kIdxTokenId));
+    auto bytes = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxTokenBytes));
+    auto specs = std::dynamic_pointer_cast<arrow::Int8Array>(batch->column(kIdxIsSpecial));
+    if (!ids || !bytes || !specs)
+        return arrow::Status::TypeError("tokenizer vocab column type mismatch");
+
+    const int64_t n = batch->num_rows();
+    std::vector<VocabRow> rows;
+    rows.resize(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        auto &r = rows[static_cast<size_t>(i)];
+        r.token_id = ids->Value(i);
+        r.is_special = specs->Value(i);
+        auto v = bytes->GetView(i);
+        r.token_bytes.assign(v.begin(), v.end());
+    }
+    return rows;
+}
+
+std::shared_ptr<arrow::Schema> TokenizerMergesSchema::Make(int32_t merge_count)
+{
+    auto kv = arrow::KeyValueMetadata::Make({"merge_count"}, {std::to_string(merge_count)});
+    return arrow::schema({
+        arrow::field("merge_left", arrow::int32()),
+        arrow::field("merge_right", arrow::int32()),
+        arrow::field("merge_rank", arrow::int32()),
+        arrow::field("merge_token_id", arrow::int32()),
+    }, kv);
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+TokenizerMergesSchema::MakeBatch(const std::vector<MergeRow> &rows, int32_t merge_count)
+{
+    auto schema = Make(merge_count);
+    const int64_t n = static_cast<int64_t>(rows.size());
+
+    arrow::Int32Builder left_builder, right_builder, rank_builder, token_builder;
+    ARROW_RETURN_NOT_OK(left_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(right_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(rank_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(token_builder.Reserve(n));
+
+    for (const auto &r : rows) {
+        ARROW_RETURN_NOT_OK(left_builder.Append(r.merge_left));
+        ARROW_RETURN_NOT_OK(right_builder.Append(r.merge_right));
+        ARROW_RETURN_NOT_OK(rank_builder.Append(r.merge_rank));
+        ARROW_RETURN_NOT_OK(token_builder.Append(r.merge_token_id));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto left_arr, left_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto right_arr, right_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto rank_arr, rank_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto token_arr, token_builder.Finish());
+
+    auto batch = arrow::RecordBatch::Make(schema, n,
+        {left_arr, right_arr, rank_arr, token_arr});
+    diag::ValidateBatchBuffers(*batch, "TokenizerMergesSchema::MakeBatch result");
+    return batch;
+}
+
+arrow::Result<std::vector<MergeRow>>
+TokenizerMergesSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+{
+    if (!batch || batch->num_columns() != 4)
+        return arrow::Status::Invalid("Expected 4-column tokenizer merges RecordBatch");
+
+    auto left = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(kIdxMergeLeft));
+    auto right = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(kIdxMergeRight));
+    auto rank = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(kIdxMergeRank));
+    auto token = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(kIdxMergeTokenId));
+    if (!left || !right || !rank || !token)
+        return arrow::Status::TypeError("tokenizer merges column type mismatch");
+
+    const int64_t n = batch->num_rows();
+    std::vector<MergeRow> rows;
+    rows.resize(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        auto &r = rows[static_cast<size_t>(i)];
+        r.merge_left = left->Value(i);
+        r.merge_right = right->Value(i);
+        r.merge_rank = rank->Value(i);
+        r.merge_token_id = token->Value(i);
+    }
+    return rows;
+}
 
 arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,
