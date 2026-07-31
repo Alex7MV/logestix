@@ -18,6 +18,7 @@ add_library(lsxcommon STATIC
     src/loader.cpp
     src/schema.cpp
     src/tokenizer.cpp
+    src/unicode.cpp
 )
 set_target_properties(lsxcommon PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
