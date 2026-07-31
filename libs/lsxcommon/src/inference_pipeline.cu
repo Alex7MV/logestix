@@ -1,4 +1,5 @@
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
@@ -22,15 +23,41 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__, const uint8_t* __restrict__, float,
     __half* __restrict__, int);
 
-// Local inline RMSNorm — copy input to output (skip actual norm for now)
-static __host__ cudaError_t run_rmsnorm(
-    cudaStream_t stream, const __half *d_input, const __half *d_weight,
-    __half *d_output, int dim, float eps)
+//------------------------------------------------------------------------------
+// Half ↔ float helpers — bridge between the half-native pipeline and the
+// float-based rmsnorm_float kernel.
+//------------------------------------------------------------------------------
+static __global__ void half_to_float_kernel(
+    const __half* __restrict__ src, float* __restrict__ dst, int n)
 {
-    (void)d_weight; (void)eps;
-    return cudaMemcpyAsync(d_output, d_input,
-        static_cast<size_t>(dim) * sizeof(__half),
-        cudaMemcpyDeviceToDevice, stream);
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __half2float(src[i]);
+}
+
+static __global__ void float_to_half_kernel(
+    const float* __restrict__ src, __half* __restrict__ dst, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __float2half(src[i]);
+}
+
+static __host__ cudaError_t run_rmsnorm(
+    cudaStream_t stream, const __half* d_input, const __half* d_weight,
+    __half* d_output, float* d_scratch, float* d_gamma_scratch, int dim, float eps)
+{
+    int n = dim;
+    int block = 256;
+    int grid = (n + block - 1) / block;
+
+    half_to_float_kernel<<<grid, block, 0, stream>>>(d_input, d_scratch, n);
+    half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, n);
+
+    cudaError_t err = rmsnorm_float(stream, 1, dim, d_scratch,
+                                     d_gamma_scratch, eps, d_scratch);
+    if (err != cudaSuccess) return err;
+
+    float_to_half_kernel<<<grid, block, 0, stream>>>(d_scratch, d_output, n);
+    return cudaGetLastError();
 }
 
 // From inference_moe.cu
@@ -148,6 +175,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_routed_buf = nullptr;
     __half *d_dequant_scratch = nullptr;
     float *d_logits = nullptr;
+    float *d_norm_scratch = nullptr;
+    float *d_norm_gamma_scratch = nullptr;
     int32_t *d_next_token = nullptr;
     PinnedWeights pw;
     float *h_logits = nullptr;
@@ -174,6 +203,10 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
     INFER_CHECK(cudaMalloc(&d_next_token, sizeof(int32_t)));
+    INFER_CHECK(cudaMalloc(&d_norm_scratch,
+        static_cast<size_t>(kHiddenDim) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_norm_gamma_scratch,
+        static_cast<size_t>(kHiddenDim) * sizeof(float)));
 
     // 5. Load pinned weights
     {
@@ -252,7 +285,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             // RMSNorm
             if (lw.d_ffn_norm) {
                 INFER_CHECK(run_rmsnorm(stream, d_hidden, lw.d_ffn_norm,
-                                         d_hidden_next, kHiddenDim, rms_eps));
+                                         d_hidden_next, d_norm_scratch,
+                                         d_norm_gamma_scratch,
+                                         kHiddenDim, rms_eps));
             } else {
                 INFER_CHECK(cudaMemcpyAsync(d_hidden_next, d_hidden,
                     static_cast<size_t>(kHiddenDim) * sizeof(__half),
@@ -287,7 +322,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         // Final RMSNorm
         if (pw.d_final_norm) {
             INFER_CHECK(run_rmsnorm(stream, d_hidden, pw.d_final_norm,
-                                     d_hidden_next, kHiddenDim, rms_eps));
+                                     d_hidden_next, d_norm_scratch,
+                                     d_norm_gamma_scratch,
+                                     kHiddenDim, rms_eps));
             __half *tmp = d_hidden;
             d_hidden = d_hidden_next;
             d_hidden_next = tmp;
@@ -373,6 +410,8 @@ cleanup:
     if (d_routed_buf)  cudaFree(d_routed_buf);
     if (d_dequant_scratch) cudaFree(d_dequant_scratch);
     if (d_logits)      cudaFree(d_logits);
+    if (d_norm_scratch) cudaFree(d_norm_scratch);
+    if (d_norm_gamma_scratch) cudaFree(d_norm_gamma_scratch);
     if (d_next_token)  cudaFree(d_next_token);
     if (h_logits)      cudaFreeHost(h_logits);
     if (h_topk)        cudaFreeHost(h_topk);

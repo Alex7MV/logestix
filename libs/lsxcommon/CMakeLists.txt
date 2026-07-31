@@ -34,6 +34,7 @@ add_library(lsxcommon_cu OBJECT
     src/inference_moe.cu
     src/inference_head.cu
     src/inference_pipeline.cu
+    src/norm_kernels.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
