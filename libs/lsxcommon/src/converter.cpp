@@ -80,6 +80,20 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
     return p;
 }
 
+// Shared expert tensors: layers.N.ffn.shared_experts.w{1,2,3}.weight
+std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
+{
+    static const std::regex re(
+        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.weight)");
+    std::smatch m;
+    if (!std::regex_match(name, m, re)) return std::nullopt;
+    ParsedName p;
+    p.layer     = std::stoi(m[1]);
+    p.expert    = 0;
+    p.weight_id = std::stoi(m[2]);
+    return p;
+}
+
 } // anonymous namespace
 
 // ── Safetensors public API ───────────────────────────────────────────────────
@@ -618,6 +632,62 @@ arrow::Status SavePinnedTensors(
     return arrow::Status::OK();
 }
 
+// ── Save all shared expert layers ────────────────────────────────────────────
+
+// Packs the NVFP4-compressed shared expert weights (w1/w2/w3) for every layer
+// and writes a single pinned/shared_experts.arrow with one record per layer.
+arrow::Status SaveSharedExpertsToArrow(
+    const std::unordered_map<int, ExpertData> &shared_by_layer,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+
+    if (shared_by_layer.empty()) {
+        spdlog::info("  no shared experts found, skipping shared_experts.arrow");
+        return arrow::Status::OK();
+    }
+
+    int max_layer = -1;
+    for (auto &[layer, sd] : shared_by_layer)
+        max_layer = std::max(max_layer, layer);
+    if (max_layer < 0)
+        return arrow::Status::OK();
+
+    std::vector<PackedExpert> shared_layers;
+    shared_layers.resize(static_cast<size_t>(max_layer) + 1);
+
+    int packed_ok = 0;
+    for (auto &[layer, sd] : shared_by_layer) {
+        if (sd.w1_raw.empty() || sd.w2_raw.empty() || sd.w3_raw.empty()) {
+            spdlog::warn("  incomplete shared expert layer {} (w1={} w2={} w3={})",
+                layer, sd.w1_raw.size(), sd.w2_raw.size(), sd.w3_raw.size());
+            continue;
+        }
+        auto packed_res = PackExpertNVFP4(std::move(sd));
+        if (!packed_res.ok()) {
+            spdlog::error("  failed to pack shared expert layer {}: {}",
+                layer, packed_res.status().ToString());
+            continue;
+        }
+        shared_layers[static_cast<size_t>(layer)] = *packed_res;
+        ++packed_ok;
+    }
+
+    while (!shared_layers.empty() && shared_layers.back().w1_packed.empty())
+        shared_layers.pop_back();
+    if (shared_layers.empty())
+        return arrow::Status::OK();
+
+    fs::create_directories(output_root / "pinned");
+    ARROW_ASSIGN_OR_RAISE(auto batch, SharedExpertSchema::MakeBatch(shared_layers));
+    diag::ValidateBatchBuffers(*batch, "SaveSharedExpertsToArrow result");
+    auto path = output_root / "pinned" / "shared_experts.arrow";
+    ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
+    spdlog::info("  packed {} shared-expert layers -> {}", packed_ok, path.string());
+
+    return arrow::Status::OK();
+}
+
 // ── Model index ─────────────────────────────────────────────────────────────
 
 arrow::Status WriteModelIndex(
@@ -726,6 +796,7 @@ arrow::Status Converter::Run()
 
     std::unordered_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
     std::vector<TensorRecord> pinned_tensors;
+    std::unordered_map<int, ExpertData> shared_by_layer;
     int experts_processed = 0;
     int pinned_processed = 0;
     int shard_idx = 0;
@@ -822,6 +893,30 @@ arrow::Status Converter::Run()
                     partial.erase(key);
                 }
             } else {
+                auto sparsed = parse_shared_expert_name(tensor.name);
+                if (sparsed) {
+                    auto &sexp = shared_by_layer[sparsed->layer];
+                    max_layer = std::max(max_layer, sparsed->layer + 1);
+                    switch (sparsed->weight_id) {
+                    case 1:
+                        sexp.w1_raw   = std::move(raw);
+                        sexp.w1_shape = tensor.shape;
+                        sexp.w1_dtype = tensor.dtype;
+                        break;
+                    case 2:
+                        sexp.w2_raw   = std::move(raw);
+                        sexp.w2_shape = tensor.shape;
+                        sexp.w2_dtype = tensor.dtype;
+                        break;
+                    case 3:
+                        sexp.w3_raw   = std::move(raw);
+                        sexp.w3_shape = tensor.shape;
+                        sexp.w3_dtype = tensor.dtype;
+                        break;
+                    }
+                    continue;   // packed separately into shared_experts.arrow
+                }
+
                 TensorRecord t;
                 t.name  = tensor.name;
                 t.dtype = tensor.dtype;
@@ -849,6 +944,10 @@ arrow::Status Converter::Run()
 
     spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
     ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, impl_->output_path));
+
+    spdlog::info("Packing {} shared-expert layers (NVFP4)...",
+        shared_by_layer.size());
+    ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, impl_->output_path));
 
     ARROW_RETURN_NOT_OK(WriteModelIndex(
         fs::path(impl_->input_path).filename().string(),

@@ -67,7 +67,7 @@ cudaError_t run_router(
     int hidden_dim, int num_routed,
     int *h_topk_indices, int topk);
 
-void run_shared_experts_ffn(
+cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
@@ -304,9 +304,17 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
             }
 
-            // Shared experts: skip in Phase 1 (shared weights are not NVFP4 packed;
-            // load code sets scales to nullptr, causing dequant kernel crash)
-            (void)run_shared_experts_ffn;
+            // Shared experts FFN: NVFP4-packed from shared_experts.arrow
+            if (lw.d_shared_w1 && lw.shared_w1_bytes > 0) {
+                INFER_CHECK(run_shared_experts_ffn(
+                    cublas_h, stream, d_hidden_next,
+                    lw.d_shared_w1, lw.d_shared_w2, lw.d_shared_w3,
+                    lw.d_shared_w1_scales, lw.d_shared_w2_scales, lw.d_shared_w3_scales,
+                    lw.shared_w1_global_scale, lw.shared_w2_global_scale,
+                    lw.shared_w3_global_scale,
+                    lw.shared_w1_bytes, lw.shared_w2_bytes, lw.shared_w3_bytes,
+                    d_shared_int, d_shared_gate, d_dequant_scratch, d_hidden_next));
+            }
 
             // Routed experts: skipped in Phase 1 (stub)
             // Phase 2 will load from ExpertDb mmap + DMA ping-pong

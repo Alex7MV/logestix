@@ -90,10 +90,11 @@ __device__ uint8_t dev_quantize_nvfp4(float val)
     if (val == 0.0f) return 0;
     int sign = val < 0 ? 1 : 0;
     float abs_val = fabsf(val);
-    if (abs_val >= 8.0f) abs_val = 7.999f;
 
+    // NVFP4 E2M1 positive magnitudes (must match the E2M1 decode used by
+    // the dequant kernels — e.g. nvfp4_to_float in testmodel_gpu.cu)
     static const float levels[8] = {
-        0.0625f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f
     };
     int best = 0;
     float best_diff = fabsf(abs_val - levels[0]);
@@ -294,16 +295,25 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
 
         if (!std::isfinite(global_max_abs) || global_max_abs == 0.0f)
             global_max_abs = 1.0f / 128.0f;
-        global_scale = global_max_abs / 8.0f;
+        // E2M1 max magnitude is 6.0 — map the global max onto the top level.
+        // Per-block E4M3 scales are stored relative to the global max so that
+        //   dequant = E2M1(q) * e4m3_block_scale * global_scale  ≈  input
+        // (i.e. the quantizer divides by the same product).
+        global_scale = global_max_abs / 6.0f;
 
         scales_e4m3.assign(static_cast<std::size_t>(nblocks), 0);
         std::vector<float> host_block_scales(static_cast<std::size_t>(nblocks));
         for (int64_t i = 0; i < nblocks; i++) {
             float max_val = host_block_max[static_cast<std::size_t>(i)];
-            float s = (max_val == 0.0f) ? (1.0f / 128.0f) : (max_val / 8.0f);
+            float s = (max_val == 0.0f)
+                ? (1.0f / 128.0f)
+                : (max_val / global_max_abs);
             uint8_t e4 = float_to_e4m3_p2(s);
             scales_e4m3[static_cast<std::size_t>(i)] = e4;
-            host_block_scales[static_cast<std::size_t>(i)] = e4m3_p2_to_float(e4);
+            // Device-side block scales feed the quantizer, which divides by the
+            // full scale product (e4m3 * global_scale) — matching the dequant.
+            host_block_scales[static_cast<std::size_t>(i)] =
+                e4m3_p2_to_float(e4) * global_scale;
         }
 
         // Upload float scales to device (async)

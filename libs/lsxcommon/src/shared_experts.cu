@@ -1,0 +1,272 @@
+#include "lsxcommon/shared_experts.h"
+#include "lsxcommon/schema.h"
+
+#include <cstdint>
+#include <memory>
+
+//==============================================================================
+// Blackwell (CC 12.0) NVFP4 shared-expert dequantization + zero-copy Arrow
+// ingest.
+//
+// On-disk layout (pinned/shared_experts.arrow, one record per layer):
+//   w1/w2/w3       packed E2M1 nibbles, 2 elems/byte, lo nibble first
+//   w1/w2/w3 scale per-block E4M3 descriptor (1 byte per 16 elements)
+//   global_scale   float32 multiplier
+//   dequant:       value = E2M1(nibble) * E4M3(block_scale) * global_scale
+//==============================================================================
+
+namespace lsxcommon {
+namespace gpu {
+namespace {
+
+constexpr int kE2M1TableSize = 16;
+
+// NVFP4 E2M1 decode table — indexed directly by the 4-bit nibble (sign bit 3).
+__constant__ float kE2M1Table[kE2M1TableSize] = {
+     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
+    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
+};
+
+__device__ __forceinline__ float e4m3_scale_to_float(uint8_t e4m3)
+{
+    uint32_t e4 = (e4m3 >> 3) & 0x0F;
+    if (e4 == 0) return 0.0f;
+    return __uint_as_float((e4 - 7 + 127) << 23);
+}
+
+__device__ __forceinline__ uint32_t half2_raw_bits(__half2 h)
+{
+    return __half2_raw(h).x;
+}
+
+// Unpacks 8 contiguous nibbles from `u` (bytes lo-nibble-first) into 4
+// uint32 words, each word being 4 consecutive FP16 outputs (2 half2).
+__device__ __forceinline__ void unpack_nibbles8(uint32_t u, float scale, uint32_t* w)
+{
+    uint32_t n0 =  u        & 0x0F;
+    uint32_t n1 = (u >> 4)  & 0x0F;
+    uint32_t n2 = (u >> 8)  & 0x0F;
+    uint32_t n3 = (u >> 12) & 0x0F;
+    uint32_t n4 = (u >> 16) & 0x0F;
+    uint32_t n5 = (u >> 20) & 0x0F;
+    uint32_t n6 = (u >> 24) & 0x0F;
+    uint32_t n7 =  u >> 28;
+
+    __half2 h01 = __floats2half2_rn(kE2M1Table[n0] * scale, kE2M1Table[n1] * scale);
+    __half2 h23 = __floats2half2_rn(kE2M1Table[n2] * scale, kE2M1Table[n3] * scale);
+    __half2 h45 = __floats2half2_rn(kE2M1Table[n4] * scale, kE2M1Table[n5] * scale);
+    __half2 h67 = __floats2half2_rn(kE2M1Table[n6] * scale, kE2M1Table[n7] * scale);
+
+    w[0] = half2_raw_bits(h01);
+    w[1] = half2_raw_bits(h23);
+    w[2] = half2_raw_bits(h45);
+    w[3] = half2_raw_bits(h67);
+}
+
+template<int BLOCK_DIM>
+__launch_bounds__(BLOCK_DIM)
+__global__ void dequant_shared_nvfp4_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    float                        global_scale,
+    __half*       __restrict__ output,
+    int64_t                     num_elements)
+{
+    constexpr int ELEMS_PER_THREAD = 32;   // 4 × uint4, 2 scale blocks
+    constexpr int ELEMS_PER_BLOCK  = BLOCK_DIM * ELEMS_PER_THREAD;
+
+    const int64_t chunk = static_cast<int64_t>(blockIdx.x) * ELEMS_PER_BLOCK;
+    if (chunk >= num_elements) return;
+
+    const int64_t base = chunk + static_cast<int64_t>(threadIdx.x) * ELEMS_PER_THREAD;
+
+    // ---- Fast path: the thread's 32 elements are fully in range ----
+    if (base + ELEMS_PER_THREAD <= num_elements) {
+        const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
+        // Two E4M3 scale descriptors for elems [base, base+32)
+        const uint16_t s2 = *reinterpret_cast<const uint16_t*>(scales + (base >> 4));
+        const float scl_lo = e4m3_scale_to_float(static_cast<uint8_t>(s2)) * global_scale;
+        const float scl_hi = e4m3_scale_to_float(static_cast<uint8_t>(s2 >> 8)) * global_scale;
+
+        uint32_t w[16];
+        unpack_nibbles8(p.x, scl_lo, &w[0]);
+        unpack_nibbles8(p.y, scl_lo, &w[4]);
+        unpack_nibbles8(p.z, scl_hi, &w[8]);
+        unpack_nibbles8(p.w, scl_hi, &w[12]);
+
+        uint4* out4 = reinterpret_cast<uint4*>(output + base);
+        out4[0] = make_uint4(w[0], w[1], w[2], w[3]);
+        out4[1] = make_uint4(w[4], w[5], w[6], w[7]);
+        out4[2] = make_uint4(w[8], w[9], w[10], w[11]);
+        out4[3] = make_uint4(w[12], w[13], w[14], w[15]);
+        return;
+    }
+
+    // ---- Ragged tail: scalar fallback with per-element bounds ----
+    for (int64_t i = base; i < num_elements; ++i) {
+        const int64_t byte_idx = i >> 1;
+        const uint8_t nibble = (i & 1)
+            ? (packed[byte_idx] >> 4)
+            : (packed[byte_idx] & 0x0F);
+        const float scale = e4m3_scale_to_float(scales[i >> 4]) * global_scale;
+        output[i] = __float2half(kE2M1Table[nibble] * scale);
+    }
+}
+
+} // anonymous namespace
+
+//------------------------------------------------------------------------------
+// Host-side zero-copy Arrow ingest
+//------------------------------------------------------------------------------
+arrow::Status load_shared_experts_metadata(
+    const std::shared_ptr<arrow::io::MemoryMappedFile>& mmap,
+    SharedExpertDb& db)
+{
+    if (!mmap)
+        return arrow::Status::Invalid("shared_experts: null MemoryMappedFile");
+
+    db = SharedExpertDb{};
+    ARROW_ASSIGN_OR_RAISE(int64_t file_size, mmap->GetSize());
+    db.file_size = file_size;
+
+    // Base of the mapped region — ReadAt(0,1) returns a zero-copy buffer
+    // pointing at the start of the mapping.
+    ARROW_ASSIGN_OR_RAISE(auto base_buf, mmap->ReadAt(0, 1));
+    db.file_base = base_buf->data();
+
+    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
+    if (!reader_res.ok()) return reader_res.status();
+    auto reader = *reader_res;
+    if (reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("shared_experts: empty file (no batches)");
+    auto batch_res = reader->ReadRecordBatch(0);
+    if (!batch_res.ok()) return batch_res.status();
+    auto batch = *batch_res;
+
+    if (batch->num_columns() != SharedExpertSchema::kNumFields)
+        return arrow::Status::Invalid(
+            "shared_experts: expected 9 columns, got ",
+            std::to_string(batch->num_columns()));
+
+    const int64_t n = batch->num_rows();
+    if (n <= 0)
+        return arrow::Status::Invalid("shared_experts: no rows");
+
+    auto w1 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        batch->column(SharedExpertSchema::kIdxW1Weight));
+    auto w2 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        batch->column(SharedExpertSchema::kIdxW2Weight));
+    auto w3 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        batch->column(SharedExpertSchema::kIdxW3Weight));
+    auto s1 = std::dynamic_pointer_cast<arrow::ListArray>(
+        batch->column(SharedExpertSchema::kIdxW1Scale));
+    auto s2 = std::dynamic_pointer_cast<arrow::ListArray>(
+        batch->column(SharedExpertSchema::kIdxW2Scale));
+    auto s3 = std::dynamic_pointer_cast<arrow::ListArray>(
+        batch->column(SharedExpertSchema::kIdxW3Scale));
+    auto gs1 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        batch->column(SharedExpertSchema::kIdxW1GlobalScale));
+    auto gs2 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        batch->column(SharedExpertSchema::kIdxW2GlobalScale));
+    auto gs3 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        batch->column(SharedExpertSchema::kIdxW3GlobalScale));
+
+    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
+        return arrow::Status::TypeError(
+            "shared_experts: column type mismatch");
+
+    db.w1.resize(static_cast<size_t>(n));
+    db.w2.resize(static_cast<size_t>(n));
+    db.w3.resize(static_cast<size_t>(n));
+
+    auto extract_weights = [&](const std::shared_ptr<arrow::LargeBinaryArray>& arr,
+                               std::vector<SharedExpertDescriptor>& out,
+                               int64_t row, int layer) -> arrow::Status {
+        auto view = arr->GetView(row);
+        const uint8_t* ptr = reinterpret_cast<const uint8_t*>(view.data());
+        if (view.size() > 0 &&
+            (ptr < db.file_base || ptr + view.size() > db.file_base + db.file_size))
+            return arrow::Status::Invalid(
+                "shared_experts: packed buffer not backed by the mmap "
+                "(zero-copy read required)");
+        out[static_cast<size_t>(row)].layer         = layer;
+        out[static_cast<size_t>(row)].host_ptr      = ptr;
+        out[static_cast<size_t>(row)].packed_offset = ptr - db.file_base;
+        out[static_cast<size_t>(row)].packed_bytes  = view.size();
+        out[static_cast<size_t>(row)].num_elements  = view.size() * 2;
+        return arrow::Status::OK();
+    };
+
+    auto extract_scales = [&](const std::shared_ptr<arrow::ListArray>& lst,
+                              std::vector<SharedExpertDescriptor>& out,
+                              int64_t row) -> arrow::Status {
+        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
+        auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
+        if (!u8 || !offs)
+            return arrow::Status::TypeError(
+                "shared_experts: scale column not list<uint8>");
+        int64_t begin = offs->Value(row);
+        int64_t end   = offs->Value(row + 1);
+        const uint8_t* ptr = u8->raw_values() + begin;
+        if (end > begin &&
+            (ptr < db.file_base || ptr + (end - begin) > db.file_base + db.file_size))
+            return arrow::Status::Invalid(
+                "shared_experts: scale buffer not backed by the mmap");
+        out[static_cast<size_t>(row)].scale_host_ptr = ptr;
+        out[static_cast<size_t>(row)].scale_offset   = ptr - db.file_base;
+        out[static_cast<size_t>(row)].scale_bytes    = end - begin;
+        return arrow::Status::OK();
+    };
+
+    for (int64_t i = 0; i < n; ++i) {
+        ARROW_RETURN_NOT_OK(extract_weights(w1, db.w1, i, static_cast<int>(i)));
+        ARROW_RETURN_NOT_OK(extract_weights(w2, db.w2, i, static_cast<int>(i)));
+        ARROW_RETURN_NOT_OK(extract_weights(w3, db.w3, i, static_cast<int>(i)));
+        ARROW_RETURN_NOT_OK(extract_scales(s1, db.w1, i));
+        ARROW_RETURN_NOT_OK(extract_scales(s2, db.w2, i));
+        ARROW_RETURN_NOT_OK(extract_scales(s3, db.w3, i));
+        db.w1[static_cast<size_t>(i)].global_scale = gs1->Value(i);
+        db.w2[static_cast<size_t>(i)].global_scale = gs2->Value(i);
+        db.w3[static_cast<size_t>(i)].global_scale = gs3->Value(i);
+    }
+
+    db.mmap = mmap;   // keep the mapping alive for the cached host pointers
+    return arrow::Status::OK();
+}
+
+//------------------------------------------------------------------------------
+// Dequant launch wrapper
+//------------------------------------------------------------------------------
+cudaError_t dequant_shared_nvfp4(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    float global_scale,
+    __half* d_output, int64_t num_elements)
+{
+    if (!d_packed || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
+        return cudaErrorInvalidValue;
+
+    const int64_t need_packed = (num_elements + 1) / 2;
+    const int64_t need_scales = (num_elements + kVFP4BlockSize - 1) / kVFP4BlockSize;
+    if (packed_bytes < need_packed)
+        return cudaErrorInvalidValue;   // packed buffer too small
+    if (scales_bytes < need_scales)
+        return cudaErrorInvalidValue;   // scale descriptor buffer too small
+
+    constexpr int BLOCK_DIM = 256;
+    constexpr int ELEMS_PER_THREAD = 32;
+    const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
+    const int blocks = static_cast<int>(
+        (num_elements + elems_per_block - 1) / elems_per_block);
+
+    dequant_shared_nvfp4_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
+        d_packed, d_scales, global_scale, d_output, num_elements);
+
+    return cudaGetLastError();
+}
+
+} // namespace gpu
+} // namespace lsxcommon

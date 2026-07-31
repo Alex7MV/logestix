@@ -82,6 +82,32 @@ public:
     UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
 };
 
+// Shared expert weights per layer, NVFP4-packed (same 9-column layout as
+// ExpertSchema). One record per layer → single pinned/shared_experts.arrow
+// file covering every layer.
+class SharedExpertSchema {
+public:
+    static constexpr int kNumFields = 9;
+
+    static constexpr int kIdxW1Weight      = 0;
+    static constexpr int kIdxW2Weight      = 1;
+    static constexpr int kIdxW3Weight      = 2;
+    static constexpr int kIdxW1Scale       = 3;
+    static constexpr int kIdxW2Scale       = 4;
+    static constexpr int kIdxW3Scale       = 5;
+    static constexpr int kIdxW1GlobalScale = 6;
+    static constexpr int kIdxW2GlobalScale = 7;
+    static constexpr int kIdxW3GlobalScale = 8;
+
+    static std::shared_ptr<arrow::Schema> Make();
+
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatch(const std::vector<PackedExpert> &layers);
+
+    static arrow::Result<std::vector<PackedExpert>>
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+};
+
 arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,
     const std::filesystem::path &path);

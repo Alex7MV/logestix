@@ -214,6 +214,147 @@ ExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     return pe;
 }
 
+// ── SharedExpertSchema ───────────────────────────────────────────────────────
+
+std::shared_ptr<arrow::Schema> SharedExpertSchema::Make()
+{
+    auto binary_type = arrow::large_binary();
+    auto list_u8     = arrow::list(arrow::uint8());
+
+    return arrow::schema({
+        arrow::field("w1_weight", binary_type),
+        arrow::field("w2_weight", binary_type),
+        arrow::field("w3_weight", binary_type),
+        arrow::field("w1_scale",       list_u8),
+        arrow::field("w2_scale",       list_u8),
+        arrow::field("w3_scale",       list_u8),
+        arrow::field("w1_global_scale", arrow::float32()),
+        arrow::field("w2_global_scale", arrow::float32()),
+        arrow::field("w3_global_scale", arrow::float32()),
+    });
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+SharedExpertSchema::MakeBatch(const std::vector<PackedExpert> &layers)
+{
+    auto schema = Make();
+    int64_t n = static_cast<int64_t>(layers.size());
+
+    auto w1_builder = std::make_shared<arrow::LargeBinaryBuilder>();
+    auto w2_builder = std::make_shared<arrow::LargeBinaryBuilder>();
+    auto w3_builder = std::make_shared<arrow::LargeBinaryBuilder>();
+    ARROW_RETURN_NOT_OK(w1_builder->Reserve(n));
+    ARROW_RETURN_NOT_OK(w2_builder->Reserve(n));
+    ARROW_RETURN_NOT_OK(w3_builder->Reserve(n));
+
+    auto s1_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
+    auto s2_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
+    auto s3_val = std::make_shared<arrow::UInt8Builder>(arrow::default_memory_pool());
+    arrow::ListBuilder s1_builder(arrow::default_memory_pool(), s1_val);
+    arrow::ListBuilder s2_builder(arrow::default_memory_pool(), s2_val);
+    arrow::ListBuilder s3_builder(arrow::default_memory_pool(), s3_val);
+    ARROW_RETURN_NOT_OK(s1_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(s2_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(s3_builder.Reserve(n));
+
+    arrow::FloatBuilder gs1_builder, gs2_builder, gs3_builder;
+    ARROW_RETURN_NOT_OK(gs1_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(gs2_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(gs3_builder.Reserve(n));
+
+    for (const auto &e : layers) {
+        ARROW_RETURN_NOT_OK(w1_builder->Append(e.w1_packed.data(), e.w1_packed.size()));
+        ARROW_RETURN_NOT_OK(w2_builder->Append(e.w2_packed.data(), e.w2_packed.size()));
+        ARROW_RETURN_NOT_OK(w3_builder->Append(e.w3_packed.data(), e.w3_packed.size()));
+
+        ARROW_RETURN_NOT_OK(s1_builder.Append());
+        ARROW_RETURN_NOT_OK(s1_val->AppendValues(e.w1_scales.data(), e.w1_scales.size()));
+        ARROW_RETURN_NOT_OK(s2_builder.Append());
+        ARROW_RETURN_NOT_OK(s2_val->AppendValues(e.w2_scales.data(), e.w2_scales.size()));
+        ARROW_RETURN_NOT_OK(s3_builder.Append());
+        ARROW_RETURN_NOT_OK(s3_val->AppendValues(e.w3_scales.data(), e.w3_scales.size()));
+
+        ARROW_RETURN_NOT_OK(gs1_builder.Append(e.w1_global_scale));
+        ARROW_RETURN_NOT_OK(gs2_builder.Append(e.w2_global_scale));
+        ARROW_RETURN_NOT_OK(gs3_builder.Append(e.w3_global_scale));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto w1_arr, w1_builder->Finish());
+    ARROW_ASSIGN_OR_RAISE(auto w2_arr, w2_builder->Finish());
+    ARROW_ASSIGN_OR_RAISE(auto w3_arr, w3_builder->Finish());
+    ARROW_ASSIGN_OR_RAISE(auto s1_arr, s1_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto s2_arr, s2_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto s3_arr, s3_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto gs1_arr, gs1_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto gs2_arr, gs2_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto gs3_arr, gs3_builder.Finish());
+
+    auto batch = arrow::RecordBatch::Make(schema, n,
+        {w1_arr, w2_arr, w3_arr, s1_arr, s2_arr, s3_arr,
+         gs1_arr, gs2_arr, gs3_arr});
+    diag::ValidateBatchBuffers(*batch, "SharedExpertSchema::MakeBatch result");
+    return batch;
+}
+
+arrow::Result<std::vector<PackedExpert>>
+SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+{
+    if (!batch || batch->num_columns() != kNumFields)
+        return arrow::Status::Invalid("Expected 9-column shared-expert RecordBatch");
+
+    diag::ValidateBatchBuffers(*batch, "SharedExpertSchema::UnpackBatch input");
+
+    int64_t n = batch->num_rows();
+    std::vector<PackedExpert> layers;
+    layers.resize(static_cast<size_t>(n));
+
+    auto w1 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxW1Weight));
+    auto w2 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxW2Weight));
+    auto w3 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxW3Weight));
+    auto s1 = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxW1Scale));
+    auto s2 = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxW2Scale));
+    auto s3 = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxW3Scale));
+    auto gs1 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW1GlobalScale));
+    auto gs2 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW2GlobalScale));
+    auto gs3 = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxW3GlobalScale));
+
+    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
+        return arrow::Status::Invalid("Shared-expert batch column type mismatch");
+
+    auto extract_scales = [](const arrow::ListArray *lst, int64_t row,
+                             std::vector<uint8_t> &out) -> void {
+        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
+        auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
+        int64_t begin = offs->Value(row);
+        int64_t end   = offs->Value(row + 1);
+        out.assign(u8->raw_values() + begin, u8->raw_values() + end);
+    };
+
+    for (int64_t i = 0; i < n; ++i) {
+        auto &e = layers[static_cast<size_t>(i)];
+        {
+            auto v = w1->GetView(i);
+            e.w1_packed.assign(v.begin(), v.end());
+        }
+        {
+            auto v = w2->GetView(i);
+            e.w2_packed.assign(v.begin(), v.end());
+        }
+        {
+            auto v = w3->GetView(i);
+            e.w3_packed.assign(v.begin(), v.end());
+        }
+        extract_scales(s1.get(), i, e.w1_scales);
+        extract_scales(s2.get(), i, e.w2_scales);
+        extract_scales(s3.get(), i, e.w3_scales);
+        e.w1_global_scale = gs1->Value(i);
+        e.w2_global_scale = gs2->Value(i);
+        e.w3_global_scale = gs3->Value(i);
+    }
+
+    return layers;
+}
+
 // ── PinnedSchema ────────────────────────────────────────────────────────────
 
 std::shared_ptr<arrow::Schema> PinnedSchema::Make()

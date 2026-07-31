@@ -1,4 +1,5 @@
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/shared_experts.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -293,7 +294,7 @@ __global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n)
 }
 
 // Shared experts FFN: dequant NVFP4 → FP16, GEMM, SiLU activation
-void run_shared_experts_ffn(
+cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
@@ -308,14 +309,14 @@ void run_shared_experts_ffn(
     int hidden_dim = kHiddenDim;
     int intermediate_dim = w1_bytes > 0
         ? static_cast<int>((w1_bytes * 2) / hidden_dim) : kIntermediateDim;
-    int block = 256;
     int w1_el = hidden_dim * intermediate_dim;
 
     // 1. Dequant W1 → d_dequant
     if (w1_bytes > 0) {
-        int grid = (w1_el + block - 1) / block;
-        dequant_nvfp4_to_half_kernel<<<grid, block, 0, stream>>>(
-            d_w1, d_w1_scales, w1_gs, d_dequant, w1_el);
+        int64_t scales = (w1_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
+        cudaError_t e = dequant_shared_nvfp4(stream, d_w1, w1_bytes,
+            d_w1_scales, scales, w1_gs, d_dequant, w1_el);
+        if (e != cudaSuccess) return e;
     }
 
     // 2. intermediate = W1^T @ hidden → d_intermediate
@@ -328,9 +329,10 @@ void run_shared_experts_ffn(
 
     // 3. Dequant W3 → d_dequant (reuse)
     if (w3_bytes > 0) {
-        int grid = (w1_el + block - 1) / block;
-        dequant_nvfp4_to_half_kernel<<<grid, block, 0, stream>>>(
-            d_w3, d_w3_scales, w3_gs, d_dequant, w1_el);
+        int64_t scales = (w1_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
+        cudaError_t e = dequant_shared_nvfp4(stream, d_w3, w3_bytes,
+            d_w3_scales, scales, w3_gs, d_dequant, w1_el);
+        if (e != cudaSuccess) return e;
     }
 
     // 4. gate = W3^T @ hidden → d_gate
@@ -343,6 +345,7 @@ void run_shared_experts_ffn(
 
     // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate
     {
+        int block = 256;
         int grid = (intermediate_dim + block - 1) / block;
         silu_mul_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_gate, intermediate_dim);
     }
@@ -350,9 +353,10 @@ void run_shared_experts_ffn(
     // 6. Dequant W2 → d_dequant (reuse)
     int w2_el = intermediate_dim * hidden_dim;
     if (w2_bytes > 0) {
-        int grid = (w2_el + block - 1) / block;
-        dequant_nvfp4_to_half_kernel<<<grid, block, 0, stream>>>(
-            d_w2, d_w2_scales, w2_gs, d_dequant, w2_el);
+        int64_t scales = (w2_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
+        cudaError_t e = dequant_shared_nvfp4(stream, d_w2, w2_bytes,
+            d_w2_scales, scales, w2_gs, d_dequant, w2_el);
+        if (e != cudaSuccess) return e;
     }
 
     // 7. output = W2^T @ activated → d_output
@@ -362,6 +366,7 @@ void run_shared_experts_ffn(
                  d_intermediate, CUDA_R_16F, intermediate_dim, &beta,
                  d_output, CUDA_R_16F, hidden_dim,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    return cudaSuccess;
 }
 
 // Routed expert FFN: load from mmap host ptr → GPU, dequant, GEMM

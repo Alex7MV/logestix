@@ -1,5 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/shared_experts.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -330,28 +331,59 @@ cudaError_t load_pinned_weights(
                                 &lw.d_gate_weight, stream);
         }
 
-        auto load_shared = [&](const std::string &wname,
-                               uint8_t *&d_buf, uint8_t *&d_scales,
-                               float &gs, int64_t &nbytes)
-        {
-            auto *wt = find_tensor_substr(lt,
-                "ffn.shared_experts." + wname + ".weight");
-            if (!wt) return;
-            nbytes = static_cast<int64_t>(wt->data.size());
-            cudaMalloc(&d_buf, static_cast<size_t>(nbytes));
-            cudaMemcpyAsync(d_buf, wt->data.data(),
-                           static_cast<size_t>(nbytes),
-                           cudaMemcpyHostToDevice, stream);
-            d_scales = nullptr;
-            gs = 1.0f;
-        };
+    }
 
-        load_shared("w1", lw.d_shared_w1, lw.d_shared_w1_scales,
-                    lw.shared_w1_global_scale, lw.shared_w1_bytes);
-        load_shared("w2", lw.d_shared_w2, lw.d_shared_w2_scales,
-                    lw.shared_w2_global_scale, lw.shared_w2_bytes);
-        load_shared("w3", lw.d_shared_w3, lw.d_shared_w3_scales,
-                    lw.shared_w3_global_scale, lw.shared_w3_bytes);
+    // Shared experts: NVFP4-packed metadata from pinned/shared_experts.arrow.
+    // Loaded AFTER the layer loop so the descriptor registry lives independently
+    // of the per-layer pinned files.
+    {
+        auto shared_path = pinned_dir / "shared_experts.arrow";
+        if (fs::exists(shared_path)) {
+            auto mmap_res = arrow::io::MemoryMappedFile::Open(
+                shared_path.string(), arrow::io::FileMode::READ);
+            if (mmap_res.ok()) {
+                SharedExpertDb db;
+                auto st = load_shared_experts_metadata(*mmap_res, db);
+                if (!st.ok()) {
+                    std::fprintf(stderr, "[load_pinned] ERROR shared_experts metadata: %s\n",
+                                 st.ToString().c_str());
+                } else {
+                    std::fprintf(stderr, "[load_pinned] shared_experts: %d layers\n",
+                                 db.num_layers());
+                    for (int l = 0; l < db.num_layers() &&
+                                    l < static_cast<int>(pw.layers.size()); ++l) {
+                        auto &lw = pw.layers[l];
+                        auto upload = [&](const SharedExpertDescriptor &desc,
+                                          uint8_t *&d_buf, uint8_t *&d_scales,
+                                          float &gs, int64_t &nbytes)
+                        {
+                            nbytes = desc.packed_bytes;
+                            if (nbytes <= 0) return;
+                            cudaError_t e = cudaMalloc(&d_buf,
+                                static_cast<size_t>(desc.packed_bytes));
+                            if (e != cudaSuccess) return;
+                            cudaMemcpyAsync(d_buf, desc.host_ptr,
+                                static_cast<size_t>(desc.packed_bytes),
+                                cudaMemcpyHostToDevice, stream);
+                            if (desc.scale_bytes > 0) {
+                                cudaMalloc(&d_scales,
+                                    static_cast<size_t>(desc.scale_bytes));
+                                cudaMemcpyAsync(d_scales, desc.scale_host_ptr,
+                                    static_cast<size_t>(desc.scale_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                            }
+                            gs = desc.global_scale;
+                        };
+                        upload(db.w1[l], lw.d_shared_w1, lw.d_shared_w1_scales,
+                               lw.shared_w1_global_scale, lw.shared_w1_bytes);
+                        upload(db.w2[l], lw.d_shared_w2, lw.d_shared_w2_scales,
+                               lw.shared_w2_global_scale, lw.shared_w2_bytes);
+                        upload(db.w3[l], lw.d_shared_w3, lw.d_shared_w3_scales,
+                               lw.shared_w3_global_scale, lw.shared_w3_bytes);
+                    }
+                }
+            }
+        }
     }
 
     return cudaSuccess;
