@@ -101,25 +101,37 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     InferenceResult result;
     auto mp = cfg.model_path;
 
-    // 1. Load tokenizer
-    ::lsxcommon::BpeTokenizer tok;
+    // 1. Load tokenizer (mmap the Arrow files; tok_db keeps them alive for the run)
+    ::lsxcommon::ArrowTokenizerDb tok_db;
     {
-        auto tpath = std::filesystem::path(mp) / "tokenizer.json";
-        if (!tok.Load(tpath.string())) {
-            result.error_msg = "Failed to load tokenizer from " + tpath.string();
+        auto pinned = std::filesystem::path(mp) / "logestix" / "pinned";
+        auto v = arrow::io::MemoryMappedFile::Open(
+            (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+        auto m = arrow::io::MemoryMappedFile::Open(
+            (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+        if (!v.ok() || !m.ok()) {
+            result.error_msg = "Failed to open tokenizer Arrow files in " + pinned.string();
+            return result;
+        }
+        auto st = ::lsxcommon::load_tokenizer_metadata(*v, *m, tok_db);
+        if (!st.ok()) {
+            result.error_msg = "Failed to load tokenizer metadata: " + st.ToString();
             return result;
         }
     }
 
     // 2. Tokenize hardcoded prompt
     const char *prompt = "The capital of France is";
-    std::string prompt_str(prompt);
-    auto input_ids = tok.Encode(prompt_str);
-    if (input_ids.empty()) {
-        result.error_msg = "Tokenizer returned empty ids";
+    std::vector<int32_t> input_ids(512);
+    size_t in_cap = input_ids.size();
+    int32_t n_ids = ::lsxcommon::arrow_tokenizer_encode(
+        tok_db, prompt, std::strlen(prompt), input_ids.data(), &in_cap);
+    if (n_ids < 0) {
+        result.error_msg = "Tokenizer encode failed (code " + std::to_string(n_ids) + ")";
         return result;
     }
-    std::fprintf(stderr, "[inference] prompt=%lld tokens: ", static_cast<long long>(input_ids.size()));
+    input_ids.resize(static_cast<size_t>(n_ids));
+    std::fprintf(stderr, "[inference] prompt=%zu tokens: ", input_ids.size());
     for (size_t i = 0; i < input_ids.size(); ++i)
         std::fprintf(stderr, "%d ", static_cast<int>(input_ids[i]));
     std::fprintf(stderr, "\n");
@@ -365,13 +377,15 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         gen_ids.push_back(next_tok);
 
         std::fprintf(stderr, "[inference] step=%d tok=%d", step, next_tok);
+        char tok_buf[512];
+        size_t tok_cap = sizeof(tok_buf);
         std::vector<int32_t> single_tok = {static_cast<int32_t>(next_tok)};
-        std::string tstr = tok.Decode(single_tok);
-        if (!tstr.empty())
-            std::fprintf(stderr, " '%s'", tstr.c_str());
+        if (::lsxcommon::arrow_tokenizer_decode(
+                tok_db, single_tok.data(), single_tok.size(), tok_buf, &tok_cap) == 0)
+            std::fprintf(stderr, " '%.*s'", static_cast<int>(tok_cap), tok_buf);
         std::fprintf(stderr, " maxv=%.4f\n", max_val);
 
-        if (next_tok == tok.eos_id() && step >= static_cast<int>(input_ids.size()))
+        if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
             break;
     }
 
@@ -388,7 +402,19 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         // Skip prompt tokens for output decoding
         auto gen_start = gen_ids.begin() + std::min(prompt_len, static_cast<int>(gen_ids.size()));
         std::vector<int32_t> gen_ids_i32(gen_start, gen_ids.end());
-        std::string output = tok.Decode(gen_ids_i32);
+        size_t out_cap = 4096;
+        std::string output(out_cap, '\0');
+        int32_t dr = ::lsxcommon::arrow_tokenizer_decode(
+            tok_db, gen_ids_i32.data(), gen_ids_i32.size(), output.data(), &out_cap);
+        if (dr == -2) {   // *out_cap now reports the required size; retry once
+            output.resize(out_cap);
+            size_t cap2 = out_cap;
+            dr = ::lsxcommon::arrow_tokenizer_decode(
+                tok_db, gen_ids_i32.data(), gen_ids_i32.size(), output.data(), &cap2);
+            out_cap = cap2;
+        }
+        if (dr == 0) output.resize(out_cap);
+        else output.clear();
         result.ttft_ms = elapsed_ms / static_cast<double>(total_steps);
         result.tokens_per_sec = elapsed_ms > 0.0f
             ? (static_cast<double>(gen_count) / elapsed_ms) * 1000.0

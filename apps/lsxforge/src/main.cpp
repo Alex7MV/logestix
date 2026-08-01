@@ -4,6 +4,7 @@
 #include "lsxcommon/schema.h"
 #include <arrow/api.h>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <regex>
 #include <spdlog/spdlog.h>
@@ -138,6 +139,7 @@ int main(int argc, char* argv[]) {
     std::string input_path;
     std::string output_path = "converted_model";
     bool shared_only = false;
+    bool tokenizer_only = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc)
@@ -146,6 +148,10 @@ int main(int argc, char* argv[]) {
             output_path = argv[++i];
         else if (std::strcmp(argv[i], "--shared-only") == 0)
             shared_only = true;
+        else if (std::strcmp(argv[i], "--tokenizer") == 0 && i + 1 < argc) {
+            tokenizer_only = true;
+            input_path = argv[++i];
+        }
     }
 
     if (input_path.empty()) {
@@ -169,6 +175,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         spdlog::info("Shared experts extraction complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (tokenizer_only) {
+        namespace fs = std::filesystem;
+        auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
+        auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
+        fs::create_directories(pinned_dir);
+        spdlog::info("Building tokenizer Arrow files from {}", tokenizer_json.string());
+        auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(), pinned_dir);
+        if (!st.ok()) {
+            spdlog::error("Tokenizer build failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Tokenizer Arrow files complete -> {}", pinned_dir.string());
         lsxcommon::Core::Shutdown();
         return 0;
     }
