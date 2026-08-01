@@ -1,6 +1,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
+#include "lsxcommon/log.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -10,6 +11,8 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <sstream>
+#include <iomanip>
 #include <algorithm>
 #include <numeric>
 #include <filesystem>
@@ -131,10 +134,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         return result;
     }
     input_ids.resize(static_cast<size_t>(n_ids));
-    std::fprintf(stderr, "[inference] prompt=%zu tokens: ", input_ids.size());
+    std::string tok_line;
     for (size_t i = 0; i < input_ids.size(); ++i)
-        std::fprintf(stderr, "%d ", static_cast<int>(input_ids[i]));
-    std::fprintf(stderr, "\n");
+        tok_line += std::to_string(input_ids[i]) + " ";
+    log::info("[inference] prompt=" + std::to_string(input_ids.size())
+        + " tokens: " + tok_line);
 
     // 3. Load topology
     auto topo = load_topology(mp);
@@ -143,9 +147,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             ? "Empty topology" : topo.error_msg;
         return result;
     }
-    std::fprintf(stderr, "[inference] layers=%d experts_per_layer=%d total=%lld\n",
-                 topo.num_layers, topo.experts_per_layer,
-                 static_cast<long long>(topo.total_experts));
+    log::info("[inference] layers=" + std::to_string(topo.num_layers)
+        + " experts_per_layer=" + std::to_string(topo.experts_per_layer)
+        + " total=" + std::to_string(topo.total_experts));
 
     // Load pinned weights FIRST (before expert index, to avoid fd exhaustion)
     // Execution block — all INFER_CHECK gotos jump to cleanup: below
@@ -235,7 +239,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     // Hardcoded intermediate_dim = kIntermediateDim = 2048.
     // Ensure vocab size
     if (pw.vocab_size == 0) pw.vocab_size = 128000;
-    std::fprintf(stderr, "[inference] vocab_size=%d\n", pw.vocab_size);
+    log::info("[inference] vocab_size=" + std::to_string(pw.vocab_size));
 
     // Allocate logits AFTER load (pre-alloc buffers can be corrupted by loading)
     INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(150000) * sizeof(float)));
@@ -254,13 +258,13 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             static_cast<size_t>(kHiddenDim) * sizeof(__half),
             cudaMemcpyDeviceToDevice, stream);
         if (embed_err != cudaSuccess) {
-            std::fprintf(stderr, "[dbg] embed copy failed: %s\n",
-                         cudaGetErrorString(embed_err));
+            log::error(std::string("[dbg] embed copy failed: ")
+                + cudaGetErrorString(embed_err));
         }
         INFER_CHECK(cudaGetLastError());  // catch any pending
         // Sync after embed copy to catch async errors
         INFER_CHECK(cudaStreamSynchronize(stream));
-        std::fprintf(stderr, "[dbg] embed sync OK\n");
+        log::debug("[dbg] embed sync OK");
         (void)embed_err;
     }
 
@@ -289,9 +293,12 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         for (int lay = 0; lay < topo.num_layers; ++lay) {
             auto &lw = pw.layers[lay];
             if (lay == 0) {
-                std::fprintf(stderr, "[dbg] layer 0: ffn_norm=%p gate=%p sh_w1=%p (bytes=%lld)\n",
-                             (void*)lw.d_ffn_norm, (void*)lw.d_gate_weight,
-                             (void*)lw.d_shared_w1, static_cast<long long>(lw.shared_w1_bytes));
+                std::ostringstream oss;
+                oss << "[dbg] layer 0: ffn_norm=" << static_cast<void*>(lw.d_ffn_norm)
+                    << " gate=" << static_cast<void*>(lw.d_gate_weight)
+                    << " sh_w1=" << static_cast<void*>(lw.d_shared_w1)
+                    << " (bytes=" << lw.shared_w1_bytes << ")";
+                log::debug(oss.str());
             }
 
             // RMSNorm
@@ -376,14 +383,16 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         // Store generated token (always — gen_ids[0] used as first gen-step input)
         gen_ids.push_back(next_tok);
 
-        std::fprintf(stderr, "[inference] step=%d tok=%d", step, next_tok);
+        std::ostringstream step_oss;
+        step_oss << "[inference] step=" << step << " tok=" << next_tok;
         char tok_buf[512];
         size_t tok_cap = sizeof(tok_buf);
         std::vector<int32_t> single_tok = {static_cast<int32_t>(next_tok)};
         if (::lsxcommon::arrow_tokenizer_decode(
                 tok_db, single_tok.data(), single_tok.size(), tok_buf, &tok_cap) == 0)
-            std::fprintf(stderr, " '%.*s'", static_cast<int>(tok_cap), tok_buf);
-        std::fprintf(stderr, " maxv=%.4f\n", max_val);
+            step_oss << " '" << std::string(tok_buf, tok_cap) << "'";
+        step_oss << " maxv=" << std::fixed << std::setprecision(4) << max_val;
+        log::info(step_oss.str());
 
         if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
             break;
@@ -425,13 +434,18 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         result.output_text = output;
         result.ok = true;
 
-        std::fprintf(stderr, "\n=== --testprompt Results ===\n");
-        std::fprintf(stderr, "  prompt:        \"%s\"\n", prompt);
-        std::fprintf(stderr, "  output:        \"%s\"\n", output.c_str());
-        std::fprintf(stderr, "  elapsed:       %.1f ms\n", static_cast<double>(elapsed_ms));
-        std::fprintf(stderr, "  gen_tokens:    %d\n", gen_count);
-        std::fprintf(stderr, "  TTFT:          %.2f ms\n", result.ttft_ms);
-        std::fprintf(stderr, "  tokens/s:      %.1f\n", result.tokens_per_sec);
+        std::ostringstream res_oss;
+        res_oss << "=== --testprompt Results ===\n"
+                << "  prompt:        \"" << prompt << "\"\n"
+                << "  output:        \"" << output << "\"\n"
+                << "  elapsed:       " << std::fixed << std::setprecision(1)
+                << static_cast<double>(elapsed_ms) << " ms\n"
+                << "  gen_tokens:    " << gen_count << "\n"
+                << "  TTFT:          " << std::setprecision(2) << result.ttft_ms
+                << " ms\n"
+                << "  tokens/s:      " << std::setprecision(1)
+                << result.tokens_per_sec;
+        log::info(res_oss.str());
     }
 
 cleanup:

@@ -6,6 +6,7 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
+#include <spdlog/spdlog.h>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -640,10 +641,10 @@ arrow::Status WriteRecordBatchToFile(
     ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     ARROW_RETURN_NOT_OK(writer->Close());
     ARROW_RETURN_NOT_OK(outfile->Close());
-    std::fprintf(stderr, "[DIAG] wrote batch to %s (%d columns, %lld rows)\n",
-                 path.string().c_str(),
-                 batch->num_columns(),
-                 static_cast<long long>(batch->num_rows()));
+    spdlog::debug("[DIAG] wrote batch to {} ({} columns, {} rows)",
+                  path.string(),
+                  batch->num_columns(),
+                  batch->num_rows());
     return arrow::Status::OK();
 }
 

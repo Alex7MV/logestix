@@ -44,8 +44,7 @@ arrow::Status RunSharedOnly(const std::string &model_path)
 
     std::unordered_map<int, lsxcommon::ExpertData> shared_by_layer;
     for (int l = 0; l < 128; ++l) {
-        char fn[64];
-        std::snprintf(fn, sizeof(fn), "layer_%d.arrow", l);
+        auto fn = "layer_" + std::to_string(l) + ".arrow";
         auto path = pinned_dir / fn;
         if (!fs::exists(path)) {
             if (l > 0) break;

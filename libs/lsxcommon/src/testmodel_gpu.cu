@@ -8,11 +8,14 @@
 #include <arrow/api.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
+#include "lsxcommon/log.h"
 
 #include <cstdint>
 #include <cstring>
 #include <vector>
 #include <string>
+#include <sstream>
+#include <iomanip>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -422,17 +425,22 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
         result.tokens_per_sec = elapsed_ms > 0.0f
             ? (static_cast<double>(num_tokens) / elapsed_ms) * 1000.0 : 0.0;
 
-        std::fprintf(stderr, "\n=== --testmodel Throughput by interval ===\n");
+        std::ostringstream oss;
+        oss << "=== --testmodel Throughput by interval ===";
         for (int ci = 0; ci < num_checkpoints; ++ci) {
             float cp_ms = 0.0f;
             cudaEventElapsedTime(&cp_ms, t_start, checkpoints[static_cast<size_t>(ci)]);
             int ct = checkpoint_counts[static_cast<size_t>(ci)];
             double tps = ct / static_cast<double>(cp_ms) * 1000.0;
-            std::fprintf(stderr, "  tok=%4d  elapsed=%8.1f ms  %8.1f t/s\n",
-                         ct, static_cast<double>(cp_ms), tps);
+            oss << "\n  tok=" << std::setw(4) << ct
+                << "  elapsed=" << std::fixed << std::setprecision(1)
+                << static_cast<double>(cp_ms) << " ms  "
+                << std::setprecision(1) << tps << " t/s";
         }
-        std::fprintf(stderr, "  ---\n  total    elapsed=%8.1f ms  %8.1f t/s\n",
-                     static_cast<double>(elapsed_ms), result.tokens_per_sec);
+        oss << "\n  ---\n  total    elapsed=" << std::fixed
+            << std::setprecision(1) << static_cast<double>(elapsed_ms)
+            << " ms  " << std::setprecision(1) << result.tokens_per_sec << " t/s";
+        log::info(oss.str());
     }
 
     result.num_layers = topo.num_layers;

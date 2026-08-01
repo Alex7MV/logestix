@@ -16,6 +16,7 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/loader.cpp
+    src/log.cpp
     src/pretokenizer.cpp
     src/schema.cpp
     src/tokenizer.cpp

@@ -6,7 +6,7 @@
 #include <arrow/device_allocation_type_set.h>
 #include <arrow/memory_pool.h>
 #include <arrow/record_batch.h>
-#include <cstdio>
+#include "lsxcommon/log.h"
 #include <string>
 #include <array>
 
@@ -24,40 +24,33 @@ inline std::string MemoryManagerDesc(const std::shared_ptr<arrow::MemoryManager>
 
 inline void LogToStderr(const char *msg)
 {
-    std::fprintf(stderr, "[DIAG] %s\n", msg);
-    std::fflush(stderr);
+    log::debug(std::string("[DIAG] ") + msg);
 }
 
 inline void LogBuffer(const char *label, const arrow::Buffer &buf)
 {
     auto mm = buf.memory_manager();
-    std::fprintf(stderr,
-        "[DIAG] buffer %s: size=%lld is_cpu=%d device=%s\n",
-        label,
-        static_cast<long long>(buf.size()),
-        static_cast<int>(buf.is_cpu()),
-        MemoryManagerDesc(mm).c_str());
-    std::fflush(stderr);
+    log::debug(std::string("[DIAG] buffer ") + label
+        + ": size=" + std::to_string(buf.size())
+        + " is_cpu=" + std::to_string(static_cast<int>(buf.is_cpu()))
+        + " device=" + MemoryManagerDesc(mm));
 }
 
 inline void ValidateCpuBuffer(const arrow::Buffer &buf, const char *context)
 {
     if (buf.is_cpu()) return;
     auto mm = buf.memory_manager();
-    std::fprintf(stderr,
-        "[DIAG] BUFFER DEVICE MISMATCH [%s]: expected CPU buffer, got %s "
-        "(size=%lld, data=%p)\n",
-        context,
-        MemoryManagerDesc(mm).c_str(),
-        static_cast<long long>(buf.size()),
-        static_cast<const void*>(buf.data()));
-    std::fflush(stderr);
+    log::warn(std::string("[DIAG] BUFFER DEVICE MISMATCH [") + context
+        + "]: expected CPU buffer, got " + MemoryManagerDesc(mm)
+        + " (size=" + std::to_string(buf.size())
+        + ", data=" + std::to_string(reinterpret_cast<uintptr_t>(buf.data())) + ")");
 }
 
 inline void ValidateBatchBuffers(const arrow::RecordBatch &batch, const char *context)
 {
-    std::fprintf(stderr, "[DIAG] ValidateBatch [%s]: %d columns, %d rows\n",
-        context, batch.num_columns(), static_cast<int>(batch.num_rows()));
+    log::debug(std::string("[DIAG] ValidateBatch [") + context + "]: "
+        + std::to_string(batch.num_columns()) + " columns, "
+        + std::to_string(static_cast<int>(batch.num_rows())) + " rows");
     for (int col = 0; col < batch.num_columns(); ++col) {
         auto arr = batch.column(col);
         auto data = arr->data();
@@ -68,30 +61,25 @@ inline void ValidateBatchBuffers(const arrow::RecordBatch &batch, const char *co
             }
         }
     }
-    std::fflush(stderr);
 }
 
 inline void LogMemoryPoolState(const char *context)
 {
     auto *pool = arrow::default_memory_pool();
-    std::fprintf(stderr,
-        "[DIAG] memory pool [%s]: backend=%s allocated=%lld max_memory=%lld\n",
-        context,
-        pool->backend_name().c_str(),
-        static_cast<long long>(pool->bytes_allocated()),
-        static_cast<long long>(pool->max_memory()));
-    std::fflush(stderr);
+    log::debug(std::string("[DIAG] memory pool [") + context + "]: backend="
+        + pool->backend_name() + " allocated="
+        + std::to_string(pool->bytes_allocated()) + " max_memory="
+        + std::to_string(pool->max_memory()));
 }
 
 inline void LogArrowSystemState(const char *context)
 {
-    std::fprintf(stderr, "[DIAG] === Arrow system state [%s] ===\n", context);
+    log::debug(std::string("[DIAG] === Arrow system state [") + context + "] ===");
     LogMemoryPoolState(context);
     auto cpu_mm = arrow::default_cpu_memory_manager();
-    std::fprintf(stderr, "[DIAG] default CPU memory manager: %s\n",
-        MemoryManagerDesc(cpu_mm).c_str());
-    std::fprintf(stderr, "[DIAG] ===================================\n");
-    std::fflush(stderr);
+    log::debug(std::string("[DIAG] default CPU memory manager: ")
+        + MemoryManagerDesc(cpu_mm));
+    log::debug("[DIAG] ===================================");
 }
 
 } // namespace diag

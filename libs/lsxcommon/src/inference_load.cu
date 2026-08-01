@@ -8,6 +8,7 @@
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include "lsxcommon/log.h"
 #include <vector>
 #include <string>
 #include <filesystem>
@@ -250,8 +251,8 @@ cudaError_t load_pinned_weights(
     auto global_path = pinned_dir / "global.arrow";
     auto global_tensors_res = load_arrow_file(global_path.string());
     if (!global_tensors_res.ok()) {
-        std::fprintf(stderr, "[load_pinned] ERROR loading global.arrow: %s\n",
-                     global_tensors_res.status().ToString().c_str());
+        log::error("[load_pinned] ERROR loading global.arrow: "
+            + global_tensors_res.status().ToString());
         return cudaErrorUnknown;
     }
     auto &global_tensors = *global_tensors_res;
@@ -259,11 +260,12 @@ cudaError_t load_pinned_weights(
     // Debug: print first 10 tensor names
     for (int di = 0; di < std::min(10, static_cast<int>(global_tensors.size())); ++di) {
         const auto &t = global_tensors[di];
-        std::fprintf(stderr, "[load_pinned] global tensor[%d] name='%s' shape=[",
-                     di, t.name.c_str());
+        std::string shape;
         for (size_t si = 0; si < t.shape.size(); ++si)
-            std::fprintf(stderr, "%s%lld", si > 0 ? "," : "", static_cast<long long>(t.shape[si]));
-        std::fprintf(stderr, "] data_sz=%lld\n", static_cast<long long>(t.data.size()));
+            shape += (si > 0 ? "," : "") + std::to_string(t.shape[si]);
+        log::debug("[load_pinned] global tensor[" + std::to_string(di)
+            + "] name='" + t.name + "' shape=[" + shape + "] data_sz="
+            + std::to_string(t.data.size()));
     }
 
     // Upload via upload_bf16_to_half (two-step: host→device copy, then kernel)
@@ -276,13 +278,13 @@ cudaError_t load_pinned_weights(
         int64_t numel = embed_t->shape[0] * embed_t->shape[1];
         cudaError_t e = upload_bf16_to_half(embed_t->data.data(), numel,
                                              &pw.d_embed, stream);
-        if (e != cudaSuccess) { std::fprintf(stderr, "embed upload failed\n"); return e; }
+        if (e != cudaSuccess) { log::error("embed upload failed"); return e; }
     }
     if (norm_t && !norm_t->shape.empty()) {
         int64_t numel = norm_t->shape[0];
         cudaError_t e = upload_bf16_to_half(norm_t->data.data(), numel,
                                              &pw.d_final_norm, stream);
-        if (e != cudaSuccess) { std::fprintf(stderr, "norm upload failed\n"); return e; }
+        if (e != cudaSuccess) { log::error("norm upload failed"); return e; }
     }
     if (head_t && head_t->shape.size() >= 2) {
         if (pw.vocab_size == 0)
@@ -290,32 +292,33 @@ cudaError_t load_pinned_weights(
         int64_t numel = head_t->shape[0] * head_t->shape[1];
         cudaError_t e = upload_bf16_to_half(head_t->data.data(), numel,
                                              &pw.d_head, stream);
-        if (e != cudaSuccess) { std::fprintf(stderr, "head upload failed\n"); return e; }
+        if (e != cudaSuccess) { log::error("head upload failed"); return e; }
     }
 
     pw.layers.resize(kNumLayers);
     for (int l = 0; l < kNumLayers; ++l) {
-        char fn[64];
-        std::snprintf(fn, sizeof(fn), "layer_%d.arrow", l);
+        auto fn = "layer_" + std::to_string(l) + ".arrow";
         auto layer_path = pinned_dir / fn;
 
         if (!fs::exists(layer_path)) continue;
 
         auto tensors_res = load_arrow_file(layer_path.string());
         if (!tensors_res.ok()) {
-            std::fprintf(stderr, "[load_pinned] ERROR loading %s: %s\n",
-                         fn, tensors_res.status().ToString().c_str());
+            log::error("[load_pinned] ERROR loading " + fn + ": "
+                + tensors_res.status().ToString());
             continue;
         }
         auto &lt = *tensors_res;
         auto &lw = pw.layers[l];
         for (int di = 0; di < std::min(5, static_cast<int>(lt.size())); ++di) {
             const auto &t = lt[di];
-            std::fprintf(stderr, "[load_pinned]   layer_%03d tensor[%d] name='%s' shape=[",
-                         l, di, t.name.c_str());
+            std::string shape;
             for (size_t si = 0; si < t.shape.size(); ++si)
-                std::fprintf(stderr, "%s%lld", si > 0 ? "," : "", static_cast<long long>(t.shape[si]));
-            std::fprintf(stderr, "]\n");
+                shape += (si > 0 ? "," : "") + std::to_string(t.shape[si]);
+            log::debug(std::string("[load_pinned]   layer_")
+                + (l < 10 ? "00" : (l < 100 ? "0" : "")) + std::to_string(l)
+                + " tensor[" + std::to_string(di) + "] name='" + t.name
+                + "' shape=[" + shape + "]");
         }
 
         auto *ffn_norm = find_tensor_substr(lt, "ffn_norm.weight");
@@ -345,11 +348,11 @@ cudaError_t load_pinned_weights(
                 SharedExpertDb db;
                 auto st = load_shared_experts_metadata(*mmap_res, db);
                 if (!st.ok()) {
-                    std::fprintf(stderr, "[load_pinned] ERROR shared_experts metadata: %s\n",
-                                 st.ToString().c_str());
+                    log::error("[load_pinned] ERROR shared_experts metadata: "
+                        + st.ToString());
                 } else {
-                    std::fprintf(stderr, "[load_pinned] shared_experts: %d layers\n",
-                                 db.num_layers());
+                    log::info("[load_pinned] shared_experts: "
+                        + std::to_string(db.num_layers()) + " layers");
                     for (int l = 0; l < db.num_layers() &&
                                     l < static_cast<int>(pw.layers.size()); ++l) {
                         auto &lw = pw.layers[l];

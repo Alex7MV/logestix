@@ -28,7 +28,7 @@ arrow::Result<std::shared_ptr<arrow::cuda::CudaContext>> get_cuda_ctx()
     static arrow::Status status;
 
     std::call_once(init, [] {
-        std::fprintf(stderr, "[DIAG] CUDA context init: before CudaDeviceManager::Instance()\n");
+        log::debug("[DIAG] CUDA context init: before CudaDeviceManager::Instance()");
         diag::LogArrowSystemState("pre-cuda-init");
         auto mgr = arrow::cuda::CudaDeviceManager::Instance();
         if (!mgr.ok()) { status = mgr.status(); return; }
@@ -36,8 +36,8 @@ arrow::Result<std::shared_ptr<arrow::cuda::CudaContext>> get_cuda_ctx()
         auto result = (*mgr)->GetContext(0);
         if (!result.ok()) { status = result.status(); return; }
         auto ctx_ptr = *result;
-        std::fprintf(stderr, "[DIAG] CUDA context initialized: device=%s\n",
-                     ctx_ptr->device()->ToString().c_str());
+        log::debug(std::string("[DIAG] CUDA context initialized: device=")
+            + ctx_ptr->device()->ToString());
         ctx = std::move(ctx_ptr);
     });
 
