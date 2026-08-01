@@ -195,3 +195,61 @@ TEST_CASE("load_tokenizer_metadata from synthetic files", "[tokenizer][load]")
     db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
     fs::remove_all(pinned);
 }
+
+#include <lsxcommon/pretokenizer.h>
+#include <vector>
+#include <string>
+
+namespace {
+
+std::vector<std::string> SplitWords(const std::string &text)
+{
+    lsxcommon::WordStream ws(text.data(), text.size());
+    std::vector<std::string> out;
+    lsxcommon::WordSpan w;
+    while (ws.next(w))
+        out.emplace_back(w.begin, w.length);
+    CHECK(ws.error() == 0);
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("WordStream GPT-2 word splits", "[tokenizer][pretokenizer]")
+{
+    using V = std::vector<std::string>;
+    CHECK(SplitWords("hello world") == V{"hello", " world"});
+    CHECK(SplitWords("  x") == V{" ", " x"});
+    CHECK(SplitWords("a  b") == V{"a", " ", " b"});
+    CHECK(SplitWords(" a") == V{" a"});
+    CHECK(SplitWords("a ") == V{"a", " "});
+    CHECK(SplitWords("trailing  ") == V{"trailing", "  "});
+    CHECK(SplitWords("x  y  z") == V{"x", " ", " y", " ", " z"});
+    CHECK(SplitWords("  leading spaces") == V{" ", " leading", " spaces"});
+    CHECK(SplitWords("a b") == V{"a", " b"});
+}
+
+TEST_CASE("WordStream CRLF, numbers, CJK, gaps", "[tokenizer][pretokenizer]")
+{
+    using V = std::vector<std::string>;
+    CHECK(SplitWords("\r\n") == V{"\r\n"});
+    CHECK(SplitWords("\n\n") == V{"\n\n"});
+    CHECK(SplitWords("1abc") == V{"1", "abc"});
+    CHECK(SplitWords("a中b") == V{"a", "中", "b"});
+    CHECK(SplitWords("12345") == V{"123", "45"});
+    CHECK(SplitWords("a\x01") == V{"a", "\x01"});
+    CHECK(SplitWords("a\x01\x02b") == V{"a", "\x01", "\x02b"});
+    CHECK(SplitWords("!abc") == V{"!abc"});
+    CHECK(SplitWords("a?x") == V{"a", "?x"});
+    CHECK(SplitWords("a !") == V{"a", " !"});
+}
+
+TEST_CASE("WordStream rejects malformed UTF-8", "[tokenizer][pretokenizer]")
+{
+    lsxcommon::WordStream ws("a\xffz", 3);
+    lsxcommon::WordSpan w;
+    REQUIRE(ws.next(w));                     // "a"
+    CHECK(std::string(w.begin, w.length) == "a");
+    CHECK_FALSE(ws.next(w));                 // stops at bad byte
+    CHECK(ws.error() != 0);
+}
