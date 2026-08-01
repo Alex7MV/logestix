@@ -253,3 +253,79 @@ TEST_CASE("WordStream rejects malformed UTF-8", "[tokenizer][pretokenizer]")
     CHECK_FALSE(ws.next(w));                 // stops at bad byte
     CHECK(ws.error() != 0);
 }
+
+TEST_CASE("arrow_tokenizer_encode synthetic goldens", "[tokenizer][encode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    struct Case { const char *text; std::vector<int32_t> ids; };
+    const Case cases[] = {
+        {"hello world", {0, 262, 267}},
+        {"hello", {0, 262}},
+        {"  x", {0, 35, 35, 123}},
+        {" a", {0, 35, 100}},
+        {"a ", {0, 100, 35}},
+        {"a b", {0, 100, 35, 101}},
+        {"a  b", {0, 100, 35, 35, 101}},
+        {"x  y  z", {0, 123, 35, 35, 124, 35, 35, 125}},
+        {"trailing  ", {0, 119, 117, 100, 108, 111, 108, 113, 106, 35, 35}},
+        {"  leading spaces",
+         {0, 35, 35, 111, 104, 100, 103, 108, 113, 106, 35, 118, 115, 100, 102, 104, 118}},
+    };
+    for (const auto &c : cases) {
+        std::vector<int32_t> out(64, -7);
+        size_t cap = out.size();
+        int32_t n = lsxcommon::arrow_tokenizer_encode(
+            db, c.text, std::strlen(c.text), out.data(), &cap);
+        REQUIRE(n == static_cast<int32_t>(c.ids.size()));
+        CHECK(cap == c.ids.size());
+        CHECK(std::equal(out.begin(), out.begin() + n, c.ids.begin()));
+    }
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
+
+TEST_CASE("arrow_tokenizer_encode error codes", "[tokenizer][encode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    // capacity too small -> -2, *max_out_len reports the required count
+    std::vector<int32_t> small(2, -7);
+    size_t cap = small.size();
+    int32_t r = lsxcommon::arrow_tokenizer_encode(db, "hello world", 11, small.data(), &cap);
+    CHECK(r == -2);
+    CHECK(cap == 3);
+
+    // a word longer than kMaxWordBytes -> -3 (single L-run word of 600 'a')
+    std::string long_word(600, 'a');
+    std::vector<int32_t> big(700, -7);
+    cap = big.size();
+    r = lsxcommon::arrow_tokenizer_encode(db, long_word.data(), long_word.size(), big.data(), &cap);
+    CHECK(r == -3);
+
+    // default-constructed db -> -1
+    lsxcommon::ArrowTokenizerDb bad;
+    std::vector<int32_t> out(16, -7);
+    cap = out.size();
+    r = lsxcommon::arrow_tokenizer_encode(bad, "x", 1, out.data(), &cap);
+    CHECK(r == -1);
+
+    // active-db overload
+    lsxcommon::set_active_tokenizer_db(&db);
+    std::vector<int32_t> out2(16, -7);
+    cap = out2.size();
+    r = lsxcommon::arrow_tokenizer_encode("hello", 5, out2.data(), &cap);
+    CHECK(r == 2);
+    CHECK(out2[0] == 0);
+    CHECK(out2[1] == 262);
+    lsxcommon::set_active_tokenizer_db(nullptr);
+    cap = out2.size();
+    r = lsxcommon::arrow_tokenizer_encode("hello", 5, out2.data(), &cap);
+    CHECK(r == -1);
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}

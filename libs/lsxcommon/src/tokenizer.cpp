@@ -1,5 +1,6 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/pretokenizer.h"
 #include <arrow/ipc/reader.h>
 #include <simdjson.h>
 #include <algorithm>
@@ -384,18 +385,104 @@ arrow::Status load_tokenizer_metadata(
     return st;
 }
 
-// Stubs — real implementations land in Tasks 6 and 7.
-int32_t arrow_tokenizer_encode(const char *, size_t, int32_t *, size_t *)
+namespace {
+
+// Returns the number of merged tokens for one word, or:
+//   -1  a byte has no token mapping (db malformed)
+//   -3  word longer than kMaxWordBytes
+// Fills toks[0..n) with the merged token ids.
+int32_t bpe_encode_word(const ArrowTokenizerDb &db, const char *w, size_t wlen,
+                        int32_t *toks)
 {
-    return -1;
+    if (wlen > kMaxWordBytes) return -3;
+
+    for (size_t i = 0; i < wlen; ++i) {
+        int32_t t = db.byte_to_token_id[static_cast<uint8_t>(w[i])];
+        if (t < 0) return -1;
+        toks[i] = t;
+    }
+    size_t n = wlen;
+
+    while (n > 1) {
+        int best_i = -1;
+        int32_t best_rank = INT32_MAX;
+        int32_t best_tok = -1;
+        for (size_t i = 0; i + 1 < n; ++i) {
+            int32_t left = toks[i], right = toks[i + 1];
+            // binary search over merges sorted by (merge_left, merge_right)
+            int lo = 0, hi = db.merge_count;
+            while (lo < hi) {
+                int mid = (lo + hi) / 2;
+                if (db.merge_left[mid] < left ||
+                    (db.merge_left[mid] == left && db.merge_right[mid] < right))
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            if (lo < db.merge_count && db.merge_left[lo] == left &&
+                db.merge_right[lo] == right && db.merge_rank[lo] < best_rank) {
+                best_i = static_cast<int>(i);
+                best_rank = db.merge_rank[lo];
+                best_tok = db.merge_token_id[lo];
+            }
+        }
+        if (best_i < 0) break;
+        toks[best_i] = best_tok;
+        for (size_t i = static_cast<size_t>(best_i) + 1; i + 1 < n; ++i)
+            toks[i] = toks[i + 1];
+        --n;
+    }
+    return static_cast<int32_t>(n);
 }
 
-int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &, const char *,
-                               size_t, int32_t *, size_t *)
+} // anonymous namespace
+
+int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
+                               size_t text_len, int32_t *out_tokens,
+                               size_t *max_out_len)
 {
-    return -1;
+    if (!db.valid()) return -1;
+    if (text_len == 0) text = "";
+
+    // Pass 1: count.
+    size_t total = (db.bos_id >= 0) ? 1 : 0;
+    {
+        WordStream ws(text, text_len);
+        WordSpan w;
+        int32_t stack[kMaxWordBytes];
+        while (ws.next(w)) {
+            int32_t n = bpe_encode_word(db, w.begin, w.length, stack);
+            if (n < 0) return n;                    // -1 or -3
+            total += static_cast<size_t>(n);
+        }
+        if (ws.error()) return -1;                  // malformed UTF-8
+    }
+    if (total > *max_out_len) { *max_out_len = total; return -2; }
+
+    // Pass 2: emit bos + each word.
+    size_t o = 0;
+    if (db.bos_id >= 0) out_tokens[o++] = db.bos_id;
+    {
+        WordStream ws(text, text_len);
+        WordSpan w;
+        int32_t stack[kMaxWordBytes];
+        while (ws.next(w)) {
+            int32_t n = bpe_encode_word(db, w.begin, w.length, stack);
+            for (int32_t i = 0; i < n; ++i) out_tokens[o++] = stack[i];
+        }
+    }
+    *max_out_len = o;
+    return static_cast<int32_t>(o);
 }
 
+int32_t arrow_tokenizer_encode(const char *text, size_t text_len,
+                               int32_t *out_tokens, size_t *max_out_len)
+{
+    if (!g_active_db) return -1;
+    return arrow_tokenizer_encode(*g_active_db, text, text_len, out_tokens, max_out_len);
+}
+
+// Stub — real implementation lands in Task 7.
 int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &, const int32_t *,
                                size_t, char *, size_t *)
 {
