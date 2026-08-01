@@ -1163,10 +1163,11 @@ TEST_CASE("load_tokenizer_metadata from synthetic files", "[tokenizer][load]")
     CHECK(db.merge_right != nullptr);
     CHECK(db.merge_rank != nullptr);
     CHECK(db.merge_token_id != nullptr);
-    // merges sorted by (left,right): row 0 is "\u0120 w" = (35,124), rank 4
-    // (fixture merge #5); "h e" = (107,104) is rank 0 (fixture merge #1)
+    // merges sorted by (left,right): row 0 is "\u0120 w" = (35,122), rank 4
+    // (fixture merge #5); "h e" = (107,104) is rank 0 (fixture merge #1).
+    // NOTE: 'w' = id 122 (byte->token = byte+3); the plan draft said 124.
     CHECK(db.merge_left[0] == 35);
-    CHECK(db.merge_right[0] == 124);
+    CHECK(db.merge_right[0] == 122);
     CHECK(db.merge_rank[0] == 4);
     CHECK(db.merge_token_id[0] == 263);
     int he_idx = -1;
@@ -1180,6 +1181,7 @@ TEST_CASE("load_tokenizer_metadata from synthetic files", "[tokenizer][load]")
     lsxcommon::ArrowTokenizerDb bad;
     CHECK_FALSE(bad.valid());
 
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
     fs::remove_all(pinned);
 }
 ```
@@ -1710,6 +1712,10 @@ bool WordStream::next_cjk(WordSpan &word)
 namespace {
 
 // L/M run in bytes starting at a known-L/M first codepoint at 'start'.
+// NOTE: breaks at CJK-run codepoints: the CJK split runs before the main
+// regex (Isolated), so CJK chars are hard word boundaries even though they
+// are \p{L}. Also note CharClass lives in lsxcommon::unicode, so all
+// occurrences below read `unicode::CharClass::Letter` etc.
 size_t consume_lm(const char *begin, const char *end, size_t start, size_t first_len)
 {
     size_t run = first_len;
@@ -1718,6 +1724,7 @@ size_t consume_lm(const char *begin, const char *end, size_t start, size_t first
         size_t cl = 0;
         uint32_t c2 = decode_utf8(begin + p, static_cast<size_t>(end - (begin + p)), &cl);
         if (c2 == kInvalid) break;
+        if (is_cjk_run(c2)) break;
         if (unicode::classify(c2) != CharClass::Letter &&
             unicode::classify(c2) != CharClass::Mark) break;
         run += cl;
@@ -2330,7 +2337,7 @@ git commit -m "feat: add raw-byte decoder (arrow_tokenizer_decode)"
 
 This is the final integration task: the design's stated goal ("replace the runtime `tokenizer.json` dependency and the heap-allocating `BpeTokenizer`") is completed here. The `lsxcommon_cu` OBJECT library's only tokenizer user is `inference_pipeline.cu`, so after this swap nothing references `BpeTokenizer` and it can be deleted.
 
-- [ ] **Step 1: Add `--tokenizer` mode to `lsxforge`**
+- [x] **Step 1: Add `--tokenizer` mode to `lsxforge`**
 
 In `apps/lsxforge/src/main.cpp` add `#include <filesystem>` to the includes (currently only available transitively), then:
 
@@ -2376,7 +2383,7 @@ After the `shared_only` block, before the generic conversion:
 
 `BuildTokenizerArrowFiles` is already declared in `lsxcommon/converter.h` (included at the top of `main.cpp`). Usage: `lsxforge --tokenizer <model_path>` writes `tokenizer_vocab.arrow` + `tokenizer_merges.arrow` under `<model_path>/logestix/pinned/`.
 
-- [ ] **Step 2: Build and smoke-test `lsxforge --tokenizer`**
+- [x] **Step 2: Build and smoke-test `lsxforge --tokenizer`**
 
 Run: `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"; cmake --build build --config Debug --target lsxforge 2>&1 | Select-Object -Last 5`
 Expected: build succeeds.
@@ -2393,7 +2400,7 @@ Test-Path "$t\logestix\pinned\tokenizer_merges.arrow"
 ```
 Expected: prints "Tokenizer Arrow files complete", both files exist.
 
-- [ ] **Step 3: Swap `inference_pipeline.cu` to the Arrow tokenizer**
+- [x] **Step 3: Swap `inference_pipeline.cu` to the Arrow tokenizer**
 
 `inference_pipeline.cu` includes `"lsxcommon/tokenizer.h"`, so `ArrowTokenizerDb` / `load_tokenizer_metadata` / `arrow_tokenizer_encode` / `arrow_tokenizer_decode` are visible (the header gains the `arrow` includes in Task 4). Replace the load + tokenize block (currently lines ~104-125):
 
@@ -2477,13 +2484,13 @@ Replace the final decode (currently lines ~388-391):
 
 Keep the metric computations as-is; `result.output_text = output;` now receives the Arrow-decoded text.
 
-- [ ] **Step 4: Remove `BpeTokenizer`**
+- [x] **Step 4: Remove `BpeTokenizer`**
 
 In `libs/lsxcommon/include/lsxcommon/tokenizer.h`, delete the entire `class BpeTokenizer { ... };` block (the private `Impl` + members and all 5 public methods). The file now holds only the Arrow API appended in Task 4 (`kMaxWordBytes`, `ArrowTokenizerDb`, `load_tokenizer_metadata`, `set_active_tokenizer_db`, `arrow_tokenizer_encode`, `arrow_tokenizer_decode`). Keep the includes (the Arrow API needs `<arrow/api.h>`, `<arrow/io/file.h>`, `<cstddef>`).
 
 In `libs/lsxcommon/src/tokenizer.cpp`, delete the `struct BpeTokenizer::Impl`, the constructor/destructor/move members, `BpeTokenizer::Load`, `BpeTokenizer::Encode`, and `BpeTokenizer::Decode` (the whole first block appended originally in the testprompt plan). `load_tokenizer_metadata` + the Arrow encode/decode from Tasks 4/6/7 remain. Unused includes (e.g. simdjson) may stay — they do not affect the build.
 
-- [ ] **Step 5: Full build (all targets incl. `lsxcommon_cu`)**
+- [x] **Step 5: Full build (all targets incl. `lsxcommon_cu`)**
 
 Run: `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"; cmake --build build --config Debug 2>&1 | Select-Object -Last 8`
 Expected: everything compiles — `lsxcommon`, `lsxcommon_cu` (incl. `inference_pipeline.cu`), all 4 apps, all test targets. No `BpeTokenizer` references remain:
@@ -2491,12 +2498,12 @@ Expected: everything compiles — `lsxcommon`, `lsxcommon_cu` (incl. `inference_
 Run: `rg -n "BpeTokenizer|tokenizer\.json" libs apps tests`
 Expected: no matches in `libs/`, `apps/`, `tests/` (only `docs/` and `third_party/` may match).
 
-- [ ] **Step 6: Run the full test suite**
+- [x] **Step 6: Run the full test suite**
 
 Run: `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"; ctest --test-dir build --output-on-failure -C Debug`
 Expected: all tests PASS (test_core, test_loader, test_tokenizer, plus the per-app placeholder tests).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/lsxforge/src/main.cpp libs/lsxcommon/src/inference_pipeline.cu libs/lsxcommon/include/lsxcommon/tokenizer.h libs/lsxcommon/src/tokenizer.cpp
