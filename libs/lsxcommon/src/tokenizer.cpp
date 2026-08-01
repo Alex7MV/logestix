@@ -483,10 +483,33 @@ int32_t arrow_tokenizer_encode(const char *text, size_t text_len,
 }
 
 // Stub — real implementation lands in Task 7.
-int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &, const int32_t *,
-                               size_t, char *, size_t *)
+int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
+                               size_t n_ids, char *out_text, size_t *max_out_len)
 {
-    return -1;
+    if (!db.valid()) return -1;
+
+    // Pass 1: count raw bytes, skipping specials.
+    size_t total = 0;
+    for (size_t i = 0; i < n_ids; ++i) {
+        int32_t id = ids[i];
+        if (id < 0 || id >= db.vocab_size) return -1;
+        if (db.is_special[id]) continue;
+        total += static_cast<size_t>(db.token_offsets[id + 1] - db.token_offsets[id]);
+    }
+    if (total > *max_out_len) { *max_out_len = total; return -2; }
+
+    // Pass 2: copy raw bytes.
+    size_t o = 0;
+    for (size_t i = 0; i < n_ids; ++i) {
+        int32_t id = ids[i];
+        if (db.is_special[id]) continue;
+        int64_t off = db.token_offsets[id];
+        int64_t len = db.token_offsets[id + 1] - off;
+        std::memcpy(out_text + o, db.token_bytes + off, static_cast<size_t>(len));
+        o += static_cast<size_t>(len);
+    }
+    *max_out_len = o;
+    return 0;
 }
 
 } // namespace lsxcommon

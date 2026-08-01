@@ -287,6 +287,89 @@ TEST_CASE("arrow_tokenizer_encode synthetic goldens", "[tokenizer][encode]")
     fs::remove_all(pinned);
 }
 
+TEST_CASE("arrow_tokenizer_decode round-trip and specials", "[tokenizer][decode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    // round-trip: bos (special) is skipped, raw bytes come back
+    {
+        std::vector<int32_t> ids(64, -7);
+        size_t cap = ids.size();
+        int32_t n = lsxcommon::arrow_tokenizer_encode(
+            db, "hello world", 11, ids.data(), &cap);
+        REQUIRE(n == 3);
+        std::string buf(64, '\0');
+        size_t ocap = buf.size();
+        int32_t r = lsxcommon::arrow_tokenizer_decode(
+            db, ids.data(), static_cast<size_t>(n), buf.data(), &ocap);
+        CHECK(r == 0);
+        CHECK(ocap == 11);
+        CHECK(std::string(buf.data(), ocap) == "hello world");
+    }
+
+    // special token in the middle is skipped
+    {
+        const int32_t ids[] = {100, 0, 101};
+        std::string buf(64, '\0');
+        size_t ocap = buf.size();
+        int32_t r = lsxcommon::arrow_tokenizer_decode(db, ids, 3, buf.data(), &ocap);
+        CHECK(r == 0);
+        CHECK(ocap == 2);
+        CHECK(std::string(buf.data(), ocap) == "ab");
+    }
+
+    // two spaces decode back to "  x"
+    {
+        const int32_t ids[] = {0, 35, 35, 123};
+        std::string buf(64, '\0');
+        size_t ocap = buf.size();
+        int32_t r = lsxcommon::arrow_tokenizer_decode(db, ids, 4, buf.data(), &ocap);
+        CHECK(r == 0);
+        CHECK(ocap == 3);
+        CHECK(std::string(buf.data(), ocap) == "  x");
+    }
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
+
+TEST_CASE("arrow_tokenizer_decode error codes", "[tokenizer][decode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    // capacity too small -> -2, reports required count
+    {
+        const int32_t ids[] = {0, 262, 267};
+        std::string buf(2, '\0');
+        size_t ocap = buf.size();
+        int32_t r = lsxcommon::arrow_tokenizer_decode(db, ids, 3, buf.data(), &ocap);
+        CHECK(r == -2);
+        CHECK(ocap == 11);
+    }
+
+    // out-of-range id -> -1
+    {
+        const int32_t ids[] = {999};
+        char buf[16];
+        size_t ocap = 16;
+        CHECK(lsxcommon::arrow_tokenizer_decode(db, ids, 1, buf, &ocap) == -1);
+    }
+
+    // default-constructed db -> -1
+    {
+        lsxcommon::ArrowTokenizerDb bad;
+        const int32_t ids[] = {0};
+        char buf[16];
+        size_t ocap = 16;
+        CHECK(lsxcommon::arrow_tokenizer_decode(bad, ids, 1, buf, &ocap) == -1);
+    }
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
+
 TEST_CASE("arrow_tokenizer_encode error codes", "[tokenizer][encode]")
 {
     lsxcommon::ArrowTokenizerDb db;
