@@ -956,6 +956,26 @@ arrow::Status Converter::Run()
         static_cast<int64_t>(experts_processed),
         impl_->output_path));
 
+    // Build the tokenizer Arrow files from <input>/tokenizer.json so the
+    // converted model is self-contained (runtime reads
+    // pinned/tokenizer_vocab.arrow + pinned/tokenizer_merges.arrow).
+    auto tokenizer_json = fs::path(impl_->input_path) / "tokenizer.json";
+    if (fs::exists(tokenizer_json)) {
+        spdlog::info("Building tokenizer Arrow files from {} ...",
+            tokenizer_json.string());
+        auto tst = BuildTokenizerArrowFiles(
+            tokenizer_json.string(),
+            fs::path(impl_->output_path) / "pinned");
+        if (!tst.ok()) {
+            spdlog::error("Tokenizer build failed: {}", tst.ToString());
+            return tst;
+        }
+        spdlog::info("Tokenizer Arrow files -> {}/pinned", impl_->output_path);
+    } else {
+        spdlog::warn("No tokenizer.json in {}; tokenizer Arrow files not built",
+            impl_->input_path);
+    }
+
     spdlog::info("Done — {} pinned tensors, {} experts processed, incomplete {}",
         pinned_processed, experts_processed, partial.size());
     return arrow::Status::OK();
