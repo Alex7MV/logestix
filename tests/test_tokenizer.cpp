@@ -123,6 +123,54 @@ TEST_CASE("BuildTokenizerArrowFiles from synthetic fixture", "[tokenizer][conver
     fs::remove_all(pinned);
 }
 
+TEST_CASE("BuildTokenizerArrowFiles with FIM control tokens", "[tokenizer][convert]")
+{
+    // DeepSeek ships FIM tokens ("<|fim▁hole|>" etc.) in added_tokens with
+    // "special": false and chars outside the GPT-2 byte table (U+FF5C/U+2581).
+    // Regression: converter must succeed and treat them as special.
+    auto pinned = fs::temp_directory_path() / "logestix_tok_synth_fim";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+
+    auto st = lsxcommon::BuildTokenizerArrowFiles(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok_fim.json", pinned);
+    REQUIRE(st.ok());
+    REQUIRE(fs::exists(pinned / "tokenizer_vocab.arrow"));
+    REQUIRE(fs::exists(pinned / "tokenizer_merges.arrow"));
+
+    auto v = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_vocab.arrow");
+    REQUIRE(v.ok());
+    CHECK((*v)->num_rows() == 271);
+
+    auto meta = (*v)->schema()->metadata();
+    REQUIRE(meta != nullptr);
+    REQUIRE(meta->Get("vocab_size").ok());
+    CHECK(*meta->Get("vocab_size") == "271");
+    REQUIRE(meta->Get("bos_id").ok());
+    CHECK(*meta->Get("bos_id") == "0");
+    REQUIRE(meta->Get("eos_id").ok());
+    CHECK(*meta->Get("eos_id") == "1");
+    REQUIRE(meta->Get("pad_id").ok());
+    CHECK(*meta->Get("pad_id") == "2");
+
+    auto rows = lsxcommon::TokenizerVocabSchema::UnpackBatch(*v);
+    REQUIRE(rows.ok());
+    REQUIRE(rows->size() == 271);
+    // FIM ids 268/269/270 must be marked special despite special:false.
+    CHECK((*rows)[268].is_special == 1);
+    CHECK((*rows)[269].is_special == 1);
+    CHECK((*rows)[270].is_special == 1);
+    // Byte-level ids still map through the GPT-2 table.
+    CHECK((*rows)[35].is_special == 0);
+    CHECK((*rows)[35].token_bytes == std::vector<uint8_t>{0x20});
+
+    auto m = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_merges.arrow");
+    REQUIRE(m.ok());
+    CHECK((*m)->num_rows() == 9);
+
+    fs::remove_all(pinned);
+}
+
 #include <lsxcommon/tokenizer.h>
 #include <arrow/io/file.h>
 

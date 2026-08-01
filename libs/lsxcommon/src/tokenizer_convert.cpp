@@ -3,6 +3,7 @@
 #include "lsxcommon/byte_unicode.h"
 #include <arrow/api.h>
 #include <simdjson.h>
+#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -95,9 +96,14 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
 
     int32_t bos_id = 0, eos_id = 1, pad_id = 2;
     {
+        // Only added tokens explicitly flagged special (e.g. DeepSeek's
+        // "<|begin▁of▁sentence|>") may fill bos/eos/pad. Unflagged control
+        // tokens ("<|fim▁begin|>") must never be picked; missing → 0/1/2.
         auto find_special = [&](const char *needle) -> int32_t {
             for (auto &[id, k] : added_content)
-                if (k.find(needle) != std::string::npos) return id;
+                if (k.find(needle) != std::string::npos &&
+                    special_ids.count(id) > 0)
+                    return id;
             return -1;
         };
         int32_t b = find_special("begin");
@@ -184,10 +190,13 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         std::vector<uint8_t> bytes;
         bool special = special_ids.count(id) > 0;
         if (!byte_unicode::key_to_bytes(it->second, bytes)) {
-            // Unmappable chars are only legal for special tokens.
+            // Control tokens (e.g. DeepSeek's "<|fim▁hole|>") are shipped in
+            // added_tokens with "special": false but contain chars outside the
+            // GPT-2 byte table. They can never be produced by the byte-level
+            // encoder, so treat them as special (decode skips them).
             if (!special)
-                return arrow::Status::Invalid("tokenizer: non-special token not byte-level: '",
-                                              it->second, "'");
+                spdlog::warn("tokenizer: treating non-byte-level token id={} as special: '{}'",
+                             id, it->second);
             row.is_special = 1;
             row.token_bytes.assign(
                 reinterpret_cast<const uint8_t *>(it->second.data()),
