@@ -122,3 +122,76 @@ TEST_CASE("BuildTokenizerArrowFiles from synthetic fixture", "[tokenizer][conver
     CHECK(found_he);
     fs::remove_all(pinned);
 }
+
+#include <lsxcommon/tokenizer.h>
+#include <arrow/io/file.h>
+
+static fs::path BuildSyntheticDb(lsxcommon::ArrowTokenizerDb &db)
+{
+    auto pinned = fs::temp_directory_path() / "logestix_tok_synth_db";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+    auto st = lsxcommon::BuildTokenizerArrowFiles(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", pinned);
+    REQUIRE(st.ok());
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(m.ok());
+    auto lst = lsxcommon::load_tokenizer_metadata(*v, *m, db);
+    REQUIRE(lst.ok());
+    return pinned;
+}
+
+TEST_CASE("load_tokenizer_metadata from synthetic files", "[tokenizer][load]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    CHECK(db.valid());
+    CHECK(db.vocab_size == 268);
+    CHECK(db.merge_count == 9);
+    CHECK(db.bos_id == 0);
+    CHECK(db.eos_id == 1);
+    CHECK(db.pad_id == 2);
+
+    CHECK(db.byte_to_token_id[0x20] == 35);
+    CHECK(db.byte_to_token_id[0x78] == 123);
+    CHECK(db.byte_to_token_id[0x68] == 107);
+
+    CHECK(db.token_offsets != nullptr);
+    CHECK(db.token_bytes != nullptr);
+    CHECK(db.token_offsets[35 + 1] - db.token_offsets[35] == 1);
+    CHECK(db.token_bytes[db.token_offsets[35]] == 0x20);
+
+    CHECK(db.is_special[0] == 1);
+    CHECK(db.is_special[1] == 1);
+    CHECK(db.is_special[2] == 1);
+    CHECK(db.is_special[35] == 0);
+
+    CHECK(db.merge_left != nullptr);
+    CHECK(db.merge_right != nullptr);
+    CHECK(db.merge_rank != nullptr);
+    CHECK(db.merge_token_id != nullptr);
+    // merges sorted by (left,right): row 0 is "\u0120 w" = (35,122), rank 4
+    // (fixture merge #5); "h e" = (107,104) is rank 0 (fixture merge #1)
+    CHECK(db.merge_left[0] == 35);
+    CHECK(db.merge_right[0] == 122);
+    CHECK(db.merge_rank[0] == 4);
+    CHECK(db.merge_token_id[0] == 263);
+    int he_idx = -1;
+    for (int i = 0; i < db.merge_count; ++i) {
+        if (db.merge_left[i] == 107 && db.merge_right[i] == 104) { he_idx = i; break; }
+    }
+    REQUIRE(he_idx >= 0);
+    CHECK(db.merge_rank[he_idx] == 0);
+    CHECK(db.merge_token_id[he_idx] == 259);
+
+    lsxcommon::ArrowTokenizerDb bad;
+    CHECK_FALSE(bad.valid());
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
