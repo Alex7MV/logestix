@@ -69,3 +69,56 @@ TEST_CASE("TokenizerVocabSchema round-trip", "[tokenizer][schema]")
     CHECK(btt_res->rfind("3,", 0) == 0);
     fs::remove(path);
 }
+
+#include <lsxcommon/converter.h>
+
+TEST_CASE("BuildTokenizerArrowFiles from synthetic fixture", "[tokenizer][convert]")
+{
+    auto pinned = fs::temp_directory_path() / "logestix_tok_synth";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+
+    auto st = lsxcommon::BuildTokenizerArrowFiles(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", pinned);
+    REQUIRE(st.ok());
+    REQUIRE(fs::exists(pinned / "tokenizer_vocab.arrow"));
+    REQUIRE(fs::exists(pinned / "tokenizer_merges.arrow"));
+
+    auto v = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_vocab.arrow");
+    REQUIRE(v.ok());
+    CHECK((*v)->num_rows() == 268);
+
+    auto m = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_merges.arrow");
+    REQUIRE(m.ok());
+    CHECK((*m)->num_rows() == 9);
+
+    auto meta = (*v)->schema()->metadata();
+    REQUIRE(meta != nullptr);
+    REQUIRE(meta->Get("vocab_size").ok());
+    CHECK(*meta->Get("vocab_size") == "268");
+    REQUIRE(meta->Get("bos_id").ok());
+    CHECK(*meta->Get("bos_id") == "0");
+    REQUIRE(meta->Get("byte_to_token_id").ok());
+    CHECK(meta->Get("byte_to_token_id")->rfind("3,", 0) == 0);
+
+    auto merges = lsxcommon::TokenizerMergesSchema::UnpackBatch(*m);
+    REQUIRE(merges.ok());
+    REQUIRE(merges->size() == 9);
+    for (size_t i = 1; i < merges->size(); ++i) {
+        auto &a = (*merges)[i - 1];
+        auto &b = (*merges)[i];
+        CHECK((a.merge_left < b.merge_left ||
+               (a.merge_left == b.merge_left && a.merge_right < b.merge_right)));
+    }
+    // "h e" (ids 107/104) -> "he" = 259, ranks follow input order
+    bool found_he = false;
+    for (auto &r : *merges) {
+        if (r.merge_left == 107 && r.merge_right == 104) {
+            CHECK(r.merge_token_id == 259);
+            CHECK(r.merge_rank == 0);
+            found_he = true;
+        }
+    }
+    CHECK(found_he);
+    fs::remove_all(pinned);
+}

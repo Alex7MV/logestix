@@ -47,4 +47,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+arrow::Status BuildTokenizerArrowFiles(
+    const std::string &tokenizer_json_path,
+    const std::filesystem::path &pinned_dir);
+
 } // namespace lsxcommon
