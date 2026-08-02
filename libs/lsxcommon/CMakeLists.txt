@@ -38,6 +38,7 @@ add_library(lsxcommon_cu OBJECT
     src/inference_moe.cu
     src/inference_head.cu
     src/inference_attn.cu
+    src/inference_csa.cu
     src/inference_pipeline.cu
     src/norm_kernels.cu
     src/shared_experts.cu
