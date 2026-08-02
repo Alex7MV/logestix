@@ -378,6 +378,19 @@ void LayerWeights::Free()
     if (d_hc_ffn_scale) cudaFree(d_hc_ffn_scale);
     if (h_tid2eid)      cudaFreeHost(h_tid2eid);
     if (h_gate_bias)    cudaFreeHost(h_gate_bias);
+    // CSA compressor
+    if (d_comp_wkv)     cudaFree(d_comp_wkv);
+    if (d_comp_wgate)   cudaFree(d_comp_wgate);
+    if (d_comp_ape)     cudaFree(d_comp_ape);
+    if (d_comp_norm)    cudaFree(d_comp_norm);
+    // CSA indexer
+    if (d_idx_wq_b)     cudaFree(d_idx_wq_b);
+    if (d_idx_wq_b_scales) cudaFree(d_idx_wq_b_scales);
+    if (d_idx_weights_proj) cudaFree(d_idx_weights_proj);
+    if (d_idx_comp_wkv)     cudaFree(d_idx_comp_wkv);
+    if (d_idx_comp_wgate)   cudaFree(d_idx_comp_wgate);
+    if (d_idx_comp_ape)     cudaFree(d_idx_comp_ape);
+    if (d_idx_comp_norm)    cudaFree(d_idx_comp_norm);
 }
 
 void PinnedWeights::Free()

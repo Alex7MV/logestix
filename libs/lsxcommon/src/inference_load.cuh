@@ -116,6 +116,24 @@ struct LayerWeights {
     float shared_w3_global_scale = 1.0f;
     int compress_ratio = 0;          // 0 = pure MLA, >0 = CSA
     float rope_theta = 10000.0f;     // 10000 for MLA, 160000 for CSA
+    int comp_coff = 1;               // 2 for ratio=4 (overlap), 1 for ratio=128
+
+    // CSA Compressor (layers 2-41; nullptr for pure MLA layers 0,1,42)
+    __half *d_comp_wkv = nullptr;        // [coff*head_dim, 4096] BF16→FP16
+    __half *d_comp_wgate = nullptr;     // [coff*head_dim, 4096] BF16→FP16
+    float  *d_comp_ape = nullptr;       // [ratio, coff*head_dim] F32
+    __half *d_comp_norm = nullptr;      // [head_dim] BF16→FP16
+
+    // CSA Indexer (ratio=4 only; nullptr for ratio=128 and pure MLA)
+    uint8_t *d_idx_wq_b = nullptr;          // F8_E4M3 [8192, 1024] (device-malloc'd)
+    uint8_t *d_idx_wq_b_scales = nullptr;   // F8_E8M0 [64, 8]
+    int idx_wq_b_rows = 0, idx_wq_b_cols = 0;
+    __half *d_idx_weights_proj = nullptr;   // BF16→FP16 [64, 4096]
+    // Indexer's own Compressor (head_dim=128)
+    __half *d_idx_comp_wkv = nullptr;        // [256, 4096] BF16→FP16
+    __half *d_idx_comp_wgate = nullptr;     // [256, 4096] BF16→FP16
+    float  *d_idx_comp_ape = nullptr;       // [4, 256] F32
+    __half *d_idx_comp_norm = nullptr;      // [128] BF16→FP16
     int64_t shared_w1_bytes = 0;
     int64_t shared_w2_bytes = 0;
     int64_t shared_w3_bytes = 0;
