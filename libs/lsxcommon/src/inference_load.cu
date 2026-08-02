@@ -37,59 +37,28 @@ __global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
 }
 
 // Upload BF16 host data → device FP16 via device-side kernel.
-// Two-step: cudaMemcpyAsync raw BF16 → device, then convert kernel.
+// Convert BF16 → FP16 on host, then upload. Avoids temporary device buffers
+// that can cause memory corruption with large tensors (1GB+ embed/head).
 cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
                                  __half **d_out, cudaStream_t stream)
 {
-    // Allocate device buffer (BF16 capacity = __half capacity = 2 bytes per element)
+    // Host-side BF16 → FP16 conversion
+    std::vector<__half> h_half(static_cast<size_t>(numel));
+    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
+    for (int64_t i = 0; i < numel; ++i) {
+        uint32_t f32_bits = static_cast<uint32_t>(src_u16[i]) << 16;
+        float f32;
+        std::memcpy(&f32, &f32_bits, sizeof(f32));
+        h_half[static_cast<size_t>(i)] = __float2half(f32);
+    }
+    // Allocate device buffer and copy
     cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
     if (e != cudaSuccess) return e;
-    // Allocate temp device buffer for raw BF16 data
-    uint16_t *d_bf16 = nullptr;
-    e = cudaMalloc(&d_bf16, static_cast<size_t>(numel) * sizeof(uint16_t));
-    if (e != cudaSuccess) { cudaFree(*d_out); *d_out = nullptr; return e; }
-    // Copy host BF16 data → device BF16 buffer
-    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
-    e = cudaMemcpyAsync(d_bf16, src_u16,
-                        static_cast<size_t>(numel) * sizeof(uint16_t),
+    e = cudaMemcpyAsync(*d_out, h_half.data(),
+                        static_cast<size_t>(numel) * sizeof(__half),
                         cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
-    // Debug: verify device-side copy of raw BF16
-    {
-        cudaStreamSynchronize(stream);
-        uint16_t src_chk[4];
-        std::memcpy(src_chk, src_u16, sizeof(src_chk));
-        uint16_t dev_chk[4] = {0};
-        cudaMemcpy(dev_chk, d_bf16, sizeof(dev_chk), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[load_pinned] bf16 copy host[0..3]=";
-        for (int i = 0; i < 4; ++i) oss << " 0x" << std::hex << src_chk[i] << std::dec;
-        oss << " dev[0..3]=";
-        for (int i = 0; i < 4; ++i) oss << " 0x" << std::hex << dev_chk[i] << std::dec;
-        log::debug(oss.str());
-    }
-    // Launch conversion kernel
-    int block = 256;
-    int grid = (static_cast<int>(numel) + block - 1) / block;
-    bf16_to_half_kernel<<<grid, block, 0, stream>>>(d_bf16, *d_out, static_cast<int>(numel));
-    e = cudaGetLastError();
-    if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
-
-    // Debug: verify conversion by reading back the first few elements
-    {
-        cudaStreamSynchronize(stream);
-        __half chk[4] = {};
-        cudaMemcpy(chk, *d_out, 4 * sizeof(__half), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[load_pinned] bf16->half verify[0..3]=";
-        for (int i = 0; i < 4; ++i) {
-            uint16_t bits = *reinterpret_cast<uint16_t*>(&chk[i]);
-            oss << " " << __half2float(chk[i]) << "(0x" << std::hex << bits << std::dec << ")";
-        }
-        log::debug(oss.str());
-    }
-    e = cudaFree(d_bf16);
-    return e;
+    if (e != cudaSuccess) { cudaFree(*d_out); *d_out = nullptr; return e; }
+    return cudaSuccess;
 }
 
 const TensorRecord *find_tensor_suffix(
@@ -506,6 +475,17 @@ cudaError_t load_pinned_weights(
         }
         auto &lt = *tensors_res;
         auto &lw = pw.layers[l];
+
+        // Set compress_ratio and rope_theta per layer from config:
+        // layers 0,1,42: pure MLA (ratio=0, theta=10000)
+        // layers 2-41: CSA (ratio=4 or 128, theta=160000)
+        static const int compress_ratios[] = {
+            0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 0
+        };
+        lw.compress_ratio = (l < 43) ? compress_ratios[l] : 0;
+        lw.rope_theta = (lw.compress_ratio > 0) ? 160000.0f : 10000.0f;
         for (int di = 0; di < std::min(5, static_cast<int>(lt.size())); ++di) {
             const auto &t = lt[di];
             std::string shape;

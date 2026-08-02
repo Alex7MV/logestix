@@ -114,6 +114,8 @@ struct LayerWeights {
     float shared_w1_global_scale = 1.0f;
     float shared_w2_global_scale = 1.0f;
     float shared_w3_global_scale = 1.0f;
+    int compress_ratio = 0;          // 0 = pure MLA, >0 = CSA
+    float rope_theta = 10000.0f;     // 10000 for MLA, 160000 for CSA
     int64_t shared_w1_bytes = 0;
     int64_t shared_w2_bytes = 0;
     int64_t shared_w3_bytes = 0;

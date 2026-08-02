@@ -252,13 +252,18 @@ __global__ void hc_head_kernel(
     }
 }
 
-// ── RoPE (applied on the last rope_head_dim dims) ────────────────────────────
-// data: [rows, row_stride] FP16; offset = row_stride - rope_dim.
-// inverse uses conjugate (de-rotation).  theta = rope_theta (no YaRN for ratio==0).
+// ── RoPE with optional YaRN scaling (applied on the last rope_head_dim dims) ──────────
+// yarn_enabled: 0 = plain RoPE (MLA layers), 1 = YaRN with factor=16 (CSA layers)
 __global__ void rope_apply_kernel(
     __half* __restrict__ data, int rows, int row_stride,
-    int offset, int rope_dim, float pos, float theta, int inverse)
+    int offset, int rope_dim, float pos, float theta, int yarn_enabled)
 {
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kYarnFactor = 16.0f;
+    constexpr float kYarnBetaFast = 32.0f;
+    constexpr float kYarnBetaSlow = 1.0f;
+    constexpr float kYarnOrigMax = 65536.0f;
+
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int n_pairs = rope_dim / 2;
     const int total = rows * n_pairs;
@@ -266,11 +271,38 @@ __global__ void rope_apply_kernel(
     const int h = idx / n_pairs;
     const int i = idx % n_pairs;
 
-    const float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / rope_dim);
+    float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / rope_dim);
+
+    if (yarn_enabled) {
+        // YaRN: dimension-based smooth scaling (matching reference model.py)
+        constexpr float kPi2 = 2.0f * 3.14159265358979323846f;
+        constexpr float kYarnFactor = 16.0f;
+        constexpr float kYarnBetaFast = 32.0f;
+        constexpr float kYarnBetaSlow = 1.0f;
+        constexpr float kYarnOrigMax = 65536.0f;
+
+        // find_correction_dim: dim * log(max_seq_len / (num_rot * 2*pi)) / (2 * log(base))
+        float log_base = logf(theta);
+        float corr_fast = static_cast<float>(rope_dim)
+            * logf(kYarnOrigMax / (kYarnBetaFast * kPi2)) / (2.0f * log_base);
+        float corr_slow = static_cast<float>(rope_dim)
+            * logf(kYarnOrigMax / (kYarnBetaSlow * kPi2)) / (2.0f * log_base);
+        int low = max(0, static_cast<int>(floorf(corr_fast)));
+        int high = min(n_pairs - 1, static_cast<int>(ceilf(corr_slow)));
+
+        // linear_ramp: (i - low) / (high - low), clamped [0,1]
+        float ramp = 0.0f;
+        if (high > low)
+            ramp = fmaxf(0.0f, fminf(1.0f,
+                static_cast<float>(i - low) / static_cast<float>(high - low)));
+        float smooth = 1.0f - ramp;
+        freq = freq / kYarnFactor * (1.0f - smooth) + freq * smooth;
+    }
+
     const float angle = pos * freq;
     float c = cosf(angle);
     float s = sinf(angle);
-    if (inverse) s = -s;
+    if (yarn_enabled >= 2) s = -s;  // inverse
 
     __half* row = data + h * row_stride + offset;
     const float x0 = __half2float(row[2 * i]);
@@ -556,7 +588,8 @@ cudaError_t run_mla_attention(
         int block = 128;
         rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
             d_q, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), 10000.0f, 0);
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+            lw.compress_ratio > 0 ? 1 : 0);
     }
 
     // kv = wkv @ x → [512]
@@ -571,7 +604,8 @@ cudaError_t run_mla_attention(
         int block = 64;
         rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
             d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), 10000.0f, 0);
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+            lw.compress_ratio > 0 ? 1 : 0);
     }
 
     // write kv into circular cache slot
@@ -595,7 +629,8 @@ cudaError_t run_mla_attention(
         int block = 128;
         rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
             d_o, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
-            kRopeHeadDim, static_cast<float>(start_pos), 10000.0f, 1);
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
+            lw.compress_ratio > 0 ? 3 : 2);
     }
 
     // o-projection: o[64,512] → view [8,4096]; per-group wo_a[1024,4096] → [8,1024]

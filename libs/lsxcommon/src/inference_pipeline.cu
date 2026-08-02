@@ -432,7 +432,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     // 10. Autoregressive loop
     for (int step = 0; step < total_steps; ++step) {
         int cur_tok = (step < static_cast<int>(input_ids.size()))
-            ? input_ids[step] : gen_ids[static_cast<size_t>(step - input_ids.size())];
+            ? input_ids[step]
+            : gen_ids.back();  // use last generated token (not indexed by step-prompt)
 
         // Embed (if not first token)
         if (step > 0) {
