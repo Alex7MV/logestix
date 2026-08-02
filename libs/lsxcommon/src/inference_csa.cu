@@ -16,34 +16,160 @@ namespace gpu {
 // ── Constants ──────────────────────────────────────────────────────────────
 static constexpr int kCSABlock = 256;
 
-// ── Extern from inference_attn.cu ──────────────────────────────────────────
-// f8_gemm_1d is static in inference_attn.cu — we duplicate the minimal
-// pieces needed (dequant kernel + gemm wrapper).
-// Instead, we replicate the GEMM call directly.
+// ── Local copies of needed kernels (avoid cross-TU linking issues) ──────────
 
-// Forward decl of the dequant kernel from inference_attn.cu
-extern __global__ void dequant_f8_to_half_kernel(
-    const uint8_t* __restrict__ d_w,
-    const uint8_t* __restrict__ d_scale,
-    __half* __restrict__ d_out,
-    int64_t n,
-    int64_t C, int64_t SC,
-    int64_t block_r, int64_t block_c);
+// half → float conversion
+static __global__ void csa_half_to_float(const __half* src, float* dst, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __half2float(src[i]);
+}
 
-// Forward decl of helpers from inference_attn.cu
-extern __global__ void per_head_rms_kernel(__half *data, int rows, int dim);
-extern __global__ void rope_apply_kernel(
-    __half *data, int rows, int row_stride,
-    int offset, int rope_dim, float pos,
-    float theta, int yarn_enabled);
+// float → half conversion
+static __global__ void csa_float_to_half(const float* src, __half* dst, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __float2half(src[i]);
+}
 
-// RMSNorm for attention (half in → half out)
-extern "C" cudaError_t run_rmsnorm_attn(
+// RMSNorm in float (single block, loops over elements)
+static __global__ void csa_rmsnorm_kernel(
+    const float* input, const float* gamma, float* output, int n, float eps)
+{
+    __shared__ float s_sum;
+    if (threadIdx.x == 0) s_sum = 0.0f;
+    __syncthreads();
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        atomicAdd(&s_sum, input[i] * input[i]);
+    __syncthreads();
+    float inv = rsqrtf(s_sum / static_cast<float>(n) + eps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        output[i] = input[i] * inv * gamma[i];
+}
+
+// Per-head RMS normalization
+static __global__ void csa_per_head_rms(__half* q, int n_heads, int head_dim)
+{
+    int h = blockIdx.x;
+    int tid = threadIdx.x;
+    __shared__ float s_sum;
+    if (tid == 0) s_sum = 0.0f;
+    __syncthreads();
+    float local = 0.0f;
+    for (int d = tid; d < head_dim; d += blockDim.x)
+        local += __half2float(q[h * head_dim + d]) * __half2float(q[h * head_dim + d]);
+    atomicAdd(&s_sum, local);
+    __syncthreads();
+    float inv = rsqrtf(s_sum / static_cast<float>(head_dim) + 1e-6f);
+    for (int d = tid; d < head_dim; d += blockDim.x)
+        q[h * head_dim + d] = __float2half(__half2float(q[h * head_dim + d]) * inv);
+}
+
+// F8_E4M3 to float
+static __device__ float csa_f8e4m3_to_float(uint8_t b)
+{
+    if (!b || b == 0x80) return 0.0f;
+    int s = (b >> 7) & 1;
+    int e = (b >> 3) & 0x0F;
+    int m = b & 0x07;
+    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
+                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
+                 | (static_cast<uint32_t>(m) << 20);
+    float v;
+    std::memcpy(&v, &f32, sizeof(v));
+    return v;
+}
+
+// F8_E8M0 scale to float
+static __device__ float csa_e8m0_to_float(uint8_t b)
+{
+    if (b == 0) return 0.0f;
+    return __uint_as_float(static_cast<uint32_t>(b) << 23);
+}
+
+// F8 dequant kernel
+static __global__ void csa_dequant_f8_kernel(
+    const uint8_t* w, const uint8_t* scales,
+    __half* out, int64_t n, int64_t C, int64_t SC)
+{
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; i < n; i += stride) {
+        int64_t r = i / C;
+        int64_t c = i % C;
+        int64_t sr = r / 128;
+        int64_t sc = c / 128;
+        float v = csa_f8e4m3_to_float(w[i]) * csa_e8m0_to_float(scales[sr * SC + sc]);
+        out[i] = __float2half(v);
+    }
+}
+
+// RoPE apply (simplified, no YaRN)
+static __global__ void csa_rope_kernel(
+    __half* data, int rows, int row_stride,
+    int offset, int rope_dim, float pos, float theta, int inverse)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int n_pairs = rope_dim / 2;
+    int total = rows * n_pairs;
+    if (idx >= total) return;
+    int h = idx / n_pairs;
+    int i = idx % n_pairs;
+    float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / rope_dim);
+    float angle = pos * freq;
+    float c = cosf(angle);
+    float s = sinf(angle);
+    if (inverse) s = -s;
+    __half* row = data + h * row_stride + offset;
+    float x0 = __half2float(row[2 * i]);
+    float x1 = __half2float(row[2 * i + 1]);
+    row[2 * i] = __float2half(x0 * c - x1 * s);
+    row[2 * i + 1] = __float2half(x0 * s + x1 * c);
+}
+
+// RMSNorm for half input → half output
+static cudaError_t csa_rmsnorm(
     cudaStream_t stream,
     const __half *d_input, const __half *d_weight,
     __half *d_output,
     float *d_scratch, float *d_gamma_scratch,
-    int dim, float eps);
+    int dim, float eps)
+{
+    int block = 256;
+    int grid = (dim + block - 1) / block;
+    csa_half_to_float<<<grid, block, 0, stream>>>(d_input, d_scratch, dim);
+    csa_half_to_float<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, dim);
+    csa_rmsnorm_kernel<<<1, block, 0, stream>>>(
+        d_scratch, d_gamma_scratch, d_scratch, dim, eps);
+    csa_float_to_half<<<grid, block, 0, stream>>>(d_scratch, d_output, dim);
+    return cudaGetLastError();
+}
+
+// F8 GEMM helper
+static cudaError_t csa_f8_gemm(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const uint8_t* d_w, const uint8_t* d_scale,
+    int rows, int cols,
+    const __half* d_x, __half* d_out, __half* d_scratch)
+{
+    int64_t n = static_cast<int64_t>(rows) * cols;
+    int block = 256;
+    int grid = static_cast<int>((n + block - 1) / block);
+    csa_dequant_f8_kernel<<<grid, block, 0, stream>>>(
+        d_w, d_scale, d_scratch, n, cols, cols / 128);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+    cublasStatus_t st = cublasGemmEx(
+        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+        rows, 1, cols, &alpha,
+        d_scratch, CUDA_R_16F, cols,
+        d_x, CUDA_R_16F, cols, &beta,
+        d_out, CUDA_R_16F, rows,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    return (st == CUBLAS_STATUS_SUCCESS) ? cudaSuccess : cudaErrorUnknown;
+}
 
 // ── Compressor step kernel ──────────────────────────────────────────────────
 // Decode path: stores kv/score into state slot, compresses when full.
@@ -222,31 +348,6 @@ void free_csa_state(CSAState *states, int num_layers)
     }
 }
 
-// ── Helper: F8 GEMM (replicated from inference_attn.cu for static access) ──
-static cudaError_t f8_gemm_local(
-    cublasHandle_t cublas_h, cudaStream_t stream,
-    const uint8_t* d_w, const uint8_t* d_scale,
-    int rows, int cols,
-    const __half* d_x, __half* d_out, __half* d_scratch)
-{
-    int64_t n = static_cast<int64_t>(rows) * cols;
-    int block = 256;
-    dequant_f8_to_half_kernel<<<(int)((n + block - 1) / block), block, 0, stream>>>(
-        d_w, d_scale, d_scratch, n, cols, cols / 128, 128, 128);
-    cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
-    cublasSetStream(cublas_h, stream);
-    float alpha = 1.0f, beta = 0.0f;
-    cublasStatus_t st = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        rows, 1, cols, &alpha,
-        d_scratch, CUDA_R_16F, cols,
-        d_x, CUDA_R_16F, cols, &beta,
-        d_out, CUDA_R_16F, rows,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    return (st == CUBLAS_STATUS_SUCCESS) ? cudaSuccess : cudaErrorUnknown;
-}
-
 // ── Host: run_csa_attention ────────────────────────────────────────────────
 cudaError_t run_csa_attention(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -262,33 +363,33 @@ cudaError_t run_csa_attention(
     float *d_norm_scratch, float *d_norm_gamma_scratch)
 {
     // ── Q projection (identical to MLA) ──────────────────────────────────
-    cudaError_t e = f8_gemm_local(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
+    cudaError_t e = csa_f8_gemm(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
         lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
     if (e != cudaSuccess) return e;
-    e = run_rmsnorm_attn(stream, d_qr, lw.d_q_norm, d_qr2,
+    e = csa_rmsnorm(stream, d_qr, lw.d_q_norm, d_qr2,
         d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
     if (e != cudaSuccess) return e;
-    e = f8_gemm_local(cublas_h, stream, lw.d_wq_b, lw.d_wq_b_scales,
+    e = csa_f8_gemm(cublas_h, stream, lw.d_wq_b, lw.d_wq_b_scales,
         lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
     if (e != cudaSuccess) return e;
-    per_head_rms_kernel<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
+    csa_per_head_rms<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
     {
         int total = kAttnHeads * (kRopeHeadDim / 2);
-        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
+        csa_rope_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
             d_q, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
 
     // ── KV projection (identical to MLA) ──────────────────────────────────
-    e = f8_gemm_local(cublas_h, stream, lw.d_wkv, lw.d_wkv_scales,
+    e = csa_f8_gemm(cublas_h, stream, lw.d_wkv, lw.d_wkv_scales,
         lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
     if (e != cudaSuccess) return e;
-    e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
+    e = csa_rmsnorm(stream, d_kv, lw.d_kv_norm, d_kv2,
         d_norm_scratch, d_norm_gamma_scratch, kHeadDim, kRmsEps);
     if (e != cudaSuccess) return e;
     {
         int total = kRopeHeadDim / 2;
-        rope_apply_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
+        csa_rope_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
             d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
@@ -345,7 +446,7 @@ cudaError_t run_csa_attention(
     // ── Inverse RoPE on output ───────────────────────────────────────────
     {
         int total = kAttnHeads * (kRopeHeadDim / 2);
-        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
+        csa_rope_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
             d_o, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
     }
@@ -354,9 +455,9 @@ cudaError_t run_csa_attention(
     {
         int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
         int block = 256;
-        dequant_f8_to_half_kernel<<<(int)((n + block - 1) / block), block, 0, stream>>>(
+        csa_dequant_f8_kernel<<<(int)((n + block - 1) / block), block, 0, stream>>>(
             lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
-            lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
+            lw.wo_a_cols, lw.wo_a_cols / 128);
     }
     {
         const int gd = (kAttnHeads / kOGroups) * kHeadDim;
@@ -371,7 +472,7 @@ cudaError_t run_csa_attention(
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         }
     }
-    e = f8_gemm_local(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
+    e = csa_f8_gemm(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
         lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
     return e;
 }

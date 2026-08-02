@@ -613,8 +613,9 @@ cudaError_t load_pinned_weights(
 
         // ── CSA Compressor (layers 2-41) ──────────────────────────────────
         if (lw.compress_ratio > 0) {
+            if (l == 2) log::info("[load_pinned] layer2 CSA loading (ratio=" + std::to_string(lw.compress_ratio) + ")");
             int coff = lw.comp_coff;
-            int comp_out = coff * kHiddenDim;  // 1024 for ratio=4, 512 for ratio=128
+            int comp_out = coff * kHeadDim;  // 1024 for ratio=4, 512 for ratio=128
 
             auto *t_comp_wkv = find_tensor_suffix(lt, "attn.compressor.wkv.weight");
             if (t_comp_wkv && !t_comp_wkv->data.empty())

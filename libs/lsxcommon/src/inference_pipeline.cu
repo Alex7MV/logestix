@@ -2,6 +2,7 @@
 #include "lsxcommon/norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/inference_csa.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -299,6 +300,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     float *d_ffn_accum = nullptr;   // [dim] FP32 accumulation buffer (shared+routed)
     float *d_swiglu_out = nullptr;   // [intermediate_dim] FP32 SwiGLU output
     float *d_act_scales = nullptr;   // [ceil(max(hidden,inter)/128)] per-block act scales
+    CSAState *csa_states = nullptr;  // [num_layers] per-layer CSA state
     __half *d_shared_int = nullptr;
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
@@ -467,6 +469,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
 
     total_steps = static_cast<int>(input_ids.size()) + max_gen;
 
+    // Allocate CSA state for layers 2-41
+    csa_states = new CSAState[topo.num_layers];
+    INFER_CHECK(alloc_csa_state(csa_states, topo.num_layers,
+        total_steps, kHeadDim, stream));
+
     // 9. Timing events
     INFER_CHECK(cudaEventCreate(&t_start));
     INFER_CHECK(cudaEventCreate(&t_stop));
@@ -503,12 +510,22 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                                          d_normed, d_norm_scratch,
                                          d_norm_gamma_scratch,
                                          kHiddenDim, rms_eps));
-                INFER_CHECK(run_mla_attention(
-                    cublas_h, stream, lw, d_normed,
-                    d_kv_cache + static_cast<size_t>(lay) * kAttnWindow * kHeadDim,
-                    step,
-                    d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out,
-                    d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
+                if (lw.compress_ratio > 0) {
+                    INFER_CHECK(run_csa_attention(
+                        cublas_h, stream, lw, d_normed,
+                        d_kv_cache + static_cast<size_t>(lay) * kAttnWindow * kHeadDim,
+                        csa_states[lay], step,
+                        d_q, d_qr, d_qr2, d_kv, d_kv2,
+                        d_o, d_olora, d_attn_out,
+                        d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
+                } else {
+                    INFER_CHECK(run_mla_attention(
+                        cublas_h, stream, lw, d_normed,
+                        d_kv_cache + static_cast<size_t>(lay) * kAttnWindow * kHeadDim,
+                        step,
+                        d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out,
+                        d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
+                }
                 INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
                 if (step == 0 && (lay % 5 == 0 || lay == 42)) {
@@ -842,6 +859,10 @@ cleanup:
     if (h_top_weights) cudaFreeHost(h_top_weights);
     if (d_pack_stage)  cudaFree(d_pack_stage);
     if (d_scale_stage) cudaFree(d_scale_stage);
+    if (csa_states) {
+        free_csa_state(csa_states, topo.num_layers);
+        delete[] csa_states;
+    }
     if (t_start)       cudaEventDestroy(t_start);
     if (t_stop)        cudaEventDestroy(t_stop);
     free_expert_index(expert_db);
