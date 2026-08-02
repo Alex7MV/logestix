@@ -362,9 +362,17 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     }
 
     // 7. Per-block quantize + pack
-    quantize_pack_perblock_kernel<<<512, 256, 0, stream>>>(
-        d_float, d_packed, d_block_scales, numel);
-    if (cudaGetLastError() != cudaSuccess) return false;
+    {
+        // One thread packs 2 elements; launch enough blocks to cover all of
+        // them (the earlier fixed 512x256 grid only touched 262144 elems).
+        const int64_t pair_threads = (numel + 1) / 2;
+        const int pack_block = 256;
+        const int pack_grid = static_cast<int>(
+            (pair_threads + pack_block - 1) / pack_block);
+        quantize_pack_perblock_kernel<<<pack_grid, pack_block, 0, stream>>>(
+            d_float, d_packed, d_block_scales, numel);
+        if (cudaGetLastError() != cudaSuccess) return false;
+    }
 
     // 8. Copy packed data device → host (async)
     packed.resize(static_cast<std::size_t>(npacked));

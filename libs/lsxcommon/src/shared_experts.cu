@@ -36,7 +36,9 @@ __device__ __forceinline__ float e4m3_scale_to_float(uint8_t e4m3)
 
 __device__ __forceinline__ uint32_t half2_raw_bits(__half2 h)
 {
-    return __half2_raw(h).x;
+    uint32_t bits;
+    memcpy(&bits, &h, sizeof(bits));
+    return bits;
 }
 
 // Unpacks 8 contiguous nibbles from `u` (bytes lo-nibble-first) into 4
