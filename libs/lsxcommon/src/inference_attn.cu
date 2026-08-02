@@ -252,13 +252,20 @@ __global__ void hc_head_kernel(
     }
 }
 
-// ── RoPE (applied on the last rope_head_dim dims) ────────────────────────────
+// ── RoPE with YaRN scaling (applied on the last rope_head_dim dims) ──────────
 // data: [rows, row_stride] FP16; offset = row_stride - rope_dim.
-// inverse uses conjugate (de-rotation).  theta = rope_theta (no YaRN for ratio==0).
+// inverse uses conjugate (de-rotation).  YaRN: factor=16, beta_fast=32,
+// beta_slow=1, original_max_pos=65536, theta=10000.
 __global__ void rope_apply_kernel(
     __half* __restrict__ data, int rows, int row_stride,
     int offset, int rope_dim, float pos, float theta, int inverse)
 {
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kYarnFactor = 16.0f;
+    constexpr float kYarnBetaFast = 32.0f;
+    constexpr float kYarnBetaSlow = 1.0f;
+    constexpr float kYarnOrigMax = 65536.0f;
+
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int n_pairs = rope_dim / 2;
     const int total = rows * n_pairs;
@@ -266,7 +273,20 @@ __global__ void rope_apply_kernel(
     const int h = idx / n_pairs;
     const int i = idx % n_pairs;
 
-    const float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / rope_dim);
+    float freq = 1.0f / powf(theta, static_cast<float>(2 * i) / rope_dim);
+
+    // YaRN frequency scaling
+    const float wavelen = 2.0f * kPi / freq;
+    const float low_freq_wavelen = kYarnOrigMax / kYarnBetaFast;   // 2048
+    const float high_freq_wavelen = kYarnOrigMax / kYarnBetaSlow;  // 65536
+    if (wavelen > high_freq_wavelen) {
+        freq = freq / kYarnFactor;
+    } else if (wavelen > low_freq_wavelen) {
+        float smooth = (kYarnOrigMax / wavelen - kYarnBetaFast)
+                      / (kYarnBetaSlow - kYarnBetaFast);
+        freq = (1.0f - smooth) * (freq / kYarnFactor) + smooth * freq;
+    }
+
     const float angle = pos * freq;
     float c = cosf(angle);
     float s = sinf(angle);
@@ -581,9 +601,10 @@ cudaError_t run_mla_attention(
                         cudaMemcpyDeviceToDevice, stream);
     if (e != cudaSuccess) return e;
 
-    // attention
+    // attention — YaRN attention scaling: 0.1*ln(factor)+1
     {
-        float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
+        float yarn_factor = 0.1f * logf(16.0f) + 1.0f;
+        float scale = yarn_factor / sqrtf(static_cast<float>(kHeadDim));
         mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
             d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
             start_pos, kAttnWindow, scale);
