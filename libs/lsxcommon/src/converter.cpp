@@ -65,32 +65,35 @@ struct ParsedName {
     int layer = -1;
     int expert = -1;
     int weight_id = -1;
+    bool is_scale = false;
 };
 
 std::optional<ParsedName> parse_expert_name(const std::string &name)
 {
     static const std::regex re(
-        R"((?:model\.)?layers\.(\d+)\.ffn\.experts\.(\d+)\.w(\d)\.weight)");
+        R"((?:model\.)?layers\.(\d+)\.ffn\.experts\.(\d+)\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
     p.layer     = std::stoi(m[1]);
     p.expert    = std::stoi(m[2]);
     p.weight_id = std::stoi(m[3]);
+    p.is_scale  = (m[4] == "scale");
     return p;
 }
 
-// Shared expert tensors: layers.N.ffn.shared_experts.w{1,2,3}.weight
+// Shared expert tensors: layers.N.ffn.shared_experts.w{1,2,3}.{weight,scale}
 std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
 {
     static const std::regex re(
-        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.weight)");
+        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
     p.layer     = std::stoi(m[1]);
     p.expert    = 0;
     p.weight_id = std::stoi(m[2]);
+    p.is_scale  = (m[3] == "scale");
     return p;
 }
 
@@ -536,25 +539,32 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     auto process = [&](const std::vector<uint8_t> &src,
                         const std::string &dtype,
                         const std::vector<int64_t> &shape,
+                        const std::vector<uint8_t> &src_scale,
+                        const std::vector<int64_t> &scale_shape,
                         std::vector<uint8_t> &packed,
                         std::vector<uint8_t> &scales,
                         float &global_scale) -> bool
     {
         int64_t numel = product(shape);
         if (numel == 0 || src.empty()) return false;
+        const uint8_t *e8m0 = src_scale.empty() ? nullptr : src_scale.data();
         return gpu::quantize_tensor_gpu(src.data(), numel, dtype,
+                                         e8m0, shape, scale_shape,
                                          packed, scales, global_scale);
     };
 
     if (!process(raw.w1_raw, raw.w1_dtype, raw.w1_shape,
+                  raw.w1_scale_raw, raw.w1_scale_shape,
                   pe.w1_packed, pe.w1_scales, pe.w1_global_scale))
         return arrow::Status::ExecutionError("GPU quantize failed for w1");
 
     if (!process(raw.w2_raw, raw.w2_dtype, raw.w2_shape,
+                  raw.w2_scale_raw, raw.w2_scale_shape,
                   pe.w2_packed, pe.w2_scales, pe.w2_global_scale))
         return arrow::Status::ExecutionError("GPU quantize failed for w2");
 
     if (!process(raw.w3_raw, raw.w3_dtype, raw.w3_shape,
+                  raw.w3_scale_raw, raw.w3_scale_shape,
                   pe.w3_packed, pe.w3_scales, pe.w3_global_scale))
         return arrow::Status::ExecutionError("GPU quantize failed for w3");
 
@@ -686,6 +696,101 @@ arrow::Status SaveSharedExpertsToArrow(
     spdlog::info("  packed {} shared-expert layers -> {}", packed_ok, path.string());
 
     return arrow::Status::OK();
+}
+
+// ── Targeted shared-expert repack ───────────────────────────────────────────
+
+// Re-packs only the shared-expert weights from the source safetensors shards
+// into pinned/shared_experts.arrow. Reads tensors lazily per shard; skips all
+// routed experts and pinned tensors. Preserves the paired E8M0 scales so the
+// already-quantized NVFP4 values are dequantized with their true magnitude.
+arrow::Status RepackSharedExperts(
+    const std::string &input_path,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                       input_path);
+
+    std::unordered_map<int, ExpertData> shared_by_layer;
+    int shard_idx = 0;
+
+    for (const auto &shard : model.shards) {
+        ++shard_idx;
+        spdlog::info("[{}/{}] scanning {} ...", shard_idx, model.shards.size(),
+                     shard.filename);
+
+        std::ifstream sf((fs::path(input_path) / shard.filename).string(),
+                         std::ios::binary | std::ios::ate);
+        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        int64_t sz = sf.tellg();
+        if (sz <= 0) { spdlog::warn("  Zero/negative size, skipping"); continue; }
+        sf.seekg(0);
+        std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
+        sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
+        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+
+        uint64_t hdr_len;
+        std::memcpy(&hdr_len, shard_buf.data(), 8);
+        int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
+
+        for (const auto &tensor : shard.tensors) {
+            auto sparsed = parse_shared_expert_name(tensor.name);
+            if (!sparsed) continue;
+
+            int64_t raw_size = tensor.byte_size();
+            int64_t raw_start = data_off + tensor.data_begin;
+            if (raw_start < 0 || raw_start + raw_size > sz) {
+                spdlog::warn("  Skipping {} (offset out of range)", tensor.name);
+                continue;
+            }
+            const uint8_t *raw_ptr = shard_buf.data() + raw_start;
+            std::vector<uint8_t> raw(raw_ptr, raw_ptr + raw_size);
+
+            auto &sexp = shared_by_layer[sparsed->layer];
+            if (sparsed->is_scale) {
+                switch (sparsed->weight_id) {
+                case 1:
+                    sexp.w1_scale_raw   = std::move(raw);
+                    sexp.w1_scale_shape = tensor.shape;
+                    break;
+                case 2:
+                    sexp.w2_scale_raw   = std::move(raw);
+                    sexp.w2_scale_shape = tensor.shape;
+                    break;
+                case 3:
+                    sexp.w3_scale_raw   = std::move(raw);
+                    sexp.w3_scale_shape = tensor.shape;
+                    break;
+                }
+            } else {
+                switch (sparsed->weight_id) {
+                case 1:
+                    sexp.w1_raw   = std::move(raw);
+                    sexp.w1_shape = tensor.shape;
+                    sexp.w1_dtype = tensor.dtype;
+                    break;
+                case 2:
+                    sexp.w2_raw   = std::move(raw);
+                    sexp.w2_shape = tensor.shape;
+                    sexp.w2_dtype = tensor.dtype;
+                    break;
+                case 3:
+                    sexp.w3_raw   = std::move(raw);
+                    sexp.w3_shape = tensor.shape;
+                    sexp.w3_dtype = tensor.dtype;
+                    break;
+                }
+            }
+        }
+    }
+
+    spdlog::info("Packing {} shared-expert layers (NVFP4)...",
+                 shared_by_layer.size());
+    return SaveSharedExpertsToArrow(shared_by_layer, output_root);
 }
 
 // ── Model index ─────────────────────────────────────────────────────────────
@@ -849,22 +954,39 @@ arrow::Status Converter::Run()
                 auto &exp = partial[key];
                 max_layer = std::max(max_layer, parsed->layer + 1);
 
-                switch (parsed->weight_id) {
-                case 1:
-                    exp.w1_raw   = std::move(raw);
-                    exp.w1_shape = tensor.shape;
-                    exp.w1_dtype = tensor.dtype;
-                    break;
-                case 2:
-                    exp.w2_raw   = std::move(raw);
-                    exp.w2_shape = tensor.shape;
-                    exp.w2_dtype = tensor.dtype;
-                    break;
-                case 3:
-                    exp.w3_raw   = std::move(raw);
-                    exp.w3_shape = tensor.shape;
-                    exp.w3_dtype = tensor.dtype;
-                    break;
+                if (parsed->is_scale) {
+                    switch (parsed->weight_id) {
+                    case 1:
+                        exp.w1_scale_raw   = std::move(raw);
+                        exp.w1_scale_shape = tensor.shape;
+                        break;
+                    case 2:
+                        exp.w2_scale_raw   = std::move(raw);
+                        exp.w2_scale_shape = tensor.shape;
+                        break;
+                    case 3:
+                        exp.w3_scale_raw   = std::move(raw);
+                        exp.w3_scale_shape = tensor.shape;
+                        break;
+                    }
+                } else {
+                    switch (parsed->weight_id) {
+                    case 1:
+                        exp.w1_raw   = std::move(raw);
+                        exp.w1_shape = tensor.shape;
+                        exp.w1_dtype = tensor.dtype;
+                        break;
+                    case 2:
+                        exp.w2_raw   = std::move(raw);
+                        exp.w2_shape = tensor.shape;
+                        exp.w2_dtype = tensor.dtype;
+                        break;
+                    case 3:
+                        exp.w3_raw   = std::move(raw);
+                        exp.w3_shape = tensor.shape;
+                        exp.w3_dtype = tensor.dtype;
+                        break;
+                    }
                 }
 
                 if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty()) {
@@ -897,22 +1019,39 @@ arrow::Status Converter::Run()
                 if (sparsed) {
                     auto &sexp = shared_by_layer[sparsed->layer];
                     max_layer = std::max(max_layer, sparsed->layer + 1);
-                    switch (sparsed->weight_id) {
-                    case 1:
-                        sexp.w1_raw   = std::move(raw);
-                        sexp.w1_shape = tensor.shape;
-                        sexp.w1_dtype = tensor.dtype;
-                        break;
-                    case 2:
-                        sexp.w2_raw   = std::move(raw);
-                        sexp.w2_shape = tensor.shape;
-                        sexp.w2_dtype = tensor.dtype;
-                        break;
-                    case 3:
-                        sexp.w3_raw   = std::move(raw);
-                        sexp.w3_shape = tensor.shape;
-                        sexp.w3_dtype = tensor.dtype;
-                        break;
+                    if (sparsed->is_scale) {
+                        switch (sparsed->weight_id) {
+                        case 1:
+                            sexp.w1_scale_raw   = std::move(raw);
+                            sexp.w1_scale_shape = tensor.shape;
+                            break;
+                        case 2:
+                            sexp.w2_scale_raw   = std::move(raw);
+                            sexp.w2_scale_shape = tensor.shape;
+                            break;
+                        case 3:
+                            sexp.w3_scale_raw   = std::move(raw);
+                            sexp.w3_scale_shape = tensor.shape;
+                            break;
+                        }
+                    } else {
+                        switch (sparsed->weight_id) {
+                        case 1:
+                            sexp.w1_raw   = std::move(raw);
+                            sexp.w1_shape = tensor.shape;
+                            sexp.w1_dtype = tensor.dtype;
+                            break;
+                        case 2:
+                            sexp.w2_raw   = std::move(raw);
+                            sexp.w2_shape = tensor.shape;
+                            sexp.w2_dtype = tensor.dtype;
+                            break;
+                        case 3:
+                            sexp.w3_raw   = std::move(raw);
+                            sexp.w3_shape = tensor.shape;
+                            sexp.w3_dtype = tensor.dtype;
+                            break;
+                        }
                     }
                     continue;   // packed separately into shared_experts.arrow
                 }

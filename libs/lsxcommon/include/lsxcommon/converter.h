@@ -20,6 +20,14 @@ arrow::Status SavePinnedTensors(
     const std::vector<TensorRecord> &tensors,
     const std::filesystem::path &output_root);
 
+// Reads only the shared-expert tensors (w{1,2,3}.weight + w{1,2,3}.scale)
+// from the source safetensors shards and re-packs them into
+// <output_root>/pinned/shared_experts.arrow. Used to regenerate the shared
+// experts after a converter change without re-converting the full model.
+arrow::Status RepackSharedExperts(
+    const std::string &input_path,
+    const std::filesystem::path &output_root);
+
 arrow::Status WriteModelIndex(
     const std::string &model_name,
     int num_layers,

@@ -108,7 +108,10 @@ __device__ uint8_t dev_quantize_nvfp4(float val)
 // ── Kernels ──────────────────────────────────────────────────────────────────
 
 __global__ void convert_kernel(const uint8_t *input, float *output,
-                               int64_t n, int dtype_code)
+                               int64_t n, int dtype_code,
+                               const uint8_t *e8m0_scales,
+                               int64_t C, int64_t SC, int64_t block_r,
+                               int64_t block_c)
 {
     int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
@@ -122,6 +125,15 @@ __global__ void convert_kernel(const uint8_t *input, float *output,
         case 3: memcpy(&v, input + i * 4, sizeof(v)); break;
         case 4: v = dev_i8_to_float(input[i]);         break;
         default: v = 0.0f;
+        }
+        if (e8m0_scales) {
+            // 2D tile layout: scale[SR,SC] over weight[R,C] with per-tile
+            // block_r = R/SR, block_c = C/SC. Element (r,c) -> tile index.
+            int64_t r = i / C;
+            int64_t c = i % C;
+            int64_t sr = r / block_r;
+            int64_t sc = c / block_c;
+            v *= dev_f8e8m0_to_float(e8m0_scales[sr * SC + sc]);
         }
         output[i] = v;
     }
@@ -216,6 +228,9 @@ uint8_t float_to_e4m3_p2(float v)
 
 bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
                          const std::string &dtype,
+                         const uint8_t *e8m0_scales,
+                         const std::vector<int64_t> &tensor_shape,
+                         const std::vector<int64_t> &e8m0_scale_shape,
                          std::vector<uint8_t> &packed,
                          std::vector<uint8_t> &scales_e4m3,
                          float &global_scale)
@@ -232,11 +247,29 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     int64_t npacked = (numel + 1) / 2;
     int64_t nblocks = (numel + kBlockSize - 1) / kBlockSize;
 
+    // Resolve the E8M0 2D tile layout (scale[SR,SC] over weight[R,C]).
+    int64_t C = 1, SC = 1, block_r = 1, block_c = 1;
+    int64_t scale_numel = 0;
+    bool use_e8m0 = (e8m0_scales != nullptr)
+        && tensor_shape.size() == 2 && e8m0_scale_shape.size() == 2;
+    if (use_e8m0) {
+        int64_t R = tensor_shape[0];
+        C = tensor_shape[1];
+        int64_t SR = e8m0_scale_shape[0];
+        SC = e8m0_scale_shape[1];
+        block_r = (SR > 0) ? R / SR : 1;
+        block_c = (SC > 0) ? C / SC : 1;
+        scale_numel = SR * SC;
+        if (block_r <= 0 || block_c <= 0 || scale_numel <= 0)
+            use_e8m0 = false;
+    }
+
     uint8_t *d_raw = nullptr;
     float *d_float = nullptr;
     uint8_t *d_packed = nullptr;
     float *d_block_max = nullptr;
     float *d_block_scales = nullptr;
+    uint8_t *d_e8m0 = nullptr;
 
     auto alloc_dev = [](auto &ptr, int64_t sz) -> bool {
         if (sz <= 0) { ptr = nullptr; return true; }
@@ -247,17 +280,19 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     if (!alloc_dev(d_packed, npacked)) { cudaFree(d_raw); cudaFree(d_float); return false; }
     if (!alloc_dev(d_block_max, nblocks * sizeof(float))) { cudaFree(d_raw); cudaFree(d_float); cudaFree(d_packed); return false; }
     if (!alloc_dev(d_block_scales, nblocks * sizeof(float))) { cudaFree(d_raw); cudaFree(d_float); cudaFree(d_packed); cudaFree(d_block_max); return false; }
+    if (use_e8m0 && !alloc_dev(d_e8m0, scale_numel)) { cudaFree(d_raw); cudaFree(d_float); cudaFree(d_packed); cudaFree(d_block_max); cudaFree(d_block_scales); return false; }
 
     struct CudaMemGuard {
-        uint8_t *&r; float *&f; uint8_t *&p; float *&bm; float *&bs;
+        uint8_t *&r; float *&f; uint8_t *&p; float *&bm; float *&bs; uint8_t *&e;
         ~CudaMemGuard() {
+            if (e) cudaFree(e);
             if (bs) cudaFree(bs);
             if (bm) cudaFree(bm);
             if (p) cudaFree(p);
             if (f) cudaFree(f);
             if (r) cudaFree(r);
         }
-    } cmg{d_raw, d_float, d_packed, d_block_max, d_block_scales};
+    } cmg{d_raw, d_float, d_packed, d_block_max, d_block_scales, d_e8m0};
 
     // ── Async stream ────────────────────────────────────────────────────────
     cudaStream_t stream;
@@ -268,9 +303,14 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
 
     // 1. Copy raw input host → device
     cudaMemcpyAsync(d_raw, raw_data, raw_size, cudaMemcpyHostToDevice, stream);
+    if (use_e8m0)
+        cudaMemcpyAsync(d_e8m0, e8m0_scales, scale_numel,
+                        cudaMemcpyHostToDevice, stream);
 
-    // 2. Convert raw → float32
-    convert_kernel<<<512, 256, 0, stream>>>(d_raw, d_float, numel, dc);
+    // 2. Convert raw → float32 (applying E8M0 block scales if present)
+    convert_kernel<<<512, 256, 0, stream>>>(
+        d_raw, d_float, numel, dc,
+        use_e8m0 ? d_e8m0 : nullptr, C, SC, block_r, block_c);
     if (cudaGetLastError() != cudaSuccess) return false;
 
     // 3. Per-block max_abs

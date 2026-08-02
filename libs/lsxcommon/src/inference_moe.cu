@@ -1,5 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/log.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cfloat>
+#include <sstream>
 
 namespace lsxcommon {
 namespace gpu {
@@ -318,6 +320,15 @@ cudaError_t run_shared_experts_ffn(
             d_w1_scales, scales, w1_gs, d_dequant, w1_el);
         if (e != cudaSuccess) return e;
     }
+    {
+        cudaStreamSynchronize(stream);
+        __half probe[6] = {};
+        cudaMemcpy(probe, d_dequant, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[dbg] FFN W1 dequant[0..5]=";
+        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+        log::debug(oss.str());
+    }
 
     // 2. intermediate = W1^T @ hidden → d_intermediate
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -326,6 +337,15 @@ cudaError_t run_shared_experts_ffn(
                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
                  d_intermediate, CUDA_R_16F, intermediate_dim,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        cudaStreamSynchronize(stream);
+        __half probe[6] = {};
+        cudaMemcpy(probe, d_intermediate, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[dbg] FFN inter[0..5]=";
+        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+        log::debug(oss.str());
+    }
 
     // 3. Dequant W3 → d_dequant (reuse)
     if (w3_bytes > 0) {
@@ -342,6 +362,15 @@ cudaError_t run_shared_experts_ffn(
                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
                  d_gate, CUDA_R_16F, intermediate_dim,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        cudaStreamSynchronize(stream);
+        __half probe[6] = {};
+        cudaMemcpy(probe, d_gate, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[dbg] FFN gate[0..5]=";
+        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+        log::debug(oss.str());
+    }
 
     // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate
     {
@@ -366,6 +395,15 @@ cudaError_t run_shared_experts_ffn(
                  d_intermediate, CUDA_R_16F, intermediate_dim, &beta,
                  d_output, CUDA_R_16F, hidden_dim,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        cudaStreamSynchronize(stream);
+        __half probe[6] = {};
+        cudaMemcpy(probe, d_output, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[dbg] FFN out[0..5]=";
+        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+        log::debug(oss.str());
+    }
     return cudaSuccess;
 }
 

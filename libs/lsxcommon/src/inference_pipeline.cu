@@ -44,6 +44,73 @@ static __global__ void float_to_half_kernel(
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
+static __global__ void dbg_nan_count_kernel(
+    const __half* __restrict__ buf, int n, int* out_nonfinite)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float v = __half2float(buf[i]);
+    if (v != v || v == __int_as_float(0x7f800000) || v == __int_as_float(0xff800000))
+        atomicAdd(out_nonfinite, 1);
+}
+
+static __global__ void half_add_kernel(
+    const __half* __restrict__ a, const __half* __restrict__ b,
+    __half* __restrict__ out, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) out[i] = __float2half(__half2float(a[i]) + __half2float(b[i]));
+}
+
+static __global__ void half_rms_kernel(
+    const __half* __restrict__ buf, int n, float* out_sum)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float v = __half2float(buf[i]);
+    atomicAdd(out_sum, v * v);
+}
+
+static float dbg_buffer_rms(const __half* d_buf, int n)
+{
+    float* d_sum = nullptr;
+    float sum = -1.0f;
+    if (cudaMalloc(&d_sum, sizeof(float)) != cudaSuccess) return -1.0f;
+    cudaMemset(d_sum, 0, sizeof(float));
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    half_rms_kernel<<<grid, block>>>(d_buf, n, d_sum);
+    cudaMemcpy(&sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree(d_sum);
+    return sqrtf(sum / static_cast<float>(n));
+}
+
+static __host__ cudaError_t run_half_add(
+    cudaStream_t stream, const __half* a, const __half* b, __half* out, int n)
+{
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    half_add_kernel<<<grid, block, 0, stream>>>(a, b, out, n);
+    return cudaGetLastError();
+}
+
+static int dbg_count_nonfinite(const __half* d_buf, int n)
+{
+    __half* d_tmp = nullptr;
+    int* d_cnt = nullptr;
+    int cnt = -1;
+    if (cudaMalloc(&d_tmp, static_cast<size_t>(n) * sizeof(__half)) != cudaSuccess) return -2;
+    if (cudaMalloc(&d_cnt, sizeof(int)) != cudaSuccess) { cudaFree(d_tmp); return -2; }
+    cudaMemset(d_cnt, 0, sizeof(int));
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    dbg_nan_count_kernel<<<grid, block>>>(d_buf, n, d_cnt);
+    cudaMemcpy(&cnt, d_cnt, sizeof(int), cudaMemcpyDeviceToHost);
+    cudaFree(d_tmp);
+    cudaFree(d_cnt);
+    return cnt;
+}
+
 static __host__ cudaError_t run_rmsnorm(
     cudaStream_t stream, const __half* d_input, const __half* d_weight,
     __half* d_output, float* d_scratch, float* d_gamma_scratch, int dim, float eps)
@@ -266,6 +333,24 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         INFER_CHECK(cudaStreamSynchronize(stream));
         log::debug("[dbg] embed sync OK");
         (void)embed_err;
+
+        std::ostringstream dbg_oss;
+        dbg_oss << "[dbg] embed[0..4]=";
+        __half hd[5] = {};
+        __half de[5] = {};
+        INFER_CHECK(cudaMemcpy(hd, d_hidden, 5 * sizeof(__half), cudaMemcpyDeviceToHost));
+        INFER_CHECK(cudaMemcpy(de, pw.d_embed, 5 * sizeof(__half), cudaMemcpyDeviceToHost));
+        for (int i = 0; i < 5; ++i)
+            dbg_oss << " " << __half2float(hd[i]);
+        dbg_oss << " d_embed[0..4]=";
+        for (int i = 0; i < 5; ++i)
+            dbg_oss << " " << __half2float(de[i]);
+        dbg_oss << " rawhex=";
+        for (int i = 0; i < 5; ++i) {
+            uint16_t bits = *reinterpret_cast<uint16_t*>(&hd[i]);
+            dbg_oss << " 0x" << std::hex << bits << std::dec;
+        }
+        log::debug(dbg_oss.str());
     }
 
     total_steps = static_cast<int>(input_ids.size()) + max_gen;
@@ -312,6 +397,16 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     static_cast<size_t>(kHiddenDim) * sizeof(__half),
                     cudaMemcpyDeviceToDevice, stream));
             }
+            if (lay == 0) {
+                INFER_CHECK(cudaStreamSynchronize(stream));
+                int nf = dbg_count_nonfinite(d_hidden_next, kHiddenDim);
+                __half probe[6] = {};
+                cudaMemcpy(probe, d_hidden_next, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+                std::ostringstream oss;
+                oss << "[dbg] layer0 after RMSNorm: nonfinite=" << nf << " norm_out[0..5]=";
+                for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+                log::debug(oss.str());
+            }
 
             // Router: gate_weight @ d_hidden_next
             if (lw.d_gate_weight) {
@@ -333,10 +428,32 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     lw.shared_w3_global_scale,
                     lw.shared_w1_bytes, lw.shared_w2_bytes, lw.shared_w3_bytes,
                     d_shared_int, d_shared_gate, d_dequant_scratch, d_hidden_next));
+                if (lay == 0) {
+                    INFER_CHECK(cudaStreamSynchronize(stream));
+                    int nf = dbg_count_nonfinite(d_hidden_next, kHiddenDim);
+                    __half probe[6] = {};
+                    cudaMemcpy(probe, d_hidden_next, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
+                    std::ostringstream oss;
+                    oss << "[dbg] layer0 after FFN: nonfinite=" << nf << " out[0..5]=";
+                    for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
+                    log::debug(oss.str());
+                }
             }
 
             // Routed experts: skipped in Phase 1 (stub)
             // Phase 2 will load from ExpertDb mmap + DMA ping-pong
+
+            // Residual: hidden = hidden + FFN(norm(hidden))
+            // d_hidden      = pre-norm residual (this layer's input)
+            // d_hidden_next = FFN output (post-norm path)
+            INFER_CHECK(run_half_add(stream, d_hidden, d_hidden_next,
+                                     d_hidden_next, kHiddenDim));
+            if (lay == 0 || lay == 1 || lay == 42) {
+                INFER_CHECK(cudaStreamSynchronize(stream));
+                float rms = dbg_buffer_rms(d_hidden_next, kHiddenDim);
+                log::debug("[dbg] layer" + std::to_string(lay) +
+                          " residual rms=" + std::to_string(rms));
+            }
 
             // hidden = hidden_next for next layer
             if (lay < topo.num_layers - 1) {
@@ -370,6 +487,17 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             static_cast<size_t>(pw.vocab_size) * sizeof(float),
             cudaMemcpyDeviceToHost, stream));
         INFER_CHECK(cudaDeviceSynchronize());
+
+        if (step == 0) {
+            std::ostringstream dbg2;
+            dbg2 << "[dbg] logits[0..4]=";
+            for (int i = 0; i < 5; ++i) dbg2 << " " << h_logits[i];
+            __half hd[5] = {};
+            cudaMemcpy(hd, d_hidden, 5 * sizeof(__half), cudaMemcpyDeviceToHost);
+            dbg2 << "  hidden[0..4]=";
+            for (int i = 0; i < 5; ++i) dbg2 << " " << __half2float(hd[i]);
+            log::debug(dbg2.str());
+        }
 
         int next_tok = 0;
         float max_val = -1e10f;

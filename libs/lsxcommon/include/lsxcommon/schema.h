@@ -20,6 +20,15 @@ struct ExpertData {
     std::string w1_dtype;
     std::string w2_dtype;
     std::string w3_dtype;
+    // Paired per-block F8_E8M0 scale tensors (from `w{1,2,3}.scale`).
+    // Present when the source weights are already quantized (F8_E4M3 / I8);
+    // they restore the true magnitude during dequant before re-quantization.
+    std::vector<uint8_t> w1_scale_raw;
+    std::vector<uint8_t> w2_scale_raw;
+    std::vector<uint8_t> w3_scale_raw;
+    std::vector<int64_t> w1_scale_shape;
+    std::vector<int64_t> w2_scale_shape;
+    std::vector<int64_t> w3_scale_shape;
 };
 
 struct PackedExpert {

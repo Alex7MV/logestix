@@ -13,11 +13,11 @@
 
 namespace {
 
-// layers.N.ffn.shared_experts.w{1,2,3}.weight -> layer index
+// layers.N.ffn.shared_experts.w{1,2,3}.{weight,scale} -> layer index
 std::optional<int> parse_shared_expert_layer(const std::string &name)
 {
     static const std::regex re(
-        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.weight)");
+        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     return std::stoi(m[1]);
@@ -26,10 +26,19 @@ std::optional<int> parse_shared_expert_layer(const std::string &name)
 std::optional<int> parse_shared_expert_weight_id(const std::string &name)
 {
     static const std::regex re(
-        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.weight)");
+        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     return std::stoi(m[2]);
+}
+
+bool parse_shared_expert_is_scale(const std::string &name)
+{
+    static const std::regex re(
+        R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
+    std::smatch m;
+    if (!std::regex_match(name, m, re)) return false;
+    return m[3] == "scale";
 }
 
 // Extracts the NVFP4-packed shared expert weights from the existing per-layer
@@ -69,22 +78,39 @@ arrow::Status RunSharedOnly(const std::string &model_path)
             auto wid = parse_shared_expert_weight_id(t.name);
             if (!wid) continue;
             auto &sd = shared_by_layer[*layer];
-            switch (*wid) {
-            case 1:
-                sd.w1_raw   = std::move(t.data);
-                sd.w1_shape = t.shape;
-                sd.w1_dtype = t.dtype;
-                break;
-            case 2:
-                sd.w2_raw   = std::move(t.data);
-                sd.w2_shape = t.shape;
-                sd.w2_dtype = t.dtype;
-                break;
-            case 3:
-                sd.w3_raw   = std::move(t.data);
-                sd.w3_shape = t.shape;
-                sd.w3_dtype = t.dtype;
-                break;
+            if (parse_shared_expert_is_scale(t.name)) {
+                switch (*wid) {
+                case 1:
+                    sd.w1_scale_raw   = std::move(t.data);
+                    sd.w1_scale_shape = t.shape;
+                    break;
+                case 2:
+                    sd.w2_scale_raw   = std::move(t.data);
+                    sd.w2_scale_shape = t.shape;
+                    break;
+                case 3:
+                    sd.w3_scale_raw   = std::move(t.data);
+                    sd.w3_scale_shape = t.shape;
+                    break;
+                }
+            } else {
+                switch (*wid) {
+                case 1:
+                    sd.w1_raw   = std::move(t.data);
+                    sd.w1_shape = t.shape;
+                    sd.w1_dtype = t.dtype;
+                    break;
+                case 2:
+                    sd.w2_raw   = std::move(t.data);
+                    sd.w2_shape = t.shape;
+                    sd.w2_dtype = t.dtype;
+                    break;
+                case 3:
+                    sd.w3_raw   = std::move(t.data);
+                    sd.w3_shape = t.shape;
+                    sd.w3_dtype = t.dtype;
+                    break;
+                }
             }
             ++found;
         }
@@ -138,6 +164,7 @@ int main(int argc, char* argv[]) {
     std::string input_path;
     std::string output_path = "converted_model";
     bool shared_only = false;
+    bool repack_shared = false;
     bool tokenizer_only = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -147,6 +174,8 @@ int main(int argc, char* argv[]) {
             output_path = argv[++i];
         else if (std::strcmp(argv[i], "--shared-only") == 0)
             shared_only = true;
+        else if (std::strcmp(argv[i], "--repack-shared") == 0)
+            repack_shared = true;
         else if (std::strcmp(argv[i], "--tokenizer") == 0 && i + 1 < argc) {
             tokenizer_only = true;
             input_path = argv[++i];
@@ -174,6 +203,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         spdlog::info("Shared experts extraction complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (repack_shared) {
+        spdlog::info("Re-packing shared experts from {} ...", input_path);
+        auto st = lsxcommon::RepackSharedExperts(input_path, output_path);
+        if (!st.ok()) {
+            spdlog::error("Shared experts re-pack failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Shared experts re-pack complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

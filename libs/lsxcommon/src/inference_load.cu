@@ -11,6 +11,7 @@
 #include "lsxcommon/log.h"
 #include <vector>
 #include <string>
+#include <sstream>
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -22,12 +23,17 @@ namespace gpu {
 
 namespace {
 
-// BF16 → FP16 conversion kernel (reads from device memory)
+// BF16 → FP16 conversion kernel (reads from device memory).
+// Manual bit path (avoid __bfloat162float host/device ambiguity under MSVC):
+//   bf16 = top 16 bits of fp32 → reconstruct fp32 → round to fp16.
 __global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    dst[i] = __float2half(__bfloat162float(src[i]));
+    uint32_t f32 = static_cast<uint32_t>(src[i]) << 16;
+    float v;
+    std::memcpy(&v, &f32, sizeof(v));
+    dst[i] = __float2half(v);
 }
 
 // Upload BF16 host data → device FP16 via device-side kernel.
@@ -48,12 +54,40 @@ cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
                         static_cast<size_t>(numel) * sizeof(uint16_t),
                         cudaMemcpyHostToDevice, stream);
     if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
+    // Debug: verify device-side copy of raw BF16
+    {
+        cudaStreamSynchronize(stream);
+        uint16_t src_chk[4];
+        std::memcpy(src_chk, src_u16, sizeof(src_chk));
+        uint16_t dev_chk[4] = {0};
+        cudaMemcpy(dev_chk, d_bf16, sizeof(dev_chk), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[load_pinned] bf16 copy host[0..3]=";
+        for (int i = 0; i < 4; ++i) oss << " 0x" << std::hex << src_chk[i] << std::dec;
+        oss << " dev[0..3]=";
+        for (int i = 0; i < 4; ++i) oss << " 0x" << std::hex << dev_chk[i] << std::dec;
+        log::debug(oss.str());
+    }
     // Launch conversion kernel
     int block = 256;
     int grid = (static_cast<int>(numel) + block - 1) / block;
     bf16_to_half_kernel<<<grid, block, 0, stream>>>(d_bf16, *d_out, static_cast<int>(numel));
     e = cudaGetLastError();
     if (e != cudaSuccess) { cudaFree(d_bf16); cudaFree(*d_out); *d_out = nullptr; return e; }
+
+    // Debug: verify conversion by reading back the first few elements
+    {
+        cudaStreamSynchronize(stream);
+        __half chk[4] = {};
+        cudaMemcpy(chk, *d_out, 4 * sizeof(__half), cudaMemcpyDeviceToHost);
+        std::ostringstream oss;
+        oss << "[load_pinned] bf16->half verify[0..3]=";
+        for (int i = 0; i < 4; ++i) {
+            uint16_t bits = *reinterpret_cast<uint16_t*>(&chk[i]);
+            oss << " " << __half2float(chk[i]) << "(0x" << std::hex << bits << std::dec << ")";
+        }
+        log::debug(oss.str());
+    }
     e = cudaFree(d_bf16);
     return e;
 }
@@ -263,9 +297,15 @@ cudaError_t load_pinned_weights(
         std::string shape;
         for (size_t si = 0; si < t.shape.size(); ++si)
             shape += (si > 0 ? "," : "") + std::to_string(t.shape[si]);
-        log::debug("[load_pinned] global tensor[" + std::to_string(di)
-            + "] name='" + t.name + "' shape=[" + shape + "] data_sz="
-            + std::to_string(t.data.size()));
+        std::ostringstream raw;
+        for (size_t bi = 0; bi < std::min<size_t>(8, t.data.size() / 2); ++bi) {
+            uint16_t u = static_cast<uint16_t>(t.data[bi * 2])
+                       | (static_cast<uint16_t>(t.data[bi * 2 + 1]) << 8);
+            raw << " " << std::hex << u << std::dec;
+        }
+        log::info("[load_pinned] global tensor[" + std::to_string(di)
+            + "] name='" + t.name + "' dtype=" + t.dtype + " shape=[" + shape + "] data_sz="
+            + std::to_string(t.data.size()) + " raw_u16[0..7]=" + raw.str());
     }
 
     // Upload via upload_bf16_to_half (two-step: host→device copy, then kernel)
@@ -353,6 +393,19 @@ cudaError_t load_pinned_weights(
                 } else {
                     log::info("[load_pinned] shared_experts: "
                         + std::to_string(db.num_layers()) + " layers");
+                    if (db.num_layers() > 0) {
+                        std::ostringstream gs_oss;
+                        gs_oss << "[load_pinned] layer0 shared: w1_bytes="
+                               << db.w1[0].packed_bytes
+                               << " w1_gs=" << db.w1[0].global_scale
+                               << " w2_bytes=" << db.w2[0].packed_bytes
+                               << " w2_gs=" << db.w2[0].global_scale
+                               << " w3_bytes=" << db.w3[0].packed_bytes
+                               << " w3_gs=" << db.w3[0].global_scale
+                               << " w1_scale_bytes=" << db.w1[0].scale_bytes
+                               << " w1_numel=" << db.w1[0].num_elements;
+                        log::info(gs_oss.str());
+                    }
                     for (int l = 0; l < db.num_layers() &&
                                     l < static_cast<int>(pw.layers.size()); ++l) {
                         auto &lw = pw.layers[l];
