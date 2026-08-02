@@ -167,25 +167,25 @@ cudaError_t load_pinned_weights(const std::string &model_path,
                                  cudaStream_t stream);
 
 // ── inference_attn.cu ────────────────────────────────────────────────────────
-// Hyper-Connections (HC)
+// Hyper-Connections (HC) — HC state stored in FP32 for numerical stability
 cudaError_t run_hc_pre(cudaStream_t stream,
-                       const __half *d_state, const float *d_fn,
+                       const float *d_state, const float *d_fn,
                        const float *d_scale, const float *d_base,
                        __half *d_single, float *d_post, float *d_comb,
                        float *d_pre);
 
 cudaError_t run_hc_post(cudaStream_t stream,
-                        const __half *d_x, const __half *d_residual,
-                        const float *d_post, const float *d_comb,
-                        __half *d_y);
+                         const __half *d_x, const float *d_residual,
+                         const float *d_post, const float *d_comb,
+                         float *d_y);
 
 cudaError_t run_hc_head(cudaStream_t stream,
-                        const __half *d_state, const float *d_fn,
+                        const float *d_state, const float *d_fn,
                         const float *d_scale, const float *d_base,
                         __half *d_single);
 
 cudaError_t run_expand_hc(cudaStream_t stream,
-                          const __half *d_single, __half *d_state);
+                          const __half *d_single, float *d_state);
 
 // MLA forward (one token)
 cudaError_t run_mla_attention(

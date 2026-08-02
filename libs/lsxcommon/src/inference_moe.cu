@@ -284,13 +284,17 @@ cudaError_t run_router(
     return cudaSuccess;
 }
 
-// SiLU activation: silu(x) = x * sigmoid(x)
-__global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n)
+// SiLU with swiglu_limit: silu(clamp(gate, max=limit)) * clamp(up, ±limit)
+// Matches reference: gate = clamp(gate, max=limit); up = clamp(up, -limit, limit)
+__global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n, float limit)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     float x = __half2float(d_act[i]);
     float g = __half2float(d_gate[i]);
+    if (x > limit) x = limit;
+    if (g > limit) g = limit;
+    if (g < -limit) g = -limit;
     float sig = 1.0f / (1.0f + expf(-x));
     d_act[i] = __float2half(x * sig * g);
 }
@@ -392,7 +396,7 @@ cudaError_t run_shared_experts_ffn(
     {
         int block = 256;
         int grid = (intermediate_dim + block - 1) / block;
-        silu_mul_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_gate, intermediate_dim);
+        silu_mul_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_gate, intermediate_dim, 10.0f);
     }
 
     // 6. Dequant W2 → d_dequant (reuse)

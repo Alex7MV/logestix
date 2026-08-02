@@ -71,6 +71,25 @@ static __global__ void half_rms_kernel(
     atomicAdd(out_sum, v * v);
 }
 
+static float dbg_buffer_rms_float(const float* d_buf, int n)
+{
+    float* d_sum = nullptr;
+    float sum = -1.0f;
+    if (cudaMalloc(&d_sum, sizeof(float)) != cudaSuccess) return -1.0f;
+    cudaMemset(d_sum, 0, sizeof(float));
+    // Simple reduction: each thread sums its elements' squares
+    int block = 256;
+    int grid = (n + block - 1) / block;
+    // Reuse half_rms_kernel — it treats input as __half. We need a float version.
+    // For now, just do a manual cudaMemcpy + host-side computation.
+    std::vector<float> h_buf(static_cast<size_t>(n));
+    cudaMemcpy(h_buf.data(), d_buf, n * sizeof(float), cudaMemcpyDeviceToHost);
+    sum = 0.0f;
+    for (int i = 0; i < n; ++i) sum += h_buf[static_cast<size_t>(i)] * h_buf[static_cast<size_t>(i)];
+    cudaFree(d_sum);
+    return sqrtf(sum / static_cast<float>(n));
+}
+
 static float dbg_buffer_rms(const __half* d_buf, int n)
 {
     float* d_sum = nullptr;
@@ -255,8 +274,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
 
     cudaStream_t stream = nullptr;
     cublasHandle_t cublas_h = nullptr;
-    __half *d_hidden = nullptr;      // [hc_mult·dim] — HC state (4 copies)
-    __half *d_hidden_next = nullptr; // [hc_mult·dim]
+    float *d_hidden = nullptr;      // [hc_mult·dim] — HC state in FP32
+    float *d_hidden_next = nullptr; // [hc_mult·dim] FP32
     __half *d_single = nullptr;      // [dim] hc_pre output
     __half *d_normed = nullptr;      // [dim] rmsnorm output
     __half *d_ffn_out = nullptr;     // [dim] shared-expert FFN output
@@ -302,8 +321,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
-    INFER_CHECK(cudaMalloc(&d_hidden, static_cast<size_t>(kHcDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_hidden_next, static_cast<size_t>(kHcDim) * sizeof(__half)));
+    INFER_CHECK(cudaMalloc(&d_hidden, static_cast<size_t>(kHcDim) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_hidden_next, static_cast<size_t>(kHcDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_single, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_normed, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_ffn_out, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
@@ -405,20 +424,15 @@ InferenceResult RunInference(const InferenceConfig &cfg)
 
         std::ostringstream dbg_oss;
         dbg_oss << "[dbg] embed[0..4]=";
-        __half hd[5] = {};
+        float hd[5] = {};
         __half de[5] = {};
-        INFER_CHECK(cudaMemcpy(hd, d_hidden, 5 * sizeof(__half), cudaMemcpyDeviceToHost));
+        INFER_CHECK(cudaMemcpy(hd, d_hidden, 5 * sizeof(float), cudaMemcpyDeviceToHost));
         INFER_CHECK(cudaMemcpy(de, pw.d_embed, 5 * sizeof(__half), cudaMemcpyDeviceToHost));
         for (int i = 0; i < 5; ++i)
-            dbg_oss << " " << __half2float(hd[i]);
+            dbg_oss << " " << hd[i];
         dbg_oss << " d_embed[0..4]=";
         for (int i = 0; i < 5; ++i)
             dbg_oss << " " << __half2float(de[i]);
-        dbg_oss << " rawhex=";
-        for (int i = 0; i < 5; ++i) {
-            uint16_t bits = *reinterpret_cast<uint16_t*>(&hd[i]);
-            dbg_oss << " 0x" << std::hex << bits << std::dec;
-        }
         log::debug(dbg_oss.str());
     }
 
@@ -468,7 +482,21 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
                 INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
-                __half *tmp = d_hidden;
+                if (step == 0 && (lay % 5 == 0 || lay == 42)) {
+                    INFER_CHECK(cudaStreamSynchronize(stream));
+                    float attn_rms = dbg_buffer_rms(d_attn_out, kHiddenDim);
+                    float hc_rms = dbg_buffer_rms_float(d_hidden_next, kHcDim);
+                    float res_rms = dbg_buffer_rms_float(d_hidden, kHcDim);
+                    float h_post[4] = {};
+                    cudaMemcpy(h_post, d_hc_post, 4*sizeof(float), cudaMemcpyDeviceToHost);
+                    std::ostringstream oss2;
+                    oss2 << "attn=" << attn_rms << " res=" << res_rms
+                         << " hc_after_attn=" << hc_rms
+                         << " post=[" << h_post[0] << "," << h_post[1]
+                         << "," << h_post[2] << "," << h_post[3] << "]";
+                    log::debug("[dbg] step0 layer" + std::to_string(lay) + " " + oss2.str());
+                }
+                float *tmp = d_hidden;
                 d_hidden = d_hidden_next;
                 d_hidden_next = tmp;
             }
@@ -565,15 +593,18 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             }
 
             {
-                if (lay == 0) {
+                if (step == 0 && (lay % 5 == 0 || lay == 42)) {
                     INFER_CHECK(cudaStreamSynchronize(stream));
-                    int nf = dbg_count_nonfinite(d_ffn_out, kHiddenDim);
-                    __half probe[6] = {};
-                    cudaMemcpy(probe, d_ffn_out, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-                    std::ostringstream oss;
-                    oss << "[dbg] layer0 after FFN (shared+routed): nonfinite=" << nf << " out[0..5]=";
-                    for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-                    log::debug(oss.str());
+                    float ffn_rms = dbg_buffer_rms(d_ffn_out, kHiddenDim);
+                    float ffn_res = dbg_buffer_rms_float(d_hidden, kHcDim);
+                    float h_post[4] = {};
+                    cudaMemcpy(h_post, d_hc_post, 4*sizeof(float), cudaMemcpyDeviceToHost);
+                    log::debug("[dbg] step0 layer" + std::to_string(lay) +
+                        " FFN: ffn_out=" + std::to_string(ffn_rms) +
+                        " ffn_res=" + std::to_string(ffn_res) +
+                        " post=[" + std::to_string(h_post[0]) + "," +
+                        std::to_string(h_post[1]) + "," + std::to_string(h_post[2]) +
+                        "," + std::to_string(h_post[3]) + "]");
                 }
                 INFER_CHECK(run_hc_post(stream, d_ffn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
@@ -581,15 +612,22 @@ InferenceResult RunInference(const InferenceConfig &cfg)
 
             if (lay == 0 || lay == 1 || lay == 42) {
                 INFER_CHECK(cudaStreamSynchronize(stream));
-                float rms = dbg_buffer_rms(d_hidden_next, kHcDim);
+                float rms = dbg_buffer_rms_float(d_hidden_next, kHcDim);
                 log::debug("[dbg] layer" + std::to_string(lay) +
                           " hc_state rms=" + std::to_string(rms));
             }
 
             // hidden = hidden_next for next layer
-            __half *tmp = d_hidden;
+            float *tmp = d_hidden;
             d_hidden = d_hidden_next;
             d_hidden_next = tmp;
+
+            if (step == 0 && (lay % 5 == 0 || lay == 42)) {
+                INFER_CHECK(cudaStreamSynchronize(stream));
+                float rms = dbg_buffer_rms_float(d_hidden, kHcDim);
+                log::debug("[dbg] step0 layer" + std::to_string(lay) +
+                          " hc_state rms=" + std::to_string(rms));
+            }
         } // layers
 
         // Final: hc_head (4 copies → 1), then final RMSNorm, then LM Head
@@ -598,10 +636,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                                     pw.d_hc_head_scale, pw.d_hc_head_base,
                                     d_single));
         } else {
-            // Fallback: first copy of HC state
-            INFER_CHECK(cudaMemcpyAsync(d_single, d_hidden,
-                static_cast<size_t>(kHiddenDim) * sizeof(__half),
-                cudaMemcpyDeviceToDevice, stream));
+            // Fallback: first copy of HC state (float→half via kernel)
+            // This path should not be taken if hc_head_fn is loaded
+            log::warn("hc_head_fn not loaded, using raw first copy");
         }
 
         if (pw.d_final_norm) {

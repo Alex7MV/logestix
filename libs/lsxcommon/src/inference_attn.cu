@@ -66,10 +66,10 @@ __global__ void dequant_f8_to_half_kernel(
 }
 
 // ── HC pre: mixes → sinkhorn → y = Σ pre[j]·x[j] ─────────────────────────────
-// x: [hc_mult·dim] FP16; hc_fn: [mix_hc, hc_mult·dim] FP32;
+// x: [hc_mult·dim] FP32 (HC state in float for precision);
 // writes y [dim] FP16, post [hc_mult], comb [hc_mult·hc_mult] FP32.
 __global__ void hc_pre_kernel(
-    const __half* __restrict__ x,
+    const float* __restrict__ x,
     const float* __restrict__ hc_fn,
     const float* __restrict__ hc_scale,
     const float* __restrict__ hc_base,
@@ -92,7 +92,7 @@ __global__ void hc_pre_kernel(
     // rsqrt = rsqrt(mean(x^2) + eps)
     float sum_sq = 0.0f;
     for (int i = tid; i < N; i += kThreads) {
-        float v = __half2float(x[i]);
+        float v = x[i];
         sum_sq += v * v;
     }
     s_reduce[tid] = sum_sq;
@@ -108,7 +108,7 @@ __global__ void hc_pre_kernel(
         float acc = 0.0f;
         const float* row = hc_fn + m * N;
         for (int i = tid; i < N; i += kThreads)
-            acc += row[i] * __half2float(x[i]);
+            acc += row[i] * x[i];
         s_reduce[tid] = acc;
         __syncthreads();
         for (int s = kThreads / 2; s > 0; s >>= 1) {
@@ -170,18 +170,18 @@ __global__ void hc_pre_kernel(
     for (int i = tid; i < D; i += kThreads) {
         float acc = 0.0f;
         for (int j = 0; j < H; ++j)
-            acc += s_pre[j] * __half2float(x[j * D + i]);
+            acc += s_pre[j] * x[j * D + i];
         y[i] = __float2half(acc);
     }
 }
 
 // ── HC post: y[j] = post[j]·x + Σ_k comb[j,k]·residual[k] ────────────────────
 __global__ void hc_post_kernel(
-    const __half* __restrict__ x,      // [dim] FP16
-    const __half* __restrict__ residual, // [hc_mult·dim] FP16
+    const __half* __restrict__ x,      // [dim] FP16 (module output)
+    const float* __restrict__ residual, // [hc_mult·dim] FP32 (HC state)
     const float* __restrict__ post,    // [hc_mult]
     const float* __restrict__ comb,    // [hc_mult·hc_mult]
-    __half* __restrict__ y)            // [hc_mult·dim] FP16
+    float* __restrict__ y)            // [hc_mult·dim] FP32
 {
     constexpr int D = kHiddenDim;
     constexpr int H = kHcMult;
@@ -190,14 +190,14 @@ __global__ void hc_post_kernel(
     for (int j = 0; j < H; ++j) {
         float acc = post[j] * __half2float(x[i]);
         for (int k = 0; k < H; ++k)
-            acc += comb[j * H + k] * __half2float(residual[k * D + i]);
-        y[j * D + i] = __float2half(acc);
+            acc += comb[j * H + k] * residual[k * D + i];
+        y[j * D + i] = acc;
     }
 }
 
 // ── HC head: y = Σ_j sigmoid(mixes[j]·scale + base + eps)·x[j] ───────────────
 __global__ void hc_head_kernel(
-    const __half* __restrict__ x,          // [hc_mult·dim] FP16
+    const float* __restrict__ x,          // [hc_mult·dim] FP32
     const float* __restrict__ hc_fn,       // [hc_mult, hc_mult·dim] FP32
     const float* __restrict__ hc_scale,    // [1]
     const float* __restrict__ hc_base,     // [hc_mult]
@@ -214,7 +214,7 @@ __global__ void hc_head_kernel(
 
     float sum_sq = 0.0f;
     for (int i = tid; i < N; i += kThreads) {
-        float v = __half2float(x[i]);
+        float v = x[i];
         sum_sq += v * v;
     }
     s_reduce[tid] = sum_sq;
@@ -229,7 +229,7 @@ __global__ void hc_head_kernel(
         float acc = 0.0f;
         const float* row = hc_fn + m * N;
         for (int i = tid; i < N; i += kThreads)
-            acc += row[i] * __half2float(x[i]);
+            acc += row[i] * x[i];
         s_reduce[tid] = acc;
         __syncthreads();
         for (int s = kThreads / 2; s > 0; s >>= 1) {
@@ -247,7 +247,7 @@ __global__ void hc_head_kernel(
     for (int i = tid; i < D; i += kThreads) {
         float acc = 0.0f;
         for (int j = 0; j < H; ++j)
-            acc += s_pre[j] * __half2float(x[j * D + i]);
+            acc += s_pre[j] * x[j * D + i];
         y[i] = __float2half(acc);
     }
 }
@@ -338,7 +338,7 @@ __global__ void per_head_rms_kernel(__half* __restrict__ q, int n_heads, int hea
 
 // ── Expand single hidden vector to hc_mult copies ────────────────────────────
 __global__ void expand_hc_kernel(const __half* __restrict__ src,
-                                 __half* __restrict__ dst)
+                                 float* __restrict__ dst)
 {
     constexpr int D = kHiddenDim;
     constexpr int H = kHcMult;
@@ -346,7 +346,7 @@ __global__ void expand_hc_kernel(const __half* __restrict__ src,
     if (i >= D) return;
     const float v = __half2float(src[i]);
     for (int j = 0; j < H; ++j)
-        dst[j * D + i] = __float2half(v);
+        dst[j * D + i] = v;
 }
 
 // ── Causal sliding-window attention (sparse_attn for pure-MLA) ───────────────
@@ -504,7 +504,7 @@ static cudaError_t run_rmsnorm_attn(
 
 // ── Public: HC pre ───────────────────────────────────────────────────────────
 cudaError_t run_hc_pre(cudaStream_t stream,
-                       const __half* d_state,          // [hc_mult·dim] FP16
+                       const float* d_state,          // [hc_mult·dim] FP32
                        const float* d_fn,              // [mix_hc, hc_mult·dim]
                        const float* d_scale,           // [3]
                        const float* d_base,            // [mix_hc]
@@ -519,9 +519,9 @@ cudaError_t run_hc_pre(cudaStream_t stream,
 
 cudaError_t run_hc_post(cudaStream_t stream,
                         const __half* d_x,             // [dim] FP16
-                        const __half* d_residual,      // [hc_mult·dim] FP16
+                        const float* d_residual,       // [hc_mult·dim] FP32
                         const float* d_post, const float* d_comb,
-                        __half* d_y)                   // [hc_mult·dim] FP16
+                        float* d_y)                    // [hc_mult·dim] FP32
 {
     hc_post_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
         d_x, d_residual, d_post, d_comb, d_y);
@@ -529,7 +529,7 @@ cudaError_t run_hc_post(cudaStream_t stream,
 }
 
 cudaError_t run_hc_head(cudaStream_t stream,
-                        const __half* d_state,         // [hc_mult·dim] FP16
+                        const float* d_state,         // [hc_mult·dim] FP32
                         const float* d_fn,             // [hc_mult, hc_mult·dim]
                         const float* d_scale,          // [1]
                         const float* d_base,           // [hc_mult]
@@ -540,7 +540,7 @@ cudaError_t run_hc_head(cudaStream_t stream,
 }
 
 cudaError_t run_expand_hc(cudaStream_t stream,
-                          const __half* d_single, __half* d_state)
+                          const __half* d_single, float* d_state)
 {
     expand_hc_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(d_single, d_state);
     return cudaGetLastError();
