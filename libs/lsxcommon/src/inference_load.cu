@@ -611,6 +611,87 @@ cudaError_t load_pinned_weights(
             log::info(oss2.str());
         }
 
+        // ── CSA Compressor (layers 2-41) ──────────────────────────────────
+        if (lw.compress_ratio > 0) {
+            int coff = lw.comp_coff;
+            int comp_out = coff * kHiddenDim;  // 1024 for ratio=4, 512 for ratio=128
+
+            auto *t_comp_wkv = find_tensor_suffix(lt, "attn.compressor.wkv.weight");
+            if (t_comp_wkv && !t_comp_wkv->data.empty())
+                upload_bf16_to_half(t_comp_wkv->data.data(),
+                    static_cast<int64_t>(comp_out) * kHiddenDim,
+                    &lw.d_comp_wkv, stream);
+
+            auto *t_comp_wgate = find_tensor_suffix(lt, "attn.compressor.wgate.weight");
+            if (t_comp_wgate && !t_comp_wgate->data.empty())
+                upload_bf16_to_half(t_comp_wgate->data.data(),
+                    static_cast<int64_t>(comp_out) * kHiddenDim,
+                    &lw.d_comp_wgate, stream);
+
+            auto *t_comp_ape = find_tensor_suffix(lt, "attn.compressor.ape");
+            if (t_comp_ape && !t_comp_ape->data.empty())
+                upload_f32_bytes(t_comp_ape->data, &lw.d_comp_ape, stream);
+
+            auto *t_comp_norm = find_tensor_suffix(lt, "attn.compressor.norm.weight");
+            if (t_comp_norm && !t_comp_norm->data.empty())
+                upload_bf16_to_half(t_comp_norm->data.data(),
+                    static_cast<int64_t>(kHeadDim), &lw.d_comp_norm, stream);
+
+            // ── CSA Indexer (ratio=4 only) ─────────────────────────────────
+            if (lw.compress_ratio == 4) {
+                // indexer.wq_b: F8_E4M3 [8192, 1024] + F8_E8M0 scale [64, 8]
+                auto *t_idx_wq_b = find_tensor_suffix(lt, "attn.indexer.wq_b.weight");
+                auto *t_idx_wq_b_s = find_tensor_suffix(lt, "attn.indexer.wq_b.scale");
+                if (t_idx_wq_b && !t_idx_wq_b->data.empty()) {
+                    int64_t wq_n = static_cast<int64_t>(t_idx_wq_b->data.size());
+                    uint8_t *d_raw = nullptr;
+                    cudaMalloc(&d_raw, wq_n);
+                    cudaMemcpyAsync(d_raw, t_idx_wq_b->data.data(), wq_n,
+                        cudaMemcpyHostToDevice, stream);
+                    lw.d_idx_wq_b = d_raw;
+                    lw.idx_wq_b_rows = 8192;
+                    lw.idx_wq_b_cols = 1024;
+                }
+                if (t_idx_wq_b_s && !t_idx_wq_b_s->data.empty()) {
+                    int64_t sc_n = static_cast<int64_t>(t_idx_wq_b_s->data.size());
+                    uint8_t *d_sc = nullptr;
+                    cudaMalloc(&d_sc, sc_n);
+                    cudaMemcpyAsync(d_sc, t_idx_wq_b_s->data.data(), sc_n,
+                        cudaMemcpyHostToDevice, stream);
+                    lw.d_idx_wq_b_scales = d_sc;
+                }
+                // indexer.weights_proj: BF16 [64, 4096]
+                auto *t_idx_wp = find_tensor_suffix(lt, "attn.indexer.weights_proj.weight");
+                if (t_idx_wp && !t_idx_wp->data.empty())
+                    upload_bf16_to_half(t_idx_wp->data.data(),
+                        64LL * kHiddenDim, &lw.d_idx_weights_proj, stream);
+                // indexer.compressor.* (head_dim=128)
+                auto *t_ic_wkv = find_tensor_suffix(lt, "attn.indexer.compressor.wkv.weight");
+                if (t_ic_wkv && !t_ic_wkv->data.empty())
+                    upload_bf16_to_half(t_ic_wkv->data.data(),
+                        256LL * kHiddenDim, &lw.d_idx_comp_wkv, stream);
+                auto *t_ic_wgate = find_tensor_suffix(lt, "attn.indexer.compressor.wgate.weight");
+                if (t_ic_wgate && !t_ic_wgate->data.empty())
+                    upload_bf16_to_half(t_ic_wgate->data.data(),
+                        256LL * kHiddenDim, &lw.d_idx_comp_wgate, stream);
+                auto *t_ic_ape = find_tensor_suffix(lt, "attn.indexer.compressor.ape");
+                if (t_ic_ape && !t_ic_ape->data.empty())
+                    upload_f32_bytes(t_ic_ape->data, &lw.d_idx_comp_ape, stream);
+                auto *t_ic_norm = find_tensor_suffix(lt, "attn.indexer.compressor.norm.weight");
+                if (t_ic_norm && !t_ic_norm->data.empty())
+                    upload_bf16_to_half(t_ic_norm->data.data(),
+                        128LL, &lw.d_idx_comp_norm, stream);
+            }
+
+            if (l == 2)
+                log::info("[load_pinned] layer2 CSA: comp_wkv=" + std::string(lw.d_comp_wkv ? "yes" : "no")
+                    + " comp_wgate=" + std::string(lw.d_comp_wgate ? "yes" : "no")
+                    + " comp_ape=" + std::string(lw.d_comp_ape ? "yes" : "no")
+                    + " comp_norm=" + std::string(lw.d_comp_norm ? "yes" : "no")
+                    + " idx_wq_b=" + std::string(lw.d_idx_wq_b ? "yes" : "no")
+                    + " idx_weights_proj=" + std::string(lw.d_idx_weights_proj ? "yes" : "no"));
+        }
+
     }
 
     // Shared experts: NVFP4-packed metadata from pinned/shared_experts.arrow.
