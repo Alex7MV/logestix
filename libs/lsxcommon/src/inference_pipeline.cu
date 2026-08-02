@@ -175,6 +175,7 @@ cudaError_t run_routed_experts(
     const int *h_top_indices, const float *h_top_weights, int topk,
     __half *d_output,
     __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    __half *d_act_quant,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes);
 
@@ -283,6 +284,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
     __half *d_dequant_scratch = nullptr;
+    __half *d_act_quant = nullptr;     // FP8_E4M3 activation emulation scratch
     __half *d_attn_dequant = nullptr;  // F8→FP16 scratch (≥ wq_b/wo_a/wo_b)
     __half *d_kv_cache = nullptr;      // [layers][window][head_dim]
     __half *d_q = nullptr, *d_qr = nullptr, *d_qr2 = nullptr;
@@ -331,6 +333,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_shared_gate, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
+    INFER_CHECK(cudaMalloc(&d_act_quant,
+        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_attn_dequant, attn_dequant_sz));
     INFER_CHECK(cudaMalloc(&d_kv_cache, kv_cache_sz));
     INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
@@ -588,6 +592,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_out,
                     d_shared_int, d_shared_gate, d_dequant_scratch,
+                    d_act_quant,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total));
             }
@@ -766,6 +771,7 @@ cleanup:
     if (d_shared_gate) cudaFree(d_shared_gate);
     if (d_routed_buf)  cudaFree(d_routed_buf);
     if (d_dequant_scratch) cudaFree(d_dequant_scratch);
+    if (d_act_quant)      cudaFree(d_act_quant);
     if (d_attn_dequant) cudaFree(d_attn_dequant);
     if (d_kv_cache)    cudaFree(d_kv_cache);
     if (d_q)           cudaFree(d_q);

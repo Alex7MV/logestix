@@ -19,6 +19,59 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__, const uint8_t* __restrict__, float,
     __half* __restrict__, int);
 
+// ── FP8_E4M3 activation quantization emulation ──────────────────────────────
+// Clamps to [-448, 448], then reduces mantissa to 3 bits (E4M3 precision)
+// by converting through the E4M3 bit layout: sign(1) + exp(4, bias=7) + mant(3).
+// Operates in-place on __half buffers (FP16 → E4M3 → FP16 round-trip).
+__global__ void act_quant_emulation_kernel(__half* d_act, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    float v = __half2float(d_act[i]);
+
+    // Clamp to E4M3 range
+    v = fmaxf(-448.0f, fminf(448.0f, v));
+
+    // Convert to E4M3 bit layout: sign(1) | exp(4, bias=7) | mantissa(3)
+    uint32_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+
+    uint32_t sign = (bits >> 31) & 1;
+    int32_t  exp  = (bits >> 23) & 0xFF;
+    uint32_t mant = (bits >> 20) & 0x7;  // top 3 mantissa bits of float32
+
+    // E4M3 bias is 7 (vs float32 bias 127). Remap exponent.
+    // E4M3 normal range: exp 1..15 → float32 exp 128..142
+    // E4M3 subnormal: exp 0 → handled as zero-ish
+    int e4m3_exp = exp - 127 + 7;   // remap to E4M3 exponent
+    if (e4m3_exp < 1) e4m3_exp = 0; // subnormal/zero
+    if (e4m3_exp > 15) {
+        e4m3_exp = 15;             // saturate to max normal
+        mant = 7;                  // max mantissa
+    }
+
+    // Reconstruct float32 from the truncated E4M3 representation
+    uint32_t f32_exp = static_cast<uint32_t>(e4m3_exp) + 127 - 7;
+    if (e4m3_exp == 0) {
+        // Subnormal: value = 0 (simplified — true subnormals are negligible)
+        d_act[i] = __float2half(0.0f);
+        return;
+    }
+    uint32_t out_bits = (sign << 31) | (f32_exp << 23) | (mant << 20);
+    float result;
+    std::memcpy(&result, &out_bits, sizeof(result));
+    d_act[i] = __float2half(result);
+}
+
+// Apply scalar multiplier to an FP16 buffer (in-place)
+__global__ void scale_half_kernel(__half* d_buf, float scalar, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    d_buf[i] = __float2half(__half2float(d_buf[i]) * scalar);
+}
+
 // Run a single expert FFN: silu(W1 @ x) * (W3 @ x) then W2 @ result
 // All weights NVFP4 packed, dequantized to FP16 scratch
 static cudaError_t run_single_expert_ffn(
@@ -428,7 +481,8 @@ cudaError_t run_shared_experts_ffn(
 }
 
 // Routed-expert FFN: fp4 (E2M1 × F8_E8M0 per-32) dequant + SwiGLU GEMM.
-// The packed bytes + scales are staged into device buffers by the caller.
+// Applies act_quant (FP8_E4M3 emulation) to the input activation and to the
+// SwiGLU output before W2, matching the reference linear() pipeline.
 static cudaError_t run_routed_expert_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -437,12 +491,25 @@ static cudaError_t run_routed_expert_ffn(
     const uint8_t *d_w3, const uint8_t *d_w3_scales, int64_t w3_el,
     __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
     __half *d_output,
+    __half *d_act_quant,         // pre-allocated scratch [max(hidden, inter)]
     float weight, bool accumulate)
 {
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
-    // gate = W1^T @ x  (W1: [inter, hidden], packed [inter, hidden/2])
+    // ── W1^T @ x: quantize activation to FP8_E4M3 first ─────────────────────
+    int act_len = kHiddenDim;
+    {
+        int block = 256;
+        int grid = (act_len + block - 1) / block;
+        // Copy d_hidden → d_act_quant, then clamp+truncate in-place
+        cudaMemcpyAsync(d_act_quant, d_hidden,
+            static_cast<size_t>(act_len) * sizeof(__half),
+            cudaMemcpyDeviceToDevice, stream);
+        act_quant_emulation_kernel<<<grid, block, 0, stream>>>(
+            d_act_quant, act_len);
+    }
+
     if (w1_el > 0) {
         int64_t packed_bytes = (w1_el + 1) / 2;
         int64_t scale_bytes  = (w1_el + 31) / 32;
@@ -451,12 +518,12 @@ static cudaError_t run_routed_expert_ffn(
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_16F, kHiddenDim,
-                     d_hidden, CUDA_R_16F, kHiddenDim, &beta,
+                     d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
                      d_gate_vec, CUDA_R_16F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
 
-    // up = W3^T @ x
+    // ── W3^T @ x: reuse the same quantized activation ───────────────────────
     if (w3_el > 0) {
         int64_t packed_bytes = (w3_el + 1) / 2;
         int64_t scale_bytes  = (w3_el + 31) / 32;
@@ -465,28 +532,37 @@ static cudaError_t run_routed_expert_ffn(
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_16F, kHiddenDim,
-                     d_hidden, CUDA_R_16F, kHiddenDim, &beta,
+                     d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
                      d_up_vec, CUDA_R_16F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
 
-    // SwiGLU: d_gate_vec = silu(clamp(gate, max=10)) * clamp(up, +/-10)
+    // ── SwiGLU with clamp: silu(clamp(gate,max=10)) * clamp(up,±10) ─────────
     if (kIntermediateDim > 0) {
         int block = 256;
         int grid = (kIntermediateDim + block - 1) / block;
         swiglu_clamp_kernel<<<grid, block, 0, stream>>>(
             d_gate_vec, d_up_vec, kIntermediateDim, 10.0f);
+
+        // Apply routing weight (norm_topk_prob * 1.5) to the activated vector
+        // BEFORE W2, matching reference: x = weight * x; return w2(x)
+        scale_half_kernel<<<grid, block, 0, stream>>>(
+            d_gate_vec, weight, kIntermediateDim);
+
+        // Quantize the post-scaling activation to FP8_E4M3 before W2 GEMM
+        act_quant_emulation_kernel<<<grid, block, 0, stream>>>(
+            d_gate_vec, kIntermediateDim);
     }
 
-    // output += weight * (W2^T @ activated)  (W2: [hidden, inter], packed [hidden, inter/2])
+    // ── W2^T @ activated: no alpha (weight already applied above) ──────────
     if (w2_el > 0) {
         int64_t packed_bytes = (w2_el + 1) / 2;
         int64_t scale_bytes  = (w2_el + 31) / 32;
         dequant_fp4_e8m0(stream, d_w2, packed_bytes, d_w2_scales, scale_bytes,
                          d_dequant, w2_el);
-        float galpha = weight, gbeta = accumulate ? 1.0f : 0.0f;
+        float gbeta = accumulate ? 1.0f : 0.0f;
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     kHiddenDim, 1, kIntermediateDim, &galpha,
+                     kHiddenDim, 1, kIntermediateDim, &alpha,
                      d_dequant, CUDA_R_16F, kIntermediateDim,
                      d_gate_vec, CUDA_R_16F, kIntermediateDim, &gbeta,
                      d_output, CUDA_R_16F, kHiddenDim,
@@ -595,6 +671,7 @@ cudaError_t run_routed_experts(
     const int *h_top_indices, const float *h_top_weights, int topk,
     __half *d_output,
     __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    __half *d_act_quant,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
@@ -649,6 +726,7 @@ cudaError_t run_routed_experts(
             p2, s2, w2_el,
             p3, s3, w3_el,
             d_gate_vec, d_up_vec, d_dequant, d_output,
+            d_act_quant,
             h_top_weights[k], accumulate);
         if (e != cudaSuccess) return e;
         accumulate = true;
