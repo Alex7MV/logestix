@@ -113,6 +113,16 @@ static __host__ cudaError_t run_half_add(
     return cudaGetLastError();
 }
 
+// float → half conversion kernel (extern — also defined in inference_moe.cu)
+__global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
+                                          float* __restrict__ dst, int n)
+{
+    // half→float conversion (for shared FFN FP16→FP32)
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __half2float(src[i]);
+}
+
 static int dbg_count_nonfinite(const __half* d_buf, int n)
 {
     __half* d_tmp = nullptr;
@@ -173,11 +183,16 @@ cudaError_t run_routed_experts(
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
-    __half *d_output,
+    float *d_output,
     __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
     __half *d_act_quant,
+    float *d_swiglu_out,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes);
+
+// From inference_moe.cu — float→half kernel
+extern __global__ void float_to_half_kernel(const float* __restrict__ src,
+                                             __half* __restrict__ dst, int n);
 
 // From inference_head.cu
 cudaError_t run_lm_head(
@@ -279,7 +294,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     float *d_hidden_next = nullptr; // [hc_mult·dim] FP32
     __half *d_single = nullptr;      // [dim] hc_pre output
     __half *d_normed = nullptr;      // [dim] rmsnorm output
-    __half *d_ffn_out = nullptr;     // [dim] shared-expert FFN output
+    __half *d_ffn_out = nullptr;     // [dim] FFN output (converted to half for hc_post)
+    float *d_ffn_accum = nullptr;   // [dim] FP32 accumulation buffer (shared+routed)
+    float *d_swiglu_out = nullptr;   // [intermediate_dim] FP32 SwiGLU output
     __half *d_shared_int = nullptr;
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
@@ -335,6 +352,10 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
     INFER_CHECK(cudaMalloc(&d_act_quant,
         static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(__half)));
+    INFER_CHECK(cudaMalloc(&d_ffn_accum,
+        static_cast<size_t>(kHiddenDim) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_swiglu_out,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_attn_dequant, attn_dequant_sz));
     INFER_CHECK(cudaMalloc(&d_kv_cache, kv_cache_sz));
     INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
@@ -567,8 +588,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                             static_cast<size_t>(kLocalTopK) * sizeof(float));
             }
 
-            // Shared experts FFN: NVFP4-packed from shared_experts.arrow
+            // Shared experts FFN: outputs to d_ffn_accum (FP32)
             if (lw.d_shared_w1 && lw.shared_w1_bytes > 0) {
+                // Shared FFN outputs FP16 to d_ffn_out, then convert to FP32 accum
                 INFER_CHECK(run_shared_experts_ffn(
                     cublas_h, stream, d_normed,
                     lw.d_shared_w1, lw.d_shared_w2, lw.d_shared_w3,
@@ -577,12 +599,23 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     lw.shared_w3_global_scale,
                     lw.shared_w1_bytes, lw.shared_w2_bytes, lw.shared_w3_bytes,
                     d_shared_int, d_shared_gate, d_dequant_scratch, d_ffn_out));
+                // Convert shared FP16 output → FP32 accumulation buffer
+                {
+                    int block = 256;
+                    int grid = (kHiddenDim + block - 1) / block;
+                    // Reuse: half→float conversion via a simple kernel
+                    // We'll use the d_ffn_accum as float output
+                    INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
+                        static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
+                    float_to_half_f2h_kernel<<<grid, block, 0, stream>>>(
+                        d_ffn_out, d_ffn_accum, kHiddenDim);
+                }
             } else {
-                INFER_CHECK(cudaMemsetAsync(d_ffn_out, 0,
-                    static_cast<size_t>(kHiddenDim) * sizeof(__half), stream));
+                INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
+                    static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
             }
 
-            // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_out
+            // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
                 for (int i = 0; i < kLocalTopK; ++i)
                     ensure_expert_resident(expert_db, lay, h_topk[i]);
@@ -590,11 +623,19 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     cublas_h, stream, d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
-                    d_ffn_out,
+                    d_ffn_accum,
                     d_shared_int, d_shared_gate, d_dequant_scratch,
-                    d_act_quant,
+                    d_act_quant, d_swiglu_out,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total));
+            }
+
+            // Convert FP32 FFN accumulation → FP16 for hc_post
+            {
+                int block = 256;
+                int grid = (kHiddenDim + block - 1) / block;
+                float_to_half_kernel<<<grid, block, 0, stream>>>(
+                    d_ffn_accum, d_ffn_out, kHiddenDim);
             }
 
             {
@@ -772,6 +813,8 @@ cleanup:
     if (d_routed_buf)  cudaFree(d_routed_buf);
     if (d_dequant_scratch) cudaFree(d_dequant_scratch);
     if (d_act_quant)      cudaFree(d_act_quant);
+    if (d_ffn_accum)      cudaFree(d_ffn_accum);
+    if (d_swiglu_out)     cudaFree(d_swiglu_out);
     if (d_attn_dequant) cudaFree(d_attn_dequant);
     if (d_kv_cache)    cudaFree(d_kv_cache);
     if (d_q)           cudaFree(d_q);
