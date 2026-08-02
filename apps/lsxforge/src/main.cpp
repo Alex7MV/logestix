@@ -165,6 +165,7 @@ int main(int argc, char* argv[]) {
     std::string output_path = "converted_model";
     bool shared_only = false;
     bool repack_shared = false;
+    bool repack_experts = false;
     bool tokenizer_only = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -176,6 +177,8 @@ int main(int argc, char* argv[]) {
             shared_only = true;
         else if (std::strcmp(argv[i], "--repack-shared") == 0)
             repack_shared = true;
+        else if (std::strcmp(argv[i], "--repack-experts") == 0)
+            repack_experts = true;
         else if (std::strcmp(argv[i], "--tokenizer") == 0 && i + 1 < argc) {
             tokenizer_only = true;
             input_path = argv[++i];
@@ -216,6 +219,20 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         spdlog::info("Shared experts re-pack complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (repack_experts) {
+        spdlog::info("Re-packing routed experts (fp4 passthrough) from {} ...",
+                     input_path);
+        auto st = lsxcommon::RepackRoutedExperts(input_path, output_path);
+        if (!st.ok()) {
+            spdlog::error("Routed experts re-pack failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Routed experts re-pack complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

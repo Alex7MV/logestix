@@ -547,6 +547,18 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
     {
         int64_t numel = product(shape);
         if (numel == 0 || src.empty()) return false;
+
+        // Routed experts on disk are already NVFP4 (fp4 E2M1) packed 2-elements
+        // per byte with paired F8_E8M0 per-32-element scales. Pass the bytes
+        // through unchanged — re-quantizing them as raw int8 would corrupt the
+        // packed nibbles.
+        if ((dtype == "I8" || dtype == "U8") && !src_scale.empty()) {
+            packed       = src;
+            scales       = src_scale;
+            global_scale = 1.0f;
+            return true;
+        }
+
         const uint8_t *e8m0 = src_scale.empty() ? nullptr : src_scale.data();
         return gpu::quantize_tensor_gpu(src.data(), numel, dtype,
                                          e8m0, shape, scale_shape,
@@ -791,6 +803,159 @@ arrow::Status RepackSharedExperts(
     spdlog::info("Packing {} shared-expert layers (NVFP4)...",
                  shared_by_layer.size());
     return SaveSharedExpertsToArrow(shared_by_layer, output_root);
+}
+
+// ── Targeted routed-expert repack (fp4 passthrough) ─────────────────────────
+
+// Re-writes only the routed expert arrows from the source safetensors shards.
+// The source weights are already fp4 E2M1 packed (2 elems/byte) with paired
+// F8_E8M0 per-32-element scales, so the bytes are copied through unchanged.
+// CPU-only: no CUDA quantization is involved.
+arrow::Status RepackRoutedExperts(
+    const std::string &input_path,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                       input_path);
+
+    struct ExpertKey {
+        int layer;
+        int expert;
+        bool operator==(const ExpertKey &o) const {
+            return layer == o.layer && expert == o.expert;
+        }
+    };
+    struct ExpertKeyHash {
+        std::size_t operator()(const ExpertKey &k) const {
+            return static_cast<std::size_t>(k.layer) * 65536U
+                 + static_cast<std::size_t>(k.expert);
+        }
+    };
+
+    std::unordered_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
+    int shard_idx = 0;
+    int total_written = 0;
+    int max_layer = 0;
+    int max_expert_per_layer = 0;
+    std::unordered_map<int, int> experts_per_layer;
+
+    auto try_flush = [&](ExpertKey key, ExpertData &exp) -> arrow::Status {
+        if (exp.w1_raw.empty() || exp.w2_raw.empty() || exp.w3_raw.empty())
+            return arrow::Status::OK();
+        if (exp.w1_scale_raw.empty() || exp.w2_scale_raw.empty() ||
+            exp.w3_scale_raw.empty()) {
+            spdlog::warn("  expert layer={} expert={} missing E8M0 scales "
+                         "(w1={} w2={} w3={}), skipping",
+                         key.layer, key.expert,
+                         exp.w1_scale_raw.size(), exp.w2_scale_raw.size(),
+                         exp.w3_scale_raw.size());
+            return arrow::Status::OK();
+        }
+        ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
+        ARROW_RETURN_NOT_OK(SaveExpertToArrow(
+            packed, key.layer, key.expert, output_root));
+        ++total_written;
+        ++experts_per_layer[key.layer];
+        max_expert_per_layer = std::max(max_expert_per_layer, key.expert + 1);
+        max_layer = std::max(max_layer, key.layer + 1);
+        return arrow::Status::OK();
+    };
+
+    for (const auto &shard : model.shards) {
+        ++shard_idx;
+        spdlog::info("[{}/{}] scanning {} ...", shard_idx, model.shards.size(),
+                     shard.filename);
+
+        std::ifstream sf((fs::path(input_path) / shard.filename).string(),
+                         std::ios::binary | std::ios::ate);
+        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        int64_t sz = sf.tellg();
+        if (sz <= 0) { spdlog::warn("  Zero/negative size, skipping"); continue; }
+        sf.seekg(0);
+        std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
+        sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
+        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+
+        uint64_t hdr_len;
+        std::memcpy(&hdr_len, shard_buf.data(), 8);
+        int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
+
+        for (const auto &tensor : shard.tensors) {
+            auto parsed = parse_expert_name(tensor.name);
+            if (!parsed) continue;
+
+            int64_t raw_size = tensor.byte_size();
+            int64_t raw_start = data_off + tensor.data_begin;
+            if (raw_start < 0 || raw_start + raw_size > sz) {
+                spdlog::warn("  Skipping {} (offset out of range)", tensor.name);
+                continue;
+            }
+            const uint8_t *raw_ptr = shard_buf.data() + raw_start;
+            std::vector<uint8_t> raw(raw_ptr, raw_ptr + raw_size);
+
+            ExpertKey key{parsed->layer, parsed->expert};
+            auto &exp = partial[key];
+
+            if (parsed->is_scale) {
+                switch (parsed->weight_id) {
+                case 1:
+                    exp.w1_scale_raw   = std::move(raw);
+                    exp.w1_scale_shape = tensor.shape;
+                    break;
+                case 2:
+                    exp.w2_scale_raw   = std::move(raw);
+                    exp.w2_scale_shape = tensor.shape;
+                    break;
+                case 3:
+                    exp.w3_scale_raw   = std::move(raw);
+                    exp.w3_scale_shape = tensor.shape;
+                    break;
+                }
+            } else {
+                switch (parsed->weight_id) {
+                case 1:
+                    exp.w1_raw   = std::move(raw);
+                    exp.w1_shape = tensor.shape;
+                    exp.w1_dtype = tensor.dtype;
+                    break;
+                case 2:
+                    exp.w2_raw   = std::move(raw);
+                    exp.w2_shape = tensor.shape;
+                    exp.w2_dtype = tensor.dtype;
+                    break;
+                case 3:
+                    exp.w3_raw   = std::move(raw);
+                    exp.w3_shape = tensor.shape;
+                    exp.w3_dtype = tensor.dtype;
+                    break;
+                }
+            }
+
+            if (exp.w1_raw.size() && exp.w2_raw.size() && exp.w3_raw.size() &&
+                exp.w1_scale_raw.size() && exp.w2_scale_raw.size() &&
+                exp.w3_scale_raw.size()) {
+                auto st = try_flush(key, exp);
+                if (!st.ok())
+                    spdlog::error("  Failed to pack expert layer={} expert={}: {}",
+                                  key.layer, key.expert, st.ToString());
+                partial.erase(key);
+            }
+        }
+    }
+
+    for (auto &[key, exp] : partial) {
+        spdlog::warn("  incomplete expert layer={} expert={} (w1={} w2={} w3={})",
+                     key.layer, key.expert,
+                     exp.w1_raw.size(), exp.w2_raw.size(), exp.w3_raw.size());
+    }
+
+    spdlog::info("Repacked {} routed experts ({} layers, up to {} experts/layer)",
+                 total_written, max_layer, max_expert_per_layer);
+    return arrow::Status::OK();
 }
 
 // ── Model index ─────────────────────────────────────────────────────────────

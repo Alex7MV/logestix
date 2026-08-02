@@ -295,6 +295,22 @@ __global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n)
     d_act[i] = __float2half(x * sig * g);
 }
 
+// SwiGLU with swiglu_limit: gate clamped to (-inf, limit], up to [-limit, limit].
+// d_gate_vec = silu(clamp(d_gate_vec, max=limit)) * clamp(d_up_vec, +/-limit)
+__global__ void swiglu_clamp_kernel(
+    __half *d_gate_vec, const __half *d_up_vec, int n, float limit)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float g = __half2float(d_gate_vec[i]);
+    float u = __half2float(d_up_vec[i]);
+    if (g > limit) g = limit;
+    if (u >  limit) u =  limit;
+    if (u < -limit) u = -limit;
+    float sig = 1.0f / (1.0f + expf(-g));
+    d_gate_vec[i] = __float2half(sig * g * u);
+}
+
 // Shared experts FFN: dequant NVFP4 → FP16, GEMM, SiLU activation
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -407,26 +423,233 @@ cudaError_t run_shared_experts_ffn(
     return cudaSuccess;
 }
 
-// Routed expert FFN: load from mmap host ptr → GPU, dequant, GEMM
-void run_routed_expert_ffn(
+// Routed-expert FFN: fp4 (E2M1 × F8_E8M0 per-32) dequant + SwiGLU GEMM.
+// The packed bytes + scales are staged into device buffers by the caller.
+static cudaError_t run_routed_expert_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
-    const ExpertEntry &entry,
-    __half *d_intermediate_buf, __half *d_gate_buf,
-    __half *d_dequant,
+    const uint8_t *d_w1, const uint8_t *d_w1_scales, int64_t w1_el,
+    const uint8_t *d_w2, const uint8_t *d_w2_scales, int64_t w2_el,
+    const uint8_t *d_w3, const uint8_t *d_w3_scales, int64_t w3_el,
+    __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
     __half *d_output,
-    int hidden_dim)
+    float weight, bool accumulate)
 {
-    // Phase 1: stub — skip routed expert FFN
-    (void)cublas_h;
-    (void)stream;
-    (void)d_hidden;
-    (void)entry;
-    (void)d_intermediate_buf;
-    (void)d_gate_buf;
-    (void)d_dequant;
-    (void)d_output;
-    (void)hidden_dim;
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+
+    // gate = W1^T @ x  (W1: [inter, hidden], packed [inter, hidden/2])
+    if (w1_el > 0) {
+        int64_t packed_bytes = (w1_el + 1) / 2;
+        int64_t scale_bytes  = (w1_el + 31) / 32;
+        dequant_fp4_e8m0(stream, d_w1, packed_bytes, d_w1_scales, scale_bytes,
+                         d_dequant, w1_el);
+        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     kIntermediateDim, 1, kHiddenDim, &alpha,
+                     d_dequant, CUDA_R_16F, kHiddenDim,
+                     d_hidden, CUDA_R_16F, kHiddenDim, &beta,
+                     d_gate_vec, CUDA_R_16F, kIntermediateDim,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    }
+
+    // up = W3^T @ x
+    if (w3_el > 0) {
+        int64_t packed_bytes = (w3_el + 1) / 2;
+        int64_t scale_bytes  = (w3_el + 31) / 32;
+        dequant_fp4_e8m0(stream, d_w3, packed_bytes, d_w3_scales, scale_bytes,
+                         d_dequant, w3_el);
+        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     kIntermediateDim, 1, kHiddenDim, &alpha,
+                     d_dequant, CUDA_R_16F, kHiddenDim,
+                     d_hidden, CUDA_R_16F, kHiddenDim, &beta,
+                     d_up_vec, CUDA_R_16F, kIntermediateDim,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    }
+
+    // SwiGLU: d_gate_vec = silu(clamp(gate, max=10)) * clamp(up, +/-10)
+    if (kIntermediateDim > 0) {
+        int block = 256;
+        int grid = (kIntermediateDim + block - 1) / block;
+        swiglu_clamp_kernel<<<grid, block, 0, stream>>>(
+            d_gate_vec, d_up_vec, kIntermediateDim, 10.0f);
+    }
+
+    // output += weight * (W2^T @ activated)  (W2: [hidden, inter], packed [hidden, inter/2])
+    if (w2_el > 0) {
+        int64_t packed_bytes = (w2_el + 1) / 2;
+        int64_t scale_bytes  = (w2_el + 31) / 32;
+        dequant_fp4_e8m0(stream, d_w2, packed_bytes, d_w2_scales, scale_bytes,
+                         d_dequant, w2_el);
+        float galpha = weight, gbeta = accumulate ? 1.0f : 0.0f;
+        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     kHiddenDim, 1, kIntermediateDim, &galpha,
+                     d_dequant, CUDA_R_16F, kIntermediateDim,
+                     d_gate_vec, CUDA_R_16F, kIntermediateDim, &gbeta,
+                     d_output, CUDA_R_16F, kHiddenDim,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    }
+
+    return cudaGetLastError();
+}
+
+// Routes one token: gate GEMM → sqrt(softplus) scores → top-k (bias only for
+// selection; hash layers 0..2 use tid2eid) → norm_topk_prob → ×route_scale.
+cudaError_t route_token(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    const float *h_gate_bias,
+    int topk,
+    int *h_top_indices, float *h_top_weights)
+{
+    constexpr float kRouteScale = 1.5f;
+
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+
+    __half *d_logits = nullptr;
+    cudaError_t e = cudaMalloc(&d_logits, static_cast<size_t>(num_routed) * sizeof(__half));
+    if (e != cudaSuccess) return e;
+
+    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                 num_routed, 1, hidden_dim, &alpha,
+                 d_gate, CUDA_R_16F, hidden_dim,
+                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
+                 d_logits, CUDA_R_16F, num_routed,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+    float *h_logits = nullptr;
+    e = cudaMallocHost(&h_logits, static_cast<size_t>(num_routed) * sizeof(float));
+    if (e != cudaSuccess) { cudaFree(d_logits); return e; }
+
+    cudaMemcpyAsync(h_logits, d_logits,
+                    static_cast<size_t>(num_routed) * sizeof(__half),
+                    cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
+    float scores[256];
+    for (int i = 0; i < num_routed; ++i) {
+        float x = __half2float(reinterpret_cast<__half*>(h_logits)[i]);
+        scores[i] = sqrtf(log1pf(expf(x)));
+    }
+
+    // Selection scores: biased (bias is null for hash layers)
+    float sel[256];
+    for (int i = 0; i < num_routed; ++i)
+        sel[i] = scores[i] + (h_gate_bias ? h_gate_bias[i] : 0.0f);
+
+    if (h_tid2eid) {
+        // Hash layer: expert indices predetermined per token id.
+        if (tid2eid_stride <= 0) tid2eid_stride = topk;
+        int64_t base = static_cast<int64_t>(token_id) * tid2eid_stride;
+        for (int k = 0; k < topk; ++k)
+            h_top_indices[k] = static_cast<int>(h_tid2eid[base + k]);
+    } else {
+        bool selected[256] = {false};
+        for (int k = 0; k < topk; ++k) {
+            float best_val = -FLT_MAX;
+            int best_idx = -1;
+            for (int i = 0; i < num_routed; ++i) {
+                if (!selected[i] && sel[i] > best_val) {
+                    best_val = sel[i];
+                    best_idx = i;
+                }
+            }
+            if (best_idx >= 0) {
+                selected[best_idx] = true;
+                h_top_indices[k] = best_idx;
+            }
+        }
+    }
+
+    // Routing weights from unbiased scores, normalized, scaled by route_scale.
+    float sum_w = 0.0f;
+    for (int k = 0; k < topk; ++k) {
+        float w = scores[h_top_indices[k]];
+        h_top_weights[k] = w;
+        sum_w += w;
+    }
+    float inv = 1.0f / (sum_w + 1e-9f);
+    for (int k = 0; k < topk; ++k)
+        h_top_weights[k] *= inv * kRouteScale;
+
+    cudaFreeHost(h_logits);
+    cudaFree(d_logits);
+    return cudaSuccess;
+}
+
+// Runs the top-k routed experts for one token and accumulates their weighted
+// outputs into d_output (which must already hold the shared-expert result).
+// Expert host pointers come from the mmap'd ExpertDb; all 6 tensors of an
+// expert are staged into device scratch buffers at fixed offsets.
+cudaError_t run_routed_experts(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    __half *d_output,
+    __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes)
+{
+    const int64_t w1_el = static_cast<int64_t>(kHiddenDim) * kIntermediateDim;
+    const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
+    const int64_t w3_el = w1_el;
+
+    bool accumulate = false;
+    for (int k = 0; k < topk; ++k) {
+        int idx = h_top_indices[k];
+        if (idx < 0 || idx >= experts_per_layer) continue;
+        const ExpertEntry &en = db_entries[
+            static_cast<size_t>(layer) * experts_per_layer + idx];
+        if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
+
+        const int64_t w1b = en.w1_bytes, w2b = en.w2_bytes, w3b = en.w3_bytes;
+        const int64_t s1b = en.w1_scales_bytes, s2b = en.w2_scales_bytes, s3b = en.w3_scales_bytes;
+        if (w1b <= 0 || w2b <= 0 || w3b <= 0 || s1b <= 0 || s2b <= 0 || s3b <= 0)
+            continue;
+        if (w1b + w2b + w3b > pack_stage_bytes || s1b + s2b + s3b > scale_stage_bytes)
+            continue;
+
+        uint8_t *p1 = d_pack_stage;
+        uint8_t *p2 = d_pack_stage + w1b;
+        uint8_t *p3 = d_pack_stage + w1b + w2b;
+        uint8_t *s1 = d_scale_stage;
+        uint8_t *s2 = d_scale_stage + s1b;
+        uint8_t *s3 = d_scale_stage + s1b + s2b;
+
+        cudaError_t e = cudaSuccess;
+        e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(p2, en.host_w2, static_cast<size_t>(w2b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(p3, en.host_w3, static_cast<size_t>(w3b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(s3, en.host_w3_scales, static_cast<size_t>(s3b),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return e;
+
+        e = run_routed_expert_ffn(cublas_h, stream, d_normed,
+            p1, s1, w1_el,
+            p2, s2, w2_el,
+            p3, s3, w3_el,
+            d_gate_vec, d_up_vec, d_dequant, d_output,
+            h_top_weights[k], accumulate);
+        if (e != cudaSuccess) return e;
+        accumulate = true;
+    }
+    return cudaSuccess;
 }
 
 } // namespace gpu

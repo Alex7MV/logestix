@@ -28,6 +28,16 @@ arrow::Status RepackSharedExperts(
     const std::string &input_path,
     const std::filesystem::path &output_root);
 
+// Reads only the routed-expert tensors (experts.N.w{1,2,3}.weight + .scale)
+// from the source safetensors shards and re-writes
+// <output_root>/experts/layer_XXX/exp_MMM.arrow for every expert. The source
+// weights are already NVFP4 fp4-packed with F8_E8M0 scales, so this is a pure
+// CPU passthrough — no re-quantization. Used to regenerate the routed experts
+// after a converter change without re-converting the full model.
+arrow::Status RepackRoutedExperts(
+    const std::string &input_path,
+    const std::filesystem::path &output_root);
+
 arrow::Status WriteModelIndex(
     const std::string &model_name,
     int num_layers,

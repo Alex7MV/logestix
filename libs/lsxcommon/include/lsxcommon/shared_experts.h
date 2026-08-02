@@ -78,5 +78,16 @@ cudaError_t dequant_shared_nvfp4(
     float global_scale,
     __half* d_output, int64_t num_elements);
 
+// Dequantizes one routed-expert fp4-packed weight tensor:
+//   output[i] = E2M1(nibble_i) * F8_E8M0(scale[i >> 5])
+// Row-major [rows, cols] with packed bytes [rows, cols/2] and scales
+// [rows, cols/32]. cols must be a multiple of 32. Returns cudaErrorInvalidValue
+// on null pointers / size mismatches without launching.
+cudaError_t dequant_fp4_e8m0(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    __half* d_output, int64_t num_elements);
+
 } // namespace gpu
 } // namespace lsxcommon

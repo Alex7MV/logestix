@@ -34,6 +34,14 @@ __device__ __forceinline__ float e4m3_scale_to_float(uint8_t e4m3)
     return __uint_as_float((e4 - 7 + 127) << 23);
 }
 
+// F8_E8M0 scale: scale = 2^(e-127); 0 is a valid encoding of 0.
+__device__ __forceinline__ float e8m0_scale_to_float(uint8_t b)
+{
+    if (b == 0) return 0.0f;
+    if (b == 0xFF) return FLT_MAX;
+    return __uint_as_float((static_cast<uint32_t>(b) - 127 + 127) << 23);
+}
+
 __device__ __forceinline__ uint32_t half2_raw_bits(__half2 h)
 {
     uint32_t bits;
@@ -112,6 +120,54 @@ __global__ void dequant_shared_nvfp4_kernel(
             : (packed[byte_idx] & 0x0F);
         const float scale = e4m3_scale_to_float(scales[i >> 4]) * global_scale;
         output[i] = __float2half(kE2M1Table[nibble] * scale);
+    }
+}
+
+// Routed-expert NVFP4 dequant: E2M1 nibbles (2 elems/byte) with a paired
+// F8_E8M0 scale per 32 elements. Row-major layout [rows, cols], packed bytes
+// [rows, cols/2], scales [rows, cols/32]; cols is always a multiple of 32, so
+// the flat index i maps to scale[i >> 5] without row-boundary crossings.
+template<int BLOCK_DIM>
+__launch_bounds__(BLOCK_DIM)
+__global__ void dequant_fp4_e8m0_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    __half*        __restrict__ output,
+    int64_t                     num_elements)
+{
+    constexpr int ELEMS_PER_THREAD = 32;   // exactly one F8_E8M0 scale block
+    constexpr int ELEMS_PER_BLOCK  = BLOCK_DIM * ELEMS_PER_THREAD;
+
+    const int64_t chunk = static_cast<int64_t>(blockIdx.x) * ELEMS_PER_BLOCK;
+    if (chunk >= num_elements) return;
+
+    const int64_t base = chunk + static_cast<int64_t>(threadIdx.x) * ELEMS_PER_THREAD;
+
+    if (base + ELEMS_PER_THREAD <= num_elements) {
+        const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
+        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+
+        uint32_t w[16];
+        unpack_nibbles8(p.x, scl, &w[0]);
+        unpack_nibbles8(p.y, scl, &w[4]);
+        unpack_nibbles8(p.z, scl, &w[8]);
+        unpack_nibbles8(p.w, scl, &w[12]);
+
+        uint4* out4 = reinterpret_cast<uint4*>(output + base);
+        out4[0] = make_uint4(w[0], w[1], w[2], w[3]);
+        out4[1] = make_uint4(w[4], w[5], w[6], w[7]);
+        out4[2] = make_uint4(w[8], w[9], w[10], w[11]);
+        out4[3] = make_uint4(w[12], w[13], w[14], w[15]);
+        return;
+    }
+
+    for (int64_t i = base; i < num_elements; ++i) {
+        const int64_t byte_idx = i >> 1;
+        const uint8_t nibble = (i & 1)
+            ? (packed[byte_idx] >> 4)
+            : (packed[byte_idx] & 0x0F);
+        output[i] = __float2half(kE2M1Table[nibble]
+                                 * e8m0_scale_to_float(scales[i >> 5]));
     }
 }
 
@@ -266,6 +322,38 @@ cudaError_t dequant_shared_nvfp4(
 
     dequant_shared_nvfp4_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
         d_packed, d_scales, global_scale, d_output, num_elements);
+
+    return cudaGetLastError();
+}
+
+// Routed-expert fp4 dequant: E2M1 nibbles × F8_E8M0 per-32 scale (no global
+// scale — routed experts carry gs = 1.0).
+cudaError_t dequant_fp4_e8m0(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    __half* d_output, int64_t num_elements)
+{
+    if (!d_packed || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
+        return cudaErrorInvalidValue;
+
+    const int64_t need_packed = (num_elements + 1) / 2;
+    const int64_t need_scales = (num_elements + 31) / 32;
+    if (packed_bytes < need_packed)
+        return cudaErrorInvalidValue;
+    if (scales_bytes < need_scales)
+        return cudaErrorInvalidValue;
+
+    constexpr int BLOCK_DIM = 256;
+    constexpr int ELEMS_PER_THREAD = 32;
+    const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
+    const int blocks = static_cast<int>(
+        (num_elements + elems_per_block - 1) / elems_per_block);
+
+    dequant_fp4_e8m0_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
+        d_packed, d_scales, d_output, num_elements);
 
     return cudaGetLastError();
 }

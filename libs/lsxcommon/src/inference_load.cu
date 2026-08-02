@@ -115,6 +115,73 @@ const TensorRecord *find_tensor_substr(
     return nullptr;
 }
 
+// Upload raw F8_E4M3 / F8_E8M0 bytes host → device (no conversion).
+static cudaError_t upload_f8_bytes(const std::vector<uint8_t> &data,
+                                   const uint8_t **d_out, cudaStream_t stream)
+{
+    if (data.empty()) return cudaSuccess;
+    uint8_t *d = nullptr;
+    cudaError_t e = cudaMalloc(&d, data.size());
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(d, data.data(), data.size(),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d); return e; }
+    *d_out = d;
+    return cudaSuccess;
+}
+
+// Upload raw FP32 bytes host → device.
+static cudaError_t upload_f32_bytes(const std::vector<uint8_t> &data,
+                                    float **d_out, cudaStream_t stream)
+{
+    if (data.empty()) return cudaSuccess;
+    float *d = nullptr;
+    cudaError_t e = cudaMalloc(&d, data.size());
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(d, data.data(), data.size(),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d); return e; }
+    *d_out = d;
+    return cudaSuccess;
+}
+
+// Load one F8 attention weight + its per-tile scale from the arrow batch.
+static cudaError_t load_attn_weight(
+    const std::vector<TensorRecord> &tensors,
+    const std::string &weight_suffix, const std::string &scale_suffix,
+    const uint8_t **d_w, const uint8_t **d_scale,
+    int64_t &n, int64_t &scale_n, int &rows, int &cols,
+    cudaStream_t stream)
+{
+    const TensorRecord *wt = find_tensor_suffix(tensors, weight_suffix);
+    if (!wt) return cudaSuccess;
+    if (wt->shape.size() >= 2) {
+        rows = static_cast<int>(wt->shape[0]);
+        cols = static_cast<int>(wt->shape[1]);
+    }
+    n = static_cast<int64_t>(wt->data.size());
+    cudaError_t e = upload_f8_bytes(wt->data, d_w, stream);
+    if (e != cudaSuccess) return e;
+    const TensorRecord *st = find_tensor_suffix(tensors, scale_suffix);
+    if (st) {
+        scale_n = static_cast<int64_t>(st->data.size());
+        e = upload_f8_bytes(st->data, d_scale, stream);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaSuccess;
+}
+
+// Load one FP32 HC tensor (fn / base / scale) from the arrow batch.
+static cudaError_t load_hc_f32(
+    const std::vector<TensorRecord> &tensors,
+    const std::string &suffix,
+    float **d_out, cudaStream_t stream)
+{
+    const TensorRecord *t = find_tensor_suffix(tensors, suffix);
+    if (!t) return cudaSuccess;
+    return upload_f32_bytes(t->data, d_out, stream);
+}
+
 arrow::Result<std::vector<TensorRecord>> load_arrow_file(const std::string &path)
 {
     auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
@@ -166,92 +233,148 @@ ModelTopology load_topology(const std::string &model_path)
     return topo;
 }
 
+// Parse a single expert arrow (given its flat index) into db.entries[idx] and
+// keep the mmap + record batch alive in the cache. Returns true on success.
+static bool parse_expert_file(ExpertDb &db, size_t idx)
+{
+    auto &apath = db.paths[idx];
+    auto mmap_res = arrow::io::MemoryMappedFile::Open(apath, arrow::io::FileMode::READ);
+    if (!mmap_res.ok()) {
+        if (idx < 5 || idx % 1000 == 0)
+            log::debug("[load_expert_index] mmap fail " + apath
+                + ": " + mmap_res.status().ToString());
+        return false;
+    }
+    auto mmap = *mmap_res;
+
+    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
+    if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0)
+        return false;
+    auto batch_res = (*reader_res)->ReadRecordBatch(0);
+    if (!batch_res.ok())
+        return false;
+    auto batch = *batch_res;
+
+    auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
+        auto arr = batch->column(col);
+        auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
+        if (!bin) return {nullptr, 0};
+        auto view = bin->GetView(0);
+        return {reinterpret_cast<const uint8_t *>(view.data()),
+                static_cast<int64_t>(view.size())};
+    };
+
+    auto get_scale_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
+        auto lst = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(col));
+        if (!lst) return {nullptr, 0};
+        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
+        if (!u8) return {nullptr, 0};
+        auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
+        if (!offs) return {nullptr, 0};
+        int64_t begin = offs->Value(0);
+        int64_t end   = offs->Value(1);
+        return {u8->raw_values() + begin, end - begin};
+    };
+
+    auto get_gs = [&](int col) -> float {
+        auto arr = batch->column(col);
+        auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
+        return f ? f->Value(0) : 1.0f;
+    };
+
+    auto [w1p, w1s] = get_bin(ExpertSchema::kIdxW1Weight);
+    auto [w2p, w2s] = get_bin(ExpertSchema::kIdxW2Weight);
+    auto [w3p, w3s] = get_bin(ExpertSchema::kIdxW3Weight);
+    auto [w1sp, w1ss] = get_scale_bin(ExpertSchema::kIdxW1Scale);
+    auto [w2sp, w2ss] = get_scale_bin(ExpertSchema::kIdxW2Scale);
+    auto [w3sp, w3ss] = get_scale_bin(ExpertSchema::kIdxW3Scale);
+    float w1gs = get_gs(ExpertSchema::kIdxW1GlobalScale);
+    float w2gs = get_gs(ExpertSchema::kIdxW2GlobalScale);
+    float w3gs = get_gs(ExpertSchema::kIdxW3GlobalScale);
+
+    db.entries[idx] = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
+                       w1gs, w2gs, w3gs,
+                       w1s, w2s, w3s, w1ss, w2ss, w3ss};
+    db.mmaps[idx] = std::move(mmap);
+    db.batches[idx] = std::move(batch);
+    return true;
+}
+
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer)
 {
     ExpertDb db;
     int64_t total = static_cast<int64_t>(num_layers) * experts_per_layer;
     db.entries.resize(static_cast<size_t>(total));
-    db.mmaps.reserve(static_cast<size_t>(total));
-    db.batches.reserve(static_cast<size_t>(total));
+    db.mmaps.resize(static_cast<size_t>(total));
+    db.batches.resize(static_cast<size_t>(total));
+    db.paths.resize(static_cast<size_t>(total));
+    db.lru.reserve(db.max_open);
+    db.num_layers = num_layers;
+    db.experts_per_layer = experts_per_layer;
     namespace fs = std::filesystem;
 
+    // Build the file path per flat index. Parsing is deferred so we never hold
+    // more than max_open CRT file descriptors (Windows cap is 8192).
     for (int layer = 0; layer < num_layers; ++layer) {
         for (int exp = 0; exp < experts_per_layer; ++exp) {
             size_t idx = static_cast<size_t>(layer) * experts_per_layer
                        + static_cast<size_t>(exp);
-            auto apath = fs::path(model_path)
+            db.paths[idx] = (fs::path(model_path)
                 / "logestix" / "experts" / ("layer_" + std::to_string(layer))
-                / ("exp_" + std::to_string(exp) + ".arrow");
-
-            auto mmap_res = arrow::io::MemoryMappedFile::Open(
-                apath.string(), arrow::io::FileMode::READ);
-            if (!mmap_res.ok()) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto mmap = *mmap_res;
-
-            auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
-            if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto batch_res = (*reader_res)->ReadRecordBatch(0);
-            if (!batch_res.ok()) {
-                db.mmaps.push_back(nullptr);
-                db.batches.push_back(nullptr);
-                continue;
-            }
-            auto batch = *batch_res;
-
-            auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-                auto arr = batch->column(col);
-                auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
-                if (!bin) return {nullptr, 0};
-                auto view = bin->GetView(0);
-                return {reinterpret_cast<const uint8_t *>(view.data()),
-                        static_cast<int64_t>(view.size())};
-            };
-
-            auto get_scale_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-                auto lst = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(col));
-                if (!lst) return {nullptr, 0};
-                auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
-                if (!u8) return {nullptr, 0};
-                auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
-                if (!offs) return {nullptr, 0};
-                int64_t begin = offs->Value(0);
-                int64_t end   = offs->Value(1);
-                return {u8->raw_values() + begin, end - begin};
-            };
-
-            auto get_gs = [&](int col) -> float {
-                auto arr = batch->column(col);
-                auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
-                return f ? f->Value(0) : 1.0f;
-            };
-
-            auto [w1p, w1s] = get_bin(ExpertSchema::kIdxW1Weight);
-            auto [w2p, w2s] = get_bin(ExpertSchema::kIdxW2Weight);
-            auto [w3p, w3s] = get_bin(ExpertSchema::kIdxW3Weight);
-            auto [w1sp, w1ss] = get_scale_bin(ExpertSchema::kIdxW1Scale);
-            auto [w2sp, w2ss] = get_scale_bin(ExpertSchema::kIdxW2Scale);
-            auto [w3sp, w3ss] = get_scale_bin(ExpertSchema::kIdxW3Scale);
-            float w1gs = get_gs(ExpertSchema::kIdxW1GlobalScale);
-            float w2gs = get_gs(ExpertSchema::kIdxW2GlobalScale);
-            float w3gs = get_gs(ExpertSchema::kIdxW3GlobalScale);
-
-            db.entries[idx] = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
-                               w1gs, w2gs, w3gs,
-                               w1s, w2s, w3s, w1ss, w2ss, w3ss};
-            db.mmaps.push_back(std::move(mmap));
-            db.batches.push_back(std::move(batch));
+                / ("exp_" + std::to_string(exp) + ".arrow")).string();
         }
     }
+
+    // Warm the cache up to max_open (keeps old behavior for the common layers).
+    for (size_t idx = 0; idx < db.paths.size() && db.lru.size() < db.max_open; ++idx) {
+        if (parse_expert_file(db, idx))
+            db.lru.push_back(idx);
+    }
     return db;
+}
+
+void ensure_expert_resident(ExpertDb &db, int layer, int expert)
+{
+    if (expert < 0 || expert >= db.experts_per_layer) return;
+    if (db.paths.empty()) return;
+    size_t idx = static_cast<size_t>(layer) * static_cast<size_t>(db.experts_per_layer)
+               + static_cast<size_t>(expert);
+    if (idx >= db.entries.size()) return;
+
+    if (db.entries[idx].host_w1) {
+        // Already resident — touch it (move to front of LRU).
+        for (auto it = db.lru.begin(); it != db.lru.end(); ++it) {
+            if (*it == idx) {
+                db.lru.erase(it);
+                db.lru.insert(db.lru.begin(), idx);
+                break;
+            }
+        }
+        return;
+    }
+
+    // Evict least-recently-used entries until under the cap.
+    while (db.lru.size() >= db.max_open) {
+        size_t evict = db.lru.back();
+        db.lru.pop_back();
+        db.mmaps[evict].reset();
+        db.batches[evict].reset();
+        db.entries[evict] = ExpertEntry();
+    }
+    if (parse_expert_file(db, idx))
+        db.lru.insert(db.lru.begin(), idx);
+}
+
+void free_expert_index(ExpertDb &db)
+{
+    for (auto &m : db.mmaps) m.reset();
+    for (auto &b : db.batches) b.reset();
+    db.mmaps.clear();
+    db.batches.clear();
+    db.lru.clear();
+    db.entries.clear();
+    db.paths.clear();
 }
 
 void LayerWeights::Free()
@@ -264,6 +387,28 @@ void LayerWeights::Free()
     if (d_shared_w1_scales) cudaFree(d_shared_w1_scales);
     if (d_shared_w2_scales) cudaFree(d_shared_w2_scales);
     if (d_shared_w3_scales) cudaFree(d_shared_w3_scales);
+    if (d_wq_a)         cudaFree(const_cast<uint8_t*>(d_wq_a));
+    if (d_wq_a_scales)  cudaFree(const_cast<uint8_t*>(d_wq_a_scales));
+    if (d_wq_b)         cudaFree(const_cast<uint8_t*>(d_wq_b));
+    if (d_wq_b_scales)  cudaFree(const_cast<uint8_t*>(d_wq_b_scales));
+    if (d_wkv)          cudaFree(const_cast<uint8_t*>(d_wkv));
+    if (d_wkv_scales)   cudaFree(const_cast<uint8_t*>(d_wkv_scales));
+    if (d_wo_a)         cudaFree(const_cast<uint8_t*>(d_wo_a));
+    if (d_wo_a_scales)  cudaFree(const_cast<uint8_t*>(d_wo_a_scales));
+    if (d_wo_b)         cudaFree(const_cast<uint8_t*>(d_wo_b));
+    if (d_wo_b_scales)  cudaFree(const_cast<uint8_t*>(d_wo_b_scales));
+    if (d_q_norm)       cudaFree(d_q_norm);
+    if (d_kv_norm)      cudaFree(d_kv_norm);
+    if (d_attn_norm)    cudaFree(d_attn_norm);
+    if (d_attn_sink)    cudaFree(d_attn_sink);
+    if (d_hc_attn_fn)   cudaFree(d_hc_attn_fn);
+    if (d_hc_attn_base) cudaFree(d_hc_attn_base);
+    if (d_hc_attn_scale)cudaFree(d_hc_attn_scale);
+    if (d_hc_ffn_fn)    cudaFree(d_hc_ffn_fn);
+    if (d_hc_ffn_base)  cudaFree(d_hc_ffn_base);
+    if (d_hc_ffn_scale) cudaFree(d_hc_ffn_scale);
+    if (h_tid2eid)      cudaFreeHost(h_tid2eid);
+    if (h_gate_bias)    cudaFreeHost(h_gate_bias);
 }
 
 void PinnedWeights::Free()
@@ -271,6 +416,9 @@ void PinnedWeights::Free()
     if (d_embed)      cudaFree(d_embed);
     if (d_head)       cudaFree(d_head);
     if (d_final_norm) cudaFree(d_final_norm);
+    if (d_hc_head_fn)   cudaFree(d_hc_head_fn);
+    if (d_hc_head_base) cudaFree(d_hc_head_base);
+    if (d_hc_head_scale)cudaFree(d_hc_head_scale);
     for (auto &l : layers) l.Free();
 }
 
@@ -335,6 +483,14 @@ cudaError_t load_pinned_weights(
         if (e != cudaSuccess) { log::error("head upload failed"); return e; }
     }
 
+    // Hyper-Connections head (FP32, in global.arrow)
+    auto *hc_head_fn = find_tensor_suffix(global_tensors, "hc_head_fn");
+    auto *hc_head_base = find_tensor_suffix(global_tensors, "hc_head_base");
+    auto *hc_head_scale = find_tensor_suffix(global_tensors, "hc_head_scale");
+    if (hc_head_fn) upload_f32_bytes(hc_head_fn->data, &pw.d_hc_head_fn, stream);
+    if (hc_head_base) upload_f32_bytes(hc_head_base->data, &pw.d_hc_head_base, stream);
+    if (hc_head_scale) upload_f32_bytes(hc_head_scale->data, &pw.d_hc_head_scale, stream);
+
     pw.layers.resize(kNumLayers);
     for (int l = 0; l < kNumLayers; ++l) {
         auto fn = "layer_" + std::to_string(l) + ".arrow";
@@ -372,6 +528,94 @@ cudaError_t load_pinned_weights(
             // Use upload_bf16_to_half which does proper host→device copy first
             upload_bf16_to_half(gate->data.data(), numel,
                                 &lw.d_gate_weight, stream);
+        }
+
+        // Router selection bias (F32, non-hash layers only) — host copy.
+        auto *gate_bias = find_tensor_substr(lt, "ffn.gate.bias");
+        if (gate_bias && gate_bias->shape.size() == 1 &&
+            gate_bias->dtype == "F32") {
+            int n = static_cast<int>(gate_bias->shape[0]);
+            if (cudaMallocHost(&lw.h_gate_bias, static_cast<size_t>(n) * sizeof(float))
+                    == cudaSuccess) {
+                std::memcpy(lw.h_gate_bias, gate_bias->data.data(),
+                            static_cast<size_t>(n) * sizeof(float));
+                lw.gate_bias_n = n;
+            }
+        }
+
+        // Hash-routing table (I64 [vocab, topk], hash layers only) — host copy.
+        auto *tid2eid = find_tensor_substr(lt, "ffn.gate.tid2eid");
+        if (tid2eid && tid2eid->shape.size() == 2 &&
+            tid2eid->dtype == "I64") {
+            int64_t numel = tid2eid->shape[0] * tid2eid->shape[1];
+            if (cudaMallocHost(&lw.h_tid2eid, static_cast<size_t>(numel) * sizeof(int64_t))
+                    == cudaSuccess) {
+                std::memcpy(lw.h_tid2eid, tid2eid->data.data(),
+                            static_cast<size_t>(numel) * sizeof(int64_t));
+                lw.tid2eid_vocab = static_cast<int>(tid2eid->shape[0]);
+                lw.tid2eid_topk  = static_cast<int>(tid2eid->shape[1]);
+            }
+        }
+
+        // MLA attention weights (F8_E4M3 + per-tile F8_E8M0 scales)
+        load_attn_weight(lt, "attn.wq_a.weight", "attn.wq_a.scale",
+                         &lw.d_wq_a, &lw.d_wq_a_scales, lw.wq_a_n, lw.wq_a_s_n,
+                         lw.wq_a_rows, lw.wq_a_cols, stream);
+        load_attn_weight(lt, "attn.wq_b.weight", "attn.wq_b.scale",
+                         &lw.d_wq_b, &lw.d_wq_b_scales, lw.wq_b_n, lw.wq_b_s_n,
+                         lw.wq_b_rows, lw.wq_b_cols, stream);
+        load_attn_weight(lt, "attn.wkv.weight", "attn.wkv.scale",
+                         &lw.d_wkv, &lw.d_wkv_scales, lw.wkv_n, lw.wkv_s_n,
+                         lw.wkv_rows, lw.wkv_cols, stream);
+        load_attn_weight(lt, "attn.wo_a.weight", "attn.wo_a.scale",
+                         &lw.d_wo_a, &lw.d_wo_a_scales, lw.wo_a_n, lw.wo_a_s_n,
+                         lw.wo_a_rows, lw.wo_a_cols, stream);
+        load_attn_weight(lt, "attn.wo_b.weight", "attn.wo_b.scale",
+                         &lw.d_wo_b, &lw.d_wo_b_scales, lw.wo_b_n, lw.wo_b_s_n,
+                         lw.wo_b_rows, lw.wo_b_cols, stream);
+
+        // Attention norms (BF16) + sink (FP32)
+        auto *q_norm = find_tensor_suffix(lt, "attn.q_norm.weight");
+        if (q_norm && !q_norm->shape.empty())
+            upload_bf16_to_half(q_norm->data.data(), q_norm->shape[0],
+                                &lw.d_q_norm, stream);
+        auto *kv_norm = find_tensor_suffix(lt, "attn.kv_norm.weight");
+        if (kv_norm && !kv_norm->shape.empty())
+            upload_bf16_to_half(kv_norm->data.data(), kv_norm->shape[0],
+                                &lw.d_kv_norm, stream);
+        auto *attn_norm = find_tensor_suffix(lt, "attn_norm.weight");
+        if (attn_norm && !attn_norm->shape.empty())
+            upload_bf16_to_half(attn_norm->data.data(), attn_norm->shape[0],
+                                &lw.d_attn_norm, stream);
+        auto *attn_sink = find_tensor_suffix(lt, "attn.attn_sink");
+        if (attn_sink)
+            upload_f32_bytes(attn_sink->data, &lw.d_attn_sink, stream);
+
+        // Hyper-Connections (FP32)
+        load_hc_f32(lt, "hc_attn_fn", &lw.d_hc_attn_fn, stream);
+        load_hc_f32(lt, "hc_attn_base", &lw.d_hc_attn_base, stream);
+        load_hc_f32(lt, "hc_attn_scale", &lw.d_hc_attn_scale, stream);
+        load_hc_f32(lt, "hc_ffn_fn", &lw.d_hc_ffn_fn, stream);
+        load_hc_f32(lt, "hc_ffn_base", &lw.d_hc_ffn_base, stream);
+        load_hc_f32(lt, "hc_ffn_scale", &lw.d_hc_ffn_scale, stream);
+
+        if (l == 0) {
+            std::ostringstream oss;
+            oss << "[load_pinned] layer0 attn: wq_a=" << (lw.d_wq_a ? "yes" : "no")
+                << " (" << lw.wq_a_n << ") wq_b=" << (lw.d_wq_b ? "yes" : "no")
+                << " (" << lw.wq_b_n << ") wkv=" << (lw.d_wkv ? "yes" : "no")
+                << " (" << lw.wkv_n << ") wo_a=" << (lw.d_wo_a ? "yes" : "no")
+                << " (" << lw.wo_a_n << ") wo_b=" << (lw.d_wo_b ? "yes" : "no")
+                << " (" << lw.wo_b_n << ")";
+            log::info(oss.str());
+            std::ostringstream oss2;
+            oss2 << "[load_pinned] layer0 hc: attn_fn=" << (lw.d_hc_attn_fn ? "yes" : "no")
+                << " ffn_fn=" << (lw.d_hc_ffn_fn ? "yes" : "no")
+                << " sink=" << (lw.d_attn_sink ? "yes" : "no")
+                << " q_norm=" << (lw.d_q_norm ? "yes" : "no")
+                << " kv_norm=" << (lw.d_kv_norm ? "yes" : "no")
+                << " attn_norm=" << (lw.d_attn_norm ? "yes" : "no");
+            log::info(oss2.str());
         }
 
     }
