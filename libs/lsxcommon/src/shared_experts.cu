@@ -19,6 +19,21 @@ namespace lsxcommon {
 namespace gpu {
 namespace {
 
+// F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float
+__device__ __forceinline__ float f8e4m3_to_float(uint8_t b)
+{
+    if (!b || b == 0x80) return 0.0f;
+    int s = (b >> 7) & 1;
+    int e = (b >> 3) & 0x0F;
+    int m = b & 0x07;
+    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
+                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
+                 | (static_cast<uint32_t>(m) << 20);
+    float v;
+    std::memcpy(&v, &f32, sizeof(v));
+    return v;
+}
+
 constexpr int kE2M1TableSize = 16;
 
 // NVFP4 E2M1 decode table — indexed directly by the 4-bit nibble (sign bit 3).
@@ -27,6 +42,7 @@ __constant__ float kE2M1Table[kE2M1TableSize] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+// NVFP4 E4M3 power-of-2 block scale (only exponent bits used)
 __device__ __forceinline__ float e4m3_scale_to_float(uint8_t e4m3)
 {
     uint32_t e4 = (e4m3 >> 3) & 0x0F;
@@ -168,6 +184,26 @@ __global__ void dequant_fp4_e8m0_kernel(
             : (packed[byte_idx] & 0x0F);
         output[i] = __float2half(kE2M1Table[nibble]
                                  * e8m0_scale_to_float(scales[i >> 5]));
+    }
+}
+
+// F8_E4M3 × F8_E8M0 dequant kernel (per-128x128 tile scales).
+// Same format as attention weights. 1 byte per element (not packed).
+__global__ void dequant_f8_e8m0_kernel(
+    const uint8_t* __restrict__ w,
+    const uint8_t* __restrict__ scales,
+    __half* __restrict__ out, int64_t n,
+    int64_t C, int64_t SC, int64_t block_r, int64_t block_c)
+{
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; i < n; i += stride) {
+        int64_t r = i / C;
+        int64_t c = i % C;
+        int64_t sr = r / block_r;
+        int64_t sc = c / block_c;
+        float v = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
+        out[i] = __float2half(v);
     }
 }
 
@@ -355,6 +391,29 @@ cudaError_t dequant_fp4_e8m0(
     dequant_fp4_e8m0_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
         d_packed, d_scales, d_output, num_elements);
 
+    return cudaGetLastError();
+}
+
+// Shared-expert F8 dequant: F8_E4M3 × F8_E8M0 per-128x128 tile.
+// 1 byte per element (not packed). cols = number of columns.
+cudaError_t dequant_shared_f8(
+    cudaStream_t stream,
+    const uint8_t* d_weights, int64_t n_bytes,
+    const uint8_t* d_scales, int64_t scale_bytes,
+    __half* d_output, int64_t num_elements, int64_t cols)
+{
+    if (!d_weights || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || n_bytes <= 0)
+        return cudaErrorInvalidValue;
+    if (n_bytes < num_elements)
+        return cudaErrorInvalidValue;
+
+    int block = 256;
+    int grid = static_cast<int>((num_elements + block - 1) / block);
+    dequant_f8_e8m0_kernel<<<grid, block, 0, stream>>>(
+        d_weights, d_scales, d_output, num_elements,
+        cols, cols / 128, 128, 128);
     return cudaGetLastError();
 }
 

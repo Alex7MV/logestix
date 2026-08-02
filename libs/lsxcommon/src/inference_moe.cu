@@ -315,7 +315,7 @@ __global__ void swiglu_clamp_kernel(
     d_gate_vec[i] = __float2half(sig * g * u);
 }
 
-// Shared experts FFN: dequant NVFP4 → FP16, GEMM, SiLU activation
+// Shared experts FFN: dequant F8_E4M3 × E8M0 → FP16, GEMM, SiLU activation
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -329,15 +329,16 @@ cudaError_t run_shared_experts_ffn(
     float alpha = 1.0f, beta = 0.0f;
 
     int hidden_dim = kHiddenDim;
+    // F8_E4M3: 1 byte per element. intermediate_dim = n_elements / hidden_dim
     int intermediate_dim = w1_bytes > 0
-        ? static_cast<int>((w1_bytes * 2) / hidden_dim) : kIntermediateDim;
+        ? static_cast<int>(w1_bytes / hidden_dim) : kIntermediateDim;
     int w1_el = hidden_dim * intermediate_dim;
 
-    // 1. Dequant W1 → d_dequant
+    // 1. Dequant W1 → d_dequant (F8_E4M3 × E8M0, per-128x128 tiles)
     if (w1_bytes > 0) {
-        int64_t scales = (w1_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
-        cudaError_t e = dequant_shared_nvfp4(stream, d_w1, w1_bytes,
-            d_w1_scales, scales, w1_gs, d_dequant, w1_el);
+        cudaError_t e = dequant_shared_f8(stream, d_w1, w1_bytes,
+            d_w1_scales, w1_bytes / (intermediate_dim * hidden_dim) * 0 + 512,
+            d_dequant, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
     }
     {
@@ -367,11 +368,10 @@ cudaError_t run_shared_experts_ffn(
         log::debug(oss.str());
     }
 
-    // 3. Dequant W3 → d_dequant (reuse)
+    // 3. Dequant W3 → d_dequant (reuse, F8_E4M3 × E8M0)
     if (w3_bytes > 0) {
-        int64_t scales = (w1_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
-        cudaError_t e = dequant_shared_nvfp4(stream, d_w3, w3_bytes,
-            d_w3_scales, scales, w3_gs, d_dequant, w1_el);
+        cudaError_t e = dequant_shared_f8(stream, d_w3, w3_bytes,
+            d_w3_scales, 0, d_dequant, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
     }
 
@@ -402,9 +402,9 @@ cudaError_t run_shared_experts_ffn(
     // 6. Dequant W2 → d_dequant (reuse)
     int w2_el = intermediate_dim * hidden_dim;
     if (w2_bytes > 0) {
-        int64_t scales = (w2_el + kVFP4BlockSize - 1) / kVFP4BlockSize;
-        cudaError_t e = dequant_shared_nvfp4(stream, d_w2, w2_bytes,
-            d_w2_scales, scales, w2_gs, d_dequant, w2_el);
+        // W2: [hidden, intermediate] → cols = intermediate_dim
+        cudaError_t e = dequant_shared_f8(stream, d_w2, w2_bytes,
+            d_w2_scales, 0, d_dequant, w2_el, intermediate_dim);
         if (e != cudaSuccess) return e;
     }
 

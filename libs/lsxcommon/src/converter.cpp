@@ -548,11 +548,10 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
         int64_t numel = product(shape);
         if (numel == 0 || src.empty()) return false;
 
-        // Routed experts on disk are already NVFP4 (fp4 E2M1) packed 2-elements
-        // per byte with paired F8_E8M0 per-32-element scales. Pass the bytes
-        // through unchanged — re-quantizing them as raw int8 would corrupt the
-        // packed nibbles.
-        if ((dtype == "I8" || dtype == "U8") && !src_scale.empty()) {
+        // Routed/shared experts on disk are already quantized (F8_E4M3 or
+        // E2M1 packed 2-elements per byte) with paired F8_E8M0 scales. Pass
+        // the bytes through unchanged — re-quantizing would corrupt the values.
+        if ((dtype == "I8" || dtype == "U8" || dtype == "F8_E4M3") && !src_scale.empty()) {
             packed       = src;
             scales       = src_scale;
             global_scale = 1.0f;
