@@ -190,7 +190,7 @@ __global__ void hc_post_kernel(
     for (int j = 0; j < H; ++j) {
         float acc = post[j] * __half2float(x[i]);
         for (int k = 0; k < H; ++k)
-            acc += comb[j * H + k] * residual[k * D + i];
+            acc += comb[k * H + j] * residual[k * D + i];
         y[j * D + i] = acc;
     }
 }
