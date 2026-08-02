@@ -187,6 +187,7 @@ cudaError_t run_routed_experts(
     __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
     __half *d_act_quant,
     float *d_swiglu_out,
+    float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes);
 
@@ -297,6 +298,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_ffn_out = nullptr;     // [dim] FFN output (converted to half for hc_post)
     float *d_ffn_accum = nullptr;   // [dim] FP32 accumulation buffer (shared+routed)
     float *d_swiglu_out = nullptr;   // [intermediate_dim] FP32 SwiGLU output
+    float *d_act_scales = nullptr;   // [ceil(max(hidden,inter)/128)] per-block act scales
     __half *d_shared_int = nullptr;
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
@@ -356,6 +358,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         static_cast<size_t>(kHiddenDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_swiglu_out,
         static_cast<size_t>(kIntermediateDim) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_act_scales,
+        static_cast<size_t>((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_attn_dequant, attn_dequant_sz));
     INFER_CHECK(cudaMalloc(&d_kv_cache, kv_cache_sz));
     INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
@@ -625,7 +629,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_accum,
                     d_shared_int, d_shared_gate, d_dequant_scratch,
-                    d_act_quant, d_swiglu_out,
+                    d_act_quant, d_swiglu_out, d_act_scales,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total));
             }
@@ -815,6 +819,7 @@ cleanup:
     if (d_act_quant)      cudaFree(d_act_quant);
     if (d_ffn_accum)      cudaFree(d_ffn_accum);
     if (d_swiglu_out)     cudaFree(d_swiglu_out);
+    if (d_act_scales)     cudaFree(d_act_scales);
     if (d_attn_dequant) cudaFree(d_attn_dequant);
     if (d_kv_cache)    cudaFree(d_kv_cache);
     if (d_q)           cudaFree(d_q);
