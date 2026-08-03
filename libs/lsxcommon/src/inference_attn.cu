@@ -47,6 +47,73 @@ __device__ float dev_f8e8m0_to_float(uint8_t b)
     return v;
 }
 
+// ── KV act_quant (FP8_E4M3 inplace, block_size=64) ───────────────────────────
+// Reference line 506: act_quant(kv[..., :-rd], 64, scale_fmt, scale_dtype, True)
+// Applies FP8_E4M3 quantization+dequantization (fused) to the non-RoPE dims
+// of the KV vector. The RoPE dims (last 64) are left untouched.
+// This matches QAT behavior and prevents precision drift in KV cache.
+__global__ void kv_act_quant_kernel(
+    __half* d_kv,   // [head_dim] in-place FP8 quantize+dequant for first 448 dims
+    int nope_dim)    // head_dim - rope_head_dim = 448
+{
+    constexpr int BLK = 64;
+    const int blk = blockIdx.x;
+    const int base = blk * BLK;
+    if (base >= nope_dim) return;
+    const int n = min(BLK, nope_dim - base);
+
+    // Phase 1: amax
+    __shared__ float s_amax;
+    if (threadIdx.x == 0) s_amax = 0.0f;
+    __syncthreads();
+
+    float local_max = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        float v = fabsf(__half2float(d_kv[base + i]));
+        local_max = fmaxf(local_max, v);
+    }
+    __shared__ float s_reduce[32];
+    int lane = threadIdx.x & 31;
+    int warp = threadIdx.x >> 5;
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, __shfl_xor_sync(0xFFFFFFFF, local_max, offset));
+    if (lane == 0) s_reduce[warp] = local_max;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        float v = (threadIdx.x < (blockDim.x + 31) / 32) ? s_reduce[threadIdx.x] : 0.0f;
+        for (int offset = 16; offset > 0; offset >>= 1)
+            v = fmaxf(v, __shfl_xor_sync(0xFFFFFFFF, v, offset));
+        if (threadIdx.x == 0) s_amax = v;
+    }
+    __syncthreads();
+
+    // Phase 2: quantize to FP8_E4M3 then dequant back (inplace)
+    float scale = fmaxf(s_amax, 1e-4f) / 448.0f;
+    float inv_scale = 1.0f / scale;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        float v = __half2float(d_kv[base + i]) * inv_scale;
+        v = fmaxf(-448.0f, fminf(448.0f, v));
+        // FP8_E4M3 quantization: sign(1) + exp(4, bias=7) + mant(3)
+        uint32_t bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        uint32_t sign = (bits >> 31) & 1;
+        int32_t  exp32 = (bits >> 23) & 0xFF;
+        uint32_t mant3 = (bits >> 20) & 0x7;
+        int e4 = exp32 - 127 + 7;
+        if (e4 < 1) e4 = 0;
+        if (e4 > 15) { e4 = 15; mant3 = 7; }
+        if (e4 == 0) {
+            d_kv[base + i] = __float2half(0.0f);
+        } else {
+            uint32_t out_bits = (sign << 31) | (static_cast<uint32_t>(e4 + 120) << 23) | (mant3 << 20);
+            float result;
+            std::memcpy(&result, &out_bits, sizeof(result));
+            // Dequant back: result is the FP8 value, multiply by scale
+            d_kv[base + i] = __float2half(result * scale);
+        }
+    }
+}
+
 // ── F8_E4M3 → FP16 dequant with per-128x128-tile E8M0 scales ─────────────────
 __global__ void dequant_f8_to_half_kernel(
     const uint8_t* __restrict__ w, const uint8_t* __restrict__ scales,
@@ -609,7 +676,12 @@ cudaError_t run_mla_attention(
             lw.compress_ratio > 0 ? 1 : 0);
     }
 
-    // write kv into circular cache slot
+    // write kv into circular cache slot (with FP8 act_quant on non-RoPE dims)
+    {
+        // Apply act_quant(kv[..., :-rd], 64, inplace=True) — FP8 quantize+dequant
+        int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
+        kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+    }
     const int slot = start_pos % kAttnWindow;
     e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
                         static_cast<size_t>(kHeadDim) * sizeof(__half),
@@ -890,7 +962,11 @@ cudaError_t run_csa_attention(
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
 
-    // Store KV in sliding-window cache
+    // Store KV in sliding-window cache (with FP8 act_quant on non-RoPE dims)
+    {
+        int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
+        kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+    }
     const int slot = start_pos % kAttnWindow;
     cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
         static_cast<size_t>(kHeadDim) * sizeof(__half),
