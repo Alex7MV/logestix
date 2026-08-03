@@ -693,29 +693,26 @@ __global__ void csa_sparse_attn_kernel(
     constexpr int kThreads = 128;
     constexpr int kHD = 512;
 
-    __shared__ float s_acc[kHD];
+    // Use s_acc as 4-slice thread-local accumulator (like mla_attn_kernel)
     __shared__ float s_max;
     __shared__ float s_sum;
     __shared__ float s_part[kThreads];
+    float acc_o[kHD / kThreads];  // 4 slices per thread
+    for (int i = 0; i < kHD / kThreads; ++i) acc_o[i] = 0.0f;
 
-    if (tid < kHD) s_acc[tid] = 0.0f;
     if (tid == 0) { s_max = -1e30f; s_sum = 0.0f; }
     __syncthreads();
 
     const __half* qrow = q + h * kHD;
     const int total = n_attend + n_compressed;
 
-    // Get slot index for position t
-    auto get_slot = [&] __device__ (int t) -> int {
-        if (t < n_attend)
-            return (start_pos - t + window) % window;
-        else
-            return window + (t - n_attend);
-    };
-
-    // Pass 1: find max score across all positions
+    // Pass 1: find max score
     for (int t = 0; t < total; ++t) {
-        int slot = get_slot(t);
+        int slot;
+        if (t < n_attend)
+            slot = (start_pos - t + window) % window;
+        else
+            slot = window + (t - n_attend);
         const __half* krow = kv_cache + slot * kHD;
         float partial = 0.0f;
         for (int d = tid; d < kHD; d += kThreads)
@@ -732,16 +729,21 @@ __global__ void csa_sparse_attn_kernel(
         }
         __syncthreads();
     }
-    // Include sink in max
+    // Include sink
     if (tid == 0) {
         float sk = sink[h];
         if (sk > s_max) s_max = sk;
     }
     __syncthreads();
+    const float maxv = s_max;
 
-    // Pass 2: weighted accumulation
+    // Pass 2: probs + weighted accumulation (thread-local slices, like mla_attn)
     for (int t = 0; t < total; ++t) {
-        int slot = get_slot(t);
+        int slot;
+        if (t < n_attend)
+            slot = (start_pos - t + window) % window;
+        else
+            slot = window + (t - n_attend);
         const __half* krow = kv_cache + slot * kHD;
         float partial = 0.0f;
         for (int d = tid; d < kHD; d += kThreads)
@@ -752,23 +754,29 @@ __global__ void csa_sparse_attn_kernel(
             if (tid < s) s_part[tid] += s_part[tid + s];
             __syncthreads();
         }
-        __shared__ float s_weight;
+        // Thread 0 computes weight and updates sum
         if (tid == 0) {
-            s_weight = expf(s_part[0] * scale - s_max);
-            s_sum += s_weight;
+            float p = expf(s_part[0] * scale - maxv);
+            s_part[0] = p;  // reuse s_part[0] as weight storage
+            s_sum += p;
         }
         __syncthreads();
-        float w = s_weight;
-        for (int d = tid; d < kHD; d += kThreads)
-            s_acc[d] += w * __half2float(krow[d]);
+        const float p = s_part[0];  // all threads read weight
+        for (int d = tid; d < kHD; d += kThreads) {
+            const int slice = d / kThreads;
+            acc_o[slice] += p * __half2float(krow[d]);
+        }
     }
-    // Sink contribution
-    if (tid == 0) s_sum += expf(sink[h] - s_max);
+    // Sink contribution (just adds to denominator, no output contribution)
+    if (tid == 0) s_sum += expf(sink[h] - maxv);
     __syncthreads();
 
-    float inv = 1.0f / (s_sum + 1e-9f);
-    for (int d = tid; d < kHD; d += kThreads)
-        o[h * kHD + d] = __float2half(s_acc[d] * inv);
+    const float inv = 1.0f / (s_sum + 1e-9f);
+    __half* orow = o + h * kHD;
+    for (int d = tid; d < kHD; d += kThreads) {
+        const int slice = d / kThreads;
+        orow[d] = __float2half(acc_o[slice] * inv);
+    }
 }
 
 // ── CSA: apply RMSNorm to compressed KV ──────────────────────────────────────
@@ -950,13 +958,19 @@ cudaError_t run_csa_attention(
             bytes, cudaMemcpyDeviceToDevice, stream);
     }
 
-    // ── Attention: always use mla_attn_kernel (window-only, ignores compressed) ─
+    // ── Sparse attention over window + compressed positions ─────────────
     {
         int n_attend = min(start_pos + 1, kAttnWindow);
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
-        mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
-            d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
-            start_pos, kAttnWindow, scale);
+        if (n_compressed > 0) {
+            csa_sparse_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+                start_pos, kAttnWindow, n_attend, n_compressed, scale);
+        } else {
+            mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+                start_pos, kAttnWindow, scale);
+        }
     }
 
     // ── Inverse RoPE on output ───────────────────────────────────────────
