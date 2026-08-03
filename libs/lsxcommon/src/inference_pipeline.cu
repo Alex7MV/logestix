@@ -336,8 +336,10 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     // Max attention weight: wq_b/wo_a/wo_b = 32768·1024 (or 8192·4096) elements
     size_t attn_dequant_sz = static_cast<size_t>(kAttnHeads * kHeadDim) * kQloraRank
                            * sizeof(__half);
-    // KV cache: 43 layers × 128 window × 512 head_dim
-    size_t kv_cache_sz = static_cast<size_t>(kNumLayers) * kAttnWindow * kHeadDim
+    // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
+    int max_compressed = (cfg.max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
+    size_t kv_cache_sz = static_cast<size_t>(kNumLayers)
+                       * (kAttnWindow + max_compressed) * kHeadDim
                        * sizeof(__half);
 
     INFER_CHECK(cudaStreamCreate(&stream));
@@ -513,7 +515,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                 if (lw.compress_ratio > 0) {
                     INFER_CHECK(run_csa_attention(
                         cublas_h, stream, lw, d_normed,
-                        d_kv_cache + static_cast<size_t>(lay) * kAttnWindow * kHeadDim,
+                        d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
                         csa_states[lay], step,
                         d_q, d_qr, d_qr2, d_kv, d_kv2,
                         d_o, d_olora, d_attn_out,

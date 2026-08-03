@@ -673,6 +673,124 @@ cudaError_t run_mla_attention(
     return cudaSuccess;
 }
 
+// ── CSA: sparse attention kernel (window + compressed KV) ───────────────────
+// One block per head. Attends to window positions AND compressed KV positions.
+// The kv_cache is laid out as: [window_slots, head_dim] followed by
+// [compressed_slots, head_dim] in a single contiguous buffer.
+__global__ void csa_sparse_attn_kernel(
+    const __half* __restrict__ q,         // [n_heads, head_dim]
+    const __half* __restrict__ kv_cache, // [total_slots, head_dim] (window + compressed)
+    const float*  __restrict__ sink,      // [n_heads]
+    __half* __restrict__ o,               // [n_heads, head_dim]
+    int start_pos,                         // absolute position (for circular window)
+    int window,                             // window size
+    int n_attend,                           // number of window positions (≤ window)
+    int n_compressed,                      // number of compressed positions
+    float scale)
+{
+    const int h = blockIdx.x;
+    const int tid = threadIdx.x;
+    constexpr int kThreads = 128;
+    constexpr int kHD = 512;
+
+    __shared__ float s_acc[kHD];
+    __shared__ float s_max;
+    __shared__ float s_sum;
+    __shared__ float s_part[kThreads];
+
+    if (tid < kHD) s_acc[tid] = 0.0f;
+    if (tid == 0) { s_max = -1e30f; s_sum = 0.0f; }
+    __syncthreads();
+
+    const __half* qrow = q + h * kHD;
+    const int total = n_attend + n_compressed;
+
+    // Get slot index for position t
+    auto get_slot = [&] __device__ (int t) -> int {
+        if (t < n_attend)
+            return (start_pos - t + window) % window;
+        else
+            return window + (t - n_attend);
+    };
+
+    // Pass 1: find max score across all positions
+    for (int t = 0; t < total; ++t) {
+        int slot = get_slot(t);
+        const __half* krow = kv_cache + slot * kHD;
+        float partial = 0.0f;
+        for (int d = tid; d < kHD; d += kThreads)
+            partial += __half2float(qrow[d]) * __half2float(krow[d]);
+        s_part[tid] = partial;
+        __syncthreads();
+        for (int s = kThreads / 2; s > 0; s >>= 1) {
+            if (tid < s) s_part[tid] += s_part[tid + s];
+            __syncthreads();
+        }
+        if (tid == 0) {
+            float sc = s_part[0] * scale;
+            if (sc > s_max) s_max = sc;
+        }
+        __syncthreads();
+    }
+    // Include sink in max
+    if (tid == 0) {
+        float sk = sink[h];
+        if (sk > s_max) s_max = sk;
+    }
+    __syncthreads();
+
+    // Pass 2: weighted accumulation
+    for (int t = 0; t < total; ++t) {
+        int slot = get_slot(t);
+        const __half* krow = kv_cache + slot * kHD;
+        float partial = 0.0f;
+        for (int d = tid; d < kHD; d += kThreads)
+            partial += __half2float(qrow[d]) * __half2float(krow[d]);
+        s_part[tid] = partial;
+        __syncthreads();
+        for (int s = kThreads / 2; s > 0; s >>= 1) {
+            if (tid < s) s_part[tid] += s_part[tid + s];
+            __syncthreads();
+        }
+        __shared__ float s_weight;
+        if (tid == 0) {
+            s_weight = expf(s_part[0] * scale - s_max);
+            s_sum += s_weight;
+        }
+        __syncthreads();
+        float w = s_weight;
+        for (int d = tid; d < kHD; d += kThreads)
+            s_acc[d] += w * __half2float(krow[d]);
+    }
+    // Sink contribution
+    if (tid == 0) s_sum += expf(sink[h] - s_max);
+    __syncthreads();
+
+    float inv = 1.0f / (s_sum + 1e-9f);
+    for (int d = tid; d < kHD; d += kThreads)
+        o[h * kHD + d] = __float2half(s_acc[d] * inv);
+}
+
+// ── CSA: apply RMSNorm to compressed KV ──────────────────────────────────────
+__global__ void compress_kv_norm_kernel(
+    __half* d_kv,                    // [head_dim] compressed KV (in-place)
+    const __half* d_weight,          // [head_dim] norm weight
+    int head_dim)
+{
+    const int tid = threadIdx.x;
+    __shared__ float s_sum;
+    if (tid == 0) s_sum = 0.0f;
+    __syncthreads();
+    for (int i = tid; i < head_dim; i += blockDim.x) {
+        float v = __half2float(d_kv[i]);
+        s_sum += v * v;
+    }
+    __syncthreads();
+    float inv = rsqrtf(s_sum / static_cast<float>(head_dim) + kRmsEps);
+    for (int i = tid; i < head_dim; i += blockDim.x)
+        d_kv[i] = __float2half(__half2float(d_kv[i]) * inv * __half2float(d_weight[i]));
+}
+
 // ── CSA: Compressor step kernel (gated KV pooling) ──────────────────────────
 __global__ void compressor_step_kernel(
     const __half *d_kv, const __half *d_score,
@@ -793,21 +911,60 @@ cudaError_t run_csa_attention(
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         }
         bool should_compress = ((start_pos + 1) % lw.compress_ratio) == 0;
+        __half* d_compressed_slot =
+            csa_state.d_compressed_kv + csa_state.n_compressed * kHeadDim;
         compressor_step_kernel<<<1, 256, 0, stream>>>(
             d_qr2, d_qr, lw.d_comp_ape,
             csa_state.d_comp_kv_state, csa_state.d_comp_score_state,
-            csa_state.d_compressed_kv + csa_state.n_compressed * kHeadDim,
+            d_compressed_slot,
             lw.compress_ratio, coff, kHeadDim, start_pos);
-        if (should_compress)
+        if (should_compress) {
+            // Apply RMSNorm to compressed KV
+            if (lw.d_comp_norm) {
+                compress_kv_norm_kernel<<<1, 256, 0, stream>>>(
+                    d_compressed_slot, lw.d_comp_norm, kHeadDim);
+            }
+            // Apply RoPE to last 64 dims of compressed KV
+            int comp_pos = start_pos + 1 - lw.compress_ratio;
+            {
+                int total = kRopeHeadDim / 2;
+                rope_apply_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
+                    d_compressed_slot, 1, kHeadDim, kHeadDim - kRopeHeadDim,
+                    kRopeHeadDim, static_cast<float>(comp_pos), lw.rope_theta, 1);
+            }
             csa_state.n_compressed++;
+        }
     }
 
-    // ── Attention: use existing mla_attn_kernel (window-only for now) ─────
+    // ── Build combined KV cache: window + compressed ─────────────────────
+    // Copy compressed KV slots to end of kv_cache_layer buffer.
+    // The buffer is [kAttnWindow + max_compressed, head_dim].
+    // Window slots: [0, kAttnWindow)
+    // Compressed slots: [kAttnWindow, kAttnWindow + n_compressed)
+    int n_compressed = csa_state.n_compressed;
+    if (n_compressed > 0) {
+        size_t bytes = static_cast<size_t>(n_compressed) * kHeadDim * sizeof(__half);
+        cudaMemcpyAsync(
+            d_kv_cache_layer + static_cast<size_t>(kAttnWindow) * kHeadDim,
+            csa_state.d_compressed_kv,
+            bytes, cudaMemcpyDeviceToDevice, stream);
+    }
+
+    // ── Sparse attention over window + compressed positions ─────────────
     {
+        int n_attend = min(start_pos + 1, kAttnWindow);
+        // For step 0: no compressed KV yet, just use mla_attn_kernel (window only)
+        // This avoids issues with empty compressed slots
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
-        mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
-            d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
-            start_pos, kAttnWindow, scale);
+        if (n_compressed > 0) {
+            csa_sparse_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+                start_pos, kAttnWindow, n_attend, n_compressed, scale);
+        } else {
+            mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+                start_pos, kAttnWindow, scale);
+        }
     }
 
     // ── Inverse RoPE on output ───────────────────────────────────────────

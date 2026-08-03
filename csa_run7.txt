@@ -1,0 +1,103 @@
+[2026-08-03 21:36:53.767] [lsx_logger] [thread 42952] [info] Logestix common library core initialized.
+[2026-08-03 21:36:53.768] [lsx_logger] [thread 42952] [info] logestix v0.1.0
+[2026-08-03 21:36:53.845] [lsx_logger] [thread 42952] [info] GPU 0: NVIDIA GeForce RTX 5060 Ti (compute 12.0 | 16310 MiB)
+[2026-08-03 21:36:53.845] [lsx_logger] [thread 42952] [info] Model path: D:\Programs\huggingface.co\DeepSeek-V4-Flash
+[2026-08-03 21:36:53.845] [lsx_logger] [thread 42952] [info] Running prompt inference...
+[2026-08-03 21:36:53.859] [lsx_logger] [thread 42952] [info] [inference] prompt=6 tokens: 0 671 6102 294 8760 344 
+[2026-08-03 21:36:53.860] [lsx_logger] [thread 42952] [info] [inference] layers=43 experts_per_layer=256 total=11008
+[2026-08-03 21:37:01.324] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[0] name='embed.weight' dtype=BF16 shape=[129280,4096] data_sz=1059061760 raw_u16[0..7]= bddc bca3 3dcf 3e27 bb58 be66 38b7 3e38
+[2026-08-03 21:37:01.324] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[1] name='hc_head_base' dtype=F32 shape=[4] data_sz=16 raw_u16[0..7]= ca18 c021 854c c03e 5572 c032 2462 401e
+[2026-08-03 21:37:01.324] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[2] name='hc_head_fn' dtype=F32 shape=[4,16384] data_sz=262144 raw_u16[0..7]= 42ff 3298 3b5f baa3 f6c4 b8fa 91a7 b896
+[2026-08-03 21:37:01.324] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[3] name='hc_head_scale' dtype=F32 shape=[1] data_sz=4 raw_u16[0..7]= 3aca 3f4a
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[4] name='head.weight' dtype=BF16 shape=[129280,4096] data_sz=1059061760 raw_u16[0..7]= 3dc5 3f29 3bb0 bec9 bef5 3e8a 3e36 3f70
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[5] name='norm.weight' dtype=BF16 shape=[4096] data_sz=8192 raw_u16[0..7]= 3ea8 3e9a 3e9e 3ea9 3ea8 3e99 3e9f 3e9b
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[6] name='mtp.0.attn.attn_sink' dtype=F32 shape=[64] data_sz=256 raw_u16[0..7]= b7ff 3f0c 831 3d23 9ee7 3f7f 2e85 3e77
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[7] name='mtp.0.ffn.gate.bias' dtype=F32 shape=[256] data_sz=1024 raw_u16[0..7]= e92d 411d 990b 4126 65d8 4127 7300 4127
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[8] name='mtp.0.hc_attn_base' dtype=F32 shape=[24] data_sz=96 raw_u16[0..7]= 6878 406b 485a c05f 8e5f c00e 930e c007
+[2026-08-03 21:37:01.325] [lsx_logger] [thread 42952] [info] [load_pinned] global tensor[9] name='mtp.0.hc_attn_fn' dtype=F32 shape=[24,16384] data_sz=1572864 raw_u16[0..7]= f097 bcc3 3500 3b8e 6752 3a6c 9337 bcbb
+[2026-08-03 21:38:19.087] [lsx_logger] [thread 42952] [info] [load_pinned] layer0 attn: wq_a=yes (4194304) wq_b=yes (33554432) wkv=yes (2097152) wo_a=yes (33554432) wo_b=yes (33554432)
+[2026-08-03 21:38:19.087] [lsx_logger] [thread 42952] [info] [load_pinned] layer0 hc: attn_fn=yes ffn_fn=yes sink=yes q_norm=yes kv_norm=yes attn_norm=yes
+[2026-08-03 21:38:19.653] [lsx_logger] [thread 42952] [info] [load_pinned] layer2 CSA loading (ratio=4)
+[2026-08-03 21:38:20.174] [lsx_logger] [thread 42952] [info] [load_pinned] layer2 CSA: comp_wkv=yes comp_wgate=yes comp_ape=yes comp_norm=yes idx_wq_b=yes idx_weights_proj=yes
+[2026-08-03 21:38:57.244] [lsx_logger] [thread 42952] [info] [load_pinned] shared_experts: 43 layers
+[2026-08-03 21:38:57.244] [lsx_logger] [thread 42952] [info] [load_pinned] layer0 shared: w1_bytes=8388608 w1_gs=1 w2_bytes=8388608 w2_gs=1 w3_bytes=8388608 w3_gs=1 w1_scale_bytes=512 w1_numel=16777216
+[2026-08-03 21:39:46.211] [lsx_logger] [thread 42952] [info] [inference] expert mmaps: 7000/11008 loaded in 46389 ms
+[2026-08-03 21:39:46.211] [lsx_logger] [thread 42952] [info] [inference] vocab_size=129280
+[2026-08-03 21:39:53.136] [lsx_logger] [thread 42952] [info] [inference] step=0 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:39:58.869] [lsx_logger] [thread 42952] [info] [inference] step=1 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:04.110] [lsx_logger] [thread 42952] [info] [inference] step=2 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:10.001] [lsx_logger] [thread 42952] [info] [inference] step=3 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:15.615] [lsx_logger] [thread 42952] [info] [inference] step=4 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:20.072] [lsx_logger] [thread 42952] [info] [inference] step=5 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:25.543] [lsx_logger] [thread 42952] [info] [inference] step=6 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:30.911] [lsx_logger] [thread 42952] [info] [inference] step=7 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:33.637] [lsx_logger] [thread 42952] [info] [inference] step=8 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:35.976] [lsx_logger] [thread 42952] [info] [inference] step=9 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:36.800] [lsx_logger] [thread 42952] [info] [inference] step=10 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:40.174] [lsx_logger] [thread 42952] [info] [inference] step=11 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:41.822] [lsx_logger] [thread 42952] [info] [inference] step=12 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:43.942] [lsx_logger] [thread 42952] [info] [inference] step=13 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:44.757] [lsx_logger] [thread 42952] [info] [inference] step=14 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:46.613] [lsx_logger] [thread 42952] [info] [inference] step=15 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:47.508] [lsx_logger] [thread 42952] [info] [inference] step=16 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:48.369] [lsx_logger] [thread 42952] [info] [inference] step=17 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:49.297] [lsx_logger] [thread 42952] [info] [inference] step=18 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:51.127] [lsx_logger] [thread 42952] [info] [inference] step=19 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:51.982] [lsx_logger] [thread 42952] [info] [inference] step=20 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:53.707] [lsx_logger] [thread 42952] [info] [inference] step=21 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:54.560] [lsx_logger] [thread 42952] [info] [inference] step=22 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:55.399] [lsx_logger] [thread 42952] [info] [inference] step=23 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:56.271] [lsx_logger] [thread 42952] [info] [inference] step=24 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:40:57.128] [lsx_logger] [thread 42952] [info] [inference] step=25 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:02.079] [lsx_logger] [thread 42952] [info] [inference] step=26 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:08.108] [lsx_logger] [thread 42952] [info] [inference] step=27 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:08.952] [lsx_logger] [thread 42952] [info] [inference] step=28 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:09.786] [lsx_logger] [thread 42952] [info] [inference] step=29 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:10.613] [lsx_logger] [thread 42952] [info] [inference] step=30 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:11.448] [lsx_logger] [thread 42952] [info] [inference] step=31 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:12.280] [lsx_logger] [thread 42952] [info] [inference] step=32 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:13.145] [lsx_logger] [thread 42952] [info] [inference] step=33 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:13.988] [lsx_logger] [thread 42952] [info] [inference] step=34 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:14.801] [lsx_logger] [thread 42952] [info] [inference] step=35 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:15.661] [lsx_logger] [thread 42952] [info] [inference] step=36 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:16.492] [lsx_logger] [thread 42952] [info] [inference] step=37 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:17.296] [lsx_logger] [thread 42952] [info] [inference] step=38 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:18.135] [lsx_logger] [thread 42952] [info] [inference] step=39 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:18.965] [lsx_logger] [thread 42952] [info] [inference] step=40 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:19.807] [lsx_logger] [thread 42952] [info] [inference] step=41 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:20.635] [lsx_logger] [thread 42952] [info] [inference] step=42 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:21.510] [lsx_logger] [thread 42952] [info] [inference] step=43 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:22.348] [lsx_logger] [thread 42952] [info] [inference] step=44 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:23.265] [lsx_logger] [thread 42952] [info] [inference] step=45 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:24.118] [lsx_logger] [thread 42952] [info] [inference] step=46 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:24.938] [lsx_logger] [thread 42952] [info] [inference] step=47 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:25.761] [lsx_logger] [thread 42952] [info] [inference] step=48 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:26.598] [lsx_logger] [thread 42952] [info] [inference] step=49 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:27.449] [lsx_logger] [thread 42952] [info] [inference] step=50 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:28.286] [lsx_logger] [thread 42952] [info] [inference] step=51 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:29.140] [lsx_logger] [thread 42952] [info] [inference] step=52 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:29.952] [lsx_logger] [thread 42952] [info] [inference] step=53 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:30.772] [lsx_logger] [thread 42952] [info] [inference] step=54 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:31.607] [lsx_logger] [thread 42952] [info] [inference] step=55 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:32.413] [lsx_logger] [thread 42952] [info] [inference] step=56 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:33.237] [lsx_logger] [thread 42952] [info] [inference] step=57 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:34.055] [lsx_logger] [thread 42952] [info] [inference] step=58 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:34.910] [lsx_logger] [thread 42952] [info] [inference] step=59 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:35.772] [lsx_logger] [thread 42952] [info] [inference] step=60 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:36.619] [lsx_logger] [thread 42952] [info] [inference] step=61 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:37.480] [lsx_logger] [thread 42952] [info] [inference] step=62 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:38.296] [lsx_logger] [thread 42952] [info] [inference] step=63 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:39.122] [lsx_logger] [thread 42952] [info] [inference] step=64 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:39.946] [lsx_logger] [thread 42952] [info] [inference] step=65 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:40.798] [lsx_logger] [thread 42952] [info] [inference] step=66 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:41.635] [lsx_logger] [thread 42952] [info] [inference] step=67 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:42.486] [lsx_logger] [thread 42952] [info] [inference] step=68 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:43.327] [lsx_logger] [thread 42952] [info] [inference] step=69 tok=0 '' maxv=-10000000000.0000
+[2026-08-03 21:41:43.327] [lsx_logger] [thread 42952] [info] === --testprompt Results ===
+  prompt:        "The capital of France is"
+  output:        ""
+  elapsed:       117074.1 ms
+  gen_tokens:    64
+  TTFT:          1672.49 ms
+  tokens/s:      0.5
+[2026-08-03 21:41:52.893] [lsx_logger] [thread 42952] [info] Shutting down Logestix common library core...
