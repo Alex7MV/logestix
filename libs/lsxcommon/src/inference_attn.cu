@@ -6,6 +6,7 @@
 // attention with a learnable attn_sink.  CSA (compressor/indexer) is out of scope.
 
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/inference_csa.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/norm_kernels.h"
 #include "inference_load.cuh"
@@ -670,6 +671,177 @@ cudaError_t run_mla_attention(
     if (e != cudaSuccess) return e;
 
     return cudaSuccess;
+}
+
+// ── CSA: Compressor step kernel (gated KV pooling) ──────────────────────────
+__global__ void compressor_step_kernel(
+    const __half *d_kv, const __half *d_score,
+    const float  *d_ape,
+    float *d_kv_state, float *d_score_state,
+    __half *d_compressed_kv,
+    int ratio, int coff, int head_dim, int start_pos)
+{
+    const int slot = start_pos % ratio;
+    const int out_dim = coff * head_dim;
+    const int tid = threadIdx.x;
+
+    for (int i = tid; i < out_dim; i += blockDim.x) {
+        d_kv_state[slot * out_dim + i] = __half2float(d_kv[i]);
+        d_score_state[slot * out_dim + i] = __half2float(d_score[i]) + d_ape[slot * out_dim + i];
+    }
+    __syncthreads();
+
+    bool should_compress = ((start_pos + 1) % ratio) == 0;
+    if (!should_compress) return;
+
+    for (int i = tid; i < head_dim; i += blockDim.x) {
+        float max_s = -1e30f;
+        for (int r = 0; r < ratio; ++r)
+            max_s = fmaxf(max_s, d_score_state[r * out_dim + i]);
+        float sum_exp = 0.0f;
+        for (int r = 0; r < ratio; ++r) {
+            d_score_state[r * out_dim + i] = expf(d_score_state[r * out_dim + i] - max_s);
+            sum_exp += d_score_state[r * out_dim + i];
+        }
+        float compressed = 0.0f;
+        for (int r = 0; r < ratio; ++r)
+            compressed += d_kv_state[r * out_dim + i] * (d_score_state[r * out_dim + i] / (sum_exp + 1e-9f));
+        d_compressed_kv[i] = __float2half(compressed);
+    }
+}
+
+// ── Public: CSA forward (one token, layers 2-41) ────────────────────────────
+// Uses the SAME Q/KV/O-projection as MLA, plus the compressor step.
+// For now, uses mla_attn_kernel for attention (window-only, no compressed positions).
+// The compressor state is maintained for future use when sparse_attn is added.
+cudaError_t run_csa_attention(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const LayerWeights& lw,
+    const __half* d_x,
+    __half* d_kv_cache_layer,
+    CSAState& csa_state,
+    int start_pos,
+    __half* d_q, __half* d_qr, __half* d_qr2,
+    __half* d_kv, __half* d_kv2,
+    __half* d_o, __half* d_olora, __half* d_out,
+    __half* d_dequant,
+    float* d_norm_scratch, float* d_norm_gamma_scratch)
+{
+    if (!lw.d_wq_a || !lw.d_wq_b || !lw.d_wkv || !lw.d_wo_a || !lw.d_wo_b) {
+        log::error("[csa] layer missing attention weights");
+        return cudaErrorInvalidValue;
+    }
+
+    // ── Q projection (identical to MLA) ──────────────────────────────────
+    cudaError_t e = f8_gemm_1d(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
+                               lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
+    if (e != cudaSuccess) return e;
+    e = run_rmsnorm_attn(stream, d_qr, lw.d_q_norm, d_qr2,
+                         d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
+    if (e != cudaSuccess) return e;
+    e = f8_gemm_1d(cublas_h, stream, lw.d_wq_b, lw.d_wq_b_scales,
+                   lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
+    if (e != cudaSuccess) return e;
+    per_head_rms_kernel<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
+    {
+        int total = kAttnHeads * (kRopeHeadDim / 2);
+        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
+            d_q, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
+    }
+
+    // ── KV projection (identical to MLA) ──────────────────────────────────
+    e = f8_gemm_1d(cublas_h, stream, lw.d_wkv, lw.d_wkv_scales,
+                   lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
+    if (e != cudaSuccess) return e;
+    e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
+                         d_norm_scratch, d_norm_gamma_scratch, kHeadDim, kRmsEps);
+    if (e != cudaSuccess) return e;
+    {
+        int total = kRopeHeadDim / 2;
+        rope_apply_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
+            d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
+    }
+
+    // Store KV in sliding-window cache
+    const int slot = start_pos % kAttnWindow;
+    cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
+        static_cast<size_t>(kHeadDim) * sizeof(__half),
+        cudaMemcpyDeviceToDevice, stream);
+
+    // ── Compressor step (gated KV pooling) ───────────────────────────────
+    // Use d_qr2 (1024 elements) for wkv output, d_qr (1024) for wgate output
+    // Both are large enough for comp_out = coff*head_dim = 1024 (ratio=4) or 512 (ratio=128)
+    if (lw.d_comp_wkv && lw.d_comp_wgate && lw.d_comp_ape) {
+        int coff = lw.comp_coff;
+        int comp_out = coff * kHeadDim;
+        {
+            float alpha = 1.0f, beta = 0.0f;
+            cublasSetStream(cublas_h, stream);
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                comp_out, 1, kHiddenDim, &alpha,
+                lw.d_comp_wkv, CUDA_R_16F, kHiddenDim,
+                d_x, CUDA_R_16F, kHiddenDim, &beta,
+                d_qr2, CUDA_R_16F, comp_out,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                comp_out, 1, kHiddenDim, &alpha,
+                lw.d_comp_wgate, CUDA_R_16F, kHiddenDim,
+                d_x, CUDA_R_16F, kHiddenDim, &beta,
+                d_qr, CUDA_R_16F, comp_out,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        }
+        bool should_compress = ((start_pos + 1) % lw.compress_ratio) == 0;
+        compressor_step_kernel<<<1, 256, 0, stream>>>(
+            d_qr2, d_qr, lw.d_comp_ape,
+            csa_state.d_comp_kv_state, csa_state.d_comp_score_state,
+            csa_state.d_compressed_kv + csa_state.n_compressed * kHeadDim,
+            lw.compress_ratio, coff, kHeadDim, start_pos);
+        if (should_compress)
+            csa_state.n_compressed++;
+    }
+
+    // ── Attention: use existing mla_attn_kernel (window-only for now) ─────
+    {
+        float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
+        mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+            d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+            start_pos, kAttnWindow, scale);
+    }
+
+    // ── Inverse RoPE on output ───────────────────────────────────────────
+    {
+        int total = kAttnHeads * (kRopeHeadDim / 2);
+        rope_apply_kernel<<<(total + 127) / 128, 128, 0, stream>>>(
+            d_o, kAttnHeads, kHeadDim, kHeadDim - kRopeHeadDim,
+            kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
+    }
+
+    // ── O-projection (identical to MLA) ─────────────────────────────────
+    {
+        int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
+        int block = 256;
+        dequant_f8_to_half_kernel<<<(int)((n + block - 1) / block), block, 0, stream>>>(
+            lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
+            lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
+    }
+    {
+        const int gd = (kAttnHeads / kOGroups) * kHeadDim;
+        float alpha = 1.0f, beta = 0.0f;
+        cublasSetStream(cublas_h, stream);
+        for (int g = 0; g < kOGroups; ++g) {
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                kOloraRank, 1, gd, &alpha,
+                d_dequant + g * kOloraRank * gd, CUDA_R_16F, gd,
+                d_o + g * gd, CUDA_R_16F, gd, &beta,
+                d_olora + g * kOloraRank, CUDA_R_16F, kOloraRank,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        }
+    }
+    e = f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
+                   lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
+    return e;
 }
 
 } // namespace gpu
