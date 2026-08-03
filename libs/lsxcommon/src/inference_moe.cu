@@ -64,7 +64,14 @@ __global__ void act_quant_block_kernel(
     }
     __syncthreads();
 
-    float act_scale = fmaxf(s_amax, 1e-4f) / 448.0f;
+    // ue8m0: round scale UP to next power of 2 (matching reference fast_round_scale)
+    float linear_scale = fmaxf(s_amax, 1e-4f) / 448.0f;
+    int log2_s = 0;
+    float v = linear_scale;
+    while (v > 1.0f) { v *= 0.5f; log2_s++; }
+    while (v <= 0.5f && log2_s > -149) { v *= 2.0f; log2_s--; }
+    float act_scale = exp2f(static_cast<float>(log2_s));
+    if (act_scale < linear_scale) act_scale *= 2.0f;
     float inv_scale = 1.0f / act_scale;
 
     for (int i = threadIdx.x; i < n; i += blockDim.x) {

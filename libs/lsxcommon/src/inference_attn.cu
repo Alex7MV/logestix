@@ -88,7 +88,14 @@ __global__ void kv_act_quant_kernel(
     __syncthreads();
 
     // Phase 2: quantize to FP8_E4M3 then dequant back (inplace)
-    float scale = fmaxf(s_amax, 1e-4f) / 448.0f;
+    // ue8m0: round scale UP to next power of 2
+    float linear_scale = fmaxf(s_amax, 1e-4f) / 448.0f;
+    int log2_s = 0;
+    float vs = linear_scale;
+    while (vs > 1.0f) { vs *= 0.5f; log2_s++; }
+    while (vs <= 0.5f && log2_s > -149) { vs *= 2.0f; log2_s--; }
+    float scale = exp2f(static_cast<float>(log2_s));
+    if (scale < linear_scale) scale *= 2.0f;
     float inv_scale = 1.0f / scale;
     for (int i = threadIdx.x; i < n; i += blockDim.x) {
         float v = __half2float(d_kv[base + i]) * inv_scale;
