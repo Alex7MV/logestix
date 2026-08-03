@@ -520,10 +520,10 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                         d_q, d_qr, d_qr2, d_kv, d_kv2,
                         d_o, d_olora, d_attn_out,
                         d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
-                } else {
-                    INFER_CHECK(run_mla_attention(
-                        cublas_h, stream, lw, d_normed,
-                        d_kv_cache + static_cast<size_t>(lay) * kAttnWindow * kHeadDim,
+                 } else {
+                     INFER_CHECK(run_mla_attention(
+                         cublas_h, stream, lw, d_normed,
+                         d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
                         step,
                         d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out,
                         d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));

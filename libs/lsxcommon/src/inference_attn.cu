@@ -950,21 +950,13 @@ cudaError_t run_csa_attention(
             bytes, cudaMemcpyDeviceToDevice, stream);
     }
 
-    // ── Sparse attention over window + compressed positions ─────────────
+    // ── Attention: always use mla_attn_kernel (window-only, ignores compressed) ─
     {
         int n_attend = min(start_pos + 1, kAttnWindow);
-        // For step 0: no compressed KV yet, just use mla_attn_kernel (window only)
-        // This avoids issues with empty compressed slots
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
-        if (n_compressed > 0) {
-            csa_sparse_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
-                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
-                start_pos, kAttnWindow, n_attend, n_compressed, scale);
-        } else {
-            mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
-                d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
-                start_pos, kAttnWindow, scale);
-        }
+        mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+            d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
+            start_pos, kAttnWindow, scale);
     }
 
     // ── Inverse RoPE on output ───────────────────────────────────────────
