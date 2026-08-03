@@ -124,6 +124,18 @@ __global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
     dst[i] = __half2float(src[i]);
 }
 
+// Clamp float → half with overflow protection (prevents Inf/NaN from FP16 range)
+__global__ void clamp_f32_to_fp16(const float* __restrict__ src,
+                                    __half* __restrict__ dst, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float v = src[i];
+    // Clamp to FP16 representable range: [-65504, 65504]
+    v = fmaxf(-65504.0f, fminf(65504.0f, v));
+    dst[i] = __float2half(v);
+}
+
 static int dbg_count_nonfinite(const __half* d_buf, int n)
 {
     __half* d_tmp = nullptr;
@@ -654,10 +666,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             }
 
             // Convert FP32 FFN accumulation → FP16 for hc_post
+            // Clamp to FP16 range to prevent Inf/NaN overflow
             {
                 int block = 256;
                 int grid = (kHiddenDim + block - 1) / block;
-                float_to_half_kernel<<<grid, block, 0, stream>>>(
+                clamp_f32_to_fp16<<<grid, block, 0, stream>>>(
                     d_ffn_accum, d_ffn_out, kHiddenDim);
             }
 
