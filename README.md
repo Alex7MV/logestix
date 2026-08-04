@@ -55,6 +55,11 @@ cross-platform from the `nvcc` path.
 `-DLOGESTIX_AGGRESSIVE_INLINE=ON`, `-DLOGESTIX_NO_STACK_PROTECTOR=ON`.
 Detected automatically via the compiler ID; unaffected by Windows builds.
 
+The default AOCC build under Ubuntu is one command — `./build-aocc.sh`:
+configures `build-aocc` (Release, tests, AOCC compilers, LLVM-LTO+lld) and
+builds it. Override with `AOCC_ROOT`, `BUILD_DIR`, `CONFIG`, `JOBS`, or pass
+extra `-D` args through (e.g. `./build-aocc.sh -DBUILD_TESTING=OFF`).
+
 ### Windows (Visual Studio 2026)
 
 ```powershell
