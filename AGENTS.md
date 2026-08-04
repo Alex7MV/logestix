@@ -28,9 +28,14 @@ CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 ```
+
+Сборка заточена под AMD EPYC 9V74 (Zen 4): `-march=znver4` (полный AVX-512),
+`-O3` при любом билд-тайпе и LTO (опция `LOGESTIX_LTO`). Управление:
+`-DLOGESTIX_LTO=OFF`, `-DLOGESTIX_FAST_MATH=ON`. Бинарники НЕ переносимы на CPU
+без AVX-512.
 
 ### Windows (Visual Studio 2026)
 
@@ -73,6 +78,7 @@ ctest --test-dir build --output-on-failure -C Debug
   - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
   - `libs/lsxcommon/src/testmodel_gpu.cu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging)
+  - `libs/lsxcommon/src/inference_*.cu`, `norm_kernels.cu`, `shared_experts.cu` — инференс-пайплайн (load/norm/moe/head/pipeline, layer-norm, shared experts в NVFP4)
   - `libs/lsxcommon/include/lsxcommon/testmodel_gpu.h` — `lsxcommon::gpu::RunTestModel()`, TestModelResult
 - `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
@@ -83,8 +89,9 @@ ctest --test-dir build --output-on-failure -C Debug
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
 - `apps/lsxcli/` — CLI client (`--model`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
-- `tests/test_core.cpp` — интеграционные тесты; 11 test cases, ~100 assertions
-- `tests/test_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (69 assertions)
+- `tests/test_core.cpp` — интеграционные тесты; 11 test cases, ~101 assertions
+- `tests/test_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (64 assertions)
+- `tests/test_tokenizer.cpp` — 12 test cases, 223 assertions (tokenizer/pretokenizer/unicode)
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -100,7 +107,11 @@ ctest --test-dir build --output-on-failure -C Debug
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
 - **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
-- **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
+- **GCC/Clang flags**: `-march=znver4 -mtune=znver4 -O3 -funroll-loops -fno-plt -fno-semantic-interposition` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Привязка к AMD EPYC 9V74 (Zen 4); включает полный AVX-512 (bf16/vnni/vbmi2). `-O3` задан явно → применяется при любом `CMAKE_BUILD_TYPE` (в т.ч. Debug). Через `CMAKE_CXX_FLAGS` флаги попадают и в bundled Arrow/simdjson. Внимание: эти бинарники не переносимы на pre-Blackwell CPU (без AVX-512).
+- **Linux LTO**: опция `LOGESTIX_LTO` (по умолчанию ON). LTO (`INTERPROCEDURAL_OPTIMIZATION`, `-flto=auto`) включается только для наших C++-целей (`lsxcommon` + `lsxcli`/`lsxfabric`/`lsxforge`/`taskmosaic`) — НЕ для `lsxcommon_cu` (NVCC) и не для third-party. Обязательно `check_ipo_supported(... LANGUAGES CXX)`: проект включает CUDA, а IPO для NVCC не поддерживается и иначе валит всю проверку.
+- **Хост-код CUDA (Linux)**: `-Xcompiler=-march=x86-64-v3` (AVX2), а НЕ `znver4`. NVCC 13.x + GCC 15 ломаются на simdjson `icelake` (`__m512i` brace-init: «cannot convert a vector of type __m512i to type long long int»). Хост `.cu` — только оркестрация/парсинг: тяжёлые вычисления — в device-ядрах со своей архитектурой `compute_120/121`. В NVCC LTO не передаётся.
+- **LOGESTIX_FAST_MATH** (OFF) — опциональный `-ffast-math`. По умолчанию выключен: рискованно для точности NVFP4-декванта.
+- **CUDA toolkit discovery (кросс-платформенно)**: корень toolkit выводится из пути `CMAKE_CUDA_COMPILER` (`enable_language(CUDA)` поднят выше поиска); Windows использует `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3`. Раньше был хардкод только Windows-пути — на Linux сборка не запускалась.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
 - CUDA: архитектуры `120-real;121-real` (Blackwell only; Hopper/Ada/Ampere запрещены), флаг `--extended-lambda` для thrust `__host__ __device__` лямбд

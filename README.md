@@ -10,14 +10,16 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
+| CUDA cuBLAS | 13.3+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
 ## Prerequisites
 
 - CMake 3.15+
-- C++20 / C11 compiler (GCC 9+, Clang 12+, MSVC 2026+)
+- C++20 / C11 compiler (GCC 15+, Clang 12+, MSVC 2026+)
 - Git
 - NVIDIA CUDA Toolkit 13.3+ (optional, for GPU support)
+- CPU with AVX-512 (the Linux build is tuned for AMD EPYC 9V74 / Zen 4; binaries are not portable to pre-AVX-512 hardware)
 
 ## Clone with submodules
 
@@ -32,9 +34,19 @@ git submodule update --init --recursive
 ### Linux (GCC/Clang)
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+git submodule update --init --recursive
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 ```
+
+The Linux build is tuned for AMD EPYC 9V74 (Zen 4): full AVX-512
+(`-march=znver4`), explicit `-O3` in every build type, and Link-Time
+Optimization on the project's own C++ targets (option `LOGESTIX_LTO`, default
+ON). Toggle with `-DLOGESTIX_LTO=OFF` or `-DLOGESTIX_FAST_MATH=ON`. CUDA
+`--testmodel` host code compiles with `-march=x86-64-v3` (AVX2) to avoid an
+NVCC+GCC15 incompatibility with simdjson's AVX-512 path; compute lives in
+device kernels targeting Blackwell (`compute_120/121`). CUDA toolkit is located
+cross-platform from the `nvcc` path.
 
 ### Windows (Visual Studio 2026)
 
@@ -64,7 +76,7 @@ cmake --build build --config Debug
 ctest --test-dir build --output-on-failure -C Debug
 ```
 
-29 test cases across 6 test executables (~200 assertions).
+41 test cases across 7 test executables (~410 assertions): `test_core`, `test_loader`, `test_tokenizer`, plus per-app tests for `lsxfabric`, `lsxforge`, `taskmosaic`, `lsxcli`.
 
 ## Structure
 
@@ -75,12 +87,15 @@ ctest --test-dir build --output-on-failure -C Debug
   - `converter` — GPU-only NVFP4 quantization (per-block E4M3 + global scale via CUDA), safetensors parsing, Arrow IPC serialization
   - `loader` — Arrow file loading, CUDA pinned memory registration, E4M3 scale decoding
   - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`)
+  - `testmodel_gpu` — `--testmodel` NVFP4 ping-pong benchmark (cuBLAS GEMM, dual-stream overlap, pinned staging)
+  - `inference_*`, `norm_kernels`, `shared_experts` — inference pipeline (load/norm/moe/head/pipeline, layer-norm, NVFP4 shared experts)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`)
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
 - `apps/taskmosaic/` — task orchestrator (placeholder)
 - `apps/lsxcli/` — CLI client (`--model`)
 - `tests/test_core.cpp` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
 - `tests/test_loader.cpp` — loader round-trip and E4M3 encoding tests
+- `tests/test_tokenizer.cpp` — tokenizer/pretokenizer/unicode tests
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
