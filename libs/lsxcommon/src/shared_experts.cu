@@ -362,9 +362,102 @@ cudaError_t dequant_shared_nvfp4(
     return cudaGetLastError();
 }
 
-// Routed-expert fp4 dequant: E2M1 nibbles × F8_E8M0 per-32 scale (no global
-// scale — routed experts carry gs = 1.0).
+// FP32 output version of the fp4 dequant kernel
+template<int BLOCK_DIM>
+__launch_bounds__(BLOCK_DIM)
+__global__ void dequant_fp4_e8m0_f32_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    float*          __restrict__ output,
+    int64_t                       num_elements)
+{
+    constexpr int ELEMS_PER_THREAD = 32;
+    constexpr int ELEMS_PER_BLOCK  = BLOCK_DIM * ELEMS_PER_THREAD;
+    const int64_t chunk = static_cast<int64_t>(blockIdx.x) * ELEMS_PER_BLOCK;
+    if (chunk >= num_elements) return;
+    const int64_t base = chunk + static_cast<int64_t>(threadIdx.x) * ELEMS_PER_THREAD;
+
+    if (base + ELEMS_PER_THREAD <= num_elements) {
+        const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
+        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+        // Unpack 32 nibbles into 32 floats
+        uint32_t u = p.x;
+        for (int i = 0; i < 8; ++i) {
+            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            u >>= 4;
+        }
+        u = p.y;
+        for (int i = 8; i < 16; ++i) {
+            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            u >>= 4;
+        }
+        u = p.z;
+        for (int i = 16; i < 24; ++i) {
+            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            u >>= 4;
+        }
+        u = p.w;
+        for (int i = 24; i < 32; ++i) {
+            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            u >>= 4;
+        }
+        return;
+    }
+    for (int64_t i = base; i < num_elements; ++i) {
+        const int64_t byte_idx = i >> 1;
+        const uint8_t nibble = (i & 1)
+            ? (packed[byte_idx] >> 4)
+            : (packed[byte_idx] & 0x0F);
+        output[i] = kE2M1Table[nibble] * e8m0_scale_to_float(scales[i >> 5]);
+    }
+}
+
+// FP32 output version of the F8 dequant kernel
+__global__ void dequant_f8_e8m0_f32_kernel(
+    const uint8_t* __restrict__ w,
+    const uint8_t* __restrict__ scales,
+    float* __restrict__ out, int64_t n,
+    int64_t C, int64_t SC, int64_t block_r, int64_t block_c)
+{
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (; i < n; i += stride) {
+        int64_t r = i / C;
+        int64_t c = i % C;
+        int64_t sr = r / block_r;
+        int64_t sc = c / block_c;
+        float v = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
+        out[i] = v;
+    }
+}
+
+// Routed-expert fp4 dequant (FP32 output — no FP16 overflow)
 cudaError_t dequant_fp4_e8m0(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    float* d_output, int64_t num_elements)
+{
+    if (!d_packed || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
+        return cudaErrorInvalidValue;
+    const int64_t need_packed = (num_elements + 1) / 2;
+    const int64_t need_scales = (num_elements + 31) / 32;
+    if (packed_bytes < need_packed) return cudaErrorInvalidValue;
+    if (scales_bytes < need_scales) return cudaErrorInvalidValue;
+    constexpr int BLOCK_DIM = 256;
+    constexpr int ELEMS_PER_THREAD = 32;
+    const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
+    const int blocks = static_cast<int>(
+        (num_elements + elems_per_block - 1) / elems_per_block);
+    dequant_fp4_e8m0_f32_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
+        d_packed, d_scales, d_output, num_elements);
+    return cudaGetLastError();
+}
+
+// Legacy FP16 version (kept for compatibility)
+cudaError_t dequant_fp4_e8m0_half(
     cudaStream_t stream,
     const uint8_t* d_packed, int64_t packed_bytes,
     const uint8_t* d_scales, int64_t scales_bytes,
@@ -374,29 +467,43 @@ cudaError_t dequant_fp4_e8m0(
         return cudaErrorInvalidValue;
     if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
         return cudaErrorInvalidValue;
-
     const int64_t need_packed = (num_elements + 1) / 2;
     const int64_t need_scales = (num_elements + 31) / 32;
-    if (packed_bytes < need_packed)
-        return cudaErrorInvalidValue;
-    if (scales_bytes < need_scales)
-        return cudaErrorInvalidValue;
-
+    if (packed_bytes < need_packed) return cudaErrorInvalidValue;
+    if (scales_bytes < need_scales) return cudaErrorInvalidValue;
     constexpr int BLOCK_DIM = 256;
     constexpr int ELEMS_PER_THREAD = 32;
     const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
     const int blocks = static_cast<int>(
         (num_elements + elems_per_block - 1) / elems_per_block);
-
     dequant_fp4_e8m0_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
         d_packed, d_scales, d_output, num_elements);
-
     return cudaGetLastError();
 }
 
-// Shared-expert F8 dequant: F8_E4M3 × F8_E8M0 per-128x128 tile.
-// 1 byte per element (not packed). cols = number of columns.
+// Shared-expert F8 dequant (FP32 output)
 cudaError_t dequant_shared_f8(
+    cudaStream_t stream,
+    const uint8_t* d_weights, int64_t n_bytes,
+    const uint8_t* d_scales, int64_t scale_bytes,
+    float* d_output, int64_t num_elements, int64_t cols)
+{
+    if (!d_weights || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || n_bytes <= 0)
+        return cudaErrorInvalidValue;
+    if (n_bytes < num_elements)
+        return cudaErrorInvalidValue;
+    int block = 256;
+    int grid = static_cast<int>((num_elements + block - 1) / block);
+    dequant_f8_e8m0_f32_kernel<<<grid, block, 0, stream>>>(
+        d_weights, d_scales, d_output, num_elements,
+        cols, cols / 128, 128, 128);
+    return cudaGetLastError();
+}
+
+// Legacy FP16 version
+cudaError_t dequant_shared_f8_half(
     cudaStream_t stream,
     const uint8_t* d_weights, int64_t n_bytes,
     const uint8_t* d_scales, int64_t scale_bytes,
@@ -408,7 +515,6 @@ cudaError_t dequant_shared_f8(
         return cudaErrorInvalidValue;
     if (n_bytes < num_elements)
         return cudaErrorInvalidValue;
-
     int block = 256;
     int grid = static_cast<int>((num_elements + block - 1) / block);
     dequant_f8_e8m0_kernel<<<grid, block, 0, stream>>>(

@@ -190,7 +190,7 @@ cudaError_t run_shared_experts_ffn(
     float w1_gs, float w2_gs, float w3_gs,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,
-    __half *d_dequant, __half *d_output);
+    float *d_dequant, __half *d_output);
 
 cudaError_t run_routed_experts(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -199,7 +199,7 @@ cudaError_t run_routed_experts(
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
     float *d_gate_f32, float *d_up_f32,
-    __half *d_dequant,
+    float *d_dequant,
     __half *d_act_quant,
     float *d_swiglu_out,
     float *d_act_scales,
@@ -209,6 +209,19 @@ cudaError_t run_routed_experts(
 // From inference_moe.cu — float→half kernel
 extern __global__ void float_to_half_kernel(const float* __restrict__ src,
                                              __half* __restrict__ dst, int n);
+
+// From inference_attn.cu
+cudaError_t run_mla_attention(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const LayerWeights& lw,
+    const __half* d_x,
+    __half* d_kv_cache_layer,
+    int start_pos,
+    __half* d_q, __half* d_qr, __half* d_qr2,
+    __half* d_kv, __half* d_kv2,
+    __half* d_o, __half* d_olora, __half* d_out,
+    float* d_dequant,
+    float* d_norm_scratch, float* d_norm_gamma_scratch);
 
 // From inference_head.cu
 cudaError_t run_lm_head(
@@ -320,9 +333,9 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_shared_int = nullptr;
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
-    __half *d_dequant_scratch = nullptr;
+    float *d_dequant_scratch = nullptr;
     __half *d_act_quant = nullptr;     // FP8_E4M3 activation emulation scratch
-    __half *d_attn_dequant = nullptr;  // F8→FP16 scratch (≥ wq_b/wo_a/wo_b)
+    float *d_attn_dequant = nullptr;  // F8→FP32 scratch (≥ wq_b/wo_a/wo_b)
     __half *d_kv_cache = nullptr;      // [layers][window][head_dim]
     __half *d_q = nullptr, *d_qr = nullptr, *d_qr2 = nullptr;
     __half *d_kv = nullptr, *d_kv2 = nullptr;
@@ -346,12 +359,18 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     const int kLocalTopK = 6;
     size_t h_logits_sz = static_cast<size_t>(150000) * sizeof(float);
     // Shared experts may have intermediate_dim = hidden_dim; allocate full size.
-    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(__half);
+    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(float);
     // Shared experts may have intermediate_dim up to hidden_dim
     size_t shared_int_sz = static_cast<size_t>(kHiddenDim) * sizeof(__half);
     // Max attention weight: wq_b/wo_a/wo_b = 32768·1024 (or 8192·4096) elements
-    size_t attn_dequant_sz = static_cast<size_t>(kAttnHeads * kHeadDim) * kQloraRank
-                           * sizeof(__half);
+    // FP32 dequant scratch + FP16 clamped tail (worst case: wo_a = 8192*4096 elements)
+    // FP32 part: 8192 * 4096 * sizeof(float) = 128 MB
+    // FP16 tail: 8192 * 4096 * sizeof(__half) = 64 MB
+    // Total = 192 MB (same as FP32 + FP16 overlay)
+    size_t max_attn_elems = static_cast<size_t>(kAttnHeads) * kHeadDim * kQloraRank;
+    size_t max_attn_elems_wo = 8192LL * 4096;  // wo_a: [8192, 4096]
+    size_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
+    size_t attn_dequant_sz = attn_dequant_max * (sizeof(float) + sizeof(__half));
     // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
     int max_compressed = (cfg.max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
     size_t kv_cache_sz = static_cast<size_t>(kNumLayers)

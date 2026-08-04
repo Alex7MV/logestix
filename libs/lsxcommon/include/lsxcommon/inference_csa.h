@@ -39,7 +39,7 @@ cudaError_t run_csa_attention(
     __half *d_q, __half *d_qr, __half *d_qr2,
     __half *d_kv, __half *d_kv2,
     __half *d_o, __half *d_olora, __half *d_out,
-    __half *d_dequant,
+    float *d_dequant,
     float *d_norm_scratch, float *d_norm_gamma_scratch);
 
 } // namespace gpu

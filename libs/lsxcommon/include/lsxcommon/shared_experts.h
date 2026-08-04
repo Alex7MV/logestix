@@ -87,6 +87,12 @@ cudaError_t dequant_fp4_e8m0(
     cudaStream_t stream,
     const uint8_t* d_packed, int64_t packed_bytes,
     const uint8_t* d_scales, int64_t scales_bytes,
+    float* d_output, int64_t num_elements);
+
+cudaError_t dequant_fp4_e8m0_half(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
     __half* d_output, int64_t num_elements);
 
 // Dequantizes one shared-expert F8 weight tensor:
@@ -94,6 +100,12 @@ cudaError_t dequant_fp4_e8m0(
 // 1 byte per element, per-128x128 tile E8M0 scales (same as attention weights).
 // cols = number of columns in the [rows, cols] weight matrix.
 cudaError_t dequant_shared_f8(
+    cudaStream_t stream,
+    const uint8_t* d_weights, int64_t n_bytes,
+    const uint8_t* d_scales, int64_t scale_bytes,
+    float* d_output, int64_t num_elements, int64_t cols);
+
+cudaError_t dequant_shared_f8_half(
     cudaStream_t stream,
     const uint8_t* d_weights, int64_t n_bytes,
     const uint8_t* d_scales, int64_t scale_bytes,
