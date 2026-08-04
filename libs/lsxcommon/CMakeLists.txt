@@ -52,8 +52,11 @@ set_target_properties(lsxcommon_cu PROPERTIES
 if(MSVC)
     target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
 else()
+    # Хост-код .cu: x86-64-v3 (AVX2), а не znver4 — NVCC+GCC15 ломаются на
+    # simdjson icelake (__m512i brace-init). Тяжёлые вычисления живут в
+    # device-ядрах (своя архитектура compute_120/121), хост это оркестрация.
     target_compile_options(lsxcommon_cu PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=-march=znver4;-Xcompiler=-mtune=znver4;-Xcompiler=-O3>)
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=-march=x86-64-v3;-Xcompiler=-O3>)
 endif()
 target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"

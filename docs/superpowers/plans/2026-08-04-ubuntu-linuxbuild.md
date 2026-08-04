@@ -157,8 +157,11 @@ with:
 if(MSVC)
     target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
 else()
+    # Хост-код .cu: x86-64-v3 (AVX2), а не znver4 — NVCC+GCC15 ломаются на
+    # simdjson icelake (__m512i brace-init). Тяжёлые вычисления живут в
+    # device-ядрах (своя архитектура compute_120/121), хост это оркестрация.
     target_compile_options(lsxcommon_cu PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=-march=znver4;-Xcompiler=-mtune=znver4;-Xcompiler=-O3>)
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=-march=x86-64-v3;-Xcompiler=-O3>)
 endif()
 ```
 
@@ -172,6 +175,72 @@ Expected: configuration succeeds; NVCC accepts the `-Xcompiler=-march=znver4` fl
 ```bash
 git add libs/lsxcommon/CMakeLists.txt
 git commit -m "build: add znver4 host flags for NVCC and guard MSVC /utf-8"
+```
+
+---
+
+### Task 3.5: Cross-platform CUDA toolkit discovery
+
+**Files:**
+- Modify: `libs/lsxcommon/CMakeLists.txt:1-12`
+
+**Interfaces:**
+- Consumes: `CMAKE_CUDA_COMPILER` (set by `enable_language(CUDA)`).
+- Produces: `CUDA_INCLUDE_DIR`, `CUDA_CUDART_LIBRARY`, `CUDA_CUBLAS_LIBRARY` resolved for both MSVC (Windows paths) and Linux (paths derived from `nvcc` location).
+
+- [ ] **Step 1: Replace the hardcoded Windows-only discovery**
+
+Replace lines 1-12 (the three `find_*` calls and the Windows `PATHS`):
+
+<details><summary>Current lines 1-12</summary>
+
+```cmake
+find_path(CUDA_INCLUDE_DIR cuda_runtime.h
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/include"
+    REQUIRED
+)
+find_library(CUDA_CUDART_LIBRARY cudart
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+    REQUIRED
+)
+find_library(CUDA_CUBLAS_LIBRARY cublas
+    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+    REQUIRED
+)
+```
+</details>
+
+with:
+
+```cmake
+enable_language(CUDA)
+
+if(MSVC)
+    set(_cuda_root "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3")
+    set(_cuda_include_dir "${_cuda_root}/include")
+    set(_cuda_lib_dir "${_cuda_root}/lib/x64")
+else()
+    get_filename_component(_cuda_bin "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+    get_filename_component(_cuda_root "${_cuda_bin}" DIRECTORY)
+    set(_cuda_include_dir "${_cuda_root}/include")
+    set(_cuda_lib_dir "${_cuda_root}/targets/x86_64-linux/lib;${_cuda_root}/lib64")
+endif()
+
+find_path(CUDA_INCLUDE_DIR cuda_runtime.h PATHS ${_cuda_include_dir} REQUIRED)
+find_library(CUDA_CUDART_LIBRARY cudart PATHS ${_cuda_lib_dir} REQUIRED)
+find_library(CUDA_CUBLAS_LIBRARY cublas PATHS ${_cuda_lib_dir} REQUIRED)
+```
+
+- [ ] **Step 2: Re-configure on Linux**
+
+Run: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF 2>&1 | tail -5`
+Expected: configuration succeeds; the earlier `Could not find CUDA_INCLUDE_DIR` error is gone and the three CUDA variables resolve (e.g. `/usr/local/cuda/include`, `/usr/local/cuda-13.2/targets/x86_64-linux/lib/libcudart.so`).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add libs/lsxcommon/CMakeLists.txt
+git commit -m "build: make CUDA toolkit discovery cross-platform (Windows + Linux)"
 ```
 
 ---

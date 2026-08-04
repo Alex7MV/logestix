@@ -70,10 +70,12 @@ endif()
 
 - Обернуть `-Xcompiler=/utf-8` в `if(MSVC)`.
 - Для Linux добавить хост-оптимизацию без LTO:
-  ```cmake
-  target_compile_options(lsxcommon_cu PRIVATE
-      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-march=znver4;-Xcompiler=-mtune=znver4;-Xcompiler=-O3>)
-  ```
+  - **AVX2 (`-march=x86-64-v3`), а не `znver4`.** Обнаружено при реализации:
+    NVCC (13.2) + GCC 15 ломаются на simdjson-реализации `icelake`
+    (`__m512i` brace-init, ошибка `cannot convert a vector of type '__m512i'`).
+    Хост-код `.cu` — оркестрация/парсинг (тяжёлые вычисления в device-ядрах с
+    собственной архитектурой `compute_120/121`), поэтому AVX2 полностью достаточен.
+  - Чистый C++ (не-CUDA) сохраняет полный `-march=znver4` + AVX-512 + LTO.
 
 ### 4. Опции CMake
 
