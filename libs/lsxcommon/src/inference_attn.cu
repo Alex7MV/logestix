@@ -251,8 +251,9 @@ __global__ void hc_pre_kernel(
 }
 
 // ── HC post: y[j] = post[j]·x + Σ_k comb[j,k]·residual[k] ────────────────────
+// x is now FP32 (module output stays in FP32 — no FP16 conversion)
 __global__ void hc_post_kernel(
-    const __half* __restrict__ x,      // [dim] FP16 (module output)
+    const float* __restrict__ x,      // [dim] FP32 (module output)
     const float* __restrict__ residual, // [hc_mult·dim] FP32 (HC state)
     const float* __restrict__ post,    // [hc_mult]
     const float* __restrict__ comb,    // [hc_mult·hc_mult]
@@ -263,7 +264,7 @@ __global__ void hc_post_kernel(
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= D) return;
     for (int j = 0; j < H; ++j) {
-        float acc = post[j] * __half2float(x[i]);
+        float acc = post[j] * x[i];
         for (int k = 0; k < H; ++k)
             acc += comb[k * H + j] * residual[k * D + i];
         y[j * D + i] = acc;
@@ -640,7 +641,7 @@ cudaError_t run_hc_pre(cudaStream_t stream,
 }
 
 cudaError_t run_hc_post(cudaStream_t stream,
-                        const __half* d_x,             // [dim] FP16
+                        const float* d_x,              // [dim] FP32
                         const float* d_residual,       // [hc_mult·dim] FP32
                         const float* d_post, const float* d_comb,
                         float* d_y)                    // [hc_mult·dim] FP32

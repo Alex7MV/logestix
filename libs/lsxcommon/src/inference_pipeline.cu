@@ -339,7 +339,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_kv_cache = nullptr;      // [layers][window][head_dim]
     __half *d_q = nullptr, *d_qr = nullptr, *d_qr2 = nullptr;
     __half *d_kv = nullptr, *d_kv2 = nullptr;
-    __half *d_o = nullptr, *d_olora = nullptr, *d_attn_out = nullptr;
+    __half *d_o = nullptr, *d_olora = nullptr, *d_attn_out_h = nullptr;
+    float  *d_attn_out = nullptr;    // [dim] FP32 for hc_post
     float *d_hc_post = nullptr, *d_hc_comb = nullptr, *d_hc_pre = nullptr;
     float *d_logits = nullptr;
     float *d_norm_scratch = nullptr;
@@ -425,7 +426,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_kv2, static_cast<size_t>(kHeadDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_o, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half)));
     INFER_CHECK(cudaMalloc(&d_olora, static_cast<size_t>(kOGroups * kOloraRank) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_attn_out, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
+    INFER_CHECK(cudaMalloc(&d_attn_out_h, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
+    INFER_CHECK(cudaMalloc(&d_attn_out, static_cast<size_t>(kHiddenDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_hc_post, static_cast<size_t>(kHcMult) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_hc_comb, static_cast<size_t>(kHcMult * kHcMult) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_hc_pre, static_cast<size_t>(kHcMult) * sizeof(float)));
@@ -557,21 +559,27 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                         d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
                         csa_states[lay], step,
                         d_q, d_qr, d_qr2, d_kv, d_kv2,
-                        d_o, d_olora, d_attn_out,
+                        d_o, d_olora, d_attn_out_h,
                         d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
                  } else {
                      INFER_CHECK(run_mla_attention(
                          cublas_h, stream, lw, d_normed,
                          d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
-                        step,
-                        d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out,
-                        d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
+                         step,
+                         d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out_h,
+                         d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
+                }
+                // Convert FP16 attention output → FP32 for hc_post
+                {
+                    int b = 256;
+                    int g = (kHiddenDim + b - 1) / b;
+                    half_to_float_kernel<<<g, b, 0, stream>>>(d_attn_out_h, d_attn_out, kHiddenDim);
                 }
                 INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
                 if (step == 0 && (lay % 5 == 0 || lay == 42)) {
                     INFER_CHECK(cudaStreamSynchronize(stream));
-                    float attn_rms = dbg_buffer_rms(d_attn_out, kHiddenDim);
+                    float attn_rms = dbg_buffer_rms_float(d_attn_out, kHiddenDim);
                     float hc_rms = dbg_buffer_rms_float(d_hidden_next, kHcDim);
                     float res_rms = dbg_buffer_rms_float(d_hidden, kHcDim);
                     float h_post[4] = {};
@@ -694,17 +702,11 @@ InferenceResult RunInference(const InferenceConfig &cfg)
 
             // Convert FP32 FFN accumulation → FP16 for hc_post
             // Clamp to FP16 range to prevent Inf/NaN overflow
-            {
-                int block = 256;
-                int grid = (kHiddenDim + block - 1) / block;
-                clamp_f32_to_fp16<<<grid, block, 0, stream>>>(
-                    d_ffn_accum, d_ffn_out, kHiddenDim);
-            }
-
+            // Pass d_ffn_accum (FP32) directly to hc_post — no FP16 conversion
             {
                 if (step == 0 && (lay % 5 == 0 || lay == 42)) {
                     INFER_CHECK(cudaStreamSynchronize(stream));
-                    float ffn_rms = dbg_buffer_rms(d_ffn_out, kHiddenDim);
+                    float ffn_rms = dbg_buffer_rms_float(d_ffn_accum, kHiddenDim);
                     float ffn_res = dbg_buffer_rms_float(d_hidden, kHcDim);
                     float h_post[4] = {};
                     cudaMemcpy(h_post, d_hc_post, 4*sizeof(float), cudaMemcpyDeviceToHost);
@@ -715,7 +717,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                         std::to_string(h_post[1]) + "," + std::to_string(h_post[2]) +
                         "," + std::to_string(h_post[3]) + "]");
                 }
-                INFER_CHECK(run_hc_post(stream, d_ffn_out, d_hidden,
+                INFER_CHECK(run_hc_post(stream, d_ffn_accum, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
             }
 
@@ -891,6 +893,7 @@ cleanup:
     if (d_o)           cudaFree(d_o);
     if (d_olora)       cudaFree(d_olora);
     if (d_attn_out)    cudaFree(d_attn_out);
+    if (d_attn_out_h)  cudaFree(d_attn_out_h);
     if (d_hc_post)     cudaFree(d_hc_post);
     if (d_hc_comb)     cudaFree(d_hc_comb);
     if (d_hc_pre)      cudaFree(d_hc_pre);

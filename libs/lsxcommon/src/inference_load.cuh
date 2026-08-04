@@ -193,7 +193,7 @@ cudaError_t run_hc_pre(cudaStream_t stream,
                        float *d_pre);
 
 cudaError_t run_hc_post(cudaStream_t stream,
-                         const __half *d_x, const float *d_residual,
+                         const float *d_x, const float *d_residual,
                          const float *d_post, const float *d_comb,
                          float *d_y);
 
