@@ -458,6 +458,7 @@ __global__ void swiglu_clamp_kernel(
 }
 
 // Shared experts FFN: dequant F8_E4M3 × E8M0 → FP16, GEMM, SiLU activation
+// W1/W3 GEMM outputs FP32 (CUDA_R_32F) to prevent FP16 overflow
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -465,7 +466,8 @@ cudaError_t run_shared_experts_ffn(
     const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
     float w1_gs, float w2_gs, float w3_gs,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
-    __half *d_intermediate, __half *d_gate, __half *d_dequant, __half *d_output)
+    float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
+    __half *d_dequant, __half *d_output)
 {
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
@@ -498,22 +500,8 @@ cudaError_t run_shared_experts_ffn(
                  intermediate_dim, 1, hidden_dim, &alpha,
                  d_dequant, CUDA_R_16F, hidden_dim,
                   d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                  d_intermediate, CUDA_R_16F, intermediate_dim,
+                  d_intermediate_f32, CUDA_R_32F, intermediate_dim,
                   CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    {
-        int b = 256;
-        int g = (intermediate_dim + b - 1) / b;
-        clamp_half_kernel<<<g, b, 0, stream>>>(d_intermediate, intermediate_dim, 65504.0f);
-    }
-    {
-        cudaStreamSynchronize(stream);
-        __half probe[6] = {};
-        cudaMemcpy(probe, d_intermediate, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[dbg] FFN inter[0..5]=";
-        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-        log::debug(oss.str());
-    }
 
     // 3. Dequant W3 → d_dequant (reuse, F8_E4M3 × E8M0)
     if (w3_bytes > 0) {
@@ -527,28 +515,16 @@ cudaError_t run_shared_experts_ffn(
                  intermediate_dim, 1, hidden_dim, &alpha,
                  d_dequant, CUDA_R_16F, hidden_dim,
                   d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                  d_gate, CUDA_R_16F, intermediate_dim,
+                  d_gate_f32, CUDA_R_32F, intermediate_dim,
                   CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    {
-        int b = 256;
-        int g = (intermediate_dim + b - 1) / b;
-        clamp_half_kernel<<<g, b, 0, stream>>>(d_gate, intermediate_dim, 65504.0f);
-    }
-    {
-        cudaStreamSynchronize(stream);
-        __half probe[6] = {};
-        cudaMemcpy(probe, d_gate, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[dbg] FFN gate[0..5]=";
-        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-        log::debug(oss.str());
-    }
 
-    // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate
+    // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate (FP32)
     {
         int block = 256;
         int grid = (intermediate_dim + block - 1) / block;
-        silu_mul_kernel<<<grid, block, 0, stream>>>(d_intermediate, d_gate, intermediate_dim, 10.0f);
+        swiglu_clamp_f32f_kernel<<<grid, block, 0, stream>>>(
+            d_intermediate_f32, d_gate_f32, d_intermediate_f32,
+            intermediate_dim, 10.0f);
     }
 
     // 6. Dequant W2 → d_dequant (reuse)
@@ -560,13 +536,24 @@ cudaError_t run_shared_experts_ffn(
         if (e != cudaSuccess) return e;
     }
 
-    // 7. output = W2^T @ activated → d_output
+    // 7. output = W2^T @ activated → d_output (FP16 output for hc_post)
+    // Convert FP32 intermediate → FP16 for cuBLAS GEMM (W2 weights are FP16)
+    {
+        int block = 256;
+        int grid = (intermediate_dim + block - 1) / block;
+        // Reuse d_dequant as FP16 scratch for the converted activation
+        float_to_half_kernel<<<grid, block, 0, stream>>>(
+            d_intermediate_f32, reinterpret_cast<__half*>(d_dequant) +
+                static_cast<int64_t>(intermediate_dim) * kHiddenDim, // offset past W2 weights
+            intermediate_dim);
+    }
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                  hidden_dim, 1, intermediate_dim, &alpha,
                  d_dequant, CUDA_R_16F, intermediate_dim,
-                 d_intermediate, CUDA_R_16F, intermediate_dim, &beta,
-                  d_output, CUDA_R_16F, hidden_dim,
-                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                 reinterpret_cast<__half*>(d_dequant) + intermediate_dim * kHiddenDim,
+                 CUDA_R_16F, intermediate_dim, &beta,
+                 d_output, CUDA_R_16F, hidden_dim,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     {
         int b = 256;
         int g = (hidden_dim + b - 1) / b;
