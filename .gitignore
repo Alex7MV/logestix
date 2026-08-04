@@ -1,6 +1,7 @@
 # ── CMake Build Directories ──────────────────────────────────────────────────
 /build/
 /build_*/
+/build-*/
 /out/
 
 # ── MSVC / Visual Studio Artifacts ───────────────────────────────────────────

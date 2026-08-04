@@ -30,11 +30,27 @@ else()
     # Ubuntu 26.04 / AMD EPYC 9V74 (Zen 4): pin to znver4 for full AVX-512
     # (bf16/vnni/vbmi2) and tune for this microarchitecture. Aggressive
     # optimization for maximum throughput on the target machine.
-    set(CMAKE_CXX_FLAGS
-        "${CMAKE_CXX_FLAGS} -march=znver4 -mtune=znver4 -O3 -funroll-loops -fno-plt -fno-semantic-interposition")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        # GCC: классический набор флагов + LTO через INTERPROCEDURAL_OPTIMIZATION
+        set(CMAKE_CXX_FLAGS
+            "${CMAKE_CXX_FLAGS} -march=znver4 -mtune=znver4 -O3 -funroll-loops -fno-plt -fno-semantic-interposition")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AOCC")
+        # AOCC/Clang (LLVM): znver4 + выравнивание Zen4 + LLVM-кнобы AMD.
+        # LTO — ThinLTO через lld (см. блок LTO ниже). Не используем GNU-only
+        # флаги (-fipa-pta/-fipa-icf/-fno-fat-lto-objects): они ломают clang.
+        set(CMAKE_CXX_FLAGS
+            "${CMAKE_CXX_FLAGS} -march=znver4 -mtune=znver4 -O3 -funroll-loops -fno-plt -fno-semantic-interposition -fvectorize -falign-functions=32 -falign-loops=16 -mllvm -enable-interleaved-mem-accesses")
+    else()
+        # Прочие не-MSVC компиляторы: универсальная оптимизация.
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+    endif()
     option(LOGESTIX_FAST_MATH "Enable -ffast-math (risky for NVFP4 dequant accuracy)" OFF)
     if(LOGESTIX_FAST_MATH)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    endif()
+    option(LOGESTIX_NO_STACK_PROTECTOR "Disable stack protector/fixup overhead (speed trade-off)" OFF)
+    if(LOGESTIX_NO_STACK_PROTECTOR)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-stack-protector")
     endif()
 endif()
 
@@ -179,21 +195,35 @@ endif()
 add_subdirectory(libs)
 add_subdirectory(apps)
 
-# ── LTO для наших C++-целей (Linux/GCC) ──────────────────────────────────
-# LTO точечно через свойство INTERPROCEDURAL_OPTIMIZATION: применяется только
-# к нашему C++ коду и не задевает CUDA-объекты (lsxcommon_cu) и third-party.
+# ── LTO для наших C++-целей (Linux) ────────────────────────────────────────
+# Применяется только к нашему C++ коду и не задевает CUDA-объекты (lsxcommon_cu)
+# и third-party.
 include(CheckIPOSupported)
 option(LOGESTIX_LTO "Enable LTO for our C++ targets" ON)
+option(LOGESTIX_AGGRESSIVE_INLINE "AOCC/Clang only: aggressive cross-TU inlining (-mllvm -inline-threshold)" OFF)
 if(NOT MSVC AND LOGESTIX_LTO)
-    # Проверяем поддержку IPO только для CXX: проект включает CUDA,
-    # а для NVCC IPO не поддерживается и валил бы всю проверку.
-    check_ipo_supported(RESULT _lto_ok OUTPUT _lto_err LANGUAGES CXX)
-    if(_lto_ok)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AOCC")
+        # LLVM-LTO (full) + LLD: AOCC 5.2 clang не поддерживает настоящий
+        # ThinLTO (-flto=thin падает в full с warn), поэтому берём явный -flto.
+        # ld.lld: clang должен находить его в PATH (bin из дистрибутива AOCC).
         foreach(_t IN ITEMS lsxcommon lsxcli lsxfabric lsxforge taskmosaic)
-            set_property(TARGET ${_t} APPEND PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+            target_compile_options(${_t} PRIVATE -flto)
+            target_link_options(${_t} PRIVATE -flto -fuse-ld=lld)
+            if(LOGESTIX_AGGRESSIVE_INLINE)
+                target_compile_options(${_t} PRIVATE -mllvm -inline-threshold=1000)
+            endif()
         endforeach()
     else()
-        message(WARNING "LOGESTIX_LTO enabled but IPO unsupported: ${_lto_err}")
+        # Проверяем поддержку IPO только для CXX: проект включает CUDA,
+        # а для NVCC IPO не поддерживается и валил бы всю проверку.
+        check_ipo_supported(RESULT _lto_ok OUTPUT _lto_err LANGUAGES CXX)
+        if(_lto_ok)
+            foreach(_t IN ITEMS lsxcommon lsxcli lsxfabric lsxforge taskmosaic)
+                set_property(TARGET ${_t} APPEND PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+            endforeach()
+        else()
+            message(WARNING "LOGESTIX_LTO enabled but IPO unsupported: ${_lto_err}")
+        endif()
     endif()
 endif()
 
