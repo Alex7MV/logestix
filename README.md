@@ -48,6 +48,13 @@ NVCC+GCC15 incompatibility with simdjson's AVX-512 path; compute lives in
 device kernels targeting Blackwell (`compute_120/121`). CUDA toolkit is located
 cross-platform from the `nvcc` path.
 
+**AOCC mode** (AMD clang / LLVM): configure with
+`-DCMAKE_CXX_COMPILER=/path/to/aocc/bin/clang++ -DCMAKE_C_COMPILER=/path/to/aocc/bin/clang`
+(with the AOCC `bin` in `PATH` so `ld.lld` is found). Uses LLVM-LTO through
+`lld`, Zen4 code alignment, and AMD LLVM knobs. Extra options:
+`-DLOGESTIX_AGGRESSIVE_INLINE=ON`, `-DLOGESTIX_NO_STACK_PROTECTOR=ON`.
+Detected automatically via the compiler ID; unaffected by Windows builds.
+
 ### Windows (Visual Studio 2026)
 
 ```powershell
