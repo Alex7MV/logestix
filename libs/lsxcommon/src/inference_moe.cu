@@ -116,6 +116,16 @@ __global__ void fuse_act_scale_into_weights_kernel(
     }
 }
 
+// Clamp FP16 output to prevent overflow (used after GEMM)
+__global__ void clamp_half_kernel(__half* d_buf, int n, float limit)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float v = __half2float(d_buf[i]);
+    v = fmaxf(-limit, fminf(limit, v));
+    d_buf[i] = __float2half(v);
+}
+
 // Run a single expert FFN: silu(W1 @ x) * (W3 @ x) then W2 @ result
 // All weights NVFP4 packed, dequantized to FP16 scratch
 static cudaError_t run_single_expert_ffn(
@@ -397,16 +407,16 @@ __global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n, floa
     d_act[i] = __float2half(x * sig * g);
 }
 
-// SwiGLU with clamp, FP16 inputs → FP32 output (matches reference: .float() before silu)
-__global__ void swiglu_clamp_f32_kernel(
-    const __half* __restrict__ d_gate_vec,
-    const __half* __restrict__ d_up_vec,
+// SwiGLU with clamp, FP32 inputs → FP32 output (no FP16 intermediate overflow)
+__global__ void swiglu_clamp_f32f_kernel(
+    const float* __restrict__ d_gate,
+    const float* __restrict__ d_up,
     float* __restrict__ d_out, int n, float limit)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    float g = __half2float(d_gate_vec[i]);
-    float u = __half2float(d_up_vec[i]);
+    float g = d_gate[i];
+    float u = d_up[i];
     if (g > limit) g = limit;
     if (u >  limit) u =  limit;
     if (u < -limit) u = -limit;
@@ -487,9 +497,14 @@ cudaError_t run_shared_experts_ffn(
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                  intermediate_dim, 1, hidden_dim, &alpha,
                  d_dequant, CUDA_R_16F, hidden_dim,
-                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                 d_intermediate, CUDA_R_16F, intermediate_dim,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
+                  d_intermediate, CUDA_R_16F, intermediate_dim,
+                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        int b = 256;
+        int g = (intermediate_dim + b - 1) / b;
+        clamp_half_kernel<<<g, b, 0, stream>>>(d_intermediate, intermediate_dim, 65504.0f);
+    }
     {
         cudaStreamSynchronize(stream);
         __half probe[6] = {};
@@ -511,9 +526,14 @@ cudaError_t run_shared_experts_ffn(
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                  intermediate_dim, 1, hidden_dim, &alpha,
                  d_dequant, CUDA_R_16F, hidden_dim,
-                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                 d_gate, CUDA_R_16F, intermediate_dim,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
+                  d_gate, CUDA_R_16F, intermediate_dim,
+                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        int b = 256;
+        int g = (intermediate_dim + b - 1) / b;
+        clamp_half_kernel<<<g, b, 0, stream>>>(d_gate, intermediate_dim, 65504.0f);
+    }
     {
         cudaStreamSynchronize(stream);
         __half probe[6] = {};
@@ -545,8 +565,13 @@ cudaError_t run_shared_experts_ffn(
                  hidden_dim, 1, intermediate_dim, &alpha,
                  d_dequant, CUDA_R_16F, intermediate_dim,
                  d_intermediate, CUDA_R_16F, intermediate_dim, &beta,
-                 d_output, CUDA_R_16F, hidden_dim,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                  d_output, CUDA_R_16F, hidden_dim,
+                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        int b = 256;
+        int g = (hidden_dim + b - 1) / b;
+        clamp_half_kernel<<<g, b, 0, stream>>>(d_output, hidden_dim, 65504.0f);
+    }
     {
         cudaStreamSynchronize(stream);
         __half probe[6] = {};
@@ -568,11 +593,12 @@ static cudaError_t run_routed_expert_ffn(
     const uint8_t *d_w1, const uint8_t *d_w1_scales, int64_t w1_el,
     const uint8_t *d_w2, const uint8_t *d_w2_scales, int64_t w2_el,
     const uint8_t *d_w3, const uint8_t *d_w3_scales, int64_t w3_el,
-    __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    float *d_gate_f32, float *d_up_f32,    // FP32 W1/W3 outputs (no overflow)
+    __half *d_dequant,
     float *d_output,
     __half *d_act_quant,
     float *d_swiglu_out,
-    float *d_act_scales,         // [ceil(K/128)] per-block activation scales
+    float *d_act_scales,
     float weight, bool accumulate)
 {
     cublasSetStream(cublas_h, stream);
@@ -605,7 +631,7 @@ static cudaError_t run_routed_expert_ffn(
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_16F, kHiddenDim,
                      d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
-                     d_gate_vec, CUDA_R_16F, kIntermediateDim,
+                     d_gate_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
 
@@ -626,15 +652,15 @@ static cudaError_t run_routed_expert_ffn(
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_16F, kHiddenDim,
                      d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
-                     d_up_vec, CUDA_R_16F, kIntermediateDim,
+                     d_up_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
 
     // ── SwiGLU in FP32: silu(clamp(gate,max=10)) * clamp(up,±10) → FP32 ─────
     if (kIntermediateDim > 0) {
         int grid = (kIntermediateDim + block - 1) / block;
-        swiglu_clamp_f32_kernel<<<grid, block, 0, stream>>>(
-            d_gate_vec, d_up_vec, d_swiglu_out, kIntermediateDim, 10.0f);
+        swiglu_clamp_f32f_kernel<<<grid, block, 0, stream>>>(
+            d_gate_f32, d_up_f32, d_swiglu_out, kIntermediateDim, 10.0f);
         // Apply routing weight (norm_topk_prob * 1.5) in FP32 BEFORE W2
         scale_float_kernel<<<grid, block, 0, stream>>>(
             d_swiglu_out, weight, kIntermediateDim);
@@ -777,10 +803,11 @@ cudaError_t run_routed_experts(
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
-    __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    float *d_gate_f32, float *d_up_f32,   // FP32 W1/W3 outputs
+    __half *d_dequant,
     __half *d_act_quant,
     float *d_swiglu_out,
-    float *d_act_scales,          // [ceil(max(hidden,inter)/128)]
+    float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
@@ -834,7 +861,7 @@ cudaError_t run_routed_experts(
             p1, s1, w1_el,
             p2, s2, w2_el,
             p3, s3, w3_el,
-            d_gate_vec, d_up_vec, d_dequant, d_output,
+            d_gate_f32, d_up_f32, d_dequant, d_output,
             d_act_quant, d_swiglu_out, d_act_scales,
             h_top_weights[k], accumulate);
         if (e != cudaSuccess) return e;

@@ -197,7 +197,8 @@ cudaError_t run_routed_experts(
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
-    __half *d_gate_vec, __half *d_up_vec, __half *d_dequant,
+    float *d_gate_f32, float *d_up_f32,
+    __half *d_dequant,
     __half *d_act_quant,
     float *d_swiglu_out,
     float *d_act_scales,
@@ -312,6 +313,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     float *d_ffn_accum = nullptr;   // [dim] FP32 accumulation buffer (shared+routed)
     float *d_swiglu_out = nullptr;   // [intermediate_dim] FP32 SwiGLU output
     float *d_act_scales = nullptr;   // [ceil(max(hidden,inter)/128)] per-block act scales
+    float *d_gate_f32 = nullptr;      // [intermediate_dim] FP32 W1 output
+    float *d_up_f32 = nullptr;        // [intermediate_dim] FP32 W3 output
     CSAState *csa_states = nullptr;  // [num_layers] per-layer CSA state
     __half *d_shared_int = nullptr;
     __half *d_shared_gate = nullptr;
@@ -376,6 +379,10 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         static_cast<size_t>(kIntermediateDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_act_scales,
         static_cast<size_t>((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_gate_f32,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
+    INFER_CHECK(cudaMalloc(&d_up_f32,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_attn_dequant, attn_dequant_sz));
     INFER_CHECK(cudaMalloc(&d_kv_cache, kv_cache_sz));
     INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
@@ -659,7 +666,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_accum,
-                    d_shared_int, d_shared_gate, d_dequant_scratch,
+                    d_gate_f32, d_up_f32, d_dequant_scratch,
                     d_act_quant, d_swiglu_out, d_act_scales,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total));
@@ -852,6 +859,8 @@ cleanup:
     if (d_ffn_accum)      cudaFree(d_ffn_accum);
     if (d_swiglu_out)     cudaFree(d_swiglu_out);
     if (d_act_scales)     cudaFree(d_act_scales);
+    if (d_gate_f32)       cudaFree(d_gate_f32);
+    if (d_up_f32)         cudaFree(d_up_f32);
     if (d_attn_dequant) cudaFree(d_attn_dequant);
     if (d_kv_cache)    cudaFree(d_kv_cache);
     if (d_q)           cudaFree(d_q);
