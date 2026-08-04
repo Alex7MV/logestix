@@ -200,7 +200,7 @@ cudaError_t run_routed_experts(
     float *d_output,
     float *d_gate_f32, float *d_up_f32,
     float *d_dequant,
-    __half *d_act_quant,
+    float *d_act_quant,
     float *d_swiglu_out,
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
@@ -334,7 +334,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     __half *d_shared_gate = nullptr;
     __half *d_routed_buf = nullptr;
     float *d_dequant_scratch = nullptr;
-    __half *d_act_quant = nullptr;     // FP8_E4M3 activation emulation scratch
+    float *d_act_quant = nullptr;      // FP32 activation (was __half*)
     float *d_attn_dequant = nullptr;  // F8→FP32 scratch (≥ wq_b/wo_a/wo_b)
     __half *d_kv_cache = nullptr;      // [layers][window][head_dim]
     __half *d_q = nullptr, *d_qr = nullptr, *d_qr2 = nullptr;
@@ -393,7 +393,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
     INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
     INFER_CHECK(cudaMalloc(&d_act_quant,
-        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(__half)));
+        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_ffn_accum,
         static_cast<size_t>(kHiddenDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_swiglu_out,

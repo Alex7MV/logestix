@@ -30,7 +30,7 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
 
 __global__ void act_quant_block_kernel(
     const __half* __restrict__ d_input,
-    __half* __restrict__       d_output,
+    float* __restrict__        d_output,
     float* __restrict__        d_scales,
     int K)
 {
@@ -64,12 +64,11 @@ __global__ void act_quant_block_kernel(
     }
     __syncthreads();
 
-    // ue8m0: round scale UP to next power of 2 (matching reference fast_round_scale)
     float linear_scale = fmaxf(s_amax, 1e-4f) / 448.0f;
     int log2_s = 0;
-    float v = linear_scale;
-    while (v > 1.0f) { v *= 0.5f; log2_s++; }
-    while (v <= 0.5f && log2_s > -149) { v *= 2.0f; log2_s--; }
+    float vs = linear_scale;
+    while (vs > 1.0f) { vs *= 0.5f; log2_s++; }
+    while (vs <= 0.5f && log2_s > -149) { vs *= 2.0f; log2_s--; }
     float act_scale = exp2f(static_cast<float>(log2_s));
     if (act_scale < linear_scale) act_scale *= 2.0f;
     float inv_scale = 1.0f / act_scale;
@@ -77,6 +76,7 @@ __global__ void act_quant_block_kernel(
     for (int i = threadIdx.x; i < n; i += blockDim.x) {
         float v = __half2float(d_input[base + i]) * inv_scale;
         v = fmaxf(-448.0f, fminf(448.0f, v));
+        // FP8_E4M3 quantize → dequant back to float (no FP16 intermediate)
         uint32_t bits;
         std::memcpy(&bits, &v, sizeof(bits));
         uint32_t sign = (bits >> 31) & 1;
@@ -86,12 +86,12 @@ __global__ void act_quant_block_kernel(
         if (e4 < 1) e4 = 0;
         if (e4 > 15) { e4 = 15; mant3 = 7; }
         if (e4 == 0) {
-            d_output[base + i] = __float2half(0.0f);
+            d_output[base + i] = 0.0f;
         } else {
             uint32_t out_bits = (sign << 31) | (static_cast<uint32_t>(e4 + 120) << 23) | (mant3 << 20);
             float result;
             std::memcpy(&result, &out_bits, sizeof(result));
-            d_output[base + i] = __float2half(result);
+            d_output[base + i] = result;
         }
     }
     if (threadIdx.x == 0) d_scales[blk] = act_scale;
@@ -587,7 +587,7 @@ static cudaError_t run_routed_expert_ffn(
     float *d_gate_f32, float *d_up_f32,    // FP32 W1/W3 outputs (no overflow)
     float *d_dequant,                    // FP32 dequant scratch (no overflow)
     float *d_output,
-    __half *d_act_quant,
+    float *d_act_quant,                  // FP32 activation (was __half*)
     float *d_swiglu_out,
     float *d_act_scales,
     float weight, bool accumulate)
@@ -621,7 +621,7 @@ static cudaError_t run_routed_expert_ffn(
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_32F, kHiddenDim,
-                     d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
+                     d_act_quant, CUDA_R_32F, kHiddenDim, &beta,
                      d_gate_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
@@ -642,7 +642,7 @@ static cudaError_t run_routed_expert_ffn(
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
                      d_dequant, CUDA_R_32F, kHiddenDim,
-                     d_act_quant, CUDA_R_16F, kHiddenDim, &beta,
+                     d_act_quant, CUDA_R_32F, kHiddenDim, &beta,
                      d_up_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
@@ -665,14 +665,14 @@ static cudaError_t run_routed_expert_ffn(
                          d_dequant, w2_el);
 
         // Quantize the post-routing-weight SwiGLU output (intermediate_dim)
-        // Convert float→half first, then per-128 block quantize
+        // act_quant for W2: d_swiglu_out is FP32, d_act_quant is FP32.
+        // act_quant_block_kernel takes __half* input — but d_swiglu_out is float*.
+        // Skip block quantization for W2 input, use FP32 directly (pure FP32 GEMM).
+        // Copy d_swiglu_out → d_act_quant so fuse_act_scale can use the scales.
         {
-            int grid = (kIntermediateDim + block - 1) / block;
-            float_to_half_kernel<<<grid, block, 0, stream>>>(
-                d_swiglu_out, d_act_quant, kIntermediateDim);
-            int n_blocks_w2 = (kIntermediateDim + 127) / 128;
-            act_quant_block_kernel<<<n_blocks_w2, block, 0, stream>>>(
-                d_act_quant, d_act_quant, d_act_scales, kIntermediateDim);
+            cudaMemcpyAsync(d_act_quant, d_swiglu_out,
+                static_cast<size_t>(kIntermediateDim) * sizeof(float),
+                cudaMemcpyDeviceToDevice, stream);
         }
 
         // Fuse act_scale into W2 dequanted weights (W2: [hidden, inter], K=inter)
@@ -684,17 +684,13 @@ static cudaError_t run_routed_expert_ffn(
                 d_dequant, d_act_scales, N, K);
         }
 
-        // Convert FP32 activation → FP16 for cuBLAS mixed-type GEMM
-        {
-            int grid = (kIntermediateDim + block - 1) / block;
-            float_to_half_kernel<<<grid, block, 0, stream>>>(
-                d_swiglu_out, d_act_quant, kIntermediateDim);
-        }
+        // Pure FP32 GEMM: FP32 weights × FP32 activation → FP32 output
+        // Use d_swiglu_out directly as activation input (already FP32)
         float gbeta = accumulate ? 1.0f : 0.0f;
         cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kHiddenDim, 1, kIntermediateDim, &alpha,
                      d_dequant, CUDA_R_32F, kIntermediateDim,
-                     d_act_quant, CUDA_R_16F, kIntermediateDim, &gbeta,
+                     d_swiglu_out, CUDA_R_32F, kIntermediateDim, &gbeta,
                      d_output, CUDA_R_32F, kHiddenDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     }
@@ -802,7 +798,7 @@ cudaError_t run_routed_experts(
     float *d_output,
     float *d_gate_f32, float *d_up_f32,   // FP32 W1/W3 outputs
     float *d_dequant,
-    __half *d_act_quant,
+    float *d_act_quant,                  // FP32 activation
     float *d_swiglu_out,
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
