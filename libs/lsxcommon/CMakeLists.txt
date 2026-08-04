@@ -1,15 +1,19 @@
-find_path(CUDA_INCLUDE_DIR cuda_runtime.h
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/include"
-    REQUIRED
-)
-find_library(CUDA_CUDART_LIBRARY cudart
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
-    REQUIRED
-)
-find_library(CUDA_CUBLAS_LIBRARY cublas
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
-    REQUIRED
-)
+enable_language(CUDA)
+
+if(MSVC)
+    set(_cuda_root "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3")
+    set(_cuda_include_dir "${_cuda_root}/include")
+    set(_cuda_lib_dir "${_cuda_root}/lib/x64")
+else()
+    get_filename_component(_cuda_bin "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+    get_filename_component(_cuda_root "${_cuda_bin}" DIRECTORY)
+    set(_cuda_include_dir "${_cuda_root}/include")
+    set(_cuda_lib_dir "${_cuda_root}/targets/x86_64-linux/lib;${_cuda_root}/lib64")
+endif()
+
+find_path(CUDA_INCLUDE_DIR cuda_runtime.h PATHS ${_cuda_include_dir} REQUIRED)
+find_library(CUDA_CUDART_LIBRARY cudart PATHS ${_cuda_lib_dir} REQUIRED)
+find_library(CUDA_CUBLAS_LIBRARY cublas PATHS ${_cuda_lib_dir} REQUIRED)
 
 add_library(lsxcommon STATIC
     src/converter.cpp
@@ -29,7 +33,6 @@ set_target_properties(lsxcommon PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 
-enable_language(CUDA)
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
     src/testmodel_gpu.cu
@@ -46,7 +49,12 @@ set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
-target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
+if(MSVC)
+    target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
+else()
+    target_compile_options(lsxcommon_cu PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=-march=znver4;-Xcompiler=-mtune=znver4;-Xcompiler=-O3>)
+endif()
 target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
