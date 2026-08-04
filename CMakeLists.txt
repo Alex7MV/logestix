@@ -27,7 +27,15 @@ if(MSVC)
     add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    # Ubuntu 26.04 / AMD EPYC 9V74 (Zen 4): pin to znver4 for full AVX-512
+    # (bf16/vnni/vbmi2) and tune for this microarchitecture. Aggressive
+    # optimization for maximum throughput on the target machine.
+    set(CMAKE_CXX_FLAGS
+        "${CMAKE_CXX_FLAGS} -march=znver4 -mtune=znver4 -O3 -funroll-loops -fno-plt -fno-semantic-interposition")
+    option(LOGESTIX_FAST_MATH "Enable -ffast-math (risky for NVFP4 dequant accuracy)" OFF)
+    if(LOGESTIX_FAST_MATH)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math")
+    endif()
 endif()
 
 # ── ЗАВИСИМОСТИ: Apache Arrow через FetchContent (Минимальная сборка) ────────
