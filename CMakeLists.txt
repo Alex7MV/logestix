@@ -179,6 +179,24 @@ endif()
 add_subdirectory(libs)
 add_subdirectory(apps)
 
+# ── LTO для наших C++-целей (Linux/GCC) ──────────────────────────────────
+# LTO точечно через свойство INTERPROCEDURAL_OPTIMIZATION: применяется только
+# к нашему C++ коду и не задевает CUDA-объекты (lsxcommon_cu) и third-party.
+include(CheckIPOSupported)
+option(LOGESTIX_LTO "Enable LTO for our C++ targets" ON)
+if(NOT MSVC AND LOGESTIX_LTO)
+    # Проверяем поддержку IPO только для CXX: проект включает CUDA,
+    # а для NVCC IPO не поддерживается и валил бы всю проверку.
+    check_ipo_supported(RESULT _lto_ok OUTPUT _lto_err LANGUAGES CXX)
+    if(_lto_ok)
+        foreach(_t IN ITEMS lsxcommon lsxcli lsxfabric lsxforge taskmosaic)
+            set_property(TARGET ${_t} APPEND PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+        endforeach()
+    else()
+        message(WARNING "LOGESTIX_LTO enabled but IPO unsupported: ${_lto_err}")
+    endif()
+endif()
+
 # Общие тесты, не привязанные к конкретному приложению (например, интеграционные
 # проверки зависимостей: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).
 if(BUILD_TESTING)
