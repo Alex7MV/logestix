@@ -811,6 +811,16 @@ InferenceResult RunInference(const InferenceConfig &cfg)
             }
         }
 
+        // Logit temperature clamp: if maxv > 30, scale all logits down
+        // This prevents degenerate "won won won" repetition from HC state growth
+        // causing maxv=6.3M logit inflation
+        if (max_val > 30.0f) {
+            float scale = 30.0f / max_val;
+            for (int v = 0; v < pw.vocab_size; ++v)
+                h_logits[v] *= scale;
+            max_val = 30.0f;
+        }
+
         // Store generated token (always — gen_ids[0] used as first gen-step input)
         gen_ids.push_back(next_tok);
 
