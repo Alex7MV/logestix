@@ -591,10 +591,10 @@ static cudaError_t gemm_f32f32_f16(cublasHandle_t cublas_h, cudaStream_t stream,
         &beta, d_out_f32, CUDA_R_32F, m,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-    // Convert FP32 output → FP16
+    // Convert FP32 output → FP16 (with clamp to prevent overflow)
     int block = 256;
     int grid = (m + block - 1) / block;
-    float_to_half_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, m);
+    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, m);
     return cudaGetLastError();
 }
 
@@ -822,7 +822,7 @@ cudaError_t run_mla_attention(
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
             int g3 = (kOloraRank + block - 1) / block;
-            float_to_half_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
+            clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
         }
     }
 
@@ -1173,7 +1173,7 @@ cudaError_t run_csa_attention(
                 d_olora_f32, CUDA_R_32F, kOloraRank,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             int g3 = (kOloraRank + block - 1) / block;
-            float_to_half_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
+            clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
         }
     }
     e = f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
