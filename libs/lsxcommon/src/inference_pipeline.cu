@@ -378,14 +378,13 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     // Shared experts may have intermediate_dim up to hidden_dim
     size_t shared_int_sz = static_cast<size_t>(kHiddenDim) * sizeof(__half);
     // Max attention weight: wq_b/wo_a/wo_b = 32768·1024 (or 8192·4096) elements
-    // FP32 dequant scratch + FP16 clamped tail (worst case: wo_a = 8192*4096 elements)
-    // FP32 part: 8192 * 4096 * sizeof(float) = 128 MB
-    // FP16 tail: 8192 * 4096 * sizeof(__half) = 64 MB
-    // Total = 192 MB (same as FP32 + FP16 overlay)
+    // FP32 dequant scratch: weights (n) + activation (k) + output (m), all FP32
     size_t max_attn_elems = static_cast<size_t>(kAttnHeads) * kHeadDim * kQloraRank;
     size_t max_attn_elems_wo = 8192LL * 4096;  // wo_a: [8192, 4096]
     size_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
-    size_t attn_dequant_sz = attn_dequant_max * (sizeof(float) + sizeof(__half));
+    // Need: weights (n floats) + activation (max cols) + output (max rows)
+    size_t act_plus_out = static_cast<size_t>(std::max(kHiddenDim, 8192));
+    size_t attn_dequant_sz = (attn_dequant_max + act_plus_out) * sizeof(float);
     // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
     int max_compressed = (cfg.max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
     size_t kv_cache_sz = static_cast<size_t>(kNumLayers)

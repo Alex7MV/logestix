@@ -571,7 +571,34 @@ static __global__ void dequant_f8_to_f32_kernel(
     }
 }
 
-// FP32 GEMM helper: dequant F8→FP32, clamp→FP16 (tail of scratch), FP16×FP16 GEMM
+// Forward declaration (defined later)
+__global__ void half_to_float_kernel(const __half* __restrict__ src, float* __restrict__ dst, int n);
+__global__ void float_to_half_kernel(const float* __restrict__ src, __half* __restrict__ dst, int n);
+
+// FP32×FP32→FP32 GEMM then convert → FP16 output
+static cudaError_t gemm_f32f32_f16(cublasHandle_t cublas_h, cudaStream_t stream,
+                                const float* d_w, int m, int k,
+                                const float* d_x, __half* d_out,
+                                float* d_out_f32)
+{
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+    cublasStatus_t st = cublasGemmEx(
+        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+        m, 1, k, &alpha,
+        d_w, CUDA_R_32F, k,
+        d_x, CUDA_R_32F, k,
+        &beta, d_out_f32, CUDA_R_32F, m,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+    // Convert FP32 output → FP16
+    int block = 256;
+    int grid = (m + block - 1) / block;
+    float_to_half_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, m);
+    return cudaGetLastError();
+}
+
+// f8_gemm_1d: dequant F8→FP32, convert FP16 act→FP32, FP32×FP32→FP32→FP16
 static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
                               const uint8_t* d_w, const uint8_t* d_scale,
                               int rows, int cols,
@@ -581,15 +608,20 @@ static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
     int64_t n = static_cast<int64_t>(rows) * cols;
     int block = 256;
     int grid = static_cast<int>((n + block - 1) / block);
+    // Step 1: dequant F8 → FP32 weights
     dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
         d_w, d_scale, d_scratch, n, cols, cols / 128, 128, 128);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    __half* d_w_fp16 = reinterpret_cast<__half*>(d_scratch + n);
-    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_scratch, d_w_fp16, static_cast<int>(n));
+    // Step 2: convert FP16 activation → FP32 (after weights in scratch)
+    float* d_x_f32 = d_scratch + n;
+    int grid2 = (cols + block - 1) / block;
+    half_to_float_kernel<<<grid2, block, 0, stream>>>(d_x, d_x_f32, cols);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    return gemm_f16_1d(cublas_h, stream, d_w_fp16, rows, cols, d_x, d_out);
+    // Step 3: FP32×FP32→FP32 GEMM, output at d_x_f32 + cols (after activation)
+    float* d_out_f32 = d_x_f32 + cols;
+    return gemm_f32f32_f16(cublas_h, stream, d_scratch, rows, cols, d_x_f32, d_out, d_out_f32);
 }
 
 // ── RMSNorm bridge (half → float → rmsnorm_float → half) ─────────────────────
@@ -767,29 +799,30 @@ cudaError_t run_mla_attention(
             lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
         cudaError_t err = cudaGetLastError();
         if (err != cudaSuccess) return err;
-        // Clamp FP32 dequanted weights → FP16 (tail of scratch, no overlap)
-        __half* d_wa_fp16 = reinterpret_cast<__half*>(d_dequant + n);
-        clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(
-            d_dequant, d_wa_fp16, static_cast<int>(n));
-        err = cudaGetLastError();
-        if (err != cudaSuccess) return err;
 
-        // O-projection: FP16×FP16 GEMM (standard cuBLAS)
-        const int gd = (kAttnHeads / kOGroups) * kHeadDim;
+        // O-projection: FP32×FP32→FP32→FP16
+        const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
         for (int g = 0; g < kOGroups; ++g) {
-            const __half* d_o_g = d_o + g * gd;
-            const __half* d_wa_g = d_wa_fp16 + g * kOloraRank * gd;
-            __half* d_olora_g = d_olora + g * kOloraRank;
+            // Convert FP16 d_o → FP32 (after weights in scratch)
+            float* d_o_f32 = d_dequant + n;
+            int g2 = (gd + block - 1) / block;
+            half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
+            err = cudaGetLastError();
+            if (err != cudaSuccess) return err;
+            // FP32×FP32→FP32 output, then convert → FP16
+            float* d_olora_f32 = d_o_f32 + gd;
             cublasSetStream(cublas_h, stream);
             float alpha = 1.0f, beta = 0.0f;
             cublasStatus_t st = cublasGemmEx(
                 cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 kOloraRank, 1, gd, &alpha,
-                d_wa_g, CUDA_R_16F, gd,
-                d_o_g, CUDA_R_16F, gd,
-                &beta, d_olora_g, CUDA_R_16F, kOloraRank,
+                d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
+                d_o_f32, CUDA_R_32F, gd,
+                &beta, d_olora_f32, CUDA_R_32F, kOloraRank,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+            int g3 = (kOloraRank + block - 1) / block;
+            float_to_half_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
         }
     }
 
@@ -1113,7 +1146,7 @@ cudaError_t run_csa_attention(
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
     }
 
-    // ── O-projection (identical to MLA — FP32 dequant → clamp → FP16 GEMM) ──
+    // ── O-projection (identical to MLA — FP32×FP32→FP32→FP16)
     {
         int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
         int block = 256;
@@ -1121,22 +1154,26 @@ cudaError_t run_csa_attention(
         dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
             lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
             lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
-        __half* d_wa_fp16 = reinterpret_cast<__half*>(d_dequant + n);
-        clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(
-            d_dequant, d_wa_fp16, static_cast<int>(n));
     }
     {
         const int gd = (kAttnHeads / kOGroups) * kHeadDim;
+        int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
+        int block = 256;
         float alpha = 1.0f, beta = 0.0f;
         cublasSetStream(cublas_h, stream);
-        __half* d_wa_fp16 = reinterpret_cast<__half*>(d_dequant + static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols);
         for (int g = 0; g < kOGroups; ++g) {
+            float* d_o_f32 = d_dequant + n;
+            int g2 = (gd + block - 1) / block;
+            half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
+            float* d_olora_f32 = d_o_f32 + gd;
             cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 kOloraRank, 1, gd, &alpha,
-                d_wa_fp16 + g * kOloraRank * gd, CUDA_R_16F, gd,
-                d_o + g * gd, CUDA_R_16F, gd, &beta,
-                d_olora + g * kOloraRank, CUDA_R_16F, kOloraRank,
+                d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
+                d_o_f32, CUDA_R_32F, gd, &beta,
+                d_olora_f32, CUDA_R_32F, kOloraRank,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            int g3 = (kOloraRank + block - 1) / block;
+            float_to_half_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
         }
     }
     e = f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
