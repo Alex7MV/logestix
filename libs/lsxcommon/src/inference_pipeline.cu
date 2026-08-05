@@ -223,6 +223,20 @@ cudaError_t run_mla_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
+// From inference_attn.cu
+cudaError_t run_csa_attention(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const LayerWeights& lw,
+    const __half* d_x,
+    __half* d_kv_cache_layer,
+    CSAState& csa_state,
+    int start_pos,
+    __half* d_q, __half* d_qr, __half* d_qr2,
+    __half* d_kv, __half* d_kv2,
+    __half* d_o, __half* d_olora, __half* d_out,
+    float* d_dequant,
+    float* d_norm_scratch, float* d_norm_gamma_scratch);
+
 // From inference_head.cu
 cudaError_t run_lm_head(
     cublasHandle_t cublas_h,
