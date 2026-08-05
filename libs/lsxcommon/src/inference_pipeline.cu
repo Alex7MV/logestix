@@ -168,7 +168,8 @@ static __host__ cudaError_t run_rmsnorm(
                                      d_gamma_scratch, eps, d_scratch);
     if (err != cudaSuccess) return err;
 
-    float_to_half_kernel<<<grid, block, 0, stream>>>(d_scratch, d_output, n);
+    // Clamp FP32→FP16 (prevent overflow)
+    clamp_f32_to_fp16<<<grid, block, 0, stream>>>(d_scratch, d_output, n);
     return cudaGetLastError();
 }
 

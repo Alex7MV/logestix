@@ -650,7 +650,8 @@ static cudaError_t run_rmsnorm_attn(
     cudaError_t err = rmsnorm_float(stream, 1, dim, d_scratch,
                                     d_gamma_scratch, eps, d_scratch);
     if (err != cudaSuccess) return err;
-    float_to_half_kernel<<<grid, block, 0, stream>>>(d_scratch, d_output, dim);
+    // Clamp FP32→FP16 (prevent overflow from gamma multiplication)
+    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_scratch, d_output, dim);
     return cudaGetLastError();
 }
 
