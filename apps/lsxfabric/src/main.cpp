@@ -11,6 +11,7 @@ int main(int argc, char* argv[]) {
     bool validate = false;
     bool testmodel = false;
     bool testprompt = false;
+    bool selfcheck = false;
     std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--localmodel") == 0 && i + 1 < argc)
@@ -21,6 +22,8 @@ int main(int argc, char* argv[]) {
             testmodel = true;
         else if (std::strcmp(argv[i], "--testprompt") == 0)
             testprompt = true;
+        else if (std::strcmp(argv[i], "--selfcheck") == 0)
+            selfcheck = true;
     }
 
     lsxcommon::Core::Initialize("logestix_runtime.log");
@@ -38,6 +41,24 @@ int main(int argc, char* argv[]) {
         }
         lsxcommon::Core::Shutdown();
         return result.ok ? 0 : 1;
+    }
+    if (selfcheck) {
+        spdlog::info("Running single-token self-check...");
+        lsxcommon::gpu::InferenceConfig cfg;
+        cfg.model_path = model_path;
+        auto result = lsxcommon::gpu::RunSelfCheck(cfg);
+        if (result.ok) {
+            spdlog::info("=== --selfcheck Results ===");
+            spdlog::info("first token : {} '{}'",
+                         result.first_gen_tok_id, result.first_gen_text);
+            spdlog::info("maxv        : {:.4f}", result.first_gen_maxv);
+            spdlog::info("passed      : {}",
+                         result.selfcheck_passed ? "yes" : "no");
+        } else {
+            spdlog::error("SelfCheck failed: {}", result.error_msg);
+        }
+        lsxcommon::Core::Shutdown();
+        return (result.ok && result.selfcheck_passed) ? 0 : 1;
     }
     if (validate) {
         spdlog::info("Running validation...");

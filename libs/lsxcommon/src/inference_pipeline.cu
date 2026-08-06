@@ -835,6 +835,15 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         step_oss << " maxv=" << std::fixed << std::setprecision(4) << max_val;
         log::info(step_oss.str());
 
+        // Single-token self-check: capture the first generated token (pre-clamp
+        // maxv) for RunSelfCheck.
+        if (step == static_cast<int>(input_ids.size())
+            && result.first_gen_tok_id == -1) {
+            result.first_gen_tok_id = next_tok;
+            result.first_gen_maxv   = max_val;
+            result.first_gen_text   = std::string(tok_buf, tok_cap);
+        }
+
         if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
             break;
     }
@@ -942,6 +951,31 @@ cleanup:
     return result;
     } // end execution block
 } // end RunInference
+
+// Single-token self-check: runs one forward pass on the hardcoded prompt and
+// reports whether the first generated token is "Paris". Test/diagnostic entry
+// point — may be removed later.
+InferenceResult RunSelfCheck(const InferenceConfig &cfg)
+{
+    InferenceConfig sc = cfg;
+    sc.max_gen_tokens = 1;
+    InferenceResult r = RunInference(sc);
+    if (!r.ok) {
+        r.selfcheck_passed = false;
+        return r;
+    }
+    if (r.first_gen_tok_id >= 0) {
+        std::string t = r.first_gen_text;
+        auto b = t.begin(), e = t.end();
+        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
+        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
+        r.selfcheck_passed = (std::string(b, e) == "Paris");
+    }
+    log::info("[selfcheck] top1_tok=" + std::to_string(r.first_gen_tok_id)
+              + " text='" + r.first_gen_text + "' passed="
+              + (r.selfcheck_passed ? "true" : "false"));
+    return r;
+}
 
 } // namespace gpu
 } // namespace lsxcommon

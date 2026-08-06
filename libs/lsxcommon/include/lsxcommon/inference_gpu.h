@@ -21,9 +21,17 @@ struct InferenceResult {
     std::string output_text;
     std::string error_msg;
     bool ok = false;
+
+    // Single-token self-check diagnostics (filled on the first generated step).
+    int   first_gen_tok_id = -1;
+    std::string first_gen_text;
+    float first_gen_maxv = 0.0f;   // argmax logit of the first token, pre-tempclamp
+    bool  selfcheck_passed = false;
 };
 
 InferenceResult RunInference(const InferenceConfig &cfg);
+
+InferenceResult RunSelfCheck(const InferenceConfig &cfg);
 
 } // namespace gpu
 } // namespace lsxcommon
