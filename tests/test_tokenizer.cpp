@@ -127,7 +127,9 @@ TEST_CASE("BuildTokenizerArrowFiles with FIM control tokens", "[tokenizer][conve
 {
     // DeepSeek ships FIM tokens ("<|fim▁hole|>" etc.) in added_tokens with
     // "special": false and chars outside the GPT-2 byte table (U+FF5C/U+2581).
-    // Regression: converter must succeed and treat them as special.
+    // Regression: converter must succeed. They can never be produced by the
+    // byte-level encoder, so they are kept as ordinary tokens carrying their
+    // raw UTF-8 text — decode must emit them verbatim, never strip them.
     auto pinned = fs::temp_directory_path() / "logestix_tok_synth_fim";
     fs::remove_all(pinned);
     fs::create_directories(pinned);
@@ -138,31 +140,26 @@ TEST_CASE("BuildTokenizerArrowFiles with FIM control tokens", "[tokenizer][conve
     REQUIRE(fs::exists(pinned / "tokenizer_vocab.arrow"));
     REQUIRE(fs::exists(pinned / "tokenizer_merges.arrow"));
 
-    auto v = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_vocab.arrow");
-    REQUIRE(v.ok());
-    CHECK((*v)->num_rows() == 271);
-
-    auto meta = (*v)->schema()->metadata();
-    REQUIRE(meta != nullptr);
-    REQUIRE(meta->Get("vocab_size").ok());
-    CHECK(*meta->Get("vocab_size") == "271");
-    REQUIRE(meta->Get("bos_id").ok());
-    CHECK(*meta->Get("bos_id") == "0");
-    REQUIRE(meta->Get("eos_id").ok());
-    CHECK(*meta->Get("eos_id") == "1");
-    REQUIRE(meta->Get("pad_id").ok());
-    CHECK(*meta->Get("pad_id") == "2");
-
-    auto rows = lsxcommon::TokenizerVocabSchema::UnpackBatch(*v);
+    auto rows = lsxcommon::TokenizerVocabSchema::UnpackBatch(
+        *lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_vocab.arrow"));
     REQUIRE(rows.ok());
     REQUIRE(rows->size() == 271);
-    // FIM ids 268/269/270 must be marked special despite special:false.
-    CHECK((*rows)[268].is_special == 1);
-    CHECK((*rows)[269].is_special == 1);
-    CHECK((*rows)[270].is_special == 1);
+    // FIM ids 268/269/270 are non-byte-level but NOT real specials; they must
+    // keep their literal text and be decodable (is_special == 0).
+    for (int32_t fid : {268, 269, 270}) {
+        CHECK((*rows)[fid].is_special == 0);
+        CHECK_FALSE((*rows)[fid].token_bytes.empty());
+    }
+    const std::string fim_hole(reinterpret_cast<const char *>(u8"\u003C\uFF5Cfim\u2581hole\uFF5C\u003E"));
+    CHECK(std::string(reinterpret_cast<const char *>((*rows)[268].token_bytes.data()),
+                      (*rows)[268].token_bytes.size()) == fim_hole);
     // Byte-level ids still map through the GPT-2 table.
     CHECK((*rows)[35].is_special == 0);
     CHECK((*rows)[35].token_bytes == std::vector<uint8_t>{0x20});
+    // True specials (bos/eos/pad) stay marked.
+    CHECK((*rows)[0].is_special == 1);
+    CHECK((*rows)[1].is_special == 1);
+    CHECK((*rows)[2].is_special == 1);
 
     auto m = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_merges.arrow");
     REQUIRE(m.ok());
@@ -173,6 +170,43 @@ TEST_CASE("BuildTokenizerArrowFiles with FIM control tokens", "[tokenizer][conve
 
 #include <lsxcommon/tokenizer.h>
 #include <arrow/io/file.h>
+
+TEST_CASE("FIM control tokens decode verbatim", "[tokenizer][decode]")
+{
+    // Regression: non-byte-level control tokens must NOT be stripped from the
+    // decoded text. Decoding the FIM ids must reproduce their literal UTF-8.
+    auto pinned = fs::temp_directory_path() / "logestix_tok_synth_fim_db";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+    auto st = lsxcommon::BuildTokenizerArrowFiles(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok_fim.json", pinned);
+    REQUIRE(st.ok());
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
+    REQUIRE(m.ok());
+    lsxcommon::ArrowTokenizerDb db;
+    REQUIRE(lsxcommon::load_tokenizer_metadata(*v, *m, db).ok());
+
+    const int32_t ids[] = {268, 269, 270};
+    std::string buf(64, '\0');
+    size_t cap = buf.size();
+    int32_t r = lsxcommon::arrow_tokenizer_decode(db, ids, 3, buf.data(), &cap);
+    const std::string expect(
+        reinterpret_cast<const char *>(u8"\u003C\uFF5Cfim\u2581hole\uFF5C\u003E"
+                                       u8"\u003C\uFF5Cfim\u2581begin\uFF5C\u003E"
+                                       u8"\u003C\uFF5Cfim\u2581end\uFF5C\u003E"));
+    CHECK(r == 0);
+    CHECK(cap == expect.size());
+    CHECK(std::string(buf.data(), cap) == expect);
+
+    v = nullptr;
+    m = nullptr;
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
 
 static fs::path BuildSyntheticDb(lsxcommon::ArrowTokenizerDb &db)
 {

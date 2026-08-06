@@ -193,11 +193,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
             // Control tokens (e.g. DeepSeek's "<|fim▁hole|>") are shipped in
             // added_tokens with "special": false but contain chars outside the
             // GPT-2 byte table. They can never be produced by the byte-level
-            // encoder, so treat them as special (decode skips them).
+            // encoder, so keep them as ordinary tokens whose token_bytes carry
+            // the raw UTF-8 text; decode must emit them verbatim (no stripping).
             if (!special)
-                spdlog::warn("tokenizer: treating non-byte-level token id={} as special: '{}'",
-                             id, it->second);
-            row.is_special = 1;
+                spdlog::debug("tokenizer: non-byte-level token id={} kept as text: '{}'",
+                              id, it->second);
+            row.is_special = special ? 1 : 0;
             row.token_bytes.assign(
                 reinterpret_cast<const uint8_t *>(it->second.data()),
                 reinterpret_cast<const uint8_t *>(it->second.data()) + it->second.size());
