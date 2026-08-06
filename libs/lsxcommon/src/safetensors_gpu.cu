@@ -1,5 +1,6 @@
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
+#include "lsxcommon/schema.h"
 
 #include <arrow/gpu/cuda_api.h>
 
@@ -205,24 +206,15 @@ int64_t dtype_byte_size(int dc)
     }
 }
 
-float e4m3_p2_to_float(uint8_t b)
-{
-    if (b == 0) return 0.0f;
-    int e_stored = (b >> 3) & 0x0F;
-    int exp_unb = e_stored - 7;
-    return std::ldexp(1.0f, exp_unb);
-}
-
-uint8_t float_to_e4m3_p2(float v)
-{
-    if (v == 0.0f) return 0;
-    int e;
-    float m = std::frexp(v, &e);
-    int e4 = e - 1 + 7;
-    if (e4 < 1) e4 = 1;
-    if (e4 > 14) e4 = 14;
-    return static_cast<uint8_t>(e4 << 3);
-}
+// NOTE: E4M3 block-scale encode/decode intentionally delegate to the
+// canonical lsxcommon::float_to_e4m3_p2 / lsxcommon::e4m3_p2_to_float
+// (schema.h) instead of a local reimplementation. A previous local copy
+// here used floor-rounding (via std::frexp) instead of ceiling-rounding,
+// which systematically underestimated the largest weight in every
+// 16-element NVFP4 block by up to ~50% for any block whose local max wasn't
+// an exact power-of-2 fraction of the tensor's global max — see
+// tests/test_inference_kernels.cu's "NVFP4 offline quantize preserves
+// per-block magnitude" regression test.
 
 } // anonymous namespace
 
@@ -348,12 +340,12 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
             float s = (max_val == 0.0f)
                 ? (1.0f / 128.0f)
                 : (max_val / global_max_abs);
-            uint8_t e4 = float_to_e4m3_p2(s);
+            uint8_t e4 = lsxcommon::float_to_e4m3_p2(s);
             scales_e4m3[static_cast<std::size_t>(i)] = e4;
             // Device-side block scales feed the quantizer, which divides by the
             // full scale product (e4m3 * global_scale) — matching the dequant.
             host_block_scales[static_cast<std::size_t>(i)] =
-                e4m3_p2_to_float(e4) * global_scale;
+                lsxcommon::e4m3_p2_to_float(e4) * global_scale;
         }
 
         // Upload float scales to device (async)

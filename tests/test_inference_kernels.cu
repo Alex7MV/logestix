@@ -3,12 +3,18 @@
 //        KV act_quant, RMSNorm, clamp_f32_to_fp16
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cmath>
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <lsxcommon/safetensors_gpu.h>
+#include <lsxcommon/shared_experts.h>
+#include <lsxcommon/schema.h>
+
+using Catch::Approx;
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
@@ -53,6 +59,15 @@ __device__ float test_e8m0_to_float(uint8_t b) {
     return __uint_as_float(static_cast<uint32_t>(b) << 23);
 }
 
+// Top-level __global__ kernel (not an inline lambda): nvcc's extended-lambda
+// support for __global__ closures defined inside a loop body in a
+// host TEST_CASE function is unreliable across compiler versions, so this
+// mirrors the plain top-level kernel style used by every other test below.
+__global__ void test_e8m0_kernel_single(const uint8_t* in, float* out) {
+    uint8_t b = *in;
+    out[0] = test_e8m0_to_float(b);
+}
+
 TEST_CASE("E8M0 scale conversion", "[inference]") {
     // Test on device
     struct TestCase { uint8_t input; float expected; };
@@ -73,12 +88,7 @@ TEST_CASE("E8M0 scale conversion", "[inference]") {
         cudaMemcpy(d_in, &tc.input, sizeof(uint8_t), cudaMemcpyHostToDevice);
         
         // Launch a 1-thread kernel
-        auto kernel = [] __global__ (const uint8_t* in, float* out) {
-            uint8_t b = *in;
-            if (b == 0) *out = 0.0f;
-            else *out = __uint_as_float(static_cast<uint32_t>(b) << 23);
-        };
-        kernel<<<1, 1>>>(d_in, d_out);
+        test_e8m0_kernel_single<<<1, 1>>>(d_in, d_out);
         cudaDeviceSynchronize();
         
         float result = 0.0f;
@@ -442,4 +452,200 @@ TEST_CASE("Compressor produces weighted average", "[inference]") {
     cudaFree(d_kv_state);
     cudaFree(d_score_state);
     cudaFree(d_compressed);
+}
+
+// ── NVFP4 codec regression tests ─────────────────────────────────────────────
+// These call the *real* public lsxcommon::gpu functions (not reimplemented
+// mini-kernels) to catch two systematic-debugging findings:
+//   1. safetensors_gpu.cu's private float_to_e4m3_p2 floors log2(scale)
+//      instead of ceiling it like the canonical lsxcommon::float_to_e4m3_p2,
+//      underestimating the largest weight in any block whose local max isn't
+//      an exact power-of-2 fraction of the tensor's global max.
+//   2. The routed-expert dequant path (dequant_fp4_e8m0) uses a completely
+//      different on-disk format (E8M0-per-32, no global_scale) than what the
+//      offline converter actually writes (E2M1 + E4M3-per-16 + global_scale,
+//      decoded correctly only by dequant_shared_nvfp4).
+
+namespace {
+
+// Mirrors dev_quantize_nvfp4's positive E2M1 magnitude table
+// (safetensors_gpu.cu) — sign is bit 3 of the nibble, magnitude is bits 0-2.
+constexpr float kE2M1Levels[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+
+float DecodeE2M1Nibble(uint8_t nibble)
+{
+    int sign = (nibble >> 3) & 1;
+    float v = kE2M1Levels[nibble & 0x7];
+    return sign ? -v : v;
+}
+
+uint8_t ExtractNibble(const std::vector<uint8_t> &packed, int64_t i)
+{
+    uint8_t b = packed[static_cast<size_t>(i / 2)];
+    return (i % 2 == 0) ? (b & 0x0F) : ((b >> 4) & 0x0F);
+}
+
+} // namespace
+
+TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p2 regression)",
+          "[nvfp4][regression]")
+{
+    // 3 blocks of 16 F32 elements. Block 0 holds the tensor's global max
+    // (6.0). Block 1's local max (4.0) has a NON-power-of-2 ratio to the
+    // global max (4/6 = 0.667) — this is exactly the case where flooring
+    // the E4M3 block-scale exponent (the bug) underestimates the true value
+    // by ~25%, while ceiling it (correct) reconstructs it exactly. Block 2's
+    // local max (1.5) has a power-of-2 ratio (0.25) as a sanity control that
+    // must reconstruct exactly regardless of the bug.
+    std::vector<float> src(48, 0.0f);
+    src[0]  = 6.0f;
+    src[16] = 4.0f;
+    src[32] = 1.5f;
+
+    std::vector<uint8_t> raw(src.size() * sizeof(float));
+    std::memcpy(raw.data(), src.data(), raw.size());
+
+    std::vector<uint8_t> packed, scales;
+    float global_scale = 0.0f;
+    bool ok = lsxcommon::gpu::quantize_tensor_gpu(
+        raw.data(), static_cast<int64_t>(src.size()), "F32",
+        nullptr, {}, {}, packed, scales, global_scale);
+    REQUIRE(ok);
+    REQUIRE(scales.size() == 3);
+
+    auto decode = [&](int64_t i) -> float {
+        uint8_t nibble = ExtractNibble(packed, i);
+        int64_t block = i / 16;
+        float block_scale = lsxcommon::e4m3_p2_to_float(scales[static_cast<size_t>(block)]);
+        return DecodeE2M1Nibble(nibble) * block_scale * global_scale;
+    };
+
+    float d0 = decode(0);
+    float d16 = decode(16);
+    float d32 = decode(32);
+
+    INFO("global_scale=" << global_scale
+         << " scales=0x" << std::hex << (int)scales[0] << ",0x" << (int)scales[1]
+         << ",0x" << (int)scales[2] << std::dec
+         << " decoded=" << d0 << "," << d16 << "," << d32);
+
+    CHECK(std::fabs(d0 - 6.0f) / 6.0f < 0.02f);
+    // The assertion that fails under the floor-rounding bug (reconstructs
+    // ~3.0, ~25% low) and passes once safetensors_gpu.cu's float_to_e4m3_p2
+    // delegates to the canonical ceil-rounding lsxcommon::float_to_e4m3_p2.
+    CHECK(std::fabs(d16 - 4.0f) / 4.0f < 0.02f);
+    CHECK(std::fabs(d32 - 1.5f) / 1.5f < 0.02f);
+}
+
+TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",
+          "[nvfp4][regression]")
+{
+    // One full 16-element block, produced by the real offline converter
+    // path, then decoded by the *documented* decoder for this format
+    // (schema.h: E2M1 nibble * E4M3 per-16-block scale * global_scale).
+    std::vector<float> src = {
+        6.0f, 4.0f, 3.0f, 2.0f, 1.5f, 1.0f, 0.5f, 0.0f,
+        -6.0f, -4.0f, -3.0f, -2.0f, -1.5f, -1.0f, -0.5f, 0.0f};
+
+    std::vector<uint8_t> raw(src.size() * sizeof(float));
+    std::memcpy(raw.data(), src.data(), raw.size());
+
+    std::vector<uint8_t> packed, scales;
+    float global_scale = 0.0f;
+    REQUIRE(lsxcommon::gpu::quantize_tensor_gpu(
+        raw.data(), static_cast<int64_t>(src.size()), "F32",
+        nullptr, {}, {}, packed, scales, global_scale));
+    REQUIRE(scales.size() == 1);
+
+    uint8_t *d_packed = nullptr, *d_scales = nullptr;
+    __half *d_out = nullptr;
+    cudaMalloc(&d_packed, packed.size());
+    cudaMalloc(&d_scales, scales.size());
+    cudaMalloc(&d_out, src.size() * sizeof(__half));
+    cudaMemcpy(d_packed, packed.data(), packed.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scales, scales.data(), scales.size(), cudaMemcpyHostToDevice);
+
+    cudaError_t e = lsxcommon::gpu::dequant_shared_nvfp4(
+        nullptr, d_packed, static_cast<int64_t>(packed.size()),
+        d_scales, static_cast<int64_t>(scales.size()), global_scale,
+        d_out, static_cast<int64_t>(src.size()));
+    REQUIRE(e == cudaSuccess);
+    cudaDeviceSynchronize();
+
+    std::vector<__half> out(src.size());
+    cudaMemcpy(out.data(), d_out, src.size() * sizeof(__half), cudaMemcpyDeviceToHost);
+    cudaFree(d_packed);
+    cudaFree(d_scales);
+    cudaFree(d_out);
+
+    for (size_t i = 0; i < src.size(); ++i) {
+        float got = __half2float(out[i]);
+        INFO("i=" << i << " src=" << src[i] << " got=" << got);
+        if (src[i] == 0.0f) {
+            CHECK(got == 0.0f);
+        } else {
+            CHECK(std::fabs(got - src[i]) / std::fabs(src[i]) < 0.02f);
+        }
+    }
+}
+
+TEST_CASE("dequant_fp4_e8m0 (routed-expert decoder) does NOT decode NVFP4-format data — "
+          "documents the format-mismatch bug in inference_moe.cu",
+          "[nvfp4][regression]")
+{
+    // Same on-disk NVFP4 bytes as the previous test, but run through the
+    // decoder that inference_moe.cu's run_routed_expert_ffn actually calls
+    // (dequant_fp4_e8m0 / _half): E8M0-per-32 scale, no global_scale term.
+    // This characterizes why routed-expert FFN weights come out wrong at
+    // runtime even after the offline codec is fixed — the runtime side is
+    // reading the right bytes with the wrong decoder.
+    std::vector<float> src = {
+        6.0f, 4.0f, 3.0f, 2.0f, 1.5f, 1.0f, 0.5f, 0.0f,
+        -6.0f, -4.0f, -3.0f, -2.0f, -1.5f, -1.0f, -0.5f, 0.0f};
+
+    std::vector<uint8_t> raw(src.size() * sizeof(float));
+    std::memcpy(raw.data(), src.data(), raw.size());
+
+    std::vector<uint8_t> packed, scales;
+    float global_scale = 0.0f;
+    REQUIRE(lsxcommon::gpu::quantize_tensor_gpu(
+        raw.data(), static_cast<int64_t>(src.size()), "F32",
+        nullptr, {}, {}, packed, scales, global_scale));
+
+    uint8_t *d_packed = nullptr, *d_scales = nullptr;
+    __half *d_out = nullptr;
+    cudaMalloc(&d_packed, packed.size());
+    cudaMalloc(&d_scales, scales.size());
+    cudaMalloc(&d_out, src.size() * sizeof(__half));
+    cudaMemcpy(d_packed, packed.data(), packed.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scales, scales.data(), scales.size(), cudaMemcpyHostToDevice);
+
+    cudaError_t e = lsxcommon::gpu::dequant_fp4_e8m0_half(
+        nullptr, d_packed, static_cast<int64_t>(packed.size()),
+        d_scales, static_cast<int64_t>(scales.size()),
+        d_out, static_cast<int64_t>(src.size()));
+    cudaDeviceSynchronize();
+
+    bool any_finite_mismatch = false;
+    if (e == cudaSuccess) {
+        std::vector<__half> out(src.size());
+        cudaMemcpy(out.data(), d_out, src.size() * sizeof(__half), cudaMemcpyDeviceToHost);
+        for (size_t i = 0; i < src.size(); ++i) {
+            float got = __half2float(out[i]);
+            if (src[i] != 0.0f
+                && std::fabs(got - src[i]) / std::fabs(src[i]) > 0.02f) {
+                any_finite_mismatch = true;
+            }
+        }
+    }
+    cudaFree(d_packed);
+    cudaFree(d_scales);
+    cudaFree(d_out);
+
+    // Either the launch itself is rejected (size mismatch — scales.size()
+    // holding E4M3-per-16 bytes is not a valid E8M0-per-32 buffer for 16
+    // elements) or, if it launches, its output diverges from the true
+    // source values by construction (missing global_scale, wrong scale
+    // decode). Both outcomes are evidence of the format mismatch.
+    CHECK((e != cudaSuccess || any_finite_mismatch));
 }

@@ -60,17 +60,32 @@ endif()
 add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
-add_executable(test_inference_kernels test_inference_kernels.cu)
-set_target_properties(test_inference_kernels PROPERTIES
+# Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
+# passing the .cu file directly to add_executable(). Root cause found by
+# direct experimentation: when a CUDA-compiling target links (directly or
+# transitively) another target that itself carries a private
+# "-Xcompiler=/utf-8" CUDA compile option (as lsxcommon_cu does), CMake's
+# Visual Studio generator emits a duplicated, unwrapped bare "/utf-8" on the
+# nvcc command line for the *consuming* target's own CUDA compile step —
+# which nvcc 13.3.73 misparses as a second input file ("nvcc fatal: A single
+# input file is required..."). Confirmed by removing the lsxcommon link from
+# the compile step entirely, which eliminates the bare /utf-8.
+# Fix: this OBJECT library gets its own explicit include dirs (mirroring
+# lsxcommon_cu's) instead of linking lsxcommon at compile time. lsxcommon is
+# linked only at the final executable's link stage below, where its actual
+# symbols (not its CUDA compile options) are needed.
+add_library(test_inference_kernels_cu OBJECT test_inference_kernels.cu)
+set_target_properties(test_inference_kernels_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES "120-real;121-real"
-    CUDA_STANDARD 20
-    CUDA_STANDARD_REQUIRED ON
+    CUDA_ARCHITECTURES OFF
 )
-# CUDA 13.3 + MSVC: TypeInfo generates separate .ptx causing nvcc -o conflict
-set_property(TARGET test_inference_kernels PROPERTY CudaCompile_TypeInfo false)
-target_compile_options(test_inference_kernels PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
-target_include_directories(test_inference_kernels PRIVATE
+target_compile_options(test_inference_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121>)
+target_include_directories(test_inference_kernels_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
@@ -78,7 +93,17 @@ target_include_directories(test_inference_kernels PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
-target_link_libraries(test_inference_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_inference_kernels_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_inference_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_inference_kernels)
+set_target_properties(test_inference_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_inference_kernels PRIVATE
+    test_inference_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_inference_kernels POST_BUILD
