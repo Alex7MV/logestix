@@ -457,14 +457,20 @@ __global__ void swiglu_clamp_kernel(
     d_gate_vec[i] = __float2half(sig * g * u);
 }
 
-// Shared experts FFN: dequant F8_E4M3 × E8M0 → FP16, GEMM, SiLU activation
-// W1/W3 GEMM outputs FP32 (CUDA_R_32F) to prevent FP16 overflow
+// Shared experts FFN: dequant F8_E4M3 x F8_E8M0 (128x128 tile) -> FP32,
+// GEMM, SiLU activation. Verified against the real DeepSeek-V4-Flash
+// safetensors header: shared_experts.w1.weight dtype=F8_E4M3 shape=[2048,4096],
+// w1.scale dtype=F8_E8M0 shape=[16,32] -> block_r=128, block_c=128. global_scale
+// is not applicable here (converter.cpp's passthrough path hardcodes 1.0 for
+// already-quantized F8_E4M3 sources), which is why w1_gs/w2_gs/w3_gs are
+// accepted but intentionally unused below.
+// W1/W3 GEMM outputs FP32 (CUDA_R_32F) to prevent FP16 overflow.
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
     const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
-    float w1_gs, float w2_gs, float w3_gs,
+    float /*w1_gs*/, float /*w2_gs*/, float /*w3_gs*/,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
     float *d_dequant, __half *d_output)
@@ -480,19 +486,11 @@ cudaError_t run_shared_experts_ffn(
 
     // 1. Dequant W1 → d_dequant (F8_E4M3 × E8M0, per-128x128 tiles)
     if (w1_bytes > 0) {
+        // dequant_shared_f8 does not validate/use its scale_bytes parameter
+        // (kept for interface symmetry with the other dequant_* functions).
         cudaError_t e = dequant_shared_f8(stream, d_w1, w1_bytes,
-            d_w1_scales, w1_bytes / (intermediate_dim * hidden_dim) * 0 + 512,
-            d_dequant, w1_el, hidden_dim);
+            d_w1_scales, 0, d_dequant, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
-    }
-    {
-        cudaStreamSynchronize(stream);
-        __half probe[6] = {};
-        cudaMemcpy(probe, d_dequant, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[dbg] FFN W1 dequant[0..5]=";
-        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-        log::debug(oss.str());
     }
 
     // 2. intermediate = W1^T @ hidden → d_intermediate
@@ -563,20 +561,16 @@ cudaError_t run_shared_experts_ffn(
         int g = (hidden_dim + b - 1) / b;
         clamp_half_kernel<<<g, b, 0, stream>>>(d_output, hidden_dim, 65504.0f);
     }
-    {
-        cudaStreamSynchronize(stream);
-        __half probe[6] = {};
-        cudaMemcpy(probe, d_output, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-        std::ostringstream oss;
-        oss << "[dbg] FFN out[0..5]=";
-        for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-        log::debug(oss.str());
-    }
     return cudaSuccess;
 }
 
-// Routed-expert FFN: fp4 (E2M1 × F8_E8M0 per-32) dequant + SwiGLU GEMM.
-// Applies act_quant (FP8_E4M3 emulation) to the input activation and to the
+// Routed-expert FFN: fp4 (E2M1 x F8_E8M0 per-32) dequant + SwiGLU GEMM.
+// Verified against the real DeepSeek-V4-Flash safetensors header
+// ("expert_dtype": "fp4" in config.json): weight is a nibble-packed E2M1
+// container (stored as raw I8 bytes, 2 elements/byte) with a flat F8_E8M0
+// scale every 32 elements — global_scale does not apply (converter.cpp's
+// passthrough path hardcodes 1.0 for already-quantized sources). Applies
+// act_quant (FP8_E4M3 emulation) to the input activation and to the
 // SwiGLU output before W2, matching the reference linear() pipeline.
 static cudaError_t run_routed_expert_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -808,7 +802,14 @@ cudaError_t run_routed_experts(
     const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
     const int64_t w3_el = w1_el;
 
-    bool accumulate = false;
+    // d_output already holds the shared-expert FFN result (or was freshly
+    // zeroed by the caller when there are no shared experts — see
+    // inference_pipeline.cu's d_ffn_accum setup) *before* this function is
+    // called, so every routed expert's W2 GEMM must accumulate (beta=1),
+    // never overwrite (beta=0). This used to start `false`, which silently
+    // discarded the shared-expert contribution on every layer/token that
+    // selected >=1 routed expert.
+    const bool accumulate = true;
     for (int k = 0; k < topk; ++k) {
         int idx = h_top_indices[k];
         if (idx < 0 || idx >= experts_per_layer) continue;
@@ -858,7 +859,6 @@ cudaError_t run_routed_experts(
             d_act_quant, d_swiglu_out, d_act_scales,
             h_top_weights[k], accumulate);
         if (e != cudaSuccess) return e;
-        accumulate = true;
     }
     return cudaSuccess;
 }

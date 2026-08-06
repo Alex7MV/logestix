@@ -261,6 +261,44 @@ static bool parse_expert_file(ExpertDb &db, size_t idx)
     float w2gs = get_gs(ExpertSchema::kIdxW2GlobalScale);
     float w3gs = get_gs(ExpertSchema::kIdxW3GlobalScale);
 
+    // ── Diagnostic: log real packed/scale geometry for the first few experts.
+    // Reveals the actual NVFP4 scale block size (per-16 / per-32 / 2D tile) that
+    // the converter passthrough stored, which the inference dequant must match.
+    if (idx == 0 || idx == 1 || idx == static_cast<size_t>(db.experts_per_layer)) {
+        auto fmt_scale_bytes = [](const uint8_t *p, int64_t n) -> std::string {
+            std::ostringstream os;
+            os << "[";
+            for (int64_t i = 0; i < n && i < 8; ++i) {
+                if (i) os << ",";
+                char b[4];
+                std::snprintf(b, sizeof(b), "%02x", p[i]);
+                os << b;
+            }
+            os << "]";
+            return os.str();
+        };
+        auto implied_blk = [](int64_t packed_bytes, int64_t scale_bytes) -> std::string {
+            int64_t numel = packed_bytes * 2;
+            if (scale_bytes <= 0) return "n/a (0 scales)";
+            int64_t blk = numel / scale_bytes;
+            // Detect a 2D tile layout: numel/blk is a perfect square-ish tile.
+            std::ostringstream os;
+            os << blk << " elems/scale (numel=" << numel
+               << " scales=" << scale_bytes << ")";
+            return os.str();
+        };
+        std::ostringstream os;
+        os << "[diag-expert] idx=" << idx
+           << " w1: packed=" << w1s << "B scales=" << w1ss << "B gs=" << w1gs
+           << " blk=" << implied_blk(w1s, w1ss)
+           << " s1[0..7]=" << fmt_scale_bytes(w1sp, w1ss)
+           << " | w2: packed=" << w2s << "B scales=" << w2ss << "B gs=" << w2gs
+           << " blk=" << implied_blk(w2s, w2ss)
+           << " | w3: packed=" << w3s << "B scales=" << w3ss << "B gs=" << w3gs
+           << " blk=" << implied_blk(w3s, w3ss);
+        log::info(os.str());
+    }
+
     db.entries[idx] = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
                        w1gs, w2gs, w3gs,
                        w1s, w2s, w3s, w1ss, w2ss, w3ss};

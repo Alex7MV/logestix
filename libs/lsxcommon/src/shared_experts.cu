@@ -362,6 +362,72 @@ cudaError_t dequant_shared_nvfp4(
     return cudaGetLastError();
 }
 
+// FP32 output version of the NVFP4 (E2M1 nibble + E4M3 per-16-block scale +
+// global_scale) dequant kernel. NOT currently used at runtime: verified
+// against the real DeepSeek-V4-Flash safetensors headers that expert
+// weights actually go through converter.cpp's F8_E4M3/I8-passthrough path
+// (F8_E8M0-tiled scales, not E4M3-per-16 + global_scale), so this format
+// only applies to weights that go through fresh GPU NVFP4 quantization.
+// Kept for that case and to mirror the existing (also currently-unused)
+// half-precision dequant_shared_nvfp4 above.
+template<int BLOCK_DIM>
+__launch_bounds__(BLOCK_DIM)
+__global__ void dequant_shared_nvfp4_f32_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    float                        global_scale,
+    float*        __restrict__ output,
+    int64_t                     num_elements)
+{
+    constexpr int ELEMS_PER_THREAD = 32;
+    constexpr int ELEMS_PER_BLOCK  = BLOCK_DIM * ELEMS_PER_THREAD;
+    const int64_t chunk = static_cast<int64_t>(blockIdx.x) * ELEMS_PER_BLOCK;
+    if (chunk >= num_elements) return;
+    const int64_t base = chunk + static_cast<int64_t>(threadIdx.x) * ELEMS_PER_THREAD;
+    const int64_t end = min(base + static_cast<int64_t>(ELEMS_PER_THREAD), num_elements);
+
+    for (int64_t i = base; i < end; ++i) {
+        const int64_t byte_idx = i >> 1;
+        const uint8_t nibble = (i & 1)
+            ? (packed[byte_idx] >> 4)
+            : (packed[byte_idx] & 0x0F);
+        const float scale = e4m3_scale_to_float(scales[i >> 4]) * global_scale;
+        output[i] = kE2M1Table[nibble] * scale;
+    }
+}
+
+// FP32-output NVFP4 dequant wrapper (E2M1 + E4M3-per-16 + global_scale).
+cudaError_t dequant_shared_nvfp4_f32(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    float global_scale,
+    float* d_output, int64_t num_elements)
+{
+    if (!d_packed || !d_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
+        return cudaErrorInvalidValue;
+
+    const int64_t need_packed = (num_elements + 1) / 2;
+    const int64_t need_scales = (num_elements + kVFP4BlockSize - 1) / kVFP4BlockSize;
+    if (packed_bytes < need_packed)
+        return cudaErrorInvalidValue;
+    if (scales_bytes < need_scales)
+        return cudaErrorInvalidValue;
+
+    constexpr int BLOCK_DIM = 256;
+    constexpr int ELEMS_PER_THREAD = 32;
+    const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
+    const int blocks = static_cast<int>(
+        (num_elements + elems_per_block - 1) / elems_per_block);
+
+    dequant_shared_nvfp4_f32_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
+        d_packed, d_scales, global_scale, d_output, num_elements);
+
+    return cudaGetLastError();
+}
+
 // FP32 output version of the fp4 dequant kernel
 template<int BLOCK_DIM>
 __launch_bounds__(BLOCK_DIM)

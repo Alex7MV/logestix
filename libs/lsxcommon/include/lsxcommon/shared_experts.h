@@ -78,6 +78,19 @@ cudaError_t dequant_shared_nvfp4(
     float global_scale,
     __half* d_output, int64_t num_elements);
 
+// FP32-output variant of the above. NOT currently wired into any live
+// dequant path — verified against the real DeepSeek-V4-Flash safetensors
+// headers that both routed- and shared-expert weights actually go through
+// converter.cpp's passthrough path (F8_E4M3/I8 + F8_E8M0-tiled scale, not
+// E4M3-per-16 + global_scale), so this format only applies to weights that
+// go through fresh GPU NVFP4 quantization (see quantize_tensor_gpu).
+cudaError_t dequant_shared_nvfp4_f32(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    float global_scale,
+    float* d_output, int64_t num_elements);
+
 // Dequantizes one routed-expert fp4-packed weight tensor:
 //   output[i] = E2M1(nibble_i) * F8_E8M0(scale[i >> 5])
 // Row-major [rows, cols] with packed bytes [rows, cols/2] and scales
