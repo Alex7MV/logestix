@@ -202,6 +202,33 @@ ModelTopology load_topology(const std::string &model_path)
     return topo;
 }
 
+std::string detect_model_type(const std::string &model_path)
+{
+    std::string result;
+    auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    std::ifstream f(ipath);
+    if (!f) return result;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                      std::istreambuf_iterator<char>());
+
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) return result;
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) return result;
+
+    std::string_view name;
+    if (root["model"].get_string().get(name) != simdjson::SUCCESS) return result;
+    std::string raw(name);
+    // Normalize: "DeepSeek-V4-Flash" -> "deepseek-v4-flash"
+    for (char &c : raw) {
+        if (c == ' ') c = '-';
+        else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return raw;
+}
+
 // Parse a single expert arrow (given its flat index) into db.entries[idx] and
 // keep the mmap + record batch alive in the cache. Returns true on success.
 static bool parse_expert_file(ExpertDb &db, size_t idx)

@@ -62,6 +62,10 @@ struct ModelTopology {
 
 ModelTopology load_topology(const std::string &model_path);
 
+// Read `model` field from <model_path>/logestix/model.index.json.
+// Returns normalized type (lowercase, ' ' -> '-'), or "" on any error.
+std::string detect_model_type(const std::string &model_path);
+
 struct ExpertDb {
     std::vector<ExpertEntry> entries;
     std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
