@@ -5,7 +5,9 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace lsxcommon {
@@ -28,12 +30,16 @@ void Core::Initialize(const std::string& log_file_path) {
         );
 
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [thread %t] [%^%l%$] %v");
-        logger->set_level(spdlog::level::info);
+        logger->set_level(spdlog::level::trace);
         spdlog::set_default_logger(logger);
 
         spdlog::info("Logestix common library core initialized.");
     } catch (const spdlog::spdlog_ex& ex) {
-        fprintf(stderr, "Critical: Log initialization failed: %s\n", ex.what());
+        // spdlog itself failed to initialize — no logger exists, so fall back
+        // to a raw stderr write to surface the failure.
+        const std::string msg = std::string("Critical: Log initialization failed: ")
+            + ex.what() + "\n";
+        std::fputs(msg.c_str(), stderr);
     }
 }
 
