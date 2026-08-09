@@ -1,6 +1,8 @@
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
 #include "lsxcommon/safetensors.h"
+#include "lsxcommon/model.h"
+#include "lsxcommon/model_factory.h"
 #include <cstring>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -25,12 +27,21 @@ int main(int argc, char* argv[]) {
     spdlog::info("Model path: {}", model_path);
 
     if (info || infofull) {
-        auto model = lsxcommon::scan_directory(model_path);
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = model_path;
+        auto model = lsxcommon::LsxModelFactory::Create(cfg);
+        if (!model || !model->Load()) {
+            spdlog::error("Failed to create/load model: {}", model_path);
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        auto mi = model->Inspect();
         if (infofull) {
-            for (auto &shard : model.shards)
+            for (auto &shard : mi.shards)
                 lsxcommon::print_shard(shard);
         }
-        lsxcommon::print_model(model);
+        lsxcommon::print_model(mi);
+        model->Unload();
     }
 
     lsxcommon::Core::Shutdown();
