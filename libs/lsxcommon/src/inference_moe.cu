@@ -648,7 +648,7 @@ cudaError_t run_shared_experts_ffn(
 // passthrough path hardcodes 1.0 for already-quantized sources). Applies
 // act_quant (FP8_E4M3 emulation) to the input activation and to the
 // SwiGLU output before W2, matching the reference linear() pipeline.
-static cudaError_t run_routed_expert_ffn(
+cudaError_t run_routed_expert_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w1_scales, int64_t w1_el,
@@ -727,32 +727,19 @@ static cudaError_t run_routed_expert_ffn(
             d_swiglu_out, weight, kIntermediateDim);
     }
 
-    // ── W2 GEMM: quantize SwiGLU output (per-128 blocks) then fuse ──────────
+    // ── W2 GEMM: pure FP32 matmul of dequantized W2 against the raw
+    // SwiGLU output. No act_scale fusion: the W2 activation (d_swiglu_out)
+    // is used at full FP32 precision and is NOT divided by any per-128 block
+    // scale, so the weights must stay unscaled. (Fusing the input's
+    // d_act_scales here — as the older quantized-activation path did — scaled
+    // every routed-expert output by ~act_scale≈2^-9, silently zeroing routed
+    // experts and leaving the model running on attention + shared experts
+    // only, which answered incorrectly.)
     if (w2_el > 0) {
         int64_t packed_bytes = (w2_el + 1) / 2;
         int64_t scale_bytes  = (w2_el + 31) / 32;
         dequant_fp4_e8m0(stream, d_w2, packed_bytes, d_w2_scales, scale_bytes,
                          d_dequant, w2_el);
-
-        // Quantize the post-routing-weight SwiGLU output (intermediate_dim)
-        // act_quant for W2: d_swiglu_out is FP32, d_act_quant is FP32.
-        // act_quant_block_kernel takes __half* input — but d_swiglu_out is float*.
-        // Skip block quantization for W2 input, use FP32 directly (pure FP32 GEMM).
-        // Copy d_swiglu_out → d_act_quant so fuse_act_scale can use the scales.
-        {
-            cudaMemcpyAsync(d_act_quant, d_swiglu_out,
-                static_cast<size_t>(kIntermediateDim) * sizeof(float),
-                cudaMemcpyDeviceToDevice, stream);
-        }
-
-        // Fuse act_scale into W2 dequanted weights (W2: [hidden, inter], K=inter)
-        {
-            int64_t N = kHiddenDim, K = kIntermediateDim;
-            int64_t total = N * K;
-            int grid = static_cast<int>((total + block - 1) / block);
-            fuse_act_scale_into_weights_kernel<<<grid, block, 0, stream>>>(
-                d_dequant, d_act_scales, N, K);
-        }
 
         // Pure FP32 GEMM: FP32 weights × FP32 activation → FP32 output
         // Use d_swiglu_out directly as activation input (already FP32)

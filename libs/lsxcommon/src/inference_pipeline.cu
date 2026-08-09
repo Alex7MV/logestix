@@ -1130,8 +1130,12 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             log::info(step_oss.str());
 
             // Single-token self-check: capture the first generated token (pre-clamp
-            // maxv) for RunSelfCheck.
-            if (step == static_cast<int>(input_ids.size())
+            // maxv) for RunSelfCheck. The first generated token is the argmax at
+            // step == input_ids.size()-1 (the step whose embedding is the LAST
+            // prompt token); at step == input_ids.size() the model has already been
+            // fed that first generated token and argmax produces the SECOND
+            // generated token (off-by-one).
+            if (step == static_cast<int>(input_ids.size()) - 1
                 && result.first_gen_tok_id == -1) {
                 result.first_gen_tok_id = next_tok;
                 result.first_gen_maxv   = max_val;
