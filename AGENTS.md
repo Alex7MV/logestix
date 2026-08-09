@@ -2,7 +2,7 @@
 
 ## Project
 
-Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.15+.
+Multi-app monorepo: fabric, forge, taskmosaic, lsxcli. C++20 / C23. CMake 3.25+ (CMakePresets).
 Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Tensor Cores and TMA.
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
@@ -24,42 +24,41 @@ CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
 
 ## Build
 
-### Linux (GCC/Clang)
+Use CMakePresets — ready-made for both supported OSes. Replace `debug` with
+`release` in the preset name for an optimization build.
+
+### Linux (Ubuntu 26.04, Ninja + GCC)
 
 ```bash
 git submodule update --init --recursive
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
+cmake --preset linux-debug
+cmake --build --preset linux-debug
 ```
 
 ### Windows (Visual Studio 2026)
 
-Arrow's xsimd sub-dependency requires `CMAKE_POLICY_VERSION_MINIMUM=3.5`
-for CMake 4.x. Set the env var before `cmake --build` (it's lost after configure).
-
 ```powershell
 git submodule update --init --recursive
-cmake -S . -B build -G "Visual Studio 18 2026"
-$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
-cmake --build build --config Debug
+cmake --preset windows-debug
+cmake --build --preset windows-debug
 ```
 
 `arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD`.
 
+Arrow's xsimd sub-dependency requires `CMAKE_POLICY_VERSION_MINIMUM=3.5`; the
+variable is now applied automatically through `CMakePresets.json` — no manual
+`$env:CMAKE_POLICY_VERSION_MINIMUM` needed.
+
 ## Test
 
+`BUILD_TESTING=ON` is included in every preset.
+
 ```bash
-cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure
+ctest --preset linux-debug      # Ubuntu 26.04
 ```
 
-On Windows без `-DCMAKE_BUILD_TYPE` (используется `--config Debug`):
-
 ```powershell
-$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
-cmake --build build --config Debug
-ctest --test-dir build --output-on-failure -C Debug
+ctest --preset windows-debug    # Windows 11
 ```
 
 ## Structure
@@ -100,6 +99,7 @@ ctest --test-dir build --output-on-failure -C Debug
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
 - **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
+- **CMAKE_POLICY_VERSION_MINIMUM**: задаётся через `CMakePresets.json` (`cacheVariables`), ручная установка env-переменной не требуется. Arrow's xsimd требует значения 3.5.
 - **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
