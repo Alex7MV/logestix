@@ -250,48 +250,23 @@ cudaError_t run_lm_head(
     float *d_logits,
     int32_t *d_next_token);
 
-InferenceResult RunInference(const InferenceConfig &cfg)
+InferenceResult RunInferenceModel(
+    const std::string &model_path,
+    const std::vector<int32_t> &input_ids,
+    int max_gen_tokens,
+    ::lsxcommon::ArrowTokenizerDb &tok_db)
 {
     InferenceResult result;
-    auto mp = cfg.model_path;
+    auto mp = model_path;
 
-    // 1. Load tokenizer (mmap the Arrow files; tok_db keeps them alive for the run)
-    ::lsxcommon::ArrowTokenizerDb tok_db;
-    {
-        auto pinned = std::filesystem::path(mp) / "logestix" / "pinned";
-        auto v = arrow::io::MemoryMappedFile::Open(
-            (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
-        auto m = arrow::io::MemoryMappedFile::Open(
-            (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
-        if (!v.ok() || !m.ok()) {
-            result.error_msg = "Failed to open tokenizer Arrow files in " + pinned.string();
-            return result;
-        }
-        auto st = ::lsxcommon::load_tokenizer_metadata(*v, *m, tok_db);
-        if (!st.ok()) {
-            result.error_msg = "Failed to load tokenizer metadata: " + st.ToString();
-            return result;
-        }
-    }
-
-    // 2. Tokenize hardcoded prompt
-    const char *prompt = "The capital of France is";
-    std::vector<int32_t> input_ids(512);
-    size_t in_cap = input_ids.size();
-    int32_t n_ids = ::lsxcommon::arrow_tokenizer_encode(
-        tok_db, prompt, std::strlen(prompt), input_ids.data(), &in_cap);
-    if (n_ids < 0) {
-        result.error_msg = "Tokenizer encode failed (code " + std::to_string(n_ids) + ")";
-        return result;
-    }
-    input_ids.resize(static_cast<size_t>(n_ids));
+    // 1. Log the incoming prompt tokens
     std::string tok_line;
     for (size_t i = 0; i < input_ids.size(); ++i)
         tok_line += std::to_string(input_ids[i]) + " ";
     log::info("[inference] prompt=" + std::to_string(input_ids.size())
         + " tokens: " + tok_line);
 
-    // 3. Load topology
+    // 2. Load topology
     auto topo = load_topology(mp);
     if (topo.num_layers == 0) {
         result.error_msg = topo.error_msg.empty()
@@ -328,7 +303,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     } while (0)
 
     // 4. Allocate device buffers
-    int max_gen = std::min(cfg.max_gen_tokens, 4096);
+    int max_gen = std::min(max_gen_tokens, 4096);
     int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
     std::vector<int> gen_ids;
     gen_ids.reserve(static_cast<size_t>(total_tokens));
@@ -398,7 +373,7 @@ InferenceResult RunInference(const InferenceConfig &cfg)
     size_t act_plus_out = static_cast<size_t>(std::max(kHiddenDim, 8192));
     size_t attn_dequant_sz = (attn_dequant_max + act_plus_out) * sizeof(float);
     // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
-    int max_compressed = (cfg.max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
+    int max_compressed = (max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
     size_t kv_cache_sz = static_cast<size_t>(kNumLayers)
                        * (kAttnWindow + max_compressed) * kHeadDim
                        * sizeof(__half);
@@ -1272,14 +1247,16 @@ cleanup:
     } // end execution block
 } // end RunInference
 
-// Single-token self-check: runs one forward pass on the hardcoded prompt and
+// Single-token self-check: runs one forward pass on the given prompt and
 // reports whether the first generated token is "Paris". Test/diagnostic entry
 // point — may be removed later.
-InferenceResult RunSelfCheck(const InferenceConfig &cfg)
+InferenceResult RunSelfCheckModel(
+    const std::string &model_path,
+    const std::vector<int32_t> &input_ids,
+    int max_gen_tokens,
+    ::lsxcommon::ArrowTokenizerDb &tok_db)
 {
-    InferenceConfig sc = cfg;
-    sc.max_gen_tokens = 1;
-    InferenceResult r = RunInference(sc);
+    InferenceResult r = RunInferenceModel(model_path, input_ids, max_gen_tokens, tok_db);
     if (!r.ok) {
         r.selfcheck_passed = false;
         return r;
