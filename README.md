@@ -14,8 +14,9 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 
 ## Prerequisites
 
-- CMake 3.15+
-- C++20 / C11 compiler (GCC 9+, Clang 12+, MSVC 2026+)
+- CMake 3.25+ (for CMakePresets)
+- C++20 / C11 compiler (GCC 13+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
+- Ninja build system (required on Ubuntu; optional on Windows)
 - Git
 - NVIDIA CUDA Toolkit 13.3+ (optional, for GPU support)
 
@@ -29,39 +30,39 @@ git submodule update --init --recursive
 
 ## Build
 
-### Linux (GCC/Clang)
+CMakePresets define ready-made configurations for both supported OSes. Replace
+`debug` with `release` in the preset name for an optimization build.
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-```
-
-### Windows (Visual Studio 2026)
+### Windows 11 (Visual Studio 2026)
 
 ```powershell
-git submodule update --init --recursive
-cmake -S . -B build -G "Visual Studio 18 2026"
-$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
-cmake --build build --config Debug
+cmake --preset windows-debug
+cmake --build --preset windows-debug
 ```
 
-`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD`. All executables land in `build/bin/Debug/`.
+Binaries land in `build/windows-debug/bin/Debug/`.
+
+### Ubuntu 26.04 (Ninja + GCC)
+
+```bash
+cmake --preset linux-debug
+cmake --build --preset linux-debug
+```
+
+Binaries land in `build/linux-debug/bin/`.
+
+`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD` on Windows.
 
 ## Test
 
-```bash
-cmake -S . -B build -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-On Windows:
+`BUILD_TESTING=ON` is already enabled in all presets.
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 18 2026" -DBUILD_TESTING=ON
-$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"
-cmake --build build --config Debug
-ctest --test-dir build --output-on-failure -C Debug
+ctest --preset windows-debug    # Windows 11
+```
+
+```bash
+ctest --preset linux-debug      # Ubuntu 26.04
 ```
 
 29 test cases across 6 test executables (~200 assertions).
