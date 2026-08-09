@@ -9,31 +9,55 @@ namespace gpu {
 // where it has direct access to the MLA kernels (f8_gemm_1d, run_rmsnorm_attn,
 // per_head_rms_kernel, rope_apply_kernel, dequant_f8_to_half_kernel, mla_attn_kernel).
 
-cudaError_t alloc_csa_state(CSAState *states, int num_layers,
-                             int max_seq_len, int head_dim, cudaStream_t stream)
+// score_state must start as -inf (reference: torch.full(..., -inf)),
+// because the overlap pooling treats rows [0, ratio) before the first shift
+// as masked (their softmax weight must be ~0).
+__global__ void fill_f32_neg_inf_kernel(float* p, int n)
 {
-    int max_comp = max_seq_len / 4 + 1;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) p[i] = -INFINITY;
+}
+
+// Per-layer compressor state sizing, matching reference Compressor.
+//   kv_state:     [ratio*coff, coff*head_dim] FP32
+//   idx state:    [ratio*coff_idx, coff_idx*idx_head_dim] FP32 (idx_head_dim=128)
+//   compressed:   [max_seq_len / ratio + 1, head_dim] FP16
+//   idx comp:     [max_seq_len / ratio + 1, idx_head_dim] FP16
+cudaError_t alloc_csa_state(CSAState *states, int num_layers,
+                             int max_seq_len, int head_dim, cudaStream_t stream,
+                             const int *compress_ratios)
+{
+    constexpr int kIdxHeadDim = 128;
     for (int l = 0; l < num_layers; ++l) {
         auto &s = states[l];
-        int state_sz = 2 * 4 * 2 * 512;
-        cudaMalloc(&s.d_comp_kv_state, state_sz * sizeof(float));
-        cudaMalloc(&s.d_comp_score_state, state_sz * sizeof(float));
-        cudaMemsetAsync(s.d_comp_kv_state, 0, state_sz * sizeof(float), stream);
-        cudaMemsetAsync(s.d_comp_score_state, 0, state_sz * sizeof(float), stream);
+        const int ratio = (l < num_layers && compress_ratios) ? compress_ratios[l] : 0;
+        if (ratio <= 0) continue;  // pure-MLA layer: no CSA state
+
+        const int coff = (ratio == 4) ? 2 : 1;          // overlap -> coff=2
+        const int rows = coff * ratio;
+        const int state_cols = coff * head_dim;
+        int state_sz = rows * state_cols;
+        cudaMalloc(&s.d_comp_kv_state, static_cast<size_t>(state_sz) * sizeof(float));
+        cudaMalloc(&s.d_comp_score_state, static_cast<size_t>(state_sz) * sizeof(float));
+        cudaMemsetAsync(s.d_comp_kv_state, 0, static_cast<size_t>(state_sz) * sizeof(float), stream);
+        fill_f32_neg_inf_kernel<<<(state_sz + 255) / 256, 256, 0, stream>>>(s.d_comp_score_state, state_sz);
+
+        int max_comp = max_seq_len / ratio + 1;
         cudaMalloc(&s.d_compressed_kv,
             static_cast<size_t>(max_comp) * head_dim * sizeof(__half));
         cudaMemsetAsync(s.d_compressed_kv, 0,
             static_cast<size_t>(max_comp) * head_dim * sizeof(__half), stream);
 
-        int idx_state_sz = 2 * 4 * 2 * 128;
-        cudaMalloc(&s.d_idx_kv_state, idx_state_sz * sizeof(float));
-        cudaMalloc(&s.d_idx_score_state, idx_state_sz * sizeof(float));
-        cudaMemsetAsync(s.d_idx_kv_state, 0, idx_state_sz * sizeof(float), stream);
-        cudaMemsetAsync(s.d_idx_score_state, 0, idx_state_sz * sizeof(float), stream);
+        // Indexer compressor state (only ratio==4 layers have an indexer).
+        int idx_state_sz = 2 * 4 * 2 * kIdxHeadDim;
+        cudaMalloc(&s.d_idx_kv_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
+        cudaMalloc(&s.d_idx_score_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
+        cudaMemsetAsync(s.d_idx_kv_state, 0, static_cast<size_t>(idx_state_sz) * sizeof(float), stream);
+        fill_f32_neg_inf_kernel<<<(idx_state_sz + 255) / 256, 256, 0, stream>>>(s.d_idx_score_state, idx_state_sz);
         cudaMalloc(&s.d_idx_compressed_kv,
-            static_cast<size_t>(max_comp) * 128 * sizeof(__half));
+            static_cast<size_t>(max_comp) * kIdxHeadDim * sizeof(__half));
         cudaMemsetAsync(s.d_idx_compressed_kv, 0,
-            static_cast<size_t>(max_comp) * 128 * sizeof(__half), stream);
+            static_cast<size_t>(max_comp) * kIdxHeadDim * sizeof(__half), stream);
     }
     return cudaSuccess;
 }

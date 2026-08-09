@@ -58,9 +58,9 @@ cudaError_t run_lm_head(
     float alpha = 1.0f, beta = 0.0f;
 
     cublasStatus_t stat = cublasGemmEx(
-        cublas_h, CUBLAS_OP_N, CUBLAS_OP_N,
+        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
         vocab_size, 1, hidden_dim, &alpha,
-        d_head_weight, CUDA_R_16F, vocab_size,
+        d_head_weight, CUDA_R_16F, hidden_dim,
         d_hidden, CUDA_R_16F, hidden_dim, &beta,
         d_logits, CUDA_R_32F, vocab_size,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);

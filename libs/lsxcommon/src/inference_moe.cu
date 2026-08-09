@@ -441,6 +441,15 @@ __global__ void float_to_half_kernel(const float* __restrict__ src,
     dst[i] = __float2half(src[i]);
 }
 
+// Convert half buffer → float buffer
+__global__ void half_to_float_kernel(const __half* __restrict__ src,
+                                     float* __restrict__ dst, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __half2float(src[i]);
+}
+
 // SwiGLU with swiglu_limit: gate clamped to (-inf, limit], up to [-limit, limit].
 // d_gate_vec = silu(clamp(d_gate_vec, max=limit)) * clamp(d_up_vec, +/-limit)
 __global__ void swiglu_clamp_kernel(
@@ -493,13 +502,65 @@ cudaError_t run_shared_experts_ffn(
         if (e != cudaSuccess) return e;
     }
 
+    // FP32 copy of activation (pure FP32 GEMMs; cuBLAS rejects F32-in x F16-in).
+    // Lives in d_dequant tail after the W1 weights region.
+    float *d_hidden_f32 = d_dequant + w1_el;
+    {
+        int b = 256;
+        int g = (hidden_dim + b - 1) / b;
+        half_to_float_kernel<<<g, b, 0, stream>>>(d_hidden, d_hidden_f32, hidden_dim);
+    }
+
     // 2. intermediate = W1^T @ hidden → d_intermediate
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 intermediate_dim, 1, hidden_dim, &alpha,
-                 d_dequant, CUDA_R_32F, hidden_dim,
-                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                  d_intermediate_f32, CUDA_R_32F, intermediate_dim,
-                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    {
+        cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     intermediate_dim, 1, hidden_dim, &alpha,
+                     d_dequant, CUDA_R_32F, hidden_dim,
+                      d_hidden_f32, CUDA_R_32F, hidden_dim, &beta,
+                      d_intermediate_f32, CUDA_R_32F, intermediate_dim,
+                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        static int pcount = 0;
+        if (pcount == 42) {
+            cudaStreamSynchronize(stream);
+            std::vector<float> ii(intermediate_dim);
+            cudaMemcpy(ii.data(), d_intermediate_f32, intermediate_dim*sizeof(float), cudaMemcpyDeviceToHost);
+            double si=0, mi=0; for (auto v:ii){si+=(double)v*v; if(std::fabs(v)>mi)mi=std::fabs(v);}
+            std::vector<__half> hh(hidden_dim);
+            cudaMemcpy(hh.data(), d_hidden, hidden_dim*sizeof(__half), cudaMemcpyDeviceToHost);
+            std::vector<float> hhf(hidden_dim);
+            for (int i=0;i<hidden_dim;++i) hhf[i]=__half2float(hh[i]);
+            std::vector<float> ww(static_cast<size_t>(hidden_dim)*intermediate_dim);
+            cudaMemcpy(ww.data(), d_dequant, ww.size()*sizeof(float), cudaMemcpyDeviceToHost);
+            {
+                FILE*f=fopen("C:/Users/aumoz/AppData/Local/Temp/opencode/l42_in.bin","wb");
+                fwrite(hhf.data(), sizeof(float), hidden_dim, f); fclose(f);
+                f=fopen("C:/Users/aumoz/AppData/Local/Temp/opencode/l42_w1.bin","wb");
+                fwrite(ww.data(), sizeof(float), ww.size(), f); fclose(f);
+                f=fopen("C:/Users/aumoz/AppData/Local/Temp/opencode/l42_inter.bin","wb");
+                fwrite(ii.data(), sizeof(float), intermediate_dim, f); fclose(f);
+                // raw W1 bytes + scale bytes
+                size_t raw_sz = static_cast<size_t>(w1_bytes);
+                std::vector<uint8_t> raw(raw_sz);
+                cudaMemcpy(raw.data(), d_w1, raw_sz, cudaMemcpyDeviceToHost);
+                f=fopen("C:/Users/aumoz/AppData/Local/Temp/opencode/l42_w1raw.bin","wb");
+                fwrite(raw.data(), 1, raw_sz, f); fclose(f);
+                const int64_t sc_sz = 16*32;
+                std::vector<uint8_t> sc(sc_sz);
+                cudaMemcpy(sc.data(), d_w1_scales, sc_sz, cudaMemcpyDeviceToHost);
+                f=fopen("C:/Users/aumoz/AppData/Local/Temp/opencode/l42_w1sc.bin","wb");
+                fwrite(sc.data(), 1, sc_sz, f); fclose(f);
+            }
+            double sw=0, mw=0; for (auto v:ww){sw+=(double)v*v; float a=std::fabs(v); if(a>mw)mw=a;}
+            float ir = std::sqrt((float)(si / intermediate_dim));
+            float hr = std::sqrt((float)(0.0));
+            float wr = std::sqrt((float)(sw / ww.size()));
+            log::info("[SPLIT] W1 deq rms=" + std::to_string(wr) + " max=" + std::to_string(mw)
+                      + " inter_rms=" + std::to_string(ir) + " inter_max=" + std::to_string(mi)
+                      + " in_rms=" + std::to_string(hr));
+        }
+        ++pcount;
+        (void)w1s;
+    }
 
     // 3. Dequant W3 → d_dequant (reuse, F8_E4M3 × E8M0)
     if (w3_bytes > 0) {
@@ -512,7 +573,7 @@ cudaError_t run_shared_experts_ffn(
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                  intermediate_dim, 1, hidden_dim, &alpha,
                  d_dequant, CUDA_R_32F, hidden_dim,
-                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
+                  d_hidden_f32, CUDA_R_32F, hidden_dim, &beta,
                   d_gate_f32, CUDA_R_32F, intermediate_dim,
                   CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
@@ -535,26 +596,41 @@ cudaError_t run_shared_experts_ffn(
     }
 
     // 7. output = W2^T @ activated → d_output (FP16 output for hc_post)
-    // Convert FP32 activated → FP16 for cuBLAS mixed-type GEMM
+    // Pure FP32 GEMM (FP32 weights × FP32 activation → FP32) then convert to
+    // FP16, matching the routed-expert W2 pattern. cuBLAS rejects F32×F16.
     {
         int b = 256;
-        int g = (intermediate_dim + b - 1) / b;
-        // Use d_dequant (float*) tail as scratch: offset past W2 weights
-        // W2 weights = [hidden_dim * intermediate_dim] floats
-        // Activated = [intermediate_dim] elements → convert to __half
-        // Put __half output at byte offset = W2_floats * sizeof(float) + intermediate_dim * sizeof(__half) space
-        // Simpler: just reuse d_output (which is __half* [hidden_dim]) as scratch
-        // No — d_output is the final output. Use a dedicated scratch.
-        // Simplest: convert activated to FP16 using a temp view of d_dequant tail
-        __half *d_act_fp16 = reinterpret_cast<__half*>(d_dequant + w2_el);
-        float_to_half_kernel<<<g, b, 0, stream>>>(
-            d_intermediate_f32, d_act_fp16, intermediate_dim);
-        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+        // FP32 W2 output scratch located after [W2 weights][(reserved) act fp16]
+        float *d_w2out_f32 = d_dequant + w2_el + intermediate_dim / 2;
+        cublasStatus_t wbst = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      hidden_dim, 1, intermediate_dim, &alpha,
                      d_dequant, CUDA_R_32F, intermediate_dim,
-                     d_act_fp16, CUDA_R_16F, intermediate_dim, &beta,
-                     d_output, CUDA_R_16F, hidden_dim,
+                     d_intermediate_f32, CUDA_R_32F, intermediate_dim, &beta,
+                     d_w2out_f32, CUDA_R_32F, hidden_dim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        // W2 FP32 output -> FP16 d_output
+        int g2 = (hidden_dim + b - 1) / b;
+        float_to_half_kernel<<<g2, b, 0, stream>>>(
+            d_w2out_f32, d_output, hidden_dim);
+        static int pcount2 = 0;
+        if (pcount2 == 42) {
+            cudaStreamSynchronize(stream);
+            float *d_swig = d_intermediate_f32; // swiglu already written back in place
+            std::vector<float> sf(intermediate_dim);
+            cudaMemcpy(sf.data(), d_swig, intermediate_dim*sizeof(float), cudaMemcpyDeviceToHost);
+            double ss=0; for (auto v:sf) ss+=(double)v*v;
+            std::vector<float> w2d(static_cast<size_t>(hidden_dim)*intermediate_dim);
+            cudaMemcpy(w2d.data(), d_dequant, w2d.size()*sizeof(float), cudaMemcpyDeviceToHost);
+            double sw2=0; for (auto v:w2d) sw2+=(double)v*v;
+            double so=0;
+            std::vector<float> owf(hidden_dim);
+            cudaMemcpy(owf.data(), d_w2out_f32, hidden_dim*sizeof(float), cudaMemcpyDeviceToHost);
+            for (auto v:owf) so+=(double)v*v;
+            log::info("[SPLIT] layer42 W2 deq rms=" + std::to_string(std::sqrt((float)(sw2/w2d.size())))
+                      + " swig_in_rms=" + std::to_string(std::sqrt((float)(ss/intermediate_dim)))
+                      + " w2out_rms=" + std::to_string(std::sqrt((float)(so/hidden_dim))));
+        }
+        ++pcount2;
     }
     {
         int b = 256;

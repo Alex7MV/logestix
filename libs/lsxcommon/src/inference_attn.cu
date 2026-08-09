@@ -264,6 +264,7 @@ __global__ void hc_post_kernel(
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= D) return;
     for (int j = 0; j < H; ++j) {
+        // HF ref: y[j] = post[j]*x[i] + sum_i comb[i,j]*residual[i]  (verified broadcast)
         float acc = post[j] * x[i];
         for (int k = 0; k < H; ++k)
             acc += comb[k * H + j] * residual[k * D + i];
@@ -948,20 +949,46 @@ __global__ void compress_kv_norm_kernel(
     int head_dim)
 {
     const int tid = threadIdx.x;
-    __shared__ float s_sum;
-    if (tid == 0) s_sum = 0.0f;
-    __syncthreads();
+    const int warp = tid / 32;
+    const int lane = tid % 32;
+    __shared__ float s_partial[32];
+    float vsum = 0.0f;
     for (int i = tid; i < head_dim; i += blockDim.x) {
         float v = __half2float(d_kv[i]);
-        s_sum += v * v;
+        vsum += v * v;
+    }
+    vsum += __shfl_down_sync(0xffffffffu, vsum, 16);
+    vsum += __shfl_down_sync(0xffffffffu, vsum, 8);
+    vsum += __shfl_down_sync(0xffffffffu, vsum, 4);
+    vsum += __shfl_down_sync(0xffffffffu, vsum, 2);
+    vsum += __shfl_down_sync(0xffffffffu, vsum, 1);
+    if (lane == 0) s_partial[warp] = vsum;
+    __syncthreads();
+    if (warp == 0) {
+        float wsum = (lane < (blockDim.x / 32)) ? s_partial[lane] : 0.0f;
+        wsum += __shfl_down_sync(0xffffffffu, wsum, 16);
+        wsum += __shfl_down_sync(0xffffffffu, wsum, 8);
+        wsum += __shfl_down_sync(0xffffffffu, wsum, 4);
+        wsum += __shfl_down_sync(0xffffffffu, wsum, 2);
+        wsum += __shfl_down_sync(0xffffffffu, wsum, 1);
+        if (lane == 0) s_partial[0] = wsum;
     }
     __syncthreads();
+    float s_sum = s_partial[0];
     float inv = rsqrtf(s_sum / static_cast<float>(head_dim) + kRmsEps);
     for (int i = tid; i < head_dim; i += blockDim.x)
         d_kv[i] = __float2half(__half2float(d_kv[i]) * inv * __half2float(d_weight[i]));
 }
 
 // ── CSA: Compressor step kernel (gated KV pooling) ──────────────────────────
+// Matches reference Compressor.forward (model.py:316-377).
+// State layout: [ratio*coff, coff*head_dim] FP32.
+//   overlap (ratio==4, coff==2): token `sp` is written to row `ratio + sp%ratio`.
+//     Rows [0,ratio) hold the previous block (first-half dims) = overlapping window;
+//     Rows [ratio,2ratio) hold the current window (second-half dims).
+//     On compress: pool over 2*ratio rows (row r<ratio -> col i; row r>=ratio -> col d+i),
+//     then shift rows [ratio,2ratio) into [0,ratio) for the next round.
+//   non-overlap (ratio==128, coff==1): token written to `sp%ratio`, pool over ratio rows.
 __global__ void compressor_step_kernel(
     const __half *d_kv, const __half *d_score,
     const float  *d_ape,
@@ -969,32 +996,65 @@ __global__ void compressor_step_kernel(
     __half *d_compressed_kv,
     int ratio, int coff, int head_dim, int start_pos)
 {
-    const int slot = start_pos % ratio;
-    const int out_dim = coff * head_dim;
+    const int d = head_dim;
+    const int out_dim = coff * d;
     const int tid = threadIdx.x;
+    const int slot = start_pos % ratio;
+    const int store_row = (coff == 2) ? (ratio + slot) : slot;
 
+    // Store current token KV + score (score += ape[sp%ratio], like reference)
     for (int i = tid; i < out_dim; i += blockDim.x) {
-        d_kv_state[slot * out_dim + i] = __half2float(d_kv[i]);
-        d_score_state[slot * out_dim + i] = __half2float(d_score[i]) + d_ape[slot * out_dim + i];
+        d_kv_state[store_row * out_dim + i] = __half2float(d_kv[i]);
+        d_score_state[store_row * out_dim + i] = __half2float(d_score[i]) + d_ape[slot * out_dim + i];
     }
     __syncthreads();
 
-    bool should_compress = ((start_pos + 1) % ratio) == 0;
+    const bool should_compress = ((start_pos + 1) % ratio) == 0;
     if (!should_compress) return;
 
-    for (int i = tid; i < head_dim; i += blockDim.x) {
-        float max_s = -1e30f;
-        for (int r = 0; r < ratio; ++r)
-            max_s = fmaxf(max_s, d_score_state[r * out_dim + i]);
-        float sum_exp = 0.0f;
-        for (int r = 0; r < ratio; ++r) {
-            d_score_state[r * out_dim + i] = expf(d_score_state[r * out_dim + i] - max_s);
-            sum_exp += d_score_state[r * out_dim + i];
+    if (coff == 1) {
+        // Non-overlapping compression: pool over `ratio` rows.
+        for (int i = tid; i < d; i += blockDim.x) {
+            float max_s = -1e30f;
+            for (int r = 0; r < ratio; ++r)
+                max_s = fmaxf(max_s, d_score_state[r * out_dim + i]);
+            float sum_exp = 0.0f;
+            for (int r = 0; r < ratio; ++r)
+                sum_exp += expf(d_score_state[r * out_dim + i] - max_s);
+            float compressed = 0.0f;
+            for (int r = 0; r < ratio; ++r)
+                compressed += d_kv_state[r * out_dim + i] * (expf(d_score_state[r * out_dim + i] - max_s) / (sum_exp + 1e-9f));
+            d_compressed_kv[i] = __float2half(compressed);
         }
-        float compressed = 0.0f;
-        for (int r = 0; r < ratio; ++r)
-            compressed += d_kv_state[r * out_dim + i] * (d_score_state[r * out_dim + i] / (sum_exp + 1e-9f));
-        d_compressed_kv[i] = __float2half(compressed);
+    } else {
+        // Overlapping compression (ratio==4): pool over 2*ratio rows.
+        const int nrows = 2 * ratio;
+        for (int i = tid; i < d; i += blockDim.x) {
+            float max_s = -1e30f;
+            for (int r = 0; r < nrows; ++r) {
+                const int c = (r < ratio) ? i : (d + i);
+                max_s = fmaxf(max_s, d_score_state[r * out_dim + c]);
+            }
+            float sum_exp = 0.0f;
+            for (int r = 0; r < nrows; ++r) {
+                const int c = (r < ratio) ? i : (d + i);
+                sum_exp += expf(d_score_state[r * out_dim + c] - max_s);
+            }
+            float compressed = 0.0f;
+            for (int r = 0; r < nrows; ++r) {
+                const int c = (r < ratio) ? i : (d + i);
+                compressed += d_kv_state[r * out_dim + c] * (expf(d_score_state[r * out_dim + c] - max_s) / (sum_exp + 1e-9f));
+            }
+            d_compressed_kv[i] = __float2half(compressed);
+        }
+        __syncthreads();
+        // Shift: rows [ratio,2*ratio) -> [0,ratio) for next overlap window.
+        for (int i = tid; i < ratio * out_dim; i += blockDim.x) {
+            const int r = i / out_dim;
+            const int c = i % out_dim;
+            d_kv_state[r * out_dim + c] = d_kv_state[(r + ratio) * out_dim + c];
+            d_score_state[r * out_dim + c] = d_score_state[(r + ratio) * out_dim + c];
+        }
     }
 }
 
@@ -1062,7 +1122,7 @@ cudaError_t run_csa_attention(
         static_cast<size_t>(kHeadDim) * sizeof(__half),
         cudaMemcpyDeviceToDevice, stream);
 
-    // ── Compressor step (gated KV pooling) ───────────────────────────────
+// ── Compressor step (gated KV pooling) ───────────────────────────────
     // Use d_qr2 (1024 elements) for wkv output, d_qr (1024) for wgate output
     // Both are large enough for comp_out = coff*head_dim = 1024 (ratio=4) or 512 (ratio=128)
     if (lw.d_comp_wkv && lw.d_comp_wgate && lw.d_comp_ape) {
@@ -1106,6 +1166,12 @@ cudaError_t run_csa_attention(
                     d_compressed_slot, 1, kHeadDim, kHeadDim - kRopeHeadDim,
                     kRopeHeadDim, static_cast<float>(comp_pos), lw.rope_theta, 1);
             }
+            // Main compressor (rotate=False) applies FP8 act_quant to non-RoPE dims
+            // (reference model.py:372 act_quant(kv[..., :-rd], 64, ..., True)).
+            {
+                int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
+                kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_compressed_slot, kHeadDim - kRopeHeadDim);
+            }
             csa_state.n_compressed++;
         }
     }
@@ -1126,7 +1192,7 @@ cudaError_t run_csa_attention(
 
     // ── Sparse attention over window + compressed positions ─────────────
     {
-        int n_attend = min(start_pos + 1, kAttnWindow);
+        int n_attend = std::min(start_pos + 1, kAttnWindow);
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
         if (n_compressed > 0) {
             csa_sparse_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(

@@ -527,16 +527,18 @@ cudaError_t load_pinned_weights(
         auto &lt = *tensors_res;
         auto &lw = pw.layers[l];
 
-        // Set compress_ratio and rope_theta per layer from config:
-        // layers 0,1,42: pure MLA (ratio=0, theta=10000)
-        // layers 2-41: CSA (ratio=4 or 128, theta=160000)
+        // Set compress_ratio and rope_theta per layer from config.
+        // config.compress_ratios has 44 entries; entry 43 is the MTP block.
+        // Decoder layers 0..42 map to config indices 0..42 (pure MLA=0, CSA>0).
         static const int compress_ratios[] = {
             0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
             4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 0
+            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4
         };
         lw.compress_ratio = (l < 43) ? compress_ratios[l] : 0;
         lw.rope_theta = (lw.compress_ratio > 0) ? 160000.0f : 10000.0f;
+        // CSA overlap: ratio==4 uses coff=2 (reference Compressor: coff = 1 + overlap).
+        lw.comp_coff = (lw.compress_ratio == 4) ? 2 : 1;
         for (int di = 0; di < std::min(5, static_cast<int>(lt.size())); ++di) {
             const auto &t = lt[di];
             std::string shape;
@@ -668,8 +670,17 @@ cudaError_t load_pinned_weights(
                     &lw.d_comp_wgate, stream);
 
             auto *t_comp_ape = find_tensor_suffix(lt, "attn.compressor.ape");
-            if (t_comp_ape && !t_comp_ape->data.empty())
+            if (t_comp_ape && !t_comp_ape->data.empty()) {
+                std::ostringstream aoss;
+                aoss << "[load_pinned] layer CSA ape shape=[";
+                for (size_t ai = 0; ai < t_comp_ape->shape.size(); ++ai) {
+                    if (ai) aoss << ",";
+                    aoss << t_comp_ape->shape[ai];
+                }
+                aoss << "] dsz=" << t_comp_ape->data.size();
+                if (l == 2) log::info(aoss.str());
                 upload_f32_bytes(t_comp_ape->data, &lw.d_comp_ape, stream);
+            }
 
             auto *t_comp_norm = find_tensor_suffix(lt, "attn.compressor.norm.weight");
             if (t_comp_norm && !t_comp_norm->data.empty())

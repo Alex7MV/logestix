@@ -30,7 +30,7 @@ void Core::Initialize(const std::string& log_file_path) {
         );
 
         logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%n] [thread %t] [%^%l%$] %v");
-        logger->set_level(spdlog::level::info);
+        logger->set_level(spdlog::level::trace);
         spdlog::set_default_logger(logger);
 
         spdlog::info("Logestix common library core initialized.");

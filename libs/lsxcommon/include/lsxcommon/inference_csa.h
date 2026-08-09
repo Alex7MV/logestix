@@ -22,10 +22,12 @@ struct CSAState {
     __half *d_idx_compressed_kv = nullptr;
 
     int n_compressed = 0;
+    int prefill_len = 0;  // prompt token count (bulk-prefill region)
 };
 
 cudaError_t alloc_csa_state(CSAState *states, int num_layers,
-                             int max_seq_len, int head_dim, cudaStream_t stream);
+                             int max_seq_len, int head_dim, cudaStream_t stream,
+                             const int *compress_ratios);
 
 void free_csa_state(CSAState *states, int num_layers);
 
