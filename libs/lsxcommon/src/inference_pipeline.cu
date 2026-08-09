@@ -1181,7 +1181,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 
         std::ostringstream res_oss;
         res_oss << "=== --testprompt Results ===\n"
-                << "  prompt:        \"" << prompt << "\"\n"
+                << "  prompt_tokens: \"" << input_ids.size() << "\"\n"
                 << "  output:        \"" << output << "\"\n"
                 << "  elapsed:       " << std::fixed << std::setprecision(1)
                 << static_cast<double>(elapsed_ms) << " ms\n"
