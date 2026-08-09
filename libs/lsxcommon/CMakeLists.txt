@@ -15,8 +15,11 @@ add_library(lsxcommon STATIC
     src/converter.cpp
     src/core.cpp
     src/common.cpp
+    src/deepseek_v4_flash_model.cpp
     src/loader.cpp
     src/log.cpp
+    src/model_factory.cpp
+    src/model_registry.cpp
     src/pretokenizer.cpp
     src/schema.cpp
     src/tokenizer.cpp

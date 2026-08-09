@@ -29,9 +29,5 @@ struct InferenceResult {
     bool  selfcheck_passed = false;
 };
 
-InferenceResult RunInference(const InferenceConfig &cfg);
-
-InferenceResult RunSelfCheck(const InferenceConfig &cfg);
-
 } // namespace gpu
 } // namespace lsxcommon
