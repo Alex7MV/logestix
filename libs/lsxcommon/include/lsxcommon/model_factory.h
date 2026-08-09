@@ -21,6 +21,6 @@ public:
 void EnsureModelRegistry();
 
 // Registration helper used by model_registry.cpp.
-bool RegisterModel(const char *type, CreateModelFn fn);
+bool RegisterModel(const std::string &type, CreateModelFn fn);
 
 } // namespace lsxcommon

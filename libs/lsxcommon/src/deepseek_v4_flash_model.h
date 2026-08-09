@@ -21,7 +21,7 @@ public:
     const std::string &Type() const override { return kType; }
     ArrowTokenizerDb &Tokenizer() override;
 
-    static constexpr const char *kType = "deepseek-v4-flash";
+    static const std::string kType;
 
 private:
     ModelInitConfig cfg_;

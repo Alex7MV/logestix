@@ -10,6 +10,8 @@
 
 namespace lsxcommon {
 
+const std::string DeepSeekV4FlashModel::kType = "deepseek-v4-flash";
+
 namespace gpu {
 // Internal engine entry points (inference_pipeline.cu).
 InferenceResult RunInferenceModel(

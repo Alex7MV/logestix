@@ -37,6 +37,25 @@ endif()
 
 add_test(NAME test_loader COMMAND test_loader)
 
+# ── Тест фабрики моделей ────────────────────────────────────────────────
+add_executable(test_model_factory test_model_factory.cpp)
+target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_factory POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_factory>"
+    )
+    add_custom_command(TARGET test_model_factory POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_factory>"
+    )
+endif()
+
+add_test(NAME test_model_factory COMMAND test_model_factory)
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE

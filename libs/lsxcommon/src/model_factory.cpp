@@ -21,7 +21,7 @@ void LsxModelFactory::Register(const std::string &type, CreateModelFn fn)
     Registry()[type] = std::move(fn);
 }
 
-bool RegisterModel(const char *type, CreateModelFn fn)
+bool RegisterModel(const std::string &type, CreateModelFn fn)
 {
     LsxModelFactory::Register(type, std::move(fn));
     return true;
