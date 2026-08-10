@@ -37,6 +37,66 @@ endif()
 
 add_test(NAME test_loader COMMAND test_loader)
 
+# ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
+add_executable(test_glm_convert test_glm_convert.cpp)
+target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_convert>"
+    )
+    add_custom_command(TARGET test_glm_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_convert>"
+    )
+endif()
+
+add_test(NAME test_glm_convert COMMAND test_glm_convert)
+
+# ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
+add_executable(test_glm_loader test_glm_loader.cpp)
+target_link_libraries(test_glm_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_loader>"
+    )
+    add_custom_command(TARGET test_glm_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_loader>"
+    )
+endif()
+
+add_test(NAME test_glm_loader COMMAND test_glm_loader)
+
+# ── Тест GLM-5.2 модели (фабрика + IModel) ─────────────────────────────────
+add_executable(test_glm_model test_glm_model.cpp)
+target_compile_definitions(test_glm_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_model>"
+    )
+    add_custom_command(TARGET test_glm_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_model>"
+    )
+endif()
+
+add_test(NAME test_glm_model COMMAND test_glm_model)
+
 # ── Тест фабрики моделей ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -99,9 +159,10 @@ set_target_properties(test_inference_kernels_cu PROPERTIES
     CUDA_ARCHITECTURES OFF
 )
 target_compile_options(test_inference_kernels_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8;-std=c++20;
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
     --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121>)
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_inference_kernels_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
