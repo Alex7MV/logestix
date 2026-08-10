@@ -58,6 +58,20 @@ if(LSX_ARCH_ZNVER4 AND UNIX AND NOT APPLE)
     )
 endif()
 
+if(LSX_LTO AND UNIX AND NOT APPLE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        set(LSX_LTO_FLAG "-flto=thin")
+    else()
+        set(LSX_LTO_FLAG "-flto")
+    endif()
+    target_compile_options(lsx_tune INTERFACE
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>,$<CONFIG:Release>>:${LSX_LTO_FLAG}>
+    )
+    target_link_options(lsx_tune INTERFACE
+        $<$<AND:$<PLATFORM_ID:Linux>,$<LINK_LANGUAGE:CXX>,$<CONFIG:Release>>:${LSX_LTO_FLAG}>
+    )
+endif()
+
 # ── ЗАВИСИМОСТИ: Apache Arrow через FetchContent (Минимальная сборка) ────────
 
 include(FetchContent)

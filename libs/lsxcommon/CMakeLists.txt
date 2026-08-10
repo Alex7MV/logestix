@@ -84,7 +84,7 @@ target_link_libraries(lsxcommon_cu
     arrow_shared
     arrow_cuda_shared
 )
-target_link_libraries(lsxcommon PUBLIC lsxcommon_cu)
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsx_tune)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
