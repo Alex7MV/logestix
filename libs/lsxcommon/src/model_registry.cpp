@@ -1,6 +1,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include "deepseek_v4_flash_model.h"
+#include "glm_v5_model.h"
 
 namespace lsxcommon {
 
@@ -14,6 +15,10 @@ void EnsureModelRegistry()
         LsxModelFactory::Register(DeepSeekV4FlashModel::kType,
             [](const ModelInitConfig &cfg) {
                 return std::make_unique<DeepSeekV4FlashModel>(cfg);
+            });
+        LsxModelFactory::Register(GlmV5Model::kType,
+            [](const ModelInitConfig &cfg) {
+                return std::make_unique<GlmV5Model>(cfg);
             });
         return true;
     }();

@@ -7,7 +7,7 @@ Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Te
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
 No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
-CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
+CUDA Toolkit 13.2+ (nvcc 13.2.78; 13.3 также поддерживается), full native C++23 support in NVCC.
 
 ## Dependencies
 
@@ -19,13 +19,24 @@ CUDA Toolkit 13.3+ (nvcc 13.3), full native C++23 support in NVCC.
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.3 (latest) | submodule (`third_party/cccl`) | Header-only |
-| CUDA cuBLAS | 13.3 | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
+| CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
 ## Build
 
 Use CMakePresets — ready-made for both supported OSes. Replace `debug` with
 `release` in the preset name for an optimization build.
+
+Toolchain notes (tested, higher than the minimums below also work):
+- CMake 4.2.3 / 3.25+ (CMakePresets, `CMAKE_POLICY_VERSION_MINIMUM=3.5`)
+- GCC 15.2 (Ubuntu 26.04) — C++20 baseline; GCC 15+ supports C++23, but the
+  project pins to C++20 deliberately
+- NVCC 13.2.78 — CUDA `LANGUAGES ... CUDA` enabled at top level
+  (`find_package(CUDAToolkit)`), not `enable_language()` in a subdirectory
+  (CMake 4.x breaks when CUDA is enabled in a nested dir)
+- Arrow `BUILD_WARNING_LEVEL=PRODUCTION` — GCC 15 treats previously-ignored
+  warnings as errors (`-Werror=unused-parameter` in Arrow 25.0.0 under the
+  default CHECKIN debug level); PRODUCTION never adds `-Werror`
 
 ### Linux (Ubuntu 26.04, Ninja + GCC)
 
@@ -70,13 +81,17 @@ ctest --preset windows-debug    # Windows 11
   - `libs/lsxcommon/src/schema.cpp` — ExpertSchema (9 полей: weights, E4M3 per-block scales uint8[], float32 global_scale), PackedExpert
   - `libs/lsxcommon/src/converter.cpp` — GPU-only NVFP4 квантизация (per-block E4M3 + global_scale), парсинг safetensors, сериализация в Arrow IPC
   - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
+  - `libs/lsxcommon/src/glm_convert.cpp` + `include/lsxcommon/glm_convert.h` — GLM-5.2 классификатор, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` формат)
+  - `libs/lsxcommon/src/glm_inference_load.cpp` + `include/lsxcommon/glm_inference_load.h` — host-only GLM loader: `LoadGlmPinnedWeights` (BF16→FP16 upload, router bias host pinned, indexer bias device), `GlmLayerWeights`/`GlmPinnedWeights`
+  - `libs/lsxcommon/src/glm_v5_model.cpp` + `src/glm_v5_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer/SelfCheck stub "not implemented"
+  - `libs/lsxcommon/src/tokenizer_convert.cpp` — tokenizer arrows; merges в форматах string `"a b"` И array `["a","b"]` (GLM-5.2), byte_to_token_id, bos/eos/pad
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
   - `libs/lsxcommon/src/testmodel_gpu.cu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging)
   - `libs/lsxcommon/include/lsxcommon/testmodel_gpu.h` — `lsxcommon::gpu::RunTestModel()`, TestModelResult
 - `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
-- `apps/lsxforge/` — data preprocessing utility (placeholder)
+- `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`)
   - `apps/lsxforge/tests/` — 1 test case, 1 assertion
 - `apps/taskmosaic/` — task orchestrator (placeholder)
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
@@ -93,7 +108,9 @@ ctest --preset windows-debug    # Windows 11
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
 - CUDA `.cu` файлы вынесены в отдельную OBJECT библиотеку `lsxcommon_cu` (линкуется в `lsxcommon` PUBLIC) — это изолирует NVCC от MSVC-флагов
-- `lsxcommon_cu` линкуется с `cudart` и `cublas` (CUDA Toolkit system libs)
+- `lsxcommon_cu` линкуется с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
+  Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
+  а не через жёсткие пути `C:/Program Files/...
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
 - Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)

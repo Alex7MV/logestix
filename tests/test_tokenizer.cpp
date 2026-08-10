@@ -123,6 +123,42 @@ TEST_CASE("BuildTokenizerArrowFiles from synthetic fixture", "[tokenizer][conver
     fs::remove_all(pinned);
 }
 
+TEST_CASE("BuildTokenizerArrowFiles parses array-format merges", "[tokenizer][convert]")
+{
+    // Regression: GLM-5.2 (and modern HF tokenizers) store "model.merges" as
+    // arrays of two strings (["h","e"]) instead of DeepSeek's "h e" strings.
+    // The converter must accept both; array merges were silently dropped.
+    auto pinned = fs::temp_directory_path() / "logestix_tok_synth_arr";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+
+    auto st = lsxcommon::BuildTokenizerArrowFiles(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok_arr.json", pinned);
+    REQUIRE(st.ok());
+    REQUIRE(fs::exists(pinned / "tokenizer_vocab.arrow"));
+    REQUIRE(fs::exists(pinned / "tokenizer_merges.arrow"));
+
+    auto m = lsxcommon::ReadRecordBatchFromFile(pinned / "tokenizer_merges.arrow");
+    REQUIRE(m.ok());
+    CHECK((*m)->num_rows() == 9);
+
+    auto merges = lsxcommon::TokenizerMergesSchema::UnpackBatch(*m);
+    REQUIRE(merges.ok());
+    REQUIRE(merges->size() == 9);
+    // "h e" (ids 107/104) -> "he" = 259, rank 0, same as the string form.
+    bool found_he = false;
+    for (auto &r : *merges) {
+        if (r.merge_left == 107 && r.merge_right == 104) {
+            CHECK(r.merge_token_id == 259);
+            CHECK(r.merge_rank == 0);
+            found_he = true;
+        }
+    }
+    CHECK(found_he);
+
+    fs::remove_all(pinned);
+}
+
 TEST_CASE("BuildTokenizerArrowFiles with FIM control tokens", "[tokenizer][convert]")
 {
     // DeepSeek ships FIM tokens ("<|fim▁hole|>" etc.) in added_tokens with

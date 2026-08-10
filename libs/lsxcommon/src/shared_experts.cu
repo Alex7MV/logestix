@@ -1,6 +1,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/schema.h"
 
+#include <cfloat>
 #include <cstdint>
 #include <memory>
 

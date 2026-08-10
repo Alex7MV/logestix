@@ -133,23 +133,41 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         if (model_obj["merges"].get_array().get(merges_arr) == simdjson::SUCCESS) {
             int64_t rank = 0;
             for (auto m : merges_arr) {
-                std::string_view sv;
-                if (m.get_string().get(sv) != simdjson::SUCCESS) continue;
-                auto s = std::string(sv);
-                auto sp = s.find(' ');
-                if (sp == std::string::npos) continue;
-                std::string A = s.substr(0, sp);
-                std::string B = s.substr(sp + 1);
+                // Two merge encodings exist in the wild:
+                //   DeepSeek:  "h e"            (single string, space-separated)
+                //   GLM-5.2+:  ["h","e"]        (array of two strings, new HF)
+                std::string A, B;
+                if (m.is_string()) {
+                    std::string_view sv;
+                    if (m.get_string().get(sv) != simdjson::SUCCESS) continue;
+                    auto s = std::string(sv);
+                    auto sp = s.find(' ');
+                    if (sp == std::string::npos) continue;
+                    A = s.substr(0, sp);
+                    B = s.substr(sp + 1);
+                } else {
+                    simdjson::ondemand::array pair;
+                    if (m.get_array().get(pair) != simdjson::SUCCESS) continue;
+                    simdjson::ondemand::array_iterator it = pair.begin();
+                    if (it == pair.end()) continue;
+                    std::string_view a_sv, b_sv;
+                    if ((*it).get_string().get(a_sv) != simdjson::SUCCESS) continue;
+                    ++it;
+                    if (it == pair.end()) continue;
+                    if ((*it).get_string().get(b_sv) != simdjson::SUCCESS) continue;
+                    A = std::string(a_sv);
+                    B = std::string(b_sv);
+                }
 
                 auto itL = key_to_id.find(A);
                 auto itR = key_to_id.find(B);
                 if (itL == key_to_id.end() || itR == key_to_id.end())
-                    return arrow::Status::Invalid("tokenizer: merge operand missing in vocab: '", s, "'");
+                    return arrow::Status::Invalid("tokenizer: merge operand missing in vocab: '", A, "'/'", B, "'");
 
                 std::vector<uint8_t> bytesA, bytesB;
                 if (!byte_unicode::key_to_bytes(A, bytesA) ||
                     !byte_unicode::key_to_bytes(B, bytesB))
-                    return arrow::Status::Invalid("tokenizer: merge operand not byte-level: '", s, "'");
+                    return arrow::Status::Invalid("tokenizer: merge operand not byte-level: '", A, "'/'", B, "'");
 
                 std::vector<uint8_t> merged_bytes = bytesA;
                 merged_bytes.insert(merged_bytes.end(), bytesB.begin(), bytesB.end());

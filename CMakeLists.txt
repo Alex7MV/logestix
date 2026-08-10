@@ -3,11 +3,16 @@ cmake_minimum_required(VERSION 3.15)
 project(logestix
     VERSION 0.1.0
     DESCRIPTION "Logestix — multi-app monorepo: fabric, forge, taskmosaic, c"
-    LANGUAGES C CXX
+    LANGUAGES C CXX CUDA
 )
+
+find_package(CUDAToolkit REQUIRED)
 
 # ── Стандарты ────────────────────────────────────────────────────────────────
 
+# C++20 используется как baseline для всего кода (включая CUDA через
+# CUDA_STANDARD 20). Компиляторы поддерживают более высокие стандарты
+# (GCC 15 / nvcc 13.2+ умеют C++23), но проект осознанно зафиксирован на C++20.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
@@ -54,6 +59,10 @@ set(ARROW_FLIGHT OFF CACHE INTERNAL "Disable Arrow Flight RPC")
 set(ARROW_GANDIVA OFF CACHE INTERNAL "Disable Gandiva LLVM compiler")
 set(ARROW_HDFS OFF CACHE INTERNAL "Disable HDFS support")
 set(ARROW_PARQUET OFF CACHE INTERNAL "Disable Parquet support")
+# Новые компиляторы (GCC 15+) строже; CHECKIN добавляет -Werror в debug и
+# Arrow 25.0.0 не собирается (-Werror=unused-parameter). Используем PRODUCTION,
+# где -Werror не добавляется вовсе.
+set(BUILD_WARNING_LEVEL "PRODUCTION" CACHE STRING "Arrow: disable -Werror" FORCE)
 
 # Включаем только то, что критично для инференса и работы с данными
 set(ARROW_DEPENDENCY_SOURCE "BUNDLED" CACHE STRING "Use bundled dependencies")
