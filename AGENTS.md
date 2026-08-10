@@ -46,6 +46,20 @@ cmake --preset linux-debug
 cmake --build --preset linux-debug
 ```
 
+### Linux release (tuned for AMD EPYC 9V74, Zen 4)
+
+```bash
+cmake --preset linux-release-znver4
+cmake --build --preset linux-release-znver4   # Ninja -j160
+ctest --preset linux-release-znver4
+```
+
+Enables `LSX_ARCH_ZNVER4=ON` + `LSX_LTO=ON`: `lsx_tune` INTERFACE library
+applies `-march=znver4` (-mtune=znver4, -O3, -fno-math-errno,
+-falign-loops=16, -funroll-loops) and LTO (`-flto` GCC / `-flto=thin`
+Clang-AOCC) to C/C++ targets only. CUDA (`lsxcommon_cu`), dependencies and
+the Windows/MSVC build are never affected.
+
 ### Windows (Visual Studio 2026)
 
 ```powershell
@@ -117,7 +131,15 @@ ctest --preset windows-debug    # Windows 11
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
 - **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
 - **CMAKE_POLICY_VERSION_MINIMUM**: задаётся через `CMakePresets.json` (`cacheVariables`), ручная установка env-переменной не требуется. Arrow's xsimd требует значения 3.5.
-- **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
+- **GCC/Clang Linux flags**: НЕ глобальные. Тюнинг под EPYC 9V74 (Zen 4) живёт в
+  INTERFACE-библиотеке `lsx_tune` (root `CMakeLists.txt`) и включается через
+  `LSX_ARCH_ZNVER4`/`LSX_LTO` (см. пресет `linux-release-znver4`): `-march=znver4`,
+  `-mtune=znver4`, `-O3` (Release), `-fno-math-errno`, `-falign-loops=16`,
+  `-funroll-loops`, LTO `-flto` (GCC) / `-flto=thin` (Clang/AOCC). Всё обёрнуто в
+  `$<$<PLATFORM_ID:Linux>...$<COMPILE_LANGUAGE:C,CXX>>`, LTO ещё и в
+  `$<$<LINK_LANGUAGE:CXX> $<CONFIG:Release>>` — в NVCC и MSVC не протекает.
+  Обычные `linux-debug`/`linux-release` пресеты остаются generic-сборками без
+  `-march`.
 - **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
 - Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
 - CUDA: архитектуры `120-real;121-real` (Blackwell only; Hopper/Ada/Ampere запрещены), флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
