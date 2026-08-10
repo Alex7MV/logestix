@@ -32,7 +32,30 @@ if(MSVC)
     add_compile_definitions(CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+endif()
+
+# ── Linux CPU-tuned build: AMD EPYC 9V74 (Zen 4) ─────────────────────────────
+# `lsx_tune` — INTERFACE-библиотека, несущая агрессивные флаги оптимизации C/C++
+# под EPYC 9V74. Линкуется PUBLIC в `lsxcommon` (а через него — транзитивно во
+# все приложения и тесты). CUDA-объекты (`lsxcommon_cu`), FetchContent- и
+# submodule-зависимости (Arrow, spdlog, simdjson, FlatBuffers, libzmq) эти флаги
+# НЕ получают: всё обёрнуто в $<$<COMPILE_LANGUAGE:C,CXX>:...> плюс
+# $<$<PLATFORM_ID:Linux>:...>. MSVC и Apple не затрагиваются.
+# Включается через LSX_ARCH_ZNVER4 / LSX_LTO (см. пресет linux-release-znver4).
+option(LSX_ARCH_ZNVER4 "Tune Linux C/C++ build for AMD EPYC 9V74 (Zen 4)" OFF)
+option(LSX_LTO "Enable LTO for Linux Release C/C++ (GCC: -flto; Clang/AOCC: -flto=thin)" OFF)
+
+add_library(lsx_tune INTERFACE)
+
+if(LSX_ARCH_ZNVER4 AND UNIX AND NOT APPLE)
+    target_compile_options(lsx_tune INTERFACE
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>>:-march=znver4>
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>>:-mtune=znver4>
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>>:-fno-math-errno>
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>>:-falign-loops=16>
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>>:-funroll-loops>
+        $<$<AND:$<PLATFORM_ID:Linux>,$<COMPILE_LANGUAGE:C,CXX>,$<CONFIG:Release>>:-O3>
+    )
 endif()
 
 # ── ЗАВИСИМОСТИ: Apache Arrow через FetchContent (Минимальная сборка) ────────
