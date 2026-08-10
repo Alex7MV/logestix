@@ -44,6 +44,19 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "ON"
       }
+    },
+    {
+      "name": "linux-release-znver4",
+      "displayName": "Ubuntu 26.04 (Ninja) - Release, EPYC 9V74 (Zen 4, 160t)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-release-znver4",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "LSX_ARCH_ZNVER4": "ON",
+        "LSX_LTO": "ON"
+      }
     }
   ],
 
@@ -51,13 +64,15 @@
     { "name": "windows-debug",   "configurePreset": "windows-debug" },
     { "name": "windows-release", "configurePreset": "windows-release" },
     { "name": "linux-debug",     "configurePreset": "linux-debug" },
-    { "name": "linux-release",   "configurePreset": "linux-release" }
+    { "name": "linux-release",   "configurePreset": "linux-release" },
+    { "name": "linux-release-znver4", "configurePreset": "linux-release-znver4", "jobs": 160 }
   ],
 
   "testPresets": [
     { "name": "windows-debug",   "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true } },
     { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release", "output": { "outputOnFailure": true } },
     { "name": "linux-debug",     "configurePreset": "linux-debug",     "output": { "outputOnFailure": true } },
-    { "name": "linux-release",   "configurePreset": "linux-release",   "output": { "outputOnFailure": true } }
+    { "name": "linux-release",   "configurePreset": "linux-release",   "output": { "outputOnFailure": true } },
+    { "name": "linux-release-znver4", "configurePreset": "linux-release-znver4", "output": { "outputOnFailure": true } }
   ]
 }
