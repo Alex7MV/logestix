@@ -1,21 +1,26 @@
-find_path(CUDA_INCLUDE_DIR cuda_runtime.h
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/include"
-    REQUIRED
-)
-find_library(CUDA_CUDART_LIBRARY cudart
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
-    REQUIRED
-)
-find_library(CUDA_CUBLAS_LIBRARY cublas
-    PATHS "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
-    REQUIRED
-)
+find_package(CUDAToolkit REQUIRED)
+set(CUDA_INCLUDE_DIR     "${CUDAToolkit_INCLUDE_DIRS}")
+set(CUDA_CUDART_LIBRARY  "${CUDAToolkit_CUDART_LIBRARY}")
+# cublas: prefer the imported target (defined by FindCUDAToolkit on all
+# platforms); fall back to a hardcoded search only if the toolkit's CMake
+# config does not expose it.
+if(TARGET CUDA::cublas)
+    set(CUDA_CUBLAS_LIBRARY "CUDA::cublas")
+else()
+    find_library(CUDA_CUBLAS_LIBRARY cublas
+        PATHS "/usr/local/cuda/lib64" "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
+        REQUIRED
+    )
+endif()
 
 add_library(lsxcommon STATIC
     src/converter.cpp
     src/core.cpp
     src/common.cpp
     src/deepseek_v4_flash_model.cpp
+    src/glm_convert.cpp
+    src/glm_inference_load.cpp
+    src/glm_v5_model.cpp
     src/loader.cpp
     src/log.cpp
     src/model_factory.cpp
@@ -51,7 +56,10 @@ set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
-target_compile_options(lsxcommon_cu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-Xcompiler=/utf-8>)
+target_compile_options(lsxcommon_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
 target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
