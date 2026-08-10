@@ -6,6 +6,7 @@
 #include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cublas_v2.h>
 #include <cmath>
 #include <vector>
 #include <cstring>
@@ -15,6 +16,24 @@
 #include <lsxcommon/schema.h>
 
 using Catch::Approx;
+
+// ── Routed-expert FFN (real production function from inference_moe.cu) ───────
+// Exposed (non-static) so the W2 projection math is testable end-to-end.
+namespace lsxcommon::gpu {
+cudaError_t run_routed_expert_ffn(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w1, const uint8_t *d_w1_scales, int64_t w1_el,
+    const uint8_t *d_w2, const uint8_t *d_w2_scales, int64_t w2_el,
+    const uint8_t *d_w3, const uint8_t *d_w3_scales, int64_t w3_el,
+    float *d_gate_f32, float *d_up_f32,
+    float *d_dequant,
+    float *d_output,
+    float *d_act_quant,
+    float *d_swiglu_out,
+    float *d_act_scales,
+    float weight, bool accumulate);
+}
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
@@ -648,4 +667,92 @@ TEST_CASE("dequant_fp4_e8m0 (routed-expert decoder) does NOT decode NVFP4-format
     // source values by construction (missing global_scale, wrong scale
     // decode). Both outcomes are evidence of the format mismatch.
     CHECK((e != cudaSuccess || any_finite_mismatch));
+}
+
+// ── Routed-expert W2 projection regression ──────────────────────────────────
+// Verifies that run_routed_expert_ffn's W2 GEMM is a pure FP32 matmul of the
+// dequantized W2 weights against the raw SwiGLU output. The W1/W3 GEMMs are
+// bypassed (w1_el = w3_el = 0) so gate/up are constant, making the expected
+// output exactly:  Σ_k dequant(W2)[row,k] * swiglu[k]   (no act_scale factor).
+//
+// Regression: the code used to fuse the *input* activation per-128 block
+// scales (d_act_scales, derived from d_hidden) into the dequantized W2
+// weights while feeding the raw SwiGLU output as activation. Since the W2
+// activation is never divided by that scale, every routed-expert output was
+// scaled down by ~act_scale (≈2^-9), silently zeroing routed experts — the
+// model then ran attention + shared experts only and answered incorrectly.
+TEST_CASE("routed-expert W2 projection is a pure FP32 matmul (no act_scale fuse)",
+          "[inference][regression]")
+{
+    constexpr int kHid = 4096;      // kHiddenDim
+    constexpr int kInt = 2048;      // kIntermediateDim
+    const int64_t w2_el = static_cast<int64_t>(kInt) * kHid;   // 8388608
+    const int64_t packed_bytes = (w2_el + 1) / 2;              // E2M1, 2 elems/byte
+    const int64_t scale_bytes  = (w2_el + 31) / 32;            // E8M0 per-32
+
+    // W2 dequantizes to all 1.0: E2M1 nibble 2 == 1.0, E8M0 scale 127 == 1.0.
+    std::vector<uint8_t> packed(packed_bytes, 0x22);
+    std::vector<uint8_t> scales(scale_bytes, 127);
+
+    __half *d_hidden = nullptr;      // input to act_quant (all 0.5)
+    float *d_gate = nullptr, *d_up = nullptr;   // W1/W3 outputs (constant 1.0)
+    float *d_dequant = nullptr, *d_out = nullptr;
+    float *d_act_quant = nullptr, *d_swiglu = nullptr, *d_act_scales = nullptr;
+    uint8_t *d_w2 = nullptr, *d_w2_scales = nullptr;
+
+    cudaMalloc(&d_hidden, static_cast<size_t>(kHid) * sizeof(__half));
+    cudaMalloc(&d_gate, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_up, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_dequant, static_cast<size_t>(w2_el) * sizeof(float));
+    cudaMalloc(&d_out, static_cast<size_t>(kHid) * sizeof(float));
+    cudaMalloc(&d_act_quant, static_cast<size_t>(kHid) * sizeof(float));
+    cudaMalloc(&d_swiglu, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_act_scales, static_cast<size_t>(32) * sizeof(float));
+    cudaMalloc(&d_w2, packed_bytes);
+    cudaMalloc(&d_w2_scales, scale_bytes);
+
+    std::vector<__half> h_hidden(kHid, __float2half(0.5f));
+    std::vector<float> h_gate(kInt, 1.0f), h_up(kInt, 1.0f);
+    cudaMemcpy(d_hidden, h_hidden.data(), h_hidden.size() * sizeof(__half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_gate, h_gate.data(), kInt * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_up, h_up.data(), kInt * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w2, packed.data(), packed_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w2_scales, scales.data(), scale_bytes, cudaMemcpyHostToDevice);
+
+    cublasHandle_t cublas_h = nullptr;
+    cublasCreate(&cublas_h);
+    cudaStream_t stream = nullptr;
+    cudaStreamCreate(&stream);
+
+    // gate=1.0, up=1.0, weight=1.0 → swiglu[k] = silu(1.0)*1.0 = 0.7310586
+    const float swiglu_val = 1.0f / (1.0f + expf(-1.0f));  // silu(1.0)
+    const float expected = swiglu_val * static_cast<float>(kInt);  // ≈ 1497.2
+
+    cudaError_t e = lsxcommon::gpu::run_routed_expert_ffn(
+        cublas_h, stream, d_hidden,
+        nullptr, nullptr, 0,            // w1 bypassed
+        d_w2, d_w2_scales, w2_el,
+        nullptr, nullptr, 0,            // w3 bypassed
+        d_gate, d_up, d_dequant, d_out,
+        d_act_quant, d_swiglu, d_act_scales,
+        1.0f, false);
+    cudaDeviceSynchronize();
+
+    std::vector<float> out(kHid);
+    cudaMemcpy(out.data(), d_out, kHid * sizeof(float), cudaMemcpyDeviceToHost);
+
+    INFO("run_routed_expert_ffn err=" << cudaGetErrorString(e)
+         << " expected≈" << expected << " out[0]=" << out[0]);
+    REQUIRE(e == cudaSuccess);
+    for (int r = 0; r < kHid; ++r) {
+        INFO("row " << r << " out=" << out[r] << " expected≈" << expected);
+        CHECK(std::fabs(out[r] - expected) / expected < 0.02f);
+    }
+
+    cudaFree(d_hidden); cudaFree(d_gate); cudaFree(d_up);
+    cudaFree(d_dequant); cudaFree(d_out);
+    cudaFree(d_act_quant); cudaFree(d_swiglu); cudaFree(d_act_scales);
+    cudaFree(d_w2); cudaFree(d_w2_scales);
+    cublasDestroy(cublas_h);
+    cudaStreamDestroy(stream);
 }
