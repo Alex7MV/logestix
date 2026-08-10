@@ -94,6 +94,16 @@ struct GlmPinnedWeights {
 // skipped (heterogeneous GLM layer grid). Sizes GlmPinnedWeights.layers from
 // the extended topology (glm::load_topology). Returns cudaErrorInvalidValue on
 // a missing pinned dir / unreadable global.arrow.
+//
+// When layer_filter is non-null, only the layer files whose index appears in
+// the list are uploaded (global tensors are always uploaded). This lets a
+// partial forward pass (e.g. the dense layers 0-2) avoid uploading the full
+// 32 GiB pinned set.
+cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
+                                 GlmPinnedWeights &pw,
+                                 cudaStream_t stream,
+                                 const std::vector<int> *layer_filter);
+
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                                  GlmPinnedWeights &pw,
                                  cudaStream_t stream);

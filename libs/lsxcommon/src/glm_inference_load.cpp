@@ -8,6 +8,7 @@
 #include <arrow/ipc/reader.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -275,7 +276,8 @@ void GlmPinnedWeights::Free()
 
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                                  GlmPinnedWeights &pw,
-                                 cudaStream_t stream)
+                                 cudaStream_t stream,
+                                 const std::vector<int> *layer_filter)
 {
     namespace fs = std::filesystem;
 
@@ -301,6 +303,10 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     if (err != cudaSuccess) return err;
 
     for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
+        if (layer_filter &&
+            std::find(layer_filter->begin(), layer_filter->end(), l) ==
+                layer_filter->end())
+            continue;
         auto fn = "layer_" + std::to_string(l) + ".arrow";
         auto layer_path = pinned_dir / fn;
         if (!fs::exists(layer_path)) continue;
@@ -314,6 +320,13 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     }
 
     return cudaSuccess;
+}
+
+cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
+                                 GlmPinnedWeights &pw,
+                                 cudaStream_t stream)
+{
+    return LoadGlmPinnedWeights(model_path, pw, stream, nullptr);
 }
 
 } // namespace glm
