@@ -49,6 +49,7 @@ add_library(lsxcommon_cu OBJECT
     src/inference_csa.cu
     src/inference_pipeline.cu
     src/glm_inference.cu
+    src/glm_inference_load.cu
     src/norm_kernels.cu
     src/shared_experts.cu
 )

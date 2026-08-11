@@ -157,6 +157,25 @@ endif()
 
 add_test(NAME test_glm_compute COMMAND test_glm_compute)
 
+# ── Тест GLM-5.2 MoE Layer-3 router (top_k=8 warp selection) ───────────────
+add_executable(test_glm_moe_router test_glm_moe_router.cpp)
+target_link_libraries(test_glm_moe_router PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_router POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_router>"
+    )
+    add_custom_command(TARGET test_glm_moe_router POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_router>"
+    )
+endif()
+
+add_test(NAME test_glm_moe_router COMMAND test_glm_moe_router)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
