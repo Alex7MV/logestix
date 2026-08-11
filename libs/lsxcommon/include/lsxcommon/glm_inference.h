@@ -29,6 +29,43 @@ cudaError_t RunGlmDenseMLPStack(
 // Top-k expert slot cardinality for every MoE layer of GLM-5.2.
 constexpr int kGlmMoETopK = 8;
 
+// NVFP4 block granularity of the GLM expert weights: one E4M3 power-of-two
+// block scale descriptor covers kGlmNvfp4Block consecutive elements of the
+// packed E2M1 nibble stream. The per-tensor E8M0 global modifier is stored
+// already decoded as a float (see GlmExpertDeviceBlock).
+constexpr int kGlmNvfp4Block = 128;
+
+// Element count of a single expert weight matrix: w1/w3 are [moe_intermediate,
+// hidden], w2 is [hidden, moe_intermediate] — same 6144*2048 element count.
+constexpr int64_t kGlmExpertMatEl =
+    static_cast<int64_t>(kGlmMoeIntermediate) * kGlmHidden;
+
+// One NVFP4-packed expert weight set resident in persistent device (VRAM)
+// allocations. The packed payloads hold E2M1 nibbles (2 elements per byte, lo
+// nibble first); each per-block scales array holds one E4M3 power-of-two
+// descriptor per kGlmNvfp4Block elements; the global_scale floats are the
+// already-decoded E8M0 tensor modifiers. Dequant invariant:
+//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>7]>>3)&0xF) - 7) * global_scale
+// A descriptor with any null/zero payload pointer marks the expert inactive:
+// routing slots that select it contribute nothing (deterministic skip).
+struct GlmExpertDeviceBlock {
+    const uint8_t *d_w1_packed = nullptr;
+    const uint8_t *d_w1_scales = nullptr;
+    float          w1_global_scale = 1.0f;
+    int64_t        w1_packed_bytes = 0;
+    int64_t        w1_scale_bytes  = 0;
+    const uint8_t *d_w2_packed = nullptr;
+    const uint8_t *d_w2_scales = nullptr;
+    float          w2_global_scale = 1.0f;
+    int64_t        w2_packed_bytes = 0;
+    int64_t        w2_scale_bytes  = 0;
+    const uint8_t *d_w3_packed = nullptr;
+    const uint8_t *d_w3_scales = nullptr;
+    float          w3_global_scale = 1.0f;
+    int64_t        w3_packed_bytes = 0;
+    int64_t        w3_scale_bytes  = 0;
+};
+
 // One routed-expert slot of the output routing grid. Exactly 8 bytes, so a
 // token's 8 slots form an 8-byte-boundary-aligned record that the top-k
 // kernel writes with single 64-bit stores (see glm_inference_load.cu).
@@ -64,6 +101,34 @@ cudaError_t RunGlmMoERouter(
     const GlmLayerWeights &lw, int seq,
     const __half *d_hidden, const float *d_gate_bias,
     __half *d_normed, float *d_logits, GlmRoutedSlot *d_routing);
+
+// MoE expert stack for layers 3-77: NVFP4 block dequantization + SwiGLU
+// projection, evaluating the locked GLM-5.2 path
+//
+//   out[t] += Σ_r coeff_r · w2( silu( w1(x_t) ) * w3(x_t) )
+//
+// with hidden_size locked to kGlmHidden (6144), intermediate to
+// kGlmMoeIntermediate (2048). Weights are decoded inline from the packed E2M1
+// nibble / per-128 E4M3 block-scale / E8M0 global-modifier layout straight
+// into FP16 scratch and piped through cuBLAS FP16 GEMMs (CUBLAS_COMPUTE_32F,
+// matching the dense-MLP stack). Every kernel/enqueue runs on the caller's
+// explicit async stream; the ONLY synchronization is a single localized
+// cudaStreamSynchronize used to stage the tiny routing grid back to a pinned
+// host buffer so per-slot expert launches can be issued from the host. No
+// cudaDeviceSynchronize is ever invoked.
+//
+//   d_routing: [seq, kGlmMoETopK] 64-bit slot grid from RunGlmMoERouter.
+//   d_act:     [seq, kGlmHidden] FP16 input (RMS-normed activations).
+//   h_experts: [n_experts] host descriptor registry; inactive blocks are
+//              deterministically skipped when a slot selects them.
+//   d_out:     [seq, kGlmHidden] FP16 result (accumulated, NOT residual-added).
+//   d_scratch: >= kGlmExpertMatEl + kGlmHidden + 2*kGlmMoeIntermediate halves.
+cudaError_t RunGlmExpertsStack(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmRoutedSlot *d_routing, int seq,
+    const __half *d_act,
+    const GlmExpertDeviceBlock *h_experts, int n_experts,
+    __half *d_out, __half *d_scratch);
 
 } // namespace glm
 } // namespace lsxcommon

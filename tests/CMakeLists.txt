@@ -176,6 +176,25 @@ endif()
 
 add_test(NAME test_glm_moe_router COMMAND test_glm_moe_router)
 
+# ── Тест GLM-5.2 эксперт-стека (NVFP4 dequant + SwiGLU, слои 3-77) ─────────
+add_executable(test_glm_experts test_glm_experts.cpp)
+target_link_libraries(test_glm_experts PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_experts POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_experts>"
+    )
+    add_custom_command(TARGET test_glm_experts POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_experts>"
+    )
+endif()
+
+add_test(NAME test_glm_experts COMMAND test_glm_experts)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
