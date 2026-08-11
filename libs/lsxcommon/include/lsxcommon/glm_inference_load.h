@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -107,6 +108,88 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                                  GlmPinnedWeights &pw,
                                  cudaStream_t stream);
+
+// ── IndexShare attention state (TDD Cycle 5, layers 3-77) ──────────────────
+// Persistent, pre-allocated "virtual staging" block that carries the central
+// memory-mapped shared indexer mask arrays across every call of
+// RunGlmIndexShareAttention:
+//   kv      [slots][kGlmHidden]       FP16 cached token values (KV cache)
+//   q_key   [slots][kGlmIndexHeadDim] FP16 cached winner-head queries (wq_b)
+//   key     [slots][kGlmIndexHeadDim] FP16 normalized projected keys (wk)
+//   score   [slots][kGlmIndexNHeads]  FP32 last-refresh per-head scores
+//   slot    [slots]                   winning (argmax) head index per slot
+// The mask arrays (q_key/key/score/slot) are calculated, block-aligned and
+// refreshed ONLY on the structural modulo check (layer_idx % 4 == 0). All
+// mask arrays start on a 16-byte boundary; the struct is one single cudaMalloc
+// allocation (>= sizeof(GlmIndexShareState), ~12.7 MiB at kGlmIndexMaxSlots
+// 1024), so the KV cache lives directly inside the pre-allocated staging.
+constexpr int kGlmIndexMaxSlots = 1024;
+
+struct alignas(16) GlmIndexShareState {
+    __half kv[kGlmIndexMaxSlots][kGlmHidden];
+    __half q_key[kGlmIndexMaxSlots][kGlmIndexHeadDim];
+    __half key[kGlmIndexMaxSlots][kGlmIndexHeadDim];
+    float  score[kGlmIndexMaxSlots][kGlmIndexNHeads];
+    int    slot[kGlmIndexMaxSlots];
+    int    n_used        = 0;   // occupied slot count (device-maintained)
+    int    turn_id       = -1;  // last appended turn
+    int    refresh_layer = -1;  // last layer that refreshed the masks
+};
+
+static_assert(offsetof(GlmIndexShareState, kv) % 16 == 0 &&
+                  offsetof(GlmIndexShareState, q_key) % 16 == 0 &&
+                  offsetof(GlmIndexShareState, key) % 16 == 0 &&
+                  offsetof(GlmIndexShareState, score) % 16 == 0 &&
+                  offsetof(GlmIndexShareState, slot) % 16 == 0,
+              "IndexShare mask arrays must stay 16-byte block-aligned");
+
+// Asynchronously resets a GlmIndexShareState to the untouched state
+// (n_used=0, turn_id=-1, refresh_layer=-1) on <stream>. Must be called once
+// per allocation before the first RunGlmIndexShareAttention, exactly mirroring
+// LoadGlmPinnedWeights for the pinned-weight sets.
+cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream);
+
+// IndexShare attention for ONE MoE layer (layer_idx in [3,77]) entirely on the
+// caller's explicit async stream (no host-side synchronization fence is ever
+// issued by this pass).
+//
+// The rigid structural modulo check (layer_idx % 4 == 0) drives the refresh
+// of the central shared indexer mask arrays from this layer's indexer weights
+// (indexer.wq_b with input rank kGlmQLoraRank, indexer.wk, indexer.weights_proj
+// and indexer.k_norm weight + bias):
+//   score[h] = dot(kv[slot], weights_proj[h])     -> winning head slot[τ]
+//   key[r]   = RMSNorm(dot(kv[slot], wk[r])) + k_norm_bias[r]
+//   q_key[r] = dot(kv[slot][0:kGlmQLoraRank], wq_b[head{τ}][r])
+// For every intermediate layer (layer_idx % 4 != 0) the execution thread
+// blocks completely bypass that matrix sorting: they pull the cached sparse
+// token memory pointers straight from the pre-allocated virtual staging
+// buffers (d_state) and never read the indexer matrices. A layer that passes
+// the modulo check but carries no indexer weights (null pointers) degrades to
+// reuse as well.
+//
+// KV registration happens once per turn (first call with a new <turn>): the
+// seq hidden vectors of that turn are appended to the staging KV cache. Turn
+// tokens are then attended over every occupied slot with the frozen cached
+// masks; Multi-turn decoding therefore keeps old slots alive across turns.
+//
+// Attention per token (deterministic, elementwise): sim(s) = dot(q_key[τ],
+// key[s]) * kGlmIndexAttnScale, softmax over the occupied slots, then
+// out = x + Σ_s p(s)·kv[s] (residual added). The per-block key/query cache is
+// staged in CUDA shared memory; KV values stay in the staging buffer.
+//
+//   layer_idx: in [3, 77]; the mod-4 group head recomputes the shared masks.
+//   turn:      monotonically increasing token-block id; seq must stay constant
+//              within a turn.
+//   lw:        per-layer weights; only the indexer fields are consumed.
+//   seq:       tokens in the current turn's block.
+//   d_hidden:  [seq, hidden] FP16 input hidden states.
+//   d_out:     [seq, hidden] FP16 result (residual-added); distinct from
+//              d_hidden. Guarded output tails must be pre-filled by the caller.
+//   d_state:   persistent shared indexer mask arrays (see GlmIndexShareState).
+cudaError_t RunGlmIndexShareAttention(
+    cudaStream_t stream, int layer_idx, int turn,
+    const GlmLayerWeights &lw, int seq,
+    const __half *d_hidden, __half *d_out, GlmIndexShareState *d_state);
 
 } // namespace glm
 } // namespace lsxcommon

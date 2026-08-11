@@ -195,6 +195,25 @@ endif()
 
 add_test(NAME test_glm_experts COMMAND test_glm_experts)
 
+# ── Тест GLM-5.2 IndexShare attention (mod-4 refresh, слои 3-77) ────────────
+add_executable(test_glm_attention test_glm_attention.cpp)
+target_link_libraries(test_glm_attention PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_attention POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_attention>"
+    )
+    add_custom_command(TARGET test_glm_attention POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_attention>"
+    )
+endif()
+
+add_test(NAME test_glm_attention COMMAND test_glm_attention)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
