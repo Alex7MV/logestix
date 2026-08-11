@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 
 #include "lsxcommon/model.h"
@@ -15,10 +16,23 @@ std::string TestModelPath()
     return R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
 }
 
+// Real-model tests need a model dir with a ready logestix index. Unset or
+// absent dirs (e.g. the Windows default path on a Linux runner) skip them
+// instead of failing the whole suite.
+bool TestModelPathUsable()
+{
+    const auto idx =
+        std::filesystem::path(TestModelPath()) / "logestix" / "model.index.json";
+    std::error_code ec;
+    return std::filesystem::exists(idx, ec) && !ec;
+}
+
 } // namespace
 
 TEST_CASE("DetectType returns normalized type", "[factory]")
 {
+    if (!TestModelPathUsable())
+        SKIP("model dir lacks logestix/model.index.json (set LSX_TEST_MODEL_PATH)");
     std::string t = lsxcommon::LsxModelFactory::DetectType(TestModelPath());
     REQUIRE(t == "deepseek-v4-flash");
 }
@@ -58,6 +72,8 @@ TEST_CASE("Registry round-trip with mock model", "[factory]")
 
 TEST_CASE("Create + Load + Inspect on real model dir", "[factory]")
 {
+    if (!TestModelPathUsable())
+        SKIP("model dir lacks logestix/model.index.json (set LSX_TEST_MODEL_PATH)");
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = TestModelPath();
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
