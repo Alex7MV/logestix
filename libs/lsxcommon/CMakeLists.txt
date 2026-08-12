@@ -38,31 +38,17 @@ set_target_properties(lsxcommon PROPERTIES
 )
 
 enable_language(CUDA)
-add_library(lsxcommon_cu OBJECT
-    src/safetensors_gpu.cu
-    src/testmodel_gpu.cu
-    src/inference_load.cu
-    src/inference_norm.cu
-    src/inference_moe.cu
-    src/inference_head.cu
-    src/inference_attn.cu
-    src/inference_csa.cu
-    src/inference_pipeline.cu
-    src/glm_inference.cu
-    src/glm_inference_load.cu
-    src/norm_kernels.cu
-    src/shared_experts.cu
-)
-set_target_properties(lsxcommon_cu PROPERTIES
-    CUDA_ARCHITECTURES "120-real;121-real"
-    CUDA_STANDARD 20
-    CUDA_STANDARD_REQUIRED ON
-)
-target_compile_options(lsxcommon_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
-    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
-)
-target_include_directories(lsxcommon_cu PRIVATE
+
+# Shared CUDA-target plumbing for the two OBJECT libraries below (NVCC include
+# paths + CCCL/MSVC compile definitions). lsxcommon_cu carries the general
+# kernels (NVFP4 quantizer, testmodel, DeepSeek inference); lsxcommon_glm_cu
+# carries ONLY the GLM-5.2 bit-exact parity kernels, which must compile with
+# -fmad=false to reproduce the non-contracted IEEE sequences of the -O0 host
+# reference (see GlmExpfGlibc / fp64 GEMM / sequential RMSNorm). Scoping the
+# flag to the GLM object library keeps the quantizer/testmodel/DeepSeek kernels
+# on their default FMA contraction (their numeric contracts do not depend on
+# -fmad=false and their performance must not regress).
+set(LSXCOMMON_CU_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CUDA_INCLUDE_DIR}"
@@ -74,19 +60,66 @@ target_include_directories(lsxcommon_cu PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_SOURCE_DIR}/third_party/simdjson/singleheader"
 )
-target_compile_definitions(lsxcommon_cu PRIVATE
+set(LSXCOMMON_CU_DEFS
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
     FMT_UNICODE=0
 )
+
+add_library(lsxcommon_cu OBJECT
+    src/safetensors_gpu.cu
+    src/testmodel_gpu.cu
+    src/inference_load.cu
+    src/inference_norm.cu
+    src/inference_moe.cu
+    src/inference_head.cu
+    src/inference_attn.cu
+    src/inference_csa.cu
+    src/inference_pipeline.cu
+    src/norm_kernels.cu
+    src/shared_experts.cu
+)
+set_target_properties(lsxcommon_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_cu
     "${CUDA_CUDART_LIBRARY}"
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
 )
-target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsx_tune)
+
+add_library(lsxcommon_glm_cu OBJECT
+    src/glm_inference.cu
+    src/glm_inference_load.cu
+)
+set_target_properties(lsxcommon_glm_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_glm_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_glm_cu
+    "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_CUBLAS_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+)
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsx_tune)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP

@@ -1,4 +1,5 @@
 #include "lsxcommon/glm_inference.h"
+#include "lsxcommon/log.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -6,7 +7,6 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
-#include <cstdio>
 #include <vector>
 
 #include "glm_device_math.h"
@@ -325,6 +325,7 @@ struct GlmLoopCtx {
     float  *d_logits_head = nullptr; // [vocab]   raw logits row
     float  *d_gate_bias = nullptr;   // [kGlmNumRouted] staged router bias
     GlmArgmaxOut *d_argmax = nullptr;
+    GlmRoutedSlot *h_routing = nullptr;  // host staging for the routing grid
 };
 
 cudaError_t GlmCopyAsync(cudaStream_t st, const __half *src, __half *dst,
@@ -397,7 +398,8 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
         if (e != cudaSuccess) return e;
         e = RunGlmExpertsStack(c.ch, c.st, c.d_routing, 1, c.d_normed,
                                c.experts->tables[78].data(),
-                               kGlmNumRouted, c.d_moe, c.d_scratch_e);
+                               kGlmNumRouted, c.d_moe, c.d_scratch_e,
+                               c.h_routing);
         if (e != cudaSuccess) return e;
         GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
             c.d_h78, c.d_hmtp, c.d_moe, hidden);
@@ -439,7 +441,8 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
     if (e != cudaSuccess) return e;
     e = RunGlmExpertsStack(c.ch, c.st, c.d_routing, 1, c.d_normed,
                            c.experts->tables[static_cast<size_t>(l)].data(),
-                           kGlmNumRouted, c.d_moe, c.d_scratch_e);
+                           kGlmNumRouted, c.d_moe, c.d_scratch_e,
+                           c.h_routing);
     if (e != cudaSuccess) return e;
     GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
         d_out, c.d_moe, c.d_hidrow, hidden);
@@ -459,24 +462,47 @@ cudaError_t RunGlmGeneration(
     int g_alloc = 0;
     const cudaError_t g_pending = cudaPeekAtLastError();
     if (g_pending != cudaSuccess) {
-        std::fprintf(stderr, "[glm_gen] WARNING stale cuda error before entry: %s\n",
-                     cudaGetErrorString(g_pending));
+        log::warn("[glm_gen] stale cuda error before entry: " +
+                  std::string(cudaGetErrorString(g_pending)));
         cudaGetLastError();  // consume, so the caller's stale state can't derail us
     }
     const int hidden = kGlmHidden;
     const int inter  = kGlmMoeIntermediate;
     const int P  = static_cast<int>(prompt.size());
     const int vocab = pw.vocab_size;
-    std::fprintf(stderr, "[glm_gen] validate: ch=%d st=%d P=%d max_new=%d vocab=%d "
-                         "embed=%p head=%p layers=%zu tables=%zu\n",
-                 cublas_h != nullptr, stream != nullptr, P, max_new, vocab,
-                 (void *)pw.d_embed, (void *)pw.d_head, pw.layers.size(),
-                 experts.tables.size());
+    log::debug("[glm_gen] validate: ch=" + std::to_string(cublas_h != nullptr) +
+               " st=" + std::to_string(stream != nullptr) +
+               " P=" + std::to_string(P) +
+               " max_new=" + std::to_string(max_new) +
+               " vocab=" + std::to_string(vocab) +
+               " layers=" + std::to_string(pw.layers.size()) +
+               " tables=" + std::to_string(experts.tables.size()));
     if (!cublas_h || !stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
         !pw.d_embed || !pw.d_head ||
         pw.layers.size() != static_cast<size_t>(kGlmNumLayers) ||
         experts.tables.size() != static_cast<size_t>(kGlmNumLayers))
         return cudaErrorInvalidValue;
+
+    // Memory safety: the decoder KV staging is fixed at kGlmIndexMaxSlots
+    // (1024) slots. prompt + generated tokens must fit, and every prompt id
+    // must index the embed table. Reject explicitly here (deterministic)
+    // rather than risk silent device-side out-of-bounds access.
+    if (P > kGlmIndexMaxSlots ||
+        max_new > kGlmIndexMaxSlots - P) {
+        log::error("[glm_gen] prompt+" + std::to_string(max_new) +
+                   " tokens exceed the decoder KV capacity (" +
+                   std::to_string(kGlmIndexMaxSlots) + " slots)");
+        return cudaErrorInvalidValue;
+    }
+    for (int i = 0; i < P; ++i) {
+        const int32_t id = prompt[static_cast<size_t>(i)];
+        if (id < 0 || id >= vocab) {
+            log::error("[glm_gen] prompt id out of range: " +
+                       std::to_string(id) + " (vocab=" +
+                       std::to_string(vocab) + ")");
+            return cudaErrorInvalidValue;
+        }
+    }
 
     const int seq_max = std::max(P, 1);
     const size_t hid_n = static_cast<size_t>(seq_max) * hidden;
@@ -493,6 +519,7 @@ cudaError_t RunGlmGeneration(
     float *d_logits_head = nullptr, *d_gate_bias = nullptr;
     GlmArgmaxOut *d_argmax = nullptr, *h_argmax = nullptr;
     int32_t *d_ids = nullptr;
+    GlmRoutedSlot *h_routing_staging = nullptr;  // hoisted experts-stack staging
 
     auto cleanup = [&]() {
         cudaFree(d_state);  cudaFree(d_cur_buf); cudaFree(d_alt_buf);
@@ -504,12 +531,14 @@ cudaError_t RunGlmGeneration(
         cudaFree(d_logits_head); cudaFree(d_gate_bias);
         cudaFree(d_argmax); cudaFree(d_ids);
         if (h_argmax) cudaFreeHost(h_argmax);
+        if (h_routing_staging) cudaFreeHost(h_routing_staging);
     };
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
-        std::fprintf(stderr, "[glm_gen] FAIL (stage=%s alloc=%d): %s\n",
-                     g_stage, g_alloc, cudaGetErrorString(err));
+        log::error("[glm_gen] FAIL (stage=" + std::string(g_stage) +
+                   " alloc=" + std::to_string(g_alloc) + "): " +
+                   std::string(cudaGetErrorString(err)));
         cleanup();
         return err;
     };
@@ -566,6 +595,10 @@ cudaError_t RunGlmGeneration(
     if (e == cudaSuccess) e = cudaMalloc(&d_ids,
         static_cast<size_t>(P) * sizeof(int32_t));
     g_alloc = 21;
+    if (e == cudaSuccess) e = cudaMallocHost(
+        &h_routing_staging,
+        static_cast<size_t>(seq_max) * kGlmMoETopK * sizeof(GlmRoutedSlot));
+    g_alloc = 22;
     if (e != cudaSuccess) return fail(e);
 
     GlmLoopCtx ctx;
@@ -593,6 +626,7 @@ cudaError_t RunGlmGeneration(
     ctx.d_logits_head = d_logits_head;
     ctx.d_gate_bias = d_gate_bias;
     ctx.d_argmax = d_argmax;
+    ctx.h_routing = h_routing_staging;
 
     // ── Prefill (turn 0): embed the prompt and forward all 79 layers. ─────
     g_stage = "prefill-embed";
@@ -612,7 +646,8 @@ cudaError_t RunGlmGeneration(
     int block_rows = P;
     for (int l = 0; l < kGlmNumLayers; ++l) {
         g_stage = "prefill-layer";
-        std::fprintf(stderr, "[glm_gen] prefill l=%d seq=%d\n", l, block_rows);
+        log::debug("[glm_gen] prefill l=" + std::to_string(l) +
+                   " seq=" + std::to_string(block_rows));
         e = RunGlmLoopLayer(ctx, l, 0, block_rows, cur, nxt);
         if (e != cudaSuccess) return fail(e);
         if (l == 0) {
@@ -653,7 +688,7 @@ cudaError_t RunGlmGeneration(
         cur = d_cur_buf;
         nxt = d_alt_buf;
         g_stage = "decode-forward";
-        std::fprintf(stderr, "[glm_gen] decode step=%d\n", step);
+        log::debug("[glm_gen] decode step=" + std::to_string(step));
         for (int l = 0; l < kGlmNumLayers; ++l) {
             e = RunGlmLoopLayer(ctx, l, step + 1, 1, cur, nxt);
             if (e != cudaSuccess) return fail(e);

@@ -327,6 +327,11 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
 {
     namespace fs = std::filesystem;
 
+    // Idempotent re-load: drop any previously uploaded set first (Free() is
+    // safe on a nulled/empty set), so calling Load twice without an explicit
+    // Free() in between cannot leak the old device allocations.
+    pw.Free();
+
     // Accept both the logestix root itself and its container directory:
     //   <model>/logestix/pinned/...   (model dir, like the DeepSeek loader)
     //   <logestix>/pinned/...         (converter output_root)
@@ -389,6 +394,10 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
                                 int max_experts)
 {
     namespace fs = std::filesystem;
+
+    // Idempotent re-load: drop any previously loaded expert tables first so a
+    // second Load without an explicit Free() cannot leak device allocations.
+    experts.Free();
 
     // Accept both the logestix root and its container directory, mirroring
     // the pinned loader:

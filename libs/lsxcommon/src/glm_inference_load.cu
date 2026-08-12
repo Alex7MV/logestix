@@ -201,8 +201,16 @@ __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
             const float v = d_gate_bias ? lm[e] + d_gate_bias[e] : lm[e];
             if (v > bv || (v == bv && e < bi)) { bv = v; bi = e; }
         }
-        row[r].eid   = bi;
-        row[r].coeff = GlmExpfGlibc(lm[bi] - lmax) * inv;
+        // Single 64-bit store of the 8-byte-aligned slot (coeff | eid), as the
+        // header contract documents: the token's kGlmMoETopK slots form one
+        // 8-byte-aligned record. GlmRoutedSlot lays eid at offset 0 and coeff
+        // at offset 4, so on little-endian the coeff bits must occupy the HIGH
+        // word of the packed u64 and eid the LOW word.
+        const float coeff = GlmExpfGlibc(lm[bi] - lmax) * inv;
+        const uint64_t packed =
+            (static_cast<uint64_t>(__float_as_uint(coeff)) << 32) |
+            static_cast<uint32_t>(bi);
+        *reinterpret_cast<uint64_t *>(&row[r]) = packed;
         used[bi] = true;
     }
 }
@@ -255,16 +263,30 @@ __global__ void GlmIdxInitKernel(GlmIndexShareState *__restrict__ s)
 // hidden vectors into the pre-allocated KV staging buffer and bumps n_used.
 // n_used is read through the atomic return so every thread sees the same
 // slot base; the whole registration stays kernel-ordered (no host sync).
+// Defensive capacity guard: a turn whose slot base would exceed the fixed
+// kGlmIndexMaxSlots staging is consumed without writing (the KV staging and
+// the attention shared arrays are fixed-size), so no out-of-bounds access is
+// ever issued even if a caller bypasses the host-side capacity validation.
 __global__ void GlmIdxAppendKernel(GlmIndexShareState *__restrict__ s,
                                    const __half *__restrict__ x,
                                    int seq, int turn)
 {
     const bool append = (turn != s->turn_id);
-    __shared__ int s_base;
-    if (threadIdx.x == 0)
-        s_base = append ? atomicAdd(&s->n_used, seq) : s->n_used;
+    __shared__ int  s_base;
+    __shared__ bool s_ok;
+    if (threadIdx.x == 0) {
+        if (append) {
+            const int base = atomicAdd(&s->n_used, seq);
+            s_base = base;
+            s_ok = (base + seq <= kGlmIndexMaxSlots);
+            if (!s_ok) s->turn_id = turn;   // consume the turn even on overflow
+        } else {
+            s_base = s->n_used;
+            s_ok = false;
+        }
+    }
     __syncthreads();
-    if (!append) return;
+    if (!s_ok) return;
     const int base = s_base;
     const int total = seq * kGlmHidden;
     for (int idx = threadIdx.x; idx < total; idx += blockDim.x) {
@@ -333,7 +355,7 @@ __global__ void GlmIdxKeyKernel(GlmIndexShareState *__restrict__ s,
     }
     __syncthreads();
     const float kk =
-        (acc / s_rms) * __half2float(k_norm[r]) + k_bias[r];
+        (acc / s_rms) * __half2float(k_norm[r]) + (k_bias ? k_bias[r] : 0.0f);
     s->key[slot][r] = __float2half(kk);
 }
 
@@ -377,7 +399,11 @@ __global__ void GlmIdxAttnKernel(GlmIndexShareState *__restrict__ s,
 
     const int t    = blockIdx.x;
     const int tid  = threadIdx.x;
-    const int n    = s->n_used;
+    // Clamp to the fixed staging capacity: if a caller bypassed host-side
+    // validation and n_used grew beyond kGlmIndexMaxSlots, the shared arrays
+    // and KV staging below must not be indexed past the allocation.
+    const int n    = (s->n_used < kGlmIndexMaxSlots) ? s->n_used
+                                                     : kGlmIndexMaxSlots;
     const int base = n - seq + t;
     const int nout = kGlmHidden;
 
@@ -398,7 +424,7 @@ __global__ void GlmIdxAttnKernel(GlmIndexShareState *__restrict__ s,
     __syncthreads();
 
     if (tid == 0) {
-        float m = -FLT_MAX;
+        float m = -1e30f;   // sentinel, same as the host reference
         for (int sl = 0; sl < n; ++sl) m = fmaxf(m, s_sim[sl]);
         s_m = m;
     }
@@ -463,7 +489,8 @@ cudaError_t RunGlmExpertsStack(
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
-    __half *d_out, __half *d_scratch)
+    __half *d_out, __half *d_scratch,
+    GlmRoutedSlot *h_routing_staging /* = nullptr */)
 {
     constexpr int64_t kMatEl = kGlmExpertMatEl;
     constexpr int64_t kExpectPacked = kMatEl / 2;
@@ -480,16 +507,26 @@ cudaError_t RunGlmExpertsStack(
     // Stage the tiny routing grid back to host so per-slot expert launches
     // can be picked from the host descriptor registry. Single localized
     // stream barrier on the caller's stream; never a device-wide sync.
-    GlmRoutedSlot *h_routing = nullptr;
-    cudaError_t e = cudaMallocHost(&h_routing,
-                                   static_cast<size_t>(slots) *
-                                       sizeof(GlmRoutedSlot));
-    if (e != cudaSuccess) return e;
+    // The caller may pre-allocate the staging buffer once per generation
+    // (RunGlmGeneration) to avoid a cudaMallocHost/FreeHost pair per call;
+    // otherwise it is allocated here.
+    const bool own_staging = (h_routing_staging == nullptr);
+    GlmRoutedSlot *h_routing = h_routing_staging;
+    cudaError_t e = cudaSuccess;
+    if (own_staging) {
+        e = cudaMallocHost(&h_routing,
+                           static_cast<size_t>(slots) *
+                               sizeof(GlmRoutedSlot));
+        if (e != cudaSuccess) return e;
+    }
     e = cudaMemcpyAsync(h_routing, d_routing,
                         static_cast<size_t>(slots) * sizeof(GlmRoutedSlot),
                         cudaMemcpyDeviceToHost, stream);
     if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess) { cudaFreeHost(h_routing); return e; }
+    if (e != cudaSuccess) {
+        if (own_staging) cudaFreeHost(h_routing);
+        return e;
+    }
 
     // Scratch layout (halves): dequant w-deck / tmp / inter / gate.
     __half *d_deq   = d_scratch;                                      // kMatEl
@@ -573,7 +610,7 @@ cudaError_t RunGlmExpertsStack(
         if (e != cudaSuccess) break;
     }
 
-    cudaFreeHost(h_routing);
+    if (own_staging) cudaFreeHost(h_routing);
     return e;
 }
 
@@ -581,6 +618,12 @@ cudaError_t RunGlmExpertsStack(
 cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream)
 {
     if (!d_state) return cudaErrorInvalidValue;
+    // Explicitly zero the shared state before the init kernel: relying on the
+    // fresh cudaMalloc'ed state (or on a previous reuse without Free) left the
+    // key/score/slot arrays with stale content on re-entry.
+    cudaError_t e = cudaMemsetAsync(d_state, 0, sizeof(GlmIndexShareState),
+                                    stream);
+    if (e != cudaSuccess) return e;
     GlmIdxInitKernel<<<1, 1, 0, stream>>>(d_state);
     return cudaGetLastError();
 }

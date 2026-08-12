@@ -125,12 +125,26 @@ cudaError_t RunGlmMoERouter(
 //              deterministically skipped when a slot selects them.
 //   d_out:     [seq, kGlmHidden] FP16 result (accumulated, NOT residual-added).
 //   d_scratch: >= kGlmExpertMatEl + kGlmHidden + 2*kGlmMoeIntermediate halves.
+//   h_routing_staging: caller-provided pinned host buffer of at least
+//              seq*kGlmMoETopK GlmRoutedSlot entries, reused across calls to
+//              avoid a cudaMallocHost/cudaFreeHost pair per invocation, or
+//              nullptr to have this function allocate and free it internally.
+//              The buffer is only touched during the single staging barrier.
+//
+// Throughput contract: this is a parity-first, host-driven implementation. One
+// kernel launch + one cudaStreamSynchronize (the routing-grid staging barrier)
+// is issued per routed slot, plus the per-expert dequant/GEMM/accumulate
+// sequence; decoding throughput is therefore bounded by launch latency, not by
+// device compute. Callers needing throughput should batch routing slots or
+// hoist per-expert state across turns; correctness (bit-exact parity) is not
+// affected by these costs.
 cudaError_t RunGlmExpertsStack(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
-    __half *d_out, __half *d_scratch);
+    __half *d_out, __half *d_scratch,
+    GlmRoutedSlot *h_routing_staging = nullptr);
 
 // ── TDD Cycle 6: full 79-layer generation pass ─────────────────────────────
 // Routed-expert registry for the generation pass: a per-layer table of
@@ -186,7 +200,25 @@ struct GlmGenerationResult {
 // the layer-78 logits row, embed the winner and forward again per step
 // (turn = step + 1) until max_new tokens or EOS. The first generated token's
 // argmax logit is reported in `first_maxv`, and the decoder KV slot count after
-// the run in `kv_slots_used` (prompt length + generated tokens).
+// the run in `kv_slots_used`. When EOS is generated, the EOS token itself is
+// NOT appended to the KV cache: `kv_slots_used` then equals
+// prompt.size() + (tokens_until_eos) (i.e. one slot per generated token that
+// was actually forwarded through the decoder).
+//
+// Capacity + input validation (memory safety): the decoder KV staging is fixed
+// at kGlmIndexMaxSlots = 1024 slots (see GlmIndexShareState). This function
+// returns cudaErrorInvalidValue (and leaves `result.ok` false) when
+// prompt.size() + max_new > kGlmIndexMaxSlots, so the pre-allocated staging can
+// never be written past its bounds, and when any prompt id falls outside
+// [0, pw.vocab_size) (the embed table would be read out of bounds). Device-side
+// guards in the KV append/attention kernels additionally clamp overflows, but
+// the host validation makes the rejection deterministic and explicit.
+//
+// Throughput contract: parity-first, host-driven. One call allocates the
+// pinned routing staging buffer for the whole run (hoisted out of
+// RunGlmExpertsStack), then per generated token issues the full 79-layer
+// forward with per-layer stream barriers; throughput is launch-latency-bound,
+// not device-bound. Correctness is the goal; see RunGlmExpertsStack.
 cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,

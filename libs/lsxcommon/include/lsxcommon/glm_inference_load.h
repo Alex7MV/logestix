@@ -146,7 +146,10 @@ static_assert(offsetof(GlmIndexShareState, kv) % 16 == 0 &&
 // Asynchronously resets a GlmIndexShareState to the untouched state
 // (n_used=0, turn_id=-1, refresh_layer=-1) on <stream>. Must be called once
 // per allocation before the first RunGlmIndexShareAttention, exactly mirroring
-// LoadGlmPinnedWeights for the pinned-weight sets.
+// LoadGlmPinnedWeights for the pinned-weight sets. The whole struct (including
+// the kv/q_key/key/score/slot arrays) is cudaMemsetAsync'ed to zero first, so
+// re-entry never observes stale mask content from a previous run or a state
+// buffer that was reused without Free().
 cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream);
 
 // IndexShare attention for ONE layer (layer_idx in [0,78] — relaxed for the
@@ -173,6 +176,13 @@ cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream)
 // seq hidden vectors of that turn are appended to the staging KV cache. Turn
 // tokens are then attended over every occupied slot with the frozen cached
 // masks; Multi-turn decoding therefore keeps old slots alive across turns.
+//
+// Capacity contract: the staging KV cache is fixed at kGlmIndexMaxSlots slots.
+// RunGlmGeneration validates prompt+generated against the capacity up front;
+// a caller that bypasses it is still memory-safe because the append kernel
+// consumes an over-capacity turn without writing and the attention kernel
+// clamps its occupancy to kGlmIndexMaxSlots. The host-side validation makes
+// the rejection deterministic and explicit.
 //
 // Attention per token (deterministic, elementwise): sim(s) = dot(q_key[τ],
 // key[s]) * kGlmIndexAttnScale, softmax over the occupied slots, then

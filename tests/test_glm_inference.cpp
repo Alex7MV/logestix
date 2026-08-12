@@ -210,9 +210,11 @@ void RefRefresh(RefIdx &R, const RefLayer &W)
                                     lsxcommon::glm::kGlmRmsEps);
         __half *kd = R.key.data() + static_cast<size_t>(s) * kHeadDim;
         for (int r = 0; r < kHeadDim; ++r) {
+            const float kb = W.k_bias.empty()
+                                 ? 0.0f
+                                 : W.k_bias[static_cast<size_t>(r)];
             kd[r] = H((kraw[static_cast<size_t>(r)] / rms) *
-                      F(W.k_norm[static_cast<size_t>(r)]) +
-                      W.k_bias[static_cast<size_t>(r)]);
+                      F(W.k_norm[static_cast<size_t>(r)]) + kb);
         }
         __half *qd = R.q_key.data() + static_cast<size_t>(s) * kHeadDim;
         for (int r = 0; r < kHeadDim; ++r) {
@@ -679,9 +681,12 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     // ── FP64 CPU baseline over the identical frozen subset ─────────────────
     CpuBaseline baseline = CpuGenerate(ref, kPrompt, kMaxNew);
     REQUIRE(baseline.tokens.size() == static_cast<size_t>(kMaxNew));
-    std::fprintf(stderr, "TMP_BASELINE_TOKENS:");
-    for (int32_t t : baseline.tokens) std::fprintf(stderr, " %d", t);
-    std::fprintf(stderr, " first_maxv=%.6f\n", baseline.first_maxv);
+    INFO("baseline tokens: " << [&]() {
+        std::string s;
+        for (int32_t t : baseline.tokens) s += " " + std::to_string(t);
+        return s;
+    }());
+    INFO("baseline first_maxv: " << baseline.first_maxv);
 
     // ── Device generation (first run = the model under test) ────────────────
     GlmGenerationResult r1;
@@ -690,9 +695,12 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     REQUIRE(r1.ok);
     REQUIRE(r1.error_msg.empty());
     REQUIRE(r1.tokens.size() == static_cast<size_t>(kMaxNew));
-    std::fprintf(stderr, "TMP_DEVICE_TOKENS:");
-    for (int32_t t : r1.tokens) std::fprintf(stderr, " %d", t);
-    std::fprintf(stderr, " first_maxv=%.6f\n", r1.first_maxv);
+    INFO("device tokens: " << [&]() {
+        std::string s;
+        for (int32_t t : r1.tokens) s += " " + std::to_string(t);
+        return s;
+    }());
+    INFO("device first_maxv: " << r1.first_maxv);
 
     // (a) Bit-exact convergence: 0 tokens-drift against the CPU baseline.
     int tokens_drift = 0;
@@ -712,8 +720,14 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
 
     // (c) MTP isolation: the decoder IndexShare staging grew by exactly
     //     prompt_len + generated tokens. A Layer-78 leak would add extra slots.
+    //     The EOS token itself is NOT forwarded into the KV cache, so a run
+    //     that ended on EOS accounts for one fewer slot than tokens emitted.
+    const bool trailing_eos = !r1.tokens.empty() &&
+        (r1.tokens.back() == kEosIds[0] || r1.tokens.back() == kEosIds[1] ||
+         r1.tokens.back() == kEosIds[2]);
     const int expect_slots = static_cast<int>(kPrompt.size()) +
-                             static_cast<int>(r1.tokens.size());
+                             static_cast<int>(r1.tokens.size()) -
+                             (trailing_eos ? 1 : 0);
     CHECK(r1.kv_slots_used == expect_slots);
 
     // (b) Full determinism: a second fresh run must be byte-identical.
@@ -725,6 +739,47 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     CHECK(std::memcmp(r2.tokens.data(), r1.tokens.data(),
                       r1.tokens.size() * sizeof(int32_t)) == 0);
     CHECK(r2.kv_slots_used == r1.kv_slots_used);
+
+    // ── Edge: single-token prompt. The loop must still embed, forward all 79
+    //    layers and produce exactly max_new tokens; KV growth = 1 + generated.
+    {
+        const std::vector<int32_t> one = {5};
+        GlmGenerationResult rs;
+        REQUIRE(lsxcommon::glm::RunGlmGeneration(
+                    ch, st, pw, experts, one, 1, rs) == cudaSuccess);
+        REQUIRE(rs.ok);
+        REQUIRE(rs.tokens.size() == 1);
+        const bool eos_one = rs.tokens[0] == kEosIds[0] ||
+                             rs.tokens[0] == kEosIds[1] ||
+                             rs.tokens[0] == kEosIds[2];
+        CHECK(rs.kv_slots_used == 1 + (eos_one ? 0 : 1));
+    }
+
+    // ── Edge: capacity guard. prompt + max_new must fit the fixed decoder KV
+    //    staging (kGlmIndexMaxSlots); a request that exceeds it is rejected
+    //    deterministically with cudaErrorInvalidValue (no device OOB access).
+    {
+        const std::vector<int32_t> big(static_cast<size_t>(kMaxSlots - 1), 0);
+        GlmGenerationResult rb;
+        CHECK(lsxcommon::glm::RunGlmGeneration(
+                  ch, st, pw, experts, big, 2, rb) == cudaErrorInvalidValue);
+        CHECK(!rb.ok);
+    }
+
+    // ── Edge: out-of-range prompt ids are rejected before any allocation, so
+    //    the embed table can never be indexed past its bounds.
+    {
+        const std::vector<int32_t> bad0 = {0, 200000};
+        GlmGenerationResult rb0;
+        CHECK(lsxcommon::glm::RunGlmGeneration(
+                  ch, st, pw, experts, bad0, 1, rb0) == cudaErrorInvalidValue);
+        CHECK(!rb0.ok);
+        const std::vector<int32_t> bad1 = {0, -3};
+        GlmGenerationResult rb1;
+        CHECK(lsxcommon::glm::RunGlmGeneration(
+                  ch, st, pw, experts, bad1, 1, rb1) == cudaErrorInvalidValue);
+        CHECK(!rb1.ok);
+    }
 
     experts.Free();
     pw.Free();
