@@ -451,6 +451,20 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
 
 } // anonymous namespace
 
+cudaError_t RunGlmEmbed(cudaStream_t stream, const __half *d_embed,
+                        const int32_t *d_ids, __half *d_out, int seq,
+                        int hidden)
+{
+    if (!d_embed || !d_ids || !d_out || seq <= 0 || hidden <= 0)
+        return cudaErrorInvalidValue;
+    const int64_t total = static_cast<int64_t>(seq) * hidden;
+    const int blocks = static_cast<int>((total + kGlmLoopBlock - 1) /
+                                        kGlmLoopBlock);
+    GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+        d_embed, d_ids, d_out, seq, hidden);
+    return cudaGetLastError();
+}
+
 cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,

@@ -28,6 +28,14 @@ cudaError_t RunGlmDenseMLPStack(
     const GlmPinnedWeights &pw, int seq,
     __half *d_act, __half *d_alt, __half *d_result, __half *d_scratch);
 
+// Token embedding for the dense/MLP entry path: out[t][h] =
+// embed[ids[t]][h] for a [seq] ids block into a [seq, hidden] FP16 buffer.
+// Streamed on the caller's explicit async stream; the ONLY synchronization a
+// caller performs is whatever it needs to publish the output.
+cudaError_t RunGlmEmbed(cudaStream_t stream, const __half *d_embed,
+                        const int32_t *d_ids, __half *d_out, int seq,
+                        int hidden);
+
 // Top-k expert slot cardinality for every MoE layer of GLM-5.2.
 constexpr int kGlmMoETopK = 8;
 

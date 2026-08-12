@@ -157,6 +157,29 @@ endif()
 
 add_test(NAME test_glm_compute COMMAND test_glm_compute)
 
+# ── Тест GLM-5.2 Dense MLP forward (слои 0-2, Phase 4.5 hash-фикстура) ───────
+# Прогоняет конкретный C++/CUDA execution loop RunGlmDenseMLPStack (SwiGLU
+# w2(silu(w1)x*w3)) через explicit async stream по синтетической hash-фикстуре
+# hidden=6144 и сверяет поэлементно против независимого CPU FP64-референса
+# (RED/GREEN), плюс проверяет целостность указателей/стридов слоёв 0-2.
+add_executable(test_glm_dense_compute test_glm_dense_compute.cpp)
+target_link_libraries(test_glm_dense_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_dense_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_dense_compute>"
+    )
+    add_custom_command(TARGET test_glm_dense_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_dense_compute>"
+    )
+endif()
+
+add_test(NAME test_glm_dense_compute COMMAND test_glm_dense_compute)
+
 # ── Тест GLM-5.2 MoE Layer-3 router (top_k=8 warp selection) ───────────────
 add_executable(test_glm_moe_router test_glm_moe_router.cpp)
 target_link_libraries(test_glm_moe_router PRIVATE lsxcommon Catch2::Catch2WithMain)
