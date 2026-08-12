@@ -4,6 +4,8 @@
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "lsxcommon/glm_inference_load.h"
 
@@ -129,6 +131,67 @@ cudaError_t RunGlmExpertsStack(
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
     __half *d_out, __half *d_scratch);
+
+// ── TDD Cycle 6: full 79-layer generation pass ─────────────────────────────
+// Routed-expert registry for the generation pass: a per-layer table of
+// NVFP4-packed GlmExpertDeviceBlock descriptors resident in persistent VRAM.
+// `tables` is indexed by layer (num_layers entries, sized from the extended
+// topology); a layer without a loaded expert set holds a full kGlmNumRouted
+// table of all-inactive blocks (null payload pointers), so routing slots that
+// select them contribute nothing — the same deterministic skip contract
+// RunGlmExpertsStack enforces on inactive descriptors.
+struct GlmExpertTables {
+    std::vector<std::vector<GlmExpertDeviceBlock>> tables;
+
+    void Free();
+};
+
+// Loads the routed-expert tables for every layer in `layer_filter` of a
+// converted GLM-5.2 model (<model_path>/logestix/experts/layer_<l>/exp_<e>.
+// arrow, `max_experts` experts per layer; falls back to
+// <model_path>/experts/... like the pinned loader), uploading the packed E2M1
+// nibble payloads, the per-block E4M3 scales and the decoded E8M0 global
+// modifiers on <stream>. A missing or unreadable expert file leaves its table
+// slot inactive (null payload pointers), which routing deterministically
+// skips. `layer_filter` may be null (all layers).
+cudaError_t LoadGlmExpertTables(const std::string &model_path,
+                                GlmExpertTables &experts,
+                                cudaStream_t stream,
+                                const std::vector<int> *layer_filter,
+                                int max_experts);
+
+// Result of one greedy multi-token generation run.
+struct GlmGenerationResult {
+    bool ok = false;
+    std::string error_msg;
+    std::vector<int32_t> tokens;  // greedy-argmax token ids, EOS-terminated
+    float first_maxv = 0.0f;      // first generated token's argmax logit
+    int  kv_slots_used = 0;       // decoder IndexShare slots after the run
+};
+
+// Full greedy multi-token generation over the frozen 79-layer GLM-5.2 loop on
+// ONE explicit async stream (a caller-owned cublasHandle + cudaStream_t):
+//
+//   layers 0-2   Dense MLP (post-attn RMSNorm -> gate/up -> swiglu -> down)
+//   layers 3-77  IndexShare attention + MoE router + NVFP4 expert stack
+//   layer 78     MTP epilogue: eh_proj -> enorm -> router -> experts ->
+//                residual -> shared_head.norm -> lm_head^T (raw logits row)
+//
+// Every layer runs IndexShare attention over the shared decoder KV staging
+// (GlmIndexShareState, allocated + reset per call); only group heads
+// (layer_idx % 4 == 0) carrying indexer weights refresh the shared masks.
+// A layer whose pinned/MoE weights are absent degrades its branch to identity
+// (attention still runs), mirroring the heterogeneous GLM grid. The generation
+// loop: embed the prompt, forward all 79 layers (turn 0), then greedily argmax
+// the layer-78 logits row, embed the winner and forward again per step
+// (turn = step + 1) until max_new tokens or EOS. The first generated token's
+// argmax logit is reported in `first_maxv`, and the decoder KV slot count after
+// the run in `kv_slots_used` (prompt length + generated tokens).
+cudaError_t RunGlmGeneration(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    const std::vector<int32_t> &prompt, int max_new,
+    GlmGenerationResult &result);
 
 } // namespace glm
 } // namespace lsxcommon

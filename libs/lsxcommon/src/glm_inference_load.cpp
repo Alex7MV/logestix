@@ -1,4 +1,5 @@
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/glm_inference.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/log.h"
@@ -63,6 +64,51 @@ cudaError_t UploadRaw(const std::vector<uint8_t> &data, float **d_out,
     }
     *d_out = d;
     return cudaSuccess;
+}
+
+// Uploads one NVFP4-packed expert tensor (packed E2M1 nibbles + per-block E4M3
+// scales) into a GlmExpertDeviceBlock slot. On any failure the slot stays
+// inactive (null payload pointers) — the deterministic zero-contribution skip.
+cudaError_t UploadExpertTensor(const std::vector<uint8_t> &packed,
+                               const std::vector<uint8_t> &scales,
+                               float global_scale,
+                               const uint8_t **d_packed,
+                               const uint8_t **d_scales,
+                               float *out_global_scale,
+                               int64_t *out_packed_bytes,
+                               int64_t *out_scale_bytes,
+                               cudaStream_t stream)
+{
+    void *d1 = nullptr;
+    void *d2 = nullptr;
+    cudaError_t e = cudaMalloc(&d1, packed.size());
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(d1, packed.data(), packed.size(),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d1); return e; }
+    e = cudaMalloc(&d2, scales.size());
+    if (e != cudaSuccess) { cudaFree(d1); return e; }
+    e = cudaMemcpyAsync(d2, scales.data(), scales.size(),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d1); cudaFree(d2); return e; }
+    *d_packed         = static_cast<const uint8_t *>(d1);
+    *d_scales         = static_cast<const uint8_t *>(d2);
+    *out_global_scale = global_scale;
+    *out_packed_bytes = static_cast<int64_t>(packed.size());
+    *out_scale_bytes  = static_cast<int64_t>(scales.size());
+    return cudaSuccess;
+}
+
+// Frees the six payload pointers of one NVFP4 expert descriptor.
+void FreeExpertBlock(GlmExpertDeviceBlock &b)
+{
+    cudaFree(const_cast<uint8_t *>(b.d_w1_packed));
+    cudaFree(const_cast<uint8_t *>(b.d_w1_scales));
+    cudaFree(const_cast<uint8_t *>(b.d_w2_packed));
+    cudaFree(const_cast<uint8_t *>(b.d_w2_scales));
+    cudaFree(const_cast<uint8_t *>(b.d_w3_packed));
+    cudaFree(const_cast<uint8_t *>(b.d_w3_scales));
+    b = GlmExpertDeviceBlock{};
 }
 
 const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
@@ -327,6 +373,93 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                                  cudaStream_t stream)
 {
     return LoadGlmPinnedWeights(model_path, pw, stream, nullptr);
+}
+
+void GlmExpertTables::Free()
+{
+    for (auto &tab : tables)
+        for (auto &b : tab) FreeExpertBlock(b);
+    tables.clear();
+}
+
+cudaError_t LoadGlmExpertTables(const std::string &model_path,
+                                GlmExpertTables &experts,
+                                cudaStream_t stream,
+                                const std::vector<int> *layer_filter,
+                                int max_experts)
+{
+    namespace fs = std::filesystem;
+
+    // Accept both the logestix root and its container directory, mirroring
+    // the pinned loader:
+    //   <model>/logestix/experts/layer_<l>/exp_<e>.arrow
+    //   <model>/experts/layer_<l>/exp_<e>.arrow
+    fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
+    if (!fs::exists(exp_dir) && fs::exists(fs::path(model_path) / "experts"))
+        exp_dir = fs::path(model_path) / "experts";
+
+    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
+    if (!fs::exists(index_path) &&
+        fs::exists(fs::path(model_path) / "model.index.json"))
+        index_path = fs::path(model_path) / "model.index.json";
+
+    auto topo = load_topology(index_path.string());
+    if (!topo.error_msg.empty()) {
+        log::error("[glm_load] expert topology error: " + topo.error_msg);
+        return cudaErrorInvalidValue;
+    }
+
+    experts.tables.resize(static_cast<size_t>(topo.num_layers));
+    for (auto &tab : experts.tables)
+        tab.resize(static_cast<size_t>(kGlmNumRouted));  // all-inactive default
+
+    for (int l = 0; l < topo.num_layers; ++l) {
+        if (layer_filter &&
+            std::find(layer_filter->begin(), layer_filter->end(), l) ==
+                layer_filter->end())
+            continue;
+        auto layer_dir = exp_dir / ("layer_" + std::to_string(l));
+        if (!fs::is_directory(layer_dir)) continue;
+        auto &tab = experts.tables[static_cast<size_t>(l)];
+        for (int e = 0; e < max_experts; ++e) {
+            auto p = layer_dir / ("exp_" + std::to_string(e) + ".arrow");
+            if (!fs::exists(p)) continue;
+            auto batch_res = ReadRecordBatchFromFile(p);
+            if (!batch_res.ok()) continue;
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            if (!pe_res.ok()) continue;
+            const PackedExpert &pe = *pe_res;
+            if (pe.w1_packed.empty() || pe.w2_packed.empty() ||
+                pe.w3_packed.empty() || pe.w1_scales.empty() ||
+                pe.w2_scales.empty() || pe.w3_scales.empty())
+                continue;
+
+            GlmExpertDeviceBlock b;
+            cudaError_t err = UploadExpertTensor(
+                pe.w1_packed, pe.w1_scales, pe.w1_global_scale,
+                &b.d_w1_packed, &b.d_w1_scales, &b.w1_global_scale,
+                &b.w1_packed_bytes, &b.w1_scale_bytes, stream);
+            if (err == cudaSuccess)
+                err = UploadExpertTensor(
+                    pe.w2_packed, pe.w2_scales, pe.w2_global_scale,
+                    &b.d_w2_packed, &b.d_w2_scales, &b.w2_global_scale,
+                    &b.w2_packed_bytes, &b.w2_scale_bytes, stream);
+            if (err == cudaSuccess)
+                err = UploadExpertTensor(
+                    pe.w3_packed, pe.w3_scales, pe.w3_global_scale,
+                    &b.d_w3_packed, &b.d_w3_scales, &b.w3_global_scale,
+                    &b.w3_packed_bytes, &b.w3_scale_bytes, stream);
+            if (err != cudaSuccess) {
+                log::error("[glm_load] expert upload failed: layer " +
+                           std::to_string(l) + " exp " + std::to_string(e));
+                FreeExpertBlock(b);  // slot stays inactive
+                continue;
+            }
+            tab[static_cast<size_t>(e)] = b;
+        }
+    }
+
+    return cudaSuccess;
 }
 
 } // namespace glm

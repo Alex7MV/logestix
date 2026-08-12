@@ -59,7 +59,7 @@ set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(lsxcommon_cu PRIVATE

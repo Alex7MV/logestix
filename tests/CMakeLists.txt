@@ -214,6 +214,25 @@ endif()
 
 add_test(NAME test_glm_attention COMMAND test_glm_attention)
 
+# ── Тест GLM-5.2 полного 79-слойного цикла + MTP epilogue (генерация) ───────
+add_executable(test_glm_inference test_glm_inference.cpp)
+target_link_libraries(test_glm_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_inference POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_inference>"
+    )
+    add_custom_command(TARGET test_glm_inference POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_inference>"
+    )
+endif()
+
+add_test(NAME test_glm_inference COMMAND test_glm_inference)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by

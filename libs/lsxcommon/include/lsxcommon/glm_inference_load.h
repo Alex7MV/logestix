@@ -149,9 +149,11 @@ static_assert(offsetof(GlmIndexShareState, kv) % 16 == 0 &&
 // LoadGlmPinnedWeights for the pinned-weight sets.
 cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream);
 
-// IndexShare attention for ONE MoE layer (layer_idx in [3,77]) entirely on the
-// caller's explicit async stream (no host-side synchronization fence is ever
-// issued by this pass).
+// IndexShare attention for ONE layer (layer_idx in [0,78] — relaxed for the
+// full 79-layer generation loop; layers 0-2 and the layer-78 MTP epilogue
+// still attend over the shared KV staging, exactly like the intermediate MoE
+// layers) entirely on the caller's explicit async stream (no host-side
+// synchronization fence is ever issued by this pass).
 //
 // The rigid structural modulo check (layer_idx % 4 == 0) drives the refresh
 // of the central shared indexer mask arrays from this layer's indexer weights
@@ -177,7 +179,7 @@ cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream)
 // out = x + Σ_s p(s)·kv[s] (residual added). The per-block key/query cache is
 // staged in CUDA shared memory; KV values stay in the staging buffer.
 //
-//   layer_idx: in [3, 77]; the mod-4 group head recomputes the shared masks.
+//   layer_idx: in [0, 78]; the mod-4 group head recomputes the shared masks.
 //   turn:      monotonically increasing token-block id; seq must stay constant
 //              within a turn.
 //   lw:        per-layer weights; only the indexer fields are consumed.

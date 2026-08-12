@@ -11,10 +11,15 @@
 #include <cfloat>
 #include <cstring>
 
+#include "glm_device_math.h"
+
 namespace lsxcommon {
 namespace glm {
 
 namespace {
+
+using device::GlmExpfGlibc;
+using device::GlmRsqrtfGlibc;
 
 constexpr int kGlmRmsBlock = 256;
 
@@ -84,7 +89,7 @@ __global__ void GlmSwigluKernel(__half *__restrict__ gate,
     if (i >= n) return;
     float g = __half2float(gate[i]);
     float u = __half2float(up[i]);
-    float s = g / (1.0f + expf(-g));
+    float s = g / (1.0f + GlmExpfGlibc(-g));
     gate[i] = __float2half(s * u);
 }
 
@@ -98,9 +103,13 @@ __global__ void GlmExpertAccumKernel(__half *__restrict__ out,
     out[i] = __float2half(__half2float(out[i]) + coeff * __half2float(tmp[i]));
 }
 
-// RMSNorm over a [rows, dim] FP16 matrix, one block per row. Mirrors the
-// verified GlmRmsNormKernel in glm_inference.cu (shfl_xor warp reduce +
-// shared-memory cross-warp reduce).
+// RMSNorm over a [rows, dim] FP16 matrix, one block per row. Bit-exact mirror
+// of the host RmsNormFP32 reference: SINGLE sequential fp32 scan over
+// 0..dim-1 for the square sum, GlmRsqrtfGlibc(acc/dim + eps) output scale.
+// Matches
+// GlmRmsNormKernel in glm_inference.cu; both rely on the -fmad=false target
+// flag to keep the accumulation non-contracted (the -O0 host baseline cannot
+// FMA either).
 __global__ void GlmMoERmsNormKernel(const __half *__restrict__ x,
                                     const __half *__restrict__ w,
                                     __half *__restrict__ y,
@@ -109,26 +118,18 @@ __global__ void GlmMoERmsNormKernel(const __half *__restrict__ x,
     constexpr int kBlock = kGlmRmsBlock;
     const int row = blockIdx.x;
     const int tid = threadIdx.x;
-    __shared__ float s_red[kBlock / 32];
-    float acc = 0.0f;
-    for (int i = tid; i < dim; i += kBlock) {
-        float v = __half2float(x[row * dim + i]);
-        acc += v * v;
-    }
-    for (int off = 16; off > 0; off >>= 1)
-        acc += __shfl_xor_sync(0xffffffffu, acc, off);
-    const int lane = tid & 31;
-    const int warp = tid >> 5;
-    if (lane == 0) s_red[warp] = acc;
-    __syncthreads();
-    if (warp == 0) {
-        float v = (tid < (kBlock >> 5)) ? s_red[tid] : 0.0f;
-        for (int off = 16; off > 0; off >>= 1)
-            v += __shfl_xor_sync(0xffffffffu, v, off);
-        if (lane == 0) s_red[0] = v;
+    __shared__ float s_rms;
+    if (tid == 0) {
+        const __half *xr = x + row * dim;
+        float acc = 0.0f;
+        for (int i = 0; i < dim; ++i) {
+            const float v = __half2float(xr[i]);
+            acc += v * v;
+        }
+        s_rms = GlmRsqrtfGlibc(acc / static_cast<float>(dim) + eps);
     }
     __syncthreads();
-    const float rinv = rsqrtf(s_red[0] / static_cast<float>(dim) + eps);
+    const float rinv = s_rms;
     const __half *xr = x + row * dim;
     __half *yr = y + row * dim;
     for (int i = tid; i < dim; i += kBlock) {
@@ -137,117 +138,97 @@ __global__ void GlmMoERmsNormKernel(const __half *__restrict__ x,
     }
 }
 
-// Warp-per-token top_k selection kernel.
-//
-//   d_logits:  [seq, kGlmNumRouted] FP32, row-major token-major. Row t lives
-//              at t*kGlmNumRouted; each lane owns 8 consecutive experts
-//              (256/32).
-//   d_gate_bias: [kGlmNumRouted] FP32 per-expert selection bias or nullptr.
-//   d_routing: [seq, kGlmMoETopK] GlmRoutedSlot grid, 8-byte aligned.
-//
-// Pipeline per token (one warp):
-//   1. Load 8 logits/lane, reduce global max over the UNBIASED logits via
-//      __shfl_down_sync, then plain softmax weights.
-//   2. For each of the kGlmMoETopK slots, find the global arg-extreme of the
-//      selection keys ((logit + bias), total order: larger key, smaller eid
-//      on tie) via __shfl_down_sync; clear the winning lane's bit so the next
-//      iteration picks the next-highest distinct expert.
-//   3. Lanes 0..kGlmMoETopK-1 store the winners with a single 64-bit write
-//      per slot; every slot address is an 8-byte boundary (alignas(8) record
-//      with 8-byte stride).
+// Router logits: logit[t][e] = (float)Σ_q F(gate[e][q])·F(normed[t][q]) in
+// FP64 over ascending q — bit-exact mirror of CpuRouter. gate row-major
+// [kGlmNumRouted, kGlmHidden]; out [seq, kGlmNumRouted] token-major
+// (column-major [kGlmNumRouted, seq] at out[e + t*256], the same layout the
+// previous cuBLAS call produced). Plain non-contracted double mul+add
+// (-fmad=false), like the -O0 host baseline.
+__global__ void GlmMoELogitsFp64Kernel(const __half *__restrict__ gate,
+                                       const __half *__restrict__ x,
+                                       float *__restrict__ out,
+                                       int m, int k, int n)
+{
+    const int64_t total = static_cast<int64_t>(m) * n;
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                        threadIdx.x;
+    if (idx >= total) return;
+    const int t = static_cast<int>(idx / m);
+    const int e = static_cast<int>(idx - static_cast<int64_t>(t) * m);
+    const __half *gr = gate + static_cast<int64_t>(e) * k;
+    const __half *xr = x + static_cast<int64_t>(t) * k;
+    double acc = 0.0;
+    for (int q = 0; q < k; ++q)
+        acc += static_cast<double>(__half2float(gr[q])) *
+               static_cast<double>(__half2float(xr[q]));
+    out[idx] = static_cast<float>(acc);
+}
+
+// Per-token sequential router selection: bit-exact mirror of CpuRouter.
+// One thread per token replays the host order exactly:
+//   1. lmax  = sequential max over the UNBIASED logits (ascending e),
+//   2. psum  = sequential Σ GlmExpfGlibc(logit[e] - lmax) (ascending e),
+//   3. inv   = 1/psum, prob[e] = GlmExpfGlibc(logit[e] - lmax) * inv,
+//   4. top-k: for each rank, a sequential scan over 0..255 picking the largest
+//      sel[e] = logit[e] + bias[e] among the unused experts (ties -> smallest
+//      eid), then coeff = prob[eid]. Identical loop/order to the host.
 __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
                                  const float *__restrict__ d_gate_bias,
                                  GlmRoutedSlot *__restrict__ d_routing,
                                  int seq)
 {
-    constexpr int kLanes   = 32;
-    constexpr int kPerLane = kGlmNumRouted / kLanes; // 8 experts per lane
-    constexpr unsigned kFullMask = 0xffffffffu;
-
-    const int lane   = threadIdx.x & 31;
-    const int warp   = threadIdx.x >> 5;
-    const int nwarps = blockDim.x >> 5;
-    const int t      = static_cast<int>(blockIdx.x) * nwarps + warp;
+    const int t = blockIdx.x;
     if (t >= seq) return;
+    if (threadIdx.x != 0) return;
 
-    const float *lm  = d_logits + static_cast<size_t>(t) * kGlmNumRouted;
-    const int    e0  = lane * kPerLane;
+    const float *lm = d_logits + static_cast<size_t>(t) * kGlmNumRouted;
 
-    // Softmax max + denominator over the unbiased logits.
-    float lmax = -FLT_MAX;
-#pragma unroll
-    for (int j = 0; j < kPerLane; ++j)
-        lmax = fmaxf(lmax, lm[e0 + j]);
-#pragma unroll
-    for (int off = 16; off > 0; off >>= 1)
-        lmax = fmaxf(lmax, __shfl_down_sync(kFullMask, lmax, off));
-    // Only lane 0 holds the true global max after the down-reduction; the
-    // softmax normalization must be identical across every lane, so broadcast.
-    lmax = __shfl_sync(kFullMask, lmax, 0);
-
-    float prob[kPerLane];
+    float lmax = -1e30f;
+    for (int e = 0; e < kGlmNumRouted; ++e) lmax = fmaxf(lmax, lm[e]);
     float psum = 0.0f;
-#pragma unroll
-    for (int j = 0; j < kPerLane; ++j) {
-        const float p = expf(lm[e0 + j] - lmax);
-        prob[j] = p;
-        psum += p;
-    }
-#pragma unroll
-    for (int off = 16; off > 0; off >>= 1)
-        psum += __shfl_down_sync(kFullMask, psum, off);
-    // Same as lmax: broadcast the global sum so every lane normalizes with the
-    // identical denominator (partial-sum lanes would otherwise scale winners
-    // differently, corrupting the coefficient equality across equal-slot ties).
-    psum = __shfl_sync(kFullMask, psum, 0);
+    for (int e = 0; e < kGlmNumRouted; ++e) psum += GlmExpfGlibc(lm[e] - lmax);
     const float inv = 1.0f / psum;
-#pragma unroll
-    for (int j = 0; j < kPerLane; ++j) prob[j] *= inv;
 
-    // Selection keys: logit + optional per-expert correction bias.
-    float sel[kPerLane];
-#pragma unroll
-    for (int j = 0; j < kPerLane; ++j)
-        sel[j] = d_gate_bias ? lm[e0 + j] + d_gate_bias[e0 + j] : lm[e0 + j];
+    bool used[kGlmNumRouted];
+    for (int e = 0; e < kGlmNumRouted; ++e) used[e] = false;
 
-    GlmRoutedSlot top[kGlmMoETopK];
-    uint8_t live = 0xffu; // per-lane candidate bitmap (8 experts / lane)
-#pragma unroll
-    for (int r = 0; r < kGlmMoETopK; ++r) {
-        float bv = -FLT_MAX;
-        int   bi = -1;
-#pragma unroll
-        for (int j = 0; j < kPerLane; ++j) {
-            if (!(live & (1u << j))) continue;
-            const float v = sel[j];
-            const int   ei = e0 + j;
-            if (v > bv || (v == bv && ei < bi)) { bv = v; bi = ei; }
-        }
-#pragma unroll
-        for (int off = 16; off > 0; off >>= 1) {
-            const float ov = __shfl_down_sync(kFullMask, bv, off);
-            const int   oi = __shfl_down_sync(kFullMask, bi, off);
-            if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
-        }
-        // Global winner (total order makes it unique), broadcast from lane 0.
-        const int gi = __shfl_sync(kFullMask, bi, 0);
-        const int owner = gi >> 3; // lane owning expert gi
-        const float garea = (lane == owner) ? prob[gi & 7] : 0.0f;
-        const float gcoeff = __shfl_sync(kFullMask, garea, owner);
-        top[r].eid   = gi;
-        top[r].coeff = gcoeff;
-        if (lane == owner) live &= static_cast<uint8_t>(~(1u << (gi & 7)));
-    }
-
-    // 8-byte-boundary aligned 64-bit grid writes, one slot per active lane.
     GlmRoutedSlot *row = d_routing + static_cast<size_t>(t) * kGlmMoETopK;
-    if (lane < kGlmMoETopK) {
-        static_assert(sizeof(GlmRoutedSlot) == 8u,
-                      "routing slot must pack into 8 bytes");
-        long long bits;
-        std::memcpy(&bits, &top[lane], sizeof(bits));
-        reinterpret_cast<long long *>(row)[lane] = bits;
+    for (int r = 0; r < kGlmMoETopK; ++r) {
+        float bv = -1e30f;
+        int   bi = -1;
+        for (int e = 0; e < kGlmNumRouted; ++e) {
+            if (used[e]) continue;
+            const float v = d_gate_bias ? lm[e] + d_gate_bias[e] : lm[e];
+            if (v > bv || (v == bv && e < bi)) { bv = v; bi = e; }
+        }
+        row[r].eid   = bi;
+        row[r].coeff = GlmExpfGlibc(lm[bi] - lmax) * inv;
+        used[bi] = true;
     }
+}
+
+// FP64-accumulate FP16 GEMM (same contract as GlmGemmFp64Kernel in
+// glm_inference.cu): out[t][i] = H((float)Σ_q F(w[i][q])·F(x[t][q])), plain
+// non-contracted double accumulation, w row-major [m, k], x row-major [k, n],
+// out column-major [m, n].
+__global__ void GlmGemmFp64Kernel(const __half *__restrict__ w,
+                                  const __half *__restrict__ x,
+                                  __half *__restrict__ out,
+                                  int m, int k, int n)
+{
+    const int64_t total = static_cast<int64_t>(m) * n;
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                        threadIdx.x;
+    if (idx >= total) return;
+    const int t = static_cast<int>(idx / m);
+    const int i = static_cast<int>(idx - static_cast<int64_t>(t) * m);
+    const __half *wr = w + static_cast<int64_t>(i) * k;
+    const __half *xr = x + static_cast<int64_t>(t) * k;
+    double acc = 0.0;
+    for (int q = 0; q < k; ++q)
+        acc += static_cast<double>(__half2float(wr[q])) *
+               static_cast<double>(__half2float(xr[q]));
+    out[idx] = __float2half(static_cast<float>(acc));
 }
 
 // ── IndexShare attention kernels (Cycle 5, layers 3-77) ─────────────────────
@@ -423,7 +404,7 @@ __global__ void GlmIdxAttnKernel(GlmIndexShareState *__restrict__ s,
     }
     __syncthreads();
     for (int sl = tid; sl < n; sl += blockDim.x)
-        s_p[sl] = expf(s_sim[sl] - s_m);
+        s_p[sl] = GlmExpfGlibc(s_sim[sl] - s_m);
     __syncthreads();
     if (tid == 0) {
         float sum = 0.0f;
@@ -451,6 +432,7 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
                             __half *d_normed, float *d_logits,
                             GlmRoutedSlot *d_routing)
 {
+    (void)cublas_h;
     if (!lw.d_post_attn_norm || !lw.d_router_gate ||
         !d_hidden || !d_normed || !d_logits || !d_routing || seq <= 0)
         return cudaErrorInvalidValue;
@@ -462,30 +444,16 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
 
-    // 2. logits[t][e] = sum_k normed[t][k] * gate[e][k].
-    // Gate row-major [kGlmNumRouted, kGlmHidden] is a column-major
-    // [kGlmHidden, kGlmNumRouted] matrix with lda = kGlmHidden, so
-    // C = gate^T @ normed with m=256, n=seq, k=6144; the FP32 C column-major
-    // layout C[e + t*256] doubles as the token-major [seq, 256] row for the
-    // top-k kernel (same index arithmetic).
-    cublasSetStream(cublas_h, stream);
-    const float alpha = 1.0f;
-    const float beta  = 0.0f;
-    const cublasStatus_t st = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        kGlmNumRouted, seq, kGlmHidden, &alpha,
-        lw.d_router_gate, CUDA_R_16F, kGlmHidden,
-        d_normed,        CUDA_R_16F, kGlmHidden,
-        &beta, d_logits, CUDA_R_32F, kGlmNumRouted,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorInvalidValue;
+    // 2. logits[t][e] = (float)Σ_k normed[t][k]·gate[e][k] in FP64.
+    const int logits_total = kGlmNumRouted * seq;
+    const int logits_blocks = (logits_total + kGlmRmsBlock - 1) / kGlmRmsBlock;
+    GlmMoELogitsFp64Kernel<<<logits_blocks, kGlmRmsBlock, 0, stream>>>(
+        lw.d_router_gate, d_normed, d_logits, kGlmNumRouted, kGlmHidden, seq);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
 
-    // 3. Warp-per-token softmax + top_k selection, 4 tokens per 128-thread
-    // block; Blackwell occupancy stays 48 warps/SM-class agnostic (small grid).
-    constexpr int kBlock = 128;
-    const int tokens_per_block = kBlock / 32;
-    const int grid = (seq + tokens_per_block - 1) / tokens_per_block;
-    GlmMoETopkKernel<<<grid, kBlock, 0, stream>>>(
+    // 3. Per-token sequential softmax + top_k selection (host-order mirror).
+    GlmMoETopkKernel<<<seq, 1, 0, stream>>>(
         d_logits, d_gate_bias, d_routing, seq);
     return cudaGetLastError();
 }
@@ -539,9 +507,9 @@ cudaError_t RunGlmExpertsStack(
     const int deq_grid =
         static_cast<int>((kMatEl + dequant_per_block - 1) / dequant_per_block);
 
-    cublasSetStream(cublas_h, stream);
-    const float alpha = 1.0f;
-    const float beta  = 0.0f;
+    const int inter_blocks =
+        (kGlmMoeIntermediate + kBlock - 1) / kBlock;
+    const int hidden_blocks = (kGlmHidden + kBlock - 1) / kBlock;
 
     for (int s = 0; s < slots; ++s) {
         const GlmRoutedSlot &rs = h_routing[s];
@@ -566,34 +534,24 @@ cudaError_t RunGlmExpertsStack(
         GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
             eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
         e = cudaGetLastError();
-        cublasStatus_t cs = CUBLAS_STATUS_SUCCESS;
-        if (e == cudaSuccess)
-            cs = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                kGlmMoeIntermediate, 1, kGlmHidden, &alpha,
-                d_deq, CUDA_R_16F, kGlmHidden,
-                x_t,   CUDA_R_16F, kGlmHidden,
-                &beta, d_inter, CUDA_R_16F, kGlmMoeIntermediate,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (cs != CUBLAS_STATUS_SUCCESS) e = cudaErrorInvalidValue;
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+            d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
+        e = cudaGetLastError();
         if (e != cudaSuccess) break;
 
         // gate = w3^T @ x
         GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
             eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
         e = cudaGetLastError();
-        if (e == cudaSuccess)
-            cs = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                kGlmMoeIntermediate, 1, kGlmHidden, &alpha,
-                d_deq, CUDA_R_16F, kGlmHidden,
-                x_t,   CUDA_R_16F, kGlmHidden,
-                &beta, d_gate, CUDA_R_16F, kGlmMoeIntermediate,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (cs != CUBLAS_STATUS_SUCCESS) e = cudaErrorInvalidValue;
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+            d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
+        e = cudaGetLastError();
         if (e != cudaSuccess) break;
 
         // swiglu: inter = silu(inter) * gate, in place (FP32 math)
-        const int swig_blocks = (kGlmMoeIntermediate + kBlock - 1) / kBlock;
-        GlmSwigluKernel<<<swig_blocks, kBlock, 0, stream>>>(
+        GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
             d_inter, d_gate, kGlmMoeIntermediate);
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
@@ -602,19 +560,14 @@ cudaError_t RunGlmExpertsStack(
         GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
             eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
         e = cudaGetLastError();
-        if (e == cudaSuccess)
-            cs = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                kGlmHidden, 1, kGlmMoeIntermediate, &alpha,
-                d_deq,   CUDA_R_16F, kGlmMoeIntermediate,
-                d_inter, CUDA_R_16F, kGlmMoeIntermediate,
-                &beta, d_tmp, CUDA_R_16F, kGlmHidden,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (cs != CUBLAS_STATUS_SUCCESS) e = cudaErrorInvalidValue;
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<hidden_blocks, kBlock, 0, stream>>>(
+            d_deq, d_inter, d_tmp, kGlmHidden, kGlmMoeIntermediate, 1);
+        e = cudaGetLastError();
         if (e != cudaSuccess) break;
 
         // out_t[h] += coeff * tmp[h]
-        const int acc_blocks = (kGlmHidden + kBlock - 1) / kBlock;
-        GlmExpertAccumKernel<<<acc_blocks, kBlock, 0, stream>>>(
+        GlmExpertAccumKernel<<<hidden_blocks, kBlock, 0, stream>>>(
             out_t, d_tmp, rs.coeff, kGlmHidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
@@ -638,7 +591,7 @@ cudaError_t RunGlmIndexShareAttention(
     const __half *d_hidden, __half *d_out, GlmIndexShareState *d_state)
 {
     if (!d_state || !d_hidden || !d_out || seq <= 0 ||
-        layer_idx < 3 || layer_idx > 77)
+        layer_idx < 0 || layer_idx > 78)
         return cudaErrorInvalidValue;
 
     // Rigid structural modulo check: the group head (layer_idx % 4 == 0) is
