@@ -20,8 +20,15 @@ simdjson::error_code OpenAiEndpoint::Parse(const char* data, std::size_t size,
         return e;
     }
 
-    if (auto e = root["id"].get_string().get(out.id)) return e;
-    if (auto e = root["object"].get_string().get(out.object)) return e;
+    if (auto e = root["id"].get_string(out.id)) return e;
+    if (auto e = root["object"].get_string(out.object)) return e;
+
+    // Optional dispatch target. OpenAI requests/reports carry a top-level
+    // "model" string; absent/weird payloads leave it empty rather than failing
+    // the whole parse (a missing model routes to the orchestrator's default).
+    if (auto err = root["model"].get_string(out.model)) {
+        if (err != simdjson::NO_SUCH_FIELD) return err;
+    }
 
     simdjson::ondemand::object usage;
     if (auto e = root["usage"].get_object().get(usage)) return e;
@@ -38,12 +45,12 @@ simdjson::error_code OpenAiEndpoint::Parse(const char* data, std::size_t size,
 
     simdjson::ondemand::object choice;
     if (auto e = choice_value.get_object().get(choice)) return e;
-    if (auto e = choice["finish_reason"].get_string().get(out.finish_reason)) return e;
+    if (auto e = choice["finish_reason"].get_string(out.finish_reason)) return e;
 
     simdjson::ondemand::object message;
     if (auto e = choice["message"].get_object().get(message)) return e;
-    if (auto e = message["role"].get_string().get(out.role)) return e;
-    if (auto e = message["content"].get_string().get(out.content)) return e;
+    if (auto e = message["role"].get_string(out.role)) return e;
+    if (auto e = message["content"].get_string(out.content)) return e;
 
     return simdjson::SUCCESS;
 }

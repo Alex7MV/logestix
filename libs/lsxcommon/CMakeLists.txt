@@ -25,6 +25,7 @@ add_library(lsxcommon STATIC
     src/log.cpp
     src/model_factory.cpp
     src/model_registry.cpp
+    src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
     src/schema.cpp
     src/tokenizer.cpp
@@ -156,3 +157,8 @@ target_link_libraries(lsxcommon PRIVATE
     arrow_cuda_shared
     simdjson::simdjson
 )
+# lsx_orchestrator.h lives in the PUBLIC include tree and exposes
+# lsxnetwork::FrameQueue in ServeTaskMosaic's signature -> the dependency is
+# part of lsxcommon's public interface, so it must be PUBLIC (not PRIVATE) or
+# consumers including the orchestrator header lack lsxnetwork's include dirs.
+target_link_libraries(lsxcommon PUBLIC lsxnetwork)

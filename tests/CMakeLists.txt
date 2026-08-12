@@ -239,6 +239,29 @@ target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithM
 
 add_test(NAME test_mosaic_network COMMAND test_mosaic_network)
 
+# ── Интеграционный тест TaskMosaic: мультимодальный оркестратор (lsx_orchestrator) ──
+# Прогоняет одновременный burst OpenAI-запросов на обе ветки ("glm-5.2" и
+# "deepseek-v4-flash") через длинный lock-free SPSC конвейер и проверяет
+# zero-copy retirement без token-drift. Линкует lsxcommon (оркестратор + IModel)
+# и lsxnetwork (FrameQueue).
+add_executable(test_integrated_pipeline test_integrated_pipeline.cpp)
+target_link_libraries(test_integrated_pipeline PRIVATE lsxcommon lsxnetwork Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_integrated_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_integrated_pipeline>"
+    )
+    add_custom_command(TARGET test_integrated_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_integrated_pipeline>"
+    )
+endif()
+
+add_test(NAME test_integrated_pipeline COMMAND test_integrated_pipeline)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
