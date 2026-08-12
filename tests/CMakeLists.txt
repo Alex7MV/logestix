@@ -233,6 +233,12 @@ endif()
 
 add_test(NAME test_glm_inference COMMAND test_glm_inference)
 
+# ── Тест TaskMosaic CE сетевого слоя (lsxnetwork) ───────────────────────────
+add_executable(test_mosaic_network test_mosaic_network.cpp)
+target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_mosaic_network COMMAND test_mosaic_network)
+
 # ── Тест CUDA inference kernels ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
