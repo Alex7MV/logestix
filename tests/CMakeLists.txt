@@ -457,3 +457,22 @@ if(WIN32)
 endif()
 
 add_test(NAME test_deepseek_moe COMMAND test_deepseek_moe)
+
+# �� ���� model-metadata vault path registry �����������������������������
+add_executable(test_path_registry test_path_registry.cpp)
+target_link_libraries(test_path_registry PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_path_registry POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_path_registry>"
+    )
+    add_custom_command(TARGET test_path_registry POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_path_registry>"
+    )
+endif()
+
+add_test(NAME test_path_registry COMMAND test_path_registry)
