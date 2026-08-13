@@ -47,6 +47,8 @@ struct BuildPassportOptions {
 /// host memory. Cleanup responsibility of the caller.
 std::vector<std::byte> BuildPassport(const BuildPassportOptions& opts);
 
+/// The passport is written/read from the unified vault by default; callers
+/// resolve the location via lsxcommon::lsx_model_metadata("passport/passport.bin").
 /// Writes the generated passport to @p path. Returns 0 on success, -1 on I/O
 /// failure.
 int WritePassport(const char* path, const BuildPassportOptions& opts);

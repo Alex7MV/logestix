@@ -1,9 +1,11 @@
 #include "lsxnetwork/lsx_token_translator.h"
+#include "lsxcommon/path_registry.h"
 
 #include <spdlog/spdlog.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -35,7 +37,8 @@ void PrintUsage() {
 
 int main(int argc, char** argv) {
     lsxnetwork::BuildPassportOptions opts;
-    std::string glm_path, ds_path, out_path;
+    std::string glm_path, ds_path, out_path =
+        lsxcommon::lsx_model_metadata("passport/passport.bin");
     bool have_glm = false, have_ds = false, have_out = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -69,13 +72,18 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!(have_glm && have_ds && have_out)) {
+    if (!(have_glm && have_ds)) {
         PrintUsage();
         return 2;
     }
+    if (!have_out)
+        SPDLOG_INFO("lsx_token_packer: --out defaulted to '{}'", out_path);
 
     opts.glm_tokens = ReadLines(glm_path);
     opts.deepseek_tokens = ReadLines(ds_path);
+    if (!out_path.empty())
+        std::filesystem::create_directories(
+            std::filesystem::path(out_path).parent_path());
     SPDLOG_INFO("lsx_token_packer: glm={} deepseek={} out='{}'",
                 opts.glm_tokens.size(), opts.deepseek_tokens.size(), out_path);
 

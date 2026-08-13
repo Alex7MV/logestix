@@ -18,7 +18,11 @@ std::string lsx_model_metadata_root()
 
 std::string lsx_model_metadata(const std::string& rel)
 {
-    return (base() / kModelMetadataDir / rel).string();
+    std::string norm = rel;
+    const char sep = std::filesystem::path::preferred_separator;
+    for (char &c : norm)
+        if (c == '/') c = sep;
+    return (base() / kModelMetadataDir / std::filesystem::path(norm)).string();
 }
 
 std::string lsx_model_models_dir()
