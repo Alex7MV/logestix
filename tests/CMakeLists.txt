@@ -309,6 +309,18 @@ target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithM
 
 add_test(NAME test_mosaic_network COMMAND test_mosaic_network)
 
+# ── TDD Phase 4: LsxTokenTranslator (cross-model binary token translator) ─────
+# Exercises the offline passport builder (BuildPassport/WritePassport) plus the
+# runtime zero-copy mapper (CreateFileMapping/MapViewOfFile) over a synthetic
+# GLM-5.2 / DeepSeek-V4-Flash vocabulary pair. Asserts 100% bidirectional index
+# mapping accuracy, 64-byte cache-line alignment of the access pointers, and a
+# zero-runtime-allocation translation burst. Links lsxnetwork only (no Arrow;
+# the global replacement operator-new counter is unit-local).
+add_executable(test_token_translator test_token_translator.cpp)
+target_link_libraries(test_token_translator PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_token_translator COMMAND test_token_translator)
+
 # ── Интеграционный тест TaskMosaic: мультимодальный оркестратор (lsx_orchestrator) ──
 # Прогоняет одновременный burst OpenAI-запросов на обе ветки ("glm-5.2" и
 # "deepseek-v4-flash") через длинный lock-free SPSC конвейер и проверяет

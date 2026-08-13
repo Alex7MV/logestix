@@ -4,6 +4,7 @@ add_library(lsxnetwork STATIC
     src/affinity.cpp
     src/frame_queue.cpp
     src/io_worker.cpp
+    src/lsx_token_translator.cpp
     src/openai_endpoint.cpp
     src/zmq_context.cpp
 )
