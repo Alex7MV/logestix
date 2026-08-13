@@ -309,6 +309,17 @@ target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithM
 
 add_test(NAME test_mosaic_network COMMAND test_mosaic_network)
 
+# ── TDD Phase 5: TaskMosaic CE static SPA frontend route harness ──────────────
+# Verifies the in-memory static router serves the compiled www/ bundle: asset
+# bytes are 64-byte cache-line aligned, GET returns exactly 200 OK with
+# byte-for-byte content, a simultaneous multi-threaded hit-rate surge holds 200
+# with zero corruption/alignment drift, and the /v1/chat/completions SSE stream
+# frames a 200 event-stream. Links lsxnetwork only (no Arrow/CUDA).
+add_executable(test_mosaic_frontend_route test_mosaic_frontend_route.cpp)
+target_link_libraries(test_mosaic_frontend_route PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_mosaic_frontend_route COMMAND test_mosaic_frontend_route)
+
 # ── TDD Phase 4: LsxTokenTranslator (cross-model binary token translator) ─────
 # Exercises the offline passport builder (BuildPassport/WritePassport) plus the
 # runtime zero-copy mapper (CreateFileMapping/MapViewOfFile) over a synthetic

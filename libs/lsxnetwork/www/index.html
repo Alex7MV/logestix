@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>TaskMosaic CE — Mosaic Grid</title>
+<link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&#9670;</span>
+    <h1>TaskMosaic <em>Common&nbsp;Edition</em></h1>
+  </div>
+  <nav class="agent-rail" id="agent-rail" aria-label="agent nodes"></nav>
+</header>
+
+<main class="mosaic-stage">
+  <section id="grid" class="mosaic-grid" aria-live="polite"></section>
+  <p id="grid-empty" class="grid-empty">Tessellate a prompt below to decompose it into routed task tiles.</p>
+</main>
+
+<footer class="composer">
+  <form id="prompt-form" autocomplete="off">
+    <textarea id="prompt-input" rows="1"
+      placeholder="Describe a complex task, e.g.  agent:researcher -- gather specs&#10;agent:router   -- decompose the request&#10;agent:writer   -- synthesize the final answer"
+      spellcheck="false"></textarea>
+    <button id="submit-btn" type="submit">Tessellate</button>
+  </form>
+  <p class="stream-status" id="stream-status" hidden></p>
+</footer>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>
