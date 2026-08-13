@@ -111,4 +111,17 @@ private:
     std::size_t len_ = 0;
 };
 
+/// Grammar-stable, zero-alloc cross-model bridge welded into the streaming
+/// ingestion path. Rewrites @p n GLM-5.2 token ids held in @p ids in place to
+/// the DeepSeek-V4-Flash vocabulary. Every mapping miss (LCS sub-string
+/// translation miss, or out-of-range id) falls back to the passport's genuine
+/// DeepSeek unknown-token id — the translator already guarantees that internally,
+/// so no caller-side constant is required. noexcept and heap-allocation-free.
+inline void TranslateGlmToDeepSeekInPlace(const LsxTokenTranslator& tr,
+                                          std::uint32_t* ids,
+                                          std::size_t n) noexcept {
+    for (std::size_t i = 0; i < n; ++i)
+        ids[i] = tr.TranslateGlmToDeepSeek(ids[i]);
+}
+
 }  // namespace lsxnetwork

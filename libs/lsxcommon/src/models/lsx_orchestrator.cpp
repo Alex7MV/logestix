@@ -5,6 +5,9 @@
 #include <thread>
 
 #include "lsxnetwork/openai_endpoint.h"
+#include "lsxnetwork/io_worker.h"
+
+#include "lsxcommon/path_registry.h"
 
 namespace lsxcommon {
 
@@ -77,6 +80,24 @@ void LsxOrchestrator::ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
         SlotRetire retire(queue, index, stats);
         DispatchOne(frame, stats);
     }
+}
+
+void LsxOrchestrator::ServeTaskMosaicPinned(
+    lsxnetwork::FrameQueue& queue, TaskMosaicStats& stats,
+    std::atomic<bool>& stop, const std::string& passport_path) {
+    // The entire consumer/ingestion loop runs inside a single pinned worker.
+    // That worker threads a privately-owned LsxTokenTranslator, loaded from the
+    // unified model-metadata vault during thread entry (after affinity pin).
+    // The per-thread translator is fully isolated — no shared singleton — and
+    // its mapping views stay alive only for the lifetime of this worker.
+    lsxnetwork::IoWorker worker(
+        [this, &queue, &stats, &stop] { ServeTaskMosaic(queue, stats, stop); },
+        passport_path);
+    if (worker.Start() != 0) {
+        spdlog::error("[orchestrator] pinned serve worker failed to start");
+        return;
+    }
+    // Joins implicitly via the worker dtor once ServeTaskMosaic returns on stop.
 }
 
 void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,

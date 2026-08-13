@@ -321,6 +321,17 @@ target_link_libraries(test_token_translator PRIVATE lsxnetwork Catch2::Catch2Wit
 
 add_test(NAME test_token_translator COMMAND test_token_translator)
 
+# ── TDD Phase 4.5: network translator weld ──────────────────────────────────
+# Welds a privately-owned, per-thread LsxTokenTranslator into the pinned
+# IoWorker thread context. Concurrency burst (4 workers over cores 0..3) asserts
+# per-thread isolation, 64-byte cache-line alignment of every embedded mapping,
+# zero cross-thread lock contention, and zero runtime heap allocations via the
+# unit-local global replacement operator-new counter. Links lsxnetwork only.
+add_executable(test_network_translator_weld test_network_translator_weld.cpp)
+target_link_libraries(test_network_translator_weld PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
+
 # ── Интеграционный тест TaskMosaic: мультимодальный оркестратор (lsx_orchestrator) ──
 # Прогоняет одновременный burst OpenAI-запросов на обе ветки ("glm-5.2" и
 # "deepseek-v4-flash") через длинный lock-free SPSC конвейер и проверяет
