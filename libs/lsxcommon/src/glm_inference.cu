@@ -191,10 +191,6 @@ constexpr int kGlmLoopBlock = 256;
 // Real-model EOS ids (config.json eos_token_id), mirrored by the test.
 constexpr int kGlmEosIds[3] = {154820, 154827, 154829};
 
-struct GlmArgmaxOut {
-    int   best;
-    float maxv;
-};
 
 __global__ void GlmEmbedKernel(const __half *__restrict__ embed,
                                const int32_t *__restrict__ ids,
@@ -245,7 +241,7 @@ __global__ void GlmResidualKernel(__half *__restrict__ out,
 // Ascending scan, strict >, so ties resolve to the smallest index. Single
 // block, warp-shuffle + shared-memory reduction.
 __global__ void GlmArgmaxKernel(const float *__restrict__ logits, int vocab,
-                                GlmArgmaxOut *__restrict__ out)
+                                GlmArgmaxSlot *__restrict__ out)
 {
     constexpr int kBlock = kGlmLoopBlock;
     __shared__ int   s_best[kBlock / 32];
@@ -324,7 +320,7 @@ struct GlmLoopCtx {
     __half *d_hn = nullptr;          // [hidden]  shared_head.norm output
     float  *d_logits_head = nullptr; // [vocab]   raw logits row
     float  *d_gate_bias = nullptr;   // [kGlmNumRouted] staged router bias
-    GlmArgmaxOut *d_argmax = nullptr;
+    GlmArgmaxSlot *d_argmax = nullptr;
     GlmRoutedSlot *h_routing = nullptr;  // host staging for the routing grid
 };
 
@@ -473,7 +469,6 @@ cudaError_t RunGlmGeneration(
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
-    int g_alloc = 0;
     const cudaError_t g_pending = cudaPeekAtLastError();
     if (g_pending != cudaSuccess) {
         log::warn("[glm_gen] stale cuda error before entry: " +
@@ -519,101 +514,42 @@ cudaError_t RunGlmGeneration(
     }
 
     const int seq_max = std::max(P, 1);
-    const size_t hid_n = static_cast<size_t>(seq_max) * hidden;
 
-    GlmIndexShareState *d_state = nullptr;
-    __half *d_cur_buf = nullptr, *d_alt_buf = nullptr;
-    __half *d_attn = nullptr, *d_normed = nullptr, *d_moe = nullptr;
-    __half *d_gate = nullptr, *d_up = nullptr;
-    float *d_logits = nullptr;
-    GlmRoutedSlot *d_routing = nullptr;
-    __half *d_scratch_e = nullptr;
-    __half *d_hidrow = nullptr, *d_mtp = nullptr, *d_hmtp = nullptr;
-    __half *d_h78 = nullptr, *d_hn = nullptr;
-    float *d_logits_head = nullptr, *d_gate_bias = nullptr;
-    GlmArgmaxOut *d_argmax = nullptr, *h_argmax = nullptr;
-    int32_t *d_ids = nullptr;
-    GlmRoutedSlot *h_routing_staging = nullptr;  // hoisted experts-stack staging
+    // ── Cycle 10: ONE unified arena for the whole 79-layer loop footprint ────
+    // The complete IndexShare K-V cache slots (GlmIndexShareState), the
+    // attention/dense/MoE activation workspaces and the Layer-78 MTP execution
+    // spaces (eh_proj output, enorm/hmtp, h78, shared-head normalized hidden
+    // and the [vocab] logits row) live together in a single contiguous device
+    // allocation, plus one combined pinned host staging block (routing grid +
+    // argmax slot). Mid-flight runtime heap fragmentation is structurally
+    // outlawed; the whole run performs exactly one device + one host cudaAlloc.
+    GlmMoEArena arena;
+    cudaError_t e = arena.AllocateGeneration(seq_max, hidden, kGlmNumRouted,
+                                             vocab);
+    if (e != cudaSuccess) {
+        result.ok = false;
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+    e = GlmIndexShareReset(arena.d_state, stream);
+    if (e != cudaSuccess) {
+        result.ok = false;
+        result.error_msg = cudaGetErrorString(e);
+        log::error("[glm_gen] FAIL (stage=kv-reset): " +
+                   std::string(cudaGetErrorString(e)));
+        arena.Free();
+        return e;
+    }
 
-    auto cleanup = [&]() {
-        cudaFree(d_state);  cudaFree(d_cur_buf); cudaFree(d_alt_buf);
-        cudaFree(d_attn);   cudaFree(d_normed);  cudaFree(d_moe);
-        cudaFree(d_gate);   cudaFree(d_up);      cudaFree(d_logits);
-        cudaFree(d_routing); cudaFree(d_scratch_e);
-        cudaFree(d_hidrow); cudaFree(d_mtp); cudaFree(d_hmtp);
-        cudaFree(d_h78);    cudaFree(d_hn);
-        cudaFree(d_logits_head); cudaFree(d_gate_bias);
-        cudaFree(d_argmax); cudaFree(d_ids);
-        if (h_argmax) cudaFreeHost(h_argmax);
-        if (h_routing_staging) cudaFreeHost(h_routing_staging);
-    };
+    auto cleanup = [&]() { arena.Free(); };
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
-        log::error("[glm_gen] FAIL (stage=" + std::string(g_stage) +
-                   " alloc=" + std::to_string(g_alloc) + "): " +
+        log::error("[glm_gen] FAIL (stage=" + std::string(g_stage) + "): " +
                    std::string(cudaGetErrorString(err)));
         cleanup();
         return err;
     };
-
-    g_alloc = 0;
-    cudaError_t e = cudaMalloc(&d_state, sizeof(GlmIndexShareState));
-    if (e == cudaSuccess) e = GlmIndexShareReset(d_state, stream);
-    g_alloc = 1;
-    if (e == cudaSuccess) e = cudaMalloc(&d_cur_buf, hid_n * sizeof(__half));
-    g_alloc = 2;
-    if (e == cudaSuccess) e = cudaMalloc(&d_alt_buf, hid_n * sizeof(__half));
-    g_alloc = 3;
-    if (e == cudaSuccess) e = cudaMalloc(&d_attn, hid_n * sizeof(__half));
-    g_alloc = 4;
-    if (e == cudaSuccess) e = cudaMalloc(&d_normed, hid_n * sizeof(__half));
-    g_alloc = 5;
-    if (e == cudaSuccess) e = cudaMalloc(&d_moe, hid_n * sizeof(__half));
-    g_alloc = 6;
-    if (e == cudaSuccess) e = cudaMalloc(&d_gate,
-        static_cast<size_t>(seq_max) * inter * sizeof(__half));
-    g_alloc = 7;
-    if (e == cudaSuccess) e = cudaMalloc(&d_up,
-        static_cast<size_t>(seq_max) * inter * sizeof(__half));
-    g_alloc = 8;
-    if (e == cudaSuccess) e = cudaMalloc(&d_logits,
-        static_cast<size_t>(seq_max) * kGlmNumRouted * sizeof(float));
-    g_alloc = 9;
-    if (e == cudaSuccess) e = cudaMalloc(&d_routing,
-        static_cast<size_t>(seq_max) * kGlmMoETopK * sizeof(GlmRoutedSlot));
-    g_alloc = 10;
-    if (e == cudaSuccess) e = cudaMalloc(&d_scratch_e,
-        (kGlmExpertMatEl + hidden + 2 * inter) * sizeof(__half));
-    g_alloc = 11;
-    if (e == cudaSuccess) e = cudaMalloc(&d_hidrow, hidden * sizeof(__half));
-    g_alloc = 12;
-    if (e == cudaSuccess) e = cudaMalloc(&d_mtp, hidden * sizeof(__half));
-    g_alloc = 13;
-    if (e == cudaSuccess) e = cudaMalloc(&d_hmtp, hidden * sizeof(__half));
-    g_alloc = 14;
-    if (e == cudaSuccess) e = cudaMalloc(&d_h78, hidden * sizeof(__half));
-    g_alloc = 15;
-    if (e == cudaSuccess) e = cudaMalloc(&d_hn, hidden * sizeof(__half));
-    g_alloc = 16;
-    if (e == cudaSuccess) e = cudaMalloc(&d_logits_head,
-        static_cast<size_t>(vocab) * sizeof(float));
-    g_alloc = 17;
-    if (e == cudaSuccess) e = cudaMalloc(&d_gate_bias,
-        static_cast<size_t>(kGlmNumRouted) * sizeof(float));
-    g_alloc = 18;
-    if (e == cudaSuccess) e = cudaMalloc(&d_argmax, sizeof(GlmArgmaxOut));
-    g_alloc = 19;
-    if (e == cudaSuccess) e = cudaMallocHost(&h_argmax, sizeof(GlmArgmaxOut));
-    g_alloc = 20;
-    if (e == cudaSuccess) e = cudaMalloc(&d_ids,
-        static_cast<size_t>(P) * sizeof(int32_t));
-    g_alloc = 21;
-    if (e == cudaSuccess) e = cudaMallocHost(
-        &h_routing_staging,
-        static_cast<size_t>(seq_max) * kGlmMoETopK * sizeof(GlmRoutedSlot));
-    g_alloc = 22;
-    if (e != cudaSuccess) return fail(e);
 
     GlmLoopCtx ctx;
     ctx.ch = cublas_h;
@@ -623,40 +559,40 @@ cudaError_t RunGlmGeneration(
     ctx.hidden = hidden;
     ctx.inter = inter;
     ctx.vocab = vocab;
-    ctx.d_state = d_state;
-    ctx.d_attn = d_attn;
-    ctx.d_normed = d_normed;
-    ctx.d_moe = d_moe;
-    ctx.d_gate = d_gate;
-    ctx.d_up = d_up;
-    ctx.d_logits = d_logits;
-    ctx.d_routing = d_routing;
-    ctx.d_scratch_e = d_scratch_e;
-    ctx.d_hidrow = d_hidrow;
-    ctx.d_mtp = d_mtp;
-    ctx.d_hmtp = d_hmtp;
-    ctx.d_h78 = d_h78;
-    ctx.d_hn = d_hn;
-    ctx.d_logits_head = d_logits_head;
-    ctx.d_gate_bias = d_gate_bias;
-    ctx.d_argmax = d_argmax;
-    ctx.h_routing = h_routing_staging;
+    ctx.d_state = arena.d_state;
+    ctx.d_attn = arena.d_attn;
+    ctx.d_normed = arena.d_normed;
+    ctx.d_moe = arena.d_moe;
+    ctx.d_gate = arena.d_gate;
+    ctx.d_up = arena.d_up;
+    ctx.d_logits = arena.d_logits;
+    ctx.d_routing = arena.d_routing;
+    ctx.d_scratch_e = arena.d_scratch;
+    ctx.d_hidrow = arena.d_hidrow;
+    ctx.d_mtp = arena.d_mtp;
+    ctx.d_hmtp = arena.d_hmtp;
+    ctx.d_h78 = arena.d_h78;
+    ctx.d_hn = arena.d_hn;
+    ctx.d_logits_head = arena.d_logits_head;
+    ctx.d_gate_bias = arena.d_gate_bias;
+    ctx.d_argmax = arena.d_argmax;
+    ctx.h_routing = arena.h_routing_staging;
 
     // ── Prefill (turn 0): embed the prompt and forward all 79 layers. ─────
     g_stage = "prefill-embed";
-    e = cudaMemcpyAsync(d_ids, prompt.data(),
+    e = cudaMemcpyAsync(arena.d_ids, prompt.data(),
                         static_cast<size_t>(P) * sizeof(int32_t),
                         cudaMemcpyHostToDevice, stream);
     if (e != cudaSuccess) return fail(e);
     const int emb_blocks = static_cast<int>(
         (static_cast<size_t>(P) * hidden + kGlmLoopBlock - 1) / kGlmLoopBlock);
     GlmEmbedKernel<<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
-        pw.d_embed, d_ids, d_cur_buf, P, hidden);
+        pw.d_embed, arena.d_ids, arena.d_cur, P, hidden);
     e = cudaGetLastError();
     if (e != cudaSuccess) return fail(e);
 
-    __half *cur = d_cur_buf;
-    __half *nxt = d_alt_buf;
+    __half *cur = arena.d_cur;
+    __half *nxt = arena.d_alt;
     int block_rows = P;
     for (int l = 0; l < kGlmNumLayers; ++l) {
         g_stage = "prefill-layer";
@@ -677,30 +613,31 @@ cudaError_t RunGlmGeneration(
     // ── Greedy decode: argmax the layer-78 logits row, embed, re-forward. ──
     for (int step = 0; step < max_new; ++step) {
         g_stage = "decode-argmax";
-        e = cudaMemcpyAsync(h_argmax, d_argmax, sizeof(GlmArgmaxOut),
-                            cudaMemcpyDeviceToHost, stream);
+        e = cudaMemcpyAsync(arena.h_argmax, arena.d_argmax,
+                            sizeof(GlmArgmaxSlot), cudaMemcpyDeviceToHost,
+                            stream);
         if (e != cudaSuccess) return fail(e);
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return fail(e);
-        const int best = h_argmax->best;
+        const int best = arena.h_argmax->best;
         result.tokens.push_back(best);
-        if (step == 0) result.first_maxv = h_argmax->maxv;
+        if (step == 0) result.first_maxv = arena.h_argmax->maxv;
         if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
             best == kGlmEosIds[2])
             break;
 
         int32_t id = best;
-        e = cudaMemcpyAsync(d_ids, &id, sizeof(int32_t),
+        e = cudaMemcpyAsync(arena.d_ids, &id, sizeof(int32_t),
                             cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) return fail(e);
         const int emb_blocks = (hidden + kGlmLoopBlock - 1) / kGlmLoopBlock;
         GlmEmbedKernel<<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
-            pw.d_embed, d_ids, d_cur_buf, 1, hidden);
+            pw.d_embed, arena.d_ids, arena.d_cur, 1, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return fail(e);
 
-        cur = d_cur_buf;
-        nxt = d_alt_buf;
+        cur = arena.d_cur;
+        nxt = arena.d_alt;
         g_stage = "decode-forward";
         log::debug("[glm_gen] decode step=" + std::to_string(step));
         for (int l = 0; l < kGlmNumLayers; ++l) {
@@ -710,9 +647,22 @@ cudaError_t RunGlmGeneration(
         }
     }
 
+    // ── Final logits row: the raw [vocab] logits the last layer-78 MTP forward
+    //    produced (the row whose argmax would be the next hypothetical token).
+    //    Published for the SKWOS regression harness, which compares it
+    //    element-for-element against the CPU FP64 reference. ──────────────
+    result.final_logits.resize(static_cast<size_t>(vocab));
+    g_stage = "final-logits";
+    e = cudaMemcpyAsync(result.final_logits.data(), arena.d_logits_head,
+                        static_cast<size_t>(vocab) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess) return fail(e);
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) return fail(e);
+
     // ── KV slot readback: prompt length + generated tokens. ────────────────
     int h_n_used = 0;
-    e = cudaMemcpyAsync(&h_n_used, &d_state->n_used, sizeof(int),
+    e = cudaMemcpyAsync(&h_n_used, &arena.d_state->n_used, sizeof(int),
                         cudaMemcpyDeviceToHost, stream);
     if (e != cudaSuccess) return fail(e);
     e = cudaStreamSynchronize(stream);

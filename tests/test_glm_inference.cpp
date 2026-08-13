@@ -315,6 +315,15 @@ std::vector<CpuRouted> CpuRouter(const std::vector<__half> &normed,
 }
 
 // ── RMSNorm fp32 mirror of the device kernel (strided partials + butterfly) ──
+// rsqrtf is a CUDA/glibc builtin, absent from MSVC's host <cmath>; on Windows
+// fall back to the mathematically identical 1.0f/std::sqrt so this real-model
+// test still compiles there (it is SKIP'd without the model anyway). Linux
+// keeps calling rsqrtf, so its FP64 parity is unchanged.
+#if defined(_MSC_VER)
+inline float GlmRsqrtHost(float v) { return 1.0f / std::sqrt(v); }
+#else
+inline float GlmRsqrtHost(float v) { return rsqrtf(v); }
+#endif
 std::vector<__half> RmsNormFP32(const std::vector<__half> &x,
                                 const std::vector<__half> &w, int dim)
 {
@@ -323,7 +332,7 @@ std::vector<__half> RmsNormFP32(const std::vector<__half> &x,
         const float v = F(x[static_cast<size_t>(i)]);
         acc += v * v;
     }
-    const float rinv = rsqrtf(acc / static_cast<float>(dim) + lsxcommon::glm::kGlmRmsEps);
+    const float rinv = GlmRsqrtHost(acc / static_cast<float>(dim) + lsxcommon::glm::kGlmRmsEps);
     std::vector<__half> y(static_cast<size_t>(dim));
     for (int i = 0; i < dim; ++i)
         y[static_cast<size_t>(i)] = H(F(x[static_cast<size_t>(i)]) * rinv * F(w[static_cast<size_t>(i)]));

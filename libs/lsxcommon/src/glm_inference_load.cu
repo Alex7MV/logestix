@@ -726,6 +726,107 @@ cudaError_t GlmMoEArena::Allocate(int seq_, int hidden_, int n_experts_)
     return cudaSuccess;
 }
 
+// TDD Cycle 10: extension of the arena to the FULL 79-layer loop footprint.
+// One contiguous device allocation carries the IndexShare K-V cache slots
+// (GlmIndexShareState), the dense/MoE + attention activation workspaces and the
+// Layer-78 MTP execution spaces (eh_proj output, enorm/hmtp, h78, shared-head
+// normalized hidden and the [vocab] logits row). A single combined pinned host
+// block holds both the routing-grid staging and the argmax slot. The virtual
+// per-expert slice grid (d_slices) is intentionally omitted: the generation
+// loop never materializes it (it runs the cheaper RunGlmExpertsStack path), so
+// a full-capacity prefill cannot balloon this arena by seq*256*hidden halves.
+cudaError_t GlmMoEArena::AllocateGeneration(int seq_, int hidden_,
+                                            int n_experts_, int vocab_)
+{
+    Free();
+    constexpr int64_t kRouted = kGlmNumRouted;
+    if (seq_ <= 0 || hidden_ <= 0 || n_experts_ <= 0 || vocab_ <= 0)
+        return cudaErrorInvalidValue;
+    const int64_t route_n = static_cast<int64_t>(seq_) * kGlmMoETopK;
+    const int64_t logit_n = static_cast<int64_t>(seq_) * kRouted;
+    const int64_t hid_n   = static_cast<int64_t>(seq_) * hidden_;
+    const int64_t inter_n = static_cast<int64_t>(seq_) * kGlmMoeIntermediate;
+    const int64_t scratch_n = kGlmExpertMatEl + hidden_ +
+                              2 * static_cast<int64_t>(kGlmMoeIntermediate);
+
+    int64_t off = 0;
+    auto page = [&](int64_t bytes_, int64_t align) -> int64_t {
+        off = (off + align - 1) / align * align;
+        const int64_t at = off;
+        off += bytes_;
+        return at;
+    };
+    const int64_t o_state   = page(sizeof(GlmIndexShareState), 16);
+    const int64_t o_norm    = page(hid_n * sizeof(__half), 16);
+    const int64_t o_logits  = page(logit_n * sizeof(float), 16);
+    const int64_t o_route   = page(route_n * sizeof(GlmRoutedSlot), 16);
+    const int64_t o_moe     = page(hid_n * sizeof(__half), 16);
+    const int64_t o_scratch = page(scratch_n * sizeof(__half), 16);
+    const int64_t o_bias    = page(kRouted * sizeof(float), 16);
+    const int64_t o_attn    = page(hid_n * sizeof(__half), 16);
+    const int64_t o_gate    = page(inter_n * sizeof(__half), 16);
+    const int64_t o_up      = page(inter_n * sizeof(__half), 16);
+    const int64_t o_cur     = page(hid_n * sizeof(__half), 16);
+    const int64_t o_alt     = page(hid_n * sizeof(__half), 16);
+    const int64_t o_hidrow  = page(hidden_ * sizeof(__half), 16);
+    const int64_t o_mtp     = page(hidden_ * sizeof(__half), 16);
+    const int64_t o_hmtp    = page(hidden_ * sizeof(__half), 16);
+    const int64_t o_h78     = page(hidden_ * sizeof(__half), 16);
+    const int64_t o_hn      = page(hidden_ * sizeof(__half), 16);
+    const int64_t o_logits_head = page(int64_t(vocab_) * sizeof(float), 16);
+    const int64_t o_argmax  = page(sizeof(GlmArgmaxSlot), 16);
+    const int64_t o_ids     = page(int64_t(seq_) * sizeof(int32_t), 16);
+    const int64_t o_guard   = page(1024, 16);   // sentinel tail for overrun checks
+    bytes = static_cast<size_t>(off);
+
+    uint8_t *base = nullptr;
+    cudaError_t e = cudaMalloc(reinterpret_cast<void **>(&base), bytes);
+    if (e != cudaSuccess) {
+        bytes = 0;
+        return e;
+    }
+    d_base      = base;
+    d_state     = reinterpret_cast<GlmIndexShareState *>(base + o_state);
+    d_normed    = reinterpret_cast<__half *>(base + o_norm);
+    d_logits    = reinterpret_cast<float *>(base + o_logits);
+    d_routing   = reinterpret_cast<GlmRoutedSlot *>(base + o_route);
+    d_moe       = reinterpret_cast<__half *>(base + o_moe);
+    d_scratch   = reinterpret_cast<__half *>(base + o_scratch);
+    d_gate_bias = reinterpret_cast<float *>(base + o_bias);
+    d_attn      = reinterpret_cast<__half *>(base + o_attn);
+    d_gate      = reinterpret_cast<__half *>(base + o_gate);
+    d_up        = reinterpret_cast<__half *>(base + o_up);
+    d_cur       = reinterpret_cast<__half *>(base + o_cur);
+    d_alt       = reinterpret_cast<__half *>(base + o_alt);
+    d_hidrow    = reinterpret_cast<__half *>(base + o_hidrow);
+    d_mtp       = reinterpret_cast<__half *>(base + o_mtp);
+    d_hmtp      = reinterpret_cast<__half *>(base + o_hmtp);
+    d_h78       = reinterpret_cast<__half *>(base + o_h78);
+    d_hn        = reinterpret_cast<__half *>(base + o_hn);
+    d_logits_head = reinterpret_cast<float *>(base + o_logits_head);
+    d_argmax    = reinterpret_cast<GlmArgmaxSlot *>(base + o_argmax);
+    d_ids       = reinterpret_cast<int32_t *>(base + o_ids);
+
+    // Single combined pinned host staging block.
+    const int64_t h_route_bytes = route_n * sizeof(GlmRoutedSlot);
+    const int64_t h_argmax_bytes = sizeof(GlmArgmaxSlot);
+    uint8_t *hbase = nullptr;
+    e = cudaMallocHost(reinterpret_cast<void **>(&hbase),
+                       static_cast<size_t>(h_route_bytes + h_argmax_bytes));
+    if (e != cudaSuccess) {
+        Free();
+        return e;
+    }
+    h_routing_staging = reinterpret_cast<GlmRoutedSlot *>(hbase);
+    h_argmax = reinterpret_cast<GlmArgmaxSlot *>(hbase + h_route_bytes);
+
+    seq = seq_;
+    hidden = hidden_;
+    n_experts = n_experts_;
+    vocab = vocab_;
+    return cudaSuccess;
+}
+
 void GlmMoEArena::Free()
 {
     if (h_routing_staging) cudaFreeHost(h_routing_staging);
@@ -735,7 +836,13 @@ void GlmMoEArena::Free()
     d_normed = nullptr; d_logits = nullptr; d_routing = nullptr;
     d_slices = nullptr; d_moe = nullptr; d_scratch = nullptr;
     d_gate_bias = nullptr;
-    seq = 0; hidden = 0; n_experts = 0; bytes = 0;
+    d_state = nullptr;
+    d_attn = nullptr; d_gate = nullptr; d_up = nullptr;
+    d_cur = nullptr; d_alt = nullptr;
+    d_hidrow = nullptr; d_mtp = nullptr; d_hmtp = nullptr;
+    d_h78 = nullptr; d_hn = nullptr; d_logits_head = nullptr;
+    d_argmax = nullptr; d_ids = nullptr; h_argmax = nullptr;
+    seq = 0; hidden = 0; n_experts = 0; vocab = 0; bytes = 0;
 }
 
 cudaError_t RunGlmMoESlices(

@@ -157,16 +157,32 @@ cudaError_t RunGlmExpertsStack(
 // ── TDD Cycle 9: MoE router + NVFP4 expert stacks (layers 3-77) ─────────────
 struct GlmExpertTables;  // fwd decl (defined in the Cycle-6 section below)
 
+// ── TDD Cycle 10: unified arena — IndexShare KV + Layer-78 MTP spaces ───────
+// The greedy-argmax staging slot the loop writes. Public (defined here) so the
+// arena can carry both its device region and its pinned host copy as typed
+// pointers while preserving the single-contiguous-block invariant.
+struct GlmArgmaxSlot { int best; float maxv; };
+
 // Single contiguous VRAM arena that holds every activation workspace of the
 // MoE MLP forward for layers 3-77 — including one virtual activation slice per
 // routed expert (per token row) — inside ONE cudaMalloc allocation plus ONE
 // pinned host routing-staging buffer. The inference loop allocates the arena
 // once and drives all 75 layers through it, so mid-flight runtime heap
 // fragmentation is structurally outlawed.
+//
+// TDD Cycle 10 extends the SAME single device allocation to additionally carry
+// the complete IndexShare K-V cache slots (GlmIndexShareState, visited by the
+// mod-4 attention passes) and the Layer-78 MTP execution spaces (attention
+// output, dense/MoE scratch, eh_proj/enorm norm buffers, shared-head normalized
+// hidden and the [vocab] logits row). AllocateGeneration() therefore lays the
+// whole 79-layer loop footprint — KV staging + MoE + attention + MTP + logits
+// — into one contiguous device block, so a generation run performs exactly one
+// device cudaMalloc and one host cudaMalloc overall.
 struct GlmMoEArena {
     int seq       = 0;
     int hidden    = 0;
     int n_experts = 0;
+    int vocab     = 0;
     size_t      bytes     = 0;   // total bytes of the single device allocation
     void        *d_base    = nullptr; // single contiguous device allocation
     __half      *d_normed  = nullptr; // [seq, hidden]            RMSNorm out
@@ -178,10 +194,32 @@ struct GlmMoEArena {
     float       *d_gate_bias = nullptr; // [kGlmNumRouted] router-bias staging
     GlmRoutedSlot *h_routing_staging = nullptr; // pinned host lookup grid
 
-    // Allocates the whole arena with a single cudaMalloc (device) + a single
-    // cudaMallocHost (staging). Re-allocation without Free() is forbidden: the
-    // caller must Free() before reusing with a larger seq.
+    // ── Cycle 10: full-loop footprint (all carved from the same d_base) ──────
+    GlmIndexShareState *d_state = nullptr; // IndexShare K-V cache + shared masks
+    __half *d_attn  = nullptr; // [seq, hidden]    attention output
+    __half *d_gate  = nullptr; // [seq, inter]     dense/MoE gate scratch
+    __half *d_up    = nullptr; // [seq, inter]     dense/MoE up scratch
+    __half *d_cur   = nullptr; // [seq, hidden]    ping-pong activation A
+    __half *d_alt   = nullptr; // [seq, hidden]    ping-pong activation B
+    __half *d_hidrow = nullptr; // [hidden]        row-0 collapse buffer
+    __half *d_mtp   = nullptr; // [hidden]         Layer-78 eh_proj output
+    __half *d_hmtp  = nullptr; // [hidden]         Layer-78 enorm-normed
+    __half *d_h78   = nullptr; // [hidden]         hmtp + moe
+    __half *d_hn    = nullptr; // [hidden]         shared_head.norm output
+    float  *d_logits_head = nullptr; // [vocab]     raw logits row
+    GlmArgmaxSlot *d_argmax = nullptr;  // [1] greedy argmax (device)
+    int32_t *d_ids = nullptr;  // [seq]             token id staging
+    GlmArgmaxSlot *h_argmax = nullptr;  // pinned host argmax slot
+
+    // Allocates the MoE-only workspace with a single cudaMalloc (device) + a
+    // single cudaMallocHost (staging). Re-allocation without Free() is
+    // forbidden: the caller must Free() before reusing with a larger seq.
     cudaError_t Allocate(int seq_, int hidden_, int n_experts_);
+    // Allocates the complete 79-layer loop footprint — MoE + IndexShare KV +
+    // Layer-78 MTP + logits — into ONE contiguous device allocation plus one
+    // combined pinned host staging block (routing grid + argmax slot).
+    cudaError_t AllocateGeneration(int seq_, int hidden_, int n_experts_,
+                                   int vocab_);
     void Free();
 };
 
@@ -276,6 +314,12 @@ struct GlmGenerationResult {
     std::vector<int32_t> tokens;  // greedy-argmax token ids, EOS-terminated
     float first_maxv = 0.0f;      // first generated token's argmax logit
     int  kv_slots_used = 0;       // decoder IndexShare slots after the run
+    // TDD Cycle 10: raw [vocab] logits row produced by the final layer-78 MTP
+    // forward (the row whose argmax would be the next hypothetical token).
+    // Published for the SKWOS regression harness, which compares it
+    // element-for-element against the independent CPU FP64 reference. Empty
+    // when the run fails before its first decode forward.
+    std::vector<float> final_logits;
 };
 
 // Full greedy multi-token generation over the frozen 79-layer GLM-5.2 loop on

@@ -279,6 +279,30 @@ endif()
 
 add_test(NAME test_glm_inference COMMAND test_glm_inference)
 
+# ── TDD Cycle 10: GLM-5.2 full 79-layer SKWOS integration regression (unified
+#    arena: IndexShare K-V cache + Layer-78 MTP spaces in one contiguous block)
+#    Driving the complete execution loop on real weights with multi-turn
+#    prompts; asserts no memory leak / no index-boundary truncation, and that
+#    the final speculative Layer-78 MTP logits row converges element-for-element
+#    against the independent CPU FP64 reference (RED/GREEN).
+add_executable(test_glm_full_compute test_glm_full_compute.cpp)
+target_link_libraries(test_glm_full_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_full_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_full_compute>"
+    )
+    add_custom_command(TARGET test_glm_full_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_full_compute>"
+    )
+endif()
+
+add_test(NAME test_glm_full_compute COMMAND test_glm_full_compute)
+
 # ── Тест TaskMosaic CE сетевого слоя (lsxnetwork) ───────────────────────────
 add_executable(test_mosaic_network test_mosaic_network.cpp)
 target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithMain)
