@@ -347,17 +347,17 @@ add_test(NAME test_integrated_pipeline COMMAND test_integrated_pipeline)
 # lsxcommon_cu's) instead of linking lsxcommon at compile time. lsxcommon is
 # linked only at the final executable's link stage below, where its actual
 # symbols (not its CUDA compile options) are needed.
-add_library(test_inference_kernels_cu OBJECT test_inference_kernels.cu)
-set_target_properties(test_inference_kernels_cu PROPERTIES
+add_library(test_deepseek_inference_kernels_cu OBJECT test_deepseek_inference_kernels.cu)
+set_target_properties(test_deepseek_inference_kernels_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES OFF
 )
-target_compile_options(test_inference_kernels_cu PRIVATE
+target_compile_options(test_deepseek_inference_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
     --generate-code=arch=compute_120,code=sm_120;
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
-target_include_directories(test_inference_kernels_cu PRIVATE
+target_include_directories(test_deepseek_inference_kernels_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
@@ -367,29 +367,29 @@ target_include_directories(test_inference_kernels_cu PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
 )
-target_compile_definitions(test_inference_kernels_cu PRIVATE
+target_compile_definitions(test_deepseek_inference_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
     CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
     LOGESTIX_HAS_CUDA
 )
-target_link_libraries(test_inference_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_deepseek_inference_kernels_cu PRIVATE Catch2::Catch2WithMain)
 
-add_executable(test_inference_kernels)
-set_target_properties(test_inference_kernels PROPERTIES LINKER_LANGUAGE CXX)
-target_link_libraries(test_inference_kernels PRIVATE
-    test_inference_kernels_cu lsxcommon Catch2::Catch2WithMain)
+add_executable(test_deepseek_inference_kernels)
+set_target_properties(test_deepseek_inference_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_inference_kernels PRIVATE
+    test_deepseek_inference_kernels_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
-    add_custom_command(TARGET test_inference_kernels POST_BUILD
+    add_custom_command(TARGET test_deepseek_inference_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_inference_kernels>"
+            "$<TARGET_FILE_DIR:test_deepseek_inference_kernels>"
     )
-    add_custom_command(TARGET test_inference_kernels POST_BUILD
+    add_custom_command(TARGET test_deepseek_inference_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_inference_kernels>"
+            "$<TARGET_FILE_DIR:test_deepseek_inference_kernels>"
     )
 endif()
 
-add_test(NAME test_inference_kernels COMMAND test_inference_kernels)
+add_test(NAME test_deepseek_inference_kernels COMMAND test_deepseek_inference_kernels)

@@ -50,7 +50,7 @@ static bool cuda_sync_check() {
 // E2M1 format: sign(1) + exp(2, bias=1) + mant(1)
 // Values: 0, ±0.5, ±1.0, ±1.5, ±2.0, ±3.0, ±4.0, ±6.0
 
-TEST_CASE("E2M1 decode table has correct values", "[inference]") {
+TEST_CASE("E2M1 decode table has correct values", "[deepseek][inference]") {
     // Expected E2M1 values indexed by nibble 0-15
     const float expected[16] = {
          0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
@@ -87,7 +87,7 @@ __global__ void test_e8m0_kernel_single(const uint8_t* in, float* out) {
     out[0] = test_e8m0_to_float(b);
 }
 
-TEST_CASE("E8M0 scale conversion", "[inference]") {
+TEST_CASE("E8M0 scale conversion", "[deepseek][inference]") {
     // Test on device
     struct TestCase { uint8_t input; float expected; };
     TestCase cases[] = {
@@ -148,7 +148,7 @@ __global__ void test_fp8_e4m3_roundtrip_kernel(const float* in, float* out, int 
     }
 }
 
-TEST_CASE("FP8_E4M3 quantization clamps and rounds", "[inference]") {
+TEST_CASE("FP8_E4M3 quantization clamps and rounds", "[deepseek][inference]") {
     float h_in[] = {0.0f, 1.0f, -1.0f, 448.0f, -448.0f, 500.0f, -500.0f,
                    0.5f, 1.5f, 2.0f, 3.0f, 6.0f, 0.015625f};
     int n = sizeof(h_in) / sizeof(float);
@@ -189,7 +189,7 @@ __global__ void test_clamp_kernel(const float* in, __half* out, int n) {
     out[i] = __float2half(v);
 }
 
-TEST_CASE("clamp_f32_to_fp16 prevents overflow", "[inference]") {
+TEST_CASE("clamp_f32_to_fp16 prevents overflow", "[deepseek][inference]") {
     float h_in[] = {0.0f, 1.0f, -1.0f, 65504.0f, -65504.0f,
                     100000.0f, -100000.0f, 1e30f, -1e30f, 42.5f};
     int n = sizeof(h_in) / sizeof(float);
@@ -238,7 +238,7 @@ __global__ void test_ue8m0_kernel(const float* amax_in, float* scale_out, int n)
     scale_out[i] = test_ue8m0_scale(amax_in[i]);
 }
 
-TEST_CASE("ue8m0 scale is power of 2 and >= linear scale", "[inference]") {
+TEST_CASE("ue8m0 scale is power of 2 and >= linear scale", "[deepseek][inference]") {
     float h_amax[] = {448.0f, 224.0f, 100.0f, 1.0f, 0.001f, 0.0f};
     int n = sizeof(h_amax) / sizeof(float);
     float *d_in = nullptr, *d_out = nullptr;
@@ -284,7 +284,7 @@ __global__ void test_rmsnorm_kernel(const float* input, const float* gamma,
         output[i] = input[i] * inv * gamma[i];
 }
 
-TEST_CASE("RMSNorm produces unit-rms output", "[inference]") {
+TEST_CASE("RMSNorm produces unit-rms output", "[deepseek][inference]") {
     const int n = 256;
     std::vector<float> h_in(n), h_gamma(n, 1.0f), h_out(n, 0.0f);
     
@@ -335,7 +335,7 @@ __global__ void test_swiglu_clamp_kernel(
     out[i] = sig * g * u;
 }
 
-TEST_CASE("SwiGLU clamps gate and up to limit", "[inference]") {
+TEST_CASE("SwiGLU clamps gate and up to limit", "[deepseek][inference]") {
     const int n = 8;
     __half h_gate[] = {__float2half(5.0f), __float2half(20.0f), __float2half(-20.0f),
                        __float2half(0.5f), __float2half(10.0f), __float2half(-5.0f),
@@ -413,7 +413,7 @@ __global__ void test_compressor_kernel(
     }
 }
 
-TEST_CASE("Compressor produces weighted average", "[inference]") {
+TEST_CASE("Compressor produces weighted average", "[deepseek][inference]") {
     const int ratio = 4;
     const int coff = 1;
     const int head_dim = 8;
@@ -507,7 +507,7 @@ uint8_t ExtractNibble(const std::vector<uint8_t> &packed, int64_t i)
 } // namespace
 
 TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p2 regression)",
-          "[nvfp4][regression]")
+          "[deepseek][nvfp4][regression]")
 {
     // 3 blocks of 16 F32 elements. Block 0 holds the tensor's global max
     // (6.0). Block 1's local max (4.0) has a NON-power-of-2 ratio to the
@@ -557,7 +557,7 @@ TEST_CASE("NVFP4 offline quantize preserves per-block magnitude (float_to_e4m3_p
 }
 
 TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",
-          "[nvfp4][regression]")
+          "[deepseek][nvfp4][regression]")
 {
     // One full 16-element block, produced by the real offline converter
     // path, then decoded by the *documented* decoder for this format
@@ -610,7 +610,7 @@ TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",
 
 TEST_CASE("dequant_fp4_e8m0 (routed-expert decoder) does NOT decode NVFP4-format data — "
           "documents the format-mismatch bug in inference_moe.cu",
-          "[nvfp4][regression]")
+          "[deepseek][nvfp4][regression]")
 {
     // Same on-disk NVFP4 bytes as the previous test, but run through the
     // decoder that inference_moe.cu's run_routed_expert_ffn actually calls
@@ -682,7 +682,7 @@ TEST_CASE("dequant_fp4_e8m0 (routed-expert decoder) does NOT decode NVFP4-format
 // scaled down by ~act_scale (≈2^-9), silently zeroing routed experts — the
 // model then ran attention + shared experts only and answered incorrectly.
 TEST_CASE("routed-expert W2 projection is a pure FP32 matmul (no act_scale fuse)",
-          "[inference][regression]")
+          "[deepseek][inference][regression]")
 {
     constexpr int kHid = 4096;      // kHiddenDim
     constexpr int kInt = 2048;      // kIntermediateDim
