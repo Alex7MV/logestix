@@ -81,7 +81,8 @@ ctest --preset linux-debug      # Ubuntu 26.04
 - `apps/taskmosaic/` — task orchestrator (placeholder)
 - `apps/lsxcli/` — CLI client (`--model`)
 - `tests/test_core.cpp` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
-- `tests/test_loader.cpp` — loader round-trip and E4M3 encoding tests
+- `tests/test_deepseek_loader.cpp` — loader round-trip and E4M3 encoding tests
+- `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5

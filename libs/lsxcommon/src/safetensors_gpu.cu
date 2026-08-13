@@ -213,7 +213,7 @@ int64_t dtype_byte_size(int dc)
 // which systematically underestimated the largest weight in every
 // 16-element NVFP4 block by up to ~50% for any block whose local max wasn't
 // an exact power-of-2 fraction of the tensor's global max — see
-// tests/test_inference_kernels.cu's "NVFP4 offline quantize preserves
+// tests/test_deepseek_inference_kernels.cu's "NVFP4 offline quantize preserves
 // per-block magnitude" regression test.
 
 } // anonymous namespace

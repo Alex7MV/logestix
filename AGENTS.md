@@ -112,7 +112,8 @@ ctest --preset windows-debug    # Windows 11
 - `apps/lsxcli/` — CLI client (`--model`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
 - `tests/test_core.cpp` — интеграционные тесты; 11 test cases, ~100 assertions
-- `tests/test_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (69 assertions)
+- `tests/test_deepseek_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (64 assertions)
+- `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests (12 test cases, 4470 assertions)
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)

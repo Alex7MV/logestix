@@ -1,4 +1,4 @@
-// test_inference_kernels.cpp — Unit tests for CUDA inference kernels
+// test_deepseek_inference_kernels.cu — Unit tests for DeepSeek CUDA inference kernels
 // Tests: E2M1 dequant, E8M0 scale conversion, act_quant block scaling,
 //        KV act_quant, RMSNorm, clamp_f32_to_fp16
 
