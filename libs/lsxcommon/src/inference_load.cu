@@ -1,6 +1,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/path_registry.h"
 #include "inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -171,6 +172,10 @@ ModelTopology load_topology(const std::string &model_path)
 {
     ModelTopology topo;
     auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    const auto vault = std::filesystem::path(
+        lsxcommon::lsx_model_metadata("manifests/model.index.json"));
+    if (!std::filesystem::exists(ipath) && std::filesystem::exists(vault))
+        ipath = vault;
     std::ifstream f(ipath);
     if (!f) {
         topo.error_msg = "Cannot open " + ipath.string();
@@ -206,6 +211,10 @@ std::string detect_model_type(const std::string &model_path)
 {
     std::string result;
     auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    const auto vault = std::filesystem::path(
+        lsxcommon::lsx_model_metadata("manifests/model.index.json"));
+    if (!std::filesystem::exists(ipath) && std::filesystem::exists(vault))
+        ipath = vault;
     std::ifstream f(ipath);
     if (!f) return result;
     std::string json((std::istreambuf_iterator<char>(f)),
