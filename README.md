@@ -15,10 +15,10 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 ## Prerequisites
 
 - CMake 3.25+ (for CMakePresets)
-- C++20 / C11 compiler (GCC 13+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
+- C++20 / C23 compiler (GCC 15+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
 - Ninja build system (required on Ubuntu; optional on Windows)
 - Git
-- NVIDIA CUDA Toolkit 13.3+ (optional, for GPU support)
+- NVIDIA CUDA Toolkit 13.2+ (optional, for GPU support)
 
 ## Clone with submodules
 
@@ -51,6 +51,14 @@ cmake --build --preset linux-debug
 
 Binaries land in `build/linux-debug/bin/`.
 
+Linux release, tuned for AMD EPYC 9V74 (Zen 4), with LTO:
+
+```bash
+cmake --preset linux-release-znver4
+cmake --build --preset linux-release-znver4   # Ninja -j160
+ctest --preset linux-release-znver4
+```
+
 `arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD` on Windows.
 
 ## Test
@@ -65,7 +73,16 @@ ctest --preset windows-debug    # Windows 11
 ctest --preset linux-debug      # Ubuntu 26.04
 ```
 
-29 test cases across 6 test executables (~200 assertions).
+22 test executables (~100 test cases, ~2.6M assertions). GLM-5.2 and DeepSeek
+suites are autonomous and run independently:
+
+```bash
+ctest -R glm        # GLM-5.2 suite only (11 executables)
+ctest -R deepseek   # DeepSeek suite only (2 executables)
+```
+
+Real-model tests SKIP gracefully when the checkpoint is absent
+(`LSX_TEST_GLM_MODEL_PATH` for GLM-5.2, `LSX_TEST_MODEL_PATH` for DeepSeek).
 
 ## Structure
 
@@ -75,14 +92,32 @@ ctest --preset linux-debug      # Ubuntu 26.04
   - `schema` — `ExpertSchema` (9 fields: weights, E4M3 per-block scales, float32 global scales), `PackedExpert`, `ExpertData` structs
   - `converter` — GPU-only NVFP4 quantization (per-block E4M3 + global scale via CUDA), safetensors parsing, Arrow IPC serialization
   - `loader` — Arrow file loading, CUDA pinned memory registration, E4M3 scale decoding
+  - `tokenizer` / `pretokenizer` / `unicode` — BPE tokenizer, word-level pre-tokenization, Unicode classification
+  - `tokenizer_convert` — tokenizer Arrow files (string `"a b"` and array `["a","b"]` merges, byte_to_token_id, bos/eos/pad)
   - `safetensors_gpu` — GPU-accelerated tensor quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`)
-- `apps/lsxforge/` — data preprocessing utility (placeholder)
-- `apps/taskmosaic/` — task orchestrator (placeholder)
-- `apps/lsxcli/` — CLI client (`--model`)
-- `tests/test_core.cpp` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
-- `tests/test_deepseek_loader.cpp` — loader round-trip and E4M3 encoding tests
-- `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests
+  - `glm_convert` — GLM-5.2 classifier, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` format)
+  - `glm_inference_load` — host GLM loader: `LoadGlmPinnedWeights` (BF16→FP16 upload), `GlmLayerWeights`/`GlmPinnedWeights`
+  - `glm_v5_model` — `GlmV5Model` (IModel, registry `glm-5.2`); 79-layer Infer (dense 0-2 + IndexShare attention + MoE router + NVFP4 experts 3-77 + MTP 78)
+  - `deepseek_v4_flash_model` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
+  - `model_factory` / `model_registry` — `LsxModelFactory` + IModel registry
+  - `models/lsx_orchestrator` — TaskMosaic orchestrator: lock-free SPSC dispatch (GLM-5.2 / DeepSeek / unknown)
+  - `inference_*.cu` — DeepSeek-V4-Flash CUDA kernels (load, norm, moe, head, attn, csa, pipeline)
+  - `shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
+  - `glm_inference.cu` — GLM-5.2 CUDA kernels (router, IndexShare attention, NVFP4 expert decode)
+  - `testmodel_gpu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark
+- `libs/lsxnetwork/` — zero-alloc async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`, `--testprompt`, `--selfcheck`)
+  - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
+- `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
+- `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)
+- `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
+- `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
+  - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
+  - `test_deepseek_loader` — loader round-trip and E4M3 encoding tests
+  - `test_deepseek_inference_kernels` — DeepSeek CUDA inference kernel unit tests
+  - `test_glm_*` — GLM-5.2 converter/loader/model/compute/inference/full-loop tests
+  - `test_mosaic_network` — lsxnetwork (FrameQueue SPSC, zero-copy)
+  - `test_integrated_pipeline` — TaskMosaic orchestrator (GLM + DeepSeek burst)
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5

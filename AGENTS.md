@@ -97,23 +97,37 @@ ctest --preset windows-debug    # Windows 11
   - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
   - `libs/lsxcommon/src/glm_convert.cpp` + `include/lsxcommon/glm_convert.h` — GLM-5.2 классификатор, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` формат)
   - `libs/lsxcommon/src/glm_inference_load.cpp` + `include/lsxcommon/glm_inference_load.h` — host-only GLM loader: `LoadGlmPinnedWeights` (BF16→FP16 upload, router bias host pinned, indexer bias device), `GlmLayerWeights`/`GlmPinnedWeights`
-  - `libs/lsxcommon/src/glm_v5_model.cpp` + `src/glm_v5_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer/SelfCheck stub "not implemented"
+  - `libs/lsxcommon/src/glm_v5_model.cpp` + `src/glm_v5_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer: полный 79-слойный цикл (dense 0-2, IndexShare attention + MoE router + NVFP4 expert stacks 3-77, MTP epilogue layer 78); SelfCheck stub "not implemented"
+  - `libs/lsxcommon/src/glm_inference.cu` — GLM-5.2 CUDA-ядра (router, IndexShare attention, NVFP4 expert decode/SwiGLU)
+  - `libs/lsxcommon/src/glm_device_math.h` — device-математика, бит-точная репликация glibc-функций для GLM-5.2
   - `libs/lsxcommon/src/tokenizer_convert.cpp` — tokenizer arrows; merges в форматах string `"a b"` И array `["a","b"]` (GLM-5.2), byte_to_token_id, bos/eos/pad
+  - `libs/lsxcommon/src/tokenizer.cpp` + `pretokenizer.cpp` + `unicode.cpp` — BPE-токенизатор, word-level претокенизация, Unicode-классификация
+  - `libs/lsxcommon/src/deepseek_v4_flash_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
+  - `libs/lsxcommon/src/model_factory.cpp` + `model_registry.cpp` + `include/lsxcommon/model_factory.h` — `LsxModelFactory` + IModel registry
+  - `libs/lsxcommon/src/models/lsx_orchestrator.cpp` + `include/lsxcommon/lsx_orchestrator.h` — TaskMosaic оркестратор: lock-free SPSC dispatch GLM-5.2 / DeepSeek / unknown
+  - `libs/lsxcommon/src/inference_*.cu` + `inference_load.cuh` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
+  - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode-таблицы (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
-  - `libs/lsxcommon/src/testmodel_gpu.cu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging)
-  - `libs/lsxcommon/include/lsxcommon/testmodel_gpu.h` — `lsxcommon::gpu::RunTestModel()`, TestModelResult
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`)
+  - `libs/lsxcommon/src/testmodel_gpu.cu` + `include/lsxcommon/testmodel_gpu.h` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunTestModel()`, TestModelResult
+- `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`, `--testprompt`, `--selfcheck`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
-- `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`)
+- `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`), `--tokenizer`, repack-флаги
   - `apps/lsxforge/tests/` — 1 test case, 1 assertion
-- `apps/taskmosaic/` — task orchestrator (placeholder)
+- `apps/taskmosaic/` — task orchestrator (CLI-обёртка над `lsxcommon::LsxOrchestrator`)
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
-- `apps/lsxcli/` — CLI client (`--model`)
+- `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
-- `tests/test_core.cpp` — интеграционные тесты; 11 test cases, ~100 assertions
-- `tests/test_deepseek_loader.cpp` — 3 test cases — round-trip, empty fields, E4M3 encoding (64 assertions)
-- `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests (12 test cases, 4470 assertions)
+- `tests/` — Catch2 test suite; GLM и DeepSeek тесты автономны и запускаются по отдельности (`ctest -R glm` / `ctest -R deepseek`)
+  - `tests/test_core.cpp` — интеграционные тесты зависимостей (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 11 test cases, 101 assertions
+  - `tests/test_deepseek_loader.cpp` — 3 test cases, 64 assertions (round-trip, empty fields, E4M3 encoding)
+  - `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests; 12 test cases, 4470 assertions (E2M1/E8M0, act_quant, RMSNorm, SwiGLU, CSA Compressor, routed-expert FFN, NVFP4 codec)
+  - `tests/test_model_factory.cpp` — LsxModelFactory/registry; 5 test cases, 4 assertions (real-model tests SKIP без модели)
+  - `tests/test_tokenizer.cpp` — токенизатор (unicode, schema, arrow-конвертация, pre-tokenizer, encode/decode); 14 test cases, 236 assertions
+  - `tests/test_glm_*.cpp` — GLM-5.2 suite (11 executables): convert, loader, model, compute, dense_compute, moe_router, experts, moe_compute, attention, inference, full_compute (~541k assertions, real-model tests SKIP без GLM)
+  - `tests/test_mosaic_network.cpp` — lsxnetwork (FrameQueue SPSC, zero-copy); 8 test cases, ~2M assertions
+  - `tests/test_integrated_pipeline.cpp` — TaskMosaic оркестратор (GLM + DeepSeek burst); 4 test cases, 8026 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -121,15 +135,16 @@ ctest --preset windows-debug    # Windows 11
 
 ## CMake Key Points
 
-- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файлы вынесены в отдельную OBJECT библиотеку `lsxcommon_cu` (линкуется в `lsxcommon` PUBLIC) — это изолирует NVCC от MSVC-флагов
-- `lsxcommon_cu` линкуется с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
+- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
+- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + testmodel) и `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
+- `lsxcommon_cu`/`lsxcommon_glm_cu` линкуются с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
   Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
   а не через жёсткие пути `C:/Program Files/...
+- `lsxnetwork` — STATIC library (`libs/lsxnetwork/CMakeLists.txt`); simdjson, libzmq-static и Threads — PUBLIC (STATIC-библиотека ре-экспортирует link-зависимости потребителям); spdlog — PRIVATE
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
 - Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
-- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all 5 test targets
+- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all test targets (кроме `test_mosaic_network`)
 - **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
 - **CMAKE_POLICY_VERSION_MINIMUM**: задаётся через `CMakePresets.json` (`cacheVariables`), ручная установка env-переменной не требуется. Arrow's xsimd требует значения 3.5.
 - **GCC/Clang Linux flags**: НЕ глобальные. Тюнинг под EPYC 9V74 (Zen 4) живёт в
