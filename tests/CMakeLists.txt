@@ -393,3 +393,55 @@ if(WIN32)
 endif()
 
 add_test(NAME test_deepseek_inference_kernels COMMAND test_deepseek_inference_kernels)
+
+# test_deepseek_moe — MoE orchestration tests (route_token, shared FFN, routed
+# experts, layer mix). Same OBJECT-lib pattern as the kernel test above: the
+# .cu must not inherit lsxcommon's C++ compile flags, so it compiles standalone
+# and links against lsxcommon only at the executable's link stage.
+add_library(test_deepseek_moe_cu OBJECT test_deepseek_moe.cu)
+set_target_properties(test_deepseek_moe_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe)
+set_target_properties(test_deepseek_moe PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe PRIVATE
+    test_deepseek_moe_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe>"
+    )
+    add_custom_command(TARGET test_deepseek_moe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe COMMAND test_deepseek_moe)
