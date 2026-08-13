@@ -154,6 +154,93 @@ cudaError_t RunGlmExpertsStack(
     __half *d_out, __half *d_scratch,
     GlmRoutedSlot *h_routing_staging = nullptr);
 
+// ── TDD Cycle 9: MoE router + NVFP4 expert stacks (layers 3-77) ─────────────
+struct GlmExpertTables;  // fwd decl (defined in the Cycle-6 section below)
+
+// Single contiguous VRAM arena that holds every activation workspace of the
+// MoE MLP forward for layers 3-77 — including one virtual activation slice per
+// routed expert (per token row) — inside ONE cudaMalloc allocation plus ONE
+// pinned host routing-staging buffer. The inference loop allocates the arena
+// once and drives all 75 layers through it, so mid-flight runtime heap
+// fragmentation is structurally outlawed.
+struct GlmMoEArena {
+    int seq       = 0;
+    int hidden    = 0;
+    int n_experts = 0;
+    size_t      bytes     = 0;   // total bytes of the single device allocation
+    void        *d_base    = nullptr; // single contiguous device allocation
+    __half      *d_normed  = nullptr; // [seq, hidden]            RMSNorm out
+    float       *d_logits  = nullptr; // [seq, kGlmNumRouted]     router logits
+    GlmRoutedSlot *d_routing = nullptr; // [seq, kGlmMoETopK]     routing grid
+    __half      *d_slices  = nullptr; // [seq][n_experts][hidden] virtual expert slices
+    __half      *d_moe     = nullptr; // [seq, hidden]            Σ coeff·slice
+    __half      *d_scratch = nullptr; // expert dequant/inter/gate workspace
+    float       *d_gate_bias = nullptr; // [kGlmNumRouted] router-bias staging
+    GlmRoutedSlot *h_routing_staging = nullptr; // pinned host lookup grid
+
+    // Allocates the whole arena with a single cudaMalloc (device) + a single
+    // cudaMallocHost (staging). Re-allocation without Free() is forbidden: the
+    // caller must Free() before reusing with a larger seq.
+    cudaError_t Allocate(int seq_, int hidden_, int n_experts_);
+    void Free();
+};
+
+// Per-token virtual-slice expert writer for layers 3-77. Drives the routing
+// grid on <stream>: for every occupied (token, expert) slot that selects an
+// active NVFP4 block it decodes w1/w3, evaluates the w2( silu(w1·x) * w3·x )
+// projection and writes the per-expert contribution into the (token, expert)
+// virtual activation slice; inactive/foreign slots contribute nothing
+// (deterministic zero). A final kernel folds the co-scaled selected slices
+// into `d_moe`, accumulating
+//
+//   moe[t][h] = Σ_r coeff_r · slices[(t·n_experts + eid_r)][h]
+//
+// entirely on the caller's async stream (the only synchronization is the
+// single localized staging barrier that pulls the tiny routing grid to host,
+// exactly like RunGlmExpertsStack).
+//
+//   d_routing:  [seq, kGlmMoETopK] routing grid from RunGlmMoERouter.
+//   d_act:      [seq, hidden] RMS-normed activations (router output).
+//   h_experts:  [n_experts] host descriptor registry; inactive blocks skip.
+//   d_slices:   [seq][n_experts][hidden] contiguous virtual activation grid.
+//   d_out:      [seq, hidden] FP16 accumulated result (NOT residual-added).
+//   d_scratch:  >= kGlmExpertMatEl + hidden + 2*intermediate halves.
+//   h_routing_staging: pinned host buffer of >= seq*kGlmMoETopK slots (may be
+//                nullptr to have it allocated internally, but the arena owns
+//                one that a caller reuses to avoid per-call MallocHost pairs).
+cudaError_t RunGlmMoESlices(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmRoutedSlot *d_routing, int seq,
+    const __half *d_act,
+    const GlmExpertDeviceBlock *h_experts, int n_experts,
+    __half *d_slices, __half *d_out, __half *d_scratch,
+    GlmRoutedSlot *h_routing_staging);
+
+// MoE MLP stack for the heterogeneous layers [first_layer, last_layer) of
+// GLM-5.2 (the MoE range is 3..77): per layer,
+//
+//   RunGlmMoERouter   (post-attn RMSNorm -> top_k=8 routing grid)
+//   RunGlmMoESlices   (NVFP4 expert stack -> per-expert virtual slices -> d_moe)
+//   residual          out = d_moe + layer input (ping-pong)
+//
+// All work runs on the caller's explicit async stream through the caller-owned
+// GlmMoEArena (single contiguous allocation); no cudaDeviceSynchronize is ever
+// issued. hidden/intermediate geometry is locked to kGlmHidden/kGlmMoeInter.
+// A layer missing its router gate/post-attn norm degrades to identity
+// (activations pass through unchanged), mirroring the heterogeneous grid.
+//
+//   d_act:    [seq, hidden] FP16 input  (output of the dense stack layers 0-2)
+//   d_alt:    [seq, hidden] FP16 ping-pong scratch (distinct from d_act)
+//   d_result: [seq, hidden] FP16 final layer output (distinct from d_act)
+//   arena:    must be Allocate()'d with n_experts >= kGlmNumRouted, hidden
+//             == kGlmHidden, seq == the block length.
+cudaError_t RunGlmMoEStack(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    int first_layer, int last_layer, int seq,
+    __half *d_act, __half *d_alt, __half *d_result,
+    GlmMoEArena &arena);
+
 // ── TDD Cycle 6: full 79-layer generation pass ─────────────────────────────
 // Routed-expert registry for the generation pass: a per-layer table of
 // NVFP4-packed GlmExpertDeviceBlock descriptors resident in persistent VRAM.

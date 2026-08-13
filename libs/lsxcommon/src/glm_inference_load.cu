@@ -614,6 +614,320 @@ cudaError_t RunGlmExpertsStack(
     return e;
 }
 
+// ── Cycle 9: MoE virtual-slice kernels (layers 3-77) ───────────────────────
+// out[i] = src[i]: identity pass-through for a MoE layer that carries no
+// router weights (heterogeneous grid fallback).
+__global__ void GlmMoECopyKernel(__half *__restrict__ dst,
+                                 const __half *__restrict__ src, int64_t n)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (i < n) dst[i] = src[i];
+}
+
+// out[i] = fp16(moe[i] + base[i]): MoE MLP residual. base is the layer input
+// (pre-norm activations), moe the expert stack result — the MoE branch always
+// residual-adds the un-normed layer input, mirroring the dense stack.
+__global__ void GlmMoEResidualKernel(__half *__restrict__ out,
+                                     const __half *__restrict__ moe,
+                                     const __half *__restrict__ base,
+                                     int64_t n)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (i < n)
+        out[i] = __float2half(__half2float(moe[i]) + __half2float(base[i]));
+}
+
+// Folds the per-(token, expert) virtual activation slices into the token
+// output: out[t][h] = H(Σ_r routing[t][r].coeff · slices[(t·n_experts +
+// routing[t][r].eid)·hidden + h]). Only the kGlmMoETopK selected slices are
+// read; a slot whose eid falls outside [0, n_experts) contributes nothing
+// (the slot writer already skipped it). FP32 accumulate, FP16 store.
+__global__ void GlmMoESliceAccumKernel(
+    const __half *__restrict__ slices,
+    const GlmRoutedSlot *__restrict__ routing,
+    __half *__restrict__ out, int seq, int n_experts, int hidden)
+{
+    const int64_t total = static_cast<int64_t>(seq) * hidden;
+    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                        threadIdx.x;
+    if (idx >= total) return;
+    const int t = static_cast<int>(idx / hidden);
+    const int h = static_cast<int>(idx - static_cast<int64_t>(t) * hidden);
+    const GlmRoutedSlot *row = routing + static_cast<size_t>(t) * kGlmMoETopK;
+    float acc = 0.0f;
+    for (int r = 0; r < kGlmMoETopK; ++r) {
+        const GlmRoutedSlot &rs = row[r];
+        if (rs.eid < 0 || rs.eid >= n_experts) continue;
+        const __half *slice =
+            slices + (static_cast<int64_t>(t) * n_experts + rs.eid) * hidden;
+        acc += rs.coeff * __half2float(slice[h]);
+    }
+    out[idx] = __float2half(acc);
+}
+
+// ── Cycle 9: MoE arena + virtual-slice stack (layers 3-77) ─────────────────
+cudaError_t GlmMoEArena::Allocate(int seq_, int hidden_, int n_experts_)
+{
+    Free();
+    constexpr int64_t kRouted = kGlmNumRouted;
+    if (seq_ <= 0 || hidden_ <= 0 || n_experts_ <= 0)
+        return cudaErrorInvalidValue;
+    const int64_t n_seq_r = static_cast<int64_t>(seq_) * kRouted;
+    const int64_t route_n = static_cast<int64_t>(seq_) * kGlmMoETopK;
+    const int64_t hid_n   = static_cast<int64_t>(seq_) * hidden_;
+    const int64_t slice_n = n_seq_r * hidden_;
+    const int64_t scratch_n = kGlmExpertMatEl + hidden_ +
+                              2 * static_cast<int64_t>(kGlmMoeIntermediate);
+
+    int64_t off = 0;
+    auto page = [&](int64_t bytes, int64_t align) -> int64_t {
+        off = (off + align - 1) / align * align;
+        const int64_t at = off;
+        off += bytes;
+        return at;
+    };
+    const int64_t o_norm    = page(hid_n * sizeof(__half), 16);
+    const int64_t o_logits  = page(n_seq_r * sizeof(float), 16);
+    const int64_t o_route   = page(route_n * sizeof(GlmRoutedSlot), 16);
+    const int64_t o_slices  = page(slice_n * sizeof(__half), 16);
+    const int64_t o_moe     = page(hid_n * sizeof(__half), 16);
+    const int64_t o_scratch = page(scratch_n * sizeof(__half), 16);
+    const int64_t o_bias    = page(kRouted * sizeof(float), 16);
+    const int64_t o_guard   = page(1024, 16);   // sentinel tail for overrun checks
+    bytes = static_cast<size_t>(off);
+
+    uint8_t *base = nullptr;
+    cudaError_t e = cudaMalloc(reinterpret_cast<void **>(&base), bytes);
+    if (e != cudaSuccess) {
+        bytes = 0;
+        return e;
+    }
+    d_base      = base;
+    d_normed    = reinterpret_cast<__half *>(base + o_norm);
+    d_logits    = reinterpret_cast<float *>(base + o_logits);
+    d_routing   = reinterpret_cast<GlmRoutedSlot *>(base + o_route);
+    d_slices    = reinterpret_cast<__half *>(base + o_slices);
+    d_moe       = reinterpret_cast<__half *>(base + o_moe);
+    d_scratch   = reinterpret_cast<__half *>(base + o_scratch);
+    d_gate_bias = reinterpret_cast<float *>(base + o_bias);
+
+    e = cudaMallocHost(&h_routing_staging,
+                       static_cast<size_t>(route_n) *
+                           sizeof(GlmRoutedSlot));
+    if (e != cudaSuccess) {
+        Free();
+        return e;
+    }
+    seq = seq_;
+    hidden = hidden_;
+    n_experts = n_experts_;
+    return cudaSuccess;
+}
+
+void GlmMoEArena::Free()
+{
+    if (h_routing_staging) cudaFreeHost(h_routing_staging);
+    if (d_base) cudaFree(d_base);
+    h_routing_staging = nullptr;
+    d_base = nullptr;
+    d_normed = nullptr; d_logits = nullptr; d_routing = nullptr;
+    d_slices = nullptr; d_moe = nullptr; d_scratch = nullptr;
+    d_gate_bias = nullptr;
+    seq = 0; hidden = 0; n_experts = 0; bytes = 0;
+}
+
+cudaError_t RunGlmMoESlices(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmRoutedSlot *d_routing, int seq,
+    const __half *d_act,
+    const GlmExpertDeviceBlock *h_experts, int n_experts,
+    __half *d_slices, __half *d_out, __half *d_scratch,
+    GlmRoutedSlot *h_routing_staging)
+{
+    constexpr int64_t kMatEl = kGlmExpertMatEl;
+    constexpr int64_t kExpectPacked = kMatEl / 2;
+    constexpr int64_t kExpectScale  = kMatEl / kGlmNvfp4Block;
+    constexpr int    kBlock  = 256;
+
+    if (!d_routing || !d_act || !h_experts || !d_slices || !d_out ||
+        !d_scratch || seq <= 0 || n_experts <= 0 || !cublas_h)
+        return cudaErrorInvalidValue;
+
+    const int slots = seq * kGlmMoETopK;
+    if (slots < 0) return cudaErrorInvalidValue;
+
+    const bool own_staging = (h_routing_staging == nullptr);
+    GlmRoutedSlot *h_routing = h_routing_staging;
+    cudaError_t e = cudaSuccess;
+    if (own_staging) {
+        e = cudaMallocHost(&h_routing,
+                           static_cast<size_t>(slots) * sizeof(GlmRoutedSlot));
+        if (e != cudaSuccess) return e;
+    }
+    e = cudaMemcpyAsync(h_routing, d_routing,
+                        static_cast<size_t>(slots) * sizeof(GlmRoutedSlot),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) {
+        if (own_staging) cudaFreeHost(h_routing);
+        return e;
+    }
+
+    // Scratch layout (halves): dequant w-deck / (reserved tmp) / inter / gate.
+    __half *d_deq   = d_scratch;                                // kMatEl
+    __half *d_inter = d_deq + kMatEl;                           // kGlmMoeIntermediate
+    __half *d_gate  = d_inter + kGlmMoeIntermediate;            // kGlmMoeIntermediate
+
+    const int64_t dequant_per_block =
+        static_cast<int64_t>(kGlmDequantThreads) * kGlmDequantPerThread;
+    const int deq_grid =
+        static_cast<int>((kMatEl + dequant_per_block - 1) / dequant_per_block);
+    const int inter_blocks = (kGlmMoeIntermediate + kBlock - 1) / kBlock;
+    const int hidden_blocks = (kGlmHidden + kBlock - 1) / kBlock;
+
+    // Zero the entire virtual-activation arena BEFORE stamping this layer's
+    // expert slices. An inactive/foreign selected expert leaves its slice at 0
+    // so the fold below contributes nothing — otherwise the arena would carry
+    // STALE slices from a previously active layer and re-apply them here,
+    // silently corrupting the identity residual of every inactive layer.
+    const int64_t slice_n =
+        static_cast<int64_t>(seq) * n_experts * kGlmHidden;
+    e = cudaMemsetAsync(d_slices, 0,
+                        static_cast<size_t>(slice_n) * sizeof(__half), stream);
+    if (e != cudaSuccess) return e;
+
+    for (int s = 0; s < slots; ++s) {
+        const GlmRoutedSlot &rs = h_routing[s];
+        if (rs.eid < 0 || rs.eid >= n_experts) continue;
+        const GlmExpertDeviceBlock &eb = h_experts[rs.eid];
+        if (!eb.d_w1_packed || !eb.d_w1_scales ||
+            !eb.d_w2_packed || !eb.d_w2_scales ||
+            !eb.d_w3_packed || !eb.d_w3_scales ||
+            eb.w1_packed_bytes != kExpectPacked ||
+            eb.w2_packed_bytes != kExpectPacked ||
+            eb.w3_packed_bytes != kExpectPacked ||
+            eb.w1_scale_bytes  != kExpectScale ||
+            eb.w2_scale_bytes  != kExpectScale ||
+            eb.w3_scale_bytes  != kExpectScale)
+            continue; // inactive / foreign format: deterministic zero contribution
+
+        const int t = s / kGlmMoETopK;
+        const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
+        __half *slice =
+            d_slices + (static_cast<size_t>(t) * n_experts + rs.eid) * kGlmHidden;
+
+        // inter = w1^T @ x
+        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+            eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+            d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+
+        // gate = w3^T @ x
+        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+            eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+            d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+
+        // swiglu: inter = silu(inter) * gate
+        GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
+            d_inter, d_gate, kGlmMoeIntermediate);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+
+        // down = w2^T @ swig, written DIRECTLY into the (t, eid) slice.
+        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+            eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+        GlmGemmFp64Kernel<<<hidden_blocks, kBlock, 0, stream>>>(
+            d_deq, d_inter, slice, kGlmHidden, kGlmMoeIntermediate, 1);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) break;
+    }
+
+    if (own_staging) cudaFreeHost(h_routing);
+    if (e != cudaSuccess) return e;
+
+    // Folds the co-scaled selected slices into d_out on the same async stream.
+    const int64_t out_n = static_cast<int64_t>(seq) * kGlmHidden;
+    GlmMoESliceAccumKernel<<<static_cast<int>((out_n + kBlock - 1) / kBlock),
+                             kBlock, 0, stream>>>(
+        d_slices, d_routing, d_out, seq, n_experts, kGlmHidden);
+    return cudaGetLastError();
+}
+
+cudaError_t RunGlmMoEStack(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    int first_layer, int last_layer, int seq,
+    __half *d_act, __half *d_alt, __half *d_result,
+    GlmMoEArena &arena)
+{
+    if (!cublas_h || !stream || seq <= 0 || first_layer < 0 ||
+        last_layer <= first_layer ||
+        pw.layers.size() < static_cast<size_t>(last_layer) ||
+        experts.tables.size() < static_cast<size_t>(last_layer) ||
+        !d_act || !d_alt || !d_result ||
+        arena.d_slices == nullptr || arena.seq < seq ||
+        arena.hidden != kGlmHidden || arena.n_experts < kGlmNumRouted)
+        return cudaErrorInvalidValue;
+
+    __half *cur = d_act;
+    const int out_blocks = static_cast<int>(
+        (static_cast<int64_t>(seq) * kGlmHidden + kGlmRmsBlock - 1) /
+        kGlmRmsBlock);
+    for (int l = first_layer; l < last_layer; ++l) {
+        const GlmLayerWeights &lw = pw.layers[l];
+        __half *nxt = (l == last_layer - 1)
+                          ? d_result
+                          : (cur == d_act ? d_alt : d_act);
+        cudaError_t e;
+        if (!lw.d_post_attn_norm || !lw.d_router_gate) {
+            // Heterogeneous grid: a layer without router weights is identity.
+            GlmMoECopyKernel<<<out_blocks, kGlmRmsBlock, 0, stream>>>(
+                nxt, cur, static_cast<int64_t>(seq) * kGlmHidden);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return e;
+            cur = nxt;
+            continue;
+        }
+        const float *d_bias = nullptr;
+        if (lw.h_gate_bias && lw.gate_bias_n == kGlmNumRouted) {
+            e = cudaMemcpyAsync(arena.d_gate_bias, lw.h_gate_bias,
+                                static_cast<size_t>(kGlmNumRouted) *
+                                    sizeof(float),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            d_bias = arena.d_gate_bias;
+        }
+        e = RunGlmMoERouter(cublas_h, stream, lw, seq, cur, d_bias,
+                            arena.d_normed, arena.d_logits, arena.d_routing);
+        if (e != cudaSuccess) return e;
+        e = RunGlmMoESlices(cublas_h, stream, arena.d_routing, seq,
+                            arena.d_normed, experts.tables[l].data(),
+                            arena.n_experts, arena.d_slices, arena.d_moe,
+                            arena.d_scratch, arena.h_routing_staging);
+        if (e != cudaSuccess) return e;
+        // residual: nxt = moe + cur  (cur = un-normed layer input)
+        GlmMoEResidualKernel<<<out_blocks, kGlmRmsBlock, 0, stream>>>(
+            nxt, arena.d_moe, cur, static_cast<int64_t>(seq) * kGlmHidden);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+        cur = nxt;
+    }
+    return cudaSuccess;
+}
+
 // ── Cycle 5: IndexShare attention pass (layers 3-77) ────────────────────────
 cudaError_t GlmIndexShareReset(GlmIndexShareState *d_state, cudaStream_t stream)
 {

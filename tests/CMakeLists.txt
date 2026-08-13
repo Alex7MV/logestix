@@ -218,6 +218,29 @@ endif()
 
 add_test(NAME test_glm_experts COMMAND test_glm_experts)
 
+# ── TDD Cycle 9: GLM-5.2 MoE router + NVFP4 expert stacks (layers 3-77) ───────
+# Прогоняет RunGlmMoEStack (слои 3-77) через одиночный contiguous MoE-арену
+# (256 виртуальных срезов активаций экспертов) по синтетической hash-фикстуре
+# E2M1/E4M3/E8M0 и сверяет поэлементно против независимого CPU FP64-референса
+# (RED/GREEN) + проверяет целостность указателей/границ аорены.
+add_executable(test_glm_moe_compute test_glm_moe_compute.cpp)
+target_link_libraries(test_glm_moe_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_compute>"
+    )
+    add_custom_command(TARGET test_glm_moe_compute POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_compute>"
+    )
+endif()
+
+add_test(NAME test_glm_moe_compute COMMAND test_glm_moe_compute)
+
 # ── Тест GLM-5.2 IndexShare attention (mod-4 refresh, слои 3-77) ────────────
 add_executable(test_glm_attention test_glm_attention.cpp)
 target_link_libraries(test_glm_attention PRIVATE lsxcommon Catch2::Catch2WithMain)
