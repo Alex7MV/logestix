@@ -45,7 +45,7 @@ static fs::path TempExpertPath()
     return fs::temp_directory_path() / "logestix_test_expert.arrow";
 }
 
-TEST_CASE("Loader round-trip with synthetic PackedExpert", "[loader]")
+TEST_CASE("Loader round-trip with synthetic PackedExpert", "[deepseek][loader]")
 {
     auto expert = MakeTestExpert();
 
@@ -86,7 +86,7 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[loader]")
     fs::remove(path);
 }
 
-TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[schema][e4m3]")
+TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[deepseek][schema][e4m3]")
 {
     SECTION("zero returns 0") {
         CHECK(lsxcommon::float_to_e4m3_p2(0.0f) == 0);
@@ -126,7 +126,7 @@ TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[schema][e4m3]")
     }
 }
 
-TEST_CASE("Load expert with empty w1 fields", "[loader][edge]")
+TEST_CASE("Load expert with empty w1 fields", "[deepseek][loader][edge]")
 {
     auto expert = MakeTestExpert();
     expert.w1_packed.clear();

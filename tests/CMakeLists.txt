@@ -18,24 +18,24 @@ endif()
 
 add_test(NAME test_core COMMAND test_core)
 
-# ── Тест round-trip загрузчика ──────────────────────────────────────────
-add_executable(test_loader test_loader.cpp)
-target_link_libraries(test_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+# ── Тест DeepSeek round-trip загрузчика ─────────────────────────────────
+add_executable(test_deepseek_loader test_deepseek_loader.cpp)
+target_link_libraries(test_deepseek_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
-    add_custom_command(TARGET test_loader POST_BUILD
+    add_custom_command(TARGET test_deepseek_loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_loader>"
+            "$<TARGET_FILE_DIR:test_deepseek_loader>"
     )
-    add_custom_command(TARGET test_loader POST_BUILD
+    add_custom_command(TARGET test_deepseek_loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_loader>"
+            "$<TARGET_FILE_DIR:test_deepseek_loader>"
     )
 endif()
 
-add_test(NAME test_loader COMMAND test_loader)
+add_test(NAME test_deepseek_loader COMMAND test_deepseek_loader)
 
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
