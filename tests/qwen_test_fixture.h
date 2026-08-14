@@ -178,10 +178,10 @@ inline std::vector<FakeTensor> BuildSyntheticQwenModel()
 
         if (linear) {
             auto la = lp + "linear_attn.";
-            t.push_back({la + "in_proj_qkv.weight", "BF16", {H, KD * 2 + VD}, MakeBf16(H * KD * 2 + VD * H)});
-            t.push_back({la + "in_proj_a.weight",   "BF16", {H, c.linear_num_value_heads}, MakeBf16(H * c.linear_num_value_heads)});
-            t.push_back({la + "in_proj_b.weight",   "BF16", {H, c.linear_num_value_heads}, MakeBf16(H * c.linear_num_value_heads)});
-            t.push_back({la + "in_proj_z.weight",   "BF16", {H, VD}, MakeBf16(H * VD)});
+            t.push_back({la + "in_proj_qkv.weight", "BF16", {KD * 2 + VD, H}, MakeBf16(H * KD * 2 + VD * H)});
+            t.push_back({la + "in_proj_a.weight",   "BF16", {c.linear_num_value_heads, H}, MakeBf16(H * c.linear_num_value_heads)});
+            t.push_back({la + "in_proj_b.weight",   "BF16", {c.linear_num_value_heads, H}, MakeBf16(H * c.linear_num_value_heads)});
+            t.push_back({la + "in_proj_z.weight",   "BF16", {VD, H}, MakeBf16(H * VD)});
             t.push_back({la + "out_proj.weight",    "BF16", {H, VD}, MakeBf16(H * VD)});
             t.push_back({la + "conv1d.weight",      "BF16", {CD, c.linear_conv_kernel_dim}, MakeBf16(CD * c.linear_conv_kernel_dim)});
             t.push_back({la + "norm.weight",        "BF16", {c.linear_value_head_dim}, MakeBf16(c.linear_value_head_dim)});
@@ -189,18 +189,18 @@ inline std::vector<FakeTensor> BuildSyntheticQwenModel()
             t.push_back({la + "dt_bias",            "F32",  {c.linear_num_value_heads}, MakeF32Values(c.linear_num_value_heads, [](int64_t i){ return (float)i * 0.1f; })});
         } else {
             auto fa = lp + "self_attn.";
-            t.push_back({fa + "q_proj.weight", "BF16", {H, QProjOut()}, MakeBf16(H * QProjOut())});
-            t.push_back({fa + "k_proj.weight", "BF16", {H, KVProjOut()}, MakeBf16(H * KVProjOut())});
-            t.push_back({fa + "v_proj.weight", "BF16", {H, KVProjOut()}, MakeBf16(H * KVProjOut())});
-            t.push_back({fa + "o_proj.weight", "BF16", {c.num_attention_heads * c.head_dim, H}, MakeBf16(c.num_attention_heads * c.head_dim * H)});
+            t.push_back({fa + "q_proj.weight", "BF16", {QProjOut(), H}, MakeBf16(H * QProjOut())});
+            t.push_back({fa + "k_proj.weight", "BF16", {KVProjOut(), H}, MakeBf16(H * KVProjOut())});
+            t.push_back({fa + "v_proj.weight", "BF16", {KVProjOut(), H}, MakeBf16(H * KVProjOut())});
+            t.push_back({fa + "o_proj.weight", "BF16", {H, c.num_attention_heads * c.head_dim}, MakeBf16(c.num_attention_heads * c.head_dim * H)});
             t.push_back({fa + "q_norm.weight", "BF16", {c.head_dim}, MakeBf16(c.head_dim)});
             t.push_back({fa + "k_norm.weight", "BF16", {c.head_dim}, MakeBf16(c.head_dim)});
         }
 
         // MLP (SwiGLU)
-        t.push_back({lp + "mlp.gate_proj.weight", "BF16", {H, I}, MakeBf16(H * I)});
-        t.push_back({lp + "mlp.up_proj.weight",   "BF16", {H, I}, MakeBf16(H * I)});
-        t.push_back({lp + "mlp.down_proj.weight", "BF16", {I, H}, MakeBf16(I * H)});
+        t.push_back({lp + "mlp.gate_proj.weight", "BF16", {I, H}, MakeBf16(H * I)});
+        t.push_back({lp + "mlp.up_proj.weight",   "BF16", {I, H}, MakeBf16(H * I)});
+        t.push_back({lp + "mlp.down_proj.weight", "BF16", {H, I}, MakeBf16(I * H)});
     }
 
     // MTP + Visual tensors — must be skipped by the converter.

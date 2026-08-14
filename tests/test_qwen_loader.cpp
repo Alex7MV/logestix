@@ -65,24 +65,29 @@ TEST_CASE("Qwen loader reads topology and sizes layers")
     SECTION("linear layer weights uploaded") {
         auto &l0 = pw.layers[0];
         CHECK(l0.loaded == true);
-        CHECK(l0.qkv.rows == 64);
-        // conv_dim = 2*key_dim + v_dim
+        // qkv: [KD*2+VD, H] = [64, 64]
+        CHECK(l0.qkv.rows == 64);   // KD*2+VD = 64
+        CHECK(l0.qkv.cols == 64);   // H = 64
         CHECK(l0.d_conv1d != nullptr);
         CHECK(l0.d_A_log != nullptr);
         CHECK(l0.d_dt_bias != nullptr);
         CHECK(l0.d_attn_norm != nullptr);
         CHECK(l0.norm_size == 64);
-        // MLP present
-        CHECK(l0.mlp_gate.rows == 64);
-        CHECK(l0.mlp_gate.cols == 128);
+        // MLP gate: [I, H] = [128, 64]
+        CHECK(l0.mlp_gate.rows == 128);
+        CHECK(l0.mlp_gate.cols == 64);
     }
     SECTION("full attention layer weights uploaded") {
         auto &l3 = pw.layers[3];
         CHECK(l3.loaded == true);
-        CHECK(l3.q.rows == 64);
+        // q_proj: [QProjOut(), H] = [128, 64]
+        CHECK(l3.q.rows == 128);
+        CHECK(l3.q.cols == 64);
         CHECK(l3.d_q_norm != nullptr);
         CHECK(l3.d_k_norm != nullptr);
-        CHECK(l3.mlp_gate.cols == 128);
+        // MLP gate: [I, H] = [128, 64] -> cols = 64
+        CHECK(l3.mlp_gate.rows == 128);
+        CHECK(l3.mlp_gate.cols == 64);
     }
     SECTION("bugs: duplicate-Free is safe") {
         cudaError_t last = cudaGetLastError();
