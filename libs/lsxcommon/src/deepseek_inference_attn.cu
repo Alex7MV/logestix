@@ -1,4 +1,4 @@
-// inference_attn.cu — Hyper-Connections + Multi-head Latent Attention (MLA)
+// deepseek_inference_attn.cu — Hyper-Connections + Multi-head Latent Attention (MLA)
 // for DeepSeek-V4-Flash.  Mirrors inference/model.py (Attention, Block, ParallelHead)
 // and inference/kernel.py (hc_split_sinkhorn, sparse_attn).
 //

@@ -17,7 +17,7 @@
 
 using Catch::Approx;
 
-// ── Routed-expert FFN (real production function from inference_moe.cu) ───────
+// ── Routed-expert FFN (real production function from deepseek_inference_moe.cu) ─
 // Exposed (non-static) so the W2 projection math is testable end-to-end.
 namespace lsxcommon::gpu {
 cudaError_t run_routed_expert_ffn(
@@ -609,11 +609,11 @@ TEST_CASE("dequant_shared_nvfp4 correctly decodes the on-disk NVFP4 format",
 }
 
 TEST_CASE("dequant_fp4_e8m0 (routed-expert decoder) does NOT decode NVFP4-format data — "
-          "documents the format-mismatch bug in inference_moe.cu",
+          "documents the format-mismatch bug in deepseek_inference_moe.cu",
           "[deepseek][nvfp4][regression]")
 {
     // Same on-disk NVFP4 bytes as the previous test, but run through the
-    // decoder that inference_moe.cu's run_routed_expert_ffn actually calls
+    // decoder that deepseek_inference_moe.cu's run_routed_expert_ffn actually calls
     // (dequant_fp4_e8m0 / _half): E8M0-per-32 scale, no global_scale term.
     // This characterizes why routed-expert FFN weights come out wrong at
     // runtime even after the offline codec is fixed — the runtime side is

@@ -5,7 +5,7 @@
 namespace lsxcommon {
 namespace gpu {
 
-// State management only — run_csa_attention is defined in inference_attn.cu
+// State management only — run_csa_attention is defined in deepseek_inference_attn.cu
 // where it has direct access to the MLA kernels (f8_gemm_1d, run_rmsnorm_attn,
 // per_head_rms_kernel, rope_apply_kernel, dequant_f8_to_half_kernel, mla_attn_kernel).
 

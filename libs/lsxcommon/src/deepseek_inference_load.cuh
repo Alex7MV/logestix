@@ -188,7 +188,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
                                  PinnedWeights &pw,
                                  cudaStream_t stream);
 
-// ── inference_attn.cu ────────────────────────────────────────────────────────
+// ── deepseek_inference_attn.cu ───────────────────────────────────────────────
 // Hyper-Connections (HC) — HC state stored in FP32 for numerical stability
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float *d_state, const float *d_fn,

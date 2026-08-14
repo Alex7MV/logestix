@@ -41,7 +41,7 @@ static __global__ void float_to_half_kernel(
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
-// float → half conversion kernel (extern — also defined in inference_moe.cu)
+// float → half conversion kernel (extern — also defined in deepseek_inference_moe.cu)
 __global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
                                           float* __restrict__ dst, int n)
 {
@@ -83,7 +83,7 @@ static __host__ cudaError_t run_rmsnorm(
     return cudaGetLastError();
 }
 
-// From inference_moe.cu
+// From deepseek_inference_moe.cu
 cudaError_t route_token(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -117,11 +117,11 @@ cudaError_t run_routed_experts(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes);
 
-// From inference_moe.cu — float→half kernel
+// From deepseek_inference_moe.cu — float→half kernel
 extern __global__ void float_to_half_kernel(const float* __restrict__ src,
                                              __half* __restrict__ dst, int n);
 
-// From inference_attn.cu
+// From deepseek_inference_attn.cu
 cudaError_t run_mla_attention(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const LayerWeights& lw,
@@ -134,7 +134,7 @@ cudaError_t run_mla_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
-// From inference_attn.cu
+// From deepseek_inference_attn.cu
 cudaError_t run_csa_attention(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const LayerWeights& lw,
@@ -148,7 +148,7 @@ cudaError_t run_csa_attention(
     float* d_dequant,
     float* d_norm_scratch, float* d_norm_gamma_scratch);
 
-// From inference_head.cu
+// From deepseek_inference_head.cu
 cudaError_t run_lm_head(
     cublasHandle_t cublas_h,
     cudaStream_t stream,
