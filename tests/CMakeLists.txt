@@ -75,6 +75,25 @@ endif()
 
 add_test(NAME test_qwen_loader COMMAND test_qwen_loader)
 
+# ── CUDA kernel tests (link lsxcommon; kernels live in lsxcommon_qwen_cu) ──
+foreach(qt test_qwen_norm test_qwen_rotary)
+    add_executable(${qt} ${qt}.cpp)
+    target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)

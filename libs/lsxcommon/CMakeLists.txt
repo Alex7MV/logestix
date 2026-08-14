@@ -123,7 +123,27 @@ target_link_libraries(lsxcommon_glm_cu
     arrow_shared
     arrow_cuda_shared
 )
-target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsx_tune)
+add_library(lsxcommon_qwen_cu OBJECT
+    src/qwen_inference.cu
+)
+set_target_properties(lsxcommon_qwen_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_qwen_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_qwen_cu
+    "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_CUBLAS_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+)
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsxcommon_qwen_cu lsx_tune)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
