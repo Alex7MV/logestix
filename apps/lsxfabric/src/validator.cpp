@@ -57,6 +57,65 @@ ModelInfo LoadModelIndex(const std::string &index_path)
     return info;
 }
 
+// ── DenseNvfp4Schema validation (for logestix-qwen / logestix-glm) ─────────
+
+ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path)
+{
+    ValidationResult r;
+
+    auto result = arrow::io::ReadableFile::Open(arrow_path);
+    if (!result.ok()) { r.add_error(); spdlog::error("  Cannot open {}", arrow_path); return r; }
+    auto reader = arrow::ipc::RecordBatchFileReader::Open(result->get());
+    if (!reader.ok()) { r.add_error(); spdlog::error("  Cannot read batch from {}", arrow_path); return r; }
+    auto batch = (*reader)->ReadRecordBatch(0);
+    if (!batch.ok()) { r.add_error(); spdlog::error("  Cannot read record from {}", arrow_path); return r; }
+
+    auto rb = *batch;
+    using D = lsxcommon::DenseNvfp4Schema;
+    const int expected_cols = 6;
+    if (rb->num_columns() != expected_cols) {
+        spdlog::error("  DenseNvfp4Schema: expected {} columns, got {}", expected_cols, rb->num_columns());
+        r.add_error(); return r;
+    }
+
+    int64_t n = rb->num_rows();
+    spdlog::info("  DenseNvfp4Schema: {} tensors in {}", n, arrow_path);
+
+    // Validate packed binary (E2M1 nibbles).
+    auto packed_arr = std::static_pointer_cast<arrow::LargeBinaryArray>(rb->column(D::kIdxPacked));
+    for (int64_t i = 0; i < n; ++i) {
+        auto view = packed_arr->GetView(i);
+        if (!ValidateNVFP4Data(reinterpret_cast<const uint8_t*>(view.data()),
+                               static_cast<int64_t>(view.size()))) {
+            spdlog::error("  Packed data invalid at row {}", i);
+            r.add_error();
+        }
+    }
+
+    // Validate scales (E4M3).
+    auto scales_arr = std::static_pointer_cast<arrow::ListArray>(rb->column(D::kIdxScales));
+    auto scales_u8 = std::static_pointer_cast<arrow::UInt8Array>(scales_arr->values());
+    const int32_t *offsets = scales_arr->raw_value_offsets();
+    for (int64_t i = 0; i < n; ++i) {
+        int64_t count = offsets[i + 1] - offsets[i];
+        if (!ValidateE4M3Scales(scales_u8->raw_values() + offsets[i], count)) {
+            spdlog::error("  E4M3 scales invalid at row {}", i);
+            r.add_error();
+        }
+    }
+
+    // Validate global scale.
+    auto gs_arr = std::static_pointer_cast<arrow::FloatArray>(rb->column(D::kIdxGlobalScale));
+    for (int64_t i = 0; i < n; ++i) {
+        if (!ValidateGlobalScale(gs_arr->Value(i))) {
+            spdlog::error("  Global scale invalid at row {}: {}", i, gs_arr->Value(i));
+            r.add_error();
+        }
+    }
+
+    return r;
+}
+
 // ── Pinned tensor validation ─────────────────────────────────────────────────
 
 ValidationResult ValidatePinnedTensors(const std::string &pinned_dir, int64_t expected_count)
@@ -218,13 +277,16 @@ ValidationResult RunValidator(const std::string &model_path)
     }
 
     auto info = LoadModelIndex(index_path.string());
-    if (info.format != "logestix-v1") {
+    bool is_qwen = (info.format == "logestix-qwen");
+    bool is_glm = (info.format == "logestix-glm");
+
+    if (info.format != "logestix-v1" && !is_qwen && !is_glm) {
         spdlog::warn("  Unknown format '{}', continuing anyway", info.format);
         r.add_warning();
     }
 
-    spdlog::info("Model: {}  layers={} experts/layer={} pinned={} experts={}",
-        info.model_name, info.num_layers, info.experts_per_layer,
+    spdlog::info("Model: {} format={} layers={} experts/layer={} pinned={} experts={}",
+        info.model_name, info.format, info.num_layers, info.experts_per_layer,
         info.total_pinned, info.total_experts);
 
     auto pinned_dir = fs::path(model_path) / "pinned";
@@ -238,20 +300,34 @@ ValidationResult RunValidator(const std::string &model_path)
     }
 
     int experts_checked = 0;
-    for (int layer = 0; layer < info.num_layers; ++layer) {
-        auto exp_path = fs::path(model_path)
-            / ("experts/layer_" + std::to_string(layer))
-            / "exp_000.arrow";
-        if (!fs::exists(exp_path)) {
-            spdlog::warn("  Expert not found: {}", exp_path.string());
-            r.add_warning();
-            continue;
+    if (is_qwen || is_glm) {
+        spdlog::info("  Format {}: validating DenseNvfp4Schema tensors", info.format);
+        auto pinned_dir = fs::path(model_path) / "pinned";
+        if (fs::exists(pinned_dir)) {
+            for (const auto &entry : fs::directory_iterator(pinned_dir)) {
+                auto fn = entry.path().filename().string();
+                if (fn.find("nvfp4") != std::string::npos && entry.path().extension() == ".arrow") {
+                    auto dr = ValidateDenseNvfp4Schema(entry.path().string());
+                    if (!dr.ok) { r.add_error(); r.warnings += dr.warnings; }
+                }
+            }
         }
-        spdlog::info("Validating expert layer={}...", layer);
-        auto er = ValidateExpert(exp_path.string());
-        if (!er.ok) r.add_error();
-        r.warnings += er.warnings;
-        ++experts_checked;
+    } else {
+        for (int layer = 0; layer < info.num_layers; ++layer) {
+            auto exp_path = fs::path(model_path)
+                / ("experts/layer_" + std::to_string(layer))
+                / "exp_000.arrow";
+            if (!fs::exists(exp_path)) {
+                spdlog::warn("  Expert not found: {}", exp_path.string());
+                r.add_warning();
+                continue;
+            }
+            spdlog::info("Validating expert layer={}...", layer);
+            auto er = ValidateExpert(exp_path.string());
+            if (!er.ok) r.add_error();
+            r.warnings += er.warnings;
+            ++experts_checked;
+        }
     }
 
     spdlog::info("=== Validation Summary ===");

@@ -2,6 +2,7 @@
 
 #include "deepseek_v4_flash_model.h"
 #include "glm_v5_model.h"
+#include "qwen_v5_model.h"
 
 namespace lsxcommon {
 
@@ -19,6 +20,10 @@ void EnsureModelRegistry()
         LsxModelFactory::Register(GlmV5Model::kType,
             [](const ModelInitConfig &cfg) {
                 return std::make_unique<GlmV5Model>(cfg);
+            });
+        LsxModelFactory::Register(QwenV5Model::kType,
+            [](const ModelInitConfig &cfg) {
+                return std::make_unique<QwenV5Model>(cfg);
             });
         return true;
     }();

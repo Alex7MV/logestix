@@ -30,6 +30,7 @@ add_library(lsxcommon STATIC
     src/pretokenizer.cpp
     src/qwen_convert.cpp
     src/qwen_inference_load.cpp
+    src/qwen_v5_model.cpp
     src/schema.cpp
     src/tokenizer.cpp
     src/tokenizer_convert.cpp

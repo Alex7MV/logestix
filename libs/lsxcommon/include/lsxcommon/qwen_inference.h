@@ -45,7 +45,7 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate
 // -> o_proj. All buffers caller-provided (see RunQwenGeneration arena layout).
 cudaError_t RunQwenFullAttention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const QwenLayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qc, __half *d_q, __half *d_gate,
@@ -59,7 +59,7 @@ cudaError_t RunQwenFullAttention(
 //   d_g: [seq*nv] float decay, d_beta: [seq*nv] float beta,
 //   d_conv: [seq, KD*2+VD], d_core: [seq,VD], d_gated: [seq,VD].
 cudaError_t RunQwenLinearAttention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const QwenLayerWeights &lw, const QwenTopology &top, int seq,
     const __half *d_normed, __half *d_out,
     __half *d_qkv, __half *d_z, __half *d_ab,
@@ -68,7 +68,7 @@ cudaError_t RunQwenLinearAttention(
 
 // Dense SwiGLU MLP: gate=silu(x@Wg), up=x@Wu, inter=gate*up, out=inter@Wd.
 cudaError_t RunQwenMLP(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const QwenLayerWeights &lw, int seq,
     const __half *d_in, __half *d_out, __half *d_scratch);
 
@@ -77,16 +77,16 @@ cudaError_t RunQwenMLP(
 struct QwenGenerationResult {
     bool ok = false;
     std::string error_msg;
-    std::vector<int32_t> tokens;  // greedy-argmax token ids, EOS-terminated
-    float first_maxv = 0.0f;
-    std::vector<float> final_logits;  // last-row logits over vocab (when computable)
+    std::vector<int32_t> tokens;
+    int32_t first_token = -1;
+    std::vector<float> final_logits;
 };
 
 // Full greedy multi-token generation over the frozen Qwen3.5-9B hybrid loop:
 // per decoder layer, RMSNorm input -> (linear or full attention) -> residual ->
 // RMSNorm -> MLP -> residual; final norm -> lm_head -> greedy argmax.
 cudaError_t RunQwenGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const QwenPinnedWeights &pw,
     const std::vector<int32_t> &prompt, int max_new,
     QwenGenerationResult &result);

@@ -12,6 +12,8 @@
 #include <map>
 #include <optional>
 #include <regex>
+#include <sstream>
+#include <unordered_map>
 
 namespace lsxcommon::qwen {
 
@@ -35,16 +37,28 @@ std::string layer_regex(const std::string &suffix)
     return R"((?:model\.)?language_model\.layers\.(\d+)\.)" + suffix;
 }
 
+// Pre-compiled regex patterns (constructed once at first use, then reused).
+std::regex &re_embed()   { static auto r = std::regex(R"(model\.language_model\.embed_tokens\.weight$)"); return r; }
+std::regex &re_final()   { static auto r = std::regex(R"(model\.language_model\.norm\.weight$)"); return r; }
+
+std::regex &re_linear(const std::string &s) {
+    static std::unordered_map<std::string, std::regex> cache;
+    auto it = cache.find(s);
+    if (it == cache.end())
+        it = cache.emplace(s, std::regex(layer_regex(s))).first;
+    return it->second;
+}
+
 } // namespace
 
 ParsedTensor classify_qwen_tensor(const std::string &name)
 {
     using K = TensorKind;
 
-    if (std::regex_match(name, std::regex(R"(model\.language_model\.embed_tokens\.weight$)")))
+    if (std::regex_match(name, re_embed()))
         return {K::Embed, -1};
     if (name == "lm_head.weight") return {K::LmHead, -1};
-    if (std::regex_match(name, std::regex(R"(model\.language_model\.norm\.weight$)")))
+    if (std::regex_match(name, re_final()))
         return {K::FinalNorm, -1};
 
     if (name.rfind("mtp.", 0) == 0) return {K::MTP, -1};
@@ -52,7 +66,7 @@ ParsedTensor classify_qwen_tensor(const std::string &name)
         return {K::Visual, -1};
 
     auto P = [&](K kind, const std::string &suffix) -> std::optional<ParsedTensor> {
-        return match_layer(name, std::regex(layer_regex(suffix)), kind);
+        return match_layer(name, re_linear(suffix), kind);
     };
 
     if (auto p = P(K::LinearAttnQkv,   R"(linear_attn\.in_proj_qkv\.weight$)"))   return *p;
@@ -168,38 +182,36 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
     }
 
-    std::string lt = "[";
+    std::ostringstream j;
+    j << "{\n"
+      << "  \"format\": \"logestix-qwen\",\n"
+      << "  \"model\": \"Qwen3.5-9B\",\n"
+      << "  \"num_layers\": " << top.num_layers
+      << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
-        if (i) lt += ",";
-        lt += "\"" + top.layer_types[i] + "\"";
+        if (i) j << ",";
+        j << "\"" << top.layer_types[i] << "\"";
     }
-    lt += "]";
-
-    std::string json =
-        "{\n"
-        "  \"format\": \"logestix-qwen\",\n"
-        "  \"model\": \"Qwen3.5-9B\",\n"
-        "  \"num_layers\": " + std::to_string(top.num_layers) +
-        ",\n  \"layer_types\": " + lt +
-        ",\n  \"hidden_size\": " + std::to_string(top.hidden_size) +
-        ",\n  \"intermediate_size\": " + std::to_string(top.intermediate_size) +
-        ",\n  \"vocab_size\": " + std::to_string(top.vocab_size) +
-        ",\n  \"num_attention_heads\": " + std::to_string(top.num_attention_heads) +
-        ",\n  \"num_key_value_heads\": " + std::to_string(top.num_key_value_heads) +
-        ",\n  \"head_dim\": " + std::to_string(top.head_dim) +
-        ",\n  \"linear_num_key_heads\": " + std::to_string(top.linear_num_key_heads) +
-        ",\n  \"linear_num_value_heads\": " + std::to_string(top.linear_num_value_heads) +
-        ",\n  \"linear_key_head_dim\": " + std::to_string(top.linear_key_head_dim) +
-        ",\n  \"linear_value_head_dim\": " + std::to_string(top.linear_value_head_dim) +
-        ",\n  \"linear_conv_kernel_dim\": " + std::to_string(top.linear_conv_kernel_dim) +
-        ",\n  \"rms_norm_eps\": " + std::to_string(top.rms_norm_eps) +
-        ",\n  \"partial_rotary_factor\": " + std::to_string(top.partial_rotary_factor) +
-        ",\n  \"rope_theta\": " + std::to_string(top.rope_theta) +
-        ",\n  \"total_pinned_tensors\": " + std::to_string(top.total_pinned_tensors) +
-        "\n}";
+    j << "]"
+      << ",\n  \"hidden_size\": " << top.hidden_size
+      << ",\n  \"intermediate_size\": " << top.intermediate_size
+      << ",\n  \"vocab_size\": " << top.vocab_size
+      << ",\n  \"num_attention_heads\": " << top.num_attention_heads
+      << ",\n  \"num_key_value_heads\": " << top.num_key_value_heads
+      << ",\n  \"head_dim\": " << top.head_dim
+      << ",\n  \"linear_num_key_heads\": " << top.linear_num_key_heads
+      << ",\n  \"linear_num_value_heads\": " << top.linear_num_value_heads
+      << ",\n  \"linear_key_head_dim\": " << top.linear_key_head_dim
+      << ",\n  \"linear_value_head_dim\": " << top.linear_value_head_dim
+      << ",\n  \"linear_conv_kernel_dim\": " << top.linear_conv_kernel_dim
+      << ",\n  \"rms_norm_eps\": " << top.rms_norm_eps
+      << ",\n  \"partial_rotary_factor\": " << top.partial_rotary_factor
+      << ",\n  \"rope_theta\": " << top.rope_theta
+      << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
+      << "\n}";
 
     std::ofstream out(dir / "model.index.json");
-    out << json;
+    out << j.str();
     return arrow::Status::OK();
 }
 
