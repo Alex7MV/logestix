@@ -20,7 +20,7 @@
 #include <limits>
 #include <lsxcommon/shared_experts.h>
 
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 
 using Catch::Approx;
 
