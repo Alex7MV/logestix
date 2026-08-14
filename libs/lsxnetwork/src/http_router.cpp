@@ -60,7 +60,7 @@ void HttpRouter::MountStatic(const spa::Asset* assets, std::size_t count) {
 }
 
 int HttpRouter::Handle(std::string_view method, std::string_view path,
-                       std::string_view body, HttpReply& out) const {
+                       std::string_view /*body*/, HttpReply& out) const {
     out = HttpReply{};
     std::string_view p = StripQuery(path);
     if (p.empty()) p = "/";
