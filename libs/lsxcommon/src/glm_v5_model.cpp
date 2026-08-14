@@ -86,11 +86,11 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     if (ch_ok && st_ok) cublasSetStream(ch, st);
 
     glm::GlmPinnedWeights pw;
-    glm::GlmExpertTables  experts;
+    glm::GlmExpertDb      experts;
 
     auto cleanup = [&]() {
         pw.Free();
-        experts.Free();
+        glm::free_glm_expert_index(experts);
         if (st) cudaStreamDestroy(st);
         if (ch) cublasDestroy(ch);
     };
@@ -117,16 +117,17 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     if (!pw.d_embed || !pw.d_head)
         return fail("model embed/lm_head weights missing");
 
-    // Expert tables for every MoE layer (3-78); a missing expert file just
-    // leaves its slot inactive, which routing deterministically skips. The
-    // layer-78 MTP block also routes through per-expert stacks.
-    e = glm::LoadGlmExpertTables(cfg_.model_path, experts, st, nullptr,
-                                 glm::kGlmNumRouted);
-    if (e != cudaSuccess)
-        return fail(std::string("load expert tables: ") +
-                    cudaGetErrorString(e));
-    if (experts.tables.size() != static_cast<size_t>(glm::kGlmNumLayers))
-        return fail("expert tables incomplete");
+    // On-demand routed-expert index for every MoE layer (3-78): a flat
+    // memory-mapped registry whose experts are mmap'd lazily through a bounded
+    // LRU and staged one at a time, so the full ~385 GiB expert set is NEVER
+    // resident in VRAM — the generation loop needs only the pinned weights
+    // plus ~2 × one-expert staging. The layer-78 MTP block also routes
+    // through per-expert stacks.
+    experts = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
+                                         glm::kGlmNumRouted);
+    if (experts.num_layers != glm::kGlmNumLayers ||
+        experts.experts_per_layer != glm::kGlmNumRouted)
+        return fail("expert index incomplete");
 
     // The frozen greedy multi-token generation pass. Capacity + prompt-id
     // bounds are validated inside (against the fixed 1024-slot KV staging and
