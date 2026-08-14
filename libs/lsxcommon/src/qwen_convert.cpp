@@ -91,7 +91,6 @@ bool qwen_tensor_is_nvfp4(TensorKind kind)
     case TensorKind::LinearAttnB:
     case TensorKind::LinearAttnA:
     case TensorKind::LinearAttnOut:
-    case TensorKind::LinearAttnConv:
     case TensorKind::FullAttnQ:
     case TensorKind::FullAttnK:
     case TensorKind::FullAttnV:

@@ -56,6 +56,25 @@ endif()
 
 add_test(NAME test_qwen_convert COMMAND test_qwen_convert)
 
+# ── Тест Qwen3.5-9B загрузчика (pinned upload, topology, layer dispatch) ────
+add_executable(test_qwen_loader test_qwen_loader.cpp)
+target_link_libraries(test_qwen_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_loader>"
+    )
+    add_custom_command(TARGET test_qwen_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_loader>"
+    )
+endif()
+
+add_test(NAME test_qwen_loader COMMAND test_qwen_loader)
+
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
