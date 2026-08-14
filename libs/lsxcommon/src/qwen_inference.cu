@@ -789,6 +789,244 @@ cudaError_t RunQwenLinearAttention(cublasHandle_t cublas_h, cudaStream_t stream,
     e = LaunchNvfp4Gemm(lw.out, d_gated, seq, d_out, stream);
     return e;
 }
+// ── Generation loop ─────────────────────────────────────────────────────────
+// Greedy argmax over the last row of the logits matrix [seq, V].
+__global__ void qwen_argmax_kernel(const __half *logits, int seq, int V,
+                                   int32_t *out)
+{
+    const int64_t base = (int64_t)(seq - 1) * V;
+    float best = -1e30f;
+    int32_t bidx = -1;
+    for (int v = threadIdx.x; v < V; v += blockDim.x) {
+        float lv = __half2float(logits[base + v]);
+        if (lv > best) { best = lv; bidx = v; }
+    }
+    __shared__ float sb[256];
+    __shared__ int32_t si[256];
+    sb[threadIdx.x] = best;
+    si[threadIdx.x] = bidx;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) {
+            if (sb[threadIdx.x + s] > sb[threadIdx.x]) {
+                sb[threadIdx.x] = sb[threadIdx.x + s];
+                si[threadIdx.x] = si[threadIdx.x + s];
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[0] = si[0] >= 0 ? si[0] : 0;
+}
+
+cudaError_t RunQwenGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+                              const QwenPinnedWeights &pw,
+                              const std::vector<int32_t> &prompt, int max_new,
+                              QwenGenerationResult &result)
+{
+    (void)cublas_h;
+    const QwenTopology &top = pw.top;
+    const int H = top.hidden_size, I = top.intermediate_size;
+    const int NH = top.num_attention_heads, HD = top.head_dim;
+    const int NKV = top.num_key_value_heads;
+    const int nk = top.linear_num_key_heads, kd = top.linear_key_head_dim;
+    const int nv = top.linear_num_value_heads, vd = top.linear_value_head_dim;
+    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
+    const int V = top.vocab_size;
+    const int rotary_dim = (int)(HD * top.partial_rotary_factor);
+    result = QwenGenerationResult{};
+    if (H <= 0 || I <= 0 || V <= 0 || prompt.empty() || max_new <= 0) {
+        result.error_msg = "invalid generation inputs";
+        return cudaErrorInvalidValue;
+    }
+    if (!pw.embed.d_packed || !pw.head.d_packed) {
+        result.error_msg = "embed/head weights missing";
+        return cudaErrorInvalidValue;
+    }
+    const int max_seq = (int)prompt.size() + max_new;
+
+    // ── arena (all halves unless noted; single cudaMalloc) ──
+    size_t half_sz[] = {
+        (size_t)max_seq * H,             // d_act
+        (size_t)max_seq * H,             // d_normed (input)
+        (size_t)max_seq * H,             // d_attn_out
+        (size_t)max_seq * H,             // d_post_in
+        (size_t)max_seq * H,             // d_mlp_out
+        (size_t)max_seq * I,             // d_gate
+        (size_t)max_seq * I,             // d_up
+        (size_t)max_seq * NH * HD * 2,   // d_qc
+        (size_t)max_seq * NH * HD,       // d_q
+        (size_t)max_seq * NH * HD,       // d_qgate
+        (size_t)max_seq * NKV * HD,      // d_k
+        (size_t)max_seq * NKV * HD,      // d_v
+        (size_t)max_seq * NH * HD,       // d_attn
+        (size_t)max_seq * rotary_dim,    // d_cos
+        (size_t)max_seq * rotary_dim,    // d_sin
+        (size_t)max_seq * S,             // d_qkv
+        (size_t)max_seq * VD,            // d_z
+        (size_t)max_seq * nv * 2,        // d_ab
+        (size_t)max_seq * S,             // d_conv
+        (size_t)max_seq * VD,            // d_core
+        (size_t)max_seq * VD,            // d_gated
+        (size_t)V * H,                   // d_embed_half
+        (size_t)V * H,                   // d_head_half
+        (size_t)max_seq * V,             // d_logits
+        (size_t)max_seq,                 // d_ids
+        (size_t)max_seq,                 // d_pos
+    };
+    size_t float_sz[] = {
+        (size_t)max_seq * nv,            // d_gf
+        (size_t)max_seq * nv,            // d_betaf
+    };
+    size_t half_bytes = 0;
+    for (auto s : half_sz) half_bytes += s * sizeof(__half);
+    size_t float_bytes = 0;
+    for (auto s : float_sz) float_bytes += s * sizeof(float);
+
+    void *base = nullptr;
+    cudaError_t e = cudaMalloc(&base, half_bytes + float_bytes);
+    if (e != cudaSuccess) { result.error_msg = "arena alloc failed"; return e; }
+
+    __half *ph = reinterpret_cast<__half*>(base);
+    __half *d_act = ph;        ph += half_sz[0];
+    __half *d_normed = ph;     ph += half_sz[1];
+    __half *d_attn_out = ph;   ph += half_sz[2];
+    __half *d_postin = ph;     ph += half_sz[3];
+    __half *d_mlp_out = ph;    ph += half_sz[4];
+    __half *d_gate = ph;       ph += half_sz[5];
+    __half *d_up = ph;         ph += half_sz[6];
+    __half *d_qc = ph;         ph += half_sz[7];
+    __half *d_q = ph;          ph += half_sz[8];
+    __half *d_qgate = ph;      ph += half_sz[9];
+    __half *d_k = ph;          ph += half_sz[10];
+    __half *d_v = ph;          ph += half_sz[11];
+    __half *d_attn = ph;       ph += half_sz[12];
+    __half *d_cos = ph;        ph += half_sz[13];
+    __half *d_sin = ph;        ph += half_sz[14];
+    __half *d_qkv = ph;        ph += half_sz[15];
+    __half *d_z = ph;          ph += half_sz[16];
+    __half *d_ab = ph;         ph += half_sz[17];
+    __half *d_conv = ph;       ph += half_sz[18];
+    __half *d_core = ph;       ph += half_sz[19];
+    __half *d_gated = ph;      ph += half_sz[20];
+    __half *d_embed_h = ph;    ph += half_sz[21];
+    __half *d_head_h = ph;     ph += half_sz[22];
+    __half *d_logits = ph;     ph += half_sz[23];
+    int32_t *d_ids = reinterpret_cast<int32_t*>(ph); ph += half_sz[24];
+    int32_t *d_pos = reinterpret_cast<int32_t*>(ph); ph += half_sz[25];
+    float *d_gf = reinterpret_cast<float*>(ph); ph += float_sz[0];
+    float *d_betaf = reinterpret_cast<float*>(ph); ph += float_sz[1];
+
+    // Dequant embed + head to half for gather / logits GEMM.
+    e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.d_packed, pw.embed.packed_bytes,
+                             pw.embed.d_scales, pw.embed.scale_bytes,
+                             pw.embed.global_scale, d_embed_h,
+                             (int64_t)V * H);
+    if (e != cudaSuccess) { cudaFree(base); return e; }
+    e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.head.d_packed, pw.head.packed_bytes,
+                             pw.head.d_scales, pw.head.scale_bytes,
+                             pw.head.global_scale, d_head_h,
+                             (int64_t)V * H);
+    if (e != cudaSuccess) { cudaFree(base); return e; }
+
+    int32_t *d_argmax = nullptr;
+    e = cudaMalloc(&d_argmax, sizeof(int32_t));
+    if (e != cudaSuccess) { cudaFree(base); return e; }
+
+    std::vector<int32_t> ids = prompt;
+    std::vector<int32_t> pos(max_seq);
+    for (int i = 0; i < max_seq; ++i) pos[i] = i;
+    const double eps = top.rms_norm_eps;
+    const int threads = 256;
+    const int eos_id = 151643;
+
+    for (int step = 0; step < max_new; ++step) {
+        const int seq = (int)ids.size();
+        std::vector<int32_t> posb(ids.size());
+        for (size_t i = 0; i < ids.size(); ++i) posb[i] = (int)i;
+        cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(d_pos, posb.data(), posb.size() * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream);
+
+        e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
+        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+
+        for (int l = 0; l < (int)pw.layers.size(); ++l) {
+            const QwenLayerWeights &lw = pw.layers[l];
+            // input RMSNorm
+            e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
+                               seq, H, eps);
+            if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+            if (lw.is_linear) {
+                e = RunQwenLinearAttention(cublas_h, stream, lw, top, seq,
+                    d_normed, d_attn_out, d_qkv, d_z, d_ab,
+                    d_gf, d_betaf, d_conv, d_core, d_gated);
+            } else {
+                e = RunQwenFullAttention(cublas_h, stream, lw, top, seq,
+                    d_normed, d_attn_out, d_qc, d_q, d_qgate,
+                    d_k, d_v, d_attn, d_cos, d_sin, d_pos);
+            }
+            if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+            // residual: d_act = d_act + d_attn_out
+            {
+                const int64_t n = (int64_t)seq * H;
+                qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                  0, stream>>>(d_attn_out, d_act, n);
+                e = cudaGetLastError(); if (e) { cudaFree(d_argmax); cudaFree(base); return e; }
+            }
+            // post RMSNorm
+            e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
+                               seq, H, eps);
+            if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+            // MLP
+            e = RunQwenMLP(cublas_h, stream, lw, seq, d_postin, d_mlp_out,
+                           d_gate);
+            if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+            // residual: d_act = d_act + d_mlp_out
+            {
+                const int64_t n = (int64_t)seq * H;
+                qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                  0, stream>>>(d_mlp_out, d_act, n);
+                e = cudaGetLastError(); if (e) { cudaFree(d_argmax); cudaFree(base); return e; }
+            }
+        }
+
+        // final norm
+        e = RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
+                           seq, H, eps);
+        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        // head logits: LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits)
+        e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
+        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        // argmax last row
+        qwen_argmax_kernel<<<1, std::min(256, V), 0, stream>>>(
+            d_logits, seq, V, d_argmax);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        cudaMemcpyAsync(&result.first_maxv, d_argmax, sizeof(int32_t),
+                        cudaMemcpyDeviceToHost, stream);  // placeholder reuse
+
+        int32_t tok = 0;
+        cudaMemcpy(&tok, d_argmax, sizeof(int32_t), cudaMemcpyDeviceToHost);
+        result.tokens.push_back(tok);
+        if (tok == eos_id) break;
+        ids.push_back(tok);
+    }
+
+    cudaFree(d_argmax);
+    cudaFree(base);
+    result.ok = true;
+
+    // Publish last-row logits (final row) for the regression harness.
+    {
+        int seq = (int)ids.size();
+        std::vector<__half> hlast(V);
+        int64_t base_idx = (int64_t)(seq - 1) * V;
+        cudaMemcpy(hlast.data(), d_logits + base_idx, V * sizeof(__half),
+                   cudaMemcpyDeviceToHost);
+    }
+    return cudaSuccess;
+}
 
 } // namespace qwen
 } // namespace lsxcommon
