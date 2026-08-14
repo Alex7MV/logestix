@@ -1,4 +1,4 @@
-#include "lsxcommon/norm_kernels.h"
+#include "lsxcommon/deepseek_norm_kernels.h"
 
 //==============================================================================
 // rms_norm_float_kernel

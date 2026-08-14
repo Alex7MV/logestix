@@ -1,9 +1,9 @@
 #include "lsxcommon/inference_gpu.h"
-#include "lsxcommon/norm_kernels.h"
+#include "lsxcommon/deepseek_norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
-#include "lsxcommon/inference_csa.h"
-#include "inference_load.cuh"
+#include "lsxcommon/deepseek_inference_csa.h"
+#include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cmath>

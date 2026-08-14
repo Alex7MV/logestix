@@ -2,7 +2,7 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/path_registry.h"
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>

@@ -1,4 +1,4 @@
-#include "lsxcommon/inference_csa.h"
+#include "lsxcommon/deepseek_inference_csa.h"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 

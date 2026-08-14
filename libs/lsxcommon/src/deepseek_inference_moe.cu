@@ -1,7 +1,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/log.h"
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
