@@ -8,6 +8,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/deepseek_inference_csa.h"
 #include "lsxcommon/deepseek_norm_kernels.h"
+#include "lsxcommon/log.h"
 #include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
