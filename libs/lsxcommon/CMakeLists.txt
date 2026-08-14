@@ -75,14 +75,14 @@ set(LSXCOMMON_CU_DEFS
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
     src/testmodel_gpu.cu
-    src/inference_load.cu
-    src/inference_norm.cu
-    src/inference_moe.cu
-    src/inference_head.cu
-    src/inference_attn.cu
-    src/inference_csa.cu
-    src/inference_pipeline.cu
-    src/norm_kernels.cu
+    src/deepseek_inference_load.cu
+    src/deepseek_inference_norm.cu
+    src/deepseek_inference_moe.cu
+    src/deepseek_inference_head.cu
+    src/deepseek_inference_attn.cu
+    src/deepseek_inference_csa.cu
+    src/deepseek_inference_pipeline.cu
+    src/deepseek_norm_kernels.cu
     src/shared_experts.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
