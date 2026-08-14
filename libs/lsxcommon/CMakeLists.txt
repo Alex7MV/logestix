@@ -25,6 +25,7 @@ add_library(lsxcommon STATIC
     src/log.cpp
     src/model_factory.cpp
     src/model_registry.cpp
+    src/path_registry.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
     src/schema.cpp

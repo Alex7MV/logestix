@@ -216,6 +216,7 @@ endif()
 
 add_subdirectory(libs)
 add_subdirectory(apps)
+add_subdirectory(tools)
 
 # Общие тесты, не привязанные к конкретному приложению (например, интеграционные
 # проверки зависимостей: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).

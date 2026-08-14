@@ -4,7 +4,9 @@
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/tokenizer.h"
+#include "lsxcommon/path_registry.h"
 #include <cstring>
+#include <filesystem>
 #include <spdlog/spdlog.h>
 #include <string>
 #include "validator.h"
@@ -14,7 +16,8 @@ int main(int argc, char* argv[]) {
     bool testmodel = false;
     bool testprompt = false;
     bool selfcheck = false;
-    std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
+                       / "DeepSeek-V4-Flash").string();
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--localmodel") == 0 && i + 1 < argc)
             model_path = argv[++i];

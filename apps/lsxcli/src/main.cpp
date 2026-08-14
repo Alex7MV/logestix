@@ -3,12 +3,15 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/path_registry.h"
 #include <cstring>
+#include <filesystem>
 #include <spdlog/spdlog.h>
 #include <string>
 
 int main(int argc, char* argv[]) {
-    std::string model_path = R"(D:\Programs\huggingface.co\DeepSeek-V4-Flash)";
+    auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
+                       / "DeepSeek-V4-Flash").string();
     bool info = false;
     bool infofull = false;
     for (int i = 1; i < argc; ++i) {

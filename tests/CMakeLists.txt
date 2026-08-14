@@ -309,6 +309,40 @@ target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithM
 
 add_test(NAME test_mosaic_network COMMAND test_mosaic_network)
 
+# ── TDD Phase 5: TaskMosaic CE static SPA frontend route harness ──────────────
+# Verifies the in-memory static router serves the compiled www/ bundle: asset
+# bytes are 64-byte cache-line aligned, GET returns exactly 200 OK with
+# byte-for-byte content, a simultaneous multi-threaded hit-rate surge holds 200
+# with zero corruption/alignment drift, and the /v1/chat/completions SSE stream
+# frames a 200 event-stream. Links lsxnetwork only (no Arrow/CUDA).
+add_executable(test_mosaic_frontend_route test_mosaic_frontend_route.cpp)
+target_link_libraries(test_mosaic_frontend_route PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_mosaic_frontend_route COMMAND test_mosaic_frontend_route)
+
+# ── TDD Phase 4: LsxTokenTranslator (cross-model binary token translator) ─────
+# Exercises the offline passport builder (BuildPassport/WritePassport) plus the
+# runtime zero-copy mapper (CreateFileMapping/MapViewOfFile) over a synthetic
+# GLM-5.2 / DeepSeek-V4-Flash vocabulary pair. Asserts 100% bidirectional index
+# mapping accuracy, 64-byte cache-line alignment of the access pointers, and a
+# zero-runtime-allocation translation burst. Links lsxnetwork only (no Arrow;
+# the global replacement operator-new counter is unit-local).
+add_executable(test_token_translator test_token_translator.cpp)
+target_link_libraries(test_token_translator PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_token_translator COMMAND test_token_translator)
+
+# ── TDD Phase 4.5: network translator weld ──────────────────────────────────
+# Welds a privately-owned, per-thread LsxTokenTranslator into the pinned
+# IoWorker thread context. Concurrency burst (4 workers over cores 0..3) asserts
+# per-thread isolation, 64-byte cache-line alignment of every embedded mapping,
+# zero cross-thread lock contention, and zero runtime heap allocations via the
+# unit-local global replacement operator-new counter. Links lsxnetwork only.
+add_executable(test_network_translator_weld test_network_translator_weld.cpp)
+target_link_libraries(test_network_translator_weld PRIVATE lsxnetwork Catch2::Catch2WithMain)
+
+add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
+
 # ── Интеграционный тест TaskMosaic: мультимодальный оркестратор (lsx_orchestrator) ──
 # Прогоняет одновременный burst OpenAI-запросов на обе ветки ("glm-5.2" и
 # "deepseek-v4-flash") через длинный lock-free SPSC конвейер и проверяет
@@ -445,3 +479,22 @@ if(WIN32)
 endif()
 
 add_test(NAME test_deepseek_moe COMMAND test_deepseek_moe)
+
+# �� ���� model-metadata vault path registry �����������������������������
+add_executable(test_path_registry test_path_registry.cpp)
+target_link_libraries(test_path_registry PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_path_registry POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_path_registry>"
+    )
+    add_custom_command(TARGET test_path_registry POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_path_registry>"
+    )
+endif()
+
+add_test(NAME test_path_registry COMMAND test_path_registry)
