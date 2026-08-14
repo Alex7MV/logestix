@@ -300,7 +300,10 @@ struct GlmLoopCtx {
     cublasHandle_t ch = nullptr;
     cudaStream_t   st = nullptr;
     const GlmPinnedWeights *pw = nullptr;
-    const GlmExpertTables *experts = nullptr;
+    const GlmExpertTables *experts = nullptr;   // device-table path
+    GlmExpertDb *db = nullptr;                  // on-demand mmap path
+    uint8_t *d_pack_stage = nullptr;            // on-demand staging buffers
+    uint8_t *d_scale_stage = nullptr;
     int hidden = 0;
     int inter  = 0;
     int vocab  = 0;
@@ -330,6 +333,24 @@ cudaError_t GlmCopyAsync(cudaStream_t st, const __half *src, __half *dst,
     const int blocks = static_cast<int>((n + kGlmLoopBlock - 1) / kGlmLoopBlock);
     GlmCopyKernel<<<blocks, kGlmLoopBlock, 0, st>>>(src, dst, n);
     return cudaGetLastError();
+}
+
+// Runs the routed-expert stack of one layer through either the resident device
+// descriptor table (c.experts, layer-3..78 tables) or the on-demand mmap index
+// (c.db) with the caller-provided staging buffers. The layer's routing grid
+// (c.d_routing) holds 8 slots for the single decode row.
+cudaError_t RunLoopExpertStack(GlmLoopCtx &c, int l)
+{
+    if (c.db) {
+        return RunGlmExpertsStackOnDemand(
+            c.ch, c.st, c.d_routing, 1, c.d_normed,
+            *c.db, l, kGlmNumRouted, c.d_moe, c.d_scratch_e,
+            c.d_pack_stage, c.d_scale_stage, c.h_routing);
+    }
+    return RunGlmExpertsStack(
+        c.ch, c.st, c.d_routing, 1, c.d_normed,
+        c.experts->tables[static_cast<size_t>(l)].data(),
+        kGlmNumRouted, c.d_moe, c.d_scratch_e, c.h_routing);
 }
 
 // One layer of the frozen 79-layer loop. The attention pass always consumes
@@ -392,10 +413,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
         e = RunGlmMoERouter(c.ch, c.st, lw, 1, c.d_hmtp, d_bias,
                             c.d_normed, c.d_logits, c.d_routing);
         if (e != cudaSuccess) return e;
-        e = RunGlmExpertsStack(c.ch, c.st, c.d_routing, 1, c.d_normed,
-                               c.experts->tables[78].data(),
-                               kGlmNumRouted, c.d_moe, c.d_scratch_e,
-                               c.h_routing);
+        e = RunLoopExpertStack(c, 78);
         if (e != cudaSuccess) return e;
         GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
             c.d_h78, c.d_hmtp, c.d_moe, hidden);
@@ -435,10 +453,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
     e = RunGlmMoERouter(c.ch, c.st, lw, 1, c.d_hidrow, d_bias,
                         c.d_normed, c.d_logits, c.d_routing);
     if (e != cudaSuccess) return e;
-    e = RunGlmExpertsStack(c.ch, c.st, c.d_routing, 1, c.d_normed,
-                           c.experts->tables[static_cast<size_t>(l)].data(),
-                           kGlmNumRouted, c.d_moe, c.d_scratch_e,
-                           c.h_routing);
+    e = RunLoopExpertStack(c, l);
     if (e != cudaSuccess) return e;
     GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
         d_out, c.d_moe, c.d_hidrow, hidden);
@@ -461,9 +476,15 @@ cudaError_t RunGlmEmbed(cudaStream_t stream, const __half *d_embed,
     return cudaGetLastError();
 }
 
-cudaError_t RunGlmGeneration(
+// Shared generation-loop body used by both public RunGlmGeneration overloads.
+// Exactly one of `experts` / `expert_db` must be non-null:
+//   experts    device-resident GlmExpertTables (all layers resident in VRAM)
+//   expert_db  on-demand mmap index + staging buffers (one expert at a time)
+static cudaError_t RunGlmGenerationImpl(
     cublasHandle_t cublas_h, cudaStream_t stream,
-    const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    const GlmPinnedWeights &pw,
+    const GlmExpertTables *experts, GlmExpertDb *expert_db,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result)
 {
@@ -479,18 +500,29 @@ cudaError_t RunGlmGeneration(
     const int inter  = kGlmMoeIntermediate;
     const int P  = static_cast<int>(prompt.size());
     const int vocab = pw.vocab_size;
+    const bool on_demand = (expert_db != nullptr);
     log::debug("[glm_gen] validate: ch=" + std::to_string(cublas_h != nullptr) +
                " st=" + std::to_string(stream != nullptr) +
                " P=" + std::to_string(P) +
                " max_new=" + std::to_string(max_new) +
                " vocab=" + std::to_string(vocab) +
                " layers=" + std::to_string(pw.layers.size()) +
-               " tables=" + std::to_string(experts.tables.size()));
+               " tables=" + std::to_string(experts ? experts->tables.size() : 0) +
+               " on_demand=" + std::to_string(on_demand));
     if (!cublas_h || !stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
         !pw.d_embed || !pw.d_head ||
-        pw.layers.size() != static_cast<size_t>(kGlmNumLayers) ||
-        experts.tables.size() != static_cast<size_t>(kGlmNumLayers))
+        pw.layers.size() != static_cast<size_t>(kGlmNumLayers))
         return cudaErrorInvalidValue;
+    if (on_demand) {
+        if (expert_db->num_layers != kGlmNumLayers ||
+            expert_db->experts_per_layer != kGlmNumRouted ||
+            !d_pack_stage || !d_scale_stage)
+            return cudaErrorInvalidValue;
+    } else {
+        if (!experts ||
+            experts->tables.size() != static_cast<size_t>(kGlmNumLayers))
+            return cudaErrorInvalidValue;
+    }
 
     // Memory safety: the decoder KV staging is fixed at kGlmIndexMaxSlots
     // (1024) slots. prompt + generated tokens must fit, and every prompt id
@@ -555,7 +587,13 @@ cudaError_t RunGlmGeneration(
     ctx.ch = cublas_h;
     ctx.st = stream;
     ctx.pw = &pw;
-    ctx.experts = &experts;
+    if (on_demand) {
+        ctx.db = expert_db;
+        ctx.d_pack_stage = d_pack_stage;
+        ctx.d_scale_stage = d_scale_stage;
+    } else {
+        ctx.experts = experts;
+    }
     ctx.hidden = hidden;
     ctx.inter = inter;
     ctx.vocab = vocab;
@@ -671,6 +709,53 @@ cudaError_t RunGlmGeneration(
     result.ok = true;
     cleanup();
     return cudaSuccess;
+}
+
+cudaError_t RunGlmGeneration(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    const std::vector<int32_t> &prompt, int max_new,
+    GlmGenerationResult &result)
+{
+    return RunGlmGenerationImpl(cublas_h, stream, pw, &experts, nullptr,
+                                nullptr, nullptr, prompt, max_new, result);
+}
+
+cudaError_t RunGlmGeneration(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
+    const std::vector<int32_t> &prompt, int max_new,
+    GlmGenerationResult &result)
+{
+    // Two reusable per-call staging buffers, one expert at a time: the packed
+    // E2M1 payloads (w1+w2+w3) and the per-block E4M3 scales. Freed on every
+    // exit path, so a 385 GiB model never exceeds the pinned weights + ~2 ×
+    // one-expert staging in VRAM.
+    constexpr int64_t kMatEl = kGlmExpertMatEl;
+    constexpr size_t pack_bytes = static_cast<size_t>(kMatEl / 2) * 3;
+    constexpr size_t scale_bytes =
+        static_cast<size_t>(kMatEl / kGlmNvfp4Block) * 3;
+
+    uint8_t *d_pack = nullptr;
+    uint8_t *d_scale = nullptr;
+    cudaError_t e = cudaMalloc(&d_pack, pack_bytes);
+    if (e != cudaSuccess) {
+        result = GlmGenerationResult{};
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+    e = cudaMalloc(&d_scale, scale_bytes);
+    if (e != cudaSuccess) {
+        cudaFree(d_pack);
+        result = GlmGenerationResult{};
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+
+    e = RunGlmGenerationImpl(cublas_h, stream, pw, nullptr, &expert_db,
+                             d_pack, d_scale, prompt, max_new, result);    cudaFree(d_scale);
+    cudaFree(d_pack);
+    return e;
 }
 
 } // namespace glm

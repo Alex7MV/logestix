@@ -7,7 +7,6 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -15,10 +14,6 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
-#include <numeric>
-#include <filesystem>
-#include <fstream>
-#include <cstdlib>
 
 namespace lsxcommon {
 namespace gpu {
@@ -46,75 +41,6 @@ static __global__ void float_to_half_kernel(
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
-static __global__ void dbg_nan_count_kernel(
-    const __half* __restrict__ buf, int n, int* out_nonfinite)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i >= n) return;
-    float v = __half2float(buf[i]);
-    if (v != v || v == __int_as_float(0x7f800000) || v == __int_as_float(0xff800000))
-        atomicAdd(out_nonfinite, 1);
-}
-
-static __global__ void half_add_kernel(
-    const __half* __restrict__ a, const __half* __restrict__ b,
-    __half* __restrict__ out, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) out[i] = __float2half(__half2float(a[i]) + __half2float(b[i]));
-}
-
-static __global__ void half_rms_kernel(
-    const __half* __restrict__ buf, int n, float* out_sum)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i >= n) return;
-    float v = __half2float(buf[i]);
-    atomicAdd(out_sum, v * v);
-}
-
-static float dbg_buffer_rms_float(const float* d_buf, int n)
-{
-    float* d_sum = nullptr;
-    float sum = -1.0f;
-    if (cudaMalloc(&d_sum, sizeof(float)) != cudaSuccess) return -1.0f;
-    cudaMemset(d_sum, 0, sizeof(float));
-    // Simple reduction: each thread sums its elements' squares
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    // Reuse half_rms_kernel — it treats input as __half. We need a float version.
-    // For now, just do a manual cudaMemcpy + host-side computation.
-    std::vector<float> h_buf(static_cast<size_t>(n));
-    cudaMemcpy(h_buf.data(), d_buf, n * sizeof(float), cudaMemcpyDeviceToHost);
-    sum = 0.0f;
-    for (int i = 0; i < n; ++i) sum += h_buf[static_cast<size_t>(i)] * h_buf[static_cast<size_t>(i)];
-    cudaFree(d_sum);
-    return sqrtf(sum / static_cast<float>(n));
-}
-
-static float dbg_buffer_rms(const __half* d_buf, int n)
-{
-    float* d_sum = nullptr;
-    float sum = -1.0f;
-    if (cudaMalloc(&d_sum, sizeof(float)) != cudaSuccess) return -1.0f;
-    cudaMemset(d_sum, 0, sizeof(float));
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    half_rms_kernel<<<grid, block>>>(d_buf, n, d_sum);
-    cudaMemcpy(&sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
-    cudaFree(d_sum);
-    return sqrtf(sum / static_cast<float>(n));
-}
-
-static __host__ cudaError_t run_half_add(
-    cudaStream_t stream, const __half* a, const __half* b, __half* out, int n)
-{
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    half_add_kernel<<<grid, block, 0, stream>>>(a, b, out, n);
-    return cudaGetLastError();
-}
-
 // float → half conversion kernel (extern — also defined in inference_moe.cu)
 __global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
                                           float* __restrict__ dst, int n)
@@ -135,23 +61,6 @@ __global__ void clamp_f32_to_fp16(const float* __restrict__ src,
     // Clamp to FP16 representable range: [-65504, 65504]
     v = fmaxf(-65504.0f, fminf(65504.0f, v));
     dst[i] = __float2half(v);
-}
-
-static int dbg_count_nonfinite(const __half* d_buf, int n)
-{
-    __half* d_tmp = nullptr;
-    int* d_cnt = nullptr;
-    int cnt = -1;
-    if (cudaMalloc(&d_tmp, static_cast<size_t>(n) * sizeof(__half)) != cudaSuccess) return -2;
-    if (cudaMalloc(&d_cnt, sizeof(int)) != cudaSuccess) { cudaFree(d_tmp); return -2; }
-    cudaMemset(d_cnt, 0, sizeof(int));
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    dbg_nan_count_kernel<<<grid, block>>>(d_buf, n, d_cnt);
-    cudaMemcpy(&cnt, d_cnt, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaFree(d_tmp);
-    cudaFree(d_cnt);
-    return cnt;
 }
 
 static __host__ cudaError_t run_rmsnorm(
@@ -307,16 +216,6 @@ InferenceResult RunInferenceModel(
     int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
     std::vector<int> gen_ids;
     gen_ids.reserve(static_cast<size_t>(total_tokens));
-
-    // ── State-trapping prefill mode flags ─────────────────────────────────
-    // pref_only      : strictly prompt-only run over the fixed token seq;
-    //                  bypasses the autoregressive generation loop so that
-    //                  per-step/per-layer dumps are byte-deterministic and
-    //                  never receive stale gen_ids state.
-    // pref_dump_all  : dump attn_out/kv/normed/ffn for EVERY layer at EVERY
-    //                  prefill step (0..input_ids.size()-1).
-    const bool pref_only     = std::getenv("LSX_PREFILL_ONLY")   != nullptr;
-    const bool pref_dump_all = std::getenv("LSX_DUMP_PREFILL")   != nullptr;
 
     cudaStream_t stream = nullptr;
     cublasHandle_t cublas_h = nullptr;
@@ -527,7 +426,7 @@ InferenceResult RunInferenceModel(
             static_cast<size_t>(kHiddenDim) * sizeof(__half),
             cudaMemcpyDeviceToDevice, stream);
         if (embed_err != cudaSuccess) {
-            log::error(std::string("[dbg] embed copy failed: ")
+            log::error(std::string("embed copy failed: ")
                 + cudaGetErrorString(embed_err));
         }
         INFER_CHECK(cudaGetLastError());  // catch any pending
@@ -535,31 +434,10 @@ InferenceResult RunInferenceModel(
         INFER_CHECK(run_expand_hc(stream, d_single, d_hidden));
         // Sync after embed copy to catch async errors
         INFER_CHECK(cudaStreamSynchronize(stream));
-        log::debug("[dbg] embed sync OK");
         (void)embed_err;
-
-        std::ostringstream dbg_oss;
-        dbg_oss << "[dbg] embed[0..4]=";
-        float hd[5] = {};
-        __half de[5] = {};
-        INFER_CHECK(cudaMemcpy(hd, d_hidden, 5 * sizeof(float), cudaMemcpyDeviceToHost));
-        INFER_CHECK(cudaMemcpy(de, pw.d_embed, 5 * sizeof(__half), cudaMemcpyDeviceToHost));
-        for (int i = 0; i < 5; ++i)
-            dbg_oss << " " << hd[i];
-        dbg_oss << " d_embed[0..4]=";
-        for (int i = 0; i < 5; ++i)
-            dbg_oss << " " << __half2float(de[i]);
-        log::debug(dbg_oss.str());
     }
 
     total_steps = static_cast<int>(input_ids.size()) + max_gen;
-    if (pref_only) {
-        max_gen = 0;
-        total_steps = static_cast<int>(input_ids.size());
-        log::info("[dump] LSX_PREFILL_ONLY: prompt-only prefill run, "
-                  "total_steps=" + std::to_string(total_steps) +
-                  " (generation loop fully bypassed)");
-    }
 
     // Allocate CSA state for layers 2-41
     csa_states = new CSAState[topo.num_layers];
@@ -596,10 +474,6 @@ InferenceResult RunInferenceModel(
 
         // Per-layer HC + MLA + FFN
         int max_layers = topo.num_layers;
-        if (const char* ml = std::getenv("LSX_MAX_LAYERS")) {
-            int v = std::atoi(ml);
-            if (v > 0) max_layers = std::min(max_layers, v);
-        }
         for (int lay = 0; lay < max_layers; ++lay) {
             auto &lw = pw.layers[lay];
 
@@ -614,26 +488,6 @@ InferenceResult RunInferenceModel(
                                          d_normed, d_norm_scratch,
                                          d_norm_gamma_scratch,
                                          kHiddenDim, rms_eps));
-                {
-                    const char* dl = std::getenv("LSX_DUMP");
-                    const bool dump_this =
-                        pref_dump_all ||                     // every layer, every step
-                        (step == 0 || step == static_cast<int>(input_ids.size())) ||
-                        (lay == 2);                          // per-step normed, CSA probe layer
-                    if (dl && dump_this) {
-                        INFER_CHECK(cudaDeviceSynchronize());
-                        std::vector<__half> hb(kHiddenDim);
-                        INFER_CHECK(cudaMemcpy(hb.data(), d_normed,
-                            kHiddenDim * sizeof(__half), cudaMemcpyDeviceToHost));
-                        std::string fn = std::string(dl) + "\\normed_l" + std::to_string(lay) +
-                                         "_s" + std::to_string(step) + ".bin";
-                        std::ofstream f(fn, std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(hb.data()),
-                            kHiddenDim * sizeof(__half));
-                        if (step == 0 || step == static_cast<int>(input_ids.size()))
-                            log::info("[dump] normed_l" + std::to_string(lay) + " " + fn);
-                    }
-                }
                 if (lw.compress_ratio > 0) {
                     INFER_CHECK(run_csa_attention(
                         cublas_h, stream, lw, d_normed,
@@ -658,62 +512,6 @@ InferenceResult RunInferenceModel(
                 }
 INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
-                {
-                    const char* dl = std::getenv("LSX_DUMP");
-                    const char* hb2 = std::getenv("LSX_DUMP_HC");
-                    if (dl && hb2 && step == 0 && lay == 0) {
-                        INFER_CHECK(cudaDeviceSynchronize());
-                        std::vector<float> hc(kHcDim);
-                        INFER_CHECK(cudaMemcpy(hc.data(), d_hidden_next,
-                            kHcDim*sizeof(float), cudaMemcpyDeviceToHost));
-                        std::ofstream f(std::string(dl)+"\\hc_attn_l0_s0.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(hc.data()), kHcDim*sizeof(float));
-                        std::vector<float> pc(kHcMult);
-                        std::vector<float> cm(kHcMult*kHcMult);
-                        cudaMemcpy(pc.data(), d_hc_post, kHcMult*sizeof(float), cudaMemcpyDeviceToHost);
-                        cudaMemcpy(cm.data(), d_hc_comb, kHcMult*kHcMult*sizeof(float), cudaMemcpyDeviceToHost);
-                        log::info("[dump] hc_attn_l0_s0.bin post=[" + std::to_string(pc[0])+","+std::to_string(pc[1])+","+std::to_string(pc[2])+","+std::to_string(pc[3])+"]");
-                    }
-                }
-                if (pref_dump_all ||
-                    ((step == 0 || step == static_cast<int>(input_ids.size()))
-                     && (lay == 0 || lay == 2))) {
-                    const char* dl = std::getenv("LSX_DUMP");
-                    if (dl) {
-                        INFER_CHECK(cudaDeviceSynchronize());
-                        std::vector<float> ao(kHiddenDim);
-                        INFER_CHECK(cudaMemcpy(ao.data(), d_attn_out,
-                            kHiddenDim*sizeof(float), cudaMemcpyDeviceToHost));
-                        std::string fn = std::string(dl)+"\\attn_out_l" + std::to_string(lay) + "_s" + std::to_string(step) + ".bin";
-                        std::ofstream f(fn, std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(ao.data()), kHiddenDim*sizeof(float));
-                        log::info("[dump] " + fn);
-                        // dump kv cache for this layer
-                        int kv_elems = (kAttnWindow + max_compressed) * kHeadDim;
-                        std::vector<__half> kvb(kv_elems);
-                        INFER_CHECK(cudaMemcpy(kvb.data(),
-                            d_kv_cache + static_cast<size_t>(lay) * kv_elems,
-                            kv_elems*sizeof(__half), cudaMemcpyDeviceToHost));
-                        std::string kvfn = std::string(dl)+"\\kv_l" + std::to_string(lay) + "_s" + std::to_string(step) + ".bin";
-                        std::ofstream kf(kvfn, std::ios::binary);
-                        kf.write(reinterpret_cast<const char*>(kvb.data()), kv_elems*sizeof(__half));
-                        log::info("[dump] " + kvfn);
-                    }
-                }
-                if (step == 0 && (lay % 5 == 0 || lay == 42)) {
-                    INFER_CHECK(cudaStreamSynchronize(stream));
-                    float attn_rms = dbg_buffer_rms_float(d_attn_out, kHiddenDim);
-                    float hc_rms = dbg_buffer_rms_float(d_hidden_next, kHcDim);
-                    float res_rms = dbg_buffer_rms_float(d_hidden, kHcDim);
-                    float h_post[4] = {};
-                    cudaMemcpy(h_post, d_hc_post, 4*sizeof(float), cudaMemcpyDeviceToHost);
-                    std::ostringstream oss2;
-                    oss2 << "attn=" << attn_rms << " res=" << res_rms
-                         << " hc_after_attn=" << hc_rms
-                         << " post=[" << h_post[0] << "," << h_post[1]
-                         << "," << h_post[2] << "," << h_post[3] << "]";
-                    log::debug("[dbg] step0 layer" + std::to_string(lay) + " " + oss2.str());
-                }
                 float *tmp = d_hidden;
                 d_hidden = d_hidden_next;
                 d_hidden_next = tmp;
@@ -743,31 +541,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     static_cast<size_t>(kHiddenDim) * sizeof(__half),
                     cudaMemcpyDeviceToDevice, stream));
             }
-            if (lay == 0) {
-                INFER_CHECK(cudaStreamSynchronize(stream));
-                int nf = dbg_count_nonfinite(d_normed, kHiddenDim);
-                __half probe[6] = {};
-                cudaMemcpy(probe, d_normed, 6 * sizeof(__half), cudaMemcpyDeviceToHost);
-                std::ostringstream oss;
-                oss << "[dbg] layer0 after ffn RMSNorm: nonfinite=" << nf << " norm_out[0..5]=";
-                for (int i = 0; i < 6; ++i) oss << " " << __half2float(probe[i]);
-                log::debug(oss.str());
-            }
-             // probe: dump FFN branch input (d_normed) for every layer and step
-             if (pref_dump_all || (lay == 2)) {
-                 const char* dl = std::getenv("LSX_DUMP");
-                 if (dl) {
-                     INFER_CHECK(cudaDeviceSynchronize());
-                     std::vector<__half> nb(kHiddenDim);
-                     INFER_CHECK(cudaMemcpy(nb.data(), d_normed,
-                         kHiddenDim * sizeof(__half), cudaMemcpyDeviceToHost));
-                     std::string fn = std::string(dl) + "\\ffn_norm_l" + std::to_string(lay) + "_s" + std::to_string(step) + ".bin";
-                     std::ofstream f(fn, std::ios::binary);
-                     f.write(reinterpret_cast<const char*>(nb.data()),
-                         kHiddenDim * sizeof(__half));
-                     log::info("[dump] " + fn);
-                 }
-             }
 
             // Router: gate GEMM + sqrt(softplus) + top-k (hash/score) + weights
             if (lw.d_gate_weight) {
@@ -779,17 +552,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                         tid, lw.tid2eid_topk, cur_tok,
                                         lw.h_gate_bias,
                                         kLocalTopK, h_topk, h_top_weights));
-                if (pref_dump_all || (lay == 0 || lay == 1 || lay == 42)) {
-                    std::ostringstream oss;
-                    oss << "[dbg] layer" << lay << " route idx=[";
-                    for (int i = 0; i < kLocalTopK; ++i)
-                        oss << (i ? "," : "") << h_topk[i];
-                    oss << "] w=[";
-                    for (int i = 0; i < kLocalTopK; ++i)
-                        oss << (i ? "," : "") << h_top_weights[i];
-                    oss << "]";
-                    log::debug(oss.str());
-                }
             } else {
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
                 std::memset(h_top_weights, 0,
@@ -822,11 +584,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
                     static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
             }
-            if (step == 0 && lay == 42) {
-                INFER_CHECK(cudaStreamSynchronize(stream));
-                float s = dbg_buffer_rms_float(d_ffn_accum, kHiddenDim);
-                log::info("[SPLIT] layer42 SHARED-only rms=" + std::to_string(s));
-            }
 
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
@@ -842,112 +599,19 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total));
             }
-            if (step == 0 && lay == 42) {
-                INFER_CHECK(cudaStreamSynchronize(stream));
-                float s = dbg_buffer_rms_float(d_ffn_accum, kHiddenDim);
-                log::info("[SPLIT] layer42 SHARED+ROUTED rms=" + std::to_string(s));
-            }
-            {
-                const char* dl = std::getenv("LSX_DUMP");
-                if (dl) {
-                    const char* fb = std::getenv("LSX_DUMP_FFN");
-                    if (fb && step == 0 && lay == 0) {
-                        INFER_CHECK(cudaStreamSynchronize(stream));
-                        std::vector<__half> nb(kHiddenDim);
-                        INFER_CHECK(cudaMemcpy(nb.data(), d_normed,
-                            kHiddenDim*sizeof(__half), cudaMemcpyDeviceToHost));
-                        std::ofstream f(std::string(dl)+"\\ffn_in_l0_s0.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(nb.data()), kHiddenDim*sizeof(__half));
-                        std::vector<float> acc(kHiddenDim);
-                        INFER_CHECK(cudaMemcpy(acc.data(), d_ffn_accum,
-                            kHiddenDim*sizeof(float), cudaMemcpyDeviceToHost));
-                        std::ofstream f2(std::string(dl)+"\\ffn_accum_l0_s0.bin", std::ios::binary);
-                        f2.write(reinterpret_cast<const char*>(acc.data()), kHiddenDim*sizeof(float));
-                        log::info("[dump] ffn_in_l0_s0.bin + ffn_accum_l0_s0.bin");
-                    } else if (fb && step == 0 && lay == 0 && !lw.d_gate_weight) {
-                        log::info("[dump] gate missing, skipping ffn dump");
-                    }
-                }
-            }
-
-             // probe: dump FFN accumulated output (shared+routed) for every layer, every step
-             if (pref_dump_all || (lay == 2)) {
-                 const char* dl = std::getenv("LSX_DUMP");
-                 if (dl) {
-                     INFER_CHECK(cudaStreamSynchronize(stream));
-                     std::vector<float> acc(kHiddenDim);
-                     INFER_CHECK(cudaMemcpy(acc.data(), d_ffn_accum,
-                         kHiddenDim * sizeof(float), cudaMemcpyDeviceToHost));
-                     std::string fn = std::string(dl) + "\\ffn_accum_l" + std::to_string(lay) + "_s" + std::to_string(step) + ".bin";
-                     std::ofstream f(fn, std::ios::binary);
-                     f.write(reinterpret_cast<const char*>(acc.data()),
-                         kHiddenDim * sizeof(float));
-                     log::info("[dump] " + fn);
-                     // also dump the routing info for this layer/step
-                     std::ostringstream rt;
-                     rt << "[route] lay" << lay << " step" << step << " idx=[";
-                     for (int i = 0; i < kLocalTopK; ++i)
-                         rt << (i ? "," : "") << h_topk[i];
-                     rt << "] w=[";
-                     for (int i = 0; i < kLocalTopK; ++i)
-                         rt << (i ? "," : "") << h_top_weights[i];
-                     rt << "]";
-                     log::info(rt.str());
-                 }
-             }
 
             // Convert FP32 FFN accumulation → FP16 for hc_post
             // Clamp to FP16 range to prevent Inf/NaN overflow
             // Pass d_ffn_accum (FP32) directly to hc_post — no FP16 conversion
             {
-                if (step == 0 && (lay % 5 == 0 || lay == 42)) {
-                    INFER_CHECK(cudaStreamSynchronize(stream));
-                    float ffn_rms = dbg_buffer_rms_float(d_ffn_accum, kHiddenDim);
-                    float ffn_res = dbg_buffer_rms_float(d_hidden, kHcDim);
-                    float h_post[4] = {};
-                    cudaMemcpy(h_post, d_hc_post, 4*sizeof(float), cudaMemcpyDeviceToHost);
-                    log::debug("[dbg] step0 layer" + std::to_string(lay) +
-                        " FFN: ffn_out=" + std::to_string(ffn_rms) +
-                        " ffn_res=" + std::to_string(ffn_res) +
-                        " post=[" + std::to_string(h_post[0]) + "," +
-                        std::to_string(h_post[1]) + "," + std::to_string(h_post[2]) +
-                        "," + std::to_string(h_post[3]) + "]");
-                }
                 INFER_CHECK(run_hc_post(stream, d_ffn_accum, d_hidden,
                                          d_hc_post, d_hc_comb, d_hidden_next));
-                {
-                    const char* dl = std::getenv("LSX_DUMP");
-                    const char* hb2 = std::getenv("LSX_DUMP_HC");
-                    if (dl && hb2 && step == 0 && lay == 0) {
-                        INFER_CHECK(cudaDeviceSynchronize());
-                        std::vector<float> hc(kHcDim);
-                        INFER_CHECK(cudaMemcpy(hc.data(), d_hidden_next,
-                            kHcDim*sizeof(float), cudaMemcpyDeviceToHost));
-                        std::ofstream f(std::string(dl)+"\\hc_ffn_l0_s0.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(hc.data()), kHcDim*sizeof(float));
-                        log::info("[dump] hc_ffn_l0_s0.bin");
-                    }
-                }
-            }
-
-            if (lay == 0 || lay == 1 || lay == 42) {
-                INFER_CHECK(cudaStreamSynchronize(stream));
-                float rms = dbg_buffer_rms_float(d_hidden_next, kHcDim);
-                log::debug("[dbg] layer" + std::to_string(lay) +
-                          " hc_state rms=" + std::to_string(rms));
             }
 
             // hidden = hidden_next for next layer
             float *tmp = d_hidden;
             d_hidden = d_hidden_next;
             d_hidden_next = tmp;
-
-            if (step == 0 && (lay % 5 == 0 || lay == 42)) {
-                INFER_CHECK(cudaStreamSynchronize(stream));
-                float rms = dbg_buffer_rms_float(d_hidden, kHcDim);
-                log::debug("[dbg] step0 layer" + std::to_string(lay) +
-                          " hc_state rms=" + std::to_string(rms));
-            }
         } // layers
 
         // Final: hc_head (4 copies → 1), then final RMSNorm, then LM Head
@@ -972,18 +636,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 cudaMemcpyDeviceToDevice, stream));
         }
 
-        // probe: dump final head input (post hc_head + final RMSNorm) per step
-        if (pref_dump_all) {
-            INFER_CHECK(cudaDeviceSynchronize());
-            std::vector<__half> hb(kHiddenDim);
-            INFER_CHECK(cudaMemcpy(hb.data(), d_normed,
-                kHiddenDim * sizeof(__half), cudaMemcpyDeviceToHost));
-            std::string hfn = std::string(std::getenv("LSX_DUMP")) + "\\head_in_s" + std::to_string(step) + ".bin";
-            std::ofstream hf(hfn, std::ios::binary);
-            hf.write(reinterpret_cast<const char*>(hb.data()), kHiddenDim*sizeof(__half));
-            log::info("[dump] head_in " + hfn);
-        }
-
         // LM Head
         INFER_CHECK(cudaMemsetAsync(d_logits, 0,
             static_cast<size_t>(pw.vocab_size) * sizeof(float), stream));
@@ -992,159 +644,60 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                  pw.vocab_size, kHiddenDim,
                                  d_logits, d_next_token));
 
-        {
-            INFER_CHECK(cudaStreamSynchronize(stream));
-            float nrms = dbg_buffer_rms(d_normed, kHiddenDim);
-            __half hd[4] = {};
-            cudaMemcpy(hd, d_normed, 4*sizeof(__half), cudaMemcpyDeviceToHost);
-            log::info("[probe] step=" + std::to_string(step) + " normed_rms="
-                + std::to_string(nrms) + " head_in[0..3]="
-                + std::to_string(__half2float(hd[0])) + "," + std::to_string(__half2float(hd[1]))
-                + "," + std::to_string(__half2float(hd[2])) + "," + std::to_string(__half2float(hd[3])));
-        }
-
         // Copy token back to host
         INFER_CHECK(cudaMemcpyAsync(h_logits, d_logits,
             static_cast<size_t>(pw.vocab_size) * sizeof(float),
             cudaMemcpyDeviceToHost, stream));
         INFER_CHECK(cudaDeviceSynchronize());
 
-        // Probe: rank of 'Paris'-family token + top-10 logits at the first
-        // generated step (debug; remove before shipping).
-        if (step == static_cast<int>(input_ids.size())) {
-            std::vector<std::pair<float,int>> vp;
-            vp.reserve(pw.vocab_size);
-            for (int v = 0; v < pw.vocab_size; ++v) vp.emplace_back(h_logits[v], v);
-            std::partial_sort(vp.begin(), vp.begin() + 10, vp.end(),
-                [](const auto& a, const auto& b){ return a.first > b.first; });
-            std::ostringstream top;
-            top << "[probe] top10:";
-            for (int i = 0; i < 10; ++i) {
-                std::vector<int32_t> t = {vp[i].second};
-                char buf[64]; size_t cap = sizeof(buf);
-                std::string s;
-                if (::lsxcommon::arrow_tokenizer_decode(tok_db, t.data(), t.size(), buf, &cap) == 0)
-                    s = std::string(buf, cap);
-                top << " " << vp[i].second << "='" << s << "'("
-                    << std::fixed << std::setprecision(2) << vp[i].first << ")";
-            }
-            // locate any token whose decoded bytes == "Paris"
-            int paris_id = -1; int paris_rank = -1; float paris_logit = 0;
-            std::string target = "Paris";
-            for (int v = 0; v < pw.vocab_size; ++v) {
-                std::vector<int32_t> t = {v};
-                char buf[64]; size_t cap = sizeof(buf);
-                if (::lsxcommon::arrow_tokenizer_decode(tok_db, t.data(), t.size(), buf, &cap) == 0 &&
-                    std::string(buf, cap) == target) { paris_id = v; break; }
-            }
-            if (paris_id >= 0) {
-                paris_rank = 1;
-                for (int v = 0; v < pw.vocab_size; ++v)
-                    if (h_logits[v] > h_logits[paris_id]) ++paris_rank;
-                paris_logit = h_logits[paris_id];
-            }
-            top << " | Paris id=" << paris_id << " rank=" << paris_rank
-                << " logit=" << std::fixed << std::setprecision(4) << paris_logit;
-            log::info(top.str());
-        }
-
-        if (step == static_cast<int>(input_ids.size())) {
-                const char* dump_dir = std::getenv("LSX_DUMP");
-                if (dump_dir) {
-                    INFER_CHECK(cudaDeviceSynchronize());
-                    std::vector<__half> hn(kHiddenDim);
-                    INFER_CHECK(cudaMemcpy(hn.data(), d_normed,
-                        kHiddenDim * sizeof(__half), cudaMemcpyDeviceToHost));
-                    std::vector<__half> hc(kHiddenDim);
-                    INFER_CHECK(cudaMemcpy(hc.data(), d_single,
-                        kHiddenDim * sizeof(__half), cudaMemcpyDeviceToHost));
-                    std::vector<float> lg(pw.vocab_size);
-                    INFER_CHECK(cudaMemcpy(lg.data(), d_logits,
-                        pw.vocab_size * sizeof(float), cudaMemcpyDeviceToHost));
-                    std::string pdir(dump_dir);
-                    {
-                        std::ofstream f(pdir + "\\head_in.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(hn.data()),
-                            kHiddenDim * sizeof(__half));
-                    }
-                    {
-                        std::ofstream f(pdir + "\\hc_single.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(hc.data()),
-                            kHiddenDim * sizeof(__half));
-                    }
-                    {
-                        std::ofstream f(pdir + "\\logits.bin", std::ios::binary);
-                        f.write(reinterpret_cast<const char*>(lg.data()),
-                            pw.vocab_size * sizeof(float));
-                    }
-                    log::info("[dump] wrote head_in / hc_single / logits to " + std::string(dump_dir));
-                }
-            }
-            if (step == 0) {
-            std::ostringstream dbg2;
-            dbg2 << "[dbg] logits[0..4]=";
-            for (int i = 0; i < 5; ++i) dbg2 << " " << h_logits[i];
-            __half hd[5] = {};
-            cudaMemcpy(hd, d_normed, 5 * sizeof(__half), cudaMemcpyDeviceToHost);
-            dbg2 << "  normed[0..4]=";
-            for (int i = 0; i < 5; ++i) dbg2 << " " << __half2float(hd[i]);
-            log::debug(dbg2.str());
-        }
-
         int next_tok = 0;
         float max_val = -1e10f;
-        // ── Prefill-only mode: zero sampling / zero generation state ──────
-        // In LSX_PREFILL_ONLY, total_steps == input_ids.size(), so this block
-        // is skipped on every step; gen_ids stays empty and no stale token can
-        // leak into the per-step/per-layer dumps.
-        if (!pref_only) {
-            for (int v = 0; v < pw.vocab_size; ++v) {
-                if (h_logits[v] > max_val) {
-                    max_val = h_logits[v];
-                    next_tok = v;
-                }
+        for (int v = 0; v < pw.vocab_size; ++v) {
+            if (h_logits[v] > max_val) {
+                max_val = h_logits[v];
+                next_tok = v;
             }
-
-            // Logit temperature clamp: if maxv > 30, scale all logits down
-            // This prevents degenerate "won won won" repetition from HC state growth
-            // causing maxv=6.3M logit inflation
-            if (max_val > 30.0f) {
-                float scale = 30.0f / max_val;
-                for (int v = 0; v < pw.vocab_size; ++v)
-                    h_logits[v] *= scale;
-                max_val = 30.0f;
-            }
-
-            // Store generated token (always — gen_ids[0] used as first gen-step input)
-            gen_ids.push_back(next_tok);
-
-            std::ostringstream step_oss;
-            step_oss << "[inference] step=" << step << " tok=" << next_tok;
-            char tok_buf[512];
-            size_t tok_cap = sizeof(tok_buf);
-            std::vector<int32_t> single_tok = {static_cast<int32_t>(next_tok)};
-            if (::lsxcommon::arrow_tokenizer_decode(
-                    tok_db, single_tok.data(), single_tok.size(), tok_buf, &tok_cap) == 0)
-                step_oss << " '" << std::string(tok_buf, tok_cap) << "'";
-            step_oss << " maxv=" << std::fixed << std::setprecision(4) << max_val;
-            log::info(step_oss.str());
-
-            // Single-token self-check: capture the first generated token (pre-clamp
-            // maxv) for RunSelfCheck. The first generated token is the argmax at
-            // step == input_ids.size()-1 (the step whose embedding is the LAST
-            // prompt token); at step == input_ids.size() the model has already been
-            // fed that first generated token and argmax produces the SECOND
-            // generated token (off-by-one).
-            if (step == static_cast<int>(input_ids.size()) - 1
-                && result.first_gen_tok_id == -1) {
-                result.first_gen_tok_id = next_tok;
-                result.first_gen_maxv   = max_val;
-                result.first_gen_text   = std::string(tok_buf, tok_cap);
-            }
-
-            if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
-                break;
         }
+
+        // Logit temperature clamp: if maxv > 30, scale all logits down
+        // This prevents degenerate "won won won" repetition from HC state growth
+        // causing maxv=6.3M logit inflation
+        if (max_val > 30.0f) {
+            float scale = 30.0f / max_val;
+            for (int v = 0; v < pw.vocab_size; ++v)
+                h_logits[v] *= scale;
+            max_val = 30.0f;
+        }
+
+        // Store generated token (always — gen_ids[0] used as first gen-step input)
+        gen_ids.push_back(next_tok);
+
+        std::ostringstream step_oss;
+        step_oss << "[inference] step=" << step << " tok=" << next_tok;
+        char tok_buf[512];
+        size_t tok_cap = sizeof(tok_buf);
+        std::vector<int32_t> single_tok = {static_cast<int32_t>(next_tok)};
+        if (::lsxcommon::arrow_tokenizer_decode(
+                tok_db, single_tok.data(), single_tok.size(), tok_buf, &tok_cap) == 0)
+            step_oss << " '" << std::string(tok_buf, tok_cap) << "'";
+        step_oss << " maxv=" << std::fixed << std::setprecision(4) << max_val;
+        log::info(step_oss.str());
+
+        // Single-token self-check: capture the first generated token (pre-clamp
+        // maxv) for RunSelfCheck. The first generated token is the argmax at
+        // step == input_ids.size()-1 (the step whose embedding is the LAST
+        // prompt token); at step == input_ids.size() the model has already been
+        // fed that first generated token and argmax produces the SECOND
+        // generated token (off-by-one).
+        if (step == static_cast<int>(input_ids.size()) - 1
+            && result.first_gen_tok_id == -1) {
+            result.first_gen_tok_id = next_tok;
+            result.first_gen_maxv   = max_val;
+            result.first_gen_text   = std::string(tok_buf, tok_cap);
+        }
+
+        if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
+            break;
     }
 
     INFER_CHECK(cudaEventRecord(t_stop, stream));

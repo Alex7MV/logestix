@@ -484,6 +484,89 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
     return cudaGetLastError();
 }
 
+// The per-routed-slot expert decode chain shared by RunGlmExpertsStack and
+// RunGlmExpertsStackOnDemand: w1^T @ x -> inter, w3^T @ x -> gate, silu(inter)
+// * gate -> swig, w2^T @ swig -> tmp, out += coeff * tmp. `eb` is a single
+// NVFP4 block descriptor; inactive / foreign-format blocks contribute nothing
+// (deterministic zero contribution). All kernels run on <stream>.
+cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
+                             const GlmExpertDeviceBlock &eb,
+                             const __half *x_t, __half *out_t,
+                             __half *d_scratch, float coeff)
+{
+    (void)cublas_h;
+    constexpr int64_t kMatEl = kGlmExpertMatEl;
+    constexpr int64_t kExpectPacked = kMatEl / 2;
+    constexpr int64_t kExpectScale  = kMatEl / kGlmNvfp4Block;
+    constexpr int    kBlock  = 256;
+
+    if (!eb.d_w1_packed || !eb.d_w1_scales ||
+        !eb.d_w2_packed || !eb.d_w2_scales ||
+        !eb.d_w3_packed || !eb.d_w3_scales ||
+        eb.w1_packed_bytes != kExpectPacked ||
+        eb.w2_packed_bytes != kExpectPacked ||
+        eb.w3_packed_bytes != kExpectPacked ||
+        eb.w1_scale_bytes  != kExpectScale  ||
+        eb.w2_scale_bytes  != kExpectScale  ||
+        eb.w3_scale_bytes  != kExpectScale)
+        return cudaSuccess; // inactive / foreign format: deterministic zero contribution
+
+    // Scratch layout (halves): dequant w-deck / tmp / inter / gate.
+    __half *d_deq   = d_scratch;                                      // kMatEl
+    __half *d_tmp   = d_deq + kMatEl;                                 // kGlmHidden
+    __half *d_inter = d_tmp + kGlmHidden;                             // kGlmMoeIntermediate
+    __half *d_gate  = d_inter + kGlmMoeIntermediate;                  // kGlmMoeIntermediate
+
+    const int64_t dequant_per_block =
+        static_cast<int64_t>(kGlmDequantThreads) * kGlmDequantPerThread;
+    const int deq_grid =
+        static_cast<int>((kMatEl + dequant_per_block - 1) / dequant_per_block);
+    const int inter_blocks =
+        (kGlmMoeIntermediate + kBlock - 1) / kBlock;
+    const int hidden_blocks = (kGlmHidden + kBlock - 1) / kBlock;
+
+    // inter = w1^T @ x  (w1 row-major [inter, hidden] dequantized to FP16)
+    GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+        eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+        d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // gate = w3^T @ x
+    GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+        eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
+        d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // swiglu: inter = silu(inter) * gate, in place (FP32 math)
+    GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
+        d_inter, d_gate, kGlmMoeIntermediate);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // down = w2^T @ swig  (w2 row-major [hidden, inter])
+    GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
+        eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    GlmGemmFp64Kernel<<<hidden_blocks, kBlock, 0, stream>>>(
+        d_deq, d_inter, d_tmp, kGlmHidden, kGlmMoeIntermediate, 1);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // out_t[h] += coeff * tmp[h]
+    GlmExpertAccumKernel<<<hidden_blocks, kBlock, 0, stream>>>(
+        out_t, d_tmp, coeff, kGlmHidden);
+    return cudaGetLastError();
+}
+
 cudaError_t RunGlmExpertsStack(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
@@ -492,11 +575,6 @@ cudaError_t RunGlmExpertsStack(
     __half *d_out, __half *d_scratch,
     GlmRoutedSlot *h_routing_staging /* = nullptr */)
 {
-    constexpr int64_t kMatEl = kGlmExpertMatEl;
-    constexpr int64_t kExpectPacked = kMatEl / 2;
-    constexpr int64_t kExpectScale  = kMatEl / kGlmNvfp4Block;
-    constexpr int    kBlock  = 256;
-
     if (!d_routing || !d_act || !h_experts || !d_out || !d_scratch ||
         seq <= 0 || n_experts <= 0 || !cublas_h)
         return cudaErrorInvalidValue;
@@ -528,85 +606,156 @@ cudaError_t RunGlmExpertsStack(
         return e;
     }
 
-    // Scratch layout (halves): dequant w-deck / tmp / inter / gate.
-    __half *d_deq   = d_scratch;                                      // kMatEl
-    __half *d_tmp   = d_deq + kMatEl;                                 // kGlmHidden
-    __half *d_inter = d_tmp + kGlmHidden;                             // kGlmMoeIntermediate
-    __half *d_gate  = d_inter + kGlmMoeIntermediate;                  // kGlmMoeIntermediate
+    e = cudaMemsetAsync(d_out, 0,
+                        static_cast<size_t>(seq) * kGlmHidden * sizeof(__half),
+                        stream);
+    if (e != cudaSuccess) { cudaFreeHost(h_routing); return e; }
+
+    for (int s = 0; s < slots; ++s) {
+        const GlmRoutedSlot &rs = h_routing[s];
+        if (rs.eid < 0 || rs.eid >= n_experts) continue;
+        const int   t    = s / kGlmMoETopK;
+        const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
+        __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
+        e = RunGlmExpertSlot(cublas_h, stream, h_experts[rs.eid],
+                             x_t, out_t, d_scratch, rs.coeff);
+        if (e != cudaSuccess) break;
+    }
+
+    if (own_staging) cudaFreeHost(h_routing);
+    return e;
+}
+
+// VRAM-budgeted twin of RunGlmExpertsStack: identical routing-grid staging
+// barrier, per-slot decode chain and deterministic inactive-expert skip, but
+// the routed experts are pulled from a host memory-mapped index (GlmExpertDb)
+// instead of a resident device descriptor table. For every occupied slot the
+// expert's packed E2M1 payloads + E4M3 scales are streamed into the caller's
+// reusable device staging buffers (one expert at a time) and the identical
+// RunGlmExpertSlot chain runs against them. A full 385 GiB expert model never
+// needs more than the pinned weights + ~2 × one-expert staging in VRAM.
+cudaError_t RunGlmExpertsStackOnDemand(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmRoutedSlot *d_routing, int seq,
+    const __half *d_act,
+    GlmExpertDb &db, int layer, int n_experts,
+    __half *d_out, __half *d_scratch,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    GlmRoutedSlot *h_routing_staging /* = nullptr */)
+{
+    constexpr int64_t kMatEl = kGlmExpertMatEl;
+    constexpr int64_t kPackPerMat = kMatEl / 2;
+    constexpr int64_t kScalePerMat = kMatEl / kGlmNvfp4Block;
+
+    if (!d_routing || !d_act || !d_out || !d_scratch ||
+        !d_pack_stage || !d_scale_stage ||
+        seq <= 0 || n_experts <= 0 || layer < 0 || !cublas_h)
+        return cudaErrorInvalidValue;
+
+    const int slots = seq * kGlmMoETopK;
+    if (slots < 0) return cudaErrorInvalidValue;
+
+    // Same single localized stream barrier as RunGlmExpertsStack: stage the
+    // tiny routing grid back to host so per-slot expert launches can be picked
+    // from the host descriptor registry.
+    const bool own_staging = (h_routing_staging == nullptr);
+    GlmRoutedSlot *h_routing = h_routing_staging;
+    cudaError_t e = cudaSuccess;
+    if (own_staging) {
+        e = cudaMallocHost(&h_routing,
+                           static_cast<size_t>(slots) *
+                               sizeof(GlmRoutedSlot));
+        if (e != cudaSuccess) return e;
+    }
+    e = cudaMemcpyAsync(h_routing, d_routing,
+                        static_cast<size_t>(slots) * sizeof(GlmRoutedSlot),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) {
+        if (own_staging) cudaFreeHost(h_routing);
+        return e;
+    }
 
     e = cudaMemsetAsync(d_out, 0,
                         static_cast<size_t>(seq) * kGlmHidden * sizeof(__half),
                         stream);
     if (e != cudaSuccess) { cudaFreeHost(h_routing); return e; }
 
-    const int64_t dequant_per_block =
-        static_cast<int64_t>(kGlmDequantThreads) * kGlmDequantPerThread;
-    const int deq_grid =
-        static_cast<int>((kMatEl + dequant_per_block - 1) / dequant_per_block);
-
-    const int inter_blocks =
-        (kGlmMoeIntermediate + kBlock - 1) / kBlock;
-    const int hidden_blocks = (kGlmHidden + kBlock - 1) / kBlock;
+    // Staging layout (bytes): [w1][w2][w3] packed payloads, then [w1][w2][w3]
+    // per-block scales. Reused and overwritten per slot, so only ONE expert is
+    // ever resident in VRAM beyond the pinned weights.
+    uint8_t *p1 = d_pack_stage;
+    uint8_t *p2 = p1 + kPackPerMat;
+    uint8_t *p3 = p2 + kPackPerMat;
+    uint8_t *s1 = d_scale_stage;
+    uint8_t *s2 = s1 + kScalePerMat;
+    uint8_t *s3 = s2 + kScalePerMat;
 
     for (int s = 0; s < slots; ++s) {
         const GlmRoutedSlot &rs = h_routing[s];
         if (rs.eid < 0 || rs.eid >= n_experts) continue;
-        const GlmExpertDeviceBlock &eb = h_experts[rs.eid];
-        if (!eb.d_w1_packed || !eb.d_w1_scales ||
-            !eb.d_w2_packed || !eb.d_w2_scales ||
-            !eb.d_w3_packed || !eb.d_w3_scales ||
-            eb.w1_packed_bytes != kExpectPacked ||
-            eb.w2_packed_bytes != kExpectPacked ||
-            eb.w3_packed_bytes != kExpectPacked ||
-            eb.w1_scale_bytes  != kExpectScale  ||
-            eb.w2_scale_bytes  != kExpectScale  ||
-            eb.w3_scale_bytes  != kExpectScale)
-            continue; // inactive / foreign format: deterministic zero contribution
+        ensure_glm_expert_resident(db, layer, rs.eid);
+        const size_t flat = static_cast<size_t>(layer) *
+                                static_cast<size_t>(db.experts_per_layer) +
+                            static_cast<size_t>(rs.eid);
+        if (flat >= db.entries.size()) continue;
+        const GlmExpertEntry &en = db.entries[flat];
+        if (!en.host_w1 || !en.host_w2 || !en.host_w3 ||
+            !en.host_w1_scales || !en.host_w2_scales || !en.host_w3_scales ||
+            en.w1_bytes != kPackPerMat || en.w2_bytes != kPackPerMat ||
+            en.w3_bytes != kPackPerMat ||
+            en.w1_scales_bytes != kScalePerMat ||
+            en.w2_scales_bytes != kScalePerMat ||
+            en.w3_scales_bytes != kScalePerMat)
+            continue; // missing / foreign format: deterministic zero contribution
+
+        e = cudaMemcpyAsync(p1, en.host_w1,
+                            static_cast<size_t>(kPackPerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+        e = cudaMemcpyAsync(p2, en.host_w2,
+                            static_cast<size_t>(kPackPerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+        e = cudaMemcpyAsync(p3, en.host_w3,
+                            static_cast<size_t>(kPackPerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+        e = cudaMemcpyAsync(s1, en.host_w1_scales,
+                            static_cast<size_t>(kScalePerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+        e = cudaMemcpyAsync(s2, en.host_w2_scales,
+                            static_cast<size_t>(kScalePerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+        e = cudaMemcpyAsync(s3, en.host_w3_scales,
+                            static_cast<size_t>(kScalePerMat),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) break;
+
+        GlmExpertDeviceBlock eb;
+        eb.d_w1_packed      = p1;
+        eb.d_w1_scales      = s1;
+        eb.w1_global_scale  = en.w1_global_scale;
+        eb.w1_packed_bytes  = kPackPerMat;
+        eb.w1_scale_bytes   = kScalePerMat;
+        eb.d_w2_packed      = p2;
+        eb.d_w2_scales      = s2;
+        eb.w2_global_scale  = en.w2_global_scale;
+        eb.w2_packed_bytes  = kPackPerMat;
+        eb.w2_scale_bytes   = kScalePerMat;
+        eb.d_w3_packed      = p3;
+        eb.d_w3_scales      = s3;
+        eb.w3_global_scale  = en.w3_global_scale;
+        eb.w3_packed_bytes  = kPackPerMat;
+        eb.w3_scale_bytes   = kScalePerMat;
 
         const int   t    = s / kGlmMoETopK;
         const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
         __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-
-        // inter = w1^T @ x  (w1 row-major [inter, hidden] dequantized to FP16)
-        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
-            eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
-            d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-
-        // gate = w3^T @ x
-        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
-            eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-        GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
-            d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-
-        // swiglu: inter = silu(inter) * gate, in place (FP32 math)
-        GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
-            d_inter, d_gate, kGlmMoeIntermediate);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-
-        // down = w2^T @ swig  (w2 row-major [hidden, inter])
-        GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
-            eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-        GlmGemmFp64Kernel<<<hidden_blocks, kBlock, 0, stream>>>(
-            d_deq, d_inter, d_tmp, kGlmHidden, kGlmMoeIntermediate, 1);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) break;
-
-        // out_t[h] += coeff * tmp[h]
-        GlmExpertAccumKernel<<<hidden_blocks, kBlock, 0, stream>>>(
-            out_t, d_tmp, rs.coeff, kGlmHidden);
-        e = cudaGetLastError();
+        e = RunGlmExpertSlot(cublas_h, stream, eb,
+                             x_t, out_t, d_scratch, rs.coeff);
         if (e != cudaSuccess) break;
     }
 

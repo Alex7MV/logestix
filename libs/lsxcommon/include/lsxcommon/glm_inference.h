@@ -146,12 +146,56 @@ cudaError_t RunGlmMoERouter(
 // device compute. Callers needing throughput should batch routing slots or
 // hoist per-expert state across turns; correctness (bit-exact parity) is not
 // affected by these costs.
+//
+// Per-slot decode chain shared by RunGlmExpertsStack and
+// RunGlmExpertsStackOnDemand:
+//   inter = silu(w1^T @ x_t) * (w3^T @ x_t)
+//   out_t += coeff * (w2^T @ inter)
+// <eb> is one NVFP4 descriptor (row-major dequantized to FP16, then FP64
+// GEMMs); inactive / foreign-format blocks contribute nothing. Runs entirely
+// on <stream> with no synchronization. d_scratch follows the RunGlmExpertsStack
+// layout: kGlmExpertMatEl + kGlmHidden + 2*kGlmMoeIntermediate halves.
+cudaError_t RunGlmExpertSlot(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmExpertDeviceBlock &eb,
+    const __half *x_t, __half *out_t, __half *d_scratch, float coeff);
+
 cudaError_t RunGlmExpertsStack(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
     __half *d_out, __half *d_scratch,
+    GlmRoutedSlot *h_routing_staging = nullptr);
+
+// On-demand variant of RunGlmExpertsStack for layers 3-78: identical
+// NVFP4-dequant / SwiGLU / FP64-GEMM / accumulate sequence and the same single
+// localized routing-grid staging barrier, but the routed experts are read from
+// a memory-mapped on-disk index (GlmExpertDb) instead of a pre-uploaded device
+// descriptor table. For every occupied (token, expert) slot this function
+//   1. calls ensure_glm_expert_resident(db, layer, eid) — mmap LRU touch,
+//   2. copies the expert's packed E2M1 payloads + E4M3 scales from the host
+//      mmap into the caller-provided device staging buffers,
+//   3. runs the identical per-expert decode/GEMM chain against those staging
+//      pointers (reusing one temporary descriptor, overwritten per slot).
+// Inactive/missing experts contribute nothing (deterministic skip), matching
+// the device-table contract. This is the VRAM-budgeted path the generation
+// loop uses: a full 385 GiB expert set is never resident at once.
+//
+//   db:            flat host mmap index (load_glm_expert_index).
+//   layer:         current MoE layer (3..78) — selects the db slice.
+//   n_experts:     must be kGlmNumRouted (the routing grid's eid domain).
+//   d_pack_stage:  device staging >= w1+w2+w3 packed payload bytes of one
+//                  expert (kGlmExpertMatEl/2 * 3, ~19 MiB).
+//   d_scale_stage: device staging >= w1+w2+w3 scale bytes of one expert
+//                  (kGlmExpertMatEl/kGlmNvfp4Block * 3).
+cudaError_t RunGlmExpertsStackOnDemand(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmRoutedSlot *d_routing, int seq,
+    const __half *d_act,
+    GlmExpertDb &db, int layer, int n_experts,
+    __half *d_out, __half *d_scratch,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     GlmRoutedSlot *h_routing_staging = nullptr);
 
 // ── TDD Cycle 9: MoE router + NVFP4 expert stacks (layers 3-77) ─────────────
@@ -361,6 +405,20 @@ struct GlmGenerationResult {
 cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
+    const std::vector<int32_t> &prompt, int max_new,
+    GlmGenerationResult &result);
+
+// VRAM-budgeted generation pass over the same frozen 79-layer GLM-5.2 loop,
+// driven by a memory-mapped expert index (GlmExpertDb) instead of a fully
+// resident device table set. Routed experts are staged into two reusable
+// per-call device buffers (one expert at a time) by RunGlmExpertsStackOnDemand;
+// the loop allocates those staging buffers once and frees them on exit, so a
+// full 385 GiB expert model never exceeds the pinned-weights footprint plus
+// ~2 × one-expert staging. Semantics, capacity validation and the
+// GlmGenerationResult contract are identical to the device-table overload.
+cudaError_t RunGlmGeneration(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result);
 

@@ -2,6 +2,7 @@
 
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <cctype>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -167,7 +168,27 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
-    r.error_msg = "GLM self-check not implemented (glm-5.2)";
+    r = Infer(req);
+    if (!r.ok) {
+        r.selfcheck_passed = false;
+        return r;
+    }
+    if (r.first_gen_tok_id >= 0) {
+        char buf[512];
+        size_t cap = sizeof(buf);
+        std::vector<int32_t> single_tok = {r.first_gen_tok_id};
+        if (::lsxcommon::arrow_tokenizer_decode(
+                *tok_db_, single_tok.data(), single_tok.size(), buf, &cap) == 0)
+            r.first_gen_text = std::string(buf, cap);
+        std::string t = r.first_gen_text;
+        auto b = t.begin(), e = t.end();
+        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
+        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
+        r.selfcheck_passed = (std::string(b, e) == "Paris");
+    }
+    spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
+                 r.first_gen_tok_id, r.first_gen_text,
+                 r.selfcheck_passed ? "true" : "false");
     return r;
 }
 

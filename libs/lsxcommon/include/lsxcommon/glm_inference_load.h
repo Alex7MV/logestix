@@ -2,8 +2,11 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <arrow/io/file.h>
+#include <arrow/record_batch.h>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -202,6 +205,69 @@ cudaError_t RunGlmIndexShareAttention(
     cudaStream_t stream, int layer_idx, int turn,
     const GlmLayerWeights &lw, int seq,
     const __half *d_hidden, __half *d_out, GlmIndexShareState *d_state);
+
+// ── On-demand routed-expert index (layers 3-78) ─────────────────────────────
+// Host-side memory-mapped view of one routed expert: NVFP4 packed E2M1 nibble
+// payloads + per-128-block E4M3 scales + decoded E8M0 global modifiers, all
+// pointing straight into the Arrow IPC buffer of the mmap'd expert file
+// (zero-copy — no per-expert heap copy). Sized like the DeepSeek ExpertEntry
+// the lsxcommon loader uses for its own on-demand routed-expert path.
+//
+// Dequant invariant (identical to GlmExpertDeviceBlock):
+//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>7]>>3)&0xF) - 7) * global_scale
+// A null host_w1 marks the entry missing/inactive (deterministic skip).
+struct GlmExpertEntry {
+    const uint8_t *host_w1 = nullptr;
+    const uint8_t *host_w2 = nullptr;
+    const uint8_t *host_w3 = nullptr;
+    const uint8_t *host_w1_scales = nullptr;
+    const uint8_t *host_w2_scales = nullptr;
+    const uint8_t *host_w3_scales = nullptr;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
+    int64_t w1_bytes = 0;
+    int64_t w2_bytes = 0;
+    int64_t w3_bytes = 0;
+    int64_t w1_scales_bytes = 0;
+    int64_t w2_scales_bytes = 0;
+    int64_t w3_scales_bytes = 0;
+};
+
+// Flat on-disk routed-expert registry for GLM-5.2. Entries are indexed by
+// (layer * experts_per_layer + expert). Files are opened lazily (mmap) and
+// cached through a bounded LRU so a full 19456-expert model never needs more
+// than `max_open` CRT file descriptors at once (Windows cap is 8192) and host
+// memory stays proportional to the resident set, mirroring the DeepSeek
+// loader (ExpertDb in inference_load.cuh). The generation loop calls
+// ensure_glm_expert_resident per routed slot before uploading the selected
+// expert's packed payload to device staging.
+struct GlmExpertDb {
+    std::vector<GlmExpertEntry> entries;
+    std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
+    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    std::vector<std::string> paths;      // per flat index (for lazy open)
+    std::vector<size_t> lru;             // flat indices, back = least recently used
+    size_t max_open = 7000;              // bounded by Windows CRT fd cap (8192)
+    int experts_per_layer = 0;
+    int num_layers = 0;
+    std::string error_msg;
+};
+
+// Builds the flat file-path index of every expert of a converted GLM-5.2
+// model (<model_path>/logestix/experts/layer_<l>/exp_<e>.arrow, falling back to
+// <model_path>/experts/... like the pinned loader) and warms the LRU cache up
+// to max_open entries. Parsing is deferred until ensure_glm_expert_resident
+// touches an index, so the full 19456-expert model costs no memory up front.
+GlmExpertDb load_glm_expert_index(const std::string &model_path,
+                                  int num_layers, int experts_per_layer);
+
+// Ensures the mmap for (layer, expert) is resident in the LRU cache, evicting
+// the least-recently-used entries as needed. No-op when already resident.
+void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert);
+
+// Releases all expert mmaps (frees CRT file descriptors).
+void free_glm_expert_index(GlmExpertDb &db);
 
 } // namespace glm
 } // namespace lsxcommon
