@@ -358,6 +358,125 @@ SharedExpertSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch
     return layers;
 }
 
+// ── DenseNvfp4Schema ──────────────────────────────────────────────────────────
+
+std::shared_ptr<arrow::Schema> DenseNvfp4Schema::Make()
+{
+    return arrow::schema({
+        arrow::field("name",         arrow::utf8()),
+        arrow::field("shape",        arrow::list(arrow::int64())),
+        arrow::field("dtype",        arrow::utf8()),
+        arrow::field("packed",       arrow::large_binary()),
+        arrow::field("scales",       arrow::list(arrow::uint8())),
+        arrow::field("global_scale", arrow::float32()),
+    });
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+DenseNvfp4Schema::MakeBatch(const std::vector<DenseNvfp4Record> &records)
+{
+    auto schema = Make();
+    int64_t n = static_cast<int64_t>(records.size());
+
+    arrow::StringBuilder name_builder;
+    arrow::StringBuilder dtype_builder;
+    arrow::LargeBinaryBuilder packed_builder;
+    arrow::FloatBuilder gs_builder;
+
+    auto shape_val_builder = std::make_shared<arrow::Int64Builder>();
+    arrow::ListBuilder shape_builder(arrow::default_memory_pool(), shape_val_builder);
+    auto scale_val_builder = std::make_shared<arrow::UInt8Builder>();
+    arrow::ListBuilder scale_builder(arrow::default_memory_pool(), scale_val_builder);
+
+    ARROW_RETURN_NOT_OK(name_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(dtype_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(packed_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(gs_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(shape_builder.Reserve(n));
+    ARROW_RETURN_NOT_OK(scale_builder.Reserve(n));
+
+    for (auto &r : records) {
+        ARROW_RETURN_NOT_OK(name_builder.Append(r.name));
+        ARROW_RETURN_NOT_OK(dtype_builder.Append(r.dtype));
+        ARROW_RETURN_NOT_OK(packed_builder.Append(r.packed.data(), r.packed.size()));
+        ARROW_RETURN_NOT_OK(gs_builder.Append(r.global_scale));
+        ARROW_RETURN_NOT_OK(shape_builder.Append());
+        for (int64_t d : r.shape)
+            ARROW_RETURN_NOT_OK(shape_val_builder->Append(d));
+        ARROW_RETURN_NOT_OK(scale_builder.Append());
+        for (uint8_t s : r.scales)
+            ARROW_RETURN_NOT_OK(scale_val_builder->Append(s));
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto name_arr, name_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto shape_arr, shape_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto dtype_arr, dtype_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto packed_arr, packed_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto scales_arr, scale_builder.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto gs_arr, gs_builder.Finish());
+
+    auto batch = arrow::RecordBatch::Make(schema, n,
+        {name_arr, shape_arr, dtype_arr, packed_arr, scales_arr, gs_arr});
+    diag::ValidateBatchBuffers(*batch, "DenseNvfp4Schema::MakeBatch result");
+    return batch;
+}
+
+arrow::Result<std::vector<DenseNvfp4Record>>
+DenseNvfp4Schema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
+{
+    if (!batch || batch->num_columns() != 6)
+        return arrow::Status::Invalid("Expected 6-column DenseNvfp4 RecordBatch");
+
+    diag::ValidateBatchBuffers(*batch, "DenseNvfp4Schema::UnpackBatch input");
+
+    auto names = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxName));
+    auto dtypes = std::dynamic_pointer_cast<arrow::StringArray>(batch->column(kIdxDtype));
+    auto packeds = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(batch->column(kIdxPacked));
+    auto shapes = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxShape));
+    auto scales = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(kIdxScales));
+    auto gs_arr = std::dynamic_pointer_cast<arrow::FloatArray>(batch->column(kIdxGlobalScale));
+
+    if (!names || !dtypes || !packeds || !shapes || !scales || !gs_arr)
+        return arrow::Status::Invalid("DenseNvfp4 batch column type mismatch");
+
+    int64_t n = batch->num_rows();
+    std::vector<DenseNvfp4Record> records;
+    records.reserve(static_cast<size_t>(n));
+
+    auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
+    auto flat_scales = std::dynamic_pointer_cast<arrow::UInt8Array>(scales->values());
+    if (!flat_shapes || !flat_scales)
+        return arrow::Status::Invalid("DenseNvfp4 list value array type mismatch");
+
+    auto shape_offsets = std::dynamic_pointer_cast<arrow::Int32Array>(shapes->offsets());
+    auto scale_offsets = std::dynamic_pointer_cast<arrow::Int32Array>(scales->offsets());
+    if (!shape_offsets || !scale_offsets)
+        return arrow::Status::Invalid("DenseNvfp4 list offsets not int32");
+
+    for (int64_t i = 0; i < n; ++i) {
+        DenseNvfp4Record rec;
+        rec.name = names->GetString(i);
+        rec.dtype = dtypes->GetString(i);
+        rec.global_scale = gs_arr->Value(i);
+
+        auto pv = packeds->GetView(i);
+        rec.packed.assign(pv.begin(), pv.end());
+
+        int64_t sb = shape_offsets->Value(i);
+        int64_t se = shape_offsets->Value(i + 1);
+        for (int64_t j = sb; j < se; ++j)
+            rec.shape.push_back(flat_shapes->Value(j));
+
+        int64_t cb = scale_offsets->Value(i);
+        int64_t ce = scale_offsets->Value(i + 1);
+        for (int64_t j = cb; j < ce; ++j)
+            rec.scales.push_back(flat_scales->Value(j));
+
+        records.push_back(std::move(rec));
+    }
+    return records;
+}
+
 // ── PinnedSchema ────────────────────────────────────────────────────────────
 
 std::shared_ptr<arrow::Schema> PinnedSchema::Make()

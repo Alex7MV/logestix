@@ -37,6 +37,25 @@ endif()
 
 add_test(NAME test_deepseek_loader COMMAND test_deepseek_loader)
 
+# ── Тест Qwen3.5-9B конвертера (парсер имён + индекс + round-trip) ────────
+add_executable(test_qwen_convert test_qwen_convert.cpp)
+target_link_libraries(test_qwen_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_convert>"
+    )
+    add_custom_command(TARGET test_qwen_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_convert>"
+    )
+endif()
+
+add_test(NAME test_qwen_convert COMMAND test_qwen_convert)
+
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)

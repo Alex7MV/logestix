@@ -53,6 +53,34 @@ struct TensorRecord {
     std::vector<uint8_t> data;
 };
 
+// Dense NVFP4 tensor record (per-tensor 6-column schema).
+struct DenseNvfp4Record {
+    std::string name;
+    std::vector<int64_t> shape;
+    std::string dtype;
+    std::vector<uint8_t> packed;
+    std::vector<uint8_t> scales;
+    float global_scale = 1.0f;
+};
+
+class DenseNvfp4Schema {
+public:
+    static constexpr int kIdxName        = 0;
+    static constexpr int kIdxShape       = 1;
+    static constexpr int kIdxDtype       = 2;
+    static constexpr int kIdxPacked      = 3;
+    static constexpr int kIdxScales      = 4;
+    static constexpr int kIdxGlobalScale = 5;
+
+    static std::shared_ptr<arrow::Schema> Make();
+
+    static arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+    MakeBatch(const std::vector<DenseNvfp4Record> &records);
+
+    static arrow::Result<std::vector<DenseNvfp4Record>>
+    UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch);
+};
+
 class ExpertSchema {
 public:
     static constexpr int kNumFields = 9;
