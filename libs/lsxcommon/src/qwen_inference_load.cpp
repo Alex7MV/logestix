@@ -104,6 +104,50 @@ void UploadF32(const uint8_t *data, int64_t n, float **dst, cudaStream_t stream)
     if (e != cudaSuccess) { cudaFree(*dst); *dst = nullptr; }
 }
 
+// Uploads a raw BF16 tensor as FP32 (dt_bias on disk is BF16).
+void UploadBf16ToFloat(const uint8_t *src_bytes, int64_t numel, float **dst,
+                       cudaStream_t stream)
+{
+    if (!src_bytes || numel <= 0) return;
+    std::vector<float> h(static_cast<size_t>(numel));
+    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
+    for (int64_t i = 0; i < numel; ++i) {
+        uint32_t bits = static_cast<uint32_t>(src_u16[i]) << 16;
+        std::memcpy(&h[static_cast<size_t>(i)], &bits, sizeof(bits));
+    }
+    cudaError_t e = cudaMalloc(dst, static_cast<size_t>(numel) * sizeof(float));
+    if (e != cudaSuccess) return;
+    e = cudaMemcpyAsync(*dst, h.data(), static_cast<size_t>(numel) * sizeof(float),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(*dst); *dst = nullptr; }
+}
+
+// Uploads a raw F32 tensor as FP16 (linear_attn.norm.weight on disk is F32).
+void UploadF32ToHalf(const uint8_t *src_bytes, int64_t numel, __half **dst,
+                     cudaStream_t stream)
+{
+    if (!src_bytes || numel <= 0) return;
+    std::vector<__half> h(static_cast<size_t>(numel));
+    const float *src = reinterpret_cast<const float *>(src_bytes);
+    for (int64_t i = 0; i < numel; ++i)
+        h[static_cast<size_t>(i)] = __float2half(src[i]);
+    cudaError_t e = cudaMalloc(dst, static_cast<size_t>(numel) * sizeof(__half));
+    if (e != cudaSuccess) return;
+    e = cudaMemcpyAsync(*dst, h.data(), static_cast<size_t>(numel) * sizeof(__half),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(*dst); *dst = nullptr; }
+}
+
+// Uploads a 1D norm tensor to FP16, honoring its on-disk dtype (BF16 or F32).
+void UploadNorm1D(const uint8_t *data, int64_t n, const std::string &dtype,
+                  __half **dst, cudaStream_t stream)
+{
+    if (!data || n <= 0) return;
+    if (dtype == "F32") { UploadF32ToHalf(data, n, dst, stream); return; }
+    if (UploadBf16ToHalf(data, n, dst, stream) != cudaSuccess)
+        *dst = nullptr;
+}
+
 // Matches a tensor record whose name ENDS with `suffix`.
 const TensorRecord *FindRaw(const std::vector<TensorRecord> &tensors,
                             const std::string &suffix)
@@ -174,7 +218,7 @@ arrow::Result<std::vector<DenseNvfp4Record>> LoadNvfp4File(const std::string &pa
     return DenseNvfp4Schema::UnpackBatch(*batch_res);
 }
 
-cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
+    cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
                       const std::vector<DenseNvfp4Record> &nv,
                       QwenLayerWeights &lw, cudaStream_t stream,
                       bool is_linear)
@@ -184,11 +228,13 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
     auto *in_norm = FindRaw(raw, "input_layernorm.weight");
     if (in_norm && !in_norm->shape.empty())
         lw.norm_size = static_cast<int>(in_norm->shape[0]);
-    Upload1D(in_norm ? in_norm->data.data() : nullptr, lw.norm_size,
-             &lw.d_input_norm, stream);
+    UploadNorm1D(in_norm ? in_norm->data.data() : nullptr, lw.norm_size,
+                 in_norm ? in_norm->dtype : std::string("BF16"),
+                 &lw.d_input_norm, stream);
     auto *post_norm = FindRaw(raw, "post_attention_layernorm.weight");
-    Upload1D(post_norm ? post_norm->data.data() : nullptr, lw.norm_size,
-             &lw.d_post_norm, stream);
+    UploadNorm1D(post_norm ? post_norm->data.data() : nullptr, lw.norm_size,
+                 post_norm ? post_norm->dtype : std::string("BF16"),
+                 &lw.d_post_norm, stream);
 
     if (is_linear) {
         UploadNvfp4Weight(FindNvfp4(nv, "linear_attn.in_proj_qkv.weight"), lw.qkv, stream);
@@ -208,13 +254,19 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
         if (al && !al->shape.empty())
             UploadF32(al->data.data(), al->shape[0], &lw.d_A_log, stream);
         auto *dt = FindRaw(raw, "linear_attn.dt_bias");
-        if (dt && !dt->shape.empty())
-            UploadF32(dt->data.data(), dt->shape[0], &lw.d_dt_bias, stream);
+        if (dt && !dt->shape.empty()) {
+            // dt_bias is BF16 on disk; kernels consume it as FP32.
+            if (dt->dtype == "BF16" || dt->dtype.empty())
+                UploadBf16ToFloat(dt->data.data(), dt->shape[0], &lw.d_dt_bias, stream);
+            else
+                UploadF32(dt->data.data(), dt->shape[0], &lw.d_dt_bias, stream);
+        }
         auto *an = FindRaw(raw, "linear_attn.norm.weight");
         if (an && !an->shape.empty())
             lw.attn_norm_size = static_cast<int>(an->shape[0]);
-        Upload1D(an ? an->data.data() : nullptr, lw.attn_norm_size,
-                 &lw.d_attn_norm, stream);
+        UploadNorm1D(an ? an->data.data() : nullptr, lw.attn_norm_size,
+                     an ? an->dtype : std::string("BF16"),
+                     &lw.d_attn_norm, stream);
     } else {
         UploadNvfp4Weight(FindNvfp4(nv, "self_attn.q_proj.weight"), lw.q, stream);
         UploadNvfp4Weight(FindNvfp4(nv, "self_attn.k_proj.weight"), lw.k, stream);
@@ -223,11 +275,15 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
         auto *qn = FindRaw(raw, "self_attn.q_norm.weight");
         if (qn && !qn->shape.empty())
             lw.q_norm_size = static_cast<int>(qn->shape[0]);
-        Upload1D(qn ? qn->data.data() : nullptr, lw.q_norm_size, &lw.d_q_norm, stream);
+        UploadNorm1D(qn ? qn->data.data() : nullptr, lw.q_norm_size,
+                     qn ? qn->dtype : std::string("BF16"),
+                     &lw.d_q_norm, stream);
         auto *kn = FindRaw(raw, "self_attn.k_norm.weight");
         if (kn && !kn->shape.empty())
             lw.k_norm_size = static_cast<int>(kn->shape[0]);
-        Upload1D(kn ? kn->data.data() : nullptr, lw.k_norm_size, &lw.d_k_norm, stream);
+        UploadNorm1D(kn ? kn->data.data() : nullptr, lw.k_norm_size,
+                     kn ? kn->dtype : std::string("BF16"),
+                     &lw.d_k_norm, stream);
     }
 
     // MLP.
@@ -267,7 +323,8 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
             auto *fn = FindRaw(*raw_res, "norm.weight");
             if (fn && !fn->shape.empty()) {
                 pw.final_norm_size = static_cast<int>(fn->shape[0]);
-                Upload1D(fn->data.data(), pw.final_norm_size, &pw.d_final_norm, stream);
+                UploadNorm1D(fn->data.data(), pw.final_norm_size,
+                             fn->dtype, &pw.d_final_norm, stream);
             }
         }
     }

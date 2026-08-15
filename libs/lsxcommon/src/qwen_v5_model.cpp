@@ -140,28 +140,46 @@ gpu::InferenceResult QwenV5Model::SelfCheck(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
-    // Structural self-check: validate the stored model configuration.
-    qwen::QwenPinnedWeights pw;
-    qwen::QwenTopology top;
+    // Single-token self-check: run generation and verify the first generated
+    // token decodes to the expected answer ("Paris"). Mirrors GlmV5Model so the
+    // same prompt harness validates the Qwen3.5-9B pipeline end-to-end.
+    // Qwen tokenizes " Paris" as " " + "Paris" (two BPE tokens), unlike
+    // DeepSeek/GLM which fuse them into one token, so generate 2 tokens and
+    // decode the full continuation to check against "Paris".
     cudaStream_t st = nullptr;
-    auto ec = cudaStreamCreate(&st);
-    if (ec != cudaSuccess) { r.error_msg = "stream"; return r; }
-
-    bool ok = qwen::LoadQwenPinnedWeights(cfg_.model_path, pw, st);
+    if (cudaStreamCreate(&st) != cudaSuccess) { r.error_msg = "stream"; return r; }
+    qwen::QwenGenerationResult gen;
+    int max_gen = std::max(2, req.max_gen_tokens);
+    cudaError_t e = qwen::RunQwenGeneration(st, pw_, req.input_ids,
+                                            max_gen, gen);
     cudaStreamSynchronize(st);
     cudaStreamDestroy(st);
-    if (!ok) { r.error_msg = "load pinned weights failed"; pw.Free(); return r; }
-
-    // Validate: all layers present, dimensions match
-    r.selfcheck_passed = (pw.layers.size() > 0);
-    for (auto &lw : pw.layers) {
-        if (!lw.d_input_norm || !lw.d_post_norm) r.selfcheck_passed = false;
+    if (e != cudaSuccess) {
+        r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
+        r.ok = false;
+        r.selfcheck_passed = false;
+        return r;
     }
-
-    spdlog::info("[qwen-selfcheck] layers={} passed={}",
-                 pw.layers.size(), r.selfcheck_passed ? "true" : "false");
-    pw.Free();
     r.ok = true;
+    r.num_tokens = static_cast<int>(gen.tokens.size());
+    if (!gen.tokens.empty())
+        r.first_gen_tok_id = gen.tokens[0];
+    if (!gen.tokens.empty()) {
+        char buf[512];
+        size_t cap = sizeof(buf);
+        if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(),
+                                   std::min((int)gen.tokens.size(), 8),
+                                   buf, &cap) == 0)
+            r.first_gen_text = std::string(buf, cap);
+        std::string t = r.first_gen_text;
+        auto b = t.begin(), e = t.end();
+        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
+        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
+        r.selfcheck_passed = (std::string(b, e) == "Paris");
+    }
+    spdlog::info("[qwen-selfcheck] top1_tok={} text='{}' passed={}",
+                 r.first_gen_tok_id, r.first_gen_text,
+                 r.selfcheck_passed ? "true" : "false");
     return r;
 }
 

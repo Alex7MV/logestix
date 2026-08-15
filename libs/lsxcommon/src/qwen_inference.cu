@@ -312,13 +312,15 @@ __global__ void qwen_nvfp4_gemm_kernel(
     const int t = (int)(idx / N);
 
     const __half *xrow = x + (int64_t)t * K;
-    const uint8_t *wrow = packed + (int64_t)n * K;
 
     float acc = 0.0f;
     for (int k = 0; k < K; ++k) {
-        const int idx2 = n * K + k;
-        const uint8_t nib = (idx2 & 1) ? (wrow[k] >> 4) : (wrow[k] & 0x0F);
-        const float scl = qwen_e4m3_scale(scales[idx2 >> 4]) * global_scale;
+        // NVFP4 layout: element e lives at byte e>>1, low nibble if even,
+        // high nibble if odd; scale is per-16 elements (e>>4).
+        const int64_t e = (int64_t)n * K + k;
+        const uint8_t byte = packed[e >> 1];
+        const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+        const float scl = qwen_e4m3_scale(scales[e >> 4]) * global_scale;
         acc += __half2float(xrow[k]) * qwen_e2m1_tab[nib] * scl;
     }
     y[idx] = __float2half(acc);
@@ -986,7 +988,6 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             hlast_f[i] = __half2float(hlast[i]);
         result.final_logits = std::move(hlast_f);
     }
-
     cudaFree(d_argmax);
     cudaFree(base);
     result.ok = true;

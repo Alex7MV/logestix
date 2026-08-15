@@ -94,11 +94,12 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         }
     }
 
-    int32_t bos_id = 0, eos_id = 1, pad_id = 2;
+    int32_t bos_id = -1, eos_id = 1, pad_id = 2;
     {
         // Only added tokens explicitly flagged special (e.g. DeepSeek's
-        // "<|begin▁of▁sentence|>") may fill bos/eos/pad. Unflagged control
-        // tokens ("<|fim▁begin|>") must never be picked; missing → 0/1/2.
+        // "<|begin▁of▁sentence|>" or Qwen's "<|im_start|>") fill bos/eos/pad.
+        // Unflagged control tokens ("<|fim▁begin|>") must never be picked;
+        // missing → no BOS (-1) / eos 1 / pad 2.
         auto find_special = [&](const char *needle) -> int32_t {
             for (auto &[id, k] : added_content)
                 if (k.find(needle) != std::string::npos &&
@@ -107,6 +108,7 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
             return -1;
         };
         int32_t b = find_special("begin");
+        if (b < 0) b = find_special("bos");
         if (b < 0) b = find_special("sentence");
         if (b >= 0) bos_id = b;
         int32_t e = find_special("end");
