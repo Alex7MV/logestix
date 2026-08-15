@@ -1,14 +1,20 @@
-// lsxhome (LogestiX Home) — Windows-native MVP desktop shell.
+// lsxhome (LogestiX Home) — Windows-native x64 desktop shell.
 //
-// Lifecycle: WinMain -> native window -> D3D11 hardware renderer + Dear ImGui;
-// a compute thread publishes decoded tokens into the lock-free SPSC GuiBridge;
-// the UI thread drains them every frame and renders the Cowork-style Blackwell
-// theme. Strict separation: the UI thread never touches the model, and the
-// compute thread never touches the window.
+// Lifecycle: WinMain -> native window -> D3D12 hardware renderer + Dear ImGui
+// (docking branch); a compute thread publishes decoded tokens into the
+// lock-free SPSC GuiBridge; the UI thread drains them every frame and renders
+// the Cowork-style Blackwell theme. Strict separation: the UI thread never
+// touches the model, and the compute thread never touches the window.
 
 #include "backends/imgui_impl_win32.h"
+#include <imgui.h>
+#include <imgui_freetype.h>
+#include <implot.h>
+#include <imnodes.h>
+
 #include "lsxhome/blackwell_theme.h"
-#include "lsxhome/d3d11_renderer.h"
+#include "lsxhome/d3d12_renderer.h"
+#include "lsxhome/font_loader.h"
 #include "lsxhome/gui_bridge.h"
 
 #include <windows.h>
@@ -16,7 +22,6 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <thread>
@@ -37,11 +42,7 @@ constexpr int kDefaultHeight = 900;
 // GLM-5.2 self-check token: 11751 decodes to "Paris".
 constexpr std::uint32_t kParisTokenId = 11751;
 
-lsxhome::D3D11Renderer* g_renderer = nullptr;
-
-// ImGui's Win32 backend needs to see mouse/keyboard messages; forward them
-// through this message pump before the switch chain below.
-
+lsxhome::D3D12Renderer* g_renderer = nullptr;
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     if (g_renderer && g_renderer->Initialized()) {
@@ -82,10 +83,11 @@ void ApplyBlackwellTheme() noexcept {
 
     auto as_vec4 = [](Color argb) {
         const float scale = 1.0f / 255.0f;
-        return ImVec4(((argb >> 24) & 0xFF) * scale,  // r
-                      ((argb >> 16) & 0xFF) * scale,  // g
-                      ((argb >> 8) & 0xFF) * scale,   // b
-                      (argb & 0xFF) * scale);         // a
+        return ImVec4(
+            ((argb >> 24) & 0xFF) * scale,  // r
+            ((argb >> 16) & 0xFF) * scale,  // g
+            ((argb >> 8) & 0xFF) * scale,   // b
+            (argb & 0xFF) * scale);         // a
     };
 
     ImGuiStyle& style = ImGui::GetStyle();
@@ -136,11 +138,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
-    lsxhome::D3D11Renderer renderer;
+    lsxhome::D3D12Renderer renderer;
     if (renderer.Init(hwnd, kDefaultWidth, kDefaultHeight) != 0) {
         return 3;
     }
     g_renderer = &renderer;
+
+    // Docking + multithreaded renderer are both required pieces of the shell.
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+    // imgui_freetype subpixel rasterizer is configured by the loader; the base
+    // font comes from the embedded static TTF payload.
+    lsxhome::FontLoader::LoadDefault(*io.Fonts);
 
     lsxhome::GuiBridge bridge;
     std::atomic<bool> running{true};
@@ -161,14 +172,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         }
         ApplyBlackwellTheme();
 
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImVec2(static_cast<float>(renderer.Width()),
-                                        static_cast<float>(renderer.Height())));
-        constexpr ImGuiWindowFlags kFlags =
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoBringToFrontOnFocus;
-        if (ImGui::Begin("lsxhome", nullptr, kFlags)) {
+        // Docking root: full-viewport host window.
+        ImGui::DockSpaceOverViewport();
+
+        if (ImGui::Begin("LogestiX Home")) {
             constexpr float kSidebarW = 300.0f;
             ImGui::BeginChild("##sidebar", ImVec2(kSidebarW, 0), true);
             {
@@ -180,12 +187,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                                    "LogestiX Home");
                 ImGui::Separator();
                 ImGui::TextUnformatted("Sessions");
-                ImGui::EndChild();
-            }
 
-            ImGui::SameLine();
-            ImGui::BeginChild("##main", ImVec2(0, 0), true);
-            {
+                ImGui::Separator();
                 if (ImGui::Button("Drain pool")) {
                     lsxhome::TokenPayload buf[256];
                     const std::size_t n = bridge.DrainAll(buf, 256);
@@ -197,6 +200,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
                 ImGui::Text("Published: %zu\nDropped: %zu\nPoolSlots: %zu",
                             bridge.Published(), bridge.Dropped(),
                             lsxhome::GuiBridge::kPoolSlots);
+                ImGui::EndChild();
+            }
+
+            ImGui::SameLine();
+            ImGui::BeginChild("##main", ImVec2(0, 0), true);
+            {
+                static float ys[256];
+                static int idx = 0;
+                ys[idx] = static_cast<float>(bridge.Published());
+                idx = (idx + 1) % 256;
+                if (ImPlot::BeginPlot("Token Throughput")) {
+                    ImPlot::PlotLine("published", ys, 256);
+                    ImPlot::EndPlot();
+                }
                 ImGui::Separator();
                 ImGui::TextUnformatted("Compute -> UI SPSC ring is live.");
                 ImGui::EndChild();
