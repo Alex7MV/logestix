@@ -9,7 +9,64 @@
 #include <filesystem>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <vector>
 #include "validator.h"
+
+namespace {
+
+// Encodes the shared "capital of France" self-check prompt for the active
+// model. GLM-5.2 requires its chat-template framing
+// ([gMASK]<sop><|user|>{prompt}<|assistant|><think></think> for the
+// non-thinking generation mode) and never auto-prepends a BOS; other models
+// (e.g. DeepSeek) consume the raw prompt directly. Returns false when the
+// tokenizer rejects the prompt.
+bool EncodeSelfCheckPrompt(lsxcommon::IModel &model, std::vector<int32_t> &ids)
+{
+    auto &tok = model.Tokenizer();
+    const char *prompt = "The capital of France is";
+    ids.assign(512, 0);
+    int32_t n_ids = -1;
+    if (model.Type() == "glm-5.2") {
+        const int32_t gmask =
+            lsxcommon::arrow_tokenizer_lookup(tok, "[gMASK]", 7);
+        const int32_t sop = lsxcommon::arrow_tokenizer_lookup(tok, "<sop>", 5);
+        const int32_t usr = lsxcommon::arrow_tokenizer_lookup(tok, "<|user|>", 8);
+        const int32_t asst =
+            lsxcommon::arrow_tokenizer_lookup(tok, "<|assistant|>", 13);
+        const int32_t think =
+            lsxcommon::arrow_tokenizer_lookup(tok, "<think>", 7);
+        const int32_t endthink =
+            lsxcommon::arrow_tokenizer_lookup(tok, "</think>", 8);
+        if (gmask >= 0 && sop >= 0 && usr >= 0 && asst >= 0 &&
+            think >= 0 && endthink >= 0) {
+            size_t cap = ids.size() - 6;
+            n_ids = lsxcommon::arrow_tokenizer_encode(
+                tok, prompt, std::strlen(prompt), ids.data() + 3, &cap);
+            if (n_ids > 0) {
+                ids[0] = gmask;
+                ids[1] = sop;
+                ids[2] = usr;
+                ids[3 + n_ids] = asst;
+                ids[4 + n_ids] = think;
+                ids[5 + n_ids] = endthink;
+                n_ids += 6;
+            }
+        } else {
+            size_t cap = ids.size();
+            n_ids = lsxcommon::arrow_tokenizer_encode(
+                tok, prompt, std::strlen(prompt), ids.data(), &cap);
+        }
+    } else {
+        size_t cap = ids.size();
+        n_ids = lsxcommon::arrow_tokenizer_encode(
+            tok, prompt, std::strlen(prompt), ids.data(), &cap);
+    }
+    if (n_ids < 0) return false;
+    ids.resize(static_cast<size_t>(n_ids));
+    return true;
+}
+
+} // namespace
 
 int main(int argc, char* argv[]) {
     bool validate = false;
@@ -46,21 +103,13 @@ int main(int argc, char* argv[]) {
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        auto &tok = model->Tokenizer();
-
-        // Same prompt as the previous hardcoded pipeline prompt.
-        const char *prompt = "The capital of France is";
-        std::vector<int32_t> input_ids(512);
-        size_t in_cap = input_ids.size();
-        int32_t n_ids = lsxcommon::arrow_tokenizer_encode(
-            tok, prompt, std::strlen(prompt), input_ids.data(), &in_cap);
-        if (n_ids < 0) {
-            spdlog::error("Tokenizer encode failed (code {})", n_ids);
+        std::vector<int32_t> input_ids;
+        if (!EncodeSelfCheckPrompt(*model, input_ids)) {
+            spdlog::error("Tokenizer encode failed");
             model->Unload();
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        input_ids.resize(static_cast<size_t>(n_ids));
 
         lsxcommon::ModelRequest req{std::move(input_ids), 64};
         auto result = model->Infer(req);
@@ -81,19 +130,13 @@ int main(int argc, char* argv[]) {
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        auto &tok = model->Tokenizer();
-        const char *prompt = "The capital of France is";
-        std::vector<int32_t> input_ids(512);
-        size_t in_cap = input_ids.size();
-        int32_t n_ids = lsxcommon::arrow_tokenizer_encode(
-            tok, prompt, std::strlen(prompt), input_ids.data(), &in_cap);
-        if (n_ids < 0) {
-            spdlog::error("Tokenizer encode failed (code {})", n_ids);
+        std::vector<int32_t> input_ids;
+        if (!EncodeSelfCheckPrompt(*model, input_ids)) {
+            spdlog::error("Tokenizer encode failed");
             model->Unload();
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        input_ids.resize(static_cast<size_t>(n_ids));
 
         lsxcommon::ModelRequest req{std::move(input_ids), 1};
         auto result = model->SelfCheck(req);

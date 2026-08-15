@@ -308,4 +308,18 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
     return 0;
 }
 
+int32_t arrow_tokenizer_lookup(const ArrowTokenizerDb &db, const char *content,
+                               size_t len)
+{
+    if (!db.valid()) return -1;
+    for (int32_t id = 0; id < db.vocab_size; ++id) {
+        const int64_t off = db.token_offsets[id];
+        const int64_t tlen = db.token_offsets[id + 1] - off;
+        if (tlen == static_cast<int64_t>(len) &&
+            std::memcmp(db.token_bytes + off, content, len) == 0)
+            return id;
+    }
+    return -1;
+}
+
 } // namespace lsxcommon

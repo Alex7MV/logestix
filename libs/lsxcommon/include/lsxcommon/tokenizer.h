@@ -59,4 +59,10 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
                                size_t n_ids, char *out_text,
                                size_t *max_out_len);
 
+// Returns the token id whose raw bytes equal `content[0..len)`, or -1 when not
+// found (or the db is invalid). Linear scan over the vocab; use for a handful
+// of lookups at init time (e.g. resolving chat-template special tokens).
+int32_t arrow_tokenizer_lookup(const ArrowTokenizerDb &db, const char *content,
+                               size_t len);
+
 } // namespace lsxcommon

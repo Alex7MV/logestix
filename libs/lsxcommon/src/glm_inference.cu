@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "glm_device_math.h"
@@ -756,6 +758,693 @@ cudaError_t RunGlmGeneration(
                              d_pack, d_scale, prompt, max_new, result);    cudaFree(d_scale);
     cudaFree(d_pack);
     return e;
+}
+
+// ── Faithful GLM-5.2 generation: real MLA + sigmoid MoE forward ─────────────
+namespace {
+
+constexpr float kGlmRopeTheta = 8000000.0f;   // config rope_theta
+constexpr int   kGlmDenseInter = 12288;       // config intermediate_size
+constexpr float kGlmAttnScale = 0.0625f;      // qk_head_dim^-0.5 = 256^-0.5
+constexpr float kGlmIndexScale = 0.0883883476f; // (unused: indexer is a no-op ≤ 1024 slots)
+
+// Interleaved RoPE (DeepSeek layout) applied to the rotary half of the q
+// matrix in place: q = [heads][256], rot slice [192, 256). Pair i of each
+// head is rotated by pos·θ^(-(2i)/192) — matches apply_rotary_pos_emb_interleave
+// with cos/sin from the head_dim=192 inv_freq table (first 32 pairs).
+__global__ void GlmQropeKernel(__half *__restrict__ q, int pos, float theta,
+                               int heads)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= heads * 32) return;
+    const int h = idx / 32;
+    const int i = idx % 32;
+    const float angle = static_cast<float>(pos) *
+        powf(theta, -static_cast<float>(2 * i) / 192.0f);
+    const float c = cosf(angle);
+    const float s = sinf(angle);
+    __half *qr = q + static_cast<size_t>(h) * 256 + 192 + 2 * i;
+    const float a = __half2float(qr[0]);
+    const float b = __half2float(qr[1]);
+    qr[0] = __float2half(a * c - b * s);
+    qr[1] = __float2half(b * c + a * s);
+}
+
+// Same rotation for the contiguous [64] shared k_rot vector.
+__global__ void GlmKropeKernel(__half *__restrict__ rot, int pos, float theta)
+{
+    const int i = threadIdx.x;
+    if (i >= 32) return;
+    const float angle = static_cast<float>(pos) *
+        powf(theta, -static_cast<float>(2 * i) / 192.0f);
+    const float c = cosf(angle);
+    const float s = sinf(angle);
+    const float a = __half2float(rot[2 * i]);
+    const float b = __half2float(rot[2 * i + 1]);
+    rot[2 * i]     = __float2half(a * c - b * s);
+    rot[2 * i + 1] = __float2half(b * c + a * s);
+}
+
+// Expands kv_b_proj output into the per-layer K/V cache. kvb = [64][448] per
+// head (k_nope[192] | v[256]); krot[64] is the shared rotated k_rot. Writes
+// key[h] = [k_nope[h] | krot] and value[h] = v[h] into cache slot `pos`.
+__global__ void GlmMlaStoreKvKernel(const __half *__restrict__ kvb,
+                                    const __half *__restrict__ krot,
+                                    __half *__restrict__ k_cache,
+                                    __half *__restrict__ v_cache,
+                                    int slot, int cap, int heads)
+{
+    const int64_t total = static_cast<int64_t>(heads) * 256;
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (i >= total) return;
+    const int h = static_cast<int>(i / 256);
+    const int d = static_cast<int>(i % 256);
+    const __half *kr = kvb + static_cast<int64_t>(h) * 448;
+    const __half val = (d < 192) ? kr[d] : krot[d - 192];
+    const int64_t at = (static_cast<int64_t>(slot) * heads + h) * 256 + d;
+    k_cache[at] = val;
+    v_cache[at] = kr[192 + d];
+}
+
+// Causal MLA attention for one token over its layer's K/V cache (slots 0..T-1):
+//   out[h][d] = Σ_t softmax_t((q·k)·scale) · v[t][h][d],   scale = 256^-0.5
+// One block per head, 256 threads. Pass 1 block-reduces each key score (FP32),
+// pass 2 accumulates the weighted value projection per dimension. FP16 in/out,
+// FP32 math, single FP16 rounding at the end (like the eager attention path).
+__global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
+                                 const __half *__restrict__ k_cache,
+                                 const __half *__restrict__ v_cache,
+                                 __half *__restrict__ out,
+                                 int cap, int T, int heads, float scale)
+{
+    const int h = blockIdx.x;
+    __shared__ float s_q[256];
+    __shared__ float s_red[8];
+    __shared__ float s_score[1024];
+    __shared__ float s_p[1024];
+    __shared__ float s_lmax;
+    __shared__ float s_psum;
+    if (threadIdx.x < 256)
+        s_q[threadIdx.x] = __half2float(q[h * 256 + threadIdx.x]);
+    __syncthreads();
+
+    float lmax = -FLT_MAX;
+    for (int t = 0; t < T; ++t) {
+        const __half *kr =
+            k_cache + (static_cast<int64_t>(t) * heads + h) * 256;
+        float v = s_q[threadIdx.x] * __half2float(kr[threadIdx.x]);
+        for (int off = 16; off > 0; off >>= 1)
+            v += __shfl_down_sync(0xffffffffu, v, off);
+        const int lane = threadIdx.x & 31;
+        const int warp = threadIdx.x >> 5;
+        if (lane == 0) s_red[warp] = v;
+        __syncthreads();
+        if (warp == 0) {
+            float w = (threadIdx.x < 8) ? s_red[threadIdx.x] : 0.0f;
+            for (int off = 16; off > 0; off >>= 1)
+                w += __shfl_down_sync(0xffffffffu, w, off);
+            if (lane == 0) {
+                s_score[t] = w * scale;
+                lmax = fmaxf(lmax, s_score[t]);
+            }
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) s_lmax = lmax;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float psum = 0.0f;
+        for (int t = 0; t < T; ++t) {
+            s_p[t] = expf(s_score[t] - s_lmax);
+            psum += s_p[t];
+        }
+        s_psum = psum;
+    }
+    __syncthreads();
+    float acc = 0.0f;
+    for (int t = 0; t < T; ++t) {
+        const float p = s_p[t] / s_psum;
+        acc += p * __half2float(
+                       v_cache[(static_cast<int64_t>(t) * heads + h) * 256 +
+                               threadIdx.x]);
+    }
+    out[h * 256 + threadIdx.x] = __float2half(acc);
+}
+
+// Silu SwiGLU (dense MLP): gate = silu(gate)·up, no clamp (matches the real
+// GlmMoeDsaMLP, unlike the frozen GlmSwigluClampKernel approximation).
+__global__ void GlmRealSwigluKernel(__half *__restrict__ gate,
+                                    const __half *__restrict__ up, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float g = __half2float(gate[i]);
+    const float u = __half2float(up[i]);
+    gate[i] = __float2half((g / (1.0f + GlmExpfGlibc(-g))) * u);
+}
+
+// Per-token scratch + persistent per-layer expanded K/V caches of the real
+// GLM-5.2 generation pass. One contiguous device allocation + one pinned host
+// staging block.
+struct GlmRealCtx {
+    cublasHandle_t ch = nullptr;
+    cudaStream_t   st = nullptr;
+    const GlmPinnedWeights *pw = nullptr;
+    GlmExpertDb *db = nullptr;
+
+    __half *d_hid = nullptr;      // [hidden]          working residual stream
+    __half *d_norm = nullptr;     // [hidden]          input_layernorm out
+    __half *d_q_resid = nullptr;  // [q_lora]          q_a_proj out
+    __half *d_q_resid_n = nullptr;// [q_lora]          q_a_layernorm out
+    __half *d_q = nullptr;        // [64*256]          q_b_proj out
+    __half *d_kva = nullptr;      // [576]             kv_a_proj out
+    __half *d_kvp = nullptr;      // [512]             kv_a_layernorm out
+    __half *d_kvb = nullptr;      // [64*448]          kv_b_proj out
+    __half *d_krot = nullptr;     // [64]              rotated shared k_rot
+    __half *d_attn = nullptr;     // [64*256]          per-head attention out
+    __half *d_off = nullptr;      // [hidden]          o_proj / dense-down out
+    __half *d_mlpn = nullptr;     // [hidden]          post_attn_layernorm out
+    __half *d_routed = nullptr;   // [hidden]          routed-expert output
+    __half *d_shared = nullptr;   // [hidden]          shared-expert output
+    __half *d_dgate = nullptr;    // [dense_inter]     dense gate_proj out
+    __half *d_dup = nullptr;      // [dense_inter]     dense up_proj out
+    float  *d_logits = nullptr;   // [256]             router logits
+    GlmRoutedSlot *d_routing = nullptr; // [8]         router grid
+    float  *d_gate_bias = nullptr;// [256]             router-bias staging
+    __half *d_scratch_e = nullptr;// expert dequant/inter/gate workspace
+    uint8_t *d_pack = nullptr;    // on-demand expert staging
+    uint8_t *d_scale = nullptr;   // on-demand expert staging
+    GlmRoutedSlot *h_routing = nullptr; // [8] pinned host routing staging
+
+    __half *d_hn = nullptr;       // [hidden]          model.norm out
+    float  *d_logits_head = nullptr; // [vocab]        head logits row
+    GlmArgmaxSlot *d_argmax = nullptr; // [1]
+    GlmArgmaxSlot *h_argmax = nullptr; // pinned host argmax
+    __half *d_cur = nullptr;      // [cap][hidden]     token residual stream
+    int32_t *d_ids = nullptr;     // [cap]             id staging
+    void   *d_base = nullptr;     // single device allocation
+    __half *d_kv_k_base = nullptr; // [layers][cap][64][256] expanded keys
+    __half *d_kv_v_base = nullptr; // [layers][cap][64][256] expanded values
+    int kv_cap = 0;
+    size_t bytes = 0;
+
+    void Free()
+    {
+        if (h_routing) cudaFreeHost(h_routing);
+        if (h_argmax)  cudaFreeHost(h_argmax);
+        if (d_base)    cudaFree(d_base);
+        h_routing = nullptr; h_argmax = nullptr; d_base = nullptr;
+        d_hid = d_norm = d_q_resid = d_q_resid_n = d_q = nullptr;
+        d_kva = d_kvp = d_kvb = d_krot = d_attn = d_off = nullptr;
+        d_mlpn = d_routed = d_shared = d_dgate = d_dup = nullptr;
+        d_logits = nullptr; d_routing = nullptr; d_gate_bias = nullptr;
+        d_scratch_e = nullptr; d_pack = nullptr; d_scale = nullptr;
+        d_hn = nullptr; d_logits_head = nullptr; d_argmax = nullptr;
+        d_cur = nullptr; d_ids = nullptr;
+        d_kv_k_base = nullptr; d_kv_v_base = nullptr;
+        kv_cap = 0; bytes = 0;
+    }
+};
+
+// Allocates the full real-generation footprint (per-token scratch + per-layer
+// expanded K/V caches + head + residual stream) as one device block plus one
+// pinned host staging block. cap = P + max_new (≤ kGlmIndexMaxSlots).
+cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
+{
+    c.Free();
+    constexpr int64_t kMatEl = kGlmExpertMatEl;
+    const int64_t hidden = kGlmHidden;
+    const int64_t dinter = kGlmDenseInter;
+    const int64_t layers = kGlmNumLayers;
+    const int64_t heads256 = static_cast<int64_t>(kGlmNumHeads) * 256;
+    const int64_t kv_bytes = layers * cap * heads256 * 2 * sizeof(__half);
+
+    int64_t off = 0;
+    auto page = [&](int64_t bytes_, int64_t align) -> int64_t {
+        off = (off + align - 1) / align * align;
+        const int64_t at = off;
+        off += bytes_;
+        return at;
+    };
+    const int64_t o_hid    = page(hidden * sizeof(__half), 16);
+    const int64_t o_norm   = page(hidden * sizeof(__half), 16);
+    const int64_t o_qr     = page(kGlmQLoraRank * sizeof(__half), 16);
+    const int64_t o_qrn    = page(kGlmQLoraRank * sizeof(__half), 16);
+    const int64_t o_q      = page(heads256 * sizeof(__half), 16);
+    const int64_t o_kva    = page((kGlmKVLoraRank + kGlmQkRope) * sizeof(__half), 16);
+    const int64_t o_kvp    = page(kGlmKVLoraRank * sizeof(__half), 16);
+    const int64_t o_kvb    = page(kGlmNumHeads * 448 * sizeof(__half), 16);
+    const int64_t o_krot   = page(kGlmQkRope * sizeof(__half), 16);
+    const int64_t o_attn   = page(heads256 * sizeof(__half), 16);
+    const int64_t o_off    = page(hidden * sizeof(__half), 16);
+    const int64_t o_mlpn   = page(hidden * sizeof(__half), 16);
+    const int64_t o_routed = page(hidden * sizeof(__half), 16);
+    const int64_t o_shared = page(hidden * sizeof(__half), 16);
+    const int64_t o_dgate  = page(dinter * sizeof(__half), 16);
+    const int64_t o_dup    = page(dinter * sizeof(__half), 16);
+    const int64_t o_logits = page(kGlmNumRouted * sizeof(float), 16);
+    const int64_t o_route  = page(kGlmMoETopK * sizeof(GlmRoutedSlot), 16);
+    const int64_t o_bias   = page(kGlmNumRouted * sizeof(float), 16);
+    const int64_t o_scratch = page((kMatEl + hidden + 2 * kGlmMoeIntermediate) * sizeof(__half), 16);
+    const int64_t o_pack   = page(kMatEl / 2 * 3, 16);
+    const int64_t o_scale  = page(kMatEl / kGlmNvfp4Block * 3, 16);
+    const int64_t o_hn     = page(hidden * sizeof(__half), 16);
+    const int64_t o_lhead  = page(int64_t(vocab) * sizeof(float), 16);
+    const int64_t o_argmax = page(sizeof(GlmArgmaxSlot), 16);
+    const int64_t o_cur    = page(int64_t(cap) * hidden * sizeof(__half), 16);
+    const int64_t o_ids    = page(int64_t(cap) * sizeof(int32_t), 16);
+    const int64_t o_kv     = page(kv_bytes, 16);
+    c.bytes = static_cast<size_t>(off);
+
+    uint8_t *base = nullptr;
+    cudaError_t e = cudaMalloc(reinterpret_cast<void **>(&base), c.bytes);
+    if (e != cudaSuccess) { c.bytes = 0; return e; }
+    c.d_base = base;
+    c.d_hid     = reinterpret_cast<__half *>(base + o_hid);
+    c.d_norm    = reinterpret_cast<__half *>(base + o_norm);
+    c.d_q_resid = reinterpret_cast<__half *>(base + o_qr);
+    c.d_q_resid_n = reinterpret_cast<__half *>(base + o_qrn);
+    c.d_q       = reinterpret_cast<__half *>(base + o_q);
+    c.d_kva     = reinterpret_cast<__half *>(base + o_kva);
+    c.d_kvp     = reinterpret_cast<__half *>(base + o_kvp);
+    c.d_kvb     = reinterpret_cast<__half *>(base + o_kvb);
+    c.d_krot    = reinterpret_cast<__half *>(base + o_krot);
+    c.d_attn    = reinterpret_cast<__half *>(base + o_attn);
+    c.d_off     = reinterpret_cast<__half *>(base + o_off);
+    c.d_mlpn    = reinterpret_cast<__half *>(base + o_mlpn);
+    c.d_routed  = reinterpret_cast<__half *>(base + o_routed);
+    c.d_shared  = reinterpret_cast<__half *>(base + o_shared);
+    c.d_dgate   = reinterpret_cast<__half *>(base + o_dgate);
+    c.d_dup     = reinterpret_cast<__half *>(base + o_dup);
+    c.d_logits  = reinterpret_cast<float *>(base + o_logits);
+    c.d_routing = reinterpret_cast<GlmRoutedSlot *>(base + o_route);
+    c.d_gate_bias = reinterpret_cast<float *>(base + o_bias);
+    c.d_scratch_e = reinterpret_cast<__half *>(base + o_scratch);
+    c.d_pack    = base + o_pack;
+    c.d_scale   = base + o_scale;
+    c.d_hn      = reinterpret_cast<__half *>(base + o_hn);
+    c.d_logits_head = reinterpret_cast<float *>(base + o_lhead);
+    c.d_argmax  = reinterpret_cast<GlmArgmaxSlot *>(base + o_argmax);
+    c.d_cur     = reinterpret_cast<__half *>(base + o_cur);
+    c.d_ids     = reinterpret_cast<int32_t *>(base + o_ids);
+    c.d_kv_k_base = reinterpret_cast<__half *>(base + o_kv);
+    c.d_kv_v_base = c.d_kv_k_base + layers * cap * heads256;
+    c.kv_cap    = cap;
+
+    uint8_t *hbase = nullptr;
+    const int64_t h_route = kGlmMoETopK * sizeof(GlmRoutedSlot);
+    e = cudaMallocHost(reinterpret_cast<void **>(&hbase),
+                       static_cast<size_t>(h_route + sizeof(GlmArgmaxSlot)));
+    if (e != cudaSuccess) { c.Free(); return e; }
+    c.h_routing = reinterpret_cast<GlmRoutedSlot *>(hbase);
+    c.h_argmax  = reinterpret_cast<GlmArgmaxSlot *>(hbase + h_route);
+    return cudaSuccess;
+}
+
+// One layer of the real GLM-5.2 forward for a single token at position `pos`
+// (its K/V is stored at cache slot `pos`). d_hid is the in/out residual stream.
+cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
+                            const PackedExpert *shared_host)
+{
+    const GlmPinnedWeights &pw = *c.pw;
+    const GlmLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
+    const int hidden = pw.hidden;
+    const __half *dkv = c.d_kv_k_base +
+        static_cast<int64_t>(l) * c.kv_cap * 64 * 256;
+    const __half *dvv = c.d_kv_v_base +
+        static_cast<int64_t>(l) * c.kv_cap * 64 * 256;
+    cudaError_t e;
+
+    // input_layernorm
+    e = RunGlmRmsNorm(c.st, c.d_hid, lw.d_input_norm, c.d_norm, 1, hidden,
+                      kGlmRmsEps);
+    if (e != cudaSuccess) return e;
+
+    // q_resid = q_a_proj(x); q_resid = q_a_layernorm(q_resid)
+    e = RunGemmFp64(c.st, lw.d_q_a_proj, c.d_norm, c.d_q_resid,
+                    kGlmQLoraRank, hidden, 1);
+    if (e != cudaSuccess) return e;
+    e = RunGlmRmsNorm(c.st, c.d_q_resid, lw.d_q_a_norm, c.d_q_resid_n,
+                      1, kGlmQLoraRank, kGlmRmsEps);
+    if (e != cudaSuccess) return e;
+    // q = q_b_proj(q_resid_n)  [64, 256]
+    e = RunGemmFp64(c.st, lw.d_q_b_proj, c.d_q_resid_n, c.d_q,
+                    kGlmNumHeads * (kGlmQkNope + kGlmQkRope), kGlmQLoraRank, 1);
+    if (e != cudaSuccess) return e;
+
+    // compressed_kv = kv_a_proj_with_mqa(x)  [576]
+    e = RunGemmFp64(c.st, lw.d_kv_a_proj, c.d_norm, c.d_kva,
+                    kGlmKVLoraRank + kGlmQkRope, hidden, 1);
+    if (e != cudaSuccess) return e;
+    // k_pass = kv_a_layernorm(kv_pass); k_rot_raw = kv_a[512:576]
+    e = RunGlmRmsNorm(c.st, c.d_kva, lw.d_kv_a_norm, c.d_kvp, 1,
+                      kGlmKVLoraRank, kGlmRmsEps);
+    if (e != cudaSuccess) return e;
+    {
+        const int blocks = (kGlmQkRope + kGlmLoopBlock - 1) / kGlmLoopBlock;
+        GlmCopyKernel<<<blocks, kGlmLoopBlock, 0, c.st>>>(
+            c.d_kva + kGlmKVLoraRank, c.d_krot, kGlmQkRope);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+    // kv_b = kv_b_proj(k_pass)  [64, 448]
+    e = RunGemmFp64(c.st, lw.d_kv_b_proj, c.d_kvp, c.d_kvb,
+                    kGlmNumHeads * (kGlmQkNope + kGlmHeadV),
+                    kGlmKVLoraRank, 1);
+    if (e != cudaSuccess) return e;
+
+    // Interleaved RoPE on q[..., 192:256] and k_rot, then store K/V.
+    {
+        GlmQropeKernel<<<(64 * 32 + 255) / 256, 256, 0, c.st>>>(
+            c.d_q, pos, kGlmRopeTheta, kGlmNumHeads);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+    GlmKropeKernel<<<1, 32, 0, c.st>>>(c.d_krot, pos, kGlmRopeTheta);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    GlmMlaStoreKvKernel<<<64, 256, 0, c.st>>>(
+        c.d_kvb, c.d_krot, c.d_kv_k_base + static_cast<int64_t>(l) * c.kv_cap * 64 * 256,
+        c.d_kv_v_base + static_cast<int64_t>(l) * c.kv_cap * 64 * 256,
+        pos, c.kv_cap, kGlmNumHeads);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // Attention over slots 0..pos (causal).
+    GlmMlaAttnKernel<<<kGlmNumHeads, 256, 0, c.st>>>(
+        c.d_q, dkv, dvv, c.d_attn, c.kv_cap, pos + 1, kGlmNumHeads,
+        kGlmAttnScale);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    // o_proj(attn) -> d_off; residual: hid += off
+    e = RunGemmFp64(c.st, lw.d_o_proj, c.d_attn, c.d_off, hidden,
+                    kGlmNumHeads * kGlmHeadV, 1);
+    if (e != cudaSuccess) return e;
+    GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // MLP.
+    if (l < 3) {
+        // Dense: post_attn_norm -> gate/up -> silu swiglu -> down -> residual.
+        e = RunGlmRmsNorm(c.st, c.d_hid, lw.d_post_attn_norm, c.d_mlpn, 1,
+                          hidden, kGlmRmsEps);
+        if (e != cudaSuccess) return e;
+        e = RunGemmFp64(c.st, lw.d_mlp_gate, c.d_mlpn, c.d_dgate,
+                        kGlmDenseInter, hidden, 1);
+        if (e != cudaSuccess) return e;
+        e = RunGemmFp64(c.st, lw.d_mlp_up, c.d_mlpn, c.d_dup,
+                        kGlmDenseInter, hidden, 1);
+        if (e != cudaSuccess) return e;
+        GlmRealSwigluKernel<<<(kGlmDenseInter + 255) / 256, 256, 0, c.st>>>(
+            c.d_dgate, c.d_dup, kGlmDenseInter);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+        e = RunGemmFp64(c.st, lw.d_mlp_down, c.d_dgate, c.d_off, hidden,
+                        kGlmDenseInter, 1);
+        if (e != cudaSuccess) return e;
+        GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+        return cudaGetLastError();
+    }
+
+    // MoE: real sigmoid router + routed experts + shared expert.
+    if (!lw.d_post_attn_norm || !lw.d_router_gate)
+        return cudaErrorInvalidValue;
+    const float *d_bias = nullptr;
+    if (lw.h_gate_bias && lw.gate_bias_n == kGlmNumRouted) {
+        e = cudaMemcpyAsync(c.d_gate_bias, lw.h_gate_bias,
+                            static_cast<size_t>(kGlmNumRouted) * sizeof(float),
+                            cudaMemcpyHostToDevice, c.st);
+        if (e != cudaSuccess) return e;
+        d_bias = c.d_gate_bias;
+    }
+    e = RunGlmRealRouter(c.ch, c.st, lw, 1, c.d_hid, d_bias,
+                         c.d_mlpn, c.d_logits, c.d_routing);
+    if (e != cudaSuccess) return e;
+    e = RunGlmExpertsStackOnDemand(c.ch, c.st, c.d_routing, 1, c.d_mlpn,
+                                   *c.db, l, kGlmNumRouted, c.d_routed,
+                                   c.d_scratch_e, c.d_pack, c.d_scale,
+                                   c.h_routing);
+    if (e != cudaSuccess) return e;
+    // Shared expert (w1=gate, w2=down, w3=up, same NVFP4 layout as a routed
+    // expert): streamed from the host-side shared_host into the reusable
+    // staging buffers and evaluated with the identical RunGlmExpertSlot chain,
+    // so the full ~1.4 GiB shared set costs no VRAM. Inactive/foreign payloads
+    // (missing w1/w2/w3 or mismatched sizes) contribute nothing.
+    constexpr int64_t kPackPerMat = kGlmExpertMatEl / 2;
+    constexpr int64_t kScalePerMat = kGlmExpertMatEl / kGlmNvfp4Block;
+    bool shared_ok = false;
+    if (shared_host && !shared_host->w1_packed.empty() &&
+        !shared_host->w2_packed.empty() && !shared_host->w3_packed.empty() &&
+        !shared_host->w1_scales.empty() && !shared_host->w2_scales.empty() &&
+        !shared_host->w3_scales.empty() &&
+        shared_host->w1_packed.size() == static_cast<size_t>(kPackPerMat) &&
+        shared_host->w2_packed.size() == static_cast<size_t>(kPackPerMat) &&
+        shared_host->w3_packed.size() == static_cast<size_t>(kPackPerMat) &&
+        shared_host->w1_scales.size() == static_cast<size_t>(kScalePerMat) &&
+        shared_host->w2_scales.size() == static_cast<size_t>(kScalePerMat) &&
+        shared_host->w3_scales.size() == static_cast<size_t>(kScalePerMat)) {
+        uint8_t *p1 = c.d_pack;
+        uint8_t *p2 = p1 + kPackPerMat;
+        uint8_t *p3 = p2 + kPackPerMat;
+        uint8_t *s1 = c.d_scale;
+        uint8_t *s2 = s1 + kScalePerMat;
+        uint8_t *s3 = s2 + kScalePerMat;
+        GlmExpertDeviceBlock seb;
+        seb.d_w1_packed = p1;  seb.d_w1_scales = s1;
+        seb.w1_global_scale = shared_host->w1_global_scale;
+        seb.w1_packed_bytes = kPackPerMat;
+        seb.w1_scale_bytes = kScalePerMat;
+        seb.d_w2_packed = p2;  seb.d_w2_scales = s2;
+        seb.w2_global_scale = shared_host->w2_global_scale;
+        seb.w2_packed_bytes = kPackPerMat;
+        seb.w2_scale_bytes = kScalePerMat;
+        seb.d_w3_packed = p3;  seb.d_w3_scales = s3;
+        seb.w3_global_scale = shared_host->w3_global_scale;
+        seb.w3_packed_bytes = kPackPerMat;
+        seb.w3_scale_bytes = kScalePerMat;
+        e = cudaMemcpyAsync(p1, shared_host->w1_packed.data(),
+                            static_cast<size_t>(kPackPerMat),
+                            cudaMemcpyHostToDevice, c.st);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(p2, shared_host->w2_packed.data(),
+                                static_cast<size_t>(kPackPerMat),
+                                cudaMemcpyHostToDevice, c.st);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(p3, shared_host->w3_packed.data(),
+                                static_cast<size_t>(kPackPerMat),
+                                cudaMemcpyHostToDevice, c.st);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(s1, shared_host->w1_scales.data(),
+                                static_cast<size_t>(kScalePerMat),
+                                cudaMemcpyHostToDevice, c.st);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(s2, shared_host->w2_scales.data(),
+                                static_cast<size_t>(kScalePerMat),
+                                cudaMemcpyHostToDevice, c.st);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(s3, shared_host->w3_scales.data(),
+                                static_cast<size_t>(kScalePerMat),
+                                cudaMemcpyHostToDevice, c.st);
+        if (e != cudaSuccess) return e;
+        e = cudaMemsetAsync(c.d_shared, 0,
+                            static_cast<size_t>(hidden) * sizeof(__half), c.st);
+        if (e != cudaSuccess) return e;
+        e = RunGlmExpertSlot(c.ch, c.st, seb, c.d_mlpn, c.d_shared,
+                             c.d_scratch_e, 1.0f);
+        if (e != cudaSuccess) return e;
+        shared_ok = true;
+    }
+    if (!shared_ok) {
+        cudaMemsetAsync(c.d_shared, 0,
+                        static_cast<size_t>(hidden) * sizeof(__half), c.st);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+    // mlp_out = routed + shared; residual: hid += mlp_out.
+    GlmResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(
+        c.d_off, c.d_routed, c.d_shared, hidden);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+    return cudaGetLastError();
+}
+
+} // anonymous namespace
+
+cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+                                 const GlmPinnedWeights &pw,
+                                 GlmExpertDb &expert_db,
+                                 const std::vector<int32_t> &prompt,
+                                 int max_new, GlmGenerationResult &result)
+{
+    result = GlmGenerationResult{};
+    const char *g_stage = "validate";
+    char g_stage_buf[64];
+    const cudaError_t g_pending = cudaPeekAtLastError();
+    if (g_pending != cudaSuccess) {
+        log::warn("[glm_real] stale cuda error before entry: " +
+                  std::string(cudaGetErrorString(g_pending)));
+        cudaGetLastError();
+    }
+    const int P = static_cast<int>(prompt.size());
+    const int vocab = pw.vocab_size;
+    if (!cublas_h || !stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
+        !pw.d_embed || !pw.d_head ||
+        pw.layers.size() != static_cast<size_t>(kGlmNumLayers))
+        return cudaErrorInvalidValue;
+    if (expert_db.num_layers != kGlmNumLayers ||
+        expert_db.experts_per_layer != kGlmNumRouted)
+        return cudaErrorInvalidValue;
+    const int cap = P + max_new;
+    if (cap > kGlmIndexMaxSlots) {
+        log::error("[glm_real] prompt+" + std::to_string(max_new) +
+                   " tokens exceed the decoder KV capacity (" +
+                   std::to_string(kGlmIndexMaxSlots) + " slots)");
+        return cudaErrorInvalidValue;
+    }
+    for (int i = 0; i < P; ++i) {
+        const int32_t id = prompt[static_cast<size_t>(i)];
+        if (id < 0 || id >= vocab) return cudaErrorInvalidValue;
+    }
+
+    GlmRealCtx c;
+    c.ch = cublas_h;
+    c.st = stream;
+    c.pw = &pw;
+    c.db = &expert_db;
+    // Staging buffers for the on-demand expert path.
+    cudaError_t e = GlmRealCtxAllocate(c, cap, vocab);
+    if (e != cudaSuccess) {
+        result.ok = false;
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+    auto fail = [&](cudaError_t err) -> cudaError_t {
+        result.ok = false;
+        result.error_msg = cudaGetErrorString(err);
+        log::error("[glm_real] FAIL (stage=" + std::string(g_stage) + "): " +
+                   std::string(cudaGetErrorString(err)));
+        c.Free();
+        return err;
+    };
+
+    const int hidden = pw.hidden;
+    const auto shared_for = [&pw](int l) -> const PackedExpert * {
+        return (l >= 0 && static_cast<size_t>(l) < pw.shared_host.size())
+                   ? &pw.shared_host[static_cast<size_t>(l)]
+                   : nullptr;
+    };
+
+    // Embed the prompt (all tokens) into the residual stream.
+    g_stage = "embed";
+    e = cudaMemcpyAsync(c.d_ids, prompt.data(),
+                        static_cast<size_t>(P) * sizeof(int32_t),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return fail(e);
+    {
+        const int blocks = static_cast<int>(
+            (static_cast<size_t>(P) * hidden + kGlmLoopBlock - 1) /
+            kGlmLoopBlock);
+        GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+            pw.d_embed, c.d_ids, c.d_cur, P, hidden);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(e);
+    }
+
+    // Prefill: forward each prompt token through all 78 layers (causal), storing
+    // its K/V at slot = position.
+    g_stage = "prefill";
+    for (int pos = 0; pos < P; ++pos) {
+        e = GlmCopyAsync(stream, c.d_cur + static_cast<size_t>(pos) * hidden,
+                         c.d_hid, hidden);
+        if (e != cudaSuccess) return fail(e);
+        for (int l = 0; l < kGlmNumLayers; ++l) {
+            if (l == 78) break;  // layer 78 is the MTP block, not in the main model
+            snprintf(g_stage_buf, sizeof(g_stage_buf), "prefill-p%d-l%d", pos, l);
+            g_stage = g_stage_buf;
+            e = RunGlmRealLayer(c, l, pos, shared_for(l));
+            if (e != cudaSuccess) return fail(e);
+        }
+        e = GlmCopyAsync(stream, c.d_hid,
+                         c.d_cur + static_cast<size_t>(pos) * hidden, hidden);
+        if (e != cudaSuccess) return fail(e);
+    }
+
+    // Decode: head on the last produced hidden, then forward the winner.
+    int last_idx = P - 1;
+    for (int step = 0; step < max_new; ++step) {
+        g_stage = "head";
+        e = GlmCopyAsync(stream, c.d_cur + static_cast<size_t>(last_idx) * hidden,
+                         c.d_hid, hidden);
+        if (e != cudaSuccess) return fail(e);
+        e = RunGlmRmsNorm(stream, c.d_hid, pw.d_final_norm, c.d_hn, 1, hidden,
+                          kGlmRmsEps);
+        if (e != cudaSuccess) return fail(e);
+        {
+            const int blocks = (vocab + kGlmLoopBlock - 1) / kGlmLoopBlock;
+            GlmHeadLogitsKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+                pw.d_head, c.d_hn, c.d_logits_head, vocab, hidden);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return fail(e);
+        }
+        GlmArgmaxKernel<<<1, kGlmLoopBlock, 0, stream>>>(
+            c.d_logits_head, vocab, c.d_argmax);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return fail(e);
+        e = cudaMemcpyAsync(c.h_argmax, c.d_argmax, sizeof(GlmArgmaxSlot),
+                            cudaMemcpyDeviceToHost, stream);
+        if (e != cudaSuccess) return fail(e);
+        e = cudaStreamSynchronize(stream);
+        if (e != cudaSuccess) return fail(e);
+        const int best = c.h_argmax->best;
+        result.tokens.push_back(best);
+        if (step == 0) result.first_maxv = c.h_argmax->maxv;
+        if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
+            best == kGlmEosIds[2])
+            break;
+
+        g_stage = "decode";
+        const int pos = last_idx + 1;
+        e = cudaMemcpyAsync(c.d_ids, &best, sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
+        if (e != cudaSuccess) return fail(e);
+        {
+            const int blocks = (hidden + kGlmLoopBlock - 1) / kGlmLoopBlock;
+            GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+                pw.d_embed, c.d_ids, c.d_cur + static_cast<size_t>(pos) * hidden,
+                1, hidden);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return fail(e);
+        }
+        e = GlmCopyAsync(stream, c.d_cur + static_cast<size_t>(pos) * hidden,
+                         c.d_hid, hidden);
+        if (e != cudaSuccess) return fail(e);
+        for (int l = 0; l < kGlmNumLayers; ++l) {
+            if (l == 78) break;
+            e = RunGlmRealLayer(c, l, pos, shared_for(l));
+            if (e != cudaSuccess) return fail(e);
+        }
+        e = GlmCopyAsync(stream, c.d_hid,
+                         c.d_cur + static_cast<size_t>(pos) * hidden, hidden);
+        if (e != cudaSuccess) return fail(e);
+        last_idx = pos;
+    }
+
+    // Publish the raw [vocab] logits row of the last head forward.
+    g_stage = "final-logits";
+    result.final_logits.resize(static_cast<size_t>(vocab));
+    e = cudaMemcpyAsync(result.final_logits.data(), c.d_logits_head,
+                        static_cast<size_t>(vocab) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess) return fail(e);
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) return fail(e);
+    result.kv_slots_used = last_idx + 1;
+    result.ok = true;
+    c.Free();
+    return cudaSuccess;
 }
 
 } // namespace glm

@@ -94,11 +94,61 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
         }
     }
 
-    int32_t bos_id = 0, eos_id = 1, pad_id = 2;
+    // Authoritative special-token names come from <dir>/tokenizer_config.json
+    // when present (bos_token / eos_token / pad_token, string or {content:...}).
+    // GLM-5.2 omits bos_token entirely → no BOS prepend; DeepSeek names all
+    // three explicitly.
+    std::string cfg_bos, cfg_eos, cfg_pad;
+    {
+        auto cfg_path = std::filesystem::path(tokenizer_json_path).parent_path() /
+                        "tokenizer_config.json";
+        std::ifstream cf(cfg_path, std::ios::binary | std::ios::ate);
+        if (cf) {
+            const auto csz = cf.tellg();
+            cf.seekg(0);
+            std::string cjson(static_cast<size_t>(csz), '\0');
+            cf.read(cjson.data(), csz);
+            simdjson::padded_string cpad(cjson.data(), cjson.size());
+            simdjson::ondemand::parser cparser;
+            simdjson::ondemand::document cdoc;
+            if (cparser.iterate(cpad).get(cdoc) == simdjson::SUCCESS) {
+                simdjson::ondemand::object croot;
+                if (cdoc.get_object().get(croot) == simdjson::SUCCESS) {
+                    auto get_name = [&](const char *key,
+                                        std::string &out) -> void {
+                        simdjson::ondemand::value v;
+                        if (croot[key].get(v) != simdjson::SUCCESS) return;
+                        std::string_view sv;
+                        if (v.get_string().get(sv) == simdjson::SUCCESS) {
+                            out.assign(sv.data(), sv.size());
+                        } else {
+                            simdjson::ondemand::object obj;
+                            if (v.get_object().get(obj) != simdjson::SUCCESS)
+                                return;
+                            if (obj["content"].get_string().get(sv) !=
+                                simdjson::SUCCESS)
+                                return;
+                            out.assign(sv.data(), sv.size());
+                        }
+                    };
+                    get_name("bos_token", cfg_bos);
+                    get_name("eos_token", cfg_eos);
+                    get_name("pad_token", cfg_pad);
+                }
+            }
+        }
+    }
+
+    int32_t bos_id = -1, eos_id = -1, pad_id = -1;
     {
         // Only added tokens explicitly flagged special (e.g. DeepSeek's
         // "<|begin▁of▁sentence|>") may fill bos/eos/pad. Unflagged control
-        // tokens ("<|fim▁begin|>") must never be picked; missing → 0/1/2.
+        // tokens ("<|fim▁begin|>") must never be picked.
+        auto find_exact = [&](const std::string &name) -> int32_t {
+            for (auto &[id, k] : added_content)
+                if (k == name) return id;
+            return -1;
+        };
         auto find_special = [&](const char *needle) -> int32_t {
             for (auto &[id, k] : added_content)
                 if (k.find(needle) != std::string::npos &&
@@ -106,13 +156,39 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
                     return id;
             return -1;
         };
-        int32_t b = find_special("begin");
-        if (b < 0) b = find_special("sentence");
-        if (b >= 0) bos_id = b;
-        int32_t e = find_special("end");
-        if (e >= 0) eos_id = e;
-        int32_t p = find_special("pad");
-        if (p >= 0) pad_id = p;
+
+        // 1) Authoritative tokenizer_config.json names win when present.
+        //    A name that is absent from added_tokens is treated as "no BOS"
+        //    (stays -1), matching GLM-5.2, which must NOT auto-prepend.
+        if (!cfg_bos.empty()) bos_id = find_exact(cfg_bos);
+        if (!cfg_eos.empty()) eos_id = find_exact(cfg_eos);
+        if (!cfg_pad.empty()) pad_id = find_exact(cfg_pad);
+
+        // 2) Heuristic fallback for models without tokenizer_config.json.
+        //    Never let generic "begin"/"end" substrings misclassify GLM's
+        //    multimodal <|begin_of_*|> / <|end_of_*|> controls as sentence
+        //    markers — match explicit BOS/EOS spellings only.
+        if (bos_id < 0) {
+            int32_t b = find_exact("<|bos|>");
+            if (b < 0) b = find_exact("<s>");
+            if (b < 0) b = find_exact("<|begin▁of▁sentence|>");
+            if (b < 0) b = find_exact("<|begin_of_sentence|>");
+            if (b < 0) b = find_special("sentence");
+            bos_id = b;
+        }
+        if (eos_id < 0) {
+            int32_t e = find_exact("<|eos|>");
+            if (e < 0) e = find_exact("<|endoftext|>");
+            if (e < 0) e = find_exact("</s>");
+            if (e < 0) e = find_exact("<|eot_id|>");
+            eos_id = e;
+        }
+        if (pad_id < 0) {
+            int32_t p = find_exact("<|pad|>");
+            if (p < 0) p = find_exact("<pad>");
+            if (p < 0) p = find_special("pad");
+            pad_id = p;
+        }
     }
 
     // byte_to_token_id via vocab lookup of the GPT-2 byte table.
