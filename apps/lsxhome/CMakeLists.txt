@@ -135,8 +135,13 @@ target_compile_definitions(lsxhome_imgui PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
     IMGUI_ENABLE_FREETYPE
-    IMGUI_DISABLE_OBSOLETE_FUNCTIONS
 )
+# NOTE: IMGUI_DISABLE_OBSOLETE_FUNCTIONS is intentionally NOT used. It guards
+# layout-affecting members of ImGuiIO/ImGuiStyle (imgui.h), so it MUST be
+# identical across every TU that includes imgui.h AND calls IMGUI_CHECKVERSION().
+# Because imnodes/implot still call obsolete ImDrawList APIs, enabling it only
+# inside imgui.cpp would desync sizeof(ImGuiIO) vs. the app TUs and trip the
+# "Mismatched struct layout!" debug assert at startup.
 target_compile_definitions(lsxhome_imgui PUBLIC
     IMGUI_DEFINE_MATH_OPERATORS
 )
@@ -221,6 +226,7 @@ add_executable(lsxhome WIN32
     src/main_win32.cpp
     src/d3d12_renderer.cpp
     src/font_loader.cpp
+    src/gui_renderer.cpp
 )
 target_include_directories(lsxhome PRIVATE include)
 target_compile_definitions(lsxhome PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -16,6 +16,7 @@
 #include "lsxhome/d3d12_renderer.h"
 #include "lsxhome/font_loader.h"
 #include "lsxhome/gui_bridge.h"
+#include "lsxhome/gui_renderer.h"
 
 #include <windows.h>
 
@@ -78,40 +79,6 @@ void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running) {
     }
 }
 
-void ApplyBlackwellTheme() noexcept {
-    using namespace lsxhome::theme;
-
-    auto as_vec4 = [](Color argb) {
-        const float scale = 1.0f / 255.0f;
-        return ImVec4(
-            ((argb >> 24) & 0xFF) * scale,  // r
-            ((argb >> 16) & 0xFF) * scale,  // g
-            ((argb >> 8) & 0xFF) * scale,   // b
-            (argb & 0xFF) * scale);         // a
-    };
-
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowPadding = ImVec2(kGeometry.padding, kGeometry.padding);
-    style.FramePadding = ImVec2(kGeometry.frame_padding, kGeometry.frame_padding);
-    style.ItemSpacing = ImVec2(kGeometry.item_spacing, kGeometry.item_spacing);
-    style.FrameRounding = kGeometry.rounding;
-    style.ScrollbarSize = kGeometry.scrollbar_size;
-
-    const BlackwellPalette& p = kPalette;
-    style.Colors[ImGuiCol_WindowBg] = as_vec4(p.window_bg);
-    style.Colors[ImGuiCol_ChildBg] = as_vec4(p.window_bg_alt);
-    style.Colors[ImGuiCol_PopupBg] = as_vec4(p.window_bg);
-    style.Colors[ImGuiCol_Border] = as_vec4(p.border);
-    style.Colors[ImGuiCol_FrameBg] = as_vec4(p.field_bg);
-    style.Colors[ImGuiCol_FrameBgHovered] = as_vec4(p.field_hover);
-    style.Colors[ImGuiCol_Header] = as_vec4(p.field_hover);
-    style.Colors[ImGuiCol_Text] = as_vec4(p.text);
-    style.Colors[ImGuiCol_TextDisabled] = as_vec4(p.text_disabled);
-    style.Colors[ImGuiCol_TextSelectedBg] = as_vec4(p.accent);
-    style.Colors[ImGuiCol_Button] = as_vec4(p.accent);
-    style.Colors[ImGuiCol_ButtonHovered] = as_vec4(p.accent_hover);
-}
-
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
@@ -170,10 +137,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         if (!renderer.BeginFrame()) {
             continue;
         }
-        ApplyBlackwellTheme();
+        lsxhome::ApplyBlackwellCoworkTheme();
 
         // Docking root: full-viewport host window.
-        ImGui::DockSpaceOverViewport();
+        lsxhome::BuildWorkspaceSkeleton();
 
         if (ImGui::Begin("LogestiX Home")) {
             constexpr float kSidebarW = 300.0f;

@@ -45,3 +45,6 @@ CMakeUserPresets.json
 *.swp
 *~
 .DS_Store
+
+# Dear ImGui runtime layout
+imgui.ini

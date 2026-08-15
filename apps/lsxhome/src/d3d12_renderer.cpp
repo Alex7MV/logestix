@@ -11,6 +11,8 @@
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
 #include <imgui.h>
+#include <imnodes.h>
+#include <implot.h>
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -263,6 +265,8 @@ void CleanupDeviceD3D() {
 }
 
 void ReleaseImgui() noexcept {
+    ImPlot::DestroyContext();
+    ImNodes::DestroyContext();
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -286,6 +290,8 @@ int D3D12Renderer::Init(HWND hwnd, int width, int height) noexcept {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
+    ImNodes::CreateContext();
     ImGui::StyleColorsDark();
 
     if (!ImGui_ImplWin32_Init(hwnd)) {
