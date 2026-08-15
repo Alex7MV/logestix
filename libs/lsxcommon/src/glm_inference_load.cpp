@@ -318,6 +318,7 @@ void GlmPinnedWeights::Free()
     hidden = 0;
     for (auto &l : layers) l.Free();
     layers.clear();
+    shared_host.clear();
 }
 
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
@@ -368,6 +369,33 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
             continue;
         }
         LoadSingleLayer(*tensors_res, pw.layers[static_cast<size_t>(l)], stream);
+    }
+
+    // Shared experts: one NVFP4-packed PackedExpert per layer in
+    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up). Kept host-side in
+    // pw.shared_host (index = layer); the faithful generation pass stages each
+    // layer's shared expert into the reusable per-expert device staging
+    // buffers on demand, so the ~1.4 GiB shared set costs no VRAM.
+    pw.shared_host.assign(pw.layers.size(), PackedExpert{});
+    auto se_path = pinned_dir / "shared_experts.arrow";
+    if (fs::exists(se_path)) {
+        auto se_batch_res = ReadRecordBatchFromFile(se_path);
+        if (se_batch_res.ok()) {
+            auto sh_res = SharedExpertSchema::UnpackBatch(*se_batch_res);
+            if (sh_res.ok()) {
+                auto &sh = *sh_res;
+                for (size_t l = 0;
+                     l < sh.size() && l < pw.layers.size(); ++l) {
+                    pw.shared_host[l] = std::move(sh[l]);
+                }
+            } else {
+                log::warn("[glm_load] shared_experts.arrow unpack failed: " +
+                          sh_res.status().ToString());
+            }
+        } else {
+            log::warn("[glm_load] shared_experts.arrow read failed: " +
+                      se_batch_res.status().ToString());
+        }
     }
 
     return cudaSuccess;

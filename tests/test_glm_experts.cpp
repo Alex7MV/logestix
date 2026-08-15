@@ -1,5 +1,5 @@
 // TDD Cycle 4 - GLM-5.2 MoE expert stack (layers 3-77): NVFP4 block
-// dequantization (E2M1 nibbles x per-128 E4M3 block scales x E8M0 global
+// dequantization (E2M1 nibbles x per-16 E4M3 block scales x E8M0 global
 // modifier) piped straight into the locked w2(swiglu(w1(x) * w3(x)))
 // projection path on ONE explicit async stream. The device output must match
 // a deterministic CPU reference sequence layout element-for-element, with no
@@ -228,10 +228,10 @@ TEST_CASE("GLM MoE expert stack: multi-token NVFP4 decode + SwiGLU vs "
 {
     static_assert(kPackedBytes == 6291456,
                   "GLM expert matrix packing size regression");
-    static_assert(kScaleBytes  == 98304,
-                  "GLM expert per-128 block scale count regression");
-    static_assert(lsxcommon::glm::kGlmNvfp4Block == 128,
-                  "Cycle 4 locks the NVFP4 block size to 128");
+    static_assert(kScaleBytes  == 786432,
+                  "GLM expert per-16 block scale count regression");
+    static_assert(lsxcommon::glm::kGlmNvfp4Block == 16,
+                  "Cycle 4 locks the NVFP4 block size to 16");
 
     cudaFree(0);
     cublasHandle_t ch;

@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "glm_device_math.h"
+#include <spdlog/spdlog.h>
 
 namespace lsxcommon {
 namespace glm {
@@ -24,12 +25,12 @@ using device::GlmRsqrtfGlibc;
 constexpr int kGlmRmsBlock = 256;
 
 // ── NVFP4 expert-weight decode (Cycle 4, layers 3-77) ──────────────────────
-// One E4M3 power-of-two block scale covers kGlmNvfp4Block (128) consecutive
+// One E4M3 power-of-two block scale covers kGlmNvfp4Block (16) consecutive
 // elements of the packed E2M1 nibble stream; a single decoded E8M0 global
 // modifier scales the whole tensor. Dequant invariant:
-//   out[i] = E2M1(nibble_i) * 2^(((scales[i>>7]>>3)&0xF) - 7) * global_mod
+//   out[i] = E2M1(nibble_i) * 2^(((scales[i>>4]>>3)&0xF) - 7) * global_mod
 // Advances 4 elements per thread (2 packed bytes), which always stay inside
-// one 128-block except across the ragged tail.
+// one 16-block except across the ragged tail.
 
 __constant__ float kGlmE2M1Table[16] = {
       0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
@@ -64,7 +65,7 @@ __global__ void GlmDequantNvfp4Kernel(
         const uint8_t nib1 = b0 >> 4;
         const uint8_t nib2 = b1 & 0x0Fu;
         const uint8_t nib3 = b1 >> 4;
-        const float sc = GlmE4M3P2ToFloat(scales[i0 >> 7]) * global_modifier;
+        const float sc = GlmE4M3P2ToFloat(scales[i0 >> 4]) * global_modifier;
         out[i0 + 0] = __float2half(kGlmE2M1Table[nib0] * sc);
         out[i0 + 1] = __float2half(kGlmE2M1Table[nib1] * sc);
         out[i0 + 2] = __float2half(kGlmE2M1Table[nib2] * sc);
@@ -75,7 +76,7 @@ __global__ void GlmDequantNvfp4Kernel(
         const uint8_t b   = packed[i >> 1];
         const uint8_t nib = (i & 1) ? static_cast<uint8_t>(b >> 4)
                                     : static_cast<uint8_t>(b & 0x0Fu);
-        const float sc = GlmE4M3P2ToFloat(scales[i >> 7]) * global_modifier;
+        const float sc = GlmE4M3P2ToFloat(scales[i >> 4]) * global_modifier;
         out[i] = __float2half(kGlmE2M1Table[nib] * sc);
     }
 }
@@ -484,6 +485,93 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
     return cudaGetLastError();
 }
 
+// ── Real GLM-5.2 router (GlmMoeDsaTopkRouter) ────────────────────────────────
+// Per-token sequential selection mirroring GlmMoeDsaTopkRouter.forward exactly
+// (n_group = 1 / topk_group = 1, so the group-mask step is a no-op):
+//   1. score[e] = sigmoid(logits[e])            (per-expert, NOT softmax)
+//   2. sel[e]   = score[e] + e_score_correction_bias[e]  (bias ONLY for choice)
+//   3. top-8 by sel[e] over the full 256 (ties -> smallest eid)
+//   4. coeff = score[eid]; then norm_topk_prob: coeff /= (Σ coeff + 1e-20),
+//      then routed_scaling_factor: coeff *= 2.5
+__global__ void GlmRealTopkKernel(const float *__restrict__ d_logits,
+                                  const float *__restrict__ d_gate_bias,
+                                  GlmRoutedSlot *__restrict__ d_routing,
+                                  int seq)
+{
+    const int t = blockIdx.x;
+    if (t >= seq) return;
+    if (threadIdx.x != 0) return;
+
+    const float *lm = d_logits + static_cast<size_t>(t) * kGlmNumRouted;
+
+    float score[kGlmNumRouted];
+    for (int e = 0; e < kGlmNumRouted; ++e)
+        score[e] = 1.0f / (1.0f + expf(-lm[e]));
+
+    bool used[kGlmNumRouted];
+    for (int e = 0; e < kGlmNumRouted; ++e) used[e] = false;
+
+    GlmRoutedSlot *row = d_routing + static_cast<size_t>(t) * kGlmMoETopK;
+    float sum = 0.0f;
+    for (int r = 0; r < kGlmMoETopK; ++r) {
+        float bv = -1e30f;
+        int   bi = -1;
+        for (int e = 0; e < kGlmNumRouted; ++e) {
+            if (used[e]) continue;
+            const float v = d_gate_bias ? score[e] + d_gate_bias[e] : score[e];
+            if (v > bv || (v == bv && e < bi)) { bv = v; bi = e; }
+        }
+        // Single 64-bit store (eid | coeff), same record layout as GlmMoETopkKernel.
+        if (bi < 0) break;  // all scores NaN/Inf: no valid selection remains
+        const float coeff = score[bi];
+        const uint64_t packed =
+            (static_cast<uint64_t>(__float_as_uint(coeff)) << 32) |
+            static_cast<uint32_t>(bi);
+        *reinterpret_cast<uint64_t *>(&row[r]) = packed;
+        sum += coeff;
+        used[bi] = true;
+    }
+    const float denom = sum + 1e-20f;
+    for (int r = 0; r < kGlmMoETopK; ++r)
+        row[r].coeff = (row[r].coeff / denom) * 2.5f;
+}
+
+// Real GLM-5.2 router for the generation pass: identical entry contract to
+// RunGlmMoERouter (post-attn RMSNorm -> logits -> d_routing grid), but the
+// top-k selection follows GlmMoeDsaTopkRouter (sigmoid scores + bias-only
+// selection + norm_topk_prob + routed_scaling_factor=2.5).
+cudaError_t RunGlmRealRouter(cublasHandle_t cublas_h, cudaStream_t stream,
+                             const GlmLayerWeights &lw, int seq,
+                             const __half *d_hidden, const float *d_gate_bias,
+                             __half *d_normed, float *d_logits,
+                             GlmRoutedSlot *d_routing)
+{
+    (void)cublas_h;
+    if (!lw.d_post_attn_norm || !lw.d_router_gate ||
+        !d_hidden || !d_normed || !d_logits || !d_routing || seq <= 0)
+        return cudaErrorInvalidValue;
+
+    // 1. RMSNorm(raw activations) -> d_normed, rows=seq on the async stream.
+    GlmMoERmsNormKernel<<<seq, kGlmRmsBlock, 0, stream>>>(
+        d_hidden, lw.d_post_attn_norm, d_normed, seq, kGlmHidden,
+        kGlmRmsEps);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // 2. logits[t][e] = (float)Σ_k normed[t][k]·gate[e][k] in FP64.
+    const int logits_total = kGlmNumRouted * seq;
+    const int logits_blocks = (logits_total + kGlmRmsBlock - 1) / kGlmRmsBlock;
+    GlmMoELogitsFp64Kernel<<<logits_blocks, kGlmRmsBlock, 0, stream>>>(
+        lw.d_router_gate, d_normed, d_logits, kGlmNumRouted, kGlmHidden, seq);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    // 3. Per-token sigmoid selection + norm_topk + scaling.
+    GlmRealTopkKernel<<<seq, 1, 0, stream>>>(
+        d_logits, d_gate_bias, d_routing, seq);
+    return cudaGetLastError();
+}
+
 // The per-routed-slot expert decode chain shared by RunGlmExpertsStack and
 // RunGlmExpertsStackOnDemand: w1^T @ x -> inter, w3^T @ x -> gate, silu(inter)
 // * gate -> swig, w2^T @ swig -> tmp, out += coeff * tmp. `eb` is a single
@@ -529,37 +617,65 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
     GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
         eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
     cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] dequant w1 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
     GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
         d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] gemm w1 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
 
     // gate = w3^T @ x
     GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
         eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] dequant w3 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
     GlmGemmFp64Kernel<<<inter_blocks, kBlock, 0, stream>>>(
         d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] gemm w3 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
 
     // swiglu: inter = silu(inter) * gate, in place (FP32 math)
     GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
         d_inter, d_gate, kGlmMoeIntermediate);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] swiglu fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
 
     // down = w2^T @ swig  (w2 row-major [hidden, inter])
     GlmDequantNvfp4Kernel<<<deq_grid, kGlmDequantThreads, 0, stream>>>(
         eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] dequant w2 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
     GlmGemmFp64Kernel<<<hidden_blocks, kBlock, 0, stream>>>(
         d_deq, d_inter, d_tmp, kGlmHidden, kGlmMoeIntermediate, 1);
     e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        spdlog::error("[glm_expert] gemm w2 fault: " +
+                   std::string(cudaGetErrorString(e)));
+        return e;
+    }
 
     // out_t[h] += coeff * tmp[h]
     GlmExpertAccumKernel<<<hidden_blocks, kBlock, 0, stream>>>(

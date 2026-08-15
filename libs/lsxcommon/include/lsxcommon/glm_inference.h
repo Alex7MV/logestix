@@ -43,7 +43,7 @@ constexpr int kGlmMoETopK = 8;
 // block scale descriptor covers kGlmNvfp4Block consecutive elements of the
 // packed E2M1 nibble stream. The per-tensor E8M0 global modifier is stored
 // already decoded as a float (see GlmExpertDeviceBlock).
-constexpr int kGlmNvfp4Block = 128;
+constexpr int kGlmNvfp4Block = 16;
 
 // Element count of a single expert weight matrix: w1/w3 are [moe_intermediate,
 // hidden], w2 is [hidden, moe_intermediate] — same 6144*2048 element count.
@@ -55,7 +55,7 @@ constexpr int64_t kGlmExpertMatEl =
 // nibble first); each per-block scales array holds one E4M3 power-of-two
 // descriptor per kGlmNvfp4Block elements; the global_scale floats are the
 // already-decoded E8M0 tensor modifiers. Dequant invariant:
-//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>7]>>3)&0xF) - 7) * global_scale
+//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>4]>>3)&0xF) - 7) * global_scale
 // A descriptor with any null/zero payload pointer marks the expert inactive:
 // routing slots that select it contribute nothing (deterministic skip).
 struct GlmExpertDeviceBlock {
@@ -112,6 +112,18 @@ cudaError_t RunGlmMoERouter(
     const __half *d_hidden, const float *d_gate_bias,
     __half *d_normed, float *d_logits, GlmRoutedSlot *d_routing);
 
+// Real GLM-5.2 router (GlmMoeDsaTopkRouter) for the faithful generation pass.
+// Identical entry contract to RunGlmMoERouter (post-attn RMSNorm -> FP64
+// logits -> d_routing grid), but the top-k selection follows the real model:
+// scores = sigmoid(logits), selection key = score + e_score_correction_bias
+// (bias never leaks into the weights), then norm_topk_prob (÷(Σ+1e-20)) and
+// routed_scaling_factor (×2.5). Grouping is a no-op (n_group = topk_group = 1).
+cudaError_t RunGlmRealRouter(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmLayerWeights &lw, int seq,
+    const __half *d_hidden, const float *d_gate_bias,
+    __half *d_normed, float *d_logits, GlmRoutedSlot *d_routing);
+
 // MoE expert stack for layers 3-77: NVFP4 block dequantization + SwiGLU
 // projection, evaluating the locked GLM-5.2 path
 //
@@ -119,7 +131,7 @@ cudaError_t RunGlmMoERouter(
 //
 // with hidden_size locked to kGlmHidden (6144), intermediate to
 // kGlmMoeIntermediate (2048). Weights are decoded inline from the packed E2M1
-// nibble / per-128 E4M3 block-scale / E8M0 global-modifier layout straight
+// nibble / per-16 E4M3 block-scale / E8M0 global-modifier layout straight
 // into FP16 scratch and piped through cuBLAS FP16 GEMMs (CUBLAS_COMPUTE_32F,
 // matching the dense-MLP stack). Every kernel/enqueue runs on the caller's
 // explicit async stream; the ONLY synchronization is a single localized
@@ -417,6 +429,33 @@ cudaError_t RunGlmGeneration(
 // ~2 × one-expert staging. Semantics, capacity validation and the
 // GlmGenerationResult contract are identical to the device-table overload.
 cudaError_t RunGlmGeneration(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
+    const std::vector<int32_t> &prompt, int max_new,
+    GlmGenerationResult &result);
+
+// ── Faithful GLM-5.2 generation (real forward pass) ─────────────────────────
+// Greedy multi-token generation over the REAL GlmMoeDsaForCausalLM forward:
+//   layers 0-77 only (the layer-78 MTP block is explicitly NOT part of the
+//   main model — transformers ignores model.layers.78.* on load),
+//   per layer: input_layernorm -> MLA attention (q_a/q_b, kv_a/kv_b lora
+//   expansion, interleaved RoPE θ=8e6, 64×256 heads, causal, o_proj) ->
+//   residual -> post_attention_layernorm -> MLP -> residual,
+//   MLP: dense (0-2) silu SwiGLU; MoE (3-77) sigmoid router top-8 +
+//   norm_topk×2.5 routed experts + shared expert, routed+shared residual,
+//   head: logits = lm_head(model.norm(layer77_out)) on the last token.
+//
+// Per-token causal decoding: each prompt token is forwarded through all 78
+// layers in order, writing its MLA K/V into a per-layer expanded cache at
+// slot = its position; decode steps follow the same loop at position P+step.
+// The DSA indexer is mathematically a no-op within the decoder's KV capacity
+// (index_topk=2048 >= capacity 1024, so every key is always selected) and is
+// therefore not executed; attention is full causal. Runs entirely on the
+// caller's async stream with a single sync per decode step for the argmax
+// readback. VRAM-budgeted like the RunGlmGeneration(GlmExpertDb) overload:
+// routed experts are mmap'd on demand; the shared experts + pinned weights
+// are resident.
+cudaError_t RunGlmRealGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,

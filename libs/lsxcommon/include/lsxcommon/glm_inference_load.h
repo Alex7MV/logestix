@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/schema.h"
+
 namespace lsxcommon {
 namespace glm {
 
@@ -88,6 +90,14 @@ struct GlmPinnedWeights {
     int vocab_size = 0;
     int hidden = 0;
     std::vector<GlmLayerWeights> layers;    // indexed by layer 0..num_layers-1
+
+    // Shared experts: one NVFP4-packed PackedExpert per MoE layer (3-77) from
+    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up — same layout as a
+    // routed expert). Kept HOST-side only: the generation pass stages each
+    // layer's shared expert into the reusable per-expert device staging
+    // buffers on demand, so the ~1.4 GiB shared set never has to live in VRAM
+    // alongside the ~31 GiB pinned set. Index = layer; empty for dense layers.
+    std::vector<PackedExpert> shared_host;
 
     void Free();
 };
@@ -214,7 +224,7 @@ cudaError_t RunGlmIndexShareAttention(
 // the lsxcommon loader uses for its own on-demand routed-expert path.
 //
 // Dequant invariant (identical to GlmExpertDeviceBlock):
-//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>7]>>3)&0xF) - 7) * global_scale
+//   w[i] = E2M1(nibble_i) * 2^(((scales[i>>4]>>3)&0xF) - 7) * global_scale
 // A null host_w1 marks the entry missing/inactive (deterministic skip).
 struct GlmExpertEntry {
     const uint8_t *host_w1 = nullptr;

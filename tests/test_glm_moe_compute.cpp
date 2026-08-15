@@ -214,7 +214,7 @@ TEST_CASE("GLM MoE compute layers 3-77: contiguous arena, full-range loop, "
           "[glm][moe][compute]")
 {
     static_assert(kPackedBytes == 6291456, "GLM expert packing size regression");
-    static_assert(kScaleBytes  == 98304,   "GLM expert block-scale count regression");
+    static_assert(kScaleBytes  == 786432,  "GLM expert block-scale count regression");
 
     cudaFree(0);
     cublasHandle_t ch;

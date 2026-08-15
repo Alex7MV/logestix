@@ -129,12 +129,14 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         experts.experts_per_layer != glm::kGlmNumRouted)
         return fail("expert index incomplete");
 
-    // The frozen greedy multi-token generation pass. Capacity + prompt-id
+    // The faithful greedy multi-token generation pass (real GlmMoeDsaForCausalLM
+    // forward: MLA + interleaved RoPE + causal per-token KV cache, sigmoid MoE
+    // router + shared experts, model.norm -> lm_head head). Capacity + prompt-id
     // bounds are validated inside (against the fixed 1024-slot KV staging and
     // the embed table), making the run deterministic and memory-safe.
     glm::GlmGenerationResult gen;
-    e = glm::RunGlmGeneration(ch, st, pw, experts, req.input_ids,
-                              req.max_gen_tokens, gen);
+    e = glm::RunGlmRealGeneration(ch, st, pw, experts, req.input_ids,
+                                  req.max_gen_tokens, gen);
     if (e != cudaSuccess || !gen.ok)
         return fail(gen.ok ? cudaGetErrorString(e) : gen.error_msg);
 
