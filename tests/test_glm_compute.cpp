@@ -11,6 +11,7 @@
 
 #include "lsxcommon/glm_inference.h"
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/path_registry.h"
 
 using Catch::Approx;
 
@@ -215,7 +216,7 @@ TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
     const char *env = std::getenv("LSX_TEST_GLM_MODEL_PATH");
     std::filesystem::path model =
         env ? std::filesystem::path(env)
-            : std::filesystem::path("/mnt/llm_models/models/GLM-5.2");
+            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) / "GLM-5.2";
     if (!std::filesystem::exists(model / "logestix" / "pinned"))
         SKIP("GLM real model directory not present");
 

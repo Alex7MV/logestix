@@ -12,7 +12,7 @@
 #include <cstring>
 
 #include "glm_device_math.h"
-#include <spdlog/spdlog.h>
+#include "lsxcommon/log.h"
 
 namespace lsxcommon {
 namespace glm {
@@ -618,7 +618,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         eb.d_w1_packed, eb.d_w1_scales, eb.w1_global_scale, d_deq, kMatEl);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] dequant w1 fault: " +
+        log::error("[glm_expert] dequant w1 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -626,7 +626,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         d_deq, x_t, d_inter, kGlmMoeIntermediate, kGlmHidden, 1);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] gemm w1 fault: " +
+        log::error("[glm_expert] gemm w1 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -636,7 +636,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         eb.d_w3_packed, eb.d_w3_scales, eb.w3_global_scale, d_deq, kMatEl);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] dequant w3 fault: " +
+        log::error("[glm_expert] dequant w3 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -644,7 +644,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         d_deq, x_t, d_gate, kGlmMoeIntermediate, kGlmHidden, 1);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] gemm w3 fault: " +
+        log::error("[glm_expert] gemm w3 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -654,7 +654,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         d_inter, d_gate, kGlmMoeIntermediate);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] swiglu fault: " +
+        log::error("[glm_expert] swiglu fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -664,7 +664,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         eb.d_w2_packed, eb.d_w2_scales, eb.w2_global_scale, d_deq, kMatEl);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] dequant w2 fault: " +
+        log::error("[glm_expert] dequant w2 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }
@@ -672,7 +672,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
         d_deq, d_inter, d_tmp, kGlmHidden, kGlmMoeIntermediate, 1);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
-        spdlog::error("[glm_expert] gemm w2 fault: " +
+        log::error("[glm_expert] gemm w2 fault: " +
                    std::string(cudaGetErrorString(e)));
         return e;
     }

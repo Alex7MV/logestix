@@ -485,6 +485,11 @@ endif()
 
 add_test(NAME test_glm_inference COMMAND test_glm_inference)
 
+# GLM real-weight tests skip (exit 4 = Catch2 "all test cases skipped") when no
+# GLM-5.2 checkpoint is present; that is not a failure per the project SKIP
+# invariant, so tell CTest to report it as SKIPPED instead.
+set_tests_properties(test_glm_inference PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── TDD Cycle 10: GLM-5.2 full 79-layer SKWOS integration regression (unified
 #    arena: IndexShare K-V cache + Layer-78 MTP spaces in one contiguous block)
 #    Driving the complete execution loop on real weights with multi-turn
@@ -508,6 +513,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_full_compute COMMAND test_glm_full_compute)
+set_tests_properties(test_glm_full_compute PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест TaskMosaic CE сетевого слоя (lsxnetwork) ───────────────────────────
 add_executable(test_mosaic_network test_mosaic_network.cpp)
