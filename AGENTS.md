@@ -105,7 +105,7 @@ ctest --preset windows-debug    # Windows 11
   - `libs/lsxcommon/src/deepseek_v4_flash_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
   - `libs/lsxcommon/src/model_factory.cpp` + `model_registry.cpp` + `include/lsxcommon/model_factory.h` — `LsxModelFactory` + IModel registry
   - `libs/lsxcommon/src/models/lsx_orchestrator.cpp` + `include/lsxcommon/lsx_orchestrator.h` — TaskMosaic оркестратор: lock-free SPSC dispatch GLM-5.2 / DeepSeek / unknown
-  - `libs/lsxcommon/src/inference_*.cu` + `inference_load.cuh` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
+  - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_inference_load.cuh` + `deepseek_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode-таблицы (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
   - `libs/lsxcommon/src/testmodel_gpu.cu` + `include/lsxcommon/testmodel_gpu.h` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunTestModel()`, TestModelResult
@@ -132,6 +132,103 @@ ctest --preset windows-debug    # Windows 11
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
 - `third_party/simdjson/` — simdjson v4.4.2 (сабмодуль)
+
+## Model Ingestion Protocol
+
+Унифицированный 8-этапный протокол добавления новых моделей (MODEL INGEST
+INVARIANT). Каждый агент ОБЯЗАН строго следовать порядку этапов при интеграции
+любой новой архитектуры. Нарушение порядка или пропуск шагов классифицируется
+как дефект сборки (broken build). Эталоны реализации: GLM-5.2, DeepSeek-V4-Flash,
+Qwen3.5-9B (перечисленные пути — актуальные якоря кода, не плейсхолдеры).
+
+### 1. Топология и паспорт структуры (lsxforge)
+
+- Расширить C++-конвейер `apps/lsxforge` (не Python-инструмент) парсингом
+  оригинального конфигурационного файла (config.json) и safetensors
+  (аналогично `lsxcommon::qwen::ConvertQwenModel` в `libs/lsxcommon/src/qwen_convert.cpp`).
+- Сгенерировать очищенный от мультимодального жира структурный манифест.
+- НАПРАВЛЕНИЕ ПУТЕЙ: Результат обязан детерминировано сохраняться в
+  централизованный каталог метаданных `model-metadata/` через единый authority
+  путей `lsxcommon::lsx_model_metadata(rel)` / `lsx_model_metadata_root()`
+  (`libs/lsxcommon/src/path_registry.cpp`, Windows `D:\Programs\huggingface.co`
+  / Linux `/mnt/llm_models/models`). Инвариант vault-root, переключатели путей —
+  только в `path_registry`, никаких хардкодов путей в конвертере.
+
+### 2. Квантование и сжатие (NVFP4)
+
+- Настроить движок квантования на тотальное 4-битное квантование плотных
+  линейных матриц: E2M1-нибблы (nibble-packed, 2 элемента на байт) + поблочные
+  E4M3-шкалы + float global_scale (см. `QwenNvfp4Weight` в
+  `libs/lsxcommon/include/lsxcommon/qwen_inference_load.h`).
+- ИНВАРИАНТ ТОЧНОСТИ: Layers нормирования (Norms) и векторы смещений (Biases)
+  ОБЯЗАНЫ оставаться в высоком разрешении FP16/BF16, не квантизуются.
+
+### 3. Регистрация в фабрике (LsxModelFactory)
+
+- Зарегистрировать строковый идентификатор модели в
+  `libs/lsxcommon/src/model_registry.cpp` через `LsxModelFactory::Register(kType, ...)`
+  (пример: `QwenV5Model::kType = "qwen3.5-9b"`, `libs/lsxcommon/src/qwen_v5_model.h`).
+- Реализовать класс `IModel` (final, наследуется от `lsxcommon::IModel`), реализовать
+  `Load/Infer/Unload/Inspect/SelfCheck/Tokenizer`.
+- НОВОЕ ТРЕБОВАНИЕ для новых моделей: параметры геометрии (hidden_size,
+  layers_count, heads) жёстко блокировать compile-time макросами и `static_assert`
+  на этапе загрузки (текущие модели читают их из конфига в рантайме).
+
+### 4. Побайтовая токенизация (Token Bridge)
+
+- Зарегистрировать BPE-словарь токенизатора через `BuildTokenizerArrowFiles`
+  (`libs/lsxcommon/src/tokenizer_convert.cpp`); merges-форматы: string `"a b"`
+  И array `["a","b"]`.
+- ИНВАРИАНТ ВЫРАВНИВАНИЯ: `bos_id`/`eos_id`/`pad_id` читать из конфига модели
+  (`tokenizer_convert.cpp` default-ы), а НЕ хардкодить в ядре; служебные префиксы
+  сгенерировать ровно как в исходном токенизаторе, исключая мусорные смещения
+  при кодировании промпта. `bos_id >= 0` → реальный ID начала предложения
+  (`libs/lsxcommon/src/tokenizer.cpp`), иначе `bos_id = -1`.
+
+### 5. Низкоуровневые CUDA-ядра (inference.cu)
+
+- Написать/расширить кастомные CUDA-ядра инференса под специфику внимания модели
+  (пример гибридного макета: GatedDeltaNet + Full Attention —
+  `libs/lsxcommon/src/qwen_inference.cu`: `qwen_gated_delta_kernel`,
+  `full_attn_softmax_kernel`).
+- ИНВАРИАНТ СТРИМА: Весь цикл генерации от Prefill до Decode выполняется внутри
+  ОДНОГО сквозного `cudaStream_t` без возврата управления хосту на каждом токене
+  (без `cudaDeviceSynchronize` в цикле; только финальная синхронизация).
+- ИНВАРИАНТ ШАГА (Stride): Все смещения адресов Q, K, V вычислять строго по
+  физической геометрии тензоров, исключая наложение соседних временных интервалов
+  (stride-арифметика в strided conv/recurrence бафферах).
+
+### 6. Синхронизация памяти (Shared Memory Sandbox)
+
+- Любая операция Read-Modify-Write (RMW) внутри Shared Memory ОБЯЗАНА быть
+  изолирована: запись разрешена только `thread 0` под защитой жёстких барьеров
+  `__syncthreads()`, после барьера остальные потоки читают только-на-чтение
+  (Эталон: `full_attn_softmax_kernel`, `qwen_inference.cu`).
+- Это ликвидирует нетерминизм варпов Independent Thread Scheduling
+  (data race в shared памяти → NaN → недетерминированная генерация).
+
+### 7. Поточно-изолированный маппинг (LsxTokenTranslator)
+
+- Обновить бинарный паспорт трансляции токенов `model-metadata/passport/passport.bin`
+  (vault: `lsxcommon::lsx_model_metadata("passport/passport.bin")`, генерация через
+  `lsxnetwork::BuildPassport` / `WritePassport`).
+- Интегрировать экземпляр транслятора как приватный член `alignas(64)` внутри
+  сетевого воркера `IoWorker` (`libs/lsxnetwork/include/lsxnetwork/io_worker.h`).
+- Загрузка `Load()` через Win32 `MapViewOfFile(PAGE_READONLY)` / POSIX
+  `mmap(PROT_READ)` обязана происходить строго ПОСЛЕ аппаратной привязки потока
+  к ядру (`CpuAffinity::PinToCores0To3`) И ДО сигнального флага готовности
+  `set_value()` (`libs/lsxnetwork/src/io_worker.cpp`).
+
+### 8. ТДД и селфчек (SelfCheck Harness)
+
+- Реализовать инкрементальный селфчек генерации (1→2 токена) через метод
+  `SelfCheck()` (эталон: `QwenV5Model::SelfCheck`, `libs/lsxcommon/src/qwen_v5_model.cpp`).
+- Контрольный промпт `"The capital of France is"` обязан выдавать детерминированный
+  эталонный ответ `"Paris"` (top-1, декод первого токена/короткого префикса),
+  `r.selfcheck_passed == true`.
+- НОВОЕ ТРЕБОВАНИЕ для новых моделей: добавить `tests/test_<model>_selfcheck.cpp`
+  с инкрементальным 1→2-токенным селфчеком подряд минимум 50 циклов стресс-теста
+  с бит-точной детерминированностью логитов и `exit 0`.
 
 ## CMake Key Points
 

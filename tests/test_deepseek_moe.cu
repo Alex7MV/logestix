@@ -4,7 +4,7 @@
 //   run_shared_experts_ffn — F8_E4M3 shared-expert FFN (W1/W3 SwiGLU + W2)
 //   run_routed_experts     — NVFP4 routed experts, weighted FP32 accumulation
 //   layer mix              — route_token + shared FFN + routed experts in the
-//                            exact order of inference_pipeline.cu's layer loop.
+//                            exact order of deepseek_inference_pipeline.cu's layer loop.
 // Every case compares against an independent host-side FP64 reference.
 
 #include <catch2/catch_test_macros.hpp>
@@ -20,13 +20,13 @@
 #include <limits>
 #include <lsxcommon/shared_experts.h>
 
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 
 using Catch::Approx;
 
 namespace lsxcommon::gpu {
 
-// Production entry points (inference_moe.cu), forward-declared like the
+// Production entry points (deepseek_inference_moe.cu), forward-declared like the
 // existing kernel test does for run_routed_expert_ffn.
 cudaError_t route_token(
     cublasHandle_t cublas_h, cudaStream_t stream,

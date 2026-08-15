@@ -4,7 +4,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 
 namespace lsxcommon {
 

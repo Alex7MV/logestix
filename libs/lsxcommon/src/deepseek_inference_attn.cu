@@ -1,4 +1,4 @@
-// inference_attn.cu — Hyper-Connections + Multi-head Latent Attention (MLA)
+// deepseek_inference_attn.cu — Hyper-Connections + Multi-head Latent Attention (MLA)
 // for DeepSeek-V4-Flash.  Mirrors inference/model.py (Attention, Block, ParallelHead)
 // and inference/kernel.py (hc_split_sinkhorn, sparse_attn).
 //
@@ -6,10 +6,10 @@
 // attention with a learnable attn_sink.  CSA (compressor/indexer) is out of scope.
 
 #include "lsxcommon/inference_gpu.h"
-#include "lsxcommon/inference_csa.h"
+#include "lsxcommon/deepseek_inference_csa.h"
+#include "lsxcommon/deepseek_norm_kernels.h"
 #include "lsxcommon/log.h"
-#include "lsxcommon/norm_kernels.h"
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>

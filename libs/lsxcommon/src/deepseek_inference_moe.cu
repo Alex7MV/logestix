@@ -1,7 +1,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/log.h"
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
@@ -303,7 +303,7 @@ cudaError_t run_moe_layer(
         // Compute intermediate dim for shared from byte count
         int shared_inter = static_cast<int>((lw.shared_w1_bytes * 2) / hidden_dim);
         // We need GPU device buffers for shared weights - they're already in VRAM
-        // (loaded by inference_load.cu via cudaMemcpyAsync)
+        // (loaded by deepseek_inference_load.cu via cudaMemcpyAsync)
         // But d_shared_w1/2/3 are device pointers
         run_single_expert_ffn(cublas_h, stream,
             lw.d_shared_w1, lw.d_shared_w1_scales, lw.shared_w1_global_scale,
@@ -808,7 +808,7 @@ cudaError_t run_routed_experts(
 
     // d_output already holds the shared-expert FFN result (or was freshly
     // zeroed by the caller when there are no shared experts — see
-    // inference_pipeline.cu's d_ffn_accum setup) *before* this function is
+    // deepseek_inference_pipeline.cu's d_ffn_accum setup) *before* this function is
     // called, so every routed expert's W2 GEMM must accumulate (beta=1),
     // never overwrite (beta=0). This used to start `false`, which silently
     // discarded the shared-expert contribution on every layer/token that

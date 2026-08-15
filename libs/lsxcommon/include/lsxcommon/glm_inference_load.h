@@ -249,7 +249,7 @@ struct GlmExpertEntry {
 // cached through a bounded LRU so a full 19456-expert model never needs more
 // than `max_open` CRT file descriptors at once (Windows cap is 8192) and host
 // memory stays proportional to the resident set, mirroring the DeepSeek
-// loader (ExpertDb in inference_load.cuh). The generation loop calls
+// loader (ExpertDb in deepseek_inference_load.cuh). The generation loop calls
 // ensure_glm_expert_resident per routed slot before uploading the selected
 // expert's packed payload to device staging.
 struct GlmExpertDb {

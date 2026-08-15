@@ -1,7 +1,7 @@
 #include "lsxcommon/testmodel_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
-#include "inference_load.cuh"
+#include "deepseek_inference_load.cuh"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>

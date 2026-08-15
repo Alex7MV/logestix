@@ -3,6 +3,7 @@
 #include "lsxcommon/common.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/glm_convert.h"
+#include "lsxcommon/qwen_convert.h"
 #include <arrow/api.h>
 #include <cstring>
 #include <filesystem>
@@ -169,6 +170,7 @@ int main(int argc, char* argv[]) {
     bool repack_experts = false;
     bool tokenizer_only = false;
     bool glm = false;
+    bool qwen = false;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc)
@@ -187,6 +189,8 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--glm") == 0)
             glm = true;
+        else if (std::strcmp(argv[i], "--qwen") == 0)
+            qwen = true;
     }
 
     if (input_path.empty()) {
@@ -259,6 +263,19 @@ int main(int argc, char* argv[]) {
     }
 
     spdlog::info("Converting model: {} -> {}", input_path, output_path);
+    if (qwen) {
+        spdlog::info("Qwen3.5 pipeline (logestix-qwen layout)");
+        auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
+        if (!st.ok()) {
+            spdlog::error("Qwen conversion failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Qwen conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
     if (glm) {
         spdlog::info("GLM-5.2 pipeline (logestix-glm layout)");
         auto st = lsxcommon::glm::ConvertGlmModel(input_path, output_path);

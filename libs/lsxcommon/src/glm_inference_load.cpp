@@ -21,7 +21,7 @@ namespace glm {
 namespace {
 
 // Host-side BF16 → FP16 conversion + upload. Mirrors the DeepSeek loader
-// (inference_load.cu): converts on the host to avoid device temp buffers for
+// (deepseek_inference_load.cu): converts on the host to avoid device temp buffers for
 // large tensors, then one async H2D copy. Manual bit path (no __bfloat162float
 // host/device ambiguity under MSVC):
 //   bf16 = top 16 bits of fp32 → reconstruct fp32 → round to fp16.
