@@ -12,7 +12,7 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 | Dear ImGui | 1.92.9-docking | FetchContent (lsxhome only) | Static |
-| ImPlot | 0.17 | FetchContent (lsxhome only) | Static |
+| ImPlot | 1.0 | FetchContent (lsxhome only) | Static |
 | ImNodes | 0.5 | FetchContent (lsxhome only) | Static |
 | FreeType | 2.14.3 | FetchContent (lsxhome only) | Static |
 

@@ -30,7 +30,7 @@ if(NOT dear-imgui_POPULATED)
 endif()
 
 # ── ImPlot (real-time charting channels) ────────────────────────────────────
-set(LSXHOME_IMPLOT_TAG v0.17 CACHE STRING "ImPlot tag")
+set(LSXHOME_IMPLOT_TAG v1.0 CACHE STRING "ImPlot tag")
 FetchContent_Declare(
     implot
     GIT_REPOSITORY "https://github.com/epezent/implot.git"

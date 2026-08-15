@@ -129,7 +129,7 @@ ctest --preset windows-debug    # Windows 11
   - `include/lsxhome/spsc_token_ring.h` — lock-free SPSC ring
   - `include/lsxhome/imnodes_offsetof_shim.h` — shim для imnodes v0.5 против obsolete IM_OFFSETOF
   - `tests/` — `test_lsxhome_gui` (5 test cases: payload alignment, SPSC zero-alloc/backpressure/burst) + `test_lsxhome_font` (3 test cases)
-  - GUI-стек (Dear ImGui 1.92.9-docking, ImPlot 0.17, ImNodes 0.5, FreeType 2.14.3) — FetchContent, статические архивы (`lsxhome_imgui`/`lsxhome_implot`/`lsxhome_imnodes`/`lsxhome_font`/`lsxhome_mono`)
+  - GUI-стек (Dear ImGui 1.92.9-docking, ImPlot 1.0, ImNodes 0.5, FreeType 2.14.3) — FetchContent, статические архивы (`lsxhome_imgui`/`lsxhome_implot`/`lsxhome_imnodes`/`lsxhome_font`/`lsxhome_mono`)
   - **GUI-инварианты**: `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` НЕ используется (меняет layout ImGuiIO/ImGuiStyle → десинхрон `sizeof` с app TU → assert "Mismatched struct layout!" в `IMGUI_CHECKVERSION`); ImPlot/ImNodes требуют своих `CreateContext()`/`DestroyContext()` (иначе assert `GImPlot == nullptr`)
 - `tests/` — Catch2 test suite; GLM и DeepSeek тесты автономны и запускаются по отдельности (`ctest -R glm` / `ctest -R deepseek`)
   - `tests/test_core.cpp` — интеграционные тесты зависимостей (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 11 test cases, 101 assertions
