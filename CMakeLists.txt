@@ -157,6 +157,34 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+# ── Patch bundled fmt for nvcc 13.x (Windows) ─────────────────────────────────
+# spdlog bundles fmt, whose `fractional_part_rounding_thresholds` uses a
+# char32 string literal with code points above U+10FFFF (0x9999999a, ...).
+# GCC/Clang/MSVC accept those, but the nvcc front end rejects them with
+# "character value is out of range" when a .cu pulls in <spdlog/spdlog.h>
+# (glm_inference_load.cu). Replace the literal with a plain uint32_t array —
+# idempotent: both replaces no-op once already applied against v1.15.0.
+set(_spdlog_fmt "${spdlog_SOURCE_DIR}/include/spdlog/fmt/bundled/format.h")
+if(EXISTS "${_spdlog_fmt}")
+    file(READ "${_spdlog_fmt}" _spdlog_fmt_content)
+    # Idempotence guard: the array declaration is the marker — never re-insert it.
+    string(FIND "${_spdlog_fmt_content}" "gNvccRoundingThresholds" _spdlog_fmt_marker)
+    if(_spdlog_fmt_marker EQUAL -1)
+        string(REPLACE
+            "fractional_part_rounding_thresholds(int index) -> uint32_t {"
+            "fractional_part_rounding_thresholds(int index) -> uint32_t {\n  constexpr uint32_t gNvccRoundingThresholds[] = {0x9999999a, 0x828f5c29, 0x80418938, 0x80068db9, 0x8000a7c6, 0x800010c7, 0x800001ae, 0x8000002b};"
+            _spdlog_fmt_content "${_spdlog_fmt_content}")
+        string(REGEX REPLACE
+            "return U\"[^\n]*\n[^\]]*\\[index\\];"
+            "return gNvccRoundingThresholds[index];"
+            _spdlog_fmt_content "${_spdlog_fmt_content}")
+        file(WRITE "${_spdlog_fmt}" "${_spdlog_fmt_content}")
+    endif()
+    unset(_spdlog_fmt_marker)
+    unset(_spdlog_fmt_content)
+endif()
+unset(_spdlog_fmt)
+
 # ── ЗАВИСИМОСТИ: simdjson через submodule (быстрый JSON-парсер) ───────────
 
 set(SIMDJSON_DEVELOPER_MODE OFF CACHE INTERNAL "")
