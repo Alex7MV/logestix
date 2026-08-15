@@ -39,6 +39,9 @@ add_test(NAME test_deepseek_loader COMMAND test_deepseek_loader)
 
 # ── Тест Qwen3.5-9B конвертера (парсер имён + индекс + round-trip) ────────
 add_executable(test_qwen_convert test_qwen_convert.cpp)
+target_compile_definitions(test_qwen_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_qwen_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -58,6 +61,9 @@ add_test(NAME test_qwen_convert COMMAND test_qwen_convert)
 
 # ── Тест Qwen3.5-9B загрузчика (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_loader test_qwen_loader.cpp)
+target_compile_definitions(test_qwen_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_qwen_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -187,8 +193,55 @@ endif()
 
 add_test(NAME test_qwen_3_8_27b_model COMMAND test_qwen_3_8_27b_model)
 
+# ── Тест общей модели проверки целостности (integrity:: helpers) ─────────
+add_executable(test_model_integrity test_model_integrity.cpp)
+target_compile_definitions(test_model_integrity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_model_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_integrity>"
+    )
+    add_custom_command(TARGET test_model_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_integrity>"
+    )
+endif()
+
+add_test(NAME test_model_integrity COMMAND test_model_integrity)
+
+# ── Интеграционный тест целостности Qwen-конвертера ───────────────────────
+add_executable(test_qwen_converter_integrity test_qwen_converter_integrity.cpp)
+target_compile_definitions(test_qwen_converter_integrity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_converter_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_converter_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_converter_integrity>"
+    )
+    add_custom_command(TARGET test_qwen_converter_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_converter_integrity>"
+    )
+endif()
+
+add_test(NAME test_qwen_converter_integrity COMMAND test_qwen_converter_integrity)
+
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
+target_compile_definitions(test_glm_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -208,6 +261,9 @@ add_test(NAME test_glm_convert COMMAND test_glm_convert)
 
 # ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_loader test_glm_loader.cpp)
+target_compile_definitions(test_glm_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_glm_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)

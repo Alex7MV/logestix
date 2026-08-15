@@ -12,6 +12,13 @@
 
 using namespace lsxcommon::qwen;
 
+static void WriteToken(const std::filesystem::path &dir)
+{
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        dir / "tokenizer.json");
+}
+
 static float ReadHalf(const __half *d, int64_t idx)
 {
     __half v;
@@ -29,6 +36,7 @@ TEST_CASE("Qwen loader reads topology and sizes layers")
     auto tensors = qwentest::BuildSyntheticQwenModel();
     qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
     qwentest::WriteConfig(tmp);
+    WriteToken(tmp);
 
     auto st = ConvertQwenModel(tmp.string(), tmp.string());
     REQUIRE(st.ok());
@@ -109,6 +117,7 @@ TEST_CASE("Qwen loader BF16->FP16 values")
     auto tensors = qwentest::BuildSyntheticQwenModel();
     qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
     qwentest::WriteConfig(tmp);
+    WriteToken(tmp);
     REQUIRE(ConvertQwenModel(tmp.string(), tmp.string()).ok());
 
     cudaStream_t stream;

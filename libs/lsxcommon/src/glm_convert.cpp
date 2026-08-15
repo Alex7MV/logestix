@@ -1,5 +1,6 @@
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/converter.h"
+#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
@@ -21,6 +22,7 @@
 #include <vector>
 #include <iterator>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace lsxcommon {
 namespace glm {
@@ -410,6 +412,47 @@ arrow::Status ConvertGlmModel(
         return arrow::Status::Invalid("no safetensors shards found in ",
                                        input_path);
 
+    // (2) config.json is mandatory; parsed for geometry cross-checks.
+    auto cfg_path = fs::path(input_path) / "config.json";
+    if (!fs::exists(cfg_path))
+        return arrow::Status::Invalid("config.json not found in ", input_path);
+
+    int cfg_num_layers = 0;
+    int cfg_hidden_size = 0;
+    int cfg_vocab_size = 0;
+    int cfg_experts_per_layer = 0;
+    {
+        std::ifstream cf(cfg_path);
+        if (!cf)
+            return arrow::Status::IOError("cannot open ", cfg_path.string());
+        std::string cj((std::istreambuf_iterator<char>(cf)),
+                       std::istreambuf_iterator<char>());
+        simdjson::padded_string cpj(cj.data(), cj.size());
+        simdjson::ondemand::parser cp;
+        simdjson::ondemand::document cd;
+        if (cp.iterate(cpj).get(cd) != simdjson::SUCCESS)
+            return arrow::Status::Invalid("config.json parse failed");
+        auto root = cd.get_object();
+        if (root.error() != simdjson::SUCCESS)
+            return arrow::Status::Invalid("config.json root not an object");
+        auto get_i = [&](simdjson::ondemand::object &o, const char *k, int dflt) {
+            int64_t v;
+            if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
+            return static_cast<int>(v);
+        };
+        cfg_num_layers = get_i(root.value(), "num_layers", 0);
+        if (cfg_num_layers <= 0)
+            cfg_num_layers = get_i(root.value(), "num_hidden_layers", 0);
+        cfg_hidden_size = get_i(root.value(), "hidden_size", 0);
+        cfg_vocab_size = get_i(root.value(), "vocab_size", 0);
+        cfg_experts_per_layer = get_i(root.value(), "num_local_experts", 0);
+        if (cfg_experts_per_layer <= 0)
+            cfg_experts_per_layer = get_i(root.value(), "num_experts", 0);
+    }
+
+    // (3) Verify every tensor read is complete before any output is written.
+    ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_path, model));
+
     std::unordered_map<GlmExpertKey, ExpertData, GlmExpertKeyHash> partial;
     std::unordered_map<int, ExpertData> shared_by_layer;
     std::vector<TensorRecord> pinned_tensors;
@@ -431,13 +474,16 @@ arrow::Status ConvertGlmModel(
 
         std::ifstream sf((fs::path(input_path) / shard.filename).string(),
                          std::ios::binary | std::ios::ate);
-        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        if (!sf)
+            return arrow::Status::IOError("cannot open ", shard.filename);
         int64_t sz = sf.tellg();
-        if (sz <= 0) { spdlog::warn("  Zero/negative size, skipping"); continue; }
+        if (sz <= 0)
+            return arrow::Status::IOError("zero/negative size: ", shard.filename);
         sf.seekg(0);
         std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
         sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
-        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+        if (!sf)
+            return arrow::Status::IOError("cannot read ", shard.filename);
 
         uint64_t hdr_len;
         std::memcpy(&hdr_len, shard_buf.data(), 8);
@@ -448,11 +494,10 @@ arrow::Status ConvertGlmModel(
 
             int64_t raw_size = tensor.byte_size();
             int64_t raw_start = data_off + tensor.data_begin;
-            if (raw_start < 0 || raw_start + raw_size > sz) {
-                spdlog::warn("  Skipping {} (offset out of range)",
-                             tensor.name);
-                continue;
-            }
+            if (raw_start < 0 || raw_start + raw_size > sz)
+                return arrow::Status::Invalid(
+                    shard.filename, " tensor ", tensor.name,
+                    " offset out of range");
             const uint8_t *raw_ptr = shard_buf.data() + raw_start;
             std::vector<uint8_t> raw(raw_ptr, raw_ptr + raw_size);
 
@@ -519,14 +564,76 @@ arrow::Status ConvertGlmModel(
         }
     }
 
-    for (auto &[key, raw] : partial) {
-        spdlog::warn("  Incomplete expert layer={} expert={} "
-                     "(w1={} w2={} w3={})",
-            key.layer, key.expert,
-            raw.w1_raw.size(), raw.w2_raw.size(), raw.w3_raw.size());
-    }
+    for (auto &[key, raw] : partial)
+        return arrow::Status::Invalid(
+            "incomplete expert layer=", key.layer,
+            " expert=", key.expert,
+            " (w1=", raw.w1_raw.size(), " bytes / w2=", raw.w2_raw.size(),
+            " / w3=", raw.w3_raw.size(), ")");
     for (auto &[layer, cnt] : experts_per_layer)
         max_experts_per_layer = std::max(max_experts_per_layer, cnt);
+
+    // (4) Tensor coverage: required globals + per-layer MLP/route essentials.
+    {
+        std::vector<std::string> present_names;
+        std::unordered_set<int> present_layers;
+        for (auto &shard : model.shards) {
+            for (auto &t : shard.tensors) {
+                auto p = classify(t.name);
+                if (p.kind == TensorKind::Unknown) continue;
+                present_names.push_back(t.name);
+                if (p.layer >= 0) present_layers.insert(p.layer);
+            }
+        }
+
+        std::vector<std::string> expected;
+        expected.push_back("model.embed_tokens.weight");
+        expected.push_back("lm_head.weight");
+        expected.push_back("model.norm.weight");
+        for (int l : dense_layers) {
+            std::string lb = "model.layers." + std::to_string(l) + ".";
+            expected.push_back(lb + "mlp.gate_proj.weight");
+            expected.push_back(lb + "mlp.up_proj.weight");
+            expected.push_back(lb + "mlp.down_proj.weight");
+        }
+        for (int l : moe_layers) {
+            std::string lb = "model.layers." + std::to_string(l) + ".";
+            expected.push_back(lb + "mlp.gate.weight");
+            expected.push_back(lb + "mlp.gate.e_score_correction_bias");
+            expected.push_back(lb + "mlp.shared_experts.gate_proj.weight");
+            expected.push_back(lb + "mlp.shared_experts.up_proj.weight");
+            expected.push_back(lb + "mlp.shared_experts.down_proj.weight");
+        }
+
+        ARROW_RETURN_NOT_OK(
+            integrity::CheckTensorCoverage(expected, present_names, "glm"));
+    }
+
+    // (6) Geometry: config-declared vs tensor-derived (fields with a declared
+    // value only — GLM configs vary in which keys they carry).
+    {
+        int embed_vocab = 0, embed_hidden = 0;
+        for (auto &shard : model.shards) {
+            for (auto &t : shard.tensors) {
+                if (t.name == "model.embed_tokens.weight" && t.shape.size() >= 2) {
+                    embed_vocab = static_cast<int>(t.shape[0]);
+                    embed_hidden = static_cast<int>(t.shape[1]);
+                }
+            }
+        }
+        std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> geom;
+        if (cfg_num_layers > 0)
+            geom.push_back({"num_layers", {cfg_num_layers, max_layer + 1}});
+        if (cfg_hidden_size > 0)
+            geom.push_back({"hidden_size", {cfg_hidden_size, embed_hidden}});
+        if (cfg_vocab_size > 0)
+            geom.push_back({"vocab_size", {cfg_vocab_size, embed_vocab}});
+        if (cfg_experts_per_layer > 0)
+            geom.push_back({"experts_per_layer",
+                            {cfg_experts_per_layer, max_experts_per_layer}});
+        if (!geom.empty())
+            ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields(geom));
+    }
 
     spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
     ARROW_RETURN_NOT_OK(SaveGlmPinnedTensors(pinned_tensors, output_root));
@@ -550,20 +657,21 @@ arrow::Status ConvertGlmModel(
         static_cast<int64_t>(experts_processed),
         output_root);
 
-    // Build the tokenizer Arrow files from <input>/tokenizer.json so the
-    // converted model is self-contained (runtime reads
-    // pinned/tokenizer_vocab.arrow + pinned/tokenizer_merges.arrow).
+    // (8) Build and verify the binary tokenizer (mandatory).
     auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
-    if (fs::exists(tokenizer_json)) {
-        spdlog::info("Building tokenizer Arrow files from {} ...",
-                     tokenizer_json.string());
-        ARROW_RETURN_NOT_OK(BuildTokenizerArrowFiles(
-            tokenizer_json.string(), output_root / "pinned"));
-        spdlog::info("Tokenizer Arrow files -> {}/pinned", output_root.string());
-    } else {
-        spdlog::warn("No tokenizer.json in {}; tokenizer Arrow files not built",
-                     input_path);
-    }
+    if (!fs::exists(tokenizer_json))
+        return arrow::Status::Invalid("tokenizer.json not found in ",
+                                      input_path);
+    ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
+        tokenizer_json.string(), output_root / "pinned",
+        integrity::TokenizerSpecialIds{.bos_required = true,
+                                       .eos_required = true}));
+
+    // (9) The converted output must be a loadable, verified model.
+    auto vres = integrity::VerifyConvertedModel(output_root);
+    if (!vres.ok())
+        return arrow::Status::Invalid(
+            "output verification failed: ", vres.status().ToString());
 
     spdlog::info("Done — {} pinned tensors, {} experts processed, "
                  "incomplete {}",

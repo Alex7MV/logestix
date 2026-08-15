@@ -1,6 +1,7 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
+#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/qwen_convert.h"
@@ -169,6 +170,7 @@ int main(int argc, char* argv[]) {
     bool repack_shared = false;
     bool repack_experts = false;
     bool tokenizer_only = false;
+    bool verify_only = false;
     bool glm = false;
     bool qwen = false;
 
@@ -177,6 +179,8 @@ int main(int argc, char* argv[]) {
             input_path = argv[++i];
         else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc)
             output_path = argv[++i];
+        else if (std::strcmp(argv[i], "--verify") == 0)
+            verify_only = true;
         else if (std::strcmp(argv[i], "--shared-only") == 0)
             shared_only = true;
         else if (std::strcmp(argv[i], "--repack-shared") == 0)
@@ -204,6 +208,20 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("lsxforge_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
+
+    if (verify_only) {
+        spdlog::info("Verifying converted model: {}", input_path);
+        auto vres = lsxcommon::integrity::VerifyConvertedModel(input_path);
+        if (!vres.ok()) {
+            spdlog::error("Verify failed: {}", vres.status().ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Verify OK — {} model tensors across {} arrow files",
+                     vres->pinned_tensor_count, vres->arrow_files_checked);
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
 
     if (shared_only) {
         spdlog::info("Extracting shared experts from {} ...", input_path);

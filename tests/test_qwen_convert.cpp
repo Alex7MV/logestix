@@ -68,6 +68,9 @@ TEST_CASE("Qwen converter builds logestix-qwen index and filters MTP/Visual")
     auto tensors = qwentest::BuildSyntheticQwenModel();
     qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
     qwentest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
 
     auto st = ConvertQwenModel(tmp.string(), tmp.string());
     REQUIRE(st.ok());

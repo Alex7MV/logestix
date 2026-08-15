@@ -67,6 +67,9 @@ TEST_CASE("GLM loader uploads global tensors BF16→FP16", "[glm][loader]")
     t.push_back({"model.layers.0.input_layernorm.weight", "BF16", {2},
         glmtest::MakeBf16Values(2, [](int64_t i) { return 0.25f + static_cast<float>(i); })});
     glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", t);
+    glmtest::WriteConfig(in, /*num_layers=*/1, /*hidden=*/2, /*vocab=*/4,
+                         /*experts=*/0);
+    glmtest::WriteTokenizer(in);
 
     auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
     REQUIRE(st.ok());
@@ -118,6 +121,8 @@ TEST_CASE("GLM loader sizes layers from topology and skips missing files",
 
     glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
                               glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(in);
+    glmtest::WriteTokenizer(in);
     auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
     REQUIRE(st.ok());
 
@@ -198,13 +203,22 @@ TEST_CASE("GLM loader writes correct FP16 values per layer", "[glm][loader]")
     std::vector<glmtest::FakeTensor> t;
     t.push_back({"model.embed_tokens.weight", "BF16", {16, 16},
         glmtest::MakeBf16Values(256, [](int64_t i) { return 0.125f * static_cast<float>(i); })});
+    t.push_back({"lm_head.weight", "BF16", {16, 16},
+        glmtest::MakeBf16(256)});
     t.push_back({"model.norm.weight", "BF16", {16},
         glmtest::MakeBf16Values(16, [](int64_t i) { return 1.0f + static_cast<float>(i) * 0.25f; })});
     t.push_back({"model.layers.0.input_layernorm.weight", "BF16", {16},
         glmtest::MakeBf16Values(16, [](int64_t i) { return 0.5f + static_cast<float>(i); })});
     t.push_back({"model.layers.0.mlp.gate_proj.weight", "BF16", {16, 16},
         glmtest::MakeBf16Values(256, [](int64_t i) { return static_cast<float>(i) * 0.125f; })});
+    t.push_back({"model.layers.0.mlp.up_proj.weight", "BF16", {16, 16},
+        glmtest::MakeBf16(256)});
+    t.push_back({"model.layers.0.mlp.down_proj.weight", "BF16", {16, 16},
+        glmtest::MakeBf16(256)});
     glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", t);
+    glmtest::WriteConfig(in, /*num_layers=*/1, /*hidden=*/16, /*vocab=*/16,
+                         /*experts=*/0);
+    glmtest::WriteTokenizer(in);
 
     auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
     REQUIRE(st.ok());

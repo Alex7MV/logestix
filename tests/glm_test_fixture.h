@@ -240,4 +240,31 @@ inline std::vector<std::string> TensorNamesIn(const std::filesystem::path &arrow
     return names;
 }
 
+// Writes the config.json the converter's integrity checks expect. Defaults
+// match BuildSyntheticModel(): 79 layers, hidden 16, vocab 64, 2 local experts.
+inline void WriteConfig(const std::filesystem::path &dir,
+                        int num_layers = 79, int hidden = 16,
+                        int vocab = 64, int experts = 2)
+{
+    std::string json =
+        "{\"model_type\":\"glm\"," 
+        "\"num_layers\":" + std::to_string(num_layers) + ","
+        "\"hidden_size\":" + std::to_string(hidden) + ","
+        "\"vocab_size\":" + std::to_string(vocab) + ","
+        "\"num_local_experts\":" + std::to_string(experts) + ","
+        "\"num_experts\":" + std::to_string(experts) +
+        "}";
+    std::ofstream f(dir / "config.json");
+    f << json;
+}
+
+// Copies the shared synthetic BPE tokenizer.json into `dir` so converters
+// that make the tokenizer mandatory can build+verify it.
+inline void WriteTokenizer(const std::filesystem::path &dir)
+{
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        dir / "tokenizer.json");
+}
+
 } // namespace glmtest

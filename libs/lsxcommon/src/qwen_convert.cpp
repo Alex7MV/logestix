@@ -1,4 +1,5 @@
 #include "lsxcommon/qwen_convert.h"
+#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
@@ -15,6 +16,7 @@
 #include <regex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace lsxcommon::qwen {
 
@@ -48,6 +50,108 @@ std::regex &re_linear(const std::string &s) {
     if (it == cache.end())
         it = cache.emplace(s, std::regex(layer_regex(s))).first;
     return it->second;
+}
+
+// Generate full expected tensor names for a Qwen config.
+std::vector<std::string> generate_qwen_expected_names(const QwenTopology &top)
+{
+    std::vector<std::string> expected;
+
+    // Global.
+    expected.push_back("model.language_model.embed_tokens.weight");
+    expected.push_back("lm_head.weight");
+    expected.push_back("model.language_model.norm.weight");
+
+    // Per layer.
+    for (int l = 0; l < top.num_layers; ++l) {
+        std::string base = "model.language_model.layers." + std::to_string(l) + ".";
+
+        // Common to both linear and full attention.
+        expected.push_back(base + "input_layernorm.weight");
+        expected.push_back(base + "post_attention_layernorm.weight");
+        expected.push_back(base + "mlp.gate_proj.weight");
+        expected.push_back(base + "mlp.up_proj.weight");
+        expected.push_back(base + "mlp.down_proj.weight");
+
+        bool linear = (static_cast<size_t>(l) < top.layer_types.size() &&
+                       top.layer_types[static_cast<size_t>(l)] == "linear_attention");
+        if (linear) {
+            expected.push_back(base + "linear_attn.in_proj_qkv.weight");
+            expected.push_back(base + "linear_attn.in_proj_z.weight");
+            expected.push_back(base + "linear_attn.in_proj_b.weight");
+            expected.push_back(base + "linear_attn.in_proj_a.weight");
+            expected.push_back(base + "linear_attn.out_proj.weight");
+            expected.push_back(base + "linear_attn.conv1d.weight");
+            expected.push_back(base + "linear_attn.norm.weight");
+            expected.push_back(base + "linear_attn.A_log");
+            expected.push_back(base + "linear_attn.dt_bias");
+        } else {
+            expected.push_back(base + "self_attn.q_proj.weight");
+            expected.push_back(base + "self_attn.k_proj.weight");
+            expected.push_back(base + "self_attn.v_proj.weight");
+            expected.push_back(base + "self_attn.o_proj.weight");
+            expected.push_back(base + "self_attn.q_norm.weight");
+            expected.push_back(base + "self_attn.k_norm.weight");
+        }
+    }
+    return expected;
+}
+
+// Collect present tensor names (classified, non-MTP/Visual) + layer set.
+void collect_qwen_present(
+    const SafetensorsModel &model,
+    std::vector<std::string> &present_names,
+    std::unordered_set<int> &present_layers)
+{
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            auto p = classify_qwen_tensor(t.name);
+            if (p.kind == TensorKind::Unknown ||
+                p.kind == TensorKind::MTP ||
+                p.kind == TensorKind::Visual)
+                continue;
+            present_names.push_back(t.name);
+            if (p.layer >= 0)
+                present_layers.insert(p.layer);
+        }
+    }
+}
+
+// Extract tensor-derived dimensions from classified tensors.
+void qwen_derive_actual_shapes(const SafetensorsModel &model,
+    int &vocab, int &hidden, int &intermediate, int &tensor_layers)
+{
+    int max_layer = -1;
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            auto p = classify_qwen_tensor(t.name);
+            if (p.kind == TensorKind::Unknown ||
+                p.kind == TensorKind::MTP ||
+                p.kind == TensorKind::Visual)
+                continue;
+            if (p.layer >= 0)
+                max_layer = std::max(max_layer, p.layer);
+
+            if (t.shape.size() < 2) continue;
+            int in_dim = static_cast<int>(t.shape[0]);
+            int out_dim = static_cast<int>(t.shape[1]);
+            switch (p.kind) {
+            case TensorKind::Embed:
+            case TensorKind::LmHead:
+                vocab = in_dim;
+                if (!hidden) hidden = out_dim;
+                break;
+            case TensorKind::MlpGate:
+                // gate_proj.weight is [intermediate_size, hidden_size].
+                intermediate = in_dim;
+                hidden = out_dim;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    tensor_layers = max_layer + 1;
 }
 
 } // namespace
@@ -315,6 +419,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
             t.hidden_size = get_i(src, "hidden_size", t.hidden_size);
             t.intermediate_size = get_i(src, "intermediate_size", t.intermediate_size);
             t.vocab_size = get_i(src, "vocab_size", t.vocab_size);
+            t.num_layers = get_i(src, "num_hidden_layers", t.num_layers);
             t.num_attention_heads = get_i(src, "num_attention_heads", t.num_attention_heads);
             t.num_key_value_heads = get_i(src, "num_key_value_heads", t.num_key_value_heads);
             t.head_dim = get_i(src, "head_dim", t.head_dim);
@@ -347,50 +452,40 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     };
 
     auto cfg_path = fs::path(input_path) / "config.json";
-    // Shape-inference fallback first (only used if config.json is absent).
-    if (!fs::exists(cfg_path)) {
-        // Hidden/intermediate/vocab from tensor shapes.
-        for (auto &shard : model.shards) {
-            for (auto &t : shard.tensors) {
-                auto p = classify_qwen_tensor(t.name);
-                if (p.layer < 0 || t.shape.size() < 2) continue;
-                int in = static_cast<int>(t.shape[0]);
-                int out = static_cast<int>(t.shape[1]);
-                switch (p.kind) {
-                case TensorKind::Embed:
-                case TensorKind::LmHead:
-                    top.vocab_size = in;
-                    if (!top.hidden_size) top.hidden_size = out;
-                    break;
-                case TensorKind::MlpGate:
-                    top.hidden_size = in;
-                    top.intermediate_size = out;
-                    break;
-                case TensorKind::LinearAttnQkv:
-                    // out = k_dim*2 + v_dim; infer linear geometry from siblings
-                    top.hidden_size = in;
-                    for (auto &s2 : shard.tensors) {
-                        auto p2 = classify_qwen_tensor(s2.name);
-                        if (p2.kind == TensorKind::LinearAttnA_log) {
-                            top.linear_num_value_heads = static_cast<int>(s2.numel());
-                        }
-                    }
-                    break;
-                case TensorKind::LinearAttnZ: {
-                    if (top.linear_num_value_heads > 0)
-                        top.linear_value_head_dim = out / top.linear_num_value_heads;
-                    break;
-                }
-                default:
-                    break;
-                }
-            }
-        }
-        if (top.linear_num_value_heads > 0 && top.linear_value_head_dim > 0)
-            top.linear_num_key_heads = 1;  // placeholder; refine if needed
-    } else {
-        read_cfg(cfg_path.string(), top);
-    }
+    // (2) config.json is mandatory and authoritative for geometry.
+    if (!fs::exists(cfg_path))
+        return arrow::Status::Invalid("config.json not found in ", input_path);
+    if (!read_cfg(cfg_path.string(), top))
+        return arrow::Status::Invalid("failed to parse ", cfg_path.string());
+
+    // Capture the config-declared layer count for the geometry cross-check,
+    // then keep the tensor-derived count as the operational topology.
+    int cfg_num_layers = top.num_layers;
+    top.num_layers = max_layer + 1;
+
+    // (3) Source reads must be complete before any output is written.
+    ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_path, model));
+
+    // (4) Every expected Qwen tensor must be present.
+    auto expected = generate_qwen_expected_names(top);
+    std::vector<std::string> present_names;
+    std::unordered_set<int> present_layers;
+    collect_qwen_present(model, present_names, present_layers);
+    ARROW_RETURN_NOT_OK(integrity::CheckTensorCoverage(expected, present_names, "qwen"));
+
+    // (5) Layers must be contiguous.
+    ARROW_RETURN_NOT_OK(integrity::CheckLayerContiguity(top.num_layers, present_layers));
+
+    // (6) Config geometry vs tensor shapes.
+    int tensor_vocab = 0, tensor_hidden = 0, tensor_intermediate = 0, tensor_layers = 0;
+    qwen_derive_actual_shapes(model, tensor_vocab, tensor_hidden,
+                              tensor_intermediate, tensor_layers);
+    ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields({
+        {"num_layers", {cfg_num_layers, tensor_layers}},
+        {"hidden_size", {top.hidden_size, tensor_hidden}},
+        {"vocab_size", {top.vocab_size, tensor_vocab}},
+        {"intermediate_size", {top.intermediate_size, tensor_intermediate}},
+    }));
 
     // Build pinned outputs per layer.
     auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
@@ -411,10 +506,8 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
                 continue;
 
             auto data = read_tensor_data(input_path, shard, t);
-            if (data.empty()) {
-                spdlog::warn("  {} read empty", t.name);
-                continue;
-            }
+            if (data.empty())
+                return arrow::Status::IOError("failed to read tensor data: ", t.name);
 
             bool nvfp4 = qwen_tensor_is_nvfp4(p.kind);
 
@@ -474,7 +567,6 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
         auto batch = DenseNvfp4Schema::MakeBatch(global_nvfp4);
         if (!batch.ok()) return batch.status();
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(*batch, pinned_dir / "global_nvfp4.arrow"));
-        total_pinned += static_cast<int64_t>(global_nvfp4.size());
     }
 
     for (auto &[layer, recs] : nvfp4_by_layer) {
@@ -494,12 +586,21 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     auto st = WriteQwenModelIndex(output_root, top);
     if (!st.ok()) return st;
 
+    // (8) Build and verify the binary tokenizer (mandatory).
     auto tok_path = fs::path(input_path) / "tokenizer.json";
-    if (fs::exists(tok_path)) {
-        auto tok_st = BuildTokenizerArrowFiles(tok_path.string(), pinned_dir);
-        if (!tok_st.ok())
-            spdlog::warn("[qwen_convert] tokenizer build failed: {}", tok_st.ToString());
-    }
+    if (!fs::exists(tok_path))
+        return arrow::Status::Invalid("tokenizer.json not found in ", input_path);
+    ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
+        tok_path.string(), pinned_dir,
+        integrity::TokenizerSpecialIds{.bos_required = true,
+                                       .eos_required = true}));
+
+    // (9) The converted output must be a loadable, verified model.
+    auto vres = integrity::VerifyConvertedModel(output_root);
+    if (!vres.ok())
+        return arrow::Status::Invalid(
+            "output verification failed: ", vres.status().ToString());
+
     return arrow::Status::OK();
 }
 
