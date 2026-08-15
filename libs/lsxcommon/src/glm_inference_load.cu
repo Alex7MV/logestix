@@ -725,7 +725,10 @@ cudaError_t RunGlmExpertsStack(
     e = cudaMemsetAsync(d_out, 0,
                         static_cast<size_t>(seq) * kGlmHidden * sizeof(__half),
                         stream);
-    if (e != cudaSuccess) { cudaFreeHost(h_routing); return e; }
+    if (e != cudaSuccess) {
+        if (own_staging) cudaFreeHost(h_routing);
+        return e;
+    }
 
     for (int s = 0; s < slots; ++s) {
         const GlmRoutedSlot &rs = h_routing[s];
@@ -795,7 +798,10 @@ cudaError_t RunGlmExpertsStackOnDemand(
     e = cudaMemsetAsync(d_out, 0,
                         static_cast<size_t>(seq) * kGlmHidden * sizeof(__half),
                         stream);
-    if (e != cudaSuccess) { cudaFreeHost(h_routing); return e; }
+    if (e != cudaSuccess) {
+        if (own_staging) cudaFreeHost(h_routing);
+        return e;
+    }
 
     // Staging layout (bytes): [w1][w2][w3] packed payloads, then [w1][w2][w3]
     // per-block scales. Reused and overwritten per slot, so only ONE expert is

@@ -708,6 +708,16 @@ cudaError_t route_token(
     int *h_top_indices, float *h_top_weights)
 {
     constexpr float kRouteScale = 1.5f;
+    constexpr int kMaxRouted = 256;  // fixed-size scores[]/sel[]/selected[] below
+
+    // Defensive bounds: `scores`/`sel`/`selected` are fixed-size stack arrays
+    // sized for the model's known geometry (kNumRouted==256). A `num_routed`
+    // larger than that would overflow them; a `topk` larger than the actual
+    // candidate pool would leave `h_top_indices` slots unfilled further down.
+    if (num_routed <= 0 || num_routed > kMaxRouted)
+        return cudaErrorInvalidValue;
+    if (topk > num_routed) topk = num_routed;
+    if (topk <= 0) return cudaErrorInvalidValue;
 
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
@@ -733,16 +743,25 @@ cudaError_t route_token(
     cudaStreamSynchronize(stream);
 
     // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
-    float scores[256];
+    float scores[kMaxRouted];
     for (int i = 0; i < num_routed; ++i) {
         float x = __half2float(reinterpret_cast<__half*>(h_logits)[i]);
         scores[i] = sqrtf(log1pf(expf(x)));
     }
 
     // Selection scores: biased (bias is null for hash layers)
-    float sel[256];
+    float sel[kMaxRouted];
     for (int i = 0; i < num_routed; ++i)
         sel[i] = scores[i] + (h_gate_bias ? h_gate_bias[i] : 0.0f);
+
+    // Every slot starts unfilled (-1) so a routing round that can't find
+    // `topk` distinct candidates (num_routed < topk — already clamped above
+    // so this can't happen — or every remaining candidate score is NaN, which
+    // always compares false against `best_val` and so is never selected)
+    // leaves a detectable sentinel instead of silently reusing whatever
+    // stale expert index/weight this long-lived buffer held from a
+    // previous layer/token's routing decision.
+    for (int k = 0; k < topk; ++k) h_top_indices[k] = -1;
 
     if (h_tid2eid) {
         // Hash layer: expert indices predetermined per token id.
@@ -751,7 +770,8 @@ cudaError_t route_token(
         for (int k = 0; k < topk; ++k)
             h_top_indices[k] = static_cast<int>(h_tid2eid[base + k]);
     } else {
-        bool selected[256] = {false};
+        bool selected[kMaxRouted] = {false};
+        bool any_unfilled = false;
         for (int k = 0; k < topk; ++k) {
             float best_val = -FLT_MAX;
             int best_idx = -1;
@@ -764,14 +784,27 @@ cudaError_t route_token(
             if (best_idx >= 0) {
                 selected[best_idx] = true;
                 h_top_indices[k] = best_idx;
+            } else {
+                any_unfilled = true;
             }
+        }
+        if (any_unfilled) {
+            // All remaining candidates were NaN (or otherwise unselectable).
+            // Fall back to a deterministic, in-range index rather than
+            // leaving -1 sentinels for the weight loop below to choke on.
+            log::warn("[route_token] top-k selection could not fill all "
+                      "slots (NaN/invalid router logits?) — falling back "
+                      "to expert 0 for unfilled slots");
+            for (int k = 0; k < topk; ++k)
+                if (h_top_indices[k] < 0) h_top_indices[k] = 0;
         }
     }
 
     // Routing weights from unbiased scores, normalized, scaled by route_scale.
     float sum_w = 0.0f;
     for (int k = 0; k < topk; ++k) {
-        float w = scores[h_top_indices[k]];
+        int idx = h_top_indices[k];
+        float w = (idx >= 0 && idx < num_routed) ? scores[idx] : 0.0f;
         h_top_weights[k] = w;
         sum_w += w;
     }

@@ -28,6 +28,7 @@ struct TaskMosaicStats {
     std::atomic<std::uint64_t> deepseek_routed{0}; ///< dispatched to DeepSeek branch
     std::atomic<std::uint64_t> unknown_routed{0};  ///< unmapped model string
     std::atomic<std::uint64_t> retired_slots {0};  ///< slots released to producer
+    std::atomic<std::uint64_t> dispatch_exceptions{0}; ///< IModel::Infer/Parse threw
 };
 
 /// Multi-model core orchestration layer for the asynchronous TaskMosaic queue

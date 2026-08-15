@@ -5,8 +5,12 @@
 namespace lsxcommon {
 namespace gpu {
 
-// Argmax: find index of max element in float array
-__global__ void argmax_kernel(const float *logits, int32_t *out, int vocab_size)
+// Argmax: find index (and value) of max element in float array. Writing the
+// max value out alongside the index lets the caller read back a tiny 8-byte
+// (int32+float) result instead of copying the full vocab-sized logits array
+// to host just to rediscover the value the GPU already computed.
+__global__ void argmax_kernel(const float *logits, int32_t *out_idx,
+                              float *out_val, int vocab_size)
 {
     int tid = threadIdx.x;
     int nthreads = blockDim.x;
@@ -36,14 +40,18 @@ __global__ void argmax_kernel(const float *logits, int32_t *out, int vocab_size)
         __syncthreads();
     }
 
-    if (tid == 0)
-        *out = s_idxs[0];
+    if (tid == 0) {
+        *out_idx = s_idxs[0];
+        if (out_val) *out_val = s_vals[0];
+    }
 }
 
 // Compute LM head: logits = head_weight @ hidden (FP16 GEMM) + argmax
 // head_weight: [vocab_size, hidden_dim] column-major (lda = vocab_size)
 // hidden: [hidden_dim, 1]
 // logits: [vocab_size, 1] (float32 output)
+// d_next_token / d_next_maxv: device scalars the caller reads back (8 bytes
+// total) instead of the whole `vocab_size`-sized logits buffer.
 cudaError_t run_lm_head(
     cublasHandle_t cublas_h,
     cudaStream_t stream,
@@ -52,7 +60,8 @@ cudaError_t run_lm_head(
     int vocab_size,
     int hidden_dim,
     float *d_logits,
-    int32_t *d_next_token)
+    int32_t *d_next_token,
+    float *d_next_maxv)
 {
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
@@ -69,7 +78,8 @@ cudaError_t run_lm_head(
 
     int block = 256;
     size_t shared_sz = static_cast<size_t>(block) * (sizeof(float) + sizeof(int));
-    argmax_kernel<<<1, block, shared_sz, stream>>>(d_logits, d_next_token, vocab_size);
+    argmax_kernel<<<1, block, shared_sz, stream>>>(d_logits, d_next_token,
+                                                    d_next_maxv, vocab_size);
     return cudaGetLastError();
 }
 

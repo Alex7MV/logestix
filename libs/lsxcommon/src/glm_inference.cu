@@ -640,12 +640,21 @@ static cudaError_t RunGlmGenerationImpl(
                    " seq=" + std::to_string(block_rows));
         e = RunGlmLoopLayer(ctx, l, 0, block_rows, cur, nxt);
         if (e != cudaSuccess) return fail(e);
-        if (l == 0) {
-            const GlmLayerWeights &lw = pw.layers[0];
-            block_rows = (lw.d_post_attn_norm && lw.d_mlp_gate &&
-                          lw.d_mlp_up && lw.d_mlp_down)
-                             ? 1
-                             : P;  // a loaded dense branch collapses the block
+        // Dense layers 0-2 collapse the block to row 0 (see RunGlmLoopLayer)
+        // as soon as their MLP weights are fully loaded — whichever of the
+        // three is the FIRST to be fully loaded, not necessarily layer 0.
+        // Re-checking only at l==0 left `block_rows` stuck at P whenever
+        // layer 0 lacked its dense weights but layer 1 or 2 had theirs:
+        // RunGlmLoopLayer would then silently collapse ITS OWN output to
+        // row 0 while every later layer kept being invoked (and kept
+        // reading downstream buffers) with seq=block_rows=P, consuming
+        // rows 1..P-1 that were never written by the previous layer.
+        if (l < 3 && block_rows != 1) {
+            const GlmLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
+            if (lw.d_post_attn_norm && lw.d_mlp_gate &&
+                lw.d_mlp_up && lw.d_mlp_down) {
+                block_rows = 1;  // this dense branch collapsed the block
+            }
         }
         if (l < kGlmNumLayers - 1) std::swap(cur, nxt);
     }
@@ -876,7 +885,12 @@ __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
     if (threadIdx.x == 0) {
         float psum = 0.0f;
         for (int t = 0; t < T; ++t) {
-            s_p[t] = expf(s_score[t] - s_lmax);
+            // Bit-exact glibc expf shim — this whole forward pass
+            // (RunGlmRealGeneration) is built to replicate the CPU/glibc
+            // reference bit-for-bit under -fmad=false; a raw CUDA expf()
+            // here would use a different polynomial/table and silently
+            // break that parity for every MLA attention softmax.
+            s_p[t] = GlmExpfGlibc(s_score[t] - s_lmax);
             psum += s_p[t];
         }
         s_psum = psum;

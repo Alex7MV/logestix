@@ -301,7 +301,6 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
     for (int tok = 0; tok < num_tokens; ++tok) {
         for (int lay = 0; lay < topo.num_layers; ++lay) {
             int slot      = lay & 1;
-            int next_slot = (lay + 1) & 1;
 
             cudaStream_t compute_stream = (lay & 1) ? stream_B : stream_A;
             cudaStream_t dma_stream     = (lay & 1) ? stream_A : stream_B;
@@ -313,6 +312,18 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
             if (lay < topo.num_layers - 1 || tok < num_tokens - 1) {
                 int next_tok = (lay == topo.num_layers - 1) ? tok + 1 : tok;
                 int next_lay = (lay == topo.num_layers - 1) ? 0 : lay + 1;
+                // Derived from next_lay (which already wraps to 0 at a token
+                // boundary), NOT from `(lay + 1) & 1`: at the last layer of a
+                // token, the physically next (tok, lay) pair is (tok+1, 0),
+                // whose own `slot = next_lay & 1` computation on the
+                // following outer-loop iteration is `0 & 1 == 0`. For an odd
+                // `topo.num_layers`, `(lay + 1) & 1` disagreed with that
+                // (e.g. num_layers=3: lay=2 -> (2+1)&1==1, but the consuming
+                // iteration uses slot=0&1==0), so the prefetch DMA landed in
+                // a slot the compute step never read from — silently
+                // consuming a stale, previous-token's expert weights instead
+                // of the one just prefetched.
+                int next_slot = next_lay & 1;
                 int next_exp = route_table[static_cast<size_t>(
                     next_tok * topo.num_layers + next_lay)];
                 size_t next_eidx = static_cast<size_t>(next_exp);

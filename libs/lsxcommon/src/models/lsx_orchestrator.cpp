@@ -2,6 +2,7 @@
 
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
+#include <exception>
 #include <thread>
 
 #include "lsxnetwork/openai_endpoint.h"
@@ -78,7 +79,22 @@ void LsxOrchestrator::ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
         // the slot is retired only after the target model's CUDA execution step
         // has fully returned (SlotRetire dtor below — exception-safe).
         SlotRetire retire(queue, index, stats);
-        DispatchOne(frame, stats);
+        try {
+            DispatchOne(frame, stats);
+        } catch (const std::exception& ex) {
+            // SlotRetire guarantees the ring slot itself is never leaked, but
+            // without this catch an exception escaping DispatchOne()/Infer()
+            // (e.g. std::bad_alloc, a filesystem error from a missing weight
+            // file) would keep unwinding straight through this while loop and
+            // permanently kill the consumer thread — turning one bad request
+            // into a permanent TaskMosaic outage instead of a single dropped
+            // frame.
+            ++stats.dispatch_exceptions;
+            spdlog::error("[orchestrator] DispatchOne threw: {}", ex.what());
+        } catch (...) {
+            ++stats.dispatch_exceptions;
+            spdlog::error("[orchestrator] DispatchOne threw a non-std::exception");
+        }
     }
 }
 

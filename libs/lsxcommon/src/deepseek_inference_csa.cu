@@ -28,6 +28,14 @@ cudaError_t alloc_csa_state(CSAState *states, int num_layers,
                              const int *compress_ratios)
 {
     constexpr int kIdxHeadDim = 128;
+    // Every cudaMalloc/cudaMemsetAsync/kernel-launch below is checked. On the
+    // first failure (e.g. OOM) we stop allocating further layers and return
+    // the real error immediately instead of reporting cudaSuccess with a
+    // null d_comp_kv_state/d_comp_score_state that a later kernel (e.g.
+    // compressor_step_kernel) would silently write through. The caller is
+    // responsible for calling free_csa_state() on error too (CSAState fields
+    // default-initialize to nullptr, so partially-populated entries and
+    // never-touched trailing layers are both safe to free).
     for (int l = 0; l < num_layers; ++l) {
         auto &s = states[l];
         const int ratio = (l < num_layers && compress_ratios) ? compress_ratios[l] : 0;
@@ -37,27 +45,42 @@ cudaError_t alloc_csa_state(CSAState *states, int num_layers,
         const int rows = coff * ratio;
         const int state_cols = coff * head_dim;
         int state_sz = rows * state_cols;
-        cudaMalloc(&s.d_comp_kv_state, static_cast<size_t>(state_sz) * sizeof(float));
-        cudaMalloc(&s.d_comp_score_state, static_cast<size_t>(state_sz) * sizeof(float));
-        cudaMemsetAsync(s.d_comp_kv_state, 0, static_cast<size_t>(state_sz) * sizeof(float), stream);
+
+        cudaError_t e = cudaMalloc(&s.d_comp_kv_state, static_cast<size_t>(state_sz) * sizeof(float));
+        if (e != cudaSuccess) return e;
+        e = cudaMalloc(&s.d_comp_score_state, static_cast<size_t>(state_sz) * sizeof(float));
+        if (e != cudaSuccess) return e;
+        e = cudaMemsetAsync(s.d_comp_kv_state, 0, static_cast<size_t>(state_sz) * sizeof(float), stream);
+        if (e != cudaSuccess) return e;
         fill_f32_neg_inf_kernel<<<(state_sz + 255) / 256, 256, 0, stream>>>(s.d_comp_score_state, state_sz);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
 
         int max_comp = max_seq_len / ratio + 1;
-        cudaMalloc(&s.d_compressed_kv,
+        e = cudaMalloc(&s.d_compressed_kv,
             static_cast<size_t>(max_comp) * head_dim * sizeof(__half));
-        cudaMemsetAsync(s.d_compressed_kv, 0,
+        if (e != cudaSuccess) return e;
+        e = cudaMemsetAsync(s.d_compressed_kv, 0,
             static_cast<size_t>(max_comp) * head_dim * sizeof(__half), stream);
+        if (e != cudaSuccess) return e;
 
         // Indexer compressor state (only ratio==4 layers have an indexer).
         int idx_state_sz = 2 * 4 * 2 * kIdxHeadDim;
-        cudaMalloc(&s.d_idx_kv_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
-        cudaMalloc(&s.d_idx_score_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
-        cudaMemsetAsync(s.d_idx_kv_state, 0, static_cast<size_t>(idx_state_sz) * sizeof(float), stream);
+        e = cudaMalloc(&s.d_idx_kv_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
+        if (e != cudaSuccess) return e;
+        e = cudaMalloc(&s.d_idx_score_state, static_cast<size_t>(idx_state_sz) * sizeof(float));
+        if (e != cudaSuccess) return e;
+        e = cudaMemsetAsync(s.d_idx_kv_state, 0, static_cast<size_t>(idx_state_sz) * sizeof(float), stream);
+        if (e != cudaSuccess) return e;
         fill_f32_neg_inf_kernel<<<(idx_state_sz + 255) / 256, 256, 0, stream>>>(s.d_idx_score_state, idx_state_sz);
-        cudaMalloc(&s.d_idx_compressed_kv,
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+        e = cudaMalloc(&s.d_idx_compressed_kv,
             static_cast<size_t>(max_comp) * kIdxHeadDim * sizeof(__half));
-        cudaMemsetAsync(s.d_idx_compressed_kv, 0,
+        if (e != cudaSuccess) return e;
+        e = cudaMemsetAsync(s.d_idx_compressed_kv, 0,
             static_cast<size_t>(max_comp) * kIdxHeadDim * sizeof(__half), stream);
+        if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
 }

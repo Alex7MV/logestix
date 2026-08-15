@@ -121,18 +121,10 @@ cudaError_t run_routed_experts(
 extern __global__ void float_to_half_kernel(const float* __restrict__ src,
                                              __half* __restrict__ dst, int n);
 
-// From deepseek_inference_attn.cu
-cudaError_t run_mla_attention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
-    const LayerWeights& lw,
-    const __half* d_x,
-    __half* d_kv_cache_layer,
-    int start_pos,
-    __half* d_q, __half* d_qr, __half* d_qr2,
-    __half* d_kv, __half* d_kv2,
-    __half* d_o, __half* d_olora, __half* d_out,
-    float* d_dequant,
-    float* d_norm_scratch, float* d_norm_gamma_scratch);
+// run_mla_attention is declared in deepseek_inference_load.cuh (included
+// above) — that header's signature now matches the real definition in
+// deepseek_inference_attn.cu (float* d_dequant), so this file no longer
+// needs its own local, previously-stale (__half*) redeclaration.
 
 // From deepseek_inference_attn.cu
 cudaError_t run_csa_attention(
@@ -157,7 +149,14 @@ cudaError_t run_lm_head(
     int vocab_size,
     int hidden_dim,
     float *d_logits,
-    int32_t *d_next_token);
+    int32_t *d_next_token,
+    float *d_next_maxv);
+
+// Sanity ceiling for a model-reported vocab_size. d_logits is now allocated
+// dynamically to the actual vocab_size (see RunInferenceModel), but any
+// model reporting an implausibly large vocabulary fails loudly at load time
+// instead of proceeding with a runaway allocation/GEMM size.
+constexpr int kMaxVocabSize = 200000;
 
 InferenceResult RunInferenceModel(
     const std::string &model_path,
@@ -246,8 +245,8 @@ InferenceResult RunInferenceModel(
     float *d_norm_scratch = nullptr;
     float *d_norm_gamma_scratch = nullptr;
     int32_t *d_next_token = nullptr;
+    float *d_next_maxv = nullptr;
     PinnedWeights pw;
-    float *h_logits = nullptr;
     int *h_topk = nullptr;
     float *h_top_weights = nullptr;
     uint8_t *d_pack_stage = nullptr;
@@ -258,7 +257,6 @@ InferenceResult RunInferenceModel(
     float rms_eps = 1e-6f;
     int total_steps = 0;
     const int kLocalTopK = 6;
-    size_t h_logits_sz = static_cast<size_t>(150000) * sizeof(float);
     // Shared experts may have intermediate_dim = hidden_dim; allocate full size.
     size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(float);
     // Shared experts may have intermediate_dim up to hidden_dim
@@ -331,6 +329,7 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaMalloc(&d_hc_comb, static_cast<size_t>(kHcMult * kHcMult) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_hc_pre, static_cast<size_t>(kHcMult) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_next_token, sizeof(int32_t)));
+    INFER_CHECK(cudaMalloc(&d_next_maxv, sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_norm_scratch,
         static_cast<size_t>(kHiddenDim) * sizeof(float)));
     INFER_CHECK(cudaMalloc(&d_norm_gamma_scratch,
@@ -406,10 +405,18 @@ InferenceResult RunInferenceModel(
     // Ensure vocab size
     if (pw.vocab_size == 0) pw.vocab_size = 128000;
     log::info("[inference] vocab_size=" + std::to_string(pw.vocab_size));
+    if (pw.vocab_size < 0 || pw.vocab_size > kMaxVocabSize) {
+        result.error_msg = "vocab_size " + std::to_string(pw.vocab_size)
+            + " exceeds fixed logits-buffer capacity ("
+            + std::to_string(kMaxVocabSize) + ")";
+        goto cleanup;
+    }
 
-    // Allocate logits AFTER load (pre-alloc buffers can be corrupted by loading)
-    INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(150000) * sizeof(float)));
-    INFER_CHECK(cudaMallocHost(&h_logits, h_logits_sz));
+    // Allocate logits AFTER load (pre-alloc buffers can be corrupted by loading).
+    // Sized to the model's actual vocab_size (bounds-checked above), not a
+    // fixed literal — a larger-vocab model now fails loudly at load time
+    // instead of silently overflowing this buffer on every decode step.
+    INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(pw.vocab_size) * sizeof(float)));
 
     // 7. Route table for top-8
     INFER_CHECK(cudaMallocHost(&h_topk,
@@ -642,30 +649,28 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         INFER_CHECK(run_lm_head(cublas_h, stream,
                                  pw.d_head, d_normed,
                                  pw.vocab_size, kHiddenDim,
-                                 d_logits, d_next_token));
+                                 d_logits, d_next_token, d_next_maxv));
 
-        // Copy token back to host
-        INFER_CHECK(cudaMemcpyAsync(h_logits, d_logits,
-            static_cast<size_t>(pw.vocab_size) * sizeof(float),
-            cudaMemcpyDeviceToHost, stream));
-        INFER_CHECK(cudaDeviceSynchronize());
-
-        int next_tok = 0;
+        // Read back only the 8-byte GPU-computed argmax result (token id +
+        // max logit) — not the whole vocab_size-sized logits buffer — and
+        // synchronize just this stream, never the whole device. This keeps
+        // the per-token host handshake (needed to pick the next embedding
+        // and check EOS) from stalling unrelated streams/models sharing
+        // the GPU, and removes the O(vocab_size) host rescan entirely.
+        int32_t next_tok_i32 = 0;
         float max_val = -1e10f;
-        for (int v = 0; v < pw.vocab_size; ++v) {
-            if (h_logits[v] > max_val) {
-                max_val = h_logits[v];
-                next_tok = v;
-            }
-        }
+        INFER_CHECK(cudaMemcpyAsync(&next_tok_i32, d_next_token,
+            sizeof(int32_t), cudaMemcpyDeviceToHost, stream));
+        INFER_CHECK(cudaMemcpyAsync(&max_val, d_next_maxv,
+            sizeof(float), cudaMemcpyDeviceToHost, stream));
+        INFER_CHECK(cudaStreamSynchronize(stream));
+        int next_tok = static_cast<int>(next_tok_i32);
 
-        // Logit temperature clamp: if maxv > 30, scale all logits down
-        // This prevents degenerate "won won won" repetition from HC state growth
-        // causing maxv=6.3M logit inflation
+        // Diagnostic-only clamp of the *logged* max value. The previous
+        // implementation rescaled the whole host logits array here, but
+        // that array was never read again after this point — only the
+        // logged max_val mattered, so only the log-facing value is clamped.
         if (max_val > 30.0f) {
-            float scale = 30.0f / max_val;
-            for (int v = 0; v < pw.vocab_size; ++v)
-                h_logits[v] *= scale;
             max_val = 30.0f;
         }
 
@@ -786,7 +791,7 @@ cleanup:
     if (d_norm_scratch) cudaFree(d_norm_scratch);
     if (d_norm_gamma_scratch) cudaFree(d_norm_gamma_scratch);
     if (d_next_token)  cudaFree(d_next_token);
-    if (h_logits)      cudaFreeHost(h_logits);
+    if (d_next_maxv)   cudaFree(d_next_maxv);
     if (h_topk)        cudaFreeHost(h_topk);
     if (h_top_weights) cudaFreeHost(h_top_weights);
     if (d_pack_stage)  cudaFree(d_pack_stage);
