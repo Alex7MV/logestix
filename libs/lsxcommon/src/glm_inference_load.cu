@@ -816,7 +816,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
     for (int s = 0; s < slots; ++s) {
         const GlmRoutedSlot &rs = h_routing[s];
         if (rs.eid < 0 || rs.eid >= n_experts) continue;
-        ensure_glm_expert_resident(db, layer, rs.eid);
+        ensure_glm_expert_resident(db, layer, rs.eid, stream);
         const size_t flat = static_cast<size_t>(layer) *
                                 static_cast<size_t>(db.experts_per_layer) +
                             static_cast<size_t>(rs.eid);

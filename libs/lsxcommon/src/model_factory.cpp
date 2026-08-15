@@ -1,5 +1,6 @@
 #include "lsxcommon/model_factory.h"
 
+#include <mutex>
 #include <unordered_map>
 
 #include <spdlog/spdlog.h>
@@ -14,11 +15,29 @@ std::unordered_map<std::string, CreateModelFn> &Registry()
     static std::unordered_map<std::string, CreateModelFn> reg;
     return reg;
 }
+
+// Guards Registry() against concurrent Register()/Create() calls. Today the
+// only writer is EnsureModelRegistry() (itself serialized by its own
+// function-local static init), invoked lazily from Create() before any
+// lookup — but LsxModelFactory::Register() is a public API, and without this
+// lock a hypothetical concurrent registration (e.g. a future plugin-model
+// hot-reload path) racing a lookup from another thread would be a data race
+// on the underlying unordered_map (rehash-during-read is undefined behavior).
+std::mutex &RegistryMutex()
+{
+    static std::mutex m;
+    return m;
+}
 } // namespace
 
 void LsxModelFactory::Register(const std::string &type, CreateModelFn fn)
 {
-    Registry()[type] = std::move(fn);
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    auto &reg = Registry();
+    if (reg.find(type) != reg.end())
+        spdlog::warn("[factory] model type '{}' re-registered, overwriting "
+                     "the previous factory function", type);
+    reg[type] = std::move(fn);
 }
 
 bool RegisterModel(const std::string &type, CreateModelFn fn)
@@ -46,13 +65,21 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
         }
     }
 
-    auto &reg = Registry();
-    auto it = reg.find(type);
-    if (it == reg.end()) {
-        spdlog::error("[factory] no registered model for type '{}'", type);
-        return nullptr;
+    CreateModelFn fn;
+    {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        auto &reg = Registry();
+        auto it = reg.find(type);
+        if (it == reg.end()) {
+            spdlog::error("[factory] no registered model for type '{}'", type);
+            return nullptr;
+        }
+        // Copy the std::function out while holding the lock, then invoke it
+        // unlocked — the factory function itself (a model constructor) may
+        // take arbitrarily long and must never hold RegistryMutex.
+        fn = it->second;
     }
-    return it->second(cfg);
+    return fn(cfg);
 }
 
 } // namespace lsxcommon

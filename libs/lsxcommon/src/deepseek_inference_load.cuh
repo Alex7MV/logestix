@@ -66,6 +66,15 @@ ModelTopology load_topology(const std::string &model_path);
 // Returns normalized type (lowercase, ' ' -> '-'), or "" on any error.
 std::string detect_model_type(const std::string &model_path);
 
+// THREAD-SAFETY: this struct is NOT internally synchronized. It is safe only
+// because RunInferenceModel constructs, uses and destroys its own ExpertDb
+// entirely within a single call (never shared across calls or threads) and
+// LsxOrchestrator::ServeTaskMosaic is documented single-consumer. If a future
+// change makes an IModel instance serve concurrent Infer() calls from
+// multiple threads (or hoists an ExpertDb into persistent per-model state),
+// ensure_expert_resident/load_expert_index/free_expert_index will need an
+// external lock: concurrent LRU touch/evict mutates `lru`/`entries`/`mmaps`
+// without any synchronization.
 struct ExpertDb {
     std::vector<ExpertEntry> entries;
     std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
@@ -83,7 +92,17 @@ ExpertDb load_expert_index(const std::string &model_path,
 
 // Ensure the mmap for (layer, expert) is resident in the LRU cache, evicting the
 // least-recently-used entries as needed. No-op if already resident.
-void ensure_expert_resident(ExpertDb &db, int layer, int expert);
+//
+// `stream` is synchronized (once, only when an eviction is actually about to
+// happen) before any mmap is unmapped: run_routed_experts / run_shared_experts
+// issue cudaMemcpyAsync() calls that read directly from an entry's mmap'd host
+// memory (host_w1/host_w2/... — this is the whole point of the zero-copy
+// design), and cudaMemcpyAsync() returning to the host does NOT mean the DMA
+// engine has finished reading the source buffer yet. Without this barrier,
+// evicting (munmap-ing) an entry whose async H2D copy is still in flight is a
+// use-after-free read of unmapped host memory from the GPU's DMA engine.
+void ensure_expert_resident(ExpertDb &db, int layer, int expert,
+                            cudaStream_t stream);
 
 // Release all expert mmaps (frees CRT file descriptors).
 void free_expert_index(ExpertDb &db);

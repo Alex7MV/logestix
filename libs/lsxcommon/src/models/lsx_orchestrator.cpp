@@ -139,7 +139,20 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
                 // GLM-5.2 execution branch. GlmV5Model::Infer is currently an
                 // honest stub (returns "GLM inference pipeline not implemented")
                 // until the GLM runtime lands; routing + retirement are real.
-                glm_->Infer(req);
+                //
+                // NOTE: `req` is intentionally NOT populated from `cc.content`
+                // yet — translating chat-completion text into `input_ids`
+                // requires calling into the target model's tokenizer
+                // (IModel::Tokenizer()), which is a separate, larger wiring
+                // task (and today's `Infer()` for both branches is itself a
+                // stub ahead of the real runtime landing here). What IS fixed
+                // here: the result of Infer() is no longer silently dropped.
+                auto res = glm_->Infer(req);
+                if (!res.ok) {
+                    ++stats.infer_failures;
+                    spdlog::warn("[orchestrator] glm-5.2 Infer failed: {}",
+                                 res.error_msg);
+                }
             } else {
                 spdlog::warn("[orchestrator] glm-5.2 routed but no model registered");
             }
@@ -150,7 +163,12 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
             ModelRequest req;
             if (deepseek_ != nullptr) {
                 // DeepSeek-V4-Flash execution branch -> gpu::RunInferenceModel.
-                deepseek_->Infer(req);
+                auto res = deepseek_->Infer(req);
+                if (!res.ok) {
+                    ++stats.infer_failures;
+                    spdlog::warn("[orchestrator] deepseek-v4-flash Infer failed: {}",
+                                 res.error_msg);
+                }
             } else {
                 spdlog::warn("[orchestrator] deepseek-v4-flash routed but no model registered");
             }

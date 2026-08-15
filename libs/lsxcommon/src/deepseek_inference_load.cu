@@ -131,12 +131,31 @@ static cudaError_t load_attn_weight(
     }
     n = static_cast<int64_t>(wt->data.size());
     cudaError_t e = upload_f8_bytes(wt->data, d_w, stream);
-    if (e != cudaSuccess) return e;
+    if (e != cudaSuccess) {
+        log::error("[deepseek_load] weight upload failed for '"
+                   + weight_suffix + "': " + cudaGetErrorString(e));
+        return e;
+    }
     const TensorRecord *st = find_tensor_suffix(tensors, scale_suffix);
     if (st) {
         scale_n = static_cast<int64_t>(st->data.size());
         e = upload_f8_bytes(st->data, d_scale, stream);
-        if (e != cudaSuccess) return e;
+        if (e != cudaSuccess) {
+            // The weight upload above already succeeded and *d_w is a live
+            // device pointer, but without its matching scale a dequant
+            // kernel would read a null/garbage scale against a valid weight
+            // buffer — an inconsistent, not deterministically-zero, state.
+            // Roll the weight back too so this attention weight is either
+            // fully present or (matching every other partial-load path in
+            // this loader) cleanly absent.
+            log::error("[deepseek_load] scale upload failed for '"
+                       + scale_suffix + "', rolling back weight '"
+                       + weight_suffix + "': " + cudaGetErrorString(e));
+            cudaFree(const_cast<uint8_t *>(*d_w));
+            *d_w = nullptr;
+            n = 0;
+            return e;
+        }
     }
     return cudaSuccess;
 }
@@ -377,7 +396,8 @@ ExpertDb load_expert_index(const std::string &model_path,
     return db;
 }
 
-void ensure_expert_resident(ExpertDb &db, int layer, int expert)
+void ensure_expert_resident(ExpertDb &db, int layer, int expert,
+                            cudaStream_t stream)
 {
     if (expert < 0 || expert >= db.experts_per_layer) return;
     if (db.paths.empty()) return;
@@ -397,7 +417,15 @@ void ensure_expert_resident(ExpertDb &db, int layer, int expert)
         return;
     }
 
-    // Evict least-recently-used entries until under the cap.
+    // Evict least-recently-used entries until under the cap. Sync the caller's
+    // stream ONCE before the first eviction: any earlier RunInferenceModel
+    // step may have issued a cudaMemcpyAsync() reading from one of the
+    // about-to-be-unmapped entries' host_w*/host_*_scales pointers, and that
+    // copy is not guaranteed complete just because the launching call
+    // returned. Synchronizing only when eviction is actually about to happen
+    // (rather than every call) keeps this a rare, not per-token, barrier.
+    if (db.lru.size() >= db.max_open)
+        cudaStreamSynchronize(stream);
     while (db.lru.size() >= db.max_open) {
         size_t evict = db.lru.back();
         db.lru.pop_back();

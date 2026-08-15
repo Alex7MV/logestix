@@ -595,7 +595,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
                 for (int i = 0; i < kLocalTopK; ++i)
-                    ensure_expert_resident(expert_db, lay, h_topk[i]);
+                    ensure_expert_resident(expert_db, lay, h_topk[i], stream);
                 INFER_CHECK(run_routed_experts(
                     cublas_h, stream, d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,

@@ -232,8 +232,11 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
 
     auto maybe_ctx = get_cuda_ctx();
     if (!maybe_ctx.ok()) return false;
-    auto ctx = *maybe_ctx;
-    (void)ctx;
+    // The CudaContext itself is unused below (all device work goes through
+    // plain cudaMalloc/cudaMemcpyAsync/kernel launches, not Arrow's CUDA
+    // buffer wrappers) — this call's only purpose is to force Arrow's CUDA
+    // device manager to initialize before we touch the device directly.
+    (void)(*maybe_ctx);
 
     int64_t raw_size = numel * dtype_byte_size(dc);
     int64_t npacked = (numel + 1) / 2;
@@ -291,34 +294,51 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
     if (cudaStreamCreate(&stream) != cudaSuccess) return false;
     struct StreamGuard { cudaStream_t s; ~StreamGuard() { if (s) cudaStreamDestroy(s); } } sg{stream};
 
+    // On any error path below, synchronize the stream BEFORE returning: both
+    // cudaStreamDestroy() (StreamGuard) and cudaFree() (CudaMemGuard) run
+    // automatically as we unwind, but cudaStreamDestroy() is documented as
+    // non-blocking (it merely marks the stream for destruction once pending
+    // work finishes) — so without an explicit sync here, the destructors
+    // could tear down the stream/buffers while an async copy or kernel from
+    // an earlier step of this same pipeline is still reading/writing them.
+    auto fail = [&]() -> bool {
+        cudaStreamSynchronize(stream);
+        return false;
+    };
+
     // ── Async pipeline on stream ────────────────────────────────────────────
 
     // 1. Copy raw input host → device
-    cudaMemcpyAsync(d_raw, raw_data, raw_size, cudaMemcpyHostToDevice, stream);
-    if (use_e8m0)
+    if (cudaMemcpyAsync(d_raw, raw_data, raw_size, cudaMemcpyHostToDevice,
+                        stream) != cudaSuccess)
+        return fail();
+    if (use_e8m0 &&
         cudaMemcpyAsync(d_e8m0, e8m0_scales, scale_numel,
-                        cudaMemcpyHostToDevice, stream);
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess)
+        return fail();
 
     // 2. Convert raw → float32 (applying E8M0 block scales if present)
     convert_kernel<<<512, 256, 0, stream>>>(
         d_raw, d_float, numel, dc,
         use_e8m0 ? d_e8m0 : nullptr, C, SC, block_r, block_c);
-    if (cudaGetLastError() != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return fail();
 
     // 3. Per-block max_abs
     block_maxabs_kernel<<<static_cast<int>(nblocks), kBlockSize, 0, stream>>>(
         d_float, d_block_max, nblocks, numel);
-    if (cudaGetLastError() != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return fail();
 
     // 4. Sync stream so block_max is ready for host readback
-    cudaStreamSynchronize(stream);
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
 
     // 5. Read back block_max → host, compute E4M3 scales and global max
     float global_max_abs = 0.0f;
     {
         std::vector<float> host_block_max(static_cast<std::size_t>(nblocks));
-        cudaMemcpy(host_block_max.data(), d_block_max,
-                   nblocks * sizeof(float), cudaMemcpyDeviceToHost);
+        if (cudaMemcpy(host_block_max.data(), d_block_max,
+                       nblocks * sizeof(float), cudaMemcpyDeviceToHost)
+                != cudaSuccess)
+            return false;
 
         for (int64_t i = 0; i < nblocks; i++) {
             float v = host_block_max[static_cast<std::size_t>(i)];
@@ -349,8 +369,10 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
         }
 
         // Upload float scales to device (async)
-        cudaMemcpyAsync(d_block_scales, host_block_scales.data(),
-                        nblocks * sizeof(float), cudaMemcpyHostToDevice, stream);
+        if (cudaMemcpyAsync(d_block_scales, host_block_scales.data(),
+                            nblocks * sizeof(float), cudaMemcpyHostToDevice,
+                            stream) != cudaSuccess)
+            return fail();
     }
 
     // 7. Per-block quantize + pack
@@ -363,16 +385,20 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
             (pair_threads + pack_block - 1) / pack_block);
         quantize_pack_perblock_kernel<<<pack_grid, pack_block, 0, stream>>>(
             d_float, d_packed, d_block_scales, numel);
-        if (cudaGetLastError() != cudaSuccess) return false;
+        if (cudaGetLastError() != cudaSuccess) return fail();
     }
 
     // 8. Copy packed data device → host (async)
     packed.resize(static_cast<std::size_t>(npacked));
-    cudaMemcpyAsync(packed.data(), d_packed, npacked,
-                    cudaMemcpyDeviceToHost, stream);
+    if (cudaMemcpyAsync(packed.data(), d_packed, npacked,
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return fail();
 
-    // 9. Final sync
-    cudaStreamSynchronize(stream);
+    // 9. Final sync — also catches any error from the async copy/kernels
+    // above that hadn't yet surfaced (cudaGetLastError() only reports
+    // launch-time errors, not asynchronous execution failures).
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
+    if (cudaGetLastError() != cudaSuccess) return false;
 
     return true;
 }

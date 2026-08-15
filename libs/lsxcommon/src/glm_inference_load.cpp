@@ -139,8 +139,16 @@ void Upload1D(const TensorRecord *t, __half **dst, cudaStream_t stream)
     if (!t || t->shape.empty()) return;
     int64_t numel = t->shape[0];
     if (numel <= 0) return;
-    if (UploadBf16ToHalf(t->data.data(), numel, dst, stream) != cudaSuccess)
+    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream);
+    if (e != cudaSuccess) {
+        // Distinguish a real CUDA failure (OOM, driver error) from the
+        // legitimately-silent "tensor not present for this layer type" case
+        // above: this tensor WAS found and DID have a valid shape, so a
+        // failure here is a genuine upload error worth surfacing.
+        log::error("[glm_load] upload failed for '" + t->name + "': "
+                   + cudaGetErrorString(e));
         *dst = nullptr;
+    }
 }
 
 // Uploads a 2D BF16 weight, storing its shape (when rows/cols are non-null).
@@ -157,8 +165,12 @@ void Upload2D(const std::vector<TensorRecord> &tensors,
     if (cols) *cols = c;
     int64_t numel = r * c;
     if (numel <= 0) return;
-    if (UploadBf16ToHalf(t->data.data(), numel, dst, stream) != cudaSuccess)
+    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream);
+    if (e != cudaSuccess) {
+        log::error("[glm_load] upload failed for '" + t->name + "': "
+                   + cudaGetErrorString(e));
         *dst = nullptr;
+    }
 }
 
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
@@ -176,23 +188,43 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     if (embed && embed->shape.size() >= 2) {
         pw.vocab_size = static_cast<int>(embed->shape[0]);
         pw.hidden = static_cast<int>(embed->shape[1]);
-        if (UploadBf16ToHalf(embed->data.data(),
+        cudaError_t e = UploadBf16ToHalf(embed->data.data(),
                              pw.vocab_size * pw.hidden, &pw.d_embed,
-                             stream) != cudaSuccess)
-            log::error("[glm_load] embed upload failed");
+                             stream);
+        if (e != cudaSuccess) {
+            log::error(std::string("[glm_load] embed upload failed: ")
+                       + cudaGetErrorString(e));
+            return e;
+        }
+    } else {
+        log::error("[glm_load] embed_tokens.weight missing/malformed in "
+                   "global.arrow — model cannot run without it");
+        return cudaErrorInvalidValue;
     }
     auto *head = FindTensor(tensors, "lm_head.weight");
     if (head && head->shape.size() >= 2 && head != embed) {
         int64_t numel = head->shape[0] * head->shape[1];
-        if (UploadBf16ToHalf(head->data.data(), numel, &pw.d_head,
-                             stream) != cudaSuccess)
-            log::error("[glm_load] head upload failed");
+        cudaError_t e = UploadBf16ToHalf(head->data.data(), numel, &pw.d_head,
+                             stream);
+        if (e != cudaSuccess) {
+            log::error(std::string("[glm_load] head upload failed: ")
+                       + cudaGetErrorString(e));
+            return e;
+        }
     }
     auto *norm = FindTensor(tensors, "model.norm.weight");
     if (norm && !norm->shape.empty()) {
-        if (UploadBf16ToHalf(norm->data.data(), norm->shape[0],
-                             &pw.d_final_norm, stream) != cudaSuccess)
-            log::error("[glm_load] model.norm upload failed");
+        cudaError_t e = UploadBf16ToHalf(norm->data.data(), norm->shape[0],
+                             &pw.d_final_norm, stream);
+        if (e != cudaSuccess) {
+            log::error(std::string("[glm_load] model.norm upload failed: ")
+                       + cudaGetErrorString(e));
+            return e;
+        }
+    } else {
+        log::error("[glm_load] model.norm.weight missing/malformed in "
+                   "global.arrow — final RMSNorm cannot run without it");
+        return cudaErrorInvalidValue;
     }
     return cudaSuccess;
 }
@@ -428,14 +460,30 @@ bool ParseGlmExpertFile(GlmExpertDb &db, size_t idx)
     auto &apath = db.paths[idx];
     auto mmap_res = arrow::io::MemoryMappedFile::Open(
         apath, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) return false;
+    if (!mmap_res.ok()) {
+        // Rate-limited: a missing expert file is a common, expected case
+        // when scanning a full (e.g. 19456-expert) grid — mirrors the
+        // DeepSeek loader's parse_expert_file logging so a genuinely broken
+        // pinned-dir layout is still discoverable without flooding the log
+        // per-expert on every ensure_glm_expert_resident() miss.
+        if (idx < 5 || idx % 1000 == 0)
+            log::debug("[glm_load] expert mmap fail " + apath + ": "
+                       + mmap_res.status().ToString());
+        return false;
+    }
     auto mmap = *mmap_res;
 
     auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
-    if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0)
+    if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0) {
+        log::debug("[glm_load] expert file has no record batches: " + apath);
         return false;
+    }
     auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) return false;
+    if (!batch_res.ok()) {
+        log::debug("[glm_load] expert batch read failed for " + apath + ": "
+                   + batch_res.status().ToString());
+        return false;
+    }
     auto batch = *batch_res;
 
     auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
@@ -520,7 +568,8 @@ GlmExpertDb load_glm_expert_index(const std::string &model_path,
     return db;
 }
 
-void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert)
+void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert,
+                                cudaStream_t stream)
 {
     if (expert < 0 || expert >= db.experts_per_layer) return;
     if (db.paths.empty()) return;
@@ -541,7 +590,15 @@ void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert)
         return;
     }
 
-    // Evict least-recently-used entries until under the cap.
+    // Evict least-recently-used entries until under the cap. Sync the
+    // caller's stream ONCE before the first eviction: an earlier routed-slot
+    // launch may have issued a cudaMemcpyAsync() reading from one of the
+    // about-to-be-unmapped entries' host_w*/host_*_scales pointers, and that
+    // copy is not guaranteed complete just because the launching call
+    // returned. Synchronizing only when eviction is actually about to happen
+    // (rather than every call) keeps this a rare, not per-slot, barrier.
+    if (db.lru.size() >= db.max_open)
+        cudaStreamSynchronize(stream);
     while (db.lru.size() >= db.max_open) {
         size_t evict = db.lru.back();
         db.lru.pop_back();

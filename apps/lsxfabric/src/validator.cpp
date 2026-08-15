@@ -208,15 +208,19 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
     using E = lsxcommon::ExpertSchema;
     int64_t n = rb->num_rows();
 
+    // Loop over every row of the batch (mirrors ValidateDenseNvfp4Schema
+    // above): the expert schema does not forbid >1 row per exp_NNN.arrow
+    // file, so checking only row 0 would silently PASS a file whose later
+    // rows are corrupt.
     auto check_binary = [&](int idx, const char *name) {
         auto arr = rb->column(idx);
         auto bin = std::static_pointer_cast<arrow::LargeBinaryArray>(arr);
-        if (n > 0) {
-            auto view = bin->GetView(0);
+        for (int64_t i = 0; i < n; ++i) {
+            auto view = bin->GetView(i);
             auto data = reinterpret_cast<const uint8_t*>(view.data());
             auto size = static_cast<int64_t>(view.size());
             if (!ValidateNVFP4Data(data, size)) {
-                spdlog::error("  NVFP4 data invalid in {}", name);
+                spdlog::error("  NVFP4 data invalid in {} at row {}", name, i);
                 r.add_error();
             }
         }
@@ -225,13 +229,13 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
     auto check_scales = [&](int idx, const char *name) {
         auto arr = rb->column(idx);
         auto lst = std::static_pointer_cast<arrow::ListArray>(arr);
-        if (n > 0) {
-            auto offsets = lst->raw_value_offsets();
-            int64_t count = offsets[1] - offsets[0];
-            auto u8 = std::static_pointer_cast<arrow::UInt8Array>(lst->values());
-            const uint8_t *data = u8->raw_values() + offsets[0];
+        auto offsets = lst->raw_value_offsets();
+        auto u8 = std::static_pointer_cast<arrow::UInt8Array>(lst->values());
+        for (int64_t i = 0; i < n; ++i) {
+            int64_t count = offsets[i + 1] - offsets[i];
+            const uint8_t *data = u8->raw_values() + offsets[i];
             if (!ValidateE4M3Scales(data, count)) {
-                spdlog::error("  E4M3 scales invalid in {}", name);
+                spdlog::error("  E4M3 scales invalid in {} at row {}", name, i);
                 r.add_error();
             }
         }
@@ -240,10 +244,10 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
     auto check_global = [&](int idx, const char *name) {
         auto arr = rb->column(idx);
         auto f32 = std::static_pointer_cast<arrow::FloatArray>(arr);
-        if (n > 0) {
-            float s = f32->Value(0);
+        for (int64_t i = 0; i < n; ++i) {
+            float s = f32->Value(i);
             if (!ValidateGlobalScale(s)) {
-                spdlog::error("  Global scale invalid in {}: {}", name, s);
+                spdlog::error("  Global scale invalid in {} at row {}: {}", name, i, s);
                 r.add_error();
             }
         }

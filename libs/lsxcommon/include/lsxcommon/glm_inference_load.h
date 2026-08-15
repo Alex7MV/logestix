@@ -252,6 +252,17 @@ struct GlmExpertEntry {
 // loader (ExpertDb in deepseek_inference_load.cuh). The generation loop calls
 // ensure_glm_expert_resident per routed slot before uploading the selected
 // expert's packed payload to device staging.
+//
+// THREAD-SAFETY: this struct is NOT internally synchronized. It is safe only
+// because GlmV5Model::Infer() constructs, uses and destroys its own GlmExpertDb
+// entirely within a single call (never shared across calls or threads) and
+// LsxOrchestrator::ServeTaskMosaic is documented single-consumer. If a future
+// change makes an IModel instance serve concurrent Infer() calls from
+// multiple threads (or hoists a GlmExpertDb into persistent per-model state —
+// see the Load()/Unload() design note on GlmV5Model), ensure_glm_expert_resident
+// and load_glm_expert_index/free_glm_expert_index will need an external lock:
+// concurrent LRU touch/evict mutates `lru`/`entries`/`mmaps` without any
+// synchronization.
 struct GlmExpertDb {
     std::vector<GlmExpertEntry> entries;
     std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
@@ -274,7 +285,17 @@ GlmExpertDb load_glm_expert_index(const std::string &model_path,
 
 // Ensures the mmap for (layer, expert) is resident in the LRU cache, evicting
 // the least-recently-used entries as needed. No-op when already resident.
-void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert);
+//
+// `stream` is synchronized (once, only when an eviction is actually about to
+// happen) before any mmap is unmapped: RunGlmExpertsStackOnDemand issues
+// cudaMemcpyAsync() calls that read directly from an entry's mmap'd host
+// memory (host_w1/host_w2/... — the whole point of the zero-copy design), and
+// cudaMemcpyAsync() returning to the host does not mean the DMA engine has
+// finished reading the source buffer yet. Without this barrier, evicting
+// (munmap-ing) an entry whose async H2D copy is still in flight is a
+// use-after-free read of unmapped host memory from the GPU's DMA engine.
+void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert,
+                                cudaStream_t stream);
 
 // Releases all expert mmaps (frees CRT file descriptors).
 void free_glm_expert_index(GlmExpertDb &db);

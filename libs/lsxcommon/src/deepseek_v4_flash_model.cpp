@@ -64,6 +64,14 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
+    if (req.input_ids.empty()) {
+        r.error_msg = "empty input_ids";
+        return r;
+    }
+    if (req.max_gen_tokens <= 0) {
+        r.error_msg = "max_gen_tokens must be positive";
+        return r;
+    }
     return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
                                   req.max_gen_tokens, *tok_db_);
 }
@@ -85,6 +93,14 @@ gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!loaded_) {
         r.error_msg = "model not loaded";
+        return r;
+    }
+    if (req.input_ids.empty()) {
+        r.error_msg = "empty input_ids";
+        return r;
+    }
+    if (req.max_gen_tokens <= 0) {
+        r.error_msg = "max_gen_tokens must be positive";
         return r;
     }
     return gpu::RunSelfCheckModel(cfg_.model_path, req.input_ids,
