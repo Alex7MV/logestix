@@ -1,5 +1,5 @@
 // TDD Cycle 4 - GLM-5.2 MoE expert stack (layers 3-77): NVFP4 block
-// dequantization (E2M1 nibbles x per-128 E4M3 block scales x E8M0 global
+// dequantization (E2M1 nibbles x per-16 E4M3 block scales x E8M0 global
 // modifier) piped straight into the locked w2(swiglu(w1(x) * w3(x)))
 // projection path on ONE explicit async stream. The device output must match
 // a deterministic CPU reference sequence layout element-for-element, with no

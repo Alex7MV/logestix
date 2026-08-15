@@ -131,7 +131,7 @@ cudaError_t RunGlmRealRouter(
 //
 // with hidden_size locked to kGlmHidden (6144), intermediate to
 // kGlmMoeIntermediate (2048). Weights are decoded inline from the packed E2M1
-// nibble / per-128 E4M3 block-scale / E8M0 global-modifier layout straight
+// nibble / per-16 E4M3 block-scale / E8M0 global-modifier layout straight
 // into FP16 scratch and piped through cuBLAS FP16 GEMMs (CUBLAS_COMPUTE_32F,
 // matching the dense-MLP stack). Every kernel/enqueue runs on the caller's
 // explicit async stream; the ONLY synchronization is a single localized
