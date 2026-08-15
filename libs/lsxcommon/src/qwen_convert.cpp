@@ -142,8 +142,9 @@ void qwen_derive_actual_shapes(const SafetensorsModel &model,
                 if (!hidden) hidden = out_dim;
                 break;
             case TensorKind::MlpGate:
-                hidden = in_dim;
-                intermediate = out_dim;
+                // gate_proj.weight is [intermediate_size, hidden_size].
+                intermediate = in_dim;
+                hidden = out_dim;
                 break;
             default:
                 break;
@@ -566,7 +567,6 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
         auto batch = DenseNvfp4Schema::MakeBatch(global_nvfp4);
         if (!batch.ok()) return batch.status();
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(*batch, pinned_dir / "global_nvfp4.arrow"));
-        total_pinned += static_cast<int64_t>(global_nvfp4.size());
     }
 
     for (auto &[layer, recs] : nvfp4_by_layer) {

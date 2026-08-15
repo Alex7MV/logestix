@@ -216,7 +216,7 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
 {
     namespace fs = std::filesystem;
     VerificationReport r;
-    r.ok = false;
+    std::string error;
 
     // Resolve index location (Qwen layout vs GLM/DeepSeek layout).
     fs::path index_path;
@@ -229,65 +229,53 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
         index_path = output_root / "model.index.json";
         pinned_dir = output_root / "pinned";
     } else {
-        r.error = "model.index.json not found in " + output_root.string();
-        return r;
+        return arrow::Status::Invalid(
+            "model.index.json not found in ", output_root.string());
     }
 
-    if (!fs::exists(pinned_dir)) {
-        r.error = "pinned dir not found: " + pinned_dir.string();
-        return r;
-    }
+    if (!fs::exists(pinned_dir))
+        return arrow::Status::Invalid("pinned dir not found: ",
+                                      pinned_dir.string());
 
     std::ifstream f(index_path, std::ios::binary);
-    if (!f) {
-        r.error = "cannot open " + index_path.string();
-        return r;
-    }
+    if (!f)
+        return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());
-    if (json.empty()) {
-        r.error = "index file is empty";
-        return r;
-    }
+    if (json.empty())
+        return arrow::Status::Invalid("index file is empty");
 
     simdjson::padded_string pad(json.data(), json.size());
     simdjson::ondemand::parser parser;
     simdjson::ondemand::document doc;
-    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) {
-        r.error = "cannot parse " + index_path.string();
-        return r;
-    }
     simdjson::ondemand::object root;
-    if (doc.get_object().get(root) != simdjson::SUCCESS) {
-        r.error = "index root not an object";
-        return r;
-    }
+    if (simdjson::error_code serr = parser.iterate(pad).get(doc);
+        serr != simdjson::SUCCESS)
+        return arrow::Status::Invalid("cannot parse index JSON");
+    if (auto rroot = doc.get_object(); rroot.error() != simdjson::SUCCESS)
+        return arrow::Status::Invalid("index root not an object");
+    else
+        root = rroot.value();
 
     // Format tag must be one of the known layouts.
     std::string_view fmt;
-    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS) {
-        r.error = "index missing 'format' tag";
-        return r;
-    }
+    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS)
+        return arrow::Status::Invalid("index missing 'format' tag");
     static const std::string_view kKnownFmts[] = {
         "logestix-qwen", "logestix-glm", "logestix-v1"};
     bool known = false;
     for (auto kf : kKnownFmts)
         if (fmt == kf) { known = true; break; }
-    if (!known) {
-        r.error = "unknown format tag: " + std::string(fmt);
-        return r;
-    }
+    if (!known)
+        return arrow::Status::Invalid("unknown format tag: ",
+                                      std::string(fmt));
 
     int64_t expected_pinned = 0;
     if (auto p = root["total_pinned_tensors"].get_int64(); p.error() == simdjson::SUCCESS)
         expected_pinned = p.value();
 
-    int64_t expected_experts = -1;
-    if (auto e = root["total_experts"].get_int64(); e.error() == simdjson::SUCCESS)
-        expected_experts = e.value();
-
-    // Walk pinned dir, reopen + ValidateFull().
+    // Walk pinned dir, reopen + ValidateFull(). Tokenizer arrows are reopened
+    // (corruption is caught) but excluded from the tensor record count.
     int64_t actual_pinned = 0;
     size_t checked = 0;
     for (auto &entry : fs::recursive_directory_iterator(pinned_dir)) {
@@ -295,32 +283,31 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
         if (entry.path().extension() != ".arrow") continue;
 
         auto batch_res = ReadRecordBatchFromFile(entry.path());
-        if (!batch_res.ok()) {
-            r.error = entry.path().filename().string() + ": " +
-                      batch_res.status().ToString();
-            return r;
-        }
+        if (!batch_res.ok())
+            return arrow::Status::Invalid(
+                entry.path().filename().string(), ": ",
+                batch_res.status().ToString());
 
         auto st = (*batch_res)->ValidateFull();
-        if (!st.ok()) {
-            r.error = entry.path().filename().string() +
-                      " ValidateFull: " + st.ToString();
-            return r;
-        }
+        if (!st.ok())
+            return arrow::Status::Invalid(
+                entry.path().filename().string(),
+                " ValidateFull: ", st.ToString());
+
+        auto fname = entry.path().filename().string();
+        if (fname.rfind("tokenizer_", 0) == 0)
+            continue;  // validated, but not a model tensor record
 
         actual_pinned += (*batch_res)->num_rows();
         ++checked;
     }
 
-    if (expected_pinned != actual_pinned) {
-        r.error = "pinned tensor count mismatch: index says " +
-                  std::to_string(expected_pinned) + " but actual is " +
-                  std::to_string(actual_pinned) + " across " +
-                  std::to_string(checked) + " arrow files";
-        return r;
-    }
+    if (expected_pinned != actual_pinned)
+        return arrow::Status::Invalid(
+            "pinned tensor count mismatch: index says ",
+            expected_pinned, " but actual is ", actual_pinned,
+            " across ", checked, " arrow files");
 
-    r.ok = true;
     r.pinned_tensor_count = actual_pinned;
     r.arrow_files_checked = checked;
     return r;

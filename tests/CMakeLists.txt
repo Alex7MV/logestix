@@ -187,6 +187,50 @@ endif()
 
 add_test(NAME test_qwen_3_8_27b_model COMMAND test_qwen_3_8_27b_model)
 
+# ── Тест общей модели проверки целостности (integrity:: helpers) ─────────
+add_executable(test_model_integrity test_model_integrity.cpp)
+target_compile_definitions(test_model_integrity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_model_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_integrity>"
+    )
+    add_custom_command(TARGET test_model_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_integrity>"
+    )
+endif()
+
+add_test(NAME test_model_integrity COMMAND test_model_integrity)
+
+# ── Интеграционный тест целостности Qwen-конвертера ───────────────────────
+add_executable(test_qwen_converter_integrity test_qwen_converter_integrity.cpp)
+target_compile_definitions(test_qwen_converter_integrity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_converter_integrity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_converter_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_converter_integrity>"
+    )
+    add_custom_command(TARGET test_qwen_converter_integrity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_converter_integrity>"
+    )
+endif()
+
+add_test(NAME test_qwen_converter_integrity COMMAND test_qwen_converter_integrity)
+
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)

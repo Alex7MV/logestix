@@ -58,17 +58,18 @@ arrow::Status CheckGeometryFields(
 // ── Output verification ──
 
 struct VerificationReport {
-    bool ok = false;
-    std::string error;
     int64_t pinned_tensor_count = 0;
     size_t arrow_files_checked = 0;
 };
 
 // Verifies a converted model directory: index parseable, format tag known,
-// every arrow file reopens + ValidateFull(), record counts match index
-// totals (total_pinned_tensors / total_experts). Probes index at
+// every *model-tensor* arrow file reopens + ValidateFull(), record counts
+// match the index total_pinned_tensors. Tokenizer arrows are reopened for
+// validate but excluded from the count. Probes index at
 // output_root/logestix/model.index.json (Qwen) then
-// output_root/model.index.json (GLM/DeepSeek).
+// output_root/model.index.json (GLM/DeepSeek). On any failure the returned
+// Result carries a non-OK Status with a message naming the cause; on success
+// the report holds the verified record totals.
 arrow::Result<VerificationReport> VerifyConvertedModel(
     const std::filesystem::path &output_root);
 
