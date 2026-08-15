@@ -8,19 +8,13 @@
 
 #include "backends/imgui_impl_win32.h"
 #include <imgui.h>
-#include <imgui_freetype.h>
-#include <implot.h>
-#include <imnodes.h>
 
-#include "lsxhome/blackwell_theme.h"
 #include "lsxhome/d3d12_renderer.h"
 #include "lsxhome/font_loader.h"
 #include "lsxhome/gui_bridge.h"
 #include "lsxhome/gui_renderer.h"
 
 #include <windows.h>
-
-#include <spdlog/spdlog.h>
 
 #include <atomic>
 #include <cstdint>
@@ -139,54 +133,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
         }
         lsxhome::ApplyBlackwellCoworkTheme();
 
-        // Docking root: full-viewport host window.
-        lsxhome::BuildWorkspaceSkeleton();
-
-        if (ImGui::Begin("LogestiX Home")) {
-            constexpr float kSidebarW = 300.0f;
-            ImGui::BeginChild("##sidebar", ImVec2(kSidebarW, 0), true);
-            {
-                const auto& palette = lsxhome::theme::kPalette;
-                const float accent_r = ((palette.accent >> 24) & 0xFF) / 255.f;
-                const float accent_g = ((palette.accent >> 16) & 0xFF) / 255.f;
-                const float accent_b = ((palette.accent >> 8) & 0xFF) / 255.f;
-                ImGui::TextColored(ImVec4(accent_r, accent_g, accent_b, 1.0f),
-                                   "LogestiX Home");
-                ImGui::Separator();
-                ImGui::TextUnformatted("Sessions");
-
-                ImGui::Separator();
-                if (ImGui::Button("Drain pool")) {
-                    lsxhome::TokenPayload buf[256];
-                    const std::size_t n = bridge.DrainAll(buf, 256);
-                    for (std::size_t i = 0; i < n; ++i) {
-                        spdlog::info("token id={} seq={} text={}", buf[i].token_id,
-                                     buf[i].stream_seq, buf[i].text);
-                    }
-                }
-                ImGui::Text("Published: %zu\nDropped: %zu\nPoolSlots: %zu",
-                            bridge.Published(), bridge.Dropped(),
-                            lsxhome::GuiBridge::kPoolSlots);
-                ImGui::EndChild();
-            }
-
-            ImGui::SameLine();
-            ImGui::BeginChild("##main", ImVec2(0, 0), true);
-            {
-                static float ys[256];
-                static int idx = 0;
-                ys[idx] = static_cast<float>(bridge.Published());
-                idx = (idx + 1) % 256;
-                if (ImPlot::BeginPlot("Token Throughput")) {
-                    ImPlot::PlotLine("published", ys, 256);
-                    ImPlot::EndPlot();
-                }
-                ImGui::Separator();
-                ImGui::TextUnformatted("Compute -> UI SPSC ring is live.");
-                ImGui::EndChild();
-            }
-        }
-        ImGui::End();
+        // Edge-to-edge docking root + seamless sidebar/panel layout.
+        lsxhome::BuildWorkspaceSkeleton(bridge);
 
         renderer.EndFrame(true);
     }
