@@ -1,6 +1,5 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/shared_experts.h"
-#include "lsxcommon/log.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -17,13 +16,12 @@ namespace {
 
 __device__ __forceinline__ float silu_dev(float x)
 {
-    const float e = __expf(x);
-    return x * e / (e + 1.0f);
+    return x / (1.0f + expf(-x));
 }
 
 __device__ __forceinline__ float sigmoid_dev(float x)
 {
-    return 1.0f / (1.0f + __expf(-x));
+    return 1.0f / (1.0f + expf(-x));
 }
 
 __device__ __forceinline__ float softplus_dev(float x)
@@ -115,44 +113,70 @@ __global__ void rope_cos_sin_kernel(const int32_t *pos, __half *cos_buf,
     }
 }
 
-__device__ __forceinline__ void rope_pair(__half2 &v, float cosv, float sinv)
-{
-    float2 f = __half22float2(v);
-    v = __floats2half2_rn(f.x * cosv - f.y * sinv, f.x * sinv + f.y * cosv);
-}
-
 __global__ void partial_rope_kernel(const __half *q, const __half *k,
                                     const __half *cos_buf, const __half *sin_buf,
                                     __half *q_out, __half *k_out,
-                                    int seq, int heads, int head_dim,
-                                    int rotary_dim)
+                                    int seq, int q_heads, int k_heads,
+                                    int head_dim, int rotary_dim)
 {
-    const int64_t total = (int64_t)seq * heads * (rotary_dim / 2);
-    for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-         idx < total; idx += (int64_t)blockDim.x * gridDim.x) {
-        const int p = (int)(idx % (rotary_dim / 2));
-        const int h = (int)((idx / (rotary_dim / 2)) % heads);
-        const int t = (int)(idx / ((int64_t)(rotary_dim / 2) * heads));
-
-        const float cosv = __half2float(cos_buf[t * (rotary_dim / 2) + p]);
-        const float sinv = __half2float(sin_buf[t * (rotary_dim / 2) + p]);
-        const int64_t base = ((int64_t)t * heads + h) * head_dim + (int64_t)p * 2;
-        __half2 qv = *reinterpret_cast<const __half2*>(q + base);
-        __half2 kv = *reinterpret_cast<const __half2*>(k + base);
-        rope_pair(qv, cosv, sinv);
-        rope_pair(kv, cosv, sinv);
-        *reinterpret_cast<__half2*>(q_out + base) = qv;
-        *reinterpret_cast<__half2*>(k_out + base) = kv;
+    // HF Qwen3_5 rotate_half pairing: for j in [0, rot/2) the pair is
+    // (j, j + rot/2); cos/sin index j. cos/sin layout: [seq, rot/2].
+    const int64_t half = rotary_dim / 2;
+    // q rotation
+    {
+        const int64_t total = (int64_t)seq * q_heads * half;
+        for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+             idx < total; idx += (int64_t)blockDim.x * gridDim.x) {
+            const int j = (int)(idx % half);
+            const int h = (int)((idx / half) % q_heads);
+            const int t = (int)(idx / (half * q_heads));
+            const float c = __half2float(cos_buf[t * half + j]);
+            const float s = __half2float(sin_buf[t * half + j]);
+            const int64_t row = ((int64_t)t * q_heads + h) * head_dim;
+            const float x1 = __half2float(q[row + j]);
+            const float x2 = __half2float(q[row + j + half]);
+            q_out[row + j]        = __float2half(x1 * c - x2 * s);
+            q_out[row + j + half] = __float2half(x2 * c + x1 * s);
+        }
     }
-    // Pass-through dims (rotary_dim .. head_dim) for each (t,h) row.
-    const int64_t npt = (int64_t)seq * heads * (head_dim - rotary_dim);
-    for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-         idx < npt; idx += (int64_t)blockDim.x * gridDim.x) {
-        const int pk = (int)(idx % (head_dim - rotary_dim));
-        const int rh = (int)(idx / (head_dim - rotary_dim));   // (t*heads+h)
-        const int64_t base = (int64_t)rh * head_dim + rotary_dim;
-        q_out[base + pk] = q[base + pk];
-        k_out[base + pk] = k[base + pk];
+    // q pass-through
+    {
+        const int64_t npt = (int64_t)seq * q_heads * (head_dim - rotary_dim);
+        for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+             idx < npt; idx += (int64_t)blockDim.x * gridDim.x) {
+            const int pk = (int)(idx % (head_dim - rotary_dim));
+            const int rh = (int)(idx / (head_dim - rotary_dim));
+            const int64_t base = (int64_t)rh * head_dim + rotary_dim;
+            q_out[base + pk] = q[base + pk];
+        }
+    }
+    // k rotation
+    {
+        const int64_t total = (int64_t)seq * k_heads * half;
+        for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+             idx < total; idx += (int64_t)blockDim.x * gridDim.x) {
+            const int j = (int)(idx % half);
+            const int h = (int)((idx / half) % k_heads);
+            const int t = (int)(idx / (half * k_heads));
+            const float c = __half2float(cos_buf[t * half + j]);
+            const float s = __half2float(sin_buf[t * half + j]);
+            const int64_t row = ((int64_t)t * k_heads + h) * head_dim;
+            const float x1 = __half2float(k[row + j]);
+            const float x2 = __half2float(k[row + j + half]);
+            k_out[row + j]        = __float2half(x1 * c - x2 * s);
+            k_out[row + j + half] = __float2half(x2 * c + x1 * s);
+        }
+    }
+    // k pass-through
+    {
+        const int64_t npt = (int64_t)seq * k_heads * (head_dim - rotary_dim);
+        for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+             idx < npt; idx += (int64_t)blockDim.x * gridDim.x) {
+            const int pk = (int)(idx % (head_dim - rotary_dim));
+            const int rh = (int)(idx / (head_dim - rotary_dim));
+            const int64_t base = (int64_t)rh * head_dim + rotary_dim;
+            k_out[base + pk] = k[base + pk];
+        }
     }
 }
 
@@ -183,14 +207,21 @@ __global__ void qwen_conv1d_kernel(const __half *mixed, const __half *w,
         for (int k = 0; k < kernel; ++k) {
             const int tt = t - k;
             if (tt < 0) continue;
-            acc += __half2float(w[c * kernel + k]) *
+            // HF causal conv1d: padding=kernel-1 both sides + right trim ==
+            // F.conv1d cross-correlation == kernel reversal vs. this loop's
+            // index, hence (kernel-1-k).
+            acc += __half2float(w[c * kernel + (kernel - 1 - k)]) *
                    __half2float(mixed[(int64_t)tt * conv_dim + c]);
         }
-        out[(int64_t)t * conv_dim + c] = __float2half(acc);
+        out[(int64_t)t * conv_dim + c] = __float2half(silu_dev(acc));
     }
 }
 
 // ── Full attention softmax core (per block per (t, head)) ──────────────────
+// Thread 0 builds the logit row into shared memory; after the barrier every
+// thread treats slogits as READ-ONLY (any read-modify-write there is a race:
+// it corrupted softmax weights -> 0/0 -> NaN, which poisoned the residual
+// stream and made generation non-deterministic).
 __global__ void full_attn_softmax_kernel(
     const __half *q, const __half *k, const __half *v,
     __half *out, int seq, int heads, int head_dim, int kv_heads, float scale)
@@ -204,29 +235,28 @@ __global__ void full_attn_softmax_kernel(
     const __half *vbase = v + (int64_t)kvh * head_dim;
 
     extern __shared__ float slogits[];
+    if (threadIdx.x == 0) {
+        for (int j = 0; j <= t; ++j) {
+            const __half *krow = kbase + (int64_t)j * (int64_t)kv_heads * head_dim;
+            float dot = 0.0f;
+            for (int d = 0; d < head_dim; ++d)
+                dot += __half2float(qrow[d]) * __half2float(krow[d]);
+            slogits[j] = dot * scale;
+        }
+    }
+    __syncthreads();
+
     float m = -1e30f;
-    for (int j = 0; j <= t; ++j) {
-        const __half *krow = kbase + (int64_t)j * (int64_t)kv_heads * head_dim;
-        float dot = 0.0f;
-        for (int d = 0; d < head_dim; ++d)
-            dot += __half2float(qrow[d]) * __half2float(krow[d]);
-        const float lg = dot * scale;
-        slogits[j] = lg;
-        m = fmaxf(m, lg);
-    }
-    __syncthreads();
+    for (int j = 0; j <= t; ++j) m = fmaxf(m, slogits[j]);
     float sum = 0.0f;
-    for (int j = 0; j <= t; ++j) {
-        const float e = __expf(slogits[j] - m);
-        slogits[j] = e;
-        sum += e;
-    }
-    __syncthreads();
-    for (int d = 0; d < head_dim; ++d) {
+    for (int j = 0; j <= t; ++j) sum += __expf(slogits[j] - m);
+    const float inv_sum = 1.0f / sum;
+
+    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
         float acc = 0.0f;
         for (int j = 0; j <= t; ++j) {
             const __half *vrow = vbase + (int64_t)j * (int64_t)kv_heads * head_dim;
-            acc += (slogits[j] / sum) * __half2float(vrow[d]);
+            acc += (__expf(slogits[j] - m) * inv_sum) * __half2float(vrow[d]);
         }
         out[((int64_t)t * heads + h) * head_dim + d] = __float2half(acc);
     }
@@ -261,15 +291,28 @@ cudaError_t RunQwenRopeCosSin(cudaStream_t stream, const int32_t *pos, int seq,
 cudaError_t RunQwenPartialRope(cudaStream_t stream, const __half *q,
                                const __half *k, const __half *cos_buf,
                                const __half *sin_buf, __half *q_out,
+                               __half *k_out, int seq, int q_heads,
+                               int k_heads, int head_dim, int rotary_dim)
+{
+    const int threads = 256;
+    const int64_t work = std::max(
+        (int64_t)seq * std::max(q_heads, k_heads) * (rotary_dim / 2),
+        (int64_t)seq * std::max(q_heads, k_heads) * (head_dim - rotary_dim));
+    const int blocks = (int)((work + threads - 1) / threads);
+    partial_rope_kernel<<<blocks, threads, 0, stream>>>(
+        q, k, cos_buf, sin_buf, q_out, k_out, seq, q_heads, k_heads,
+        head_dim, rotary_dim);
+    return cudaGetLastError();
+}
+
+cudaError_t RunQwenPartialRope(cudaStream_t stream, const __half *q,
+                               const __half *k, const __half *cos_buf,
+                               const __half *sin_buf, __half *q_out,
                                __half *k_out, int seq, int heads,
                                int head_dim, int rotary_dim)
 {
-    const int threads = 256;
-    const int64_t total = (int64_t)seq * heads * (rotary_dim / 2);
-    const int blocks = (int)((total + threads - 1) / threads);
-    partial_rope_kernel<<<blocks, threads, 0, stream>>>(
-        q, k, cos_buf, sin_buf, q_out, k_out, seq, heads, head_dim, rotary_dim);
-    return cudaGetLastError();
+    return RunQwenPartialRope(stream, q, k, cos_buf, sin_buf, q_out, k_out,
+                              seq, heads, heads, head_dim, rotary_dim);
 }
 
 cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *embed,
@@ -451,19 +494,47 @@ __global__ void qwen_prep_gating_kernel(
     g[idx] = -__expf(A_log[h]) * softplus_dev(a + dt_bias[h]);
 }
 
+// L2-normalize one (t, head) row of kd elements in place within a strided
+// buffer (row stride = `stride`, head offset = `head_off`), then multiply by
+// extra_scale (1/sqrt(kd) for q, 1 for k). Mirrors HF l2norm(eps=1e-6).
+// Grid: (seq, nk); one thread per element. blockDim is a power of 2 >= kd.
+__global__ void qwen_l2norm_rows_kernel(__half *base, int seq, int nk, int kd,
+                                        int stride, int head_off,
+                                        float extra_scale)
+{
+    const int t = blockIdx.x;
+    const int h = blockIdx.y;
+    const int l = threadIdx.x;
+    __shared__ float vals[256];
+    __shared__ float red[256];
+    __shared__ float inv;
+    __half *row = base + (int64_t)t * stride + head_off + (int64_t)h * kd;
+    float v = 0.0f;
+    if (l < kd) v = __half2float(row[l]);
+    vals[l] = v;
+    red[l] = v * v;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (l < s) red[l] += red[l + s];
+        __syncthreads();
+    }
+    if (l == 0) inv = rsqrtf(red[0] + 1e-6f) * extra_scale;
+    __syncthreads();
+    if (l < kd) row[l] = __float2half(vals[l] * inv);
+}
+
 // Gated delta rule, block per (t, v_head), thread per value-dim d.
-// Columns d are mutually independent across tt (kv[d] uses only column d of S,
-// and updates only column d) -> one thread owns the whole column [kd]. Only the
-// q/k l2-norm reduction is shared across the block.
+// q and k arrive already l2-normalised (q pre-scaled by 1/sqrt(kd)) in the
+// strided conv buffer (row stride = `stride`); v is read from the same buffer.
+// Columns d are independent -> one thread owns the whole column S[0..kd, d].
 // Ordering mirrors HF torch_recurrent_gated_delta_rule:
-//   q,k l2-normalised (eps 1e-6), q scaled by 1/sqrt(kd);
 //   S=0; for tt in 0..t: S*=exp(g); kv=sum_l S[l]*ktt[l]; Δ=(v-kv)β;
 //        S[l]+=ktt[l]*Δ;  out=sum_l S[l]*q[l].
 __global__ void qwen_gated_delta_kernel(
     const __half *__restrict__ q, const __half *__restrict__ k,
     const __half *__restrict__ v, const float *__restrict__ g,
     const float *__restrict__ beta, __half *__restrict__ out,
-    int seq, int nk, int kd, int nv, int vd, int r, float scale)
+    int seq, int nk, int kd, int nv, int vd, int r, int stride)
 {
     const int t = blockIdx.x;
     const int vh = blockIdx.y;
@@ -472,69 +543,26 @@ __global__ void qwen_gated_delta_kernel(
     if (d >= vd) return;
 
     // Registers hold this thread's column [l in 0..kd).
-    __shared__ float qn[256];
-    __shared__ float kttn_s[256];
-
-    const __half *qrow = q + ((int64_t)t * nk + kh) * kd;
-    const __half *krow = k + ((int64_t)t * nk + kh) * kd;
-
-    // Cooperative l2-norm of q,k over kd.
-    __shared__ float qdot, kdot;
-    float lq = 0.0f, lk = 0.0f;
-    for (int l = d; l < kd; l += blockDim.x) {
-        float qv = __half2float(qrow[l]);
-        float kv2 = __half2float(krow[l]);
-        lq += qv * qv; lk += kv2 * kv2;
-    }
-    // reduce across threads
-    __shared__ float swap[256];
-    if (d < blockDim.x) swap[d] = lq;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (d < s) swap[d] += swap[d + s];
-        __syncthreads();
-    }
-    if (d == 0) qdot = swap[0];
-    __syncthreads();
-    if (d < blockDim.x) swap[d] = lk;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (d < s) swap[d] += swap[d + s];
-        __syncthreads();
-    }
-    if (d == 0) kdot = swap[0];
-    __syncthreads();
-    const float isq = rsqrtf(qdot + 1e-6f) * scale;
-    const float isk = rsqrtf(kdot + 1e-6f);
-
-    // Each thread keeps column array in registers.
     float col[256];
     for (int l = 0; l < kd; ++l) col[l] = 0.0f;
-    if (d == 0) {
-        for (int l = 0; l < kd; ++l) qn[l] = __half2float(qrow[l]) * isq;
-    }
-    __syncthreads();
+
+    const __half *qrow = q + (int64_t)t * stride + (int64_t)kh * kd;
 
     for (int tt = 0; tt <= t; ++tt) {
         const float decay = __expf(g[tt * nv + vh]);
         const float betaf = beta[tt * nv + vh];
-        const __half *ktt = k + ((int64_t)tt * nk + kh) * kd;
-        const __half *vtt = v + ((int64_t)tt * nv + vh) * vd;
-
-        if (d == 0)
-            for (int l = 0; l < kd; ++l) kttn_s[l] = __half2float(ktt[l]);
-        __syncthreads();
+        const __half *ktt = k + (int64_t)tt * stride + (int64_t)kh * kd;
+        const __half *vtt = v + (int64_t)tt * stride + (int64_t)vh * vd;
 
         for (int l = 0; l < kd; ++l) col[l] *= decay;
         float kv = 0.0f;
-        for (int l = 0; l < kd; ++l) kv += col[l] * kttn_s[l];
+        for (int l = 0; l < kd; ++l) kv += col[l] * __half2float(ktt[l]);
         const float delta = (__half2float(vtt[d]) - kv) * betaf;
-        for (int l = 0; l < kd; ++l) col[l] += kttn_s[l] * delta;
-        __syncthreads();
+        for (int l = 0; l < kd; ++l) col[l] += __half2float(ktt[l]) * delta;
     }
 
     float acc = 0.0f;
-    for (int l = 0; l < kd; ++l) acc += col[l] * qn[l];
+    for (int l = 0; l < kd; ++l) acc += col[l] * __half2float(qrow[l]);
     out[((int64_t)t * nv + vh) * vd + d] = __float2half(acc);
 }
 
@@ -618,11 +646,11 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         e = cudaGetLastError(); if (e) return e;
     }
 
-    // 5. RoPE on q,k (first rotary_dim dims).
+    // 5. RoPE on q,k (first rotary_dim dims). k has NKV heads, q has NH heads.
     e = RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, top.rope_theta,
                           d_cos, d_sin); if (e) return e;
     e = RunQwenPartialRope(stream, d_q, d_k, d_cos, d_sin, d_q, d_k,
-                           seq, NH, HD, rotary_dim); if (e) return e;
+                           seq, NH, NKV, HD, rotary_dim); if (e) return e;
 
     // 6. Scaled dot-product attention (GQA, causal) -> d_attn [seq, NH, HD].
     {
@@ -709,19 +737,32 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
         e = cudaGetLastError(); if (e) return e;
     }
 
-    // 4. Split q/k/v from d_conv and run gated delta rule.
+    // 4. l2-normalize q,k rows in place (HF: l2norm eps=1e-6, q scaled by
+    //    1/sqrt(kd)), then run the gated delta rule. q/k/v are slices of the
+    //    strided conv buffer [seq, S], so the recurrence must use stride S.
     {
+        if (kd > 256) return cudaErrorInvalidValue;
+        int nthreads = 1;
+        while (nthreads < kd) nthreads <<= 1;
+        const float q_scale = 1.0f / sqrtf((float)kd);
+        const dim3 norm_grid(seq, nk);
+        qwen_l2norm_rows_kernel<<<norm_grid, nthreads, 0, stream>>>(
+            d_conv, seq, nk, kd, S, 0, q_scale);
+        e = cudaGetLastError(); if (e) return e;
+        qwen_l2norm_rows_kernel<<<norm_grid, nthreads, 0, stream>>>(
+            d_conv, seq, nk, kd, S, KD, 1.0f);
+        e = cudaGetLastError(); if (e) return e;
+
         const __half *qsplit = d_conv;
         const __half *ksplit = d_conv + KD;
         const __half *vsplit = d_conv + (int64_t)2 * KD;
-        const float scale = 1.0f / sqrtf((float)kd);
         const int r = nv / nk;
         // one block per (t, v_head)
         const dim3 grid(seq, nv);
         const int threads = std::min(vd, 256);
         qwen_gated_delta_kernel<<<grid, threads, 0, stream>>>(
             qsplit, ksplit, vsplit, d_g, d_beta, d_core, seq,
-            nk, kd, nv, vd, r, scale);
+            nk, kd, nv, vd, r, S);
         e = cudaGetLastError(); if (e) return e;
     }
 
@@ -818,8 +859,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         (size_t)V * H,                   // d_embed_half
         (size_t)V * H,                   // d_head_half
         (size_t)max_seq * V,             // d_logits
-        (size_t)max_seq,                 // d_ids
-        (size_t)max_seq,                 // d_pos
+        (size_t)max_seq * 2,             // d_ids (int32: 2 halves each)
+        (size_t)max_seq * 2,             // d_pos (int32: 2 halves each)
     };
     size_t float_sz[] = {
         (size_t)max_seq * nv,            // d_gf
@@ -894,7 +935,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     int last_seq = (int)ids.size();
     const double eps = top.rms_norm_eps;
     const int threads = 256;
-    const int eos_id = 151643;
+    const int eos_id = 248044;   // Qwen3.5 text_config.eos_token_id
 
     for (int step = 0; step < max_new; ++step) {
         const int seq = (int)ids.size();

@@ -244,9 +244,13 @@ arrow::Result<std::vector<DenseNvfp4Record>> LoadNvfp4File(const std::string &pa
         UploadNvfp4Weight(FindNvfp4(nv, "linear_attn.out_proj.weight"), lw.out, stream);
 
         auto *conv = FindRaw(raw, "linear_attn.conv1d.weight");
-        if (conv && conv->shape.size() >= 2) {
+        if (conv && !conv->shape.empty()) {
+            // nn.Conv1d weight is [C, 1, K] on disk; legacy fixtures store
+            // [C, K]. The squeezed [C, K] layout is contiguous either way.
             lw.conv_dim = static_cast<int>(conv->shape[0]);
-            lw.conv_kernel = static_cast<int>(conv->shape[1]);
+            lw.conv_kernel = conv->shape.size() >= 3
+                ? static_cast<int>(conv->shape[2])
+                : static_cast<int>(conv->shape[conv->shape.size() - 1]);
             int64_t numel = static_cast<int64_t>(lw.conv_dim) * lw.conv_kernel;
             UploadBf16ToHalf(conv->data.data(), numel, &lw.d_conv1d, stream);
         }

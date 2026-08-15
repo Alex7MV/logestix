@@ -165,17 +165,33 @@ gpu::InferenceResult QwenV5Model::SelfCheck(const ModelRequest &req)
     if (!gen.tokens.empty())
         r.first_gen_tok_id = gen.tokens[0];
     if (!gen.tokens.empty()) {
+        // Decode incrementally: " Paris" may be one BPE token or two
+        // (" " + "Paris") depending on the vocabulary. Accept the shortest
+        // prefix (1 or 2 tokens) whose trimmed decode equals "Paris".
         char buf[512];
-        size_t cap = sizeof(buf);
-        if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(),
-                                   std::min((int)gen.tokens.size(), 8),
-                                   buf, &cap) == 0)
-            r.first_gen_text = std::string(buf, cap);
-        std::string t = r.first_gen_text;
-        auto b = t.begin(), e = t.end();
-        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
-        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
-        r.selfcheck_passed = (std::string(b, e) == "Paris");
+        for (int ntok : {1, 2}) {
+            if (ntok > (int)gen.tokens.size()) break;
+            size_t cap = sizeof(buf);
+            if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(), ntok,
+                                       buf, &cap) != 0)
+                continue;
+            std::string t(buf, cap);
+            auto b = t.begin(), e = t.end();
+            while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
+            while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
+            r.first_gen_text = std::string(b, e);
+            if (r.first_gen_text == "Paris") {
+                r.selfcheck_passed = true;
+                break;
+            }
+        }
+        if (!r.selfcheck_passed && r.first_gen_text.empty()) {
+            size_t cap = sizeof(buf);
+            if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(),
+                                       std::min((int)gen.tokens.size(), 8),
+                                       buf, &cap) == 0)
+                r.first_gen_text = std::string(buf, cap);
+        }
     }
     spdlog::info("[qwen-selfcheck] top1_tok={} text='{}' passed={}",
                  r.first_gen_tok_id, r.first_gen_text,

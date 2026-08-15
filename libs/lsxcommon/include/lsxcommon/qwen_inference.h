@@ -26,8 +26,17 @@ cudaError_t RunQwenRopeCosSin(
     cudaStream_t stream, const int32_t *positions, int seq, int rotary_dim,
     double theta, __half *cos, __half *sin);
 
-// Partial rotary: rotates the first `rotary_dim` of `head_dim` dims per
-// (seq,head) pair, pass-through the rest. q,k: [seq, heads, head_dim].
+// Partial rotary (HF rotate_half pairing: dims j and j+rot/2 form a pair):
+// rotates the first `rotary_dim` of `head_dim` dims per (seq,head) pair,
+// pass-through the rest. q: [seq, q_heads, head_dim],
+// k: [seq, k_heads, head_dim] (GQA: q_heads=NH, k_heads=NKV).
+cudaError_t RunQwenPartialRope(
+    cudaStream_t stream, const __half *q, const __half *k,
+    const __half *cos, const __half *sin,
+    __half *q_out, __half *k_out,
+    int seq, int q_heads, int k_heads, int head_dim, int rotary_dim);
+
+// Same-heads convenience overload (q_heads = k_heads = heads).
 cudaError_t RunQwenPartialRope(
     cudaStream_t stream, const __half *q, const __half *k,
     const __half *cos, const __half *sin,

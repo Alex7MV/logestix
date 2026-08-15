@@ -31,16 +31,16 @@ TEST_CASE("Partial rotary (64 of 256 dims) matches CPU reference")
         }
     for (int t = 0; t < seq; ++t)
         for (int h = 0; h < heads; ++h) {
-            for (int d = 0; d < rotary_dim; d += 2) {
-                int idx = (t * heads + h) * head_dim + d;
-                auto [c, s] = ct[t * (rotary_dim/2) + d/2];
-                float q1 = (float)h_q[idx], q2 = (float)h_q[idx+1];
-                float k1 = (float)h_k[idx], k2 = (float)h_k[idx+1];
-                // store raw fp32 from original (fp16-rounded) inputs
-                qc[idx]   = (float)__float2half(q1*c - q2*s);
-                qc[idx+1] = (float)__float2half(q1*s + q2*c);
-                kc[idx]   = (float)__float2half(k1*c - k2*s);
-                kc[idx+1] = (float)__float2half(k1*s + k2*c);
+            // HF rotate_half pairing: (j, j + rotary_dim/2) share cos/sin[j].
+            for (int j = 0; j < rotary_dim / 2; ++j) {
+                int idx = (t * heads + h) * head_dim;
+                auto [c, s] = ct[t * (rotary_dim/2) + j];
+                float q1 = (float)h_q[idx + j], q2 = (float)h_q[idx + j + rotary_dim/2];
+                float k1 = (float)h_k[idx + j], k2 = (float)h_k[idx + j + rotary_dim/2];
+                qc[idx + j]                = (float)__float2half(q1*c - q2*s);
+                qc[idx + j + rotary_dim/2] = (float)__float2half(q2*c + q1*s);
+                kc[idx + j]                = (float)__float2half(k1*c - k2*s);
+                kc[idx + j + rotary_dim/2] = (float)__float2half(k2*c + k1*s);
             }
             // pass-through
             for (int d = rotary_dim; d < head_dim; ++d) {
