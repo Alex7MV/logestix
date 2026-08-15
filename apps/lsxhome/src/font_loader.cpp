@@ -29,9 +29,9 @@ ImFont* AddEmbedded(ImFontAtlas& atlas,
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 1;
-    cfg.GlyphExtraSpacing.x = 0.0f;
+    cfg.GlyphExtraAdvanceX = 0.0f;
     cfg.FontLoaderFlags = loader_flags;
-    cfg.FontDataOwnedAtlas = false;
+    cfg.FontDataOwnedByAtlas = false;
 
     ImFont* font = atlas.AddFontFromMemoryTTF(
         const_cast<unsigned char*>(data), static_cast<int>(size), size_px, &cfg);

@@ -55,6 +55,22 @@ if(NOT imnodes_POPULATED)
     FetchContent_Populate(imnodes)
 endif()
 
+# ImNodes v0.5 predates Dear ImGui 1.92's texture-refactoring: ImDrawCmd::TextureId
+# became ImTextureRef TexRef and ImDrawList::_TextureIdStack became _TextureStack.
+# Patch the vendored source (same pattern as the Arrow/Boost patches) so the
+# node editor compiles against the docking imgui.1.92.9.
+set(_imnodes_cpp "${imnodes_SOURCE_DIR}/imnodes.cpp")
+if(EXISTS "${_imnodes_cpp}")
+    file(READ "${_imnodes_cpp}" _imnodes_content)
+    string(REPLACE
+        "draw_cmd.TextureId = draw_list->_TextureIdStack.back();"
+        "draw_cmd.TexRef = draw_list->_TextureStack.back();"
+        _imnodes_content "${_imnodes_content}")
+    file(WRITE "${_imnodes_cpp}" "${_imnodes_content}")
+    unset(_imnodes_content)
+endif()
+unset(_imnodes_cpp)
+
 # ── FreeType (imgui_freetype abstraction layer, LCD subpixel AA) ────────────
 set(LSXHOME_FREETYPE_TAG VER-2-14-3 CACHE STRING "FreeType tag")
 FetchContent_Declare(
@@ -112,16 +128,22 @@ target_include_directories(lsxhome_imgui PUBLIC
 )
 # imgui_freetype must see the compiled-in FreeType subpixel rasterizer, and
 # imgui.cpp must default to the FreeType loader (imconfig-level IMGUI_ENABLE_FREETYPE).
+# IMGUI_DEFINE_MATH_OPERATORS is the docking-branch contract for ImNodes/ImPlot
+# (they need ImVec2/ImVec4 operators) and must be visible to every TU that
+# includes imgui.h, hence PUBLIC.
 target_compile_definitions(lsxhome_imgui PRIVATE
     NOMINMAX
     WIN32_LEAN_AND_MEAN
     IMGUI_ENABLE_FREETYPE
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
 )
+target_compile_definitions(lsxhome_imgui PUBLIC
+    IMGUI_DEFINE_MATH_OPERATORS
+)
 # Execution-subsystem layers forced natively: D3D12 + Win32 graphics stack.
-# /MACHINE:X64 everywhere: PE32+ is a hard requirement of the Blackwell toolchain.
+# /MACHINE:X64 is a LINKER option only — the x64 machine block is applied to
+# the final exe below; feeding it to cl.exe would warn D9002.
 target_link_libraries(lsxhome_imgui PUBLIC freetype)
-target_compile_options(lsxhome_imgui PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/MACHINE:X64>)
 if(MSVC)
     target_link_options(lsxhome_imgui PUBLIC /MACHINE:X64)
 endif()
@@ -146,6 +168,16 @@ add_library(lsxhome_imnodes STATIC
 target_include_directories(lsxhome_imnodes PUBLIC
     $<BUILD_INTERFACE:${imnodes_SOURCE_DIR}>
 )
+# ImNodes v0.5 still uses IM_OFFSETOF, which Dear ImGui obsoleted in 1.90
+# (removed from imgui.h). Force-include a shim that restores the std::offsetof
+# classic for the vendored imnodes TU only. A /D define is NOT viable here:
+# cl.exe truncates function-like macro definitions at the comma, breaking
+# <type_traits>. /FI is the MSVC-native, precise mechanism.
+if(MSVC)
+    target_compile_options(lsxhome_imnodes PRIVATE
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/lsxhome/imnodes_offsetof_shim.h"
+    )
+endif()
 target_link_libraries(lsxhome_imnodes PUBLIC lsxhome_imgui)
 if(MSVC)
     target_link_options(lsxhome_imnodes PUBLIC /MACHINE:X64)

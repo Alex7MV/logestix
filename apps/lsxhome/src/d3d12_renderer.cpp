@@ -142,7 +142,6 @@ void CleanupRenderTargets() {
 }
 
 bool CreateDeviceD3D(HWND hwnd) {
-    UINT dxgi_factory_flags = 0;
     IDXGIFactory4* factory = nullptr;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
         return false;
@@ -201,11 +200,11 @@ bool CreateDeviceD3D(HWND hwnd) {
 
     for (int i = 0; i < kNumFrames; ++i) {
         if (FAILED(g_device->CreateCommandAllocator(
-                D3D12_COMMAND_LIST_TYPE_DIRECT, &g_frame[i].allocator))) {
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_frame[i].allocator)))) {
             return false;
         }
         if (FAILED(g_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                         &g_frame[i].fence))) {
+                                         IID_PPV_ARGS(&g_frame[i].fence)))) {
             return false;
         }
     }
@@ -218,8 +217,8 @@ bool CreateDeviceD3D(HWND hwnd) {
 
     RECT rect = {};
     GetClientRect(hwnd, &rect);
-    const UINT w = static_cast<UINT>(std::max(rect.right - rect.left, 1));
-    const UINT h = static_cast<UINT>(std::max(rect.bottom - rect.top, 1));
+    const UINT w = static_cast<UINT>(std::max(static_cast<int>(rect.right - rect.left), 1));
+    const UINT h = static_cast<UINT>(std::max(static_cast<int>(rect.bottom - rect.top), 1));
 
     DXGI_SWAP_CHAIN_DESC1 desc = {};
     desc.Width = w;
@@ -305,7 +304,8 @@ int D3D12Renderer::Init(HWND hwnd, int width, int height) noexcept {
     info.SrvDescriptorAllocFn =
         [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE* cpu,
            D3D12_GPU_DESCRIPTOR_HANDLE* gpu) {
-            return g_srv_alloc.Alloc(*cpu, *gpu);
+            const bool ok = g_srv_alloc.Alloc(*cpu, *gpu);
+            IM_ASSERT(ok && "lsxhome: SRV descriptor heap exhausted");
         };
     info.SrvDescriptorFreeFn =
         [](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE,
@@ -388,8 +388,8 @@ void D3D12Renderer::Resize(int width, int height) noexcept {
 
     RECT rect = {};
     GetClientRect(hwnd_, &rect);
-    width_ = std::max(rect.right - rect.left, 1);
-    height_ = std::max(rect.bottom - rect.top, 1);
+    width_ = std::max(static_cast<int>(rect.right - rect.left), 1);
+    height_ = std::max(static_cast<int>(rect.bottom - rect.top), 1);
 
     WaitForAllFences();
     CleanupRenderTargets();
