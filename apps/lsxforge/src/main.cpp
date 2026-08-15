@@ -264,7 +264,7 @@ int main(int argc, char* argv[]) {
 
     spdlog::info("Converting model: {} -> {}", input_path, output_path);
     if (qwen) {
-        spdlog::info("Qwen3.5-9B pipeline (logestix-qwen layout)");
+        spdlog::info("Qwen3.5 pipeline (logestix-qwen layout)");
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
         if (!st.ok()) {
             spdlog::error("Qwen conversion failed: {}", st.ToString());

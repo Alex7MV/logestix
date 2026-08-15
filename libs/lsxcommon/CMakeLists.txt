@@ -28,9 +28,11 @@ add_library(lsxcommon STATIC
     src/path_registry.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
+    src/qwen_3_8_27b_model.cpp
     src/qwen_convert.cpp
     src/qwen_inference_load.cpp
     src/qwen_v5_model.cpp
+    src/qwen_base_model.cpp
     src/schema.cpp
     src/tokenizer.cpp
     src/tokenizer_convert.cpp

@@ -1,35 +1,26 @@
 #pragma once
 
-#include <memory>
-#include <string>
-
-#include "lsxcommon/model.h"
-#include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/qwen_base_model.h"
 
 namespace lsxcommon {
 
-class QwenV5Model final : public IModel {
+class Qwen3_5_9BModel final : public QwenBaseModel {
 public:
-    explicit QwenV5Model(ModelInitConfig cfg);
-    ~QwenV5Model() override;
+    static constexpr int kHiddenSize = 4096;
+    static constexpr int kNumLayers = 32;
+    static constexpr int kNumHeads = 16;
+    static constexpr int kNumKVHeads = 4;
+    static constexpr int kHeadDim = 256;
+    static constexpr int kIntermediateSize = 12288;
+    static constexpr int kLinearNumValueHeads = 32;
 
-    bool Load() override;
-    gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
-    SafetensorsModel Inspect() override;
-    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    explicit Qwen3_5_9BModel(ModelInitConfig cfg);
 
     const std::string &Type() const override { return kType; }
-    ArrowTokenizerDb &Tokenizer() override;
-
     static const std::string kType;
 
-private:
-    ModelInitConfig cfg_;
-    std::unique_ptr<ArrowTokenizerDb> tok_db_;
-    qwen::QwenPinnedWeights pw_;
-    bool weights_loaded_ = false;
-    bool loaded_ = false;
+protected:
+    void ValidateGeometry(const qwen::QwenTopology &top) const override;
 };
 
 } // namespace lsxcommon

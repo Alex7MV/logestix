@@ -47,6 +47,7 @@ struct QwenTestConfig {
     double rms_norm_eps       = 1e-6;
     double partial_rotary_factor = 0.25;
     double rope_theta          = 10000.0;
+    std::string model_name     = "qwen3.5-9b";
 };
 
 inline const QwenTestConfig &TestCfg()

@@ -2,6 +2,7 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/converter.h"
 
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
@@ -182,10 +183,15 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
         if (!st) return arrow::Status::IOError("cannot create ", dir.string());
     }
 
+    std::string model_name = "Qwen3.5-9B";
+    if (top.hidden_size == 5120 && top.num_layers == 64 &&
+        top.num_attention_heads == 24 && top.linear_num_value_heads == 48)
+        model_name = "Qwen3.8-27B";
+
     std::ostringstream j;
     j << "{\n"
       << "  \"format\": \"logestix-qwen\",\n"
-      << "  \"model\": \"Qwen3.5-9B\",\n"
+      << "  \"model\": \"" << model_name << "\",\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -325,6 +331,15 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
                 simdjson::ondemand::object rope = ro.value();
                 t.partial_rotary_factor = rope_d(rope, "partial_rotary_factor", t.partial_rotary_factor);
                 t.rope_theta = rope_d(rope, "rope_theta", t.rope_theta);
+            }
+
+            if (auto lt = src["layer_types"].get_array(); lt.error() == simdjson::SUCCESS) {
+                t.layer_types.clear();
+                for (auto v : lt.value()) {
+                    std::string_view sv;
+                    if (v.get_string().get(sv) == simdjson::SUCCESS)
+                        t.layer_types.emplace_back(sv);
+                }
             }
             return true;
         }
@@ -476,7 +491,16 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     }
 
     top.total_pinned_tensors = static_cast<int>(total_pinned);
-    return WriteQwenModelIndex(output_root, top);
+    auto st = WriteQwenModelIndex(output_root, top);
+    if (!st.ok()) return st;
+
+    auto tok_path = fs::path(input_path) / "tokenizer.json";
+    if (fs::exists(tok_path)) {
+        auto tok_st = BuildTokenizerArrowFiles(tok_path.string(), pinned_dir);
+        if (!tok_st.ok())
+            spdlog::warn("[qwen_convert] tokenizer build failed: {}", tok_st.ToString());
+    }
+    return arrow::Status::OK();
 }
 
 } // namespace lsxcommon::qwen
