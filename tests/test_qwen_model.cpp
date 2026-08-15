@@ -22,6 +22,9 @@ TEST_CASE("Qwen V5 model factory registration and generation")
     auto tensors = qwentest::BuildSyntheticQwenModel();
     qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
     qwentest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
     REQUIRE(lsxcommon::qwen::ConvertQwenModel(tmp.string(), tmp.string()).ok());
 
     lsxcommon::ModelInitConfig cfg;

@@ -24,13 +24,10 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
 
     glmtest::WriteSafetensors(model_home, "model-00001-of-00001.safetensors",
                               glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(model_home);
+    glmtest::WriteTokenizer(model_home);
     auto st = lsxcommon::glm::ConvertGlmModel(model_home.string(), out);
     REQUIRE(st.ok());
-
-    // Tokenizer arrows are required for Load(); the real pipeline builds them
-    // from <model>/tokenizer.json. Use the repository synthetic tokenizer.
-    REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", out / "pinned").ok());
 
     // Autodetect from logestix/model.index.json ("GLM-5.2" -> "glm-5.2").
     auto type = lsxcommon::LsxModelFactory::DetectType(model_home.string());
@@ -74,9 +71,9 @@ TEST_CASE("GLM model explicit type create", "[glm][model]")
 
     glmtest::WriteSafetensors(model_home, "model-00001-of-00001.safetensors",
                               glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(model_home);
+    glmtest::WriteTokenizer(model_home);
     REQUIRE(lsxcommon::glm::ConvertGlmModel(model_home.string(), out).ok());
-    REQUIRE(lsxcommon::BuildTokenizerArrowFiles(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json", out / "pinned").ok());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_home.string();

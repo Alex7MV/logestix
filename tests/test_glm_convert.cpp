@@ -225,6 +225,30 @@ TEST_CASE("GLM topology rejects malformed index", "[glm][topology]")
 
 /* ── Converter pipeline (synthetic safetensors → logestix layout) ───────── */
 
+// Builds the synthetic input dir used by the converter pipeline tests.
+static fs::path GlmBuildInput(fs::path base, bool with_tok,
+                              const std::vector<std::string> &drop_names = {})
+{
+    fs::remove_all(base);
+    auto in = base / "model";
+    fs::create_directories(in);
+
+    auto tensors = glmtest::BuildSyntheticModel();
+    std::vector<glmtest::FakeTensor> keep;
+    for (auto &t : tensors) {
+        bool drop = false;
+        for (auto &n : drop_names)
+            if (t.name.find(n) != std::string::npos) { drop = true; break; }
+        if (!drop) keep.push_back(t);
+    }
+    glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", keep);
+    glmtest::WriteConfig(in);
+    if (with_tok)
+        fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                      in / "tokenizer.json");
+    return in;
+}
+
 TEST_CASE("GLM converter writes logestix layout from synthetic shards",
           "[glm][convert][pipeline]")
 {
@@ -236,6 +260,9 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     fs::create_directories(in);
 
     glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(in);
+    fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                  in / "tokenizer.json");
 
     auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
     REQUIRE(st.ok());
@@ -304,7 +331,34 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     CHECK(!(*se_vec)[6].w1_packed.empty());
     CHECK(!(*se_vec)[78].w1_packed.empty());
     CHECK((*se_vec)[3].w2_packed.size() == (*se_vec)[3].w1_packed.size());
+    CHECK((*se_vec)[3].w2_packed.size() == (*se_vec)[3].w1_packed.size());
     CHECK((*se_vec)[0].w1_packed.empty());
 
+    fs::remove_all(base);
+}
+
+TEST_CASE("GLM converter aborts on missing required tensor", "[glm][convert][integrity]")
+{
+    auto base = fs::temp_directory_path() / "logestix_glm_integrity";
+    auto in = GlmBuildInput(base, true, {"model.layers.3.mlp.gate.weight"});
+    auto out = base / "converted";
+
+    auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
+    INFO("ConvertGlmModel error: " << st.ToString());
+    CHECK(!st.ok());
+    CHECK(st.ToString().find("missing tensors") != std::string::npos);
+    fs::remove_all(base);
+}
+
+TEST_CASE("GLM converter aborts on missing tokenizer.json", "[glm][convert][integrity]")
+{
+    auto base = fs::temp_directory_path() / "logestix_glm_integrity_tok";
+    auto in = GlmBuildInput(base, false);
+    auto out = base / "converted";
+
+    auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
+    INFO("ConvertGlmModel error: " << st.ToString());
+    CHECK(!st.ok());
+    CHECK(st.ToString().find("tokenizer.json") != std::string::npos);
     fs::remove_all(base);
 }

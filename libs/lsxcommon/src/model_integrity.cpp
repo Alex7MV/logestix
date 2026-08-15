@@ -274,8 +274,13 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
     if (auto p = root["total_pinned_tensors"].get_int64(); p.error() == simdjson::SUCCESS)
         expected_pinned = p.value();
 
-    // Walk pinned dir, reopen + ValidateFull(). Tokenizer arrows are reopened
-    // (corruption is caught) but excluded from the tensor record count.
+    int64_t expected_experts = -1;
+    if (auto e = root["total_experts"].get_int64(); e.error() == simdjson::SUCCESS)
+        expected_experts = e.value();
+
+    // Walk pinned dir, reopen + ValidateFull(). Tokenizer arrows and the
+    // shared_experts.arrow must reopen (corruption is caught), but are excluded
+    // from the model-tensor record count.
     int64_t actual_pinned = 0;
     size_t checked = 0;
     for (auto &entry : fs::recursive_directory_iterator(pinned_dir)) {
@@ -296,7 +301,9 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
 
         auto fname = entry.path().filename().string();
         if (fname.rfind("tokenizer_", 0) == 0)
-            continue;  // validated, but not a model tensor record
+            continue;
+        if (fname == "shared_experts.arrow")
+            continue;  // validated, but not counted in total_pinned_tensors
 
         actual_pinned += (*batch_res)->num_rows();
         ++checked;
@@ -307,6 +314,23 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
             "pinned tensor count mismatch: index says ",
             expected_pinned, " but actual is ", actual_pinned,
             " across ", checked, " arrow files");
+
+    // Expert arrows (GLM/DeepSeek layouts) must total total_experts.
+    if (expected_experts > 0) {
+        auto experts_dir = output_root / "experts";
+        if (!fs::exists(experts_dir))
+            return arrow::Status::Invalid(
+                "experts dir missing: ", experts_dir.string());
+        int64_t actual_experts = 0;
+        for (auto &entry : fs::recursive_directory_iterator(experts_dir))
+            if (entry.is_regular_file() &&
+                entry.path().extension() == ".arrow")
+                ++actual_experts;
+        if (actual_experts != expected_experts)
+            return arrow::Status::Invalid(
+                "expert count mismatch: index says ", expected_experts,
+                " but actual is ", actual_experts);
+    }
 
     r.pinned_tensor_count = actual_pinned;
     r.arrow_files_checked = checked;

@@ -1,4 +1,5 @@
 #include "lsxcommon/converter.h"
+#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <regex>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <map>
 
@@ -1053,6 +1055,47 @@ arrow::Status Converter::Run()
         return arrow::Status::Invalid("no safetensors shards found in ",
                                        impl_->input_path);
 
+    // (2) config.json is mandatory; parsed for geometry cross-checks.
+    auto cfg_path = fs::path(impl_->input_path) / "config.json";
+    if (!fs::exists(cfg_path))
+        return arrow::Status::Invalid("config.json not found in ",
+                                      impl_->input_path);
+
+    int cfg_num_layers = 0;
+    int cfg_hidden_size = 0;
+    int cfg_vocab_size = 0;
+    int cfg_experts_per_layer = 0;
+    {
+        std::ifstream cf(cfg_path);
+        if (!cf)
+            return arrow::Status::IOError("cannot open ", cfg_path.string());
+        std::string cj((std::istreambuf_iterator<char>(cf)),
+                       std::istreambuf_iterator<char>());
+        simdjson::padded_string cpj(cj.data(), cj.size());
+        simdjson::ondemand::parser cp;
+        simdjson::ondemand::document cd;
+        if (cp.iterate(cpj).get(cd) != simdjson::SUCCESS)
+            return arrow::Status::Invalid("config.json parse failed");
+        auto root = cd.get_object();
+        if (root.error() != simdjson::SUCCESS)
+            return arrow::Status::Invalid("config.json root not an object");
+        auto get_i = [&](simdjson::ondemand::object &o, const char *k, int dflt) {
+            int64_t v;
+            if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
+            return static_cast<int>(v);
+        };
+        cfg_num_layers = get_i(root.value(), "num_hidden_layers", 0);
+        if (cfg_num_layers <= 0)
+            cfg_num_layers = get_i(root.value(), "num_layers", 0);
+        cfg_hidden_size = get_i(root.value(), "hidden_size", 0);
+        cfg_vocab_size = get_i(root.value(), "vocab_size", 0);
+        cfg_experts_per_layer = get_i(root.value(), "num_local_experts", 0);
+    }
+
+    // (3) Verify every tensor read is complete before any output is written.
+    ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(
+        impl_->input_path, model));
+
     auto total_shards = model.shards.size();
     spdlog::info("Found {} shards, {} tensors across {} shards",
         total_shards,
@@ -1084,13 +1127,17 @@ arrow::Status Converter::Run()
         std::ifstream sf(
             (fs::path(impl_->input_path) / shard.filename).string(),
             std::ios::binary | std::ios::ate);
-        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        if (!sf)
+            return arrow::Status::IOError("cannot open ", shard.filename);
         int64_t sz = sf.tellg();
-        if (sz <= 0) { spdlog::warn("  Zero or negative file size, skipping"); continue; }
+        if (sz <= 0)
+            return arrow::Status::IOError("zero/negative size: ",
+                                          shard.filename);
         sf.seekg(0);
         std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
         sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
-        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+        if (!sf)
+            return arrow::Status::IOError("cannot read ", shard.filename);
 
         spdlog::info("  read {} MB", sz / (1024 * 1024));
 
@@ -1104,11 +1151,11 @@ arrow::Status Converter::Run()
 
             int64_t raw_size = tensor.byte_size();
             int64_t raw_start = data_off + tensor.data_begin;
-            if (raw_start < 0 || raw_start + raw_size > sz) {
-                spdlog::warn("  Skipping {} (offset {}+{} exceeds file size {})",
-                    tensor.name, data_off, tensor.data_begin, sz);
-                continue;
-            }
+            if (raw_start < 0 || raw_start + raw_size > sz)
+                return arrow::Status::Invalid(
+                    shard.filename, " tensor ", tensor.name,
+                    " offset ", data_off, "+", tensor.data_begin,
+                    " exceeds file size ", sz);
 
             const uint8_t *raw_ptr = shard_buf.data() + raw_start;
             std::vector<uint8_t> raw(raw_ptr, raw_ptr + raw_size);
@@ -1236,14 +1283,39 @@ arrow::Status Converter::Run()
             elapsed / 1000.0, experts_in_shard);
     }
 
-    for (auto &[key, raw] : partial) {
-        spdlog::warn("  Incomplete expert layer={} expert={} (w1={} w2={} w3={})",
-            key.layer, key.expert,
-            raw.w1_raw.size(), raw.w2_raw.size(), raw.w3_raw.size());
-    }
+    for (auto &[key, raw] : partial)
+        return arrow::Status::Invalid(
+            "incomplete expert layer=", key.layer, " expert=", key.expert,
+            " (w1=", raw.w1_raw.size(), " w2=", raw.w2_raw.size(),
+            " w3=", raw.w3_raw.size(), ")");
 
     for (auto &[layer, cnt] : experts_per_layer)
         max_experts_per_layer = std::max(max_experts_per_layer, cnt);
+
+    // (6) Geometry cross-check: config-declared vs tensor-derived.
+    {
+        int embed_vocab = 0, embed_hidden = 0;
+        for (auto &shard : model.shards) {
+            for (auto &t : shard.tensors) {
+                if (t.name == "model.embed_tokens.weight" && t.shape.size() >= 2) {
+                    embed_vocab = static_cast<int>(t.shape[0]);
+                    embed_hidden = static_cast<int>(t.shape[1]);
+                }
+            }
+        }
+        std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> geom;
+        if (cfg_num_layers > 0)
+            geom.push_back({"num_layers", {cfg_num_layers, max_layer}});
+        if (cfg_hidden_size > 0)
+            geom.push_back({"hidden_size", {cfg_hidden_size, embed_hidden}});
+        if (cfg_vocab_size > 0)
+            geom.push_back({"vocab_size", {cfg_vocab_size, embed_vocab}});
+        if (cfg_experts_per_layer > 0)
+            geom.push_back({"experts_per_layer",
+                            {cfg_experts_per_layer, max_experts_per_layer}});
+        if (!geom.empty())
+            ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields(geom));
+    }
 
     spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
     ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, impl_->output_path));
@@ -1259,25 +1331,22 @@ arrow::Status Converter::Run()
         static_cast<int64_t>(experts_processed),
         impl_->output_path));
 
-    // Build the tokenizer Arrow files from <input>/tokenizer.json so the
-    // converted model is self-contained (runtime reads
-    // pinned/tokenizer_vocab.arrow + pinned/tokenizer_merges.arrow).
+    // (8) Build and verify the binary tokenizer (mandatory).
     auto tokenizer_json = fs::path(impl_->input_path) / "tokenizer.json";
-    if (fs::exists(tokenizer_json)) {
-        spdlog::info("Building tokenizer Arrow files from {} ...",
-            tokenizer_json.string());
-        auto tst = BuildTokenizerArrowFiles(
-            tokenizer_json.string(),
-            fs::path(impl_->output_path) / "pinned");
-        if (!tst.ok()) {
-            spdlog::error("Tokenizer build failed: {}", tst.ToString());
-            return tst;
-        }
-        spdlog::info("Tokenizer Arrow files -> {}/pinned", impl_->output_path);
-    } else {
-        spdlog::warn("No tokenizer.json in {}; tokenizer Arrow files not built",
-            impl_->input_path);
-    }
+    if (!fs::exists(tokenizer_json))
+        return arrow::Status::Invalid("tokenizer.json not found in ",
+                                      impl_->input_path);
+    ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
+        tokenizer_json.string(),
+        fs::path(impl_->output_path) / "pinned",
+        integrity::TokenizerSpecialIds{.bos_required = true,
+                                       .eos_required = true}));
+
+    // (9) The converted output must be a loadable, verified model.
+    auto vres = integrity::VerifyConvertedModel(impl_->output_path);
+    if (!vres.ok())
+        return arrow::Status::Invalid(
+            "output verification failed: ", vres.status().ToString());
 
     spdlog::info("Done — {} pinned tensors, {} experts processed, incomplete {}",
         pinned_processed, experts_processed, partial.size());

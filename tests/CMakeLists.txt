@@ -39,6 +39,9 @@ add_test(NAME test_deepseek_loader COMMAND test_deepseek_loader)
 
 # ── Тест Qwen3.5-9B конвертера (парсер имён + индекс + round-trip) ────────
 add_executable(test_qwen_convert test_qwen_convert.cpp)
+target_compile_definitions(test_qwen_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_qwen_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -58,6 +61,9 @@ add_test(NAME test_qwen_convert COMMAND test_qwen_convert)
 
 # ── Тест Qwen3.5-9B загрузчика (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_loader test_qwen_loader.cpp)
+target_compile_definitions(test_qwen_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_qwen_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -233,6 +239,9 @@ add_test(NAME test_qwen_converter_integrity COMMAND test_qwen_converter_integrit
 
 # ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
 add_executable(test_glm_convert test_glm_convert.cpp)
+target_compile_definitions(test_glm_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_glm_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
@@ -252,6 +261,9 @@ add_test(NAME test_glm_convert COMMAND test_glm_convert)
 
 # ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_loader test_glm_loader.cpp)
+target_compile_definitions(test_glm_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
 target_link_libraries(test_glm_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
