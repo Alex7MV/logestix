@@ -71,14 +71,22 @@ std::vector<ConvertedModelRecord> ReadConvertedModelManifest();
 // Rewrites the file sorted by (model_name, format). Returns Status.
 arrow::Status UpdateConvertedModelManifest(const ConvertedModelRecord& rec);
 
+// Explicit-path variants (used for deterministic writes; the vault wrappers
+// below forward to them with lsx_model_metadata("manifests/models.json")).
+arrow::Status WriteManifestTo(const std::filesystem::path& manifest_path,
+                              const std::vector<ConvertedModelRecord>& recs);
+std::vector<ConvertedModelRecord> ReadManifestFrom(
+    const std::filesystem::path& manifest_path);
+
 // Log each record via spdlog::info.
 arrow::Status LogConvertedModels(const std::vector<ConvertedModelRecord>& recs);
 ```
 
-`UpdateConvertedModelManifest` creates `manifests/` if missing. On parse failure
-of an existing but corrupt file, the existing content is treated as empty and
-replaced (a corrupted manifest is not a reason to keep stale data, but a
-`spdlog::warn` is emitted).
+The vault-path wrappers delegate to the explicit-path variants, so the manifest
+path is always explicit and never reconstructed twice. `UpdateConvertedModelManifest`
+creates `manifests/` if missing. On parse failure of an existing but corrupt file,
+the existing content is treated as empty and replaced (a corrupted manifest is not
+a reason to keep stale data, but a `spdlog::warn` is emitted).
 
 ## Converter integration
 
@@ -110,8 +118,9 @@ New `tests/test_converted_models.cpp` (read-only, no GPU):
 4. Resilience: a missing manifest reads as empty; a corrupt manifest is replaced
    on the next upsert without throwing.
 
-Test writes go to the OS temp dir (path injected), never the real vault.
-Registered in `tests/CMakeLists.txt`.
+Tests exercise the explicit-path variants against a temp dir, never the real
+vault. The vault itself is only asserted via `test_path_registry` (already
+existing). Registered in `tests/CMakeLists.txt`.
 
 ## Acceptance
 
