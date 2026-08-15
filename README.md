@@ -1,6 +1,6 @@
 # logestix
 
-Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client). Shared core library `lsxcommon`.
+Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client), **lsxhome** (Windows-native desktop shell). Shared core library `lsxcommon`.
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
@@ -11,6 +11,10 @@ Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data pre
 | simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
+| Dear ImGui | 1.92.9-docking | FetchContent (lsxhome only) | Static |
+| ImPlot | 0.17 | FetchContent (lsxhome only) | Static |
+| ImNodes | 0.5 | FetchContent (lsxhome only) | Static |
+| FreeType | 2.14.3 | FetchContent (lsxhome only) | Static |
 
 ## Prerequisites
 
@@ -73,7 +77,7 @@ ctest --preset windows-debug    # Windows 11
 ctest --preset linux-debug      # Ubuntu 26.04
 ```
 
-22 test executables (~100 test cases, ~2.6M assertions). GLM-5.2 and DeepSeek
+Test executables (~100 test cases, ~2.6M assertions). GLM-5.2 and DeepSeek
 suites are autonomous and run independently:
 
 ```bash
@@ -111,6 +115,8 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
 - `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
+- `apps/lsxhome/` — Windows-native x64 desktop shell (WIN32, D3D12 + Dear ImGui docking branch). Compute thread → lock-free SPSC `GuiBridge` → UI thread. Phase 1 theme layer (`ApplyBlackwellCoworkTheme` + `BuildWorkspaceSkeleton`) adds a matte Blackwell/Cowork styling profile.
+  - `apps/lsxhome/tests/` — `test_lsxhome_gui` (5 test cases: payload alignment, SPSC zero-alloc/backpressure/burst) + `test_lsxhome_font` (3 test cases)
 - `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
   - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
   - `test_deepseek_loader` — loader round-trip and E4M3 encoding tests

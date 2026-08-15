@@ -119,6 +119,18 @@ ctest --preset windows-debug    # Windows 11
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
+- `apps/lsxhome/` — Windows-native x64 desktop shell (`lsxhome`, WIN32 subsystem, D3D12 + Dear ImGui docking branch). Только Windows — блок в CMakeLists обёрнут в `if(NOT WIN32) return()`. Compute thread публикует токены в lock-free SPSC `GuiBridge` → UI thread дренирует их каждый кадр.
+  - `src/main_win32.cpp` — WinMain, окно, render loop, SPSC compute→UI bridge, sidebar + ImPlot график
+  - `src/d3d12_renderer.cpp` — `D3D12Renderer` (device/queue/swapchain, SRV-дескрипторный пул, ImGui Win32+DX12 backend, fence), `CreateContext()` для ImGui+ImPlot+ImNodes
+  - `src/gui_renderer.cpp` + `include/lsxhome/gui_renderer.h` — Phase 1 theme-слой: `ApplyBlackwellCoworkTheme()` (матовый Blackwell/Cowork, WindowBg `0.08`, ChildBg `0.10`, Text `0.88`, все rounding ровно 6.0f) и `BuildWorkspaceSkeleton()` (`ImGui::DockSpaceOverViewport`)
+  - `src/font_loader.cpp` + `include/lsxhome/font_loader.h` — imgui_freetype LCD-растеризатор, встроенные TTF (Inter + JetBrains Mono)
+  - `include/lsxhome/blackwell_theme.h` — палитра `BlackwellPalette` + `Geometry` (kPalette/kGeometry)
+  - `include/lsxhome/gui_bridge.h` — `TokenPayload` (одна cache-line, 64B) + `GuiBridge` (SPSC publish/drop/poll/drain, zero-alloc)
+  - `include/lsxhome/spsc_token_ring.h` — lock-free SPSC ring
+  - `include/lsxhome/imnodes_offsetof_shim.h` — shim для imnodes v0.5 против obsolete IM_OFFSETOF
+  - `tests/` — `test_lsxhome_gui` (5 test cases: payload alignment, SPSC zero-alloc/backpressure/burst) + `test_lsxhome_font` (3 test cases)
+  - GUI-стек (Dear ImGui 1.92.9-docking, ImPlot 0.17, ImNodes 0.5, FreeType 2.14.3) — FetchContent, статические архивы (`lsxhome_imgui`/`lsxhome_implot`/`lsxhome_imnodes`/`lsxhome_font`/`lsxhome_mono`)
+  - **GUI-инварианты**: `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` НЕ используется (меняет layout ImGuiIO/ImGuiStyle → десинхрон `sizeof` с app TU → assert "Mismatched struct layout!" в `IMGUI_CHECKVERSION`); ImPlot/ImNodes требуют своих `CreateContext()`/`DestroyContext()` (иначе assert `GImPlot == nullptr`)
 - `tests/` — Catch2 test suite; GLM и DeepSeek тесты автономны и запускаются по отдельности (`ctest -R glm` / `ctest -R deepseek`)
   - `tests/test_core.cpp` — интеграционные тесты зависимостей (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 11 test cases, 101 assertions
   - `tests/test_deepseek_loader.cpp` — 3 test cases, 64 assertions (round-trip, empty fields, E4M3 encoding)
