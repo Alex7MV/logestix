@@ -1,0 +1,329 @@
+#include "lsxcommon/model_integrity.h"
+#include "lsxcommon/converter.h"
+#include "lsxcommon/schema.h"
+#include <arrow/api.h>
+#include <arrow/io/file.h>
+#include <arrow/ipc/reader.h>
+#include <simdjson.h>
+#include <spdlog/spdlog.h>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <sstream>
+#include <string>
+
+namespace lsxcommon::integrity {
+
+namespace {
+
+// Encode → decode round-trip check. Returns error if the decoded bytes
+// differ from source or if encode/decode signals failure.
+arrow::Status round_trip_sample(
+    const ArrowTokenizerDb &db,
+    const std::string &sample)
+{
+    int32_t token_buf[512];
+    size_t max_tokens = 512;
+    int32_t n = arrow_tokenizer_encode(
+        db, sample.data(), sample.size(), token_buf, &max_tokens);
+    if (n <= 0) {
+        std::string msg = (n == 0)
+            ? "encode returned 0 tokens"
+            : "encode failed with code " + std::to_string(n);
+        return arrow::Status::Invalid("tokenizer round-trip: ", msg);
+    }
+
+    std::vector<char> text_buf(sample.size() * 4 + 64, '\0');
+    size_t max_len = text_buf.size();
+    int32_t rc = arrow_tokenizer_decode(
+        db, token_buf, static_cast<size_t>(n),
+        text_buf.data(), &max_len);
+    if (rc != 0)
+        return arrow::Status::Invalid(
+            "tokenizer round-trip: decode failed with code ", rc);
+
+    if (std::string(text_buf.data(), max_len) != sample)
+        return arrow::Status::Invalid(
+            "tokenizer round-trip: decoded text differs");
+
+    return arrow::Status::OK();
+}
+
+} // anonymous namespace
+
+arrow::Status BuildAndVerifyTokenizer(
+    const std::string &tokenizer_json_path,
+    const std::filesystem::path &pinned_dir,
+    const TokenizerSpecialIds &required_specials)
+{
+    namespace fs = std::filesystem;
+
+    // (1) Build binary Arrow files from tokenizer.json (mandatory).
+    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFiles(tokenizer_json_path, pinned_dir));
+
+    auto vocab_path = pinned_dir / "tokenizer_vocab.arrow";
+    auto merges_path = pinned_dir / "tokenizer_merges.arrow";
+
+    if (!fs::exists(vocab_path))
+        return arrow::Status::Invalid(
+            "tokenizer: vocab file not built: ", vocab_path.string());
+    if (!fs::exists(merges_path))
+        return arrow::Status::Invalid(
+            "tokenizer: merges file not built: ", merges_path.string());
+
+    // (2) MMAP and load.
+    ARROW_ASSIGN_OR_RAISE(auto vocab_mmap,
+        arrow::io::MemoryMappedFile::Open(vocab_path.string(),
+                                          arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(auto merges_mmap,
+        arrow::io::MemoryMappedFile::Open(merges_path.string(),
+                                          arrow::io::FileMode::READ));
+
+    ArrowTokenizerDb db;
+    ARROW_RETURN_NOT_OK(load_tokenizer_metadata(vocab_mmap, merges_mmap, db));
+
+    if (!db.valid())
+        return arrow::Status::Invalid("tokenizer: DB not valid after load");
+
+    // (3) Validate special ids.
+    if (required_specials.bos_required && db.bos_id < 0)
+        return arrow::Status::Invalid("tokenizer: required bos_id is missing");
+    if (required_specials.eos_required && db.eos_id < 0)
+        return arrow::Status::Invalid("tokenizer: required eos_id is missing");
+    if (required_specials.pad_required && db.pad_id < 0)
+        return arrow::Status::Invalid("tokenizer: required pad_id is missing");
+
+    // (4) Round-trip on two samples (ASCII + Unicode "élève").
+    ARROW_RETURN_NOT_OK(round_trip_sample(db, "The capital of France is"));
+    ARROW_RETURN_NOT_OK(round_trip_sample(db, "\xC3\xA9l\xC3\xA8ve"));
+
+    return arrow::Status::OK();
+}
+
+arrow::Status VerifyAllTensorReads(
+    const std::filesystem::path &input_path,
+    const SafetensorsModel &model)
+{
+    for (auto &shard : model.shards) {
+        auto sf_path = input_path / shard.filename;
+        std::ifstream sf(sf_path.string(), std::ios::binary);
+        if (!sf)
+            return arrow::Status::IOError("cannot open ", sf_path.string());
+
+        uint64_t hdr_len = 0;
+        sf.read(reinterpret_cast<char*>(&hdr_len), 8);
+        if (!sf || sf.gcount() != 8)
+            return arrow::Status::IOError("cannot read header length in ",
+                                          sf_path.string());
+
+        int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
+        for (auto &t : shard.tensors) {
+            int64_t raw_start = data_off + t.data_begin;
+            int64_t expected = t.byte_size();
+            if (raw_start + expected > shard.file_size)
+                return arrow::Status::Invalid(
+                    shard.filename, " tensor ", t.name,
+                    " extends beyond file size");
+
+            std::vector<uint8_t> buf(static_cast<size_t>(expected));
+            sf.seekg(raw_start, std::ios::beg);
+            sf.read(reinterpret_cast<char*>(buf.data()),
+                    static_cast<std::streamsize>(expected));
+            if (!sf || static_cast<int64_t>(sf.gcount()) != expected)
+                return arrow::Status::IOError(
+                    "short read on ", shard.filename, " tensor ", t.name,
+                    ": expected ", expected, " bytes, got ", sf.gcount());
+        }
+    }
+    return arrow::Status::OK();
+}
+
+arrow::Status CheckTensorCoverage(
+    const std::vector<std::string> &expected,
+    const std::vector<std::string> &present,
+    const std::string &what)
+{
+    std::unordered_set<std::string> exp_set(expected.begin(), expected.end());
+    std::unordered_set<std::string> pre_set(present.begin(), present.end());
+
+    std::vector<std::string> missing;
+    for (auto &e : exp_set)
+        if (pre_set.find(e) == pre_set.end())
+            missing.push_back(e);
+
+    if (!missing.empty()) {
+        std::ostringstream os;
+        os << "missing tensors [" << what << "]:";
+        for (size_t i = 0; i < missing.size(); ++i)
+            os << " " << missing[i];
+        return arrow::Status::Invalid(os.str());
+    }
+
+    for (auto &p : pre_set)
+        if (exp_set.find(p) == exp_set.end())
+            spdlog::warn("[integrity] unexpected tensor: {}", p);
+
+    return arrow::Status::OK();
+}
+
+arrow::Status CheckLayerContiguity(
+    int expected_layers,
+    const std::unordered_set<int> &present_layers)
+{
+    if (present_layers.empty())
+        return arrow::Status::Invalid("no layer tensors found");
+
+    int max_layer = -1;
+    for (int l : present_layers)
+        max_layer = std::max(max_layer, l);
+
+    int actual = max_layer + 1;
+    if (expected_layers != actual)
+        return arrow::Status::Invalid(
+            "layer count mismatch: config says ",
+            expected_layers, " but tensors span 0..",
+            max_layer, " (", actual, " layers)");
+
+    for (int l = 0; l <= max_layer; ++l)
+        if (present_layers.find(l) == present_layers.end())
+            return arrow::Status::Invalid(
+                "layer hole: layer ", l, " has no tensors");
+
+    return arrow::Status::OK();
+}
+
+arrow::Status CheckGeometryFields(
+    const std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> &fields)
+{
+    std::ostringstream os;
+    size_t count = 0;
+    for (auto &[name, pair] : fields) {
+        auto [expected, actual] = pair;
+        if (expected != actual) {
+            if (count > 0) os << "; ";
+            os << name << ": config=" << expected << " tensor=" << actual;
+            ++count;
+        }
+    }
+    if (count > 0)
+        return arrow::Status::Invalid("geometry mismatch: ", os.str());
+    return arrow::Status::OK();
+}
+
+arrow::Result<VerificationReport> VerifyConvertedModel(
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+    VerificationReport r;
+    r.ok = false;
+
+    // Resolve index location (Qwen layout vs GLM/DeepSeek layout).
+    fs::path index_path;
+    fs::path pinned_dir;
+    fs::path logestix_dir = output_root / "logestix";
+    if (fs::exists(logestix_dir / "model.index.json")) {
+        index_path = logestix_dir / "model.index.json";
+        pinned_dir = logestix_dir / "pinned";
+    } else if (fs::exists(output_root / "model.index.json")) {
+        index_path = output_root / "model.index.json";
+        pinned_dir = output_root / "pinned";
+    } else {
+        r.error = "model.index.json not found in " + output_root.string();
+        return r;
+    }
+
+    if (!fs::exists(pinned_dir)) {
+        r.error = "pinned dir not found: " + pinned_dir.string();
+        return r;
+    }
+
+    std::ifstream f(index_path, std::ios::binary);
+    if (!f) {
+        r.error = "cannot open " + index_path.string();
+        return r;
+    }
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (json.empty()) {
+        r.error = "index file is empty";
+        return r;
+    }
+
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::parser parser;
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) {
+        r.error = "cannot parse " + index_path.string();
+        return r;
+    }
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) {
+        r.error = "index root not an object";
+        return r;
+    }
+
+    // Format tag must be one of the known layouts.
+    std::string_view fmt;
+    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS) {
+        r.error = "index missing 'format' tag";
+        return r;
+    }
+    static const std::string_view kKnownFmts[] = {
+        "logestix-qwen", "logestix-glm", "logestix-v1"};
+    bool known = false;
+    for (auto kf : kKnownFmts)
+        if (fmt == kf) { known = true; break; }
+    if (!known) {
+        r.error = "unknown format tag: " + std::string(fmt);
+        return r;
+    }
+
+    int64_t expected_pinned = 0;
+    if (auto p = root["total_pinned_tensors"].get_int64(); p.error() == simdjson::SUCCESS)
+        expected_pinned = p.value();
+
+    int64_t expected_experts = -1;
+    if (auto e = root["total_experts"].get_int64(); e.error() == simdjson::SUCCESS)
+        expected_experts = e.value();
+
+    // Walk pinned dir, reopen + ValidateFull().
+    int64_t actual_pinned = 0;
+    size_t checked = 0;
+    for (auto &entry : fs::recursive_directory_iterator(pinned_dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ".arrow") continue;
+
+        auto batch_res = ReadRecordBatchFromFile(entry.path());
+        if (!batch_res.ok()) {
+            r.error = entry.path().filename().string() + ": " +
+                      batch_res.status().ToString();
+            return r;
+        }
+
+        auto st = (*batch_res)->ValidateFull();
+        if (!st.ok()) {
+            r.error = entry.path().filename().string() +
+                      " ValidateFull: " + st.ToString();
+            return r;
+        }
+
+        actual_pinned += (*batch_res)->num_rows();
+        ++checked;
+    }
+
+    if (expected_pinned != actual_pinned) {
+        r.error = "pinned tensor count mismatch: index says " +
+                  std::to_string(expected_pinned) + " but actual is " +
+                  std::to_string(actual_pinned) + " across " +
+                  std::to_string(checked) + " arrow files";
+        return r;
+    }
+
+    r.ok = true;
+    r.pinned_tensor_count = actual_pinned;
+    r.arrow_files_checked = checked;
+    return r;
+}
+
+} // namespace lsxcommon::integrity

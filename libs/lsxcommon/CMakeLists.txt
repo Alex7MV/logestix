@@ -24,6 +24,7 @@ add_library(lsxcommon STATIC
     src/loader.cpp
     src/log.cpp
     src/model_factory.cpp
+    src/model_integrity.cpp
     src/model_registry.cpp
     src/path_registry.cpp
     src/models/lsx_orchestrator.cpp
