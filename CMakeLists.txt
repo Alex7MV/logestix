@@ -23,7 +23,11 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Флаги компилятора ────────────────────────────────────────────────────────
 
 if(MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /utf-8 /MP /arch:AVX512")
+    # CACHE FORCE so the value propagates into single-file try_compile sub-builds
+    # (abseil's check_cxx_source_compiles probes). A plain set() only overrides the
+    # in-memory variable and the probe sub-build falls back to the toolchain default
+    # C++14, missing the /std:c++20 gate. /std:c++20 aligns with the C++20 pin below.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /utf-8 /MP /arch:AVX512 /std:c++20" CACHE STRING "Flags used by the C++ compiler." FORCE)
     # WIN32_LEAN_AND_MEAN / NOMINMAX: suppress Windows header bloat and min/max macros
     # that conflict with std::numeric_limits::max() in CCCL/Thrust.
     add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -184,6 +188,55 @@ if(EXISTS "${_spdlog_fmt}")
     unset(_spdlog_fmt_content)
 endif()
 unset(_spdlog_fmt)
+
+# ── ЗАВИСИМОСТИ: abseil-cpp через FetchContent (статические flat-структуры) ─
+# Стабильный LTS-тег (проверен 2026-06: "Abseil LTS branch, May 2026", 20260526.0,
+# коммит 5650e9c). Статика обязана учитывать верхнеуровневый C++ стандарт проекта:
+# ABSL_PROPAGATE_CXX_STD=ON заставляет каждую abseil-цель наследовать
+# CMAKE_CXX_STANDARD родителя (проект осознанно зафиксирован на C++20), а не
+# дефолтный C++14, иначе ABI-расхождение при линковке в lsxcommon/lsxhome.
+set(ABSL_BUILD_TESTING OFF CACHE INTERNAL "Disable abseil tests")
+set(ABSL_BUILD_TEST_HELPERS OFF CACHE INTERNAL "Disable abseil test helpers")
+set(ABSL_BUILD_EXAMPLES OFF CACHE INTERNAL "Disable abseil examples")
+set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "Propagate project C++ standard to abseil" FORCE)
+# Abseil's ABSL_INTERNAL_AT_LEAST_CXX17/CXX20 probes run as a nested
+# check_cxx_source_compiles (try_compile) in a fresh sub-build. The top-level
+# set(CMAKE_CXX_STANDARD 20) above is a NORMAL variable and is invisible there
+# (MSVC would fall back to its default C++14, failing the >=C++17 gate). Promote
+# it to a CACHE variable so the probe inherits /std:c++20.
+set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard (CACHE for abseil try_compile sub-build)" FORCE)
+set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "C++ standard required (CACHE for abseil)" FORCE)
+
+FetchContent_Declare(
+  abseil-cpp
+  GIT_REPOSITORY "https://github.com/abseil/abseil-cpp.git"
+  GIT_TAG        "20260526.0" # Abseil LTS, May 2026
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(abseil-cpp)
+
+# Patch abseil CRC for MSVC + project-wide /arch:AVX512 (idempotent, same
+# patch-after-fetch pattern as Boost/spdlog/imnodes above). The global
+# /arch:AVX512 (root CMAKE_CXX_FLAGS) defines __AVX__ on MSVC, which activates
+# abseil's GCC/Clang-only VPCLMULQDQ inline-asm path (crc_x86_arm_combined.cc's
+# `__asm__`), and MSVC cannot parse those statements. Disabling the MSVC SIMD
+# branch keeps CRC on the generic intrinsic fallback. Rebuilds cleanly anyway,
+# since 20260526.0 re-fetches; the guard is applied each configure.
+set(_absx86simd "${abseil-cpp_SOURCE_DIR}/absl/crc/internal/crc32_x86_arm_combined_simd.h")
+if(EXISTS "${_absx86simd}")
+    file(READ "${_absx86simd}" _absxsimd_content)
+    string(FIND "${_absxsimd_content}" "defined(_M_AMD64) && 0" _absxsimd_marker)
+    if(_absxsimd_marker EQUAL -1)
+        string(REPLACE
+            "#elif defined(_MSC_VER) && !defined(__clang__) && defined(__AVX__) && \\\n    defined(_M_AMD64)"
+            "#elif defined(_MSC_VER) && !defined(__clang__) && defined(__AVX__) && \\\n    defined(_M_AMD64) && 0"
+            _absxsimd_content "${_absxsimd_content}")
+        file(WRITE "${_absx86simd}" "${_absxsimd_content}")
+    endif()
+    unset(_absxsimd_marker)
+    unset(_absxsimd_content)
+endif()
+unset(_absx86simd)
 
 # ── ЗАВИСИМОСТИ: simdjson через submodule (быстрый JSON-парсер) ───────────
 

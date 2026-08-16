@@ -13,10 +13,9 @@
 #include <cstring>
 #include <algorithm>
 #include <regex>
-#include <unordered_map>
-#include <unordered_set>
+#include <absl/container/btree_map.h>
+#include <absl/container/flat_hash_map.h>
 #include <filesystem>
-#include <map>
 
 namespace lsxcommon {
 
@@ -189,7 +188,7 @@ void print_model(const SafetensorsModel &model)
     spdlog::info("Staged (MoE experts):   {} tensors, {}",
         staged_tensors, format_size(staged_bytes));
     spdlog::info("--- Pinned breakdown ---");
-    std::map<std::string, int64_t> cat_tensors, cat_bytes;
+    absl::btree_map<std::string, int64_t> cat_tensors, cat_bytes;
     for (auto &shard : model.shards) {
         for (auto &t : shard.tensors) {
             if (is_staged_tensor(t.name)) continue;
@@ -209,8 +208,8 @@ void print_model(const SafetensorsModel &model)
         int64_t total_expert_bytes = 0;
         int expert_count = 0;
     };
-    std::map<int, LayerExpertInfo> moe_layers;
-    std::map<int, bool> layers_with_attention;
+    absl::btree_map<int, LayerExpertInfo> moe_layers;
+    absl::btree_map<int, bool> layers_with_attention;
     int hidden_dim = 0;
     int kv_latent_dim = 0;
     int total_layers = 0;
@@ -296,7 +295,7 @@ void print_nvfp4_forecast(const SafetensorsModel &model)
         int64_t nvfp4_bytes = 0;
         int count = 0;
     };
-    std::map<std::string, CatStats> cats;
+    absl::btree_map<std::string, CatStats> cats;
 
     int64_t total_orig = 0;
     int64_t total_nvfp4 = 0;
@@ -622,7 +621,7 @@ arrow::Status SavePinnedTensors(
     namespace fs = std::filesystem;
     fs::create_directories(output_root / "pinned");
 
-    std::unordered_map<std::string, std::vector<TensorRecord>> by_layer;
+    absl::flat_hash_map<std::string, std::vector<TensorRecord>> by_layer;
     std::vector<TensorRecord> global;
 
     for (auto &t : tensors) {
@@ -660,7 +659,7 @@ arrow::Status SavePinnedTensors(
 // Packs the NVFP4-compressed shared expert weights (w1/w2/w3) for every layer
 // and writes a single pinned/shared_experts.arrow with one record per layer.
 arrow::Status SaveSharedExpertsToArrow(
-    const std::unordered_map<int, ExpertData> &shared_by_layer,
+    const absl::flat_hash_map<int, ExpertData> &shared_by_layer,
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
@@ -728,7 +727,7 @@ arrow::Status RepackSharedExperts(
         return arrow::Status::Invalid("no safetensors shards found in ",
                                        input_path);
 
-    std::unordered_map<int, ExpertData> shared_by_layer;
+    absl::flat_hash_map<int, ExpertData> shared_by_layer;
     int shard_idx = 0;
 
     for (const auto &shard : model.shards) {
@@ -837,12 +836,12 @@ arrow::Status RepackRoutedExperts(
         }
     };
 
-    std::unordered_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
+    absl::flat_hash_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
     int shard_idx = 0;
     int total_written = 0;
     int max_layer = 0;
     int max_expert_per_layer = 0;
-    std::unordered_map<int, int> experts_per_layer;
+    absl::flat_hash_map<int, int> experts_per_layer;
 
     auto try_flush = [&](ExpertKey key, ExpertData &exp) -> arrow::Status {
         if (exp.w1_raw.empty() || exp.w2_raw.empty() || exp.w3_raw.empty())
@@ -1106,15 +1105,15 @@ arrow::Status Converter::Run()
         }(),
         total_shards);
 
-    std::unordered_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
+    absl::flat_hash_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
     std::vector<TensorRecord> pinned_tensors;
-    std::unordered_map<int, ExpertData> shared_by_layer;
+    absl::flat_hash_map<int, ExpertData> shared_by_layer;
     int experts_processed = 0;
     int pinned_processed = 0;
     int shard_idx = 0;
     int max_layer = 0;
     int max_experts_per_layer = 0;
-    std::unordered_map<int, int> experts_per_layer;
+    absl::flat_hash_map<int, int> experts_per_layer;
 
     for (const auto &shard : model.shards) {
         ++shard_idx;

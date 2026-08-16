@@ -96,13 +96,13 @@ TEST_CASE("CheckTensorCoverage empty expected passes", "[integrity]")
 
 TEST_CASE("CheckLayerContiguity passes on full range", "[integrity]")
 {
-    std::unordered_set<int> layers = {0, 1, 2, 3};
+    absl::flat_hash_set<int> layers = {0, 1, 2, 3};
     CHECK(CheckLayerContiguity(4, layers).ok());
 }
 
 TEST_CASE("CheckLayerContiguity fails on hole", "[integrity]")
 {
-    std::unordered_set<int> layers = {0, 1, 3};
+    absl::flat_hash_set<int> layers = {0, 1, 3};
     auto st = CheckLayerContiguity(4, layers);
     CHECK(!st.ok());
     CHECK(st.ToString().find("hole") != std::string::npos);
@@ -111,7 +111,7 @@ TEST_CASE("CheckLayerContiguity fails on hole", "[integrity]")
 
 TEST_CASE("CheckLayerContiguity fails on count mismatch", "[integrity]")
 {
-    std::unordered_set<int> layers = {0, 1, 2};
+    absl::flat_hash_set<int> layers = {0, 1, 2};
     auto st = CheckLayerContiguity(4, layers);
     CHECK(!st.ok());
     CHECK(st.ToString().find("layer count mismatch") != std::string::npos);
@@ -119,7 +119,7 @@ TEST_CASE("CheckLayerContiguity fails on count mismatch", "[integrity]")
 
 TEST_CASE("CheckLayerContiguity fails on empty set", "[integrity]")
 {
-    std::unordered_set<int> layers;
+    absl::flat_hash_set<int> layers;
     CHECK(!CheckLayerContiguity(4, layers).ok());
 }
 

@@ -6,11 +6,11 @@
 #include <arrow/ipc/reader.h>
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
+#include <absl/strings/str_cat.h>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iterator>
-#include <sstream>
 #include <string>
 
 namespace lsxcommon::integrity {
@@ -144,8 +144,8 @@ arrow::Status CheckTensorCoverage(
     const std::vector<std::string> &present,
     const std::string &what)
 {
-    std::unordered_set<std::string> exp_set(expected.begin(), expected.end());
-    std::unordered_set<std::string> pre_set(present.begin(), present.end());
+    absl::flat_hash_set<std::string> exp_set(expected.begin(), expected.end());
+    absl::flat_hash_set<std::string> pre_set(present.begin(), present.end());
 
     std::vector<std::string> missing;
     for (auto &e : exp_set)
@@ -153,11 +153,10 @@ arrow::Status CheckTensorCoverage(
             missing.push_back(e);
 
     if (!missing.empty()) {
-        std::ostringstream os;
-        os << "missing tensors [" << what << "]:";
+        std::string msg = absl::StrCat("missing tensors [", what, "]:");
         for (size_t i = 0; i < missing.size(); ++i)
-            os << " " << missing[i];
-        return arrow::Status::Invalid(os.str());
+            absl::StrAppend(&msg, " ", missing[i]);
+        return arrow::Status::Invalid(msg);
     }
 
     for (auto &p : pre_set)
@@ -169,7 +168,7 @@ arrow::Status CheckTensorCoverage(
 
 arrow::Status CheckLayerContiguity(
     int expected_layers,
-    const std::unordered_set<int> &present_layers)
+    const absl::flat_hash_set<int> &present_layers)
 {
     if (present_layers.empty())
         return arrow::Status::Invalid("no layer tensors found");
@@ -196,18 +195,18 @@ arrow::Status CheckLayerContiguity(
 arrow::Status CheckGeometryFields(
     const std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> &fields)
 {
-    std::ostringstream os;
+    std::string msg;
     size_t count = 0;
     for (auto &[name, pair] : fields) {
         auto [expected, actual] = pair;
         if (expected != actual) {
-            if (count > 0) os << "; ";
-            os << name << ": config=" << expected << " tensor=" << actual;
+            if (count > 0) absl::StrAppend(&msg, "; ");
+            absl::StrAppend(&msg, name, ": config=", expected, " tensor=", actual);
             ++count;
         }
     }
     if (count > 0)
-        return arrow::Status::Invalid("geometry mismatch: ", os.str());
+        return arrow::Status::Invalid("geometry mismatch: ", msg);
     return arrow::Status::OK();
 }
 

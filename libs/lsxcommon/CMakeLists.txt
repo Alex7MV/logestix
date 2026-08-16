@@ -104,6 +104,7 @@ target_link_libraries(lsxcommon_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 
 add_library(lsxcommon_glm_cu OBJECT
@@ -178,6 +179,9 @@ target_link_libraries(lsxcommon PUBLIC
     flatbuffers
     libzmq-static
     "${CUDA_CUDART_LIBRARY}"
+    absl::flat_hash_map
+    absl::span
+    absl::strings
 )
 target_link_libraries(lsxcommon PRIVATE
     arrow_shared

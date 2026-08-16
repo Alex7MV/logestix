@@ -5,8 +5,8 @@
 #include <arrow/api.h>
 #include <filesystem>
 #include <string>
-#include <unordered_set>
 #include <vector>
+#include <absl/container/flat_hash_set.h>
 
 namespace lsxcommon::integrity {
 
@@ -48,7 +48,7 @@ arrow::Status CheckTensorCoverage(
 // and max_layer+1 must equal expected_layers.
 arrow::Status CheckLayerContiguity(
     int expected_layers,
-    const std::unordered_set<int> &present_layers);
+    const absl::flat_hash_set<int> &present_layers);
 
 // Verify a vector of {name, {expected, actual}} geometry fields.
 // Any mismatch hard-fails naming field, expected, and actual.

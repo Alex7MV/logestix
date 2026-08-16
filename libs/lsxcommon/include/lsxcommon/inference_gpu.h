@@ -1,8 +1,9 @@
 #pragma once
 
-#include <cctype>
 #include <cstdint>
 #include <string>
+
+#include <absl/strings/ascii.h>
 
 namespace lsxcommon {
 namespace gpu {
@@ -29,19 +30,6 @@ struct InferenceResult {
     float first_gen_maxv = 0.0f;   // argmax logit of the first token, pre-tempclamp
     bool  selfcheck_passed = false;
 };
-
-// Strips leading/trailing ASCII whitespace. Shared by every model's
-// SelfCheck() (GlmV5Model, DeepSeekV4FlashModel, QwenBaseModel and any future
-// IModel implementation) ahead of comparing the decoded first-token text
-// against the "Paris" self-check oracle — previously hand-copied
-// byte-for-byte into three separate .cpp/.cu files.
-inline std::string TrimAsciiWhitespace(const std::string &s)
-{
-    auto b = s.begin(), e = s.end();
-    while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
-    while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
-    return std::string(b, e);
-}
 
 } // namespace gpu
 } // namespace lsxcommon

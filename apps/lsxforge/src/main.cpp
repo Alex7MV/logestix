@@ -12,7 +12,7 @@
 #include <regex>
 #include <spdlog/spdlog.h>
 #include <string>
-#include <unordered_map>
+#include <absl/container/flat_hash_map.h>
 
 namespace {
 
@@ -54,7 +54,7 @@ arrow::Status RunSharedOnly(const std::string &model_path)
     if (!fs::exists(pinned_dir))
         return arrow::Status::Invalid("no pinned dir found: ", pinned_dir.string());
 
-    std::unordered_map<int, lsxcommon::ExpertData> shared_by_layer;
+    absl::flat_hash_map<int, lsxcommon::ExpertData> shared_by_layer;
     for (int l = 0; l < 128; ++l) {
         auto fn = "layer_" + std::to_string(l) + ".arrow";
         auto path = pinned_dir / fn;

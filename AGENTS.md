@@ -19,6 +19,7 @@ CUDA Toolkit 13.2+ (nvcc 13.2.78; 13.3 также поддерживается),
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.3 (latest) | submodule (`third_party/cccl`) | Header-only |
+| abseil-cpp | 20260526.0 | FetchContent (`20260526.0`, LTS May 2026) | Header-only + static libs |
 | CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
 | Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
 
@@ -286,6 +287,51 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 - **Никаких галлюцинаций**: Не уверен в сигнатуре метода Arrow/CCCL — проверь `.h`/`.cuh` в репозитории или запусти компиляцию.
 - **Alignment**: Проверяй выравнивание данных для CUDA-структур, контролируй Shared Memory на блок (occupancy). Blackwell: 48 warps/SM max.
 - **Комментарии**: Сохраняй все Doxygen/JSDoc при рефакторинге. Адаптируй для проекта.
+
+## absl:: Priority (Container/String policy)
+
+Приоритет `absl::` над `std::` в host-only C++ коде (НЕ компилируемом NVCC):
+
+| Приоритет | std:: | → absl:: | Заголовок |
+|---|---|---|---|
+| ДОЛЖЕН | `std::unordered_map` | `absl::flat_hash_map` | `<absl/container/flat_hash_map.h>` |
+| ДОЛЖЕН | `std::unordered_set` | `absl::flat_hash_set` | `<absl/container/flat_hash_set.h>` |
+| ДОЛЖЕН | `std::map` | `absl::btree_map` | `<absl/container/btree_map.h>` |
+| ДОЛЖЕН | `std::set` | `absl::btree_set` | `<absl/container/btree_set.h>` |
+| МОЖНО | `std::ostringstream` (простые конкатенации) | `absl::StrCat` / `absl::StrAppend` | `<absl/strings/str_cat.h>` |
+
+Исключения — остаётся `std::`:
+- `std::string_view`, `std::optional`, `std::variant`, `std::function`, `std::unique_ptr` —
+  для C++17+ abseil сам рекомендует `std::*-версии (absl-версии — полифилы).
+- Потоковый JSON/отчёт builder с цикловым мемпингом (`std::ostringstream` c setw/setfill
+  и т.п.) — легитимный потоковый use, НЕ конвертируется (эталон: `qwen_convert.cpp`
+  `ConvertQwenModel`, билдер model.index.json).
+- Кастомные хэшер-функторы (`ExpertKeyHash`, `GlmExpertKeyHash`) — передаются как
+  Hasher параметр напрямую, менять не нужно.
+
+NVCC ИНКОМПАТИБИЛЬНОСТЬ (критично):
+- abseil контейнеры (flat_, btree_ и все `absl/container/internal/*`) НЕ компилируются
+  NVCC-ом (raw_hash_map ломается в `.cu`: `C2794`/`C2938` MSVC-in-NVCC).
+- ЗАПРЕЩЕНО добавлять `#include <absl/container/*>` какие-либо в заголовки, достижимые
+  транзитивно из `.cu`/`.cuh` TU (эталоны безопасных заголовков: `schema.h`,
+  `tokenizer.h`, `shared_experts.h`; НЕбезопасные — только host-заголовки:
+  `model_integrity.h`, `lsx_orchestrator.h`, `converter.h`, `http_router.h`).
+- В `.cu`/`.cuh` файлах контейнеры и стриммы остаются `std::`; при сомнении проверь
+  транзитивной граф: `rg 'include "[^"]+"' libs/lsxcommon/src/*.cu`.
+- `absl::strings` подтягивается к объект-библиотекам `lsxcommon_cu`/`glm_cu`/`qwen_cu`
+  через `target_link_libraries(... absl::strings)` — это даёт include-пути, но
+  НЕ вносит контейнерных заголов во `.cu`.
+
+CMake-якоря:
+- `absl::flat_hash_map` / `absl::span` / `absl::strings` — PUBLIC линк `lsxcommon`
+  и `lsxhome` (apps/lsxhome PRIVATE), `absl::flat_hash_map` — PUBLIC `lsxnetwork`;
+  реализация в lsxcommon_cu/glm_cu/qwen_cu линкует `absl::strings`.
+- `ABSL_PROPAGATE_CXX_STD=ON` выравнивает abseil по стандарту проекта (C++20);
+  `CMAKE_CXX_STANDARD`/`CMAKE_CXX_FLAGS` вынужденно CACHE для probe-try_compile
+  (`/std:c++20` нужен, чтобы `ABSL_INTERNAL_AT_LEAST_CXX20` в under-проекте).
+- LTS-тег фиксируется на `20260526.0`; после FetchContent применяется идемпотентный
+  патч `crc32_x86_arm_combined_simd.h` (MSVC+`/arch:AVX512` → G-asm не парсится;
+  патч отключает MSVC-ветку SIMD в CRC).
 
 ## Git
 

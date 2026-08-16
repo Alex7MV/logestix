@@ -806,7 +806,8 @@ InferenceResult RunSelfCheckModel(
         return r;
     }
     if (r.first_gen_tok_id >= 0) {
-        r.selfcheck_passed = (TrimAsciiWhitespace(r.first_gen_text) == "Paris");
+        absl::StripAsciiWhitespace(&r.first_gen_text);
+        r.selfcheck_passed = (r.first_gen_text == "Paris");
     }
     log::info("[selfcheck] top1_tok=" + std::to_string(r.first_gen_tok_id)
               + " text='" + r.first_gen_text + "' passed="
