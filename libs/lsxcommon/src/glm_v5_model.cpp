@@ -2,6 +2,7 @@
 
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <absl/strings/ascii.h>
 #include <cctype>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -183,8 +184,9 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
         if (::lsxcommon::arrow_tokenizer_decode(
                 *tok_db_, single_tok.data(), single_tok.size(), buf, &cap) == 0)
             r.first_gen_text = std::string(buf, cap);
+        absl::StripAsciiWhitespace(&r.first_gen_text);
         r.selfcheck_passed =
-            (gpu::TrimAsciiWhitespace(r.first_gen_text) == "Paris");
+            (r.first_gen_text == "Paris");
     }
     spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
                  r.first_gen_tok_id, r.first_gen_text,

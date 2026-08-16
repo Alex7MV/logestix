@@ -14,17 +14,24 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
-#include <map>
 #include <optional>
 #include <regex>
-#include <set>
 #include <string>
 #include <vector>
 #include <iterator>
-#include <unordered_map>
-#include <unordered_set>
+#include <absl/container/btree_map.h>
+#include <absl/container/btree_set.h>
+#include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 
 namespace lsxcommon {
+// Forward declaration (defined in converter.cpp). Kept out of converter.h so
+// that NVCC-translated TUs (e.g. testmodel_gpu.cu, which only needs the PIMPL
+// Converter class) never parse abseil's flat_hash_map header.
+arrow::Status SaveSharedExpertsToArrow(
+    const absl::flat_hash_map<int, ExpertData> &shared_by_layer,
+    const std::filesystem::path &output_root);
+
 namespace glm {
 
 namespace {
@@ -321,7 +328,7 @@ arrow::Status SaveGlmPinnedTensors(
     namespace fs = std::filesystem;
     fs::create_directories(output_root / "pinned");
 
-    std::map<int, std::vector<TensorRecord>> by_layer;
+    absl::btree_map<int, std::vector<TensorRecord>> by_layer;
     std::vector<TensorRecord> global;
 
     for (const auto &t : tensors) {
@@ -453,8 +460,8 @@ arrow::Status ConvertGlmModel(
     // (3) Verify every tensor read is complete before any output is written.
     ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_path, model));
 
-    std::unordered_map<GlmExpertKey, ExpertData, GlmExpertKeyHash> partial;
-    std::unordered_map<int, ExpertData> shared_by_layer;
+    absl::flat_hash_map<GlmExpertKey, ExpertData, GlmExpertKeyHash> partial;
+    absl::flat_hash_map<int, ExpertData> shared_by_layer;
     std::vector<TensorRecord> pinned_tensors;
 
     int experts_processed = 0;
@@ -462,10 +469,10 @@ arrow::Status ConvertGlmModel(
     int shard_idx = 0;
     int max_layer = -1;
     int max_experts_per_layer = 0;
-    std::unordered_map<int, int> experts_per_layer;
-    std::set<int> moe_layers;
-    std::set<int> dense_layers;
-    std::set<int> indexer_layers;
+    absl::flat_hash_map<int, int> experts_per_layer;
+    absl::btree_set<int> moe_layers;
+    absl::btree_set<int> dense_layers;
+    absl::btree_set<int> indexer_layers;
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
@@ -576,7 +583,7 @@ arrow::Status ConvertGlmModel(
     // (4) Tensor coverage: required globals + per-layer MLP/route essentials.
     {
         std::vector<std::string> present_names;
-        std::unordered_set<int> present_layers;
+        absl::flat_hash_set<int> present_layers;
         for (auto &shard : model.shards) {
             for (auto &t : shard.tensors) {
                 auto p = classify(t.name);

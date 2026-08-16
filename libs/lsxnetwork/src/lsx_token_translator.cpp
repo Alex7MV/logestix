@@ -6,7 +6,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
-#include <unordered_map>
+#include <absl/container/flat_hash_map.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -55,12 +55,12 @@ std::vector<std::byte> BuildPassport(const BuildPassportOptions& opts) {
     const std::uint32_t n_ds = static_cast<std::uint32_t>(opts.deepseek_tokens.size());
 
     // Reverse index of DeepSeek token string -> id (exact match wins).
-    std::unordered_map<std::string, std::uint32_t> ds_exact;
+    absl::flat_hash_map<std::string, std::uint32_t> ds_exact;
     ds_exact.reserve(static_cast<std::size_t>(n_ds) * 2);
     // First-byte buckets so substring overlap scanning only touches a bounded,
     // deterministic candidate set (the two vocabularies commonly share token
     // stems under the same leading byte).
-    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> buckets;
+    absl::flat_hash_map<std::uint32_t, std::vector<std::uint32_t>> buckets;
     for (std::uint32_t j = 0; j < n_ds; ++j) {
         const std::string& t = opts.deepseek_tokens[j];
         ds_exact.emplace(t, j);  // lowest id wins on duplicate strings

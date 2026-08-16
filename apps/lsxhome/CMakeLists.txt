@@ -239,6 +239,9 @@ target_link_libraries(lsxhome PRIVATE
     lsxcommon
     arrow_shared
     arrow_cuda_shared
+    absl::flat_hash_map
+    absl::span
+    absl::strings
     d3d12
     dxgi
     d3dcompiler

@@ -2,6 +2,7 @@
 
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <absl/strings/ascii.h>
 #include <cctype>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -166,7 +167,8 @@ gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
                                        buf, &cap) != 0)
                 continue;
             std::string t(buf, cap);
-            r.first_gen_text = gpu::TrimAsciiWhitespace(t);
+            absl::StripAsciiWhitespace(&t);
+            r.first_gen_text = t;
             if (r.first_gen_text == "Paris") {
                 r.selfcheck_passed = true;
                 break;

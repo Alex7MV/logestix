@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include <unordered_map>
 
 namespace lsxcommon {
 
@@ -19,13 +18,6 @@ arrow::Status SaveExpertToArrow(
 
 arrow::Status SavePinnedTensors(
     const std::vector<TensorRecord> &tensors,
-    const std::filesystem::path &output_root);
-
-// Packs the per-layer shared-expert weights (w1/w2/w3) with PackExpertNVFP4
-// and writes a single <output_root>/pinned/shared_experts.arrow with one
-// record per layer (sparse: empty slots for layers without shared experts).
-arrow::Status SaveSharedExpertsToArrow(
-    const std::unordered_map<int, ExpertData> &shared_by_layer,
     const std::filesystem::path &output_root);
 
 // Reads only the shared-expert tensors (w{1,2,3}.weight + w{1,2,3}.scale)

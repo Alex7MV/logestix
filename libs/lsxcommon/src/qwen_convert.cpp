@@ -11,12 +11,12 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <optional>
 #include <regex>
 #include <sstream>
-#include <unordered_map>
-#include <unordered_set>
+#include <absl/container/btree_map.h>
+#include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 
 namespace lsxcommon::qwen {
 
@@ -45,7 +45,7 @@ std::regex &re_embed()   { static auto r = std::regex(R"(model\.language_model\.
 std::regex &re_final()   { static auto r = std::regex(R"(model\.language_model\.norm\.weight$)"); return r; }
 
 std::regex &re_linear(const std::string &s) {
-    static std::unordered_map<std::string, std::regex> cache;
+    static absl::flat_hash_map<std::string, std::regex> cache;
     auto it = cache.find(s);
     if (it == cache.end())
         it = cache.emplace(s, std::regex(layer_regex(s))).first;
@@ -101,7 +101,7 @@ std::vector<std::string> generate_qwen_expected_names(const QwenTopology &top)
 void collect_qwen_present(
     const SafetensorsModel &model,
     std::vector<std::string> &present_names,
-    std::unordered_set<int> &present_layers)
+    absl::flat_hash_set<int> &present_layers)
 {
     for (auto &shard : model.shards) {
         for (auto &t : shard.tensors) {
@@ -359,7 +359,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
 
     // Determine layer count from tensor names.
     int max_layer = -1;
-    std::map<int, std::string> layer_type;  // layer -> linear_attention | full_attention
+    absl::btree_map<int, std::string> layer_type;  // layer -> linear_attention | full_attention
     for (auto &shard : model.shards)
         for (auto &t : shard.tensors) {
             auto p = classify_qwen_tensor(t.name);
@@ -469,7 +469,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     // (4) Every expected Qwen tensor must be present.
     auto expected = generate_qwen_expected_names(top);
     std::vector<std::string> present_names;
-    std::unordered_set<int> present_layers;
+    absl::flat_hash_set<int> present_layers;
     collect_qwen_present(model, present_names, present_layers);
     ARROW_RETURN_NOT_OK(integrity::CheckTensorCoverage(expected, present_names, "qwen"));
 
@@ -492,8 +492,8 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     if (!fs::exists(pinned_dir))
         fs::create_directories(pinned_dir);
 
-    std::map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
-    std::map<int, std::vector<TensorRecord>> raw_by_layer;
+    absl::btree_map<int, std::vector<DenseNvfp4Record>> nvfp4_by_layer;
+    absl::btree_map<int, std::vector<TensorRecord>> raw_by_layer;
     std::vector<DenseNvfp4Record> global_nvfp4;
     std::vector<TensorRecord> global_raw;
 

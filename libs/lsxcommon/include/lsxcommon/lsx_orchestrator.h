@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
+#include <absl/container/flat_hash_map.h>
 
 #include "lsxcommon/model.h"          // IModel
 #include "lsxnetwork/frame_queue.h"   // lsxnetwork::FrameQueue
@@ -47,7 +47,7 @@ public:
     /// "glm-5.2", "deepseek-v4-flash"); values are caller-owned model
     /// instances. Ownership is NOT transferred: the orchestrator only reads /
     /// invokes them and releases ring slots after each call returns.
-    using ModelTable = std::unordered_map<std::string, lsxcommon::IModel*>;
+    using ModelTable = absl::flat_hash_map<std::string, lsxcommon::IModel*>;
 
     explicit LsxOrchestrator(const ModelTable& models);
 

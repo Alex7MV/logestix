@@ -9,8 +9,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
+#include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
 #include <vector>
 
 namespace lsxcommon {
@@ -34,10 +34,10 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: root is not an object");
 
-    std::unordered_map<std::string, int32_t> key_to_id;
-    std::unordered_map<int32_t, std::string> id_to_key;
-    std::unordered_set<int32_t> special_ids;
-    std::unordered_map<int32_t, std::string> added_content;
+absl::flat_hash_map<std::string, int32_t> key_to_id;
+    absl::flat_hash_map<int32_t, std::string> id_to_key;
+    absl::flat_hash_set<int32_t> special_ids;
+    absl::flat_hash_map<int32_t, std::string> added_content;
     bool has_added = false;
 
     // added_tokens precede "model" in the JSON. Read them first so the shared

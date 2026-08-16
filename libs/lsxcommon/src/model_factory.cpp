@@ -1,7 +1,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include <mutex>
-#include <unordered_map>
+#include <absl/container/flat_hash_map.h>
 
 #include <spdlog/spdlog.h>
 
@@ -10,9 +10,9 @@
 namespace lsxcommon {
 
 namespace {
-std::unordered_map<std::string, CreateModelFn> &Registry()
+absl::flat_hash_map<std::string, CreateModelFn> &Registry()
 {
-    static std::unordered_map<std::string, CreateModelFn> reg;
+    static absl::flat_hash_map<std::string, CreateModelFn> reg;
     return reg;
 }
 
