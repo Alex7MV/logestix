@@ -322,6 +322,25 @@ endif()
 
 add_test(NAME test_model_factory COMMAND test_model_factory)
 
+# ── Тест generation-path CLI (--run / -r нормализация + default prompt) ─────
+add_executable(test_generation_cli test_generation_cli.cpp)
+target_link_libraries(test_generation_cli PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_generation_cli POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_generation_cli>"
+    )
+    add_custom_command(TARGET test_generation_cli POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_generation_cli>"
+    )
+endif()
+
+add_test(NAME test_generation_cli COMMAND test_generation_cli)
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE

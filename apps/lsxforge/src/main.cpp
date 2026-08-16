@@ -1,8 +1,13 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
+#include "lsxcommon/generation_cli.h"
+#include "lsxcommon/model.h"
+#include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_integrity.h"
+#include "lsxcommon/path_registry.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/tokenizer.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/qwen_convert.h"
 #include <arrow/api.h>
@@ -12,9 +17,30 @@
 #include <regex>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <vector>
 #include <absl/container/flat_hash_map.h>
+#include <absl/flags/flag.h>
+#include <absl/flags/parse.h>
+#include <absl/flags/usage.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+
+ABSL_FLAG(std::string, input, "", "input model directory");
+ABSL_FLAG(std::string, output, "converted_model", "output directory");
+ABSL_FLAG(bool, verify, false, "verify a converted model");
+ABSL_FLAG(bool, shared_only, false, "extract shared experts from pinned layers");
+ABSL_FLAG(bool, repack_shared, false, "re-pack shared experts into shared_experts.arrow");
+ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)");
+ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
+ABSL_FLAG(bool, glm, false, "GLM-5.2 conversion pipeline");
+ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
+// Generation path execution option: routes the resolved prompt straight into
+// the tokenizer encode channel and the single end-to-end cudaStream_t
+// Prefill->Decode autogeneration sequence loop (IModel::Infer), bypassing the
+// standalone --selfcheck truncation logic and the --benchmark dummy-token
+// layers. A bare --run/-r (no value) falls back to the default blueprint
+// prompt via lsxcommon::cli.
+ABSL_FLAG(std::string, run, "", "generation prompt (--run \"PROMPT\" / -r \"PROMPT\")");
 
 namespace {
 
@@ -170,38 +196,30 @@ arrow::Status RunSharedOnly(const std::string &model_path)
 } // anonymous namespace
 
 int main(int argc, char* argv[]) {
-    std::string input_path;
-    std::string output_path = "converted_model";
-    bool shared_only = false;
-    bool repack_shared = false;
-    bool repack_experts = false;
-    bool tokenizer_only = false;
-    bool verify_only = false;
-    bool glm = false;
-    bool qwen = false;
+    // Canonicalize the generation-path flag (-r/--run, bare -> default prompt)
+    // before absl::ParseCommandLine consumes argv.
+    auto normalized = lsxcommon::cli::NormalizeGenerationArgv(argc, argv);
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(normalized.size());
+    for (auto& arg : normalized) argv_ptrs.push_back(arg.data());
+    absl::SetProgramUsageMessage(
+        "lsxforge — LogestiX data preprocessing (NVFP4 conversion, tokenizer, generation)");
+    absl::ParseCommandLine(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
 
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc)
-            input_path = argv[++i];
-        else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc)
-            output_path = argv[++i];
-        else if (std::strcmp(argv[i], "--verify") == 0)
-            verify_only = true;
-        else if (std::strcmp(argv[i], "--shared-only") == 0)
-            shared_only = true;
-        else if (std::strcmp(argv[i], "--repack-shared") == 0)
-            repack_shared = true;
-        else if (std::strcmp(argv[i], "--repack-experts") == 0)
-            repack_experts = true;
-        else if (std::strcmp(argv[i], "--tokenizer") == 0 && i + 1 < argc) {
-            tokenizer_only = true;
-            input_path = argv[++i];
-        }
-        else if (std::strcmp(argv[i], "--glm") == 0)
-            glm = true;
-        else if (std::strcmp(argv[i], "--qwen") == 0)
-            qwen = true;
+    std::string input_path  = absl::GetFlag(FLAGS_input);
+    std::string output_path = absl::GetFlag(FLAGS_output);
+    bool shared_only = absl::GetFlag(FLAGS_shared_only);
+    bool repack_shared = absl::GetFlag(FLAGS_repack_shared);
+    bool repack_experts = absl::GetFlag(FLAGS_repack_experts);
+    bool tokenizer_only = false;
+    if (!absl::GetFlag(FLAGS_tokenizer).empty()) {
+        tokenizer_only = true;
+        input_path = absl::GetFlag(FLAGS_tokenizer);
     }
+    bool verify_only = absl::GetFlag(FLAGS_verify);
+    bool glm = absl::GetFlag(FLAGS_glm);
+    bool qwen = absl::GetFlag(FLAGS_qwen);
+    const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -214,6 +232,50 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("lsxforge_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
+
+    // Generation path execution option. Resolved prompt (or the default
+    // blueprint prompt) is encoded through the model tokenizer and handed to
+    // the single end-to-end cudaStream_t Prefill->Decode autogeneration loop.
+    if (!absl::GetFlag(FLAGS_run).empty()) {
+        spdlog::info("Running generation path on prompt: {}", run_prompt);
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = input_path;
+        cfg.max_gen_tokens = 64;
+        auto model = lsxcommon::LsxModelFactory::Create(cfg);
+        if (!model || !model->Load()) {
+            spdlog::error("Failed to create/load model: {}", input_path);
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        std::vector<int32_t> input_ids(512, 0);
+        size_t cap = input_ids.size();
+        int32_t n_ids = lsxcommon::arrow_tokenizer_encode(
+            model->Tokenizer(), run_prompt.data(), run_prompt.size(),
+            input_ids.data(), &cap);
+        if (n_ids < 0) {
+            spdlog::error("Tokenizer encode failed: {}", n_ids);
+            model->Unload();
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        input_ids.resize(static_cast<size_t>(n_ids));
+        lsxcommon::ModelRequest req{std::move(input_ids), 64};
+        auto result = model->Infer(req);
+        if (!result.ok) {
+            spdlog::error("Inference failed: {}", result.error_msg);
+            model->Unload();
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("=== --run Results ===");
+        spdlog::info("prompt   : {}", run_prompt);
+        spdlog::info("output   : {}", result.output_text);
+        spdlog::info("tokens   : {} at {:.1f} t/s",
+                     result.num_tokens, result.tokens_per_sec);
+        model->Unload();
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
 
     if (verify_only) {
         spdlog::info("Verifying converted model: {}", input_path);

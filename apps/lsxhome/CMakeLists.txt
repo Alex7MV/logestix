@@ -242,6 +242,8 @@ target_link_libraries(lsxhome PRIVATE
     absl::flat_hash_map
     absl::span
     absl::strings
+    absl::flags_parse
+    absl::flags
     d3d12
     dxgi
     d3dcompiler

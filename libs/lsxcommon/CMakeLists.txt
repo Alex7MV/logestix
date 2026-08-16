@@ -18,6 +18,7 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/deepseek_v4_flash_model.cpp
+    src/generation_cli.cpp
     src/glm_convert.cpp
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp

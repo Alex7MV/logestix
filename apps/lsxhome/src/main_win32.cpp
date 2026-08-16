@@ -14,17 +14,30 @@
 #include "lsxhome/gui_bridge.h"
 #include "lsxhome/gui_renderer.h"
 
+#include "lsxcommon/generation_cli.h"
+
+#include <absl/flags/flag.h>
+#include <absl/flags/parse.h>
+
 #include <windows.h>
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <string>
 #include <thread>
+#include <vector>
 
 // Dear ImGui's Win32 backend keeps WndProcHandler intentionally commented out;
 // the application is responsible for this exact forward declaration.
 IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// Generation path execution option: --run/-r routes the resolved prompt into
+// the shell's token stream. A bare --run/-r (no value) falls back to the
+// default blueprint prompt via lsxcommon::cli.
+ABSL_FLAG(std::string, run, "", "generation prompt (--run \"PROMPT\" / -r \"PROMPT\")");
 
 namespace {
 
@@ -56,11 +69,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running) {
+void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running,
+                     const std::string& seed_prompt) {
     std::uint32_t seq = 0;
     while (running.load(std::memory_order_relaxed)) {
+        // Route the generation prompt (resolved via --run/-r) into the shell's
+        // token stream: the first payload carries the prompt text instead of
+        // the demo token.
+        const char* text = seed_prompt.empty() ? "Paris" : seed_prompt.c_str();
         lsxhome::TokenPayload t =
-            lsxhome::MakeTokenPayload(kParisTokenId, seq++, "Paris");
+            lsxhome::MakeTokenPayload(kParisTokenId, seq++, text);
         // Backpressure contract: dropping on a full pool is deterministic and
         // never blocks the compute stream.
         bridge.Publish(t);
@@ -76,6 +94,17 @@ void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running) {
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
+    // Canonicalize the generation-path flag (bare --run/-r -> default prompt)
+    // before absl::ParseCommandLine consumes argv.
+    auto normalized = lsxcommon::cli::NormalizeGenerationArgv(__argc, __argv);
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(normalized.size());
+    for (auto& arg : normalized) argv_ptrs.push_back(arg.data());
+    absl::ParseCommandLine(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+
+    std::string run_prompt =
+        lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
@@ -116,7 +145,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     lsxhome::GuiBridge bridge;
     std::atomic<bool> running{true};
-    std::thread compute_thread(ComputeProducer, std::ref(bridge), std::ref(running));
+    std::thread compute_thread(
+        ComputeProducer, std::ref(bridge), std::ref(running), run_prompt);
 
     MSG msg = {};
     while (msg.message != WM_QUIT) {
