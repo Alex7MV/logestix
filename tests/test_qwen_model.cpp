@@ -45,6 +45,22 @@ TEST_CASE("Qwen V5 model factory registration and generation")
     REQUIRE(result.ok);
     CHECK(result.num_tokens > 0);
     CHECK(result.first_gen_tok_id >= 0);
+    CHECK(result.num_layers == 4);
+    CHECK(result.total_time_ms > 0.0);
+    CHECK(result.tokens_per_sec > 0.0);
+    // Regression: Infer must populate first-gen decode text through the same
+    // tokenizer round-trip the self-check uses (synthetic special ids may
+    // decode empty, so only assert visibility when a plain token is produced).
+    if (result.first_gen_tok_id >= 0) {
+        char tb[64];
+        size_t tc = sizeof(tb);
+        if (lsxcommon::arrow_tokenizer_decode(model->Tokenizer(),
+                                              &result.first_gen_tok_id, 1,
+                                              tb, &tc) == 0) {
+            std::string d(tb, tc);
+            CHECK(result.first_gen_text == d);
+        }
+    }
 
     auto sc = model->SelfCheck(req);
     CHECK(sc.ok);

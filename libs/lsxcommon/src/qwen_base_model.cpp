@@ -4,6 +4,7 @@
 #include <arrow/ipc/reader.h>
 #include <absl/strings/ascii.h>
 #include <cctype>
+#include <chrono>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -90,6 +91,8 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
 
     std::vector<int32_t> out_ids;
     std::vector<float> final_logits;
+    std::chrono::steady_clock::time_point t_start =
+        std::chrono::steady_clock::now();
     auto run = [&]() -> cudaError_t {
         qwen::QwenGenerationResult gen;
         cudaError_t e = qwen::RunQwenGeneration(st, pw_, req.input_ids,
@@ -103,6 +106,8 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     };
 
     cudaError_t e = run();
+    std::chrono::steady_clock::time_point t_stop =
+        std::chrono::steady_clock::now();
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + r.error_msg;
         r.ok = false;
@@ -111,10 +116,44 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
         return r;
     }
 
+    // Decode the generated token stream to text (skips specials), matching the
+    // CLI contract that Infer() returns the model answer in output_text.
+    std::string output;
+    if (!out_ids.empty()) {
+        size_t cap = 4096;
+        output.resize(cap);
+        int32_t dr = lsxcommon::arrow_tokenizer_decode(
+            *tok_db_, out_ids.data(), out_ids.size(), output.data(), &cap);
+        if (dr == -2) {
+            output.resize(cap);
+            size_t cap2 = cap;
+            dr = lsxcommon::arrow_tokenizer_decode(
+                *tok_db_, out_ids.data(), out_ids.size(), output.data(), &cap2);
+            cap = cap2;
+        }
+        if (dr == 0) output.resize(cap);
+        else output.clear();
+    }
+
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(t_stop - t_start).count();
+    const int gen_count = static_cast<int>(out_ids.size());
     r.ok = true;
-    r.num_tokens = static_cast<int>(out_ids.size());
-    if (!out_ids.empty())
+    r.num_tokens = gen_count;
+    r.num_layers = static_cast<int>(pw_.layers.size());
+    r.total_time_ms = elapsed_ms;
+    r.ttft_ms = gen_count > 0 ? elapsed_ms / gen_count : 0.0;
+    r.tokens_per_sec =
+        elapsed_ms > 0.0 ? (static_cast<double>(gen_count) / elapsed_ms) * 1000.0
+                         : 0.0;
+    r.output_text = std::move(output);
+    if (!out_ids.empty()) {
         r.first_gen_tok_id = out_ids[0];
+        char buf[512];
+        size_t cap = sizeof(buf);
+        if (arrow_tokenizer_decode(*tok_db_, out_ids.data(), 1, buf, &cap) == 0)
+            r.first_gen_text.assign(buf, cap);
+    }
     if (st) cudaStreamDestroy(st);
     if (ch) cublasDestroy(ch);
     return r;

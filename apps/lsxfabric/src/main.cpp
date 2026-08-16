@@ -115,6 +115,14 @@ int main(int argc, char* argv[]) {
         auto result = model->Infer(req);
         if (!result.ok) {
             spdlog::error("Inference failed: {}", result.error_msg);
+        } else {
+            spdlog::info("=== --testprompt Results ===");
+            if (!result.output_text.empty())
+                spdlog::info("output   : {}", result.output_text);
+            spdlog::info("tokens   : {}", result.num_tokens);
+            spdlog::info("time     : {:0.1f} ms", result.total_time_ms);
+            spdlog::info("TTFT     : {:0.2f} ms", result.ttft_ms);
+            spdlog::info("tokens/s : {:0.1f}", result.tokens_per_sec);
         }
         model->Unload();
         lsxcommon::Core::Shutdown();
