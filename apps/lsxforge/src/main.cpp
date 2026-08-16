@@ -13,6 +13,8 @@
 #include <spdlog/spdlog.h>
 #include <string>
 #include <absl/container/flat_hash_map.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 
 namespace {
 
@@ -23,7 +25,9 @@ std::optional<int> parse_shared_expert_layer(const std::string &name)
         R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
-    return std::stoi(m[1]);
+    int layer = 0;
+    if (!absl::SimpleAtoi(m[1].str(), &layer)) return std::nullopt;
+    return layer;
 }
 
 std::optional<int> parse_shared_expert_weight_id(const std::string &name)
@@ -32,7 +36,9 @@ std::optional<int> parse_shared_expert_weight_id(const std::string &name)
         R"((?:model\.)?layers\.(\d+)\.ffn\.shared_experts\.w(\d)\.(weight|scale))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
-    return std::stoi(m[2]);
+    int wid = 0;
+    if (!absl::SimpleAtoi(m[2].str(), &wid)) return std::nullopt;
+    return wid;
 }
 
 bool parse_shared_expert_is_scale(const std::string &name)
@@ -56,7 +62,7 @@ arrow::Status RunSharedOnly(const std::string &model_path)
 
     absl::flat_hash_map<int, lsxcommon::ExpertData> shared_by_layer;
     for (int l = 0; l < 128; ++l) {
-        auto fn = "layer_" + std::to_string(l) + ".arrow";
+        auto fn = absl::StrCat("layer_", l, ".arrow");
         auto path = pinned_dir / fn;
         if (!fs::exists(path)) {
             if (l > 0) break;

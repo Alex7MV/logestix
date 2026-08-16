@@ -75,6 +75,52 @@ Arrow's xsimd sub-dependency requires `CMAKE_POLICY_VERSION_MINIMUM=3.5`; the
 variable is now applied automatically through `CMakePresets.json` — no manual
 `$env:CMAKE_POLICY_VERSION_MINIMUM` needed.
 
+### Windows — расположение тулчейна (VS 2026, MSVC 14.51, CUDA 13.3)
+
+`cmake`/`ctest`/`ninja` НЕ в PATH — их поставляет Visual Studio 2026
+(`18\Community`), CUDA Toolkit 13.3 лежит отдельно. Кэш сборки — `build\`
+уже сконфигурирован (пресет `windows-debug`, `WIN32` generator). Точные пути
+(актуально для этой машины; проверил в 2026-08):
+
+- CMake 4.3: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"`
+- CTest: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"`
+- Ninja: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"`
+- MSVC `cl.exe` (Hostx64): `"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe"`
+- NVCC 13.3: `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe"`
+  (в PATH уже есть; CMake находит через `find_package(CUDAToolkit)`)
+
+PowerShell-вызовы (без добавления в PATH):
+
+```powershell
+$cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+& $cmake --build build --config Debug --target <target>
+$cmake --preset windows-debug && $cmake --build --preset windows-debug
+```
+
+Если VS обновится (новый `MSVC\<ver>`), сверь номер каталога `14.51.36231`
+через `Get-ChildItem "$vs\VC\Tools\MSVC"`. Альтернативный CMake 4.2.3 в
+системе НЕ установлен — используется только встроенный в VS 4.3.
+
+## Resources (host)
+
+Политика расхода ресурсов хост-машины. Показатели относятся к **Windows**
+dev box (машина со свежим тулчейном даёт ещё меньшую загрузку):
+
+- Средняя утилизация CPU при сборках и работе инструментов ≈ **10%**.
+  Процессорное время экономить НЕ нужно: параллельность не ограничивать,
+  отдельные треды/ядра не сдерживать.
+- RAM занята примерно на **35%**. Память тоже экономить НЕ нужно — никаких
+  ухищрений по снижению потребления в обычном инструментальном коде.
+- Под **Linux** (Ubuntu 26.04 dev box) ничего экономить не нужно вообще:
+  загрузка там ещё ниже, чем под Windows, поэтому ограничений дополнительных
+  не вводить — обычные правила (подробности выше) не трактовать жёстче.
+
+ИСКЛЮЧЕНИЕ (оба OS-профиля): когда запускается **инференс** или **тесты
+инференса** (`--selfcheck`, `--testmodel`, `--testprompt`, infer-тесты,
+CUDA-ядра на реальных весах), потребление памяти и GPU-ресурсов считается
+критичным: не запускать параллельные тяжёлые нагрузки, следить за VRAM/RAM
+и освобождать модели по завершении. Работающие инференсы не дублировать.
+
 ## Test
 
 `BUILD_TESTING=ON` is included in every preset.

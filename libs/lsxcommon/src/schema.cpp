@@ -7,6 +7,10 @@
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
 #include <spdlog/spdlog.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -19,6 +23,7 @@ namespace lsxcommon {
 // that out-of-bounds vector reads (e.g., uint4 loads in CUDA kernels) stay within
 // the allocation. The `raw_values()` pointer from UInt8Array is at least 64-byte aligned.
 
+// float <-> E4M3_P2 scalar conversion (used by the per-block E4M3 quantizer).
 uint8_t float_to_e4m3_p2(float s)
 {
     if (s == 0.0f) return 0;
@@ -574,33 +579,24 @@ PinnedSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
     return tensors;
 }
 
-// ── File I/O helpers ────────────────────────────────────────────────────────
-
 // ── Tokenizer schemas ───────────────────────────────────────────────────────
 
 namespace {
 
 std::string SerializeByteToTokenId(const std::array<int32_t, 256> &b)
 {
-    std::string s;
-    s.reserve(256 * 8);
-    for (int i = 0; i < 256; ++i) {
-        if (i) s.push_back(',');
-        s += std::to_string(b[static_cast<size_t>(i)]);
-    }
-    return s;
+    return absl::StrJoin(b, ",");
 }
 
 std::array<int32_t, 256> DeserializeByteToTokenId(const std::string &s)
 {
     std::array<int32_t, 256> out{};
-    const char *p = s.c_str();
-    for (int i = 0; i < 256; ++i) {
-        char *end = nullptr;
-        long v = std::strtol(p, &end, 10);
-        out[static_cast<size_t>(i)] = static_cast<int32_t>(v);
-        p = end;
-        if (i < 255 && *p == ',') ++p;
+    size_t i = 0;
+    for (absl::string_view part : absl::StrSplit(s, ',')) {
+        int32_t v = 0;
+        if (!absl::SimpleAtoi(part, &v)) break;
+        if (i >= out.size()) break;
+        out[i++] = v;
     }
     return out;
 }
@@ -612,10 +608,10 @@ std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMe
     auto kv = arrow::KeyValueMetadata::Make({
         "bos_id", "eos_id", "pad_id", "vocab_size", "byte_to_token_id"
     }, {
-        std::to_string(meta.bos_id),
-        std::to_string(meta.eos_id),
-        std::to_string(meta.pad_id),
-        std::to_string(meta.vocab_size),
+        absl::StrCat(meta.bos_id),
+        absl::StrCat(meta.eos_id),
+        absl::StrCat(meta.pad_id),
+        absl::StrCat(meta.vocab_size),
         SerializeByteToTokenId(meta.byte_to_token_id)
     });
     return arrow::schema({
@@ -682,7 +678,7 @@ TokenizerVocabSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &bat
 
 std::shared_ptr<arrow::Schema> TokenizerMergesSchema::Make(int32_t merge_count)
 {
-    auto kv = arrow::KeyValueMetadata::Make({"merge_count"}, {std::to_string(merge_count)});
+    auto kv = arrow::KeyValueMetadata::Make({"merge_count"}, {absl::StrCat(merge_count)});
     return arrow::schema({
         arrow::field("merge_left", arrow::int32()),
         arrow::field("merge_right", arrow::int32()),
@@ -746,6 +742,8 @@ TokenizerMergesSchema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &ba
     }
     return rows;
 }
+
+// ── File I/O helpers ────────────────────────────────────────────────────────
 
 arrow::Status WriteRecordBatchToFile(
     const std::shared_ptr<arrow::RecordBatch> &batch,

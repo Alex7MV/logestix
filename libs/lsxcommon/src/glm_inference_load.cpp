@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <absl/strings/str_cat.h>
 
 namespace lsxcommon {
 namespace glm {
@@ -409,7 +410,7 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
             std::find(layer_filter->begin(), layer_filter->end(), l) ==
                 layer_filter->end())
             continue;
-        auto fn = "layer_" + std::to_string(l) + ".arrow";
+        auto fn = absl::StrCat("layer_", l, ".arrow");
         auto layer_path = pinned_dir / fn;
         if (!fs::exists(layer_path)) continue;
         auto tensors_res = LoadArrowFile(layer_path.string());
@@ -572,8 +573,8 @@ GlmExpertDb load_glm_expert_index(const std::string &model_path,
         for (int exp = 0; exp < experts_per_layer; ++exp) {
             size_t idx = static_cast<size_t>(layer) * experts_per_layer
                        + static_cast<size_t>(exp);
-            db.paths[idx] = (exp_dir / ("layer_" + std::to_string(layer)) /
-                             ("exp_" + std::to_string(exp) + ".arrow")).string();
+            db.paths[idx] = (exp_dir / absl::StrCat("layer_", layer) /
+                             absl::StrCat("exp_", exp, ".arrow")).string();
         }
     }
 
@@ -687,11 +688,11 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
             std::find(layer_filter->begin(), layer_filter->end(), l) ==
                 layer_filter->end())
             continue;
-        auto layer_dir = exp_dir / ("layer_" + std::to_string(l));
+        auto layer_dir = exp_dir / absl::StrCat("layer_", l);
         if (!fs::is_directory(layer_dir)) continue;
         auto &tab = experts.tables[static_cast<size_t>(l)];
         for (int e = 0; e < max_experts; ++e) {
-            auto p = layer_dir / ("exp_" + std::to_string(e) + ".arrow");
+            auto p = layer_dir / absl::StrCat("exp_", e, ".arrow");
             if (!fs::exists(p)) continue;
             auto batch_res = ReadRecordBatchFromFile(p);
             if (!batch_res.ok()) continue;
@@ -719,8 +720,8 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
                     &b.d_w3_packed, &b.d_w3_scales, &b.w3_global_scale,
                     &b.w3_packed_bytes, &b.w3_scale_bytes, stream);
             if (err != cudaSuccess) {
-                log::error("[glm_load] expert upload failed: layer " +
-                           std::to_string(l) + " exp " + std::to_string(e));
+                log::error(absl::StrCat("[glm_load] expert upload failed: layer ", l,
+                            " exp ", e));
                 FreeExpertBlock(b);  // slot stays inactive
                 continue;
             }

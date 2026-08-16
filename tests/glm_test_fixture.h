@@ -9,6 +9,8 @@
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/writer.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -97,18 +99,12 @@ inline void WriteSafetensors(const std::filesystem::path &dir,
     int64_t data_pos = 0;
     std::vector<std::pair<int64_t, int64_t>> offsets;  // begin,end of each tensor
     for (const auto &t : tensors) {
-        std::string shape_s = "[";
-        for (size_t i = 0; i < t.shape.size(); ++i) {
-            if (i) shape_s += ",";
-            shape_s += std::to_string(t.shape[i]);
-        }
-        shape_s += "]";
+        std::string shape_s = absl::StrCat("[", absl::StrJoin(t.shape, ","), "]");
         int64_t begin = data_pos;
         int64_t end = data_pos + static_cast<int64_t>(t.data.size());
-        header += ",\"" + t.name + "\":{\"dtype\":\"" + t.dtype +
-                  "\",\"shape\":" + shape_s +
-                  ",\"data_offsets\":[" + std::to_string(begin) + "," +
-                  std::to_string(end) + "]}";
+        absl::StrAppend(&header, ",\"", t.name, "\":{\"dtype\":\"", t.dtype,
+                        "\",\"shape\":", shape_s, ",\"data_offsets\":[", begin,
+                        ",", end, "]}");
         data_pos = end;
         offsets.push_back({begin, end});
     }
@@ -170,7 +166,7 @@ inline std::vector<FakeTensor> BuildSyntheticModel()
     t.push_back({"model.layers.3.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
     // Routed experts
     for (int e = 0; e < 2; ++e) {
-        auto base = "model.layers.3.mlp.experts." + std::to_string(e) + ".";
+        auto base = absl::StrCat("model.layers.3.mlp.experts.", e, ".");
         t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
@@ -199,7 +195,7 @@ inline std::vector<FakeTensor> BuildSyntheticModel()
     t.push_back({"model.layers.6.mlp.gate.weight",    "BF16", {16, 16}, MakeBf16(256)});
     t.push_back({"model.layers.6.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
     for (int e = 0; e < 2; ++e) {
-        auto base = "model.layers.6.mlp.experts." + std::to_string(e) + ".";
+        auto base = absl::StrCat("model.layers.6.mlp.experts.", e, ".");
         t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
@@ -216,7 +212,7 @@ inline std::vector<FakeTensor> BuildSyntheticModel()
     t.push_back({"model.layers.78.mlp.gate.weight", "BF16", {16, 16}, MakeBf16(256)});
     t.push_back({"model.layers.78.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
     for (int e = 0; e < 2; ++e) {
-        auto base = "model.layers.78.mlp.experts." + std::to_string(e) + ".";
+        auto base = absl::StrCat("model.layers.78.mlp.experts.", e, ".");
         t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
         t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
@@ -246,14 +242,14 @@ inline void WriteConfig(const std::filesystem::path &dir,
                         int num_layers = 79, int hidden = 16,
                         int vocab = 64, int experts = 2)
 {
-    std::string json =
-        "{\"model_type\":\"glm\"," 
-        "\"num_layers\":" + std::to_string(num_layers) + ","
-        "\"hidden_size\":" + std::to_string(hidden) + ","
-        "\"vocab_size\":" + std::to_string(vocab) + ","
-        "\"num_local_experts\":" + std::to_string(experts) + ","
-        "\"num_experts\":" + std::to_string(experts) +
-        "}";
+    std::string json = absl::StrCat(
+        "{\"model_type\":\"glm\",",
+        "\"num_layers\":", num_layers, ",",
+        "\"hidden_size\":", hidden, ",",
+        "\"vocab_size\":", vocab, ",",
+        "\"num_local_experts\":", experts, ",",
+        "\"num_experts\":", experts,
+        "}");
     std::ofstream f(dir / "config.json");
     f << json;
 }

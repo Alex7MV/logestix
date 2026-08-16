@@ -4,6 +4,7 @@
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
 #include <spdlog/spdlog.h>
+#include <absl/strings/str_cat.h>
 #include <cstring>
 
 #ifdef LSXCOMMON_HAS_CUDA
@@ -166,10 +167,10 @@ arrow::Status Loader::RegisterCudaPinned(LoadedExpert &expert)
         for (int b = 0; b < arr->num_buffers(); ++b) {
             auto buf = arr->data()->buffers[b];
             if (buf && buf->size() > 0) {
-                diag::LogBuffer(("RegisterCudaPinned col=" + std::to_string(i) +
-                                       " buf=" + std::to_string(b)).c_str(), *buf);
-                diag::ValidateCpuBuffer(*buf, ("RegisterCudaPinned col=" +
-                    std::to_string(i) + " buf=" + std::to_string(b)).c_str());
+                diag::LogBuffer(absl::StrCat("RegisterCudaPinned col=", i,
+                                       " buf=", b).c_str(), *buf);
+                diag::ValidateCpuBuffer(*buf, absl::StrCat("RegisterCudaPinned col=",
+                    i, " buf=", b).c_str());
                 cudaError_t e = reg(buf->mutable_data(), buf->size());
                 if (e != cudaSuccess) {
                     UnregisterCudaPinned(expert);
@@ -203,8 +204,8 @@ void Loader::UnregisterCudaPinned(LoadedExpert &expert)
         for (int b = 0; b < arr->num_buffers(); ++b) {
             auto buf = arr->data()->buffers[b];
             if (buf && buf->size() > 0) {
-                diag::LogBuffer(("UnregisterCudaPinned col=" + std::to_string(i) +
-                                       " buf=" + std::to_string(b)).c_str(), *buf);
+                diag::LogBuffer(absl::StrCat("UnregisterCudaPinned col=", i,
+                                       " buf=", b).c_str(), *buf);
                 cudaError_t e = cudaHostUnregister(buf->mutable_data());
                 if (e != cudaSuccess) {
                     spdlog::warn("cudaHostUnregister failed: {}",

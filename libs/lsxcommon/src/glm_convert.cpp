@@ -23,6 +23,8 @@
 #include <absl/container/btree_set.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 
 namespace lsxcommon {
 // Forward declaration (defined in converter.cpp). Kept out of converter.h so
@@ -48,8 +50,8 @@ std::optional<ParsedTensor> parse_routed(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::RoutedExpert;
-    p.layer = std::stoi(m[1]);
-    p.expert = std::stoi(m[2]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
+    absl::SimpleAtoi(m[2].str(), &p.expert);
     p.weight_id = (m[3] == "gate") ? 1 : (m[3] == "down") ? 2 : 3;
     p.base = m[3].str() + "_proj";
     return p;
@@ -64,7 +66,7 @@ std::optional<ParsedTensor> parse_shared(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::SharedExpert;
-    p.layer = std::stoi(m[1]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
     p.weight_id = (m[2] == "gate") ? 1 : (m[2] == "down") ? 2 : 3;
     p.base = m[2].str() + "_proj";
     return p;
@@ -79,7 +81,7 @@ std::optional<ParsedTensor> parse_router(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::Router;
-    p.layer = std::stoi(m[1]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
     p.base = (m[2] == "e_score_correction_bias") ? "e_score_correction_bias"
                                                  : "gate";
     return p;
@@ -92,7 +94,8 @@ std::optional<ParsedTensor> parse_dense(const std::string &name)
         R"(model\.layers\.(\d+)\.mlp\.(gate|down|up)_proj\.weight)");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
-    int layer = std::stoi(m[1]);
+    int layer = 0;
+    absl::SimpleAtoi(m[1].str(), &layer);
     if (layer > kDenseLayerMax) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::DenseMlp;
@@ -114,7 +117,7 @@ std::optional<ParsedTensor> parse_attention(const std::string &name)
     if (std::regex_match(name, m, re)) {
         ParsedTensor p;
         p.kind = TensorKind::Attention;
-        p.layer = std::stoi(m[1]);
+        absl::SimpleAtoi(m[1].str(), &p.layer);
         p.base = m[2].str();
         return p;
     }
@@ -137,7 +140,7 @@ std::optional<ParsedTensor> parse_indexer(const std::string &name)
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = TensorKind::Indexer;
-    p.layer = std::stoi(m[1]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
     p.base = m[2].str();
     return p;
 }
@@ -154,14 +157,14 @@ std::optional<ParsedTensor> parse_layer_norm(const std::string &name)
     if (std::regex_match(name, m, re)) {
         ParsedTensor p;
         p.kind = TensorKind::LayerNorm;
-        p.layer = std::stoi(m[1]);
+        absl::SimpleAtoi(m[1].str(), &p.layer);
         p.base = m[2].str();
         return p;
     }
     if (std::regex_match(name, m, re_shared_head)) {
         ParsedTensor p;
         p.kind = TensorKind::LayerNorm;
-        p.layer = std::stoi(m[1]);
+        absl::SimpleAtoi(m[1].str(), &p.layer);
         p.base = "shared_head.norm";
         return p;
     }
@@ -348,10 +351,10 @@ arrow::Status SaveGlmPinnedTensors(
 
     for (const auto &[layer, tens] : by_layer) {
         auto path = output_root / "pinned"
-            / ("layer_" + std::to_string(layer) + ".arrow");
+            / absl::StrCat("layer_", layer, ".arrow");
         ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(tens));
         diag::ValidateBatchBuffers(*batch,
-            ("SaveGlmPinnedTensors layer_" + std::to_string(layer)).c_str());
+            absl::StrCat("SaveGlmPinnedTensors layer_", layer).c_str());
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
     }
 
@@ -598,13 +601,13 @@ arrow::Status ConvertGlmModel(
         expected.push_back("lm_head.weight");
         expected.push_back("model.norm.weight");
         for (int l : dense_layers) {
-            std::string lb = "model.layers." + std::to_string(l) + ".";
+            std::string lb = absl::StrCat("model.layers.", l, ".");
             expected.push_back(lb + "mlp.gate_proj.weight");
             expected.push_back(lb + "mlp.up_proj.weight");
             expected.push_back(lb + "mlp.down_proj.weight");
         }
         for (int l : moe_layers) {
-            std::string lb = "model.layers." + std::to_string(l) + ".";
+            std::string lb = absl::StrCat("model.layers.", l, ".");
             expected.push_back(lb + "mlp.gate.weight");
             expected.push_back(lb + "mlp.gate.e_score_correction_bias");
             expected.push_back(lb + "mlp.shared_experts.gate_proj.weight");

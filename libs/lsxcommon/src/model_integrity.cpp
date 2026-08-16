@@ -30,7 +30,7 @@ arrow::Status round_trip_sample(
     if (n <= 0) {
         std::string msg = (n == 0)
             ? "encode returned 0 tokens"
-            : "encode failed with code " + std::to_string(n);
+            : absl::StrCat("encode failed with code ", n);
         return arrow::Status::Invalid("tokenizer round-trip: ", msg);
     }
 

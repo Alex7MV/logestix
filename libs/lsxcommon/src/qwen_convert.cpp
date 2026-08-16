@@ -17,6 +17,8 @@
 #include <absl/container/btree_map.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 
 namespace lsxcommon::qwen {
 
@@ -31,7 +33,7 @@ std::optional<ParsedTensor> match_layer(
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedTensor p;
     p.kind = kind;
-    p.layer = std::stoi(m[1]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
     return p;
 }
 
@@ -64,7 +66,7 @@ std::vector<std::string> generate_qwen_expected_names(const QwenTopology &top)
 
     // Per layer.
     for (int l = 0; l < top.num_layers; ++l) {
-        std::string base = "model.language_model.layers." + std::to_string(l) + ".";
+        std::string base = absl::StrCat("model.language_model.layers.", l, ".");
 
         // Common to both linear and full attention.
         expected.push_back(base + "input_layernorm.weight");
@@ -572,13 +574,13 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     for (auto &[layer, recs] : nvfp4_by_layer) {
         auto batch = DenseNvfp4Schema::MakeBatch(recs);
         if (!batch.ok()) return batch.status();
-        auto fname = "layer_" + std::to_string(layer) + "_nvfp4.arrow";
+        auto fname = absl::StrCat("layer_", layer, "_nvfp4.arrow");
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(*batch, pinned_dir / fname));
     }
     for (auto &[layer, recs] : raw_by_layer) {
         auto batch = PinnedSchema::MakeBatch(recs);
         if (!batch.ok()) return batch.status();
-        auto fname = "layer_" + std::to_string(layer) + ".arrow";
+        auto fname = absl::StrCat("layer_", layer, ".arrow");
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(*batch, pinned_dir / fname));
     }
 

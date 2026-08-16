@@ -8,6 +8,8 @@
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/writer.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -123,18 +125,12 @@ inline void WriteSafetensors(const std::filesystem::path &dir,
     int64_t data_pos = 0;
     std::vector<std::pair<int64_t, int64_t>> offsets;
     for (const auto &t : tensors) {
-        std::string shape_s = "[";
-        for (size_t i = 0; i < t.shape.size(); ++i) {
-            if (i) shape_s += ",";
-            shape_s += std::to_string(t.shape[i]);
-        }
-        shape_s += "]";
+        std::string shape_s = absl::StrCat("[", absl::StrJoin(t.shape, ","), "]");
         int64_t begin = data_pos;
         int64_t end = data_pos + static_cast<int64_t>(t.data.size());
-        header += ",\"" + t.name + "\":{\"dtype\":\"" + t.dtype +
-                  "\",\"shape\":" + shape_s +
-                  ",\"data_offsets\":[" + std::to_string(begin) + "," +
-                  std::to_string(end) + "]}";
+        absl::StrAppend(&header, ",\"", t.name, "\":{\"dtype\":\"", t.dtype,
+                        "\",\"shape\":", shape_s, ",\"data_offsets\":[", begin,
+                        ",", end, "]}");
         data_pos = end;
         offsets.push_back({begin, end});
     }

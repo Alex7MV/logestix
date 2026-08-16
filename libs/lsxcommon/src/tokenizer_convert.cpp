@@ -11,6 +11,7 @@
 #include <string>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
+#include <absl/strings/str_cat.h>
 #include <vector>
 
 namespace lsxcommon {
@@ -277,7 +278,7 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
     for (int32_t id = 0; id < vocab_size; ++id) {
         auto it = id_to_key.find(id);
         if (it == id_to_key.end())
-            return arrow::Status::Invalid("tokenizer: missing vocab id ", std::to_string(id));
+            return arrow::Status::Invalid(absl::StrCat("tokenizer: missing vocab id ", id));
         auto &row = vocab_rows[static_cast<size_t>(id)];
         row.token_id = id;
 

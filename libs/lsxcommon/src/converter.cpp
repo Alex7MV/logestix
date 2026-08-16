@@ -15,6 +15,9 @@
 #include <regex>
 #include <absl/container/btree_map.h>
 #include <absl/container/flat_hash_map.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 #include <filesystem>
 
 namespace lsxcommon {
@@ -37,12 +40,12 @@ int64_t dtype_size(const std::string &dtype)
 std::string format_size(int64_t bytes)
 {
     if (bytes >= 1024LL * 1024 * 1024)
-        return std::to_string(bytes / (1024 * 1024 * 1024)) + " GiB";
+        return absl::StrCat(bytes / (1024 * 1024 * 1024), " GiB");
     if (bytes >= 1024 * 1024)
-        return std::to_string(bytes / (1024 * 1024)) + " MiB";
+        return absl::StrCat(bytes / (1024 * 1024), " MiB");
     if (bytes >= 1024)
-        return std::to_string(bytes / 1024) + " KiB";
-    return std::to_string(bytes) + " B";
+        return absl::StrCat(bytes / 1024, " KiB");
+    return absl::StrCat(bytes, " B");
 }
 
 // ── Expert name parsing ──────────────────────────────────────────────────────
@@ -76,9 +79,9 @@ std::optional<ParsedName> parse_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    p.layer     = std::stoi(m[1]);
-    p.expert    = std::stoi(m[2]);
-    p.weight_id = std::stoi(m[3]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
+    absl::SimpleAtoi(m[2].str(), &p.expert);
+    absl::SimpleAtoi(m[3].str(), &p.weight_id);
     p.is_scale  = (m[4] == "scale");
     return p;
 }
@@ -91,9 +94,9 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedName p;
-    p.layer     = std::stoi(m[1]);
+    absl::SimpleAtoi(m[1].str(), &p.layer);
     p.expert    = 0;
-    p.weight_id = std::stoi(m[2]);
+    absl::SimpleAtoi(m[2].str(), &p.weight_id);
     p.is_scale  = (m[3] == "scale");
     return p;
 }
@@ -142,12 +145,7 @@ void print_shard(const SafetensorsModel::Shard &shard)
 {
     spdlog::info("--- {} ({}) ---", shard.filename, format_size(shard.file_size));
     for (auto &t : shard.tensors) {
-        std::string shape_str = "[";
-        for (size_t i = 0; i < t.shape.size(); ++i) {
-            if (i > 0) shape_str += ", ";
-            shape_str += std::to_string(t.shape[i]);
-        }
-        shape_str += "]";
+        std::string shape_str = absl::StrCat("[", absl::StrJoin(t.shape, ", "), "]");
 
         spdlog::info("  {} {:<50} {:<8} {:<24} {}",
             is_staged_tensor(t.name) ? "[S]" : "[P]",
@@ -220,7 +218,8 @@ void print_model(const SafetensorsModel &model)
             if (t.name.rfind("layers.", 0) == 0) {
                 auto dot = t.name.find('.', 7);
                 if (dot != std::string::npos) {
-                    layer_num = std::stoi(t.name.substr(7, dot - 7));
+                    const std::string lv = t.name.substr(7, dot - 7);
+                    if (!absl::SimpleAtoi(lv, &layer_num)) layer_num = -1;
                     total_layers = std::max(total_layers, layer_num + 1);
                 }
             }
@@ -594,11 +593,11 @@ arrow::Status SaveExpertToArrow(
     namespace fs = std::filesystem;
 
     auto layer_dir = output_root /
-        "experts" / ("layer_" + std::to_string(layer_idx));
+        "experts" / absl::StrCat("layer_", layer_idx);
     fs::create_directories(layer_dir);
 
     auto out_path = layer_dir /
-        ("exp_" + std::to_string(expert_idx) + ".arrow");
+        absl::StrCat("exp_", expert_idx, ".arrow");
 
     ARROW_ASSIGN_OR_RAISE(auto batch, ExpertSchema::MakeBatch(expert));
     diag::ValidateBatchBuffers(*batch, "SaveExpertToArrow pre-write");

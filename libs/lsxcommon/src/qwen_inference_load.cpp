@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 
 namespace lsxcommon::qwen {
 
@@ -348,7 +350,9 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
         for (auto &entry : fs::directory_iterator(pinned_dir)) {
             auto fn = entry.path().filename().string();
             if (fn.rfind("layer_", 0) == 0 && fn.find("_nvfp4") == std::string::npos) {
-                int l = std::atoi(fn.c_str() + 6);
+                int l = 0;
+                const std::string layer_str = fn.substr(6, fn.find('.') - 6);
+                if (!absl::SimpleAtoi(layer_str, &l)) continue;
                 num_layers = std::max(num_layers, l + 1);
             }
         }
@@ -356,8 +360,8 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
 
     pw.layers.resize(static_cast<size_t>(num_layers));
     for (int l = 0; l < num_layers; ++l) {
-        std::string raw_name = "layer_" + std::to_string(l) + ".arrow";
-        std::string nv_name  = "layer_" + std::to_string(l) + "_nvfp4.arrow";
+        std::string raw_name = absl::StrCat("layer_", l, ".arrow");
+        std::string nv_name  = absl::StrCat("layer_", l, "_nvfp4.arrow");
         if (!fs::exists(pinned_dir / raw_name)) continue;
 
         auto raw = LoadRawFile((pinned_dir / raw_name).string());

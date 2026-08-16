@@ -6,6 +6,7 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include "lsxcommon/schema.h"
+#include <absl/strings/str_cat.h>
 #include <cmath>
 
 namespace lsxfabric {
@@ -319,7 +320,7 @@ ValidationResult RunValidator(const std::string &model_path)
     } else {
         for (int layer = 0; layer < info.num_layers; ++layer) {
             auto exp_path = fs::path(model_path)
-                / ("experts/layer_" + std::to_string(layer))
+                / absl::StrCat("experts/layer_", layer)
                 / "exp_000.arrow";
             if (!fs::exists(exp_path)) {
                 spdlog::warn("  Expert not found: {}", exp_path.string());

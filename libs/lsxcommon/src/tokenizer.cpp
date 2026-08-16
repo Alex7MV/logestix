@@ -2,6 +2,8 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/pretokenizer.h"
 #include <arrow/ipc/reader.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_split.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -91,11 +93,10 @@ arrow::Status load_tokenizer_metadata(
         if (!meta) return arrow::Status::Invalid("tokenizer: vocab schema has no metadata");
         auto get_i32 = [&](const char *key, int32_t &out) -> arrow::Status {
             ARROW_ASSIGN_OR_RAISE(auto s, meta->Get(key));
-            char *end = nullptr;
-            long v = std::strtol(s.c_str(), &end, 10);
-            if (end == s.c_str())
+            int32_t v = 0;
+            if (!absl::SimpleAtoi(s, &v))
                 return arrow::Status::Invalid("tokenizer: bad metadata ", key);
-            out = static_cast<int32_t>(v);
+            out = v;
             return arrow::Status::OK();
         };
         ARROW_RETURN_NOT_OK(get_i32("bos_id", db.bos_id));
@@ -108,16 +109,17 @@ arrow::Status load_tokenizer_metadata(
         // byte_to_token_id (256 comma-separated ints)
         {
             ARROW_ASSIGN_OR_RAISE(auto btt, meta->Get("byte_to_token_id"));
-            const char *p = btt.c_str();
-            for (int i = 0; i < 256; ++i) {
-                char *end = nullptr;
-                long v = std::strtol(p, &end, 10);
-                if (end == p)
+            size_t i = 0;
+            for (absl::string_view part : absl::StrSplit(btt, ',')) {
+                if (i >= 256) break;
+                int32_t v = 0;
+                if (!absl::SimpleAtoi(part, &v))
                     return arrow::Status::Invalid("tokenizer: bad byte_to_token_id metadata");
-                db.byte_to_token_id[i] = static_cast<int32_t>(v);
-                p = end;
-                if (i < 255 && *p == ',') ++p;
+                db.byte_to_token_id[i] = v;
+                ++i;
             }
+            if (i != 256)
+                return arrow::Status::Invalid("tokenizer: bad byte_to_token_id metadata");
         }
 
         // ---- merges file ----
@@ -162,9 +164,8 @@ arrow::Status load_tokenizer_metadata(
         if (!m_meta) return arrow::Status::Invalid("tokenizer: merges schema has no metadata");
         {
             ARROW_ASSIGN_OR_RAISE(auto s, m_meta->Get("merge_count"));
-            char *end = nullptr;
-            long v = std::strtol(s.c_str(), &end, 10);
-            if (end == s.c_str() || v != mn)
+            int32_t mc = 0;
+            if (!absl::SimpleAtoi(s, &mc) || mc != mn)
                 return arrow::Status::Invalid("tokenizer: merge_count metadata != row count");
         }
 
