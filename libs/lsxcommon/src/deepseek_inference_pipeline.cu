@@ -23,23 +23,9 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__, const uint8_t* __restrict__, float,
     __half* __restrict__, int);
 
-//------------------------------------------------------------------------------
-// Half ↔ float helpers — bridge between the half-native pipeline and the
-// float-based rmsnorm_float kernel.
-//------------------------------------------------------------------------------
-static __global__ void half_to_float_kernel(
-    const __half* __restrict__ src, float* __restrict__ dst, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) dst[i] = __half2float(src[i]);
-}
-
-static __global__ void float_to_half_kernel(
-    const float* __restrict__ src, __half* __restrict__ dst, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) dst[i] = __float2half(src[i]);
-}
+// half_to_float_kernel / float_to_half_kernel are defined once in
+// deepseek_inference_load.cuh (included above) and shared by every .cu
+// file in this pipeline — see that header for why.
 
 // float → half conversion kernel (extern — also defined in deepseek_inference_moe.cu)
 __global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
@@ -116,10 +102,6 @@ cudaError_t run_routed_experts(
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes);
-
-// From deepseek_inference_moe.cu — float→half kernel
-extern __global__ void float_to_half_kernel(const float* __restrict__ src,
-                                             __half* __restrict__ dst, int n);
 
 // run_mla_attention is declared in deepseek_inference_load.cuh (included
 // above) — that header's signature now matches the real definition in
@@ -824,11 +806,7 @@ InferenceResult RunSelfCheckModel(
         return r;
     }
     if (r.first_gen_tok_id >= 0) {
-        std::string t = r.first_gen_text;
-        auto b = t.begin(), e = t.end();
-        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
-        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
-        r.selfcheck_passed = (std::string(b, e) == "Paris");
+        r.selfcheck_passed = (TrimAsciiWhitespace(r.first_gen_text) == "Paris");
     }
     log::info("[selfcheck] top1_tok=" + std::to_string(r.first_gen_tok_id)
               + " text='" + r.first_gen_text + "' passed="

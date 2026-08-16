@@ -407,6 +407,8 @@ void ensure_expert_resident(ExpertDb &db, int layer, int expert,
 
     if (db.entries[idx].host_w1) {
         // Already resident — touch it (move to front of LRU).
+        // PERF NOTE: O(lru.size()) linear scan — see the identical tradeoff
+        // documented on GLM's ensure_glm_expert_resident (glm_inference_load.cpp).
         for (auto it = db.lru.begin(); it != db.lru.end(); ++it) {
             if (*it == idx) {
                 db.lru.erase(it);

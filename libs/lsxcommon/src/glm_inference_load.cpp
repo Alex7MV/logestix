@@ -25,6 +25,24 @@ namespace {
 // large tensors, then one async H2D copy. Manual bit path (no __bfloat162float
 // host/device ambiguity under MSVC):
 //   bf16 = top 16 bits of fp32 → reconstruct fp32 → round to fp16.
+//
+// PERF NOTE (deliberately not "fixed" further): this scalar loop is not
+// SIMD-vectorized, and `h_half` is plain (pageable) host memory rather than
+// pinned — so cudaMemcpyAsync() below is synchronous in practice for a
+// pageable source (the CUDA driver copies out of pageable memory before
+// returning control to the host, which is exactly why it's safe for
+// `h_half` to go out of scope right after this call returns with no
+// explicit stream sync here). Both are real, measurable one-time
+// model-load costs, not correctness issues. They are intentionally left
+// as-is rather than hand-rolling AVX2/F16C intrinsics: this codebase's
+// generic `linux-debug`/`linux-release` presets compile WITHOUT `-march`
+// (see AGENTS.md), so unconditional F16C intrinsics would either fail to
+// compile or (with a runtime feature-detection fallback) add complexity
+// that can't be verified against a real GLM checkpoint in this
+// environment. Switching `h_half` to pinned memory would need a
+// corresponding explicit stream sync before free (today's implicit
+// pageable-copy safety would be lost) — left as a follow-up with real
+// hardware benchmarking, not attempted blind.
 cudaError_t UploadBf16ToHalf(const uint8_t *src_bytes, int64_t numel,
                              __half **d_out, cudaStream_t stream)
 {
@@ -580,6 +598,12 @@ void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert,
 
     if (db.entries[idx].host_w1) {
         // Already resident — touch it (move to front of LRU).
+        // PERF NOTE: O(lru.size()) linear scan, up to O(max_open)=7000 in the
+        // worst case. Not upgraded to an O(1) index (e.g. an auxiliary
+        // idx->position map) because a single generation touches at most
+        // num_layers * kGlmMoETopK distinct experts (a small fraction of
+        // max_open in practice) — the added map-maintenance complexity
+        // isn't justified without a profiled hot path showing otherwise.
         for (auto it = db.lru.begin(); it != db.lru.end(); ++it) {
             if (*it == idx) {
                 db.lru.erase(it);

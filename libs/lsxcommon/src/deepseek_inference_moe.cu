@@ -167,23 +167,9 @@ __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
     d_buf[i] *= scalar;
 }
 
-// Convert float buffer → half buffer
-__global__ void float_to_half_kernel(const float* __restrict__ src,
-                                      __half* __restrict__ dst, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __float2half(src[i]);
-}
-
-// Convert half buffer → float buffer
-__global__ void half_to_float_kernel(const __half* __restrict__ src,
-                                     float* __restrict__ dst, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __half2float(src[i]);
-}
+// float_to_half_kernel / half_to_float_kernel are defined once in
+// deepseek_inference_load.cuh (included above) and shared across this
+// pipeline's .cu files.
 
 // SwiGLU with swiglu_limit: gate clamped to (-inf, limit], up to [-limit, limit].
 // d_gate_vec = silu(clamp(d_gate_vec, max=limit)) * clamp(d_up_vec, +/-limit)
@@ -452,13 +438,13 @@ cudaError_t route_token(
     int *h_top_indices, float *h_top_weights)
 {
     constexpr float kRouteScale = 1.5f;
-    constexpr int kMaxRouted = 256;  // fixed-size scores[]/sel[]/selected[] below
 
     // Defensive bounds: `scores`/`sel`/`selected` are fixed-size stack arrays
-    // sized for the model's known geometry (kNumRouted==256). A `num_routed`
+    // sized for the model's known geometry (kNumRouted, declared in
+    // deepseek_inference_load.cuh). A `num_routed`
     // larger than that would overflow them; a `topk` larger than the actual
     // candidate pool would leave `h_top_indices` slots unfilled further down.
-    if (num_routed <= 0 || num_routed > kMaxRouted)
+    if (num_routed <= 0 || num_routed > kNumRouted)
         return cudaErrorInvalidValue;
     if (topk > num_routed) topk = num_routed;
     if (topk <= 0) return cudaErrorInvalidValue;
@@ -488,14 +474,14 @@ cudaError_t route_token(
     cudaStreamSynchronize(stream);
 
     // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
-    float scores[kMaxRouted];
+    float scores[kNumRouted];
     for (int i = 0; i < num_routed; ++i) {
         float x = __half2float(reinterpret_cast<__half*>(h_logits)[i]);
         scores[i] = sqrtf(log1pf(expf(x)));
     }
 
     // Selection scores: biased (bias is null for hash layers)
-    float sel[kMaxRouted];
+    float sel[kNumRouted];
     for (int i = 0; i < num_routed; ++i)
         sel[i] = scores[i] + (h_gate_bias ? h_gate_bias[i] : 0.0f);
 
@@ -515,7 +501,7 @@ cudaError_t route_token(
         for (int k = 0; k < topk; ++k)
             h_top_indices[k] = static_cast<int>(h_tid2eid[base + k]);
     } else {
-        bool selected[kMaxRouted] = {false};
+        bool selected[kNumRouted] = {false};
         bool any_unfilled = false;
         for (int k = 0; k < topk; ++k) {
             float best_val = -FLT_MAX;

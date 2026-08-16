@@ -183,11 +183,8 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
         if (::lsxcommon::arrow_tokenizer_decode(
                 *tok_db_, single_tok.data(), single_tok.size(), buf, &cap) == 0)
             r.first_gen_text = std::string(buf, cap);
-        std::string t = r.first_gen_text;
-        auto b = t.begin(), e = t.end();
-        while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
-        while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
-        r.selfcheck_passed = (std::string(b, e) == "Paris");
+        r.selfcheck_passed =
+            (gpu::TrimAsciiWhitespace(r.first_gen_text) == "Paris");
     }
     spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
                  r.first_gen_tok_id, r.first_gen_text,

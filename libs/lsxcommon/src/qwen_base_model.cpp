@@ -166,10 +166,7 @@ gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
                                        buf, &cap) != 0)
                 continue;
             std::string t(buf, cap);
-            auto b = t.begin(), e = t.end();
-            while (b != e && std::isspace(static_cast<unsigned char>(*b))) ++b;
-            while (e != b && std::isspace(static_cast<unsigned char>(*(e - 1)))) --e;
-            r.first_gen_text = std::string(b, e);
+            r.first_gen_text = gpu::TrimAsciiWhitespace(t);
             if (r.first_gen_text == "Paris") {
                 r.selfcheck_passed = true;
                 break;

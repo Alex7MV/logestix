@@ -778,34 +778,49 @@ constexpr float kGlmAttnScale = 0.0625f;      // qk_head_dim^-0.5 = 256^-0.5
 constexpr float kGlmIndexScale = 0.0883883476f; // (unused: indexer is a no-op ≤ 1024 slots)
 
 // Interleaved RoPE (DeepSeek layout) applied to the rotary half of the q
-// matrix in place: q = [heads][256], rot slice [192, 256). Pair i of each
-// head is rotated by pos·θ^(-(2i)/192) — matches apply_rotary_pos_emb_interleave
-// with cos/sin from the head_dim=192 inv_freq table (first 32 pairs).
+// matrix in place: q = [heads][kGlmQkNope+kGlmQkRope], rot slice
+// [kGlmQkNope, kGlmQkNope+kGlmQkRope). Pair i of each head is rotated by
+// pos·θ^(-(2i)/kGlmQkNope) — matches apply_rotary_pos_emb_interleave with
+// cos/sin from the head_dim=kGlmQkNope inv_freq table (first kGlmQkRope/2
+// pairs).
+//
+// KNOWN BIT-EXACTNESS GAP: unlike the softmax path (GlmExpfGlibc) and rsqrt
+// path (GlmRsqrtfGlibc, glm_device_math.h), this kernel's powf/cosf/sinf are
+// raw CUDA math, not glibc-bit-exact replicas. Reproducing glibc's table-
+// based sincosf/powf bit-for-bit would be a substantial reverse-engineering
+// effort in its own right (glm_device_math.h's GlmExpfGlibc alone is ~60
+// lines replicating one glibc table), and — critically — it cannot be
+// verified here: doing so blind, without the reference CPU output + a
+// token-for-token diff harness against a real GLM-5.2 checkpoint, risks
+// introducing a subtly wrong "bit-exact" implementation that is worse than
+// today's honestly-approximate one. Left as a documented gap for whoever
+// has that reference harness available, rather than attempted speculatively.
 __global__ void GlmQropeKernel(__half *__restrict__ q, int pos, float theta,
                                int heads)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= heads * 32) return;
-    const int h = idx / 32;
-    const int i = idx % 32;
+    if (idx >= heads * (kGlmQkRope / 2)) return;
+    const int h = idx / (kGlmQkRope / 2);
+    const int i = idx % (kGlmQkRope / 2);
     const float angle = static_cast<float>(pos) *
-        powf(theta, -static_cast<float>(2 * i) / 192.0f);
+        powf(theta, -static_cast<float>(2 * i) / static_cast<float>(kGlmQkNope));
     const float c = cosf(angle);
     const float s = sinf(angle);
-    __half *qr = q + static_cast<size_t>(h) * 256 + 192 + 2 * i;
+    __half *qr = q + static_cast<size_t>(h) * (kGlmQkNope + kGlmQkRope)
+                    + kGlmQkNope + 2 * i;
     const float a = __half2float(qr[0]);
     const float b = __half2float(qr[1]);
     qr[0] = __float2half(a * c - b * s);
     qr[1] = __float2half(b * c + a * s);
 }
 
-// Same rotation for the contiguous [64] shared k_rot vector.
+// Same rotation for the contiguous [kGlmQkRope] shared k_rot vector.
 __global__ void GlmKropeKernel(__half *__restrict__ rot, int pos, float theta)
 {
     const int i = threadIdx.x;
-    if (i >= 32) return;
+    if (i >= kGlmQkRope / 2) return;
     const float angle = static_cast<float>(pos) *
-        powf(theta, -static_cast<float>(2 * i) / 192.0f);
+        powf(theta, -static_cast<float>(2 * i) / static_cast<float>(kGlmQkNope));
     const float c = cosf(angle);
     const float s = sinf(angle);
     const float a = __half2float(rot[2 * i]);
@@ -814,33 +829,35 @@ __global__ void GlmKropeKernel(__half *__restrict__ rot, int pos, float theta)
     rot[2 * i + 1] = __float2half(b * c + a * s);
 }
 
-// Expands kv_b_proj output into the per-layer K/V cache. kvb = [64][448] per
-// head (k_nope[192] | v[256]); krot[64] is the shared rotated k_rot. Writes
-// key[h] = [k_nope[h] | krot] and value[h] = v[h] into cache slot `pos`.
+// Expands kv_b_proj output into the per-layer K/V cache. kvb = [heads]
+// [kGlmQkNope+kGlmHeadV] per head (k_nope[kGlmQkNope] | v[kGlmHeadV]);
+// krot[kGlmQkRope] is the shared rotated k_rot. Writes key[h] =
+// [k_nope[h] | krot] and value[h] = v[h] into cache slot `pos`.
 __global__ void GlmMlaStoreKvKernel(const __half *__restrict__ kvb,
                                     const __half *__restrict__ krot,
                                     __half *__restrict__ k_cache,
                                     __half *__restrict__ v_cache,
                                     int slot, int cap, int heads)
 {
-    const int64_t total = static_cast<int64_t>(heads) * 256;
+    const int64_t total = static_cast<int64_t>(heads) * kGlmHeadV;
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
                       threadIdx.x;
     if (i >= total) return;
-    const int h = static_cast<int>(i / 256);
-    const int d = static_cast<int>(i % 256);
-    const __half *kr = kvb + static_cast<int64_t>(h) * 448;
-    const __half val = (d < 192) ? kr[d] : krot[d - 192];
-    const int64_t at = (static_cast<int64_t>(slot) * heads + h) * 256 + d;
+    const int h = static_cast<int>(i / kGlmHeadV);
+    const int d = static_cast<int>(i % kGlmHeadV);
+    const __half *kr = kvb + static_cast<int64_t>(h) * (kGlmQkNope + kGlmHeadV);
+    const __half val = (d < kGlmQkNope) ? kr[d] : krot[d - kGlmQkNope];
+    const int64_t at = (static_cast<int64_t>(slot) * heads + h) * kGlmHeadV + d;
     k_cache[at] = val;
-    v_cache[at] = kr[192 + d];
+    v_cache[at] = kr[kGlmQkNope + d];
 }
 
 // Causal MLA attention for one token over its layer's K/V cache (slots 0..T-1):
-//   out[h][d] = Σ_t softmax_t((q·k)·scale) · v[t][h][d],   scale = 256^-0.5
-// One block per head, 256 threads. Pass 1 block-reduces each key score (FP32),
-// pass 2 accumulates the weighted value projection per dimension. FP16 in/out,
-// FP32 math, single FP16 rounding at the end (like the eager attention path).
+//   out[h][d] = Σ_t softmax_t((q·k)·scale) · v[t][h][d],   scale = kGlmHeadV^-0.5
+// One block per head, kGlmHeadV threads. Pass 1 block-reduces each key score
+// (FP32), pass 2 accumulates the weighted value projection per dimension.
+// FP16 in/out, FP32 math, single FP16 rounding at the end (like the eager
+// attention path).
 __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
                                  const __half *__restrict__ k_cache,
                                  const __half *__restrict__ v_cache,
@@ -848,20 +865,20 @@ __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
                                  int cap, int T, int heads, float scale)
 {
     const int h = blockIdx.x;
-    __shared__ float s_q[256];
+    __shared__ float s_q[kGlmHeadV];
     __shared__ float s_red[8];
-    __shared__ float s_score[1024];
-    __shared__ float s_p[1024];
+    __shared__ float s_score[kGlmIndexMaxSlots];
+    __shared__ float s_p[kGlmIndexMaxSlots];
     __shared__ float s_lmax;
     __shared__ float s_psum;
-    if (threadIdx.x < 256)
-        s_q[threadIdx.x] = __half2float(q[h * 256 + threadIdx.x]);
+    if (threadIdx.x < kGlmHeadV)
+        s_q[threadIdx.x] = __half2float(q[h * kGlmHeadV + threadIdx.x]);
     __syncthreads();
 
     float lmax = -FLT_MAX;
     for (int t = 0; t < T; ++t) {
         const __half *kr =
-            k_cache + (static_cast<int64_t>(t) * heads + h) * 256;
+            k_cache + (static_cast<int64_t>(t) * heads + h) * kGlmHeadV;
         float v = s_q[threadIdx.x] * __half2float(kr[threadIdx.x]);
         for (int off = 16; off > 0; off >>= 1)
             v += __shfl_down_sync(0xffffffffu, v, off);
@@ -900,10 +917,10 @@ __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
     for (int t = 0; t < T; ++t) {
         const float p = s_p[t] / s_psum;
         acc += p * __half2float(
-                       v_cache[(static_cast<int64_t>(t) * heads + h) * 256 +
+                       v_cache[(static_cast<int64_t>(t) * heads + h) * kGlmHeadV +
                                threadIdx.x]);
     }
-    out[h * 256 + threadIdx.x] = __float2half(acc);
+    out[h * kGlmHeadV + threadIdx.x] = __float2half(acc);
 }
 
 // Silu SwiGLU (dense MLP): gate = silu(gate)·up, no clamp (matches the real
@@ -991,7 +1008,7 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
     const int64_t hidden = kGlmHidden;
     const int64_t dinter = kGlmDenseInter;
     const int64_t layers = kGlmNumLayers;
-    const int64_t heads256 = static_cast<int64_t>(kGlmNumHeads) * 256;
+    const int64_t heads256 = static_cast<int64_t>(kGlmNumHeads) * kGlmHeadV;
     const int64_t kv_bytes = layers * cap * heads256 * 2 * sizeof(__half);
 
     int64_t off = 0;
@@ -1008,7 +1025,7 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
     const int64_t o_q      = page(heads256 * sizeof(__half), 16);
     const int64_t o_kva    = page((kGlmKVLoraRank + kGlmQkRope) * sizeof(__half), 16);
     const int64_t o_kvp    = page(kGlmKVLoraRank * sizeof(__half), 16);
-    const int64_t o_kvb    = page(kGlmNumHeads * 448 * sizeof(__half), 16);
+    const int64_t o_kvb    = page(kGlmNumHeads * (kGlmQkNope + kGlmHeadV) * sizeof(__half), 16);
     const int64_t o_krot   = page(kGlmQkRope * sizeof(__half), 16);
     const int64_t o_attn   = page(heads256 * sizeof(__half), 16);
     const int64_t o_off    = page(hidden * sizeof(__half), 16);
@@ -1085,9 +1102,9 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
     const GlmLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
     const int hidden = pw.hidden;
     const __half *dkv = c.d_kv_k_base +
-        static_cast<int64_t>(l) * c.kv_cap * 64 * 256;
+        static_cast<int64_t>(l) * c.kv_cap * kGlmNumHeads * kGlmHeadV;
     const __half *dvv = c.d_kv_v_base +
-        static_cast<int64_t>(l) * c.kv_cap * 64 * 256;
+        static_cast<int64_t>(l) * c.kv_cap * kGlmNumHeads * kGlmHeadV;
     cudaError_t e;
 
     // input_layernorm
@@ -1128,25 +1145,27 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
                     kGlmKVLoraRank, 1);
     if (e != cudaSuccess) return e;
 
-    // Interleaved RoPE on q[..., 192:256] and k_rot, then store K/V.
+    // Interleaved RoPE on q[..., kGlmQkNope:kGlmQkNope+kGlmQkRope] and
+    // k_rot, then store K/V.
     {
-        GlmQropeKernel<<<(64 * 32 + 255) / 256, 256, 0, c.st>>>(
+        GlmQropeKernel<<<(kGlmNumHeads * (kGlmQkRope / 2) + 255) / 256, 256, 0, c.st>>>(
             c.d_q, pos, kGlmRopeTheta, kGlmNumHeads);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
-    GlmKropeKernel<<<1, 32, 0, c.st>>>(c.d_krot, pos, kGlmRopeTheta);
+    GlmKropeKernel<<<1, kGlmQkRope / 2, 0, c.st>>>(c.d_krot, pos, kGlmRopeTheta);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    GlmMlaStoreKvKernel<<<64, 256, 0, c.st>>>(
-        c.d_kvb, c.d_krot, c.d_kv_k_base + static_cast<int64_t>(l) * c.kv_cap * 64 * 256,
-        c.d_kv_v_base + static_cast<int64_t>(l) * c.kv_cap * 64 * 256,
+    GlmMlaStoreKvKernel<<<kGlmNumHeads, kGlmHeadV, 0, c.st>>>(
+        c.d_kvb, c.d_krot,
+        c.d_kv_k_base + static_cast<int64_t>(l) * c.kv_cap * kGlmNumHeads * kGlmHeadV,
+        c.d_kv_v_base + static_cast<int64_t>(l) * c.kv_cap * kGlmNumHeads * kGlmHeadV,
         pos, c.kv_cap, kGlmNumHeads);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
 
     // Attention over slots 0..pos (causal).
-    GlmMlaAttnKernel<<<kGlmNumHeads, 256, 0, c.st>>>(
+    GlmMlaAttnKernel<<<kGlmNumHeads, kGlmHeadV, 0, c.st>>>(
         c.d_q, dkv, dvv, c.d_attn, c.kv_cap, pos + 1, kGlmNumHeads,
         kGlmAttnScale);
     e = cudaGetLastError();

@@ -572,9 +572,8 @@ static __global__ void dequant_f8_to_f32_kernel(
     }
 }
 
-// Forward declaration (defined later)
-__global__ void half_to_float_kernel(const __half* __restrict__ src, float* __restrict__ dst, int n);
-__global__ void float_to_half_kernel(const float* __restrict__ src, __half* __restrict__ dst, int n);
+// half_to_float_kernel / float_to_half_kernel come from
+// deepseek_inference_load.cuh (included above).
 
 // FP32×FP32→FP32 GEMM then convert → FP16 output
 static cudaError_t gemm_f32f32_f16(cublasHandle_t cublas_h, cudaStream_t stream,
@@ -626,19 +625,9 @@ static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
 }
 
 // ── RMSNorm bridge (half → float → rmsnorm_float → half) ─────────────────────
-__global__ void half_to_float_kernel(
-    const __half* __restrict__ src, float* __restrict__ dst, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) dst[i] = __half2float(src[i]);
-}
-
-__global__ void float_to_half_kernel(
-    const float* __restrict__ src, __half* __restrict__ dst, int n)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if (i < n) dst[i] = __float2half(src[i]);
-}
+// half_to_float_kernel / float_to_half_kernel are defined once in
+// deepseek_inference_load.cuh (included above) and shared across this
+// pipeline's .cu files.
 
 static cudaError_t run_rmsnorm_attn(
     cudaStream_t stream, const __half* d_input, const __half* d_weight,
@@ -703,6 +692,62 @@ cudaError_t run_expand_hc(cudaStream_t stream,
 }
 
 // ── Public: MLA forward (one token) ──────────────────────────────────────────
+// O-projection shared by MLA and CSA attention (identical math in both:
+// o[kAttnHeads,kHeadDim] -> view [kOGroups, gd]; per-group wo_a dequant +
+// FP32 GEMM -> olora; then wo_b @ olora -> the final [kHiddenDim] output).
+// wo_a.weight [8192,4096] row-major, groups are contiguous 1024-row blocks.
+// Previously hand-copied into run_csa_attention with its cudaGetLastError()/
+// cublasStatus_t checks silently dropped (an "error handling desync" between
+// the two copies) — extracting one checked implementation fixes that for
+// both call sites.
+static cudaError_t run_o_projection(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const LayerWeights &lw,
+    __half *d_o, __half *d_olora, __half *d_out,
+    float *d_dequant)
+{
+    int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
+    int block = 256;
+    int grid = static_cast<int>((n + block - 1) / block);
+    // Use FP32 dequant kernel via reinterpret_cast (data is same size in bytes)
+    dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
+        lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
+        lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return err;
+
+    // O-projection: FP32×FP32→FP32→FP16
+    const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+    for (int g = 0; g < kOGroups; ++g) {
+        // Convert FP16 d_o → FP32 (after weights in scratch)
+        float* d_o_f32 = d_dequant + n;
+        int g2 = (gd + block - 1) / block;
+        half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) return err;
+        // FP32×FP32→FP32 output, then convert → FP16
+        float* d_olora_f32 = d_o_f32 + gd;
+        cublasStatus_t st = cublasGemmEx(
+            cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+            kOloraRank, 1, gd, &alpha,
+            d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
+            d_o_f32, CUDA_R_32F, gd,
+            &beta, d_olora_f32, CUDA_R_32F, kOloraRank,
+            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+        int g3 = (kOloraRank + block - 1) / block;
+        clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
+        err = cudaGetLastError();
+        if (err != cudaSuccess) return err;
+    }
+
+    // out = wo_b @ olora → [kHiddenDim]
+    return f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
+                      lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
+}
+
 cudaError_t run_mla_attention(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const LayerWeights& lw,
@@ -791,46 +836,7 @@ cudaError_t run_mla_attention(
 
     // o-projection: o[64,512] → view [8,4096]; per-group wo_a[1024,4096] → [8,1024]
     // wo_a.weight [8192,4096] row-major, groups are contiguous 1024-row blocks.
-    {
-        int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
-        int block = 256;
-        int grid = static_cast<int>((n + block - 1) / block);
-        // Use FP32 dequant kernel via reinterpret_cast (data is same size in bytes)
-        dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
-            lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
-            lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) return err;
-
-        // O-projection: FP32×FP32→FP32→FP16
-        const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
-        for (int g = 0; g < kOGroups; ++g) {
-            // Convert FP16 d_o → FP32 (after weights in scratch)
-            float* d_o_f32 = d_dequant + n;
-            int g2 = (gd + block - 1) / block;
-            half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
-            err = cudaGetLastError();
-            if (err != cudaSuccess) return err;
-            // FP32×FP32→FP32 output, then convert → FP16
-            float* d_olora_f32 = d_o_f32 + gd;
-            cublasSetStream(cublas_h, stream);
-            float alpha = 1.0f, beta = 0.0f;
-            cublasStatus_t st = cublasGemmEx(
-                cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                kOloraRank, 1, gd, &alpha,
-                d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
-                d_o_f32, CUDA_R_32F, gd,
-                &beta, d_olora_f32, CUDA_R_32F, kOloraRank,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-            if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-            int g3 = (kOloraRank + block - 1) / block;
-            clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
-        }
-    }
-
-    // out = wo_b @ olora → [4096]
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
-                   lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
+    e = run_o_projection(cublas_h, stream, lw, d_o, d_olora, d_out, d_dequant);
     if (e != cudaSuccess) return e;
 
     return cudaSuccess;
@@ -1213,38 +1219,8 @@ cudaError_t run_csa_attention(
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 3);
     }
 
-    // ── O-projection (identical to MLA — FP32×FP32→FP32→FP16)
-    {
-        int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
-        int block = 256;
-        int grid = (int)((n + block - 1) / block);
-        dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
-            lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
-            lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
-    }
-    {
-        const int gd = (kAttnHeads / kOGroups) * kHeadDim;
-        int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
-        int block = 256;
-        float alpha = 1.0f, beta = 0.0f;
-        cublasSetStream(cublas_h, stream);
-        for (int g = 0; g < kOGroups; ++g) {
-            float* d_o_f32 = d_dequant + n;
-            int g2 = (gd + block - 1) / block;
-            half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
-            float* d_olora_f32 = d_o_f32 + gd;
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                kOloraRank, 1, gd, &alpha,
-                d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
-                d_o_f32, CUDA_R_32F, gd, &beta,
-                d_olora_f32, CUDA_R_32F, kOloraRank,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-            int g3 = (kOloraRank + block - 1) / block;
-            clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
-        }
-    }
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
-                   lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
+    // ── O-projection (identical to MLA — FP32×FP32→FP32→FP16) ────────────
+    e = run_o_projection(cublas_h, stream, lw, d_o, d_olora, d_out, d_dequant);
     return e;
 }
 

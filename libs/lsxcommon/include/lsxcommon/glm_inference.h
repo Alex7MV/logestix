@@ -15,9 +15,12 @@ namespace glm {
 // Forward pass over the heterogeneous Dense MLP layers 0-2 on ONE explicit
 // async stream. MoE routing, expert loading and indexer ("IndexShare")
 // attention logic are fully branched out for these layers: activations feed
-// the layer norms, then pure FP16 cuBLAS gate_proj -> up_proj -> swiglu ->
-// down_proj, residual-added per layer. hidden_size is hard-locked to
-// kGlmHidden (6144); intermediate is kGlmMoeIntermediate (2048).
+// the layer norms, then gate_proj -> up_proj -> swiglu -> down_proj via the
+// custom FP64-accumulate GlmGemmFp64Kernel (RunGemmFp64) — NOT cuBLAS;
+// `cublas_h` is threaded through for API-shape consistency with the other
+// Run*Stack entry points but is unused on this path (see the `(void)cublas_h`
+// in RunDenseMLPLayer) — residual-added per layer. hidden_size is
+// hard-locked to kGlmHidden (6144); intermediate is kGlmMoeIntermediate (2048).
 //
 //   d_act:    [seq, hidden] FP16 input
 //   d_alt:    [seq, hidden] FP16 ping-pong scratch
@@ -132,12 +135,14 @@ cudaError_t RunGlmRealRouter(
 // with hidden_size locked to kGlmHidden (6144), intermediate to
 // kGlmMoeIntermediate (2048). Weights are decoded inline from the packed E2M1
 // nibble / per-16 E4M3 block-scale / E8M0 global-modifier layout straight
-// into FP16 scratch and piped through cuBLAS FP16 GEMMs (CUBLAS_COMPUTE_32F,
-// matching the dense-MLP stack). Every kernel/enqueue runs on the caller's
-// explicit async stream; the ONLY synchronization is a single localized
-// cudaStreamSynchronize used to stage the tiny routing grid back to a pinned
-// host buffer so per-slot expert launches can be issued from the host. No
-// cudaDeviceSynchronize is ever invoked.
+// into FP16 scratch and piped through the same custom FP64-accumulate
+// GlmGemmFp64Kernel (RunGemmFp64) as the dense-MLP stack — NOT cuBLAS;
+// `cublas_h` is accepted for API-shape consistency but unused here. Every
+// kernel/enqueue runs on the caller's explicit async stream; the ONLY
+// synchronization is a single localized cudaStreamSynchronize used to stage
+// the tiny routing grid back to a pinned host buffer so per-slot expert
+// launches can be issued from the host. No cudaDeviceSynchronize is ever
+// invoked.
 //
 //   d_routing: [seq, kGlmMoETopK] 64-bit slot grid from RunGlmMoERouter.
 //   d_act:     [seq, kGlmHidden] FP16 input (RMS-normed activations).

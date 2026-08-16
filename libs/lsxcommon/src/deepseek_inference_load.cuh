@@ -117,6 +117,39 @@ inline int moe_route(int token_idx, int layer_idx, int experts_per_layer)
     return static_cast<int>(h % static_cast<unsigned>(experts_per_layer));
 }
 
+// Half <-> float elementwise conversion kernels shared by every stage of the
+// pipeline (attention, MoE FFNs, the top-level RMSNorm bridge). Previously
+// hand-copied with external (non-`static`) linkage into three separate .cu
+// files (deepseek_inference_pipeline.cu, deepseek_inference_moe.cu,
+// deepseek_inference_attn.cu) — defined once here (header-`static`, so each
+// TU that includes this file gets its own internal-linkage copy, the
+// standard pattern for sharing small __global__ kernels across CUDA
+// translation units without relocatable device code) to remove the
+// triplicated, driftable copies and a since-removed misleading `extern`
+// re-declaration in pipeline.cu that claimed (incorrectly) to resolve to
+// deepseek_inference_moe.cu's definition.
+//
+// Guarded by __CUDACC__: this header is also #included from model_factory.cpp
+// (a plain host .cpp compiled by cl.exe/g++, not nvcc) purely for its host-
+// only declarations (e.g. detect_model_type); threadIdx/blockIdx/blockDim
+// below are CUDA device-compile builtins that a non-CUDA host compiler does
+// not know about.
+#ifdef __CUDACC__
+static __global__ void half_to_float_kernel(
+    const __half* __restrict__ src, float* __restrict__ dst, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __half2float(src[i]);
+}
+
+static __global__ void float_to_half_kernel(
+    const float* __restrict__ src, __half* __restrict__ dst, int n)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[i] = __float2half(src[i]);
+}
+#endif  // __CUDACC__
+
 struct LayerWeights {
     __half *d_ffn_norm = nullptr;
     __half *d_gate_weight = nullptr;
