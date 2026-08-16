@@ -36,7 +36,7 @@ Files being **modified** (references only):
 - `libs/lsxcommon/src/inference_csa.cu` — include
 - `libs/lsxcommon/src/norm_kernels.cu` — include
 - `libs/lsxcommon/src/model_factory.cpp` — include
-- `libs/lsxcommon/src/testmodel_gpu.cu` — include
+- `libs/lsxcommon/src/benchmark_gpu.cu` — include
 - `tests/test_deepseek_moe.cu` — include
 - `AGENTS.md` — structure note at line 108
 
@@ -125,7 +125,7 @@ source list so the DeepSeek kernel entries use their new names. Replace:
 ```cmake
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
-    src/testmodel_gpu.cu
+    src/benchmark_gpu.cu
     src/inference_load.cu
     src/inference_norm.cu
     src/inference_moe.cu
@@ -143,7 +143,7 @@ with:
 ```cmake
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
-    src/testmodel_gpu.cu
+    src/benchmark_gpu.cu
     src/deepseek_inference_load.cu
     src/deepseek_inference_norm.cu
     src/deepseek_inference_moe.cu
@@ -268,7 +268,7 @@ Select-String -Path libs/lsxcommon/src/*.cu,libs/lsxcommon/src/*.cuh,libs/lsxcom
 ```
 
 Expected: no matches in the 6 files above (note: `model_factory.cpp` and
-`testmodel_gpu.cu` are updated in Task 4).
+`benchmark_gpu.cu` are updated in Task 4).
 
 - [ ] **Step 8: Commit**
 
@@ -283,7 +283,7 @@ git commit -m "refactor: update includes inside renamed DeepSeek kernel sources"
 
 **Files:**
 - Modify: `libs/lsxcommon/src/model_factory.cpp`
-- Modify: `libs/lsxcommon/src/testmodel_gpu.cu`
+- Modify: `libs/lsxcommon/src/benchmark_gpu.cu`
 - Modify: `tests/test_deepseek_moe.cu`
 
 - [ ] **Step 1: `model_factory.cpp`**
@@ -300,9 +300,9 @@ to:
 #include "deepseek_inference_load.cuh"
 ```
 
-- [ ] **Step 2: `testmodel_gpu.cu`**
+- [ ] **Step 2: `benchmark_gpu.cu`**
 
-In `libs/lsxcommon/src/testmodel_gpu.cu`, change line 4:
+In `libs/lsxcommon/src/benchmark_gpu.cu`, change line 4:
 
 ```
 #include "inference_load.cuh"
@@ -341,7 +341,7 @@ Expected: **no matches** (all renamed references resolved).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add libs/lsxcommon/src/model_factory.cpp libs/lsxcommon/src/testmodel_gpu.cu tests/test_deepseek_moe.cu
+git add libs/lsxcommon/src/model_factory.cpp libs/lsxcommon/src/benchmark_gpu.cu tests/test_deepseek_moe.cu
 git commit -m "refactor: update engine and test includes for deepseek_ kernel renames"
 ```
 
@@ -433,7 +433,7 @@ Otherwise skip this step (no commit needed).
 - Rename set (7 sources + `inference_load.cuh` + `norm_kernels.cu` + 2 headers) → Tasks 1.
 - CMake `lsxcommon_cu` source list update → Task 2.
 - Include sites in the 7 kernels + `norm_kernels.cu` → Task 3.
-- Engine/test include sites (`model_factory.cpp`, `testmodel_gpu.cu`, `test_deepseek_moe.cu`) → Task 4.
+- Engine/test include sites (`model_factory.cpp`, `benchmark_gpu.cu`, `test_deepseek_moe.cu`) → Task 4.
 - AGENTS.md note → Task 5.
 - Build + `ctest -R deepseek` verification → Task 6.
 - `inference_gpu.h` / `shared_experts.cu` kept shared → explicitly excluded in File Structure.

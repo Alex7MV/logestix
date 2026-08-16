@@ -108,9 +108,9 @@ Real-model tests SKIP gracefully when the checkpoint is absent
   - `inference_*.cu` — DeepSeek-V4-Flash CUDA kernels (load, norm, moe, head, attn, csa, pipeline)
   - `shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
   - `glm_inference.cu` — GLM-5.2 CUDA kernels (router, IndexShare attention, NVFP4 expert decode)
-  - `testmodel_gpu` — `--testmodel` pipeline: NVFP4 ping-pong benchmark
+  - `benchmark_gpu` — `--benchmark` pipeline: NVFP4 ping-pong benchmark
 - `libs/lsxnetwork/` — zero-alloc async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`, `--testprompt`, `--selfcheck`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`)
   - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
 - `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)

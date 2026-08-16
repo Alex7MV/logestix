@@ -108,8 +108,8 @@ top‑k indices + weights             (custom kernel, k=4 or from model config)
 ```
 
 **Shared+Routed FFN** (`inference_moe.cu`):
-- Reuse `dequant_nvfp4_to_half_kernel` from testmodel
-- Reuse `cublasGemmEx CUDA_R_16F` pattern from testmodel
+- Reuse `dequant_nvfp4_to_half_kernel` from benchmark
+- Reuse `cublasGemmEx CUDA_R_16F` pattern from benchmark
 - Shared: `silu(w1×h)*(w3×h) → w2×result`
 - Routed: for each of k experts, weighted sum
 
@@ -195,7 +195,7 @@ cuBLAS GEMM uses `CUDA_R_16F`.
 - Phase 2 adds: MLA attention + KV cache + HC components
 - KV cache for Phase 2: `[max_seq_len × num_layers × kv_latent_dim × 2]` FP16
 - All pinned tensors stay in VRAM for the lifetime of the process
-- Experts loaded via mmap (same as testmodel), streamed per layer
+- Experts loaded via mmap (same as benchmark), streamed per layer
 
 ### Testing
 

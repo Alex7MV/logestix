@@ -4,7 +4,7 @@
 
 **Goal:** Add `--testprompt` option to `lsxfabric` — hardcoded-prompt text generation with basic latency/throughput measurement (Phase 1: FFN‑only, no attention).
 
-**Architecture:** 5 new CUDA files + 1 C++ tokenizer + 2 headers. Tokenizer parses `tokenizer.json` (BPE). Pinned tensors (embed, norms, head, gate, shared experts) loaded once into VRAM. Routed experts streamed per layer via existing mmap `ExpertDb`. Reuses `dequant_nvfp4_to_half_kernel` and `cublasGemmEx` FP16 pattern from `testmodel_gpu.cu`.
+**Architecture:** 5 new CUDA files + 1 C++ tokenizer + 2 headers. Tokenizer parses `tokenizer.json` (BPE). Pinned tensors (embed, norms, head, gate, shared experts) loaded once into VRAM. Routed experts streamed per layer via existing mmap `ExpertDb`. Reuses `dequant_nvfp4_to_half_kernel` and `cublasGemmEx` FP16 pattern from `benchmark_gpu.cu`.
 
 **Tech Stack:** CUDA 13.3 (Blackwell 12.0), C++20, simdjson, Arrow IPC, cuBLAS, Catch2
 
@@ -324,7 +324,7 @@ Edit line 28:
 ```
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
-    src/testmodel_gpu.cu
+    src/benchmark_gpu.cu
     src/inference_load.cu
     src/inference_norm.cu
     src/inference_moe.cu
@@ -876,7 +876,7 @@ cudaError_t run_moe_ffn(
     // Using run_expert_ffn for each shared weight
 
     // 5. Routed experts FFN — for each top-k expert
-    // Use existing ExpertDb and dequant+GEMM pattern from testmodel
+    // Use existing ExpertDb and dequant+GEMM pattern from benchmark
 
     return cudaSuccess;
 }
@@ -1064,8 +1064,8 @@ InferenceResult RunInference(const InferenceConfig &cfg)
         return result;
     }
 
-    // 3. Load topology + expert index (reuse from testmodel)
-    // (same as RunTestModel — will integrate)
+    // 3. Load topology + expert index (reuse from benchmark)
+    // (same as RunBenchmark — will integrate)
 
     // 4. Load pinned weights to GPU
     cudaStream_t stream = nullptr;
@@ -1197,7 +1197,7 @@ git commit -m "feat: add inference pipeline orchestrator"
 
 - [ ] **Step 1: Edit `main.cpp` — add `--testprompt` flag**
 
-After the `--testmodel` block (around line 19), add:
+After the `--benchmark` block (around line 19), add:
 ```cpp
 else if (std::strcmp(argv[i], "--testprompt") == 0)
     testprompt = true;
@@ -1208,7 +1208,7 @@ Add before the variable declarations:
 bool testprompt = false;
 ```
 
-After the `--testmodel` result block (around line 52), add:
+After the `--benchmark` result block (around line 52), add:
 ```cpp
 if (testprompt) {
     spdlog::info("Running inference benchmark...");

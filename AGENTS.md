@@ -116,7 +116,7 @@ dev box (машина со свежим тулчейном даёт ещё ме�
   не вводить — обычные правила (подробности выше) не трактовать жёстче.
 
 ИСКЛЮЧЕНИЕ (оба OS-профиля): когда запускается **инференс** или **тесты
-инференса** (`--selfcheck`, `--testmodel`, `--testprompt`, infer-тесты,
+инференса** (`--selfcheck`, `--benchmark`, `--testprompt`, infer-тесты,
 CUDA-ядра на реальных весах), потребление памяти и GPU-ресурсов считается
 критичным: не запускать параллельные тяжёлые нагрузки, следить за VRAM/RAM
 и освобождать модели по завершении. Работающие инференсы не дублировать.
@@ -155,9 +155,9 @@ ctest --preset windows-debug    # Windows 11
   - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_inference_load.cuh` + `deepseek_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode-таблицы (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
-  - `libs/lsxcommon/src/testmodel_gpu.cu` + `include/lsxcommon/testmodel_gpu.h` — `--testmodel` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunTestModel()`, TestModelResult
+  - `libs/lsxcommon/src/benchmark_gpu.cu` + `include/lsxcommon/benchmark_gpu.h` — `--benchmark` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunBenchmark()`, BenchmarkResult
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--testmodel`, `--testprompt`, `--selfcheck`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`), `--tokenizer`, repack-флаги
@@ -292,7 +292,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 ## CMake Key Points
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + testmodel) и `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
+- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + benchmark) и `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
 - `lsxcommon_cu`/`lsxcommon_glm_cu` линкуются с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
   Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
   а не через жёсткие пути `C:/Program Files/...

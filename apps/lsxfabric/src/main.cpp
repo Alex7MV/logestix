@@ -1,6 +1,6 @@
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
-#include "lsxcommon/testmodel_gpu.h"
+#include "lsxcommon/benchmark_gpu.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/tokenizer.h"
@@ -70,7 +70,7 @@ bool EncodeSelfCheckPrompt(lsxcommon::IModel &model, std::vector<int32_t> &ids)
 
 int main(int argc, char* argv[]) {
     bool validate = false;
-    bool testmodel = false;
+    bool benchmark = false;
     bool testprompt = false;
     bool selfcheck = false;
     auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
@@ -80,8 +80,8 @@ int main(int argc, char* argv[]) {
             model_path = argv[++i];
         else if (std::strcmp(argv[i], "--validate") == 0)
             validate = true;
-        else if (std::strcmp(argv[i], "--testmodel") == 0)
-            testmodel = true;
+        else if (std::strcmp(argv[i], "--benchmark") == 0)
+            benchmark = true;
         else if (std::strcmp(argv[i], "--testprompt") == 0)
             testprompt = true;
         else if (std::strcmp(argv[i], "--selfcheck") == 0)
@@ -160,13 +160,13 @@ int main(int argc, char* argv[]) {
         lsxcommon::Core::Shutdown();
         return result.ok ? 0 : 1;
     }
-    if (testmodel) {
+    if (benchmark) {
         spdlog::info("Running model benchmark...");
-        auto result = lsxcommon::gpu::RunTestModel(model_path);
+        auto result = lsxcommon::gpu::RunBenchmark(model_path);
         if (!result.ok) {
-            spdlog::error("TestModel failed: {}", result.error_msg);
+            spdlog::error("Benchmark failed: {}", result.error_msg);
         } else {
-            spdlog::info("=== --testmodel Results ===");
+            spdlog::info("=== --benchmark Results ===");
             spdlog::info("Tokens generated : {}", result.num_tokens);
             spdlog::info("Layers processed : {}",
                          result.num_layers * result.num_tokens);

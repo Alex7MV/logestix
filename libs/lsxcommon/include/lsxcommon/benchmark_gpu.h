@@ -6,7 +6,7 @@
 namespace lsxcommon {
 namespace gpu {
 
-struct TestModelResult {
+struct BenchmarkResult {
     double total_time_ms = 0.0;
     double avg_bus_latency_ms = 0.0;
     double tokens_per_sec = 0.0;
@@ -17,7 +17,7 @@ struct TestModelResult {
     std::string error_msg;
 };
 
-TestModelResult RunTestModel(const std::string &model_path, int num_tokens = 2048);
+BenchmarkResult RunBenchmark(const std::string &model_path, int num_tokens = 2048);
 
 } // namespace gpu
 } // namespace lsxcommon

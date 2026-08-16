@@ -1,4 +1,4 @@
-#include "lsxcommon/testmodel_gpu.h"
+#include "lsxcommon/benchmark_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
 #include "deepseek_inference_load.cuh"
@@ -112,9 +112,9 @@ __global__ void dequant_nvfp4_to_half_kernel(
 
 
 
-TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
+BenchmarkResult RunBenchmark(const std::string &model_path, int num_tokens)
 {
-    TestModelResult result;
+    BenchmarkResult result;
     if (num_tokens <= 0) num_tokens = kDefaultTokenCount;
 
     uint8_t *h_pinned_stage[kNumPinnedSlots] = {nullptr, nullptr};
@@ -437,7 +437,7 @@ TestModelResult RunTestModel(const std::string &model_path, int num_tokens)
             ? (static_cast<double>(num_tokens) / elapsed_ms) * 1000.0 : 0.0;
 
         std::ostringstream oss;
-        oss << "=== --testmodel Throughput by interval ===";
+        oss << "=== --benchmark Throughput by interval ===";
         for (int ci = 0; ci < num_checkpoints; ++ci) {
             float cp_ms = 0.0f;
             cudaEventElapsedTime(&cp_ms, t_start, checkpoints[static_cast<size_t>(ci)]);

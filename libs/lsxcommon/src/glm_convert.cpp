@@ -28,7 +28,7 @@
 
 namespace lsxcommon {
 // Forward declaration (defined in converter.cpp). Kept out of converter.h so
-// that NVCC-translated TUs (e.g. testmodel_gpu.cu, which only needs the PIMPL
+// that NVCC-translated TUs (e.g. benchmark_gpu.cu, which only needs the PIMPL
 // Converter class) never parse abseil's flat_hash_map header.
 arrow::Status SaveSharedExpertsToArrow(
     const absl::flat_hash_map<int, ExpertData> &shared_by_layer,

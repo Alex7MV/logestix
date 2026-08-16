@@ -14,7 +14,7 @@
 namespace lsxcommon {
 namespace gpu {
 
-// Dequant kernel from testmodel (extern declaration)
+// Dequant kernel from benchmark (extern declaration)
 extern __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__, const uint8_t* __restrict__, float,
     __half* __restrict__, int);

@@ -78,7 +78,7 @@ File renames are only valid when the build stays green:
   - `deepseek_v4_flash_model.cpp`
   - `model_factory.cpp` (`#include "inference_load.cuh"` →
     `"deepseek_inference_load.cuh"`)
-  - `testmodel_gpu.cu` (`#include "inference_load.cuh"` → new name)
+  - `benchmark_gpu.cu` (`#include "inference_load.cuh"` → new name)
   - `tests/test_deepseek_moe.cu` (`#include "inference_load.cuh"` → new name)
   - `tests/test_deepseek_inference_kernels.cu` (any `inference_*.cuh` includes)
 

@@ -49,11 +49,11 @@ enable_language(CUDA)
 
 # Shared CUDA-target plumbing for the two OBJECT libraries below (NVCC include
 # paths + CCCL/MSVC compile definitions). lsxcommon_cu carries the general
-# kernels (NVFP4 quantizer, testmodel, DeepSeek inference); lsxcommon_glm_cu
+# kernels (NVFP4 quantizer, benchmark, DeepSeek inference); lsxcommon_glm_cu
 # carries ONLY the GLM-5.2 bit-exact parity kernels, which must compile with
 # -fmad=false to reproduce the non-contracted IEEE sequences of the -O0 host
 # reference (see GlmExpfGlibc / fp64 GEMM / sequential RMSNorm). Scoping the
-# flag to the GLM object library keeps the quantizer/testmodel/DeepSeek kernels
+# flag to the GLM object library keeps the quantizer/benchmark/DeepSeek kernels
 # on their default FMA contraction (their numeric contracts do not depend on
 # -fmad=false and their performance must not regress).
 set(LSXCOMMON_CU_INCLUDES
@@ -77,7 +77,7 @@ set(LSXCOMMON_CU_DEFS
 
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
-    src/testmodel_gpu.cu
+    src/benchmark_gpu.cu
     src/deepseek_inference_load.cu
     src/deepseek_inference_norm.cu
     src/deepseek_inference_moe.cu

@@ -93,7 +93,7 @@ __device__ uint8_t dev_quantize_nvfp4(float val)
     float abs_val = fabsf(val);
 
     // NVFP4 E2M1 positive magnitudes (must match the E2M1 decode used by
-    // the dequant kernels — e.g. nvfp4_to_float in testmodel_gpu.cu)
+    // the dequant kernels — e.g. nvfp4_to_float in benchmark_gpu.cu)
     static const float levels[8] = {
         0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f
     };
