@@ -3,6 +3,7 @@
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
 #include <absl/strings/ascii.h>
+#include <algorithm>
 #include <cctype>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -150,6 +151,8 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         r.first_gen_tok_id = gen.tokens[0];
         r.first_gen_maxv = gen.first_maxv;
     }
+    r.gen_tokens = std::move(gen.tokens);
+    r.final_logits = std::move(gen.final_logits);
     cleanup();
     return r;
 }
@@ -172,21 +175,45 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
-    r = Infer(req);
+    if (req.input_ids.empty()) {
+        r.error_msg = "empty input_ids";
+        return r;
+    }
+    // Incremental 1->2-token selfcheck: force at least two generated tokens so
+    // the reference answer can be matched on a 1-token or a 2-token prefix
+    // (e.g. when "Paris" is split across two BPE merges).
+    ModelRequest sc_req = req;
+    sc_req.max_gen_tokens = std::max(2, req.max_gen_tokens);
+    r = Infer(sc_req);
     if (!r.ok) {
         r.selfcheck_passed = false;
         return r;
     }
-    if (r.first_gen_tok_id >= 0) {
+    if (!r.gen_tokens.empty()) {
         char buf[512];
-        size_t cap = sizeof(buf);
-        std::vector<int32_t> single_tok = {r.first_gen_tok_id};
-        if (::lsxcommon::arrow_tokenizer_decode(
-                *tok_db_, single_tok.data(), single_tok.size(), buf, &cap) == 0)
-            r.first_gen_text = std::string(buf, cap);
-        absl::StripAsciiWhitespace(&r.first_gen_text);
-        r.selfcheck_passed =
-            (r.first_gen_text == "Paris");
+        for (int ntok : {1, 2}) {
+            if (ntok > static_cast<int>(r.gen_tokens.size())) break;
+            size_t cap = sizeof(buf);
+            if (::lsxcommon::arrow_tokenizer_decode(
+                    *tok_db_, r.gen_tokens.data(),
+                    static_cast<size_t>(ntok), buf, &cap) != 0)
+                continue;
+            std::string t(buf, cap);
+            absl::StripAsciiWhitespace(&t);
+            r.first_gen_text = t;
+            if (r.first_gen_text == "Paris") {
+                r.selfcheck_passed = true;
+                break;
+            }
+        }
+        if (!r.selfcheck_passed && r.first_gen_text.empty()) {
+            size_t cap = sizeof(buf);
+            if (::lsxcommon::arrow_tokenizer_decode(
+                    *tok_db_, r.gen_tokens.data(),
+                    std::min(static_cast<int>(r.gen_tokens.size()), 8),
+                    buf, &cap) == 0)
+                r.first_gen_text = std::string(buf, cap);
+        }
     }
     spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
                  r.first_gen_tok_id, r.first_gen_text,

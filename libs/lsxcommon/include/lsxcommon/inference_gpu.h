@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <absl/strings/ascii.h>
 
@@ -29,6 +30,13 @@ struct InferenceResult {
     std::string first_gen_text;
     float first_gen_maxv = 0.0f;   // argmax logit of the first token, pre-tempclamp
     bool  selfcheck_passed = false;
+
+    // Full generated token-id stream and the raw [vocab] logits row of the
+    // final decode step (published by GLM-5.2 inference). Empty when the run
+    // produced no output. The logits row lets self-check stress harnesses
+    // verify bit-exact determinism across repeated runs.
+    std::vector<int32_t> gen_tokens;
+    std::vector<float> final_logits;
 };
 
 } // namespace gpu
