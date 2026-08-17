@@ -55,4 +55,12 @@ ImFont* FontLoader::LoadMonospace(ImFontAtlas& atlas) noexcept {
                        lsxhome_mono_payload_size, lsxhome::theme::kGeometry.font_size - 1.0f);
 }
 
+ImFont* FontLoader::LoadHeading(ImFontAtlas& atlas) noexcept {
+    constexpr unsigned int kFlags = ImGuiFreeTypeLoaderFlags_LightHinting |
+                                    ImGuiFreeTypeLoaderFlags_ForceAutoHint;
+    return AddEmbedded(atlas, kFlags,
+                       static_cast<const unsigned char*>(lsxhome_font_payload),
+                       lsxhome_font_payload_size, 34.0f);
+}
+
 }  // namespace lsxhome

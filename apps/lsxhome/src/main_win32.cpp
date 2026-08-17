@@ -143,6 +143,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     // font comes from the embedded static TTF payload.
     lsxhome::FontLoader::LoadDefault(*io.Fonts);
 
+    // Hero heading face for the welcome screen's 34px greeting.
+    lsxhome::FontLoader::LoadHeading(*io.Fonts);
+
     lsxhome::GuiBridge bridge;
     std::atomic<bool> running{true};
     std::thread compute_thread(
