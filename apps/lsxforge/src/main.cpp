@@ -6,6 +6,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/glm_convert.h"
@@ -247,18 +248,15 @@ int main(int argc, char* argv[]) {
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        std::vector<int32_t> input_ids(512, 0);
-        size_t cap = input_ids.size();
-        int32_t n_ids = lsxcommon::arrow_tokenizer_encode(
-            model->Tokenizer(), run_prompt.data(), run_prompt.size(),
-            input_ids.data(), &cap);
-        if (n_ids < 0) {
-            spdlog::error("Tokenizer encode failed: {}", n_ids);
+        std::vector<int32_t> input_ids;
+        if (!lsxcommon::prompt::BuildPromptInputIds(
+                model->Type(), model->Tokenizer(), run_prompt, input_ids)) {
+            spdlog::error("Tokenizer encode failed for prompt: {}",
+                          run_prompt);
             model->Unload();
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        input_ids.resize(static_cast<size_t>(n_ids));
         lsxcommon::ModelRequest req{std::move(input_ids), 64};
         auto result = model->Infer(req);
         if (!result.ok) {
