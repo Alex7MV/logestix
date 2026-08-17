@@ -328,6 +328,29 @@ endif()
 add_test(NAME test_glm_selfcheck COMMAND test_glm_selfcheck)
 set_tests_properties(test_glm_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест GLM-5.2 осмысленного вывода по --run (Infer output_text) ───────────
+add_executable(test_glm_prompt_output test_glm_prompt_output.cpp)
+target_compile_definitions(test_glm_prompt_output PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_prompt_output POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_output>"
+    )
+    add_custom_command(TARGET test_glm_prompt_output POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_output>"
+    )
+endif()
+
+add_test(NAME test_glm_prompt_output COMMAND test_glm_prompt_output)
+set_tests_properties(test_glm_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест фабрики моделей ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
