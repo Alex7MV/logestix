@@ -28,6 +28,7 @@ add_library(lsxcommon STATIC
     src/model_integrity.cpp
     src/model_registry.cpp
     src/path_registry.cpp
+    src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
     src/qwen_3_8_27b_model.cpp

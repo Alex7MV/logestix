@@ -367,26 +367,26 @@ endif()
 add_test(NAME test_generation_cli COMMAND test_generation_cli)
 
 # ── Тест GLM-5.2 prompt framing helper (host-only, синтетический токенизатор) ────
-add_executable(test_prompt_framing test_prompt_framing.cpp)
-target_compile_definitions(test_prompt_framing PRIVATE
+add_executable(test_glm_prompt_framing test_glm_prompt_framing.cpp)
+target_compile_definitions(test_glm_prompt_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_glm_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
-    add_custom_command(TARGET test_prompt_framing POST_BUILD
+    add_custom_command(TARGET test_glm_prompt_framing POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_prompt_framing>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_framing>"
     )
-    add_custom_command(TARGET test_prompt_framing POST_BUILD
+    add_custom_command(TARGET test_glm_prompt_framing POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_prompt_framing>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_framing>"
     )
 endif()
 
-add_test(NAME test_prompt_framing COMMAND test_prompt_framing)
+add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
 
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)

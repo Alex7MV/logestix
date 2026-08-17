@@ -65,10 +65,11 @@ TEST_CASE("prompt_framing: GLM chat-template framing order", "[prompt_framing]")
     const int32_t sop   = lsxcommon::arrow_tokenizer_lookup(db, "<sop>", 5);
     const int32_t usr   = lsxcommon::arrow_tokenizer_lookup(db, "<|user|>", 8);
     const int32_t asst  = lsxcommon::arrow_tokenizer_lookup(db, "<|assistant|>", 13);
-    const int32_t think = lsxcommon::arrow_tokenizer_lookup(db, " thinking", 7);
-    const int32_t ethink = lsxcommon::arrow_tokenizer_lookup(db, " response", 8);
-    REQUIRE(gmask >= 0 && sop >= 0 && usr >= 0 && asst >= 0 &&
-            think >= 0 && ethink >= 0);
+    const int32_t think = lsxcommon::arrow_tokenizer_lookup(db, "<think>", 7);
+    const int32_t ethink = lsxcommon::arrow_tokenizer_lookup(db, "</think>", 8);
+    const bool all_specials = (gmask >= 0 && sop >= 0 && usr >= 0 &&
+                               asst >= 0 && think >= 0 && ethink >= 0);
+    REQUIRE(all_specials);
 
     const char *prompt = "The capital of France is";
     const std::vector<int32_t> raw = RawEncode(db, prompt);
