@@ -696,9 +696,15 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         INFER_CHECK(cudaEventElapsedTime(&elapsed_ms, t_start, t_stop));
 
         int prompt_len = static_cast<int>(input_ids.size());
-        int gen_count = static_cast<int>(gen_ids.size()) - prompt_len;
-        // Skip prompt tokens for output decoding
-        auto gen_start = gen_ids.begin() + std::min(prompt_len, static_cast<int>(gen_ids.size()));
+        // The first generated token is the argmax at step == prompt_len-1 (the
+        // step whose embedding is the LAST prompt token); the steps below it
+        // only predicted prompt-continuation tokens and are not part of the
+        // output. Start the generated stream there (was prompt_len — an
+        // off-by-one that dropped the first generated token).
+        int first_gen_idx = std::max(prompt_len - 1, 0);
+        int gen_count = static_cast<int>(gen_ids.size()) - first_gen_idx;
+        auto gen_start = gen_ids.begin()
+            + std::min(first_gen_idx, static_cast<int>(gen_ids.size()));
         std::vector<int32_t> gen_ids_i32(gen_start, gen_ids.end());
         size_t out_cap = 4096;
         std::string output(out_cap, '\0');
@@ -721,6 +727,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         result.num_tokens = gen_count;
         result.num_layers = topo.num_layers;
         result.output_text = output;
+        result.gen_tokens = std::move(gen_ids_i32);
         result.ok = true;
 
         std::ostringstream res_oss;
