@@ -28,7 +28,7 @@
 
 **Files:**
 - Create: `tests/data/synthetic_glm_tok.json` (generated from `tests/data/synthetic_tok.json`)
-- Create: `tests/test_prompt_framing.cpp`
+- Create: `tests/test_glm_prompt_framing.cpp`
 - Modify: `tests/CMakeLists.txt`
 
 **Interfaces:**
@@ -69,7 +69,7 @@ Expected: the last added token is `</think>` with id 273, and `max(id)+1 == 274`
 
 Note: the parser in `tokenizer_convert.cpp` requires `added_tokens` to precede `"model"` in the JSON stream; `json.dump` preserves key order from `json.load`, so this holds automatically.
 
-- [ ] **Step 2: Write the failing test `tests/test_prompt_framing.cpp`**
+- [ ] **Step 2: Write the failing test `tests/test_glm_prompt_framing.cpp`**
 
 ```cpp
 // TDD — GLM-5.2 prompt framing helper (host-only, no CUDA, no real model).
@@ -225,41 +225,41 @@ Append after the `test_generation_cli` block (after line 367):
 
 ```cmake
 # ── Тест GLM-5.2 prompt framing helper (host-only, синтетический токенизатор) ────
-add_executable(test_prompt_framing test_prompt_framing.cpp)
-target_compile_definitions(test_prompt_framing PRIVATE
+add_executable(test_glm_prompt_framing test_glm_prompt_framing.cpp)
+target_compile_definitions(test_glm_prompt_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_glm_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
-    add_custom_command(TARGET test_prompt_framing POST_BUILD
+    add_custom_command(TARGET test_glm_prompt_framing POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_prompt_framing>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_framing>"
     )
-    add_custom_command(TARGET test_prompt_framing POST_BUILD
+    add_custom_command(TARGET test_glm_prompt_framing POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_cuda_shared>"
-            "$<TARGET_FILE_DIR:test_prompt_framing>"
+            "$<TARGET_FILE_DIR:test_glm_prompt_framing>"
     )
 endif()
 
-add_test(NAME test_prompt_framing COMMAND test_prompt_framing)
+add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
 ```
 
 - [ ] **Step 4: Reconfigure and build the test to verify it FAILS**
 
 ```bash
 cmake --preset linux-debug
-cmake --build --preset linux-debug --target test_prompt_framing
+cmake --build --preset linux-debug --target test_glm_prompt_framing
 ```
 
-Expected: COMPILE FAILURE — `test_prompt_framing.cpp` includes `lsxcommon/prompt_framing.h`, which does not exist yet (`fatal error: lsxcommon/prompt_framing.h: No such file or directory`). This is the RED.
+Expected: COMPILE FAILURE — `test_glm_prompt_framing.cpp` includes `lsxcommon/prompt_framing.h`, which does not exist yet (`fatal error: lsxcommon/prompt_framing.h: No such file or directory`). This is the RED.
 
 - [ ] **Step 5: Commit the red test**
 
 ```bash
-git add tests/data/synthetic_glm_tok.json tests/test_prompt_framing.cpp tests/CMakeLists.txt
+git add tests/data/synthetic_glm_tok.json tests/test_glm_prompt_framing.cpp tests/CMakeLists.txt
 git commit -m "test: add host-only GLM prompt framing tests (RED)"
 ```
 
@@ -275,7 +275,7 @@ git commit -m "test: add host-only GLM prompt framing tests (RED)"
 
 **Interfaces:**
 - Consumes: `ArrowTokenizerDb`, `arrow_tokenizer_lookup`, `arrow_tokenizer_encode` from `lsxcommon/tokenizer.h`.
-- Produces: `bool lsxcommon::prompt::BuildPromptInputIds(std::string_view model_type, const ArrowTokenizerDb &tok, std::string_view raw_prompt, std::vector<int32_t> &out_ids)` — the exact signature used by `tests/test_prompt_framing.cpp`, `tests/test_glm_prompt_output.cpp` (Task 3) and `apps/lsxforge/src/main.cpp` (Task 5).
+- Produces: `bool lsxcommon::prompt::BuildPromptInputIds(std::string_view model_type, const ArrowTokenizerDb &tok, std::string_view raw_prompt, std::vector<int32_t> &out_ids)` — the exact signature used by `tests/test_glm_prompt_framing.cpp`, `tests/test_glm_prompt_output.cpp` (Task 3) and `apps/lsxforge/src/main.cpp` (Task 5).
 
 - [ ] **Step 1: Write the header `libs/lsxcommon/include/lsxcommon/prompt_framing.h`**
 
@@ -396,8 +396,8 @@ In the `add_library(lsxcommon STATIC ...)` block (lines 16-42), add `src/prompt_
 
 ```bash
 cmake --preset linux-debug
-cmake --build --preset linux-debug --target test_prompt_framing
-ctest --preset linux-debug -R "^test_prompt_framing$" --output-on-failure
+cmake --build --preset linux-debug --target test_glm_prompt_framing
+ctest --preset linux-debug -R "^test_glm_prompt_framing$" --output-on-failure
 ```
 
 Expected: all 5 test cases pass (`All tests passed`, exit code 0).
@@ -722,7 +722,7 @@ build/linux-debug/bin/lsxforge --run "The capital of France is" \
 - [ ] **Step 4: Run the full targeted test set**
 
 ```bash
-ctest --preset linux-debug -R "test_prompt_framing|test_glm_prompt_output|test_generation_cli" --output-on-failure
+ctest --preset linux-debug -R "test_glm_prompt_framing|test_glm_prompt_output|test_generation_cli" --output-on-failure
 ```
 
 Expected: all pass (host-only framing, real-model output, and the unchanged
@@ -756,5 +756,5 @@ git commit -m "feat: frame GLM-5.2 prompts in lsxforge --run path"
 
 ```bash
 cmake --build --preset linux-debug
-ctest --preset linux-debug -R "test_prompt_framing|test_glm_prompt_output|test_generation_cli|test_glm_selfcheck" --output-on-failure
+ctest --preset linux-debug -R "test_glm_prompt_framing|test_glm_prompt_output|test_generation_cli|test_glm_selfcheck" --output-on-failure
 ```
