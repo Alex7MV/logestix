@@ -83,6 +83,7 @@ git commit -m "feat: load 34px Inter heading font for lsxhome welcome screen"
 **Files:**
 - Modify: `apps/lsxhome/include/lsxhome/gui_renderer.h`
 - Modify: `apps/lsxhome/src/gui_renderer.cpp`
+- Modify: `apps/lsxhome/src/main_win32.cpp`
 
 - [ ] **Step 1: Declare the new API in the header**
 
@@ -233,6 +234,21 @@ void DrawMCPTools(ImDrawList* dl, const ImVec2& pos, ImVec2 size, const char* la
 
 }  // namespace
 ```
+
+- [ ] **Step 2b: Wire the heading font into the renderer via main_win32**
+
+The `LoadHeading` call in Task 1 currently discards its return value, so the
+welcome interface would never receive the 34px face. In
+`apps/lsxhome/src/main_win32.cpp`, replace the caption/assignment set in Task 1
+so the returned face is handed to the renderer:
+
+```cpp
+    // Hero heading face for the welcome screen's 34px greeting.
+    lsxhome::SetHeadingFont(lsxhome::FontLoader::LoadHeading(*io.Fonts));
+```
+
+(`SetHeadingFont` now exists in `lsxhome/gui_renderer.h`; no new include is
+needed — `main_win32.cpp` already includes `lsxhome/gui_renderer.h`.)
 
 - [ ] **Step 3: Implement `SetHeadingFont` + `DrawClaudeWelcomeInterface`**
 
