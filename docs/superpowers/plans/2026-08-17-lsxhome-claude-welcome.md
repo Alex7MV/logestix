@@ -147,7 +147,6 @@ constexpr float kHeaderH        = 56.0f;
 constexpr float kCardH          = 220.0f;
 constexpr float kActionsH       = 88.0f;
 constexpr float kVGap           = 20.0f;
-constexpr float kVS2            = kVGap * 2.0f;
 
 // ── Dedicated accents (coral asterisk, purple chip) — kept local ──
 constexpr ImU32 kCoralU32        = IM_COL32(255, 106, 74, 255);
@@ -389,7 +388,7 @@ Expected: `test_lsxhome_gui` and `test_lsxhome_font` PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add apps/lsxhome/include/lsxhome/gui_renderer.h apps/lsxhome/src/gui_renderer.cpp
+git add apps/lsxhome/include/lsxhome/gui_renderer.h apps/lsxhome/src/gui_renderer.cpp apps/lsxhome/src/main_win32.cpp
 git commit -m "feat: render Claude-style welcome interface in lsxhome ##main panel"
 ```
 
