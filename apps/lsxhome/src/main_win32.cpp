@@ -144,7 +144,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     lsxhome::FontLoader::LoadDefault(*io.Fonts);
 
     // Hero heading face for the welcome screen's 34px greeting.
-    lsxhome::FontLoader::LoadHeading(*io.Fonts);
+    lsxhome::SetHeadingFont(lsxhome::FontLoader::LoadHeading(*io.Fonts));
 
     lsxhome::GuiBridge bridge;
     std::atomic<bool> running{true};
