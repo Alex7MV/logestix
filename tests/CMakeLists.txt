@@ -351,6 +351,26 @@ endif()
 add_test(NAME test_glm_prompt_output COMMAND test_glm_prompt_output)
 set_tests_properties(test_glm_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест DeepSeek-V4-Flash осмысленного вывода (Infer output_text) ────────
+add_executable(test_deepseek_prompt_output test_deepseek_prompt_output.cpp)
+target_link_libraries(test_deepseek_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_prompt_output POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_prompt_output>"
+    )
+    add_custom_command(TARGET test_deepseek_prompt_output POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_prompt_output>"
+    )
+endif()
+
+add_test(NAME test_deepseek_prompt_output COMMAND test_deepseek_prompt_output)
+set_tests_properties(test_deepseek_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест фабрики моделей ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
