@@ -1,8 +1,10 @@
-// lsxhome — Blackwell matte/Cowork theme styling profile (Phase 1).
+// lsxhome — Blackwell matte/Cowork theme styling profile (Phase 1) and the
+// Claude-style welcome interface.
 //
-// Owns the hardlocked ImGuiStyle and the edge-to-edge docking-grid skeleton
-// render pass. Zero-allocation: the theme touches style state only, and the
-// workspace skeleton reuses the existing viewport — no per-frame allocations.
+// Owns the hardlocked ImGuiStyle, the edge-to-edge docking-grid skeleton
+// render pass, and the centered welcome screen that fills the main panel.
+// Zero-allocation: the theme touches style state only, and the workspace
+// skeleton reuses the existing viewport — no per-frame allocations.
 
 #include "lsxhome/gui_renderer.h"
 
