@@ -11,7 +11,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +23,6 @@ constexpr ImVec4 MakeVec4(float r, float g, float b, float a = 1.0f) noexcept {
 }
 
 constexpr float kSidebarWidth = 300.0f;
-constexpr int kPlotSamples = 256;
 
 // ── Welcome-interface geometry (per design: rounding 6f, centered column) ──
 constexpr float kWelcomeColumn  = 700.0f;
@@ -79,10 +77,8 @@ void DrawPlanChip(ImDrawList* dl, const ImVec2& tl, float fs, const char* label)
     dl->AddText(ImVec2(tl.x + 12.0f, tl.y + 4.0f), kChipTextU32, label);
 }
 
-void DrawPickerCombo(ImGuiID id, const char* preview) noexcept {
-    char label[64];
-    ImFormatString(label, sizeof(label), "##picker_%lld", static_cast<long long>(id));
-    if (ImGui::BeginCombo(label, preview, ImGuiComboFlags_NoPreview)) {
+void DrawPickerCombo(const char* id, const char* preview) noexcept {
+    if (ImGui::BeginCombo(id, preview, ImGuiComboFlags_NoPreview)) {
         ImGui::Selectable(preview);
         ImGui::EndCombo();
     }
@@ -162,6 +158,7 @@ void DrawClaudeWelcomeInterface() noexcept {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 14.0f));
     if (ImGui::BeginChild("##welcome_input_card", ImVec2(kWelcomeColumn, kCardH),
                           true)) {
+        ImDrawList* child_dl = ImGui::GetWindowDrawList();
         const float bottom_row_h = 30.0f;
         const ImVec2 input_pos = ImGui::GetCursorScreenPos();
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
@@ -173,23 +170,23 @@ void DrawClaudeWelcomeInterface() noexcept {
         ImGui::PopStyleVar(1);
         ImGui::PopStyleColor(1);
         if (input_buf[0] == '\0') {
-            dl->AddText(input_pos, kMutedU32, "How can Claude help you today?");
+            child_dl->AddText(input_pos, kMutedU32, "How can Claude help you today?");
         }
 
         // Bottom control row: model/style pickers left, MCP tools right.
         const float row_y =
             ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - bottom_row_h - 8.0f;
         ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + 14.0f, row_y));
-        DrawPickerCombo(ImGui::GetID("model"), "Claude 3.5 Sonnet");
+        DrawPickerCombo("##model", "Claude 3.5 Sonnet");
         ImGui::SameLine();
-        DrawPickerCombo(ImGui::GetID("style"), "Choose style");
+        DrawPickerCombo("##style", "Choose style");
         const char* mcp = "MCP tools available";
         const float fs3 = fs * 0.42f * 3.0f + 6.0f;
         const float mcp_w = fs3 + ImGui::CalcTextSize("28").x +
                             ImGui::CalcTextSize(mcp).x;
         ImGui::SameLine(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x -
                         mcp_w - 8.0f);
-        DrawMCPTools(dl,
+        DrawMCPTools(child_dl,
                      ImVec2(ImGui::GetCursorScreenPos().x,
                             row_y),
                      ImVec2(mcp_w, bottom_row_h), mcp);
