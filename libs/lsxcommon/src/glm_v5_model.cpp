@@ -145,14 +145,39 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     r.ok = true;
     r.num_tokens = static_cast<int>(gen.tokens.size());
     r.num_layers = glm::kGlmNumLayers;
-    // output_text stays empty: full tokenizer decode is out of scope for the
-    // raw hidden/logit pass; only the decoded id stream is published.
     if (!gen.tokens.empty()) {
         r.first_gen_tok_id = gen.tokens[0];
         r.first_gen_maxv = gen.first_maxv;
     }
     r.gen_tokens = std::move(gen.tokens);
     r.final_logits = std::move(gen.final_logits);
+
+    // Decode the generated token stream into output_text (gen.tokens carries
+    // only generated tokens, never the prompt). Capacity-retry mirrors the
+    // DeepSeek pipeline; a decode failure leaves output_text empty but keeps
+    // r.ok true — generation succeeded, decode is best-effort.
+    if (!r.gen_tokens.empty()) {
+        std::string out(4096, '\0');
+        size_t cap = 4096;
+        int dr = ::lsxcommon::arrow_tokenizer_decode(
+            *tok_db_, r.gen_tokens.data(), r.gen_tokens.size(),
+            out.data(), &cap);
+        if (dr == -2) {   // *cap now reports the required size; retry once
+            out.resize(cap);
+            size_t cap2 = cap;
+            dr = ::lsxcommon::arrow_tokenizer_decode(
+                *tok_db_, r.gen_tokens.data(), r.gen_tokens.size(),
+                out.data(), &cap2);
+            cap = cap2;
+        }
+        if (dr == 0) {
+            out.resize(cap);
+            r.output_text = std::move(out);
+        } else {
+            spdlog::warn("[glm-model] tokenizer decode failed: {}", dr);
+        }
+    }
+
     cleanup();
     return r;
 }
