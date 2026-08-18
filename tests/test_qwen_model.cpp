@@ -3,6 +3,7 @@
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/qwen_convert.h>
 #include <lsxcommon/qwen_inference_load.h>
+#include <lsxcommon/tokenizer.h>
 
 #include <spdlog/spdlog.h>
 
@@ -45,6 +46,20 @@ TEST_CASE("Qwen V5 model factory registration and generation")
     REQUIRE(result.ok);
     CHECK(result.num_tokens > 0);
     CHECK(result.first_gen_tok_id >= 0);
+
+    // Unified runtime contract (Task 7): token parity, logits, decode.
+    REQUIRE(result.num_tokens == static_cast<int>(result.gen_tokens.size()));
+    REQUIRE_FALSE(result.final_logits.empty());
+    if (!result.gen_tokens.empty()) {
+        std::vector<char> buf(256, '\0');
+        size_t cap = buf.size();
+        int dr = arrow_tokenizer_decode(model->Tokenizer(),
+                                        result.gen_tokens.data(),
+                                        result.gen_tokens.size(),
+                                        buf.data(), &cap);
+        REQUIRE(dr == 0);
+        REQUIRE(result.output_text == std::string(buf.data(), cap));
+    }
 
     auto sc = model->SelfCheck(req);
     CHECK(sc.ok);

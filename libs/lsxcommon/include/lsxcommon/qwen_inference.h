@@ -102,6 +102,7 @@ cudaError_t RunQwenGeneration(
     cudaStream_t stream,
     const QwenPinnedWeights &pw,
     const std::vector<int32_t> &prompt, int max_new,
+    int eos_id,
     QwenGenerationResult &result);
 
 } // namespace qwen

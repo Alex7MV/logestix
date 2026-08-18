@@ -811,6 +811,7 @@ __global__ void qwen_argmax_kernel(const __half *logits, int seq, int V,
 cudaError_t RunQwenGeneration(cudaStream_t stream,
                               const QwenPinnedWeights &pw,
                               const std::vector<int32_t> &prompt, int max_new,
+                              int eos_id,
                               QwenGenerationResult &result)
 {
     const QwenTopology &top = pw.top;
@@ -825,6 +826,10 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     result = QwenGenerationResult{};
     if (H <= 0 || I <= 0 || V <= 0 || prompt.empty() || max_new <= 0) {
         result.error_msg = "invalid generation inputs";
+        return cudaErrorInvalidValue;
+    }
+    if (eos_id < 0) {
+        result.error_msg = "invalid eos_id";
         return cudaErrorInvalidValue;
     }
     if (!pw.embed.d_packed || !pw.head.d_packed) {
@@ -929,17 +934,31 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
     if (e != cudaSuccess) { result.error_msg="argmax alloc"; cudaFree(base); return e; }
 
+    // Wall-clock timing (stream-delta): t_start at entry, t_ttft at the first
+    // generated token, t_stop after the final decode row.
+    cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
+    cudaEventCreate(&t_start);
+    cudaEventCreate(&t_ttft);
+    cudaEventCreate(&t_stop);
+    cudaEventRecord(t_start, stream);
+    auto fail = [&](cudaError_t err, std::string msg) -> cudaError_t {
+        result.error_msg = std::move(msg);
+        if (t_start) cudaEventDestroy(t_start);
+        if (t_ttft) cudaEventDestroy(t_ttft);
+        if (t_stop) cudaEventDestroy(t_stop);
+        cudaFree(d_argmax);
+        cudaFree(base);
+        return err;
+    };
+
     std::vector<int32_t> ids = prompt;
     std::vector<int32_t> pos(max_seq);
     for (int i = 0; i < max_seq; ++i) pos[i] = i;
-    int last_seq = (int)ids.size();
     const double eps = top.rms_norm_eps;
     const int threads = 256;
-    const int eos_id = 248044;   // Qwen3.5 text_config.eos_token_id
 
     for (int step = 0; step < max_new; ++step) {
         const int seq = (int)ids.size();
-        last_seq = seq;
         std::vector<int32_t> posb(ids.size());
         for (size_t i = 0; i < ids.size(); ++i) posb[i] = (int)i;
         cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int32_t),
@@ -948,14 +967,14 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                         cudaMemcpyHostToDevice, stream);
 
         e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
-        if (e != cudaSuccess) { result.error_msg = "embed"; cudaFree(d_argmax); cudaFree(base); return e; }
+        if (e != cudaSuccess) return fail(e, "embed");
 
         for (int l = 0; l < (int)pw.layers.size(); ++l) {
             const QwenLayerWeights &lw = pw.layers[l];
             // input RMSNorm
             e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
                                seq, H, eps);
-            if (e != cudaSuccess) { result.error_msg = std::string("inputnorm l")+std::to_string(l); cudaFree(d_argmax); cudaFree(base); return e; }
+            if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
             if (lw.is_linear) {
                 e = RunQwenLinearAttention(stream, lw, top, seq,
                     d_normed, d_attn_out, d_qkv, d_z, d_ab,
@@ -965,43 +984,43 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                     d_normed, d_attn_out, d_qc, d_q, d_qgate,
                     d_k, d_v, d_attn, d_cos, d_sin, d_pos);
             }
-            if (e != cudaSuccess) { result.error_msg = std::string("attn l")+std::to_string(l); cudaFree(d_argmax); cudaFree(base); return e; }
+            if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
             // residual: d_act = d_act + d_attn_out
             {
                 const int64_t n = (int64_t)seq * H;
                 qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
                                   0, stream>>>(d_attn_out, d_act, n);
-                e = cudaGetLastError(); if (e) { result.error_msg = std::string("res1 l")+std::to_string(l); cudaFree(d_argmax); cudaFree(base); return e; }
+                e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
             }
             // post RMSNorm
             e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
                                seq, H, eps);
-            if (e != cudaSuccess) { result.error_msg = std::string("postnorm l")+std::to_string(l); cudaFree(d_argmax); cudaFree(base); return e; }
+            if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
             // MLP
             e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
                            d_gate);
-            if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+            if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
             // residual: d_act = d_act + d_mlp_out
             {
                 const int64_t n = (int64_t)seq * H;
                 qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
                                   0, stream>>>(d_mlp_out, d_act, n);
-                e = cudaGetLastError(); if (e) { cudaFree(d_argmax); cudaFree(base); return e; }
+                e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
             }
         }
 
         // final norm
         e = RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
                            seq, H, eps);
-        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        if (e != cudaSuccess) return fail(e, "finalnorm");
         // head logits: LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits)
         e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
-        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        if (e != cudaSuccess) return fail(e, "head");
         // argmax last row
         qwen_argmax_kernel<<<1, std::min(256, V), 0, stream>>>(
             d_logits, seq, V, d_argmax);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { cudaFree(d_argmax); cudaFree(base); return e; }
+        if (e != cudaSuccess) return fail(e, "argmax");
 
         // Publish first generated token id (async, synchronized via event below).
         int32_t tok = 0;
@@ -1012,8 +1031,12 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         cudaEventRecord(tok_ready, stream);
         cudaEventSynchronize(tok_ready);
         cudaEventDestroy(tok_ready);
+        if (step == 0) cudaEventRecord(t_ttft, stream);
         result.tokens.push_back(tok);
-        if (tok == eos_id) break;
+        if (tok == eos_id) {
+            result.eos_terminated = true;
+            break;
+        }
         ids.push_back(tok);
     }
 
@@ -1021,7 +1044,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     // the arena is still alive.
     {
         std::vector<float> hlast_f(V);
-        int64_t base_idx = (int64_t)(last_seq - 1) * V;
+        int64_t base_idx = (int64_t)ids.size() - 1;
+        if (base_idx < 0) base_idx = 0;
+        base_idx *= V;
         std::vector<__half> hlast(V);
         cudaMemcpy(hlast.data(), d_logits + base_idx, V * sizeof(__half),
                    cudaMemcpyDeviceToHost);
@@ -1029,6 +1054,20 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             hlast_f[i] = __half2float(hlast[i]);
         result.final_logits = std::move(hlast_f);
     }
+
+    // Publish timing and residency before tearing down the arena.
+    cudaEventRecord(t_stop, stream);
+    cudaEventSynchronize(t_stop);
+    float ms_total = 0.0f, ms_ttft = 0.0f;
+    cudaEventElapsedTime(&ms_total, t_start, t_stop);
+    cudaEventElapsedTime(&ms_ttft, t_start, t_ttft);
+    result.total_ms = ms_total;
+    result.ttft_ms = ms_ttft;
+    cudaEventDestroy(t_start);
+    cudaEventDestroy(t_ttft);
+    cudaEventDestroy(t_stop);
+    result.resident_bytes = pw.resident_bytes + half_bytes
+                            + float_bytes + sizeof(int32_t);
     cudaFree(d_argmax);
     cudaFree(base);
     result.ok = true;

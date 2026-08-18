@@ -41,6 +41,7 @@ void QwenPinnedWeights::Free() {
     cudaFree(d_final_norm); d_final_norm = nullptr;
     for (auto &l : layers) l.Free();
     layers.clear();
+    resident_bytes = 0;
 }
 
 std::vector<uint8_t> ReadFileBytes(const std::string &path)
@@ -381,6 +382,32 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
 
         LoadLayer(*raw, nv, pw.layers[static_cast<size_t>(l)], stream, is_linear);
     }
+
+    // Resident footprint = every device allocation held by `pw` after load.
+    std::uint64_t rb = 0;
+    rb += static_cast<std::uint64_t>(pw.embed.packed_bytes) + pw.embed.scale_bytes;
+    rb += static_cast<std::uint64_t>(pw.head.packed_bytes) + pw.head.scale_bytes;
+    rb += static_cast<std::uint64_t>(pw.final_norm_size) * sizeof(__half);
+    for (const auto &l : pw.layers) {
+        if (!l.loaded) continue;
+        rb += static_cast<std::uint64_t>(l.norm_size) * sizeof(__half) * 2;
+        const QwenNvfp4Weight *wts[] = {
+            &l.qkv, &l.z, &l.b, &l.a, &l.out,
+            &l.q, &l.k, &l.v, &l.o,
+            &l.mlp_gate, &l.mlp_up, &l.mlp_down,
+        };
+        for (const auto *w : wts)
+            rb += static_cast<std::uint64_t>(w->packed_bytes) + w->scale_bytes;
+        rb += static_cast<std::uint64_t>(l.conv_dim) * l.conv_kernel * sizeof(__half);
+        if (l.d_A_log)
+            rb += static_cast<std::uint64_t>(pw.top.linear_num_value_heads) * sizeof(float);
+        if (l.d_dt_bias)
+            rb += static_cast<std::uint64_t>(pw.top.linear_num_value_heads) * sizeof(float);
+        rb += static_cast<std::uint64_t>(l.attn_norm_size) * sizeof(__half);
+        rb += static_cast<std::uint64_t>(l.q_norm_size) * sizeof(__half);
+        rb += static_cast<std::uint64_t>(l.k_norm_size) * sizeof(__half);
+    }
+    pw.resident_bytes = rb;
 
     return true;
 }
