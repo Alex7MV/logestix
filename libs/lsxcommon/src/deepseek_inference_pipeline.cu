@@ -741,7 +741,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             : 0.0;
         result.total_time_ms = static_cast<double>(elapsed_ms);
         result.kv_slots_used = prompt_len + gen_count;
-        result.weight_resident_bytes = d_alloc_bytes;  // + pw.resident_bytes (Task 8)
+        result.weight_resident_bytes = pw.resident_bytes + d_alloc_bytes;
         result.num_tokens = gen_count;
         result.num_layers = topo.num_layers;
         result.gen_tokens = std::move(gen_ids_i32);

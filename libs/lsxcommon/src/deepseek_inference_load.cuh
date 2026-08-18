@@ -232,6 +232,7 @@ struct PinnedWeights {
     float *d_hc_head_scale = nullptr; // [1]
     std::vector<LayerWeights> layers;
     int vocab_size = 0;
+    std::uint64_t resident_bytes = 0;   // total device bytes held on load
 
     void Free();
 };

@@ -29,7 +29,8 @@ std::string BuildPinnedTokenizerDir(const std::string &fixture_name)
 
 class FakeModel : public lsxcommon::ModelBase {
 public:
-    explicit FakeModel(std::string type) : type_(std::move(type)) {}
+    explicit FakeModel(std::string type)
+        : ModelBase(lsxcommon::ModelInitConfig{}), type_(std::move(type)) {}
 
     bool Load() override
     {
@@ -85,6 +86,12 @@ TEST_CASE("model_base: LoadTokenizerDb fails on a missing model dir", "[model_ba
     m.cfg_.model_path = fs::temp_directory_path() / "no_such_model_xyz";
     REQUIRE_FALSE(m.Load());
     REQUIRE_FALSE(m.loaded_);
+}
+
+TEST_CASE("model_runtime: FakeModel ResidentWeightBytes defaults to zero", "[model_runtime]")
+{
+    FakeModel m("glm-5.2");
+    REQUIRE(m.ResidentWeightBytes() == 0);
 }
 
 TEST_CASE("model_base: ValidateInferRequest canonical errors", "[model_base]")
