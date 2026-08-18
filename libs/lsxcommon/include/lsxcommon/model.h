@@ -32,6 +32,10 @@ public:
     virtual SafetensorsModel Inspect() = 0;
     virtual gpu::InferenceResult SelfCheck(const ModelRequest &req) = 0;
 
+    // Peak resident weight set (pinned + arena + staged experts), in bytes.
+    // Default 0 keeps the interface additive for test fakes.
+    virtual std::uint64_t ResidentWeightBytes() const { return 0; }
+
     virtual const std::string &Type() const = 0;
     virtual ArrowTokenizerDb &Tokenizer() = 0;
 };

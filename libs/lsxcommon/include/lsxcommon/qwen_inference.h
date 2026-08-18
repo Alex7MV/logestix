@@ -89,6 +89,10 @@ struct QwenGenerationResult {
     std::vector<int32_t> tokens;
     int32_t first_token = -1;
     std::vector<float> final_logits;
+    double ttft_ms = 0.0;
+    double total_ms = 0.0;
+    std::uint64_t resident_bytes = 0;
+    bool eos_terminated = false;
 };
 
 // Full greedy multi-token generation over the frozen Qwen3.5-9B hybrid loop:
