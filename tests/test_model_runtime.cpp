@@ -2,12 +2,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <arrow/io/file.h>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include <lsxcommon/converter.h>
 #include <lsxcommon/model_base.h>
+#include <lsxcommon/model_runtime.h>
 #include <lsxcommon/tokenizer.h>
 
 namespace fs = std::filesystem;
@@ -114,6 +116,67 @@ TEST_CASE("model_base: ValidateInferRequest canonical errors", "[model_base]")
 
     req.max_gen_tokens = 64;
     REQUIRE(m.ValidateInferRequest(req, r));
+    m.Unload();
+    fs::remove_all(root);
+}
+
+TEST_CASE("model_runtime: DecodeGeneratedText round-trips a token stream", "[model_runtime]")
+{
+    const std::string root = BuildPinnedTokenizerDir("synthetic_tok.json");
+    FakeModel m("deepseek-v4-flash");
+    m.cfg_.model_path = root;
+    REQUIRE(m.Load());
+
+    const char *text = "The capital of France is Paris";
+    std::vector<int32_t> ids(256, 0);
+    size_t cap = ids.size();
+    const int32_t n = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), text, std::strlen(text), ids.data(), &cap);
+    REQUIRE(n > 0);
+    ids.resize(static_cast<size_t>(n));
+
+    const std::string out = lsxcommon::runtime::DecodeGeneratedText(m.Tokenizer(), ids);
+    REQUIRE_FALSE(out.empty());
+    REQUIRE(out.find("Paris") != std::string::npos);
+
+    REQUIRE(lsxcommon::runtime::DecodeGeneratedText(m.Tokenizer(), {}).empty());
+    m.Unload();
+    fs::remove_all(root);
+}
+
+TEST_CASE("model_runtime: RunParisSelfCheck matches a 1/2-token Paris prefix", "[model_runtime]")
+{
+    // synthetic_paris_tok.json adds a "P a"->...->"Paris" BPE merge chain so
+    // "Paris" encodes to a single token (the byte-level synthetic_tok.json
+    // fixture would yield 5 byte tokens, which 1->2-token decode can never
+    // reassemble into "Paris").
+    const std::string root = BuildPinnedTokenizerDir("synthetic_paris_tok.json");
+    FakeModel m("glm-5.2");
+    m.cfg_.model_path = root;
+    REQUIRE(m.Load());
+
+    // Script the fake's Infer to emit gen_tokens that decode to "Paris".
+    std::vector<int32_t> paris(256, 0);
+    size_t cap = paris.size();
+    const int32_t np = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), "Paris", 5, paris.data(), &cap);
+    REQUIRE(np > 0);
+    paris.resize(static_cast<size_t>(np));
+    m.scripted_.ok = true;
+    m.scripted_.gen_tokens = paris;
+    m.scripted_.first_gen_tok_id = paris.front();
+
+    lsxcommon::ModelRequest req{std::vector<int32_t>{1, 2}, 1};
+    auto r = lsxcommon::runtime::RunParisSelfCheck(m, req);
+    REQUIRE(r.ok);
+    REQUIRE(r.selfcheck_passed);
+    REQUIRE_FALSE(r.first_gen_text.empty());
+
+    m.scripted_.gen_tokens = {12345};   // never decodes to "Paris"
+    m.scripted_.first_gen_tok_id = 12345;
+    auto r2 = lsxcommon::runtime::RunParisSelfCheck(m, req);
+    REQUIRE(r2.ok);
+    REQUIRE_FALSE(r2.selfcheck_passed);
     m.Unload();
     fs::remove_all(root);
 }
