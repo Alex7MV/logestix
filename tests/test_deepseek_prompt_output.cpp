@@ -81,5 +81,10 @@ TEST_CASE(
     absl::StripAsciiWhitespace(&trimmed);
     REQUIRE(trimmed.rfind("Paris", 0) == 0);
 
+    // Unified runtime contract (Task 6): timings, occupancy, token count.
+    REQUIRE(r.total_time_ms >= r.ttft_ms);
+    REQUIRE(r.kv_slots_used > 0);
+    REQUIRE(r.num_tokens == static_cast<int>(r.gen_tokens.size()));
+
     m->Unload();
 }

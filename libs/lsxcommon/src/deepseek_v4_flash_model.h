@@ -1,14 +1,14 @@
 #pragma once
 
-#include <memory>
 #include <string>
 
-#include "lsxcommon/model.h"
+#include "lsxcommon/model_base.h"
 
 namespace lsxcommon {
 
-class DeepSeekV4FlashModel final : public IModel {
+class DeepSeekV4FlashModel final : public ModelBase {
 public:
+    static const std::string kType;
     explicit DeepSeekV4FlashModel(ModelInitConfig cfg);
     ~DeepSeekV4FlashModel() override;
 
@@ -19,14 +19,6 @@ public:
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
 
     const std::string &Type() const override { return kType; }
-    ArrowTokenizerDb &Tokenizer() override;
-
-    static const std::string kType;
-
-private:
-    ModelInitConfig cfg_;
-    std::unique_ptr<ArrowTokenizerDb> tok_db_;
-    bool loaded_ = false;
 };
 
 } // namespace lsxcommon

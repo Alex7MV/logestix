@@ -2,6 +2,7 @@
 #include "lsxcommon/deepseek_norm_kernels.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/deepseek_inference_csa.h"
 #include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
@@ -192,6 +193,14 @@ InferenceResult RunInferenceModel(
         }                                                              \
     } while (0)
 
+// Device cudaMalloc + resident-bytes accumulation (weight_resident_bytes
+// arena-and-staging component). Host staging (cudaMallocHost) is excluded.
+#define DS_ALLOC(dst, bytes)                                               \
+    do {                                                                   \
+        INFER_CHECK(cudaMalloc(&(dst), (bytes)));                          \
+        d_alloc_bytes += static_cast<std::uint64_t>(bytes);                \
+    } while (0)
+
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);
     int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
@@ -235,9 +244,10 @@ InferenceResult RunInferenceModel(
     uint8_t *d_scale_stage = nullptr;
     int64_t routed_pack_total = 0, routed_scale_total = 0;
     ExpertDb expert_db;
-    cudaEvent_t t_start = nullptr, t_stop = nullptr;
+    cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     float rms_eps = 1e-6f;
     int total_steps = 0;
+    std::uint64_t d_alloc_bytes = 0;  // arena + routed-expert staging, device only
     const int kLocalTopK = 6;
     // Shared experts may have intermediate_dim = hidden_dim; allocate full size.
     size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(float);
@@ -261,30 +271,30 @@ InferenceResult RunInferenceModel(
     CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
-    INFER_CHECK(cudaMalloc(&d_hidden, static_cast<size_t>(kHcDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_hidden_next, static_cast<size_t>(kHcDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_single, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_normed, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_ffn_out, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
+    DS_ALLOC(d_hidden, static_cast<size_t>(kHcDim) * sizeof(float));
+    DS_ALLOC(d_hidden_next, static_cast<size_t>(kHcDim) * sizeof(float));
+    DS_ALLOC(d_single, static_cast<size_t>(kHiddenDim) * sizeof(__half));
+    DS_ALLOC(d_normed, static_cast<size_t>(kHiddenDim) * sizeof(__half));
+    DS_ALLOC(d_ffn_out, static_cast<size_t>(kHiddenDim) * sizeof(__half));
 
-    INFER_CHECK(cudaMalloc(&d_shared_int, shared_int_sz));
-    INFER_CHECK(cudaMalloc(&d_shared_gate, shared_int_sz));
-    INFER_CHECK(cudaMalloc(&d_routed_buf, shared_int_sz));
-    INFER_CHECK(cudaMalloc(&d_dequant_scratch, dequant_sz));
-    INFER_CHECK(cudaMalloc(&d_act_quant,
-        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_ffn_accum,
-        static_cast<size_t>(kHiddenDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_swiglu_out,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_act_scales,
-        static_cast<size_t>((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_gate_f32,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_up_f32,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_attn_dequant, attn_dequant_sz));
-    INFER_CHECK(cudaMalloc(&d_kv_cache, kv_cache_sz));
+    DS_ALLOC(d_shared_int, shared_int_sz);
+    DS_ALLOC(d_shared_gate, shared_int_sz);
+    DS_ALLOC(d_routed_buf, shared_int_sz);
+    DS_ALLOC(d_dequant_scratch, dequant_sz);
+    DS_ALLOC(d_act_quant,
+        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(float));
+    DS_ALLOC(d_ffn_accum,
+        static_cast<size_t>(kHiddenDim) * sizeof(float));
+    DS_ALLOC(d_swiglu_out,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float));
+    DS_ALLOC(d_act_scales,
+        static_cast<size_t>((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float));
+    DS_ALLOC(d_gate_f32,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float));
+    DS_ALLOC(d_up_f32,
+        static_cast<size_t>(kIntermediateDim) * sizeof(float));
+    DS_ALLOC(d_attn_dequant, attn_dequant_sz);
+    DS_ALLOC(d_kv_cache, kv_cache_sz);
     INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
 
     // Routed-expert staging: 3 packed weights (~4.19MB each) + 3 E8M0 scales.
@@ -294,28 +304,28 @@ InferenceResult RunInferenceModel(
         routed_pack_total = pk + w2p + pk;
         int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 32; // per-32 E8M0
         routed_scale_total = scl * 3;
-        INFER_CHECK(cudaMalloc(&d_pack_stage, static_cast<size_t>(routed_pack_total)));
-        INFER_CHECK(cudaMalloc(&d_scale_stage, static_cast<size_t>(routed_scale_total)));
+        DS_ALLOC(d_pack_stage, static_cast<size_t>(routed_pack_total));
+        DS_ALLOC(d_scale_stage, static_cast<size_t>(routed_scale_total));
     }
 
-    INFER_CHECK(cudaMalloc(&d_q, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_qr, static_cast<size_t>(kQloraRank) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_qr2, static_cast<size_t>(kQloraRank) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_kv, static_cast<size_t>(kHeadDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_kv2, static_cast<size_t>(kHeadDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_o, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_olora, static_cast<size_t>(kOGroups * kOloraRank) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_attn_out_h, static_cast<size_t>(kHiddenDim) * sizeof(__half)));
-    INFER_CHECK(cudaMalloc(&d_attn_out, static_cast<size_t>(kHiddenDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_hc_post, static_cast<size_t>(kHcMult) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_hc_comb, static_cast<size_t>(kHcMult * kHcMult) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_hc_pre, static_cast<size_t>(kHcMult) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_next_token, sizeof(int32_t)));
-    INFER_CHECK(cudaMalloc(&d_next_maxv, sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_norm_scratch,
-        static_cast<size_t>(kHiddenDim) * sizeof(float)));
-    INFER_CHECK(cudaMalloc(&d_norm_gamma_scratch,
-        static_cast<size_t>(kHiddenDim) * sizeof(float)));
+    DS_ALLOC(d_q, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half));
+    DS_ALLOC(d_qr, static_cast<size_t>(kQloraRank) * sizeof(__half));
+    DS_ALLOC(d_qr2, static_cast<size_t>(kQloraRank) * sizeof(__half));
+    DS_ALLOC(d_kv, static_cast<size_t>(kHeadDim) * sizeof(__half));
+    DS_ALLOC(d_kv2, static_cast<size_t>(kHeadDim) * sizeof(__half));
+    DS_ALLOC(d_o, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half));
+    DS_ALLOC(d_olora, static_cast<size_t>(kOGroups * kOloraRank) * sizeof(__half));
+    DS_ALLOC(d_attn_out_h, static_cast<size_t>(kHiddenDim) * sizeof(__half));
+    DS_ALLOC(d_attn_out, static_cast<size_t>(kHiddenDim) * sizeof(float));
+    DS_ALLOC(d_hc_post, static_cast<size_t>(kHcMult) * sizeof(float));
+    DS_ALLOC(d_hc_comb, static_cast<size_t>(kHcMult * kHcMult) * sizeof(float));
+    DS_ALLOC(d_hc_pre, static_cast<size_t>(kHcMult) * sizeof(float));
+    DS_ALLOC(d_next_token, sizeof(int32_t));
+    DS_ALLOC(d_next_maxv, sizeof(float));
+    DS_ALLOC(d_norm_scratch,
+        static_cast<size_t>(kHiddenDim) * sizeof(float));
+    DS_ALLOC(d_norm_gamma_scratch,
+        static_cast<size_t>(kHiddenDim) * sizeof(float));
 
     // ── DBG: zero ALL scratch so uninit reads can't differ run-to-run ──
     INFER_CHECK(cudaMemsetAsync(d_hidden, 0, static_cast<size_t>(kHcDim) * sizeof(float), stream));
@@ -398,7 +408,7 @@ InferenceResult RunInferenceModel(
     // Sized to the model's actual vocab_size (bounds-checked above), not a
     // fixed literal — a larger-vocab model now fails loudly at load time
     // instead of silently overflowing this buffer on every decode step.
-    INFER_CHECK(cudaMalloc(&d_logits, static_cast<size_t>(pw.vocab_size) * sizeof(float)));
+    DS_ALLOC(d_logits, static_cast<size_t>(pw.vocab_size) * sizeof(float));
 
     // 7. Route table for top-8
     INFER_CHECK(cudaMallocHost(&h_topk,
@@ -442,6 +452,7 @@ InferenceResult RunInferenceModel(
 
     // 9. Timing events
     INFER_CHECK(cudaEventCreate(&t_start));
+    INFER_CHECK(cudaEventCreate(&t_ttft));
     INFER_CHECK(cudaEventCreate(&t_stop));
     INFER_CHECK(cudaEventRecord(t_start, stream));
 
@@ -681,10 +692,24 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             result.first_gen_tok_id = next_tok;
             result.first_gen_maxv   = max_val;
             result.first_gen_text   = std::string(tok_buf, tok_cap);
+            cudaEventRecord(t_ttft, stream);
         }
 
-        if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size()))
+        if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size())) {
+            result.eos_terminated = true;
             break;
+        }
+    }
+
+    // Publish the raw [vocab] logits row of the final decode step.
+    {
+        result.final_logits.resize(static_cast<size_t>(pw.vocab_size));
+        cudaError_t fl_e = cudaMemcpyAsync(
+            result.final_logits.data(), d_logits,
+            static_cast<size_t>(pw.vocab_size) * sizeof(float),
+            cudaMemcpyDeviceToHost, stream);
+        if (fl_e == cudaSuccess) fl_e = cudaStreamSynchronize(stream);
+        if (fl_e != cudaSuccess) result.final_logits.clear();  // best-effort
     }
 
     INFER_CHECK(cudaEventRecord(t_stop, stream));
@@ -706,34 +731,26 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         auto gen_start = gen_ids.begin()
             + std::min(first_gen_idx, static_cast<int>(gen_ids.size()));
         std::vector<int32_t> gen_ids_i32(gen_start, gen_ids.end());
-        size_t out_cap = 4096;
-        std::string output(out_cap, '\0');
-        int32_t dr = ::lsxcommon::arrow_tokenizer_decode(
-            tok_db, gen_ids_i32.data(), gen_ids_i32.size(), output.data(), &out_cap);
-        if (dr == -2) {   // *out_cap now reports the required size; retry once
-            output.resize(out_cap);
-            size_t cap2 = out_cap;
-            dr = ::lsxcommon::arrow_tokenizer_decode(
-                tok_db, gen_ids_i32.data(), gen_ids_i32.size(), output.data(), &cap2);
-            out_cap = cap2;
-        }
-        if (dr == 0) output.resize(out_cap);
-        else output.clear();
-        result.ttft_ms = elapsed_ms / static_cast<double>(total_steps);
+        result.output_text = lsxcommon::runtime::DecodeGeneratedText(
+            tok_db, gen_ids_i32);
+        float ttft_elapsed = 0.0f;
+        INFER_CHECK(cudaEventElapsedTime(&ttft_elapsed, t_start, t_ttft));
+        result.ttft_ms = static_cast<double>(ttft_elapsed);
         result.tokens_per_sec = elapsed_ms > 0.0f
             ? (static_cast<double>(gen_count) / elapsed_ms) * 1000.0
             : 0.0;
         result.total_time_ms = static_cast<double>(elapsed_ms);
+        result.kv_slots_used = prompt_len + gen_count;
+        result.weight_resident_bytes = d_alloc_bytes;  // + pw.resident_bytes (Task 8)
         result.num_tokens = gen_count;
         result.num_layers = topo.num_layers;
-        result.output_text = output;
         result.gen_tokens = std::move(gen_ids_i32);
         result.ok = true;
 
         std::ostringstream res_oss;
         res_oss << "=== --testprompt Results ===\n"
                 << "  prompt_tokens: \"" << input_ids.size() << "\"\n"
-                << "  output:        \"" << output << "\"\n"
+                << "  output:        \"" << result.output_text << "\"\n"
                 << "  elapsed:       " << std::fixed << std::setprecision(1)
                 << static_cast<double>(elapsed_ms) << " ms\n"
                 << "  gen_tokens:    " << gen_count << "\n"
@@ -790,6 +807,7 @@ cleanup:
         delete[] csa_states;
     }
     if (t_start)       cudaEventDestroy(t_start);
+    if (t_ttft)        cudaEventDestroy(t_ttft);
     if (t_stop)        cudaEventDestroy(t_stop);
     free_expert_index(expert_db);
     pw.Free();
@@ -797,30 +815,6 @@ cleanup:
     return result;
     } // end execution block
 } // end RunInference
-
-// Single-token self-check: runs one forward pass on the given prompt and
-// reports whether the first generated token is "Paris". Test/diagnostic entry
-// point — may be removed later.
-InferenceResult RunSelfCheckModel(
-    const std::string &model_path,
-    const std::vector<int32_t> &input_ids,
-    int max_gen_tokens,
-    ::lsxcommon::ArrowTokenizerDb &tok_db)
-{
-    InferenceResult r = RunInferenceModel(model_path, input_ids, max_gen_tokens, tok_db);
-    if (!r.ok) {
-        r.selfcheck_passed = false;
-        return r;
-    }
-    if (r.first_gen_tok_id >= 0) {
-        absl::StripAsciiWhitespace(&r.first_gen_text);
-        r.selfcheck_passed = (r.first_gen_text == "Paris");
-    }
-    log::info("[selfcheck] top1_tok=" + std::to_string(r.first_gen_tok_id)
-              + " text='" + r.first_gen_text + "' passed="
-              + (r.selfcheck_passed ? "true" : "false"));
-    return r;
-}
 
 } // namespace gpu
 } // namespace lsxcommon
