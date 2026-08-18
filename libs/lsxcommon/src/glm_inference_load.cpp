@@ -45,7 +45,8 @@ namespace {
 // pageable-copy safety would be lost) — left as a follow-up with real
 // hardware benchmarking, not attempted blind.
 cudaError_t UploadBf16ToHalf(const uint8_t *src_bytes, int64_t numel,
-                             __half **d_out, cudaStream_t stream)
+                             __half **d_out, cudaStream_t stream,
+                             std::uint64_t &bytes_acc)
 {
     std::vector<__half> h_half(static_cast<size_t>(numel));
     const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
@@ -57,6 +58,7 @@ cudaError_t UploadBf16ToHalf(const uint8_t *src_bytes, int64_t numel,
     }
     cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
     if (e != cudaSuccess) return e;
+    bytes_acc += static_cast<std::uint64_t>(numel) * sizeof(__half);
     e = cudaMemcpyAsync(*d_out, h_half.data(),
                         static_cast<size_t>(numel) * sizeof(__half),
                         cudaMemcpyHostToDevice, stream);
@@ -69,12 +71,13 @@ cudaError_t UploadBf16ToHalf(const uint8_t *src_bytes, int64_t numel,
 }
 
 cudaError_t UploadRaw(const std::vector<uint8_t> &data, float **d_out,
-                      cudaStream_t stream)
+                      cudaStream_t stream, std::uint64_t &bytes_acc)
 {
     if (data.empty()) return cudaSuccess;
     float *d = nullptr;
     cudaError_t e = cudaMalloc(&d, data.size());
     if (e != cudaSuccess) return e;
+    bytes_acc += data.size();
     e = cudaMemcpyAsync(d, data.data(), data.size(),
                         cudaMemcpyHostToDevice, stream);
     if (e != cudaSuccess) {
@@ -153,12 +156,14 @@ arrow::Result<std::vector<TensorRecord>> LoadArrowFile(const std::string &path)
     return PinnedSchema::UnpackBatch(*batch_res);
 }
 
-void Upload1D(const TensorRecord *t, __half **dst, cudaStream_t stream)
+void Upload1D(const TensorRecord *t, __half **dst, cudaStream_t stream,
+              std::uint64_t &bytes_acc)
 {
     if (!t || t->shape.empty()) return;
     int64_t numel = t->shape[0];
     if (numel <= 0) return;
-    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream);
+    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream,
+                                     bytes_acc);
     if (e != cudaSuccess) {
         // Distinguish a real CUDA failure (OOM, driver error) from the
         // legitimately-silent "tensor not present for this layer type" case
@@ -174,7 +179,8 @@ void Upload1D(const TensorRecord *t, __half **dst, cudaStream_t stream)
 // The base is the full suffix within the layer, e.g. "self_attn.q_a_proj.weight".
 void Upload2D(const std::vector<TensorRecord> &tensors,
               const std::string &suffix, __half **dst,
-              int64_t *rows, int64_t *cols, cudaStream_t stream)
+              int64_t *rows, int64_t *cols, cudaStream_t stream,
+              std::uint64_t &bytes_acc)
 {
     auto *t = FindTensor(tensors, suffix);
     if (!t || t->shape.size() < 2) return;
@@ -184,7 +190,8 @@ void Upload2D(const std::vector<TensorRecord> &tensors,
     if (cols) *cols = c;
     int64_t numel = r * c;
     if (numel <= 0) return;
-    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream);
+    cudaError_t e = UploadBf16ToHalf(t->data.data(), numel, dst, stream,
+                                     bytes_acc);
     if (e != cudaSuccess) {
         log::error("[glm_load] upload failed for '" + t->name + "': "
                    + cudaGetErrorString(e));
@@ -193,7 +200,8 @@ void Upload2D(const std::vector<TensorRecord> &tensors,
 }
 
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
-                       GlmPinnedWeights &pw, cudaStream_t stream)
+                       GlmPinnedWeights &pw, cudaStream_t stream,
+                       std::uint64_t &bytes_acc)
 {
     auto tensors_res = LoadArrowFile((pinned_dir / "global.arrow").string());
     if (!tensors_res.ok()) {
@@ -209,7 +217,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         pw.hidden = static_cast<int>(embed->shape[1]);
         cudaError_t e = UploadBf16ToHalf(embed->data.data(),
                              pw.vocab_size * pw.hidden, &pw.d_embed,
-                             stream);
+                             stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] embed upload failed: ")
                        + cudaGetErrorString(e));
@@ -224,7 +232,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     if (head && head->shape.size() >= 2 && head != embed) {
         int64_t numel = head->shape[0] * head->shape[1];
         cudaError_t e = UploadBf16ToHalf(head->data.data(), numel, &pw.d_head,
-                             stream);
+                             stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] head upload failed: ")
                        + cudaGetErrorString(e));
@@ -234,7 +242,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     auto *norm = FindTensor(tensors, "model.norm.weight");
     if (norm && !norm->shape.empty()) {
         cudaError_t e = UploadBf16ToHalf(norm->data.data(), norm->shape[0],
-                             &pw.d_final_norm, stream);
+                             &pw.d_final_norm, stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] model.norm upload failed: ")
                        + cudaGetErrorString(e));
@@ -249,36 +257,38 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
 }
 
 void LoadSingleLayer(const std::vector<TensorRecord> &tensors,
-                     GlmLayerWeights &lw, cudaStream_t stream)
+                     GlmLayerWeights &lw, cudaStream_t stream,
+                     std::uint64_t &bytes_acc)
 {
     // Layer norms.
     Upload1D(FindTensor(tensors, "input_layernorm.weight"),
-             &lw.d_input_norm, stream);
+             &lw.d_input_norm, stream, bytes_acc);
     Upload1D(FindTensor(tensors, "post_attention_layernorm.weight"),
-             &lw.d_post_attn_norm, stream);
+             &lw.d_post_attn_norm, stream, bytes_acc);
 
     // MLA attention.
     Upload2D(tensors, "self_attn.q_a_proj.weight", &lw.d_q_a_proj,
-             &lw.q_a_rows, &lw.q_a_cols, stream);
+             &lw.q_a_rows, &lw.q_a_cols, stream, bytes_acc);
     Upload1D(FindTensor(tensors, "self_attn.q_a_layernorm.weight"),
-             &lw.d_q_a_norm, stream);
+             &lw.d_q_a_norm, stream, bytes_acc);
     Upload2D(tensors, "self_attn.q_b_proj.weight", &lw.d_q_b_proj,
-             &lw.q_b_rows, &lw.q_b_cols, stream);
+             &lw.q_b_rows, &lw.q_b_cols, stream, bytes_acc);
     Upload2D(tensors, "self_attn.kv_a_proj_with_mqa.weight", &lw.d_kv_a_proj,
-             &lw.kv_a_rows, &lw.kv_a_cols, stream);
+             &lw.kv_a_rows, &lw.kv_a_cols, stream, bytes_acc);
     Upload1D(FindTensor(tensors, "self_attn.kv_a_layernorm.weight"),
-             &lw.d_kv_a_norm, stream);
+             &lw.d_kv_a_norm, stream, bytes_acc);
     Upload2D(tensors, "self_attn.kv_b_proj.weight", &lw.d_kv_b_proj,
-             &lw.kv_b_rows, &lw.kv_b_cols, stream);
+             &lw.kv_b_rows, &lw.kv_b_cols, stream, bytes_acc);
     Upload2D(tensors, "self_attn.o_proj.weight", &lw.d_o_proj,
-             &lw.o_rows, &lw.o_cols, stream);
+             &lw.o_rows, &lw.o_cols, stream, bytes_acc);
 
     // Router (MoE layers): gate weight BF16 + e_score_correction_bias F32.
     auto *router = FindTensor(tensors, "mlp.gate.weight");
     if (router && router->shape.size() >= 2) {
         int64_t numel = router->shape[0] * router->shape[1];
         if (UploadBf16ToHalf(router->data.data(), numel,
-                             &lw.d_router_gate, stream) == cudaSuccess)
+                             &lw.d_router_gate, stream, bytes_acc)
+            == cudaSuccess)
             log::debug("[glm_load] router gate uploaded");
     }
     auto *gate_bias = FindTensor(tensors, "mlp.gate.e_score_correction_bias");
@@ -294,32 +304,34 @@ void LoadSingleLayer(const std::vector<TensorRecord> &tensors,
 
     // Dense MLP (layers 0-2).
     Upload2D(tensors, "mlp.gate_proj.weight", &lw.d_mlp_gate,
-             nullptr, nullptr, stream);
+             nullptr, nullptr, stream, bytes_acc);
     Upload2D(tensors, "mlp.down_proj.weight", &lw.d_mlp_down,
-             nullptr, nullptr, stream);
+             nullptr, nullptr, stream, bytes_acc);
     Upload2D(tensors, "mlp.up_proj.weight", &lw.d_mlp_up,
-             nullptr, nullptr, stream);
+             nullptr, nullptr, stream, bytes_acc);
 
     // Indexer (indexer layers).
     Upload2D(tensors, "self_attn.indexer.wq_b.weight", &lw.d_idx_wq_b,
-             nullptr, nullptr, stream);
+             nullptr, nullptr, stream, bytes_acc);
     Upload2D(tensors, "self_attn.indexer.wk.weight", &lw.d_idx_wk,
-             nullptr, nullptr, stream);
+             nullptr, nullptr, stream, bytes_acc);
     Upload2D(tensors, "self_attn.indexer.weights_proj.weight",
-             &lw.d_idx_weights_proj, nullptr, nullptr, stream);
+             &lw.d_idx_weights_proj, nullptr, nullptr, stream, bytes_acc);
     Upload1D(FindTensor(tensors, "self_attn.indexer.k_norm.weight"),
-             &lw.d_idx_k_norm, stream);
+             &lw.d_idx_k_norm, stream, bytes_acc);
     auto *k_bias = FindTensor(tensors, "self_attn.indexer.k_norm.bias");
     if (k_bias && !k_bias->data.empty())
-        UploadRaw(k_bias->data, &lw.d_idx_k_norm_bias, stream);
+        UploadRaw(k_bias->data, &lw.d_idx_k_norm_bias, stream, bytes_acc);
 
     // MTP block (layer 78).
     Upload2D(tensors, "eh_proj.weight", &lw.d_eh_proj,
-             &lw.q_a_rows, &lw.q_a_cols, stream);
-    Upload1D(FindTensor(tensors, "enorm.weight"), &lw.d_enorm, stream);
-    Upload1D(FindTensor(tensors, "hnorm.weight"), &lw.d_hnorm, stream);
+             &lw.q_a_rows, &lw.q_a_cols, stream, bytes_acc);
+    Upload1D(FindTensor(tensors, "enorm.weight"), &lw.d_enorm, stream,
+             bytes_acc);
+    Upload1D(FindTensor(tensors, "hnorm.weight"), &lw.d_hnorm, stream,
+             bytes_acc);
     Upload1D(FindTensor(tensors, "shared_head.norm.weight"),
-             &lw.d_shared_head_norm, stream);
+             &lw.d_shared_head_norm, stream, bytes_acc);
 }
 
 } // anonymous namespace
@@ -367,6 +379,7 @@ void GlmPinnedWeights::Free()
     d_embed = d_head = d_final_norm = nullptr;
     vocab_size = 0;
     hidden = 0;
+    resident_bytes = 0;
     for (auto &l : layers) l.Free();
     layers.clear();
     shared_host.clear();
@@ -402,7 +415,7 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     }
     pw.layers.resize(static_cast<size_t>(topo.num_layers));
 
-    auto err = LoadGlobal(pinned_dir, pw, stream);
+    auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes);
     if (err != cudaSuccess) return err;
 
     for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
@@ -419,7 +432,8 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                        + tensors_res.status().ToString());
             continue;
         }
-        LoadSingleLayer(*tensors_res, pw.layers[static_cast<size_t>(l)], stream);
+        LoadSingleLayer(*tensors_res, pw.layers[static_cast<size_t>(l)], stream,
+                        pw.resident_bytes);
     }
 
     // Shared experts: one NVFP4-packed PackedExpert per layer in

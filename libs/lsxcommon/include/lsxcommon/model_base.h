@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "lsxcommon/model.h"
 #include "lsxcommon/tokenizer.h"
@@ -13,6 +14,8 @@ namespace lsxcommon {
 // guards (Item 5: infer-preamble guards). All three models migrate onto it.
 class ModelBase : public IModel {
 public:
+    explicit ModelBase(ModelInitConfig cfg) : cfg_(std::move(cfg)) {}
+
     ModelInitConfig cfg_;
     std::unique_ptr<ArrowTokenizerDb> tok_db_;
     bool loaded_ = false;

@@ -1354,14 +1354,27 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         result.error_msg = cudaGetErrorString(e);
         return e;
     }
+
+    cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
         log::error("[glm_real] FAIL (stage=" + std::string(g_stage) + "): " +
                    std::string(cudaGetErrorString(err)));
+        if (t_start) cudaEventDestroy(t_start);
+        if (t_ttft) cudaEventDestroy(t_ttft);
+        if (t_stop) cudaEventDestroy(t_stop);
         c.Free();
         return err;
     };
+
+    // Wall-clock timing (stream-delta, GPU time only): t_start at entry,
+    // t_ttft at the first generated token, t_stop after the final head copy.
+    e = cudaEventCreate(&t_start);
+    if (e == cudaSuccess) e = cudaEventCreate(&t_ttft);
+    if (e == cudaSuccess) e = cudaEventCreate(&t_stop);
+    if (e != cudaSuccess) return fail(e);
+    cudaEventRecord(t_start, stream);
 
     const int hidden = pw.hidden;
     const auto shared_for = [&pw](int l) -> const PackedExpert * {
@@ -1434,9 +1447,12 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         const int best = c.h_argmax->best;
         result.tokens.push_back(best);
         if (step == 0) result.first_maxv = c.h_argmax->maxv;
+        if (step == 0) cudaEventRecord(t_ttft, stream);
         if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
-            best == kGlmEosIds[2])
+            best == kGlmEosIds[2]) {
+            result.eos_terminated = true;
             break;
+        }
 
         g_stage = "decode";
         const int pos = last_idx + 1;
@@ -1474,6 +1490,20 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     if (e != cudaSuccess) return fail(e);
     e = cudaStreamSynchronize(stream);
     if (e != cudaSuccess) return fail(e);
+    cudaEventRecord(t_stop, stream);
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) return fail(e);
+    float ms_total = 0.0f, ms_ttft = 0.0f;
+    e = cudaEventElapsedTime(&ms_total, t_start, t_stop);
+    if (e != cudaSuccess) return fail(e);
+    e = cudaEventElapsedTime(&ms_ttft, t_start, t_ttft);
+    if (e != cudaSuccess) return fail(e);
+    result.total_ms = ms_total;
+    result.ttft_ms = ms_ttft;
+    result.resident_bytes = c.bytes + pw.resident_bytes;
+    cudaEventDestroy(t_start);
+    cudaEventDestroy(t_ttft);
+    cudaEventDestroy(t_stop);
     result.kv_slots_used = last_idx + 1;
     result.ok = true;
     c.Free();
