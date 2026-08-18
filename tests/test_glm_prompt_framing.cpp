@@ -65,8 +65,8 @@ TEST_CASE("prompt_framing: GLM chat-template framing order", "[prompt_framing]")
     const int32_t sop   = lsxcommon::arrow_tokenizer_lookup(db, "<sop>", 5);
     const int32_t usr   = lsxcommon::arrow_tokenizer_lookup(db, "<|user|>", 8);
     const int32_t asst  = lsxcommon::arrow_tokenizer_lookup(db, "<|assistant|>", 13);
-    const int32_t think = lsxcommon::arrow_tokenizer_lookup(db, "<think>", 7);
-    const int32_t ethink = lsxcommon::arrow_tokenizer_lookup(db, "</think>", 8);
+    const int32_t think = lsxcommon::arrow_tokenizer_lookup(db, " thinking", 9);
+    const int32_t ethink = lsxcommon::arrow_tokenizer_lookup(db, " response", 9);
     const bool all_specials = (gmask >= 0 && sop >= 0 && usr >= 0 &&
                                asst >= 0 && think >= 0 && ethink >= 0);
     REQUIRE(all_specials);
@@ -143,4 +143,21 @@ TEST_CASE("prompt_framing: long prompt grows past the initial capacity", "[promp
 
     f.db = lsxcommon::ArrowTokenizerDb{};
     fs::remove_all(f.pinned);
+}
+TEST_CASE("prompt_framing: LookupFraming returns the GLM descriptor", "[prompt_framing]")
+{
+    const auto *f = lsxcommon::prompt::LookupFraming("glm-5.2");
+    REQUIRE(f != nullptr);
+    REQUIRE(f->model_type == "glm-5.2");
+    REQUIRE(f->leading_count == 3);
+    REQUIRE(f->trailing_count == 3);
+    REQUIRE(f->leading[0] == "[gMASK]");
+    REQUIRE(f->leading[1] == "<sop>");
+    REQUIRE(f->leading[2] == "<|user|>");
+    REQUIRE(f->trailing[0] == "<|assistant|>");
+    REQUIRE(f->trailing[1] == " thinking");
+    REQUIRE(f->trailing[2] == " response");
+
+    REQUIRE(lsxcommon::prompt::LookupFraming("deepseek-v4-flash") == nullptr);
+    REQUIRE(lsxcommon::prompt::LookupFraming("qwen3.5-9b") == nullptr);
 }
