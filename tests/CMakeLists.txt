@@ -431,6 +431,28 @@ endif()
 
 add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
 
+# ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
+add_executable(test_model_runtime test_model_runtime.cpp)
+target_compile_definitions(test_model_runtime PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_runtime>"
+    )
+    add_custom_command(TARGET test_model_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_runtime>"
+    )
+endif()
+
+add_test(NAME test_model_runtime COMMAND test_model_runtime)
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
