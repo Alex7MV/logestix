@@ -5,6 +5,7 @@
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_integrity.h"
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/schema.h"
@@ -238,41 +239,13 @@ int main(int argc, char* argv[]) {
     // blueprint prompt) is encoded through the model tokenizer and handed to
     // the single end-to-end cudaStream_t Prefill->Decode autogeneration loop.
     if (!absl::GetFlag(FLAGS_run).empty()) {
-        spdlog::info("Running generation path on prompt: {}", run_prompt);
-        lsxcommon::ModelInitConfig cfg;
-        cfg.model_path = input_path;
-        cfg.max_gen_tokens = 64;
-        auto model = lsxcommon::LsxModelFactory::Create(cfg);
-        if (!model || !model->Load()) {
-            spdlog::error("Failed to create/load model: {}", input_path);
-            lsxcommon::Core::Shutdown();
-            return 1;
-        }
-        std::vector<int32_t> input_ids;
-        if (!lsxcommon::prompt::BuildPromptInputIds(
-                model->Type(), model->Tokenizer(), run_prompt, input_ids)) {
-            spdlog::error("Tokenizer encode failed for prompt: {}",
-                          run_prompt);
-            model->Unload();
-            lsxcommon::Core::Shutdown();
-            return 1;
-        }
-        lsxcommon::ModelRequest req{std::move(input_ids), 64};
-        auto result = model->Infer(req);
-        if (!result.ok) {
-            spdlog::error("Inference failed: {}", result.error_msg);
-            model->Unload();
-            lsxcommon::Core::Shutdown();
-            return 1;
-        }
-        spdlog::info("=== --run Results ===");
-        spdlog::info("prompt   : {}", run_prompt);
-        spdlog::info("output   : {}", result.output_text);
-        spdlog::info("tokens   : {} at {:.1f} t/s",
-                     result.num_tokens, result.tokens_per_sec);
-        model->Unload();
+        lsxcommon::runtime::GenerationCliArgs args;
+        args.model_path = input_path;
+        args.prompt = run_prompt;
+        args.max_gen_tokens = 64;
+        int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();
-        return 0;
+        return rc;
     }
 
     if (verify_only) {

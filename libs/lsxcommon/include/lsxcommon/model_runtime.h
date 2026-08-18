@@ -23,5 +23,19 @@ std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
 // Returns the InferenceResult with selfcheck_passed filled.
 gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req);
 
+struct GenerationCliArgs {
+    std::string model_path;
+    std::string prompt;
+    int max_gen_tokens = 64;
+};
+
+// Item 6 — unified CLI lifecycle. Each helper wraps
+// Create -> Load -> frame/encode -> run -> print -> Unload and returns a
+// process exit code. The caller owns Core::Initialize/Shutdown.
+int RunCliGeneration(const GenerationCliArgs &args);
+int RunCliSelfCheck(const GenerationCliArgs &args);
+int RunCliInspect(const std::string &model_path, bool full);
+void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r);
+
 } // namespace runtime
 } // namespace lsxcommon

@@ -3,6 +3,7 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/path_registry.h"
 #include <cstring>
 #include <filesystem>
@@ -30,21 +31,9 @@ int main(int argc, char* argv[]) {
     spdlog::info("Model path: {}", model_path);
 
     if (info || infofull) {
-        lsxcommon::ModelInitConfig cfg;
-        cfg.model_path = model_path;
-        auto model = lsxcommon::LsxModelFactory::Create(cfg);
-        if (!model || !model->Load()) {
-            spdlog::error("Failed to create/load model: {}", model_path);
-            lsxcommon::Core::Shutdown();
-            return 1;
-        }
-        auto mi = model->Inspect();
-        if (infofull) {
-            for (auto &shard : mi.shards)
-                lsxcommon::print_shard(shard);
-        }
-        lsxcommon::print_model(mi);
-        model->Unload();
+        int rc = lsxcommon::runtime::RunCliInspect(model_path, infofull);
+        lsxcommon::Core::Shutdown();
+        return rc;
     }
 
     lsxcommon::Core::Shutdown();

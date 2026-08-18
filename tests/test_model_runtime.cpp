@@ -94,6 +94,14 @@ TEST_CASE("model_runtime: FakeModel ResidentWeightBytes defaults to zero", "[mod
     REQUIRE(m.ResidentWeightBytes() == 0);
 }
 
+TEST_CASE("model_runtime: RunCliGeneration returns nonzero on a missing model", "[model_runtime]")
+{
+    lsxcommon::runtime::GenerationCliArgs args;
+    args.model_path = fs::temp_directory_path() / "no_such_model_xyz";
+    args.prompt = "hello";
+    REQUIRE(lsxcommon::runtime::RunCliGeneration(args) != 0);
+}
+
 TEST_CASE("model_base: ValidateInferRequest canonical errors", "[model_base]")
 {
     FakeModel m("glm-5.2");
