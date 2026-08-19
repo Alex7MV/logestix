@@ -8,6 +8,7 @@
 
 #include "lsxcommon/model.h"          // IModel
 #include "lsxnetwork/frame_queue.h"   // lsxnetwork::FrameQueue
+#include "lsxnetwork/openai_endpoint.h" // lsxnetwork::ChatCompletion
 
 namespace lsxcommon {
 
@@ -30,6 +31,9 @@ struct TaskMosaicStats {
     std::atomic<std::uint64_t> retired_slots {0};  ///< slots released to producer
     std::atomic<std::uint64_t> dispatch_exceptions{0}; ///< IModel::Infer/Parse threw
     std::atomic<std::uint64_t> infer_failures{0};  ///< IModel::Infer returned !ok
+    std::atomic<std::uint64_t> responses_ok{0};           ///< responses published to ring
+    std::atomic<std::uint64_t> responses_failed{0};       ///< ring full / frame too large
+    std::atomic<std::uint64_t> response_serialize_failures{0}; ///< WriteCompletion OOM
 };
 
 /// Multi-model core orchestration layer for the asynchronous TaskMosaic queue
@@ -57,10 +61,23 @@ public:
     /// Serves frames until @p stop becomes true.
     ///
     /// @param queue SPSC frame ring to poll (thread-safe single consumer).
+    /// @param responses SPSC frame ring that receives the serialized reply for
+    ///                  every routed branch. Full / oversized replies are
+    ///                  dropped (responses_failed) — never back-pressure the
+    ///                  request consumer.
     /// @param stats accumulates the loop's dispatch/retirement totals.
     void ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
+                         lsxnetwork::FrameQueue& responses,
                          TaskMosaicStats& stats,
                          std::atomic<bool>& stop);
+
+    /// Drains @p responses and sends each frame verbatim over a ZMQ REP socket
+    /// bound on @p endpoint (blocking until @p stop). Intended to run on a
+    /// second pinned IoWorker when the caller wants network delivery; tests
+    /// drain the ring directly instead.
+    void ServeResponses(lsxnetwork::FrameQueue& responses,
+                        std::atomic<bool>& stop,
+                        const std::string& endpoint);
 
     /// Phase 4.5 — welds the streaming ingestion loop into a pinned IoWorker
     /// (cores 0..3) that owns a per-thread isolated LsxTokenTranslator, loaded
@@ -69,13 +86,22 @@ public:
     /// @param passport_path vault-resolved "model-metadata/passport/passport.bin"
     ///                      (use lsxcommon::lsx_model_metadata("passport/passport.bin")).
     void ServeTaskMosaicPinned(lsxnetwork::FrameQueue& queue,
+                               lsxnetwork::FrameQueue& responses,
                                TaskMosaicStats& stats,
                                std::atomic<bool>& stop,
                                const std::string& passport_path);
 
 private:
     void DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
+                     lsxnetwork::FrameQueue& responses,
                      TaskMosaicStats& stats);
+
+    // Serializes @p res for @p cc and publishes it onto @p responses. Never
+    // throws; failures bump the response_* counters.
+    void EmitResponse(lsxnetwork::FrameQueue& responses,
+                      const lsxnetwork::ChatCompletion& cc,
+                      const gpu::InferenceResult& res,
+                      TaskMosaicStats& stats);
 
     // Model targets resolved once from the dispatch table (keyed by type), so
     // the hot dispatch path never constructs a std::string or runs a hash.

@@ -693,6 +693,8 @@ add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
 # и lsxnetwork (FrameQueue).
 add_executable(test_integrated_pipeline test_integrated_pipeline.cpp)
 target_link_libraries(test_integrated_pipeline PRIVATE lsxcommon lsxnetwork Catch2::Catch2WithMain)
+target_compile_definitions(test_integrated_pipeline PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 if(WIN32)
     add_custom_command(TARGET test_integrated_pipeline POST_BUILD
