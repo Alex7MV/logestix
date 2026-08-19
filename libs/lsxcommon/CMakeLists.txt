@@ -91,6 +91,7 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_inference_pipeline.cu
     src/deepseek_norm_kernels.cu
     src/shared_experts.cu
+    src/sampling.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
