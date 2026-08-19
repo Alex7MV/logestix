@@ -1,5 +1,6 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/sampling.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -780,39 +781,16 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
     return e;
 }
 // ── Generation loop ─────────────────────────────────────────────────────────
-// Greedy argmax over the last row of the logits matrix [seq, V].
-__global__ void qwen_argmax_kernel(const __half *logits, int seq, int V,
-                                   int32_t *out)
-{
-    const int64_t base = (int64_t)(seq - 1) * V;
-    float best = -1e30f;
-    int32_t bidx = -1;
-    for (int v = threadIdx.x; v < V; v += blockDim.x) {
-        float lv = __half2float(logits[base + v]);
-        if (lv > best) { best = lv; bidx = v; }
-    }
-    __shared__ float sb[256];
-    __shared__ int32_t si[256];
-    sb[threadIdx.x] = best;
-    si[threadIdx.x] = bidx;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) {
-            if (sb[threadIdx.x + s] > sb[threadIdx.x]) {
-                sb[threadIdx.x] = sb[threadIdx.x + s];
-                si[threadIdx.x] = si[threadIdx.x + s];
-            }
-        }
-        __syncthreads();
-    }
-    if (threadIdx.x == 0) out[0] = si[0] >= 0 ? si[0] : 0;
-}
+// Greedy argmax over the last row of the logits matrix [seq, V] is delegated to
+// the injected lsxcommon::sample::ISampler (kF16), replacing the former fused
+// qwen_argmax_kernel.
 
 cudaError_t RunQwenGeneration(cudaStream_t stream,
                               const QwenPinnedWeights &pw,
                               const std::vector<int32_t> &prompt, int max_new,
                               int eos_id,
-                              QwenGenerationResult &result)
+                              QwenGenerationResult &result,
+                              lsxcommon::sample::ISampler &sampler)
 {
     const QwenTopology &top = pw.top;
     const int H = top.hidden_size, I = top.intermediate_size;
@@ -870,6 +848,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     size_t float_sz[] = {
         (size_t)max_seq * nv,            // d_gf
         (size_t)max_seq * nv,            // d_betaf
+        (size_t)1,                       // d_maxv_scratch (sampler max-value out)
     };
     size_t half_bytes = 0;
     for (auto s : half_sz) half_bytes += ((s + 7) / 8) * 8 * sizeof(__half);
@@ -917,6 +896,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     float *pf = reinterpret_cast<float*>((uint8_t*)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
+    float *d_maxv_scratch = pf; pf += float_sz[2];
 
     // Dequant embed + head to half for gather / logits GEMM.
     e = lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.d_packed, pw.embed.packed_bytes,
@@ -1017,10 +997,14 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
         if (e != cudaSuccess) return fail(e, "head");
         // argmax last row
-        qwen_argmax_kernel<<<1, std::min(256, V), 0, stream>>>(
-            d_logits, seq, V, d_argmax);
-        e = cudaGetLastError();
-        if (e != cudaSuccess) return fail(e, "argmax");
+        {
+            const int last_row = seq - 1;
+            e = sampler.Sample(stream,
+                               d_logits + static_cast<size_t>(last_row) * V, V,
+                               lsxcommon::sample::LogitType::kF16,
+                               d_argmax, d_maxv_scratch);
+            if (e != cudaSuccess) return fail(e, "argmax");
+        }
 
         // Publish first generated token id (async, synchronized via event below).
         int32_t tok = 0;

@@ -488,7 +488,9 @@ static cudaError_t RunGlmGenerationImpl(
     const GlmExpertTables *experts, GlmExpertDb *expert_db,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler())
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -662,6 +664,10 @@ static cudaError_t RunGlmGenerationImpl(
     // ── Greedy decode: argmax the layer-78 logits row, embed, re-forward. ──
     for (int step = 0; step < max_new; ++step) {
         g_stage = "decode-argmax";
+        e = sampler.Sample(stream, arena.d_logits_head, vocab,
+                           lsxcommon::sample::LogitType::kF32Rounded16,
+                           &arena.d_argmax->best, &arena.d_argmax->maxv);
+        if (e != cudaSuccess) return fail(e);
         e = cudaMemcpyAsync(arena.h_argmax, arena.d_argmax,
                             sizeof(GlmArgmaxSlot), cudaMemcpyDeviceToHost,
                             stream);
@@ -726,17 +732,20 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler)
 {
     return RunGlmGenerationImpl(cublas_h, stream, pw, &experts, nullptr,
-                                nullptr, nullptr, prompt, max_new, result);
+                                nullptr, nullptr, prompt, max_new, result,
+                                sampler);
 }
 
 cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler)
 {
     // Two reusable per-call staging buffers, one expert at a time: the packed
     // E2M1 payloads (w1+w2+w3) and the per-block E4M3 scales. Freed on every
@@ -764,7 +773,7 @@ cudaError_t RunGlmGeneration(
     }
 
     e = RunGlmGenerationImpl(cublas_h, stream, pw, nullptr, &expert_db,
-                             d_pack, d_scale, prompt, max_new, result);    cudaFree(d_scale);
+                             d_pack, d_scale, prompt, max_new, result, sampler);    cudaFree(d_scale);
     cudaFree(d_pack);
     return e;
 }
@@ -1310,7 +1319,8 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                                  const GlmPinnedWeights &pw,
                                  GlmExpertDb &expert_db,
                                  const std::vector<int32_t> &prompt,
-                                 int max_new, GlmGenerationResult &result)
+                                 int max_new, GlmGenerationResult &result,
+                                 lsxcommon::sample::ISampler &sampler)
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -1435,13 +1445,12 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e);
         }
-        GlmArgmaxKernel<<<1, kGlmLoopBlock, 0, stream>>>(
-            c.d_logits_head, vocab, c.d_argmax);
-        e = cudaGetLastError();
+        e = sampler.Sample(stream, c.d_logits_head, vocab,
+                           lsxcommon::sample::LogitType::kF32Rounded16,
+                           &c.d_argmax->best, &c.d_argmax->maxv);
         if (e != cudaSuccess) return fail(e);
         e = cudaMemcpyAsync(c.h_argmax, c.d_argmax, sizeof(GlmArgmaxSlot),
-                            cudaMemcpyDeviceToHost, stream);
-        if (e != cudaSuccess) return fail(e);
+                            cudaMemcpyDeviceToHost, stream);        if (e != cudaSuccess) return fail(e);
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return fail(e);
         const int best = c.h_argmax->best;

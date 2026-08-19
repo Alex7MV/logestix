@@ -4,6 +4,7 @@
 
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 
@@ -15,7 +16,9 @@ InferenceResult RunInferenceModel(
     const std::string &model_path,
     const std::vector<int32_t> &input_ids,
     int max_gen_tokens,
-    ::lsxcommon::ArrowTokenizerDb &tok_db);
+    ::lsxcommon::ArrowTokenizerDb &tok_db,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 } // namespace gpu
 
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)

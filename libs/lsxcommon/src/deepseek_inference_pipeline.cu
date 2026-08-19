@@ -4,6 +4,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/deepseek_inference_csa.h"
+#include "lsxcommon/sampling.h"
 #include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -145,7 +146,9 @@ InferenceResult RunInferenceModel(
     const std::string &model_path,
     const std::vector<int32_t> &input_ids,
     int max_gen_tokens,
-    ::lsxcommon::ArrowTokenizerDb &tok_db)
+    ::lsxcommon::ArrowTokenizerDb &tok_db,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler())
 {
     InferenceResult result;
     auto mp = model_path;
@@ -643,6 +646,10 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                  pw.d_head, d_normed,
                                  pw.vocab_size, kHiddenDim,
                                  d_logits, d_next_token, d_next_maxv));
+
+        INFER_CHECK(sampler.Sample(stream, d_logits, pw.vocab_size,
+                                   lsxcommon::sample::LogitType::kF32,
+                                   d_next_token, d_next_maxv));
 
         // Read back only the 8-byte GPU-computed argmax result (token id +
         // max logit) — not the whole vocab_size-sized logits buffer — and

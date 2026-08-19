@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 namespace qwen {
@@ -103,7 +104,9 @@ cudaError_t RunQwenGeneration(
     const QwenPinnedWeights &pw,
     const std::vector<int32_t> &prompt, int max_new,
     int eos_id,
-    QwenGenerationResult &result);
+    QwenGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 } // namespace qwen
 } // namespace lsxcommon

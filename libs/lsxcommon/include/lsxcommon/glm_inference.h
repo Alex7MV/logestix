@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 namespace glm {
@@ -427,7 +428,9 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 // VRAM-budgeted generation pass over the same frozen 79-layer GLM-5.2 loop,
 // driven by a memory-mapped expert index (GlmExpertDb) instead of a fully
@@ -441,7 +444,9 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 // ── Faithful GLM-5.2 generation (real forward pass) ─────────────────────────
 // Greedy multi-token generation over the REAL GlmMoeDsaForCausalLM forward:
@@ -468,7 +473,9 @@ cudaError_t RunGlmRealGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 } // namespace glm
 } // namespace lsxcommon

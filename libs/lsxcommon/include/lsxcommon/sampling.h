@@ -11,8 +11,9 @@ namespace lsxcommon {
 namespace sample {
 
 enum class LogitType {
-    kF32 = 0,   // float logits rows (GLM d_logits_head, DeepSeek d_logits)
-    kF16 = 1,   // __half logits rows (Qwen d_logits)
+    kF32 = 0,         // float logits rows (DeepSeek d_logits)
+    kF16 = 1,         // __half logits rows (Qwen d_logits)
+    kF32Rounded16 = 2 // float row, compared as FP16-rounded (GLM d_logits_head)
 };
 
 class ISampler {
