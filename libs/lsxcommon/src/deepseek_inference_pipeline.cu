@@ -72,15 +72,6 @@ static __host__ cudaError_t run_rmsnorm(
 }
 
 // From deepseek_inference_moe.cu
-cudaError_t route_token(
-    cublasHandle_t cublas_h, cudaStream_t stream,
-    const __half *d_gate, const __half *d_hidden,
-    int hidden_dim, int num_routed,
-    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
-    const float *h_gate_bias,
-    int topk,
-    int *h_top_indices, float *h_top_weights);
-
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -196,14 +187,6 @@ InferenceResult RunInferenceModel(
         }                                                              \
     } while (0)
 
-// Device cudaMalloc + resident-bytes accumulation (weight_resident_bytes
-// arena-and-staging component). Host staging (cudaMallocHost) is excluded.
-#define DS_ALLOC(dst, bytes)                                               \
-    do {                                                                   \
-        INFER_CHECK(cudaMalloc(&(dst), (bytes)));                          \
-        d_alloc_bytes += static_cast<std::uint64_t>(bytes);                \
-    } while (0)
-
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);
     int total_tokens = static_cast<int>(input_ids.size()) + max_gen;
@@ -212,6 +195,10 @@ InferenceResult RunInferenceModel(
 
     cudaStream_t stream = nullptr;
     cublasHandle_t cublas_h = nullptr;
+    // Per-run single-allocation arena (spec item 12). Local aliases below are
+    // bound to arena slices right after Allocate(); d_hidden/d_hidden_next get
+    // swapped by the layer loop (pointers swap, arena members stay fixed).
+    DeepSeekInferArena arena;
     float *d_hidden = nullptr;      // [hc_mult·dim] — HC state in FP32
     float *d_hidden_next = nullptr; // [hc_mult·dim] FP32
     __half *d_single = nullptr;      // [dim] hc_pre output
@@ -250,20 +237,18 @@ InferenceResult RunInferenceModel(
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     float rms_eps = 1e-6f;
     int total_steps = 0;
-    std::uint64_t d_alloc_bytes = 0;  // arena + routed-expert staging, device only
+    std::uint64_t d_alloc_bytes = 0;  // arena device bytes (resident accounting)
     const int kLocalTopK = 6;
-    // Shared experts may have intermediate_dim = hidden_dim; allocate full size.
-    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(float);
-    // Shared experts may have intermediate_dim up to hidden_dim
-    size_t shared_int_sz = static_cast<size_t>(kHiddenDim) * sizeof(__half);
-    // Max attention weight: wq_b/wo_a/wo_b = 32768·1024 (or 8192·4096) elements
-    // FP32 dequant scratch: weights (n) + activation (k) + output (m), all FP32
-    size_t max_attn_elems = static_cast<size_t>(kAttnHeads) * kHeadDim * kQloraRank;
-    size_t max_attn_elems_wo = 8192LL * 4096;  // wo_a: [8192, 4096]
-    size_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
-    // Need: weights (n floats) + activation (max cols) + output (max rows)
-    size_t act_plus_out = static_cast<size_t>(std::max(kHiddenDim, 8192));
-    size_t attn_dequant_sz = (attn_dequant_max + act_plus_out) * sizeof(float);
+    // Routed-expert staging: 3 packed weights (~4.19MB each) + 3 E8M0 scales.
+    // Sizes are replicated by DeepSeekInferArena::Allocate; these locals feed
+    // run_routed_experts' bounds and the memset block below.
+    {
+        int64_t pk = static_cast<int64_t>(kIntermediateDim) * kHiddenDim / 2;   // w1/w3 packed bytes
+        int64_t w2p = static_cast<int64_t>(kHiddenDim) * kIntermediateDim / 2;  // w2 packed bytes
+        routed_pack_total = pk + w2p + pk;
+        int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 32; // per-32 E8M0
+        routed_scale_total = scl * 3;
+    }
     // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
     int max_compressed = (max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
     size_t kv_cache_sz = static_cast<size_t>(kNumLayers)
@@ -274,63 +259,115 @@ InferenceResult RunInferenceModel(
     CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
-    DS_ALLOC(d_hidden, static_cast<size_t>(kHcDim) * sizeof(float));
-    DS_ALLOC(d_hidden_next, static_cast<size_t>(kHcDim) * sizeof(float));
-    DS_ALLOC(d_single, static_cast<size_t>(kHiddenDim) * sizeof(__half));
-    DS_ALLOC(d_normed, static_cast<size_t>(kHiddenDim) * sizeof(__half));
-    DS_ALLOC(d_ffn_out, static_cast<size_t>(kHiddenDim) * sizeof(__half));
+    // The whole per-run footprint (every scratch buffer, KV cache, CSA state,
+    // logits, routing staging) is carved from DeepSeekInferArena below — after
+    // load_pinned_weights, so d_logits can be sized to the model's actual
+    // vocab_size. One device cudaMalloc + one pinned cudaMallocHost per run.
 
-    DS_ALLOC(d_shared_int, shared_int_sz);
-    DS_ALLOC(d_shared_gate, shared_int_sz);
-    DS_ALLOC(d_routed_buf, shared_int_sz);
-    DS_ALLOC(d_dequant_scratch, dequant_sz);
-    DS_ALLOC(d_act_quant,
-        static_cast<size_t>(std::max(kHiddenDim, kIntermediateDim)) * sizeof(float));
-    DS_ALLOC(d_ffn_accum,
-        static_cast<size_t>(kHiddenDim) * sizeof(float));
-    DS_ALLOC(d_swiglu_out,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float));
-    DS_ALLOC(d_act_scales,
-        static_cast<size_t>((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float));
-    DS_ALLOC(d_gate_f32,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float));
-    DS_ALLOC(d_up_f32,
-        static_cast<size_t>(kIntermediateDim) * sizeof(float));
-    DS_ALLOC(d_attn_dequant, attn_dequant_sz);
-    DS_ALLOC(d_kv_cache, kv_cache_sz);
-    INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
-
-    // Routed-expert staging: 3 packed weights (~4.19MB each) + 3 E8M0 scales.
+    // 5. Load pinned weights
     {
-        int64_t pk = static_cast<int64_t>(kIntermediateDim) * kHiddenDim / 2;   // w1/w3 packed bytes
-        int64_t w2p = static_cast<int64_t>(kHiddenDim) * kIntermediateDim / 2;  // w2 packed bytes
-        routed_pack_total = pk + w2p + pk;
-        int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 32; // per-32 E8M0
-        routed_scale_total = scl * 3;
-        DS_ALLOC(d_pack_stage, static_cast<size_t>(routed_pack_total));
-        DS_ALLOC(d_scale_stage, static_cast<size_t>(routed_scale_total));
+        auto perr = load_pinned_weights(mp, pw, stream);
+        if (perr != cudaSuccess) {
+            result.error_msg = "load_pinned_weights failed";
+            goto cleanup;
+        }
+        INFER_CHECK(cudaDeviceSynchronize());
     }
 
-    DS_ALLOC(d_q, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half));
-    DS_ALLOC(d_qr, static_cast<size_t>(kQloraRank) * sizeof(__half));
-    DS_ALLOC(d_qr2, static_cast<size_t>(kQloraRank) * sizeof(__half));
-    DS_ALLOC(d_kv, static_cast<size_t>(kHeadDim) * sizeof(__half));
-    DS_ALLOC(d_kv2, static_cast<size_t>(kHeadDim) * sizeof(__half));
-    DS_ALLOC(d_o, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half));
-    DS_ALLOC(d_olora, static_cast<size_t>(kOGroups * kOloraRank) * sizeof(__half));
-    DS_ALLOC(d_attn_out_h, static_cast<size_t>(kHiddenDim) * sizeof(__half));
-    DS_ALLOC(d_attn_out, static_cast<size_t>(kHiddenDim) * sizeof(float));
-    DS_ALLOC(d_hc_post, static_cast<size_t>(kHcMult) * sizeof(float));
-    DS_ALLOC(d_hc_comb, static_cast<size_t>(kHcMult * kHcMult) * sizeof(float));
-    DS_ALLOC(d_hc_pre, static_cast<size_t>(kHcMult) * sizeof(float));
-    DS_ALLOC(d_next_token, sizeof(int32_t));
-    DS_ALLOC(d_next_maxv, sizeof(float));
-    DS_ALLOC(d_norm_scratch,
-        static_cast<size_t>(kHiddenDim) * sizeof(float));
-    DS_ALLOC(d_norm_gamma_scratch,
-        static_cast<size_t>(kHiddenDim) * sizeof(float));
+    // 6. Expert index: mmap all routed-expert arrows for zero-copy access.
+    {
+        auto t0 = std::chrono::steady_clock::now();
+        expert_db = load_expert_index(mp, topo.num_layers, topo.experts_per_layer);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        int loaded = 0;
+        for (const auto &en : expert_db.entries)
+            if (en.host_w1) ++loaded;
+        log::info("[inference] expert mmaps: " + std::to_string(loaded)
+            + "/" + std::to_string(expert_db.entries.size())
+            + " loaded in " + std::to_string(ms) + " ms");
+        if (loaded == 0 && !expert_db.entries.empty())
+            log::warn("[inference] NO routed experts mapped — routed experts inactive");
+    }
+    // Ensure vocab size
+    if (pw.vocab_size == 0) pw.vocab_size = 128000;
+    log::info("[inference] vocab_size=" + std::to_string(pw.vocab_size));
+    if (pw.vocab_size < 0 || pw.vocab_size > kMaxVocabSize) {
+        result.error_msg = "vocab_size " + std::to_string(pw.vocab_size)
+            + " exceeds fixed logits-buffer capacity ("
+            + std::to_string(kMaxVocabSize) + ")";
+        goto cleanup;
+    }
+
+    // 7. Single-allocation per-run arena (spec item 12). Allocate AFTER load so
+    // d_logits is sized to the model's actual vocab_size (bounds-checked above),
+    // and the CSA region to the real per-layer compress ratios.
+    total_steps = static_cast<int>(input_ids.size()) + max_gen;
+    {
+        // Per-layer compress_ratio table (mirrors load_pinned_weights).
+        std::vector<int> compress_ratios(topo.num_layers, 0);
+        for (int i = 0; i < topo.num_layers && i < static_cast<int>(pw.layers.size()); ++i) {
+            compress_ratios[i] = pw.layers[i].compress_ratio;
+        }
+        INFER_CHECK(arena.Allocate(stream, topo.num_layers, total_steps,
+                                   compress_ratios.data(), pw.vocab_size));
+        d_alloc_bytes = arena.bytes;
+    }
+
+    // Bind local aliases to the arena slices.
+    d_hidden        = arena.d_hidden;
+    d_hidden_next   = arena.d_hidden_next;
+    d_single        = arena.d_single;
+    d_normed        = arena.d_normed;
+    d_ffn_out       = arena.d_ffn_out;
+    d_shared_int    = arena.d_shared_int;
+    d_shared_gate   = arena.d_shared_gate;
+    d_routed_buf    = arena.d_routed_buf;
+    d_dequant_scratch = arena.d_dequant_scratch;
+    d_act_quant     = arena.d_act_quant;
+    d_ffn_accum     = arena.d_ffn_accum;
+    d_swiglu_out    = arena.d_swiglu_out;
+    d_act_scales    = arena.d_act_scales;
+    d_gate_f32      = arena.d_gate_f32;
+    d_up_f32        = arena.d_up_f32;
+    d_attn_dequant  = arena.d_attn_dequant;
+    d_kv_cache      = arena.d_kv_cache;
+    d_q             = arena.d_q;
+    d_qr            = arena.d_qr;
+    d_qr2           = arena.d_qr2;
+    d_kv            = arena.d_kv;
+    d_kv2           = arena.d_kv2;
+    d_o             = arena.d_o;
+    d_olora         = arena.d_olora;
+    d_attn_out_h    = arena.d_attn_out_h;
+    d_attn_out      = arena.d_attn_out;
+    d_hc_post       = arena.d_hc_post;
+    d_hc_comb       = arena.d_hc_comb;
+    d_hc_pre        = arena.d_hc_pre;
+    d_logits        = arena.d_logits;
+    d_norm_scratch  = arena.d_norm_scratch;
+    d_norm_gamma_scratch = arena.d_norm_gamma_scratch;
+    d_next_token    = arena.d_next_token;
+    d_next_maxv     = arena.d_next_maxv;
+    d_pack_stage    = arena.d_pack_stage;
+    d_scale_stage   = arena.d_scale_stage;
+    h_topk          = arena.h_topk;
+    h_top_weights   = arena.h_top_weights;
+    csa_states      = arena.csa_states;
 
     // ── DBG: zero ALL scratch so uninit reads can't differ run-to-run ──
+    // (Sizes replicated from DeepSeekInferArena::Allocate so the zero block
+    // covers the exact footprint. Nested block: the goto-based INFER_CHECK
+    // jumps above must not cross these initializers (nvcc C2362).)
+    {
+    size_t dequant_sz = static_cast<size_t>(kHiddenDim * kHiddenDim) * sizeof(float);
+    size_t attn_dequant_max = std::max(
+        static_cast<size_t>(kAttnHeads) * kHeadDim * kQloraRank,
+        static_cast<size_t>(8192ULL * 4096));
+    size_t attn_dequant_sz = (attn_dequant_max
+                              + std::max<size_t>(kHiddenDim, 8192)) * sizeof(float);
+    size_t shared_int_sz = static_cast<size_t>(kHiddenDim) * sizeof(__half);
+    INFER_CHECK(cudaMemset(d_kv_cache, 0, kv_cache_sz));
     INFER_CHECK(cudaMemsetAsync(d_hidden, 0, static_cast<size_t>(kHcDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_hidden_next, 0, static_cast<size_t>(kHcDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_single, 0, static_cast<size_t>(kHiddenDim) * sizeof(__half), stream));
@@ -371,53 +408,7 @@ InferenceResult RunInferenceModel(
         static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
     INFER_CHECK(cudaMemsetAsync(d_norm_gamma_scratch, 0,
         static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
-
-    // 5. Load pinned weights
-    {
-        auto perr = load_pinned_weights(mp, pw, stream);
-        if (perr != cudaSuccess) {
-            result.error_msg = "load_pinned_weights failed";
-            goto cleanup;
-        }
-        INFER_CHECK(cudaDeviceSynchronize());
     }
-
-    // 6. Expert index: mmap all routed-expert arrows for zero-copy access.
-    {
-        auto t0 = std::chrono::steady_clock::now();
-        expert_db = load_expert_index(mp, topo.num_layers, topo.experts_per_layer);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
-        int loaded = 0;
-        for (const auto &en : expert_db.entries)
-            if (en.host_w1) ++loaded;
-        log::info("[inference] expert mmaps: " + std::to_string(loaded)
-            + "/" + std::to_string(expert_db.entries.size())
-            + " loaded in " + std::to_string(ms) + " ms");
-        if (loaded == 0 && !expert_db.entries.empty())
-            log::warn("[inference] NO routed experts mapped — routed experts inactive");
-    }
-    // Ensure vocab size
-    if (pw.vocab_size == 0) pw.vocab_size = 128000;
-    log::info("[inference] vocab_size=" + std::to_string(pw.vocab_size));
-    if (pw.vocab_size < 0 || pw.vocab_size > kMaxVocabSize) {
-        result.error_msg = "vocab_size " + std::to_string(pw.vocab_size)
-            + " exceeds fixed logits-buffer capacity ("
-            + std::to_string(kMaxVocabSize) + ")";
-        goto cleanup;
-    }
-
-    // Allocate logits AFTER load (pre-alloc buffers can be corrupted by loading).
-    // Sized to the model's actual vocab_size (bounds-checked above), not a
-    // fixed literal — a larger-vocab model now fails loudly at load time
-    // instead of silently overflowing this buffer on every decode step.
-    DS_ALLOC(d_logits, static_cast<size_t>(pw.vocab_size) * sizeof(float));
-
-    // 7. Route table for top-8
-    INFER_CHECK(cudaMallocHost(&h_topk,
-        static_cast<size_t>(kLocalTopK) * sizeof(int)));
-    INFER_CHECK(cudaMallocHost(&h_top_weights,
-        static_cast<size_t>(kLocalTopK) * sizeof(float)));
 
     // 8. Embedding: first token
     {
@@ -437,20 +428,6 @@ InferenceResult RunInferenceModel(
         // Sync after embed copy to catch async errors
         INFER_CHECK(cudaStreamSynchronize(stream));
         (void)embed_err;
-    }
-
-    total_steps = static_cast<int>(input_ids.size()) + max_gen;
-
-    // Allocate CSA state for layers 2-41
-    csa_states = new CSAState[topo.num_layers];
-    {
-        // Per-layer compress_ratio table (mirrors load_pinned_weights).
-        std::vector<int> compress_ratios(topo.num_layers, 0);
-        for (int i = 0; i < topo.num_layers && i < static_cast<int>(pw.layers.size()); ++i) {
-            compress_ratios[i] = pw.layers[i].compress_ratio;
-        }
-        INFER_CHECK(alloc_csa_state(csa_states, topo.num_layers,
-            total_steps, kHeadDim, stream, compress_ratios.data()));
     }
 
     // 9. Timing events
@@ -554,7 +531,10 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                                         d_normed, kHiddenDim, num_routed,
                                         tid, lw.tid2eid_topk, cur_tok,
                                         lw.h_gate_bias,
-                                        kLocalTopK, h_topk, h_top_weights));
+                                        kLocalTopK,
+                                        arena.d_routing_scratch,
+                                        arena.h_routing_scratch,
+                                        h_topk, h_top_weights));
             } else {
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
                 std::memset(h_top_weights, 0,
@@ -771,48 +751,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 cleanup:
     if (stream)        cudaStreamDestroy(stream);
     if (cublas_h)      cublasDestroy(cublas_h);
-    if (d_hidden)      cudaFree(d_hidden);
-    if (d_hidden_next) cudaFree(d_hidden_next);
-    if (d_single)      cudaFree(d_single);
-    if (d_normed)      cudaFree(d_normed);
-    if (d_ffn_out)     cudaFree(d_ffn_out);
-    if (d_shared_int)  cudaFree(d_shared_int);
-    if (d_shared_gate) cudaFree(d_shared_gate);
-    if (d_routed_buf)  cudaFree(d_routed_buf);
-    if (d_dequant_scratch) cudaFree(d_dequant_scratch);
-    if (d_act_quant)      cudaFree(d_act_quant);
-    if (d_ffn_accum)      cudaFree(d_ffn_accum);
-    if (d_swiglu_out)     cudaFree(d_swiglu_out);
-    if (d_act_scales)     cudaFree(d_act_scales);
-    if (d_gate_f32)       cudaFree(d_gate_f32);
-    if (d_up_f32)         cudaFree(d_up_f32);
-    if (d_attn_dequant) cudaFree(d_attn_dequant);
-    if (d_kv_cache)    cudaFree(d_kv_cache);
-    if (d_q)           cudaFree(d_q);
-    if (d_qr)          cudaFree(d_qr);
-    if (d_qr2)         cudaFree(d_qr2);
-    if (d_kv)          cudaFree(d_kv);
-    if (d_kv2)         cudaFree(d_kv2);
-    if (d_o)           cudaFree(d_o);
-    if (d_olora)       cudaFree(d_olora);
-    if (d_attn_out)    cudaFree(d_attn_out);
-    if (d_attn_out_h)  cudaFree(d_attn_out_h);
-    if (d_hc_post)     cudaFree(d_hc_post);
-    if (d_hc_comb)     cudaFree(d_hc_comb);
-    if (d_hc_pre)      cudaFree(d_hc_pre);
-    if (d_logits)      cudaFree(d_logits);
-    if (d_norm_scratch) cudaFree(d_norm_scratch);
-    if (d_norm_gamma_scratch) cudaFree(d_norm_gamma_scratch);
-    if (d_next_token)  cudaFree(d_next_token);
-    if (d_next_maxv)   cudaFree(d_next_maxv);
-    if (h_topk)        cudaFreeHost(h_topk);
-    if (h_top_weights) cudaFreeHost(h_top_weights);
-    if (d_pack_stage)  cudaFree(d_pack_stage);
-    if (d_scale_stage) cudaFree(d_scale_stage);
-    if (csa_states) {
-        free_csa_state(csa_states, topo.num_layers);
-        delete[] csa_states;
-    }
+    arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
     if (t_start)       cudaEventDestroy(t_start);
     if (t_ttft)        cudaEventDestroy(t_ttft);
     if (t_stop)        cudaEventDestroy(t_stop);

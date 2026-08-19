@@ -893,5 +893,263 @@ cudaError_t load_pinned_weights(
     return cudaSuccess;
 }
 
+// ── DeepSeekInferArena: single-allocation per-run footprint ────────────────
+// Mirrors GlmMoEArena::AllocateGeneration's page() lambda: one device block +
+// one pinned host block, 16-byte-aligned slices, sized exactly as the old
+// malloc-per-buffer pipeline (deepseek_inference_pipeline.cu) and
+// alloc_csa_state. The CSA score buffers must start at -inf (the overlap
+// pooling masks rows [0, ratio) before the first shift), everything else zero.
+
+namespace {
+
+__global__ void ds_fill_neg_inf_kernel(float* p, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) p[i] = -INFINITY;
+}
+
+} // namespace
+
+cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
+                                         int max_seq_len,
+                                         const int* compress_ratios, int vocab)
+{
+    Free();
+    constexpr int64_t kIdxHeadDim = 128;
+
+    // Sizing replicated verbatim from the old pipeline (lines 252-268) and
+    // alloc_csa_state so the arena is a pure allocation refactor.
+    const int64_t dequant_sz = static_cast<int64_t>(kHiddenDim) * kHiddenDim
+                             * sizeof(float);
+    const int64_t shared_int_sz = static_cast<int64_t>(kHiddenDim)
+                                * sizeof(__half);
+    const int64_t max_attn_elems = static_cast<int64_t>(kAttnHeads) * kHeadDim
+                                 * kQloraRank;
+    const int64_t max_attn_elems_wo = 8192LL * 4096;
+    const int64_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
+    const int64_t act_plus_out = std::max<int64_t>(kHiddenDim, 8192);
+    const int64_t attn_dequant_sz = (attn_dequant_max + act_plus_out)
+                                  * sizeof(float);
+    const int64_t max_compressed = max_seq_len / 4 + 1;
+    const int64_t kv_cache_sz = static_cast<int64_t>(kNumLayers)
+                              * (kAttnWindow + max_compressed) * kHeadDim
+                              * sizeof(__half);
+    const int64_t pack_total = 3 * (static_cast<int64_t>(kIntermediateDim)
+                                    * kHiddenDim / 2);
+    const int64_t scale_total = 3 * (static_cast<int64_t>(kIntermediateDim)
+                                     * kHiddenDim / 32);
+
+    int64_t off = 0;
+    auto page = [&](int64_t bytes_, int64_t align) -> int64_t {
+        off = (off + align - 1) / align * align;
+        const int64_t at = off;
+        off += bytes_;
+        return at;
+    };
+    const int64_t o_single       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_normed       = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_ffn_out      = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_hidden       = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
+    const int64_t o_hidden_next  = page(static_cast<int64_t>(kHcDim) * sizeof(float), 16);
+    const int64_t o_shared_int   = page(shared_int_sz, 16);
+    const int64_t o_shared_gate  = page(shared_int_sz, 16);
+    const int64_t o_routed_buf   = page(shared_int_sz, 16);
+    const int64_t o_dequant      = page(dequant_sz, 16);
+    const int64_t o_act_quant    = page(std::max(kHiddenDim, kIntermediateDim) * sizeof(float), 16);
+    const int64_t o_ffn_accum    = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
+    const int64_t o_swiglu       = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
+    const int64_t o_act_scales   = page(((std::max(kHiddenDim, kIntermediateDim) + 127) / 128) * sizeof(float), 16);
+    const int64_t o_gate_f32     = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
+    const int64_t o_up_f32       = page(static_cast<int64_t>(kIntermediateDim) * sizeof(float), 16);
+    const int64_t o_attn_dequant = page(attn_dequant_sz, 16);
+    const int64_t o_kv_cache     = page(kv_cache_sz, 16);
+    const int64_t o_q            = page(static_cast<int64_t>(kAttnHeads) * kHeadDim * sizeof(__half), 16);
+    const int64_t o_qr           = page(static_cast<int64_t>(kQloraRank) * sizeof(__half), 16);
+    const int64_t o_qr2          = page(static_cast<int64_t>(kQloraRank) * sizeof(__half), 16);
+    const int64_t o_kv           = page(static_cast<int64_t>(kHeadDim) * sizeof(__half), 16);
+    const int64_t o_kv2          = page(static_cast<int64_t>(kHeadDim) * sizeof(__half), 16);
+    const int64_t o_o            = page(static_cast<int64_t>(kAttnHeads) * kHeadDim * sizeof(__half), 16);
+    const int64_t o_olora        = page(static_cast<int64_t>(kOGroups) * kOloraRank * sizeof(__half), 16);
+    const int64_t o_attn_out_h   = page(static_cast<int64_t>(kHiddenDim) * sizeof(__half), 16);
+    const int64_t o_attn_out     = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
+    const int64_t o_hc_post      = page(static_cast<int64_t>(kHcMult) * sizeof(float), 16);
+    const int64_t o_hc_comb      = page(static_cast<int64_t>(kHcMult) * kHcMult * sizeof(float), 16);
+    const int64_t o_hc_pre       = page(static_cast<int64_t>(kHcMult) * sizeof(float), 16);
+    const int64_t o_logits       = page(static_cast<int64_t>(vocab) * sizeof(float), 16);
+    const int64_t o_norm_scratch = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
+    const int64_t o_norm_gamma   = page(static_cast<int64_t>(kHiddenDim) * sizeof(float), 16);
+    const int64_t o_next_token   = page(sizeof(int32_t), 16);
+    const int64_t o_next_maxv    = page(sizeof(float), 16);
+    const int64_t o_pack_stage   = page(pack_total, 16);
+    const int64_t o_scale_stage  = page(scale_total, 16);
+    const int64_t o_routing      = page(static_cast<int64_t>(kNumRouted) * sizeof(__half), 16);
+
+    // Per-layer CSA region (exact alloc_csa_state sizes; ratio<=0 skipped).
+    const int64_t o_csa = off;
+    struct CsaOffsets {
+        int64_t kv_state, score_state, compressed_kv;
+        int64_t idx_kv_state, idx_score_state, idx_compressed_kv;
+    };
+    std::vector<CsaOffsets> csa_off(num_layers > 0 ? num_layers : 0);
+    for (int l = 0; l < num_layers; ++l) {
+        const int ratio = compress_ratios ? compress_ratios[l] : 0;
+        if (ratio <= 0) continue;
+        const int coff = (ratio == 4) ? 2 : 1;
+        const int state_sz = coff * ratio * coff * kHeadDim;
+        const int max_comp = max_seq_len / ratio + 1;
+        const int idx_state_sz = 2 * 4 * 2 * static_cast<int>(kIdxHeadDim);
+        csa_off[static_cast<size_t>(l)].kv_state =
+            page(static_cast<int64_t>(state_sz) * sizeof(float), 16);
+        csa_off[static_cast<size_t>(l)].score_state =
+            page(static_cast<int64_t>(state_sz) * sizeof(float), 16);
+        csa_off[static_cast<size_t>(l)].compressed_kv =
+            page(static_cast<int64_t>(max_comp) * kHeadDim * sizeof(__half), 16);
+        csa_off[static_cast<size_t>(l)].idx_kv_state =
+            page(static_cast<int64_t>(idx_state_sz) * sizeof(float), 16);
+        csa_off[static_cast<size_t>(l)].idx_score_state =
+            page(static_cast<int64_t>(idx_state_sz) * sizeof(float), 16);
+        csa_off[static_cast<size_t>(l)].idx_compressed_kv =
+            page(static_cast<int64_t>(max_comp) * kIdxHeadDim * sizeof(__half), 16);
+    }
+    bytes = static_cast<size_t>(off);
+
+    cudaError_t e = cudaMalloc(reinterpret_cast<void**>(&d_base), bytes);
+    if (e != cudaSuccess) { bytes = 0; Free(); return e; }
+
+    // Pinned host block: top-k result slots + route_token logits staging.
+    int64_t hoff = 0;
+    auto hpage = [&](int64_t bytes_, int64_t align) -> int64_t {
+        hoff = (hoff + align - 1) / align * align;
+        const int64_t at = hoff;
+        hoff += bytes_;
+        return at;
+    };
+    const int64_t ho_topk    = hpage(static_cast<int64_t>(kTopK) * sizeof(int), 16);
+    const int64_t ho_topw    = hpage(static_cast<int64_t>(kTopK) * sizeof(float), 16);
+    const int64_t ho_routing = hpage(static_cast<int64_t>(kNumRouted) * sizeof(float), 16);
+    host_bytes = static_cast<size_t>(hoff);
+
+    e = cudaMallocHost(reinterpret_cast<void**>(&h_base), host_bytes);
+    if (e != cudaSuccess) { host_bytes = 0; Free(); return e; }
+
+    InferenceAllocCount().fetch_add(2);
+
+    // Bind device slices.
+    d_single       = reinterpret_cast<__half*>(d_base + o_single);
+    d_normed       = reinterpret_cast<__half*>(d_base + o_normed);
+    d_ffn_out      = reinterpret_cast<__half*>(d_base + o_ffn_out);
+    d_hidden       = reinterpret_cast<float*>(d_base + o_hidden);
+    d_hidden_next  = reinterpret_cast<float*>(d_base + o_hidden_next);
+    d_shared_int   = reinterpret_cast<__half*>(d_base + o_shared_int);
+    d_shared_gate  = reinterpret_cast<__half*>(d_base + o_shared_gate);
+    d_routed_buf   = reinterpret_cast<__half*>(d_base + o_routed_buf);
+    d_dequant_scratch = reinterpret_cast<float*>(d_base + o_dequant);
+    d_act_quant    = reinterpret_cast<float*>(d_base + o_act_quant);
+    d_ffn_accum    = reinterpret_cast<float*>(d_base + o_ffn_accum);
+    d_swiglu_out   = reinterpret_cast<float*>(d_base + o_swiglu);
+    d_act_scales   = reinterpret_cast<float*>(d_base + o_act_scales);
+    d_gate_f32     = reinterpret_cast<float*>(d_base + o_gate_f32);
+    d_up_f32       = reinterpret_cast<float*>(d_base + o_up_f32);
+    d_attn_dequant = reinterpret_cast<float*>(d_base + o_attn_dequant);
+    d_kv_cache     = reinterpret_cast<__half*>(d_base + o_kv_cache);
+    d_q            = reinterpret_cast<__half*>(d_base + o_q);
+    d_qr           = reinterpret_cast<__half*>(d_base + o_qr);
+    d_qr2          = reinterpret_cast<__half*>(d_base + o_qr2);
+    d_kv           = reinterpret_cast<__half*>(d_base + o_kv);
+    d_kv2          = reinterpret_cast<__half*>(d_base + o_kv2);
+    d_o            = reinterpret_cast<__half*>(d_base + o_o);
+    d_olora        = reinterpret_cast<__half*>(d_base + o_olora);
+    d_attn_out_h   = reinterpret_cast<__half*>(d_base + o_attn_out_h);
+    d_attn_out     = reinterpret_cast<float*>(d_base + o_attn_out);
+    d_hc_post      = reinterpret_cast<float*>(d_base + o_hc_post);
+    d_hc_comb      = reinterpret_cast<float*>(d_base + o_hc_comb);
+    d_hc_pre       = reinterpret_cast<float*>(d_base + o_hc_pre);
+    d_logits       = reinterpret_cast<float*>(d_base + o_logits);
+    d_norm_scratch = reinterpret_cast<float*>(d_base + o_norm_scratch);
+    d_norm_gamma_scratch = reinterpret_cast<float*>(d_base + o_norm_gamma);
+    d_next_token   = reinterpret_cast<int32_t*>(d_base + o_next_token);
+    d_next_maxv    = reinterpret_cast<float*>(d_base + o_next_maxv);
+    d_pack_stage   = d_base + o_pack_stage;
+    d_scale_stage  = d_base + o_scale_stage;
+    d_routing_scratch = reinterpret_cast<__half*>(d_base + o_routing);
+
+    // Bind pinned slices.
+    h_topk          = reinterpret_cast<int*>(h_base + ho_topk);
+    h_top_weights   = reinterpret_cast<float*>(h_base + ho_topw);
+    h_routing_scratch = reinterpret_cast<float*>(h_base + ho_routing);
+
+    // Bind + init per-layer CSA state (same zero / -inf init as alloc_csa_state).
+    csa_states = new CSAState[num_layers];
+    for (int l = 0; l < num_layers; ++l) {
+        const int ratio = compress_ratios ? compress_ratios[l] : 0;
+        if (ratio <= 0) continue;
+        CSAState& s = csa_states[l];
+        const CsaOffsets& co = csa_off[static_cast<size_t>(l)];
+        s.d_comp_kv_state    = reinterpret_cast<float*>(d_base + co.kv_state);
+        s.d_comp_score_state = reinterpret_cast<float*>(d_base + co.score_state);
+        s.d_compressed_kv    = reinterpret_cast<__half*>(d_base + co.compressed_kv);
+        s.d_idx_kv_state     = reinterpret_cast<float*>(d_base + co.idx_kv_state);
+        s.d_idx_score_state  = reinterpret_cast<float*>(d_base + co.idx_score_state);
+        s.d_idx_compressed_kv = reinterpret_cast<__half*>(d_base + co.idx_compressed_kv);
+    }
+
+    // CSA init (mirror alloc_csa_state): zero KV/compressed, -inf score states.
+    for (int l = 0; l < num_layers; ++l) {
+        const int ratio = compress_ratios ? compress_ratios[l] : 0;
+        if (ratio <= 0) continue;
+        CSAState& s = csa_states[l];
+        const int coff = (ratio == 4) ? 2 : 1;
+        const int state_sz = coff * ratio * coff * kHeadDim;
+        const int max_comp = max_seq_len / ratio + 1;
+        const int idx_state_sz = 2 * 4 * 2 * static_cast<int>(kIdxHeadDim);
+
+        if ((e = cudaMemsetAsync(s.d_comp_kv_state, 0,
+                 static_cast<size_t>(state_sz) * sizeof(float), stream)) != cudaSuccess) goto fail;
+        ds_fill_neg_inf_kernel<<<(state_sz + 255) / 256, 256, 0, stream>>>(
+            s.d_comp_score_state, state_sz);
+        if ((e = cudaGetLastError()) != cudaSuccess) goto fail;
+        if ((e = cudaMemsetAsync(s.d_compressed_kv, 0,
+                 static_cast<size_t>(max_comp) * kHeadDim * sizeof(__half), stream)) != cudaSuccess) goto fail;
+        if ((e = cudaMemsetAsync(s.d_idx_kv_state, 0,
+                 static_cast<size_t>(idx_state_sz) * sizeof(float), stream)) != cudaSuccess) goto fail;
+        ds_fill_neg_inf_kernel<<<(idx_state_sz + 255) / 256, 256, 0, stream>>>(
+            s.d_idx_score_state, idx_state_sz);
+        if ((e = cudaGetLastError()) != cudaSuccess) goto fail;
+        if ((e = cudaMemsetAsync(s.d_idx_compressed_kv, 0,
+                 static_cast<size_t>(max_comp) * kIdxHeadDim * sizeof(__half), stream)) != cudaSuccess) goto fail;
+    }
+    return cudaSuccess;
+
+fail:
+    Free();
+    return e;
+}
+
+void DeepSeekInferArena::Free()
+{
+    if (d_base) cudaFree(d_base);
+    if (h_base) cudaFreeHost(h_base);
+    delete[] csa_states;
+    d_base = nullptr; h_base = nullptr; csa_states = nullptr;
+    d_single = d_normed = d_ffn_out = nullptr;
+    d_hidden = d_hidden_next = nullptr;
+    d_shared_int = d_shared_gate = d_routed_buf = nullptr;
+    d_dequant_scratch = d_act_quant = d_ffn_accum = d_swiglu_out = nullptr;
+    d_act_scales = d_gate_f32 = d_up_f32 = d_attn_dequant = nullptr;
+    d_kv_cache = nullptr;
+    d_q = d_qr = d_qr2 = d_kv = d_kv2 = d_o = d_olora = d_attn_out_h = nullptr;
+    d_attn_out = nullptr;
+    d_hc_post = d_hc_comb = d_hc_pre = nullptr;
+    d_logits = d_norm_scratch = d_norm_gamma_scratch = nullptr;
+    d_next_token = nullptr;
+    d_next_maxv = nullptr;
+    d_pack_stage = d_scale_stage = nullptr;
+    d_routing_scratch = nullptr;
+    h_topk = nullptr;
+    h_top_weights = nullptr;
+    h_routing_scratch = nullptr;
+    bytes = 0; host_bytes = 0;
+}
+
 } // namespace gpu
 } // namespace lsxcommon

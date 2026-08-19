@@ -27,16 +27,8 @@ using Catch::Approx;
 namespace lsxcommon::gpu {
 
 // Production entry points (deepseek_inference_moe.cu), forward-declared like the
-// existing kernel test does for run_routed_expert_ffn.
-cudaError_t route_token(
-    cublasHandle_t cublas_h, cudaStream_t stream,
-    const __half *d_gate, const __half *d_hidden,
-    int hidden_dim, int num_routed,
-    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
-    const float *h_gate_bias,
-    int topk,
-    int *h_top_indices, float *h_top_weights);
-
+// existing kernel test does for run_routed_expert_ffn. route_token comes from
+// deepseek_inference_load.cuh (included above).
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -449,12 +441,20 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
     int topk[kTopk];
     float weights[kTopk];
 
+    // Caller-owned route_token staging (arena-style, per new signature).
+    __half *d_logits_scratch = nullptr;
+    float *h_logits_scratch = nullptr;
+    REQUIRE(cudaMalloc(&d_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMallocHost(&h_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(float)) == cudaSuccess);
+
     // 1. Score path, no bias.
     std::vector<int> eidx;
     std::vector<float> eweight;
     {
         lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
-                                    nullptr, 0, 0, nullptr, kTopk, topk, weights);
+                                    nullptr, 0, 0, nullptr, kTopk,
+                                    d_logits_scratch, h_logits_scratch,
+                                    topk, weights);
         REQUIRE(cuda_sync_check());
         ref_route(gate, kHidden, kNumRouted, hidden, nullptr, nullptr, 0, 0,
                   kTopk, eidx, eweight);
@@ -480,7 +480,9 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
         std::vector<float> bias(static_cast<size_t>(kNumRouted), 0.0f);
         bias[3] = 100.0f; // expert 3 has an average rank, but bias forces it in
         lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
-                                    nullptr, 0, 0, bias.data(), kTopk, topk, weights);
+                                    nullptr, 0, 0, bias.data(), kTopk,
+                                    d_logits_scratch, h_logits_scratch,
+                                    topk, weights);
         REQUIRE(cuda_sync_check());
         ref_route(gate, kHidden, kNumRouted, hidden, &bias, nullptr, 0, 0,
                   kTopk, eidx, eweight);
@@ -506,7 +508,9 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
             tid2eid[k] = (kNumRouted - 1 - k) % kNumRouted; // descending distinct
         lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
                                     tid2eid.data(), kTidStride, 1,
-                                    nullptr, kTopk, topk, weights);
+                                    nullptr, kTopk,
+                                    d_logits_scratch, h_logits_scratch,
+                                    topk, weights);
         REQUIRE(cuda_sync_check());
         ref_route(gate, kHidden, kNumRouted, hidden, nullptr, &tid2eid,
                   kTidStride, 1, kTopk, eidx, eweight);
@@ -523,6 +527,8 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
 
     cudaFree(d_gate);
     cudaFree(d_hidden);
+    cudaFree(d_logits_scratch);
+    cudaFreeHost(h_logits_scratch);
     cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
@@ -860,8 +866,14 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
     // 1. Router (score path, no bias).
     int topk[kTopk];
     float weights[kTopk];
+    __half *d_logits_scratch = nullptr;
+    float *h_logits_scratch = nullptr;
+    REQUIRE(cudaMalloc(&d_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMallocHost(&h_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(float)) == cudaSuccess);
     lsxcommon::gpu::route_token(ch, st, d_gate_in, d_hidden_in, kHidden, kNumRouted,
-                                nullptr, 0, 0, nullptr, kTopk, topk, weights);
+                                nullptr, 0, 0, nullptr, kTopk,
+                                d_logits_scratch, h_logits_scratch,
+                                topk, weights);
     REQUIRE(cuda_sync_check());
     // The gate design guarantees {1,2,3}; the routed db only filled those.
     for (int k = 0; k < kTopk; ++k) {
@@ -936,6 +948,8 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
     cudaFree(d_ss1); cudaFree(d_ss2); cudaFree(d_ss3);
     cudaFree(d_pack);
     cudaFree(d_scale);
+    cudaFree(d_logits_scratch);
+    cudaFreeHost(h_logits_scratch);
     cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
