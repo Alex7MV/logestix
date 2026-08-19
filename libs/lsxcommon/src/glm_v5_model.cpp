@@ -154,4 +154,71 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
+gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
+{
+    gpu::BenchmarkResult r;
+    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times.
+    const std::vector<int32_t> prompt = {0, 0, 0, 0};
+
+    // Mirror Infer exactly: own async context, full pin, on-demand expert index,
+    // faithful real forward generation loop.
+    cublasHandle_t ch = nullptr;
+    cudaStream_t   st = nullptr;
+    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
+    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
+    if (ch_ok && st_ok) cublasSetStream(ch, st);
+    if (!ch_ok || !st_ok) {
+        r.error_msg = "cublas/stream init failed";
+        if (st) cudaStreamDestroy(st);
+        if (ch) cublasDestroy(ch);
+        return r;
+    }
+
+    glm::GlmExpertDb experts;
+    auto cleanup = [&]() {
+        pw_.Free();
+        glm::free_glm_expert_index(experts);
+        if (st) cudaStreamDestroy(st);
+        if (ch) cublasDestroy(ch);
+    };
+
+    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, st);
+    if (e != cudaSuccess) {
+        r.error_msg = std::string("load pinned weights: ") +
+                      cudaGetErrorString(e);
+        cleanup();
+        return r;
+    }
+    if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers)) {
+        r.error_msg = "model does not expose all 79 layers";
+        cleanup();
+        return r;
+    }
+    experts = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
+                                         glm::kGlmNumRouted);
+    if (experts.num_layers != glm::kGlmNumLayers ||
+        experts.experts_per_layer != glm::kGlmNumRouted) {
+        r.error_msg = "expert index incomplete";
+        cleanup();
+        return r;
+    }
+
+    glm::GlmGenerationResult gr;
+    e = glm::RunGlmRealGeneration(ch, st, pw_, experts, prompt, num_tokens, gr);
+    cleanup();
+    if (e != cudaSuccess || !gr.ok) {
+        r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
+        return r;
+    }
+    r.ok = true;
+    r.num_tokens = static_cast<int>(gr.tokens.size());
+    r.num_layers = glm::kGlmNumLayers;
+    r.total_time_ms = gr.total_ms;
+    r.tokens_per_sec = gr.total_ms > 0.0
+        ? (static_cast<double>(r.num_tokens) / gr.total_ms) * 1000.0 : 0.0;
+    r.resident_bytes = gr.resident_bytes;
+    return r;
+}
+
 } // namespace lsxcommon

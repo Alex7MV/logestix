@@ -19,6 +19,7 @@ public:
     void Unload() override;
     SafetensorsModel Inspect() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return type_; }
     void SetType(std::string t) { type_ = std::move(t); }

@@ -11,6 +11,7 @@
 #include <lsxcommon/model_base.h>
 #include <lsxcommon/model_runtime.h>
 #include <lsxcommon/tokenizer.h>
+#include <lsxcommon/benchmark_gpu.h>
 
 namespace fs = std::filesystem;
 
@@ -157,6 +158,25 @@ TEST_CASE("model_runtime: DecodeGeneratedText round-trips a token stream", "[mod
     REQUIRE(lsxcommon::runtime::DecodeGeneratedText(m.Tokenizer(), {}).empty());
     m.Unload();
     fs::remove_all(root);
+}
+
+TEST_CASE("model_runtime: IModel::Benchmark default returns ok=false", "[model_runtime]")
+{
+    // The shared test FakeModel does NOT override Benchmark -> default applies.
+    FakeModel m("glm-5.2");
+    auto r = m.Benchmark();
+    REQUIRE_FALSE(r.ok);
+}
+
+TEST_CASE("model_runtime: RunBenchmark shim delegates to IModel::Benchmark", "[model_runtime]")
+{
+    // No checkpoint at this path -> factory returns nullptr -> shim reports
+    // ok=false but still fills num_tokens from its argument (fill-before-dispatch).
+    auto r = lsxcommon::gpu::RunBenchmark(
+        (fs::temp_directory_path() / "no_such_model_xyz").string(), 64);
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.num_tokens == 64);
+    REQUIRE(r.resident_bytes == 0);
 }
 
 TEST_CASE("model_runtime: RunParisSelfCheck matches a 1/2-token Paris prefix", "[model_runtime]")

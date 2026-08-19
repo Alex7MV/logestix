@@ -118,6 +118,42 @@ gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
+gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
+{
+    gpu::BenchmarkResult r;
+    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    const std::vector<int32_t> prompt = {0};
+    // Mirror Infer: open a stream, run RunQwenGeneration, map the result.
+    qwen::QwenGenerationResult gr;
+    cudaStream_t st = nullptr;
+    cublasHandle_t ch = nullptr;
+    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
+    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
+    if (ch_ok && st_ok) cublasSetStream(ch, st);
+    if (!ch_ok || !st_ok) {
+        r.error_msg = "cuda/cublas init failed";
+        if (st) cudaStreamDestroy(st);
+        if (ch) cublasDestroy(ch);
+        return r;
+    }
+    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+    cudaError_t e = qwen::RunQwenGeneration(st, pw_, prompt, num_tokens,
+                                            eos_id, gr);
+    if (st) cudaStreamDestroy(st);
+    if (ch) cublasDestroy(ch);
+    if (e != cudaSuccess) {
+        r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gr.error_msg;
+        return r;
+    }
+    r.ok = true;
+    r.num_tokens = static_cast<int>(gr.tokens.size());
+    r.total_time_ms = gr.total_ms;
+    r.tokens_per_sec = gr.total_ms > 0.0
+        ? (static_cast<double>(r.num_tokens) / gr.total_ms) * 1000.0 : 0.0;
+    r.resident_bytes = gr.resident_bytes;
+    return r;
+}
+
 void QwenBaseModel::ValidateGeometry(const qwen::QwenTopology &) const {}
 
 } // namespace lsxcommon
