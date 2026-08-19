@@ -328,6 +328,34 @@ endif()
 add_test(NAME test_glm_selfcheck COMMAND test_glm_selfcheck)
 set_tests_properties(test_glm_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
+#    block_rows = P (полная длина промпта), каждый промпт-токен занимает один
+#    IndexShare KV-слот. FAIL при коллапсе строк (kv_slots_used != P + gen),
+#    при расхождении argmax final_logits с первым сгенерированным токеном или
+#    при потере бит-точности между двумя идентичными прогонами. SKIP без
+#    чекпоинта.
+add_executable(test_glm_prefill_seqp test_glm_prefill_seqp.cpp)
+target_compile_definitions(test_glm_prefill_seqp PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_prefill_seqp PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_prefill_seqp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prefill_seqp>"
+    )
+    add_custom_command(TARGET test_glm_prefill_seqp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prefill_seqp>"
+    )
+endif()
+
+add_test(NAME test_glm_prefill_seqp COMMAND test_glm_prefill_seqp)
+set_tests_properties(test_glm_prefill_seqp PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест GLM-5.2 осмысленного вывода по --run (Infer output_text) ───────────
 add_executable(test_glm_prompt_output test_glm_prompt_output.cpp)
 target_compile_definitions(test_glm_prompt_output PRIVATE
