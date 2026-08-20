@@ -1,6 +1,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
+#include "nvfp4_codec.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -333,18 +334,10 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *embed,
 
 namespace {
 
-// E2M1 decode table (indexed by 4-bit nibble, sign bit 3).
-__constant__ float qwen_e2m1_tab[16] = {
-     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
-};
-
-__device__ __forceinline__ float qwen_e4m3_scale(uint8_t e4m3)
-{
-    uint32_t e4 = (e4m3 >> 3) & 0x0F;
-    if (e4 == 0) return 0.0f;
-    return __uint_as_float((e4 - 7 + 127) << 23);
-}
+// Shared NVFP4 decode primitives (nvfp4_codec.h). Aliased into this anonymous
+// namespace so existing call sites stay unchanged.
+using gpu::nvfp4::kE2M1Table;
+using gpu::nvfp4::E4M3ScaleToFloat;
 
 // Fused NVFP4 dense GEMM: y[t][n] = sum_k x[t*K+k] * W[n*K+k], where W is the
 // [N, K] row-major weight with per-16 E4M3 block scales + global_scale.
@@ -368,8 +361,8 @@ __global__ void qwen_nvfp4_gemm_kernel(
         const int64_t e = (int64_t)n * K + k;
         const uint8_t byte = packed[e >> 1];
         const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
-        const float scl = qwen_e4m3_scale(scales[e >> 4]) * global_scale;
-        acc += __half2float(xrow[k]) * qwen_e2m1_tab[nib] * scl;
+        const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
+        acc += __half2float(xrow[k]) * kE2M1Table[nib] * scl;
     }
     y[idx] = __float2half(acc);
 }
