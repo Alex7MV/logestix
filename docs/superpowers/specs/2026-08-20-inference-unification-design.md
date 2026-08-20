@@ -91,17 +91,41 @@ is non-contractual.
   `qwen_base_model.cpp:28` must be preserved) + weight-pin + geometry +
   `FinishLoad`; set `resident_bytes_ = pw_.resident_bytes` after pin.
 
-### 3.3 `ResidentWeightBytes` migration
+### 3.3 `ResidentWeightBytes` — dense vs MoE residency semantics
 
-- `GlmV5Model` / `QwenBaseModel`: drop the override; assign `resident_bytes_`
-  after each weight pin. GLM pins in `Infer` (weights `pw_.Free()`d at cleanup),
-  so `resident_bytes_` latest-write semantics apply and may reflect zero between
-  infers — mirror previous override behaviour which read `pw_.resident_bytes`
-  live. **Implementation detail:** to preserve exact live-read semantics,
-  keep a `const` accessor; simplest faithful option is GLM/Qwen keep assigning
-  `resident_bytes_` in `Unload()` too. Decide in plan; behavioural equivalence
-  with today is the requirement.
-- `DeepSeekV4FlashModel`: no override today → stays `0` via base default.
+The models split into two residency families; `ResidentWeightBytes()` must
+report the **persistent (pinned/full) device-resident weight set**, NOT the
+on-disk total and NOT the transient per-infer peak:
+
+- **Dense (Qwen3.5-9B / Qwen3.8-27B):** `Load()` uploads the entire model to
+  VRAM once (`QwenPinnedWeights.resident_bytes` = "total device bytes held on
+  load", `qwen_inference_load.cpp:410`; `qwen_base_model.cpp:30-48`). The
+  resident set is stable and complete after `Load()`.
+- **MoE (GLM-5.2, DeepSeek-V4-Flash):** only the **pinned** subset is
+  persistently resident. The full expert set (GLM ~385 GiB / 19456 experts)
+  lives host-side via mmap and is staged **one expert at a time** into reusable
+  device staging during a generation pass
+  (`ensure_glm_expert_resident`, `glm_inference_load.cpp:604+`;
+  `glm_inference_load.h:224-306`). The transient per-infer peak (`arena` +
+  staged experts) is reported separately via `InferenceResult.weight_resident_bytes`
+  / `BenchmarkResult.resident_bytes` (`glm_inference.cu:1512`,
+  `deepseek_inference_pipeline.cu:731`) — it is NOT what `ResidentWeightBytes()`
+  carries.
+
+Migration, preserving today's exact overrides:
+
+- `GlmV5Model` / `QwenBaseModel`: drop the override; assign
+  `resident_bytes_ = pw_.resident_bytes` at the point where the weights are
+  resident. For Qwen (dense) that is inside `Load()` after the pin and on
+  `Unload()` (reset). For GLM (MoE) that is when the pinned set is resident;
+  because GLM pins per-`Infer` and frees at cleanup, the persistent member
+  `resident_bytes_` must not report the wrong transient figure — assign it from
+  `pw_.resident_bytes` at pin time only, preserving the "pinned-persistent",
+  not per-infer-peak, semantics the current override already has.
+- `DeepSeekV4FlashModel`: no persistent weight set (per-call load/free via
+  `RunInferenceModel`) → no override today; stays `0` via base default. The
+  per-call peak continues to surface through `InferenceResult`/`BenchmarkResult`
+  only.
 
 ### 3.4 `num_layers` consistency
 
@@ -182,4 +206,8 @@ unaffected. ValidateInferRequest guard messages unchanged (locked by
 
 - Whether `BeginLoad` logs `[model]` or a per-model tag.
 - Exact `QwenTopology` field providing layer count for `num_layers`.
-- Whether GLM/Qwen also refresh `resident_bytes_` in `Unload`.
+- Confirm GLM keeps `ResidentWeightBytes()` = pinned-persistent (not per-infer
+  peak). The interface contract wording `model.h:62` says "Peak resident
+  (pinned + arena + staged experts)" — today's override returns only pinned, so
+  `resident_bytes_` documents the persistent-pinned reality; the infer peak
+  stays in `InferenceResult`/`BenchmarkResult`.
