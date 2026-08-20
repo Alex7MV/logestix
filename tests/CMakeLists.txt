@@ -512,6 +512,25 @@ target_compile_definitions(test_model_runtime PRIVATE
 )
 target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
 
+# ── Тест InferenceEngine singleton + TokenChunk streaming/abort (host-only) ──
+add_executable(test_model_engine test_model_engine.cpp)
+target_link_libraries(test_model_engine PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_engine>"
+    )
+    add_custom_command(TARGET test_model_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_engine>"
+    )
+endif()
+
+add_test(NAME test_model_engine COMMAND test_model_engine)
+
 if(WIN32)
     add_custom_command(TARGET test_model_runtime POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different

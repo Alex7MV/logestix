@@ -26,6 +26,7 @@ add_library(lsxcommon STATIC
     src/loader.cpp
     src/log.cpp
     src/model_base.cpp
+    src/model_engine.cpp
     src/model_factory.cpp
     src/model_integrity.cpp
     src/model_registry.cpp
