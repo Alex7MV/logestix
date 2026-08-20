@@ -20,13 +20,8 @@ GlmV5Model::~GlmV5Model() { Unload(); }
 
 bool GlmV5Model::Load()
 {
-    if (loaded_) return true;
-    if (cfg_.model_path.empty()) {
-        spdlog::error("[glm-model] empty model_path");
-        return false;
-    }
-    if (!LoadTokenizerDb(cfg_.model_path)) return false;
-    loaded_ = true;
+    if (!BeginLoad(cfg_.model_path)) return false;
+    FinishLoad();
     return true;
 }
 
@@ -78,6 +73,10 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     if (e != cudaSuccess)
         return fail(std::string("load pinned weights: ") +
                     cudaGetErrorString(e));
+    // MoE pinned-persistent residency (spec 3.3): only the pinned subset is
+    // persistently resident; the on-demand expert mmaps and staged experts are
+    // transient (reported via InferenceResult, not ResidentWeightBytes()).
+    resident_bytes_ = pw_.resident_bytes;
     if (pw_.hidden != glm::kGlmHidden)
         return fail("model hidden_size does not match kGlmHidden (6144)");
     if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers))
@@ -142,11 +141,6 @@ void GlmV5Model::Unload()
     pw_.Free();
     tok_db_.reset();
     loaded_ = false;
-}
-
-SafetensorsModel GlmV5Model::Inspect()
-{
-    return lsxcommon::scan_directory(cfg_.model_path);
 }
 
 gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)

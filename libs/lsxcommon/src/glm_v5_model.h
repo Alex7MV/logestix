@@ -16,12 +16,10 @@ public:
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
     void Unload() override;
-    SafetensorsModel Inspect() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
     gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return kType; }
-    std::uint64_t ResidentWeightBytes() const override { return pw_.resident_bytes; }
 
 private:
     glm::GlmPinnedWeights pw_;
