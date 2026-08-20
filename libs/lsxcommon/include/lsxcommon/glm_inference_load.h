@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "lsxcommon/schema.h"
+#include "lsxcommon/expert_store.h"
 
 namespace lsxcommon {
 namespace glm {
@@ -268,17 +269,7 @@ struct GlmExpertEntry {
 // and load_glm_expert_index/free_glm_expert_index will need an external lock:
 // concurrent LRU touch/evict mutates `lru`/`entries`/`mmaps` without any
 // synchronization.
-struct GlmExpertDb {
-    std::vector<GlmExpertEntry> entries;
-    std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
-    std::vector<std::string> paths;      // per flat index (for lazy open)
-    std::vector<size_t> lru;             // flat indices, back = least recently used
-    size_t max_open = 7000;              // bounded by Windows CRT fd cap (8192)
-    int experts_per_layer = 0;
-    int num_layers = 0;
-    std::string error_msg;
-};
+using GlmExpertDb = lsxcommon::gpu::expert_store::ExpertStore<GlmExpertEntry>;
 
 // Builds the flat file-path index of every expert of a converted GLM-5.2
 // model (<model_path>/logestix/experts/layer_<l>/exp_<e>.arrow, falling back to

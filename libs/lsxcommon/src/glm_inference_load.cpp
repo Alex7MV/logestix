@@ -483,85 +483,8 @@ void GlmExpertTables::Free()
 // ── On-demand routed-expert index (layers 3-78) ─────────────────────────────
 namespace {
 
-// Parses one expert arrow file (given its flat index) into db.entries[idx] and
-// keeps the mmap + record batch alive in the cache. Returns true on success.
-// Zero-copy: the host_w* / host_*_scales pointers reference the mmap'd Arrow
-// IPC buffers directly (no per-expert heap copy), mirroring the DeepSeek
-// loader's parse_expert_file.
-bool ParseGlmExpertFile(GlmExpertDb &db, size_t idx)
-{
-    auto &apath = db.paths[idx];
-    auto mmap_res = arrow::io::MemoryMappedFile::Open(
-        apath, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) {
-        // Rate-limited: a missing expert file is a common, expected case
-        // when scanning a full (e.g. 19456-expert) grid — mirrors the
-        // DeepSeek loader's parse_expert_file logging so a genuinely broken
-        // pinned-dir layout is still discoverable without flooding the log
-        // per-expert on every ensure_glm_expert_resident() miss.
-        if (idx < 5 || idx % 1000 == 0)
-            log::debug("[glm_load] expert mmap fail " + apath + ": "
-                       + mmap_res.status().ToString());
-        return false;
-    }
-    auto mmap = *mmap_res;
-
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap.get());
-    if (!reader_res.ok() || (*reader_res)->num_record_batches() == 0) {
-        log::debug("[glm_load] expert file has no record batches: " + apath);
-        return false;
-    }
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) {
-        log::debug("[glm_load] expert batch read failed for " + apath + ": "
-                   + batch_res.status().ToString());
-        return false;
-    }
-    auto batch = *batch_res;
-
-    auto get_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-        auto arr = batch->column(col);
-        auto bin = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(arr);
-        if (!bin) return {nullptr, 0};
-        auto view = bin->GetView(0);
-        return {reinterpret_cast<const uint8_t *>(view.data()),
-                static_cast<int64_t>(view.size())};
-    };
-
-    auto get_scale_bin = [&](int col) -> std::pair<const uint8_t *, int64_t> {
-        auto lst = std::dynamic_pointer_cast<arrow::ListArray>(batch->column(col));
-        if (!lst) return {nullptr, 0};
-        auto u8 = std::dynamic_pointer_cast<arrow::UInt8Array>(lst->values());
-        if (!u8) return {nullptr, 0};
-        auto offs = std::dynamic_pointer_cast<arrow::Int32Array>(lst->offsets());
-        if (!offs) return {nullptr, 0};
-        int64_t begin = offs->Value(0);
-        int64_t end   = offs->Value(1);
-        return {u8->raw_values() + begin, end - begin};
-    };
-
-    auto get_gs = [&](int col) -> float {
-        auto arr = batch->column(col);
-        auto f = std::dynamic_pointer_cast<arrow::FloatArray>(arr);
-        return f ? f->Value(0) : 1.0f;
-    };
-
-    auto [w1p, w1s] = get_bin(lsxcommon::ExpertSchema::kIdxW1Weight);
-    auto [w2p, w2s] = get_bin(lsxcommon::ExpertSchema::kIdxW2Weight);
-    auto [w3p, w3s] = get_bin(lsxcommon::ExpertSchema::kIdxW3Weight);
-    auto [w1sp, w1ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW1Scale);
-    auto [w2sp, w2ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW2Scale);
-    auto [w3sp, w3ss] = get_scale_bin(lsxcommon::ExpertSchema::kIdxW3Scale);
-
-    db.entries[idx] = {w1p, w2p, w3p, w1sp, w2sp, w3sp,
-                       get_gs(lsxcommon::ExpertSchema::kIdxW1GlobalScale),
-                       get_gs(lsxcommon::ExpertSchema::kIdxW2GlobalScale),
-                       get_gs(lsxcommon::ExpertSchema::kIdxW3GlobalScale),
-                       w1s, w2s, w3s, w1ss, w2ss, w3ss};
-    db.mmaps[idx] = std::move(mmap);
-    db.batches[idx] = std::move(batch);
-    return true;
-}
+// No per-model parser needed: the shared ExpertStore<TEntry>::DecodeEntry()
+// extracts the six ExpertSchema bins + three global scales into TEntry.
 
 } // anonymous namespace
 
@@ -569,98 +492,23 @@ GlmExpertDb load_glm_expert_index(const std::string &model_path,
                                   int num_layers, int experts_per_layer)
 {
     GlmExpertDb db;
-    int64_t total = static_cast<int64_t>(num_layers) * experts_per_layer;
-    db.entries.resize(static_cast<size_t>(total));
-    db.mmaps.resize(static_cast<size_t>(total));
-    db.batches.resize(static_cast<size_t>(total));
-    db.paths.resize(static_cast<size_t>(total));
-    db.lru.reserve(db.max_open);
     db.num_layers = num_layers;
     db.experts_per_layer = experts_per_layer;
-    namespace fs = std::filesystem;
-
-    fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
-    if (!fs::exists(exp_dir) && fs::exists(fs::path(model_path) / "experts"))
-        exp_dir = fs::path(model_path) / "experts";
-
-    for (int layer = 0; layer < num_layers; ++layer) {
-        for (int exp = 0; exp < experts_per_layer; ++exp) {
-            size_t idx = static_cast<size_t>(layer) * experts_per_layer
-                       + static_cast<size_t>(exp);
-            db.paths[idx] = (exp_dir / absl::StrCat("layer_", layer) /
-                             absl::StrCat("exp_", exp, ".arrow")).string();
-        }
-    }
-
-    // Warm the cache up to max_open (keeps the common first layers resident).
-    for (size_t idx = 0; idx < db.paths.size() && db.lru.size() < db.max_open;
-         ++idx) {
-        if (ParseGlmExpertFile(db, idx))
-            db.lru.push_back(idx);
-    }
+    db.log_prefix = "[glm_load] ";
+    db.mmap_fail_verb = "expert mmap fail ";
+    db.emit_diag = false;            // GLM emits no [diag-expert] block
+    db.log_batch_fails = true;       // GLM logs batch-failure lines
+    db.Load(model_path, /*fallback=*/true);
     return db;
 }
 
 void ensure_glm_expert_resident(GlmExpertDb &db, int layer, int expert,
                                 cudaStream_t stream)
 {
-    if (expert < 0 || expert >= db.experts_per_layer) return;
-    if (db.paths.empty()) return;
-    size_t idx = static_cast<size_t>(layer) *
-                     static_cast<size_t>(db.experts_per_layer) +
-                 static_cast<size_t>(expert);
-    if (idx >= db.entries.size()) return;
-
-    if (db.entries[idx].host_w1) {
-        // Already resident — touch it (move to front of LRU).
-        // PERF NOTE: O(lru.size()) linear scan, up to O(max_open)=7000 in the
-        // worst case. Not upgraded to an O(1) index (e.g. an auxiliary
-        // idx->position map) because a single generation touches at most
-        // num_layers * kGlmMoETopK distinct experts (a small fraction of
-        // max_open in practice) — the added map-maintenance complexity
-        // isn't justified without a profiled hot path showing otherwise.
-        for (auto it = db.lru.begin(); it != db.lru.end(); ++it) {
-            if (*it == idx) {
-                db.lru.erase(it);
-                db.lru.insert(db.lru.begin(), idx);
-                break;
-            }
-        }
-        return;
-    }
-
-    // Evict least-recently-used entries until under the cap. Sync the
-    // caller's stream ONCE before the first eviction: an earlier routed-slot
-    // launch may have issued a cudaMemcpyAsync() reading from one of the
-    // about-to-be-unmapped entries' host_w*/host_*_scales pointers, and that
-    // copy is not guaranteed complete just because the launching call
-    // returned. Synchronizing only when eviction is actually about to happen
-    // (rather than every call) keeps this a rare, not per-slot, barrier.
-    if (db.lru.size() >= db.max_open)
-        cudaStreamSynchronize(stream);
-    while (db.lru.size() >= db.max_open) {
-        size_t evict = db.lru.back();
-        db.lru.pop_back();
-        db.mmaps[evict].reset();
-        db.batches[evict].reset();
-        db.entries[evict] = GlmExpertEntry();
-    }
-    if (ParseGlmExpertFile(db, idx))
-        db.lru.insert(db.lru.begin(), idx);
+    db.EnsureResident(layer, expert, stream);
 }
 
-void free_glm_expert_index(GlmExpertDb &db)
-{
-    for (auto &m : db.mmaps) m.reset();
-    for (auto &b : db.batches) b.reset();
-    db.mmaps.clear();
-    db.batches.clear();
-    db.lru.clear();
-    db.entries.clear();
-    db.paths.clear();
-    db.num_layers = 0;
-    db.experts_per_layer = 0;
-}
+void free_glm_expert_index(GlmExpertDb &db) { db.Free(); }
 
 cudaError_t LoadGlmExpertTables(const std::string &model_path,
                                 GlmExpertTables &experts,
