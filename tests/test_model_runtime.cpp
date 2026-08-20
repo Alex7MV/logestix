@@ -84,7 +84,7 @@ TEST_CASE("model_base: LoadTokenizerDb loads a valid Arrow db", "[model_base]")
 TEST_CASE("model_base: LoadTokenizerDb fails on a missing model dir", "[model_base]")
 {
     FakeModel m("glm-5.2");
-    m.cfg_.model_path = fs::temp_directory_path() / "no_such_model_xyz";
+    m.cfg_.model_path = (fs::temp_directory_path() / "no_such_model_xyz").string();
     REQUIRE_FALSE(m.Load());
     REQUIRE_FALSE(m.loaded_);
 }
@@ -98,7 +98,7 @@ TEST_CASE("model_runtime: FakeModel ResidentWeightBytes defaults to zero", "[mod
 TEST_CASE("model_runtime: RunCliGeneration returns nonzero on a missing model", "[model_runtime]")
 {
     lsxcommon::runtime::GenerationCliArgs args;
-    args.model_path = fs::temp_directory_path() / "no_such_model_xyz";
+    args.model_path = (fs::temp_directory_path() / "no_such_model_xyz").string();
     args.prompt = "hello";
     REQUIRE(lsxcommon::runtime::RunCliGeneration(args) != 0);
 }

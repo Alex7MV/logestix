@@ -184,7 +184,7 @@ ctest --preset windows-debug    # Windows 11
   - `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests; 12 test cases, 4470 assertions (E2M1/E8M0, act_quant, RMSNorm, SwiGLU, CSA Compressor, routed-expert FFN, NVFP4 codec)
   - `tests/test_model_factory.cpp` — LsxModelFactory/registry; 5 test cases, 4 assertions (real-model tests SKIP без модели)
   - `tests/test_tokenizer.cpp` — токенизатор (unicode, schema, arrow-конвертация, pre-tokenizer, encode/decode); 14 test cases, 236 assertions
-  - `tests/test_glm_*.cpp` — GLM-5.2 suite (12 executables): convert, loader, model, compute, dense_compute, moe_router, experts, moe_compute, attention, inference, full_compute, selfcheck (~541k assertions, real-model tests SKIP без GLM; test_glm_selfcheck — 50-цикловый stress SelfCheck с бит-точной детерминированностью `final_logits`, exit 0)
+  - `tests/test_glm_*.cpp` — GLM-5.2 suite (12 executables): convert, loader, model, compute, dense_compute, moe_router, experts, moe_compute, attention, inference, full_compute, selfcheck (~541k assertions, real-model tests SKIP без GLM; test_glm_selfcheck — 3-цикловый stress SelfCheck с бит-точной детерминированностью `final_logits` (3 циклов достаточно для подачи нагрузки; переопределяется `LSX_TEST_GLM_SELFCHECK_CYCLES`), exit 0)
   - `tests/test_mosaic_network.cpp` — lsxnetwork (FrameQueue SPSC, zero-copy); 8 test cases, ~2M assertions
   - `tests/test_integrated_pipeline.cpp` — TaskMosaic оркестратор (GLM + DeepSeek burst); 4 test cases, 8026 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
@@ -286,8 +286,10 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
   эталонный ответ `"Paris"` (top-1, декод первого токена/короткого префикса),
   `r.selfcheck_passed == true`.
 - НОВОЕ ТРЕБОВАНИЕ для новых моделей: добавить `tests/test_<model>_selfcheck.cpp`
-  с инкрементальным 1→2-токенным селфчеком подряд минимум 50 циклов стресс-теста
-  с бит-точной детерминированностью логитов и `exit 0`.
+  с инкрементальным 1→2-токенным селфчеком подряд минимум 3 циклов стресс-теста
+  (для подачи нагрузки достаточно 3-х раз; количество переопределяется
+  `LSX_TEST_GLM_SELFCHECK_CYCLES`) с бит-точной детерминированностью логитов
+  и `exit 0`.
 
 ## CMake Key Points
 

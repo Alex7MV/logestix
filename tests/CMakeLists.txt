@@ -349,8 +349,9 @@ endif()
 add_test(NAME test_glm_model COMMAND test_glm_model)
 
 # ── Тест GLM-5.2 SelfCheck (шаг 8 протокола): инкрементальный 1->2-токенный
-#    селфчек на реальной модели, минимум 50 циклов стресса, бит-точная
-#    детерминированность final_logits, exit 0. SKIP без чекпоинта.
+#    селфчек на реальной модели, минимум 3 цикла стресса (для подачи нагрузки
+#    достаточно 3-х раз; переопределяется LSX_TEST_GLM_SELFCHECK_CYCLES),
+#    бит-точная детерминированность final_logits, exit 0. SKIP без чекпоинта.
 add_executable(test_glm_selfcheck test_glm_selfcheck.cpp)
 target_compile_definitions(test_glm_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"

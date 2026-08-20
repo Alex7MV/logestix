@@ -171,11 +171,12 @@ TEST_CASE("Qwen: broken tokenizer json aborts", "[qwen][integrity]")
     CHECK(!st.ok());
 }
 
-TEST_CASE("Qwen: tokenizer without bos special aborts", "[qwen][integrity]")
+TEST_CASE("Qwen: tokenizer without bos special still converts", "[qwen][integrity]")
 {
     QwenIntegrityFixture f;
     f.build(true);
-    // Strip the "<|bos|>" added-token entry so bos_id resolves to -1.
+    // Qwen3.5-9B has no BOS token (bos_id == -1 per convention, commit df91ab9),
+    // so stripping the "<|bos|>" added-token entry must NOT abort conversion.
     std::string content = read_file(f.tmp / "tokenizer.json");
     auto p0 = content.find("{\"id\":0,\"content\":\"<|bos|>\"");
     REQUIRE(p0 != std::string::npos);
@@ -188,8 +189,7 @@ TEST_CASE("Qwen: tokenizer without bos special aborts", "[qwen][integrity]")
     }
     auto st = lsxcommon::qwen::ConvertQwenModel(f.tmp.string(), f.tmp.string());
     INFO("ConvertQwenModel error: " << st.ToString());
-    CHECK(!st.ok());
-    CHECK(st.ToString().find("bos_id") != std::string::npos);
+    CHECK(st.ok());
 }
 
 TEST_CASE("Qwen: truncated safetensors aborts", "[qwen][integrity]")
