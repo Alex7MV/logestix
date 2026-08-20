@@ -2,6 +2,7 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
 #include "deepseek_inference_load.cuh"
+#include "nvfp4_codec.h"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -41,13 +42,6 @@ __device__ float nvfp4_to_float(uint8_t nibble)
     return sign ? -v : v;
 }
 
-__device__ float e4m3_scale_to_float(uint8_t e4m3)
-{
-    int e4 = (e4m3 >> 3) & 0x0F;
-    if (e4 == 0) return 0.0f;
-    return __uint_as_float(static_cast<uint32_t>(e4 - 7 + 127) << 23);
-}
-
 __global__ void dequant_nvfp4_to_half_kernel(
     const uint8_t* __restrict__ packed,
     const uint8_t* __restrict__ scales,
@@ -63,7 +57,7 @@ __global__ void dequant_nvfp4_to_half_kernel(
         ? (packed[byte_idx] >> 4)
         : (packed[byte_idx] & 0x0F);
 
-    float bs = e4m3_scale_to_float(scales[i >> 4]);
+    float bs = nvfp4::E4M3ScaleToFloat(scales[i >> 4]);
     float f32 = nvfp4_to_float(nibble) * bs * global_scale;
     output[i] = __float2half(f32);
 }
