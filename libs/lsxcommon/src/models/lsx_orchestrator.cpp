@@ -3,12 +3,17 @@
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
 #include <exception>
+#include <cstring>
 #include <thread>
 
 #include "lsxnetwork/openai_endpoint.h"
 #include "lsxnetwork/io_worker.h"
+#include "lsxnetwork/zmq_context.h"
+
+#include <zmq.h>
 
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/prompt_framing.h"
 
 namespace lsxcommon {
 
@@ -59,6 +64,7 @@ DispatchSignal LsxOrchestrator::Classify(std::string_view model) noexcept {
 }
 
 void LsxOrchestrator::ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
+                                      lsxnetwork::FrameQueue& responses,
                                       TaskMosaicStats& stats,
                                       std::atomic<bool>& stop) {
     // Headless consumer loop. Polling the lock-free SPSC tail watermark via
@@ -80,7 +86,7 @@ void LsxOrchestrator::ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
         // has fully returned (SlotRetire dtor below — exception-safe).
         SlotRetire retire(queue, index, stats);
         try {
-            DispatchOne(frame, stats);
+            DispatchOne(frame, responses, stats);
         } catch (const std::exception& ex) {
             // SlotRetire guarantees the ring slot itself is never leaked, but
             // without this catch an exception escaping DispatchOne()/Infer()
@@ -98,16 +104,40 @@ void LsxOrchestrator::ServeTaskMosaic(lsxnetwork::FrameQueue& queue,
     }
 }
 
+void LsxOrchestrator::ServeResponses(lsxnetwork::FrameQueue& responses,
+                                     std::atomic<bool>& stop,
+                                     const std::string& endpoint) {
+    lsxnetwork::ZmqContext ctx;
+    lsxnetwork::ZmqSocket sock(ctx, ZMQ_REP);
+    if (!sock.Valid() || sock.Bind(endpoint.c_str()) != 0) {
+        spdlog::error("[orchestrator] failed to bind response socket on {}",
+                      endpoint);
+        return;
+    }
+    while (!stop.load(std::memory_order_acquire)) {
+        lsxnetwork::FrameQueue::Frame frame;
+        std::size_t index = 0;
+        if (!responses.TryTake(frame, index)) {
+            std::this_thread::yield();
+            continue;
+        }
+        sock.SendZeroCopy(responses, frame, index);
+    }
+}
+
 void LsxOrchestrator::ServeTaskMosaicPinned(
-    lsxnetwork::FrameQueue& queue, TaskMosaicStats& stats,
-    std::atomic<bool>& stop, const std::string& passport_path) {
+    lsxnetwork::FrameQueue& queue, lsxnetwork::FrameQueue& responses,
+    TaskMosaicStats& stats, std::atomic<bool>& stop,
+    const std::string& passport_path) {
     // The entire consumer/ingestion loop runs inside a single pinned worker.
     // That worker threads a privately-owned LsxTokenTranslator, loaded from the
     // unified model-metadata vault during thread entry (after affinity pin).
     // The per-thread translator is fully isolated — no shared singleton — and
     // its mapping views stay alive only for the lifetime of this worker.
     lsxnetwork::IoWorker worker(
-        [this, &queue, &stats, &stop] { ServeTaskMosaic(queue, stats, stop); },
+        [this, &queue, &responses, &stats, &stop] {
+            ServeTaskMosaic(queue, responses, stats, stop);
+        },
         passport_path);
     if (worker.Start() != 0) {
         spdlog::error("[orchestrator] pinned serve worker failed to start");
@@ -116,7 +146,47 @@ void LsxOrchestrator::ServeTaskMosaicPinned(
     // Joins implicitly via the worker dtor once ServeTaskMosaic returns on stop.
 }
 
+void LsxOrchestrator::EmitResponse(lsxnetwork::FrameQueue& responses,
+                                   const lsxnetwork::ChatCompletion& cc,
+                                   const gpu::InferenceResult& res,
+                                   TaskMosaicStats& stats) {
+    lsxnetwork::CompletionResponse cr;
+    cr.ok = res.ok;
+    cr.output_text = res.output_text;
+    cr.gen_tokens = res.gen_tokens;
+    cr.eos_terminated = res.eos_terminated;
+    cr.ttft_ms = res.ttft_ms;
+    cr.tokens_per_sec = res.tokens_per_sec;
+
+    std::string payload;
+    if (!lsxnetwork::OpenAiEndpoint().WriteCompletion(cc, cr, payload)) {
+        ++stats.response_serialize_failures;
+        return;
+    }
+    std::size_t rcap = 0;
+    char* rslot = responses.Acquire(&rcap);
+    if (!rslot) {
+        // Response ring full: drop the reply (503-ish semantics) rather than
+        // stall the request consumer. The request ring slot was already retired
+        // by the caller's SlotRetire guard.
+        spdlog::warn("[orchestrator] response ring full; dropping reply for {}",
+                     cc.id);
+        ++stats.responses_failed;
+        return;
+    }
+    if (payload.size() > rcap) {
+        spdlog::warn("[orchestrator] response frame too large ({} bytes); dropping",
+                     payload.size());
+        ++stats.responses_failed;
+        return;
+    }
+    std::memcpy(rslot, payload.data(), payload.size());
+    responses.Publish(payload.size());
+    ++stats.responses_ok;
+}
+
 void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
+                                  lsxnetwork::FrameQueue& responses,
                                   TaskMosaicStats& stats) {
     // Zero-alloc extraction of the dispatch target (top-level "model").
     lsxnetwork::ChatCompletion cc;
@@ -136,23 +206,18 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
             ++stats.glm_routed;
             ModelRequest req;
             if (glm_ != nullptr) {
-                // GLM-5.2 execution branch. GlmV5Model::Infer is currently an
-                // honest stub (returns "GLM inference pipeline not implemented")
-                // until the GLM runtime lands; routing + retirement are real.
-                //
-                // NOTE: `req` is intentionally NOT populated from `cc.content`
-                // yet — translating chat-completion text into `input_ids`
-                // requires calling into the target model's tokenizer
-                // (IModel::Tokenizer()), which is a separate, larger wiring
-                // task (and today's `Infer()` for both branches is itself a
-                // stub ahead of the real runtime landing here). What IS fixed
-                // here: the result of Infer() is no longer silently dropped.
+                req.max_gen_tokens = (cc.max_tokens > 0) ? cc.max_tokens : 64;
+                if (!lsxcommon::prompt::BuildPromptInputIds(
+                        cc.model, glm_->Tokenizer(), cc.content, req.input_ids)) {
+                    spdlog::warn("[orchestrator] glm-5.2 prompt tokenization failed");
+                }
                 auto res = glm_->Infer(req);
                 if (!res.ok) {
                     ++stats.infer_failures;
                     spdlog::warn("[orchestrator] glm-5.2 Infer failed: {}",
                                  res.error_msg);
                 }
+                EmitResponse(responses, cc, res, stats);
             } else {
                 spdlog::warn("[orchestrator] glm-5.2 routed but no model registered");
             }
@@ -162,6 +227,11 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
             ++stats.deepseek_routed;
             ModelRequest req;
             if (deepseek_ != nullptr) {
+                req.max_gen_tokens = (cc.max_tokens > 0) ? cc.max_tokens : 64;
+                if (!lsxcommon::prompt::BuildPromptInputIds(
+                        cc.model, deepseek_->Tokenizer(), cc.content, req.input_ids)) {
+                    spdlog::warn("[orchestrator] deepseek-v4-flash prompt tokenization failed");
+                }
                 // DeepSeek-V4-Flash execution branch -> gpu::RunInferenceModel.
                 auto res = deepseek_->Infer(req);
                 if (!res.ok) {
@@ -169,6 +239,7 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
                     spdlog::warn("[orchestrator] deepseek-v4-flash Infer failed: {}",
                                  res.error_msg);
                 }
+                EmitResponse(responses, cc, res, stats);
             } else {
                 spdlog::warn("[orchestrator] deepseek-v4-flash routed but no model registered");
             }

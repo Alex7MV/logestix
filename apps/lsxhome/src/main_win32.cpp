@@ -15,6 +15,9 @@
 #include "lsxhome/gui_renderer.h"
 
 #include "lsxcommon/generation_cli.h"
+#include "lsxcommon/model.h"
+#include "lsxcommon/model_factory.h"
+#include "lsxcommon/prompt_framing.h"
 
 #include <absl/flags/flag.h>
 #include <absl/flags/parse.h>
@@ -26,6 +29,7 @@
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -38,6 +42,7 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 // the shell's token stream. A bare --run/-r (no value) falls back to the
 // default blueprint prompt via lsxcommon::cli.
 ABSL_FLAG(std::string, run, "", "generation prompt (--run \"PROMPT\" / -r \"PROMPT\")");
+ABSL_FLAG(std::string, model, "", "model path for the --run generation path");
 
 namespace {
 
@@ -70,24 +75,51 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running,
-                     const std::string& seed_prompt) {
-    std::uint32_t seq = 0;
-    while (running.load(std::memory_order_relaxed)) {
-        // Route the generation prompt (resolved via --run/-r) into the shell's
-        // token stream: the first payload carries the prompt text instead of
-        // the demo token.
-        const char* text = seed_prompt.empty() ? "Paris" : seed_prompt.c_str();
-        lsxhome::TokenPayload t =
-            lsxhome::MakeTokenPayload(kParisTokenId, seq++, text);
-        // Backpressure contract: dropping on a full pool is deterministic and
-        // never blocks the compute stream.
-        bridge.Publish(t);
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-        if ((seq & 7u) == 0) {
-            for (int i = 0; i < 8; ++i) {
-                bridge.Publish(t);
+                     const std::string& model_path,
+                     const std::string& prompt) {
+    bool published = false;
+    // Runs the resolved generation prompt through the model once and publishes
+    // each decoded token into the SPSC bridge. Falls back to the previous demo
+    // behavior (single "Paris" token pump) when no model is loadable.
+    if (!model_path.empty()) {
+        lsxcommon::ModelInitConfig cfg;
+        cfg.model_path = model_path;
+        auto model = lsxcommon::LsxModelFactory::Create(cfg);
+        if (model && model->Load()) {
+            std::vector<int32_t> input_ids;
+            if (lsxcommon::prompt::BuildPromptInputIds(
+                    model->Type(), model->Tokenizer(), prompt, input_ids)) {
+                lsxcommon::ModelRequest req{std::move(input_ids), 64};
+                auto result = model->Infer(req);
+                if (result.ok && !result.output_text.empty()) {
+                    int idx = 0;
+                    std::string_view rest = result.output_text;
+                    while (!rest.empty()) {
+                        auto sp = rest.find(' ');
+                        std::string_view tok =
+                            (sp == rest.npos) ? rest : rest.substr(0, sp);
+                        bridge.Publish(lsxhome::MakeTokenPayload(
+                            0, static_cast<std::uint32_t>(idx++),
+                            std::string(tok).c_str()));
+                        rest.remove_prefix(sp == rest.npos ? rest.size()
+                                                           : sp + 1);
+                    }
+                    published = true;
+                }
             }
+            model->Unload();
         }
+    }
+    if (!published) {
+        bridge.Publish(lsxhome::MakeTokenPayload(
+            kParisTokenId, 0,
+            prompt.empty() ? "Paris" : prompt.c_str()));
+    }
+
+    // Keep the compute thread alive until the shell tears down; the UI thread
+    // drains the already-published token stream every frame.
+    while (running.load(std::memory_order_relaxed)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 }
 
@@ -104,6 +136,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
 
     std::string run_prompt =
         lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
+    std::string model_path = absl::GetFlag(FLAGS_model);
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -149,7 +182,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
     lsxhome::GuiBridge bridge;
     std::atomic<bool> running{true};
     std::thread compute_thread(
-        ComputeProducer, std::ref(bridge), std::ref(running), run_prompt);
+        ComputeProducer, std::ref(bridge), std::ref(running),
+        model_path, run_prompt);
 
     MSG msg = {};
     while (msg.message != WM_QUIT) {

@@ -62,5 +62,14 @@ TEST_CASE("GLM-5.2 Infer: meaningful output_text on the test prompt",
     REQUIRE(!r.output_text.empty());
     REQUIRE(r.output_text.find("Paris") != std::string::npos);
 
+    // Unified runtime contract (Task 5): timings, residency, occupancy.
+    REQUIRE(r.ttft_ms >= 0.0);
+    REQUIRE(r.total_time_ms >= r.ttft_ms);
+    REQUIRE(r.tokens_per_sec >= 0.0);
+    REQUIRE(r.kv_slots_used >= static_cast<int>(ids.size()));
+    REQUIRE(r.weight_resident_bytes > 0);
+    REQUIRE(r.num_tokens == static_cast<int>(r.gen_tokens.size()));
+    REQUIRE(!r.final_logits.empty());
+
     m->Unload();
 }

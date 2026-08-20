@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <simdjson.h>
 
@@ -27,6 +28,19 @@ struct ChatCompletion {
     std::int64_t prompt_tokens     = 0;
     std::int64_t completion_tokens = 0;
     std::int64_t total_tokens      = 0;
+    int max_tokens = 0;         // "max_tokens" (0 = model default 64)
+};
+
+/// Network-layer slice of lsxcommon::gpu::InferenceResult. lsxnetwork cannot
+/// depend on lsxcommon, so the orchestrator maps InferenceResult -> this and
+/// hands it to OpenAiEndpoint::WriteCompletion.
+struct CompletionResponse {
+    bool ok = false;
+    std::string output_text;
+    std::vector<int32_t> gen_tokens;
+    bool eos_terminated = false;
+    double ttft_ms = 0.0;
+    double tokens_per_sec = 0.0;
 };
 
 /// Maps raw incoming OpenAI chat-completion JSON onto a `ChatCompletion`.
@@ -45,6 +59,14 @@ public:
     /// @return split-free simdjson error_code; simdjson::SUCCESS on success.
     simdjson::error_code Parse(const char* data, std::size_t size,
                                std::size_t capacity, ChatCompletion& out) const;
+
+    /// Serializes an OpenAI-style chat-completion reply. Echoes @p req's `id`
+    /// and `model` so the response ring can correlate without a per-slot
+    /// channel. Content is JSON-escaped (quotes/backslash/control chars).
+    /// Returns false only on OOM (string growth) — never on valid input.
+    bool WriteCompletion(const ChatCompletion& req,
+                         const CompletionResponse& res,
+                         std::string& out) const;
 };
 
 }  // namespace lsxnetwork

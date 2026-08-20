@@ -8,6 +8,7 @@
 #include "lsxcommon/inference_gpu.h"   // gpu::InferenceResult
 #include "lsxcommon/safetensors.h"     // SafetensorsModel
 #include "lsxcommon/tokenizer.h"       // ArrowTokenizerDb
+#include "lsxcommon/benchmark_gpu.h"   // gpu::BenchmarkResult
 
 namespace lsxcommon {
 
@@ -31,6 +32,14 @@ public:
     virtual void Unload() = 0;
     virtual SafetensorsModel Inspect() = 0;
     virtual gpu::InferenceResult SelfCheck(const ModelRequest &req) = 0;
+
+    // Runs the model's own engine loop on synthetic tokens. Additive default:
+    // ok=false keeps test fakes compiling without an override.
+    virtual gpu::BenchmarkResult Benchmark(int num_tokens = 2048) { return {}; }
+
+    // Peak resident weight set (pinned + arena + staged experts), in bytes.
+    // Default 0 keeps the interface additive for test fakes.
+    virtual std::uint64_t ResidentWeightBytes() const { return 0; }
 
     virtual const std::string &Type() const = 0;
     virtual ArrowTokenizerDb &Tokenizer() = 0;

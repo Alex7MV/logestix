@@ -428,6 +428,8 @@ cudaError_t run_routed_expert_ffn(
 
 // Routes one token: gate GEMM → sqrt(softplus) scores → top-k (bias only for
 // selection; hash layers 0..2 use tid2eid) → norm_topk_prob → ×route_scale.
+// `d_logits_scratch` / `h_logits_scratch` are caller-owned arena carves sized
+// [num_routed] — route_token performs ZERO CUDA allocations (spec item 12).
 cudaError_t route_token(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
@@ -435,6 +437,8 @@ cudaError_t route_token(
     const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
     const float *h_gate_bias,
     int topk,
+    __half *d_logits_scratch,
+    float *h_logits_scratch,
     int *h_top_indices, float *h_top_weights)
 {
     constexpr float kRouteScale = 1.5f;
@@ -452,23 +456,15 @@ cudaError_t route_token(
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
-    __half *d_logits = nullptr;
-    cudaError_t e = cudaMalloc(&d_logits, static_cast<size_t>(num_routed) * sizeof(__half));
-    if (e != cudaSuccess) return e;
-
     cublasStatus_t rstat = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                  num_routed, 1, hidden_dim, &alpha,
                  d_gate, CUDA_R_16F, hidden_dim,
                  d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                 d_logits, CUDA_R_16F, num_routed,
+                 d_logits_scratch, CUDA_R_16F, num_routed,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (rstat != CUBLAS_STATUS_SUCCESS) { cudaFree(d_logits); return cudaErrorUnknown; }
+    if (rstat != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
 
-    float *h_logits = nullptr;
-    e = cudaMallocHost(&h_logits, static_cast<size_t>(num_routed) * sizeof(float));
-    if (e != cudaSuccess) { cudaFree(d_logits); return e; }
-
-    cudaMemcpyAsync(h_logits, d_logits,
+    cudaMemcpyAsync(h_logits_scratch, d_logits_scratch,
                     static_cast<size_t>(num_routed) * sizeof(__half),
                     cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream);
@@ -476,7 +472,7 @@ cudaError_t route_token(
     // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
     float scores[kNumRouted];
     for (int i = 0; i < num_routed; ++i) {
-        float x = __half2float(reinterpret_cast<__half*>(h_logits)[i]);
+        float x = __half2float(reinterpret_cast<__half*>(h_logits_scratch)[i]);
         scores[i] = sqrtf(log1pf(expf(x)));
     }
 
@@ -543,8 +539,6 @@ cudaError_t route_token(
     for (int k = 0; k < topk; ++k)
         h_top_weights[k] *= inv * kRouteScale;
 
-    cudaFreeHost(h_logits);
-    cudaFree(d_logits);
     return cudaSuccess;
 }
 

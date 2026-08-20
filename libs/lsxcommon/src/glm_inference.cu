@@ -488,7 +488,9 @@ static cudaError_t RunGlmGenerationImpl(
     const GlmExpertTables *experts, GlmExpertDb *expert_db,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler())
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -662,6 +664,10 @@ static cudaError_t RunGlmGenerationImpl(
     // ── Greedy decode: argmax the layer-78 logits row, embed, re-forward. ──
     for (int step = 0; step < max_new; ++step) {
         g_stage = "decode-argmax";
+        e = sampler.Sample(stream, arena.d_logits_head, vocab,
+                           lsxcommon::sample::LogitType::kF32Rounded16,
+                           &arena.d_argmax->best, &arena.d_argmax->maxv);
+        if (e != cudaSuccess) return fail(e);
         e = cudaMemcpyAsync(arena.h_argmax, arena.d_argmax,
                             sizeof(GlmArgmaxSlot), cudaMemcpyDeviceToHost,
                             stream);
@@ -726,17 +732,20 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler)
 {
     return RunGlmGenerationImpl(cublas_h, stream, pw, &experts, nullptr,
-                                nullptr, nullptr, prompt, max_new, result);
+                                nullptr, nullptr, prompt, max_new, result,
+                                sampler);
 }
 
 cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result)
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler)
 {
     // Two reusable per-call staging buffers, one expert at a time: the packed
     // E2M1 payloads (w1+w2+w3) and the per-block E4M3 scales. Freed on every
@@ -764,7 +773,7 @@ cudaError_t RunGlmGeneration(
     }
 
     e = RunGlmGenerationImpl(cublas_h, stream, pw, nullptr, &expert_db,
-                             d_pack, d_scale, prompt, max_new, result);    cudaFree(d_scale);
+                             d_pack, d_scale, prompt, max_new, result, sampler);    cudaFree(d_scale);
     cudaFree(d_pack);
     return e;
 }
@@ -1310,7 +1319,8 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                                  const GlmPinnedWeights &pw,
                                  GlmExpertDb &expert_db,
                                  const std::vector<int32_t> &prompt,
-                                 int max_new, GlmGenerationResult &result)
+                                 int max_new, GlmGenerationResult &result,
+                                 lsxcommon::sample::ISampler &sampler)
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -1354,14 +1364,27 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         result.error_msg = cudaGetErrorString(e);
         return e;
     }
+
+    cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
         log::error("[glm_real] FAIL (stage=" + std::string(g_stage) + "): " +
                    std::string(cudaGetErrorString(err)));
+        if (t_start) cudaEventDestroy(t_start);
+        if (t_ttft) cudaEventDestroy(t_ttft);
+        if (t_stop) cudaEventDestroy(t_stop);
         c.Free();
         return err;
     };
+
+    // Wall-clock timing (stream-delta, GPU time only): t_start at entry,
+    // t_ttft at the first generated token, t_stop after the final head copy.
+    e = cudaEventCreate(&t_start);
+    if (e == cudaSuccess) e = cudaEventCreate(&t_ttft);
+    if (e == cudaSuccess) e = cudaEventCreate(&t_stop);
+    if (e != cudaSuccess) return fail(e);
+    cudaEventRecord(t_start, stream);
 
     const int hidden = pw.hidden;
     const auto shared_for = [&pw](int l) -> const PackedExpert * {
@@ -1422,21 +1445,23 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e);
         }
-        GlmArgmaxKernel<<<1, kGlmLoopBlock, 0, stream>>>(
-            c.d_logits_head, vocab, c.d_argmax);
-        e = cudaGetLastError();
+        e = sampler.Sample(stream, c.d_logits_head, vocab,
+                           lsxcommon::sample::LogitType::kF32Rounded16,
+                           &c.d_argmax->best, &c.d_argmax->maxv);
         if (e != cudaSuccess) return fail(e);
         e = cudaMemcpyAsync(c.h_argmax, c.d_argmax, sizeof(GlmArgmaxSlot),
-                            cudaMemcpyDeviceToHost, stream);
-        if (e != cudaSuccess) return fail(e);
+                            cudaMemcpyDeviceToHost, stream);        if (e != cudaSuccess) return fail(e);
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return fail(e);
         const int best = c.h_argmax->best;
         result.tokens.push_back(best);
         if (step == 0) result.first_maxv = c.h_argmax->maxv;
+        if (step == 0) cudaEventRecord(t_ttft, stream);
         if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
-            best == kGlmEosIds[2])
+            best == kGlmEosIds[2]) {
+            result.eos_terminated = true;
             break;
+        }
 
         g_stage = "decode";
         const int pos = last_idx + 1;
@@ -1474,6 +1499,20 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     if (e != cudaSuccess) return fail(e);
     e = cudaStreamSynchronize(stream);
     if (e != cudaSuccess) return fail(e);
+    cudaEventRecord(t_stop, stream);
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) return fail(e);
+    float ms_total = 0.0f, ms_ttft = 0.0f;
+    e = cudaEventElapsedTime(&ms_total, t_start, t_stop);
+    if (e != cudaSuccess) return fail(e);
+    e = cudaEventElapsedTime(&ms_ttft, t_start, t_ttft);
+    if (e != cudaSuccess) return fail(e);
+    result.total_ms = ms_total;
+    result.ttft_ms = ms_ttft;
+    result.resident_bytes = c.bytes + pw.resident_bytes;
+    cudaEventDestroy(t_start);
+    cudaEventDestroy(t_ttft);
+    cudaEventDestroy(t_stop);
     result.kv_slots_used = last_idx + 1;
     result.ok = true;
     c.Free();

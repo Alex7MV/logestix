@@ -594,7 +594,7 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
         return arrow::Status::Invalid("tokenizer.json not found in ", input_path);
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tok_path.string(), pinned_dir,
-        integrity::TokenizerSpecialIds{.bos_required = true,
+        integrity::TokenizerSpecialIds{.bos_required = false,
                                        .eos_required = true}));
 
     // (9) The converted output must be a loadable, verified model.

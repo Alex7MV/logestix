@@ -1,33 +1,28 @@
 #include "deepseek_v4_flash_model.h"
 
-#include <arrow/io/file.h>
-#include <arrow/ipc/reader.h>
-#include <filesystem>
 #include <spdlog/spdlog.h>
 
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
-#include "lsxcommon/tokenizer.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 
 const std::string DeepSeekV4FlashModel::kType = "deepseek-v4-flash";
 
 namespace gpu {
-// Internal engine entry points (deepseek_inference_pipeline.cu).
+// Internal engine entry point (deepseek_inference_pipeline.cu).
 InferenceResult RunInferenceModel(
     const std::string &model_path,
     const std::vector<int32_t> &input_ids,
     int max_gen_tokens,
-    ::lsxcommon::ArrowTokenizerDb &tok_db);
-InferenceResult RunSelfCheckModel(
-    const std::string &model_path,
-    const std::vector<int32_t> &input_ids,
-    int max_gen_tokens,
-    ::lsxcommon::ArrowTokenizerDb &tok_db);
+    ::lsxcommon::ArrowTokenizerDb &tok_db,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 } // namespace gpu
 
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
-    : cfg_(std::move(cfg)) {}
+    : ModelBase{std::move(cfg)} {}
 
 DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
 
@@ -38,21 +33,7 @@ bool DeepSeekV4FlashModel::Load()
         spdlog::error("[model] empty model_path");
         return false;
     }
-    tok_db_ = std::make_unique<ArrowTokenizerDb>();
-    auto pinned = std::filesystem::path(cfg_.model_path) / "logestix" / "pinned";
-    auto v = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
-    auto m = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
-    if (!v.ok() || !m.ok()) {
-        spdlog::error("[model] cannot open tokenizer arrows in {}", pinned.string());
-        return false;
-    }
-    auto st = load_tokenizer_metadata(*v, *m, *tok_db_);
-    if (!st.ok()) {
-        spdlog::error("[model] load_tokenizer_metadata: {}", st.ToString());
-        return false;
-    }
+    if (!LoadTokenizerDb(cfg_.model_path)) return false;
     loaded_ = true;
     return true;
 }
@@ -60,18 +41,7 @@ bool DeepSeekV4FlashModel::Load()
 gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
-    if (!loaded_) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
-    if (req.input_ids.empty()) {
-        r.error_msg = "empty input_ids";
-        return r;
-    }
-    if (req.max_gen_tokens <= 0) {
-        r.error_msg = "max_gen_tokens must be positive";
-        return r;
-    }
+    if (!ValidateInferRequest(req, r)) return r;
     return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
                                   req.max_gen_tokens, *tok_db_);
 }
@@ -90,26 +60,24 @@ SafetensorsModel DeepSeekV4FlashModel::Inspect()
 
 gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
 {
-    gpu::InferenceResult r;
-    if (!loaded_) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
-    if (req.input_ids.empty()) {
-        r.error_msg = "empty input_ids";
-        return r;
-    }
-    if (req.max_gen_tokens <= 0) {
-        r.error_msg = "max_gen_tokens must be positive";
-        return r;
-    }
-    return gpu::RunSelfCheckModel(cfg_.model_path, req.input_ids,
-                                  req.max_gen_tokens, *tok_db_);
+    return runtime::RunParisSelfCheck(*this, req);
 }
 
-ArrowTokenizerDb &DeepSeekV4FlashModel::Tokenizer()
+gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
 {
-    return *tok_db_;
+    gpu::BenchmarkResult r;
+    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    const std::vector<int32_t> prompt = {0};
+    auto res = gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
+                                      *tok_db_);
+    if (!res.ok) { r.error_msg = res.error_msg; return r; }
+    r.ok = true;
+    r.num_tokens = res.num_tokens;
+    r.num_layers = res.num_layers;
+    r.total_time_ms = res.total_time_ms;
+    r.tokens_per_sec = res.tokens_per_sec;
+    r.resident_bytes = res.weight_resident_bytes;
+    return r;
 }
 
 } // namespace lsxcommon

@@ -15,9 +15,15 @@ struct InferenceConfig {
 };
 
 struct InferenceResult {
-    double ttft_ms = 0.0;
-    double tokens_per_sec = 0.0;
-    double total_time_ms = 0.0;
+    // Timings (engine-recorded cudaEvent deltas; 0 when the run failed early).
+    double ttft_ms = 0.0;            // stream start -> first generated token
+    double total_time_ms = 0.0;      // stream start -> final token
+    double tokens_per_sec = 0.0;     // num_tokens / (total_time_ms/1000)
+    // Residency + occupancy (Item 10b).
+    std::uint64_t weight_resident_bytes = 0;  // peak resident weight set over the run
+    int32_t kv_slots_used = 0;       // KV occupancy at run end
+    // EOS routing (Item 10c): true when the run stopped on the tokenizer EOS.
+    bool eos_terminated = false;
     int num_tokens = 0;
     int num_layers = 0;
     float final_loss = 0.0f;

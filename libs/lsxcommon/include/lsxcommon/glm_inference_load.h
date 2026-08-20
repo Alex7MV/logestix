@@ -99,6 +99,11 @@ struct GlmPinnedWeights {
     // alongside the ~31 GiB pinned set. Index = layer; empty for dense layers.
     std::vector<PackedExpert> shared_host;
 
+    // Peak device-resident weight set uploaded by LoadGlmPinnedWeights (embed
+    // + head + final_norm + per-layer tensors), in bytes. Host-side data
+    // (shared_host, h_gate_bias) is excluded — only VRAM counts.
+    std::uint64_t resident_bytes = 0;
+
     void Free();
 };
 

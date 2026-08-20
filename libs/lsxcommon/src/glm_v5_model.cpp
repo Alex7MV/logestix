@@ -1,27 +1,20 @@
 #include "glm_v5_model.h"
 
-#include <arrow/io/file.h>
-#include <arrow/ipc/reader.h>
-#include <absl/strings/ascii.h>
-#include <algorithm>
-#include <cctype>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <filesystem>
 #include <spdlog/spdlog.h>
 
 #include "lsxcommon/glm_inference.h"
 #include "lsxcommon/glm_inference_load.h"
-#include "lsxcommon/safetensors.h"
-#include "lsxcommon/tokenizer.h"
+#include "lsxcommon/model_runtime.h"
 
 namespace lsxcommon {
 
 const std::string GlmV5Model::kType = "glm-5.2";
 
 GlmV5Model::GlmV5Model(ModelInitConfig cfg)
-    : cfg_(std::move(cfg)) {}
+    : ModelBase{std::move(cfg)} {}
 
 GlmV5Model::~GlmV5Model() { Unload(); }
 
@@ -32,22 +25,7 @@ bool GlmV5Model::Load()
         spdlog::error("[glm-model] empty model_path");
         return false;
     }
-    tok_db_ = std::make_unique<ArrowTokenizerDb>();
-    auto pinned = std::filesystem::path(cfg_.model_path) / "logestix" / "pinned";
-    auto v = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
-    auto m = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
-    if (!v.ok() || !m.ok()) {
-        spdlog::error("[glm-model] cannot open tokenizer arrows in {}",
-                      pinned.string());
-        return false;
-    }
-    auto st = load_tokenizer_metadata(*v, *m, *tok_db_);
-    if (!st.ok()) {
-        spdlog::error("[glm-model] load_tokenizer_metadata: {}", st.ToString());
-        return false;
-    }
+    if (!LoadTokenizerDb(cfg_.model_path)) return false;
     loaded_ = true;
     return true;
 }
@@ -55,18 +33,7 @@ bool GlmV5Model::Load()
 gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
-    if (!loaded_) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
-    if (req.input_ids.empty()) {
-        r.error_msg = "empty input_ids";
-        return r;
-    }
-    if (req.max_gen_tokens <= 0) {
-        r.error_msg = "max_gen_tokens must be positive";
-        return r;
-    }
+    if (!ValidateInferRequest(req, r)) return r;
 
     // ── TDD Cycle 10: drives the full frozen 79-layer execution loop ─────────
     // One owned async execution context shared by every layer pass: dense
@@ -87,11 +54,10 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
     if (ch_ok && st_ok) cublasSetStream(ch, st);
 
-    glm::GlmPinnedWeights pw;
     glm::GlmExpertDb      experts;
 
     auto cleanup = [&]() {
-        pw.Free();
+        pw_.Free();
         glm::free_glm_expert_index(experts);
         if (st) cudaStreamDestroy(st);
         if (ch) cublasDestroy(ch);
@@ -108,15 +74,15 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     // Full pin: all 79 layers (dense 0-2 + MoE router 3-77 + MTP 78) so the
     // heterogeneous loop can read every layer's router gate / norm / indexer
     // matrices during its single pass.
-    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw, st);
+    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, st);
     if (e != cudaSuccess)
         return fail(std::string("load pinned weights: ") +
                     cudaGetErrorString(e));
-    if (pw.hidden != glm::kGlmHidden)
+    if (pw_.hidden != glm::kGlmHidden)
         return fail("model hidden_size does not match kGlmHidden (6144)");
-    if (pw.layers.size() != static_cast<size_t>(glm::kGlmNumLayers))
+    if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers))
         return fail("model does not expose all 79 layers");
-    if (!pw.d_embed || !pw.d_head)
+    if (!pw_.d_embed || !pw_.d_head)
         return fail("model embed/lm_head weights missing");
 
     // On-demand routed-expert index for every MoE layer (3-78): a flat
@@ -137,7 +103,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     // bounds are validated inside (against the fixed 1024-slot KV staging and
     // the embed table), making the run deterministic and memory-safe.
     glm::GlmGenerationResult gen;
-    e = glm::RunGlmRealGeneration(ch, st, pw, experts, req.input_ids,
+    e = glm::RunGlmRealGeneration(ch, st, pw_, experts, req.input_ids,
                                   req.max_gen_tokens, gen);
     if (e != cudaSuccess || !gen.ok)
         return fail(gen.ok ? cudaGetErrorString(e) : gen.error_msg);
@@ -149,34 +115,23 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         r.first_gen_tok_id = gen.tokens[0];
         r.first_gen_maxv = gen.first_maxv;
     }
-    r.gen_tokens = std::move(gen.tokens);
+r.gen_tokens = std::move(gen.tokens);
     r.final_logits = std::move(gen.final_logits);
+    r.kv_slots_used = gen.kv_slots_used;
+    r.ttft_ms = gen.ttft_ms;
+    r.total_time_ms = gen.total_ms;
+    r.tokens_per_sec = (gen.total_ms > 0.0)
+                           ? (r.gen_tokens.size() / (gen.total_ms / 1000.0))
+                           : 0.0;
+    r.eos_terminated = gen.eos_terminated;
+    r.weight_resident_bytes = gen.resident_bytes;
 
     // Decode the generated token stream into output_text (gen.tokens carries
-    // only generated tokens, never the prompt). Capacity-retry mirrors the
-    // DeepSeek pipeline; a decode failure leaves output_text empty but keeps
-    // r.ok true — generation succeeded, decode is best-effort.
-    if (!r.gen_tokens.empty()) {
-        std::string out(4096, '\0');
-        size_t cap = 4096;
-        int dr = ::lsxcommon::arrow_tokenizer_decode(
-            *tok_db_, r.gen_tokens.data(), r.gen_tokens.size(),
-            out.data(), &cap);
-        if (dr == -2) {   // *cap now reports the required size; retry once
-            out.resize(cap);
-            size_t cap2 = cap;
-            dr = ::lsxcommon::arrow_tokenizer_decode(
-                *tok_db_, r.gen_tokens.data(), r.gen_tokens.size(),
-                out.data(), &cap2);
-            cap = cap2;
-        }
-        if (dr == 0) {
-            out.resize(cap);
-            r.output_text = std::move(out);
-        } else {
-            spdlog::warn("[glm-model] tokenizer decode failed: {}", dr);
-        }
-    }
+    // only generated tokens, never the prompt). A decode failure leaves
+    // output_text empty but keeps r.ok true — generation succeeded, decode is
+    // best-effort.
+    if (!r.gen_tokens.empty())
+        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
 
     cleanup();
     return r;
@@ -184,6 +139,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
 
 void GlmV5Model::Unload()
 {
+    pw_.Free();
     tok_db_.reset();
     loaded_ = false;
 }
@@ -195,60 +151,74 @@ SafetensorsModel GlmV5Model::Inspect()
 
 gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
 {
-    gpu::InferenceResult r;
-    if (!loaded_) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
-    if (req.input_ids.empty()) {
-        r.error_msg = "empty input_ids";
-        return r;
-    }
-    // Incremental 1->2-token selfcheck: force at least two generated tokens so
-    // the reference answer can be matched on a 1-token or a 2-token prefix
-    // (e.g. when "Paris" is split across two BPE merges).
-    ModelRequest sc_req = req;
-    sc_req.max_gen_tokens = std::max(2, req.max_gen_tokens);
-    r = Infer(sc_req);
-    if (!r.ok) {
-        r.selfcheck_passed = false;
-        return r;
-    }
-    if (!r.gen_tokens.empty()) {
-        char buf[512];
-        for (int ntok : {1, 2}) {
-            if (ntok > static_cast<int>(r.gen_tokens.size())) break;
-            size_t cap = sizeof(buf);
-            if (::lsxcommon::arrow_tokenizer_decode(
-                    *tok_db_, r.gen_tokens.data(),
-                    static_cast<size_t>(ntok), buf, &cap) != 0)
-                continue;
-            std::string t(buf, cap);
-            absl::StripAsciiWhitespace(&t);
-            r.first_gen_text = t;
-            if (r.first_gen_text == "Paris") {
-                r.selfcheck_passed = true;
-                break;
-            }
-        }
-        if (!r.selfcheck_passed && r.first_gen_text.empty()) {
-            size_t cap = sizeof(buf);
-            if (::lsxcommon::arrow_tokenizer_decode(
-                    *tok_db_, r.gen_tokens.data(),
-                    std::min(static_cast<int>(r.gen_tokens.size()), 8),
-                    buf, &cap) == 0)
-                r.first_gen_text = std::string(buf, cap);
-        }
-    }
-    spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
-                 r.first_gen_tok_id, r.first_gen_text,
-                 r.selfcheck_passed ? "true" : "false");
-    return r;
+    return runtime::RunParisSelfCheck(*this, req);
 }
 
-ArrowTokenizerDb &GlmV5Model::Tokenizer()
+gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
 {
-    return *tok_db_;
+    gpu::BenchmarkResult r;
+    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times.
+    const std::vector<int32_t> prompt = {0, 0, 0, 0};
+
+    // Mirror Infer exactly: own async context, full pin, on-demand expert index,
+    // faithful real forward generation loop.
+    cublasHandle_t ch = nullptr;
+    cudaStream_t   st = nullptr;
+    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
+    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
+    if (ch_ok && st_ok) cublasSetStream(ch, st);
+    if (!ch_ok || !st_ok) {
+        r.error_msg = "cublas/stream init failed";
+        if (st) cudaStreamDestroy(st);
+        if (ch) cublasDestroy(ch);
+        return r;
+    }
+
+    glm::GlmExpertDb experts;
+    auto cleanup = [&]() {
+        pw_.Free();
+        glm::free_glm_expert_index(experts);
+        if (st) cudaStreamDestroy(st);
+        if (ch) cublasDestroy(ch);
+    };
+
+    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, st);
+    if (e != cudaSuccess) {
+        r.error_msg = std::string("load pinned weights: ") +
+                      cudaGetErrorString(e);
+        cleanup();
+        return r;
+    }
+    if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers)) {
+        r.error_msg = "model does not expose all 79 layers";
+        cleanup();
+        return r;
+    }
+    experts = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
+                                         glm::kGlmNumRouted);
+    if (experts.num_layers != glm::kGlmNumLayers ||
+        experts.experts_per_layer != glm::kGlmNumRouted) {
+        r.error_msg = "expert index incomplete";
+        cleanup();
+        return r;
+    }
+
+    glm::GlmGenerationResult gr;
+    e = glm::RunGlmRealGeneration(ch, st, pw_, experts, prompt, num_tokens, gr);
+    cleanup();
+    if (e != cudaSuccess || !gr.ok) {
+        r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
+        return r;
+    }
+    r.ok = true;
+    r.num_tokens = static_cast<int>(gr.tokens.size());
+    r.num_layers = glm::kGlmNumLayers;
+    r.total_time_ms = gr.total_ms;
+    r.tokens_per_sec = gr.total_ms > 0.0
+        ? (static_cast<double>(r.num_tokens) / gr.total_ms) * 1000.0 : 0.0;
+    r.resident_bytes = gr.resident_bytes;
+    return r;
 }
 
 } // namespace lsxcommon

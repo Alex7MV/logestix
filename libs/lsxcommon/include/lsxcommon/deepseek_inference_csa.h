@@ -25,12 +25,6 @@ struct CSAState {
     int prefill_len = 0;  // prompt token count (bulk-prefill region)
 };
 
-cudaError_t alloc_csa_state(CSAState *states, int num_layers,
-                             int max_seq_len, int head_dim, cudaStream_t stream,
-                             const int *compress_ratios);
-
-void free_csa_state(CSAState *states, int num_layers);
-
 cudaError_t run_csa_attention(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const LayerWeights &lw,

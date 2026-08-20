@@ -171,6 +171,51 @@ endif()
 
 add_test(NAME test_qwen_model COMMAND test_qwen_model)
 
+# ── Инкрементальный KV-кэш Qwen (Task 7) ─────────────────────────────────
+add_executable(test_qwen_kv_cache test_qwen_kv_cache.cpp)
+target_compile_definitions(test_qwen_kv_cache PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_kv_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_kv_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_cache>"
+    )
+    add_custom_command(TARGET test_qwen_kv_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_cache>"
+    )
+endif()
+
+add_test(NAME test_qwen_kv_cache COMMAND test_qwen_kv_cache)
+set_tests_properties(test_qwen_kv_cache PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Bit-exactness gate: incremental KV vs full recompute (synthetic) ────────
+add_executable(test_qwen_kv_parity test_qwen_kv_parity.cpp)
+target_compile_definitions(test_qwen_kv_parity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_kv_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_kv_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_parity>"
+    )
+    add_custom_command(TARGET test_qwen_kv_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_parity>"
+    )
+endif()
+
+add_test(NAME test_qwen_kv_parity COMMAND test_qwen_kv_parity)
+
 # ── Тест Qwen3.8-27B модели ──────────────────────────────────────────────
 add_executable(test_qwen_3_8_27b_model test_qwen_3_8_27b_model.cpp)
 target_compile_definitions(test_qwen_3_8_27b_model PRIVATE
@@ -328,6 +373,34 @@ endif()
 add_test(NAME test_glm_selfcheck COMMAND test_glm_selfcheck)
 set_tests_properties(test_glm_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
+#    block_rows = P (полная длина промпта), каждый промпт-токен занимает один
+#    IndexShare KV-слот. FAIL при коллапсе строк (kv_slots_used != P + gen),
+#    при расхождении argmax final_logits с первым сгенерированным токеном или
+#    при потере бит-точности между двумя идентичными прогонами. SKIP без
+#    чекпоинта.
+add_executable(test_glm_prefill_seqp test_glm_prefill_seqp.cpp)
+target_compile_definitions(test_glm_prefill_seqp PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_prefill_seqp PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_prefill_seqp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prefill_seqp>"
+    )
+    add_custom_command(TARGET test_glm_prefill_seqp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_prefill_seqp>"
+    )
+endif()
+
+add_test(NAME test_glm_prefill_seqp COMMAND test_glm_prefill_seqp)
+set_tests_properties(test_glm_prefill_seqp PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест GLM-5.2 осмысленного вывода по --run (Infer output_text) ───────────
 add_executable(test_glm_prompt_output test_glm_prompt_output.cpp)
 target_compile_definitions(test_glm_prompt_output PRIVATE
@@ -430,6 +503,28 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
+
+# ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
+add_executable(test_model_runtime test_model_runtime.cpp)
+target_compile_definitions(test_model_runtime PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_model_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_model_runtime>"
+    )
+    add_custom_command(TARGET test_model_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_model_runtime>"
+    )
+endif()
+
+add_test(NAME test_model_runtime COMMAND test_model_runtime)
 
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
@@ -671,6 +766,8 @@ add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
 # и lsxnetwork (FrameQueue).
 add_executable(test_integrated_pipeline test_integrated_pipeline.cpp)
 target_link_libraries(test_integrated_pipeline PRIVATE lsxcommon lsxnetwork Catch2::Catch2WithMain)
+target_compile_definitions(test_integrated_pipeline PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 if(WIN32)
     add_custom_command(TARGET test_integrated_pipeline POST_BUILD
@@ -800,6 +897,109 @@ if(WIN32)
 endif()
 
 add_test(NAME test_deepseek_moe COMMAND test_deepseek_moe)
+
+# test_deepseek_arena — single-allocation per-run arena + zero-alloc route_token.
+# Same OBJECT-lib pattern as test_deepseek_moe_cu: the .cu must not inherit
+# lsxcommon's C++ compile flags, so it compiles standalone and links against
+# lsxcommon only at the executable's link stage.
+add_library(test_deepseek_arena_cu OBJECT test_deepseek_arena.cu)
+set_target_properties(test_deepseek_arena_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_arena_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_arena_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_arena_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_arena_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_arena)
+set_target_properties(test_deepseek_arena PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_arena PRIVATE
+    test_deepseek_arena_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_arena POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_arena>"
+    )
+    add_custom_command(TARGET test_deepseek_arena POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_arena>"
+    )
+endif()
+
+add_test(NAME test_deepseek_arena COMMAND test_deepseek_arena)
+
+# ── Тест isolated sampling seam (lsxcommon::sample, GreedySampler) ──────────
+# Same OBJECT-lib pattern as test_deepseek_moe_cu: the .cu must not inherit
+# lsxcommon's C++ compile flags, so it compiles standalone and links lsxcommon
+# only at the executable's link stage.
+add_library(test_sampling_cu OBJECT test_sampling.cu)
+set_target_properties(test_sampling_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_sampling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_sampling_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_sampling_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_sampling_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_sampling)
+set_target_properties(test_sampling PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_sampling PRIVATE
+    test_sampling_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_sampling POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_sampling>"
+    )
+    add_custom_command(TARGET test_sampling POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_sampling>"
+    )
+endif()
+
+add_test(NAME test_sampling COMMAND test_sampling)
 
 # �� ���� model-metadata vault path registry �����������������������������
 add_executable(test_path_registry test_path_registry.cpp)

@@ -78,6 +78,7 @@ struct QwenPinnedWeights {
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<QwenLayerWeights> layers;
+    std::uint64_t resident_bytes = 0;   // total device bytes held on load
 
     void Free();
 };

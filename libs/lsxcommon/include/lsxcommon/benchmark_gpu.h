@@ -13,6 +13,7 @@ struct BenchmarkResult {
     int num_layers = 0;
     int num_tokens = 0;
     int64_t total_bytes_transferred = 0;
+    std::uint64_t resident_bytes = 0;   // peak resident weight set during the run
     bool ok = false;
     std::string error_msg;
 };

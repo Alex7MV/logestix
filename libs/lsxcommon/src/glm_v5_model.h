@@ -1,14 +1,15 @@
 #pragma once
 
-#include <memory>
 #include <string>
 
-#include "lsxcommon/model.h"
+#include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/model_base.h"
 
 namespace lsxcommon {
 
-class GlmV5Model final : public IModel {
+class GlmV5Model final : public ModelBase {
 public:
+    static const std::string kType;
     explicit GlmV5Model(ModelInitConfig cfg);
     ~GlmV5Model() override;
 
@@ -17,16 +18,13 @@ public:
     void Unload() override;
     SafetensorsModel Inspect() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return kType; }
-    ArrowTokenizerDb &Tokenizer() override;
-
-    static const std::string kType;
+    std::uint64_t ResidentWeightBytes() const override { return pw_.resident_bytes; }
 
 private:
-    ModelInitConfig cfg_;
-    std::unique_ptr<ArrowTokenizerDb> tok_db_;
-    bool loaded_ = false;
+    glm::GlmPinnedWeights pw_;
 };
 
 } // namespace lsxcommon

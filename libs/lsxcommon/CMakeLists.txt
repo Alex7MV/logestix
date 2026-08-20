@@ -18,15 +18,18 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/deepseek_v4_flash_model.cpp
+    src/benchmark_gpu.cpp
     src/generation_cli.cpp
     src/glm_convert.cpp
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp
     src/loader.cpp
     src/log.cpp
+    src/model_base.cpp
     src/model_factory.cpp
     src/model_integrity.cpp
     src/model_registry.cpp
+    src/model_runtime.cpp
     src/path_registry.cpp
     src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp
@@ -89,6 +92,7 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_inference_pipeline.cu
     src/deepseek_norm_kernels.cu
     src/shared_experts.cu
+    src/sampling.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

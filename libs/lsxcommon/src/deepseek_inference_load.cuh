@@ -4,6 +4,7 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -11,6 +12,7 @@
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include "lsxcommon/deepseek_inference_csa.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -232,7 +234,93 @@ struct PinnedWeights {
     float *d_hc_head_scale = nullptr; // [1]
     std::vector<LayerWeights> layers;
     int vocab_size = 0;
+    std::uint64_t resident_bytes = 0;   // total device bytes held on load
 
+    void Free();
+};
+
+// ── deepseek_inference_moe.cu ──────────────────────────────────────────────
+// Routes one token: gate GEMM → sqrt(softplus) scores → top-k → weights.
+// `d_logits_scratch` / `h_logits_scratch` are caller-owned (arena carve) — the
+// function performs ZERO CUDA allocations (spec item 12, malloc-per-layer kill).
+cudaError_t route_token(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    const float *h_gate_bias,
+    int topk,
+    __half *d_logits_scratch,   // caller-owned [num_routed] __half
+    float *h_logits_scratch,    // caller-owned [num_routed] float (pinned)
+    int *h_top_indices, float *h_top_weights);
+
+// Global CUDA-allocation counter for per-run inference footprints. The arena's
+// Allocate() increments it by 2 (device + pinned host block); route_token and
+// load_pinned_weights must not touch it. Header-inline function-local static →
+// one shared counter across every TU (and test) that includes this header.
+inline std::atomic<std::uint64_t>& InferenceAllocCount()
+{
+    static std::atomic<std::uint64_t> c{0};
+    return c;
+}
+
+// Single-allocation per-run arena (spec item 12). One device cudaMalloc + one
+// pinned cudaMallocHost carve every direct buffer, the CSA per-layer state and
+// the routing/logits staging for one RunInferenceModel call. Mirrors
+// GlmMoEArena::AllocateGeneration. Task 8 reads `bytes` for occupancy
+// accounting.
+struct DeepSeekInferArena {
+    // device block
+    uint8_t* d_base = nullptr;
+    __half* d_single = nullptr;      // [kHiddenDim]
+    __half* d_normed = nullptr;      // [kHiddenDim]
+    __half* d_ffn_out = nullptr;     // [kHiddenDim]
+    float*  d_hidden = nullptr;      // [kHcDim]
+    float*  d_hidden_next = nullptr; // [kHcDim]
+    __half* d_shared_int = nullptr;  // [kHiddenDim]
+    __half* d_shared_gate = nullptr; // [kHiddenDim]
+    __half* d_routed_buf = nullptr;  // [kHiddenDim]
+    float*  d_dequant_scratch = nullptr;
+    float*  d_act_quant = nullptr;
+    float*  d_ffn_accum = nullptr;   // [kHiddenDim]
+    float*  d_swiglu_out = nullptr;  // [kIntermediateDim]
+    float*  d_act_scales = nullptr;
+    float*  d_gate_f32 = nullptr;    // [kIntermediateDim]
+    float*  d_up_f32 = nullptr;      // [kIntermediateDim]
+    float*  d_attn_dequant = nullptr;
+    __half* d_kv_cache = nullptr;
+    __half* d_q = nullptr, *d_qr = nullptr, *d_qr2 = nullptr;
+    __half* d_kv = nullptr, *d_kv2 = nullptr;
+    __half* d_o = nullptr, *d_olora = nullptr, *d_attn_out_h = nullptr;
+    float*  d_attn_out = nullptr;
+    float*  d_hc_post = nullptr, *d_hc_comb = nullptr, *d_hc_pre = nullptr;
+    float*  d_logits = nullptr;
+    float*  d_norm_scratch = nullptr;
+    float*  d_norm_gamma_scratch = nullptr;
+    int32_t* d_next_token = nullptr;
+    float*  d_next_maxv = nullptr;
+    uint8_t* d_pack_stage = nullptr;
+    uint8_t* d_scale_stage = nullptr;
+    __half* d_routing_scratch = nullptr;  // [kNumRouted] route_token logits
+    CSAState* csa_states = nullptr;       // [num_layers] host-side state records
+
+    // pinned host block
+    uint8_t* h_base = nullptr;
+    int*   h_topk = nullptr;         // [kTopK]
+    float* h_top_weights = nullptr;  // [kTopK]
+    float* h_routing_scratch = nullptr; // [kNumRouted] route_token logits
+
+    std::size_t bytes = 0;           // total device bytes (resident accounting)
+    std::size_t host_bytes = 0;
+
+    // Allocates the whole per-run footprint: one device cudaMalloc + one pinned
+    // cudaMallocHost. `num_layers`/`compress_ratios` bound the per-layer CSA
+    // region (0 for pure-MLA layers); `max_seq_len` sizes the CSA compressed
+    // slots + KV cache; `vocab` sizes the logits buffer. Increments
+    // InferenceAllocCount() by 2. Buffers are laid out 16-byte aligned so every
+    // element pointer stays properly aligned inside the single block.
+    cudaError_t Allocate(cudaStream_t stream, int num_layers, int max_seq_len,
+                         const int* compress_ratios, int vocab);
     void Free();
 };
 

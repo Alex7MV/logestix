@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon {
 namespace glm {
@@ -375,6 +376,10 @@ struct GlmGenerationResult {
     std::vector<int32_t> tokens;  // greedy-argmax token ids, EOS-terminated
     float first_maxv = 0.0f;      // first generated token's argmax logit
     int  kv_slots_used = 0;       // decoder IndexShare slots after the run
+    double ttft_ms = 0.0;       // stream start -> first generated token
+    double total_ms = 0.0;      // stream start -> final token
+    std::uint64_t resident_bytes = 0;  // pinned + arena + expert-staging peak
+    bool eos_terminated = false;       // stopped on a GLM EOS id
     // TDD Cycle 10: raw [vocab] logits row produced by the final layer-78 MTP
     // forward (the row whose argmax would be the next hypothetical token).
     // Published for the SKWOS regression harness, which compares it
@@ -423,7 +428,9 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 // VRAM-budgeted generation pass over the same frozen 79-layer GLM-5.2 loop,
 // driven by a memory-mapped expert index (GlmExpertDb) instead of a fully
@@ -437,7 +444,9 @@ cudaError_t RunGlmGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 // ── Faithful GLM-5.2 generation (real forward pass) ─────────────────────────
 // Greedy multi-token generation over the REAL GlmMoeDsaForCausalLM forward:
@@ -464,7 +473,9 @@ cudaError_t RunGlmRealGeneration(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
-    GlmGenerationResult &result);
+    GlmGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler =
+        lsxcommon::sample::DefaultSampler());
 
 } // namespace glm
 } // namespace lsxcommon
