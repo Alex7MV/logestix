@@ -13,6 +13,7 @@
 
 #include "glm_device_math.h"
 #include "glm_expert_kernels.cuh"
+#include "nvfp4_codec.h"
 #include "lsxcommon/log.h"
 
 namespace lsxcommon {
@@ -33,17 +34,13 @@ constexpr int kGlmRmsBlock = 256;
 // Advances 4 elements per thread (2 packed bytes), which always stay inside
 // one 16-block except across the ragged tail.
 
-__constant__ float kGlmE2M1Table[16] = {
-      0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
-};
-
-__device__ __forceinline__ float GlmE4M3P2ToFloat(uint8_t e4m3)
-{
-    if (e4m3 == 0) return 0.0f;
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    return __uint_as_float((e4 + 120u) << 23);
-}
+// E2M1 table + E4M3 scale now live in nvfp4_codec.h (gpu::nvfp4); alias them
+// into this anonymous namespace so GlmDequantNvfp4Kernel binds to the single
+// text source. Bit-exact on valid power-of-two block scales (note: the shared
+// E4M3ScaleToFloat guards on e4==0, equal to the previous E4M3ScaleToFloat
+// e4m3==0 guard for mantissa-zero scales).
+using gpu::nvfp4::kE2M1Table;
+using gpu::nvfp4::E4M3ScaleToFloat;
 
 constexpr int kGlmDequantThreads = 256;
 constexpr int kGlmDequantPerThread = 4;
@@ -66,19 +63,19 @@ __global__ void GlmDequantNvfp4Kernel(
         const uint8_t nib1 = b0 >> 4;
         const uint8_t nib2 = b1 & 0x0Fu;
         const uint8_t nib3 = b1 >> 4;
-        const float sc = GlmE4M3P2ToFloat(scales[i0 >> 4]) * global_modifier;
-        out[i0 + 0] = __float2half(kGlmE2M1Table[nib0] * sc);
-        out[i0 + 1] = __float2half(kGlmE2M1Table[nib1] * sc);
-        out[i0 + 2] = __float2half(kGlmE2M1Table[nib2] * sc);
-        out[i0 + 3] = __float2half(kGlmE2M1Table[nib3] * sc);
+        const float sc = E4M3ScaleToFloat(scales[i0 >> 4]) * global_modifier;
+        out[i0 + 0] = __float2half(kE2M1Table[nib0] * sc);
+        out[i0 + 1] = __float2half(kE2M1Table[nib1] * sc);
+        out[i0 + 2] = __float2half(kE2M1Table[nib2] * sc);
+        out[i0 + 3] = __float2half(kE2M1Table[nib3] * sc);
         return;
     }
     for (int64_t i = i0; i < n; ++i) {
         const uint8_t b   = packed[i >> 1];
         const uint8_t nib = (i & 1) ? static_cast<uint8_t>(b >> 4)
                                     : static_cast<uint8_t>(b & 0x0Fu);
-        const float sc = GlmE4M3P2ToFloat(scales[i >> 4]) * global_modifier;
-        out[i] = __float2half(kGlmE2M1Table[nib] * sc);
+        const float sc = E4M3ScaleToFloat(scales[i >> 4]) * global_modifier;
+        out[i] = __float2half(kE2M1Table[nib] * sc);
     }
 }
 
