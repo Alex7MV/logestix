@@ -33,7 +33,20 @@ public:
 
     ArrowTokenizerDb &Tokenizer() override { return *tok_db_; }
 
+    SafetensorsModel Inspect() override;
+    std::uint64_t ResidentWeightBytes() const override { return resident_bytes_; }
+
 protected:
+    // Shared Load-preamble (triplicated in DeepSeek/GLM/Qwen): loaded_ early-out,
+    // empty model_path guard, LoadTokenizerDb. Callers keep any model-specific
+    // weight-pin between BeginLoad and FinishLoad.
+    bool BeginLoad(const std::string &model_path);
+    void FinishLoad() { loaded_ = true; }
+
+    // Persistent device-resident weight set (pinned for MoE GLM/DeepSeek; full
+    // for dense Qwen). Assign in subclass Load/Unload. See spec 3.3.
+    std::uint64_t resident_bytes_ = 0;
+
     ~ModelBase() override = default;
 };
 

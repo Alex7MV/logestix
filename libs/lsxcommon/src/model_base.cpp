@@ -37,6 +37,21 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
     return true;
 }
 
+bool ModelBase::BeginLoad(const std::string &model_path)
+{
+    if (loaded_) return true;
+    if (model_path.empty()) {
+        spdlog::error("[model] empty model_path");
+        return false;
+    }
+    return LoadTokenizerDb(model_path);
+}
+
+SafetensorsModel ModelBase::Inspect()
+{
+    return lsxcommon::scan_directory(cfg_.model_path);
+}
+
 bool ModelBase::ValidateInferRequest(const ModelRequest &req, gpu::InferenceResult &r)
 {
     if (!loaded_) {
