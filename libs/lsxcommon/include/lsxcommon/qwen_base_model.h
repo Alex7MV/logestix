@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "lsxcommon/model_base.h"
+#include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 
 namespace lsxcommon {
@@ -31,6 +34,13 @@ protected:
     std::string type_;
     qwen::QwenPinnedWeights pw_;
     bool weights_loaded_ = false;
+
+    // Incremental session state (spec item 15): a fresh request (input_ids not
+    // equal to the previous call's generated tail) resets the cache and runs a
+    // full prefill+decode; a continuation request reuses it with prompt =
+    // {kv_->last_tok}.
+    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::vector<int32_t> session_tail_;
 };
 
 } // namespace lsxcommon

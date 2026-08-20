@@ -62,17 +62,37 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
     if (ch_ok && st_ok) cublasSetStream(ch, st);
 
+        // Incremental session policy (spec item 15): a request whose input_ids
+    // exactly match the previous call's generated tail continues the session
+    // KV cache from {kv_->last_tok}; anything else starts a fresh session.
+    const bool is_continuation =
+        kv_ && kv_->allocated() && !session_tail_.empty() &&
+        req.input_ids == session_tail_;
+    if (!is_continuation) {
+        kv_.reset();
+        kv_ = std::make_unique<qwen::QwenKvCache>();
+        session_tail_.clear();
+    }
+    const std::vector<int32_t> gen_input =
+        is_continuation ? std::vector<int32_t>{kv_->last_tok} : req.input_ids;
+
     qwen::QwenGenerationResult gen;
     auto run = [&]() -> cudaError_t {
         const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-        return qwen::RunQwenGeneration(st, pw_, req.input_ids,
-                                       req.max_gen_tokens, eos_id, gen);
+        return qwen::RunQwenGeneration(st, pw_, gen_input,
+                                       req.max_gen_tokens, eos_id, gen,
+                                       lsxcommon::sample::DefaultSampler(),
+                                       kv_.get());
     };
 
     cudaError_t e = run();
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
         r.ok = false;
+        // A failed continuation may have advanced kv_rows mid-stream; drop the
+        // session so the next call starts fresh.
+        kv_.reset();
+        session_tail_.clear();
         if (st) cudaStreamDestroy(st);
         if (ch) cublasDestroy(ch);
         return r;
@@ -83,6 +103,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     if (!gen.tokens.empty())
         r.first_gen_tok_id = gen.tokens[0];
     r.gen_tokens = std::move(gen.tokens);
+    session_tail_ = r.gen_tokens;
     r.final_logits = std::move(gen.final_logits);
     r.ttft_ms = gen.ttft_ms;
     r.total_time_ms = gen.total_ms;
@@ -105,6 +126,8 @@ void QwenBaseModel::Unload()
     pw_.Free();
     weights_loaded_ = false;
     tok_db_.reset();
+    kv_.reset();
+    session_tail_.clear();
     loaded_ = false;
 }
 

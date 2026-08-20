@@ -196,17 +196,19 @@ __global__ void embed_kernel(const __half *embed, const int32_t *ids,
 
 // ── GatedDeltaNet causal conv1d (depthwise, kernel per channel) ─────────────
 // mixed: [seq, conv_dim]; w: [conv_dim, kernel]; out: [seq, conv_dim].
-// causal: out[t][c] = sum_{k=0..kernel-1} mixed[t-k][c] * w[c][k]  (skip t-k<0)
+// causal: out[t][c] = sum_{k=0..kernel-1} mixed[kv_base+t-k][c] * w[c][k]
+//         (skip rows < 0). kv_base offsets the history read for incremental
+//         decode; kv_base == 0 keeps the transient full-recompute semantics.
 __global__ void qwen_conv1d_kernel(const __half *mixed, const __half *w,
                                    __half *out, int seq, int conv_dim,
-                                   int kernel)
+                                   int kernel, int kv_base)
 {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= conv_dim) return;
     for (int t = 0; t < seq; ++t) {
         float acc = 0.0f;
         for (int k = 0; k < kernel; ++k) {
-            const int tt = t - k;
+            const int tt = kv_base + t - k;
             if (tt < 0) continue;
             // HF causal conv1d: padding=kernel-1 both sides + right trim ==
             // F.conv1d cross-correlation == kernel reversal vs. this loop's
@@ -225,11 +227,13 @@ __global__ void qwen_conv1d_kernel(const __half *mixed, const __half *w,
 // stream and made generation non-deterministic).
 __global__ void full_attn_softmax_kernel(
     const __half *q, const __half *k, const __half *v,
-    __half *out, int seq, int heads, int head_dim, int kv_heads, float scale)
+    __half *out, int seq, int heads, int head_dim, int kv_heads, float scale,
+    int kv_base)
 {
     const int t = blockIdx.x;
     const int h = blockIdx.y;
     const int kvh = h / (heads / kv_heads);
+    const int ctx = kv_base + t;   // global rows attended (inclusive)
 
     const __half *qrow = q + ((int64_t)t * heads + h) * head_dim;
     const __half *kbase = k + (int64_t)kvh * head_dim;
@@ -237,7 +241,7 @@ __global__ void full_attn_softmax_kernel(
 
     extern __shared__ float slogits[];
     if (threadIdx.x == 0) {
-        for (int j = 0; j <= t; ++j) {
+        for (int j = 0; j <= ctx; ++j) {
             const __half *krow = kbase + (int64_t)j * (int64_t)kv_heads * head_dim;
             float dot = 0.0f;
             for (int d = 0; d < head_dim; ++d)
@@ -248,14 +252,14 @@ __global__ void full_attn_softmax_kernel(
     __syncthreads();
 
     float m = -1e30f;
-    for (int j = 0; j <= t; ++j) m = fmaxf(m, slogits[j]);
+    for (int j = 0; j <= ctx; ++j) m = fmaxf(m, slogits[j]);
     float sum = 0.0f;
-    for (int j = 0; j <= t; ++j) sum += __expf(slogits[j] - m);
+    for (int j = 0; j <= ctx; ++j) sum += __expf(slogits[j] - m);
     const float inv_sum = 1.0f / sum;
 
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
         float acc = 0.0f;
-        for (int j = 0; j <= t; ++j) {
+        for (int j = 0; j <= ctx; ++j) {
             const __half *vrow = vbase + (int64_t)j * (int64_t)kv_heads * head_dim;
             acc += (__expf(slogits[j] - m) * inv_sum) * __half2float(vrow[d]);
         }
@@ -531,11 +535,15 @@ __global__ void qwen_l2norm_rows_kernel(__half *base, int seq, int nk, int kd,
 // Ordering mirrors HF torch_recurrent_gated_delta_rule:
 //   S=0; for tt in 0..t: S*=exp(g); kv=sum_l S[l]*ktt[l]; Δ=(v-kv)β;
 //        S[l]+=ktt[l]*Δ;  out=sum_l S[l]*q[l].
+// A non-null `col_seed` (per-linear-layer slice of the persistent state)
+// initialises col to the previous call's accumulator (incremental decode) and
+// writes the final state back from the last row's block (t == seq-1).
 __global__ void qwen_gated_delta_kernel(
     const __half *__restrict__ q, const __half *__restrict__ k,
     const __half *__restrict__ v, const float *__restrict__ g,
     const float *__restrict__ beta, __half *__restrict__ out,
-    int seq, int nk, int kd, int nv, int vd, int r, int stride)
+    int seq, int nk, int kd, int nv, int vd, int r, int stride,
+    float *__restrict__ col_seed)
 {
     const int t = blockIdx.x;
     const int vh = blockIdx.y;
@@ -543,9 +551,12 @@ __global__ void qwen_gated_delta_kernel(
     const int d = threadIdx.x;     // value-dim column [0, vd)
     if (d >= vd) return;
 
+    const int seed_off = (vh * vd + d) * kd;
+
     // Registers hold this thread's column [l in 0..kd).
     float col[256];
-    for (int l = 0; l < kd; ++l) col[l] = 0.0f;
+    for (int l = 0; l < kd; ++l)
+        col[l] = col_seed ? col_seed[seed_off + l] : 0.0f;
 
     const __half *qrow = q + (int64_t)t * stride + (int64_t)kh * kd;
 
@@ -560,6 +571,10 @@ __global__ void qwen_gated_delta_kernel(
         for (int l = 0; l < kd; ++l) kv += col[l] * __half2float(ktt[l]);
         const float delta = (__half2float(vtt[d]) - kv) * betaf;
         for (int l = 0; l < kd; ++l) col[l] += __half2float(ktt[l]) * delta;
+    }
+
+    if (col_seed && t == seq - 1) {
+        for (int l = 0; l < kd; ++l) col_seed[seed_off + l] = col[l];
     }
 
     float acc = 0.0f;
@@ -611,7 +626,7 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
                                  __half *d_qc, __half *d_q, __half *d_gate,
                                  __half *d_k, __half *d_v, __half *d_attn,
                                  __half *d_cos, __half *d_sin,
-                                 int32_t *d_pos)
+                                 int32_t *d_pos, int kv_base)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
     const int NH = top.num_attention_heads;
@@ -621,12 +636,17 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
     const int rotary_dim = (int)(HD * top.partial_rotary_factor);
     if (NH <= 0 || HD <= 0 || NKV <= 0 || H <= 0) return cudaErrorInvalidValue;
 
+    // kv rows are appended at [kv_base..kv_base+seq) when kv_base > 0
+    // (persistent cache) or [0..seq) when kv_base == 0 (transient arena).
+    __half *k_row0 = d_k + (int64_t)kv_base * NKV * HD;
+    __half *v_row0 = d_v + (int64_t)kv_base * NKV * HD;
+
     cudaError_t e;
     // 1. q_proj: [seq, H] -> [seq, NH*HD*2].
     e = LaunchNvfp4Gemm(lw.q, d_normed, seq, d_qc, stream); if (e) return e;
     // 2. k,v projections.
-    e = LaunchNvfp4Gemm(lw.k, d_normed, seq, d_k, stream);  if (e) return e;
-    e = LaunchNvfp4Gemm(lw.v, d_normed, seq, d_v, stream);  if (e) return e;
+    e = LaunchNvfp4Gemm(lw.k, d_normed, seq, k_row0, stream);  if (e) return e;
+    e = LaunchNvfp4Gemm(lw.v, d_normed, seq, v_row0, stream);  if (e) return e;
 
     // 3. Split query + gate, reshape to [seq, NH, HD], per-head RMSNorm(q).
     {
@@ -638,19 +658,19 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         e = cudaGetLastError(); if (e) return e;
     }
 
-    // 4. per-head RMSNorm(k) into d_k itself.
+    // 4. per-head RMSNorm(k) into k_row0 itself.
     {
         const int threads = std::min(HD, 512);
         qwen_head_norm_kernel<<<seq * NKV, threads, HD * sizeof(float),
                                   stream>>>(
-            d_k, lw.d_k_norm, d_k, seq, NKV, HD, (float)top.rms_norm_eps);
+            k_row0, lw.d_k_norm, k_row0, seq, NKV, HD, (float)top.rms_norm_eps);
         e = cudaGetLastError(); if (e) return e;
     }
 
     // 5. RoPE on q,k (first rotary_dim dims). k has NKV heads, q has NH heads.
     e = RunQwenRopeCosSin(stream, d_pos, seq, rotary_dim, top.rope_theta,
                           d_cos, d_sin); if (e) return e;
-    e = RunQwenPartialRope(stream, d_q, d_k, d_cos, d_sin, d_q, d_k,
+    e = RunQwenPartialRope(stream, d_q, k_row0, d_cos, d_sin, d_q, k_row0,
                            seq, NH, NKV, HD, rotary_dim); if (e) return e;
 
     // 6. Scaled dot-product attention (GQA, causal) -> d_attn [seq, NH, HD].
@@ -658,10 +678,13 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         const float scale = 1.0f / sqrtf((float)HD);
         const dim3 grid(seq, NH);
         const int threads = std::min(HD, 512);
-        // shared holds up to (seq+1) logits; cap at threads to bound memory.
-        const size_t smem = (static_cast<size_t>(seq) + 1) * sizeof(float);
+        // shared holds up to (kv_base+seq+1) logits; cap at threads to bound
+        // memory.
+        const size_t smem =
+            (static_cast<size_t>(kv_base) + static_cast<size_t>(seq) + 1) *
+            sizeof(float);
         full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
-            d_q, d_k, d_v, d_attn, seq, NH, HD, NKV, scale);
+            d_q, d_k, d_v, d_attn, seq, NH, HD, NKV, scale, kv_base);
         e = cudaGetLastError(); if (e) return e;
     }
 
@@ -696,7 +719,8 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
                                    __half *d_qkv, __half *d_z, __half *d_ab,
                                    float *d_g, float *d_beta,
                                    __half *d_conv, __half *d_core,
-                                   __half *d_gated)
+                                   __half *d_gated, int kv_base,
+                                   float *d_gd_state)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
     const int nk = top.linear_num_key_heads;
@@ -709,18 +733,22 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
     if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
 
     cudaError_t e;
-    // 1. qkv, z projections via NVFP4 GEMM.
-    e = LaunchNvfp4Gemm(lw.qkv, d_normed, seq, d_qkv, stream); if (e) return e;
+    // 1. qkv, z projections via NVFP4 GEMM. For incremental decode `d_qkv`
+    //    points at the layer's persistent cache base (rows [kv_base..kv_base+seq)
+    //    of the cache); the conv1d below then reads the full history.
+    e = LaunchNvfp4Gemm(lw.qkv, d_normed, seq,
+                        d_qkv + (int64_t)kv_base * S, stream); if (e) return e;
     e = LaunchNvfp4Gemm(lw.z,   d_normed, seq, d_z,   stream);   if (e) return e;
 
-    // 2. conv1d over S channels.
+    // 2. conv1d over S channels (reads history rows [kv_base-kernel+1..kv_base+seq)).
     if (lw.d_conv1d && lw.conv_dim == S) {
         const int threads = 128;
         qwen_conv1d_kernel<<<(S + threads - 1) / threads, threads, 0, stream>>>(
-            d_qkv, lw.d_conv1d, d_conv, seq, S, lw.conv_kernel);
+            d_qkv, lw.d_conv1d, d_conv, seq, S, lw.conv_kernel, kv_base);
         e = cudaGetLastError(); if (e) return e;
     } else {
-        cudaMemcpyAsync(d_conv, d_qkv, (int64_t)seq * S * sizeof(__half),
+        cudaMemcpyAsync(d_conv, d_qkv + (int64_t)kv_base * S,
+                        (int64_t)seq * S * sizeof(__half),
                         cudaMemcpyDeviceToDevice, stream);
     }
 
@@ -763,7 +791,7 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
         const int threads = std::min(vd, 256);
         qwen_gated_delta_kernel<<<grid, threads, 0, stream>>>(
             qsplit, ksplit, vsplit, d_g, d_beta, d_core, seq,
-            nk, kd, nv, vd, r, S);
+            nk, kd, nv, vd, r, S, d_gd_state);
         e = cudaGetLastError(); if (e) return e;
     }
 
@@ -780,6 +808,134 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
     e = LaunchNvfp4Gemm(lw.out, d_gated, seq, d_out, stream);
     return e;
 }
+// ── QwenKvCache (spec item 15: persistent incremental session state) ───────
+// Buffers are per-layer-sliced: full-attention layers own [max_total][NKV*HD]
+// k/v halves; linear layers own [max_total][KD*2+VD] raw qkv history halves
+// (feed for the causal conv1d) plus a [nv*vd*kd] float GatedDeltaNet col
+// accumulator. Allocate() sets up a fresh session (kv_rows == 0, col zeroed);
+// EnsureCapacity() grows geometrically and preserves the written rows.
+
+cudaError_t QwenKvCache::Allocate(const QwenPinnedWeights &pw, int max_total_in,
+                                  cudaStream_t stream)
+{
+    Free();
+    const QwenTopology &top = pw.top;
+    const int NKV = top.num_key_value_heads, HD = top.head_dim;
+    const int nk = top.linear_num_key_heads, kd = top.linear_key_head_dim;
+    const int nv = top.linear_num_value_heads, vd = top.linear_value_head_dim;
+    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
+
+    num_full_layers = 0;
+    num_linear_layers = 0;
+    for (const auto &lw : pw.layers) {
+        if (lw.is_linear) ++num_linear_layers;
+        else ++num_full_layers;
+    }
+    if (max_total_in <= 0 || num_full_layers <= 0 || num_linear_layers <= 0)
+        return cudaErrorInvalidValue;
+
+    max_total = max_total_in;
+    const size_t kvk_bytes =
+        (size_t)num_full_layers * (size_t)max_total * NKV * HD * sizeof(__half);
+    const size_t kvv_bytes = kvk_bytes;
+    const size_t qkv_bytes =
+        (size_t)num_linear_layers * (size_t)max_total * S * sizeof(__half);
+    const size_t col_bytes =
+        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
+
+    if (cudaMalloc(&d_kv_k, kvk_bytes) != cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    if (cudaMalloc(&d_kv_v, kvv_bytes) != cudaSuccess) { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_qkv, qkv_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_col, col_bytes) != cudaSuccess)   { Free(); return cudaErrorMemoryAllocation; }
+    if (cudaMemsetAsync(d_col, 0, col_bytes, stream) != cudaSuccess) {
+        Free(); return cudaErrorInvalidValue;
+    }
+    kv_rows = 0;
+    last_tok = -1;
+    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
+    return cudaSuccess;
+}
+
+cudaError_t QwenKvCache::EnsureCapacity(const QwenPinnedWeights &pw, int needed,
+                                        cudaStream_t stream)
+{
+    if (needed <= max_total) return cudaSuccess;
+    if (max_total <= 0) return cudaErrorInvalidValue;
+    const QwenTopology &top = pw.top;
+    const int NKV = top.num_key_value_heads, HD = top.head_dim;
+    const int nk = top.linear_num_key_heads, kd = top.linear_key_head_dim;
+    const int nv = top.linear_num_value_heads, vd = top.linear_value_head_dim;
+    const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
+
+    const int new_max = std::max(2 * max_total, needed);
+    const size_t kvk_bytes =
+        (size_t)num_full_layers * (size_t)new_max * NKV * HD * sizeof(__half);
+    const size_t kvv_bytes = kvk_bytes;
+    const size_t qkv_bytes =
+        (size_t)num_linear_layers * (size_t)new_max * S * sizeof(__half);
+    const size_t col_bytes =
+        (size_t)num_linear_layers * (size_t)nv * vd * kd * sizeof(float);
+
+    __half *n_k = nullptr, *n_v = nullptr, *n_q = nullptr;
+    float *n_c = nullptr;
+    if (cudaMalloc(&n_k, kvk_bytes) != cudaSuccess) return cudaErrorMemoryAllocation;
+    if (cudaMalloc(&n_v, kvv_bytes) != cudaSuccess) { cudaFree(n_k); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&n_q, qkv_bytes) != cudaSuccess) { cudaFree(n_k); cudaFree(n_v); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&n_c, col_bytes) != cudaSuccess) {
+        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q);
+        return cudaErrorMemoryAllocation;
+    }
+
+    // Preserve the written rows [0..kv_rows) per layer (col state is row-free).
+    const size_t row_k = (size_t)NKV * HD * sizeof(__half);
+    const size_t row_q = (size_t)S * sizeof(__half);
+    for (int li = 0; li < num_full_layers; ++li) {
+        cudaMemcpyAsync(n_k + (size_t)li * new_max * NKV * HD,
+                        d_kv_k + (size_t)li * max_total * NKV * HD,
+                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
+        cudaMemcpyAsync(n_v + (size_t)li * new_max * NKV * HD,
+                        d_kv_v + (size_t)li * max_total * NKV * HD,
+                        (size_t)kv_rows * row_k, cudaMemcpyDeviceToDevice, stream);
+    }
+    for (int li = 0; li < num_linear_layers; ++li) {
+        cudaMemcpyAsync(n_q + (size_t)li * new_max * S,
+                        d_qkv + (size_t)li * max_total * S,
+                        (size_t)kv_rows * row_q, cudaMemcpyDeviceToDevice, stream);
+    }
+    cudaMemcpyAsync(n_c, d_col, col_bytes, cudaMemcpyDeviceToDevice, stream);
+
+    cudaFree(d_kv_k);
+    cudaFree(d_kv_v);
+    cudaFree(d_qkv);
+    cudaFree(d_col);
+    d_kv_k = n_k;
+    d_kv_v = n_v;
+    d_qkv = n_q;
+    d_col = n_c;
+    max_total = new_max;
+    cache_bytes = (int64_t)(kvk_bytes + kvv_bytes + qkv_bytes + col_bytes);
+    return cudaSuccess;
+}
+
+void QwenKvCache::Free()
+{
+    cudaFree(d_kv_k);
+    cudaFree(d_kv_v);
+    cudaFree(d_qkv);
+    cudaFree(d_col);
+    d_kv_k = nullptr;
+    d_kv_v = nullptr;
+    d_qkv = nullptr;
+    d_col = nullptr;
+    kv_rows = 0;
+    last_tok = -1;
+    max_total = 0;
+    num_full_layers = 0;
+    num_linear_layers = 0;
+    cache_bytes = 0;
+}
+
 // ── Generation loop ─────────────────────────────────────────────────────────
 // Greedy argmax over the last row of the logits matrix [seq, V] is delegated to
 // the injected lsxcommon::sample::ISampler (kF16), replacing the former fused
@@ -790,7 +946,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                               const std::vector<int32_t> &prompt, int max_new,
                               int eos_id,
                               QwenGenerationResult &result,
-                              lsxcommon::sample::ISampler &sampler)
+                              lsxcommon::sample::ISampler &sampler,
+                              QwenKvCache *kv)
 {
     const QwenTopology &top = pw.top;
     const int H = top.hidden_size, I = top.intermediate_size;
@@ -815,6 +972,24 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         return cudaErrorInvalidValue;
     }
     const int max_seq = (int)prompt.size() + max_new;
+
+    // ── incremental session cache (spec item 15) ──
+    // kv != nullptr selects the one-token-per-step append-only path: a fresh
+    // session allocates a cache for prompt.size()+max_new rows (zeroed
+    // GatedDeltaNet state); a continuation grows it if the remaining budget
+    // does not fit. kv == nullptr keeps the full-recompute path untouched.
+    const bool is_incr = (kv != nullptr);
+    if (is_incr) {
+        cudaError_t ce;
+        if (!kv->allocated())
+            ce = kv->Allocate(pw, max_seq, stream);
+        else
+            ce = kv->EnsureCapacity(pw, kv->kv_rows + max_new, stream);
+        if (ce != cudaSuccess) {
+            result.error_msg = "kv cache alloc failed";
+            return ce;
+        }
+    }
 
     // ── arena (all halves unless noted; single cudaMalloc) ──
     size_t half_sz[] = {
@@ -937,98 +1112,210 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     const double eps = top.rms_norm_eps;
     const int threads = 256;
 
-    for (int step = 0; step < max_new; ++step) {
-        const int seq = (int)ids.size();
-        std::vector<int32_t> posb(ids.size());
-        for (size_t i = 0; i < ids.size(); ++i) posb[i] = (int)i;
-        cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int32_t),
-                        cudaMemcpyHostToDevice, stream);
-        cudaMemcpyAsync(d_pos, posb.data(), posb.size() * sizeof(int32_t),
-                        cudaMemcpyHostToDevice, stream);
+    if (!is_incr) {
+        // ── full-recompute path (unchanged) ──
+        for (int step = 0; step < max_new; ++step) {
+            const int seq = (int)ids.size();
+            std::vector<int32_t> posb(ids.size());
+            for (size_t i = 0; i < ids.size(); ++i) posb[i] = (int)i;
+            cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(d_pos, posb.data(), posb.size() * sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
 
-        e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
-        if (e != cudaSuccess) return fail(e, "embed");
+            e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
+            if (e != cudaSuccess) return fail(e, "embed");
 
-        for (int l = 0; l < (int)pw.layers.size(); ++l) {
-            const QwenLayerWeights &lw = pw.layers[l];
-            // input RMSNorm
-            e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
+            for (int l = 0; l < (int)pw.layers.size(); ++l) {
+                const QwenLayerWeights &lw = pw.layers[l];
+                // input RMSNorm
+                e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
+                                   seq, H, eps);
+                if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
+                if (lw.is_linear) {
+                    e = RunQwenLinearAttention(stream, lw, top, seq,
+                        d_normed, d_attn_out, d_qkv, d_z, d_ab,
+                        d_gf, d_betaf, d_conv, d_core, d_gated);
+                } else {
+                    e = RunQwenFullAttention(stream, lw, top, seq,
+                        d_normed, d_attn_out, d_qc, d_q, d_qgate,
+                        d_k, d_v, d_attn, d_cos, d_sin, d_pos);
+                }
+                if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
+                // residual: d_act = d_act + d_attn_out
+                {
+                    const int64_t n = (int64_t)seq * H;
+                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                      0, stream>>>(d_attn_out, d_act, n);
+                    e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
+                }
+                // post RMSNorm
+                e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
+                                   seq, H, eps);
+                if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
+                // MLP
+                e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
+                               d_gate);
+                if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
+                // residual: d_act = d_act + d_mlp_out
+                {
+                    const int64_t n = (int64_t)seq * H;
+                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                      0, stream>>>(d_mlp_out, d_act, n);
+                    e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
+                }
+            }
+
+            // final norm
+            e = RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
                                seq, H, eps);
-            if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
-            if (lw.is_linear) {
-                e = RunQwenLinearAttention(stream, lw, top, seq,
-                    d_normed, d_attn_out, d_qkv, d_z, d_ab,
-                    d_gf, d_betaf, d_conv, d_core, d_gated);
+            if (e != cudaSuccess) return fail(e, "finalnorm");
+            // head logits: LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits)
+            e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
+            if (e != cudaSuccess) return fail(e, "head");
+            // argmax last row
+            {
+                const int last_row = seq - 1;
+                e = sampler.Sample(stream,
+                                   d_logits + static_cast<size_t>(last_row) * V, V,
+                                   lsxcommon::sample::LogitType::kF16,
+                                   d_argmax, d_maxv_scratch);
+                if (e != cudaSuccess) return fail(e, "argmax");
+            }
+
+            // Publish first generated token id (async, synchronized via event below).
+            int32_t tok = 0;
+            cudaEvent_t tok_ready;
+            cudaEventCreate(&tok_ready);
+            cudaMemcpyAsync(&tok, d_argmax, sizeof(int32_t),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaEventRecord(tok_ready, stream);
+            cudaEventSynchronize(tok_ready);
+            cudaEventDestroy(tok_ready);
+            if (step == 0) cudaEventRecord(t_ttft, stream);
+            result.tokens.push_back(tok);
+            if (tok == eos_id) {
+                result.eos_terminated = true;
+                break;
+            }
+            ids.push_back(tok);
+        }
+    } else {
+        // ── incremental path: one token per step at kv->kv_rows ──
+        // The first prompt.size()-1 steps replay the prompt rows one at a time
+        // (their argmax samples are discarded); from prompt.size()-1 on every
+        // sample is a generated token. Full-attn k/v rows are appended to the
+        // persistent cache; the GatedDeltaNet col accumulator is seeded from
+        // and written back to kv->d_col per linear layer.
+        const int prompt_steps = (int)prompt.size();
+        const int total_steps = prompt_steps + max_new - 1;
+        int32_t cur = prompt[0];
+        int32_t tok = -1;
+        int generated = 0;
+        for (int step = 0; step < total_steps; ++step) {
+            const int seq = 1;
+            const int kv_base = kv->kv_rows;
+            cudaMemcpyAsync(d_ids, &cur, sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(d_pos, &kv_base, sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
+
+            e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
+            if (e != cudaSuccess) return fail(e, "embed");
+
+            int full_idx = 0, lin_idx = 0;
+            for (int l = 0; l < (int)pw.layers.size(); ++l) {
+                const QwenLayerWeights &lw = pw.layers[l];
+                // input RMSNorm
+                e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
+                                   seq, H, eps);
+                if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
+                if (lw.is_linear) {
+                    e = RunQwenLinearAttention(stream, lw, top, seq,
+                        d_normed, d_attn_out,
+                        kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
+                        d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
+                        kv_base,
+                        kv->d_col + (int64_t)lin_idx * nv * vd * kd);
+                    ++lin_idx;
+                } else {
+                    e = RunQwenFullAttention(stream, lw, top, seq,
+                        d_normed, d_attn_out, d_qc, d_q, d_qgate,
+                        kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
+                        kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
+                        d_attn, d_cos, d_sin, d_pos, kv_base);
+                    ++full_idx;
+                }
+                if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
+                // residual: d_act = d_act + d_attn_out
+                {
+                    const int64_t n = (int64_t)seq * H;
+                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                      0, stream>>>(d_attn_out, d_act, n);
+                    e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
+                }
+                // post RMSNorm
+                e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
+                                   seq, H, eps);
+                if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
+                // MLP
+                e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
+                               d_gate);
+                if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
+                // residual: d_act = d_act + d_mlp_out
+                {
+                    const int64_t n = (int64_t)seq * H;
+                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                                      0, stream>>>(d_mlp_out, d_act, n);
+                    e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
+                }
+            }
+
+            // final norm
+            e = RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
+                               seq, H, eps);
+            if (e != cudaSuccess) return fail(e, "finalnorm");
+            // head logits
+            e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
+            if (e != cudaSuccess) return fail(e, "head");
+
+            kv->kv_rows += seq;
+
+            if (step >= prompt_steps - 1) {
+                e = sampler.Sample(stream, d_logits, V,
+                                   lsxcommon::sample::LogitType::kF16,
+                                   d_argmax, d_maxv_scratch);
+                if (e != cudaSuccess) return fail(e, "argmax");
+                int32_t gtok = 0;
+                cudaEvent_t tok_ready;
+                cudaEventCreate(&tok_ready);
+                cudaMemcpyAsync(&gtok, d_argmax, sizeof(int32_t),
+                                cudaMemcpyDeviceToHost, stream);
+                cudaEventRecord(tok_ready, stream);
+                cudaEventSynchronize(tok_ready);
+                cudaEventDestroy(tok_ready);
+                tok = gtok;
+                if (generated == 0) cudaEventRecord(t_ttft, stream);
+                result.tokens.push_back(tok);
+                ++generated;
+                if (tok == eos_id) {
+                    result.eos_terminated = true;
+                    break;
+                }
+                cur = tok;
             } else {
-                e = RunQwenFullAttention(stream, lw, top, seq,
-                    d_normed, d_attn_out, d_qc, d_q, d_qgate,
-                    d_k, d_v, d_attn, d_cos, d_sin, d_pos);
-            }
-            if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
-            // residual: d_act = d_act + d_attn_out
-            {
-                const int64_t n = (int64_t)seq * H;
-                qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
-                                  0, stream>>>(d_attn_out, d_act, n);
-                e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
-            }
-            // post RMSNorm
-            e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
-                               seq, H, eps);
-            if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
-            // MLP
-            e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
-                           d_gate);
-            if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
-            // residual: d_act = d_act + d_mlp_out
-            {
-                const int64_t n = (int64_t)seq * H;
-                qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
-                                  0, stream>>>(d_mlp_out, d_act, n);
-                e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
+                cur = prompt[step + 1];
             }
         }
-
-        // final norm
-        e = RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
-                           seq, H, eps);
-        if (e != cudaSuccess) return fail(e, "finalnorm");
-        // head logits: LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits)
-        e = LaunchNvfp4Gemm(pw.head, d_postin, seq, d_logits, stream);
-        if (e != cudaSuccess) return fail(e, "head");
-        // argmax last row
-        {
-            const int last_row = seq - 1;
-            e = sampler.Sample(stream,
-                               d_logits + static_cast<size_t>(last_row) * V, V,
-                               lsxcommon::sample::LogitType::kF16,
-                               d_argmax, d_maxv_scratch);
-            if (e != cudaSuccess) return fail(e, "argmax");
-        }
-
-        // Publish first generated token id (async, synchronized via event below).
-        int32_t tok = 0;
-        cudaEvent_t tok_ready;
-        cudaEventCreate(&tok_ready);
-        cudaMemcpyAsync(&tok, d_argmax, sizeof(int32_t),
-                        cudaMemcpyDeviceToHost, stream);
-        cudaEventRecord(tok_ready, stream);
-        cudaEventSynchronize(tok_ready);
-        cudaEventDestroy(tok_ready);
-        if (step == 0) cudaEventRecord(t_ttft, stream);
-        result.tokens.push_back(tok);
-        if (tok == eos_id) {
-            result.eos_terminated = true;
-            break;
-        }
-        ids.push_back(tok);
+        kv->last_tok = tok;
     }
 
     // Publish last-row logits (final row) for the regression harness, while
     // the arena is still alive.
     {
         std::vector<float> hlast_f(V);
-        int64_t base_idx = (int64_t)ids.size() - 1;
+        // Incremental path always produces the final row at index 0 (seq == 1).
+        int64_t base_idx = is_incr ? 0 : (int64_t)ids.size() - 1;
         if (base_idx < 0) base_idx = 0;
         base_idx *= V;
         std::vector<__half> hlast(V);
@@ -1051,7 +1338,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     cudaEventDestroy(t_ttft);
     cudaEventDestroy(t_stop);
     result.resident_bytes = pw.resident_bytes + half_bytes
-                            + float_bytes + sizeof(int32_t);
+                            + float_bytes + sizeof(int32_t)
+                            + (is_incr ? kv->Bytes() : 0);
     cudaFree(d_argmax);
     cudaFree(base);
     result.ok = true;

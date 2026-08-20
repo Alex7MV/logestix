@@ -171,6 +171,51 @@ endif()
 
 add_test(NAME test_qwen_model COMMAND test_qwen_model)
 
+# ── Инкрементальный KV-кэш Qwen (Task 7) ─────────────────────────────────
+add_executable(test_qwen_kv_cache test_qwen_kv_cache.cpp)
+target_compile_definitions(test_qwen_kv_cache PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_kv_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_kv_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_cache>"
+    )
+    add_custom_command(TARGET test_qwen_kv_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_cache>"
+    )
+endif()
+
+add_test(NAME test_qwen_kv_cache COMMAND test_qwen_kv_cache)
+set_tests_properties(test_qwen_kv_cache PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Bit-exactness gate: incremental KV vs full recompute (synthetic) ────────
+add_executable(test_qwen_kv_parity test_qwen_kv_parity.cpp)
+target_compile_definitions(test_qwen_kv_parity PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_kv_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_kv_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_parity>"
+    )
+    add_custom_command(TARGET test_qwen_kv_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_kv_parity>"
+    )
+endif()
+
+add_test(NAME test_qwen_kv_parity COMMAND test_qwen_kv_parity)
+
 # ── Тест Qwen3.8-27B модели ──────────────────────────────────────────────
 add_executable(test_qwen_3_8_27b_model test_qwen_3_8_27b_model.cpp)
 target_compile_definitions(test_qwen_3_8_27b_model PRIVATE
