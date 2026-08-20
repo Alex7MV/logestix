@@ -88,3 +88,32 @@ TEST_CASE("ExpertStore::EnsureResident evicts under max_open", "[expert_store]")
 
     cudaStreamDestroy(stream);
 }
+
+TEST_CASE("ExpertStore::EnsureResident honors an eviction release event", "[expert_store]")
+{
+    Store s;
+    s.num_layers = 2;
+    s.experts_per_layer = 2;
+    s.max_open = 1;                 // forces eviction on the 2nd resident
+    REQUIRE(s.Load(MakeExpertDir().string(), false));
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    cudaEvent_t ev = nullptr;
+    REQUIRE(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) == cudaSuccess);
+
+    // No event -> legacy sync eviction still works (regression guard).
+    s.EnsureResident(0, 1, stream);           // flat=1 -> evicts flat=0
+    CHECK(s.lru.front() == 1);
+    CHECK(s.entries[1].host_w1 != nullptr);
+
+    // With the event -> same eviction semantics, released via event.
+    s.EnsureResident(1, 0, stream, ev);        // flat=2 -> evicts flat=1
+    CHECK(s.lru.front() == 2);
+    CHECK(s.entries[2].host_w1 != nullptr);
+    s.EnsureResident(0, 1, stream, ev);        // re-parse flat=1 -> evicts flat=2
+    CHECK(s.lru.front() == 1);
+
+    cudaEventDestroy(ev);
+    cudaStreamDestroy(stream);
+}

@@ -193,7 +193,13 @@ struct ExpertStore {
     // Touch a resident entry or parse it, evicting the LRU tail under max_open.
     // The caller's stream is synchronized ONCE, only before the first eviction
     // (pre-munmap barrier for in-flight cudaMemcpyAsync reading host mmap).
-    void EnsureResident(int layer, int expert, cudaStream_t stream)
+    // @p evict_done, when non-null, releases that barrier via
+    // cudaEventRecord + cudaStreamWaitEvent instead of cudaStreamSynchronize:
+    // an in-flight async H2D reading an about-to-be-munmap'd host mmap is
+    // awaited without draining unrelated stream work. nullptr preserves the
+    // prior behavior exactly (existing DeepSeek call sites pass none).
+    void EnsureResident(int layer, int expert, cudaStream_t stream,
+                        cudaEvent_t evict_done = nullptr)
     {
         if (expert < 0 || expert >= experts_per_layer) return;
         if (paths.empty()) return;
@@ -209,8 +215,14 @@ struct ExpertStore {
             return;
         }
 
-        if (lru.size() >= max_open)
-            cudaStreamSynchronize(stream);
+        if (lru.size() >= max_open) {
+            if (evict_done) {
+                cudaEventRecord(evict_done, stream);
+                cudaStreamWaitEvent(stream, evict_done, 0);
+            } else {
+                cudaStreamSynchronize(stream);
+            }
+        }
         while (lru.size() >= max_open) {
             size_t evict = lru.back();
             lru.pop_back();
