@@ -927,7 +927,14 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
                                  * kQloraRank;
     const int64_t max_attn_elems_wo = 8192LL * 4096;
     const int64_t attn_dequant_max = std::max(max_attn_elems, max_attn_elems_wo);
-    const int64_t act_plus_out = std::max<int64_t>(kHiddenDim, 8192);
+    // Extra FP32 scratch past the dequant block for the largest single attention
+    // GEMM: f8_gemm_1d needs cols for the FP32 activation copy plus rows for the
+    // FP32 output (clamped to FP16 afterwards). wq_b [32768,1024] needs
+    // kQloraRank + kAttnHeads*kHeadDim; wo_b [4096,8192] needs 8192 + 4096. The
+    // wq_b case (33,792) dominates. An undersized scratch here overflows into
+    // the adjacent kv cache (corrupting layer-0 window slots on the first step).
+    const int64_t act_plus_out = static_cast<int64_t>(kQloraRank)
+                               + static_cast<int64_t>(kAttnHeads) * kHeadDim;
     const int64_t attn_dequant_sz = (attn_dequant_max + act_plus_out)
                                   * sizeof(float);
     const int64_t max_compressed = max_seq_len / 4 + 1;
