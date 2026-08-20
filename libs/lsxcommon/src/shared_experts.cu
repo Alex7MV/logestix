@@ -1,5 +1,6 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/schema.h"
+#include "nvfp4_codec.h"
 
 #include <cfloat>
 #include <cstdint>
@@ -20,6 +21,12 @@ namespace lsxcommon {
 namespace gpu {
 namespace {
 
+// Decode primitives live in the shared nvfp4_codec.h (kE2M1Table /
+// E4M3ScaleToFloat); alias them into this anonymous namespace so existing
+// call sites compile unchanged.
+using nvfp4::kE2M1Table;
+using nvfp4::E4M3ScaleToFloat;
+
 // F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float
 __device__ __forceinline__ float f8e4m3_to_float(uint8_t b)
 {
@@ -35,22 +42,7 @@ __device__ __forceinline__ float f8e4m3_to_float(uint8_t b)
     return v;
 }
 
-constexpr int kE2M1TableSize = 16;
-
-// NVFP4 E2M1 decode table — indexed directly by the 4-bit nibble (sign bit 3).
-__constant__ float kE2M1Table[kE2M1TableSize] = {
-     0.0f,  0.5f,  1.0f,  1.5f,  2.0f,  3.0f,  4.0f,  6.0f,
-    -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
-};
-
-// NVFP4 E4M3 power-of-2 block scale (only exponent bits used)
-__device__ __forceinline__ float e4m3_scale_to_float(uint8_t e4m3)
-{
-    uint32_t e4 = (e4m3 >> 3) & 0x0F;
-    if (e4 == 0) return 0.0f;
-    return __uint_as_float((e4 - 7 + 127) << 23);
-}
-
+// NVFP4 E4M3/E2M1 decode primitives now live in nvfp4_codec.h (aliased above).
 // F8_E8M0 scale: scale = 2^(e-127); 0 is a valid encoding of 0.
 __device__ __forceinline__ float e8m0_scale_to_float(uint8_t b)
 {
@@ -112,8 +104,8 @@ __global__ void dequant_shared_nvfp4_kernel(
         const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
         // Two E4M3 scale descriptors for elems [base, base+32)
         const uint16_t s2 = *reinterpret_cast<const uint16_t*>(scales + (base >> 4));
-        const float scl_lo = e4m3_scale_to_float(static_cast<uint8_t>(s2)) * global_scale;
-        const float scl_hi = e4m3_scale_to_float(static_cast<uint8_t>(s2 >> 8)) * global_scale;
+        const float scl_lo = nvfp4::E4M3ScaleToFloat(static_cast<uint8_t>(s2)) * global_scale;
+        const float scl_hi = nvfp4::E4M3ScaleToFloat(static_cast<uint8_t>(s2 >> 8)) * global_scale;
 
         uint32_t w[16];
         unpack_nibbles8(p.x, scl_lo, &w[0]);
@@ -135,7 +127,7 @@ __global__ void dequant_shared_nvfp4_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        const float scale = e4m3_scale_to_float(scales[i >> 4]) * global_scale;
+        const float scale = nvfp4::E4M3ScaleToFloat(scales[i >> 4]) * global_scale;
         output[i] = __float2half(kE2M1Table[nibble] * scale);
     }
 }
@@ -392,7 +384,7 @@ __global__ void dequant_shared_nvfp4_f32_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        const float scale = e4m3_scale_to_float(scales[i >> 4]) * global_scale;
+        const float scale = nvfp4::E4M3ScaleToFloat(scales[i >> 4]) * global_scale;
         output[i] = kE2M1Table[nibble] * scale;
     }
 }
