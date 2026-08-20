@@ -13,6 +13,7 @@
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
 #include "lsxcommon/deepseek_inference_csa.h"
+#include "lsxcommon/expert_store.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -77,17 +78,7 @@ std::string detect_model_type(const std::string &model_path);
 // ensure_expert_resident/load_expert_index/free_expert_index will need an
 // external lock: concurrent LRU touch/evict mutates `lru`/`entries`/`mmaps`
 // without any synchronization.
-struct ExpertDb {
-    std::vector<ExpertEntry> entries;
-    std::vector<std::shared_ptr<arrow::io::MemoryMappedFile>> mmaps;
-    std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
-    std::vector<std::string> paths;       // file path per flat index (for lazy open)
-    std::vector<size_t> lru;              // flat indices, back = least recently used
-    size_t max_open = 7000;               // bounded by Windows CRT fd cap (8192)
-    int experts_per_layer = 0;
-    int num_layers = 0;
-    std::string error_msg;
-};
+using ExpertDb = lsxcommon::gpu::expert_store::ExpertStore<ExpertEntry>;
 
 ExpertDb load_expert_index(const std::string &model_path,
                             int num_layers, int experts_per_layer);
@@ -105,7 +96,6 @@ ExpertDb load_expert_index(const std::string &model_path,
 // use-after-free read of unmapped host memory from the GPU's DMA engine.
 void ensure_expert_resident(ExpertDb &db, int layer, int expert,
                             cudaStream_t stream);
-
 // Release all expert mmaps (frees CRT file descriptors).
 void free_expert_index(ExpertDb &db);
 
