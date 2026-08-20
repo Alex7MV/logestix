@@ -22,6 +22,10 @@ struct FontLoader {
     /// Loads the embedded JetBrains Mono into the same atlas (monospace font
     /// for telemetry/chart labels). Returns the built mono font.
     static ImFont* LoadMonospace(ImFontAtlas& atlas) noexcept;
+
+    /// Loads the embedded Inter at a larger point size for the welcome screen's
+    /// hero greeting. Same FreeType LCD rasterizer settings as the base font.
+    static ImFont* LoadHeading(ImFontAtlas& atlas) noexcept;
 };
 
 }  // namespace lsxhome
