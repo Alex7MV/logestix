@@ -20,13 +20,8 @@ QwenBaseModel::~QwenBaseModel() { Unload(); }
 
 bool QwenBaseModel::Load()
 {
-    if (loaded_) return true;
-    if (cfg_.model_path.empty()) {
-        spdlog::error("[qwen-model] empty model_path");
-        return false;
-    }
     tokenizer_optional_ = true;
-    if (!LoadTokenizerDb(cfg_.model_path)) return false;
+    if (!BeginLoad(cfg_.model_path)) return false;
     if (!weights_loaded_) {
         cudaStream_t st = nullptr;
         if (cudaStreamCreate(&st) == cudaSuccess) {
@@ -38,6 +33,9 @@ bool QwenBaseModel::Load()
                 spdlog::error("[qwen-model] LoadQwenPinnedWeights failed");
                 return false;
             }
+            // Dense residency (spec 3.3): the entire model is resident after
+            // Load(), so ResidentWeightBytes() reports the full persistent set.
+            resident_bytes_ = pw_.resident_bytes;
             spdlog::info("[qwen-model] pinned weights loaded: {} layers "
                          "({} bytes resident)",
                          pw_.layers.size(), pw_.resident_bytes);
@@ -46,7 +44,7 @@ bool QwenBaseModel::Load()
             return false;
         }
     }
-    loaded_ = true;
+    FinishLoad();
     ValidateGeometry(pw_.top);
     return true;
 }
@@ -100,6 +98,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
 
     r.ok = true;
     r.num_tokens = static_cast<int>(gen.tokens.size());
+    r.num_layers = pw_.top.num_layers;
     if (!gen.tokens.empty())
         r.first_gen_tok_id = gen.tokens[0];
     r.gen_tokens = std::move(gen.tokens);
@@ -131,15 +130,11 @@ void QwenBaseModel::Unload()
 {
     pw_.Free();
     weights_loaded_ = false;
+    resident_bytes_ = 0;
     tok_db_.reset();
     kv_.reset();
     session_tail_.clear();
     loaded_ = false;
-}
-
-SafetensorsModel QwenBaseModel::Inspect()
-{
-    return lsxcommon::scan_directory(cfg_.model_path);
 }
 
 gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
