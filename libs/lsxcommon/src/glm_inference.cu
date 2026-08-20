@@ -255,6 +255,11 @@ struct GlmLoopCtx {
     GlmExpertDb *db = nullptr;                  // on-demand mmap path
     uint8_t *d_pack_stage = nullptr;            // on-demand staging buffers
     uint8_t *d_scale_stage = nullptr;
+    uint8_t *d_pack_stage_b = nullptr;          // second staging set (pre-stage)
+    uint8_t *d_scale_stage_b = nullptr;
+    cudaStream_t stream_copy = nullptr;         // copy stream (H2D); null -> single-stream
+    cudaEvent_t ev_h2d[2]  = {nullptr, nullptr};
+    cudaEvent_t ev_gemm[2] = {nullptr, nullptr};
     int hidden = 0;
     int inter  = 0;
     int vocab  = 0;
@@ -294,9 +299,11 @@ cudaError_t RunLoopExpertStack(GlmLoopCtx &c, int l)
 {
     if (c.db) {
         return RunGlmExpertsStackOnDemand(
-            c.ch, c.st, c.d_routing, 1, c.d_normed,
+            c.ch, c.st, c.stream_copy, c.d_routing, 1, c.d_normed,
             *c.db, l, kGlmNumRouted, c.d_moe, c.d_scratch_e,
-            c.d_pack_stage, c.d_scale_stage, c.h_routing);
+            c.d_pack_stage, c.d_scale_stage,
+            c.d_pack_stage_b, c.d_scale_stage_b,
+            c.ev_h2d, c.ev_gemm, c.h_routing);
     }
     return RunGlmExpertsStack(
         c.ch, c.st, c.d_routing, 1, c.d_normed,
@@ -436,6 +443,8 @@ static cudaError_t RunGlmGenerationImpl(
     const GlmPinnedWeights &pw,
     const GlmExpertTables *experts, GlmExpertDb *expert_db,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    uint8_t *d_pack_stage_b, uint8_t *d_scale_stage_b,
+    cudaStream_t stream_copy, cudaEvent_t ev_h2d[2], cudaEvent_t ev_gemm[2],
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
@@ -540,10 +549,15 @@ static cudaError_t RunGlmGenerationImpl(
     ctx.ch = cublas_h;
     ctx.st = stream;
     ctx.pw = &pw;
-    if (on_demand) {
+if (on_demand) {
         ctx.db = expert_db;
         ctx.d_pack_stage = d_pack_stage;
         ctx.d_scale_stage = d_scale_stage;
+        ctx.d_pack_stage_b = d_pack_stage_b;
+        ctx.d_scale_stage_b = d_scale_stage_b;
+        ctx.stream_copy = stream_copy;
+        ctx.ev_h2d[0] = ev_h2d[0];   ctx.ev_h2d[1] = ev_h2d[1];
+        ctx.ev_gemm[0] = ev_gemm[0]; ctx.ev_gemm[1] = ev_gemm[1];
     } else {
         ctx.experts = experts;
     }
@@ -685,8 +699,9 @@ cudaError_t RunGlmGeneration(
     lsxcommon::sample::ISampler &sampler)
 {
     return RunGlmGenerationImpl(cublas_h, stream, pw, &experts, nullptr,
-                                nullptr, nullptr, prompt, max_new, result,
-                                sampler);
+                                nullptr, nullptr, nullptr, nullptr,
+                                nullptr, nullptr, nullptr,
+                                prompt, max_new, result, sampler);
 }
 
 cudaError_t RunGlmGeneration(
@@ -720,10 +735,61 @@ cudaError_t RunGlmGeneration(
         result.error_msg = cudaGetErrorString(e);
         return e;
     }
+    uint8_t *d_pack_b = nullptr;
+    uint8_t *d_scale_b = nullptr;
+    e = cudaMalloc(&d_pack_b, pack_bytes);
+    if (e != cudaSuccess) {
+        cudaFree(d_pack); cudaFree(d_scale);
+        result = GlmGenerationResult{};
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+    e = cudaMalloc(&d_scale_b, scale_bytes);
+    if (e != cudaSuccess) {
+        cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_pack_b);
+        result = GlmGenerationResult{};
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+
+    cudaStream_t stream_copy = nullptr;
+    cudaEvent_t ev_h2d[2]  = {nullptr, nullptr};
+    cudaEvent_t ev_gemm[2] = {nullptr, nullptr};
+    e = cudaStreamCreateWithFlags(&stream_copy, cudaStreamNonBlocking);
+    if (e != cudaSuccess) {
+        cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_pack_b); cudaFree(d_scale_b);
+        result = GlmGenerationResult{};
+        result.error_msg = cudaGetErrorString(e);
+        return e;
+    }
+    for (int i = 0; i < 2; ++i) {
+        e = cudaEventCreateWithFlags(&ev_h2d[i], cudaEventDisableTiming);
+        if (e != cudaSuccess) {
+            for (int j = 0; j < i; ++j) { cudaEventDestroy(ev_h2d[j]); cudaEventDestroy(ev_gemm[j]); }
+            cudaStreamDestroy(stream_copy);
+            cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_pack_b); cudaFree(d_scale_b);
+            result = GlmGenerationResult{};
+            result.error_msg = cudaGetErrorString(e);
+            return e;
+        }
+        e = cudaEventCreateWithFlags(&ev_gemm[i], cudaEventDisableTiming);
+        if (e != cudaSuccess) {
+            for (int j = 0; j <= i; ++j) { cudaEventDestroy(ev_h2d[j]); if (j < i) cudaEventDestroy(ev_gemm[j]); }
+            cudaStreamDestroy(stream_copy);
+            cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_pack_b); cudaFree(d_scale_b);
+            result = GlmGenerationResult{};
+            result.error_msg = cudaGetErrorString(e);
+            return e;
+        }
+    }
 
     e = RunGlmGenerationImpl(cublas_h, stream, pw, nullptr, &expert_db,
-                             d_pack, d_scale, prompt, max_new, result, sampler);    cudaFree(d_scale);
-    cudaFree(d_pack);
+                             d_pack, d_scale, d_pack_b, d_scale_b,
+                             stream_copy, ev_h2d, ev_gemm,
+                             prompt, max_new, result, sampler);
+    for (int i = 0; i < 2; ++i) { cudaEventDestroy(ev_h2d[i]); cudaEventDestroy(ev_gemm[i]); }
+    cudaStreamDestroy(stream_copy);
+    cudaFree(d_scale_b); cudaFree(d_pack_b); cudaFree(d_scale); cudaFree(d_pack);
     return e;
 }
 
@@ -1163,9 +1229,10 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
     e = RunGlmRealRouter(c.ch, c.st, lw, 1, c.d_hid, d_bias,
                          c.d_mlpn, c.d_logits, c.d_routing);
     if (e != cudaSuccess) return e;
-    e = RunGlmExpertsStackOnDemand(c.ch, c.st, c.d_routing, 1, c.d_mlpn,
+    e = RunGlmExpertsStackOnDemand(c.ch, c.st, nullptr, c.d_routing, 1, c.d_mlpn,
                                    *c.db, l, kGlmNumRouted, c.d_routed,
                                    c.d_scratch_e, c.d_pack, c.d_scale,
+                                   nullptr, nullptr, nullptr, nullptr,
                                    c.h_routing);
     if (e != cudaSuccess) return e;
     // Shared expert (w1=gate, w2=down, w3=up, same NVFP4 layout as a routed

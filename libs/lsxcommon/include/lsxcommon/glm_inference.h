@@ -209,11 +209,14 @@ cudaError_t RunGlmExpertsStack(
 //                  (kGlmExpertMatEl/kGlmNvfp4Block * 3).
 cudaError_t RunGlmExpertsStackOnDemand(
     cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream_copy,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     GlmExpertDb &db, int layer, int n_experts,
     __half *d_out, __half *d_scratch,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    uint8_t *d_pack_stage_b, uint8_t *d_scale_stage_b,
+    cudaEvent_t ev_h2d[2], cudaEvent_t ev_gemm[2],
     GlmRoutedSlot *h_routing_staging = nullptr);
 
 // ── TDD Cycle 9: MoE router + NVFP4 expert stacks (layers 3-77) ─────────────

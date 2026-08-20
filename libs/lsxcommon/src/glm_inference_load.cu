@@ -691,11 +691,14 @@ cudaError_t RunGlmExpertsStack(
 // needs more than the pinned weights + ~2 × one-expert staging in VRAM.
 cudaError_t RunGlmExpertsStackOnDemand(
     cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream_copy,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     GlmExpertDb &db, int layer, int n_experts,
     __half *d_out, __half *d_scratch,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    uint8_t *d_pack_stage_b, uint8_t *d_scale_stage_b,
+    cudaEvent_t ev_h2d[2], cudaEvent_t ev_gemm[2],
     GlmRoutedSlot *h_routing_staging /* = nullptr */)
 {
     constexpr int64_t kMatEl = kGlmExpertMatEl;
@@ -739,20 +742,123 @@ cudaError_t RunGlmExpertsStackOnDemand(
         return e;
     }
 
-    // Staging layout (bytes): [w1][w2][w3] packed payloads, then [w1][w2][w3]
-    // per-block scales. Reused and overwritten per slot, so only ONE expert is
-    // ever resident in VRAM beyond the pinned weights.
-    uint8_t *p1 = d_pack_stage;
-    uint8_t *p2 = p1 + kPackPerMat;
-    uint8_t *p3 = p2 + kPackPerMat;
-    uint8_t *s1 = d_scale_stage;
-    uint8_t *s2 = s1 + kScalePerMat;
-    uint8_t *s3 = s2 + kScalePerMat;
+    const bool two = stream_copy != nullptr && d_pack_stage_b && d_scale_stage_b &&
+                     ev_h2d && ev_gemm;
+    uint8_t *sets_p[2] = { d_pack_stage, d_pack_stage_b };
+    uint8_t *sets_s[2] = { d_scale_stage, d_scale_stage_b };
 
+    auto stage_slot = [&](int si, cudaStream_t cst) -> cudaError_t {
+        const GlmRoutedSlot &rs = h_routing[si];
+        if (rs.eid < 0 || rs.eid >= n_experts) return cudaSuccess;
+        const size_t flat = static_cast<size_t>(layer) *
+                                static_cast<size_t>(db.experts_per_layer) +
+                            static_cast<size_t>(rs.eid);
+        if (flat >= db.entries.size()) return cudaSuccess;
+        const GlmExpertEntry &en = db.entries[flat];
+        if (!en.host_w1 || !en.host_w2 || !en.host_w3 ||
+            !en.host_w1_scales || !en.host_w2_scales || !en.host_w3_scales ||
+            en.w1_bytes != kPackPerMat || en.w2_bytes != kPackPerMat ||
+            en.w3_bytes != kPackPerMat ||
+            en.w1_scales_bytes != kScalePerMat ||
+            en.w2_scales_bytes != kScalePerMat ||
+            en.w3_scales_bytes != kScalePerMat)
+            return cudaSuccess;
+        const int si_p = (si & 1);
+
+        // Single-stream fallback always uses set 0; two-stream uses set parity.
+        const int idx = two ? si_p : 0;
+        uint8_t *p1 = sets_p[idx], *p2 = p1 + kPackPerMat, *p3 = p2 + kPackPerMat;
+        uint8_t *s1 = sets_s[idx], *s2 = s1 + kScalePerMat, *s3 = s2 + kScalePerMat;
+        const void *src[6] = { en.host_w1, en.host_w2, en.host_w3,
+                               en.host_w1_scales, en.host_w2_scales, en.host_w3_scales };
+        void *dst[6] = { p1, p2, p3, s1, s2, s3 };
+        const size_t nb[6] = { (size_t)kPackPerMat, (size_t)kPackPerMat, (size_t)kPackPerMat,
+                               (size_t)kScalePerMat, (size_t)kScalePerMat, (size_t)kScalePerMat };
+        for (int f = 0; f < 6; ++f) {
+            cudaError_t ce = cudaMemcpyAsync(dst[f], src[f], nb[f],
+                                             cudaMemcpyHostToDevice, cst);
+            if (ce != cudaSuccess) return ce;
+        }
+        return cudaSuccess;
+    };
+
+    cudaError_t last = cudaSuccess;
+
+    if (!two) {
+        // Single-stream fallback (byte-identical to the pre-two-stream loop):
+        // stage+run each active slot on the calling stream.
+        for (int s = 0; s < slots; ++s) {
+            const GlmRoutedSlot &rs = h_routing[s];
+            if (rs.eid < 0 || rs.eid >= n_experts) continue;
+            ensure_glm_expert_resident(db, layer, rs.eid, stream);
+            const size_t flat = static_cast<size_t>(layer) *
+                                    static_cast<size_t>(db.experts_per_layer) +
+                                static_cast<size_t>(rs.eid);
+            if (flat >= db.entries.size()) continue;
+            const GlmExpertEntry &en = db.entries[flat];
+            if (!en.host_w1 || !en.host_w2 || !en.host_w3 ||
+                !en.host_w1_scales || !en.host_w2_scales || !en.host_w3_scales ||
+                en.w1_bytes != kPackPerMat || en.w2_bytes != kPackPerMat ||
+                en.w3_bytes != kPackPerMat ||
+                en.w1_scales_bytes != kScalePerMat ||
+                en.w2_scales_bytes != kScalePerMat ||
+                en.w3_scales_bytes != kScalePerMat)
+                continue; // missing / foreign format: deterministic zero contribution
+
+            last = stage_slot(s, stream);
+            if (last != cudaSuccess) break;
+
+            GlmExpertDeviceBlock eb;
+            eb.d_w1_packed = sets_p[0]; eb.d_w1_scales = sets_s[0];
+            eb.w1_global_scale = en.w1_global_scale;
+            eb.w1_packed_bytes = kPackPerMat; eb.w1_scale_bytes = kScalePerMat;
+            eb.d_w2_packed = sets_p[0] + kPackPerMat; eb.d_w2_scales = sets_s[0] + kScalePerMat;
+            eb.w2_global_scale = en.w2_global_scale;
+            eb.w2_packed_bytes = kPackPerMat; eb.w2_scale_bytes = kScalePerMat;
+            eb.d_w3_packed = sets_p[0] + 2 * kPackPerMat; eb.d_w3_scales = sets_s[0] + 2 * kScalePerMat;
+            eb.w3_global_scale = en.w3_global_scale;
+            eb.w3_packed_bytes = kPackPerMat; eb.w3_scale_bytes = kScalePerMat;
+
+            const int   t    = s / kGlmMoETopK;
+            const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
+            __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
+            last = RunGlmExpertSlot(cublas_h, stream, eb,
+                                    x_t, out_t, d_scratch, rs.coeff);
+            if (last != cudaSuccess) break;
+        }
+        if (own_staging) cudaFreeHost(h_routing);
+        return last;
+    }
+
+    // Two-stream pipeline. Slot 0 staged on the compute stream so its GEMM
+    // needs no cross-stream wait. For s>0 the copy stream staged slot s during
+    // iteration s-1 and recorded ev_h2d[s&1]; the compute stream waits it before
+    // the GEMM. The copy producer for slot s+1 waits ev_gemm[(s+1)&1] (the GEMM
+    // that last read that set) before overwriting.
+    cudaError_t ef = stage_slot(0, stream);
+    if (ef != cudaSuccess) { if (own_staging) cudaFreeHost(h_routing); return ef; }
+
+    bool set_seen[2] = {false, false};
     for (int s = 0; s < slots; ++s) {
         const GlmRoutedSlot &rs = h_routing[s];
         if (rs.eid < 0 || rs.eid >= n_experts) continue;
-        ensure_glm_expert_resident(db, layer, rs.eid, stream);
+        ensure_glm_expert_resident(db, layer, rs.eid, stream_copy);
+        const int this_set = (s & 1);
+
+        if (s > 0)
+            cudaStreamWaitEvent(stream, ev_h2d[this_set], 0);
+
+        if (s + 1 < slots) {
+            const int nxt = (s + 1) & 1;
+            // First write of a set has no prior GEMM to wait on (the set was
+            // never read); skip the wait until the set has been used once.
+            if (set_seen[nxt])
+                cudaStreamWaitEvent(stream_copy, ev_gemm[nxt], 0);
+            cudaError_t pe = stage_slot(s + 1, stream_copy);
+            if (pe != cudaSuccess) { last = pe; break; }
+            cudaEventRecord(ev_h2d[nxt], stream_copy);
+        }
+
         const size_t flat = static_cast<size_t>(layer) *
                                 static_cast<size_t>(db.experts_per_layer) +
                             static_cast<size_t>(rs.eid);
@@ -765,60 +871,31 @@ cudaError_t RunGlmExpertsStackOnDemand(
             en.w1_scales_bytes != kScalePerMat ||
             en.w2_scales_bytes != kScalePerMat ||
             en.w3_scales_bytes != kScalePerMat)
-            continue; // missing / foreign format: deterministic zero contribution
-
-        e = cudaMemcpyAsync(p1, en.host_w1,
-                            static_cast<size_t>(kPackPerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(p2, en.host_w2,
-                            static_cast<size_t>(kPackPerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(p3, en.host_w3,
-                            static_cast<size_t>(kPackPerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(s1, en.host_w1_scales,
-                            static_cast<size_t>(kScalePerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(s2, en.host_w2_scales,
-                            static_cast<size_t>(kScalePerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
-        e = cudaMemcpyAsync(s3, en.host_w3_scales,
-                            static_cast<size_t>(kScalePerMat),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) break;
+            continue;
 
         GlmExpertDeviceBlock eb;
-        eb.d_w1_packed      = p1;
-        eb.d_w1_scales      = s1;
-        eb.w1_global_scale  = en.w1_global_scale;
-        eb.w1_packed_bytes  = kPackPerMat;
-        eb.w1_scale_bytes   = kScalePerMat;
-        eb.d_w2_packed      = p2;
-        eb.d_w2_scales      = s2;
-        eb.w2_global_scale  = en.w2_global_scale;
-        eb.w2_packed_bytes  = kPackPerMat;
-        eb.w2_scale_bytes   = kScalePerMat;
-        eb.d_w3_packed      = p3;
-        eb.d_w3_scales      = s3;
-        eb.w3_global_scale  = en.w3_global_scale;
-        eb.w3_packed_bytes  = kPackPerMat;
-        eb.w3_scale_bytes   = kScalePerMat;
+        eb.d_w1_packed = sets_p[this_set];  eb.d_w1_scales = sets_s[this_set];
+        eb.w1_global_scale = en.w1_global_scale;
+        eb.w1_packed_bytes = kPackPerMat; eb.w1_scale_bytes = kScalePerMat;
+        eb.d_w2_packed = sets_p[this_set] + kPackPerMat; eb.d_w2_scales = sets_s[this_set] + kScalePerMat;
+        eb.w2_global_scale = en.w2_global_scale;
+        eb.w2_packed_bytes = kPackPerMat; eb.w2_scale_bytes = kScalePerMat;
+        eb.d_w3_packed = sets_p[this_set] + 2 * kPackPerMat; eb.d_w3_scales = sets_s[this_set] + 2 * kScalePerMat;
+        eb.w3_global_scale = en.w3_global_scale;
+        eb.w3_packed_bytes = kPackPerMat; eb.w3_scale_bytes = kScalePerMat;
 
-        const int   t    = s / kGlmMoETopK;
+        const int t = s / kGlmMoETopK;
         const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
         __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-        e = RunGlmExpertSlot(cublas_h, stream, eb,
-                             x_t, out_t, d_scratch, rs.coeff);
-        if (e != cudaSuccess) break;
+        last = RunGlmExpertSlot(cublas_h, stream, eb, x_t, out_t,
+                                d_scratch, rs.coeff);
+        if (last != cudaSuccess) break;
+        cudaEventRecord(ev_gemm[this_set], stream);
+        set_seen[this_set] = true;
     }
 
     if (own_staging) cudaFreeHost(h_routing);
-    return e;
+    return last;
 }
 
 // ── Cycle 9: MoE virtual-slice kernels (layers 3-77) ───────────────────────
