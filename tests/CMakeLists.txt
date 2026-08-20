@@ -445,6 +445,53 @@ endif()
 add_test(NAME test_deepseek_prompt_output COMMAND test_deepseek_prompt_output)
 set_tests_properties(test_deepseek_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест DeepSeek-V4-Flash SelfCheck (шаг 8 протокола): инкрементальный
+#    1->2-токенный селфчек на реальной модели, минимум 3 цикла, детерминированный
+#    final_logits. SKIP без чекпоинта.
+add_executable(test_deepseek_selfcheck test_deepseek_selfcheck.cpp)
+target_link_libraries(test_deepseek_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_selfcheck>"
+    )
+    add_custom_command(TARGET test_deepseek_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_deepseek_selfcheck COMMAND test_deepseek_selfcheck)
+set_tests_properties(test_deepseek_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест Qwen3.5-9B SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
+#    селфчек на реальной модели, минимум 3 цикла, детерминированный final_logits.
+#    SKIP без чекпоинта.
+add_executable(test_qwen_selfcheck test_qwen_selfcheck.cpp)
+target_compile_definitions(test_qwen_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_selfcheck>"
+    )
+    add_custom_command(TARGET test_qwen_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_qwen_selfcheck COMMAND test_qwen_selfcheck)
+set_tests_properties(test_qwen_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест фабрики моделей ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
