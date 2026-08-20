@@ -28,13 +28,8 @@ DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
 
 bool DeepSeekV4FlashModel::Load()
 {
-    if (loaded_) return true;
-    if (cfg_.model_path.empty()) {
-        spdlog::error("[model] empty model_path");
-        return false;
-    }
-    if (!LoadTokenizerDb(cfg_.model_path)) return false;
-    loaded_ = true;
+    if (!BeginLoad(cfg_.model_path)) return false;
+    FinishLoad();
     return true;
 }
 
@@ -51,11 +46,6 @@ void DeepSeekV4FlashModel::Unload()
     // RunInferenceModel loads pinned weights per-call and frees them on return.
     tok_db_.reset();
     loaded_ = false;
-}
-
-SafetensorsModel DeepSeekV4FlashModel::Inspect()
-{
-    return lsxcommon::scan_directory(cfg_.model_path);
 }
 
 gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
