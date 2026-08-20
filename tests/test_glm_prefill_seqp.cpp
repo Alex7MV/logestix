@@ -67,12 +67,12 @@ TEST_CASE("GLM seq-P prefill stores P KV rows and stays bit-exact", "[glm][model
     REQUIRE_FALSE(r1.final_logits.empty());
     REQUIRE(r1.gen_tokens.size() == static_cast<size_t>(r1.num_tokens));
 
-    // argmax of the final-logits row == the first generated token (both come
-    // from the same d_logits_head row via the Task 2 sampler readback).
+    // argmax of the final-logits row == the last generated token (the engine
+    // publishes the raw head row of the final decode step, not the prefill row).
     int best = 0;
     for (int i = 1; i < static_cast<int>(r1.final_logits.size()); ++i)
         if (r1.final_logits[i] > r1.final_logits[best]) best = i;
-    REQUIRE(best == r1.gen_tokens[0]);
+    REQUIRE(best == r1.gen_tokens.back());
 
     // Bit-exact determinism across a second identical run.
     auto r2 = m->Infer(req);
