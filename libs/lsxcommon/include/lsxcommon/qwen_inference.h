@@ -51,6 +51,17 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
                          const int32_t *d_ids, __half *d_out,
                          int seq, int hidden);
 
+// NVFP4 dense GEMM: y[t][n] = sum_k x[t*K+k] * dequant(packed[n*K+k], scales, gs).
+// x: [seq, K] FP16; packed: [N*K/2] nibble-packed E2M1 (row-major [N, K]);
+// scales: [N*K/16] E8M0 per-16 block floats; gs: global scale. y: [seq, N] FP16
+// (FP32 accumulate). Dispatches to a shared-memory tile kernel for N>=8 && K>=16,
+// else a per-element kernel for tiny shapes. Numeric contract: FP32 accumulate,
+// k-order free.
+cudaError_t RunQwenNvfp4Gemm(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    __half *y, int seq, int K, int N);
+
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate
 // -> o_proj. All buffers caller-provided (see RunQwenGeneration arena layout).

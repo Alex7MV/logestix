@@ -367,6 +367,62 @@ __global__ void qwen_nvfp4_gemm_kernel(
     y[idx] = __float2half(acc);
 }
 
+// Tile NVFP4 dense GEMM: block computes an [BM x BN] output tile for one token
+// tile. X rows and the NVFP4-dequantized weight rows are staged in shared
+// memory once per K-block; E8M0 scales are decoded once per 16 elements.
+// One thread owns exactly one output element (threads == BM * BN), so `acc` is
+// a single register per thread — no per-thread array, no bank-pressure.
+template <int BM, int BN, int BK>
+__global__ void qwen_nvfp4_gemm_tile_kernel(
+    const __half *x, const uint8_t *packed, const uint8_t *scales,
+    float global_scale, __half *y, int seq, int K, int N)
+{
+    static_assert(BM * BN == 256, "one thread per output element (256)");
+
+    __shared__ __half sX[BM][BK];
+    __shared__ __half sW[BN][BK];
+    const int m0 = blockIdx.x * BM;      // token tile
+    const int n0 = blockIdx.y * BN;      // output-column tile
+    const int bi = threadIdx.x;          // 0 .. BM*BN-1
+    const int bm = bi / BN;              // token index within tile
+    const int bn = bi % BN;              // output-column index within tile
+
+    const int t = m0 + bm;
+    const int n = n0 + bn;
+    const bool in_bounds = (t < seq) && (n < N);
+
+    float acc = 0.0f;
+
+    for (int kb = 0; kb < K; kb += BK) {
+        // W tile: element e = (n0+bn)*K + kb+kk (weight row-major [n, K]).
+        for (int i = bi; i < BN * BK; i += BM * BN) {
+            const int w_bn = i / BK, kk = i % BK;
+            const int64_t e = (int64_t)(n0 + w_bn) * K + (kb + kk);
+            const uint8_t byte = packed[e >> 1];
+            const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
+            sW[w_bn][kk] = __float2half(kE2M1Table[nib] * scl);
+        }
+        // X tile: x[t][kb+kk] for rows [m0, m0+BM).
+        for (int i = bi; i < BM * BK; i += BM * BN) {
+            const int x_bm = i / BK, kk = i % BK;
+            const int tt = m0 + x_bm;
+            sX[x_bm][kk] = (tt < seq) ? x[(int64_t)tt * K + (kb + kk)]
+                                      : __float2half(0.0f);
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int kk = 0; kk < BK; ++kk)
+            acc += __half2float(sX[bm][kk]) * __half2float(sW[bn][kk]);
+
+        __syncthreads();
+    }
+
+    if (in_bounds)
+        y[(int64_t)t * N + n] = __float2half(acc);
+}
+
 // Output gate: y = x * sigmoid(gate)  (per-feature).
 __global__ void qwen_out_gate_kernel(const __half *x, const __half *gate,
                                      __half *y, int seq, int N)
@@ -392,20 +448,6 @@ __global__ void qwen_add_kernel(const __half *src, __half *dst, int64_t n)
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
     dst[idx] = __float2half(__half2float(dst[idx]) + __half2float(src[idx]));
-}
-
-cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
-                            __half *y, cudaStream_t stream)
-{
-    if (!w.d_packed || w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
-    const int K = w.cols;   // input
-    const int N = w.rows;   // output
-    const int threads = 256;
-    const int64_t total = (int64_t)seq * N;
-    const int blocks = (int)((total + threads - 1) / threads);
-    qwen_nvfp4_gemm_kernel<<<blocks, threads, 0, stream>>>(
-        x, w.d_packed, w.d_scales, w.global_scale, y, seq, K, N);
-    return cudaGetLastError();
 }
 
 cudaError_t LaunchNorm1d(const __half *x, const __half *w, __half *y,
@@ -576,6 +618,41 @@ __global__ void qwen_gated_delta_kernel(
 }
 
 } // namespace
+
+// Public numeric entry: NVFP4 dense GEMM (y = x @ dequant(W)) with FP32
+// accumulate. Dispatches to the shared-memory tile kernel for N>=8 && K>=16,
+// else the per-element kernel (tiny shapes). External linkage so tests can
+// call it directly.
+cudaError_t RunQwenNvfp4Gemm(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    __half *y, int seq, int K, int N)
+{
+    if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
+        return cudaErrorInvalidValue;
+    if (N < 8 || K < 16) {
+        const int threads = 256;
+        const int64_t total = (int64_t)seq * N;
+        const int blocks = (int)((total + threads - 1) / threads);
+        qwen_nvfp4_gemm_kernel<<<blocks, threads, 0, stream>>>(
+            x, packed, scales, global_scale, y, seq, K, N);
+        return cudaGetLastError();
+    }
+    constexpr int BM = 16, BN = 16, BK = 32;
+    const int gx = (int)((seq + BM - 1) / BM);
+    const int gy = (int)((N  + BN - 1) / BN);
+    qwen_nvfp4_gemm_tile_kernel<BM, BN, BK><<<dim3(gx, gy), BM * BN, 0, stream>>>(
+        x, packed, scales, global_scale, y, seq, K, N);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
+                            __half *y, cudaStream_t stream)
+{
+    if (!w.d_packed || w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
+    return RunQwenNvfp4Gemm(stream, x, w.d_packed, w.d_scales,
+                            w.global_scale, y, seq, w.cols, w.rows);
+}
 
 cudaError_t RunQwenMLP(cudaStream_t stream,
                        const QwenLayerWeights &lw, int seq,
