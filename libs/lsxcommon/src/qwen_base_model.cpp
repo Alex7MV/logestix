@@ -111,7 +111,13 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
                            ? (r.num_tokens / (gen.total_ms / 1000.0))
                            : 0.0;
     r.eos_terminated = gen.eos_terminated;
-    r.kv_slots_used = r.num_tokens + static_cast<int>(req.input_ids.size());
+    // Occupancy (spec item 15): the incremental cache holds prompt + generated
+    // rows once the pending last-token row is counted (kv_rows + 1). The
+    // fallback (non-incremental) mirrors the same prompt + gen semantic.
+    r.kv_slots_used =
+        (kv_ && kv_->allocated())
+            ? kv_->kv_rows + 1
+            : r.num_tokens + static_cast<int>(req.input_ids.size());
     r.weight_resident_bytes = gen.resident_bytes;
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);

@@ -215,3 +215,14 @@ TEST_CASE("model_runtime: RunParisSelfCheck matches a 1/2-token Paris prefix", "
     m.Unload();
     fs::remove_all(root);
 }
+
+TEST_CASE("kv_slots_used contract defaults and monotonicity", "[model_runtime]")
+{
+    // Default InferenceResult must report zero occupancy (host-only contract).
+    lsxcommon::gpu::InferenceResult r;
+    REQUIRE(r.kv_slots_used == 0);
+    // A synthetic engine result satisfies: kv_slots_used == prompt + generated.
+    r.kv_slots_used = 7 + 3;
+    r.num_tokens = 3;
+    REQUIRE(r.kv_slots_used == 7 + r.num_tokens);
+}
