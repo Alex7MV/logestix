@@ -63,6 +63,7 @@ enable_language(CUDA)
 # on their default FMA contraction (their numeric contracts do not depend on
 # -fmad=false and their performance must not regress).
 set(LSXCOMMON_CU_INCLUDES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CUDA_INCLUDE_DIR}"
