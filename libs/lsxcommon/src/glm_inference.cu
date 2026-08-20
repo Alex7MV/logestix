@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "glm_device_math.h"
+#include "glm_expert_kernels.cuh"
 
 namespace lsxcommon {
 namespace glm {
@@ -24,39 +25,8 @@ using device::GlmRsqrtfGlibc;
 constexpr float kGlmSwigluLimit = 10.0f;
 constexpr int kGlmRmsBlock = 256;
 
-// RMSNorm over a [rows, dim] FP16 matrix, one block per row. Bit-exact mirror
-// of the host RmsNormFP32 reference: a SINGLE sequential fp32 scan over
-// 0..dim-1 accumulates the square sum, and the output scale is
-// GlmRsqrtfGlibc(acc/dim + eps) (= glibc rsqrtf = 1.0f/sqrtf) — no strided
-// partials / butterfly reduction. The
-// accumulation must stay a plain (non-FMA-contracted) mul+add sequence, which
-// the target build enforces via -fmad=false (the host baseline, compiled at
-// -O0 without FMA ISA, cannot contract either).
-__global__ void GlmRmsNormKernel(const __half *__restrict__ x,
-                                 const __half *__restrict__ w,
-                                 __half *__restrict__ y,
-                                 int dim, float eps)
-{
-    constexpr int kBlock = 256;
-    const int row = blockIdx.x;
-    const int tid = threadIdx.x;
-    __shared__ float s_rms;
-    if (tid == 0) {
-        const __half *xr = x + row * dim;
-        float acc = 0.0f;
-        for (int i = 0; i < dim; ++i) {
-            const float v = __half2float(xr[i]);
-            acc += v * v;
-        }
-        s_rms = GlmRsqrtfGlibc(acc / static_cast<float>(dim) + eps);
-    }
-    __syncthreads();
-    const float rinv = s_rms;
-    for (int i = tid; i < dim; i += kBlock) {
-        float v = __half2float(x[row * dim + i]);
-        y[row * dim + i] = __float2half(v * rinv * __half2float(w[i]));
-    }
-}
+// GlmRmsNormKernel / GlmGemmFp64Kernel / GlmRealSwigluKernel: single textual
+// source in glm_expert_kernels.cuh (bit-exact, -fmad=false), included above.
 
 __global__ void GlmSwigluClampKernel(__half *__restrict__ gate,
                                      const __half *__restrict__ up,
@@ -87,28 +57,7 @@ __global__ void GlmAddResidualKernel(__half *__restrict__ dst,
 // (which accumulates in FP64 and rounds once to FP16 via (float) then
 // __float2half_rn). w is row-major [m, k]; x row-major [k, n]; the FP16 out
 // is column-major [m, n] (out[i + t*m]), identical to the cuBLAS output
-// layout the code previously produced. The accumulation must stay a plain
-// (non-FMA-contracted) double mul+add sequence: nvcc's default -fmad=true
-// would emit DFMA, which the -O0 host baseline cannot.
-__global__ void GlmGemmFp64Kernel(const __half *__restrict__ w,
-                                  const __half *__restrict__ x,
-                                  __half *__restrict__ out,
-                                  int m, int k, int n)
-{
-    const int64_t total = static_cast<int64_t>(m) * n;
-    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-                        threadIdx.x;
-    if (idx >= total) return;
-    const int t = static_cast<int>(idx / m);
-    const int i = static_cast<int>(idx - static_cast<int64_t>(t) * m);
-    const __half *wr = w + static_cast<int64_t>(i) * k;
-    const __half *xr = x + static_cast<int64_t>(t) * k;
-    double acc = 0.0;
-    for (int q = 0; q < k; ++q)
-        acc += static_cast<double>(__half2float(wr[q])) *
-               static_cast<double>(__half2float(xr[q]));
-    out[idx] = __float2half(static_cast<float>(acc));
-}
+// GlmGemmFp64Kernel: single textual source in glm_expert_kernels.cuh.
 
 cudaError_t RunGemmFp64(cudaStream_t stream, const __half *w, const __half *x,
                         __half *out, int m, int k, int n)
@@ -932,17 +881,7 @@ __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
     out[h * kGlmHeadV + threadIdx.x] = __float2half(acc);
 }
 
-// Silu SwiGLU (dense MLP): gate = silu(gate)·up, no clamp (matches the real
-// GlmMoeDsaMLP, unlike the frozen GlmSwigluClampKernel approximation).
-__global__ void GlmRealSwigluKernel(__half *__restrict__ gate,
-                                    const __half *__restrict__ up, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    const float g = __half2float(gate[i]);
-    const float u = __half2float(up[i]);
-    gate[i] = __float2half((g / (1.0f + GlmExpfGlibc(-g))) * u);
-}
+// GlmRealSwigluKernel: single textual source in glm_expert_kernels.cuh.
 
 // Per-token scratch + persistent per-layer expanded K/V caches of the real
 // GLM-5.2 generation pass. One contiguous device allocation + one pinned host

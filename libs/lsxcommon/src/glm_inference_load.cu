@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "glm_device_math.h"
+#include "glm_expert_kernels.cuh"
 #include "lsxcommon/log.h"
 
 namespace lsxcommon {
@@ -81,18 +82,9 @@ __global__ void GlmDequantNvfp4Kernel(
     }
 }
 
-// SwiGLU projection epilogue: w1(gate) branch through SiLU, w3(up) branch as
-// the plain multiplier (GLM-5.2, no clamp). FP32 math, FP16 in/out.
-__global__ void GlmSwigluKernel(__half *__restrict__ gate,
-                                const __half *__restrict__ up, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float g = __half2float(gate[i]);
-    float u = __half2float(up[i]);
-    float s = g / (1.0f + GlmExpfGlibc(-g));
-    gate[i] = __float2half(s * u);
-}
+// SwiGLU / RMSNorm / FP64-GEMM kernels: single textual source in
+// glm_expert_kernels.cuh (-fmad=false). MoE router launches bind to them
+// below (GlmRealSwigluKernel / GlmRmsNormKernel / GlmGemmFp64Kernel).
 
 // Expert W2 epilogue: out[t][h] += coeff * tmp[h]. FP32 accumulate, FP16 out.
 __global__ void GlmExpertAccumKernel(__half *__restrict__ out,
@@ -104,40 +96,8 @@ __global__ void GlmExpertAccumKernel(__half *__restrict__ out,
     out[i] = __float2half(__half2float(out[i]) + coeff * __half2float(tmp[i]));
 }
 
-// RMSNorm over a [rows, dim] FP16 matrix, one block per row. Bit-exact mirror
-// of the host RmsNormFP32 reference: SINGLE sequential fp32 scan over
-// 0..dim-1 for the square sum, GlmRsqrtfGlibc(acc/dim + eps) output scale.
-// Matches
-// GlmRmsNormKernel in glm_inference.cu; both rely on the -fmad=false target
-// flag to keep the accumulation non-contracted (the -O0 host baseline cannot
-// FMA either).
-__global__ void GlmMoERmsNormKernel(const __half *__restrict__ x,
-                                    const __half *__restrict__ w,
-                                    __half *__restrict__ y,
-                                    int rows, int dim, float eps)
-{
-    constexpr int kBlock = kGlmRmsBlock;
-    const int row = blockIdx.x;
-    const int tid = threadIdx.x;
-    __shared__ float s_rms;
-    if (tid == 0) {
-        const __half *xr = x + row * dim;
-        float acc = 0.0f;
-        for (int i = 0; i < dim; ++i) {
-            const float v = __half2float(xr[i]);
-            acc += v * v;
-        }
-        s_rms = GlmRsqrtfGlibc(acc / static_cast<float>(dim) + eps);
-    }
-    __syncthreads();
-    const float rinv = s_rms;
-    const __half *xr = x + row * dim;
-    __half *yr = y + row * dim;
-    for (int i = tid; i < dim; i += kBlock) {
-        float v = __half2float(xr[i]);
-        yr[i] = __float2half(v * rinv * __half2float(w[i]));
-    }
-}
+// GlmRmsNormKernel (canonical, in glm_expert_kernels.cuh) already provides the
+// [rows, dim] one-block-per-row RMSNorm for the MoE router launches below.
 
 // Router logits: logit[t][e] = (float)Σ_q F(gate[e][q])·F(normed[t][q]) in
 // FP64 over ascending q — bit-exact mirror of CpuRouter. gate row-major
@@ -216,29 +176,8 @@ __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
     }
 }
 
-// FP64-accumulate FP16 GEMM (same contract as GlmGemmFp64Kernel in
-// glm_inference.cu): out[t][i] = H((float)Σ_q F(w[i][q])·F(x[t][q])), plain
-// non-contracted double accumulation, w row-major [m, k], x row-major [k, n],
-// out column-major [m, n].
-__global__ void GlmGemmFp64Kernel(const __half *__restrict__ w,
-                                  const __half *__restrict__ x,
-                                  __half *__restrict__ out,
-                                  int m, int k, int n)
-{
-    const int64_t total = static_cast<int64_t>(m) * n;
-    const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-                        threadIdx.x;
-    if (idx >= total) return;
-    const int t = static_cast<int>(idx / m);
-    const int i = static_cast<int>(idx - static_cast<int64_t>(t) * m);
-    const __half *wr = w + static_cast<int64_t>(i) * k;
-    const __half *xr = x + static_cast<int64_t>(t) * k;
-    double acc = 0.0;
-    for (int q = 0; q < k; ++q)
-        acc += static_cast<double>(__half2float(wr[q])) *
-               static_cast<double>(__half2float(xr[q]));
-    out[idx] = __float2half(static_cast<float>(acc));
-}
+// GlmGemmFp64Kernel: canonical definition in glm_expert_kernels.cuh
+// (bit-exact FP64-accum FP16 GEMM); IndexShare launches below bind to it.
 
 // ── IndexShare attention kernels (Cycle 5, layers 3-77) ─────────────────────
 // The central memory-mapped shared indexer mask arrays (state->q_key/key/
@@ -465,9 +404,9 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
         return cudaErrorInvalidValue;
 
     // 1. RMSNorm(raw activations) -> d_normed, rows=seq on the async stream.
-    GlmMoERmsNormKernel<<<seq, kGlmRmsBlock, 0, stream>>>(
-        d_hidden, lw.d_post_attn_norm, d_normed, seq, kGlmHidden,
-        kGlmRmsEps);
+    GlmRmsNormKernel<<<seq, kGlmRmsBlock, 0, stream>>>(
+    d_hidden, lw.d_post_attn_norm, d_normed, kGlmHidden,
+    kGlmRmsEps);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
 
@@ -552,9 +491,9 @@ cudaError_t RunGlmRealRouter(cublasHandle_t cublas_h, cudaStream_t stream,
         return cudaErrorInvalidValue;
 
     // 1. RMSNorm(raw activations) -> d_normed, rows=seq on the async stream.
-    GlmMoERmsNormKernel<<<seq, kGlmRmsBlock, 0, stream>>>(
-        d_hidden, lw.d_post_attn_norm, d_normed, seq, kGlmHidden,
-        kGlmRmsEps);
+    GlmRmsNormKernel<<<seq, kGlmRmsBlock, 0, stream>>>(
+    d_hidden, lw.d_post_attn_norm, d_normed, kGlmHidden,
+    kGlmRmsEps);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
 
@@ -650,7 +589,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
     }
 
     // swiglu: inter = silu(inter) * gate, in place (FP32 math)
-    GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
+    GlmRealSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
         d_inter, d_gate, kGlmMoeIntermediate);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -1217,7 +1156,7 @@ cudaError_t RunGlmMoESlices(
         if (e != cudaSuccess) break;
 
         // swiglu: inter = silu(inter) * gate
-        GlmSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
+        GlmRealSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
             d_inter, d_gate, kGlmMoeIntermediate);
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
