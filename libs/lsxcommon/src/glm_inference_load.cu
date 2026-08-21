@@ -57,17 +57,29 @@ __global__ void GlmDequantNvfp4Kernel(
                         static_cast<int64_t>(threadIdx.x)) * kGlmDequantPerThread;
     if (i0 >= n) return;
     if (i0 + kGlmDequantPerThread <= n) {
-        const uint8_t b0 = packed[i0 >> 1];
-        const uint8_t b1 = packed[(i0 >> 1) + 1];
+        // i0 is a multiple of 4 → the two packed bytes land on a 2-byte
+        // boundary (single ushort load) and the four output halves on an
+        // 8-byte boundary (single uint2 store). Element values and order are
+        // unchanged — bit-exact.
+        const unsigned short pair =
+            *reinterpret_cast<const unsigned short *>(packed + (i0 >> 1));
+        const uint8_t b0 = static_cast<uint8_t>(pair & 0xFFu);
+        const uint8_t b1 = static_cast<uint8_t>(pair >> 8);
         const uint8_t nib0 = b0 & 0x0Fu;
         const uint8_t nib1 = b0 >> 4;
         const uint8_t nib2 = b1 & 0x0Fu;
         const uint8_t nib3 = b1 >> 4;
         const float sc = E4M3ScaleToFloat(scales[i0 >> 4]) * global_modifier;
-        out[i0 + 0] = __float2half(kE2M1Table[nib0] * sc);
-        out[i0 + 1] = __float2half(kE2M1Table[nib1] * sc);
-        out[i0 + 2] = __float2half(kE2M1Table[nib2] * sc);
-        out[i0 + 3] = __float2half(kE2M1Table[nib3] * sc);
+        uint2 ov;
+        const __half h0 = __float2half(kE2M1Table[nib0] * sc);
+        const __half h1 = __float2half(kE2M1Table[nib1] * sc);
+        const __half h2 = __float2half(kE2M1Table[nib2] * sc);
+        const __half h3 = __float2half(kE2M1Table[nib3] * sc);
+        ov.x = static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h0)) |
+               (static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h1)) << 16);
+        ov.y = static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h2)) |
+               (static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h3)) << 16);
+        *reinterpret_cast<uint2 *>(out + i0) = ov;
         return;
     }
     for (int64_t i = i0; i < n; ++i) {
@@ -135,9 +147,11 @@ __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
                                  GlmRoutedSlot *__restrict__ d_routing,
                                  int seq)
 {
-    const int t = blockIdx.x;
+    // Thread-per-token: the per-token selection loop is unchanged (bit-exact
+    // sequential order), but prefill now uses seq threads in one wave instead
+    // of seq nearly-empty single-thread blocks.
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= seq) return;
-    if (threadIdx.x != 0) return;
 
     const float *lm = d_logits + static_cast<size_t>(t) * kGlmNumRouted;
 
@@ -431,7 +445,7 @@ cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
     if (e != cudaSuccess) return e;
 
     // 3. Per-token sequential softmax + top_k selection (host-order mirror).
-    GlmMoETopkKernel<<<seq, 1, 0, stream>>>(
+    GlmMoETopkKernel<<<(seq + kGlmRmsBlock - 1) / kGlmRmsBlock, kGlmRmsBlock, 0, stream>>>(
         d_logits, d_gate_bias, d_routing, seq);
     return cudaGetLastError();
 }
@@ -449,9 +463,9 @@ __global__ void GlmRealTopkKernel(const float *__restrict__ d_logits,
                                   GlmRoutedSlot *__restrict__ d_routing,
                                   int seq)
 {
-    const int t = blockIdx.x;
+    // Thread-per-token (see GlmMoETopkKernel): identical per-token order.
+    const int t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= seq) return;
-    if (threadIdx.x != 0) return;
 
     const float *lm = d_logits + static_cast<size_t>(t) * kGlmNumRouted;
 
@@ -526,7 +540,7 @@ cudaError_t RunGlmRealRouter(cublasHandle_t cublas_h, cudaStream_t stream,
     if (e != cudaSuccess) return e;
 
     // 3. Per-token sigmoid selection + norm_topk + scaling.
-    GlmRealTopkKernel<<<seq, 1, 0, stream>>>(
+    GlmRealTopkKernel<<<(seq + kGlmRmsBlock - 1) / kGlmRmsBlock, kGlmRmsBlock, 0, stream>>>(
         d_logits, d_gate_bias, d_routing, seq);
     return cudaGetLastError();
 }

@@ -8,6 +8,7 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/deepseek_inference_csa.h"
 #include "lsxcommon/deepseek_norm_kernels.h"
+#include "lsxcommon/shared_experts.h"
 #include "lsxcommon/log.h"
 #include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
@@ -150,59 +151,87 @@ __global__ void dequant_f8_to_half_kernel(
 // ── HC pre: mixes → sinkhorn → y = Σ pre[j]·x[j] ─────────────────────────────
 // x: [hc_mult·dim] FP32 (HC state in float for precision);
 // writes y [dim] FP16, post [hc_mult], comb [hc_mult·hc_mult] FP32.
-__global__ void hc_pre_kernel(
+//
+// Blackwell perf: the old single-block (<<<1,256>>>) version kept ~147 of
+// ~148 SMs idle while streaming hc_fn [24×16384] three times per launch.
+// Split into two deterministic phases:
+//   Phase A (GPU-wide): grid ((M+1), kHcTiles) — each block reduces one tile
+//     of one mix row (or the Σx² row) to a single partial float.
+//   Phase B (single block): reduce partials in fixed ascending-tile order,
+//     sinkhorn (thread-0 serial, unchanged math), write post/comb/pre.
+//   Phase C: y epilogue over D elements across many blocks.
+// Every reduction order is fixed → run-to-run deterministic.
+namespace {
+
+constexpr int kHcPartThreads = 256;
+constexpr int kHcTiles = 32;   // tiles per row; partials = (M+1)*kHcTiles floats
+
+__global__ void __launch_bounds__(kHcPartThreads)
+hc_mix_partials_kernel(
     const float* __restrict__ x,
     const float* __restrict__ hc_fn,
+    int M, int N, int tiles_per_row,
+    float* __restrict__ partials)      // [(M+1) * tiles_per_row]
+{
+    const int m = blockIdx.x;          // 0..M-1 rows; M = Σx² row
+    const int b = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int tile = (N + tiles_per_row - 1) / tiles_per_row;
+    const int begin = b * tile;
+    const int end = min(begin + tile, N);
+
+    float acc = 0.0f;
+    if (m < M) {
+        const float* row = hc_fn + static_cast<int64_t>(m) * N;
+        for (int i = begin + tid; i < end; i += blockDim.x)
+            acc += row[i] * x[i];
+    } else {
+        for (int i = begin + tid; i < end; i += blockDim.x) {
+            const float v = x[i];
+            acc += v * v;
+        }
+    }
+    __shared__ float s_warp[kHcPartThreads / 32];
+    const float total = lsx_block_reduce_sum(acc, s_warp);
+    if (tid == 0) partials[m * tiles_per_row + b] = total;
+}
+
+// Reduce partials (fixed ascending order), apply rsqrt + scale/base, and run
+// the thread-0 sinkhorn exactly as before. M == kHcMix, H == kHcMult.
+__global__ void __launch_bounds__(256)
+hc_pre_finalize_kernel(
+    const float* __restrict__ partials,
     const float* __restrict__ hc_scale,
     const float* __restrict__ hc_base,
-    __half* __restrict__ y,
+    int M, int H, int N, int tiles_per_row,
     float* __restrict__ post,
     float* __restrict__ comb,
     float* __restrict__ pre)
 {
-    constexpr int N = kHcDim;         // 16384
-    constexpr int M = kHcMix;         // 24
-    constexpr int H = kHcMult;        // 4
-    constexpr int D = kHiddenDim;     // 4096
-    constexpr int kThreads = 256;
-    __shared__ float s_reduce[kThreads];
-    __shared__ float s_mixes[M];
-    __shared__ float s_pre[H], s_post[H], s_comb[H * H];
-
+    constexpr int D = kHiddenDim;
+    __shared__ float s_red[32];
+    __shared__ float s_mixes[64];
     const int tid = threadIdx.x;
 
     // rsqrt = rsqrt(mean(x^2) + eps)
-    float sum_sq = 0.0f;
-    for (int i = tid; i < N; i += kThreads) {
-        float v = x[i];
-        sum_sq += v * v;
-    }
-    s_reduce[tid] = sum_sq;
-    __syncthreads();
-    for (int s = kThreads / 2; s > 0; s >>= 1) {
-        if (tid < s) s_reduce[tid] += s_reduce[tid + s];
-        __syncthreads();
-    }
-    float rsqrt = rsqrtf(s_reduce[0] / static_cast<float>(N) + kRmsEps);
+    float ssq = 0.0f;
+    for (int b = tid; b < tiles_per_row; b += blockDim.x)
+        ssq += partials[M * tiles_per_row + b];
+    const float ssq_tot = lsx_block_reduce_sum(ssq, s_red);
+    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + kRmsEps);
 
-    // mixes[m] = (hc_fn[m] · x) * rsqrt
-    for (int m = 0; m < M; ++m) {
+    // mixes[m] = (Σ_b partials[m][b]) * rsqrt — ascending-b order per row
+    if (tid < M) {
         float acc = 0.0f;
-        const float* row = hc_fn + m * N;
-        for (int i = tid; i < N; i += kThreads)
-            acc += row[i] * x[i];
-        s_reduce[tid] = acc;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_reduce[tid] += s_reduce[tid + s];
-            __syncthreads();
-        }
-        if (tid == 0) s_mixes[m] = s_reduce[0] * rsqrt;
-        __syncthreads();
+        const float* pr = partials + tid * tiles_per_row;
+        for (int b = 0; b < tiles_per_row; ++b) acc += pr[b];
+        s_mixes[tid] = acc * rsqrt_v;
     }
+    __syncthreads();
 
-    // sinkhorn (hc_split_sinkhorn_kernel)
+    // sinkhorn (hc_split_sinkhorn_kernel) — thread-0 serial, unchanged
     if (tid == 0) {
+        float s_pre[8], s_post[8], s_comb[16];
         for (int j = 0; j < H; ++j)
             s_pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + kRmsEps;
         for (int j = 0; j < H; ++j)
@@ -246,16 +275,25 @@ __global__ void hc_pre_kernel(
         for (int j = 0; j < H; ++j) pre[j] = s_pre[j];
         for (int j = 0; j < H * H; ++j) comb[j] = s_comb[j];
     }
-    __syncthreads();
-
-    // y[d] = Σ_j pre[j] * x[j·D + d]
-    for (int i = tid; i < D; i += kThreads) {
-        float acc = 0.0f;
-        for (int j = 0; j < H; ++j)
-            acc += s_pre[j] * x[j * D + i];
-        y[i] = __float2half(acc);
-    }
 }
+
+// y[d] = Σ_j pre[j] * x[j·D + d]
+__global__ void hc_combine_kernel(
+    const float* __restrict__ x,
+    const float* __restrict__ pre,
+    __half* __restrict__ y)
+{
+    constexpr int D = kHiddenDim;
+    constexpr int H = kHcMult;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= D) return;
+    float acc = 0.0f;
+    for (int j = 0; j < H; ++j)
+        acc += pre[j] * x[j * D + i];
+    y[i] = __float2half(acc);
+}
+
+} // anonymous namespace
 
 // ── HC post: y[j] = post[j]·x + Σ_k comb[j,k]·residual[k] ────────────────────
 // x is now FP32 (module output stays in FP32 — no FP16 conversion)
@@ -280,59 +318,66 @@ __global__ void hc_post_kernel(
 }
 
 // ── HC head: y = Σ_j sigmoid(mixes[j]·scale + base + eps)·x[j] ───────────────
-__global__ void hc_head_kernel(
-    const float* __restrict__ x,          // [hc_mult·dim] FP32
-    const float* __restrict__ hc_fn,       // [hc_mult, hc_mult·dim] FP32
-    const float* __restrict__ hc_scale,    // [1]
-    const float* __restrict__ hc_base,     // [hc_mult]
-    __half* __restrict__ y)                // [dim] FP16
+// Two-phase variant of hc_pre (M = H = kHcMult rows, no sinkhorn/post/comb).
+// pre[] is staged through the scratch tail so the combine kernel can read it.
+__global__ void __launch_bounds__(kHcPartThreads)
+hc_head_partials_kernel(
+    const float* __restrict__ x,
+    const float* __restrict__ hc_fn,
+    int M, int N, int tiles_per_row,
+    float* __restrict__ partials)      // [(M+1) * tiles_per_row]
 {
-    constexpr int N = kHcDim;
-    constexpr int H = kHcMult;
-    constexpr int D = kHiddenDim;
-    constexpr int kThreads = 256;
-    __shared__ float s_reduce[kThreads];
-    __shared__ float s_mixes[H];
-    __shared__ float s_pre[H];
+    const int m = blockIdx.x;
+    const int b = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int tile = (N + tiles_per_row - 1) / tiles_per_row;
+    const int begin = b * tile;
+    const int end = min(begin + tile, N);
+
+    float acc = 0.0f;
+    if (m < M) {
+        const float* row = hc_fn + static_cast<int64_t>(m) * N;
+        for (int i = begin + tid; i < end; i += blockDim.x)
+            acc += row[i] * x[i];
+    } else {
+        for (int i = begin + tid; i < end; i += blockDim.x) {
+            const float v = x[i];
+            acc += v * v;
+        }
+    }
+    __shared__ float s_warp[kHcPartThreads / 32];
+    const float total = lsx_block_reduce_sum(acc, s_warp);
+    if (tid == 0) partials[m * tiles_per_row + b] = total;
+}
+
+__global__ void __launch_bounds__(256)
+hc_head_finalize_kernel(
+    const float* __restrict__ partials,
+    const float* __restrict__ hc_scale,
+    const float* __restrict__ hc_base,
+    int M, int H, int N, int tiles_per_row,
+    float* __restrict__ pre)           // [H]
+{
+    __shared__ float s_red[32];
+    __shared__ float s_mixes[64];
     const int tid = threadIdx.x;
 
-    float sum_sq = 0.0f;
-    for (int i = tid; i < N; i += kThreads) {
-        float v = x[i];
-        sum_sq += v * v;
-    }
-    s_reduce[tid] = sum_sq;
-    __syncthreads();
-    for (int s = kThreads / 2; s > 0; s >>= 1) {
-        if (tid < s) s_reduce[tid] += s_reduce[tid + s];
-        __syncthreads();
-    }
-    float rsqrt = rsqrtf(s_reduce[0] / static_cast<float>(N) + kRmsEps);
+    float ssq = 0.0f;
+    for (int b = tid; b < tiles_per_row; b += blockDim.x)
+        ssq += partials[M * tiles_per_row + b];
+    const float ssq_tot = lsx_block_reduce_sum(ssq, s_red);
+    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + kRmsEps);
 
-    for (int m = 0; m < H; ++m) {
+    if (tid < M) {
         float acc = 0.0f;
-        const float* row = hc_fn + m * N;
-        for (int i = tid; i < N; i += kThreads)
-            acc += row[i] * x[i];
-        s_reduce[tid] = acc;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_reduce[tid] += s_reduce[tid + s];
-            __syncthreads();
-        }
-        if (tid == 0) s_mixes[m] = s_reduce[0] * rsqrt;
-        __syncthreads();
+        const float* pr = partials + tid * tiles_per_row;
+        for (int b = 0; b < tiles_per_row; ++b) acc += pr[b];
+        s_mixes[tid] = acc * rsqrt_v;
     }
+    __syncthreads();
     if (tid == 0) {
         for (int j = 0; j < H; ++j)
-            s_pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + kRmsEps;
-    }
-    __syncthreads();
-    for (int i = tid; i < D; i += kThreads) {
-        float acc = 0.0f;
-        for (int j = 0; j < H; ++j)
-            acc += s_pre[j] * x[j * D + i];
-        y[i] = __float2half(acc);
+            pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + kRmsEps;
     }
 }
 
@@ -396,10 +441,11 @@ __global__ void rope_apply_kernel(
 }
 
 // ── Per-head RMS norm on q (like q *= rsqrt(mean(q^2) + eps)) ────────────────
-__global__ void per_head_rms_kernel(__half* __restrict__ q, int n_heads, int head_dim)
+__global__ void __launch_bounds__(128)
+per_head_rms_kernel(__half* __restrict__ q, int n_heads, int head_dim)
 {
     constexpr int kThreads = 128;
-    __shared__ float s_reduce[kThreads];
+    __shared__ float s_red[32];
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
     __half* row = q + h * head_dim;
@@ -409,13 +455,8 @@ __global__ void per_head_rms_kernel(__half* __restrict__ q, int n_heads, int hea
         float v = __half2float(row[d]);
         sum_sq += v * v;
     }
-    s_reduce[tid] = sum_sq;
-    __syncthreads();
-    for (int s = kThreads / 2; s > 0; s >>= 1) {
-        if (tid < s) s_reduce[tid] += s_reduce[tid + s];
-        __syncthreads();
-    }
-    const float r = rsqrtf(s_reduce[0] / static_cast<float>(head_dim) + kRmsEps);
+    const float total = lsx_block_reduce_sum(sum_sq, s_red);
+    const float r = rsqrtf(total / static_cast<float>(head_dim) + kRmsEps);
     for (int d = tid; d < head_dim; d += kThreads)
         row[d] = __float2half(__half2float(row[d]) * r);
 }
@@ -437,88 +478,74 @@ __global__ void expand_hc_kernel(const __half* __restrict__ src,
 // q: [n_heads, head_dim] FP16; kv_cache: [window, head_dim] FP16;
 // sink: [n_heads] FP32; o: [n_heads, head_dim] FP16.
 // slot order (decode): newest-first circular window; causal (start_pos excludes future).
-__global__ void mla_attn_kernel(
+//
+// Blackwell perf vs the original double-pass version:
+//   • QK scores are computed ONCE and cached in dynamic shared memory — the
+//     second pass no longer recomputes every dot product (2× less QK work).
+//   • Reductions use warp shuffles (2 barriers per slot instead of ~8) via
+//     lsx_block_reduce_sum — the old tree walk issued ~2000 __syncthreads()
+//     per head per token.
+//   • 256-thread blocks (8 warps) double per-SM warp occupancy.
+__global__ void __launch_bounds__(256)
+mla_attn_kernel(
     const __half* __restrict__ q,
     const __half* __restrict__ kv_cache,
     const float* __restrict__ sink,
     __half* __restrict__ o,
     int start_pos, int window, float scale)
 {
-    constexpr int kThreads = 128;
+    constexpr int kThreads = 256;
+    constexpr int kHD = kHeadDim;      // 512
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
-    const __half* qrow = q + h * kHeadDim;
-    __half* orow = o + h * kHeadDim;
+    const __half* qrow = q + h * kHD;
+    __half* orow = o + h * kHD;
 
     const int n_attend = min(start_pos + 1, window);
 
-    // First pass: scores → max (shared so all threads see it)
-    __shared__ float s_maxv;
-    if (tid == 0) s_maxv = -1e30f;
-    __syncthreads();
-    __shared__ float s_acc[kThreads];
+    extern __shared__ float s_smem[];
+    float* s_scores = s_smem;             // [n_attend] scaled QK scores
+    float* s_warp = s_scores + n_attend;  // [kThreads/32] reduction scratch
+
+    // Pass 1: scores (cached, scaled)
     for (int t = 0; t < n_attend; ++t) {
         const int slot = (start_pos - t + window) % window;
-        const __half* krow = kv_cache + slot * kHeadDim;
+        const __half* krow = kv_cache + slot * kHD;
         float acc = 0.0f;
-        for (int d = tid; d < kHeadDim; d += kThreads)
+        for (int d = tid; d < kHD; d += kThreads)
             acc += __half2float(qrow[d]) * __half2float(krow[d]);
-        s_acc[tid] = acc;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_acc[tid] += s_acc[tid + s];
-            __syncthreads();
-        }
-        if (tid == 0) s_maxv = fmaxf(s_maxv, s_acc[0] * scale);
-        __syncthreads();
-    }
-    const float maxv = s_maxv;
-
-    // Second pass: probs + output (denominator includes sink).
-    // Per-slot probabilities are cached so the denominator reuses them
-    // (ascending-t order preserved) instead of recomputing every score.
-    __shared__ float s_acc2[kThreads];
-    __shared__ float s_probs[kAttnWindow];
-    float acc_o[kHeadDim / kThreads];  // 512/128 = 4 slices per thread
-    for (int i = 0; i < kHeadDim / kThreads; ++i) acc_o[i] = 0.0f;
-
-    for (int t = 0; t < n_attend; ++t) {
-        const int slot = (start_pos - t + window) % window;
-        const __half* krow = kv_cache + slot * kHeadDim;
-        float acc = 0.0f;
-        for (int d = tid; d < kHeadDim; d += kThreads)
-            acc += __half2float(qrow[d]) * __half2float(krow[d]);
-        s_acc2[tid] = acc;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_acc2[tid] += s_acc2[tid + s];
-            __syncthreads();
-        }
-        if (tid == 0) {
-            const float p = expf(s_acc2[0] * scale - maxv);
-            s_acc2[0] = p;
-            if (t < kAttnWindow) s_probs[t] = p;
-        }
-        __syncthreads();
-        const float p = s_acc2[0];
-        // accumulate into thread-local slices
-        for (int d = tid; d < kHeadDim; d += kThreads) {
-            const int slice = d / kThreads;
-            acc_o[slice] += p * __half2float(krow[d]);
-        }
-    }
-    // final normalize: denom = Σ p over slots + exp(sink - maxv)
-    __shared__ float s_denom_final;
-    if (tid == 0) {
-        float d2 = expf(sink[h] - maxv);
-        const int n_cached = min(n_attend, kAttnWindow);
-        for (int t = 0; t < n_cached; ++t)
-            d2 += s_probs[t];
-        s_denom_final = 1.0f / d2;
+        const float tot = lsx_block_reduce_sum(acc, s_warp);
+        if (tid == 0) s_scores[t] = tot * scale;
     }
     __syncthreads();
-    const float inv_denom = s_denom_final;
-    for (int d = tid; d < kHeadDim; d += kThreads)
+
+    // Block max over cached scores + sink (fixed order → deterministic).
+    float mx = -1e30f;
+    for (int t = 0; t < n_attend; ++t) mx = fmaxf(mx, s_scores[t]);
+    mx = fmaxf(mx, sink[h]);
+    const float maxv = mx;
+
+    // Pass 2: probs + output accumulation from cached scores (no QK recompute).
+    float acc_o[kHD / kThreads];  // 2 slices per thread
+    for (int i = 0; i < kHD / kThreads; ++i) acc_o[i] = 0.0f;
+    float psum = 0.0f;
+    for (int t = 0; t < n_attend; ++t) {
+        const int slot = (start_pos - t + window) % window;
+        const __half* krow = kv_cache + slot * kHD;
+        const float p = expf(s_scores[t] - maxv);
+        psum += p;
+        for (int d = tid; d < kHD; d += kThreads)
+            acc_o[d / kThreads] += p * __half2float(krow[d]);
+    }
+    // final normalize: denom = Σ p over slots + exp(sink - maxv).
+    // p is uniform across the block (read from shared s_scores), so every
+    // thread's psum equals the full Σp — the block reduction yields
+    // blockDim.x · Σp and must be divided back down.
+    const float denom = lsx_block_reduce_sum(psum, s_warp)
+                            / static_cast<float>(kThreads)
+                        + expf(sink[h] - maxv);
+    const float inv_denom = 1.0f / denom;
+    for (int d = tid; d < kHD; d += kThreads)
         orow[d] = __float2half(acc_o[d / kThreads] * inv_denom);
 }
 
@@ -541,7 +568,8 @@ static cudaError_t gemm_f16_1d(cublasHandle_t cublas_h, cudaStream_t stream,
 }
 
 // Clamp FP32→FP16 kernel: prevents overflow when dequanted weights exceed FP16 range
-static __global__ void clamp_f32_to_f16_kernel(const float* src, __half* dst, int n)
+static __global__ void clamp_f32_to_f16_kernel(const float* __restrict__ src,
+                                                __half* __restrict__ dst, int n)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -550,78 +578,40 @@ static __global__ void clamp_f32_to_f16_kernel(const float* src, __half* dst, in
     dst[i] = __float2half(v);
 }
 
-// FP32 dequant kernel for F8_E4M3 × F8_E8M0
-static __global__ void dequant_f8_to_f32_kernel(
-    const uint8_t* __restrict__ w,
-    const uint8_t* __restrict__ scales,
-    float* __restrict__ out, int64_t n,
-    int64_t C, int64_t SC, int64_t block_r, int64_t block_c)
-{
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-    for (; i < n; i += stride) {
-        int64_t r = i / C;
-        int64_t c = i % C;
-        int64_t sr = r / block_r;
-        int64_t sc = c / block_c;
-        float sv = 0.0f;
-        uint8_t sb = scales[sr * SC + sc];
-        if (sb != 0) sv = __uint_as_float(static_cast<uint32_t>(sb) << 23);
-        uint8_t b = w[i];
-        out[i] = dev_f8e4m3_to_float(b) * sv;
-    }
-}
-
-// half_to_float_kernel / float_to_half_kernel come from
-// deepseek_inference_load.cuh (included above).
-
-// FP32×FP32→FP32 GEMM then convert → FP16 output
-static cudaError_t gemm_f32f32_f16(cublasHandle_t cublas_h, cudaStream_t stream,
-                                const float* d_w, int m, int k,
-                                const float* d_x, __half* d_out,
-                                float* d_out_f32)
-{
-    cublasSetStream(cublas_h, stream);
-    float alpha = 1.0f, beta = 0.0f;
-    cublasStatus_t st = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        m, 1, k, &alpha,
-        d_w, CUDA_R_32F, k,
-        d_x, CUDA_R_32F, k,
-        &beta, d_out_f32, CUDA_R_32F, m,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-    // Convert FP32 output → FP16 (with clamp to prevent overflow)
-    int block = 256;
-    int grid = (m + block - 1) / block;
-    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, m);
-    return cudaGetLastError();
-}
-
-// f8_gemm_1d: dequant F8→FP32, convert FP16 act→FP32, FP32×FP32→FP32→FP16
+// f8_gemm_1d: dequant F8_E4M3×E8M0 → FP16 (vectorized kernel from
+// shared_experts.cu), then a CUDA_R_16F tensor-core GEMM with FP32
+// accumulate/output and a clamped FP16 store. E4M3 × E8M0 products are
+// exactly representable in FP16 for in-range scales, so weight precision is
+// unchanged while the weight-materialization traffic halves and the GEMM
+// runs on the 5th-gen Tensor Cores instead of the FP32 CUDA-core path.
+// d_scratch needs (n halves + rows floats) — strictly less than the old
+// (n + cols + rows) floats footprint.
 static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
                               const uint8_t* d_w, const uint8_t* d_scale,
                               int rows, int cols,
                               const __half* d_x, __half* d_out,
                               float* d_scratch)
 {
-    int64_t n = static_cast<int64_t>(rows) * cols;
+    const int64_t n = static_cast<int64_t>(rows) * cols;
+    __half* d_w_half = reinterpret_cast<__half*>(d_scratch);
+    cudaError_t e = dequant_shared_f8_half(stream, d_w, n, d_scale, 0,
+                                           d_w_half, n, cols);
+    if (e != cudaSuccess) return e;
+    float* d_out_f32 = reinterpret_cast<float*>(d_w_half + n);
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+    cublasStatus_t st = cublasGemmEx(
+        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+        rows, 1, cols, &alpha,
+        d_w_half, CUDA_R_16F, cols,
+        d_x, CUDA_R_16F, cols,
+        &beta, d_out_f32, CUDA_R_32F, rows,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
     int block = 256;
-    int grid = static_cast<int>((n + block - 1) / block);
-    // Step 1: dequant F8 → FP32 weights
-    dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
-        d_w, d_scale, d_scratch, n, cols, cols / 128, 128, 128);
-    cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
-    // Step 2: convert FP16 activation → FP32 (after weights in scratch)
-    float* d_x_f32 = d_scratch + n;
-    int grid2 = (cols + block - 1) / block;
-    half_to_float_kernel<<<grid2, block, 0, stream>>>(d_x, d_x_f32, cols);
-    e = cudaGetLastError();
-    if (e != cudaSuccess) return e;
-    // Step 3: FP32×FP32→FP32 GEMM, output at d_x_f32 + cols (after activation)
-    float* d_out_f32 = d_x_f32 + cols;
-    return gemm_f32f32_f16(cublas_h, stream, d_scratch, rows, cols, d_x_f32, d_out, d_out_f32);
+    int grid = (rows + block - 1) / block;
+    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, rows);
+    return cudaGetLastError();
 }
 
 // ── RMSNorm bridge (half → float → rmsnorm_float → half) ─────────────────────
@@ -631,17 +621,12 @@ static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
 
 static cudaError_t run_rmsnorm_attn(
     cudaStream_t stream, const __half* d_input, const __half* d_weight,
-    __half* d_output, float* d_scratch, float* d_gamma_scratch, int dim, float eps)
+    __half* d_output, float* d_scratch, float* d_gamma_scratch,
+    int dim, float eps)
 {
-    int block = 256;
-    int grid = (dim + block - 1) / block;
-    half_to_float_kernel<<<grid, block, 0, stream>>>(d_input, d_scratch, dim);
-    half_to_float_kernel<<<grid, block, 0, stream>>>(d_weight, d_gamma_scratch, dim);
-    cudaError_t err = rmsnorm_float(stream, 1, dim, d_scratch,
-                                    d_gamma_scratch, eps, d_scratch);
-    if (err != cudaSuccess) return err;
-    // Clamp FP32→FP16 (prevent overflow from gamma multiplication)
-    clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_scratch, d_output, dim);
+    // Fused single-launch FP16 RMSNorm.
+    rmsnorm_half_fused_kernel<<<1, 256, 0, stream>>>(d_input, d_weight,
+                                                      d_output, dim, eps);
     return cudaGetLastError();
 }
 
@@ -655,10 +640,23 @@ cudaError_t run_hc_pre(cudaStream_t stream,
                        const float* d_base,            // [mix_hc]
                        __half* d_single,               // [dim] FP16
                        float* d_post, float* d_comb,   // [hc_mult], [hc_mult·hc_mult]
-                       float* d_pre)                   // [hc_mult]
+                       float* d_pre,                   // [hc_mult]
+                       float* d_scratch)               // ≥ (kHcMix+1)*kHcTiles floats
 {
-    hc_pre_kernel<<<1, 256, 0, stream>>>(d_state, d_fn, d_scale, d_base,
-                                         d_single, d_post, d_comb, d_pre);
+    constexpr int M = kHcMix;
+    constexpr int H = kHcMult;
+    dim3 grid(M + 1, kHcTiles);
+    hc_mix_partials_kernel<<<grid, kHcPartThreads, 0, stream>>>(
+        d_state, d_fn, M, kHcDim, kHcTiles, d_scratch);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_pre_finalize_kernel<<<1, 256, 0, stream>>>(
+        d_scratch, d_scale, d_base, M, H, kHcDim, kHcTiles,
+        d_post, d_comb, d_pre);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_combine_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+        d_state, d_pre, d_single);
     return cudaGetLastError();
 }
 
@@ -678,9 +676,23 @@ cudaError_t run_hc_head(cudaStream_t stream,
                         const float* d_fn,             // [hc_mult, hc_mult·dim]
                         const float* d_scale,          // [1]
                         const float* d_base,           // [hc_mult]
-                        __half* d_single)              // [dim] FP16
+                        __half* d_single,              // [dim] FP16
+                        float* d_scratch)              // ≥ (kHcMult+1)*kHcTiles + kHcMult floats
 {
-    hc_head_kernel<<<1, 256, 0, stream>>>(d_state, d_fn, d_scale, d_base, d_single);
+    constexpr int M = kHcMult;
+    constexpr int H = kHcMult;
+    float* const d_pre = d_scratch + (M + 1) * kHcTiles;
+    dim3 grid(M + 1, kHcTiles);
+    hc_head_partials_kernel<<<grid, kHcPartThreads, 0, stream>>>(
+        d_state, d_fn, M, kHcDim, kHcTiles, d_scratch);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_head_finalize_kernel<<<1, 256, 0, stream>>>(
+        d_scratch, d_scale, d_base, M, H, kHcDim, kHcTiles, d_pre);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_combine_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+        d_state, d_pre, d_single);
     return cudaGetLastError();
 }
 
@@ -694,12 +706,17 @@ cudaError_t run_expand_hc(cudaStream_t stream,
 // ── Public: MLA forward (one token) ──────────────────────────────────────────
 // O-projection shared by MLA and CSA attention (identical math in both:
 // o[kAttnHeads,kHeadDim] -> view [kOGroups, gd]; per-group wo_a dequant +
-// FP32 GEMM -> olora; then wo_b @ olora -> the final [kHiddenDim] output).
+// GEMM -> olora; then wo_b @ olora -> the final [kHiddenDim] output).
 // wo_a.weight [8192,4096] row-major, groups are contiguous 1024-row blocks.
 // Previously hand-copied into run_csa_attention with its cudaGetLastError()/
 // cublasStatus_t checks silently dropped (an "error handling desync" between
 // the two copies) — extracting one checked implementation fixes that for
 // both call sites.
+//
+// Blackwell perf: wo_a is dequanted ONCE to FP16 and all 8 group GEMMs run
+// as a single cublasGemmStridedBatchedEx (16F inputs, 32F accumulate) —
+// 3 launches instead of the old 24 (per-group dequant + convert + GEMM +
+// clamp × 8), with proper tensor-core GEMM shapes.
 static cudaError_t run_o_projection(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const LayerWeights &lw,
@@ -707,38 +724,30 @@ static cudaError_t run_o_projection(
     float *d_dequant)
 {
     int64_t n = static_cast<int64_t>(lw.wo_a_rows) * lw.wo_a_cols;
-    int block = 256;
-    int grid = static_cast<int>((n + block - 1) / block);
-    // Use FP32 dequant kernel via reinterpret_cast (data is same size in bytes)
-    dequant_f8_to_f32_kernel<<<grid, block, 0, stream>>>(
-        lw.d_wo_a, lw.d_wo_a_scales, d_dequant, n,
-        lw.wo_a_cols, lw.wo_a_cols / 128, 128, 128);
-    cudaError_t err = cudaGetLastError();
+    __half* d_w_half = reinterpret_cast<__half*>(d_dequant);
+    cudaError_t err = dequant_shared_f8_half(stream, lw.d_wo_a, n,
+        lw.d_wo_a_scales, 0, d_w_half, n, lw.wo_a_cols);
     if (err != cudaSuccess) return err;
 
-    // O-projection: FP32×FP32→FP32→FP16
+    // O-projection: 8 batched FP16 TC GEMMs ([1024×4096] × [4096] each) →
+    // FP32 olora scratch, then one clamped FP16 store.
     const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
+    float* d_olora_f32 = reinterpret_cast<float*>(d_w_half + n);
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
-    for (int g = 0; g < kOGroups; ++g) {
-        // Convert FP16 d_o → FP32 (after weights in scratch)
-        float* d_o_f32 = d_dequant + n;
-        int g2 = (gd + block - 1) / block;
-        half_to_float_kernel<<<g2, block, 0, stream>>>(d_o + g * gd, d_o_f32, gd);
-        err = cudaGetLastError();
-        if (err != cudaSuccess) return err;
-        // FP32×FP32→FP32 output, then convert → FP16
-        float* d_olora_f32 = d_o_f32 + gd;
-        cublasStatus_t st = cublasGemmEx(
-            cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-            kOloraRank, 1, gd, &alpha,
-            d_dequant + g * kOloraRank * gd, CUDA_R_32F, gd,
-            d_o_f32, CUDA_R_32F, gd,
-            &beta, d_olora_f32, CUDA_R_32F, kOloraRank,
-            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-        int g3 = (kOloraRank + block - 1) / block;
-        clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(d_olora_f32, d_olora + g * kOloraRank, kOloraRank);
+    cublasStatus_t st = cublasGemmStridedBatchedEx(
+        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+        kOloraRank, 1, gd, &alpha,
+        d_w_half, CUDA_R_16F, gd, static_cast<long long>(kOloraRank) * gd,
+        d_o, CUDA_R_16F, gd, gd,
+        &beta, d_olora_f32, CUDA_R_32F, kOloraRank, kOloraRank,
+        kOGroups, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+    {
+        int block = 256;
+        int g3 = (kOGroups * kOloraRank + block - 1) / block;
+        clamp_f32_to_f16_kernel<<<g3, block, 0, stream>>>(
+            d_olora_f32, d_olora, kOGroups * kOloraRank);
         err = cudaGetLastError();
         if (err != cudaSuccess) return err;
     }
@@ -803,7 +812,7 @@ cudaError_t run_mla_attention(
     if (e != cudaSuccess) return e;
     {
         int total = kRopeHeadDim / 2;
-        int block = 64;
+        int block = 32;   // total == 32: one full warp, no idle lanes
         rope_apply_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
             d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta,
@@ -814,7 +823,7 @@ cudaError_t run_mla_attention(
     {
         // Apply act_quant(kv[..., :-rd], 64, inplace=True) — FP8 quantize+dequant
         int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-        kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+        kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
     }
     const int slot = start_pos % kAttnWindow;
     e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
@@ -825,7 +834,9 @@ cudaError_t run_mla_attention(
     // attention
     {
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
-        mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+        const int n_attend = min(start_pos + 1, kAttnWindow);
+        const size_t smem = static_cast<size_t>(n_attend + 8) * sizeof(float);
+        mla_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
             d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
             start_pos, kAttnWindow, scale);
     }
@@ -852,7 +863,10 @@ cudaError_t run_mla_attention(
 // One block per head. Attends to window positions AND compressed KV positions.
 // The kv_cache is laid out as: [window_slots, head_dim] followed by
 // [compressed_slots, head_dim] in a single contiguous buffer.
-__global__ void csa_sparse_attn_kernel(
+// Same Blackwell optimizations as mla_attn_kernel: single QK pass with cached
+// scores in dynamic shared memory + warp-shuffle reductions.
+__global__ void __launch_bounds__(256)
+csa_sparse_attn_kernel(
     const __half* __restrict__ q,         // [n_heads, head_dim]
     const __half* __restrict__ kv_cache, // [total_slots, head_dim] (window + compressed)
     const float*  __restrict__ sink,      // [n_heads]
@@ -863,25 +877,20 @@ __global__ void csa_sparse_attn_kernel(
     int n_compressed,                      // number of compressed positions
     float scale)
 {
+    constexpr int kThreads = 256;
+    constexpr int kHD = kHeadDim;      // 512
+
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
-    constexpr int kThreads = 128;
-    constexpr int kHD = 512;
 
-    // Use s_acc as 4-slice thread-local accumulator (like mla_attn_kernel)
-    __shared__ float s_max;
-    __shared__ float s_sum;
-    __shared__ float s_part[kThreads];
-    float acc_o[kHD / kThreads];  // 4 slices per thread
-    for (int i = 0; i < kHD / kThreads; ++i) acc_o[i] = 0.0f;
-
-    if (tid == 0) { s_max = -1e30f; s_sum = 0.0f; }
-    __syncthreads();
+    extern __shared__ float s_smem[];
+    float* s_scores = s_smem;             // [n_attend + n_compressed]
+    float* s_warp = s_scores + (n_attend + n_compressed);
 
     const __half* qrow = q + h * kHD;
     const int total = n_attend + n_compressed;
 
-    // Pass 1: find max score
+    // Pass 1: scores (cached, scaled)
     for (int t = 0; t < total; ++t) {
         int slot;
         if (t < n_attend)
@@ -892,27 +901,21 @@ __global__ void csa_sparse_attn_kernel(
         float partial = 0.0f;
         for (int d = tid; d < kHD; d += kThreads)
             partial += __half2float(qrow[d]) * __half2float(krow[d]);
-        s_part[tid] = partial;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_part[tid] += s_part[tid + s];
-            __syncthreads();
-        }
-        if (tid == 0) {
-            float sc = s_part[0] * scale;
-            if (sc > s_max) s_max = sc;
-        }
-        __syncthreads();
-    }
-    // Include sink
-    if (tid == 0) {
-        float sk = sink[h];
-        if (sk > s_max) s_max = sk;
+        const float tot = lsx_block_reduce_sum(partial, s_warp);
+        if (tid == 0) s_scores[t] = tot * scale;
     }
     __syncthreads();
-    const float maxv = s_max;
 
-    // Pass 2: probs + weighted accumulation (thread-local slices, like mla_attn)
+    // Block max over cached scores + sink.
+    float mx = -1e30f;
+    for (int t = 0; t < total; ++t) mx = fmaxf(mx, s_scores[t]);
+    mx = fmaxf(mx, sink[h]);
+    const float maxv = mx;
+
+    // Pass 2: probs + weighted accumulation from cached scores.
+    float acc_o[kHD / kThreads];  // 2 slices per thread
+    for (int i = 0; i < kHD / kThreads; ++i) acc_o[i] = 0.0f;
+    float psum = 0.0f;
     for (int t = 0; t < total; ++t) {
         int slot;
         if (t < n_attend)
@@ -920,38 +923,21 @@ __global__ void csa_sparse_attn_kernel(
         else
             slot = window + (t - n_attend);
         const __half* krow = kv_cache + slot * kHD;
-        float partial = 0.0f;
+        const float p = expf(s_scores[t] - maxv);
+        psum += p;
         for (int d = tid; d < kHD; d += kThreads)
-            partial += __half2float(qrow[d]) * __half2float(krow[d]);
-        s_part[tid] = partial;
-        __syncthreads();
-        for (int s = kThreads / 2; s > 0; s >>= 1) {
-            if (tid < s) s_part[tid] += s_part[tid + s];
-            __syncthreads();
-        }
-        // Thread 0 computes weight and updates sum
-        if (tid == 0) {
-            float p = expf(s_part[0] * scale - maxv);
-            s_part[0] = p;  // reuse s_part[0] as weight storage
-            s_sum += p;
-        }
-        __syncthreads();
-        const float p = s_part[0];  // all threads read weight
-        for (int d = tid; d < kHD; d += kThreads) {
-            const int slice = d / kThreads;
-            acc_o[slice] += p * __half2float(krow[d]);
-        }
+            acc_o[d / kThreads] += p * __half2float(krow[d]);
     }
-    // Sink contribution (just adds to denominator, no output contribution)
-    if (tid == 0) s_sum += expf(sink[h] - maxv);
-    __syncthreads();
-
-    const float inv = 1.0f / (s_sum + 1e-9f);
+    // Sink contribution (denominator only, no output contribution).
+    // p is uniform across the block — divide the block reduction by kThreads
+    // (see mla_attn_kernel).
+    const float denom = lsx_block_reduce_sum(psum, s_warp)
+                            / static_cast<float>(kThreads)
+                        + expf(sink[h] - maxv);
+    const float inv = 1.0f / (denom + 1e-9f);
     __half* orow = o + h * kHD;
-    for (int d = tid; d < kHD; d += kThreads) {
-        const int slice = d / kThreads;
-        orow[d] = __float2half(acc_o[slice] * inv);
-    }
+    for (int d = tid; d < kHD; d += kThreads)
+        orow[d] = __float2half(acc_o[d / kThreads] * inv);
 }
 
 // ── CSA: apply RMSNorm to compressed KV ──────────────────────────────────────
@@ -1125,7 +1111,7 @@ cudaError_t run_csa_attention(
     if (e != cudaSuccess) return e;
     {
         int total = kRopeHeadDim / 2;
-        rope_apply_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
+        rope_apply_kernel<<<(total + 31) / 32, 32, 0, stream>>>(
             d_kv2, 1, kHeadDim, kHeadDim - kRopeHeadDim,
             kRopeHeadDim, static_cast<float>(start_pos), lw.rope_theta, 1);
     }
@@ -1133,7 +1119,7 @@ cudaError_t run_csa_attention(
     // Store KV in sliding-window cache (with FP8 act_quant on non-RoPE dims)
     {
         int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-        kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
+        kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
     }
     const int slot = start_pos % kAttnWindow;
     e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
@@ -1189,7 +1175,7 @@ cudaError_t run_csa_attention(
             int comp_pos = start_pos + 1 - lw.compress_ratio;
             {
                 int total = kRopeHeadDim / 2;
-                rope_apply_kernel<<<(total + 63) / 64, 64, 0, stream>>>(
+                rope_apply_kernel<<<(total + 31) / 32, 32, 0, stream>>>(
                     d_compressed_slot, 1, kHeadDim, kHeadDim - kRopeHeadDim,
                     kRopeHeadDim, static_cast<float>(comp_pos), lw.rope_theta, 1);
             }
@@ -1197,7 +1183,7 @@ cudaError_t run_csa_attention(
             // (reference model.py:372 act_quant(kv[..., :-rd], 64, ..., True)).
             {
                 int n_blocks_q = (kHeadDim - kRopeHeadDim + 63) / 64;
-                kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_compressed_slot, kHeadDim - kRopeHeadDim);
+                kv_act_quant_kernel<<<n_blocks_q, 64, 0, stream>>>(d_compressed_slot, kHeadDim - kRopeHeadDim);
             }
             csa_state.n_compressed++;
         }
@@ -1223,11 +1209,14 @@ cudaError_t run_csa_attention(
         int n_attend = std::min(start_pos + 1, kAttnWindow);
         float scale = 1.0f / sqrtf(static_cast<float>(kHeadDim));
         if (n_compressed > 0) {
-            csa_sparse_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+            const size_t smem = static_cast<size_t>(n_attend + n_compressed + 8)
+                                * sizeof(float);
+            csa_sparse_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
                 d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
                 start_pos, kAttnWindow, n_attend, n_compressed, scale);
         } else {
-            mla_attn_kernel<<<kAttnHeads, 128, 0, stream>>>(
+            const size_t smem = static_cast<size_t>(n_attend + 8) * sizeof(float);
+            mla_attn_kernel<<<kAttnHeads, 256, smem, stream>>>(
                 d_q, d_kv_cache_layer, lw.d_attn_sink, d_o,
                 start_pos, kAttnWindow, scale);
         }

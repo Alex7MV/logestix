@@ -285,9 +285,10 @@ ExpertDb load_expert_index(const std::string &model_path,
 }
 
 void ensure_expert_resident(ExpertDb &db, int layer, int expert,
-                            cudaStream_t stream)
+                            cudaStream_t stream,
+                            cudaEvent_t evict_done)
 {
-    db.EnsureResident(layer, expert, stream);
+    db.EnsureResident(layer, expert, stream, evict_done);
 }
 
 void free_expert_index(ExpertDb &db) { db.Free(); }

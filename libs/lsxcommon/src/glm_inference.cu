@@ -231,18 +231,37 @@ __global__ void GlmArgmaxKernel(const float *__restrict__ logits, int vocab,
 // ascending h order — a bit-exact mirror of the FP64 host reference. Replaces
 // the cuBLAS fp32-accumulate path, whose ~1e-3 error crosses FP16 rounding
 // boundaries and flips the argmax on near-ties.
+// The hn vector (re-read by every vocab thread — ~1.9 GB of redundant global
+// traffic per token at 154k vocab) is staged into shared memory once per
+// block; head rows are read via uint4 (8 halves). Both changes preserve the
+// ascending-h FP64 accumulation order exactly (bit-exact).
 __global__ void GlmHeadLogitsKernel(const __half *__restrict__ head,
                                     const __half *__restrict__ hn,
                                     float *__restrict__ out,
                                     int vocab, int hidden)
 {
+    extern __shared__ __half s_hn[];
     const int v = blockIdx.x * blockDim.x + threadIdx.x;
+    for (int h = threadIdx.x; h < hidden; h += blockDim.x)
+        s_hn[h] = hn[h];
+    __syncthreads();
     if (v >= vocab) return;
     const __half *hr = head + static_cast<size_t>(v) * hidden;
     double acc = 0.0;
-    for (int h = 0; h < hidden; ++h)
+    int h = 0;
+    for (; h + 8 <= hidden; h += 8) {
+        const uint4 hv = *reinterpret_cast<const uint4 *>(hr + h);
+        const uint4 nv = *reinterpret_cast<const uint4 *>(s_hn + h);
+        const __half *hh = reinterpret_cast<const __half *>(&hv);
+        const __half *nh = reinterpret_cast<const __half *>(&nv);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            acc += static_cast<double>(__half2float(hh[j])) *
+                   static_cast<double>(__half2float(nh[j]));
+    }
+    for (; h < hidden; ++h)
         acc += static_cast<double>(__half2float(hr[h])) *
-               static_cast<double>(__half2float(hn[h]));
+               static_cast<double>(__half2float(s_hn[h]));
     out[v] = __half2float(__float2half(static_cast<float>(acc)));
 }
 
@@ -382,7 +401,9 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
         if (e != cudaSuccess) return e;
         const int head_blocks =
             (c.vocab + kGlmLoopBlock - 1) / kGlmLoopBlock;
-        GlmHeadLogitsKernel<<<head_blocks, kGlmLoopBlock, 0, c.st>>>(
+        GlmHeadLogitsKernel<<<head_blocks, kGlmLoopBlock,
+                              static_cast<size_t>(hidden) * sizeof(__half),
+                              c.st>>>(
             c.pw->d_head, c.d_hn, c.d_logits_head, c.vocab, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
@@ -1446,7 +1467,9 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         if (e != cudaSuccess) return fail(e);
         {
             const int blocks = (vocab + kGlmLoopBlock - 1) / kGlmLoopBlock;
-            GlmHeadLogitsKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+            GlmHeadLogitsKernel<<<blocks, kGlmLoopBlock,
+                                  static_cast<size_t>(hidden) * sizeof(__half),
+                                  stream>>>(
                 pw.d_head, c.d_hn, c.d_logits_head, vocab, hidden);
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e);

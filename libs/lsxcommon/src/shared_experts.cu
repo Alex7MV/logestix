@@ -189,15 +189,44 @@ __global__ void dequant_fp4_e8m0_kernel(
 
 // F8_E4M3 × F8_E8M0 dequant kernel (per-128x128 tile scales).
 // Same format as attention weights. 1 byte per element (not packed).
+// Vectorized fast path: 16 elements per thread via one uint4 byte load.
+// C is a multiple of 128, so a 16-element group never crosses a row or a
+// 128-column scale-tile boundary — r/sr/sc are loop-invariant per thread.
 __global__ void dequant_f8_e8m0_kernel(
     const uint8_t* __restrict__ w,
     const uint8_t* __restrict__ scales,
     __half* __restrict__ out, int64_t n,
     int64_t C, int64_t SC, int64_t block_r, int64_t block_c)
 {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-    for (; i < n; i += stride) {
+    constexpr int ELEMS = 16;
+    const int64_t base = (static_cast<int64_t>(blockIdx.x) * blockDim.x
+                          + threadIdx.x) * ELEMS;
+    if (base + ELEMS <= n) {
+        const int64_t r = base / C;
+        const int64_t c = base - r * C;          // multiple of 16
+        const int64_t sr = r / block_r;
+        const int64_t sc = c / block_c;
+        const float sv = e8m0_scale_to_float(scales[sr * SC + sc]);
+        const uint4 ww = *reinterpret_cast<const uint4*>(w + base);
+        const uint8_t bytes[ELEMS] = {
+            uint8_t(ww.x & 0xFF), uint8_t((ww.x >> 8) & 0xFF),
+            uint8_t((ww.x >> 16) & 0xFF), uint8_t(ww.x >> 24),
+            uint8_t(ww.y & 0xFF), uint8_t((ww.y >> 8) & 0xFF),
+            uint8_t((ww.y >> 16) & 0xFF), uint8_t(ww.y >> 24),
+            uint8_t(ww.z & 0xFF), uint8_t((ww.z >> 8) & 0xFF),
+            uint8_t((ww.z >> 16) & 0xFF), uint8_t(ww.z >> 24),
+            uint8_t(ww.w & 0xFF), uint8_t((ww.w >> 8) & 0xFF),
+            uint8_t((ww.w >> 16) & 0xFF), uint8_t(ww.w >> 24)};
+        __half vals[ELEMS];
+        #pragma unroll
+        for (int j = 0; j < ELEMS; ++j)
+            vals[j] = __float2half(f8e4m3_to_float(bytes[j]) * sv);
+        uint4* out4 = reinterpret_cast<uint4*>(out + base);
+        out4[0] = *reinterpret_cast<const uint4*>(vals);
+        out4[1] = *reinterpret_cast<const uint4*>(vals + 8);
+        return;
+    }
+    for (int64_t i = base; i < n; ++i) {
         int64_t r = i / C;
         int64_t c = i % C;
         int64_t sr = r / block_r;
@@ -478,22 +507,50 @@ __global__ void dequant_fp4_e8m0_f32_kernel(
     }
 }
 
-// FP32 output version of the F8 dequant kernel
+// FP32 output version of the F8 dequant kernel (vectorized, see the __half
+// variant above for the access-pattern rationale).
 __global__ void dequant_f8_e8m0_f32_kernel(
     const uint8_t* __restrict__ w,
     const uint8_t* __restrict__ scales,
     float* __restrict__ out, int64_t n,
     int64_t C, int64_t SC, int64_t block_r, int64_t block_c)
 {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-    for (; i < n; i += stride) {
+    constexpr int ELEMS = 16;
+    const int64_t base = (static_cast<int64_t>(blockIdx.x) * blockDim.x
+                          + threadIdx.x) * ELEMS;
+    if (base + ELEMS <= n) {
+        const int64_t r = base / C;
+        const int64_t c = base - r * C;
+        const int64_t sr = r / block_r;
+        const int64_t sc = c / block_c;
+        const float sv = e8m0_scale_to_float(scales[sr * SC + sc]);
+        const uint4 ww = *reinterpret_cast<const uint4*>(w + base);
+        const uint8_t bytes[ELEMS] = {
+            uint8_t(ww.x & 0xFF), uint8_t((ww.x >> 8) & 0xFF),
+            uint8_t((ww.x >> 16) & 0xFF), uint8_t(ww.x >> 24),
+            uint8_t(ww.y & 0xFF), uint8_t((ww.y >> 8) & 0xFF),
+            uint8_t((ww.y >> 16) & 0xFF), uint8_t(ww.y >> 24),
+            uint8_t(ww.z & 0xFF), uint8_t((ww.z >> 8) & 0xFF),
+            uint8_t((ww.z >> 16) & 0xFF), uint8_t(ww.z >> 24),
+            uint8_t(ww.w & 0xFF), uint8_t((ww.w >> 8) & 0xFF),
+            uint8_t((ww.w >> 16) & 0xFF), uint8_t(ww.w >> 24)};
+        float vals[ELEMS];
+        #pragma unroll
+        for (int j = 0; j < ELEMS; ++j)
+            vals[j] = f8e4m3_to_float(bytes[j]) * sv;
+        float4* out4 = reinterpret_cast<float4*>(out + base);
+        out4[0] = *reinterpret_cast<const float4*>(vals);
+        out4[1] = *reinterpret_cast<const float4*>(vals + 4);
+        out4[2] = *reinterpret_cast<const float4*>(vals + 8);
+        out4[3] = *reinterpret_cast<const float4*>(vals + 12);
+        return;
+    }
+    for (int64_t i = base; i < n; ++i) {
         int64_t r = i / C;
         int64_t c = i % C;
         int64_t sr = r / block_r;
         int64_t sc = c / block_c;
-        float v = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
-        out[i] = v;
+        out[i] = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
     }
 }
 
@@ -547,6 +604,44 @@ cudaError_t dequant_fp4_e8m0_half(
     return cudaGetLastError();
 }
 
+// FP16 + fused per-128 activation scale (see shared_experts.h).
+// Kernel definition lives at the bottom of this file (after the F8 kernels).
+template<int BLOCK_DIM>
+__global__ void dequant_fp4_e8m0_actscale_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    const float* __restrict__ act_scales,
+    int K,
+    __half* __restrict__ output,
+    int64_t num_elements);
+
+cudaError_t dequant_fp4_e8m0_half_actscale(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    const float* d_act_scales, int K,
+    __half* d_output, int64_t num_elements)
+{
+    if (!d_packed || !d_scales || !d_act_scales || !d_output)
+        return cudaErrorInvalidValue;
+    if (num_elements <= 0 || packed_bytes <= 0 || scales_bytes <= 0)
+        return cudaErrorInvalidValue;
+    if (K <= 0 || (K % 128) != 0)
+        return cudaErrorInvalidValue;
+    const int64_t need_packed = (num_elements + 1) / 2;
+    const int64_t need_scales = (num_elements + 31) / 32;
+    if (packed_bytes < need_packed) return cudaErrorInvalidValue;
+    if (scales_bytes < need_scales) return cudaErrorInvalidValue;
+    constexpr int BLOCK_DIM = 256;
+    constexpr int ELEMS_PER_THREAD = 32;
+    const int64_t elems_per_block = static_cast<int64_t>(BLOCK_DIM) * ELEMS_PER_THREAD;
+    const int blocks = static_cast<int>(
+        (num_elements + elems_per_block - 1) / elems_per_block);
+    dequant_fp4_e8m0_actscale_kernel<BLOCK_DIM><<<blocks, BLOCK_DIM, 0, stream>>>(
+        d_packed, d_scales, d_act_scales, K, d_output, num_elements);
+    return cudaGetLastError();
+}
+
 // Shared-expert F8 dequant (FP32 output)
 cudaError_t dequant_shared_f8(
     cudaStream_t stream,
@@ -561,7 +656,8 @@ cudaError_t dequant_shared_f8(
     if (n_bytes < num_elements)
         return cudaErrorInvalidValue;
     int block = 256;
-    int grid = static_cast<int>((num_elements + block - 1) / block);
+    // Vectorized kernel: 16 elements per thread.
+    int grid = static_cast<int>((num_elements + block * 16 - 1) / (block * 16));
     dequant_f8_e8m0_f32_kernel<<<grid, block, 0, stream>>>(
         d_weights, d_scales, d_output, num_elements,
         cols, cols / 128, 128, 128);
@@ -582,11 +678,64 @@ cudaError_t dequant_shared_f8_half(
     if (n_bytes < num_elements)
         return cudaErrorInvalidValue;
     int block = 256;
-    int grid = static_cast<int>((num_elements + block - 1) / block);
+    // Vectorized kernel: 16 elements per thread.
+    int grid = static_cast<int>((num_elements + block * 16 - 1) / (block * 16));
     dequant_f8_e8m0_kernel<<<grid, block, 0, stream>>>(
         d_weights, d_scales, d_output, num_elements,
         cols, cols / 128, 128, 128);
     return cudaGetLastError();
+}
+
+// FP16-output routed-expert dequant with the per-128 activation scale fused
+// in (see shared_experts.h). Same vectorized structure as dequant_fp4_e8m0_kernel.
+template<int BLOCK_DIM>
+__launch_bounds__(BLOCK_DIM)
+__global__ void dequant_fp4_e8m0_actscale_kernel(
+    const uint8_t* __restrict__ packed,
+    const uint8_t* __restrict__ scales,
+    const float* __restrict__ act_scales,
+    int K,
+    __half* __restrict__ output,
+    int64_t num_elements)
+{
+    constexpr int ELEMS_PER_THREAD = 32;   // exactly one F8_E8M0 scale block
+    constexpr int ELEMS_PER_BLOCK  = BLOCK_DIM * ELEMS_PER_THREAD;
+
+    const int64_t chunk = static_cast<int64_t>(blockIdx.x) * ELEMS_PER_BLOCK;
+    if (chunk >= num_elements) return;
+
+    const int64_t base = chunk + static_cast<int64_t>(threadIdx.x) * ELEMS_PER_THREAD;
+
+    if (base + ELEMS_PER_THREAD <= num_elements) {
+        const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
+        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+        // K % 128 == 0 and base % 32 == 0 → the whole 32-element group shares
+        // one activation scale (worst case k0%128 == 96, 96+31 == 127).
+        const float ascl = act_scales[(base % K) >> 7];
+
+        uint32_t w[16];
+        unpack_nibbles8(p.x, scl * ascl, &w[0]);
+        unpack_nibbles8(p.y, scl * ascl, &w[4]);
+        unpack_nibbles8(p.z, scl * ascl, &w[8]);
+        unpack_nibbles8(p.w, scl * ascl, &w[12]);
+
+        uint4* out4 = reinterpret_cast<uint4*>(output + base);
+        out4[0] = make_uint4(w[0], w[1], w[2], w[3]);
+        out4[1] = make_uint4(w[4], w[5], w[6], w[7]);
+        out4[2] = make_uint4(w[8], w[9], w[10], w[11]);
+        out4[3] = make_uint4(w[12], w[13], w[14], w[15]);
+        return;
+    }
+
+    for (int64_t i = base; i < num_elements; ++i) {
+        const int64_t byte_idx = i >> 1;
+        const uint8_t nibble = (i & 1)
+            ? (packed[byte_idx] >> 4)
+            : (packed[byte_idx] & 0x0F);
+        output[i] = __float2half(kE2M1Table[nibble]
+                                 * e8m0_scale_to_float(scales[i >> 5])
+                                 * act_scales[(i % K) >> 7]);
+    }
 }
 
 } // namespace gpu

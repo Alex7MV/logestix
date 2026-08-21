@@ -10,6 +10,7 @@
 #include <cublas_v2.h>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <string>
@@ -83,7 +84,7 @@ cudaError_t run_shared_experts_ffn(
     float *d_intermediate_f32, float *d_gate_f32,
     float *d_dequant, __half *d_output);
 
-cudaError_t run_routed_experts(
+cudaError_t run_routed_experts_ex(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
@@ -95,7 +96,8 @@ cudaError_t run_routed_experts(
     float *d_swiglu_out,
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
-    int64_t pack_stage_bytes, int64_t scale_stage_bytes);
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes,
+    const ExpertDeviceCache *cache);
 
 // run_mla_attention is declared in deepseek_inference_load.cuh (included
 // above) — that header's signature now matches the real definition in
@@ -236,6 +238,14 @@ InferenceResult RunInferenceModel(
     int64_t routed_pack_total = 0, routed_scale_total = 0;
     ExpertDb expert_db;
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
+    cudaEvent_t evict_done = nullptr;   // mmap-eviction barrier (event form)
+    // Device-side resident-expert cache (see ExpertDeviceCache in
+    // deepseek_inference_load.cuh): repeated expert selections skip the
+    // ~13 MB per-expert H2D staging entirely.
+    ExpertDeviceCache expert_cache;
+    std::vector<int32_t> cache_slot_of;
+    std::vector<int32_t> cache_slot_owner;
+    std::vector<int32_t> cache_lru;
     float rms_eps = 1e-6f;
     int total_steps = 0;
     std::uint64_t d_alloc_bytes = 0;  // arena device bytes (resident accounting)
@@ -260,6 +270,11 @@ InferenceResult RunInferenceModel(
                        * (kAttnWindow + max_compressed) * kHeadDim
                        * sizeof(__half);
 
+    // Spin (busy-poll) host synchronization: the per-layer router readback and
+    // the per-token 8-byte handshake wake the host in ~1µs instead of the
+    // ~10-30µs blocking-syscall latency. Host CPU headroom is explicitly not
+    // a constrained resource for this project.
+    INFER_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
     INFER_CHECK(cudaStreamCreate(&stream));
     CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
@@ -439,7 +454,48 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaEventCreate(&t_start));
     INFER_CHECK(cudaEventCreate(&t_ttft));
     INFER_CHECK(cudaEventCreate(&t_stop));
+    INFER_CHECK(cudaEventCreateWithFlags(&evict_done, cudaEventDisableTiming));
     INFER_CHECK(cudaEventRecord(t_start, stream));
+
+    // 9b. Device-side resident-expert cache. Slot count is overridable via
+    // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS (0 disables). Each slot holds one
+    // expert's packed w1/w2/w3 + scales (~13 MB at V4-Flash geometry).
+    {
+        int slots = 256;
+        if (const char* env = std::getenv("LSX_DEEPSEEK_EXPERT_CACHE_SLOTS"))
+            slots = std::atoi(env);
+        const int total_experts = topo.num_layers * topo.experts_per_layer;
+        if (slots > 0 && total_experts > 0 && !expert_db.entries.empty()) {
+            expert_cache.slots = std::min(slots, total_experts);
+            expert_cache.pack_stride = routed_pack_total;
+            expert_cache.scale_stride = routed_scale_total;
+            expert_cache.total_experts = total_experts;
+            cache_slot_of.assign(static_cast<size_t>(total_experts), -1);
+            cache_slot_owner.assign(static_cast<size_t>(expert_cache.slots), -1);
+            cache_lru.resize(static_cast<size_t>(expert_cache.slots));
+            for (int i = 0; i < expert_cache.slots; ++i)
+                cache_lru[static_cast<size_t>(i)] = expert_cache.slots - 1 - i; // back = LRU
+            expert_cache.h_slot_of = cache_slot_of.data();
+            expert_cache.h_slot_owner = cache_slot_owner.data();
+            expert_cache.h_lru = cache_lru.data();
+            cudaError_t ce = cudaMalloc(&expert_cache.d_base,
+                                        expert_cache.DeviceBytes());
+            if (ce == cudaSuccess) {
+                expert_cache.d_pack = expert_cache.d_base;
+                expert_cache.d_scale = expert_cache.d_base
+                    + static_cast<int64_t>(expert_cache.slots) * expert_cache.pack_stride;
+                log::info("[inference] expert device cache: "
+                          + std::to_string(expert_cache.slots) + " slots ("
+                          + std::to_string(expert_cache.DeviceBytes() / (1024 * 1024))
+                          + " MiB)");
+            } else {
+                log::warn("[inference] expert device cache allocation failed ("
+                          + std::string(cudaGetErrorString(ce))
+                          + ") — falling back to per-call staging");
+                expert_cache = ExpertDeviceCache{};
+            }
+        }
+    }
 
     // 10. Autoregressive loop
     for (int step = 0; step < total_steps; ++step) {
@@ -475,7 +531,8 @@ InferenceResult RunInferenceModel(
             if (lw.d_hc_attn_fn) {
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_attn_fn,
                                         lw.d_hc_attn_scale, lw.d_hc_attn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre));
+                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_norm_scratch));
                 INFER_CHECK(run_rmsnorm(stream, d_single, lw.d_attn_norm,
                                          d_normed, d_norm_scratch,
                                          d_norm_gamma_scratch,
@@ -515,12 +572,14 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             if (lw.d_hc_ffn_fn) {
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_ffn_fn,
                                         lw.d_hc_ffn_scale, lw.d_hc_ffn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre));
+                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_norm_scratch));
             } else {
                 // Fallback: ffn_norm on the reduced state (no HC)
                 INFER_CHECK(run_hc_pre(stream, d_hidden, lw.d_hc_attn_fn,
                                         lw.d_hc_attn_scale, lw.d_hc_attn_base,
-                                        d_single, d_hc_post, d_hc_comb, d_hc_pre));
+                                        d_single, d_hc_post, d_hc_comb, d_hc_pre,
+                                        d_norm_scratch));
             }
 
             if (lw.d_ffn_norm) {
@@ -568,10 +627,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 {
                     int block = 256;
                     int grid = (kHiddenDim + block - 1) / block;
-                    // Reuse: half→float conversion via a simple kernel
-                    // We'll use the d_ffn_accum as float output
-                    INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
-                        static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
                     half_to_float_f2h_kernel<<<grid, block, 0, stream>>>(
                         d_ffn_out, d_ffn_accum, kHiddenDim);
                 }
@@ -583,8 +638,9 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
                 for (int i = 0; i < kLocalTopK; ++i)
-                    ensure_expert_resident(expert_db, lay, h_topk[i], stream);
-                INFER_CHECK(run_routed_experts(
+                    ensure_expert_resident(expert_db, lay, h_topk[i], stream,
+                                           evict_done);
+                INFER_CHECK(run_routed_experts_ex(
                     cublas_h, stream, d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
@@ -592,7 +648,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     d_gate_f32, d_up_f32, d_dequant_scratch,
                     d_act_quant, d_swiglu_out, d_act_scales,
                     d_pack_stage, d_scale_stage,
-                    routed_pack_total, routed_scale_total));
+                    routed_pack_total, routed_scale_total,
+                    expert_cache.slots > 0 ? &expert_cache : nullptr));
             }
 
             // Convert FP32 FFN accumulation → FP16 for hc_post
@@ -612,8 +669,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         // Final: hc_head (4 copies → 1), then final RMSNorm, then LM Head
         if (pw.d_hc_head_fn) {
             INFER_CHECK(run_hc_head(stream, d_hidden, pw.d_hc_head_fn,
-                                    pw.d_hc_head_scale, pw.d_hc_head_base,
-                                    d_single));
+                                     pw.d_hc_head_scale, pw.d_hc_head_base,
+                                     d_single, d_norm_scratch));
         } else {
             // Fallback: first copy of HC state (float→half via kernel)
             // This path should not be taken if hc_head_fn is loaded
@@ -631,13 +688,15 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 cudaMemcpyDeviceToDevice, stream));
         }
 
-        // LM Head
+        // LM Head (no fused argmax — the sampler below performs the single
+        // vocab reduction; the old duplicate argmax scanned the full vocab
+        // twice per token).
         INFER_CHECK(cudaMemsetAsync(d_logits, 0,
             static_cast<size_t>(pw.vocab_size) * sizeof(float), stream));
         INFER_CHECK(run_lm_head(cublas_h, stream,
                                  pw.d_head, d_normed,
                                  pw.vocab_size, kHiddenDim,
-                                 d_logits, d_next_token, d_next_maxv));
+                                 d_logits, nullptr, nullptr));
 
         INFER_CHECK(sampler.Sample(stream, d_logits, pw.vocab_size,
                                    lsxcommon::sample::LogitType::kF32,
@@ -764,9 +823,11 @@ cleanup:
     if (stream)        cudaStreamDestroy(stream);
     if (cublas_h)      cublasDestroy(cublas_h);
     arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
+    if (expert_cache.d_base) cudaFree(expert_cache.d_base);
     if (t_start)       cudaEventDestroy(t_start);
     if (t_ttft)        cudaEventDestroy(t_ttft);
     if (t_stop)        cudaEventDestroy(t_stop);
+    if (evict_done)    cudaEventDestroy(evict_done);
     free_expert_index(expert_db);
     pw.Free();
 

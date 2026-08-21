@@ -108,6 +108,19 @@ cudaError_t dequant_fp4_e8m0_half(
     const uint8_t* d_scales, int64_t scales_bytes,
     __half* d_output, int64_t num_elements);
 
+// FP16-output routed-expert dequant with the per-128 activation scale fused
+// into the weights (replaces the separate fuse_act_scale_into_weights_kernel
+// read-modify-write pass over the full dequanted matrix):
+//   output[i] = E2M1(nibble_i) * F8_E8M0(scale[i >> 5]) * act_scales[(i % K) / 128]
+// Row-major [rows, K]; K must be a multiple of 128 so a 32-element scale
+// group never crosses an act-scale boundary.
+cudaError_t dequant_fp4_e8m0_half_actscale(
+    cudaStream_t stream,
+    const uint8_t* d_packed, int64_t packed_bytes,
+    const uint8_t* d_scales, int64_t scales_bytes,
+    const float* d_act_scales, int K,
+    __half* d_output, int64_t num_elements);
+
 // Dequantizes one shared-expert F8 weight tensor:
 //   output[i] = F8_E4M3(w[i]) * F8_E8M0(scale[r/128, c/128])
 // 1 byte per element, per-128x128 tile E8M0 scales (same as attention weights).

@@ -31,6 +31,7 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
 __global__ void act_quant_block_kernel(
     const __half* __restrict__ d_input,
     float* __restrict__        d_output,
+    __half* __restrict__       d_output_h,
     float* __restrict__        d_scales,
     int K)
 {
@@ -87,33 +88,43 @@ __global__ void act_quant_block_kernel(
         if (e4 > 15) { e4 = 15; mant3 = 7; }
         if (e4 == 0) {
             d_output[base + i] = 0.0f;
+            d_output_h[base + i] = __float2half(0.0f);
         } else {
             uint32_t out_bits = (sign << 31) | (static_cast<uint32_t>(e4 + 120) << 23) | (mant3 << 20);
             float result;
             std::memcpy(&result, &out_bits, sizeof(result));
             d_output[base + i] = result;
+            // E4M3-grid values are exactly representable in FP16 — the half
+            // copy feeds the FP16 tensor-core GEMMs without precision loss.
+            d_output_h[base + i] = __float2half(result);
         }
     }
     if (threadIdx.x == 0) d_scales[blk] = act_scale;
 }
 
-// Fuse per-128 act_scale into dequanted FP16 weights (per-32 weight scale already baked).
-// After this, the GEMM naturally produces: Σ_k (E2M1*E8M0*act_scale) * x_quantized
-//                                         = Σ_k E2M1*E8M0*act_scale * (x/act_scale)
-//                                         = Σ_k E2M1*E8M0 * x  (correct)
-__global__ void fuse_act_scale_into_weights_kernel(
-    float* __restrict__ d_weights,
-    const float* __restrict__ d_act_scales,
-    int64_t N, int64_t K)
+// Clamp FP32 → FP16 with overflow protection (feeds FP16 GEMM inputs).
+__global__ void clamp_f32_to_f16_moe_kernel(const float* __restrict__ src,
+                                             __half* __restrict__ dst, int n)
 {
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t total = N * K;
-    int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
-    for (; i < total; i += stride) {
-        int64_t k = i % K;
-        float act_scale = d_act_scales[k / 128];
-        d_weights[i] *= act_scale;
-    }
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float v = src[i];
+    v = fmaxf(-65504.0f, fminf(65504.0f, v));
+    dst[i] = __float2half(v);
+}
+
+// Fold the per-128 activation quantization scales (powers of two) into the
+// FP16 quantized activation: act'[k] = act[k] * act_scales[k/128]. A power-of-
+// two multiply is exact in FP16, so Σ w·act' == Σ (w·act_scale)·act with zero
+// added rounding — the W1/W3 tensor-core GEMMs stay numerically equivalent to
+// the old FP32 fused-scale path.
+__global__ void scale_act_blocks_kernel(__half* __restrict__ act,
+                                         const float* __restrict__ act_scales,
+                                         int K)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= K) return;
+    act[i] = __float2half(__half2float(act[i]) * act_scales[i >> 7]);
 }
 
 // Clamp FP16 output to prevent overflow (used after GEMM)
@@ -142,11 +153,13 @@ __global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n, floa
     d_act[i] = __float2half(x * sig * g);
 }
 
-// SwiGLU with clamp, FP32 inputs → FP32 output (no FP16 intermediate overflow)
+// SwiGLU with clamp, FP32 inputs → FP32 output (no FP16 intermediate overflow).
+// NOTE: deliberately NOT __restrict__ — the shared-experts call site passes
+// d_out aliased to d_gate (element-wise, same-index in-place update).
 __global__ void swiglu_clamp_f32f_kernel(
-    const float* __restrict__ d_gate,
-    const float* __restrict__ d_up,
-    float* __restrict__ d_out, int n, float limit)
+    const float* d_gate,
+    const float* d_up,
+    float* d_out, int n, float limit)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -187,14 +200,19 @@ __global__ void swiglu_clamp_kernel(
     d_gate_vec[i] = __float2half(sig * g * u);
 }
 
-// Shared experts FFN: dequant F8_E4M3 x F8_E8M0 (128x128 tile) -> FP32,
-// GEMM, SiLU activation. Verified against the real DeepSeek-V4-Flash
-// safetensors header: shared_experts.w1.weight dtype=F8_E4M3 shape=[2048,4096],
-// w1.scale dtype=F8_E8M0 shape=[16,32] -> block_r=128, block_c=128. global_scale
-// is not applicable here (converter.cpp's passthrough path hardcodes 1.0 for
-// already-quantized F8_E4M3 sources), which is why w1_gs/w2_gs/w3_gs are
-// accepted but intentionally unused below.
-// W1/W3 GEMM outputs FP32 (CUDA_R_32F) to prevent FP16 overflow.
+// Shared experts FFN: dequant F8_E4M3 x F8_E8M0 (128x128 tile) -> FP16,
+// FP16 tensor-core GEMMs (FP32 accumulate/output), SiLU activation. Verified
+// against the real DeepSeek-V4-Flash safetensors header: shared_experts.w1.weight
+// dtype=F8_E4M3 shape=[2048,4096], w1.scale dtype=F8_E8M0 shape=[16,32] ->
+// block_r=128, block_c=128. global_scale is not applicable here (converter.cpp's
+// passthrough path hardcodes 1.0 for already-quantized F8_E4M3 sources), which
+// is why w1_gs/w2_gs/w3_gs are accepted but intentionally unused below.
+//
+// Blackwell perf: weights are dequanted straight to FP16 (E4M3 x E8M0 products
+// are exactly representable in FP16 for in-range scales) and every GEMM runs
+// as CUDA_R_16F inputs with CUBLAS_COMPUTE_32F — half the weight-materialization
+// traffic of the old FP32 path and full 5th-gen Tensor Core utilization.
+// W1/W3 GEMM outputs stay FP32 to prevent FP16 overflow.
 cudaError_t run_shared_experts_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -213,40 +231,38 @@ cudaError_t run_shared_experts_ffn(
     int intermediate_dim = w1_bytes > 0
         ? static_cast<int>(w1_bytes / hidden_dim) : kIntermediateDim;
     int w1_el = hidden_dim * intermediate_dim;
+    int w2_el = intermediate_dim * hidden_dim;
 
-    // 1. Dequant W1 → d_dequant (F8_E4M3 × E8M0, per-128x128 tiles)
+    // FP16 scratch carved from the (float-typed) d_dequant arena slice:
+    // [dequanted W1/W3 weights: w1_el halves]. The W2 FP32 pass reuses the
+    // full d_dequant region (stream-ordered after the W3 GEMM that read the
+    // fp16 weights), and its FP32 output scratch sits past the W2 weights.
+    __half* const d_w_half = reinterpret_cast<__half*>(d_dequant);
+    float*  const d_w2out_f32 = d_dequant + w2_el + intermediate_dim / 2;
+    // 1. Dequant W1 → d_w_half (F8_E4M3 × E8M0, per-128x128 tiles)
     if (w1_bytes > 0) {
-        // dequant_shared_f8 does not validate/use its scale_bytes parameter
+        // dequant_shared_f8_half does not validate/use its scale_bytes parameter
         // (kept for interface symmetry with the other dequant_* functions).
-        cudaError_t e = dequant_shared_f8(stream, d_w1, w1_bytes,
-            d_w1_scales, 0, d_dequant, w1_el, hidden_dim);
+        cudaError_t e = dequant_shared_f8_half(stream, d_w1, w1_bytes,
+            d_w1_scales, 0, d_w_half, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
     }
 
-    // FP32 copy of activation (pure FP32 GEMMs; cuBLAS rejects F32-in x F16-in).
-    // Lives in d_dequant tail after the W1 weights region.
-    float *d_hidden_f32 = d_dequant + w1_el;
-    {
-        int b = 256;
-        int g = (hidden_dim + b - 1) / b;
-        half_to_float_kernel<<<g, b, 0, stream>>>(d_hidden, d_hidden_f32, hidden_dim);
-    }
-
-    // 2. intermediate = W1^T @ hidden → d_intermediate
+    // 2. intermediate = W1^T @ hidden → d_intermediate (FP16 TC GEMM, FP32 out)
     {
         cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      intermediate_dim, 1, hidden_dim, &alpha,
-                     d_dequant, CUDA_R_32F, hidden_dim,
-                      d_hidden_f32, CUDA_R_32F, hidden_dim, &beta,
+                     d_w_half, CUDA_R_16F, hidden_dim,
+                      d_hidden, CUDA_R_16F, hidden_dim, &beta,
                       d_intermediate_f32, CUDA_R_32F, intermediate_dim,
                       CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         if (w1s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
     }
 
-    // 3. Dequant W3 → d_dequant (reuse, F8_E4M3 × E8M0)
+    // 3. Dequant W3 → d_w_half (reuse)
     if (w3_bytes > 0) {
-        cudaError_t e = dequant_shared_f8(stream, d_w3, w3_bytes,
-            d_w3_scales, 0, d_dequant, w1_el, hidden_dim);
+        cudaError_t e = dequant_shared_f8_half(stream, d_w3, w3_bytes,
+            d_w3_scales, 0, d_w_half, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
     }
 
@@ -254,14 +270,17 @@ cudaError_t run_shared_experts_ffn(
     {
         cublasStatus_t w3s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      intermediate_dim, 1, hidden_dim, &alpha,
-                     d_dequant, CUDA_R_32F, hidden_dim,
-                      d_hidden_f32, CUDA_R_32F, hidden_dim, &beta,
+                     d_w_half, CUDA_R_16F, hidden_dim,
+                      d_hidden, CUDA_R_16F, hidden_dim, &beta,
                       d_gate_f32, CUDA_R_32F, intermediate_dim,
                       CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         if (w3s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
     }
 
-    // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate (FP32)
+    // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate (FP32).
+    //    W2 stays on the FP32 path: its activation terms are large and
+    //    heavily cancelling, so FP16-rounding them shifts outputs beyond the
+    //    numeric contract (same rationale as the routed-expert W2).
     {
         int block = 256;
         int grid = (intermediate_dim + block - 1) / block;
@@ -270,8 +289,8 @@ cudaError_t run_shared_experts_ffn(
             intermediate_dim, 10.0f);
     }
 
-    // 6. Dequant W2 → d_dequant (reuse)
-    int w2_el = intermediate_dim * hidden_dim;
+    // 6. Dequant W2 → d_dequant (reuse, FP32 — overwrites the W1/W3 fp16
+    //    region; stream-ordered after the W3 GEMM that read it)
     if (w2_bytes > 0) {
         // W2: [hidden, intermediate] → cols = intermediate_dim
         cudaError_t e = dequant_shared_f8(stream, d_w2, w2_bytes,
@@ -279,13 +298,8 @@ cudaError_t run_shared_experts_ffn(
         if (e != cudaSuccess) return e;
     }
 
-    // 7. output = W2^T @ activated → d_output (FP16 output for hc_post)
-    // Pure FP32 GEMM (FP32 weights × FP32 activation → FP32) then convert to
-    // FP16, matching the routed-expert W2 pattern. cuBLAS rejects F32×F16.
+    // 7. output = W2^T @ activated → FP32 scratch → clamped FP16 output
     {
-        int b = 256;
-        // FP32 W2 output scratch located after [W2 weights][(reserved) act fp16]
-        float *d_w2out_f32 = d_dequant + w2_el + intermediate_dim / 2;
         cublasStatus_t wbst = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      hidden_dim, 1, intermediate_dim, &alpha,
                      d_dequant, CUDA_R_32F, intermediate_dim,
@@ -293,14 +307,10 @@ cudaError_t run_shared_experts_ffn(
                      d_w2out_f32, CUDA_R_32F, hidden_dim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         if (wbst != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-        int g2 = (hidden_dim + b - 1) / b;
-        float_to_half_kernel<<<g2, b, 0, stream>>>(
-            d_w2out_f32, d_output, hidden_dim);
-    }
-    {
         int b = 256;
-        int g = (hidden_dim + b - 1) / b;
-        clamp_half_kernel<<<g, b, 0, stream>>>(d_output, hidden_dim, 65504.0f);
+        int g2 = (hidden_dim + b - 1) / b;
+        clamp_f32_to_f16_moe_kernel<<<g2, b, 0, stream>>>(
+            d_w2out_f32, d_output, hidden_dim);
     }
     // Surface any launch error from the kernels above here instead of letting
     // it surface at an unrelated later checked call.
@@ -315,6 +325,12 @@ cudaError_t run_shared_experts_ffn(
 // passthrough path hardcodes 1.0 for already-quantized sources). Applies
 // act_quant (FP8_E4M3 emulation) to the input activation and to the
 // SwiGLU output before W2, matching the reference linear() pipeline.
+//
+// Blackwell perf: weights dequant straight to FP16 (E2M1 x E8M0 products are
+// exactly representable in FP16) and every GEMM runs as CUDA_R_16F inputs
+// with CUBLAS_COMPUTE_32F on the 5th-gen Tensor Cores. The per-128 activation
+// scales are folded into the (power-of-two-exact) activation instead of the
+// weights — see scale_act_blocks_kernel. GEMM outputs stay FP32 (no overflow).
 cudaError_t run_routed_expert_ffn(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_hidden,
@@ -333,56 +349,57 @@ cudaError_t run_routed_expert_ffn(
     float alpha = 1.0f, beta = 0.0f;
     const int block = 256;
 
+    // FP16 scratch carved from the (float-typed) d_dequant arena slice:
+    // [dequanted W1/W3 weights: w1_el halves][act fp16: kHiddenDim halves].
+    // The carve sits inside the W2 FP32 region but is only read by the W1/W3
+    // GEMMs, which complete (stream order) before the W2 dequant overwrites
+    // it. Callers allocate ≥ max(w*_el) floats, so the carve always fits.
+    __half* const d_w_half = reinterpret_cast<__half*>(d_dequant);
+    __half* const d_act_h  = d_w_half + kIntermediateDim * kHiddenDim;
+
     // ── Per-128 block activation quantization ──────────────────────────────
-    // Quantizes d_hidden → d_act_quant (FP8_E4M3), stores scales → d_act_scales
+    // Quantizes d_hidden → d_act_quant (FP8_E4M3, FP32) + d_act_h (FP16 copy),
+    // stores scales → d_act_scales. The per-128 act scales (powers of two)
+    // are then folded into the ACTIVATION (exact in FP16) rather than into
+    // the dequanted weights: E2M1×E8M0 weight products stay bit-exact in
+    // FP16, while folding the scale into small-magnitude weights would push
+    // them into the FP16 subnormal range and destroy their precision.
     {
         int n_blocks = (kHiddenDim + 127) / 128;
         act_quant_block_kernel<<<n_blocks, block, 0, stream>>>(
-            d_hidden, d_act_quant, d_act_scales, kHiddenDim);
+            d_hidden, d_act_quant, d_act_h, d_act_scales, kHiddenDim);
+        int grid = (kHiddenDim + block - 1) / block;
+        scale_act_blocks_kernel<<<grid, block, 0, stream>>>(
+            d_act_h, d_act_scales, kHiddenDim);
     }
 
-    // ── W1 GEMM: fuse act_scale into dequanted weights, then GEMM ──────────
+    // ── W1 GEMM: exact-FP16 weights × act-scaled activation ────────────────
     if (w1_el > 0) {
         int64_t packed_bytes = (w1_el + 1) / 2;
         int64_t scale_bytes  = (w1_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0(stream, d_w1, packed_bytes, d_w1_scales,
-                                          scale_bytes, d_dequant, w1_el);
+        cudaError_t de = dequant_fp4_e8m0_half(stream, d_w1, packed_bytes,
+            d_w1_scales, scale_bytes, d_w_half, w1_el);
         if (de != cudaSuccess) return de;
-        // Fuse per-128 act_scale into dequanted weights (W1: [inter, hidden], K=hidden)
-        {
-            int64_t N = kIntermediateDim, K = kHiddenDim;
-            int64_t total = N * K;
-            int grid = static_cast<int>((total + block - 1) / block);
-            fuse_act_scale_into_weights_kernel<<<grid, block, 0, stream>>>(
-                d_dequant, d_act_scales, N, K);
-        }
         cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
-                     d_dequant, CUDA_R_32F, kHiddenDim,
-                     d_act_quant, CUDA_R_32F, kHiddenDim, &beta,
+                     d_w_half, CUDA_R_16F, kHiddenDim,
+                     d_act_h, CUDA_R_16F, kHiddenDim, &beta,
                      d_gate_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         if (w1s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
     }
 
-    // ── W3 GEMM: fuse same act_scale into W3 dequanted weights ─────────────
+    // ── W3 GEMM: same exact-FP16 weights × act-scaled activation ───────────
     if (w3_el > 0) {
         int64_t packed_bytes = (w3_el + 1) / 2;
         int64_t scale_bytes  = (w3_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0(stream, d_w3, packed_bytes, d_w3_scales,
-                                          scale_bytes, d_dequant, w3_el);
+        cudaError_t de = dequant_fp4_e8m0_half(stream, d_w3, packed_bytes,
+            d_w3_scales, scale_bytes, d_w_half, w3_el);
         if (de != cudaSuccess) return de;
-        {
-            int64_t N = kIntermediateDim, K = kHiddenDim;
-            int64_t total = N * K;
-            int grid = static_cast<int>((total + block - 1) / block);
-            fuse_act_scale_into_weights_kernel<<<grid, block, 0, stream>>>(
-                d_dequant, d_act_scales, N, K);
-        }
         cublasStatus_t w3s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kIntermediateDim, 1, kHiddenDim, &alpha,
-                     d_dequant, CUDA_R_32F, kHiddenDim,
-                     d_act_quant, CUDA_R_32F, kHiddenDim, &beta,
+                     d_w_half, CUDA_R_16F, kHiddenDim,
+                     d_act_h, CUDA_R_16F, kHiddenDim, &beta,
                      d_up_f32, CUDA_R_32F, kIntermediateDim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         if (w3s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
@@ -399,22 +416,23 @@ cudaError_t run_routed_expert_ffn(
     }
 
     // ── W2 GEMM: pure FP32 matmul of dequantized W2 against the raw
-    // SwiGLU output. No act_scale fusion: the W2 activation (d_swiglu_out)
-    // is used at full FP32 precision and is NOT divided by any per-128 block
-    // scale, so the weights must stay unscaled. (Fusing the input's
-    // d_act_scales here — as the older quantized-activation path did — scaled
-    // every routed-expert output by ~act_scale≈2^-9, silently zeroing routed
-    // experts and leaving the model running on attention + shared experts
-    // only, which answered incorrectly.)
+    // SwiGLU output (FP32 accumulate/output). W2 deliberately stays on the
+    // FP32 CUDA-core path: routing-weighted SwiGLU terms are large and
+    // heavily cancelling, so FP16-rounding the W2 activation shifts outputs
+    // by up to ~3% — far outside the numeric contract that the W1/W3 exact-
+    // input path preserves. No act_scale fusion here either: the W2
+    // activation is NOT divided by any per-128 block scale, so the weights
+    // must stay unscaled. (Fusing the input's d_act_scales — as an older
+    // quantized-activation path did — scaled every routed-expert output by
+    // ~act_scale≈2^-9, silently zeroing routed experts.)
     if (w2_el > 0) {
         int64_t packed_bytes = (w2_el + 1) / 2;
         int64_t scale_bytes  = (w2_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0(stream, d_w2, packed_bytes, d_w2_scales,
-                                          scale_bytes, d_dequant, w2_el);
+        cudaError_t de = dequant_fp4_e8m0(stream, d_w2, packed_bytes,
+                                          d_w2_scales, scale_bytes,
+                                          d_dequant, w2_el);
         if (de != cudaSuccess) return de;
 
-        // Pure FP32 GEMM: FP32 weights × FP32 activation → FP32 output
-        // Use d_swiglu_out directly as activation input (already FP32)
         float gbeta = accumulate ? 1.0f : 0.0f;
         cublasStatus_t w2s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      kHiddenDim, 1, kIntermediateDim, &alpha,
@@ -547,8 +565,11 @@ cudaError_t route_token(
 // Runs the top-k routed experts for one token and accumulates their weighted
 // outputs into d_output (which must already hold the shared-expert result).
 // Expert host pointers come from the mmap'd ExpertDb; all 6 tensors of an
-// expert are staged into device scratch buffers at fixed offsets.
-cudaError_t run_routed_experts(
+// expert are staged into device scratch buffers at fixed offsets — unless the
+// expert already lives in the resident device cache (@p cache), in which case
+// the H2D copies are skipped entirely and the cached slot is addressed
+// directly (single-stream ordering makes slot reuse safe).
+cudaError_t run_routed_experts_ex(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
@@ -560,7 +581,8 @@ cudaError_t run_routed_experts(
     float *d_swiglu_out,
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
-    int64_t pack_stage_bytes, int64_t scale_stage_bytes)
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes,
+    const ExpertDeviceCache *cache)
 {
     const int64_t w1_el = static_cast<int64_t>(kHiddenDim) * kIntermediateDim;
     const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
@@ -585,37 +607,97 @@ cudaError_t run_routed_experts(
         const int64_t s1b = en.w1_scales_bytes, s2b = en.w2_scales_bytes, s3b = en.w3_scales_bytes;
         if (w1b <= 0 || w2b <= 0 || w3b <= 0 || s1b <= 0 || s2b <= 0 || s3b <= 0)
             continue;
-        if (w1b + w2b + w3b > pack_stage_bytes || s1b + s2b + s3b > scale_stage_bytes)
-            continue;
 
-        uint8_t *p1 = d_pack_stage;
-        uint8_t *p2 = d_pack_stage + w1b;
-        uint8_t *p3 = d_pack_stage + w1b + w2b;
-        uint8_t *s1 = d_scale_stage;
-        uint8_t *s2 = d_scale_stage + s1b;
-        uint8_t *s3 = d_scale_stage + s1b + s2b;
+        uint8_t *p1, *p2, *p3, *s1, *s2, *s3;
 
-        cudaError_t e = cudaSuccess;
-        e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(p2, en.host_w2, static_cast<size_t>(w2b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(p3, en.host_w3, static_cast<size_t>(w3b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(s3, en.host_w3_scales, static_cast<size_t>(s3b),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return e;
+        // ── Resolve source pointers: resident cache hit or H2D staging ──────
+        int cache_slot = -1;
+        bool use_cache = false;
+        if (cache && cache->slots > 0
+            && w1b + w2b + w3b <= cache->pack_stride
+            && s1b + s2b + s3b <= cache->scale_stride) {
+            const int flat = static_cast<int>(layer) * experts_per_layer + idx;
+            if (flat >= 0 && flat < cache->total_experts)
+                cache_slot = cache->h_slot_of[flat];
+            if (cache_slot < 0) {
+                // Miss: evict the LRU tail slot and stage the expert into it.
+                cache_slot = cache->h_lru[cache->slots - 1];
+                const int victim = cache->h_slot_owner[cache_slot];
+                if (victim >= 0 && victim < cache->total_experts)
+                    cache->h_slot_of[victim] = -1;
+                p1 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
+                s1 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
+                cudaError_t e = cudaSuccess;
+                e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(p1 + w1b, en.host_w2, static_cast<size_t>(w2b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(p1 + w1b + w2b, en.host_w3, static_cast<size_t>(w3b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(s1 + s1b, en.host_w2_scales, static_cast<size_t>(s2b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(s1 + s1b + s2b, en.host_w3_scales, static_cast<size_t>(s3b),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                cache->h_slot_of[flat] = cache_slot;
+                cache->h_slot_owner[cache_slot] = flat;
+            }
+            // Move the slot to the MRU front.
+            for (int i = 0; i < cache->slots; ++i) {
+                if (cache->h_lru[i] == cache_slot) {
+                    for (int j = i; j > 0; --j)
+                        cache->h_lru[j] = cache->h_lru[j - 1];
+                    cache->h_lru[0] = cache_slot;
+                    break;
+                }
+            }
+            p1 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
+            p2 = p1 + w1b;
+            p3 = p2 + w2b;
+            s1 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
+            s2 = s1 + s1b;
+            s3 = s2 + s2b;
+            use_cache = true;
+        }
+        if (!use_cache) {
+            if (w1b + w2b + w3b > pack_stage_bytes || s1b + s2b + s3b > scale_stage_bytes)
+                continue;
+            p1 = d_pack_stage;
+            p2 = d_pack_stage + w1b;
+            p3 = d_pack_stage + w1b + w2b;
+            s1 = d_scale_stage;
+            s2 = d_scale_stage + s1b;
+            s3 = d_scale_stage + s1b + s2b;
 
-        e = run_routed_expert_ffn(cublas_h, stream, d_normed,
+            cudaError_t e = cudaSuccess;
+            e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(p2, en.host_w2, static_cast<size_t>(w2b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(p3, en.host_w3, static_cast<size_t>(w3b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(s3, en.host_w3_scales, static_cast<size_t>(s3b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+        }
+
+        cudaError_t e = run_routed_expert_ffn(cublas_h, stream, d_normed,
             p1, s1, w1_el,
             p2, s2, w2_el,
             p3, s3, w3_el,
@@ -625,6 +707,31 @@ cudaError_t run_routed_experts(
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
+}
+
+// Legacy entry point (no resident cache) — kept stable for existing callers
+// and tests; the production pipeline uses run_routed_experts_ex with a cache.
+cudaError_t run_routed_experts(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_normed,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, const float *h_top_weights, int topk,
+    float *d_output,
+    float *d_gate_f32, float *d_up_f32,   // FP32 W1/W3 outputs
+    float *d_dequant,
+    float *d_act_quant,                  // FP32 activation
+    float *d_swiglu_out,
+    float *d_act_scales,
+    uint8_t *d_pack_stage, uint8_t *d_scale_stage,
+    int64_t pack_stage_bytes, int64_t scale_stage_bytes)
+{
+    return run_routed_experts_ex(cublas_h, stream, d_normed,
+        db_entries, layer, experts_per_layer,
+        h_top_indices, h_top_weights, topk,
+        d_output, d_gate_f32, d_up_f32, d_dequant,
+        d_act_quant, d_swiglu_out, d_act_scales,
+        d_pack_stage, d_scale_stage, pack_stage_bytes, scale_stage_bytes,
+        nullptr);
 }
 
 } // namespace gpu

@@ -46,12 +46,15 @@ __global__ void argmax_kernel(const float *logits, int32_t *out_idx,
     }
 }
 
-// Compute LM head: logits = head_weight @ hidden (FP16 GEMM) + argmax
+// Compute LM head: logits = head_weight @ hidden (FP16 GEMM) + optional argmax
 // head_weight: [vocab_size, hidden_dim] column-major (lda = vocab_size)
 // hidden: [hidden_dim, 1]
 // logits: [vocab_size, 1] (float32 output)
 // d_next_token / d_next_maxv: device scalars the caller reads back (8 bytes
-// total) instead of the whole `vocab_size`-sized logits buffer.
+// total) instead of the whole `vocab_size`-sized logits buffer. Pass
+// d_next_token == nullptr to skip the fused argmax entirely (e.g. when a
+// sampler runs its own reduction over d_logits right after — avoids a
+// duplicate full-vocab scan per token).
 cudaError_t run_lm_head(
     cublasHandle_t cublas_h,
     cudaStream_t stream,
@@ -75,6 +78,8 @@ cudaError_t run_lm_head(
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     if (stat != CUBLAS_STATUS_SUCCESS)
         return cudaErrorUnknown;
+
+    if (!d_next_token) return cudaGetLastError();
 
     int block = 256;
     size_t shared_sz = static_cast<size_t>(block) * (sizeof(float) + sizeof(int));

@@ -72,6 +72,9 @@ __global__ void GlmRmsNormKernel(const __half *__restrict__ x,
 // FP64-accumulate FP16 GEMM: out[t][i] = H((float)Σ_q F(w[i][q])·F(x[t][q]))
 // over ascending q — bit-exact mirror of the host MatMulFp16. w row-major
 // [m, k], x row-major [k, n], out column-major [m, n]. -fmad=false (no DFMA).
+// Loads are vectorized (uint4 = 8 halves); GLM geometry keeps k a multiple of
+// 8 so every row base stays 16-byte aligned, and the ascending-q accumulation
+// order is preserved exactly (vector loads only widen the memory transactions).
 __global__ void GlmGemmFp64Kernel(const __half *__restrict__ w,
                                   const __half *__restrict__ x,
                                   __half *__restrict__ out,
@@ -86,7 +89,18 @@ __global__ void GlmGemmFp64Kernel(const __half *__restrict__ w,
     const __half *wr = w + static_cast<int64_t>(i) * k;
     const __half *xr = x + static_cast<int64_t>(t) * k;
     double acc = 0.0;
-    for (int q = 0; q < k; ++q)
+    int q = 0;
+    for (; q + 8 <= k; q += 8) {
+        const uint4 wv = *reinterpret_cast<const uint4 *>(wr + q);
+        const uint4 xv = *reinterpret_cast<const uint4 *>(xr + q);
+        const __half *wh = reinterpret_cast<const __half *>(&wv);
+        const __half *xh = reinterpret_cast<const __half *>(&xv);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            acc += static_cast<double>(__half2float(wh[j])) *
+                   static_cast<double>(__half2float(xh[j]));
+    }
+    for (; q < k; ++q)
         acc += static_cast<double>(__half2float(wr[q])) *
                static_cast<double>(__half2float(xr[q]));
     out[idx] = __float2half(static_cast<float>(acc));

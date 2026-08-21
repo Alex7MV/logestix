@@ -35,7 +35,7 @@ __device__ __forceinline__ float softplus_dev(float x)
 // ── RMSNorm, offset-weight form: out = rmsnorm(x) * (1 + w) ────────────────
 // grid-stride reduction: each thread processes multiple elements when
 // hidden > blockDim.x (supports arbitrary hidden up to 4096+).
-__global__ void rmsnorm_offset_kernel(const __half *x, const __half *w,
+__global__ void rmsnorm_offset_kernel(const __half *__restrict__ x, const __half *__restrict__ w,
                                       __half *out, int rows, int hidden,
                                       double eps)
 {
@@ -66,7 +66,7 @@ __global__ void rmsnorm_offset_kernel(const __half *x, const __half *w,
 
 // ── RMSNormGated: out = rmsnorm(x) * head * silu(z) ────────────────────────
 // grid-stride reduction (same pattern).
-__global__ void rmsnorm_gated_kernel(const __half *x, const __half *z,
+__global__ void rmsnorm_gated_kernel(const __half *__restrict__ x, const __half *__restrict__ z,
                                      const __half *whead, __half *out,
                                      int rows, int dim, double eps)
 {
@@ -97,7 +97,7 @@ __global__ void rmsnorm_gated_kernel(const __half *x, const __half *z,
 }
 
 // ── RoPE cos/sin (partial rotary, dims = rotary_dim) ───────────────────────
-__global__ void rope_cos_sin_kernel(const int32_t *pos, __half *cos_buf,
+__global__ void rope_cos_sin_kernel(const int32_t *__restrict__ pos, __half *__restrict__ cos_buf,
                                     __half *sin_buf, int seq, int rotary_dim,
                                     double theta)
 {
@@ -115,7 +115,7 @@ __global__ void rope_cos_sin_kernel(const int32_t *pos, __half *cos_buf,
     }
 }
 
-__global__ void partial_rope_kernel(const __half *q, const __half *k,
+__global__ void partial_rope_kernel(const __half *__restrict__ q, const __half *__restrict__ k,
                                     const __half *cos_buf, const __half *sin_buf,
                                     __half *q_out, __half *k_out,
                                     int seq, int q_heads, int k_heads,
@@ -183,7 +183,7 @@ __global__ void partial_rope_kernel(const __half *q, const __half *k,
 }
 
 // ── Embed ───────────────────────────────────────────────────────────────────
-__global__ void embed_kernel(const __half *embed, const int32_t *ids,
+__global__ void embed_kernel(const __half *__restrict__ embed, const int32_t *__restrict__ ids,
                              __half *out, int seq, int hidden)
 {
     const int64_t total = (int64_t)seq * hidden;
@@ -200,7 +200,7 @@ __global__ void embed_kernel(const __half *embed, const int32_t *ids,
 // causal: out[t][c] = sum_{k=0..kernel-1} mixed[kv_base+t-k][c] * w[c][k]
 //         (skip rows < 0). kv_base offsets the history read for incremental
 //         decode; kv_base == 0 keeps the transient full-recompute semantics.
-__global__ void qwen_conv1d_kernel(const __half *mixed, const __half *w,
+__global__ void qwen_conv1d_kernel(const __half *__restrict__ mixed, const __half *__restrict__ w,
                                    __half *out, int seq, int conv_dim,
                                    int kernel, int kv_base)
 {
@@ -227,8 +227,8 @@ __global__ void qwen_conv1d_kernel(const __half *mixed, const __half *w,
 // it corrupted softmax weights -> 0/0 -> NaN, which poisoned the residual
 // stream and made generation non-deterministic).
 __global__ void full_attn_softmax_kernel(
-    const __half *q, const __half *k, const __half *v,
-    __half *out, int seq, int heads, int head_dim, int kv_heads, float scale,
+    const __half *__restrict__ q, const __half *__restrict__ k, const __half *__restrict__ v,
+    __half *__restrict__ out, int seq, int heads, int head_dim, int kv_heads, float scale,
     int kv_base)
 {
     const int t = blockIdx.x;
@@ -391,8 +391,8 @@ using gpu::nvfp4::E4M3ScaleToFloat;
 // [N, K] row-major weight with per-16 E4M3 block scales + global_scale.
 // x: [seq, K] FP16; y: [seq, N] FP16 (FP32 accumulate).
 __global__ void qwen_nvfp4_gemm_kernel(
-    const __half *x, const uint8_t *packed, const uint8_t *scales,
-    float global_scale, __half *y, int seq, int K, int N, bool acc_in)
+    const __half *__restrict__ x, const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
+    float global_scale, __half *__restrict__ y, int seq, int K, int N, bool acc_in)
 {
     const int64_t total = (int64_t)seq * N;
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -422,8 +422,8 @@ __global__ void qwen_nvfp4_gemm_kernel(
 // a single register per thread — no per-thread array, no bank-pressure.
 template <int BM, int BN, int BK>
 __global__ void qwen_nvfp4_gemm_tile_kernel(
-    const __half *x, const uint8_t *packed, const uint8_t *scales,
-    float global_scale, __half *y, int seq, int K, int N, bool acc_in)
+    const __half *__restrict__ x, const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
+    float global_scale, __half *__restrict__ y, int seq, int K, int N, bool acc_in)
 {
     static_assert(BM * BN == 256, "one thread per output element (256)");
 
@@ -499,7 +499,7 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
 }
 
 // elementwise: dst[i] += src[i].
-__global__ void qwen_add_kernel(const __half *src, __half *dst, int64_t n)
+__global__ void qwen_add_kernel(const __half *__restrict__ src, __half *__restrict__ dst, int64_t n)
 {
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
@@ -519,9 +519,9 @@ cudaError_t LaunchNorm1d(const __half *x, const __half *w, __half *y,
 // half), reshaping query to [seq, NH, HD], and applies per-head RMSNorm.
 // d_k_norm unused (key norm done separately); primal q_norm applied here.
 __global__ void qwen_split_query_kernel(
-    const __half *d_qc, __half *d_gate, __half *d_q,
-    const __half *d_k_norm, int seq, int NH, int HD, const __half *d_q_norm,
-    const __half *d_k_norm2, float eps)
+    const __half *__restrict__ d_qc, __half *__restrict__ d_gate, __half *__restrict__ d_q,
+    const __half *__restrict__ d_k_norm, int seq, int NH, int HD, const __half *__restrict__ d_q_norm,
+    const __half *__restrict__ d_k_norm2, float eps)
 {
     const int64_t idx = (int64_t)blockIdx.x;      // t*NH + h
     const int h = (int)(idx % NH);
@@ -553,7 +553,7 @@ __global__ void qwen_split_query_kernel(
 }
 
 // Per-head RMSNorm offset form on [seq, NH, HD] (in place).
-__global__ void qwen_head_norm_kernel(const __half *x, const __half *w,
+__global__ void qwen_head_norm_kernel(const __half *__restrict__ x, const __half *__restrict__ w,
                                       __half *y, int seq, int NH, int HD,
                                       float eps)
 {
@@ -578,8 +578,8 @@ __global__ void qwen_head_norm_kernel(const __half *x, const __half *w,
 //   a_in -> a[h]; b_in -> b[h]; g = -exp(A_log[h])*softplus(a+dt[h]),
 //   beta = sigmoid(b). h = e % nv.
 __global__ void qwen_prep_gating_kernel(
-    const __half *a_in, const __half *b_in, const float *A_log,
-    const float *dt_bias, float *g, float *beta, int64_t total, int nv)
+    const __half *__restrict__ a_in, const __half *__restrict__ b_in, const float *__restrict__ A_log,
+    const float *__restrict__ dt_bias, float *__restrict__ g, float *__restrict__ beta, int64_t total, int nv)
 {
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) return;
@@ -594,7 +594,7 @@ __global__ void qwen_prep_gating_kernel(
 // buffer (row stride = `stride`, head offset = `head_off`), then multiply by
 // extra_scale (1/sqrt(kd) for q, 1 for k). Mirrors HF l2norm(eps=1e-6).
 // Grid: (seq, nk); one thread per element. blockDim is a power of 2 >= kd.
-__global__ void qwen_l2norm_rows_kernel(__half *base, int seq, int nk, int kd,
+__global__ void qwen_l2norm_rows_kernel(__half *__restrict__ base, int seq, int nk, int kd,
                                         int stride, int head_off,
                                         float extra_scale)
 {
@@ -835,7 +835,7 @@ __global__ void fused_o_proj_kernel(
 }
 
 // Convert a float accumulator row [H] to half out [H].
-__global__ void qwen_f2h_acc_kernel(const float *in, __half *out, int n)
+__global__ void qwen_f2h_acc_kernel(const float *__restrict__ in, __half *__restrict__ out, int n)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) out[idx] = __float2half(in[idx]);
@@ -1065,8 +1065,11 @@ cudaError_t RunQwenFusedQkv(
         NH <= 0 || NKV <= 0 || HD <= 0 || H <= 0 || kv_base < 0 ||
         rotary_dim < 0 || rotary_dim > 512)
         return cudaErrorInvalidValue;
-    __half *d_tmp;
-    if (cudaMalloc(&d_tmp, (size_t)H * 2) != cudaSuccess)
+    // Stream-ordered allocation: pool-backed, non-synchronizing (~1µs) — the
+    // old cudaMalloc/cudaFree pair could implicitly synchronize the device
+    // and ran once per layer per token.
+    __half *d_tmp = nullptr;
+    if (cudaMallocAsync(&d_tmp, (size_t)H * 2, stream) != cudaSuccess)
         return cudaErrorMemoryAllocation;
     const int th = std::min(H, 256);
     rmsnorm_offset_kernel<<<1, th, th * sizeof(float), stream>>>(
@@ -1078,7 +1081,7 @@ cudaError_t RunQwenFusedQkv(
             NH, NKV, HD, H, eps, kv_k, kv_v, q_gl, gate_gl);
         e = cudaGetLastError();
     }
-    cudaFree(d_tmp);
+    cudaFreeAsync(d_tmp, stream);
     return e;
 }
 
@@ -1176,16 +1179,19 @@ cudaError_t RunQwenFusedDecodeAttnKernel(
     const int rot = (int)(HD * top.partial_rotary_factor);
     const float scale = 1.0f / std::sqrt((float)HD);
 
-    __half *d_q, *d_gate, *d_out_h;
-    float *d_out_acc;
-    if (cudaMalloc(&d_q,       (size_t)NH * HD * 2) != cudaSuccess)
+    // Stream-ordered workspace (pool-backed, non-synchronizing): the old
+    // cudaMalloc/cudaFree quartet ran once per attention layer per token and
+    // could implicitly synchronize the device.
+    __half *d_q = nullptr, *d_gate = nullptr, *d_out_h = nullptr;
+    float *d_out_acc = nullptr;
+    if (cudaMallocAsync(&d_q,       (size_t)NH * HD * 2, stream) != cudaSuccess)
         return cudaErrorMemoryAllocation;
-    if (cudaMalloc(&d_gate,    (size_t)NH * HD * 2) != cudaSuccess)
-        { cudaFree(d_q); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&d_out_h,   (size_t)NH * HD * 2) != cudaSuccess)
-        { cudaFree(d_q); cudaFree(d_gate); return cudaErrorMemoryAllocation; }
-    if (cudaMalloc(&d_out_acc, (size_t)H * 4)       != cudaSuccess)
-        { cudaFree(d_q); cudaFree(d_gate); cudaFree(d_out_h); return cudaErrorMemoryAllocation; }
+    if (cudaMallocAsync(&d_gate,    (size_t)NH * HD * 2, stream) != cudaSuccess)
+        { cudaFreeAsync(d_q, stream); return cudaErrorMemoryAllocation; }
+    if (cudaMallocAsync(&d_out_h,   (size_t)NH * HD * 2, stream) != cudaSuccess)
+        { cudaFreeAsync(d_q, stream); cudaFreeAsync(d_gate, stream); return cudaErrorMemoryAllocation; }
+    if (cudaMallocAsync(&d_out_acc, (size_t)H * 4, stream) != cudaSuccess)
+        { cudaFreeAsync(d_q, stream); cudaFreeAsync(d_gate, stream); cudaFreeAsync(d_out_h, stream); return cudaErrorMemoryAllocation; }
 
     cudaError_t e = RunQwenFusedQkv(
         stream, x, lw.q, lw.k, lw.v, lw.d_q_norm, lw.d_k_norm,
@@ -1198,7 +1204,8 @@ cudaError_t RunQwenFusedDecodeAttnKernel(
         e = RunQwenFusedOProj(stream, d_out_h, lw.o, d_out_acc, out,
                               NH, HD, H);
 
-    cudaFree(d_q); cudaFree(d_gate); cudaFree(d_out_h); cudaFree(d_out_acc);
+    cudaFreeAsync(d_q, stream); cudaFreeAsync(d_gate, stream);
+    cudaFreeAsync(d_out_h, stream); cudaFreeAsync(d_out_acc, stream);
     return e;
 }
 
@@ -1763,9 +1770,14 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     // Wall-clock timing (stream-delta): t_start at entry, t_ttft at the first
     // generated token, t_stop after the final decode row.
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
-    cudaEventCreate(&t_start);
-    cudaEventCreate(&t_ttft);
-    cudaEventCreate(&t_stop);
+   cudaEventCreate(&t_start);
+   cudaEventCreate(&t_ttft);
+   cudaEventCreate(&t_stop);
+   // One persistent event for the per-token D2H handshake (created/destroyed
+   // once per run instead of once per token — the create/destroy pair is a
+   // ~µs driver call that used to run inside the generation loop).
+   cudaEvent_t tok_ready = nullptr;
+   cudaEventCreate(&tok_ready);
     cudaEventRecord(t_start, stream);
     auto fail = [&](cudaError_t err, std::string msg) -> cudaError_t {
         result.error_msg = std::move(msg);
@@ -1850,13 +1862,10 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
 
             // Publish first generated token id (async, synchronized via event below).
             int32_t tok = 0;
-            cudaEvent_t tok_ready;
-            cudaEventCreate(&tok_ready);
             cudaMemcpyAsync(&tok, d_argmax, sizeof(int32_t),
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready, stream);
             cudaEventSynchronize(tok_ready);
-            cudaEventDestroy(tok_ready);
             if (step == 0) cudaEventRecord(t_ttft, stream);
             result.tokens.push_back(tok);
             if (tok == eos_id) {
@@ -1961,13 +1970,10 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    d_argmax, d_maxv_scratch);
                 if (e != cudaSuccess) return fail(e, "argmax");
                 int32_t gtok = 0;
-                cudaEvent_t tok_ready;
-                cudaEventCreate(&tok_ready);
                 cudaMemcpyAsync(&gtok, d_argmax, sizeof(int32_t),
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready, stream);
                 cudaEventSynchronize(tok_ready);
-                cudaEventDestroy(tok_ready);
                 tok = gtok;
                 if (generated == 0) cudaEventRecord(t_ttft, stream);
                 result.tokens.push_back(tok);
@@ -2011,6 +2017,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     cudaEventDestroy(t_start);
     cudaEventDestroy(t_ttft);
     cudaEventDestroy(t_stop);
+    if (tok_ready) cudaEventDestroy(tok_ready);
     result.resident_bytes = pw.resident_bytes + half_bytes
                             + float_bytes + sizeof(int32_t)
                             + (is_incr ? kv->Bytes() : 0);

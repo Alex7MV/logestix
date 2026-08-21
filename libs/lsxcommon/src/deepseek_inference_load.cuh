@@ -94,10 +94,41 @@ ExpertDb load_expert_index(const std::string &model_path,
 // engine has finished reading the source buffer yet. Without this barrier,
 // evicting (munmap-ing) an entry whose async H2D copy is still in flight is a
 // use-after-free read of unmapped host memory from the GPU's DMA engine.
+// @p evict_done, when non-null, releases that barrier via cudaEventRecord +
+// cudaStreamWaitEvent instead of a full host-blocking cudaStreamSynchronize.
 void ensure_expert_resident(ExpertDb &db, int layer, int expert,
-                            cudaStream_t stream);
+                            cudaStream_t stream,
+                            cudaEvent_t evict_done = nullptr);
 // Release all expert mmaps (frees CRT file descriptors).
 void free_expert_index(ExpertDb &db);
+
+// ── Device-side resident-expert cache (Blackwell H2D-traffic elimination) ────
+// Keeps the packed NVFP4 payloads + E8M0 scales of the hottest routed experts
+// resident in VRAM so repeated selections skip the ~13 MB per-expert H2D
+// staging entirely. All device access happens on the caller's single compute
+// stream, so stream ordering alone makes slot reuse safe (a slot is only
+// overwritten by copies enqueued after every prior kernel reading it).
+// Host bookkeeping only — no device-side structures, no absl (NVCC-safe).
+struct ExpertDeviceCache {
+    uint8_t* d_base = nullptr;        // one device block: [pack region][scale region]
+    uint8_t* d_pack = nullptr;        // [slots][pack_stride]
+    uint8_t* d_scale = nullptr;       // [slots][scale_stride]
+    int slots = 0;
+    int64_t pack_stride = 0;
+    int64_t scale_stride = 0;
+    int total_experts = 0;
+    // Host bookkeeping (caller-owned storage; pipeline wires std::vector data()).
+    int32_t* h_slot_of = nullptr;     // [total_experts] flat idx -> slot, -1 = miss
+    int32_t* h_slot_owner = nullptr;  // [slots] flat idx or -1
+    int32_t* h_lru = nullptr;         // [slots]; h_lru[0] = MRU slot
+
+    std::size_t DeviceBytes() const
+    {
+        return slots > 0
+            ? static_cast<std::size_t>(slots * (pack_stride + scale_stride))
+            : 0;
+    }
+};
 
 inline int moe_route(int token_idx, int layer_idx, int experts_per_layer)
 {
@@ -139,6 +170,54 @@ static __global__ void float_to_half_kernel(
 {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) dst[i] = __float2half(src[i]);
+}
+
+// Block-wide sum reduction via warp shuffles: log2(warps) barriers instead of
+// a full shared-memory tree walk. Requires blockDim.x % 32 == 0 and an array
+// of blockDim.x/32 floats. Deterministic (fixed butterfly order).
+__device__ __forceinline__ float lsx_block_reduce_sum(float v, float* s_warp)
+{
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
+    if (lane == 0) s_warp[warp] = v;
+    __syncthreads();
+    const int nwarp = blockDim.x >> 5;
+    if (warp == 0) {
+        float w = (lane < nwarp) ? s_warp[lane] : 0.0f;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            w += __shfl_xor_sync(0xFFFFFFFFu, w, off);
+        if (lane == 0) s_warp[0] = w;
+    }
+    __syncthreads();
+    return s_warp[0];
+}
+
+// Fused FP16 RMSNorm: half in → FP32 square-sum (shuffle reduction) →
+// normalize × gamma → clamp → half out. Replaces the 4-launch bridge
+// (convert-in, gamma convert, fp32 rmsnorm, clamp-out) with one kernel.
+static __global__ void __launch_bounds__(256)
+rmsnorm_half_fused_kernel(const __half* __restrict__ x,
+                           const __half* __restrict__ gamma,
+                           __half* __restrict__ out, int dim, float eps)
+{
+    __shared__ float s_red[32];
+    const int tid = threadIdx.x;
+    float ss = 0.0f;
+    for (int i = tid; i < dim; i += blockDim.x) {
+        const float v = __half2float(x[i]);
+        ss += v * v;
+    }
+    const float total = lsx_block_reduce_sum(ss, s_red);
+    const float inv = rsqrtf(total / static_cast<float>(dim) + eps);
+    for (int i = tid; i < dim; i += blockDim.x) {
+        float v = __half2float(x[i]) * inv * __half2float(gamma[i]);
+        v = fmaxf(-65504.0f, fminf(65504.0f, v));
+        out[i] = __float2half(v);
+    }
 }
 #endif  // __CUDACC__
 
@@ -319,12 +398,16 @@ cudaError_t load_pinned_weights(const std::string &model_path,
                                  cudaStream_t stream);
 
 // ── deepseek_inference_attn.cu ───────────────────────────────────────────────
-// Hyper-Connections (HC) — HC state stored in FP32 for numerical stability
+// Hyper-Connections (HC) — HC state stored in FP32 for numerical stability.
+// run_hc_pre / run_hc_head are two-phase (GPU-wide partials + finalize) and
+// need a small FP32 scratch of ≥ (kHcMix + 2) * 32 floats; the caller's
+// d_norm_scratch is safe to pass (stream ordering: rmsnorm runs strictly
+// after hc_pre completes).
 cudaError_t run_hc_pre(cudaStream_t stream,
                        const float *d_state, const float *d_fn,
                        const float *d_scale, const float *d_base,
                        __half *d_single, float *d_post, float *d_comb,
-                       float *d_pre);
+                       float *d_pre, float *d_scratch);
 
 cudaError_t run_hc_post(cudaStream_t stream,
                          const float *d_x, const float *d_residual,
@@ -334,7 +417,7 @@ cudaError_t run_hc_post(cudaStream_t stream,
 cudaError_t run_hc_head(cudaStream_t stream,
                         const float *d_state, const float *d_fn,
                         const float *d_scale, const float *d_base,
-                        __half *d_single);
+                        __half *d_single, float *d_scratch);
 
 cudaError_t run_expand_hc(cudaStream_t stream,
                           const __half *d_single, float *d_state);

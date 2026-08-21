@@ -115,9 +115,10 @@ __device__ uint8_t dev_quantize_nvfp4(float val)
 
 // ── Kernels ──────────────────────────────────────────────────────────────────
 
-__global__ void convert_kernel(const uint8_t *input, float *output,
+__global__ void convert_kernel(const uint8_t *__restrict__ input,
+                               float *__restrict__ output,
                                int64_t n, int dtype_code,
-                               const uint8_t *e8m0_scales,
+                               const uint8_t *__restrict__ e8m0_scales,
                                int64_t C, int64_t SC, int64_t block_r,
                                int64_t block_c)
 {
@@ -147,32 +148,30 @@ __global__ void convert_kernel(const uint8_t *input, float *output,
     }
 }
 
-__global__ void block_maxabs_kernel(const float *input, float *block_max,
-                                     int64_t nblocks, int64_t numel)
+// One thread reduces one 16-element block sequentially (grid-stride over
+// blocks). The previous version launched 16-thread blocks — ~786k micro-blocks
+// for a 12.6M-element expert matrix, capping occupancy at ≤25% of Blackwell's
+// per-SM thread budget and drowning the 4-instruction payload in scheduling
+// overhead.
+__global__ void __launch_bounds__(256)
+block_maxabs_kernel(const float *__restrict__ input, float *__restrict__ block_max,
+                     int64_t nblocks, int64_t numel)
 {
-    __shared__ float sdata[16];
-
-    int64_t blk = blockIdx.x;
-    int64_t base = blk * kBlockSize;
-    int64_t idx = base + threadIdx.x;
-
-    sdata[threadIdx.x] = (idx < numel) ? fabsf(input[idx]) : 0.0f;
-    __syncthreads();
-
-    for (int s = kBlockSize / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s)
-            sdata[threadIdx.x] = fmaxf(sdata[threadIdx.x],
-                                        sdata[threadIdx.x + s]);
-        __syncthreads();
+    const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+    for (int64_t blk = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         blk < nblocks; blk += stride) {
+        const int64_t base = blk * kBlockSize;
+        const int64_t end = min(base + kBlockSize, numel);
+        float m = 0.0f;
+        for (int64_t idx = base; idx < end; ++idx)
+            m = fmaxf(m, fabsf(input[idx]));
+        block_max[blk] = m;
     }
-
-    if (threadIdx.x == 0)
-        block_max[blk] = sdata[0];
 }
 
-__global__ void quantize_pack_perblock_kernel(const float *input,
-                                               uint8_t *output,
-                                               const float *block_scales,
+__global__ void quantize_pack_perblock_kernel(const float *__restrict__ input,
+                                               uint8_t *__restrict__ output,
+                                               const float *__restrict__ block_scales,
                                                int64_t n)
 {
     int64_t i = (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 2;
@@ -330,9 +329,15 @@ bool quantize_tensor_gpu(const uint8_t *raw_data, int64_t numel,
         use_e8m0 ? d_e8m0 : nullptr, C, SC, block_r, block_c);
     if (cudaGetLastError() != cudaSuccess) return fail();
 
-    // 3. Per-block max_abs
-    block_maxabs_kernel<<<static_cast<int>(nblocks), kBlockSize, 0, stream>>>(
-        d_float, d_block_max, nblocks, numel);
+    // 3. Per-block max_abs (one thread per 16-element block, grid-stride)
+    {
+        const int threads = 256;
+        const int64_t nthreads64 = (nblocks + threads - 1) / threads;
+        const int blocks = static_cast<int>(std::min<int64_t>(
+            nthreads64, 65535LL * 16));
+        block_maxabs_kernel<<<blocks, threads, 0, stream>>>(
+            d_float, d_block_max, nblocks, numel);
+    }
     if (cudaGetLastError() != cudaSuccess) return fail();
 
     // 4. Sync stream so block_max is ready for host readback
