@@ -155,6 +155,14 @@ cudaError_t RunQwenMLP(
     const QwenLayerWeights &lw, int seq,
     const __half *d_in, __half *d_out, __half *d_scratch);
 
+// Fused MLP layer: takes the ALREADY post-RMSNormed input stream (d_in) and
+// accumulates the down-projection INTO d_resid (the residual stream) via the
+// acc-down GEMM, absorbing the separate residual add. d_scratch is [2*seq*I].
+cudaError_t RunQwenFusedMLP(
+    cudaStream_t stream, const QwenLayerWeights &lw,
+    const QwenTopology &top, int seq,
+    const __half *d_in, __half *d_resid, __half *d_scratch);
+
 // ── Generation ──────────────────────────────────────────────────────────────
 
 struct QwenGenerationResult {

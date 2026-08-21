@@ -1015,6 +1015,48 @@ cudaError_t RunQwenMLP(cudaStream_t stream,
     return e;
 }
 
+// Fused MLP layer. Takes d_in as the ALREADY post-RMSNormed input stream and
+// accumulates the down-projection INTO d_resid (the residual stream) via the
+// GEMM's acc=true path, absorbing the separate qwen_add residual. This mirrors
+// RunQwenMLP except the final down-GEMM writes resid (d_resid) rather than a
+// separate output buffer that the caller then adds. `top` is reserved for
+// future use (geometry is read from `lw`).
+cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
+                            const QwenTopology &top, int seq,
+                            const __half *d_in, __half *d_resid, __half *d_scratch)
+{
+    (void)top;
+    if (!lw.loaded || !d_in || !d_resid || !d_scratch || seq <= 0)
+        return cudaErrorInvalidValue;
+    const int H = lw.mlp_gate.cols;   // input hidden dim
+    const int I = lw.mlp_gate.rows;   // intermediate
+    if (H <= 0 || I <= 0) return cudaErrorInvalidValue;
+    if (!lw.mlp_gate.d_packed || !lw.mlp_up.d_packed || !lw.mlp_down.d_packed)
+        return cudaErrorInvalidValue;
+
+    __half *d_gate = d_scratch;                // [seq,I]
+    __half *d_up   = d_scratch + (int64_t)seq * I;
+
+    cudaError_t e;
+    e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
+                         lw.mlp_gate.global_scale, d_gate, seq, H, I,
+                         /*acc=*/false);
+    if (e) return e;
+    e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_up.d_packed, lw.mlp_up.d_scales,
+                         lw.mlp_up.global_scale, d_up, seq, H, I,
+                         /*acc=*/false);
+    if (e) return e;
+    const int64_t n_act = (int64_t)seq * I;
+    const int threads = 256;
+    const int blocks = (int)((n_act + threads - 1) / threads);
+    qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
+    e = cudaGetLastError();
+    if (e) return e;
+    return RunQwenNvfp4Gemm(stream, d_gate, lw.mlp_down.d_packed,
+                            lw.mlp_down.d_scales, lw.mlp_down.global_scale,
+                            d_resid, seq, I, H, /*acc=*/true);
+}
+
 // ── Full attention layer. ───────────────────────────────────────────────────
 // scratch (halves), sized by caller (see generation/arena):
 //   d_qc  : [seq, NH*HD*2]  raw q_proj output (query + gate)
@@ -1559,17 +1601,10 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
-                // MLP
-                e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
-                               d_gate);
+                // fused MLP (down-GEMM accumulates into d_act residual)
+                e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
+                                    d_gate);
                 if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
-                // residual: d_act = d_act + d_mlp_out
-                {
-                    const int64_t n = (int64_t)seq * H;
-                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
-                                      0, stream>>>(d_mlp_out, d_act, n);
-                    e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
-                }
             }
 
             // final norm
@@ -1669,17 +1704,10 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
-                // MLP
-                e = RunQwenMLP(stream, lw, seq, d_postin, d_mlp_out,
-                               d_gate);
+                // fused MLP (down-GEMM accumulates into d_act residual)
+                e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
+                                    d_gate);
                 if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
-                // residual: d_act = d_act + d_mlp_out
-                {
-                    const int64_t n = (int64_t)seq * H;
-                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
-                                      0, stream>>>(d_mlp_out, d_act, n);
-                    e = cudaGetLastError(); if (e) return fail(e, std::string("res2 l")+std::to_string(l));
-                }
             }
 
             // final norm
