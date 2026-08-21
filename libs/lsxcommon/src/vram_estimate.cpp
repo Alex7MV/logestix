@@ -72,7 +72,46 @@ VramProfile EstimateVram(const std::vector<VramTensorInfo> &tensors,
 
 std::int64_t ReadContextLength(const std::string &config_json_path)
 {
-    (void)config_json_path;
+    namespace sj = simdjson;
+    std::ifstream f(config_json_path);
+    if (!f) {
+        spdlog::warn("[vram] cannot open {}: defaulting context to {}",
+                     config_json_path, kDefaultContextTokens);
+        return kDefaultContextTokens;
+    }
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+
+    sj::ondemand::parser parser;
+    sj::padded_string pad(json.data(), json.size());
+    sj::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != sj::SUCCESS) {
+        spdlog::warn("[vram] {} parse failed: defaulting context to {}",
+                     config_json_path, kDefaultContextTokens);
+        return kDefaultContextTokens;
+    }
+    sj::ondemand::object root;
+    if (doc.get_object().get(root) != sj::SUCCESS)
+        return kDefaultContextTokens;
+
+    auto find_ctx = [](sj::ondemand::object &o) -> std::int64_t {
+        for (const char *k : {"max_position_embeddings", "context_length",
+                              "seq_length"}) {
+            int64_t v;
+            if (o[k].get_int64().get(v) == sj::SUCCESS && v > 0) return v;
+        }
+        return 0;
+    };
+
+    if (int64_t v = find_ctx(root); v > 0) return v;
+    // Qwen3.5 nests the language-model config under "text_config".
+    if (auto tc = root["text_config"].get_object();
+        tc.error() == sj::SUCCESS) {
+        sj::ondemand::object src = tc.value();
+        if (int64_t v = find_ctx(src); v > 0) return v;
+    }
+    spdlog::warn("[vram] no context field in {}: defaulting to {}",
+                 config_json_path, kDefaultContextTokens);
     return kDefaultContextTokens;
 }
 

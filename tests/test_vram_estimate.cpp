@@ -1,8 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/vram_estimate.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 using lsxcommon::VramGeometry;
 using lsxcommon::VramProfile;
@@ -108,4 +112,54 @@ TEST_CASE("kEmptyVramProfile is all zeros", "[vram]")
 {
     CHECK(lsxcommon::kEmptyVramProfile.min_bytes == 0);
     CHECK(lsxcommon::kEmptyVramProfile.context_tokens == 0);
+}
+
+namespace {
+
+fs::path WriteTempConfig(const std::string &json)
+{
+    static int counter = 0;   // portable unique-enough temp name per process
+    auto p = fs::temp_directory_path() /
+             ("logestix_vram_cfg_" + std::to_string(counter++) + ".json");
+    std::ofstream f(p, std::ios::trunc);
+    f << json;
+    return p;
+}
+
+} // namespace
+
+TEST_CASE("ReadContextLength: max_position_embeddings at root", "[vram]")
+{
+    auto p = WriteTempConfig(R"({"hidden_size": 4096,
+        "max_position_embeddings": 163840})");
+    CHECK(lsxcommon::ReadContextLength(p.string()) == 163840);
+    fs::remove(p);
+}
+
+TEST_CASE("ReadContextLength: nested under text_config (Qwen)", "[vram]")
+{
+    auto p = WriteTempConfig(R"({"text_config": {
+        "max_position_embeddings": 262144}})");
+    CHECK(lsxcommon::ReadContextLength(p.string()) == 262144);
+    fs::remove(p);
+}
+
+TEST_CASE("ReadContextLength: context_length / seq_length fallbacks", "[vram]")
+{
+    auto p1 = WriteTempConfig(R"({"context_length": 4096})");
+    CHECK(lsxcommon::ReadContextLength(p1.string()) == 4096);
+    fs::remove(p1);
+
+    auto p2 = WriteTempConfig(R"({"seq_length": 8192})");
+    CHECK(lsxcommon::ReadContextLength(p2.string()) == 8192);
+    fs::remove(p2);
+}
+
+TEST_CASE("ReadContextLength: missing field / missing file -> 2048", "[vram]")
+{
+    auto p = WriteTempConfig(R"({"hidden_size": 4096})");
+    CHECK(lsxcommon::ReadContextLength(p.string()) == 2048);
+    fs::remove(p);
+
+    CHECK(lsxcommon::ReadContextLength("Z:/definitely/not/here.json") == 2048);
 }
