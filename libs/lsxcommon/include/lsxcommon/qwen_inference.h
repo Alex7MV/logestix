@@ -95,6 +95,19 @@ cudaError_t RunQwenLinearAttention(
     __half *d_conv, __half *d_core, __half *d_gated,
     int kv_base = 0, float *d_gd_state = nullptr);
 
+// Linear-attention layer with a fused front-end (F1 qkv+conv1d+l2norm, F2
+// z+a+b+prep_gating), reducing the split path's 8 front launches to 2. The
+// gated-delta recurrence, RMSNormGated, and out_proj tail are unchanged.
+// Call signature and scratch layout identical to RunQwenLinearAttention.
+cudaError_t RunQwenFusedLinearAttnKernel(
+    cudaStream_t stream,
+    const QwenLayerWeights &lw, const QwenTopology &top, int seq,
+    const __half *d_normed, __half *d_out,
+    __half *d_qkv, __half *d_z, __half *d_ab,
+    float *d_g, float *d_beta,
+    __half *d_conv, __half *d_core, __half *d_gated,
+    int kv_base = 0, float *d_gd_state = nullptr);
+
 // Scaled dot-product causal attention (GQA), FP16 in/out, FP32 accumulate.
 // q: [seq, heads, head_dim]; k/v: [seq * kv_heads, head_dim] base rows where
 // the kv row for attended index s is (s * kv_heads + kvh) * head_dim;
