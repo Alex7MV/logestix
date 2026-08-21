@@ -24,20 +24,7 @@ namespace gpu {
 
 namespace {
 
-// BF16 → FP16 conversion kernel (reads from device memory).
-// Manual bit path (avoid __bfloat162float host/device ambiguity under MSVC):
-//   bf16 = top 16 bits of fp32 → reconstruct fp32 → round to fp16.
-__global__ void bf16_to_half_kernel(const uint16_t *src, __half *dst, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    uint32_t f32 = static_cast<uint32_t>(src[i]) << 16;
-    float v;
-    std::memcpy(&v, &f32, sizeof(v));
-    dst[i] = __float2half(v);
-}
-
-// Upload BF16 host data → device FP16 via device-side kernel.
+// Upload BF16 host data → device FP16.
 // Convert BF16 → FP16 on host, then upload. Avoids temporary device buffers
 // that can cause memory corruption with large tensors (1GB+ embed/head).
 cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
@@ -62,6 +49,21 @@ cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
                         cudaMemcpyHostToDevice, stream);
     if (e != cudaSuccess) { cudaFree(*d_out); *d_out = nullptr; return e; }
     return cudaSuccess;
+}
+
+// Checked wrapper: logs and propagates upload failures instead of silently
+// dropping the status (a failed upload left a null pointer that surfaced much
+// later as an unrelated kernel error).
+cudaError_t upload_bf16_checked(const char *what, const uint8_t *src_bytes,
+                                int64_t numel, __half **d_out,
+                                cudaStream_t stream, std::uint64_t &bytes_acc)
+{
+    cudaError_t e = upload_bf16_to_half(src_bytes, numel, d_out, stream,
+                                        bytes_acc);
+    if (e != cudaSuccess)
+        log::error(std::string("bf16 upload failed: ") + what + ": " +
+                   cudaGetErrorString(e));
+    return e;
 }
 
 const TensorRecord *find_tensor_suffix(
@@ -459,16 +461,19 @@ cudaError_t load_pinned_weights(
         }
 
         auto *ffn_norm = find_tensor_substr(lt, "ffn_norm.weight");
-        if (ffn_norm && !ffn_norm->shape.empty())
-            upload_bf16_to_half(ffn_norm->data.data(), ffn_norm->shape[0],
-                                &lw.d_ffn_norm, stream, rb);
+        if (ffn_norm && !ffn_norm->shape.empty()) {
+            cudaError_t ue = upload_bf16_checked("ffn_norm", ffn_norm->data.data(), ffn_norm->shape[0],
+                                                 &lw.d_ffn_norm, stream, rb);
+            if (ue != cudaSuccess) return ue;
+        }
 
         auto *gate = find_tensor_substr(lt, "ffn.gate.weight");
         if (gate && gate->shape.size() >= 2) {
             int64_t numel = gate->shape[0] * gate->shape[1];
-            // Use upload_bf16_to_half which does proper host→device copy first
-            upload_bf16_to_half(gate->data.data(), numel,
-                                &lw.d_gate_weight, stream, rb);
+            // Use upload_bf16_checked which does proper host→device copy first
+            cudaError_t ue = upload_bf16_checked("ffn.gate", gate->data.data(), numel,
+                                                 &lw.d_gate_weight, stream, rb);
+            if (ue != cudaSuccess) return ue;
         }
 
         // Router selection bias (F32, non-hash layers only) — host copy.
@@ -517,17 +522,23 @@ cudaError_t load_pinned_weights(
 
         // Attention norms (BF16) + sink (FP32)
         auto *q_norm = find_tensor_suffix(lt, "attn.q_norm.weight");
-        if (q_norm && !q_norm->shape.empty())
-            upload_bf16_to_half(q_norm->data.data(), q_norm->shape[0],
-                                &lw.d_q_norm, stream, rb);
+        if (q_norm && !q_norm->shape.empty()) {
+            cudaError_t ue = upload_bf16_checked("attn.q_norm", q_norm->data.data(), q_norm->shape[0],
+                                                 &lw.d_q_norm, stream, rb);
+            if (ue != cudaSuccess) return ue;
+        }
         auto *kv_norm = find_tensor_suffix(lt, "attn.kv_norm.weight");
-        if (kv_norm && !kv_norm->shape.empty())
-            upload_bf16_to_half(kv_norm->data.data(), kv_norm->shape[0],
-                                &lw.d_kv_norm, stream, rb);
+        if (kv_norm && !kv_norm->shape.empty()) {
+            cudaError_t ue = upload_bf16_checked("attn.kv_norm", kv_norm->data.data(), kv_norm->shape[0],
+                                                 &lw.d_kv_norm, stream, rb);
+            if (ue != cudaSuccess) return ue;
+        }
         auto *attn_norm = find_tensor_suffix(lt, "attn_norm.weight");
-        if (attn_norm && !attn_norm->shape.empty())
-            upload_bf16_to_half(attn_norm->data.data(), attn_norm->shape[0],
-                                &lw.d_attn_norm, stream, rb);
+        if (attn_norm && !attn_norm->shape.empty()) {
+            cudaError_t ue = upload_bf16_checked("attn_norm", attn_norm->data.data(), attn_norm->shape[0],
+                                                 &lw.d_attn_norm, stream, rb);
+            if (ue != cudaSuccess) return ue;
+        }
         auto *attn_sink = find_tensor_suffix(lt, "attn.attn_sink");
         if (attn_sink)
             upload_f32_bytes(attn_sink->data, &lw.d_attn_sink, stream, rb);
@@ -566,16 +577,20 @@ cudaError_t load_pinned_weights(
             int comp_out = coff * kHeadDim;  // 1024 for ratio=4, 512 for ratio=128
 
             auto *t_comp_wkv = find_tensor_suffix(lt, "attn.compressor.wkv.weight");
-            if (t_comp_wkv && !t_comp_wkv->data.empty())
-                upload_bf16_to_half(t_comp_wkv->data.data(),
+            if (t_comp_wkv && !t_comp_wkv->data.empty()) {
+                cudaError_t ue = upload_bf16_checked("csa.comp.wkv", t_comp_wkv->data.data(),
                     static_cast<int64_t>(comp_out) * kHiddenDim,
                     &lw.d_comp_wkv, stream, rb);
+                if (ue != cudaSuccess) return ue;
+            }
 
             auto *t_comp_wgate = find_tensor_suffix(lt, "attn.compressor.wgate.weight");
-            if (t_comp_wgate && !t_comp_wgate->data.empty())
-                upload_bf16_to_half(t_comp_wgate->data.data(),
+            if (t_comp_wgate && !t_comp_wgate->data.empty()) {
+                cudaError_t ue = upload_bf16_checked("csa.comp.wgate", t_comp_wgate->data.data(),
                     static_cast<int64_t>(comp_out) * kHiddenDim,
                     &lw.d_comp_wgate, stream, rb);
+                if (ue != cudaSuccess) return ue;
+            }
 
             auto *t_comp_ape = find_tensor_suffix(lt, "attn.compressor.ape");
             if (t_comp_ape && !t_comp_ape->data.empty()) {
@@ -591,9 +606,11 @@ cudaError_t load_pinned_weights(
             }
 
             auto *t_comp_norm = find_tensor_suffix(lt, "attn.compressor.norm.weight");
-            if (t_comp_norm && !t_comp_norm->data.empty())
-                upload_bf16_to_half(t_comp_norm->data.data(),
+            if (t_comp_norm && !t_comp_norm->data.empty()) {
+                cudaError_t ue = upload_bf16_checked("csa.comp.norm", t_comp_norm->data.data(),
                     static_cast<int64_t>(kHeadDim), &lw.d_comp_norm, stream, rb);
+                if (ue != cudaSuccess) return ue;
+            }
 
             // ── CSA Indexer (ratio=4 only) ─────────────────────────────────
             if (lw.compress_ratio == 4) {
@@ -634,25 +651,33 @@ cudaError_t load_pinned_weights(
                 }
                 // indexer.weights_proj: BF16 [64, 4096]
                 auto *t_idx_wp = find_tensor_suffix(lt, "attn.indexer.weights_proj.weight");
-                if (t_idx_wp && !t_idx_wp->data.empty())
-                    upload_bf16_to_half(t_idx_wp->data.data(),
+                if (t_idx_wp && !t_idx_wp->data.empty()) {
+                    cudaError_t ue = upload_bf16_checked("indexer.weights_proj", t_idx_wp->data.data(),
                         64LL * kHiddenDim, &lw.d_idx_weights_proj, stream, rb);
+                    if (ue != cudaSuccess) return ue;
+                }
                 // indexer.compressor.* (head_dim=128)
                 auto *t_ic_wkv = find_tensor_suffix(lt, "attn.indexer.compressor.wkv.weight");
-                if (t_ic_wkv && !t_ic_wkv->data.empty())
-                    upload_bf16_to_half(t_ic_wkv->data.data(),
+                if (t_ic_wkv && !t_ic_wkv->data.empty()) {
+                    cudaError_t ue = upload_bf16_checked("indexer.comp.wkv", t_ic_wkv->data.data(),
                         256LL * kHiddenDim, &lw.d_idx_comp_wkv, stream, rb);
+                    if (ue != cudaSuccess) return ue;
+                }
                 auto *t_ic_wgate = find_tensor_suffix(lt, "attn.indexer.compressor.wgate.weight");
-                if (t_ic_wgate && !t_ic_wgate->data.empty())
-                    upload_bf16_to_half(t_ic_wgate->data.data(),
+                if (t_ic_wgate && !t_ic_wgate->data.empty()) {
+                    cudaError_t ue = upload_bf16_checked("indexer.comp.wgate", t_ic_wgate->data.data(),
                         256LL * kHiddenDim, &lw.d_idx_comp_wgate, stream, rb);
+                    if (ue != cudaSuccess) return ue;
+                }
                 auto *t_ic_ape = find_tensor_suffix(lt, "attn.indexer.compressor.ape");
                 if (t_ic_ape && !t_ic_ape->data.empty())
                     upload_f32_bytes(t_ic_ape->data, &lw.d_idx_comp_ape, stream, rb);
                 auto *t_ic_norm = find_tensor_suffix(lt, "attn.indexer.compressor.norm.weight");
-                if (t_ic_norm && !t_ic_norm->data.empty())
-                    upload_bf16_to_half(t_ic_norm->data.data(),
+                if (t_ic_norm && !t_ic_norm->data.empty()) {
+                    cudaError_t ue = upload_bf16_checked("indexer.comp.norm", t_ic_norm->data.data(),
                         128LL, &lw.d_idx_comp_norm, stream, rb);
+                    if (ue != cudaSuccess) return ue;
+                }
             }
 
             if (l == 2)

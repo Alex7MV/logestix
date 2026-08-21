@@ -45,7 +45,11 @@ bool QwenBaseModel::Load()
         }
     }
     FinishLoad();
-    ValidateGeometry(pw_.top);
+    if (!ValidateGeometry(pw_.top)) {
+        spdlog::error("[qwen-model] geometry validation failed for {}",
+                      cfg_.model_path);
+        return false;
+    }
     return true;
 }
 
@@ -178,6 +182,6 @@ gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
     return r;
 }
 
-void QwenBaseModel::ValidateGeometry(const qwen::QwenTopology &) const {}
+bool QwenBaseModel::ValidateGeometry(const qwen::QwenTopology &) const { return true; }
 
 } // namespace lsxcommon

@@ -27,7 +27,10 @@ public:
     void SetType(std::string t) { type_ = std::move(t); }
 
 protected:
-    virtual void ValidateGeometry(const qwen::QwenTopology &top) const;
+    // Hard geometry gate (Model Ingestion Protocol step 3): returns false when
+    // the loaded topology does not match the model's frozen compile-time
+    // constants; Load() fails in that case.
+    virtual bool ValidateGeometry(const qwen::QwenTopology &top) const;
 
     std::string type_;
     qwen::QwenPinnedWeights pw_;

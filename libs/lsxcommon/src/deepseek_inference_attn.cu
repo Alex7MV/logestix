@@ -474,8 +474,11 @@ __global__ void mla_attn_kernel(
     }
     const float maxv = s_maxv;
 
-    // Second pass: probs + output (denominator includes sink)
+    // Second pass: probs + output (denominator includes sink).
+    // Per-slot probabilities are cached so the denominator reuses them
+    // (ascending-t order preserved) instead of recomputing every score.
     __shared__ float s_acc2[kThreads];
+    __shared__ float s_probs[kAttnWindow];
     float acc_o[kHeadDim / kThreads];  // 512/128 = 4 slices per thread
     for (int i = 0; i < kHeadDim / kThreads; ++i) acc_o[i] = 0.0f;
 
@@ -491,7 +494,11 @@ __global__ void mla_attn_kernel(
             if (tid < s) s_acc2[tid] += s_acc2[tid + s];
             __syncthreads();
         }
-        if (tid == 0) s_acc2[0] = expf(s_acc2[0] * scale - maxv);
+        if (tid == 0) {
+            const float p = expf(s_acc2[0] * scale - maxv);
+            s_acc2[0] = p;
+            if (t < kAttnWindow) s_probs[t] = p;
+        }
         __syncthreads();
         const float p = s_acc2[0];
         // accumulate into thread-local slices
@@ -504,14 +511,9 @@ __global__ void mla_attn_kernel(
     __shared__ float s_denom_final;
     if (tid == 0) {
         float d2 = expf(sink[h] - maxv);
-        for (int t = 0; t < n_attend; ++t) {
-            const int slot = (start_pos - t + window) % window;
-            const __half* krow = kv_cache + slot * kHeadDim;
-            float acc = 0.0f;
-            for (int d2i = 0; d2i < kHeadDim; ++d2i)
-                acc += __half2float(qrow[d2i]) * __half2float(krow[d2i]);
-            d2 += expf(acc * scale - maxv);
-        }
+        const int n_cached = min(n_attend, kAttnWindow);
+        for (int t = 0; t < n_cached; ++t)
+            d2 += s_probs[t];
         s_denom_final = 1.0f / d2;
     }
     __syncthreads();

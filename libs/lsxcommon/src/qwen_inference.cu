@@ -1004,6 +1004,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
     if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
     if (kd > 256) return cudaErrorInvalidValue;  // shared arrays sized [256]
+    if (vd > 256) return cudaErrorInvalidValue;  // col[256] in delta kernel
     if (lw.qkv.cols <= 0) return cudaErrorInvalidValue;
     cudaError_t e;
 
@@ -1430,6 +1431,7 @@ cudaError_t RunQwenLinearAttention(cudaStream_t stream,
     //    strided conv buffer [seq, S], so the recurrence must use stride S.
     {
         if (kd > 256) return cudaErrorInvalidValue;
+        if (vd > 256) return cudaErrorInvalidValue;  // col[256] in delta kernel
         int nthreads = 1;
         while (nthreads < kd) nthreads <<= 1;
         const float q_scale = 1.0f / sqrtf((float)kd);
@@ -1751,6 +1753,13 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
     if (e != cudaSuccess) { result.error_msg="argmax alloc"; cudaFree(base); return e; }
 
+    // Pinned staging for the per-step {token, pos} H2D copies in the
+    // incremental path: async copies must not read stack locals that die
+    // before the stream drains. Allocated in the incremental branch once
+    // total_steps is known.
+    int32_t *h_step = nullptr;
+    bool have_h_step = false;
+
     // Wall-clock timing (stream-delta): t_start at entry, t_ttft at the first
     // generated token, t_stop after the final decode row.
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
@@ -1763,6 +1772,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         if (t_start) cudaEventDestroy(t_start);
         if (t_ttft) cudaEventDestroy(t_ttft);
         if (t_stop) cudaEventDestroy(t_stop);
+        if (have_h_step) { cudaFreeHost(h_step); h_step = nullptr; }
         cudaFree(d_argmax);
         cudaFree(base);
         return err;
@@ -1864,16 +1874,32 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         // and written back to kv->d_col per linear layer.
         const int prompt_steps = (int)prompt.size();
         const int total_steps = prompt_steps + max_new - 1;
+        // One pinned slot per step (write-once): the host may run ahead of the
+        // stream during prompt replay, so slots must never be reused while a
+        // copy from them may still be pending.
+        have_h_step = cudaMallocHost(&h_step,
+            static_cast<size_t>(2 * total_steps) * sizeof(int32_t)) ==
+            cudaSuccess;
         int32_t cur = prompt[0];
         int32_t tok = -1;
         int generated = 0;
         for (int step = 0; step < total_steps; ++step) {
             const int seq = 1;
             const int kv_base = kv->kv_rows;
-            cudaMemcpyAsync(d_ids, &cur, sizeof(int32_t),
-                            cudaMemcpyHostToDevice, stream);
-            cudaMemcpyAsync(d_pos, &kv_base, sizeof(int32_t),
-                            cudaMemcpyHostToDevice, stream);
+            if (have_h_step) {
+                int32_t *slot = h_step + 2 * step;
+                slot[0] = cur;
+                slot[1] = kv_base;
+                cudaMemcpyAsync(d_ids, slot, sizeof(int32_t),
+                                cudaMemcpyHostToDevice, stream);
+                cudaMemcpyAsync(d_pos, slot + 1, sizeof(int32_t),
+                                cudaMemcpyHostToDevice, stream);
+            } else {
+                // Pinned staging unavailable: fall back to synchronous copies
+                // (pageable async H2D is staged synchronously anyway).
+                cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_pos, &kv_base, sizeof(int32_t), cudaMemcpyHostToDevice);
+            }
 
             e = RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
             if (e != cudaSuccess) return fail(e, "embed");
@@ -1988,6 +2014,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     result.resident_bytes = pw.resident_bytes + half_bytes
                             + float_bytes + sizeof(int32_t)
                             + (is_incr ? kv->Bytes() : 0);
+    if (have_h_step) cudaFreeHost(h_step);
     cudaFree(d_argmax);
     cudaFree(base);
     result.ok = true;
