@@ -302,7 +302,9 @@ cudaError_t run_shared_experts_ffn(
         int g = (hidden_dim + b - 1) / b;
         clamp_half_kernel<<<g, b, 0, stream>>>(d_output, hidden_dim, 65504.0f);
     }
-    return cudaSuccess;
+    // Surface any launch error from the kernels above here instead of letting
+    // it surface at an unrelated later checked call.
+    return cudaGetLastError();
 }
 
 // Routed-expert FFN: fp4 (E2M1 x F8_E8M0 per-32) dequant + SwiGLU GEMM.

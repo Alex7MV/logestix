@@ -184,6 +184,11 @@ gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
         cleanup();
         return r;
     }
+    if (pw_.hidden != glm::kGlmHidden) {
+        r.error_msg = "model hidden_size does not match kGlmHidden (6144)";
+        cleanup();
+        return r;
+    }
     if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers)) {
         r.error_msg = "model does not expose all 79 layers";
         cleanup();

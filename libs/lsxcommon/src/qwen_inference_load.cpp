@@ -298,7 +298,17 @@ arrow::Result<std::vector<DenseNvfp4Record>> LoadNvfp4File(const std::string &pa
     UploadNvfp4Weight(FindNvfp4(nv, "mlp.up_proj.weight"),   lw.mlp_up,   stream);
     UploadNvfp4Weight(FindNvfp4(nv, "mlp.down_proj.weight"), lw.mlp_down, stream);
 
-    lw.loaded = true;
+    // Mark the layer usable only when its essential weights actually uploaded;
+    // missing records previously left loaded=true and failed later as cryptic
+    // GEMM null-pointer errors.
+    const bool attn_ok = is_linear
+        ? (lw.qkv.d_packed && lw.out.d_packed)
+        : (lw.q.d_packed && lw.k.d_packed && lw.v.d_packed && lw.o.d_packed);
+    const bool mlp_ok = lw.mlp_gate.d_packed && lw.mlp_up.d_packed &&
+                        lw.mlp_down.d_packed;
+    lw.loaded = attn_ok && mlp_ok && lw.d_input_norm && lw.d_post_norm;
+    if (!lw.loaded)
+        log::error("[qwen_load] layer weights incomplete; layer marked not loaded");
     return cudaSuccess;
 }
 

@@ -323,9 +323,13 @@ void LoadSingleLayer(const std::vector<TensorRecord> &tensors,
     if (k_bias && !k_bias->data.empty())
         UploadRaw(k_bias->data, &lw.d_idx_k_norm_bias, stream, bytes_acc);
 
-    // MTP block (layer 78).
-    Upload2D(tensors, "eh_proj.weight", &lw.d_eh_proj,
-             &lw.q_a_rows, &lw.q_a_cols, stream, bytes_acc);
+    // MTP block (layer 78). Shape goes to dedicated locals: q_a_rows/q_a_cols
+    // belong to self_attn.q_a_proj bookkeeping and must not be overwritten.
+    {
+        int64_t eh_rows = 0, eh_cols = 0;
+        Upload2D(tensors, "eh_proj.weight", &lw.d_eh_proj,
+                 &eh_rows, &eh_cols, stream, bytes_acc);
+    }
     Upload1D(FindTensor(tensors, "enorm.weight"), &lw.d_enorm, stream,
              bytes_acc);
     Upload1D(FindTensor(tensors, "hnorm.weight"), &lw.d_hnorm, stream,

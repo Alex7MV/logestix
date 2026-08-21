@@ -125,6 +125,9 @@ cudaError_t RunQwenFullAttnKernel(
 // softmax -> o_proj) replace the ~9 split launches for a SINGLE token. x is the
 // embedded token [H]; kv_base appends its k/v and bounds attended rows
 // [0 .. kv_base]. kv_k/kv_v: persistent cache, row r is (r*NKV+kvh)*HD. out [H].
+// KNOWN-BROKEN: diverges on the real Qwen3.5-9B checkpoint (selfcheck garbled;
+// unwired from generation in 19e8d4f). TEST-ONLY — do NOT wire into generation
+// without re-validating full-layer parity on the real checkpoint.
 cudaError_t RunQwenFusedDecodeAttnKernel(
     cudaStream_t stream, const __half *x, const QwenLayerWeights &lw,
     const QwenTopology &top, int kv_base,

@@ -151,6 +151,12 @@ __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
     for (int e = 0; e < kGlmNumRouted; ++e) used[e] = false;
 
     GlmRoutedSlot *row = d_routing + static_cast<size_t>(t) * kGlmMoETopK;
+    // Pre-poison every slot so an all-NaN early exit leaves eid = -1 records
+    // (skipped downstream) instead of uninitialized memory.
+    for (int r = 0; r < kGlmMoETopK; ++r) {
+        row[r].eid = -1;
+        row[r].coeff = 0.0f;
+    }
     for (int r = 0; r < kGlmMoETopK; ++r) {
         float bv = -1e30f;
         int   bi = -1;
@@ -159,6 +165,7 @@ __global__ void GlmMoETopkKernel(const float *__restrict__ d_logits,
             const float v = d_gate_bias ? lm[e] + d_gate_bias[e] : lm[e];
             if (v > bv || (v == bv && e < bi)) { bv = v; bi = e; }
         }
+        if (bi < 0) return;  // all logits/bias sums NaN: no valid selection
         // Single 64-bit store of the 8-byte-aligned slot (coeff | eid), as the
         // header contract documents: the token's kGlmMoETopK slots form one
         // 8-byte-aligned record. GlmRoutedSlot lays eid at offset 0 and coeff
@@ -349,6 +356,14 @@ __global__ void GlmIdxAttnKernel(GlmIndexShareState *__restrict__ s,
             out[t * nout + h] = x[t * nout + h];
         return;
     }
+    // A turn that overflows capacity is consumed without appending, so
+    // n_used can be smaller than seq for late tokens; base would go negative.
+    // Identity-copy those rows instead of indexing q_key out of bounds.
+    if (base < 0) {
+        for (int h = tid; h < nout; h += blockDim.x)
+            out[t * nout + h] = x[t * nout + h];
+        return;
+    }
 
     const __half *qq = s->q_key[base];
     for (int sl = tid; sl < n; sl += blockDim.x) {
@@ -442,13 +457,20 @@ __global__ void GlmRealTopkKernel(const float *__restrict__ d_logits,
 
     float score[kGlmNumRouted];
     for (int e = 0; e < kGlmNumRouted; ++e)
-        score[e] = 1.0f / (1.0f + expf(-lm[e]));
+        score[e] = 1.0f / (1.0f + device::GlmExpfGlibc(-lm[e]));
 
     bool used[kGlmNumRouted];
     for (int e = 0; e < kGlmNumRouted; ++e) used[e] = false;
 
     GlmRoutedSlot *row = d_routing + static_cast<size_t>(t) * kGlmMoETopK;
+    // Pre-poison every slot so a mid-rank break (all-NaN scores) cannot leave
+    // uninitialized records that pass downstream bounds checks.
+    for (int r = 0; r < kGlmMoETopK; ++r) {
+        row[r].eid = -1;
+        row[r].coeff = 0.0f;
+    }
     float sum = 0.0f;
+    int written = 0;
     for (int r = 0; r < kGlmMoETopK; ++r) {
         float bv = -1e30f;
         int   bi = -1;
@@ -466,9 +488,10 @@ __global__ void GlmRealTopkKernel(const float *__restrict__ d_logits,
         *reinterpret_cast<uint64_t *>(&row[r]) = packed;
         sum += coeff;
         used[bi] = true;
+        ++written;
     }
     const float denom = sum + 1e-20f;
-    for (int r = 0; r < kGlmMoETopK; ++r)
+    for (int r = 0; r < written; ++r)
         row[r].coeff = (row[r].coeff / denom) * 2.5f;
 }
 
@@ -835,6 +858,18 @@ cudaError_t RunGlmExpertsStackOnDemand(
     // iteration s-1 and recorded ev_h2d[s&1]; the compute stream waits it before
     // the GEMM. The copy producer for slot s+1 waits ev_gemm[(s+1)&1] (the GEMM
     // that last read that set) before overwriting.
+    //
+    // Preflight residency: parse every routed expert BEFORE any staging.
+    // Otherwise stage_slot silently skips non-resident entries (host_w1 ==
+    // nullptr) and the GEMM runs on stale staging buffers; and an LRU eviction
+    // mid-loop could munmap a host mmap whose H2D copy (slot 0 runs on the
+    // compute stream) is still in flight. With all targets resident up front,
+    // no eviction can occur between staging and GEMM. The first preflight
+    // EnsureResident that evicts synchronizes stream_copy, draining any prior
+    // in-flight copies owned by this db.
+    for (int s = 0; s < slots; ++s)
+        ensure_glm_expert_resident(db, layer, h_routing[s].eid, stream_copy);
+
     cudaError_t ef = stage_slot(0, stream);
     if (ef != cudaSuccess) { if (own_staging) cudaFreeHost(h_routing); return ef; }
 

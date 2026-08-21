@@ -17,8 +17,8 @@ struct QwenNvfp4Weight {
     const uint8_t *d_packed = nullptr;
     const uint8_t *d_scales = nullptr;
     float global_scale = 1.0f;
-    int rows = 0;   // input dim (K for GEMM: W is [K x N])
-    int cols = 0;   // output dim (N)
+    int rows = 0;   // output dim (N for GEMM: W is [N, K] row-major)
+    int cols = 0;   // input dim (K)
     int64_t packed_bytes = 0;
     int64_t scale_bytes = 0;
 

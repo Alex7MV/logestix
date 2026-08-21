@@ -764,6 +764,12 @@ cudaError_t run_mla_attention(
         log::error("[attn] layer missing attention weights");
         return cudaErrorInvalidValue;
     }
+    // Mandatory per-layer companions of the weights above; the loader marks
+    // them optional, but a nullptr here becomes an in-kernel illegal address.
+    if (!lw.d_q_norm || !lw.d_kv_norm || !lw.d_attn_sink) {
+        log::error("[attn] layer missing q_norm/kv_norm/attn_sink");
+        return cudaErrorInvalidValue;
+    }
 
     // qr = wq_a @ x
     cudaError_t e = f8_gemm_1d(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
@@ -1085,6 +1091,12 @@ cudaError_t run_csa_attention(
         log::error("[csa] layer missing attention weights");
         return cudaErrorInvalidValue;
     }
+    // Mandatory per-layer companions of the weights above; a nullptr here
+    // becomes an in-kernel illegal address.
+    if (!lw.d_q_norm || !lw.d_kv_norm || !lw.d_attn_sink) {
+        log::error("[csa] layer missing q_norm/kv_norm/attn_sink");
+        return cudaErrorInvalidValue;
+    }
 
     // ── Q projection (identical to MLA) ──────────────────────────────────
     cudaError_t e = f8_gemm_1d(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
@@ -1124,9 +1136,10 @@ cudaError_t run_csa_attention(
         kv_act_quant_kernel<<<n_blocks_q, 256, 0, stream>>>(d_kv2, kHeadDim - kRopeHeadDim);
     }
     const int slot = start_pos % kAttnWindow;
-    cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
+    e = cudaMemcpyAsync(d_kv_cache_layer + slot * kHeadDim, d_kv2,
         static_cast<size_t>(kHeadDim) * sizeof(__half),
         cudaMemcpyDeviceToDevice, stream);
+    if (e != cudaSuccess) return e;
 
 // ── Compressor step (gated KV pooling) ───────────────────────────────
     // Use d_qr2 (1024 elements) for wkv output, d_qr (1024) for wgate output
@@ -1137,18 +1150,26 @@ cudaError_t run_csa_attention(
         {
             float alpha = 1.0f, beta = 0.0f;
             cublasSetStream(cublas_h, stream);
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+            cublasStatus_t s1 = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 comp_out, 1, kHiddenDim, &alpha,
                 lw.d_comp_wkv, CUDA_R_16F, kHiddenDim,
                 d_x, CUDA_R_16F, kHiddenDim, &beta,
                 d_qr2, CUDA_R_16F, comp_out,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+            if (s1 != CUBLAS_STATUS_SUCCESS) {
+                log::error("[csa] compressor wkv GEMM failed");
+                return cudaErrorInvalidValue;
+            }
+            cublasStatus_t s2 = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                 comp_out, 1, kHiddenDim, &alpha,
                 lw.d_comp_wgate, CUDA_R_16F, kHiddenDim,
                 d_x, CUDA_R_16F, kHiddenDim, &beta,
                 d_qr, CUDA_R_16F, comp_out,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            if (s2 != CUBLAS_STATUS_SUCCESS) {
+                log::error("[csa] compressor wgate GEMM failed");
+                return cudaErrorInvalidValue;
+            }
         }
         bool should_compress = ((start_pos + 1) % lw.compress_ratio) == 0;
         __half* d_compressed_slot =
@@ -1190,10 +1211,11 @@ cudaError_t run_csa_attention(
     int n_compressed = csa_state.n_compressed;
     if (n_compressed > 0) {
         size_t bytes = static_cast<size_t>(n_compressed) * kHeadDim * sizeof(__half);
-        cudaMemcpyAsync(
+        e = cudaMemcpyAsync(
             d_kv_cache_layer + static_cast<size_t>(kAttnWindow) * kHeadDim,
             csa_state.d_compressed_kv,
             bytes, cudaMemcpyDeviceToDevice, stream);
+        if (e != cudaSuccess) return e;
     }
 
     // ── Sparse attention over window + compressed positions ─────────────

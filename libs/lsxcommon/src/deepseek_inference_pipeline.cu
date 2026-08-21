@@ -29,8 +29,9 @@ extern __global__ void dequant_nvfp4_to_half_kernel(
 // deepseek_inference_load.cuh (included above) and shared by every .cu
 // file in this pipeline — see that header for why.
 
-// float → half conversion kernel (extern — also defined in deepseek_inference_moe.cu)
-__global__ void float_to_half_f2h_kernel(const __half* __restrict__ src,
+// half → float conversion kernel (local pipeline copy; the canonical
+// half_to_float_kernel lives in deepseek_inference_moe.cu)
+__global__ void half_to_float_f2h_kernel(const __half* __restrict__ src,
                                           float* __restrict__ dst, int n)
 {
     // half→float conversion (for shared FFN FP16→FP32)
@@ -249,8 +250,12 @@ InferenceResult RunInferenceModel(
         int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 32; // per-32 E8M0
         routed_scale_total = scl * 3;
     }
-    // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim
-    int max_compressed = (max_gen_tokens + static_cast<int>(input_ids.size())) / 4 + 1;
+    // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim.
+    // max_compressed must be derived from the CLAMPED step count — the arena
+    // sizes its compressed-KV region from total_steps below (which uses
+    // max_gen, not the raw max_gen_tokens); an unclamped value here would
+    // overflow the kv-cache slice via memset and desync per-layer strides.
+    int max_compressed = total_tokens / 4 + 1;
     size_t kv_cache_sz = static_cast<size_t>(kNumLayers)
                        * (kAttnWindow + max_compressed) * kHeadDim
                        * sizeof(__half);
@@ -441,6 +446,13 @@ InferenceResult RunInferenceModel(
         int cur_tok = (step < static_cast<int>(input_ids.size()))
             ? input_ids[step]
             : gen_ids.back();  // use last generated token (not indexed by step-prompt)
+        // Guard the embed gather: a token id outside [0, vocab) is an OOB
+        // device read (bad sampler output / corrupt tokenizer db).
+        if (cur_tok < 0 || cur_tok >= pw.vocab_size) {
+            result.error_msg = "token id " + std::to_string(cur_tok) +
+                " out of vocab range (" + std::to_string(pw.vocab_size) + ")";
+            goto cleanup;
+        }
 
         // Embed (if not first token)
         if (step > 0) {
@@ -560,7 +572,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     // We'll use the d_ffn_accum as float output
                     INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
                         static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
-                    float_to_half_f2h_kernel<<<grid, block, 0, stream>>>(
+                    half_to_float_f2h_kernel<<<grid, block, 0, stream>>>(
                         d_ffn_out, d_ffn_accum, kHiddenDim);
                 }
             } else {

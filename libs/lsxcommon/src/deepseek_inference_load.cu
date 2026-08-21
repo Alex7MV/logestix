@@ -603,10 +603,16 @@ cudaError_t load_pinned_weights(
                 if (t_idx_wq_b && !t_idx_wq_b->data.empty()) {
                     int64_t wq_n = static_cast<int64_t>(t_idx_wq_b->data.size());
                     uint8_t *d_raw = nullptr;
-                    cudaMalloc(&d_raw, wq_n);
-                    rb += static_cast<std::uint64_t>(wq_n);
-                    cudaMemcpyAsync(d_raw, t_idx_wq_b->data.data(), wq_n,
+                    cudaError_t ce = cudaMalloc(&d_raw, wq_n);
+                    if (ce != cudaSuccess) { log::error("indexer wq_b alloc failed"); return ce; }
+                    ce = cudaMemcpyAsync(d_raw, t_idx_wq_b->data.data(), wq_n,
                         cudaMemcpyHostToDevice, stream);
+                    if (ce != cudaSuccess) {
+                        cudaFree(d_raw);
+                        log::error("indexer wq_b upload failed");
+                        return ce;
+                    }
+                    rb += static_cast<std::uint64_t>(wq_n);
                     lw.d_idx_wq_b = d_raw;
                     lw.idx_wq_b_rows = 8192;
                     lw.idx_wq_b_cols = 1024;
@@ -614,10 +620,16 @@ cudaError_t load_pinned_weights(
                 if (t_idx_wq_b_s && !t_idx_wq_b_s->data.empty()) {
                     int64_t sc_n = static_cast<int64_t>(t_idx_wq_b_s->data.size());
                     uint8_t *d_sc = nullptr;
-                    cudaMalloc(&d_sc, sc_n);
-                    rb += static_cast<std::uint64_t>(sc_n);
-                    cudaMemcpyAsync(d_sc, t_idx_wq_b_s->data.data(), sc_n,
+                    cudaError_t ce = cudaMalloc(&d_sc, sc_n);
+                    if (ce != cudaSuccess) { log::error("indexer wq_b scale alloc failed"); return ce; }
+                    ce = cudaMemcpyAsync(d_sc, t_idx_wq_b_s->data.data(), sc_n,
                         cudaMemcpyHostToDevice, stream);
+                    if (ce != cudaSuccess) {
+                        cudaFree(d_sc);
+                        log::error("indexer wq_b scale upload failed");
+                        return ce;
+                    }
+                    rb += static_cast<std::uint64_t>(sc_n);
                     lw.d_idx_wq_b_scales = d_sc;
                 }
                 // indexer.weights_proj: BF16 [64, 4096]

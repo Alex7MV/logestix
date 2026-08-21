@@ -304,6 +304,14 @@ TEST_CASE("Fused linear-attn full layer matches split reference (seq=1,2)", "[qw
                 dqf, dzf, dabf, dgf, dbetaf, dconvf, dcoref, dgatedf) == cudaSuccess);
             cudaDeviceSynchronize();
 
+            std::vector<__half> ho(seq*H), hf(seq*H);
+            cudaMemcpy(ho.data(), dout, seq*H*2, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hf.data(), doutf, seq*H*2, cudaMemcpyDeviceToHost);
+            for (int i = 0; i < seq*H; ++i) {
+                float r = __half2float(ho[i]), g = __half2float(hf[i]);
+                REQUIRE(std::abs(r - g) < 1e-2f * (1.0f + std::abs(r)));
+            }
+
             cudaFree(dx); cudaFree(dq); cudaFree(dqf); cudaFree(dz); cudaFree(dzf);
             cudaFree(dab); cudaFree(dabf); cudaFree(dconv); cudaFree(dconvf);
             cudaFree(dcore); cudaFree(dcoref); cudaFree(dgated); cudaFree(dgatedf);

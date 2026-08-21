@@ -813,8 +813,7 @@ __global__ void fused_attn_kernel(
 
 // Stage 3: o_proj. out[n] = sum_k out_h[k] * dequant(o[n*K + k]) over ALL input
 // rows k (K = NH*HD), exactly matching RunQwenNvfp4Gemm's [N,K] row-major
-// layout. One thread per output column n; accumulates in FP32 into out_acc[H]
-// (a FLOAT accumulator — half atomicAdd would lose precision).
+// layout. One thread per output column n; full-K FP32 dot, plain store.
 __global__ void fused_o_proj_kernel(
     const __half* __restrict__ out_h,        // [NH*HD]
     const uint8_t* __restrict__ o_packed, const uint8_t* __restrict__ o_scales,
@@ -1004,6 +1003,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     const int vd = top.linear_value_head_dim;
     const int KD = nk * kd, VD = nv * vd, S = KD * 2 + VD;
     if (nk <= 0 || kd <= 0 || nv <= 0 || vd <= 0) return cudaErrorInvalidValue;
+    if (kd > 256) return cudaErrorInvalidValue;  // shared arrays sized [256]
     if (lw.qkv.cols <= 0) return cudaErrorInvalidValue;
     cudaError_t e;
 
@@ -1564,6 +1564,13 @@ cudaError_t QwenKvCache::EnsureCapacity(const QwenPinnedWeights &pw, int needed,
     }
     cudaMemcpyAsync(n_c, d_col, col_bytes, cudaMemcpyDeviceToDevice, stream);
 
+    // Drain the copy stream before freeing the old buffers so no in-flight
+    // D2D read outlives its source allocation.
+    if (cudaStreamSynchronize(stream) != cudaSuccess) {
+        cudaFree(n_k); cudaFree(n_v); cudaFree(n_q); cudaFree(n_c);
+        return cudaErrorInvalidValue;
+    }
+
     cudaFree(d_kv_k);
     cudaFree(d_kv_v);
     cudaFree(d_qkv);
@@ -1656,9 +1663,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         (size_t)max_seq * H,             // d_normed (input)
         (size_t)max_seq * H,             // d_attn_out
         (size_t)max_seq * H,             // d_post_in
-        (size_t)max_seq * H,             // d_mlp_out
-        (size_t)max_seq * I,             // d_gate
-        (size_t)max_seq * I,             // d_up
+        2 * (size_t)max_seq * I,         // d_gate (fused-MLP scratch [2*seq,I])
         (size_t)max_seq * NH * HD * 2,   // d_qc
         (size_t)max_seq * NH * HD,       // d_q
         (size_t)max_seq * NH * HD,       // d_qgate
@@ -1705,28 +1710,26 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     __half *d_normed = adv(ph, half_sz[1]);
     __half *d_attn_out = adv(ph, half_sz[2]);
     __half *d_postin = adv(ph, half_sz[3]);
-    __half *d_mlp_out = adv(ph, half_sz[4]);
-    __half *d_gate = adv(ph, half_sz[5]);
-    __half *d_up = adv(ph, half_sz[6]);
-    __half *d_qc = adv(ph, half_sz[7]);
-    __half *d_q = adv(ph, half_sz[8]);
-    __half *d_qgate = adv(ph, half_sz[9]);
-    __half *d_k = adv(ph, half_sz[10]);
-    __half *d_v = adv(ph, half_sz[11]);
-    __half *d_attn = adv(ph, half_sz[12]);
-    __half *d_cos = adv(ph, half_sz[13]);
-    __half *d_sin = adv(ph, half_sz[14]);
-    __half *d_qkv = adv(ph, half_sz[15]);
-    __half *d_z = adv(ph, half_sz[16]);
-    __half *d_ab = adv(ph, half_sz[17]);
-    __half *d_conv = adv(ph, half_sz[18]);
-    __half *d_core = adv(ph, half_sz[19]);
-    __half *d_gated = adv(ph, half_sz[20]);
-    __half *d_embed_h = adv(ph, half_sz[21]);
-    __half *d_head_h = adv(ph, half_sz[22]);
-    __half *d_logits = adv(ph, half_sz[23]);
-    int32_t *d_ids = reinterpret_cast<int32_t*>(adv(ph, half_sz[24]));
-    int32_t *d_pos = reinterpret_cast<int32_t*>(adv(ph, half_sz[25]));
+    __half *d_gate = adv(ph, half_sz[4]);
+    __half *d_qc = adv(ph, half_sz[5]);
+    __half *d_q = adv(ph, half_sz[6]);
+    __half *d_qgate = adv(ph, half_sz[7]);
+    __half *d_k = adv(ph, half_sz[8]);
+    __half *d_v = adv(ph, half_sz[9]);
+    __half *d_attn = adv(ph, half_sz[10]);
+    __half *d_cos = adv(ph, half_sz[11]);
+    __half *d_sin = adv(ph, half_sz[12]);
+    __half *d_qkv = adv(ph, half_sz[13]);
+    __half *d_z = adv(ph, half_sz[14]);
+    __half *d_ab = adv(ph, half_sz[15]);
+    __half *d_conv = adv(ph, half_sz[16]);
+    __half *d_core = adv(ph, half_sz[17]);
+    __half *d_gated = adv(ph, half_sz[18]);
+    __half *d_embed_h = adv(ph, half_sz[19]);
+    __half *d_head_h = adv(ph, half_sz[20]);
+    __half *d_logits = adv(ph, half_sz[21]);
+    int32_t *d_ids = reinterpret_cast<int32_t*>(adv(ph, half_sz[22]));
+    int32_t *d_pos = reinterpret_cast<int32_t*>(adv(ph, half_sz[23]));
     float *pf = reinterpret_cast<float*>((uint8_t*)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
@@ -1893,7 +1896,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 } else {
                     e = RunQwenFullAttention(stream, lw, top, seq,
                         d_normed, d_attn_out, d_qc, d_q, d_qgate,
-                        d_k, d_v, d_attn, d_cos, d_sin, d_pos);
+                        kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
+                        kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
+                        d_attn, d_cos, d_sin, d_pos, kv_base);
                     ++full_idx;
                 }
                 if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
