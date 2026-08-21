@@ -1777,7 +1777,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
-                    e = RunQwenLinearAttention(stream, lw, top, seq,
+                    e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
                         d_normed, d_attn_out, d_qkv, d_z, d_ab,
                         d_gf, d_betaf, d_conv, d_core, d_gated);
                 } else {
@@ -1871,7 +1871,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                     e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
                                        seq, H, eps);
                     if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
-                    e = RunQwenLinearAttention(stream, lw, top, seq,
+                    e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                         d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
