@@ -60,7 +60,7 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int seq, int K, int N);
+    __half *y, int seq, int K, int N, bool acc = false);
 
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate

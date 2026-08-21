@@ -392,7 +392,7 @@ using gpu::nvfp4::E4M3ScaleToFloat;
 // x: [seq, K] FP16; y: [seq, N] FP16 (FP32 accumulate).
 __global__ void qwen_nvfp4_gemm_kernel(
     const __half *x, const uint8_t *packed, const uint8_t *scales,
-    float global_scale, __half *y, int seq, int K, int N)
+    float global_scale, __half *y, int seq, int K, int N, bool acc_in)
 {
     const int64_t total = (int64_t)seq * N;
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -402,7 +402,7 @@ __global__ void qwen_nvfp4_gemm_kernel(
 
     const __half *xrow = x + (int64_t)t * K;
 
-    float acc = 0.0f;
+    float acc = acc_in ? __half2float(y[idx]) : 0.0f;
     for (int k = 0; k < K; ++k) {
         // NVFP4 layout: element e lives at byte e>>1, low nibble if even,
         // high nibble if odd; scale is per-16 elements (e>>4).
@@ -423,7 +423,7 @@ __global__ void qwen_nvfp4_gemm_kernel(
 template <int BM, int BN, int BK>
 __global__ void qwen_nvfp4_gemm_tile_kernel(
     const __half *x, const uint8_t *packed, const uint8_t *scales,
-    float global_scale, __half *y, int seq, int K, int N)
+    float global_scale, __half *y, int seq, int K, int N, bool acc_in)
 {
     static_assert(BM * BN == 256, "one thread per output element (256)");
 
@@ -439,7 +439,7 @@ __global__ void qwen_nvfp4_gemm_tile_kernel(
     const int n = n0 + bn;
     const bool in_bounds = (t < seq) && (n < N);
 
-    float acc = 0.0f;
+    float acc = acc_in && in_bounds ? __half2float(y[(int64_t)t * N + n]) : 0.0f;
 
     for (int kb = 0; kb < K; kb += BK) {
         // W tile: element e = (n0+bn)*K + kb+kk (weight row-major [n, K]).
@@ -917,7 +917,7 @@ cudaError_t RunQwenFusedOProj(
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int seq, int K, int N)
+    __half *y, int seq, int K, int N, bool acc /* = false */)
 {
     if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
@@ -926,14 +926,14 @@ cudaError_t RunQwenNvfp4Gemm(
         const int64_t total = (int64_t)seq * N;
         const int blocks = (int)((total + threads - 1) / threads);
         qwen_nvfp4_gemm_kernel<<<blocks, threads, 0, stream>>>(
-            x, packed, scales, global_scale, y, seq, K, N);
+            x, packed, scales, global_scale, y, seq, K, N, acc);
         return cudaGetLastError();
     }
     constexpr int BM = 16, BN = 16, BK = 32;
     const int gx = (int)((seq + BM - 1) / BM);
     const int gy = (int)((N  + BN - 1) / BN);
     qwen_nvfp4_gemm_tile_kernel<BM, BN, BK><<<dim3(gx, gy), BM * BN, 0, stream>>>(
-        x, packed, scales, global_scale, y, seq, K, N);
+        x, packed, scales, global_scale, y, seq, K, N, acc);
     return cudaGetLastError();
 }
 
@@ -942,7 +942,7 @@ cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
 {
     if (!w.d_packed || w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
     return RunQwenNvfp4Gemm(stream, x, w.d_packed, w.d_scales,
-                            w.global_scale, y, seq, w.cols, w.rows);
+                            w.global_scale, y, seq, w.cols, w.rows, /*acc=*/false);
 }
 
 // Fused decoder (seq=1) full-attention layer. Task-1 version composes the
