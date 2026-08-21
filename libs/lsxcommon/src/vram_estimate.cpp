@@ -117,17 +117,54 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
 
 std::string FormatVramJson(const VramProfile &p)
 {
-    (void)p;
-    return {};
+    std::string s = "  \"vram\": {\n";
+    s += "    \"min_bytes\": " + std::to_string(p.min_bytes) + ",\n";
+    s += "    \"optimal_bytes\": " + std::to_string(p.optimal_bytes) + ",\n";
+    s += "    \"max_bytes\": " + std::to_string(p.max_bytes) + ",\n";
+    s += "    \"context_tokens\": " + std::to_string(p.context_tokens) + "\n";
+    s += "  }";
+    return s;
 }
 
 bool ParseVramBlock(const std::string &index_json_text,
                     VramProfile &out, std::string &err)
 {
-    (void)index_json_text;
+    namespace sj = simdjson;
     out = {};
-    err = "not implemented";
-    return false;
+    sj::ondemand::parser parser;
+    sj::padded_string pad(index_json_text.data(), index_json_text.size());
+    sj::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != sj::SUCCESS) {
+        err = "JSON parse error";
+        return false;
+    }
+    sj::ondemand::object root;
+    if (doc.get_object().get(root) != sj::SUCCESS) {
+        err = "expected JSON object";
+        return false;
+    }
+    sj::ondemand::object vram;
+    if (root["vram"].get_object().get(vram) != sj::SUCCESS) {
+        err = "missing 'vram' block";
+        return false;
+    }
+    int64_t mn = 0, op = 0, mx = 0, ct = 0;
+    if (vram["min_bytes"].get_int64().get(mn) != sj::SUCCESS ||
+        vram["optimal_bytes"].get_int64().get(op) != sj::SUCCESS ||
+        vram["max_bytes"].get_int64().get(mx) != sj::SUCCESS ||
+        vram["context_tokens"].get_int64().get(ct) != sj::SUCCESS) {
+        err = "malformed 'vram' block";
+        return false;
+    }
+    if (mn < 0 || op < mn || mx < op || ct <= 0) {
+        err = "inconsistent 'vram' values";
+        return false;
+    }
+    out.min_bytes = static_cast<std::uint64_t>(mn);
+    out.optimal_bytes = static_cast<std::uint64_t>(op);
+    out.max_bytes = static_cast<std::uint64_t>(mx);
+    out.context_tokens = ct;
+    return true;
 }
 
 std::string FormatBytesHuman(std::uint64_t bytes)

@@ -163,3 +163,65 @@ TEST_CASE("ReadContextLength: missing field / missing file -> 2048", "[vram]")
 
     CHECK(lsxcommon::ReadContextLength("Z:/definitely/not/here.json") == 2048);
 }
+
+TEST_CASE("FormatVramJson / ParseVramBlock round-trip", "[vram]")
+{
+    VramProfile in;
+    in.min_bytes = 8734629888ull;
+    in.optimal_bytes = 9126804480ull;
+    in.max_bytes = 412316860416ull;
+    in.context_tokens = 163840;
+
+    std::string json = "{" + lsxcommon::FormatVramJson(in) + "}";
+
+    VramProfile out;
+    std::string err;
+    REQUIRE(lsxcommon::ParseVramBlock(json, out, err));
+    CHECK(err.empty());
+    CHECK(out.min_bytes == in.min_bytes);
+    CHECK(out.optimal_bytes == in.optimal_bytes);
+    CHECK(out.max_bytes == in.max_bytes);
+    CHECK(out.context_tokens == in.context_tokens);
+}
+
+TEST_CASE("ParseVramBlock rejects missing vram block", "[vram]")
+{
+    VramProfile out;
+    std::string err;
+    REQUIRE_FALSE(lsxcommon::ParseVramBlock(
+        R"({"format": "logestix-glm", "num_layers": 79})", out, err));
+    CHECK(err.find("vram") != std::string::npos);
+}
+
+TEST_CASE("ParseVramBlock rejects malformed vram block", "[vram]")
+{
+    VramProfile out;
+    std::string err;
+    REQUIRE_FALSE(lsxcommon::ParseVramBlock(
+        R"({"vram": {"min_bytes": 1}})", out, err));
+    CHECK(err.find("malformed") != std::string::npos);
+}
+
+TEST_CASE("ParseVramBlock rejects inconsistent values", "[vram]")
+{
+    VramProfile out;
+    std::string err;
+    // max < optimal
+    REQUIRE_FALSE(lsxcommon::ParseVramBlock(
+        R"({"vram": {"min_bytes": 10, "optimal_bytes": 30,
+            "max_bytes": 20, "context_tokens": 2048}})", out, err));
+    CHECK(err.find("inconsistent") != std::string::npos);
+
+    // context_tokens <= 0
+    REQUIRE_FALSE(lsxcommon::ParseVramBlock(
+        R"({"vram": {"min_bytes": 10, "optimal_bytes": 20,
+            "max_bytes": 30, "context_tokens": 0}})", out, err));
+}
+
+TEST_CASE("ParseVramBlock rejects invalid JSON document", "[vram]")
+{
+    VramProfile out;
+    std::string err;
+    REQUIRE_FALSE(lsxcommon::ParseVramBlock("not json {{{", out, err));
+    CHECK_FALSE(err.empty());
+}
