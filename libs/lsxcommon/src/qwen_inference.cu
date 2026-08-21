@@ -665,7 +665,250 @@ __global__ void qwen_gated_delta_kernel(
     out[((int64_t)t * nv + vh) * vd + d] = __float2half(acc);
 }
 
+// ── Fused decoder (seq=1) full-attention segments ─────────────────────────
+// Stage 1: per-head q/k/v+gate (inline NVFP4 dequant to registers) + per-head
+// RMSNorm(q)/(k) + inline RoPE (rotate-half pairing, mirrors
+// partial_rope_kernel) + append k/v to persistent KV row kv_base.
+__global__ void fused_qkv_kernel(
+    const __half* __restrict__ x,          // input token [H] (already input-normed)
+    const QwenNvfp4Weight qw, const QwenNvfp4Weight kw, const QwenNvfp4Weight vw,
+    const __half* __restrict__ q_norm, const __half* __restrict__ k_norm,
+    double theta, int rotary_dim, int kv_base,
+    int NH, int NKV, int HD, int H, float eps,
+    __half* __restrict__ kv_k, __half* __restrict__ kv_v,
+    __half* __restrict__ q_gl, __half* __restrict__ gate_gl)
+{
+    __shared__ float sq[512];  // pair staging for RoPE q (rotary_dim<=512 assumed)
+    __shared__ float sk[512];
+    __shared__ float red[512];
+    const int h = blockIdx.x;
+    const int kvh = h / (NH / NKV);
+    const int d = threadIdx.x;
+    if (d >= HD) return;
+
+    // 1. q/k/v/gate projections for head h (inline NVFP4 per element).
+    const int qcol = h*HD + d;             // query column
+    const int gcol = NH*HD + h*HD + d;     // gate column (second NH*HD half)
+    const int kcol = kvh*HD + d;           // key/value column
+    float qv = 0.0f, gv = 0.0f, kv_ = 0.0f, vv = 0.0f;
+    for (int k = 0; k < H; ++k) {
+        const float xv = __half2float(x[k]);
+        {
+            const int64_t e = (int64_t)qcol * H + k;
+            const uint8_t b = qw.d_packed[e>>1];
+            const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
+            qv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
+        }
+        {
+            const int64_t e = (int64_t)gcol * H + k;
+            const uint8_t b = qw.d_packed[e>>1];
+            const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
+            gv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
+        }
+        {
+            const int64_t e = (int64_t)kcol * H + k;
+            const uint8_t b = kw.d_packed[e>>1];
+            const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
+            kv_ += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(kw.d_scales[e>>4]) * kw.global_scale);
+        }
+        {
+            const int64_t e = (int64_t)kcol * H + k;
+            const uint8_t b = vw.d_packed[e>>1];
+            const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
+            vv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(vw.d_scales[e>>4]) * vw.global_scale);
+        }
+    }
+    // 2. per-head RMSNorm(q) and RMSNorm(k) — offset form.
+    red[d] = qv*qv; __syncthreads();
+    for (int st = HD/2; st>0; st>>=1){ if(d<st) red[d]+=red[d+st]; __syncthreads(); }
+    const float qinv = rsqrtf(red[0]/(float)HD + eps);
+    qv *= qinv * (1.0f + __half2float(q_norm[d]));
+    red[d] = kv_*kv_; __syncthreads();
+    for (int st = HD/2; st>0; st>>=1){ if(d<st) red[d]+=red[d+st]; __syncthreads(); }
+    const float kinv = rsqrtf(red[0]/(float)HD + eps);
+    kv_ *= kinv * (1.0f + __half2float(k_norm[d]));
+
+    // 3. inline RoPE (rotate-half pairing) on first rotary_dim dims.
+    //    Each thread computes ONLY its own dim `d`, reading the partner from
+    //    the synced sq/sk staging (mirrors partial_rope_kernel).
+    sq[d] = qv; sk[d] = kv_; __syncthreads();
+    if (d < rotary_dim) {
+        const int half = rotary_dim / 2;
+        double inv = 1.0 / std::pow(theta, (double)(2*(d % half))/(double)rotary_dim);
+        double ang = (double)kv_base * inv;
+        const float c = (float)std::cos(ang), s = (float)std::sin(ang);
+        if (d < half) {
+            qv = sq[d]*c - sq[d+half]*s;      // role j,   out[j]   = x1*c - x2*s
+            kv_ = sk[d]*c - sk[d+half]*s;
+        } else {
+            qv = sq[d]*c + sq[d-half]*s;      // role j+half, out[j+half] = x2*c + x1*s
+            kv_ = sk[d]*c + sk[d-half]*s;
+        }
+    }
+    __syncthreads();
+
+    // 4. append k/v to persistent KV row kv_base, publish q/gate.
+    kv_k[((int64_t)kv_base * NKV + kvh) * HD + d] = __float2half(kv_);
+    kv_v[((int64_t)kv_base * NKV + kvh) * HD + d] = __float2half(vv);
+    q_gl[(int64_t)h * HD + d]    = __float2half(qv);
+    gate_gl[(int64_t)h * HD + d] = __float2half(gv);
+}
+
+// Stage 2: block-wide online-softmax causal GQA attention over attended KV rows
+// [0..kv_base], per-head output gate (sigmoid). Reuses the validated
+// sreduce[512] static + dynamic slogits reduction.
+__global__ void fused_attn_kernel(
+    const __half* __restrict__ q_gl, const __half* __restrict__ gate_gl,
+    const __half* __restrict__ kv_k, const __half* __restrict__ kv_v,
+    __half* __restrict__ out_h, int kv_base, int NH, int NKV, int HD, float scale)
+{
+    __shared__ float sreduce[512];
+    extern __shared__ float slogits[];
+    const int h = blockIdx.x;
+    const int kvh = h / (NH / NKV);
+    const int d = threadIdx.x;
+    const int nscores = kv_base + 1;
+    if (d >= HD) return;
+
+    const __half* qrow = q_gl + (int64_t)h * HD;
+
+    // scores (parallel chunks)
+    for (int s = d; s < nscores; s += HD) {
+        const __half* krow = kv_k + ((int64_t)s * NKV + kvh) * HD;
+        float dot = 0.0f;
+        for (int dd = 0; dd < HD; ++dd)
+            dot += __half2float(qrow[dd]) * __half2float(krow[dd]);
+        slogits[s] = dot * scale;
+    }
+    __syncthreads();
+    // max block-reduce (sreduce)
+    float m = -1e30f;
+    for (int s = d; s < nscores; s += HD) m = fmaxf(m, slogits[s]);
+    sreduce[d] = m; __syncthreads();
+    for (int st = blockDim.x/2; st>0; st>>=1){ if(d<st) sreduce[d]=fmaxf(sreduce[d],sreduce[d+st]); __syncthreads(); }
+    m = sreduce[0]; __syncthreads();
+    // sum block-reduce
+    float sumd = 0.0f;
+    for (int s = d; s < nscores; s += HD) sumd += __expf(slogits[s] - m);
+    sreduce[d] = sumd; __syncthreads();
+    for (int st = blockDim.x/2; st>0; st>>=1){ if(d<st) sreduce[d]+=sreduce[d+st]; __syncthreads(); }
+    const float inv = 1.0f / (sreduce[0] + 1e-10f); __syncthreads();
+    // value + gate
+    float acc = 0.0f;
+    for (int s = 0; s < nscores; ++s) {
+        const __half* vrow = kv_v + ((int64_t)s * NKV + kvh) * HD;
+        acc += __expf(slogits[s] - m) * inv * __half2float(vrow[d]);
+    }
+    const float g = __half2float(gate_gl[h*HD + d]);
+    out_h[(int64_t)h * HD + d] = __float2half(acc * (1.0f / (1.0f + expf(-g))));
+}
+
+// Stage 3: o_proj. out[n] = sum_k out_h[k] * dequant(o[n*K + k]) over ALL input
+// rows k (K = NH*HD), exactly matching RunQwenNvfp4Gemm's [N,K] row-major
+// layout. One thread per output column n; accumulates in FP32 into out_acc[H]
+// (a FLOAT accumulator — half atomicAdd would lose precision).
+__global__ void fused_o_proj_kernel(
+    const __half* __restrict__ out_h,        // [NH*HD]
+    const uint8_t* __restrict__ o_packed, const uint8_t* __restrict__ o_scales,
+    float o_gs, float* __restrict__ out_acc, // [H], zeroed by caller
+    int K, int H)                            // K = NH*HD input rows, H output cols
+{
+    const int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= H) return;
+    float acc = 0.0f;
+    for (int k = 0; k < K; ++k) {
+        const float oh = __half2float(out_h[k]);
+        const int64_t e = (int64_t)n * K + k;
+        const uint8_t b = o_packed[e>>1];
+        const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
+        const float scl = E4M3ScaleToFloat(o_scales[e>>4]) * o_gs;
+        acc += oh * kE2M1Table[nib] * scl;
+    }
+    out_acc[n] = acc;
+}
+
+// Convert a float accumulator row [H] to half out [H].
+__global__ void qwen_f2h_acc_kernel(const float *in, __half *out, int n)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) out[idx] = __float2half(in[idx]);
+}
+
 } // namespace
+
+// ── Fused decoder (seq=1) stage wrappers ────────────────────────────────────
+cudaError_t RunQwenFusedQkv(
+    cudaStream_t stream, const __half *x,
+    const QwenNvfp4Weight &qw, const QwenNvfp4Weight &kw,
+    const QwenNvfp4Weight &vw,
+    const __half *q_norm, const __half *k_norm,
+    double theta, int rotary_dim, int kv_base,
+    int NH, int NKV, int HD, int H, float eps,
+    const __half *input_norm,
+    __half *kv_k, __half *kv_v, __half *q_gl, __half *gate_gl)
+{
+    if (!x || !qw.d_packed || !qw.d_scales || !kw.d_packed || !kw.d_scales ||
+        !vw.d_packed || !vw.d_scales || !q_norm || !k_norm || !input_norm ||
+        !kv_k || !kv_v || !q_gl || !gate_gl ||
+        NH <= 0 || NKV <= 0 || HD <= 0 || H <= 0 || kv_base < 0 ||
+        rotary_dim < 0 || rotary_dim > 512)
+        return cudaErrorInvalidValue;
+    __half *d_tmp;
+    if (cudaMalloc(&d_tmp, (size_t)H * 2) != cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    const int th = std::min(H, 256);
+    rmsnorm_offset_kernel<<<1, th, th * sizeof(float), stream>>>(
+        x, input_norm, d_tmp, 1, H, (double)eps);
+    cudaError_t e = cudaGetLastError();
+    if (!e) {
+        fused_qkv_kernel<<<NH, HD, 0, stream>>>(
+            d_tmp, qw, kw, vw, q_norm, k_norm, theta, rotary_dim, kv_base,
+            NH, NKV, HD, H, eps, kv_k, kv_v, q_gl, gate_gl);
+        e = cudaGetLastError();
+    }
+    cudaFree(d_tmp);
+    return e;
+}
+
+cudaError_t RunQwenFusedAttn(
+    cudaStream_t stream,
+    const __half *q_gl, const __half *gate_gl,
+    const __half *kv_k, const __half *kv_v, __half *out_h,
+    int kv_pos, int NH, int NKV, int HD, float scale)
+{
+    if (!q_gl || !gate_gl || !kv_k || !kv_v || !out_h ||
+        NH <= 0 || NKV <= 0 || HD <= 0 || HD > 512 || kv_pos < 0)
+        return cudaErrorInvalidValue;
+    const size_t smem = ((size_t)kv_pos + 1) * sizeof(float);
+    fused_attn_kernel<<<NH, HD, smem, stream>>>(
+        q_gl, gate_gl, kv_k, kv_v, out_h, kv_pos, NH, NKV, HD, scale);
+    return cudaGetLastError();
+}
+
+cudaError_t RunQwenFusedOProj(
+    cudaStream_t stream, const __half *out_h,
+    const QwenNvfp4Weight &o, float *out_acc, __half *out,
+    int NH, int HD, int H)
+{
+    if (!out_h || !o.d_packed || !o.d_scales || !out_acc || !out ||
+        NH <= 0 || HD <= 0 || H <= 0)
+        return cudaErrorInvalidValue;
+    cudaMemsetAsync(out_acc, 0, (size_t)H * sizeof(float), stream);
+    cudaError_t e = cudaGetLastError();
+    if (!e) {
+        const int blocks = (int)((H + HD - 1) / HD);
+        fused_o_proj_kernel<<<blocks, HD, 0, stream>>>(
+            out_h, o.d_packed, o.d_scales, o.global_scale, out_acc,
+            NH * HD, H);
+        e = cudaGetLastError();
+    }
+    if (!e) {
+        const int blocks = (int)((H + 255) / 256);
+        qwen_f2h_acc_kernel<<<blocks, 256, 0, stream>>>(out_acc, out, H);
+        e = cudaGetLastError();
+    }
+    return e;
+}
 
 // Public numeric entry: NVFP4 dense GEMM (y = x @ dequant(W)) with FP32
 // accumulate. Dispatches to the shared-memory tile kernel for N>=8 && K>=16,
@@ -708,82 +951,42 @@ cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
 cudaError_t RunQwenFusedDecodeAttnKernel(
     cudaStream_t stream, const __half *x, const QwenLayerWeights &lw,
     const QwenTopology &top, int kv_base,
-    const __half *kv_k, const __half *kv_v, __half *out)
+    __half *kv_k, __half *kv_v, __half *out)
 {
     if (!x || !out || !kv_k || !kv_v || kv_base < 0 || !lw.loaded)
         return cudaErrorInvalidValue;
-    if (!lw.d_input_norm) return cudaErrorInvalidValue;
+    if (!lw.d_input_norm || !lw.d_q_norm || !lw.d_k_norm)
+        return cudaErrorInvalidValue;
     const int NH = top.num_attention_heads, HD = top.head_dim,
               NKV = top.num_key_value_heads, H = top.hidden_size;
     if (NH <= 0 || HD <= 0 || NKV <= 0 || H <= 0) return cudaErrorInvalidValue;
+    if (HD > 512) return cudaErrorInvalidValue;
     const int rot = (int)(HD * top.partial_rotary_factor);
+    const float scale = 1.0f / std::sqrt((float)HD);
 
-    __half *d_normed, *d_qc, *d_q, *d_gate, *d_k, *d_v, *d_attn, *d_cos, *d_sin;
-    int32_t *d_pos;
-    cudaMalloc(&d_normed, (size_t)H*2);
-    cudaMalloc(&d_qc,    (size_t)NH*HD*2*2);
-    cudaMalloc(&d_q,     (size_t)NH*HD*2);
-    cudaMalloc(&d_gate,  (size_t)NH*HD*2);
-    cudaMalloc(&d_k,     (size_t)(kv_base+1)*NKV*HD*2);
-    cudaMalloc(&d_v,     (size_t)(kv_base+1)*NKV*HD*2);
-    cudaMalloc(&d_attn,  (size_t)NH*HD*2);
-    cudaMalloc(&d_cos,   (size_t)rot/2*2);
-    cudaMalloc(&d_sin,   (size_t)rot/2*2);
-    cudaMalloc(&d_pos,   sizeof(int32_t));
+    __half *d_q, *d_gate, *d_out_h;
+    float *d_out_acc;
+    if (cudaMalloc(&d_q,       (size_t)NH * HD * 2) != cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    if (cudaMalloc(&d_gate,    (size_t)NH * HD * 2) != cudaSuccess)
+        { cudaFree(d_q); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_out_h,   (size_t)NH * HD * 2) != cudaSuccess)
+        { cudaFree(d_q); cudaFree(d_gate); return cudaErrorMemoryAllocation; }
+    if (cudaMalloc(&d_out_acc, (size_t)H * 4)       != cudaSuccess)
+        { cudaFree(d_q); cudaFree(d_gate); cudaFree(d_out_h); return cudaErrorMemoryAllocation; }
 
-    const int th = std::min(H, 256);
-    rmsnorm_offset_kernel<<<1, th, th*sizeof(float), stream>>>(
-        x, lw.d_input_norm, d_normed, 1, H, (float)top.rms_norm_eps);
-    cudaError_t e = cudaGetLastError(); if (e) return e;
+    cudaError_t e = RunQwenFusedQkv(
+        stream, x, lw.q, lw.k, lw.v, lw.d_q_norm, lw.d_k_norm,
+        top.rope_theta, rot, kv_base, NH, NKV, HD, H,
+        (float)top.rms_norm_eps, lw.d_input_norm, kv_k, kv_v, d_q, d_gate);
+    if (!e)
+        e = RunQwenFusedAttn(stream, d_q, d_gate, kv_k, kv_v, d_out_h,
+                             kv_base, NH, NKV, HD, scale);
+    if (!e)
+        e = RunQwenFusedOProj(stream, d_out_h, lw.o, d_out_acc, out,
+                              NH, HD, H);
 
-    e = RunQwenNvfp4Gemm(stream, d_normed, lw.q.d_packed, lw.q.d_scales,
-                         lw.q.global_scale, d_qc, 1, H, NH*HD*2); if (e) return e;
-    e = RunQwenNvfp4Gemm(stream, d_normed, lw.k.d_packed, lw.k.d_scales,
-                         lw.k.global_scale, d_k, 1, H, NKV*HD); if (e) return e;
-    e = RunQwenNvfp4Gemm(stream, d_normed, lw.v.d_packed, lw.v.d_scales,
-                         lw.v.global_scale, d_v, 1, H, NKV*HD); if (e) return e;
-
-    {
-        const int threads = std::min(HD, 512);
-        qwen_split_query_kernel<<<NH, threads, HD*sizeof(float), stream>>>(
-            d_qc, d_gate, d_q, nullptr, 1, NH, HD, lw.d_q_norm, lw.d_k_norm,
-            (float)top.rms_norm_eps);
-        e = cudaGetLastError(); if (e) return e;
-    }
-    {
-        const int threads = std::min(HD, 512);
-        qwen_head_norm_kernel<<<NKV, threads, HD*sizeof(float), stream>>>(
-            d_k, lw.d_k_norm, d_k, 1, NKV, HD, (float)top.rms_norm_eps);
-        e = cudaGetLastError(); if (e) return e;
-    }
-    {
-        const int32_t pos = kv_base;
-        cudaMemcpyAsync(d_pos, &pos, sizeof(int32_t), cudaMemcpyHostToDevice, stream);
-        e = RunQwenRopeCosSin(stream, d_pos, 1, rot, top.rope_theta, d_cos, d_sin); if (e) return e;
-        e = RunQwenPartialRope(stream, d_q, d_k, d_cos, d_sin, d_q, d_k,
-                               1, NH, NKV, HD, rot); if (e) return e;
-    }
-    {
-        const float scale = 1.0f / std::sqrt((float)HD);
-        const dim3 grid(1, NH);
-        const int threads = std::min(HD, 512);
-        const size_t smem = ((size_t)kv_base + 2) * sizeof(float);
-        full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
-            d_q, d_k, d_v, d_attn, 1, NH, HD, NKV, scale, kv_base);
-        e = cudaGetLastError(); if (e) return e;
-    }
-    {
-        const int64_t n = (int64_t)NH*HD;
-        qwen_out_gate_kernel<<<(int)((n+255)/256), 256, 0, stream>>>(
-            d_attn, d_gate, d_attn, 1, n);
-        e = cudaGetLastError(); if (e) return e;
-    }
-    e = RunQwenNvfp4Gemm(stream, d_attn, lw.o.d_packed, lw.o.d_scales,
-                         lw.o.global_scale, out, 1, NH*HD, H);
-
-    cudaFree(d_normed); cudaFree(d_qc); cudaFree(d_q); cudaFree(d_gate);
-    cudaFree(d_k); cudaFree(d_v); cudaFree(d_attn);
-    cudaFree(d_cos); cudaFree(d_sin); cudaFree(d_pos);
+    cudaFree(d_q); cudaFree(d_gate); cudaFree(d_out_h); cudaFree(d_out_acc);
     return e;
 }
 

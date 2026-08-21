@@ -115,7 +115,39 @@ cudaError_t RunQwenFullAttnKernel(
 cudaError_t RunQwenFusedDecodeAttnKernel(
     cudaStream_t stream, const __half *x, const QwenLayerWeights &lw,
     const QwenTopology &top, int kv_base,
-    const __half *kv_k, const __half *kv_v, __half *out);
+    __half *kv_k, __half *kv_v, __half *out);
+
+// Fused decoder stage 1 (qkv): applies input RMSNorm to x ([H]), then per-head
+// inline NVFP4 q/k/v/gate projection, per-head RMSNorm(q) and RMSNorm(k),
+// inline RoPE (rotate-half pairing on the first rotary_dim dims), appends this
+// token's k/v to the persistent KV row kv_base, and publishes q_gl/gate_gl
+// [NH*HD] for the fused attention stage.
+cudaError_t RunQwenFusedQkv(
+    cudaStream_t stream, const __half *x,
+    const QwenNvfp4Weight &qw, const QwenNvfp4Weight &kw,
+    const QwenNvfp4Weight &vw,
+    const __half *q_norm, const __half *k_norm,
+    double theta, int rotary_dim, int kv_base,
+    int NH, int NKV, int HD, int H, float eps,
+    const __half *input_norm,
+    __half *kv_k, __half *kv_v, __half *q_gl, __half *gate_gl);
+
+// Fused decoder stage 2 (attention): block-wide online-softmax causal GQA over
+// attended KV rows [0..kv_base], per-head output gate (sigmoid). q_gl/gate_gl
+// [NH*HD], kv_k/kv_v persistent cache [..NKV*HD] rows; out_h [NH*HD].
+cudaError_t RunQwenFusedAttn(
+    cudaStream_t stream,
+    const __half *q_gl, const __half *gate_gl,
+    const __half *kv_k, const __half *kv_v, __half *out_h,
+    int kv_base, int NH, int NKV, int HD, float scale);
+
+// Fused decoder stage 3 (o_proj): accumulate each head's o_proj contribution
+// into out_acc[H] (float atomicAdd), then convert to out [H]. out_h [NH*HD];
+// o is the [NH*HD, H] NVFP4 output weight.
+cudaError_t RunQwenFusedOProj(
+    cudaStream_t stream, const __half *out_h,
+    const QwenNvfp4Weight &o, float *out_acc, __half *out,
+    int NH, int HD, int H);
 
 // Dense SwiGLU MLP: gate=silu(x@Wg), up=x@Wu, inter=gate*up, out=inter@Wd.
 cudaError_t RunQwenMLP(
