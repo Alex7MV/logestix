@@ -197,6 +197,9 @@ if(WIN32)
 endif()
 
 add_test(NAME test_qwen_model COMMAND test_qwen_model)
+# Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
+set_tests_properties(test_qwen_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Инкрементальный KV-кэш Qwen (Task 7) ─────────────────────────────────
 add_executable(test_qwen_kv_cache test_qwen_kv_cache.cpp)
@@ -264,6 +267,9 @@ if(WIN32)
 endif()
 
 add_test(NAME test_qwen_3_8_27b_model COMMAND test_qwen_3_8_27b_model)
+# Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
+set_tests_properties(test_qwen_3_8_27b_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Тест общей модели проверки целостности (integrity:: helpers) ─────────
 add_executable(test_model_integrity test_model_integrity.cpp)

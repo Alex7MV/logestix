@@ -63,7 +63,12 @@ TEST_CASE("GLM seq-P prefill stores P KV rows and stays bit-exact", "[glm][model
     REQUIRE(r1.ok);
     REQUIRE(r1.num_tokens >= 1);
     // seq-P prefill: every prompt token occupies one IndexShare KV slot.
-    REQUIRE(r1.kv_slots_used == P + r1.num_tokens);
+    // A terminating EOS is part of gen_tokens (final-logits argmax parity
+    // below relies on it) but the engine breaks before appending it, so an
+    // EOS-terminated turn owns one slot less than P + num_tokens.
+    const bool ended_on_eos = r1.num_tokens < req.max_gen_tokens;
+    REQUIRE(r1.kv_slots_used ==
+            P + r1.num_tokens - (ended_on_eos ? 1 : 0));
     REQUIRE_FALSE(r1.final_logits.empty());
     REQUIRE(r1.gen_tokens.size() == static_cast<size_t>(r1.num_tokens));
 

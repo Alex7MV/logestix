@@ -9,7 +9,7 @@ namespace {
 constexpr FramingDescriptor kGlmFraming = {
     "glm-5.2",
     {"[gMASK]", "<sop>", "<|user|>"},
-    {"<|assistant|>", " thinking", " response"},
+    {"<|assistant|>", "<think>", "</think>"},
     3, 3,
 };
 
