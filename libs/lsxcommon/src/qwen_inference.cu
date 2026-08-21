@@ -443,20 +443,28 @@ __global__ void qwen_nvfp4_gemm_tile_kernel(
 
     for (int kb = 0; kb < K; kb += BK) {
         // W tile: element e = (n0+bn)*K + kb+kk (weight row-major [n, K]).
+        // K-tail (K % BK != 0) and N-tail are zero-padded: the accumulate
+        // loop below runs the full BK width unmasked.
         for (int i = bi; i < BN * BK; i += BM * BN) {
             const int w_bn = i / BK, kk = i % BK;
-            const int64_t e = (int64_t)(n0 + w_bn) * K + (kb + kk);
-            const uint8_t byte = packed[e >> 1];
-            const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
-            const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
-            sW[w_bn][kk] = __float2half(kE2M1Table[nib] * scl);
+            const int n = n0 + w_bn;
+            float wv = 0.0f;
+            if (n < N && kb + kk < K) {
+                const int64_t e = (int64_t)n * K + (kb + kk);
+                const uint8_t byte = packed[e >> 1];
+                const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+                const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
+                wv = kE2M1Table[nib] * scl;
+            }
+            sW[w_bn][kk] = __float2half(wv);
         }
-        // X tile: x[t][kb+kk] for rows [m0, m0+BM).
+        // X tile: x[t][kb+kk] for rows [m0, m0+BM). K-tail zero-padded.
         for (int i = bi; i < BM * BK; i += BM * BN) {
             const int x_bm = i / BK, kk = i % BK;
             const int tt = m0 + x_bm;
-            sX[x_bm][kk] = (tt < seq) ? x[(int64_t)tt * K + (kb + kk)]
-                                      : __float2half(0.0f);
+            sX[x_bm][kk] = (tt < seq && kb + kk < K)
+                               ? x[(int64_t)tt * K + (kb + kk)]
+                               : __float2half(0.0f);
         }
         __syncthreads();
 
@@ -834,24 +842,18 @@ __global__ void qwen_f2h_acc_kernel(const float *in, __half *out, int n)
     if (idx < n) out[idx] = __float2half(in[idx]);
 }
 
-// ── Fused linear-attention front (F1): qkv NVFP4 GEMM -> causal conv1d+silu
-// -> l2norm(q,k). One block per token row t; blockDim = pow2(kd) >= kd (<=256).
-// The raw qkv GEMM row is written to the persistent d_qkv history (kv_base
-// offsets), conv reads history rows [(kv_base+t-kernel+1) .. (kv_base+t)], then
-// q (scale 1/sqrt(kd)) and k (scale 1) slices of the conv buffer are
-// l2normalized in place. Mirrors qwen_nvfp4_gemm_kernel + qwen_conv1d_kernel +
-// qwen_l2norm_rows_kernel.
-__global__ void fused_linear_front_kernel(
+// ── Fused linear-attention front stage A: raw qkv NVFP4 GEMM into the
+// persistent d_qkv history. One block per token row t; blockDim = pow2(kd).
+// Own launch: the conv stage (stage B) reads history rows written by other
+// tokens of the same call, which requires kernel-launch ordering.
+__global__ void fused_linear_qkv_kernel(
     const __half * __restrict__ x,          // d_normed [seq, H]
     const QwenNvfp4Weight qkv,              // rows=H, cols=S
-    const __half * __restrict__ conv_w,     // [S, kernel]
-    int seq, int nk, int kd, int nv, int vd, int H, int kernel, int kv_base,
-    __half * __restrict__ d_qkv,            // persistent raw history [max?, S]
-    __half * __restrict__ d_conv)           // [seq, S]
+    int seq, int nk, int kd, int nv, int vd, int H, int kv_base,
+    __half * __restrict__ d_qkv)            // persistent raw history
 {
     const int t = blockIdx.x;
     const int S = nk * kd * 2 + nv * vd;
-    const int KD = nk * kd;
     const int N = S;
     const int K = H;
     const int nth = blockDim.x;
@@ -864,108 +866,120 @@ __global__ void fused_linear_front_kernel(
             const uint8_t byte = qkv.d_packed[e >> 1];
             const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
             const float scl = E4M3ScaleToFloat(qkv.d_scales[e >> 4]) * qkv.global_scale;
-            const int s = nib & 0x7;
-            const float sign = (nib & 0x8) ? -1.0f : 1.0f;
-            acc += __half2float(x[(int64_t)t * K + k]) * (sign * kE2M1Table[s]) * scl;
+            // Tile-GEMM parity: dequantized weight is rounded to half before
+            // the product (mirrors qwen_nvfp4_gemm_tile_kernel sW staging).
+            const __half wv = __float2half(kE2M1Table[nib] * scl);
+            acc += __half2float(x[(int64_t)t * K + k]) * __half2float(wv);
         }
         d_qkv[((int64_t)kv_base + t) * S + c] = __float2half(acc);
     }
-    __syncthreads();
-
-    for (int c = threadIdx.x; c < S; c += nth) {
-        float acc = 0.0f;
-        for (int k = 0; k < kernel; ++k) {
-            const int tt = kv_base + t - k;
-            if (tt < 0) continue;
-            const float wv = __half2float(conv_w[(int64_t)c * kernel + (kernel - 1 - k)]);
-            const float mv = __half2float(d_qkv[(int64_t)tt * S + c]);
-            acc += wv * mv;
-        }
-        d_conv[(int64_t)t * S + c] = __float2half(silu_dev(acc));
-    }
-    __syncthreads();
-
-    __shared__ float svals[256], sred[256], sinv;
-    const float q_scale = 1.0f / sqrtf((float)kd);
-    for (int h = 0; h < nk; ++h) {
-        for (int slice = 0; slice < 2; ++slice) {
-            const int head_off = (slice == 0) ? 0 : KD;
-            const float extra = (slice == 0) ? q_scale : 1.0f;
-            const int lane = threadIdx.x;
-            const int c = head_off + h * kd + lane;
-            float v = 0.0f;
-            if (lane < kd) v = __half2float(d_conv[(int64_t)t * S + c]);
-            svals[lane] = v; sred[lane] = v * v;
-            __syncthreads();
-            for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-                if (lane < s) sred[lane] += sred[lane + s];
-                __syncthreads();
-            }
-            if (lane == 0) sinv = rsqrtf(sred[0] + 1e-6f) * extra;
-            __syncthreads();
-            if (lane < kd) d_conv[(int64_t)t * S + c] = __float2half(svals[lane] * sinv);
-            __syncthreads();
-        }
-    }
 }
 
-// ── Fused linear-attention front (F2): z + a + b NVFP4 GEMMs + prep_gating.
-// One block per token row t; blockDim = pow2(kd). z writes d_z, a/b write d_ab
-// (a then b), g/beta (float) from A_log/dt_bias.
-__global__ void fused_linear_zab_kernel(
-    const __half * __restrict__ x, const QwenNvfp4Weight z,
+// ── Fused linear-attention front stage B: causal conv1d+silu + l2norm(q,k)
+// for blocks [0, seq); z + a + b NVFP4 GEMMs + prep_gating for blocks
+// [seq, 2*seq). The two halves are data-independent (conv reads d_qkv from
+// stage A; z/a/b read d_normed directly), so they share one launch.
+__global__ void fused_linear_conv_zab_kernel(
+    const __half * __restrict__ x,          // d_normed [seq, H]
+    const QwenNvfp4Weight z,
     const QwenNvfp4Weight a, const QwenNvfp4Weight b,
     const float * __restrict__ A_log, const float * __restrict__ dt_bias,
-    int seq, int H, int nv, int VD,
+    const __half * __restrict__ conv_w,     // [S, kernel]
+    int seq, int nk, int kd, int nv, int vd, int H, int kernel, int kv_base,
+    const __half * __restrict__ d_qkv,      // raw history from stage A
+    __half * __restrict__ d_conv,           // [seq, S]
     __half * __restrict__ d_z, __half * __restrict__ d_ab,
     float * __restrict__ d_g, float * __restrict__ d_beta)
 {
-    const int t = blockIdx.x;
-    const int nth = blockDim.x;
-    const __half *xrow = x + (int64_t)t * H;
-
-    for (int c = threadIdx.x; c < VD; c += nth) {
-        float acc = 0.0f;
-        for (int k = 0; k < H; ++k) {
-            const int64_t e = (int64_t)c * H + k;
-            const uint8_t byte = z.d_packed[e >> 1];
-            const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
-            const float scl = E4M3ScaleToFloat(z.d_scales[e >> 4]) * z.global_scale;
-            const int s = nib & 0x7;
-            const float sign = (nib & 0x8) ? -1.0f : 1.0f;
-            acc += __half2float(xrow[k]) * (sign * kE2M1Table[s]) * scl;
+    const int VD = nv * vd;
+    if (blockIdx.x < (unsigned)seq) {
+        // ---- conv1d + silu + l2norm(q,k) for token blockIdx.x ----
+        const int t = blockIdx.x;
+        const int S = nk * kd * 2 + nv * vd;
+        const int KD = nk * kd;
+        for (int c = threadIdx.x; c < S; c += blockDim.x) {
+            float acc = 0.0f;
+            for (int k = 0; k < kernel; ++k) {
+                const int tt = kv_base + t - k;
+                if (tt < 0) continue;
+                const float wv = __half2float(conv_w[(int64_t)c * kernel + (kernel - 1 - k)]);
+                const float mv = __half2float(d_qkv[(int64_t)tt * S + c]);
+                acc += wv * mv;
+            }
+            d_conv[(int64_t)t * S + c] = __float2half(silu_dev(acc));
         }
-        d_z[(int64_t)t * VD + c] = __float2half(acc);
-    }
+        __syncthreads();
 
-    __half *a_buf = d_ab;
-    __half *b_buf = d_ab + (int64_t)seq * nv;
-    for (int c = threadIdx.x; c < nv; c += nth) {
-        float acca = 0.0f, accb = 0.0f;
-        for (int k = 0; k < H; ++k) {
-            const int64_t ea = (int64_t)c * H + k;
-            const uint8_t ba = a.d_packed[ea >> 1];
-            const uint8_t na = (ea & 1) ? (ba >> 4) : (ba & 0x0F);
-            const float sa = E4M3ScaleToFloat(a.d_scales[ea >> 4]) * a.global_scale;
-            const int ssa = na & 0x7; const float sga = (na & 0x8) ? -1.0f : 1.0f;
-            acca += __half2float(xrow[k]) * (sga * kE2M1Table[ssa]) * sa;
-            const int64_t eb = (int64_t)c * H + k;
-            const uint8_t bb = b.d_packed[eb >> 1];
-            const uint8_t nb = (eb & 1) ? (bb >> 4) : (bb & 0x0F);
-            const float sb = E4M3ScaleToFloat(b.d_scales[eb >> 4]) * b.global_scale;
-            const int ssb = nb & 0x7; const float sgb = (nb & 0x8) ? -1.0f : 1.0f;
-            accb += __half2float(xrow[k]) * (sgb * kE2M1Table[ssb]) * sb;
+        __shared__ float svals[256], sred[256], sinv;
+        const float q_scale = 1.0f / sqrtf((float)kd);
+        for (int h = 0; h < nk; ++h) {
+            for (int slice = 0; slice < 2; ++slice) {
+                const int head_off = (slice == 0) ? 0 : KD;
+                const float extra = (slice == 0) ? q_scale : 1.0f;
+                const int lane = threadIdx.x;
+                const int c = head_off + h * kd + lane;
+                float v = 0.0f;
+                if (lane < kd) v = __half2float(d_conv[(int64_t)t * S + c]);
+                svals[lane] = v; sred[lane] = v * v;
+                __syncthreads();
+                for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+                    if (lane < s) sred[lane] += sred[lane + s];
+                    __syncthreads();
+                }
+                if (lane == 0) sinv = rsqrtf(sred[0] + 1e-6f) * extra;
+                __syncthreads();
+                if (lane < kd) d_conv[(int64_t)t * S + c] = __float2half(svals[lane] * sinv);
+                __syncthreads();
+            }
         }
-        a_buf[(int64_t)t * nv + c] = __float2half(acca);
-        b_buf[(int64_t)t * nv + c] = __float2half(accb);
-    }
-    __syncthreads();
+    } else {
+        // ---- z + a + b projections + prep gating for token blockIdx.x-seq ----
+        const int t = blockIdx.x - (unsigned)seq;
+        const int nth = blockDim.x;
+        const __half *xrow = x + (int64_t)t * H;
 
-    for (int c = threadIdx.x; c < nv; c += nth) {
-        const float a_v = __half2float(a_buf[(int64_t)t * nv + c]);
-        const float b_v = __half2float(b_buf[(int64_t)t * nv + c]);
-        d_beta[(int64_t)t * nv + c] = sigmoid_dev(b_v);
-        d_g[(int64_t)t * nv + c] = -__expf(A_log[c]) * softplus_dev(a_v + dt_bias[c]);
+        for (int c = threadIdx.x; c < VD; c += nth) {
+            float acc = 0.0f;
+            for (int k = 0; k < H; ++k) {
+                const int64_t e = (int64_t)c * H + k;
+                const uint8_t byte = z.d_packed[e >> 1];
+                const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+                const float scl = E4M3ScaleToFloat(z.d_scales[e >> 4]) * z.global_scale;
+                const __half wv = __float2half(kE2M1Table[nib] * scl);
+                acc += __half2float(xrow[k]) * __half2float(wv);
+            }
+            d_z[(int64_t)t * VD + c] = __float2half(acc);
+        }
+
+        __half *a_buf = d_ab;
+        __half *b_buf = d_ab + (int64_t)seq * nv;
+        for (int c = threadIdx.x; c < nv; c += nth) {
+            float acca = 0.0f, accb = 0.0f;
+            for (int k = 0; k < H; ++k) {
+                const int64_t ea = (int64_t)c * H + k;
+                const uint8_t ba = a.d_packed[ea >> 1];
+                const uint8_t na = (ea & 1) ? (ba >> 4) : (ba & 0x0F);
+                const float sa = E4M3ScaleToFloat(a.d_scales[ea >> 4]) * a.global_scale;
+                acca += __half2float(xrow[k]) *
+                        __half2float(__float2half(kE2M1Table[na] * sa));
+                const int64_t eb = (int64_t)c * H + k;
+                const uint8_t bb = b.d_packed[eb >> 1];
+                const uint8_t nb = (eb & 1) ? (bb >> 4) : (bb & 0x0F);
+                const float sb = E4M3ScaleToFloat(b.d_scales[eb >> 4]) * b.global_scale;
+                accb += __half2float(xrow[k]) *
+                        __half2float(__float2half(kE2M1Table[nb] * sb));
+            }
+            a_buf[(int64_t)t * nv + c] = __float2half(acca);
+            b_buf[(int64_t)t * nv + c] = __float2half(accb);
+        }
+        __syncthreads();
+
+        for (int c = threadIdx.x; c < nv; c += nth) {
+            const float a_v = __half2float(a_buf[(int64_t)t * nv + c]);
+            const float b_v = __half2float(b_buf[(int64_t)t * nv + c]);
+            d_beta[(int64_t)t * nv + c] = sigmoid_dev(b_v);
+            d_g[(int64_t)t * nv + c] = -__expf(A_log[c]) * softplus_dev(a_v + dt_bias[c]);
+        }
     }
 }
 
@@ -993,18 +1007,19 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     if (lw.qkv.cols <= 0) return cudaErrorInvalidValue;
     cudaError_t e;
 
-    // F1: qkv GEMM + conv1d + l2norm(q,k).
+    // Stage A: raw qkv GEMM into the persistent history (own launch — stage B
+    // conv reads rows written by other tokens of this call).
     int nthreads = 1;
     while (nthreads < kd) nthreads <<= 1;
-    fused_linear_front_kernel<<<seq, nthreads, 0, stream>>>(
-        d_normed, lw.qkv, lw.d_conv1d, seq, nk, kd, nv, vd,
-        lw.qkv.rows, lw.conv_kernel, kv_base, d_qkv, d_conv);
+    fused_linear_qkv_kernel<<<seq, nthreads, 0, stream>>>(
+        d_normed, lw.qkv, seq, nk, kd, nv, vd, lw.qkv.cols, kv_base, d_qkv);
     e = cudaGetLastError(); if (e) return e;
 
-    // F2: z + a + b + prep_gating.
-    fused_linear_zab_kernel<<<seq, nthreads, 0, stream>>>(
-        d_normed, lw.z, lw.a, lw.b, lw.d_A_log, lw.d_dt_bias,
-        seq, lw.z.rows, nv, VD, d_z, d_ab, d_g, d_beta);
+    // Stage B: conv1d+silu+l2norm(q,k) ∥ z+a+b+prep_gating (one launch).
+    fused_linear_conv_zab_kernel<<<2 * seq, nthreads, 0, stream>>>(
+        d_normed, lw.z, lw.a, lw.b, lw.d_A_log, lw.d_dt_bias, lw.d_conv1d,
+        seq, nk, kd, nv, vd, lw.z.cols, lw.conv_kernel, kv_base,
+        d_qkv, d_conv, d_z, d_ab, d_g, d_beta);
     e = cudaGetLastError(); if (e) return e;
 
     // Tail (unchanged, mirrors RunQwenLinearAttention stages 4-6).
@@ -1868,9 +1883,6 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
-                    e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
-                                       seq, H, eps);
-                    if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                     e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
@@ -1879,13 +1891,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                         kv->d_col + (int64_t)lin_idx * nv * vd * kd);
                     ++lin_idx;
                 } else {
-                    // seq==1 decoder: fused full-attention layer (input-norm
-                    // applied inside). Replaces RMSNorm + FullAttention launches.
-                    e = RunQwenFusedDecodeAttnKernel(
-                            stream, d_act, lw, top, kv_base,
-                            kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
-                            kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
-                            d_attn_out);
+                    e = RunQwenFullAttention(stream, lw, top, seq,
+                        d_normed, d_attn_out, d_qc, d_q, d_qgate,
+                        d_k, d_v, d_attn, d_cos, d_sin, d_pos);
                     ++full_idx;
                 }
                 if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
