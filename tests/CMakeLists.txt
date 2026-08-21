@@ -126,6 +126,7 @@ add_library(test_qwen_cu OBJECT
     test_qwen_nvfp4_dense.cu
     test_qwen_nvfp4_tile_gemm.cu
     test_qwen_full_attn.cu
+    test_qwen_full_attn_parallel.cu
     test_qwen_linear_attn.cu
 )
 set_target_properties(test_qwen_cu PROPERTIES
@@ -153,7 +154,7 @@ target_compile_definitions(test_qwen_cu PRIVATE
 )
 target_link_libraries(test_qwen_cu PRIVATE Catch2::Catch2WithMain)
 
-foreach(qt test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_linear_attn)
+foreach(qt test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_full_attn_parallel test_qwen_linear_attn)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_qwen_cu lsxcommon Catch2::Catch2WithMain)

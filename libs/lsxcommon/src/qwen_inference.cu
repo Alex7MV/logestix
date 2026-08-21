@@ -234,35 +234,62 @@ __global__ void full_attn_softmax_kernel(
     const int t = blockIdx.x;
     const int h = blockIdx.y;
     const int kvh = h / (heads / kv_heads);
-    const int ctx = kv_base + t;   // global rows attended (inclusive)
+    const int ctx = kv_base + t;
+    const int nscores = ctx + 1;
+    const int threads = blockDim.x;
 
     const __half *qrow = q + ((int64_t)t * heads + h) * head_dim;
     const __half *kbase = k + (int64_t)kvh * head_dim;
     const __half *vbase = v + (int64_t)kvh * head_dim;
 
-    extern __shared__ float slogits[];
-    if (threadIdx.x == 0) {
-        for (int j = 0; j <= ctx; ++j) {
-            const __half *krow = kbase + (int64_t)j * (int64_t)kv_heads * head_dim;
-            float dot = 0.0f;
-            for (int d = 0; d < head_dim; ++d)
-                dot += __half2float(qrow[d]) * __half2float(krow[d]);
-            slogits[j] = dot * scale;
-        }
+    extern __shared__ float slogits[];      // dynamic: [nscores]
+    __shared__ float sreduce[512];          // separate block-reduction scratch
+
+    // 1. Scores, chunk-per-thread (parallel dots).
+    for (int j = threadIdx.x; j < nscores; j += threads) {
+        const __half *krow = kbase + (int64_t)j * kv_heads * head_dim;
+        float dot = 0.0f;
+        for (int d = 0; d < head_dim; ++d)
+            dot += __half2float(qrow[d]) * __half2float(krow[d]);
+        slogits[j] = dot * scale;
     }
     __syncthreads();
 
+    // 2. Global max via block reduction (scratch, NOT slogits).
     float m = -1e30f;
-    for (int j = 0; j <= ctx; ++j) m = fmaxf(m, slogits[j]);
-    float sum = 0.0f;
-    for (int j = 0; j <= ctx; ++j) sum += __expf(slogits[j] - m);
-    const float inv_sum = 1.0f / sum;
+    for (int j = threadIdx.x; j < nscores; j += threads)
+        m = fmaxf(m, slogits[j]);
+    sreduce[threadIdx.x] = m;
+    __syncthreads();
+    for (int stride = threads / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            sreduce[threadIdx.x] = fmaxf(sreduce[threadIdx.x], sreduce[threadIdx.x + stride]);
+        __syncthreads();
+    }
+    m = sreduce[0];
+    __syncthreads();
 
-    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
+    // 3. Softmax denominator via block reduction (one exp per score).
+    float sum = 0.0f;
+    for (int j = threadIdx.x; j < nscores; j += threads)
+        sum += __expf(slogits[j] - m);
+    sreduce[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = threads / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            sreduce[threadIdx.x] += sreduce[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float inv = 1.0f / (sreduce[0] + 1e-10f);
+    __syncthreads();
+
+    // 4. Per-output-dim value pass: thread d sums all scores with the SHARED
+    //    exp(s-m)*inv. Stride-d loop (idles when threads > head_dim).
+    for (int d = threadIdx.x; d < head_dim; d += threads) {
         float acc = 0.0f;
-        for (int j = 0; j <= ctx; ++j) {
-            const __half *vrow = vbase + (int64_t)j * (int64_t)kv_heads * head_dim;
-            acc += (__expf(slogits[j] - m) * inv_sum) * __half2float(vrow[d]);
+        for (int j = 0; j < nscores; ++j) {
+            const __half *vrow = vbase + (int64_t)j * kv_heads * head_dim;
+            acc += __expf(slogits[j] - m) * inv * __half2float(vrow[d]);
         }
         out[((int64_t)t * heads + h) * head_dim + d] = __float2half(acc);
     }
@@ -271,6 +298,27 @@ __global__ void full_attn_softmax_kernel(
 } // namespace
 
 // ── Public numeric kernels ──────────────────────────────────────────────────
+
+// Block-wide chunked-parallel causal attention (GQA). Serves as the numeric
+// entry for the standalone softmax-kernel launch (the high-level
+// RunQwenFullAttention calls the same kernel with projections/RoPE/gate).
+cudaError_t RunQwenFullAttnKernel(
+    cudaStream_t stream,
+    const __half *q, const __half *k, const __half *v, __half *out,
+    int seq, int heads, int head_dim, int kv_heads, float scale, int kv_base)
+{
+    if (!q || !k || !v || !out || seq <= 0 || heads <= 0 || head_dim <= 0 ||
+        kv_heads <= 0 || kv_base < 0)
+        return cudaErrorInvalidValue;
+    const dim3 grid(seq, heads);
+    const int threads = std::min(head_dim, 512);
+    // dynamic shared = slogits[nscores]; the block REDUCTION scratch is a
+    // static __shared__ (sreduce[512]) and needs no dynamic smem.
+    const size_t smem = (static_cast<size_t>(kv_base) + seq + 1) * sizeof(float);
+    full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
+        q, k, v, out, seq, heads, head_dim, kv_heads, scale, kv_base);
+    return cudaGetLastError();
+}
 
 cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w,
                            __half *out, int rows, int hidden, double eps)

@@ -95,6 +95,19 @@ cudaError_t RunQwenLinearAttention(
     __half *d_conv, __half *d_core, __half *d_gated,
     int kv_base = 0, float *d_gd_state = nullptr);
 
+// Scaled dot-product causal attention (GQA), FP16 in/out, FP32 accumulate.
+// q: [seq, heads, head_dim]; k/v: [seq * kv_heads, head_dim] base rows where
+// the kv row for attended index s is (s * kv_heads + kvh) * head_dim;
+// kv_base offsets the attended rows (s in [0, kv_base+t]) for a persistent
+// cache; out: [seq, heads, head_dim]. Dispatches to the block-wide chunked
+// parallel-softmax kernel; this is the numeric entry for the kernel alone
+// (the high-level RunQwenFullAttention adds projections/RoPE/gate).
+cudaError_t RunQwenFullAttnKernel(
+    cudaStream_t stream,
+    const __half *q, const __half *k, const __half *v, __half *out,
+    int seq, int heads, int head_dim, int kv_heads, float scale,
+    int kv_base);
+
 // Dense SwiGLU MLP: gate=silu(x@Wg), up=x@Wu, inter=gate*up, out=inter@Wd.
 cudaError_t RunQwenMLP(
     cudaStream_t stream,
