@@ -1637,6 +1637,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                    seq, H, eps);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
+                    e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
+                                       seq, H, eps);
+                    if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                     e = RunQwenLinearAttention(stream, lw, top, seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
@@ -1645,11 +1648,13 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                         kv->d_col + (int64_t)lin_idx * nv * vd * kd);
                     ++lin_idx;
                 } else {
-                    e = RunQwenFullAttention(stream, lw, top, seq,
-                        d_normed, d_attn_out, d_qc, d_q, d_qgate,
-                        kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
-                        kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
-                        d_attn, d_cos, d_sin, d_pos, kv_base);
+                    // seq==1 decoder: fused full-attention layer (input-norm
+                    // applied inside). Replaces RMSNorm + FullAttention launches.
+                    e = RunQwenFusedDecodeAttnKernel(
+                            stream, d_act, lw, top, kv_base,
+                            kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
+                            kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
+                            d_attn_out);
                     ++full_idx;
                 }
                 if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
