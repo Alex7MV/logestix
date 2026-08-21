@@ -14,6 +14,7 @@
 #include <arrow/ipc/reader.h>
 #include "lsxcommon/deepseek_inference_csa.h"
 #include "lsxcommon/expert_store.h"
+#include "lsxcommon/vram_estimate.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -60,6 +61,7 @@ struct ModelTopology {
     int num_layers = 0;
     int experts_per_layer = 0;
     int64_t total_experts = 0;
+    lsxcommon::VramProfile vram;   // conversion-time VRAM requirements
     std::string error_msg;
 };
 

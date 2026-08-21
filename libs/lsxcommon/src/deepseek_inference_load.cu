@@ -225,6 +225,12 @@ ModelTopology load_topology(const std::string &model_path)
         return topo;
     }
 
+    std::string verr;
+    if (!lsxcommon::ParseVramBlock(json, topo.vram, verr)) {
+        ModelTopology failed;   // num_layers == 0 -> pipeline guard fires
+        failed.error_msg = verr + " in " + ipath.string();
+        return failed;
+    }
     int64_t nl = 0, epl = 0, te = 0;
     root["num_layers"].get_int64().get(nl);
     root["experts_per_layer"].get_int64().get(epl);
