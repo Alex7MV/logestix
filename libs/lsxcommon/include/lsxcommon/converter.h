@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lsxcommon/schema.h"
+#include "lsxcommon/vram_estimate.h"
 #include <arrow/api.h>
 #include <filesystem>
 #include <memory>
@@ -44,6 +45,7 @@ arrow::Status WriteModelIndex(
     int experts_per_layer,
     int64_t total_pinned,
     int64_t total_experts,
+    const VramProfile &vram,
     const std::filesystem::path &output_root);
 
 class Converter {

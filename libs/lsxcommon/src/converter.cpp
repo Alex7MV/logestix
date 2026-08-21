@@ -103,6 +103,21 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
 
 } // anonymous namespace
 
+// ── VRAM profile classification (spec 2026-08-21) ───────────────────────────
+
+bool DsIsNvfp4Tensor(const std::string &name)
+{
+    return parse_expert_name(name).has_value()
+        || parse_shared_expert_name(name).has_value();
+}
+
+VramTensorClass DsMemClass(const std::string &name)
+{
+    return parse_expert_name(name).has_value()
+        ? VramTensorClass::RoutedExpert
+        : VramTensorClass::Resident;
+}
+
 // ── Safetensors public API ───────────────────────────────────────────────────
 
 bool is_staged_tensor(const std::string &name)
@@ -965,6 +980,7 @@ arrow::Status WriteModelIndex(
     int experts_per_layer,
     int64_t total_pinned,
     int64_t total_experts,
+    const VramProfile &vram,
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
@@ -980,6 +996,7 @@ arrow::Status WriteModelIndex(
     f << "  \"experts_per_layer\": " << experts_per_layer << ",\n";
     f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
     f << "  \"total_experts\": " << total_experts << ",\n";
+    f << FormatVramJson(vram) << ",\n";
     f << "  \"files\": {\n";
     f << "    \"pinned\": {\n";
     f << "      \"global\": \"pinned/global.arrow\"\n";
@@ -1322,11 +1339,42 @@ arrow::Status Converter::Run()
         shared_by_layer.size());
     ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, impl_->output_path));
 
+    // Conversion-time VRAM profile (spec 2026-08-21-vram-profile-design.md).
+    VramGeometry vg;
+    vg.num_attn_layers = max_layer;
+    vg.num_moe_layers = max_layer;
+    vg.experts_per_layer = max_experts_per_layer;
+    vg.context_length = ReadContextLength(
+        (fs::path(impl_->input_path) / "config.json").string());
+    for (const auto &shard : model.shards) {
+        for (const auto &t : shard.tensors) {
+            if (vg.kv_dim == 0 && t.shape.size() >= 2 &&
+                t.name.find("wkv.weight") != std::string::npos) {
+                vg.kv_dim = static_cast<int>(t.shape[0]);
+                vg.hidden_dim = static_cast<int>(t.shape[1]);
+            }
+        }
+    }
+
+    std::vector<VramTensorInfo> vram_inventory;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors)
+            vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+
+    VramProfile vram_profile = EstimateVram(
+        vram_inventory, {&DsIsNvfp4Tensor, &DsMemClass}, vg);
+    spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+        FormatBytesHuman(vram_profile.min_bytes),
+        FormatBytesHuman(vram_profile.optimal_bytes),
+        FormatBytesHuman(vram_profile.max_bytes),
+        vram_profile.context_tokens);
+
     ARROW_RETURN_NOT_OK(WriteModelIndex(
         fs::path(impl_->input_path).filename().string(),
         max_layer, max_experts_per_layer,
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
+        vram_profile,
         impl_->output_path));
 
     // (8) Build and verify the binary tokenizer (mandatory).
