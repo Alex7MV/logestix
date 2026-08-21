@@ -267,6 +267,12 @@ Topology load_topology(const std::string &index_json_path)
         topo.error_msg = "invalid indexer_layers in " + index_json_path;
         return topo;
     }
+    std::string verr;
+    if (!ParseVramBlock(json, topo.vram, verr)) {
+        Topology failed;   // plain reset: no partial layers + error
+        failed.error_msg = verr + " in " + index_json_path;
+        return failed;
+    }
     return topo;
 }
 
@@ -300,6 +306,22 @@ struct GlmExpertKeyHash {
              + static_cast<std::size_t>(k.expert);
     }
 };
+
+// ── VRAM profile classification (spec 2026-08-21) ───────────────────────────
+
+bool GlmIsNvfp4Tensor(const std::string &name)
+{
+    const auto p = classify(name);
+    return p.kind == TensorKind::RoutedExpert ||
+           p.kind == TensorKind::SharedExpert;
+}
+
+VramTensorClass GlmMemClass(const std::string &name)
+{
+    return classify(name).kind == TensorKind::RoutedExpert
+        ? VramTensorClass::RoutedExpert
+        : VramTensorClass::Resident;
+}
 
 // GLM writes RAW BF16 (no paired scales); straight into an ExpertData.
 void AssignExpertWeight(ExpertData &ed, int weight_id,
@@ -397,7 +419,8 @@ void WriteGlmModelIndex(
     }
     f << "],\n";
     f << "  \"total_pinned_tensors\": " << total_pinned << ",\n";
-    f << "  \"total_experts\": " << total_experts << "\n";
+    f << "  \"total_experts\": " << total_experts << ",\n";
+    f << FormatVramJson(topo.vram) << "\n";
     f << "}\n";
     f.close();
 }
@@ -659,6 +682,39 @@ arrow::Status ConvertGlmModel(
     topo.moe_layers.assign(moe_layers.begin(), moe_layers.end());
     topo.dense_layers.assign(dense_layers.begin(), dense_layers.end());
     topo.indexer_layers.assign(indexer_layers.begin(), indexer_layers.end());
+
+    // Conversion-time VRAM profile (spec 2026-08-21-vram-profile-design.md).
+    {
+        VramGeometry vg;
+        vg.hidden_dim = cfg_hidden_size;
+        vg.num_attn_layers = static_cast<int>(topo.num_layers);
+        vg.num_moe_layers = static_cast<int>(topo.moe_layers.size());
+        vg.experts_per_layer = static_cast<int>(topo.experts_per_layer);
+        vg.context_length = ReadContextLength(cfg_path.string());
+        for (const auto &shard : model.shards) {
+            for (const auto &t : shard.tensors) {
+                if (vg.kv_dim == 0 && t.shape.size() >= 2 &&
+                    t.name.find("kv_a_proj_with_mqa") != std::string::npos) {
+                    vg.kv_dim = static_cast<int>(t.shape[0]);
+                    if (vg.hidden_dim <= 0)
+                        vg.hidden_dim = static_cast<int>(t.shape[1]);
+                }
+            }
+        }
+        if (vg.hidden_dim <= 0) vg.hidden_dim = 4096;
+
+        std::vector<VramTensorInfo> vram_inventory;
+        for (const auto &shard : model.shards)
+            for (const auto &t : shard.tensors)
+                vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+        topo.vram = EstimateVram(vram_inventory,
+                                 {&GlmIsNvfp4Tensor, &GlmMemClass}, vg);
+        spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+            FormatBytesHuman(topo.vram.min_bytes),
+            FormatBytesHuman(topo.vram.optimal_bytes),
+            FormatBytesHuman(topo.vram.max_bytes),
+            topo.vram.context_tokens);
+    }
 
     WriteGlmModelIndex(
         fs::path(input_path).filename().string(),

@@ -7,6 +7,8 @@
 #include <vector>
 #include <unordered_set>
 
+#include "lsxcommon/vram_estimate.h"
+
 namespace lsxcommon {
 namespace glm {
 
@@ -47,6 +49,7 @@ struct Topology {
     std::vector<long long> moe_layers;
     std::vector<long long> dense_layers;
     std::vector<long long> indexer_layers;
+    VramProfile vram;   // conversion-time VRAM requirements (mandatory block)
     std::string error_msg;
 
     bool is_moe_layer(long long l) const {

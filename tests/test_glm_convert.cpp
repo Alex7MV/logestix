@@ -186,7 +186,13 @@ TEST_CASE("GLM topology parses extended index (79 layers)", "[glm][topology]")
       "dense_layers": [0,1,2],
       "indexer_layers": [0,1,2,6,10,14,18,22,26,30,34,38,42,46,50,54,58,62,66,70,74,78],
       "total_pinned_tensors": 1024,
-      "total_experts": 19456
+      "total_experts": 19456,
+      "vram": {
+        "min_bytes": 1000000,
+        "optimal_bytes": 2000000,
+        "max_bytes": 3000000,
+        "context_tokens": 2048
+      }
     })");
 
     auto topo = lsxcommon::glm::load_topology(TempIndexPath().string());
@@ -210,6 +216,10 @@ TEST_CASE("GLM topology parses extended index (79 layers)", "[glm][topology]")
     CHECK(topo.is_indexer_layer(78));
     CHECK(!topo.is_indexer_layer(3));
     CHECK(topo.total_experts == 19456);
+    CHECK(topo.vram.min_bytes == 1000000);
+    CHECK(topo.vram.optimal_bytes == 2000000);
+    CHECK(topo.vram.max_bytes == 3000000);
+    CHECK(topo.vram.context_tokens == 2048);
 }
 
 TEST_CASE("GLM topology rejects malformed index", "[glm][topology]")
@@ -221,6 +231,24 @@ TEST_CASE("GLM topology rejects malformed index", "[glm][topology]")
     PutIndex("not json at all {{{");
     auto topo2 = lsxcommon::glm::load_topology(TempIndexPath().string());
     CHECK(!topo2.error_msg.empty());
+}
+
+TEST_CASE("GLM topology rejects index without vram block", "[glm][topology]")
+{
+    PutIndex(R"({
+      "format": "logestix-glm",
+      "model": "GLM-5.2",
+      "num_layers": 79,
+      "experts_per_layer": 256,
+      "moe_layers": [],
+      "dense_layers": [],
+      "indexer_layers": [],
+      "total_pinned_tensors": 1024,
+      "total_experts": 19456
+    })");
+    auto topo = lsxcommon::glm::load_topology(TempIndexPath().string());
+    CHECK(!topo.error_msg.empty());
+    CHECK(topo.error_msg.find("vram") != std::string::npos);
 }
 
 /* ── Converter pipeline (synthetic safetensors → logestix layout) ───────── */
@@ -282,6 +310,12 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     CHECK(std::find(topo.dense_layers.begin(), topo.dense_layers.end(), 0) != topo.dense_layers.end());
     CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 6) != topo.indexer_layers.end());
     CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 78) == topo.indexer_layers.end());
+
+    // VRAM profile: mandatory, internally consistent.
+    CHECK(topo.vram.min_bytes > 0);
+    CHECK(topo.vram.optimal_bytes >= topo.vram.min_bytes);
+    CHECK(topo.vram.max_bytes > topo.vram.optimal_bytes); // routed experts exist
+    CHECK(topo.vram.context_tokens > 0);
 
     // Pinned files
     REQUIRE(fs::exists(out / "pinned" / "global.arrow"));
