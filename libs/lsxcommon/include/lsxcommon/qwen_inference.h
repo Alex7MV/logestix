@@ -108,6 +108,15 @@ cudaError_t RunQwenFullAttnKernel(
     int seq, int heads, int head_dim, int kv_heads, float scale,
     int kv_base);
 
+// Fused decoder (seq=1) full-attention layer: 3 fused kernels (qkv -> online
+// softmax -> o_proj) replace the ~9 split launches for a SINGLE token. x is the
+// embedded token [H]; kv_base appends its k/v and bounds attended rows
+// [0 .. kv_base]. kv_k/kv_v: persistent cache, row r is (r*NKV+kvh)*HD. out [H].
+cudaError_t RunQwenFusedDecodeAttnKernel(
+    cudaStream_t stream, const __half *x, const QwenLayerWeights &lw,
+    const QwenTopology &top, int kv_base,
+    const __half *kv_k, const __half *kv_v, __half *out);
+
 // Dense SwiGLU MLP: gate=silu(x@Wg), up=x@Wu, inter=gate*up, out=inter@Wd.
 cudaError_t RunQwenMLP(
     cudaStream_t stream,

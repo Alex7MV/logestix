@@ -702,6 +702,91 @@ cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
                             w.global_scale, y, seq, w.cols, w.rows);
 }
 
+// Fused decoder (seq=1) full-attention layer. Task-1 version composes the
+// existing split launches (bit-identical reference); Tasks 2-4 replace the
+// stages with the fused kernels. Numeric: matches the split path.
+cudaError_t RunQwenFusedDecodeAttnKernel(
+    cudaStream_t stream, const __half *x, const QwenLayerWeights &lw,
+    const QwenTopology &top, int kv_base,
+    const __half *kv_k, const __half *kv_v, __half *out)
+{
+    if (!x || !out || !kv_k || !kv_v || kv_base < 0 || !lw.loaded)
+        return cudaErrorInvalidValue;
+    if (!lw.d_input_norm) return cudaErrorInvalidValue;
+    const int NH = top.num_attention_heads, HD = top.head_dim,
+              NKV = top.num_key_value_heads, H = top.hidden_size;
+    if (NH <= 0 || HD <= 0 || NKV <= 0 || H <= 0) return cudaErrorInvalidValue;
+    const int rot = (int)(HD * top.partial_rotary_factor);
+
+    __half *d_normed, *d_qc, *d_q, *d_gate, *d_k, *d_v, *d_attn, *d_cos, *d_sin;
+    int32_t *d_pos;
+    cudaMalloc(&d_normed, (size_t)H*2);
+    cudaMalloc(&d_qc,    (size_t)NH*HD*2*2);
+    cudaMalloc(&d_q,     (size_t)NH*HD*2);
+    cudaMalloc(&d_gate,  (size_t)NH*HD*2);
+    cudaMalloc(&d_k,     (size_t)(kv_base+1)*NKV*HD*2);
+    cudaMalloc(&d_v,     (size_t)(kv_base+1)*NKV*HD*2);
+    cudaMalloc(&d_attn,  (size_t)NH*HD*2);
+    cudaMalloc(&d_cos,   (size_t)rot/2*2);
+    cudaMalloc(&d_sin,   (size_t)rot/2*2);
+    cudaMalloc(&d_pos,   sizeof(int32_t));
+
+    const int th = std::min(H, 256);
+    rmsnorm_offset_kernel<<<1, th, th*sizeof(float), stream>>>(
+        x, lw.d_input_norm, d_normed, 1, H, (float)top.rms_norm_eps);
+    cudaError_t e = cudaGetLastError(); if (e) return e;
+
+    e = RunQwenNvfp4Gemm(stream, d_normed, lw.q.d_packed, lw.q.d_scales,
+                         lw.q.global_scale, d_qc, 1, H, NH*HD*2); if (e) return e;
+    e = RunQwenNvfp4Gemm(stream, d_normed, lw.k.d_packed, lw.k.d_scales,
+                         lw.k.global_scale, d_k, 1, H, NKV*HD); if (e) return e;
+    e = RunQwenNvfp4Gemm(stream, d_normed, lw.v.d_packed, lw.v.d_scales,
+                         lw.v.global_scale, d_v, 1, H, NKV*HD); if (e) return e;
+
+    {
+        const int threads = std::min(HD, 512);
+        qwen_split_query_kernel<<<NH, threads, HD*sizeof(float), stream>>>(
+            d_qc, d_gate, d_q, nullptr, 1, NH, HD, lw.d_q_norm, lw.d_k_norm,
+            (float)top.rms_norm_eps);
+        e = cudaGetLastError(); if (e) return e;
+    }
+    {
+        const int threads = std::min(HD, 512);
+        qwen_head_norm_kernel<<<NKV, threads, HD*sizeof(float), stream>>>(
+            d_k, lw.d_k_norm, d_k, 1, NKV, HD, (float)top.rms_norm_eps);
+        e = cudaGetLastError(); if (e) return e;
+    }
+    {
+        const int32_t pos = kv_base;
+        cudaMemcpyAsync(d_pos, &pos, sizeof(int32_t), cudaMemcpyHostToDevice, stream);
+        e = RunQwenRopeCosSin(stream, d_pos, 1, rot, top.rope_theta, d_cos, d_sin); if (e) return e;
+        e = RunQwenPartialRope(stream, d_q, d_k, d_cos, d_sin, d_q, d_k,
+                               1, NH, NKV, HD, rot); if (e) return e;
+    }
+    {
+        const float scale = 1.0f / std::sqrt((float)HD);
+        const dim3 grid(1, NH);
+        const int threads = std::min(HD, 512);
+        const size_t smem = ((size_t)kv_base + 2) * sizeof(float);
+        full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
+            d_q, d_k, d_v, d_attn, 1, NH, HD, NKV, scale, kv_base);
+        e = cudaGetLastError(); if (e) return e;
+    }
+    {
+        const int64_t n = (int64_t)NH*HD;
+        qwen_out_gate_kernel<<<(int)((n+255)/256), 256, 0, stream>>>(
+            d_attn, d_gate, d_attn, 1, n);
+        e = cudaGetLastError(); if (e) return e;
+    }
+    e = RunQwenNvfp4Gemm(stream, d_attn, lw.o.d_packed, lw.o.d_scales,
+                         lw.o.global_scale, out, 1, NH*HD, H);
+
+    cudaFree(d_normed); cudaFree(d_qc); cudaFree(d_q); cudaFree(d_gate);
+    cudaFree(d_k); cudaFree(d_v); cudaFree(d_attn);
+    cudaFree(d_cos); cudaFree(d_sin); cudaFree(d_pos);
+    return e;
+}
+
 cudaError_t RunQwenMLP(cudaStream_t stream,
                        const QwenLayerWeights &lw, int seq,
                        const __half *d_in, __half *d_out, __half *d_scratch)
