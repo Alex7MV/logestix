@@ -88,6 +88,12 @@ TEST_CASE("Qwen converter builds logestix-qwen index and filters MTP/Visual")
     CHECK(top.linear_value_head_dim == 8);
     CHECK(top.num_attention_heads == 2);
     CHECK(top.head_dim == 32);
+    CHECK(top.error_msg.empty());
+    // VRAM profile: mandatory, internally consistent.
+    CHECK(top.vram.min_bytes > 0);
+    CHECK(top.vram.optimal_bytes >= top.vram.min_bytes);
+    CHECK(top.vram.max_bytes >= top.vram.optimal_bytes); // dense: max == optimal
+    CHECK(top.vram.context_tokens > 0);
 
     // global.arrow (raw norms) and global_nvfp4.arrow (embed/head)
     CHECK(exists(tmp / "logestix" / "pinned" / "global.arrow"));

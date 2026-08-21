@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/vram_estimate.h"
+
 namespace lsxcommon::qwen {
 
 enum class TensorKind {
@@ -65,6 +67,8 @@ struct QwenTopology {
     double partial_rotary_factor = 0.25;
     double rope_theta = 10000000.0;
     int total_pinned_tensors = 0;
+    VramProfile vram;        // conversion-time VRAM requirements (mandatory)
+    std::string error_msg;   // non-empty when index.json is invalid
 };
 
 QwenTopology load_qwen_topology(const std::string &index_path);

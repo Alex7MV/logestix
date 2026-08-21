@@ -277,6 +277,13 @@ QwenTopology load_qwen_topology(const std::string &index_path)
                 top.layer_types.emplace_back(sv);
         }
     }
+
+    std::string verr;
+    if (!ParseVramBlock(json, top.vram, verr)) {
+        QwenTopology failed;   // plain reset: defaults + error_msg
+        failed.error_msg = verr;
+        return failed;
+    }
     return top;
 }
 
@@ -320,6 +327,7 @@ arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopo
       << ",\n  \"partial_rotary_factor\": " << top.partial_rotary_factor
       << ",\n  \"rope_theta\": " << top.rope_theta
       << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
+      << ",\n" << FormatVramJson(top.vram)
       << "\n}";
 
     std::ofstream out(dir / "model.index.json");
@@ -585,6 +593,38 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     }
 
     top.total_pinned_tensors = static_cast<int>(total_pinned);
+
+    // Conversion-time VRAM profile (spec 2026-08-21-vram-profile-design.md).
+    {
+        VramGeometry vg;
+        vg.hidden_dim = top.hidden_size;
+        vg.kv_dim = top.head_dim > 0
+            ? top.head_dim * top.num_key_value_heads : 0;
+        int full_attn_layers = 0;
+        for (const auto &lt : top.layer_types)
+            if (lt == "full_attention") ++full_attn_layers;
+        vg.num_attn_layers = full_attn_layers;
+        vg.context_length = ReadContextLength(cfg_path.string());
+
+        std::vector<VramTensorInfo> vram_inventory;
+        for (const auto &shard : model.shards)
+            for (const auto &t : shard.tensors)
+                vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+
+        // Qwen is dense: no routed experts, mem_class stays nullptr.
+        top.vram = EstimateVram(vram_inventory,
+            {+[](const std::string &n) {
+                 return qwen_tensor_is_nvfp4(classify_qwen_tensor(n).kind);
+             },
+             nullptr},
+            vg);
+        spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+            lsxcommon::FormatBytesHuman(top.vram.min_bytes),
+            lsxcommon::FormatBytesHuman(top.vram.optimal_bytes),
+            lsxcommon::FormatBytesHuman(top.vram.max_bytes),
+            top.vram.context_tokens);
+    }
+
     auto st = WriteQwenModelIndex(output_root, top);
     if (!st.ok()) return st;
 
