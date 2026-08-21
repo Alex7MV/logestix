@@ -24,12 +24,19 @@ namespace {
 
 // ── FP8 device helpers (mirror safetensors_gpu.cu) ───────────────────────────
 
+// Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
+// 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
 __device__ float dev_f8e4m3_to_float(uint8_t b)
 {
     if (!b || b == 0x80) return 0.0f;
+    if ((b & 0x7F) == 0x7F) return __int_as_float(0x7FC00000);
     int s = (b >> 7) & 1;
     int e = (b >> 3) & 0x0F;
     int m = b & 0x07;
+    if (e == 0) {
+        float v = static_cast<float>(m) * 0.001953125f;  // m * 2^-9
+        return s ? -v : v;
+    }
     uint32_t f32 = (static_cast<uint32_t>(s) << 31)
                  | (static_cast<uint32_t>(e + 127 - 7) << 23)
                  | (static_cast<uint32_t>(m) << 20);
@@ -559,16 +566,7 @@ static __global__ void dequant_f8_to_f32_kernel(
         uint8_t sb = scales[sr * SC + sc];
         if (sb != 0) sv = __uint_as_float(static_cast<uint32_t>(sb) << 23);
         uint8_t b = w[i];
-        if (!b || b == 0x80) { out[i] = 0.0f; continue; }
-        int s = (b >> 7) & 1;
-        int e = (b >> 3) & 0x0F;
-        int m = b & 0x07;
-        uint32_t f32 = (static_cast<uint32_t>(s) << 31)
-                     | (static_cast<uint32_t>(e + 127 - 7) << 23)
-                     | (static_cast<uint32_t>(m) << 20);
-        float v;
-        std::memcpy(&v, &f32, sizeof(v));
-        out[i] = v * sv;
+        out[i] = dev_f8e4m3_to_float(b) * sv;
     }
 }
 

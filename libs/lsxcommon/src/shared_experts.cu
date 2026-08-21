@@ -27,13 +27,20 @@ namespace {
 using nvfp4::kE2M1Table;
 using nvfp4::E4M3ScaleToFloat;
 
-// F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float
+// F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float.
+// Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
+// 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
 __device__ __forceinline__ float f8e4m3_to_float(uint8_t b)
 {
     if (!b || b == 0x80) return 0.0f;
+    if ((b & 0x7F) == 0x7F) return __int_as_float(0x7FC00000);
     int s = (b >> 7) & 1;
     int e = (b >> 3) & 0x0F;
     int m = b & 0x07;
+    if (e == 0) {
+        float v = static_cast<float>(m) * 0.001953125f;  // m * 2^-9
+        return s ? -v : v;
+    }
     uint32_t f32 = (static_cast<uint32_t>(s) << 31)
                  | (static_cast<uint32_t>(e + 127 - 7) << 23)
                  | (static_cast<uint32_t>(m) << 20);
