@@ -24,13 +24,23 @@ So the attention chain alone is **9 launches**; the caller's surrounding `input-
 
 ## 2. Goal / non-goal
 
-**Goal:** A single fused kernel replaces the `input-RMSNorm → QKV NVFP4 GEMMs → split/perhead-norm → RoPE → GQA attention → out-gate → o_proj` chain for the **seq=1** case, producing `d_out` directly from `d_act` (the residual stream) + the layer weights, with **one launch** per attention layer. The caller's input/norm residual-add and post-norm/MLP are NOT part of this kernel (they stay separate in this step).
+**Goal:** A fused decoder attention layer for the **seq=1** case that replaces the 9-launch split chain with **3 kernels on one stream** (`fused_qkv` → `fused_attn` → `fused_o_proj`), eliminating the 8 intermediate scratch round-trips while keeping each stage a simple, correct, individually-testable kernel. The caller's input-norm/residual-add and post-norm/MLP are NOT part of this kernel (they stay separate in this step).
+
+> **Revision (operator decision):** a strict single-`__global__` launch would require device-wide/cooperative grid sync to combine the block-wide attention (needs all NH heads' q) with the cross-block o_proj accumulation — disproportionate risk. The accepted architecture is **3 fused stages on one `cudaStream_t`**, replacing 9 launches → 3. This still removes the ~8 intermediate scratch buffers and their HBM round-trips; it does not collapse to a literal single kernel.
 
 **Non-goal:** no change to prefill (seq>1) — it keeps the split kernels (its block-parallelism is different). No change to the NVFP4 codec or the GEMM numerics. No change to the linear-attention (GatedDeltaNet) layers in this step (separate). No change to MLP fusion (separate follow-up). No change to the persistent KV cache semantics (the fused kernel appends to the same `kv_base` rows).
 
 ## 3. Kernel design
 
 **Launch** (seq=1): grid = `NH` heads (one block per (token=0, head=h)); block = `HD` threads. Weights staged cooperatively in shared once per block; heads read them.
+
+**Stage decomposition (operator-approved):** the fused layer runs **3 kernels on one `cudaStream_t`** — a strict single-launch would need cooperative grid sync between the block-wide attention (which wants a full persistent-KV pass) and the cross-block o_proj reduction:
+
+1. `fused_qkv_kernel` (grid=NH, block=HD): input-norm → per-head inline NVFP4 q/k/v + gate → per-head RMSNorm(q/k) → inline RoPE → append k/v to persistent KV row `kv_base`.
+2. `fused_attn_softmax_kernel` (grid=NH, block=HD): per-head block-wide online-softmax over attended KV rows [0..kv_base], value-accumulate to `out_h`, apply gate `× sigmoid(gate)` → write `out_h[NH*HD]`.
+3. `fused_o_proj_kernel` (grid=NH, block=HD): each head accumulates its o_proj contribution into `d_out[0..H)` via cross-block `atomicAdd` (float accumulator).
+
+The pseudocode below shows the per-stanza math; the three kernels are individually testable against the corresponding split launches.
 
 ```
 host (RunQwenGeneration decoder step, full layer):
@@ -91,8 +101,8 @@ kernel body (per block = head h):
 
 ## 6. Open decisions (resolve in plan)
 
-- **o_proj accumulation**: the fused kernel computes per-head `out_h[HD]`, then needs `d_out[0..H) += o[·, h*HD..h*HD+HD) · out_h`. For seq=1 this is a GEMM with an `H`-wide output per head. Chosen approach: cross-block **`atomicAdd`** of each block's partial `H`-vector into `d_out` (total `NH×H` atomic opFloat-add pairs; at 9B NH=24×H=5120 = 122,880 atomic-adds/block-batch, spread over `HD` threads → ~5120 atomic-adds per block, acceptable for seq=1). Followed by `__threadfence` + a `kv_base`-matching output.
-- **RoPE**: inline trig from the `kv_base` position (the attended position is `kv_base` for token t=0) using a shared cos/sin table computed once per block — no `d_pos`/`d_cos`/`d_sin` arrays.
+- **o_proj accumulation**: resolved — cross-block **`atomicAdd` on a `float*` scratch buffer** (FP32 accuracy; converted to half at the end), `NH×H` atomicAdds total, acceptable at 9B (NH=24, H=5120). A `__threadfence()` + final half-conversion kernel (or a fused tail) completes it.
+- **RoPE**: inline trig from the `kv_base` position (the attended position is `kv_base` for token t=0) using a shared cos/sin table computed once per block. **Pair-ownership**: because each thread owns one `d`, RoPE's rotate-half pairing `(j, j+rot/2)` is done via a shared staging round-trip (threads write q/k pairs to `sq_pair[]`/`sk_pair[]`, sync, then pair-owning threads compute the rotation and write back).
 - **q/k/v projection**: per-head inline dequant dot-product loop (per-head output N = HD is small; do not reuse the tile kernel whose block-per-output-columns geometry is wasteful at N=HD). The full-layer weight tile is loaded cooperatively into shared once per block (all heads reuse for the same layer), then each block consumes only its head's columns.
 - **Persistent-KV append**: the fused kernel writes `k_vec`/`v_vec` into `kv_k[kvh][kv_base]` / `kv_v[kvh][kv_base]` (exactly the rows the split path uses for `kv_base`), and reads attended rows `[0..kv_base]` for the causal softmax.
 
