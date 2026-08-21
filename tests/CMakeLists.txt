@@ -1113,3 +1113,22 @@ if(WIN32)
 endif()
 
 add_test(NAME test_path_registry COMMAND test_path_registry)
+
+# ── Тест модуля оценки VRAM-профиля (conversion-time) ───────────────────
+add_executable(test_vram_estimate test_vram_estimate.cpp)
+target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_vram_estimate POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_vram_estimate>"
+    )
+    add_custom_command(TARGET test_vram_estimate POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_vram_estimate>"
+    )
+endif()
+
+add_test(NAME test_vram_estimate COMMAND test_vram_estimate)

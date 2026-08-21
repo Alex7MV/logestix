@@ -44,6 +44,7 @@ add_library(lsxcommon STATIC
     src/tokenizer.cpp
     src/tokenizer_convert.cpp
     src/unicode.cpp
+    src/vram_estimate.cpp
 )
 set_target_properties(lsxcommon PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
