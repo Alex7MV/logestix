@@ -76,17 +76,108 @@ std::uint64_t ResourceGovernor::GrantableVramLocked() const
 }
 
 // Defined in later tasks (declared now so the header stays stable):
-bool IsVramLease(LeaseKind kind) { (void)kind; return true; }
-Lease::~Lease() = default;
-Lease::Lease(Lease &&) noexcept = default;
-Lease &Lease::operator=(Lease &&) noexcept = default;
-void Lease::Release() { gov_ = nullptr; }
-bool Lease::Resize(std::uint64_t) { return false; }
-Lease ResourceGovernor::Acquire(LeaseKind, std::uint64_t, LeasePolicy) { return {}; }
-void ResourceGovernor::ReleaseLeaseBytes(LeaseKind, std::uint64_t) {}
 bool ResourceGovernor::ResizeLease(Lease &, std::uint64_t) { return false; }
 bool ResourceGovernor::ReconcileVram(std::uint64_t, std::uint64_t) { return true; }
 bool ResourceGovernor::ReconcileVram() { return true; }
+
+// ── Leases ──────────────────────────────────────────────────────────────────
+
+bool IsVramLease(LeaseKind kind)
+{
+    switch (kind) {
+        case LeaseKind::kPermanentWeights:
+        case LeaseKind::kExpertCache:
+        case LeaseKind::kInferArena:
+            return true;
+        case LeaseKind::kHostPinned:
+        case LeaseKind::kHostRam:
+            return false;
+    }
+    return true;
+}
+
+Lease::~Lease() { Release(); }
+
+Lease::Lease(Lease &&other) noexcept
+    : gov_(other.gov_), kind_(other.kind_), bytes_(other.bytes_),
+      min_bytes_(other.min_bytes_), max_bytes_(other.max_bytes_)
+{
+    other.gov_ = nullptr;
+    other.bytes_ = 0;
+}
+
+Lease &Lease::operator=(Lease &&other) noexcept
+{
+    if (this != &other) {
+        Release();
+        gov_ = other.gov_;
+        kind_ = other.kind_;
+        bytes_ = other.bytes_;
+        min_bytes_ = other.min_bytes_;
+        max_bytes_ = other.max_bytes_;
+        other.gov_ = nullptr;
+        other.bytes_ = 0;
+    }
+    return *this;
+}
+
+void Lease::Release()
+{
+    if (!gov_) return;
+    gov_->ReleaseLeaseBytes(kind_, bytes_);
+    gov_ = nullptr;
+    bytes_ = 0;
+}
+
+bool Lease::Resize(std::uint64_t new_bytes)
+{
+    if (!gov_) return false;
+    return gov_->ResizeLease(*this, new_bytes);
+}
+
+Lease ResourceGovernor::Acquire(LeaseKind kind, std::uint64_t bytes,
+                                LeasePolicy policy)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!initialized_) {
+        spdlog::error("[governor] Acquire before Initialize()");
+        return {};
+    }
+    const bool vram = IsVramLease(kind);
+    std::uint64_t &committed = vram ? vram_committed_ : ram_committed_;
+    const std::uint64_t grantable =
+        vram ? GrantableVramLocked() : hw_.ram_total_bytes;
+
+    std::uint64_t lo = policy.min_bytes, hi = policy.max_bytes;
+    if (policy.mode == LeasePolicy::Mode::kAdaptive) {
+        if (lo > hi) hi = lo;
+        bytes = std::clamp(bytes, lo, hi);
+    }
+
+    if (committed + bytes > grantable) {
+        spdlog::error("[governor] {} lease REFUSED: requested {} MiB, "
+                      "committed {} MiB, grantable {} MiB",
+                      vram ? "VRAM" : "RAM", bytes >> 20, committed >> 20,
+                      grantable >> 20);
+        if (policy.mode == LeasePolicy::Mode::kRequired) {
+            if (!opts_.relax_memory_refusal) return {};
+            // relaxed (tests only): grant anyway, accounting may exceed
+        } else {
+            const std::uint64_t avail =
+                grantable > committed ? grantable - committed : 0;
+            if (avail < lo) return {};  // soft refusal: caller keeps current
+            bytes = avail;
+        }
+    }
+    committed += bytes;
+    return Lease(this, kind, bytes, lo, hi);
+}
+
+void ResourceGovernor::ReleaseLeaseBytes(LeaseKind kind, std::uint64_t bytes)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    (IsVramLease(kind) ? vram_committed_ : ram_committed_) -= bytes;
+}
 
 // ── Hardware probing ────────────────────────────────────────────────────────
 
