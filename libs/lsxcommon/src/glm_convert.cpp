@@ -1,5 +1,6 @@
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/converter.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
@@ -9,7 +10,6 @@
 #include <arrow/io/file.h>
 #include <arrow/ipc/writer.h>
 #include <simdjson.h>
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -25,6 +25,7 @@
 #include <absl/container/flat_hash_set.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 namespace lsxcommon {
 // Forward declaration (defined in converter.cpp). Kept out of converter.h so
@@ -435,7 +436,7 @@ arrow::Status RecomputeGlmVram(
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
-    auto index_path = fs::path(output_root) / "model.index.json";
+    auto index_path = fs::path(output_root) / "logestix" / "model.index.json";
     std::ifstream f(index_path);
     if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -494,11 +495,12 @@ arrow::Status RecomputeGlmVram(
 
     VramProfile profile = EstimateVram(inventory,
                                        {&GlmIsNvfp4Tensor, &GlmMemClass}, vg);
-    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+    lsxcommon::log::info(absl::StrFormat(
+        "VRAM profile recomputed: min=%s optimal=%s max=%s (ctx=%d)",
         FormatBytesHuman(profile.min_bytes),
         FormatBytesHuman(profile.optimal_bytes),
         FormatBytesHuman(profile.max_bytes),
-        profile.context_tokens);
+        profile.context_tokens));
 
     std::ofstream out(index_path, std::ios::trunc);
     if (!out) return arrow::Status::IOError("cannot write ", index_path.string());
@@ -517,7 +519,10 @@ arrow::Status ConvertGlmModel(
     if (output_root.empty())
         return arrow::Status::Invalid("output path not set");
 
-    fs::create_directories(output_root);
+    // Mandatory layout: all converted artifacts live under <root>/logestix
+    // (model.index.json, pinned/, experts/), mirroring the Qwen pipeline.
+    fs::path log_root = output_root / "logestix";
+    fs::create_directories(log_root);
 
     auto model = lsxcommon::scan_directory(input_path);
     if (model.shards.empty())
@@ -581,8 +586,10 @@ arrow::Status ConvertGlmModel(
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
-        spdlog::info("[{}/{}] Scanning {} ...", shard_idx, model.shards.size(),
-                     shard.filename);
+        lsxcommon::log::info(absl::StrCat("[", shard_idx, "/",
+                                          model.shards.size(),
+                                          "] Scanning ", shard.filename,
+                                          " ..."));
 
         std::ifstream sf((fs::path(input_path) / shard.filename).string(),
                          std::ios::binary | std::ios::ate);
@@ -626,14 +633,13 @@ arrow::Status ConvertGlmModel(
                         ARROW_ASSIGN_OR_RAISE(auto packed,
                             PackExpertNVFP4(std::move(exp)));
                         ARROW_RETURN_NOT_OK(SaveExpertToArrow(
-                            packed, key.layer, key.expert, output_root));
+                            packed, key.layer, key.expert, log_root));
                         return arrow::Status::OK();
                     }();
                     if (!status.ok())
-                        spdlog::error("  Failed to pack expert layer={} "
-                                      "expert={}: {}",
-                                      key.layer, key.expert,
-                                      status.ToString());
+                        lsxcommon::log::error(absl::StrFormat(
+                            "  Failed to pack expert layer=%d expert=%d: %s",
+                            key.layer, key.expert, status.ToString()));
                     else {
                         ++experts_processed;
                         ++experts_per_layer[parsed.layer];
@@ -670,8 +676,8 @@ arrow::Status ConvertGlmModel(
                 pinned_tensors.push_back(std::move(t));
                 ++pinned_processed;
             } else {
-                spdlog::warn("  Unclassified tensor: {} (skipped)",
-                             tensor.name);
+                lsxcommon::log::warn(absl::StrCat(
+                    "  Unclassified tensor: ", tensor.name, " (skipped)"));
             }
         }
     }
@@ -747,12 +753,14 @@ arrow::Status ConvertGlmModel(
             ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields(geom));
     }
 
-    spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
-    ARROW_RETURN_NOT_OK(SaveGlmPinnedTensors(pinned_tensors, output_root));
+    lsxcommon::log::info(
+        absl::StrCat("Saving ", pinned_tensors.size(), " pinned tensors..."));
+    ARROW_RETURN_NOT_OK(SaveGlmPinnedTensors(pinned_tensors, log_root));
 
-    spdlog::info("Packing {} shared-expert layers (NVFP4)...",
-                 shared_by_layer.size());
-    ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, output_root));
+    lsxcommon::log::info(absl::StrCat(
+        "Packing ", shared_by_layer.size(),
+        " shared-expert layers (NVFP4)..."));
+    ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, log_root));
 
     Topology topo;
     topo.num_layers = (max_layer >= 0) ? max_layer + 1 : 0;
@@ -788,11 +796,12 @@ arrow::Status ConvertGlmModel(
                 vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
         topo.vram = EstimateVram(vram_inventory,
                                  {&GlmIsNvfp4Tensor, &GlmMemClass}, vg);
-        spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+        lsxcommon::log::info(absl::StrFormat(
+            "VRAM profile: min=%s optimal=%s max=%s (ctx=%d)",
             FormatBytesHuman(topo.vram.min_bytes),
             FormatBytesHuman(topo.vram.optimal_bytes),
             FormatBytesHuman(topo.vram.max_bytes),
-            topo.vram.context_tokens);
+            topo.vram.context_tokens));
     }
 
     WriteGlmModelIndex(
@@ -800,7 +809,7 @@ arrow::Status ConvertGlmModel(
         topo,
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
-        output_root);
+        log_root);
 
     // (8) Build and verify the binary tokenizer (mandatory).
     auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
@@ -808,19 +817,23 @@ arrow::Status ConvertGlmModel(
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_path);
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
-        tokenizer_json.string(), output_root / "pinned",
+        tokenizer_json.string(), log_root / "pinned",
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true}));
 
     // (9) The converted output must be a loadable, verified model.
     auto vres = integrity::VerifyConvertedModel(output_root);
     if (!vres.ok())
+    {
+        lsxcommon::log::error(absl::StrCat(
+            "GLM output verification failed: ", vres.status().ToString()));
         return arrow::Status::Invalid(
             "output verification failed: ", vres.status().ToString());
+    }
 
-    spdlog::info("Done — {} pinned tensors, {} experts processed, "
-                 "incomplete {}",
-                 pinned_processed, experts_processed, partial.size());
+    lsxcommon::log::info(absl::StrCat(
+        "Done — ", pinned_processed, " pinned tensors, ", experts_processed,
+        " experts processed, incomplete ", partial.size()));
     return arrow::Status::OK();
 }
 

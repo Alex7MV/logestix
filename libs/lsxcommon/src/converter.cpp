@@ -1,11 +1,11 @@
 #include "lsxcommon/converter.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
 #include <arrow/ipc/writer.h>
 #include <arrow/io/file.h>
-#include <spdlog/spdlog.h>
 #include <simdjson.h>
 #include <fstream>
 #include <iomanip>
@@ -18,6 +18,7 @@
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 #include <absl/strings/str_join.h>
 #include <filesystem>
 
@@ -164,13 +165,15 @@ static std::string pinned_category_name(const std::string &name)
 
 void print_shard(const SafetensorsModel::Shard &shard)
 {
-    spdlog::info("--- {} ({}) ---", shard.filename, format_size(shard.file_size));
+    lsxcommon::log::info(absl::StrFormat("--- {} ({}) ---", shard.filename,
+                                         format_size(shard.file_size)));
     for (auto &t : shard.tensors) {
         std::string shape_str = absl::StrCat("[", absl::StrJoin(t.shape, ", "), "]");
 
-        spdlog::info("  {} {:<50} {:<8} {:<24} {}",
+        lsxcommon::log::info(absl::StrFormat(
+            "  {} {:<50} {:<8} {:<24} {}",
             is_staged_tensor(t.name) ? "[S]" : "[P]",
-            t.name, t.dtype, shape_str, format_size(t.byte_size()));
+            t.name, t.dtype, shape_str, format_size(t.byte_size())));
     }
 }
 
@@ -197,16 +200,16 @@ void print_model(const SafetensorsModel &model)
         }
     }
 
-    spdlog::info("=== Model Summary ===");
-    spdlog::info("Shards: {}", model.shards.size());
-    spdlog::info("Tensors: {}", total_tensors);
-    spdlog::info("Total tensor data: {}", format_size(total_bytes));
-    spdlog::info("--- Memory classification ---");
-    spdlog::info("Pinned (always in VRAM): {} tensors, {}",
-        pinned_tensors, format_size(pinned_bytes));
-    spdlog::info("Staged (MoE experts):   {} tensors, {}",
-        staged_tensors, format_size(staged_bytes));
-    spdlog::info("--- Pinned breakdown ---");
+    lsxcommon::log::info("=== Model Summary ===");
+    lsxcommon::log::info(absl::StrFormat("Shards: {}", model.shards.size()));
+    lsxcommon::log::info(absl::StrFormat("Tensors: {}", total_tensors));
+    lsxcommon::log::info(absl::StrFormat("Total tensor data: {}", format_size(total_bytes)));
+    lsxcommon::log::info("--- Memory classification ---");
+    lsxcommon::log::info(absl::StrFormat("Pinned (always in VRAM): {} tensors, {}",
+        pinned_tensors, format_size(pinned_bytes)));
+    lsxcommon::log::info(absl::StrFormat("Staged (MoE experts):   {} tensors, {}",
+        staged_tensors, format_size(staged_bytes)));
+    lsxcommon::log::info("--- Pinned breakdown ---");
     absl::btree_map<std::string, int64_t> cat_tensors, cat_bytes;
     for (auto &shard : model.shards) {
         for (auto &t : shard.tensors) {
@@ -217,8 +220,8 @@ void print_model(const SafetensorsModel &model)
         }
     }
     for (auto &[cat, cnt] : cat_tensors) {
-        spdlog::info("  {:<22} {:>6} tensors, {}",
-            cat, cnt, format_size(cat_bytes[cat]));
+        lsxcommon::log::info(absl::StrFormat("  {:<22} {:>6} tensors, {}",
+            cat, cnt, format_size(cat_bytes[cat])));
     }
     // Runtime VRAM estimates (min/optimal/max) are no longer guessed here:
     // they are computed at conversion time and reported via the "vram" block
@@ -252,16 +255,17 @@ void print_nvfp4_forecast(const SafetensorsModel &model)
         }
     }
 
-    spdlog::info("=== NVFP4 Quantization Forecast ===");
+    lsxcommon::log::info("=== NVFP4 Quantization Forecast ===");
     for (auto &[cat, s] : cats) {
         double ratio = s.nvfp4_bytes > 0
             ? static_cast<double>(s.orig_bytes) / s.nvfp4_bytes
             : 0.0;
-        spdlog::info("  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
+        lsxcommon::log::info(absl::StrFormat(
+            "  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
             cat, s.count,
             format_size(s.orig_bytes),
             format_size(s.nvfp4_bytes),
-            ratio);
+            ratio));
     }
 
     double total_ratio = total_nvfp4 > 0
@@ -269,11 +273,12 @@ void print_nvfp4_forecast(const SafetensorsModel &model)
         : 0.0;
     int64_t cat_count = 0;
     for (auto &[_, s] : cats) cat_count += s.count;
-    spdlog::info("  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
+    lsxcommon::log::info(absl::StrFormat(
+        "  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
         "Total", cat_count,
         format_size(total_orig),
         format_size(total_nvfp4),
-        total_ratio);
+        total_ratio));
 }
 
 // ── Safetensors file parser ──────────────────────────────────────────────────
@@ -285,7 +290,7 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
 
     std::ifstream file(path, std::ios::binary);
     if (!file) {
-        spdlog::error("Cannot open file: {}", path);
+        lsxcommon::log::error(absl::StrCat("Cannot open file: ", path));
         return shard;
     }
 
@@ -296,14 +301,14 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
     uint64_t header_len = 0;
     file.read(reinterpret_cast<char*>(&header_len), 8);
     if (!file || header_len == 0 || header_len > static_cast<uint64_t>(shard.file_size) - 8) {
-        spdlog::error("Invalid safetensors header in {}", path);
+        lsxcommon::log::error(absl::StrCat("Invalid safetensors header in ", path));
         return shard;
     }
 
     std::string json_str(header_len, '\0');
     file.read(json_str.data(), header_len);
     if (!file) {
-        spdlog::error("Failed to read safetensors header from {}", path);
+        lsxcommon::log::error(absl::StrCat("Failed to read safetensors header from ", path));
         return shard;
     }
 
@@ -312,14 +317,14 @@ SafetensorsModel::Shard read_safetensors_file(const std::string &path)
     simdjson::ondemand::document doc;
     auto err = parser.iterate(padded).get(doc);
     if (err) {
-        spdlog::error("JSON parse error in {}: {}", path, simdjson::error_message(err));
+        lsxcommon::log::error(absl::StrFormat("JSON parse error in {}: {}", path, simdjson::error_message(err)));
         return shard;
     }
 
     simdjson::ondemand::object obj;
     err = doc.get_object().get(obj);
     if (err) {
-        spdlog::error("JSON root not an object in {}", path);
+        lsxcommon::log::error(absl::StrCat("JSON root not an object in ", path));
         return shard;
     }
 
@@ -398,7 +403,7 @@ SafetensorsModel scan_directory(const std::string &path)
     fs::path dir(path);
 
     if (!fs::exists(dir)) {
-        spdlog::error("Path does not exist: {}", path);
+        lsxcommon::log::error(absl::StrCat("Path does not exist: ", path));
         return model;
     }
 
@@ -450,7 +455,7 @@ SafetensorsModel scan_directory(const std::string &path)
 
     for (auto &fn : ordered_files) {
         auto full_path = (dir / fn).string();
-        spdlog::info("Reading: {}", fn);
+        lsxcommon::log::info(absl::StrCat("Reading: ", fn));
         auto shard = read_safetensors_file(full_path);
         if (!shard.tensors.empty())
             model.shards.push_back(std::move(shard));
@@ -541,10 +546,11 @@ arrow::Status SaveExpertToArrow(
     diag::ValidateBatchBuffers(*batch, "SaveExpertToArrow pre-write");
     ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, out_path));
 
-    spdlog::info("  wrote layer={:03d} expert={:03d}  {} -> {}",
+    lsxcommon::log::info(absl::StrFormat(
+        "  wrote layer={:03d} expert={:03d}  {} -> {}",
         layer_idx, expert_idx,
         batch->column(0)->length(),
-        out_path.string());
+        out_path.string()));
 
     return arrow::Status::OK();
 }
@@ -576,7 +582,8 @@ arrow::Status SavePinnedTensors(
         ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(global));
         diag::ValidateBatchBuffers(*batch, "SavePinnedTensors global");
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
-        spdlog::info("  wrote {} pinned tensors -> {}", global.size(), path.string());
+        lsxcommon::log::info(absl::StrFormat("  wrote {} pinned tensors -> {}",
+                                             global.size(), path.string()));
     }
 
     for (auto &[layer, tens] : by_layer) {
@@ -584,8 +591,8 @@ arrow::Status SavePinnedTensors(
         ARROW_ASSIGN_OR_RAISE(auto batch, PinnedSchema::MakeBatch(tens));
         diag::ValidateBatchBuffers(*batch, ("SavePinnedTensors " + layer).c_str());
         ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
-        spdlog::info("  wrote {} pinned tensors for {} -> {}",
-            tens.size(), layer, path.string());
+        lsxcommon::log::info(absl::StrFormat("  wrote {} pinned tensors for {} -> {}",
+            tens.size(), layer, path.string()));
     }
 
     return arrow::Status::OK();
@@ -602,7 +609,7 @@ arrow::Status SaveSharedExpertsToArrow(
     namespace fs = std::filesystem;
 
     if (shared_by_layer.empty()) {
-        spdlog::info("  no shared experts found, skipping shared_experts.arrow");
+        lsxcommon::log::info("  no shared experts found, skipping shared_experts.arrow");
         return arrow::Status::OK();
     }
 
@@ -618,14 +625,15 @@ arrow::Status SaveSharedExpertsToArrow(
     int packed_ok = 0;
     for (auto &[layer, sd] : shared_by_layer) {
         if (sd.w1_raw.empty() || sd.w2_raw.empty() || sd.w3_raw.empty()) {
-            spdlog::warn("  incomplete shared expert layer {} (w1={} w2={} w3={})",
-                layer, sd.w1_raw.size(), sd.w2_raw.size(), sd.w3_raw.size());
+            lsxcommon::log::warn(absl::StrFormat(
+                "  incomplete shared expert layer {} (w1={} w2={} w3={})",
+                layer, sd.w1_raw.size(), sd.w2_raw.size(), sd.w3_raw.size()));
             continue;
         }
         auto packed_res = PackExpertNVFP4(std::move(sd));
         if (!packed_res.ok()) {
-            spdlog::error("  failed to pack shared expert layer {}: {}",
-                layer, packed_res.status().ToString());
+            lsxcommon::log::error(absl::StrFormat("  failed to pack shared expert layer {}: {}",
+                layer, packed_res.status().ToString()));
             continue;
         }
         shared_layers[static_cast<size_t>(layer)] = *packed_res;
@@ -642,7 +650,8 @@ arrow::Status SaveSharedExpertsToArrow(
     diag::ValidateBatchBuffers(*batch, "SaveSharedExpertsToArrow result");
     auto path = output_root / "pinned" / "shared_experts.arrow";
     ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(batch, path));
-    spdlog::info("  packed {} shared-expert layers -> {}", packed_ok, path.string());
+    lsxcommon::log::info(absl::StrFormat("  packed {} shared-expert layers -> {}",
+                                         packed_ok, path.string()));
 
     return arrow::Status::OK();
 }
@@ -669,18 +678,19 @@ arrow::Status RepackSharedExperts(
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
-        spdlog::info("[{}/{}] scanning {} ...", shard_idx, model.shards.size(),
-                     shard.filename);
+        lsxcommon::log::info(absl::StrFormat("[{}/{}] scanning {} ...",
+                                             shard_idx, model.shards.size(),
+                                             shard.filename));
 
         std::ifstream sf((fs::path(input_path) / shard.filename).string(),
                          std::ios::binary | std::ios::ate);
-        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        if (!sf) { lsxcommon::log::warn("  Cannot open, skipping"); continue; }
         int64_t sz = sf.tellg();
-        if (sz <= 0) { spdlog::warn("  Zero/negative size, skipping"); continue; }
+        if (sz <= 0) { lsxcommon::log::warn("  Zero/negative size, skipping"); continue; }
         sf.seekg(0);
         std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
         sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
-        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+        if (!sf) { lsxcommon::log::warn("  Cannot read, skipping"); continue; }
 
         uint64_t hdr_len;
         std::memcpy(&hdr_len, shard_buf.data(), 8);
@@ -693,7 +703,8 @@ arrow::Status RepackSharedExperts(
             int64_t raw_size = tensor.byte_size();
             int64_t raw_start = data_off + tensor.data_begin;
             if (raw_start < 0 || raw_start + raw_size > sz) {
-                spdlog::warn("  Skipping {} (offset out of range)", tensor.name);
+                lsxcommon::log::warn(absl::StrFormat("  Skipping {} (offset out of range)",
+                                                     tensor.name));
                 continue;
             }
             const uint8_t *raw_ptr = shard_buf.data() + raw_start;
@@ -737,8 +748,8 @@ arrow::Status RepackSharedExperts(
         }
     }
 
-    spdlog::info("Packing {} shared-expert layers (NVFP4)...",
-                 shared_by_layer.size());
+    lsxcommon::log::info(absl::StrFormat("Packing {} shared-expert layers (NVFP4)...",
+                                         shared_by_layer.size()));
     return SaveSharedExpertsToArrow(shared_by_layer, output_root);
 }
 
@@ -785,11 +796,12 @@ arrow::Status RepackRoutedExperts(
             return arrow::Status::OK();
         if (exp.w1_scale_raw.empty() || exp.w2_scale_raw.empty() ||
             exp.w3_scale_raw.empty()) {
-            spdlog::warn("  expert layer={} expert={} missing E8M0 scales "
-                         "(w1={} w2={} w3={}), skipping",
-                         key.layer, key.expert,
-                         exp.w1_scale_raw.size(), exp.w2_scale_raw.size(),
-                         exp.w3_scale_raw.size());
+            lsxcommon::log::warn(absl::StrFormat(
+                "  expert layer={} expert={} missing E8M0 scales "
+                "(w1={} w2={} w3={}), skipping",
+                key.layer, key.expert,
+                exp.w1_scale_raw.size(), exp.w2_scale_raw.size(),
+                exp.w3_scale_raw.size()));
             return arrow::Status::OK();
         }
         ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
@@ -804,18 +816,19 @@ arrow::Status RepackRoutedExperts(
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
-        spdlog::info("[{}/{}] scanning {} ...", shard_idx, model.shards.size(),
-                     shard.filename);
+        lsxcommon::log::info(absl::StrFormat("[{}/{}] scanning {} ...",
+                                             shard_idx, model.shards.size(),
+                                             shard.filename));
 
         std::ifstream sf((fs::path(input_path) / shard.filename).string(),
                          std::ios::binary | std::ios::ate);
-        if (!sf) { spdlog::warn("  Cannot open, skipping"); continue; }
+        if (!sf) { lsxcommon::log::warn("  Cannot open, skipping"); continue; }
         int64_t sz = sf.tellg();
-        if (sz <= 0) { spdlog::warn("  Zero/negative size, skipping"); continue; }
+        if (sz <= 0) { lsxcommon::log::warn("  Zero/negative size, skipping"); continue; }
         sf.seekg(0);
         std::vector<uint8_t> shard_buf(static_cast<std::size_t>(sz));
         sf.read(reinterpret_cast<char*>(shard_buf.data()), sz);
-        if (!sf) { spdlog::warn("  Cannot read, skipping"); continue; }
+        if (!sf) { lsxcommon::log::warn("  Cannot read, skipping"); continue; }
 
         uint64_t hdr_len;
         std::memcpy(&hdr_len, shard_buf.data(), 8);
@@ -828,7 +841,8 @@ arrow::Status RepackRoutedExperts(
             int64_t raw_size = tensor.byte_size();
             int64_t raw_start = data_off + tensor.data_begin;
             if (raw_start < 0 || raw_start + raw_size > sz) {
-                spdlog::warn("  Skipping {} (offset out of range)", tensor.name);
+                lsxcommon::log::warn(absl::StrFormat("  Skipping {} (offset out of range)",
+                                                     tensor.name));
                 continue;
             }
             const uint8_t *raw_ptr = shard_buf.data() + raw_start;
@@ -877,21 +891,24 @@ arrow::Status RepackRoutedExperts(
                 exp.w3_scale_raw.size()) {
                 auto st = try_flush(key, exp);
                 if (!st.ok())
-                    spdlog::error("  Failed to pack expert layer={} expert={}: {}",
-                                  key.layer, key.expert, st.ToString());
+                    lsxcommon::log::error(absl::StrFormat(
+                        "  Failed to pack expert layer={} expert={}: {}",
+                        key.layer, key.expert, st.ToString()));
                 partial.erase(key);
             }
         }
     }
 
     for (auto &[key, exp] : partial) {
-        spdlog::warn("  incomplete expert layer={} expert={} (w1={} w2={} w3={})",
-                     key.layer, key.expert,
-                     exp.w1_raw.size(), exp.w2_raw.size(), exp.w3_raw.size());
+        lsxcommon::log::warn(absl::StrFormat(
+            "  incomplete expert layer={} expert={} (w1={} w2={} w3={})",
+            key.layer, key.expert,
+            exp.w1_raw.size(), exp.w2_raw.size(), exp.w3_raw.size()));
     }
 
-    spdlog::info("Repacked {} routed experts ({} layers, up to {} experts/layer)",
-                 total_written, max_layer, max_expert_per_layer);
+    lsxcommon::log::info(absl::StrFormat(
+        "Repacked {} routed experts ({} layers, up to {} experts/layer)",
+        total_written, max_layer, max_expert_per_layer));
     return arrow::Status::OK();
 }
 
@@ -902,7 +919,7 @@ arrow::Status RecomputeVramBlock(
     const std::filesystem::path &output_root)
 {
     namespace fs = std::filesystem;
-    auto index_path = fs::path(output_root) / "model.index.json";
+    auto index_path = fs::path(output_root) / "logestix" / "model.index.json";
     std::ifstream f(index_path);
     if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -978,11 +995,12 @@ arrow::Status RecomputeVramBlock(
 
     VramProfile profile = EstimateVram(
         inventory, {&DsIsNvfp4Tensor, &DsMemClass}, vg);
-    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+    lsxcommon::log::info(absl::StrFormat(
+        "VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
         FormatBytesHuman(profile.min_bytes),
         FormatBytesHuman(profile.optimal_bytes),
         FormatBytesHuman(profile.max_bytes),
-        profile.context_tokens);
+        profile.context_tokens));
 
     std::ofstream out(index_path, std::ios::trunc);
     if (!out) return arrow::Status::IOError("cannot write ", index_path.string());
@@ -1035,7 +1053,7 @@ arrow::Status WriteModelIndex(
     f << "}\n";
     f.close();
 
-    spdlog::info("Wrote model.index.json");
+    lsxcommon::log::info("Wrote model.index.json");
     return arrow::Status::OK();
 }
 
@@ -1081,7 +1099,10 @@ arrow::Status Converter::Run()
     if (impl_->output_path.empty())
         return arrow::Status::Invalid("output path not set");
 
-    fs::create_directories(impl_->output_path);
+    // Mandatory layout: all converted artifacts live under <root>/logestix
+    // (model.index.json, pinned/, experts/), mirroring the Qwen/GLM pipelines.
+    fs::path log_root = fs::path(impl_->output_path) / "logestix";
+    fs::create_directories(log_root);
 
     auto model = lsxcommon::scan_directory(impl_->input_path);
     if (model.shards.empty())
@@ -1130,14 +1151,15 @@ arrow::Status Converter::Run()
         impl_->input_path, model));
 
     auto total_shards = model.shards.size();
-    spdlog::info("Found {} shards, {} tensors across {} shards",
+    lsxcommon::log::info(absl::StrFormat(
+        "Found {} shards, {} tensors across {} shards",
         total_shards,
         [&]{
             std::size_t n = 0;
             for (auto &s : model.shards) n += s.tensors.size();
             return n;
         }(),
-        total_shards);
+        total_shards));
 
     absl::flat_hash_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
     std::vector<TensorRecord> pinned_tensors;
@@ -1153,9 +1175,10 @@ arrow::Status Converter::Run()
         ++shard_idx;
         auto t0 = std::chrono::steady_clock::now();
 
-        spdlog::info("[{}/{}] Scanning {} (pinned={}, experts={})",
+        lsxcommon::log::info(absl::StrFormat(
+            "[{}/{}] Scanning {} (pinned={}, experts={})",
             shard_idx, total_shards, shard.filename,
-            pinned_processed, partial.size());
+            pinned_processed, partial.size()));
 
         std::ifstream sf(
             (fs::path(impl_->input_path) / shard.filename).string(),
@@ -1172,7 +1195,7 @@ arrow::Status Converter::Run()
         if (!sf)
             return arrow::Status::IOError("cannot read ", shard.filename);
 
-        spdlog::info("  read {} MB", sz / (1024 * 1024));
+        lsxcommon::log::info(absl::StrFormat("  read {} MB", sz / (1024 * 1024)));
 
         uint64_t hdr_len;
         std::memcpy(&hdr_len, shard_buf.data(), 8);
@@ -1237,21 +1260,21 @@ arrow::Status Converter::Run()
                     ++experts_in_shard;
                     static bool first_expert = true;
                     if (first_expert) {
-                        spdlog::debug("[diag] Converter: processing first expert "
-                                      "(CUDA will be initialized here)");
+                        lsxcommon::log::debug("[diag] Converter: processing first expert "
+                                              "(CUDA will be initialized here)");
                         diag::LogArrowSystemState("converter-before-first-expert");
                         first_expert = false;
                     }
                     auto status = [&]() -> arrow::Status {
                         ARROW_ASSIGN_OR_RAISE(auto packed, PackExpertNVFP4(std::move(exp)));
                         ARROW_RETURN_NOT_OK(SaveExpertToArrow(
-                            packed, key.layer, key.expert,
-                            fs::path(impl_->output_path)));
+                            packed, key.layer, key.expert, log_root));
                         return arrow::Status::OK();
                     }();
                     if (!status.ok())
-                        spdlog::error("  Failed to pack expert layer={} expert={}: {}",
-                            key.layer, key.expert, status.ToString());
+                        lsxcommon::log::error(absl::StrFormat(
+                            "  Failed to pack expert layer={} expert={}: {}",
+                            key.layer, key.expert, status.ToString()));
                     else {
                         ++experts_processed;
                         ++experts_per_layer[parsed->layer];
@@ -1312,8 +1335,9 @@ arrow::Status Converter::Run()
 
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
-        spdlog::info("  done in {:0.1f}s — {} experts in this shard",
-            elapsed / 1000.0, experts_in_shard);
+        lsxcommon::log::info(absl::StrFormat(
+            "  done in {:0.1f}s — {} experts in this shard",
+            elapsed / 1000.0, experts_in_shard));
     }
 
     for (auto &[key, raw] : partial)
@@ -1353,12 +1377,13 @@ arrow::Status Converter::Run()
             ARROW_RETURN_NOT_OK(integrity::CheckGeometryFields(geom));
     }
 
-    spdlog::info("Saving {} pinned tensors...", pinned_tensors.size());
-    ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, impl_->output_path));
+    lsxcommon::log::info(absl::StrFormat("Saving {} pinned tensors...",
+                                         pinned_tensors.size()));
+    ARROW_RETURN_NOT_OK(SavePinnedTensors(pinned_tensors, log_root));
 
-    spdlog::info("Packing {} shared-expert layers (NVFP4)...",
-        shared_by_layer.size());
-    ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, impl_->output_path));
+    lsxcommon::log::info(absl::StrFormat("Packing {} shared-expert layers (NVFP4)...",
+                                         shared_by_layer.size()));
+    ARROW_RETURN_NOT_OK(SaveSharedExpertsToArrow(shared_by_layer, log_root));
 
     // Conversion-time VRAM profile (spec 2026-08-21-vram-profile-design.md).
     VramGeometry vg;
@@ -1409,11 +1434,12 @@ arrow::Status Converter::Run()
 
     VramProfile vram_profile = EstimateVram(
         vram_inventory, {&DsIsNvfp4Tensor, &DsMemClass}, vg);
-    spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+    lsxcommon::log::info(absl::StrFormat(
+        "VRAM profile: min={} optimal={} max={} (ctx={})",
         FormatBytesHuman(vram_profile.min_bytes),
         FormatBytesHuman(vram_profile.optimal_bytes),
         FormatBytesHuman(vram_profile.max_bytes),
-        vram_profile.context_tokens);
+        vram_profile.context_tokens));
 
     ARROW_RETURN_NOT_OK(WriteModelIndex(
         fs::path(impl_->input_path).filename().string(),
@@ -1421,7 +1447,7 @@ arrow::Status Converter::Run()
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
         vram_profile,
-        impl_->output_path));
+        log_root));
 
     // (8) Build and verify the binary tokenizer (mandatory).
     auto tokenizer_json = fs::path(impl_->input_path) / "tokenizer.json";
@@ -1430,7 +1456,7 @@ arrow::Status Converter::Run()
                                       impl_->input_path);
     ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizer(
         tokenizer_json.string(),
-        fs::path(impl_->output_path) / "pinned",
+        log_root / "pinned",
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true}));
 
@@ -1440,8 +1466,9 @@ arrow::Status Converter::Run()
         return arrow::Status::Invalid(
             "output verification failed: ", vres.status().ToString());
 
-    spdlog::info("Done — {} pinned tensors, {} experts processed, incomplete {}",
-        pinned_processed, experts_processed, partial.size());
+    lsxcommon::log::info(absl::StrFormat(
+        "Done — {} pinned tensors, {} experts processed, incomplete {}",
+        pinned_processed, experts_processed, partial.size()));
     return arrow::Status::OK();
 }
 

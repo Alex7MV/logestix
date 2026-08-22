@@ -24,6 +24,7 @@ add_library(lsxcommon STATIC
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp
     src/loader.cpp
+    src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp
     src/model_engine.cpp
@@ -40,6 +41,8 @@ add_library(lsxcommon STATIC
     src/qwen_inference_load.cpp
     src/qwen_v5_model.cpp
     src/qwen_base_model.cpp
+    src/resource_governor.cpp
+    src/runtime_tuner.cpp
     src/schema.cpp
     src/tokenizer.cpp
     src/tokenizer_convert.cpp
@@ -93,6 +96,7 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_inference_attn.cu
     src/deepseek_inference_csa.cu
     src/deepseek_inference_pipeline.cu
+    src/bf16_convert.cu
     src/deepseek_norm_kernels.cu
     src/shared_experts.cu
     src/sampling.cu

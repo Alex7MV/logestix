@@ -289,9 +289,16 @@ struct LayerWeights {
     float *d_hc_attn_fn = nullptr;    // [24, 16384]
     float *d_hc_attn_base = nullptr;  // [24]
     float *d_hc_attn_scale = nullptr; // [3]
-    float *d_hc_ffn_fn = nullptr;     // [24, 16384]
-    float *d_hc_ffn_base = nullptr;   // [24]
-    float *d_hc_ffn_scale = nullptr;  // [3]
+    float *d_hc_ffn_fn = nullptr;    // [24, 16384]
+    float *d_hc_ffn_base = nullptr;  // [24]
+    float *d_hc_ffn_scale = nullptr; // [3]
+
+    // Non-null when the layer was uploaded arena-backed: every d_* device
+    // pointer above is a view into this single allocation and Free()
+    // releases the arena instead of the individual pointers. Host-pinned
+    // router state (h_tid2eid/h_gate_bias) is NOT part of the arena.
+    void *d_arena = nullptr;
+    size_t arena_bytes = 0;
 
     void Free();
 };

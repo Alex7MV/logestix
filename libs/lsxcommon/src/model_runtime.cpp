@@ -1,13 +1,14 @@
 #include "lsxcommon/model_runtime.h"
 
 #include <absl/strings/ascii.h>
+#include <absl/strings/str_format.h>
 #include <algorithm>
 #include <cstdint>
 #include <memory>
-#include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
 
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/safetensors.h"
@@ -40,7 +41,9 @@ std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
         }
         break;
     }
-    spdlog::warn("[model_runtime] tokenizer decode failed ({} ids)", ids.size());
+    lsxcommon::log::warn(
+        absl::StrFormat("[model_runtime] tokenizer decode failed ({} ids)",
+                        ids.size()));
     return {};
 }
 
@@ -77,9 +80,9 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req)
                 r.first_gen_text = std::string(buf, cap);
         }
     }
-    spdlog::info("[selfcheck] top1_tok={} text='{}' passed={}",
-                 r.first_gen_tok_id, r.first_gen_text,
-                 r.selfcheck_passed ? "true" : "false");
+    lsxcommon::log::info(absl::StrFormat(
+        "[selfcheck] top1_tok={} text='{}' passed={}", r.first_gen_tok_id,
+        r.first_gen_text, r.selfcheck_passed ? "true" : "false"));
     return r;
 }
 
@@ -97,7 +100,8 @@ CliModel CreateCliModel(const std::string &model_path)
     cfg.model_path = model_path;
     out.model = lsxcommon::LsxModelFactory::Create(cfg);
     if (!out.model || !out.model->Load()) {
-        spdlog::error("Failed to create/load model: {}", model_path);
+        lsxcommon::log::error(
+            absl::StrFormat("Failed to create/load model: {}", model_path));
         return out;
     }
     out.ok = true;
@@ -108,22 +112,27 @@ CliModel CreateCliModel(const std::string &model_path)
 
 void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r)
 {
-    spdlog::info("=== --run Results ===");
-    spdlog::info("prompt   : {}", prompt);
-    spdlog::info("output   : {}", r.output_text);
-    spdlog::info("tokens   : {} at {:.1f} t/s", r.num_tokens, r.tokens_per_sec);
+    lsxcommon::log::info("=== --run Results ===");
+    lsxcommon::log::info(absl::StrFormat("prompt   : {}", prompt));
+    lsxcommon::log::info(absl::StrFormat("output   : {}", r.output_text));
+    lsxcommon::log::info(
+        absl::StrFormat("tokens   : {} at {:.1f} t/s", r.num_tokens,
+                        r.tokens_per_sec));
 }
 
 int RunCliGeneration(const GenerationCliArgs &args)
 {
-    spdlog::info("Running generation path on prompt: {}", args.prompt);
+    lsxcommon::log::info(
+        absl::StrFormat("Running generation path on prompt: {}", args.prompt));
     CliModel m = CreateCliModel(args.model_path);
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
     if (!lsxcommon::prompt::BuildPromptInputIds(
             m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
-        spdlog::error("Tokenizer encode failed for prompt: {}", args.prompt);
+        lsxcommon::log::error(
+            absl::StrFormat("Tokenizer encode failed for prompt: {}",
+                            args.prompt));
         m.model->Unload();
         return 1;
     }
@@ -131,7 +140,8 @@ int RunCliGeneration(const GenerationCliArgs &args)
     gpu::InferenceResult result = m.model->Infer(req);
     m.model->Unload();
     if (!result.ok) {
-        spdlog::error("Inference failed: {}", result.error_msg);
+        lsxcommon::log::error(
+            absl::StrFormat("Inference failed: {}", result.error_msg));
         return 1;
     }
     PrintGenerationResult(args.prompt, result);
@@ -140,14 +150,14 @@ int RunCliGeneration(const GenerationCliArgs &args)
 
 int RunCliSelfCheck(const GenerationCliArgs &args)
 {
-    spdlog::info("Running single-token self-check...");
+    lsxcommon::log::info("Running single-token self-check...");
     CliModel m = CreateCliModel(args.model_path);
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
     if (!lsxcommon::prompt::BuildPromptInputIds(
             m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
-        spdlog::error("Tokenizer encode failed");
+        lsxcommon::log::error("Tokenizer encode failed");
         m.model->Unload();
         return 1;
     }
@@ -155,13 +165,18 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     gpu::InferenceResult result = m.model->SelfCheck(req);
     m.model->Unload();
     if (!result.ok) {
-        spdlog::error("SelfCheck failed: {}", result.error_msg);
+            lsxcommon::log::error(
+            absl::StrFormat("SelfCheck failed: {}", result.error_msg));
         return 1;
     }
-    spdlog::info("=== --selfcheck Results ===");
-    spdlog::info("first token : {} '{}'", result.first_gen_tok_id, result.first_gen_text);
-    spdlog::info("maxv        : {:.4f}", result.first_gen_maxv);
-    spdlog::info("passed      : {}", result.selfcheck_passed ? "yes" : "no");
+    lsxcommon::log::info("=== --selfcheck Results ===");
+    lsxcommon::log::info(absl::StrFormat("first token : {} '{}'",
+                                         result.first_gen_tok_id,
+                                         result.first_gen_text));
+    lsxcommon::log::info(
+        absl::StrFormat("maxv        : {:.4f}", result.first_gen_maxv));
+    lsxcommon::log::info(absl::StrFormat(
+        "passed      : {}", result.selfcheck_passed ? "yes" : "no"));
     return result.selfcheck_passed ? 0 : 1;
 }
 
@@ -176,14 +191,18 @@ int RunCliInspect(const std::string &model_path, bool full)
     lsxcommon::print_model(mi);
     const auto &vp = m.model->VramRequirements();
     if (vp.min_bytes > 0) {
-        spdlog::info("=== VRAM Profile (conversion-time, ctx={}) ===",
-                     vp.context_tokens);
-        spdlog::info("min     (weights only)         : {}",
-                     FormatBytesHuman(vp.min_bytes));
-        spdlog::info("optimal (+KV cache+workspace)  : {}",
-                     FormatBytesHuman(vp.optimal_bytes));
-        spdlog::info("max     (full expert placement): {}",
-                     FormatBytesHuman(vp.max_bytes));
+        lsxcommon::log::info(absl::StrFormat(
+            "=== VRAM Profile (conversion-time, ctx={}) ===",
+            vp.context_tokens));
+        lsxcommon::log::info(absl::StrFormat(
+            "min     (weights only)         : {}",
+            FormatBytesHuman(vp.min_bytes)));
+        lsxcommon::log::info(absl::StrFormat(
+            "optimal (+KV cache+workspace)  : {}",
+            FormatBytesHuman(vp.optimal_bytes)));
+        lsxcommon::log::info(absl::StrFormat(
+            "max     (full expert placement): {}",
+            FormatBytesHuman(vp.max_bytes)));
     }
     m.model->Unload();
     return 0;

@@ -65,9 +65,8 @@ struct VerificationReport {
 // Verifies a converted model directory: index parseable, format tag known,
 // every *model-tensor* arrow file reopens + ValidateFull(), record counts
 // match the index total_pinned_tensors. Tokenizer arrows are reopened for
-// validate but excluded from the count. Probes index at
-// output_root/logestix/model.index.json (Qwen) then
-// output_root/model.index.json (GLM/DeepSeek). On any failure the returned
+// validate but excluded from the count. Reads index at
+// output_root/logestix/model.index.json only. On any failure the returned
 // Result carries a non-OK Status with a message naming the cause; on success
 // the report holds the verified record totals.
 arrow::Result<VerificationReport> VerifyConvertedModel(

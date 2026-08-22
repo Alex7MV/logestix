@@ -5,6 +5,7 @@
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -16,6 +17,22 @@
 
 namespace lsxcommon {
 namespace glm {
+
+namespace {
+// Governor/RuntimeTuner override for the expert device-cache slot count
+// (SetGlmExpertCacheSlotsOverride). Negative = consult the env heuristic.
+std::atomic<int> g_expert_cache_slots_override{-1};
+} // namespace
+
+void SetGlmExpertCacheSlotsOverride(int slots)
+{
+    g_expert_cache_slots_override.store(slots, std::memory_order_relaxed);
+}
+
+int GlmExpertCacheSlotsOverride()
+{
+    return g_expert_cache_slots_override.load(std::memory_order_relaxed);
+}
 
 namespace {
 
@@ -569,9 +586,12 @@ static cudaError_t RunGlmGenerationImpl(
     cudaEvent_t ev_cache_gemm = nullptr;
     std::vector<int32_t> xc_slot_of, xc_owner, xc_lru;
     if (on_demand) {
-        const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
-        int want = env ? std::atoi(env) : 64;
-        if (want < 0) want = 0;
+        int want = GlmExpertCacheSlotsOverride();
+        if (want < 0) {
+            const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
+            want = env ? std::atoi(env) : 64;
+            if (want < 0) want = 0;
+        }
         const int total_experts =
             static_cast<int>(expert_db->num_layers) *
             static_cast<int>(expert_db->experts_per_layer);
@@ -1206,9 +1226,12 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
     // one full packed expert set (~20.25 MiB). Allocation failure degrades
     // gracefully to the legacy per-expert staging pipeline.
     {
-        const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
-        int want = env ? std::atoi(env) : 64;
-        if (want < 0) want = 0;
+        int want = GlmExpertCacheSlotsOverride();
+        if (want < 0) {
+            const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
+            want = env ? std::atoi(env) : 64;
+            if (want < 0) want = 0;
+        }
         constexpr int64_t kPackPerMat = kMatEl / 2;
         constexpr int64_t kScalePerMat = kMatEl / kGlmNvfp4Block;
         c.xcache.pack_stride = 3 * kPackPerMat;
@@ -1692,10 +1715,13 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaEventDestroy(t_stop);
     result.kv_slots_used = last_idx + 1;
     result.ok = true;
-    if (c.xcache.slots > 0)
+    if (c.xcache.slots > 0) {
+        result.cache_hits = c.xcache.hits;
+        result.cache_misses = c.xcache.misses;
         log::debug("[glm_real] expert cache: hits=" +
                    std::to_string(c.xcache.hits) + " misses=" +
                    std::to_string(c.xcache.misses));
+    }
     c.Free();
     return cudaSuccess;
 }

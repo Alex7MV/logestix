@@ -12,6 +12,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/qwen_convert.h"
+#include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <fstream>
 #include <iterator>
@@ -19,7 +20,6 @@
 #include <filesystem>
 #include <optional>
 #include <regex>
-#include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
 #include <absl/container/flat_hash_map.h>
@@ -28,6 +28,7 @@
 #include <absl/flags/usage.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 ABSL_FLAG(std::string, input, "", "input model directory");
 ABSL_FLAG(std::string, output, "converted_model", "output directory");
@@ -104,12 +105,12 @@ arrow::Status RunSharedOnly(const std::string &model_path)
 
         auto batch_res = lsxcommon::ReadRecordBatchFromFile(path);
         if (!batch_res.ok()) {
-            spdlog::warn("  {} read failed: {}", fn, batch_res.status().ToString());
+            lsxcommon::log::warn(absl::StrFormat("  {} read failed: {}", fn, batch_res.status().ToString()));
             continue;
         }
         auto tensors_res = lsxcommon::PinnedSchema::UnpackBatch(*batch_res);
         if (!tensors_res.ok()) {
-            spdlog::warn("  {} unpack failed: {}", fn, tensors_res.status().ToString());
+            lsxcommon::log::warn(absl::StrFormat("  {} unpack failed: {}", fn, tensors_res.status().ToString()));
             continue;
         }
 
@@ -156,7 +157,7 @@ arrow::Status RunSharedOnly(const std::string &model_path)
             }
             ++found;
         }
-        spdlog::info("  {} — {} shared-expert tensors", fn, found);
+        lsxcommon::log::info(absl::StrFormat("  {} — {} shared-expert tensors", fn, found));
     }
 
     if (shared_by_layer.empty())
@@ -171,14 +172,14 @@ arrow::Status RunSharedOnly(const std::string &model_path)
     int packed_ok = 0;
     for (auto &[layer, sd] : shared_by_layer) {
         if (sd.w1_raw.empty() || sd.w2_raw.empty() || sd.w3_raw.empty()) {
-            spdlog::warn("  incomplete shared expert layer {} (w1={} w2={} w3={})",
-                layer, sd.w1_raw.size(), sd.w2_raw.size(), sd.w3_raw.size());
+            lsxcommon::log::warn(absl::StrFormat("  incomplete shared expert layer {} (w1={} w2={} w3={})",
+                layer, sd.w1_raw.size(), sd.w2_raw.size(), sd.w3_raw.size()));
             continue;
         }
         auto packed_res = lsxcommon::PackExpertNVFP4(std::move(sd));
         if (!packed_res.ok()) {
-            spdlog::error("  pack failed layer {}: {}",
-                layer, packed_res.status().ToString());
+            lsxcommon::log::error(absl::StrFormat("  pack failed layer {}: {}",
+                layer, packed_res.status().ToString()));
             continue;
         }
         shared_layers[static_cast<size_t>(layer)] = *packed_res;
@@ -195,8 +196,8 @@ arrow::Status RunSharedOnly(const std::string &model_path)
         return batch_res.status();
     auto out = pinned_dir / "shared_experts.arrow";
     ARROW_RETURN_NOT_OK(lsxcommon::WriteRecordBatchToFile(*batch_res, out));
-    spdlog::info("packed {} shared-expert layers -> {} ({} layers total)",
-        packed_ok, out.string(), shared_layers.size());
+    lsxcommon::log::info(absl::StrFormat("packed {} shared-expert layers -> {} ({} layers total)",
+        packed_ok, out.string(), shared_layers.size()));
     return arrow::Status::OK();
 }
 
@@ -254,15 +255,15 @@ int main(int argc, char* argv[]) {
     }
 
     if (verify_only) {
-        spdlog::info("Verifying converted model: {}", input_path);
+        lsxcommon::log::info(absl::StrFormat("Verifying converted model: {}", input_path));
         auto vres = lsxcommon::integrity::VerifyConvertedModel(input_path);
         if (!vres.ok()) {
-            spdlog::error("Verify failed: {}", vres.status().ToString());
+            lsxcommon::log::error(absl::StrFormat("Verify failed: {}", vres.status().ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Verify OK — {} model tensors across {} arrow files",
-                     vres->pinned_tensor_count, vres->arrow_files_checked);
+        lsxcommon::log::info(absl::StrFormat("Verify OK — {} model tensors across {} arrow files",
+                     vres->pinned_tensor_count, vres->arrow_files_checked));
         lsxcommon::Core::Shutdown();
         return 0;
     }
@@ -271,12 +272,10 @@ int main(int argc, char* argv[]) {
         // Detect the converted format from the index and dispatch to the
         // matching family recompute.
         namespace fs = std::filesystem;
-        auto idx = fs::path(output_path) / "model.index.json";
-        if (!fs::exists(idx))
-            idx = fs::path(output_path) / "logestix" / "model.index.json";
+        auto idx = fs::path(output_path) / "logestix" / "model.index.json";
         std::ifstream f(idx);
         if (!f) {
-            spdlog::error("model.index.json not found under {}", output_path);
+            lsxcommon::log::error(absl::StrFormat("model.index.json not found under {}", output_path));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -290,51 +289,51 @@ int main(int argc, char* argv[]) {
         else
             st = lsxcommon::RecomputeVramBlock(input_path, output_path);
         if (!st.ok()) {
-            spdlog::error("VRAM recompute failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("VRAM recompute failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("VRAM recompute complete -> {}", idx.string());
+        lsxcommon::log::info(absl::StrFormat("VRAM recompute complete -> {}", idx.string()));
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
     if (shared_only) {
-        spdlog::info("Extracting shared experts from {} ...", input_path);
+        lsxcommon::log::info(absl::StrFormat("Extracting shared experts from {} ...", input_path));
         auto st = RunSharedOnly(input_path);
         if (!st.ok()) {
-            spdlog::error("Shared experts extraction failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("Shared experts extraction failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Shared experts extraction complete");
+        lsxcommon::log::info("Shared experts extraction complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
     if (repack_shared) {
-        spdlog::info("Re-packing shared experts from {} ...", input_path);
+        lsxcommon::log::info(absl::StrFormat("Re-packing shared experts from {} ...", input_path));
         auto st = lsxcommon::RepackSharedExperts(input_path, output_path);
         if (!st.ok()) {
-            spdlog::error("Shared experts re-pack failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("Shared experts re-pack failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Shared experts re-pack complete");
+        lsxcommon::log::info("Shared experts re-pack complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
     if (repack_experts) {
-        spdlog::info("Re-packing routed experts (fp4 passthrough) from {} ...",
-                     input_path);
+        lsxcommon::log::info(absl::StrFormat("Re-packing routed experts (fp4 passthrough) from {} ...",
+                     input_path));
         auto st = lsxcommon::RepackRoutedExperts(input_path, output_path);
         if (!st.ok()) {
-            spdlog::error("Routed experts re-pack failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("Routed experts re-pack failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Routed experts re-pack complete");
+        lsxcommon::log::info("Routed experts re-pack complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
@@ -344,41 +343,41 @@ int main(int argc, char* argv[]) {
         auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
         auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
         fs::create_directories(pinned_dir);
-        spdlog::info("Building tokenizer Arrow files from {}", tokenizer_json.string());
+        lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from {}", tokenizer_json.string()));
         auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(), pinned_dir);
         if (!st.ok()) {
-            spdlog::error("Tokenizer build failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Tokenizer Arrow files complete -> {}", pinned_dir.string());
+        lsxcommon::log::info(absl::StrFormat("Tokenizer Arrow files complete -> {}", pinned_dir.string()));
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
-    spdlog::info("Converting model: {} -> {}", input_path, output_path);
+    lsxcommon::log::info(absl::StrFormat("Converting model: {} -> {}", input_path, output_path));
     if (qwen) {
-        spdlog::info("Qwen3.5 pipeline (logestix-qwen layout)");
+        lsxcommon::log::info("Qwen3.5 pipeline (logestix-qwen layout)");
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
         if (!st.ok()) {
-            spdlog::error("Qwen conversion failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("Qwen conversion failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("Qwen conversion complete");
+        lsxcommon::log::info("Qwen conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
     if (glm) {
-        spdlog::info("GLM-5.2 pipeline (logestix-glm layout)");
+        lsxcommon::log::info("GLM-5.2 pipeline (logestix-glm layout)");
         auto st = lsxcommon::glm::ConvertGlmModel(input_path, output_path);
         if (!st.ok()) {
-            spdlog::error("GLM conversion failed: {}", st.ToString());
+            lsxcommon::log::error(absl::StrFormat("GLM conversion failed: {}", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        spdlog::info("GLM conversion complete");
+        lsxcommon::log::info("GLM conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
@@ -389,12 +388,12 @@ int main(int argc, char* argv[]) {
              .SetVerbose(true);
     auto status = converter.Run();
     if (!status.ok()) {
-        spdlog::error("Conversion failed: {}", status.ToString());
+        lsxcommon::log::error(absl::StrFormat("Conversion failed: {}", status.ToString()));
         lsxcommon::Core::Shutdown();
         return 1;
     }
 
-    spdlog::info("Conversion complete");
+    lsxcommon::log::info("Conversion complete");
     lsxcommon::Core::Shutdown();
     return 0;
 }

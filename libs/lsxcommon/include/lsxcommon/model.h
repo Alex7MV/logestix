@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -73,6 +74,11 @@ public:
 
     virtual const std::string &Type() const = 0;
     virtual ArrowTokenizerDb &Tokenizer() = 0;
+
+    // Concurrency groundwork (spec: leases and residency locks). Infer()
+    // takes a shared lock; unload-during-inference / parallel dispatch take
+    // unique. One mutex per model instance, owned by ModelBase.
+    virtual std::shared_mutex &ResidencyMutex() = 0;
 };
 
 } // namespace lsxcommon

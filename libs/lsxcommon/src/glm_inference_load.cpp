@@ -462,11 +462,9 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     //   <model>/logestix/pinned/...   (model dir, like the DeepSeek loader)
     //   <logestix>/pinned/...         (converter output_root)
     fs::path pinned_dir = fs::path(model_path) / "logestix" / "pinned";
-    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned")) {
+    if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned"))
         pinned_dir = fs::path(model_path) / "pinned";
-        index_path = fs::path(model_path) / "model.index.json";
-    }
+    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
 
     // Topology: number of layers sizes the layers vector (heterogeneous grid).
     auto topo = load_topology(index_path.string());
@@ -617,9 +615,6 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
         exp_dir = fs::path(model_path) / "experts";
 
     fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(index_path) &&
-        fs::exists(fs::path(model_path) / "model.index.json"))
-        index_path = fs::path(model_path) / "model.index.json";
 
     auto topo = load_topology(index_path.string());
     if (!topo.error_msg.empty()) {

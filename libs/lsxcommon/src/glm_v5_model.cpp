@@ -3,14 +3,15 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <spdlog/spdlog.h>
-
-#include "lsxcommon/glm_inference.h"
-#include "lsxcommon/glm_inference_load.h"
-#include "lsxcommon/glm_convert.h"
-#include "lsxcommon/model_runtime.h"
 
 #include <filesystem>
+#include <shared_mutex>
+
+#include "lsxcommon/glm_convert.h"
+#include "lsxcommon/glm_inference.h"
+#include "lsxcommon/log.h"
+#include "lsxcommon/model_runtime.h"
+#include "lsxcommon/resource_governor.h"
 
 namespace lsxcommon {
 
@@ -21,22 +22,137 @@ GlmV5Model::GlmV5Model(ModelInitConfig cfg)
 
 GlmV5Model::~GlmV5Model() { Unload(); }
 
+bool GlmV5Model::EnsureExecutionContext()
+{
+    if (!stream_ && cudaStreamCreateWithFlags(&stream_,
+                                              cudaStreamNonBlocking) !=
+                        cudaSuccess) {
+        stream_ = nullptr;
+        return false;
+    }
+    if (!cublas_ && cublasCreate(&cublas_) != CUBLAS_STATUS_SUCCESS) {
+        cublas_ = nullptr;
+        return false;
+    }
+    cublasSetStream(cublas_, stream_);
+    return true;
+}
+
+std::uint64_t GlmV5Model::EstimateExpertMeanBytes() const
+{
+    // NVFP4 routed expert: three [kGlmMoeIntermediate x kGlmHidden] matrices,
+    // each packed E2M1 nibbles (elems/2 B) + E4M3 per-block scales (elems/16 B).
+    constexpr std::int64_t elems =
+        static_cast<std::int64_t>(glm::kGlmMoeIntermediate) * glm::kGlmHidden;
+    constexpr std::int64_t per_matrix = elems / 2 + elems / 16;
+    return static_cast<std::uint64_t>(per_matrix) * 3;
+}
+
+void GlmV5Model::TeardownWeights()
+{
+    tuner_.reset();          // releases the adaptive expert-cache lease
+    permanent_lease_ = {};   // RAII release
+    cache_lease_ = {};
+    glm::free_glm_expert_index(experts_);
+    pw_.Free();
+    if (cublas_) { cublasDestroy(cublas_); cublas_ = nullptr; }
+    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    resident_bytes_ = 0;
+}
+
 bool GlmV5Model::Load()
 {
+    Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
 
     namespace fs = std::filesystem;
     fs::path idx = fs::path(cfg_.model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(idx))
-        idx = fs::path(cfg_.model_path) / "model.index.json";
     auto topo = glm::load_topology(idx.string());
     if (!topo.error_msg.empty()) {
-        spdlog::error("[glm-model] topology error in {}: {}",
-                      idx.string(), topo.error_msg);
+        lsxcommon::log::error("[glm-model] topology error in "
+                              + idx.string() + ": " + topo.error_msg);
+        tok_db_.reset();
         return false;
     }
     vram_ = topo.vram;
 
+    auto &gov = ResourceGovernor::Instance();
+    if (!gov.IsInitialized()) {
+        log::warn("[glm-model] governor not initialized; standalone init");
+        GovernorOptions gopts;
+        if (!gov.Initialize(gopts)) {
+            log::error("[glm-model] governor init failed");
+            tok_db_.reset();
+            return false;
+        }
+    }
+
+    if (!EnsureExecutionContext()) {
+        log::error("[glm-model] cublas/stream init failed");
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    const cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, stream_);
+    if (e != cudaSuccess ||
+        pw_.hidden != glm::kGlmHidden ||
+        pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers) ||
+        !pw_.d_embed || !pw_.d_head) {
+        log::error(std::string("[glm-model] pinned-weight load/validation failed: ")
+                   + (e != cudaSuccess ? cudaGetErrorString(e)
+                                       : "geometry mismatch"));
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    experts_ = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
+                                          glm::kGlmNumRouted);
+    if (experts_.num_layers != glm::kGlmNumLayers ||
+        experts_.experts_per_layer != glm::kGlmNumRouted) {
+        log::error("[glm-model] expert index incomplete");
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    lifecycle::LifecycleInput in;
+    in.model_type = kType;
+    in.archetype = lifecycle::Archetype::MoE;
+    in.vram = topo.vram;
+    in.expert_mean_bytes = EstimateExpertMeanBytes();
+    const auto &plan = lifecycle::GetOrBuildPlan(in);
+
+    permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
+                                   pw_.resident_bytes, LeasePolicy{});
+    if (!permanent_lease_.Valid() && !gov.options().relax_memory_refusal) {
+        log::error("[glm-model] permanent-weight lease refused ("
+                   + std::to_string(pw_.resident_bytes) + " bytes)");
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    LeasePolicy adaptive{LeasePolicy::Mode::kAdaptive,
+                         plan.tuner_bounds.expert_cache_slots_min *
+                             in.expert_mean_bytes,
+                         plan.expert_cache_max_bytes};
+    cache_lease_ = gov.Acquire(LeaseKind::kExpertCache,
+                               plan.expert_cache_slots * in.expert_mean_bytes,
+                               adaptive);
+    tuner_ = std::make_unique<lifecycle::RuntimeTuner>(
+        &gov, std::move(cache_lease_), in.expert_mean_bytes, plan.tuner_bounds);
+    glm::SetGlmExpertCacheSlotsOverride(static_cast<int>(tuner_->Slots()));
+    tuner_last_hits_ = tuner_last_misses_ = 0;
+
+    resident_bytes_ = pw_.resident_bytes;
+    log::info("[glm-model] loaded once: resident="
+              + std::to_string(pw_.resident_bytes)
+              + " bytes, plan: cache slots="
+              + std::to_string(plan.expert_cache_slots)
+              + " streams=" + std::to_string(plan.copy_streams)
+              + " staging=" + std::to_string(plan.staging_ring_bytes));
     FinishLoad();
     return true;
 }
@@ -45,83 +161,34 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
-
-    // ── TDD Cycle 10: drives the full frozen 79-layer execution loop ─────────
-    // One owned async execution context shared by every layer pass: dense
-    // layers 0-2 (post-attn RMSNorm -> gate/up -> swiglu -> down), IndexShare
-    // attention + MoE router + NVFP4 expert stacks for layers 3-77, and the
-    // Layer-78 MTP epilogue (eh_proj -> enorm -> router -> experts -> residual
-    // -> shared_head.norm -> lm_head^T raw logits) with greedy token decode.
-    // The complete memory footprint lives in the unified GlmMoEArena that
-    // RunGlmGeneration allocates as ONE contiguous device block (+ one pinned
-    // host staging block): KV cache slots, attention/MoE workspaces and the MTP
-    // execution spaces are all carved from the same allocation, so a 79-layer
-    // forward performs a single device cudaMalloc and a single host one. All
-    // kernel launches run on the explicit async stream `st`; no
-    // cudaDeviceSynchronize is ever issued (only per-decode-step stream syncs).
-    cublasHandle_t ch = nullptr;
-    cudaStream_t   st = nullptr;
-    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
-    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
-    if (ch_ok && st_ok) cublasSetStream(ch, st);
-
-    glm::GlmExpertDb      experts;
-
-    auto cleanup = [&]() {
-        pw_.Free();
-        glm::free_glm_expert_index(experts);
-        if (st) cudaStreamDestroy(st);
-        if (ch) cublasDestroy(ch);
-    };
-    auto fail = [&](std::string msg) {
-        r.error_msg = std::move(msg);
+    if (!loaded_ || !pw_.d_embed) {
+        r.error_msg = "model not loaded (call Load(); weights are no longer "
+                      "reloaded per Infer call)";
         r.ok = false;
-        cleanup();
         return r;
-    };
+    }
 
-    if (!ch_ok || !st_ok) return fail("cublas/stream init failed");
-
-    // Full pin: all 79 layers (dense 0-2 + MoE router 3-77 + MTP 78) so the
-    // heterogeneous loop can read every layer's router gate / norm / indexer
-    // matrices during its single pass.
-    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, st);
-    if (e != cudaSuccess)
-        return fail(std::string("load pinned weights: ") +
-                    cudaGetErrorString(e));
-    // MoE pinned-persistent residency (spec 3.3): only the pinned subset is
-    // persistently resident; the on-demand expert mmaps and staged experts are
-    // transient (reported via InferenceResult, not ResidentWeightBytes()).
-    resident_bytes_ = pw_.resident_bytes;
-    if (pw_.hidden != glm::kGlmHidden)
-        return fail("model hidden_size does not match kGlmHidden (6144)");
-    if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers))
-        return fail("model does not expose all 79 layers");
-    if (!pw_.d_embed || !pw_.d_head)
-        return fail("model embed/lm_head weights missing");
-
-    // On-demand routed-expert index for every MoE layer (3-78): a flat
-    // memory-mapped registry whose experts are mmap'd lazily through a bounded
-    // LRU and staged one at a time, so the full ~385 GiB expert set is NEVER
-    // resident in VRAM — the generation loop needs only the pinned weights
-    // plus ~2 × one-expert staging. The layer-78 MTP block also routes
-    // through per-expert stacks.
-    experts = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
-                                         glm::kGlmNumRouted);
-    if (experts.num_layers != glm::kGlmNumLayers ||
-        experts.experts_per_layer != glm::kGlmNumRouted)
-        return fail("expert index incomplete");
-
-    // The faithful greedy multi-token generation pass (real GlmMoeDsaForCausalLM
-    // forward: MLA + interleaved RoPE + causal per-token KV cache, sigmoid MoE
-    // router + shared experts, model.norm -> lm_head head). Capacity + prompt-id
-    // bounds are validated inside (against the fixed 1024-slot KV staging and
-    // the embed table), making the run deterministic and memory-safe.
     glm::GlmGenerationResult gen;
-    e = glm::RunGlmRealGeneration(ch, st, pw_, experts, req.input_ids,
-                                  req.max_gen_tokens, gen);
-    if (e != cudaSuccess || !gen.ok)
-        return fail(gen.ok ? cudaGetErrorString(e) : gen.error_msg);
+    {
+        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
+        const cudaError_t e = glm::RunGlmRealGeneration(
+            cublas_, stream_, pw_, experts_, req.input_ids,
+            req.max_gen_tokens, gen);
+        if (e != cudaSuccess || !gen.ok) {
+            r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;
+            r.ok = false;
+            return r;
+        }
+    }
+
+    if (tuner_) {  // between requests: adapt the expert cache (spec 4)
+        tuner_->Report(gen.cache_hits - tuner_last_hits_,
+                       gen.cache_misses - tuner_last_misses_);
+        tuner_last_hits_ = gen.cache_hits;
+        tuner_last_misses_ = gen.cache_misses;
+        glm::SetGlmExpertCacheSlotsOverride(static_cast<int>(tuner_->Slots()));
+        ResourceGovernor::Instance().ReconcileVram();
+    }
 
     r.ok = true;
     r.num_tokens = static_cast<int>(gen.tokens.size());
@@ -130,7 +197,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         r.first_gen_tok_id = gen.tokens[0];
         r.first_gen_maxv = gen.first_maxv;
     }
-r.gen_tokens = std::move(gen.tokens);
+    r.gen_tokens = std::move(gen.tokens);
     r.final_logits = std::move(gen.final_logits);
     r.kv_slots_used = gen.kv_slots_used;
     r.ttft_ms = gen.ttft_ms;
@@ -147,14 +214,12 @@ r.gen_tokens = std::move(gen.tokens);
     // best-effort.
     if (!r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
-
-    cleanup();
     return r;
 }
 
 void GlmV5Model::Unload()
 {
-    pw_.Free();
+    TeardownWeights();
     tok_db_.reset();
     loaded_ = false;
 }
@@ -167,64 +232,19 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
 gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
-    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    if (!loaded_ || !pw_.d_embed) { r.error_msg = "model not loaded"; return r; }
     // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times.
     const std::vector<int32_t> prompt = {0, 0, 0, 0};
 
-    // Mirror Infer exactly: own async context, full pin, on-demand expert index,
-    // faithful real forward generation loop.
-    cublasHandle_t ch = nullptr;
-    cudaStream_t   st = nullptr;
-    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
-    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
-    if (ch_ok && st_ok) cublasSetStream(ch, st);
-    if (!ch_ok || !st_ok) {
-        r.error_msg = "cublas/stream init failed";
-        if (st) cudaStreamDestroy(st);
-        if (ch) cublasDestroy(ch);
-        return r;
-    }
-
-    glm::GlmExpertDb experts;
-    auto cleanup = [&]() {
-        pw_.Free();
-        glm::free_glm_expert_index(experts);
-        if (st) cudaStreamDestroy(st);
-        if (ch) cublasDestroy(ch);
-    };
-
-    cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, st);
-    if (e != cudaSuccess) {
-        r.error_msg = std::string("load pinned weights: ") +
-                      cudaGetErrorString(e);
-        cleanup();
-        return r;
-    }
-    if (pw_.hidden != glm::kGlmHidden) {
-        r.error_msg = "model hidden_size does not match kGlmHidden (6144)";
-        cleanup();
-        return r;
-    }
-    if (pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers)) {
-        r.error_msg = "model does not expose all 79 layers";
-        cleanup();
-        return r;
-    }
-    experts = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
-                                         glm::kGlmNumRouted);
-    if (experts.num_layers != glm::kGlmNumLayers ||
-        experts.experts_per_layer != glm::kGlmNumRouted) {
-        r.error_msg = "expert index incomplete";
-        cleanup();
-        return r;
-    }
-
     glm::GlmGenerationResult gr;
-    e = glm::RunGlmRealGeneration(ch, st, pw_, experts, prompt, num_tokens, gr);
-    cleanup();
-    if (e != cudaSuccess || !gr.ok) {
-        r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
-        return r;
+    {
+        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
+        const cudaError_t e = glm::RunGlmRealGeneration(
+            cublas_, stream_, pw_, experts_, prompt, num_tokens, gr);
+        if (e != cudaSuccess || !gr.ok) {
+            r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
+            return r;
+        }
     }
     r.ok = true;
     r.num_tokens = static_cast<int>(gr.tokens.size());

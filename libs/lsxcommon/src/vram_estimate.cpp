@@ -1,6 +1,7 @@
 #include "lsxcommon/vram_estimate.h"
+#include "lsxcommon/log.h"
 
-#include <spdlog/spdlog.h>
+#include <absl/strings/str_format.h>
 #include <simdjson.h>
 
 #include <fstream>
@@ -96,8 +97,9 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
     namespace sj = simdjson;
     std::ifstream f(config_json_path);
     if (!f) {
-        spdlog::warn("[vram] cannot open {}: defaulting context to {}",
-                     config_json_path, kDefaultContextTokens);
+        lsxcommon::log::warn(absl::StrFormat(
+            "[vram] cannot open {}: defaulting context to {}",
+            config_json_path, kDefaultContextTokens));
         return kDefaultContextTokens;
     }
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -107,8 +109,9 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
     sj::padded_string pad(json.data(), json.size());
     sj::ondemand::document doc;
     if (parser.iterate(pad).get(doc) != sj::SUCCESS) {
-        spdlog::warn("[vram] {} parse failed: defaulting context to {}",
-                     config_json_path, kDefaultContextTokens);
+        lsxcommon::log::warn(absl::StrFormat(
+            "[vram] {} parse failed: defaulting context to {}",
+            config_json_path, kDefaultContextTokens));
         return kDefaultContextTokens;
     }
     sj::ondemand::object root;
@@ -131,8 +134,8 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
         sj::ondemand::object src = tc.value();
         if (int64_t v = find_ctx(src); v > 0) return v;
     }
-    spdlog::warn("[vram] no context field in {}: defaulting to {}",
-                 config_json_path, kDefaultContextTokens);
+    lsxcommon::log::warn(absl::StrFormat("[vram] no context field in {}: defaulting to {}",
+                                         config_json_path, kDefaultContextTokens));
     return kDefaultContextTokens;
 }
 

@@ -296,7 +296,7 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     REQUIRE(st.ok());
 
     // Extended index
-    auto index_path = out / "model.index.json";
+    auto index_path = out / "logestix" / "model.index.json";
     REQUIRE(fs::exists(index_path));
     auto topo = lsxcommon::glm::load_topology(index_path.string());
     REQUIRE(topo.error_msg.empty());
@@ -319,14 +319,14 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     CHECK(topo.vram.context_tokens > 0);
 
     // Pinned files
-    REQUIRE(fs::exists(out / "pinned" / "global.arrow"));
-    auto globals = glmtest::TensorNamesIn(out / "pinned" / "global.arrow");
-    CHECK(glmtest::TensorNamesIn(out / "pinned" / "global.arrow").size() == 3);
+    REQUIRE(fs::exists(out / "logestix" / "pinned" / "global.arrow"));
+    auto globals = glmtest::TensorNamesIn(out / "logestix" / "pinned" / "global.arrow");
+    CHECK(glmtest::TensorNamesIn(out / "logestix" / "pinned" / "global.arrow").size() == 3);
     CHECK(globals[0] == "model.embed_tokens.weight");
 
     // Dense layer 0 file: contains dense MLP + attention, no experts
-    REQUIRE(fs::exists(out / "pinned" / "layer_0.arrow"));
-    auto l0 = glmtest::TensorNamesIn(out / "pinned" / "layer_0.arrow");
+    REQUIRE(fs::exists(out / "logestix" / "pinned" / "layer_0.arrow"));
+    auto l0 = glmtest::TensorNamesIn(out / "logestix" / "pinned" / "layer_0.arrow");
     CHECK(std::find(l0.begin(), l0.end(),
         "model.layers.0.mlp.gate_proj.weight") != l0.end());
     CHECK(std::find(l0.begin(), l0.end(),
@@ -334,8 +334,8 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     CHECK(l0.size() == 12);   // 2 norms + 7 attn + 3 dense
 
     // MoE layer 3 file: router + attn + norms; routed/shared experts separate
-    REQUIRE(fs::exists(out / "pinned" / "layer_3.arrow"));
-    auto l3 = glmtest::TensorNamesIn(out / "pinned" / "layer_3.arrow");
+    REQUIRE(fs::exists(out / "logestix" / "pinned" / "layer_3.arrow"));
+    auto l3 = glmtest::TensorNamesIn(out / "logestix" / "pinned" / "layer_3.arrow");
     CHECK(std::find(l3.begin(), l3.end(),
         "model.layers.3.mlp.gate.weight") != l3.end());
     CHECK(std::find(l3.begin(), l3.end(),
@@ -348,16 +348,16 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
         "model.layers.3.mlp.shared_experts.gate_proj.weight") == l3.end());
 
     // Routed experts: exp_0 / exp_1 for each of layers 3, 6, 78
-    REQUIRE(fs::exists(out / "experts" / "layer_3" / "exp_0.arrow"));
-    REQUIRE(fs::exists(out / "experts" / "layer_3" / "exp_1.arrow"));
-    REQUIRE(fs::exists(out / "experts" / "layer_6" / "exp_0.arrow"));
-    REQUIRE(fs::exists(out / "experts" / "layer_6" / "exp_1.arrow"));
-    REQUIRE(fs::exists(out / "experts" / "layer_78" / "exp_0.arrow"));
-    REQUIRE(fs::exists(out / "experts" / "layer_78" / "exp_1.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_3" / "exp_0.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_3" / "exp_1.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_6" / "exp_0.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_6" / "exp_1.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_78" / "exp_0.arrow"));
+    REQUIRE(fs::exists(out / "logestix" / "experts" / "layer_78" / "exp_1.arrow"));
 
     // Shared experts arrow (one slot per layer 0..78; 3, 6, 78 filled)
-    REQUIRE(fs::exists(out / "pinned" / "shared_experts.arrow"));
-    auto se_batch = lsxcommon::ReadRecordBatchFromFile(out / "pinned" / "shared_experts.arrow");
+    REQUIRE(fs::exists(out / "logestix" / "pinned" / "shared_experts.arrow"));
+    auto se_batch = lsxcommon::ReadRecordBatchFromFile(out / "logestix" / "pinned" / "shared_experts.arrow");
     REQUIRE(se_batch.ok());
     auto se_vec = lsxcommon::SharedExpertSchema::UnpackBatch(*se_batch);
     REQUIRE(se_vec.ok());

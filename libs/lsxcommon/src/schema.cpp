@@ -1,12 +1,12 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/diagnostics.h"
+#include "lsxcommon/log.h"
 #include <arrow/type_fwd.h>
 #include <arrow/builder.h>
 #include <arrow/ipc/writer.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
-#include <spdlog/spdlog.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
@@ -758,10 +758,9 @@ arrow::Status WriteRecordBatchToFile(
     ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     ARROW_RETURN_NOT_OK(writer->Close());
     ARROW_RETURN_NOT_OK(outfile->Close());
-    spdlog::debug("[DIAG] wrote batch to {} ({} columns, {} rows)",
-                  path.string(),
-                  batch->num_columns(),
-                  batch->num_rows());
+    lsxcommon::log::debug(absl::StrCat(
+        "[DIAG] wrote batch to ", path.string(), " (", batch->num_columns(),
+        " columns, ", batch->num_rows(), " rows)"));
     return arrow::Status::OK();
 }
 
