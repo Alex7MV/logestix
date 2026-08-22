@@ -174,6 +174,17 @@ int RunCliInspect(const std::string &model_path, bool full)
         for (auto &shard : mi.shards) lsxcommon::print_shard(shard);
     }
     lsxcommon::print_model(mi);
+    const auto &vp = m.model->VramRequirements();
+    if (vp.min_bytes > 0) {
+        spdlog::info("=== VRAM Profile (conversion-time, ctx={}) ===",
+                     vp.context_tokens);
+        spdlog::info("min     (weights only)         : {}",
+                     FormatBytesHuman(vp.min_bytes));
+        spdlog::info("optimal (+KV cache+workspace)  : {}",
+                     FormatBytesHuman(vp.optimal_bytes));
+        spdlog::info("max     (full expert placement): {}",
+                     FormatBytesHuman(vp.max_bytes));
+    }
     m.model->Unload();
     return 0;
 }
