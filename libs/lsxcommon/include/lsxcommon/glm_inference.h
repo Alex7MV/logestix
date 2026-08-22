@@ -399,6 +399,10 @@ struct GlmGenerationResult {
     // element-for-element against the independent CPU FP64 reference. Empty
     // when the run fails before its first decode forward.
     std::vector<float> final_logits;
+    // Expert device-cache counters accumulated over the run (0 when no cache
+    // was active). Consumed by the governor's RuntimeTuner between requests.
+    std::int64_t cache_hits = 0;
+    std::int64_t cache_misses = 0;
 };
 
 // Full greedy multi-token generation over the frozen 79-layer GLM-5.2 loop on

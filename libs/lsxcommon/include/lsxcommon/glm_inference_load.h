@@ -292,6 +292,13 @@ using GlmExpertDb = lsxcommon::gpu::expert_store::ExpertStore<GlmExpertEntry>;
 GlmExpertDb load_glm_expert_index(const std::string &model_path,
                                   int num_layers, int experts_per_layer);
 
+// Overrides the expert device-cache slot count used by the generation loop,
+// bypassing the LSX_GLM_EXPERT_CACHE_SLOTS env heuristic (governor plan +
+// RuntimeTuner drive it). Negative restores the env/default behavior; 0
+// disables the cache (same as env 0).
+void SetGlmExpertCacheSlotsOverride(int slots);
+int GlmExpertCacheSlotsOverride();
+
 // Ensures the mmap for (layer, expert) is resident in the LRU cache, evicting
 // the least-recently-used entries as needed. No-op when already resident.
 //
