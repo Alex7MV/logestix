@@ -11,7 +11,16 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/tokenizer.h"
 
+#include <cstdlib>
+
 namespace lsxcommon {
+
+bool QwenBaseModel::SyntheticGeometryAllowed()
+{
+    static const bool allowed =
+        std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
+    return allowed;
+}
 
 QwenBaseModel::QwenBaseModel(ModelInitConfig cfg)
     : ModelBase(std::move(cfg)) {}

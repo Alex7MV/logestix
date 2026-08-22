@@ -32,6 +32,12 @@ protected:
     // constants; Load() fails in that case.
     virtual bool ValidateGeometry(const qwen::QwenTopology &top) const;
 
+    // Test-only opt-out: when LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY is set in the
+    // environment, the frozen-geometry gate is bypassed so synthetic tiny
+    // fixtures can exercise converter/loader/kernel paths. Production binaries
+    // never set it and keep the hard gate.
+    static bool SyntheticGeometryAllowed();
+
     std::string type_;
     qwen::QwenPinnedWeights pw_;
     bool weights_loaded_ = false;

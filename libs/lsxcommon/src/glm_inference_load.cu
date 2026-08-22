@@ -736,7 +736,9 @@ cudaError_t RunGlmExpertsStackOnDemand(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     uint8_t *d_pack_stage_b, uint8_t *d_scale_stage_b,
     cudaEvent_t ev_h2d[2], cudaEvent_t ev_gemm[2],
-    GlmRoutedSlot *h_routing_staging /* = nullptr */)
+    GlmRoutedSlot *h_routing_staging /* = nullptr */,
+    GlmExpertDeviceCache *xcache /* = nullptr */,
+    cudaEvent_t ev_cache_gemm /* = nullptr */)
 {
     constexpr int64_t kMatEl = kGlmExpertMatEl;
     constexpr int64_t kPackPerMat = kMatEl / 2;
@@ -746,6 +748,12 @@ cudaError_t RunGlmExpertsStackOnDemand(
         !d_pack_stage || !d_scale_stage ||
         seq <= 0 || n_experts <= 0 || layer < 0 || !cublas_h)
         return cudaErrorInvalidValue;
+
+    const bool use_cache =
+        xcache && xcache->slots > 0 && xcache->d_pack && xcache->d_scale &&
+        xcache->h_slot_of && xcache->h_slot_owner && xcache->h_lru &&
+        xcache->pack_stride >= 3 * kPackPerMat &&
+        xcache->scale_stride >= 3 * kScalePerMat;
 
     const int slots = seq * kGlmMoETopK;
     if (slots < 0) return cudaErrorInvalidValue;
@@ -819,9 +827,103 @@ cudaError_t RunGlmExpertsStackOnDemand(
         return cudaSuccess;
     };
 
+    // ── Device-cache helpers (active when use_cache) ────────────────────────
+    // Eligibility gate shared by both cache paths: routing record in range,
+    // entry resident and format-exact. Returns the flat db index or -1.
+    auto cache_flat = [&](const GlmRoutedSlot &rs) -> int {
+        if (rs.eid < 0 || rs.eid >= n_experts) return -1;
+        const size_t flat = static_cast<size_t>(layer) *
+                                static_cast<size_t>(db.experts_per_layer) +
+                            static_cast<size_t>(rs.eid);
+        if (flat >= db.entries.size()) return -1;
+        const GlmExpertEntry &en = db.entries[flat];
+        if (!en.host_w1 || !en.host_w2 || !en.host_w3 ||
+            !en.host_w1_scales || !en.host_w2_scales || !en.host_w3_scales ||
+            en.w1_bytes != kPackPerMat || en.w2_bytes != kPackPerMat ||
+            en.w3_bytes != kPackPerMat ||
+            en.w1_scales_bytes != kScalePerMat ||
+            en.w2_scales_bytes != kScalePerMat ||
+            en.w3_scales_bytes != kScalePerMat)
+            return -1;
+        return static_cast<int>(flat);
+    };
+    // Six H2D copies of one expert set into its own cache slot region.
+    auto copy_into_cache_slot = [&](int slot, const GlmExpertEntry &en,
+                                    cudaStream_t cst) -> cudaError_t {
+        uint8_t *base_p = xcache->d_pack +
+                          static_cast<size_t>(slot) * xcache->pack_stride;
+        uint8_t *base_s = xcache->d_scale +
+                          static_cast<size_t>(slot) * xcache->scale_stride;
+        const void *src[6] = { en.host_w1, en.host_w2, en.host_w3,
+                               en.host_w1_scales, en.host_w2_scales,
+                               en.host_w3_scales };
+        void *dst[6] = { base_p, base_p + kPackPerMat, base_p + 2 * kPackPerMat,
+                         base_s, base_s + kScalePerMat, base_s + 2 * kScalePerMat };
+        const size_t nb[6] = { (size_t)kPackPerMat, (size_t)kPackPerMat,
+                               (size_t)kPackPerMat, (size_t)kScalePerMat,
+                               (size_t)kScalePerMat, (size_t)kScalePerMat };
+        for (int f = 0; f < 6; ++f) {
+            cudaError_t ce = cudaMemcpyAsync(dst[f], src[f], nb[f],
+                                             cudaMemcpyHostToDevice, cst);
+            if (ce != cudaSuccess) return ce;
+        }
+        return cudaSuccess;
+    };
+    // NVFP4 descriptor block pointing at a cached slot region.
+    auto eb_from_cache_slot = [&](int slot, const GlmExpertEntry &en,
+                                  GlmExpertDeviceBlock &eb) {
+        uint8_t *base_p = xcache->d_pack +
+                          static_cast<size_t>(slot) * xcache->pack_stride;
+        uint8_t *base_s = xcache->d_scale +
+                          static_cast<size_t>(slot) * xcache->scale_stride;
+        eb.d_w1_packed = base_p;                        eb.d_w1_scales = base_s;
+        eb.w1_global_scale = en.w1_global_scale;
+        eb.w1_packed_bytes = kPackPerMat;               eb.w1_scale_bytes = kScalePerMat;
+        eb.d_w2_packed = base_p + kPackPerMat;          eb.d_w2_scales = base_s + kScalePerMat;
+        eb.w2_global_scale = en.w2_global_scale;
+        eb.w2_packed_bytes = kPackPerMat;               eb.w2_scale_bytes = kScalePerMat;
+        eb.d_w3_packed = base_p + 2 * kPackPerMat;      eb.d_w3_scales = base_s + 2 * kScalePerMat;
+        eb.w3_global_scale = en.w3_global_scale;
+        eb.w3_packed_bytes = kPackPerMat;               eb.w3_scale_bytes = kScalePerMat;
+    };
+
     cudaError_t last = cudaSuccess;
 
     if (!two) {
+        // Single-stream cached path: hits run straight from the slot, misses
+        // copy on the calling stream (plain stream ordering suffices).
+        if (use_cache) {
+            for (int s = 0; s < slots; ++s) {
+                const GlmRoutedSlot &rs = h_routing[s];
+                // Parse-first ordering (mirrors the legacy loop): the entry's
+                // host pointers/byte counts are populated lazily by
+                // ensure_glm_expert_resident, so it MUST run before any
+                // db.entries field is inspected.
+                if (rs.eid < 0 || rs.eid >= n_experts) continue;
+                ensure_glm_expert_resident(db, layer, rs.eid, stream);
+                const int flat = cache_flat(rs);
+                if (flat < 0) continue;
+                const GlmExpertEntry &en =
+                    db.entries[static_cast<size_t>(flat)];
+                int cslot = CacheLookup(*xcache, flat);
+                if (cslot < 0) {
+                    cslot = CacheInsert(*xcache, flat);
+                    last = copy_into_cache_slot(cslot, en, stream);
+                    if (last != cudaSuccess) break;
+                }
+                GlmExpertDeviceBlock eb;
+                eb_from_cache_slot(cslot, en, eb);
+                const int   t    = s / kGlmMoETopK;
+                const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
+                __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
+                last = RunGlmExpertSlot(cublas_h, stream, eb,
+                                        x_t, out_t, d_scratch,
+                                        rs.coeff);
+                if (last != cudaSuccess) break;
+            }
+            if (own_staging) cudaFreeHost(h_routing);
+            return last;
+        }
         // Single-stream fallback (byte-identical to the pre-two-stream loop):
         // stage+run each active slot on the calling stream.
         for (int s = 0; s < slots; ++s) {
@@ -883,6 +985,47 @@ cudaError_t RunGlmExpertsStackOnDemand(
     // in-flight copies owned by this db.
     for (int s = 0; s < slots; ++s)
         ensure_glm_expert_resident(db, layer, h_routing[s].eid, stream_copy);
+
+    // Two-stream cached pipeline: each active slot resolves through the
+    // device-slot LRU. Hits run straight from their slot (no H2D, no wait);
+    // misses claim a slot and copy on stream_copy, recording ev_h2d[s&1]
+    // which the compute stream waits before that slot's GEMM. ev_cache_gemm
+    // (recorded after every cached GEMM) is waited by stream_copy before an
+    // insert overwrites an evicted victim slot — the victim's last reader is
+    // always some earlier GEMM on the compute stream, and events on one
+    // stream are ordered, so waiting for the latest one drains all of them.
+    if (use_cache) {
+        bool gemm_recorded = false;
+        for (int s = 0; s < slots; ++s) {
+            const int flat = cache_flat(h_routing[s]);
+            if (flat < 0) continue;
+            const GlmExpertEntry &en = db.entries[static_cast<size_t>(flat)];
+            int cslot = CacheLookup(*xcache, flat);
+            const bool hit = cslot >= 0;
+            if (!hit) {
+                cslot = CacheInsert(*xcache, flat);
+                if (gemm_recorded)
+                    cudaStreamWaitEvent(stream_copy, ev_cache_gemm, 0);
+                last = copy_into_cache_slot(cslot, en, stream_copy);
+                if (last != cudaSuccess) break;
+                cudaEventRecord(ev_h2d[s & 1], stream_copy);
+                cudaStreamWaitEvent(stream, ev_h2d[s & 1], 0);
+            }
+            GlmExpertDeviceBlock eb;
+            eb_from_cache_slot(cslot, en, eb);
+            const int   t    = s / kGlmMoETopK;
+            const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
+            __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
+            last = RunGlmExpertSlot(cublas_h, stream, eb,
+                                    x_t, out_t, d_scratch,
+                                    h_routing[s].coeff);
+            if (last != cudaSuccess) break;
+            cudaEventRecord(ev_cache_gemm, stream);
+            gemm_recorded = true;
+        }
+        if (own_staging) cudaFreeHost(h_routing);
+        return last;
+    }
 
     cudaError_t ef = stage_slot(0, stream);
     if (ef != cudaSuccess) { if (own_staging) cudaFreeHost(h_routing); return ef; }

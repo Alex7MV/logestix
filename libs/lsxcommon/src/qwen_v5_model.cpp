@@ -13,6 +13,7 @@ Qwen3_5_9BModel::Qwen3_5_9BModel(ModelInitConfig cfg)
 
 bool Qwen3_5_9BModel::ValidateGeometry(const qwen::QwenTopology &top) const
 {
+    if (SyntheticGeometryAllowed()) return true;
     auto check = [&](const char *name, int expected, int actual) {
         if (expected != actual) {
             spdlog::error("[qwen3.5-9b] geometry mismatch: {} expected={} got={}",
