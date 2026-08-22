@@ -24,6 +24,7 @@ add_library(lsxcommon STATIC
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp
     src/loader.cpp
+    src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp
     src/model_engine.cpp
