@@ -99,3 +99,114 @@ TEST_CASE("Bf16ToHalfInPlace ragged tails stay bit-exact", "[glm][loadfast]")
         CheckBitExact(RandomFinite(static_cast<size_t>(n), 42));
     }
 }
+
+#include "glm_load_internal.h"
+
+using lsxcommon::glm::PinnedStagingRing;
+
+namespace {
+
+std::vector<uint16_t> RefConvertAll(const std::vector<uint16_t> &bits)
+{
+    std::vector<uint16_t> out(bits.size());
+    for (size_t i = 0; i < bits.size(); ++i) out[i] = RefBf16ToHalf(bits[i]);
+    return out;
+}
+
+bool DeviceBitsEqual(cudaStream_t stream, const __half *d,
+                     const std::vector<uint16_t> &expect)
+{
+    std::vector<uint16_t> got(expect.size());
+    cudaMemcpyAsync(got.data(), d, expect.size() * 2,
+                    cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+    return got == expect;
+}
+
+} // namespace
+
+TEST_CASE("Staging ring chunked BF16 upload is bit-exact", "[glm][loadfast]")
+{
+    constexpr int64_t kNumel = 20001;
+    constexpr size_t kChunk = 4096;
+    PinnedStagingRing ring(kChunk);
+    REQUIRE(ring.ok());
+
+    auto bits = RandomFinite(static_cast<size_t>(kNumel), 7);
+
+    __half *d = nullptr;
+    REQUIRE(cudaMalloc(&d, kNumel * 2) == cudaSuccess);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    std::uint64_t acc = 0;
+    REQUIRE(ring.UploadBf16AsFp16(reinterpret_cast<const uint8_t *>(bits.data()),
+                                  kNumel, d, stream, acc) == cudaSuccess);
+    CHECK(acc == static_cast<std::uint64_t>(kNumel) * 2);
+    REQUIRE(DeviceBitsEqual(stream, d, RefConvertAll(bits)));
+
+    cudaStreamDestroy(stream);
+    cudaFree(d);
+}
+
+TEST_CASE("Staging ring buffer reuse never corrupts in-flight chunks",
+          "[glm][loadfast]")
+{
+    constexpr int64_t kNumel = 8192 + 3;
+    constexpr size_t kChunk = 1024;
+    PinnedStagingRing ring(kChunk);
+    REQUIRE(ring.ok());
+
+    std::vector<std::vector<uint16_t>> tensors;
+    std::vector<std::vector<uint16_t>> refs;
+    std::vector<__half *> devs;
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    for (int t = 0; t < 4; ++t) {
+        tensors.push_back(
+            RandomFinite(static_cast<size_t>(kNumel), 100 + t));
+        refs.push_back(RefConvertAll(tensors.back()));
+        __half *d = nullptr;
+        REQUIRE(cudaMalloc(&d, kNumel * 2) == cudaSuccess);
+        devs.push_back(d);
+    }
+
+    std::uint64_t acc = 0;
+    for (int t = 0; t < 4; ++t) {
+        REQUIRE(ring.UploadBf16AsFp16(
+                    reinterpret_cast<const uint8_t *>(tensors[t].data()),
+                    kNumel, devs[t], stream, acc) == cudaSuccess);
+    }
+    for (int t = 0; t < 4; ++t)
+        REQUIRE(DeviceBitsEqual(stream, devs[t], refs[t]));
+
+    cudaStreamDestroy(stream);
+    for (__half *d : devs) cudaFree(d);
+}
+
+TEST_CASE("Staging ring raw upload matches source", "[glm][loadfast]")
+{
+    constexpr size_t kBytes = 5000;
+    PinnedStagingRing ring(2048);
+    REQUIRE(ring.ok());
+
+    std::vector<uint8_t> src(kBytes);
+    for (size_t i = 0; i < kBytes; ++i) src[i] = static_cast<uint8_t>(i * 31);
+
+    uint8_t *d = nullptr;
+    REQUIRE(cudaMalloc(&d, kBytes) == cudaSuccess);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    std::uint64_t acc = 0;
+    REQUIRE(ring.UploadRaw(src.data(), d, kBytes, stream, acc) == cudaSuccess);
+    CHECK(acc == kBytes);
+    std::vector<uint16_t> expect(kBytes / 2);
+    std::memcpy(expect.data(), src.data(), expect.size() * 2);
+    REQUIRE(DeviceBitsEqual(stream,
+                            reinterpret_cast<const __half *>(d), expect));
+
+    cudaStreamDestroy(stream);
+    cudaFree(d);
+}
