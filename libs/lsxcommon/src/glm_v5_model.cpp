@@ -78,17 +78,17 @@ bool GlmV5Model::Load()
 
     auto &gov = ResourceGovernor::Instance();
     if (!gov.IsInitialized()) {
-        spdlog::warn("[glm-model] governor not initialized; standalone init");
+        log::warn("[glm-model] governor not initialized; standalone init");
         GovernorOptions gopts;
         if (!gov.Initialize(gopts)) {
-            spdlog::error("[glm-model] governor init failed");
+            log::error("[glm-model] governor init failed");
             tok_db_.reset();
             return false;
         }
     }
 
     if (!EnsureExecutionContext()) {
-        spdlog::error("[glm-model] cublas/stream init failed");
+        log::error("[glm-model] cublas/stream init failed");
         TeardownWeights();
         tok_db_.reset();
         return false;
@@ -99,9 +99,9 @@ bool GlmV5Model::Load()
         pw_.hidden != glm::kGlmHidden ||
         pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers) ||
         !pw_.d_embed || !pw_.d_head) {
-        spdlog::error("[glm-model] pinned-weight load/validation failed: {}",
-                      e != cudaSuccess ? cudaGetErrorString(e)
-                                       : "geometry mismatch");
+        log::error(std::string("[glm-model] pinned-weight load/validation failed: ")
+                   + (e != cudaSuccess ? cudaGetErrorString(e)
+                                       : "geometry mismatch"));
         TeardownWeights();
         tok_db_.reset();
         return false;
@@ -111,7 +111,7 @@ bool GlmV5Model::Load()
                                           glm::kGlmNumRouted);
     if (experts_.num_layers != glm::kGlmNumLayers ||
         experts_.experts_per_layer != glm::kGlmNumRouted) {
-        spdlog::error("[glm-model] expert index incomplete");
+        log::error("[glm-model] expert index incomplete");
         TeardownWeights();
         tok_db_.reset();
         return false;
@@ -127,8 +127,8 @@ bool GlmV5Model::Load()
     permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
                                    pw_.resident_bytes, LeasePolicy{});
     if (!permanent_lease_.Valid() && !gov.options().relax_memory_refusal) {
-        spdlog::error("[glm-model] permanent-weight lease refused ({} bytes)",
-                      pw_.resident_bytes);
+        log::error("[glm-model] permanent-weight lease refused ("
+                   + std::to_string(pw_.resident_bytes) + " bytes)");
         TeardownWeights();
         tok_db_.reset();
         return false;
@@ -147,10 +147,12 @@ bool GlmV5Model::Load()
     tuner_last_hits_ = tuner_last_misses_ = 0;
 
     resident_bytes_ = pw_.resident_bytes;
-    spdlog::info("[glm-model] loaded once: resident={} bytes, plan: cache "
-                 "slots={} streams={} staging={}",
-                 pw_.resident_bytes, plan.expert_cache_slots,
-                 plan.copy_streams, plan.staging_ring_bytes);
+    log::info("[glm-model] loaded once: resident="
+              + std::to_string(pw_.resident_bytes)
+              + " bytes, plan: cache slots="
+              + std::to_string(plan.expert_cache_slots)
+              + " streams=" + std::to_string(plan.copy_streams)
+              + " staging=" + std::to_string(plan.staging_ring_bytes));
     FinishLoad();
     return true;
 }
