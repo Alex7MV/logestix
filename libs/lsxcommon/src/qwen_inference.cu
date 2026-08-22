@@ -2,6 +2,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
 #include "nvfp4_codec.h"
+#include "qwen_reduce.cuh"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -255,18 +256,12 @@ __global__ void full_attn_softmax_kernel(
     }
     __syncthreads();
 
-    // 2. Global max via block reduction (scratch, NOT slogits).
+    // 2. Global max via warp-shuffle block reduction (bit-identical to the
+    //    strided tree: fmaxf is associative/commutative).
     float m = -1e30f;
     for (int j = threadIdx.x; j < nscores; j += threads)
         m = fmaxf(m, slogits[j]);
-    sreduce[threadIdx.x] = m;
-    __syncthreads();
-    for (int stride = threads / 2; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride)
-            sreduce[threadIdx.x] = fmaxf(sreduce[threadIdx.x], sreduce[threadIdx.x + stride]);
-        __syncthreads();
-    }
-    m = sreduce[0];
+    m = qwen_block_max_shfl(m);
     __syncthreads();
 
     // 3. Softmax denominator via block reduction (one exp per score).
@@ -789,12 +784,11 @@ __global__ void fused_attn_kernel(
         slogits[s] = dot * scale;
     }
     __syncthreads();
-    // max block-reduce (sreduce)
+    // max block-reduce via warp shuffles (bit-identical: fmaxf order-free)
     float m = -1e30f;
     for (int s = d; s < nscores; s += HD) m = fmaxf(m, slogits[s]);
-    sreduce[d] = m; __syncthreads();
-    for (int st = blockDim.x/2; st>0; st>>=1){ if(d<st) sreduce[d]=fmaxf(sreduce[d],sreduce[d+st]); __syncthreads(); }
-    m = sreduce[0]; __syncthreads();
+    m = qwen_block_max_shfl(m);
+    __syncthreads();
     // sum block-reduce
     float sumd = 0.0f;
     for (int s = d; s < nscores; s += HD) sumd += __expf(slogits[s] - m);

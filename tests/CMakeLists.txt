@@ -122,6 +122,7 @@ endforeach()
 
 # ── Qwen CUDA kernel test executables (.cu files, stand-alone OBJECT lib) ──
 add_library(test_qwen_cu OBJECT
+    test_qwen_shuffle_reduce.cu
     test_qwen_mlp.cu
     test_qwen_nvfp4_dense.cu
     test_qwen_nvfp4_tile_gemm.cu
@@ -143,6 +144,7 @@ target_compile_options(test_qwen_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_qwen_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
     "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
@@ -157,7 +159,7 @@ target_compile_definitions(test_qwen_cu PRIVATE
 )
 target_link_libraries(test_qwen_cu PRIVATE Catch2::Catch2WithMain)
 
-foreach(qt test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_full_attn_parallel test_qwen_linear_attn test_qwen_fused_decode_attn test_qwen_fused_mlp test_qwen_fused_linear_attn)
+foreach(qt test_qwen_shuffle_reduce test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_full_attn_parallel test_qwen_linear_attn test_qwen_fused_decode_attn test_qwen_fused_mlp test_qwen_fused_linear_attn)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_qwen_cu lsxcommon Catch2::Catch2WithMain)
@@ -200,6 +202,18 @@ add_test(NAME test_qwen_model COMMAND test_qwen_model)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
 set_tests_properties(test_qwen_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── GLM expert device-cache: host-side LRU bookkeeping (no CUDA) ────────
+add_executable(test_glm_expert_cache test_glm_expert_cache.cpp)
+target_link_libraries(test_glm_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_glm_expert_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_expert_cache>"
+    )
+endif()
+add_test(NAME test_glm_expert_cache COMMAND test_glm_expert_cache)
 
 # ── Инкрементальный KV-кэш Qwen (Task 7) ─────────────────────────────────
 add_executable(test_qwen_kv_cache test_qwen_kv_cache.cpp)

@@ -300,6 +300,10 @@ struct GlmLoopCtx {
     float  *d_gate_bias = nullptr;   // [kGlmNumRouted] staged router bias
     GlmArgmaxSlot *d_argmax = nullptr;
     GlmRoutedSlot *h_routing = nullptr;  // host staging for the routing grid
+    // Optional device-slot expert cache (glm_expert_cache.h); null -> legacy
+    // per-call staging buffers only.
+    GlmExpertDeviceCache *xcache = nullptr;
+    cudaEvent_t ev_cache_gemm = nullptr;
 };
 
 cudaError_t GlmCopyAsync(cudaStream_t st, const __half *src, __half *dst,
@@ -322,7 +326,8 @@ cudaError_t RunLoopExpertStack(GlmLoopCtx &c, int l)
             *c.db, l, kGlmNumRouted, c.d_moe, c.d_scratch_e,
             c.d_pack_stage, c.d_scale_stage,
             c.d_pack_stage_b, c.d_scale_stage_b,
-            c.ev_h2d, c.ev_gemm, c.h_routing);
+            c.ev_h2d, c.ev_gemm, c.h_routing,
+            c.xcache, c.ev_cache_gemm);
     }
     return RunGlmExpertsStack(
         c.ch, c.st, c.d_routing, 1, c.d_normed,
@@ -556,7 +561,62 @@ static cudaError_t RunGlmGenerationImpl(
         return e;
     }
 
-    auto cleanup = [&]() { arena.Free(); };
+    // ── Device-slot expert cache (on-demand path only) ──────────────────────
+    // Slots are sized LSX_GLM_EXPERT_CACHE_SLOTS (default 64, 0 disables);
+    // each slot holds one full packed expert set (~20.25 MiB). Allocation
+    // failure degrades gracefully to the legacy staging pipeline.
+    GlmExpertDeviceCache xcache{};
+    cudaEvent_t ev_cache_gemm = nullptr;
+    std::vector<int32_t> xc_slot_of, xc_owner, xc_lru;
+    if (on_demand) {
+        const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
+        int want = env ? std::atoi(env) : 64;
+        if (want < 0) want = 0;
+        const int total_experts =
+            static_cast<int>(expert_db->num_layers) *
+            static_cast<int>(expert_db->experts_per_layer);
+        constexpr int64_t kPackPerMat = kGlmExpertMatEl / 2;
+        constexpr int64_t kScalePerMat = kGlmExpertMatEl / kGlmNvfp4Block;
+        xcache.slots = std::min(want, total_experts);
+        xcache.pack_stride = 3 * kPackPerMat;
+        xcache.scale_stride = 3 * kScalePerMat;
+        xcache.total_experts = total_experts;
+        if (xcache.slots > 0 &&
+            cudaMalloc(&xcache.d_base, xcache.DeviceBytes()) == cudaSuccess) {
+            xcache.d_pack = xcache.d_base;
+            xcache.d_scale = xcache.d_base +
+                             static_cast<size_t>(xcache.slots) *
+                                 xcache.pack_stride;
+            xc_slot_of.assign(static_cast<size_t>(total_experts), -1);
+            xc_owner.assign(static_cast<size_t>(xcache.slots), -1);
+            xc_lru.resize(static_cast<size_t>(xcache.slots));
+            for (int i = 0; i < xcache.slots; ++i)
+                xc_lru[static_cast<size_t>(i)] = xcache.slots - 1 - i;
+            xcache.h_slot_of = xc_slot_of.data();
+            xcache.h_slot_owner = xc_owner.data();
+            xcache.h_lru = xc_lru.data();
+            if (cudaEventCreateWithFlags(&ev_cache_gemm,
+                                         cudaEventDisableTiming) !=
+                cudaSuccess) {
+                ev_cache_gemm = nullptr;
+                cudaFree(xcache.d_base);
+                xcache = GlmExpertDeviceCache{};
+            } else {
+                log::debug("[glm_gen] expert device cache: " +
+                           std::to_string(xcache.slots) + " slots (" +
+                           std::to_string(xcache.DeviceBytes() >> 20) + " MiB)");
+            }
+        } else {
+            xcache = GlmExpertDeviceCache{};
+        }
+    }
+    auto cleanup = [&]() {
+        arena.Free();
+        if (ev_cache_gemm) cudaEventDestroy(ev_cache_gemm);
+        if (xcache.d_base) cudaFree(xcache.d_base);
+        xcache = GlmExpertDeviceCache{};
+        ev_cache_gemm = nullptr;
+    };
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
@@ -565,6 +625,7 @@ static cudaError_t RunGlmGenerationImpl(
         cleanup();
         return err;
     };
+
 
     GlmLoopCtx ctx;
     ctx.ch = cublas_h;
@@ -582,6 +643,8 @@ if (on_demand) {
     } else {
         ctx.experts = experts;
     }
+    ctx.xcache = xcache.slots > 0 ? &xcache : nullptr;
+    ctx.ev_cache_gemm = ev_cache_gemm;
     ctx.hidden = hidden;
     ctx.inter = inter;
     ctx.vocab = vocab;
@@ -708,6 +771,9 @@ if (on_demand) {
     if (e != cudaSuccess) return fail(e);
     result.kv_slots_used = h_n_used;
     result.ok = true;
+    if (xcache.slots > 0)
+        log::debug("[glm_gen] expert cache: hits=" + std::to_string(xcache.hits) +
+                   " misses=" + std::to_string(xcache.misses));
     cleanup();
     return cudaSuccess;
 }
@@ -1010,6 +1076,11 @@ struct GlmRealCtx {
     __half *d_cur = nullptr;      // [cap][hidden]     token residual stream
     int32_t *d_ids = nullptr;     // [cap]             id staging
     void   *d_base = nullptr;     // single device allocation
+    // Optional device-slot expert cache (glm_expert_cache.h); slots == 0 ->
+    // disabled (legacy per-expert staging buffers only).
+    GlmExpertDeviceCache xcache{};
+    std::vector<int32_t> xc_slot_of, xc_owner, xc_lru;
+    cudaEvent_t ev_cache_gemm = nullptr;
     __half *d_kv_k_base = nullptr; // [layers][cap][64][256] expanded keys
     __half *d_kv_v_base = nullptr; // [layers][cap][64][256] expanded values
     int kv_cap = 0;
@@ -1020,6 +1091,10 @@ struct GlmRealCtx {
         if (h_routing) cudaFreeHost(h_routing);
         if (h_argmax)  cudaFreeHost(h_argmax);
         if (d_base)    cudaFree(d_base);
+        if (ev_cache_gemm) cudaEventDestroy(ev_cache_gemm);
+        if (xcache.d_base) cudaFree(xcache.d_base);
+        xcache = GlmExpertDeviceCache{};
+        ev_cache_gemm = nullptr;
         h_routing = nullptr; h_argmax = nullptr; d_base = nullptr;
         d_hid = d_norm = d_q_resid = d_q_resid_n = d_q = nullptr;
         d_kva = d_kvp = d_kvb = d_krot = d_attn = d_off = nullptr;
@@ -1125,6 +1200,78 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
     if (e != cudaSuccess) { c.Free(); return e; }
     c.h_routing = reinterpret_cast<GlmRoutedSlot *>(hbase);
     c.h_argmax  = reinterpret_cast<GlmArgmaxSlot *>(hbase + h_route);
+
+    // ── Device-slot expert cache ────────────────────────────────────────────
+    // LSX_GLM_EXPERT_CACHE_SLOTS (default 64, 0 disables); each slot holds
+    // one full packed expert set (~20.25 MiB). Allocation failure degrades
+    // gracefully to the legacy per-expert staging pipeline.
+    {
+        const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
+        int want = env ? std::atoi(env) : 64;
+        if (want < 0) want = 0;
+        constexpr int64_t kPackPerMat = kMatEl / 2;
+        constexpr int64_t kScalePerMat = kMatEl / kGlmNvfp4Block;
+        c.xcache.pack_stride = 3 * kPackPerMat;
+        c.xcache.scale_stride = 3 * kScalePerMat;
+        c.xcache.total_experts = kGlmNumLayers * kGlmNumRouted;
+
+        // Adaptive sizing with a VRAM keep-out margin: generation kernels and
+        // cuBLAS workspaces still need headroom after the cache is placed, so
+        // a cache that would leave less than kVramMargin free is shrunk
+        // (halving down to a 4-slot floor) or disabled entirely. A malloc that
+        // succeeded without the margin check caused OOM aborts at the first
+        // MoE layer on fully-resident models.
+        constexpr size_t kVramMargin = size_t(512) << 20;  // 512 MiB
+        size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        const size_t slot_bytes =
+            static_cast<size_t>(c.xcache.pack_stride + c.xcache.scale_stride);
+        while (want >= 4 &&
+               static_cast<size_t>(want) * slot_bytes + kVramMargin > free_b)
+            want /= 2;
+
+        // Below the 4-slot floor the cache cannot hold a working set anyway;
+        // disable instead of squeezing VRAM further.
+        c.xcache.slots =
+            want >= 4 ? std::min(want, c.xcache.total_experts) : 0;
+        if (c.xcache.slots > 0 &&
+            cudaMalloc(&c.xcache.d_base,
+                       static_cast<size_t>(c.xcache.slots) * slot_bytes) ==
+                cudaSuccess) {
+            c.xcache.d_pack = c.xcache.d_base;
+            c.xcache.d_scale = c.xcache.d_base +
+                               static_cast<size_t>(c.xcache.slots) *
+                                   c.xcache.pack_stride;
+            c.xc_slot_of.assign(
+                static_cast<size_t>(c.xcache.total_experts), -1);
+            c.xc_owner.assign(static_cast<size_t>(c.xcache.slots), -1);
+            c.xc_lru.resize(static_cast<size_t>(c.xcache.slots));
+            for (int i = 0; i < c.xcache.slots; ++i)
+                c.xc_lru[static_cast<size_t>(i)] = c.xcache.slots - 1 - i;
+            c.xcache.h_slot_of = c.xc_slot_of.data();
+            c.xcache.h_slot_owner = c.xc_owner.data();
+            c.xcache.h_lru = c.xc_lru.data();
+            log::debug("[glm_real] expert device cache: " +
+                       std::to_string(c.xcache.slots) + " slots (" +
+                       std::to_string(c.xcache.DeviceBytes() >> 20) + " MiB)");
+        } else {
+            // Either the margin check shrank want below the 4-slot floor, or
+            // the cudaMalloc itself failed. Consume the error state either
+            // way: a stale cudaErrorMemoryAllocation would otherwise surface
+            // from the next cudaGetLastError() after a kernel launch and
+            // abort generation.
+            const std::string reason =
+                c.xcache.slots > 0
+                    ? std::string("cudaMalloc failed: ") +
+                          cudaGetErrorString(cudaGetLastError())
+                    : std::string("insufficient free VRAM for the 4-slot "
+                                  "floor (margin 512 MiB)");
+            c.xcache = GlmExpertDeviceCache{};
+            log::debug("[glm_real] expert device cache disabled: " + reason +
+                       " | free=" + std::to_string(free_b >> 20) + "MiB/" +
+                       std::to_string(total_b >> 20) + "MiB");
+        }
+    }
     return cudaSuccess;
 }
 
@@ -1254,7 +1401,8 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
                                    *c.db, l, kGlmNumRouted, c.d_routed,
                                    c.d_scratch_e, c.d_pack, c.d_scale,
                                    nullptr, nullptr, nullptr, nullptr,
-                                   c.h_routing);
+                                   c.h_routing,
+                                   &c.xcache, c.ev_cache_gemm);
     if (e != cudaSuccess) return e;
     // Shared expert (w1=gate, w2=down, w3=up, same NVFP4 layout as a routed
     // expert): streamed from the host-side shared_host into the reusable
@@ -1544,6 +1692,10 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaEventDestroy(t_stop);
     result.kv_slots_used = last_idx + 1;
     result.ok = true;
+    if (c.xcache.slots > 0)
+        log::debug("[glm_real] expert cache: hits=" +
+                   std::to_string(c.xcache.hits) + " misses=" +
+                   std::to_string(c.xcache.misses));
     c.Free();
     return cudaSuccess;
 }

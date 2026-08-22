@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/glm_expert_cache.h"
 #include "lsxcommon/glm_inference_load.h"
 #include "lsxcommon/sampling.h"
 
@@ -207,6 +208,13 @@ cudaError_t RunGlmExpertsStack(
 //                  expert (kGlmExpertMatEl/2 * 3, ~19 MiB).
 //   d_scale_stage: device staging >= w1+w2+w3 scale bytes of one expert
 //                  (kGlmExpertMatEl/kGlmNvfp4Block * 3).
+//   xcache:        optional device-slot LRU cache (glm_expert_cache.h). When
+//                  non-null with slots > 0, routed experts are copied once
+//                  into their own slot and re-used across tokens/turns;
+//                  hits skip the H2D copy entirely. ev_cache_gemm (created by
+//                  the caller, cudaEventDisableTiming) guards slot reuse:
+//                  the copy stream waits it before overwriting an evicted
+//                  victim slot that a prior GEMM may still be reading.
 cudaError_t RunGlmExpertsStackOnDemand(
     cublasHandle_t cublas_h, cudaStream_t stream,
     cudaStream_t stream_copy,
@@ -217,7 +225,9 @@ cudaError_t RunGlmExpertsStackOnDemand(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     uint8_t *d_pack_stage_b, uint8_t *d_scale_stage_b,
     cudaEvent_t ev_h2d[2], cudaEvent_t ev_gemm[2],
-    GlmRoutedSlot *h_routing_staging = nullptr);
+    GlmRoutedSlot *h_routing_staging = nullptr,
+    GlmExpertDeviceCache *xcache = nullptr,
+    cudaEvent_t ev_cache_gemm = nullptr);
 
 // ── TDD Cycle 9: MoE router + NVFP4 expert stacks (layers 3-77) ─────────────
 struct GlmExpertTables;  // fwd decl (defined in the Cycle-6 section below)
