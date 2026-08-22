@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -455,6 +456,8 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     // Free() in between cannot leak the old device allocations.
     pw.Free();
 
+    const auto t0 = std::chrono::steady_clock::now();
+
     // Accept both the logestix root itself and its container directory:
     //   <model>/logestix/pinned/...   (model dir, like the DeepSeek loader)
     //   <logestix>/pinned/...         (converter output_root)
@@ -534,6 +537,17 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
                       se_batch_res.status().ToString());
         }
     }
+
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    const double gib =
+        static_cast<double>(pw.resident_bytes) / (1024.0 * 1024.0 * 1024.0);
+    const double gibs = (ms > 0.0) ? (gib / (ms / 1000.0)) : 0.0;
+    log::info(absl::StrCat("[glm_load] pinned weights: ",
+                           pw.resident_bytes >> 20, " MiB in ",
+                           static_cast<int>(ms + 0.5), " ms (", gibs,
+                           " GiB/s)"));
 
     return cudaSuccess;
 }
