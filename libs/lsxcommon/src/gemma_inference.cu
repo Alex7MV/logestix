@@ -182,5 +182,108 @@ cudaError_t RunGemmaPartialRope(const __half *d_x, const __half *d_cos,
     return cudaGetLastError();
 }
 
+// ── Attention ───────────────────────────────────────────────────────────────
+
+// Two-pass softmax (shared-max then sum) with a fixed slot order; output pass
+// iterates slots sequentially per (d). Out-of-band slots never enter any
+// reduction (band predicate checked before scoring).
+__global__ void gemma_attention_kernel(
+    const __half *__restrict__ q, const __half *__restrict__ k,
+    const __half *__restrict__ v, __half *__restrict__ out, int seq,
+    int total_slots, int pos_base, int q_heads, int kv_heads, int head_dim,
+    int window, float scale)
+{
+    const int t = blockIdx.x;
+    const int h = blockIdx.y;
+    if (t >= seq || h >= q_heads) return;
+
+    const int kvh = h / (q_heads / kv_heads);
+    const __half *qr = q + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
+    __half *orr = out + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
+    const int last = pos_base + t;
+    const int first =
+        (window > 0) ? (last - window + 1 > 0 ? last - window + 1 : 0) : 0;
+    const int n_valid = last - first + 1;
+    if (n_valid <= 0) {
+        for (int d = threadIdx.x; d < head_dim; d += blockDim.x) orr[d] = __float2half(0.f);
+        return;
+    }
+
+    extern __shared__ float red[];
+    __shared__ float s_max, s_sum;
+
+    // Pass A: global max score.
+    float local_max = -1e30f;
+    for (int s = first + threadIdx.x; s <= last; s += blockDim.x) {
+        const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+        float dot = 0.f;
+        for (int d = 0; d < head_dim; ++d)
+            dot += __half2float(qr[d]) * __half2float(kr[d]);
+        dot *= scale;
+        local_max = fmaxf(local_max, dot);
+    }
+    red[threadIdx.x] = local_max;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float m = red[0];
+        for (int i = 1; i < blockDim.x; ++i) m = fmaxf(m, red[i]);
+        s_max = m;
+    }
+    __syncthreads();
+
+    // Pass B: normalizer.
+    float local_sum = 0.f;
+    for (int s = first + threadIdx.x; s <= last; s += blockDim.x) {
+        const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+        float dot = 0.f;
+        for (int d = 0; d < head_dim; ++d)
+            dot += __half2float(qr[d]) * __half2float(kr[d]);
+        local_sum += expf(dot * scale - s_max);
+    }
+    red[threadIdx.x] = local_sum;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float z = 0.f;
+        for (int i = 0; i < blockDim.x; ++i) z += red[i];
+        s_sum = z;
+    }
+    __syncthreads();
+
+    // Output pass: sequential slot order per dim (deterministic).
+    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
+        float acc = 0.f;
+        for (int s = first; s <= last; ++s) {
+            const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+            float dot = 0.f;
+            for (int dd = 0; dd < head_dim; ++dd)
+                dot += __half2float(qr[dd]) * __half2float(kr[dd]);
+            const float p = expf(dot * scale - s_max) / s_sum;
+            acc += p * __half2float(v[(static_cast<int64_t>(s) * kv_heads + kvh) *
+                                       head_dim +
+                                       d]);
+        }
+        orr[d] = __float2half(acc);
+    }
+}
+
+cudaError_t RunGemmaAttention(const __half *d_q, const __half *d_k,
+                              const __half *d_v, __half *d_out, int seq,
+                              int total_slots, int pos_base, int q_heads,
+                              int kv_heads, int head_dim, int window,
+                              float scale, cudaStream_t stream)
+{
+    if (!d_q || !d_k || !d_v || !d_out || seq <= 0 || total_slots <= 0 ||
+        q_heads <= 0 || kv_heads <= 0 || head_dim <= 0 || pos_base < 0)
+        return cudaErrorInvalidValue;
+    if (q_heads % kv_heads != 0) return cudaErrorInvalidValue;
+    if (pos_base + seq > total_slots) return cudaErrorInvalidValue;
+    constexpr int kBlock = 128;
+    dim3 grid(static_cast<unsigned>(seq), static_cast<unsigned>(q_heads));
+    gemma_attention_kernel<<<grid, kBlock, kBlock * sizeof(float), stream>>>(
+        d_q, d_k, d_v, d_out, seq, total_slots, pos_base, q_heads, kv_heads,
+        head_dim, window, scale);
+    return cudaGetLastError();
+}
+
 } // namespace gemma
 } // namespace lsxcommon
