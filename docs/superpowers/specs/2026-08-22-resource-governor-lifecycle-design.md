@@ -159,7 +159,10 @@ Strategy logic:
   dense/global weights are always resident before any expert-cache capacity.
 - **Glm52Strategy** uses the heterogeneous layer grid from `Topology`
   (dense 0–2, MoE 3–77, indexer/MTP layer 78): dense + globals are
-  required-resident, MTP epilogue is lazy on demand; the current adaptive
+  required-resident. The MTP epilogue (layer 78) also stays permanently
+  resident: the frozen single-pass generation loop reads its router/norms on
+  every forward, so deferring it would create a mid-loop H2D stall
+  (amendment 2026-08-22 during planning review). The current adaptive
   expert-cache algorithm becomes the lower bound of the tuner range.
 
 Plan validation happens in the strategy before any allocation; an infeasible
@@ -236,7 +239,8 @@ small-VRAM machines.
    VRAM total > 0.
 2. **`test_lifecycle_plan.cpp`** — General/MoE/Glm52 strategies on injected
    `(Topology, VramProfile, HardwareProfile)`: plan fits free VRAM; strict-mode
-   refusal on deliberate shortage; GLM grid yields dense-resident + MTP-lazy;
+   refusal on deliberate shortage; GLM grid yields dense-resident + fully
+   resident MTP (amendment above);
    determinism (identical inputs → identical plan).
 3. **`test_resource_governor.cpp`** — RAII lease release returns budget;
    Required refusal (strict mode) fires before allocations; Adaptive bounds
