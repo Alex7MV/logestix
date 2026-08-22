@@ -109,8 +109,7 @@ TEST_CASE("GLM loader uploads global tensors BF16→FP16", "[glm][loader]")
     fs::remove_all(base);
 }
 
-TEST_CASE("GLM loader sizes layers from topology and skips missing files",
-          "[glm][loader]")
+TEST_CASE("GLM loader sizes layers from topology", "[glm][loader]")
 {
     namespace fs = std::filesystem;
     auto base = fs::temp_directory_path() / "logestix_glm_loader_topo";
@@ -134,7 +133,7 @@ TEST_CASE("GLM loader sizes layers from topology and skips missing files",
     REQUIRE(err == cudaSuccess);
     cudaStreamSynchronize(stream);
 
-    // Topology-derived sizing: layers 0..78, only present files filled.
+    // Topology-derived sizing: all 79 layer files present and loaded.
     CHECK(pw.layers.size() == 79);
     CHECK(pw.vocab_size == 64);
     CHECK(pw.hidden == 16);
@@ -149,10 +148,12 @@ TEST_CASE("GLM loader sizes layers from topology and skips missing files",
     CHECK(l0.d_q_a_proj != nullptr);
     CHECK(l0.d_q_b_proj != nullptr);
     CHECK(l0.d_o_proj != nullptr);
+    CHECK(l0.d_input_norm != nullptr);
+    CHECK(l0.d_post_attn_norm != nullptr);
 
-    // Missing layer 1 (no file) → all null.
-    CHECK(pw.layers[1].d_input_norm == nullptr);
-    CHECK(pw.layers[1].d_mlp_gate == nullptr);
+    // Dense layer 2.
+    CHECK(pw.layers[2].d_mlp_gate != nullptr);
+    CHECK(pw.layers[2].d_router_gate == nullptr);
 
     // MoE layer 3: router gate + F32 bias, no dense MLP.
     auto &l3 = pw.layers[3];
@@ -161,17 +162,18 @@ TEST_CASE("GLM loader sizes layers from topology and skips missing files",
     CHECK(l3.gate_bias_n == 16);
     CHECK(l3.d_mlp_gate == nullptr);
     CHECK(l3.d_q_a_proj != nullptr);
-    CHECK(l3.d_input_norm != nullptr);
-    CHECK(l3.d_post_attn_norm != nullptr);
 
-    // Indexer layer 6: indexer weights + F32 k_norm bias.
-    auto &l6 = pw.layers[6];
-    CHECK(l6.d_idx_wq_b != nullptr);
-    CHECK(l6.d_idx_wk != nullptr);
-    CHECK(l6.d_idx_weights_proj != nullptr);
-    CHECK(l6.d_idx_k_norm != nullptr);
-    REQUIRE(l6.d_idx_k_norm_bias != nullptr);
-    CHECK(l6.d_router_gate != nullptr);   // indexer layers are MoE too
+    // Indexer layer 4 (l % 4 == 0): indexer weights + F32 k_norm bias.
+    auto &l4 = pw.layers[4];
+    CHECK(l4.d_idx_wq_b != nullptr);
+    CHECK(l4.d_idx_wk != nullptr);
+    CHECK(l4.d_idx_weights_proj != nullptr);
+    CHECK(l4.d_idx_k_norm != nullptr);
+    REQUIRE(l4.d_idx_k_norm_bias != nullptr);
+    CHECK(l4.d_router_gate != nullptr);   // indexer layers are MoE too
+
+    // Non-indexer MoE layer 5: no indexer weights.
+    CHECK(pw.layers[5].d_idx_wq_b == nullptr);
 
     // MTP layer 78: MTP extras present.
     auto &l78 = pw.layers[78];
@@ -180,9 +182,6 @@ TEST_CASE("GLM loader sizes layers from topology and skips missing files",
     CHECK(l78.d_hnorm != nullptr);
     CHECK(l78.d_shared_head_norm != nullptr);
     CHECK(l78.d_router_gate != nullptr);
-
-    // No hidden tensors for a file that does not exist (layer 2, dense→MoE gap).
-    CHECK(pw.layers[2].d_input_norm == nullptr);
 
     pw.Free();
     DestroyStream(stream);

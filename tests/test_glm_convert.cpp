@@ -302,13 +302,14 @@ TEST_CASE("GLM converter writes logestix layout from synthetic shards",
     REQUIRE(topo.error_msg.empty());
     CHECK(topo.num_layers == 79);
     CHECK(topo.experts_per_layer == 2);
-    CHECK(topo.total_experts == 6);   // 2 experts x (layers 3, 6, 78)
+    CHECK(topo.total_experts == 152);   // 2 experts x MoE layers 3..78
     CHECK(std::find(topo.moe_layers.begin(), topo.moe_layers.end(), 3) != topo.moe_layers.end());
     CHECK(std::find(topo.moe_layers.begin(), topo.moe_layers.end(), 6) != topo.moe_layers.end());
     CHECK(std::find(topo.moe_layers.begin(), topo.moe_layers.end(), 78) != topo.moe_layers.end());
     CHECK(std::find(topo.moe_layers.begin(), topo.moe_layers.end(), 0) == topo.moe_layers.end());
     CHECK(std::find(topo.dense_layers.begin(), topo.dense_layers.end(), 0) != topo.dense_layers.end());
-    CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 6) != topo.indexer_layers.end());
+    CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 4) != topo.indexer_layers.end());
+    CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 5) == topo.indexer_layers.end());
     CHECK(std::find(topo.indexer_layers.begin(), topo.indexer_layers.end(), 78) == topo.indexer_layers.end());
 
     // VRAM profile: mandatory, internally consistent.

@@ -125,101 +125,79 @@ inline void WriteSafetensors(const std::filesystem::path &dir,
                 static_cast<std::streamsize>(t.data.size()));
 }
 
+inline void AppendAttention(std::vector<FakeTensor> &t, int l)
+{
+    auto p = absl::StrCat("model.layers.", l, ".");
+    t.push_back({p + "input_layernorm.weight",          "BF16", {16}, MakeBf16(16)});
+    t.push_back({p + "post_attention_layernorm.weight", "BF16", {16}, MakeBf16(16)});
+    t.push_back({p + "self_attn.q_a_proj.weight",            "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "self_attn.q_a_layernorm.weight",       "BF16", {16},    MakeBf16(16)});
+    t.push_back({p + "self_attn.q_b_proj.weight",            "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "self_attn.kv_a_proj_with_mqa.weight",  "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "self_attn.kv_a_layernorm.weight",      "BF16", {16},    MakeBf16(16)});
+    t.push_back({p + "self_attn.kv_b_proj.weight",           "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "self_attn.o_proj.weight",              "BF16", {16, 16}, MakeBf16(256)});
+}
+
+inline void AppendMoeFfn(std::vector<FakeTensor> &t, int l)
+{
+    auto p = absl::StrCat("model.layers.", l, ".mlp.");
+    t.push_back({p + "gate.weight",                "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "gate.e_score_correction_bias", "F32", {16},   MakeF32(16)});
+    for (int e = 0; e < 2; ++e) {
+        auto ep = absl::StrCat(p, "experts.", e, ".");
+        t.push_back({ep + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+        t.push_back({ep + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+        t.push_back({ep + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
+    }
+    t.push_back({p + "shared_experts.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "shared_experts.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "shared_experts.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
+}
+
+inline void AppendDenseMlp(std::vector<FakeTensor> &t, int l)
+{
+    auto p = absl::StrCat("model.layers.", l, ".");
+    t.push_back({p + "mlp.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "mlp.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "mlp.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
+}
+
+inline void AppendIndexer(std::vector<FakeTensor> &t, int l)
+{
+    auto p = absl::StrCat("model.layers.", l, ".self_attn.indexer.");
+    t.push_back({p + "wq_b.weight",          "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "wk.weight",            "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "weights_proj.weight",  "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({p + "k_norm.weight",        "BF16", {16},    MakeBf16(16)});
+    t.push_back({p + "k_norm.bias",          "F32",  {16},    MakeF32(16)});
+}
+
 inline std::vector<FakeTensor> BuildSyntheticModel()
 {
-    // Layer 0: dense MLP + attention (GLM layers 0-2 are dense).
-    // Layer 3: MoE with 2 routed experts + 1 shared expert + router.
-    // Layer 6: indexer layer.
-    // MTP layer 78: eh_proj etc.
-    // Global: embed / lm_head / model.norm.
+    // Full heterogeneous grid matching a real GLM-5.2 topology:
+    // layers 0-2 dense (attention+norm+MLP), layers 3-78 MoE
+    // (attention+norm+router+bias, indexer when l % 4 == 0),
+    // MTP extras on layer 78. Global embed/lm_head/model.norm.
     std::vector<FakeTensor> t;
-    t.push_back({"model.embed_tokens.weight", "BF16", {64, 16},  MakeBf16(64 * 16)});
-    t.push_back({"lm_head.weight",            "BF16", {64, 16},  MakeBf16(64 * 16)});
-    t.push_back({"model.norm.weight",         "BF16", {16},      MakeBf16(16)});
+    t.push_back({"model.embed_tokens.weight", "BF16", {64, 16}, MakeBf16(64 * 16)});
+    t.push_back({"lm_head.weight",            "BF16", {64, 16}, MakeBf16(64 * 16)});
+    t.push_back({"model.norm.weight",         "BF16", {16},     MakeBf16(16)});
 
-    // Layer 0 (dense)
-    t.push_back({"model.layers.0.input_layernorm.weight",  "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.0.post_attention_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.0.self_attn.q_a_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.self_attn.q_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.0.self_attn.q_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.self_attn.kv_a_proj_with_mqa.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.self_attn.kv_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.0.self_attn.kv_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.self_attn.o_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.mlp.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.mlp.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.0.mlp.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
-
-    // Layer 3 (MoE): attention + norm
-    t.push_back({"model.layers.3.input_layernorm.weight",  "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.3.post_attention_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.3.self_attn.q_a_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.self_attn.q_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.3.self_attn.q_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.self_attn.kv_a_proj_with_mqa.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.self_attn.kv_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.3.self_attn.kv_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.self_attn.o_proj.weight",    "BF16", {16, 16}, MakeBf16(256)});
-    // Router
-    t.push_back({"model.layers.3.mlp.gate.weight",              "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
-    // Routed experts
-    for (int e = 0; e < 2; ++e) {
-        auto base = absl::StrCat("model.layers.3.mlp.experts.", e, ".");
-        t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
+    for (int l = 0; l <= 78; ++l) {
+        AppendAttention(t, l);
+        if (l < 3) {
+            AppendDenseMlp(t, l);
+        } else {
+            AppendMoeFfn(t, l);
+            if (l % 4 == 0) AppendIndexer(t, l);
+        }
     }
-    // Shared expert
-    t.push_back({"model.layers.3.mlp.shared_experts.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.mlp.shared_experts.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.3.mlp.shared_experts.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
 
-    // Layer 6 (indexer)
-    t.push_back({"model.layers.6.input_layernorm.weight",  "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.6.post_attention_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.6.self_attn.q_a_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.q_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.6.self_attn.q_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.kv_a_proj_with_mqa.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.kv_a_layernorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.6.self_attn.kv_b_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.o_proj.weight",    "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.indexer.wq_b.weight",      "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.indexer.wk.weight",        "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.indexer.weights_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.self_attn.indexer.k_norm.weight",    "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.6.self_attn.indexer.k_norm.bias",      "F32",  {16}, MakeF32(16)});
-    // Bare layers have MLP too (3-78 MoE)
-    t.push_back({"model.layers.6.mlp.gate.weight",    "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
-    for (int e = 0; e < 2; ++e) {
-        auto base = absl::StrCat("model.layers.6.mlp.experts.", e, ".");
-        t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
-    }
-    t.push_back({"model.layers.6.mlp.shared_experts.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.mlp.shared_experts.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.6.mlp.shared_experts.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
-
-    // MTP layer 78 (MoE, has own routed + shared experts per real model)
-    t.push_back({"model.layers.78.enorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.78.hnorm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.78.eh_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.78.shared_head.norm.weight", "BF16", {16}, MakeBf16(16)});
-    t.push_back({"model.layers.78.mlp.gate.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.78.mlp.gate.e_score_correction_bias", "F32", {16}, MakeF32(16)});
-    for (int e = 0; e < 2; ++e) {
-        auto base = absl::StrCat("model.layers.78.mlp.experts.", e, ".");
-        t.push_back({base + "gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-        t.push_back({base + "up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
-    }
-    t.push_back({"model.layers.78.mlp.shared_experts.gate_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.78.mlp.shared_experts.down_proj.weight", "BF16", {16, 16}, MakeBf16(256)});
-    t.push_back({"model.layers.78.mlp.shared_experts.up_proj.weight",   "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({"model.layers.78.enorm.weight",             "BF16", {16},     MakeBf16(16)});
+    t.push_back({"model.layers.78.hnorm.weight",             "BF16", {16},     MakeBf16(16)});
+    t.push_back({"model.layers.78.eh_proj.weight",           "BF16", {16, 16}, MakeBf16(256)});
+    t.push_back({"model.layers.78.shared_head.norm.weight",  "BF16", {16},     MakeBf16(16)});
 
     return t;
 }
