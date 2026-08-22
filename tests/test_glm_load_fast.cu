@@ -210,3 +210,84 @@ TEST_CASE("Staging ring raw upload matches source", "[glm][loadfast]")
     cudaStreamDestroy(stream);
     cudaFree(d);
 }
+
+#include <catch2/catch_approx.hpp>
+#include <lsxcommon/glm_convert.h>
+#include "glm_test_fixture.h"
+
+#include <filesystem>
+
+namespace {
+
+bool InRange(const void *p, const void *base, size_t bytes)
+{
+    return p >= base &&
+           static_cast<const uint8_t *>(p) <
+               static_cast<const uint8_t *>(base) + bytes;
+}
+
+} // namespace
+
+TEST_CASE("Arena-backed GLM load: containment, idempotency, values",
+          "[glm][loadfast]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_glm_loadfast_arena";
+    fs::remove_all(base);
+    auto in = base / "model";
+    auto out = base / "converted";
+    fs::create_directories(in);
+
+    glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                              glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(in);
+    glmtest::WriteTokenizer(in);
+    auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
+    REQUIRE(st.ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::glm::GlmPinnedWeights pw;
+    REQUIRE(lsxcommon::glm::LoadGlmPinnedWeights(out.string(), pw, stream) ==
+            cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(pw.layers.size() == 79);
+
+    for (int l : {0, 3, 4, 78}) {
+        auto &lw = pw.layers[static_cast<size_t>(l)];
+        REQUIRE(lw.d_arena != nullptr);
+        REQUIRE(lw.arena_bytes > 0);
+        if (lw.d_input_norm)
+            CHECK(InRange(lw.d_input_norm, lw.d_arena, lw.arena_bytes));
+        if (lw.d_o_proj)
+            CHECK(InRange(lw.d_o_proj, lw.d_arena, lw.arena_bytes));
+        if (lw.d_router_gate)
+            CHECK(InRange(lw.d_router_gate, lw.d_arena, lw.arena_bytes));
+        if (lw.d_eh_proj)
+            CHECK(InRange(lw.d_eh_proj, lw.d_arena, lw.arena_bytes));
+    }
+    CHECK(pw.resident_bytes > 0);
+
+    {
+        auto &lw = pw.layers[3];
+        REQUIRE(lw.d_input_norm != nullptr);
+        __half h;
+        cudaMemcpyAsync(&h, lw.d_input_norm, sizeof(__half),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+        uint16_t got;
+        std::memcpy(&got, &h, 2);
+        CHECK(got == RefBf16ToHalf(glmtest::MakeBf16BitsAt(0)));
+    }
+
+    REQUIRE(lsxcommon::glm::LoadGlmPinnedWeights(out.string(), pw, stream) ==
+            cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    CHECK(pw.layers.size() == 79);
+
+    pw.Free();
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+

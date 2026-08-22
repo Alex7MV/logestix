@@ -23,55 +23,6 @@ namespace glm {
 
 namespace {
 
-// Host-side BF16 → FP16 conversion + upload. Mirrors the DeepSeek loader
-// (deepseek_inference_load.cu): converts on the host to avoid device temp buffers for
-// large tensors, then one async H2D copy. Manual bit path (no __bfloat162float
-// host/device ambiguity under MSVC):
-//   bf16 = top 16 bits of fp32 → reconstruct fp32 → round to fp16.
-//
-// PERF NOTE (deliberately not "fixed" further): this scalar loop is not
-// SIMD-vectorized, and `h_half` is plain (pageable) host memory rather than
-// pinned — so cudaMemcpyAsync() below is synchronous in practice for a
-// pageable source (the CUDA driver copies out of pageable memory before
-// returning control to the host, which is exactly why it's safe for
-// `h_half` to go out of scope right after this call returns with no
-// explicit stream sync here). Both are real, measurable one-time
-// model-load costs, not correctness issues. They are intentionally left
-// as-is rather than hand-rolling AVX2/F16C intrinsics: this codebase's
-// generic `linux-debug`/`linux-release` presets compile WITHOUT `-march`
-// (see AGENTS.md), so unconditional F16C intrinsics would either fail to
-// compile or (with a runtime feature-detection fallback) add complexity
-// that can't be verified against a real GLM checkpoint in this
-// environment. Switching `h_half` to pinned memory would need a
-// corresponding explicit stream sync before free (today's implicit
-// pageable-copy safety would be lost) — left as a follow-up with real
-// hardware benchmarking, not attempted blind.
-cudaError_t UploadBf16ToHalf(const uint8_t *src_bytes, int64_t numel,
-                             __half **d_out, cudaStream_t stream,
-                             std::uint64_t &bytes_acc)
-{
-    std::vector<__half> h_half(static_cast<size_t>(numel));
-    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
-    for (int64_t i = 0; i < numel; ++i) {
-        uint32_t f32_bits = static_cast<uint32_t>(src_u16[i]) << 16;
-        float f32;
-        std::memcpy(&f32, &f32_bits, sizeof(f32));
-        h_half[static_cast<size_t>(i)] = __float2half(f32);
-    }
-    cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
-    if (e != cudaSuccess) return e;
-    bytes_acc += static_cast<std::uint64_t>(numel) * sizeof(__half);
-    e = cudaMemcpyAsync(*d_out, h_half.data(),
-                        static_cast<size_t>(numel) * sizeof(__half),
-                        cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) {
-        cudaFree(*d_out);
-        *d_out = nullptr;
-        return e;
-    }
-    return cudaSuccess;
-}
-
 cudaError_t UploadRaw(const std::vector<uint8_t> &data, float **d_out,
                       cudaStream_t stream, std::uint64_t &bytes_acc)
 {
@@ -159,53 +110,7 @@ arrow::Result<std::vector<TensorRecord>> LoadArrowFile(const std::string &path)
 }
 
 // Found-but-malformed => error; absent => ok (optional tensor in the
-// heterogeneous layer grid). Uploads still go through the legacy scalar
-// conversion here; the arena/ring rewiring happens in the perf task.
-cudaError_t Upload1DStrict(const TensorRecord *t, __half **dst,
-                           cudaStream_t stream, PinnedStagingRing &,
-                           std::uint64_t &bytes_acc)
-{
-    *dst = nullptr;
-    if (!t) return cudaSuccess;
-    if (t->shape.size() != 1 || t->shape[0] <= 0 ||
-        t->data.size() < static_cast<size_t>(t->shape[0]) * 2) {
-        log::error("[glm_load] malformed 1D tensor '" + t->name + "'");
-        return cudaErrorInvalidValue;
-    }
-    cudaError_t e = UploadBf16ToHalf(t->data.data(), t->shape[0], dst,
-                                     stream, bytes_acc);
-    if (e != cudaSuccess)
-        log::error("[glm_load] upload failed for '" + t->name + "': " +
-                   cudaGetErrorString(e));
-    return e;
-}
-
-cudaError_t Upload2DStrict(const std::vector<TensorRecord> &tensors,
-                           const std::string &suffix, __half **dst,
-                           int64_t *rows, int64_t *cols,
-                           cudaStream_t stream, PinnedStagingRing &,
-                           std::uint64_t &bytes_acc)
-{
-    *dst = nullptr;
-    auto *t = FindTensor(tensors, suffix);
-    if (!t) return cudaSuccess;
-    if (t->shape.size() != 2 || t->shape[0] <= 0 || t->shape[1] <= 0 ||
-        t->data.size() <
-            static_cast<size_t>(t->shape[0]) *
-                static_cast<size_t>(t->shape[1]) * 2) {
-        log::error("[glm_load] malformed 2D tensor '" + suffix + "'");
-        return cudaErrorInvalidValue;
-    }
-    if (rows) *rows = t->shape[0];
-    if (cols) *cols = t->shape[1];
-    cudaError_t e = UploadBf16ToHalf(t->data.data(),
-                                     t->shape[0] * t->shape[1], dst,
-                                     stream, bytes_acc);
-    if (e != cudaSuccess)
-        log::error("[glm_load] upload failed for '" + suffix + "': " +
-                   cudaGetErrorString(e));
-    return e;
-}
+// heterogeneous layer grid). Validation lives in ValidateJob/UploadJobs.
 
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
                        GlmPinnedWeights &pw, cudaStream_t stream,
@@ -219,13 +124,23 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     }
     auto &tensors = *tensors_res;
 
+    PinnedStagingRing ring;
+    if (!ring.ok()) return cudaErrorMemoryAllocation;
+
     auto *embed = FindTensor(tensors, "embed_tokens.weight");
-    if (embed && embed->shape.size() >= 2) {
+    if (embed && embed->shape.size() >= 2 &&
+        embed->data.size() >=
+            static_cast<size_t>(embed->shape[0]) *
+                static_cast<size_t>(embed->shape[1]) * 2) {
         pw.vocab_size = static_cast<int>(embed->shape[0]);
         pw.hidden = static_cast<int>(embed->shape[1]);
-        cudaError_t e = UploadBf16ToHalf(embed->data.data(),
-                             pw.vocab_size * pw.hidden, &pw.d_embed,
-                             stream, bytes_acc);
+        cudaError_t e = cudaMalloc(&pw.d_embed,
+            static_cast<size_t>(pw.vocab_size) * pw.hidden * 2);
+        if (e != cudaSuccess) return e;
+        e = ring.UploadBf16AsFp16(embed->data.data(),
+                                  static_cast<int64_t>(pw.vocab_size) *
+                                      pw.hidden,
+                                  pw.d_embed, stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] embed upload failed: ")
                        + cudaGetErrorString(e));
@@ -237,10 +152,15 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         return cudaErrorInvalidValue;
     }
     auto *head = FindTensor(tensors, "lm_head.weight");
-    if (head && head->shape.size() >= 2 && head != embed) {
+    if (head && head->shape.size() >= 2 && head != embed &&
+        head->data.size() >=
+            static_cast<size_t>(head->shape[0]) *
+                static_cast<size_t>(head->shape[1]) * 2) {
         int64_t numel = head->shape[0] * head->shape[1];
-        cudaError_t e = UploadBf16ToHalf(head->data.data(), numel, &pw.d_head,
-                             stream, bytes_acc);
+        cudaError_t e = cudaMalloc(&pw.d_head, static_cast<size_t>(numel) * 2);
+        if (e != cudaSuccess) return e;
+        e = ring.UploadBf16AsFp16(head->data.data(), numel, pw.d_head,
+                                  stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] head upload failed: ")
                        + cudaGetErrorString(e));
@@ -248,9 +168,13 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         }
     }
     auto *norm = FindTensor(tensors, "model.norm.weight");
-    if (norm && !norm->shape.empty()) {
-        cudaError_t e = UploadBf16ToHalf(norm->data.data(), norm->shape[0],
-                             &pw.d_final_norm, stream, bytes_acc);
+    if (norm && norm->shape.size() == 1 && norm->shape[0] > 0 &&
+        norm->data.size() >= static_cast<size_t>(norm->shape[0]) * 2) {
+        cudaError_t e = cudaMalloc(&pw.d_final_norm,
+                                   static_cast<size_t>(norm->shape[0]) * 2);
+        if (e != cudaSuccess) return e;
+        e = ring.UploadBf16AsFp16(norm->data.data(), norm->shape[0],
+                                  pw.d_final_norm, stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] model.norm upload failed: ")
                        + cudaGetErrorString(e));
@@ -264,11 +188,109 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     return cudaSuccess;
 }
 
+
+
+constexpr size_t kArenaAlign = 256;
+
+size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
+
+struct StreamDrain {
+    cudaStream_t s;
+    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
+};
+
+struct Fp16Job {
+    const TensorRecord *t;
+    __half **dst;
+    int64_t *rows;   // optional row capture (2D only)
+    int64_t *cols;   // optional col capture (2D only)
+};
+
+struct JobShape {
+    bool is_2d = false;
+    size_t numel = 0;
+};
+
+cudaError_t ValidateJob(const Fp16Job &j, JobShape &sh)
+{
+    const auto &s = j.t->shape;
+    if (s.size() == 1 && s[0] > 0) {
+        sh.is_2d = false;
+        sh.numel = static_cast<size_t>(s[0]);
+    } else if (s.size() == 2 && s[0] > 0 && s[1] > 0) {
+        sh.is_2d = true;
+        sh.numel = static_cast<size_t>(s[0]) * static_cast<size_t>(s[1]);
+    } else {
+        log::error("[glm_load] malformed tensor '" + j.t->name + "'");
+        return cudaErrorInvalidValue;
+    }
+    if (j.t->data.size() < sh.numel * 2) {
+        log::error("[glm_load] malformed tensor '" + j.t->name + "'");
+        return cudaErrorInvalidValue;
+    }
+    return cudaSuccess;
+}
+
+// Validates every job, issues ONE arena allocation sized to the layer's FP16
+// footprint and uploads each tensor through the pinned ring into its
+// 256-byte-aligned arena view. On success lw.d_arena/arena_bytes own the
+// block; every *j.dst points inside it.
+cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
+                       cudaStream_t stream, PinnedStagingRing &ring,
+                       std::uint64_t &bytes_acc)
+{
+    std::vector<JobShape> shapes(jobs.size());
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        if (!jobs[i].t) continue;
+        cudaError_t e = ValidateJob(jobs[i], shapes[i]);
+        if (e != cudaSuccess) return e;
+    }
+
+    size_t total = 0;
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        if (!jobs[i].t) continue;
+        total = AlignUp(total, kArenaAlign) + shapes[i].numel * 2;
+    }
+
+    void *arena = nullptr;
+    if (total > 0) {
+        cudaError_t e = cudaMalloc(&arena, total);
+        if (e != cudaSuccess) {
+            log::error("[glm_load] arena alloc failed: " +
+                       std::string(cudaGetErrorString(e)));
+            return e;
+        }
+    }
+    lw.d_arena = arena;
+    lw.arena_bytes = total;
+
+    size_t off = 0;
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        const auto &j = jobs[i];
+        if (!j.t) continue;
+        off = AlignUp(off, kArenaAlign);
+        __half *view = static_cast<__half *>(arena) + off / 2;
+        *j.dst = view;
+        if (shapes[i].is_2d && j.rows)
+            { *j.rows = j.t->shape[0]; *j.cols = j.t->shape[1]; }
+        cudaError_t e = ring.UploadBf16AsFp16(j.t->data.data(),
+                            static_cast<int64_t>(shapes[i].numel),
+                            view, stream, bytes_acc);
+        if (e != cudaSuccess) return e;
+        off += shapes[i].numel * 2;
+    }
+    return cudaSuccess;
+}
+
+
+} // anonymous namespace
+
 cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
                             GlmLayerWeights &lw, cudaStream_t stream,
                             std::uint64_t &bytes_acc)
 {
-    PinnedStagingRing unused_ring;  // wired into uploads in the perf task
+    PinnedStagingRing ring;
+    if (!ring.ok()) return cudaErrorMemoryAllocation;
 
     // Required-for-type validation (heterogeneous-grid rules):
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
@@ -283,54 +305,59 @@ cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
         return cudaErrorInvalidValue;
     }
 
-    cudaError_t e = Upload1DStrict(in_norm, &lw.d_input_norm, stream,
-                                   unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(post_norm, &lw.d_post_attn_norm, stream,
-                       unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
+    std::vector<Fp16Job> jobs = {
+        {in_norm,   &lw.d_input_norm,     nullptr, nullptr},
+        {post_norm, &lw.d_post_attn_norm, nullptr, nullptr},
+        {FindTensor(tensors, "self_attn.q_a_proj.weight"),
+                    &lw.d_q_a_proj,       &lw.q_a_rows, &lw.q_a_cols},
+        {FindTensor(tensors, "self_attn.q_a_layernorm.weight"),
+                    &lw.d_q_a_norm,       nullptr, nullptr},
+        {FindTensor(tensors, "self_attn.q_b_proj.weight"),
+                    &lw.d_q_b_proj,       &lw.q_b_rows, &lw.q_b_cols},
+        {FindTensor(tensors, "self_attn.kv_a_proj_with_mqa.weight"),
+                    &lw.d_kv_a_proj,      &lw.kv_a_rows, &lw.kv_a_cols},
+        {FindTensor(tensors, "self_attn.kv_a_layernorm.weight"),
+                    &lw.d_kv_a_norm,      nullptr, nullptr},
+        {FindTensor(tensors, "self_attn.kv_b_proj.weight"),
+                    &lw.d_kv_b_proj,      &lw.kv_b_rows, &lw.kv_b_cols},
+        {FindTensor(tensors, "self_attn.o_proj.weight"),
+                    &lw.d_o_proj,         &lw.o_rows, &lw.o_cols},
+    };
 
-    e = Upload2DStrict(tensors, "self_attn.q_a_proj.weight", &lw.d_q_a_proj,
-                       &lw.q_a_rows, &lw.q_a_cols, stream, unused_ring,
-                       bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(FindTensor(tensors, "self_attn.q_a_layernorm.weight"),
-                       &lw.d_q_a_norm, stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.q_b_proj.weight", &lw.d_q_b_proj,
-                       &lw.q_b_rows, &lw.q_b_cols, stream, unused_ring,
-                       bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.kv_a_proj_with_mqa.weight",
-                       &lw.d_kv_a_proj, &lw.kv_a_rows, &lw.kv_a_cols,
-                       stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(FindTensor(tensors, "self_attn.kv_a_layernorm.weight"),
-                       &lw.d_kv_a_norm, stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.kv_b_proj.weight", &lw.d_kv_b_proj,
-                       &lw.kv_b_rows, &lw.kv_b_cols, stream, unused_ring,
-                       bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.o_proj.weight", &lw.d_o_proj,
-                       &lw.o_rows, &lw.o_cols, stream, unused_ring, bytes_acc);
+    if (moe) {
+        jobs.push_back({FindTensor(tensors, "mlp.gate.weight"),
+                        &lw.d_router_gate, nullptr, nullptr});
+    } else {
+        jobs.push_back({FindTensor(tensors, "mlp.gate_proj.weight"),
+                        &lw.d_mlp_gate, nullptr, nullptr});
+        jobs.push_back({FindTensor(tensors, "mlp.down_proj.weight"),
+                        &lw.d_mlp_down, nullptr, nullptr});
+        jobs.push_back({FindTensor(tensors, "mlp.up_proj.weight"),
+                        &lw.d_mlp_up, nullptr, nullptr});
+    }
+
+    jobs.push_back({FindTensor(tensors, "self_attn.indexer.wq_b.weight"),
+                    &lw.d_idx_wq_b, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "self_attn.indexer.wk.weight"),
+                    &lw.d_idx_wk, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "self_attn.indexer.weights_proj.weight"),
+                    &lw.d_idx_weights_proj, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "self_attn.indexer.k_norm.weight"),
+                    &lw.d_idx_k_norm, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "eh_proj.weight"),
+                    &lw.d_eh_proj, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "enorm.weight"),
+                    &lw.d_enorm, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "hnorm.weight"),
+                    &lw.d_hnorm, nullptr, nullptr});
+    jobs.push_back({FindTensor(tensors, "shared_head.norm.weight"),
+                    &lw.d_shared_head_norm, nullptr, nullptr});
+
+    cudaError_t e = UploadJobs(std::move(jobs), lw, stream, ring, bytes_acc);
     if (e != cudaSuccess) return e;
 
     auto *router = FindTensor(tensors, "mlp.gate.weight");
     if (router) {
-        if (router->shape.size() != 2 || router->shape[0] <= 0 ||
-            router->shape[1] <= 0 ||
-            router->data.size() <
-                static_cast<size_t>(router->shape[0]) *
-                    static_cast<size_t>(router->shape[1]) * 2) {
-            log::error("[glm_load] malformed router gate");
-            return cudaErrorInvalidValue;
-        }
-        if (UploadBf16ToHalf(router->data.data(),
-                             router->shape[0] * router->shape[1],
-                             &lw.d_router_gate, stream, bytes_acc)
-            != cudaSuccess)
-            return cudaErrorInvalidValue;
         auto *gate_bias =
             FindTensor(tensors, "mlp.gate.e_score_correction_bias");
         if (gate_bias && gate_bias->shape.size() == 1 &&
@@ -345,58 +372,30 @@ cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
                 lw.gate_bias_n = n;
             }
         }
-    } else {
-        // Dense layer 0-2.
-        e = Upload2DStrict(tensors, "mlp.gate_proj.weight", &lw.d_mlp_gate,
-                           nullptr, nullptr, stream, unused_ring, bytes_acc);
-        if (e != cudaSuccess) return e;
-        e = Upload2DStrict(tensors, "mlp.down_proj.weight", &lw.d_mlp_down,
-                           nullptr, nullptr, stream, unused_ring, bytes_acc);
-        if (e != cudaSuccess) return e;
-        e = Upload2DStrict(tensors, "mlp.up_proj.weight", &lw.d_mlp_up,
-                           nullptr, nullptr, stream, unused_ring, bytes_acc);
-        if (e != cudaSuccess) return e;
     }
 
-    e = Upload2DStrict(tensors, "self_attn.indexer.wq_b.weight",
-                       &lw.d_idx_wq_b, nullptr, nullptr, stream, unused_ring,
-                       bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.indexer.wk.weight", &lw.d_idx_wk,
-                       nullptr, nullptr, stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload2DStrict(tensors, "self_attn.indexer.weights_proj.weight",
-                       &lw.d_idx_weights_proj, nullptr, nullptr, stream,
-                       unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(FindTensor(tensors, "self_attn.indexer.k_norm.weight"),
-                       &lw.d_idx_k_norm, stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
     auto *k_bias = FindTensor(tensors, "self_attn.indexer.k_norm.bias");
-    if (k_bias && !k_bias->data.empty())
-        UploadRaw(k_bias->data, &lw.d_idx_k_norm_bias, stream, bytes_acc);
-
-    {
-        int64_t eh_rows = 0, eh_cols = 0;
-        e = Upload2DStrict(tensors, "eh_proj.weight", &lw.d_eh_proj,
-                           &eh_rows, &eh_cols, stream, unused_ring, bytes_acc);
-        if (e != cudaSuccess) return e;
+    if (k_bias && !k_bias->data.empty()) {
+        void *d = nullptr;
+        cudaError_t ke = cudaMalloc(&d, k_bias->data.size());
+        if (ke != cudaSuccess) return ke;
+        lw.d_idx_k_norm_bias = static_cast<float *>(d);
+        ke = ring.UploadRaw(k_bias->data.data(), d, k_bias->data.size(),
+                            stream, bytes_acc);
+        if (ke != cudaSuccess) return ke;
     }
-    e = Upload1DStrict(FindTensor(tensors, "enorm.weight"), &lw.d_enorm,
-                       stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(FindTensor(tensors, "hnorm.weight"), &lw.d_hnorm,
-                       stream, unused_ring, bytes_acc);
-    if (e != cudaSuccess) return e;
-    e = Upload1DStrict(FindTensor(tensors, "shared_head.norm.weight"),
-                       &lw.d_shared_head_norm, stream, unused_ring, bytes_acc);
-    return e;
+    return cudaSuccess;
 }
 
-} // anonymous namespace
 
 void GlmLayerWeights::Free()
 {
+    if (d_arena) {
+        if (h_gate_bias) cudaFreeHost(h_gate_bias);
+        cudaFree(d_arena);
+        *this = GlmLayerWeights{};
+        return;
+    }
     if (d_input_norm)          cudaFree(d_input_norm);
     if (d_post_attn_norm)      cudaFree(d_post_attn_norm);
     if (d_q_a_proj)            cudaFree(d_q_a_proj);
@@ -473,6 +472,10 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
         return cudaErrorInvalidValue;
     }
     pw.layers.resize(static_cast<size_t>(topo.num_layers));
+
+    // Drains the stream on every error exit below so pinned staging never
+    // dies while a DMA transfer is still in flight.
+    StreamDrain drain{stream};
 
     auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes);
     if (err != cudaSuccess) return err;

@@ -88,6 +88,12 @@ struct GlmLayerWeights {
     __half *d_hnorm = nullptr;              // hnorm.weight
     __half *d_shared_head_norm = nullptr;   // shared_head.norm.weight
 
+    // Non-null when the layer was uploaded arena-backed: every d_* pointer
+    // above is a view into this single allocation and Free() releases the
+    // arena instead of the individual pointers.
+    void *d_arena = nullptr;
+    size_t arena_bytes = 0;
+
     void Free();
 };
 

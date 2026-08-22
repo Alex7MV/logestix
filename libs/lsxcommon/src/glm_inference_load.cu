@@ -1636,6 +1636,9 @@ cudaError_t GlmBf16ToHalfInPlace(uint16_t *d_buf, int64_t numel,
     int64_t blocks64 = (nv + kBlock - 1) / kBlock;
     if (blocks64 < 1) blocks64 = 1;
     if (blocks64 > 65535) blocks64 = 65535;
+    // Drain any stale thread-local CUDA error left by unrelated earlier
+    // calls, so cudaGetLastError() below reflects THIS launch only.
+    (void)cudaGetLastError();
     GlmBf16ToHalfInPlaceKernel<<<static_cast<int>(blocks64), kBlock, 0,
                                  stream>>>(d_buf, numel);
     return cudaGetLastError();

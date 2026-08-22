@@ -1133,9 +1133,11 @@ target_include_directories(test_glm_load_fast_cu PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
 )
 target_compile_definitions(test_glm_load_fast_cu PRIVATE
     LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_link_libraries(test_glm_load_fast_cu PRIVATE Catch2::Catch2WithMain)
 

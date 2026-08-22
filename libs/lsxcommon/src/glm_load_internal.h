@@ -38,6 +38,12 @@ public:
 
     ~PinnedStagingRing()
     {
+        // Both events were recorded right after each buffer's latest copy:
+        // synchronizing them proves no DMA read from bufs_[i] is still in
+        // flight before cudaFreeHost (a freed-while-in-flight pinned buffer
+        // poisons the CUDA context for every later call).
+        for (int i = 0; i < 2; ++i)
+            if (ev_[i]) cudaEventSynchronize(ev_[i]);
         for (int i = 0; i < 2; ++i) {
             if (bufs_[i]) cudaFreeHost(bufs_[i]);
             if (ev_[i]) cudaEventDestroy(ev_[i]);
