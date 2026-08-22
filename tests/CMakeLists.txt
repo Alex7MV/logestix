@@ -18,6 +18,26 @@ endif()
 
 add_test(NAME test_core COMMAND test_core)
 
+# ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
+add_executable(test_schema_views test_schema_views.cpp)
+target_link_libraries(test_schema_views PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_schema_views POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_schema_views>"
+    )
+    add_custom_command(TARGET test_schema_views POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_schema_views>"
+    )
+endif()
+
+add_test(NAME test_schema_views COMMAND test_schema_views)
+
+
 # ── Тест DeepSeek round-trip загрузчика ─────────────────────────────────
 add_executable(test_deepseek_loader test_deepseek_loader.cpp)
 target_link_libraries(test_deepseek_loader PRIVATE lsxcommon Catch2::Catch2WithMain)

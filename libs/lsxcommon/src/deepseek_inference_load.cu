@@ -28,11 +28,10 @@ namespace gpu {
 
 namespace {
 
-const TensorRecord *find_tensor_suffix(
-    const std::vector<TensorRecord> &tensors,
-    const std::string &suffix)
+const TensorView *find_tensor_suffix(const TensorBatchViews &tensors,
+                                     std::string_view suffix)
 {
-    for (const auto &t : tensors) {
+    for (const auto &t : tensors.tensors) {
         if (t.name.size() >= suffix.size() &&
             t.name.compare(t.name.size() - suffix.size(), suffix.size(), suffix) == 0)
             return &t;
@@ -40,12 +39,11 @@ const TensorRecord *find_tensor_suffix(
     return nullptr;
 }
 
-const TensorRecord *find_tensor_substr(
-    const std::vector<TensorRecord> &tensors,
-    const std::string &substr)
+const TensorView *find_tensor_substr(const TensorBatchViews &tensors,
+                                     std::string_view substr)
 {
-    for (const auto &t : tensors) {
-        if (t.name.find(substr) != std::string::npos)
+    for (const auto &t : tensors.tensors) {
+        if (t.name.find(substr) != std::string_view::npos)
             return &t;
     }
     return nullptr;
@@ -67,23 +65,23 @@ struct StreamDrain {
 // verbatim (F32 / F8_E4M3 / F8_E8M0 payloads). The typed constructors route
 // the job: __half** ⇒ FP16 conversion, everything else ⇒ raw bytes.
 struct ArenaJob {
-    const TensorRecord *t;
+    const TensorView *t;
     void **dst;
     bool to_fp16;
     int64_t *bytes_cap = nullptr;   // optional: uploaded byte count
     int *rows_cap = nullptr;        // optional: shape[0] when 2D
     int *cols_cap = nullptr;        // optional: shape[1] when 2D
 
-    ArenaJob(const TensorRecord *t_, __half **dst_)
+    ArenaJob(const TensorView *t_, __half **dst_)
         : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(true) {}
-    ArenaJob(const TensorRecord *t_, float **dst_)
+    ArenaJob(const TensorView *t_, float **dst_)
         : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(false) {}
-    ArenaJob(const TensorRecord *t_, uint8_t **dst_,
+    ArenaJob(const TensorView *t_, uint8_t **dst_,
              int64_t *bytes_cap_ = nullptr, int *rows_cap_ = nullptr,
              int *cols_cap_ = nullptr)
         : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(false),
           bytes_cap(bytes_cap_), rows_cap(rows_cap_), cols_cap(cols_cap_) {}
-    ArenaJob(const TensorRecord *t_, const uint8_t **dst_,
+    ArenaJob(const TensorView *t_, const uint8_t **dst_,
              int64_t *bytes_cap_ = nullptr, int *rows_cap_ = nullptr,
              int *cols_cap_ = nullptr)
         : t(t_), dst(reinterpret_cast<void **>(
@@ -94,27 +92,27 @@ struct ArenaJob {
 
 cudaError_t ValidateArenaJob(const ArenaJob &j, size_t &upload_bytes)
 {
-    const auto &s = j.t->shape;
     if (j.to_fp16) {
-        if (s.size() == 1 && s[0] > 0)
-            upload_bytes = static_cast<size_t>(s[0]) * 2;
-        else if (s.size() == 2 && s[0] > 0 && s[1] > 0)
-            upload_bytes = static_cast<size_t>(s[0])
-                         * static_cast<size_t>(s[1]) * 2;
+        if (j.t->rank == 1 && j.t->shape[0] > 0)
+            upload_bytes = static_cast<size_t>(j.t->shape[0]) * 2;
+        else if (j.t->rank == 2 && j.t->shape[0] > 0 && j.t->shape[1] > 0)
+            upload_bytes = static_cast<size_t>(j.t->shape[0])
+                         * static_cast<size_t>(j.t->shape[1]) * 2;
         else {
-            log::error("[load_pinned] malformed BF16 tensor '" + j.t->name
-                       + "'");
+            log::error("[load_pinned] malformed BF16 tensor '" +
+                       std::string(j.t->name) + "'");
             return cudaErrorInvalidValue;
         }
-        if (j.t->data.size() < upload_bytes) {
-            log::error("[load_pinned] truncated BF16 tensor '" + j.t->name
-                       + "'");
+        if (j.t->bytes < upload_bytes) {
+            log::error("[load_pinned] truncated BF16 tensor '" +
+                       std::string(j.t->name) + "'");
             return cudaErrorInvalidValue;
         }
     } else {
-        upload_bytes = j.t->data.size();
+        upload_bytes = j.t->bytes;
         if (upload_bytes == 0) {
-            log::error("[load_pinned] empty byte tensor '" + j.t->name + "'");
+            log::error("[load_pinned] empty byte tensor '" +
+                       std::string(j.t->name) + "'");
             return cudaErrorInvalidValue;
         }
     }
@@ -161,18 +159,19 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
         void *view = base + off;
         *j.dst = view;
         if (j.bytes_cap) *j.bytes_cap = static_cast<int64_t>(sz[i]);
-        if ((j.rows_cap || j.cols_cap) && j.t->shape.size() == 2) {
+        if ((j.rows_cap || j.cols_cap) && j.t->rank == 2) {
             if (j.rows_cap) *j.rows_cap = static_cast<int>(j.t->shape[0]);
             if (j.cols_cap) *j.cols_cap = static_cast<int>(j.t->shape[1]);
         }
         cudaError_t e = j.to_fp16
-            ? ring.UploadBf16AsFp16(j.t->data.data(),
+            ? ring.UploadBf16AsFp16(j.t->data,
                   static_cast<int64_t>(sz[i] / 2),
                   static_cast<__half *>(view), stream, bytes_acc)
-            : ring.UploadRaw(j.t->data.data(), view, sz[i], stream,
+            : ring.UploadRaw(j.t->data, view, sz[i], stream,
                              bytes_acc);
         if (e != cudaSuccess) {
-            log::error("[load_pinned] upload failed for '" + j.t->name
+            log::error("[load_pinned] upload failed for '" +
+                       std::string(j.t->name)
                        + "': " + cudaGetErrorString(e));
             return e;
         }
@@ -181,18 +180,9 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
     return cudaSuccess;
 }
 
-arrow::Result<std::vector<TensorRecord>> load_arrow_file(const std::string &path)
+arrow::Result<TensorBatchViews> load_arrow_file(const std::string &path)
 {
-    auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
-    if (!mmap_res.ok())
-        return mmap_res.status();
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
-    if (!reader_res.ok())
-        return reader_res.status();
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok())
-        return batch_res.status();
-    return PinnedSchema::UnpackBatch(*batch_res);
+    return LoadTensorBatchViews(path);
 }
 
 } // anonymous namespace
@@ -434,24 +424,24 @@ cudaError_t load_pinned_weights(
     auto *embed_t = find_tensor_suffix(gt, "embed.weight");
     auto *head_t  = find_tensor_suffix(gt, "head.weight");
     auto *norm_t  = find_tensor_suffix(gt, "norm.weight");
-    if (!embed_t || embed_t->shape.size() != 2 ||
-        embed_t->data.size() <
+    if (!embed_t || embed_t->rank != 2 ||
+        embed_t->bytes <
             static_cast<size_t>(embed_t->shape[0]) *
                 static_cast<size_t>(embed_t->shape[1]) * 2) {
         log::error("[load_pinned] embed.weight missing/malformed in "
                    "global.arrow");
         return cudaErrorInvalidValue;
     }
-    if (!head_t || head_t == embed_t || head_t->shape.size() != 2 ||
-        head_t->data.size() <
+    if (!head_t || head_t == embed_t || head_t->rank != 2 ||
+        head_t->bytes <
             static_cast<size_t>(head_t->shape[0]) *
                 static_cast<size_t>(head_t->shape[1]) * 2) {
         log::error("[load_pinned] head.weight missing/malformed in "
                    "global.arrow");
         return cudaErrorInvalidValue;
     }
-    if (!norm_t || norm_t->shape.size() != 1 ||
-        norm_t->data.size() < static_cast<size_t>(norm_t->shape[0]) * 2) {
+    if (!norm_t || norm_t->rank != 1 ||
+        norm_t->bytes < static_cast<size_t>(norm_t->shape[0]) * 2) {
         log::error("[load_pinned] norm.weight missing/malformed in "
                    "global.arrow");
         return cudaErrorInvalidValue;
@@ -465,7 +455,7 @@ cudaError_t load_pinned_weights(
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
         rb += static_cast<std::uint64_t>(numel) * 2;
-        ge = ring.UploadBf16AsFp16(embed_t->data.data(), numel,
+        ge = ring.UploadBf16AsFp16(embed_t->data, numel,
                                    pw.d_embed, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] embed upload failed: ")
@@ -480,7 +470,7 @@ cudaError_t load_pinned_weights(
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
         rb += static_cast<std::uint64_t>(numel) * 2;
-        ge = ring.UploadBf16AsFp16(head_t->data.data(), numel,
+        ge = ring.UploadBf16AsFp16(head_t->data, numel,
                                    pw.d_head, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] head upload failed: ")
@@ -494,7 +484,7 @@ cudaError_t load_pinned_weights(
                                     static_cast<size_t>(numel) * 2);
         if (ge != cudaSuccess) return ge;
         rb += static_cast<std::uint64_t>(numel) * 2;
-        ge = ring.UploadBf16AsFp16(norm_t->data.data(), numel,
+        ge = ring.UploadBf16AsFp16(norm_t->data, numel,
                                    pw.d_final_norm, stream, rb);
         if (ge != cudaSuccess) {
             log::error(std::string("[load_pinned] final_norm upload failed: ")
@@ -510,15 +500,15 @@ cudaError_t load_pinned_weights(
              {"hc_head_base", &pw.d_hc_head_base},
              {"hc_head_scale", &pw.d_hc_head_scale}}) {
         auto *t = find_tensor_suffix(gt, suffix);
-        if (!t || t->data.empty()) {
+        if (!t || t->bytes == 0) {
             log::error(std::string("[load_pinned] hc head tensor missing: ")
                        + suffix);
             return cudaErrorInvalidValue;
         }
-        cudaError_t he = cudaMalloc(dst, t->data.size());
+        cudaError_t he = cudaMalloc(dst, t->bytes);
         if (he != cudaSuccess) return he;
-        rb += t->data.size();
-        he = ring.UploadRaw(t->data.data(), *dst, t->data.size(), stream, rb);
+        rb += t->bytes;
+        he = ring.UploadRaw(t->data, *dst, t->bytes, stream, rb);
         if (he != cudaSuccess) {
             log::error(std::string("[load_pinned] upload failed for ")
                        + suffix + ": " + cudaGetErrorString(he));
@@ -669,25 +659,25 @@ cudaError_t load_pinned_weights(
 
         // Router selection bias (F32) + hash table (I64) — host pinned.
         auto *gate_bias = find_tensor_substr(lt, "ffn.gate.bias");
-        if (gate_bias && gate_bias->shape.size() == 1 &&
+        if (gate_bias && gate_bias->rank == 1 &&
             gate_bias->dtype == "F32") {
             int n = static_cast<int>(gate_bias->shape[0]);
             if (cudaMallocHost(&lw.h_gate_bias,
                                static_cast<size_t>(n) * sizeof(float))
                 == cudaSuccess) {
-                std::memcpy(lw.h_gate_bias, gate_bias->data.data(),
+                std::memcpy(lw.h_gate_bias, gate_bias->data,
                             static_cast<size_t>(n) * sizeof(float));
                 lw.gate_bias_n = n;
             }
         }
         auto *tid2eid = find_tensor_substr(lt, "ffn.gate.tid2eid");
-        if (tid2eid && tid2eid->shape.size() == 2 &&
+        if (tid2eid && tid2eid->rank == 2 &&
             tid2eid->dtype == "I64") {
             int64_t numel = tid2eid->shape[0] * tid2eid->shape[1];
             if (cudaMallocHost(&lw.h_tid2eid,
                                static_cast<size_t>(numel) * sizeof(int64_t))
                 == cudaSuccess) {
-                std::memcpy(lw.h_tid2eid, tid2eid->data.data(),
+                std::memcpy(lw.h_tid2eid, tid2eid->data,
                             static_cast<size_t>(numel) * sizeof(int64_t));
                 lw.tid2eid_vocab = static_cast<int>(tid2eid->shape[0]);
                 lw.tid2eid_topk  = static_cast<int>(tid2eid->shape[1]);

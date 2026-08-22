@@ -100,39 +100,34 @@ size_t OutElemSize(CvKind k)
 }
 
 struct UploadJob {
-    const TensorRecord *t;   // null = absent tensor, skipped
+    const TensorView *t;     // null = absent tensor, skipped
     void **dst;
     CvKind kind;
 };
 
 cudaError_t ValidateJob(const UploadJob &j, int64_t &numel)
 {
-    const auto &s = j.t->shape;
-    if (!s.empty()) {
-        // Any-rank contiguous tensor (1D norms, [C, K] / [C, 1, K] conv1d,
-        // [H, 1] biases): the squeezed layout is contiguous either way.
-        numel = 1;
-        for (int64_t d : s) {
-            if (d <= 0) {
-                log::error("[qwen_load] malformed tensor '" + j.t->name + "'");
-                return cudaErrorInvalidValue;
-            }
-            numel *= d;
-        }
-    } else {
-        std::string sh;
-        for (int64_t d : s) absl::StrAppend(&sh, sh.empty() ? "" : "x", d);
-        log::error("[qwen_load] malformed tensor '" + j.t->name + "' dtype=" +
-                   j.t->dtype + " shape=[" + sh + "] bytes=" +
-                   absl::StrCat(j.t->data.size()));
+    if (j.t->rank <= 0) {
+        log::error("[qwen_load] malformed tensor '" + std::string(j.t->name) +
+                   "' dtype=" + std::string(j.t->dtype) + " rank=0 bytes=" +
+                   absl::StrCat(j.t->bytes));
         return cudaErrorInvalidValue;
+    }
+    numel = 1;
+    for (int64_t d = 0; d < j.t->rank; ++d) {
+        if (j.t->shape[d] <= 0) {
+            log::error("[qwen_load] malformed tensor '" +
+                       std::string(j.t->name) + "'");
+            return cudaErrorInvalidValue;
+        }
+        numel *= j.t->shape[d];
     }
     size_t in_bytes = (j.kind == CvKind::kF32Raw || j.kind == CvKind::kF32ToHalf)
                           ? 4 : 2;
-    if (j.t->data.size() < static_cast<size_t>(numel) * in_bytes) {
-        log::error("[qwen_load] malformed tensor '" + j.t->name +
-                   "' dtype=" + j.t->dtype + ": data " +
-                   absl::StrCat(j.t->data.size(), " < needed ",
+    if (j.t->bytes < static_cast<size_t>(numel) * in_bytes) {
+        log::error("[qwen_load] malformed tensor '" + std::string(j.t->name) +
+                   "' dtype=" + std::string(j.t->dtype) + ": data " +
+                   absl::StrCat(j.t->bytes, " < needed ",
                                 static_cast<uint64_t>(numel) * in_bytes));
         return cudaErrorInvalidValue;
     }
@@ -186,12 +181,12 @@ cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
         cudaError_t e = cudaSuccess;
         switch (j.kind) {
         case CvKind::kBf16ToHalf:
-            e = ring.UploadBf16AsFp16(j.t->data.data(), n,
+            e = ring.UploadBf16AsFp16(j.t->data, n,
                                       reinterpret_cast<__half *>(view),
                                       stream, bytes_acc);
             break;
         case CvKind::kF32Raw:
-            e = ring.UploadRaw(j.t->data.data(), view,
+            e = ring.UploadRaw(j.t->data, view,
                                static_cast<size_t>(n) * 4, stream, bytes_acc);
             break;
         default: {
@@ -200,13 +195,13 @@ cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
             std::vector<uint8_t> h(bytes);
             if (j.kind == CvKind::kF32ToHalf) {
                 const float *src =
-                    reinterpret_cast<const float *>(j.t->data.data());
+                    reinterpret_cast<const float *>(j.t->data);
                 __half *dst = reinterpret_cast<__half *>(h.data());
                 for (int64_t k = 0; k < n; ++k)
                     dst[k] = __float2half(src[k]);
             } else {
                 const uint16_t *src =
-                    reinterpret_cast<const uint16_t *>(j.t->data.data());
+                    reinterpret_cast<const uint16_t *>(j.t->data);
                 float *dst = reinterpret_cast<float *>(h.data());
                 for (int64_t k = 0; k < n; ++k) {
                     uint32_t bits = static_cast<uint32_t>(src[k]) << 16;
@@ -227,27 +222,27 @@ cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
 
 // Uploads one NVFP4 weight (packed E2M1 nibbles + E4M3 scales) as two raw
 // device blocks staged through the pinned ring.
-cudaError_t UploadNvfp4Weight(const DenseNvfp4Record *r, QwenNvfp4Weight &w,
+cudaError_t UploadNvfp4Weight(const DenseNvfp4View *r, QwenNvfp4Weight &w,
                               cudaStream_t stream,
                               fastload::PinnedStagingRing &ring,
                               std::uint64_t &bytes_acc)
 {
-    if (!r || r->packed.empty()) return cudaSuccess;
-    w.rows = r->shape.size() >= 2 ? static_cast<int>(r->shape[0]) : 0;
-    w.cols = r->shape.size() >= 2 ? static_cast<int>(r->shape[1]) : 0;
+    if (!r || r->packed_bytes == 0) return cudaSuccess;
+    w.rows = r->rank >= 2 ? static_cast<int>(r->shape[0]) : 0;
+    w.cols = r->rank >= 2 ? static_cast<int>(r->shape[1]) : 0;
     w.global_scale = r->global_scale;
-    w.packed_bytes = static_cast<int64_t>(r->packed.size());
-    w.scale_bytes = static_cast<int64_t>(r->scales.size());
+    w.packed_bytes = r->packed_bytes;
+    w.scale_bytes = r->scale_bytes;
     void *d1 = nullptr;
-    cudaError_t e = cudaMalloc(&d1, r->packed.size());
+    cudaError_t e = cudaMalloc(&d1, static_cast<size_t>(r->packed_bytes));
     if (e != cudaSuccess) { w.Free(); return e; }
-    e = ring.UploadRaw(r->packed.data(), d1, r->packed.size(),
+    e = ring.UploadRaw(r->packed, d1, static_cast<size_t>(r->packed_bytes),
                        stream, bytes_acc);
     if (e != cudaSuccess) { cudaFree(d1); w.Free(); return e; }
     void *d2 = nullptr;
-    e = cudaMalloc(&d2, r->scales.size());
+    e = cudaMalloc(&d2, static_cast<size_t>(r->scale_bytes));
     if (e != cudaSuccess) { cudaFree(d1); w.Free(); return e; }
-    e = ring.UploadRaw(r->scales.data(), d2, r->scales.size(),
+    e = ring.UploadRaw(r->scales, d2, static_cast<size_t>(r->scale_bytes),
                        stream, bytes_acc);
     if (e != cudaSuccess) { cudaFree(d1); cudaFree(d2); w.Free(); return e; }
     w.d_packed = static_cast<const uint8_t*>(d1);
@@ -256,65 +251,45 @@ cudaError_t UploadNvfp4Weight(const DenseNvfp4Record *r, QwenNvfp4Weight &w,
 }
 
 // Matches a tensor record whose name ENDS with `suffix`.
-const TensorRecord *FindRaw(const std::vector<TensorRecord> &tensors,
-                            const std::string &suffix)
+const TensorView *FindRaw(const TensorBatchViews &tensors,
+                          std::string_view suffix)
 {
-    for (const auto &t : tensors) {
+    for (const auto &t : tensors.tensors) {
         if (t.name.size() >= suffix.size() &&
-            t.name.compare(t.name.size() - suffix.size(), suffix.size(), suffix) == 0)
+            t.name.compare(t.name.size() - suffix.size(), suffix.size(),
+                           suffix) == 0)
             return &t;
     }
     return nullptr;
 }
 
-const DenseNvfp4Record *FindNvfp4(const std::vector<DenseNvfp4Record> &recs,
-                                  const std::string &suffix)
+const DenseNvfp4View *FindNvfp4(const DenseNvfp4BatchViews &recs,
+                                std::string_view suffix)
 {
-    for (const auto &r : recs) {
+    for (const auto &r : recs.records) {
         if (r.name.size() >= suffix.size() &&
-            r.name.compare(r.name.size() - suffix.size(), suffix.size(), suffix) == 0)
+            r.name.compare(r.name.size() - suffix.size(), suffix.size(),
+                           suffix) == 0)
             return &r;
     }
     return nullptr;
 }
 
-arrow::Result<std::vector<TensorRecord>> LoadRawFile(const std::string &path)
-{
-    auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) return mmap_res.status();
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
-    if (!reader_res.ok()) return reader_res.status();
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) return batch_res.status();
-    return PinnedSchema::UnpackBatch(*batch_res);
-}
-
-arrow::Result<std::vector<DenseNvfp4Record>> LoadNvfp4File(const std::string &path)
-{
-    auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) return mmap_res.status();
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
-    if (!reader_res.ok()) return reader_res.status();
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) return batch_res.status();
-    return DenseNvfp4Schema::UnpackBatch(*batch_res);
-}
-
 // Picks the upload kind for a 1D FP16-destined tensor by its on-disk dtype.
-CvKind NormKind(const TensorRecord *t)
+CvKind NormKind(const TensorView *t)
 {
     return (t && t->dtype == "F32") ? CvKind::kF32ToHalf : CvKind::kBf16ToHalf;
 }
 
 // Dtype-aware kind for F32-destined tensors: honor BF16-on-disk records
 // (e.g. A_log in real Qwen checkpoints) instead of reinterpreting bits.
-CvKind CvKindFromDtype(const TensorRecord *t, CvKind f32_kind)
+CvKind CvKindFromDtype(const TensorView *t, CvKind f32_kind)
 {
     return (t && t->dtype == "BF16") ? CvKind::kBf16ToF32 : f32_kind;
 }
 
-cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
-                      const std::vector<DenseNvfp4Record> &nv,
+cudaError_t LoadLayer(const TensorBatchViews &raw,
+                      const DenseNvfp4BatchViews &nv,
                       QwenLayerWeights &lw, cudaStream_t stream,
                       fastload::PinnedStagingRing &ring,
                       std::uint64_t &bytes_acc, bool is_linear)
@@ -322,7 +297,7 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
     lw.is_linear = is_linear;
 
     auto *in_norm = FindRaw(raw, "input_layernorm.weight");
-    if (in_norm && !in_norm->shape.empty())
+    if (in_norm && in_norm->rank > 0)
         lw.norm_size = static_cast<int>(in_norm->shape[0]);
     auto *post_norm = FindRaw(raw, "post_attention_layernorm.weight");
 
@@ -335,13 +310,13 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
 
     if (is_linear) {
         auto *conv = FindRaw(raw, "linear_attn.conv1d.weight");
-        if (conv && !conv->shape.empty()) {
+        if (conv && conv->rank > 0) {
             // nn.Conv1d weight is [C, 1, K] on disk; legacy fixtures store
             // [C, K]. The squeezed [C, K] layout is contiguous either way.
             lw.conv_dim = static_cast<int>(conv->shape[0]);
-            lw.conv_kernel = conv->shape.size() >= 3
+            lw.conv_kernel = conv->rank >= 3
                 ? static_cast<int>(conv->shape[2])
-                : static_cast<int>(conv->shape[conv->shape.size() - 1]);
+                : static_cast<int>(conv->shape[conv->rank - 1]);
         }
         jobs.push_back({conv,
                         reinterpret_cast<void **>(&lw.d_conv1d),
@@ -356,16 +331,16 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &raw,
                              ? CvKind::kBf16ToF32 : CvKind::kF32Raw;
         jobs.push_back({dt, reinterpret_cast<void **>(&lw.d_dt_bias), dt_kind});
         auto *an = FindRaw(raw, "linear_attn.norm.weight");
-        if (an && !an->shape.empty())
+        if (an && an->rank > 0)
             lw.attn_norm_size = static_cast<int>(an->shape[0]);
         jobs.push_back({an, reinterpret_cast<void **>(&lw.d_attn_norm),
                         NormKind(an)});
     } else {
         auto *qn = FindRaw(raw, "self_attn.q_norm.weight");
-        if (qn && !qn->shape.empty())
+        if (qn && qn->rank > 0)
             lw.q_norm_size = static_cast<int>(qn->shape[0]);
         auto *kn = FindRaw(raw, "self_attn.k_norm.weight");
-        if (kn && !kn->shape.empty())
+        if (kn && kn->rank > 0)
             lw.k_norm_size = static_cast<int>(kn->shape[0]);
         jobs.push_back({qn, reinterpret_cast<void **>(&lw.d_q_norm),
                         NormKind(qn)});
@@ -451,7 +426,7 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
 
     // Global raw (final norm).
     if (fs::exists(pinned_dir / "global.arrow")) {
-        auto raw_res = LoadRawFile((pinned_dir / "global.arrow").string());
+        auto raw_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
         if (!raw_res.ok()) {
             log::error("[qwen_load] global.arrow read failed: " +
                        raw_res.status().ToString());
@@ -459,23 +434,23 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
             return false;
         }
         auto *fn = FindRaw(*raw_res, "norm.weight");
-        if (fn && !fn->shape.empty()) {
+        if (fn && fn->rank > 0) {
             int64_t n = fn->shape[0];
             pw.final_norm_size = static_cast<int>(n);
             cudaError_t e = cudaMalloc(&pw.d_final_norm,
-                                       static_cast<size_t>(n) * sizeof(__half));
+                                        static_cast<size_t>(n) * sizeof(__half));
             if (e != cudaSuccess) { pw.Free(); return false; }
             if (fn->dtype == "F32") {
                 std::vector<__half> h(static_cast<size_t>(n));
                 const float *src =
-                    reinterpret_cast<const float *>(fn->data.data());
+                    reinterpret_cast<const float *>(fn->data);
                 for (int64_t i = 0; i < n; ++i)
                     h[static_cast<size_t>(i)] = __float2half(src[i]);
                 e = cudaMemcpyAsync(pw.d_final_norm, h.data(),
                                     static_cast<size_t>(n) * sizeof(__half),
                                     cudaMemcpyHostToDevice, stream);
             } else {
-                e = ring.UploadBf16AsFp16(fn->data.data(), n, pw.d_final_norm,
+                e = ring.UploadBf16AsFp16(fn->data, n, pw.d_final_norm,
                                           stream, bytes_acc);
             }
             if (e != cudaSuccess) { pw.Free(); return false; }
@@ -483,7 +458,7 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
     }
     // Global NVFP4 (embed + head).
     if (fs::exists(pinned_dir / "global_nvfp4.arrow")) {
-        auto nv_res = LoadNvfp4File((pinned_dir / "global_nvfp4.arrow").string());
+        auto nv_res = LoadDenseNvfp4BatchViews(pinned_dir / "global_nvfp4.arrow");
         if (!nv_res.ok()) {
             log::error("[qwen_load] global_nvfp4.arrow read failed: " +
                        nv_res.status().ToString());
@@ -519,14 +494,15 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
         std::string nv_name  = absl::StrCat("layer_", l, "_nvfp4.arrow");
         if (!fs::exists(pinned_dir / raw_name)) continue;
 
-        auto raw = LoadRawFile((pinned_dir / raw_name).string());
+        auto raw = LoadTensorBatchViews(pinned_dir / raw_name);
         if (!raw.ok()) {
-            log::error("[qwen_load] " + raw_name + " read failed");
+            log::error("[qwen_load] " + raw_name + " read failed: " +
+                       raw.status().ToString());
             continue;
         }
-        std::vector<DenseNvfp4Record> nv;
+        DenseNvfp4BatchViews nv;
         if (fs::exists(pinned_dir / nv_name)) {
-            auto nv_res = LoadNvfp4File((pinned_dir / nv_name).string());
+            auto nv_res = LoadDenseNvfp4BatchViews(pinned_dir / nv_name);
             if (nv_res.ok()) nv = std::move(*nv_res);
         }
 
