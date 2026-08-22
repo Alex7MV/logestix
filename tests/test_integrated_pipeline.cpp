@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -93,11 +94,14 @@ public:
     // prompt framing has a live tokenizer to encode against.
     ArrowTokenizerDb& Tokenizer() override { return SharedSyntheticTokDb(); }
 
+    std::shared_mutex& ResidencyMutex() override { return residency_mutex_; }
+
     std::uint64_t inferred_ = 0;
 
 private:
     std::string type_;
     bool frozen_ = false;
+    std::shared_mutex residency_mutex_;
 };
 
 std::string OpenAIRequestDoc(std::string_view model, std::int64_t prompt_tokens) {

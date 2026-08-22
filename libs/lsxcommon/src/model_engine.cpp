@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/resource_governor.h"
 
 namespace lsxcommon {
 
@@ -14,6 +15,7 @@ InferenceEngine &InferenceEngine::Instance()
 
 bool InferenceEngine::InitializeEngine()
 {
+    ResourceGovernor::Instance().Initialize(GovernorOptions{});
     initialized_.store(true, std::memory_order_release);
     spdlog::debug("[model_engine] initialized");
     return true;
@@ -22,6 +24,7 @@ bool InferenceEngine::InitializeEngine()
 void InferenceEngine::ShutdownEngine()
 {
     initialized_.store(false, std::memory_order_release);
+    ResourceGovernor::Instance().Shutdown();
     spdlog::debug("[model_engine] shutdown");
 }
 

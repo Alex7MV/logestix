@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <utility>
 
@@ -33,6 +34,8 @@ public:
 
     ArrowTokenizerDb &Tokenizer() override { return *tok_db_; }
 
+    std::shared_mutex &ResidencyMutex() override { return residency_mutex_; }
+
     SafetensorsModel Inspect() override;
     std::uint64_t ResidentWeightBytes() const override { return resident_bytes_; }
     const VramProfile &VramRequirements() const override { return vram_; }
@@ -51,6 +54,9 @@ protected:
     // Conversion-time VRAM requirements; populated by subclass Load() from
     // the model's model.index.json "vram" block.
     VramProfile vram_;
+
+    // Residency lock (see IModel::ResidencyMutex). Held shared during Infer.
+    std::shared_mutex residency_mutex_;
 
     ~ModelBase() override = default;
 };
