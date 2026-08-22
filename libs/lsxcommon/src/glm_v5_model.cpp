@@ -3,13 +3,13 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <spdlog/spdlog.h>
 
 #include <filesystem>
 #include <shared_mutex>
 
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/glm_inference.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/resource_governor.h"
 
@@ -67,12 +67,10 @@ bool GlmV5Model::Load()
 
     namespace fs = std::filesystem;
     fs::path idx = fs::path(cfg_.model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(idx))
-        idx = fs::path(cfg_.model_path) / "model.index.json";
     auto topo = glm::load_topology(idx.string());
     if (!topo.error_msg.empty()) {
-        spdlog::error("[glm-model] topology error in {}: {}",
-                      idx.string(), topo.error_msg);
+        lsxcommon::log::error("[glm-model] topology error in "
+                              + idx.string() + ": " + topo.error_msg);
         tok_db_.reset();
         return false;
     }

@@ -1,9 +1,9 @@
 #include "lsxcommon/converter.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/byte_unicode.h"
+#include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <simdjson.h>
-#include <spdlog/spdlog.h>
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -291,8 +291,9 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
             // encoder, so keep them as ordinary tokens whose token_bytes carry
             // the raw UTF-8 text; decode must emit them verbatim (no stripping).
             if (!special)
-                spdlog::debug("tokenizer: non-byte-level token id={} kept as text: '{}'",
-                              id, it->second);
+                lsxcommon::log::debug(absl::StrCat(
+                    "tokenizer: non-byte-level token id=", id,
+                    " kept as text: '", it->second, "'"));
             row.is_special = special ? 1 : 0;
             row.token_bytes.assign(
                 reinterpret_cast<const uint8_t *>(it->second.data()),

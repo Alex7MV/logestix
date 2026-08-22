@@ -1,5 +1,7 @@
 #include "qwen_3_8_27b_model.h"
-#include <spdlog/spdlog.h>
+#include "lsxcommon/log.h"
+
+#include <absl/strings/str_cat.h>
 
 namespace lsxcommon {
 
@@ -16,8 +18,9 @@ bool Qwen3_8_27BModel::ValidateGeometry(const qwen::QwenTopology &top) const
     if (SyntheticGeometryAllowed()) return true;
     auto check = [&](const char *name, int expected, int actual) {
         if (expected != actual) {
-            spdlog::error("[qwen3.8-27b] geometry mismatch: {} expected={} got={}",
-                          name, expected, actual);
+            lsxcommon::log::error(absl::StrCat(
+                "[qwen3.8-27b] geometry mismatch: ", name, " expected=",
+                expected, " got=", actual));
             return false;
         }
         return true;

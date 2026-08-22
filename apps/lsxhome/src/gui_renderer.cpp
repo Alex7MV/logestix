@@ -11,8 +11,9 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
-#include <spdlog/spdlog.h>
+#include "lsxcommon/log.h"
 
+#include <absl/strings/str_cat.h>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -295,8 +296,9 @@ void BuildWorkspaceSkeleton(GuiBridge& bridge) noexcept {
             TokenPayload buf[256];
             const std::size_t n = bridge.DrainAll(buf, 256);
             for (std::size_t i = 0; i < n; ++i) {
-                spdlog::info("token id={} seq={} text={}", buf[i].token_id,
-                             buf[i].stream_seq, buf[i].text);
+                lsxcommon::log::info(absl::StrCat(
+                    "token id=", buf[i].token_id, " seq=", buf[i].stream_seq,
+                    " text=", buf[i].text));
             }
         }
         ImGui::Text("Published: %zu\nDropped: %zu\nPoolSlots: %zu",

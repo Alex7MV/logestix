@@ -3,14 +3,15 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
-#include <spdlog/spdlog.h>
 
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/tokenizer.h"
 
+#include <absl/strings/str_cat.h>
 #include <cstdlib>
 
 namespace lsxcommon {
@@ -39,25 +40,26 @@ bool QwenBaseModel::Load()
             cudaStreamDestroy(st);
             weights_loaded_ = ok;
             if (!ok) {
-                spdlog::error("[qwen-model] LoadQwenPinnedWeights failed");
+                lsxcommon::log::error(
+                    "[qwen-model] LoadQwenPinnedWeights failed");
                 return false;
             }
             // Dense residency (spec 3.3): the entire model is resident after
             // Load(), so ResidentWeightBytes() reports the full persistent set.
             resident_bytes_ = pw_.resident_bytes;
             vram_ = pw_.top.vram;
-            spdlog::info("[qwen-model] pinned weights loaded: {} layers "
-                         "({} bytes resident)",
-                         pw_.layers.size(), pw_.resident_bytes);
+            lsxcommon::log::info(absl::StrCat(
+                "[qwen-model] pinned weights loaded: ", pw_.layers.size(),
+                " layers (", pw_.resident_bytes, " bytes resident)"));
         } else {
-            spdlog::error("[qwen-model] stream create failed");
+            lsxcommon::log::error("[qwen-model] stream create failed");
             return false;
         }
     }
     FinishLoad();
     if (!ValidateGeometry(pw_.top)) {
-        spdlog::error("[qwen-model] geometry validation failed for {}",
-                      cfg_.model_path);
+        lsxcommon::log::error(absl::StrCat(
+            "[qwen-model] geometry validation failed for ", cfg_.model_path));
         return false;
     }
     return true;

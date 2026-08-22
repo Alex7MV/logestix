@@ -1,10 +1,11 @@
 #include "lsxcommon/loader.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/diagnostics.h"
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
-#include <spdlog/spdlog.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 #include <cstring>
 
 #ifdef LSXCOMMON_HAS_CUDA
@@ -182,8 +183,8 @@ arrow::Status Loader::RegisterCudaPinned(LoadedExpert &expert)
     }
 
     expert.cuda_registered = true;
-    spdlog::debug("Registered {} buffers as CUDA pinned memory",
-                  batch->num_columns());
+    lsxcommon::log::debug(absl::StrFormat("Registered {} buffers as CUDA pinned memory",
+                                          batch->num_columns()));
 
 #else
     (void)expert;
@@ -208,8 +209,8 @@ void Loader::UnregisterCudaPinned(LoadedExpert &expert)
                                        " buf=", b).c_str(), *buf);
                 cudaError_t e = cudaHostUnregister(buf->mutable_data());
                 if (e != cudaSuccess) {
-                    spdlog::warn("cudaHostUnregister failed: {}",
-                                  cudaGetErrorString(e));
+                    lsxcommon::log::warn(absl::StrFormat("cudaHostUnregister failed: {}",
+                                                         cudaGetErrorString(e)));
                 }
             }
         }

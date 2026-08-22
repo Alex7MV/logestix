@@ -2,8 +2,9 @@
 
 #include <mutex>
 #include <absl/container/flat_hash_map.h>
+#include <absl/strings/str_format.h>
 
-#include <spdlog/spdlog.h>
+#include "lsxcommon/log.h"
 
 #include "deepseek_inference_load.cuh"
 
@@ -35,8 +36,10 @@ void LsxModelFactory::Register(const std::string &type, CreateModelFn fn)
     std::lock_guard<std::mutex> lock(RegistryMutex());
     auto &reg = Registry();
     if (reg.find(type) != reg.end())
-        spdlog::warn("[factory] model type '{}' re-registered, overwriting "
-                     "the previous factory function", type);
+        log::warn(absl::StrFormat(
+            "[factory] model type '{}' re-registered, overwriting "
+            "the previous factory function",
+            type));
     reg[type] = std::move(fn);
 }
 
@@ -59,8 +62,9 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
     if (type.empty()) {
         type = DetectType(cfg.model_path);
         if (type.empty()) {
-            spdlog::error("[factory] cannot autodetect model type from {}",
-                          cfg.model_path);
+            log::error(absl::StrFormat(
+                "[factory] cannot autodetect model type from {}",
+                cfg.model_path));
             return nullptr;
         }
     }
@@ -71,7 +75,9 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
         auto &reg = Registry();
         auto it = reg.find(type);
         if (it == reg.end()) {
-            spdlog::error("[factory] no registered model for type '{}'", type);
+            log::error(
+                absl::StrFormat("[factory] no registered model for type '{}'",
+                                type));
             return nullptr;
         }
         // Copy the std::function out while holding the lock, then invoke it

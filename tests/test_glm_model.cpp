@@ -19,14 +19,14 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
     auto base = fs::temp_directory_path() / "logestix_glm_model";
     fs::remove_all(base);
     auto model_home = base / "GLM-5.2";
-    auto out = model_home / "logestix";
     fs::create_directories(model_home);
 
     glmtest::WriteSafetensors(model_home, "model-00001-of-00001.safetensors",
                               glmtest::BuildSyntheticModel());
     glmtest::WriteConfig(model_home);
     glmtest::WriteTokenizer(model_home);
-    auto st = lsxcommon::glm::ConvertGlmModel(model_home.string(), out);
+    // The converter appends the mandatory "logestix" subdirectory itself.
+    auto st = lsxcommon::glm::ConvertGlmModel(model_home.string(), model_home);
     REQUIRE(st.ok());
 
     // Autodetect from logestix/model.index.json ("GLM-5.2" -> "glm-5.2").
@@ -77,14 +77,13 @@ TEST_CASE("GLM model explicit type create", "[glm][model]")
     auto base = fs::temp_directory_path() / "logestix_glm_model_type";
     fs::remove_all(base);
     auto model_home = base / "GLM-5.2";
-    auto out = model_home / "logestix";
     fs::create_directories(model_home);
 
     glmtest::WriteSafetensors(model_home, "model-00001-of-00001.safetensors",
                               glmtest::BuildSyntheticModel());
     glmtest::WriteConfig(model_home);
     glmtest::WriteTokenizer(model_home);
-    REQUIRE(lsxcommon::glm::ConvertGlmModel(model_home.string(), out).ok());
+    REQUIRE(lsxcommon::glm::ConvertGlmModel(model_home.string(), model_home).ok());
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_home.string();

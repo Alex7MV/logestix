@@ -1,13 +1,14 @@
 #include "lsxcommon/core.h"
+#include <absl/strings/str_format.h>
 #include "lsxcommon/common.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/log.h"
 #include <cstring>
 #include <filesystem>
-#include <spdlog/spdlog.h>
 #include <string>
 
 int main(int argc, char* argv[]) {
@@ -28,7 +29,7 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("lsxcli_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    spdlog::info("Model path: {}", model_path);
+    lsxcommon::log::info(absl::StrFormat("Model path: {}", model_path));
 
     if (info || infofull) {
         int rc = lsxcommon::runtime::RunCliInspect(model_path, infofull);

@@ -328,8 +328,6 @@ bool LoadQwenPinnedWeights(const std::string &output_root,
     }
 
     auto idx = fs::path(output_root) / "logestix" / "model.index.json";
-    if (!fs::exists(idx))
-        idx = fs::path(output_root) / "model.index.json";
     if (fs::exists(idx)) {
         pw.top = load_qwen_topology(idx.string());
         if (!pw.top.error_msg.empty()) {

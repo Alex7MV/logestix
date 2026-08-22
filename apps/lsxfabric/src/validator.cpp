@@ -1,12 +1,13 @@
 #include "validator.h"
 #include <simdjson.h>
-#include <spdlog/spdlog.h>
 #include <fstream>
 #include <filesystem>
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include "lsxcommon/schema.h"
+#include "lsxcommon/log.h"
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 #include <cmath>
 
 namespace lsxfabric {
@@ -18,7 +19,7 @@ ModelInfo LoadModelIndex(const std::string &index_path)
     ModelInfo info;
     std::ifstream f(index_path);
     if (!f) {
-        spdlog::error("Cannot open index: {}", index_path);
+        lsxcommon::log::error(absl::StrFormat("Cannot open index: {}", index_path));
         return info;
     }
     std::string json_str((std::istreambuf_iterator<char>(f)),
@@ -28,13 +29,13 @@ ModelInfo LoadModelIndex(const std::string &index_path)
     simdjson::padded_string padded(json_str.data(), json_str.size());
     simdjson::ondemand::document doc;
     if (parser.iterate(padded).get(doc) != simdjson::SUCCESS) {
-        spdlog::error("JSON parse error in index");
+        lsxcommon::log::error("JSON parse error in index");
         return info;
     }
 
     simdjson::ondemand::object root;
     if (doc.get_object().get(root) != simdjson::SUCCESS) {
-        spdlog::error("Index root not an object");
+        lsxcommon::log::error("Index root not an object");
         return info;
     }
 
@@ -65,22 +66,22 @@ ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path)
     ValidationResult r;
 
     auto result = arrow::io::ReadableFile::Open(arrow_path);
-    if (!result.ok()) { r.add_error(); spdlog::error("  Cannot open {}", arrow_path); return r; }
+    if (!result.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot open {}", arrow_path)); return r; }
     auto reader = arrow::ipc::RecordBatchFileReader::Open(result->get());
-    if (!reader.ok()) { r.add_error(); spdlog::error("  Cannot read batch from {}", arrow_path); return r; }
+    if (!reader.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot read batch from {}", arrow_path)); return r; }
     auto batch = (*reader)->ReadRecordBatch(0);
-    if (!batch.ok()) { r.add_error(); spdlog::error("  Cannot read record from {}", arrow_path); return r; }
+    if (!batch.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot read record from {}", arrow_path)); return r; }
 
     auto rb = *batch;
     using D = lsxcommon::DenseNvfp4Schema;
     const int expected_cols = 6;
     if (rb->num_columns() != expected_cols) {
-        spdlog::error("  DenseNvfp4Schema: expected {} columns, got {}", expected_cols, rb->num_columns());
+        lsxcommon::log::error(absl::StrFormat("  DenseNvfp4Schema: expected {} columns, got {}", expected_cols, rb->num_columns()));
         r.add_error(); return r;
     }
 
     int64_t n = rb->num_rows();
-    spdlog::info("  DenseNvfp4Schema: {} tensors in {}", n, arrow_path);
+    lsxcommon::log::info(absl::StrFormat("  DenseNvfp4Schema: {} tensors in {}", n, arrow_path));
 
     // Validate packed binary (E2M1 nibbles).
     auto packed_arr = std::static_pointer_cast<arrow::LargeBinaryArray>(rb->column(D::kIdxPacked));
@@ -88,7 +89,7 @@ ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path)
         auto view = packed_arr->GetView(i);
         if (!ValidateNVFP4Data(reinterpret_cast<const uint8_t*>(view.data()),
                                static_cast<int64_t>(view.size()))) {
-            spdlog::error("  Packed data invalid at row {}", i);
+            lsxcommon::log::error(absl::StrFormat("  Packed data invalid at row {}", i));
             r.add_error();
         }
     }
@@ -100,7 +101,7 @@ ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path)
     for (int64_t i = 0; i < n; ++i) {
         int64_t count = offsets[i + 1] - offsets[i];
         if (!ValidateE4M3Scales(scales_u8->raw_values() + offsets[i], count)) {
-            spdlog::error("  E4M3 scales invalid at row {}", i);
+            lsxcommon::log::error(absl::StrFormat("  E4M3 scales invalid at row {}", i));
             r.add_error();
         }
     }
@@ -109,7 +110,7 @@ ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path)
     auto gs_arr = std::static_pointer_cast<arrow::FloatArray>(rb->column(D::kIdxGlobalScale));
     for (int64_t i = 0; i < n; ++i) {
         if (!ValidateGlobalScale(gs_arr->Value(i))) {
-            spdlog::error("  Global scale invalid at row {}: {}", i, gs_arr->Value(i));
+            lsxcommon::log::error(absl::StrFormat("  Global scale invalid at row {}: {}", i, gs_arr->Value(i)));
             r.add_error();
         }
     }
@@ -127,17 +128,17 @@ ValidationResult ValidatePinnedTensors(const std::string &pinned_dir, int64_t ex
 
     auto check_batch = [&](const std::string &path) {
         auto result = arrow::io::ReadableFile::Open(path);
-        if (!result.ok()) { r.add_error(); spdlog::error("  Cannot open {}", path); return; }
+        if (!result.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot open {}", path)); return; }
         auto reader = arrow::ipc::RecordBatchFileReader::Open(result->get());
-        if (!reader.ok()) { r.add_error(); spdlog::error("  Cannot read batch from {}", path); return; }
+        if (!reader.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot read batch from {}", path)); return; }
         auto batch = (*reader)->ReadRecordBatch(0);
-        if (!batch.ok()) { r.add_error(); spdlog::error("  Cannot read record from {}", path); return; }
+        if (!batch.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot read record from {}", path)); return; }
         int ncol = (*batch)->num_columns();
-        spdlog::info("  {}: {} columns, {} rows", path, ncol, (*batch)->num_rows());
+        lsxcommon::log::info(absl::StrFormat("  {}: {} columns, {} rows", path, ncol, (*batch)->num_rows()));
         loaded += ncol;
     };
 
-    spdlog::info("Validating pinned tensors from {}...", pinned_dir);
+    lsxcommon::log::info(absl::StrFormat("Validating pinned tensors from {}...", pinned_dir));
 
     auto global_path = fs::path(pinned_dir) / "global.arrow";
     if (fs::exists(global_path))
@@ -150,7 +151,7 @@ ValidationResult ValidatePinnedTensors(const std::string &pinned_dir, int64_t ex
     }
 
     if (expected_count > 0 && loaded != expected_count) {
-        spdlog::warn("  Expected {} pinned tensors, loaded {}", expected_count, loaded);
+        lsxcommon::log::warn(absl::StrFormat("  Expected {} pinned tensors, loaded {}", expected_count, loaded));
         r.add_warning();
     }
     return r;
@@ -201,8 +202,8 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
 
     auto rb = *batch;
     if (rb->num_columns() != lsxcommon::ExpertSchema::kNumFields) {
-        spdlog::error("  Expert schema: expected {} columns, got {}",
-            lsxcommon::ExpertSchema::kNumFields, rb->num_columns());
+        lsxcommon::log::error(absl::StrFormat("  Expert schema: expected {} columns, got {}",
+            lsxcommon::ExpertSchema::kNumFields, rb->num_columns()));
         r.add_error(); return r;
     }
 
@@ -221,7 +222,7 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
             auto data = reinterpret_cast<const uint8_t*>(view.data());
             auto size = static_cast<int64_t>(view.size());
             if (!ValidateNVFP4Data(data, size)) {
-                spdlog::error("  NVFP4 data invalid in {} at row {}", name, i);
+                lsxcommon::log::error(absl::StrFormat("  NVFP4 data invalid in {} at row {}", name, i));
                 r.add_error();
             }
         }
@@ -236,7 +237,7 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
             int64_t count = offsets[i + 1] - offsets[i];
             const uint8_t *data = u8->raw_values() + offsets[i];
             if (!ValidateE4M3Scales(data, count)) {
-                spdlog::error("  E4M3 scales invalid in {} at row {}", name, i);
+                lsxcommon::log::error(absl::StrFormat("  E4M3 scales invalid in {} at row {}", name, i));
                 r.add_error();
             }
         }
@@ -248,7 +249,7 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
         for (int64_t i = 0; i < n; ++i) {
             float s = f32->Value(i);
             if (!ValidateGlobalScale(s)) {
-                spdlog::error("  Global scale invalid in {} at row {}: {}", name, i, s);
+                lsxcommon::log::error(absl::StrFormat("  Global scale invalid in {} at row {}: {}", name, i, s));
                 r.add_error();
             }
         }
@@ -264,7 +265,7 @@ ValidationResult ValidateExpert(const std::string &arrow_path)
     check_global(E::kIdxW2GlobalScale, "w2_global_scale");
     check_global(E::kIdxW3GlobalScale, "w3_global_scale");
 
-    spdlog::info("  Expert validated: {} rows", n);
+    lsxcommon::log::info(absl::StrFormat("  Expert validated: {} rows", n));
     return r;
 }
 
@@ -275,9 +276,9 @@ ValidationResult RunValidator(const std::string &model_path)
     namespace fs = std::filesystem;
     ValidationResult r;
 
-    auto index_path = fs::path(model_path) / "model.index.json";
+    auto index_path = fs::path(model_path) / "logestix" / "model.index.json";
     if (!fs::exists(index_path)) {
-        spdlog::error("model.index.json not found in {}", model_path);
+        lsxcommon::log::error(absl::StrFormat("model.index.json not found in {}/logestix", model_path));
         r.add_error(); return r;
     }
 
@@ -286,13 +287,13 @@ ValidationResult RunValidator(const std::string &model_path)
     bool is_glm = (info.format == "logestix-glm");
 
     if (info.format != "logestix-v1" && !is_qwen && !is_glm) {
-        spdlog::warn("  Unknown format '{}', continuing anyway", info.format);
+        lsxcommon::log::warn(absl::StrFormat("  Unknown format '{}', continuing anyway", info.format));
         r.add_warning();
     }
 
-    spdlog::info("Model: {} format={} layers={} experts/layer={} pinned={} experts={}",
+    lsxcommon::log::info(absl::StrFormat("Model: {} format={} layers={} experts/layer={} pinned={} experts={}",
         info.model_name, info.format, info.num_layers, info.experts_per_layer,
-        info.total_pinned, info.total_experts);
+        info.total_pinned, info.total_experts));
 
     auto pinned_dir = fs::path(model_path) / "pinned";
     if (fs::exists(pinned_dir)) {
@@ -300,13 +301,13 @@ ValidationResult RunValidator(const std::string &model_path)
         if (!pr.ok) r.add_error();
         r.warnings += pr.warnings;
     } else {
-        spdlog::warn("  No pinned/ directory found");
+        lsxcommon::log::warn("  No pinned/ directory found");
         r.add_warning();
     }
 
     int experts_checked = 0;
     if (is_qwen || is_glm) {
-        spdlog::info("  Format {}: validating DenseNvfp4Schema tensors", info.format);
+        lsxcommon::log::info(absl::StrFormat("  Format {}: validating DenseNvfp4Schema tensors", info.format));
         auto pinned_dir = fs::path(model_path) / "pinned";
         if (fs::exists(pinned_dir)) {
             for (const auto &entry : fs::directory_iterator(pinned_dir)) {
@@ -323,11 +324,11 @@ ValidationResult RunValidator(const std::string &model_path)
                 / absl::StrCat("experts/layer_", layer)
                 / "exp_000.arrow";
             if (!fs::exists(exp_path)) {
-                spdlog::warn("  Expert not found: {}", exp_path.string());
+                lsxcommon::log::warn(absl::StrFormat("  Expert not found: {}", exp_path.string()));
                 r.add_warning();
                 continue;
             }
-            spdlog::info("Validating expert layer={}...", layer);
+            lsxcommon::log::info(absl::StrFormat("Validating expert layer={}...", layer));
             auto er = ValidateExpert(exp_path.string());
             if (!er.ok) r.add_error();
             r.warnings += er.warnings;
@@ -335,15 +336,15 @@ ValidationResult RunValidator(const std::string &model_path)
         }
     }
 
-    spdlog::info("=== Validation Summary ===");
-    spdlog::info("  Pinned tensors checked: {}", info.total_pinned);
-    spdlog::info("  Experts checked: {}", experts_checked);
-    spdlog::info("  Errors: {}", r.errors);
-    spdlog::info("  Warnings: {}", r.warnings);
+    lsxcommon::log::info("=== Validation Summary ===");
+    lsxcommon::log::info(absl::StrFormat("  Pinned tensors checked: {}", info.total_pinned));
+    lsxcommon::log::info(absl::StrFormat("  Experts checked: {}", experts_checked));
+    lsxcommon::log::info(absl::StrFormat("  Errors: {}", r.errors));
+    lsxcommon::log::info(absl::StrFormat("  Warnings: {}", r.warnings));
     if (r.ok)
-        spdlog::info("  Result: PASS");
+        lsxcommon::log::info("  Result: PASS");
     else
-        spdlog::error("  Result: FAIL");
+        lsxcommon::log::error("  Result: FAIL");
 
     return r;
 }

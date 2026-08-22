@@ -1,5 +1,7 @@
 #include "lsxcommon/common.h"
-#include <spdlog/spdlog.h>
+#include "lsxcommon/log.h"
+
+#include <absl/strings/str_format.h>
 
 #ifdef LOGESTIX_HAS_CUDA
 #include <cuda_runtime.h>
@@ -9,7 +11,7 @@ namespace lsxcommon {
 
 void version()
 {
-    spdlog::info("logestix v0.1.0");
+    log::info("logestix v0.1.0");
 }
 
 void log_gpu_info()
@@ -19,7 +21,7 @@ void log_gpu_info()
     auto err = cudaGetDeviceCount(&count);
     if (err != cudaSuccess || count == 0)
     {
-        spdlog::warn("No CUDA-capable GPU found");
+        log::warn("No CUDA-capable GPU found");
         return;
     }
     for (int i = 0; i < count; ++i)
@@ -27,13 +29,14 @@ void log_gpu_info()
         cudaDeviceProp props{};
         if (cudaGetDeviceProperties(&props, i) == cudaSuccess)
         {
-            spdlog::info("GPU {}: {} (compute {}.{} | {} MiB)",
-                i, props.name, props.major, props.minor,
-                props.totalGlobalMem / (1024 * 1024));
+            log::info(absl::StrFormat(
+                "GPU {}: {} (compute {}.{} | {} MiB)", i, props.name,
+                props.major, props.minor,
+                props.totalGlobalMem / (1024 * 1024)));
         }
     }
 #else
-    spdlog::info("CUDA support not compiled in");
+    log::info("CUDA support not compiled in");
 #endif
 }
 
