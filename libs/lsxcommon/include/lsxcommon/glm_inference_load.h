@@ -33,6 +33,13 @@ constexpr int kGlmIndexNHeads = 32;
 constexpr int kGlmIndexHeadDim = 128;
 constexpr float kGlmRmsEps = 1e-5f;
 
+// In-place device conversion of raw BF16 bits to FP16 bits. d_buf holds
+// numel BF16 values on entry and their FP16 images on exit. Rounding is
+// nearest-even via __float2half — bit-identical to the legacy host scalar
+// path. d_buf must be 16-byte aligned.
+cudaError_t GlmBf16ToHalfInPlace(uint16_t *d_buf, int64_t numel,
+                                 cudaStream_t stream);
+
 // Per-layer pinned weights for one GLM-5.2 layer. All weights are stored as
 // raw BF16 in the logestix layout and uploaded as FP16 here (host-side
 // BF16→FP16 conversion, mirroring the DeepSeek loader). Dense layers (0-2)
