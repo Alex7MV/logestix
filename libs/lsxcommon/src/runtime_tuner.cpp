@@ -9,6 +9,12 @@ namespace lifecycle {
 
 RuntimeTuner::RuntimeTuner(ResourceGovernor *gov, Lease lease,
                            std::uint64_t slot_stride_bytes,
+                           const TuningBounds &bounds)
+    : RuntimeTuner(gov, std::move(lease), slot_stride_bytes, bounds, Config{})
+{}
+
+RuntimeTuner::RuntimeTuner(ResourceGovernor *gov, Lease lease,
+                           std::uint64_t slot_stride_bytes,
                            const TuningBounds &bounds, const Config &cfg)
     : gov_(gov), lease_(std::move(lease)),
       stride_(slot_stride_bytes > 0 ? slot_stride_bytes : 1),

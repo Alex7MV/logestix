@@ -126,6 +126,118 @@ TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[deepseek][schema][e4m3
     }
 }
 
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
+#include "deepseek_inference_load.cuh"
+#include "deepseek_test_fixture.h"
+
+namespace {
+
+uint16_t RefDsBf16ToHalf(uint16_t bits)
+{
+    uint32_t f32_bits = static_cast<uint32_t>(bits) << 16;
+    float f;
+    std::memcpy(&f, &f32_bits, sizeof(f));
+    __half h = __float2half(f);
+    uint16_t out;
+    std::memcpy(&out, &h, sizeof(out));
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Fast pinned load uploads synthetic model bit-exact",
+          "[deepseek][loader][fastload]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_fast";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw;
+    REQUIRE(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+            == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    CHECK(pw.vocab_size == dsfixtest::kVocab);
+    CHECK(pw.d_embed != nullptr);
+    CHECK(pw.d_head != nullptr);
+    CHECK(pw.d_final_norm != nullptr);
+    CHECK(pw.resident_bytes > 0);
+
+    // embed[0] must equal BF16(0x4248) converted to FP16 bit-exactly.
+    {
+        uint16_t got = 0;
+        REQUIRE(cudaMemcpy(&got, pw.d_embed, 2, cudaMemcpyDeviceToHost)
+                == cudaSuccess);
+        CHECK(got == RefDsBf16ToHalf(0x4248));
+    }
+    {
+        auto &lw = pw.layers[1];
+        REQUIRE(lw.d_ffn_norm != nullptr);
+        uint16_t got = 0;
+        REQUIRE(cudaMemcpy(&got, lw.d_ffn_norm, 2, cudaMemcpyDeviceToHost)
+                == cudaSuccess);
+        CHECK(got == RefDsBf16ToHalf(0x3C00));
+    }
+
+    pw.Free();
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("DeepSeek loader sizes layers from topology",
+          "[deepseek][loader][fastload]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_topo";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw;
+    REQUIRE(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+            == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    // Topology-driven sizing (index.json says 3; was hardcoded 43).
+    CHECK(pw.layers.size() == dsfixtest::kNumLayers);
+
+    pw.Free();
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("DeepSeek loader errors on missing layer file",
+          "[deepseek][loader][strict]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_missing";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+    fs::remove(model / "logestix" / "pinned" / "layer_1.arrow");
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw;
+    CHECK(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+          == cudaErrorInvalidValue);
+    pw.Free();
+
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
 TEST_CASE("Load expert with empty w1 fields", "[deepseek][loader][edge]")
 {
     auto expert = MakeTestExpert();
@@ -162,4 +274,85 @@ TEST_CASE("Load expert with empty w1 fields", "[deepseek][loader][edge]")
         CHECK(loaded.w3_global_scale == expert.w3_global_scale);
     }
     fs::remove(path);
+}
+
+namespace {
+
+bool DsInRange(const void *p, const void *base, size_t bytes)
+{
+    return p >= base &&
+           static_cast<const uint8_t *>(p) <
+               static_cast<const uint8_t *>(base) + bytes;
+}
+
+} // namespace
+
+TEST_CASE("Arena-backed DeepSeek load: containment + idempotency",
+          "[deepseek][loader][fastload]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_arena";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw;
+    REQUIRE(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+            == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(pw.layers.size() == dsfixtest::kNumLayers);
+
+    for (int l = 0; l < dsfixtest::kNumLayers; ++l) {
+        auto &lw = pw.layers[l];
+        REQUIRE(lw.d_arena != nullptr);
+        REQUIRE(lw.arena_bytes > 0);
+        CHECK(DsInRange(lw.d_ffn_norm, lw.d_arena, lw.arena_bytes));
+        CHECK(DsInRange(lw.d_gate_weight, lw.d_arena, lw.arena_bytes));
+        CHECK(DsInRange(lw.d_wq_a, lw.d_arena, lw.arena_bytes));
+        CHECK(DsInRange(lw.d_wq_a_scales, lw.d_arena, lw.arena_bytes));
+        CHECK(DsInRange(lw.d_hc_attn_fn, lw.d_arena, lw.arena_bytes));
+        CHECK(DsInRange(lw.d_attn_sink, lw.d_arena, lw.arena_bytes));
+    }
+
+    // Idempotent re-load: frees the previous set internally, no leak.
+    REQUIRE(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+            == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    CHECK(pw.layers.size() == dsfixtest::kNumLayers);
+
+    pw.Free();
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("DeepSeek loader errors on malformed tensor",
+          "[deepseek][loader][strict]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_loader_badtensor";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+
+    // Corrupt global.arrow: truncate model.norm.weight payload below its
+    // declared shape size.
+    {
+        auto recs = dsfixtest::GlobalRecords();
+        recs[2].data.resize(2);   // shape says kHidden elements
+        REQUIRE(dsfixtest::WriteGlobalArrow(model, recs).ok());
+    }
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    lsxcommon::gpu::PinnedWeights pw;
+    CHECK(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
+          == cudaErrorInvalidValue);
+    pw.Free();
+
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
 }

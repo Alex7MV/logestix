@@ -1,11 +1,11 @@
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/converter.h"
 #include "lsxcommon/schema.h"
+#include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
 #include <simdjson.h>
-#include <spdlog/spdlog.h>
 #include <absl/strings/str_cat.h>
 #include <cstdint>
 #include <cstring>
@@ -161,7 +161,8 @@ arrow::Status CheckTensorCoverage(
 
     for (auto &p : pre_set)
         if (exp_set.find(p) == exp_set.end())
-            spdlog::warn("[integrity] unexpected tensor: {}", p);
+            lsxcommon::log::warn(
+                absl::StrCat("[integrity] unexpected tensor: ", p));
 
     return arrow::Status::OK();
 }
@@ -217,16 +218,13 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
     VerificationReport r;
     std::string error;
 
-    // Resolve index location (Qwen layout vs GLM/DeepSeek layout).
+    // Resolve index location (mandatory logestix/ subdirectory).
     fs::path index_path;
     fs::path pinned_dir;
     fs::path logestix_dir = output_root / "logestix";
     if (fs::exists(logestix_dir / "model.index.json")) {
         index_path = logestix_dir / "model.index.json";
         pinned_dir = logestix_dir / "pinned";
-    } else if (fs::exists(output_root / "model.index.json")) {
-        index_path = output_root / "model.index.json";
-        pinned_dir = output_root / "pinned";
     } else {
         return arrow::Status::Invalid(
             "model.index.json not found in ", output_root.string());
@@ -316,7 +314,7 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
 
     // Expert arrows (GLM/DeepSeek layouts) must total total_experts.
     if (expected_experts > 0) {
-        auto experts_dir = output_root / "experts";
+        auto experts_dir = logestix_dir / "experts";
         if (!fs::exists(experts_dir))
             return arrow::Status::Invalid(
                 "experts dir missing: ", experts_dir.string());

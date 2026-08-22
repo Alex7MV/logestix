@@ -6,9 +6,90 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lsxcommon {
+
+// ── Zero-copy fast-load views ───────────────────────────────────────────────
+//
+// Non-owning views over mmap-backed Arrow IPC buffers. The owning UnpackBatch
+// paths copy every tensor byte out of the page cache into std::vectors before
+// the loaders memcpy them again into the pinned staging ring; the view API
+// hands out pointers INTO the mapping so uploads read straight from the page
+// cache (cudaMemcpyAsync faults pages in as it streams).
+//
+// Lifetime: keepalive owns the open MemoryMappedFile + RecordBatchFileReader +
+// RecordBatch. Every pointer inside a view is valid exactly as long as the
+// owning *BatchViews object is alive.
+
+struct TensorView {
+    std::string_view name;
+    std::string_view dtype;
+    const int64_t *shape = nullptr;
+    int64_t rank = 0;
+    const uint8_t *data = nullptr;
+    size_t bytes = 0;
+};
+
+struct TensorBatchViews {
+    std::shared_ptr<void> keepalive;
+    std::vector<TensorView> tensors;
+};
+
+struct DenseNvfp4View {
+    std::string_view name;
+    std::string_view dtype;
+    const int64_t *shape = nullptr;
+    int64_t rank = 0;
+    const uint8_t *packed = nullptr;
+    int64_t packed_bytes = 0;
+    const uint8_t *scales = nullptr;
+    int64_t scale_bytes = 0;
+    float global_scale = 1.0f;
+};
+
+struct DenseNvfp4BatchViews {
+    std::shared_ptr<void> keepalive;
+    std::vector<DenseNvfp4View> records;
+};
+
+// Non-owning view of one NVFP4-packed shared-expert row (w1=gate, w2=down,
+// w3=up; same 9-column layout as ExpertSchema).
+struct PackedExpertView {
+    const uint8_t *w1_packed = nullptr;
+    int64_t w1_packed_bytes = 0;
+    const uint8_t *w2_packed = nullptr;
+    int64_t w2_packed_bytes = 0;
+    const uint8_t *w3_packed = nullptr;
+    int64_t w3_packed_bytes = 0;
+    const uint8_t *w1_scales = nullptr;
+    int64_t w1_scale_bytes = 0;
+    const uint8_t *w2_scales = nullptr;
+    int64_t w2_scale_bytes = 0;
+    const uint8_t *w3_scales = nullptr;
+    int64_t w3_scale_bytes = 0;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
+};
+
+struct SharedExpertBatchViews {
+    std::shared_ptr<void> keepalive;
+    std::vector<PackedExpertView> layers;
+};
+
+// Opens `path` memory-mapped, reads record batch 0 and builds zero-copy
+// views. Error on any missing/malformed input.
+arrow::Result<TensorBatchViews>
+LoadTensorBatchViews(const std::filesystem::path &path);
+
+arrow::Result<DenseNvfp4BatchViews>
+LoadDenseNvfp4BatchViews(const std::filesystem::path &path);
+
+arrow::Result<SharedExpertBatchViews>
+LoadSharedExpertBatchViews(const std::filesystem::path &path);
+
 
 struct ExpertData {
     std::vector<uint8_t> w1_raw;

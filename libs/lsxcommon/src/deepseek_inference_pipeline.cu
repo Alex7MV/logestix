@@ -141,6 +141,7 @@ InferenceResult RunInferenceModel(
     const std::vector<int32_t> &input_ids,
     int max_gen_tokens,
     ::lsxcommon::ArrowTokenizerDb &tok_db,
+    PinnedWeights &pw,
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler())
 {
@@ -230,7 +231,6 @@ InferenceResult RunInferenceModel(
     float *d_norm_gamma_scratch = nullptr;
     int32_t *d_next_token = nullptr;
     float *d_next_maxv = nullptr;
-    PinnedWeights pw;
     int *h_topk = nullptr;
     float *h_top_weights = nullptr;
     uint8_t *d_pack_stage = nullptr;
@@ -284,14 +284,12 @@ InferenceResult RunInferenceModel(
     // load_pinned_weights, so d_logits can be sized to the model's actual
     // vocab_size. One device cudaMalloc + one pinned cudaMallocHost per run.
 
-    // 5. Load pinned weights
-    {
-        auto perr = load_pinned_weights(mp, pw, stream);
-        if (perr != cudaSuccess) {
-            result.error_msg = "load_pinned_weights failed";
-            goto cleanup;
-        }
-        INFER_CHECK(cudaDeviceSynchronize());
+    // 5. Pinned weights are loaded ONCE by the owning model
+    //    (DeepSeekV4FlashModel::Load) and handed in here; the loader already
+    //    ends synchronized (StreamDrain), so no device-wide sync is needed.
+    if (!pw.d_embed || pw.layers.empty()) {
+        result.error_msg = "pinned weights not loaded";
+        goto cleanup;
     }
 
     // 6. Expert index: mmap all routed-expert arrows for zero-copy access.
@@ -829,7 +827,6 @@ cleanup:
     if (t_stop)        cudaEventDestroy(t_stop);
     if (evict_done)    cudaEventDestroy(evict_done);
     free_expert_index(expert_db);
-    pw.Free();
 
     return result;
     } // end execution block

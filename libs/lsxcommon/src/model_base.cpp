@@ -1,8 +1,10 @@
 #include "lsxcommon/model_base.h"
 
+#include <absl/strings/str_format.h>
 #include <arrow/io/file.h>
 #include <filesystem>
-#include <spdlog/spdlog.h>
+
+#include "lsxcommon/log.h"
 
 namespace lsxcommon {
 
@@ -17,20 +19,25 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
         (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
     if (!v.ok() || !m.ok()) {
         if (tokenizer_optional_) {
-            spdlog::warn("[model] tokenizer arrows not found (OK for synthetic test)");
+            log::warn("[model] tokenizer arrows not found (OK for synthetic test)");
             return true;
         }
-        spdlog::error("[model] cannot open tokenizer arrows in {}", pinned.string());
+        log::error(
+            absl::StrFormat("[model] cannot open tokenizer arrows in {}",
+                            pinned.string()));
         tok_db_.reset();
         return false;
     }
     auto st = load_tokenizer_metadata(*v, *m, *tok_db_);
     if (!st.ok()) {
         if (tokenizer_optional_) {
-            spdlog::warn("[model] tokenizer load failed: {}", st.ToString());
+            log::warn(absl::StrFormat("[model] tokenizer load failed: {}",
+                                      st.ToString()));
             return true;
         }
-        spdlog::error("[model] load_tokenizer_metadata: {}", st.ToString());
+        log::error(
+            absl::StrFormat("[model] load_tokenizer_metadata: {}",
+                            st.ToString()));
         tok_db_.reset();
         return false;
     }
@@ -41,7 +48,7 @@ bool ModelBase::BeginLoad(const std::string &model_path)
 {
     if (loaded_) return true;
     if (model_path.empty()) {
-        spdlog::error("[model] empty model_path");
+        log::error("[model] empty model_path");
         return false;
     }
     return LoadTokenizerDb(model_path);

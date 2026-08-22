@@ -79,7 +79,8 @@ arrow::Status ConvertGlmModel(
     const std::filesystem::path &output_root);
 
 // Recomputes the conversion-time VRAM profile from the SOURCE safetensors
-// inventory and rewrites the "vram" block of <output_root>/model.index.json.
+// inventory and rewrites the "vram" block of
+// <output_root>/logestix/model.index.json.
 arrow::Status RecomputeGlmVram(
     const std::string &input_path,
     const std::filesystem::path &output_root);

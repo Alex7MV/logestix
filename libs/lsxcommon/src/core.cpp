@@ -1,4 +1,5 @@
 #include "lsxcommon/core.h"
+#include "lsxcommon/log.h"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/async.h>
@@ -33,7 +34,7 @@ void Core::Initialize(const std::string& log_file_path) {
         logger->set_level(spdlog::level::trace);
         spdlog::set_default_logger(logger);
 
-        spdlog::info("Logestix common library core initialized.");
+        log::info("Logestix common library core initialized.");
     } catch (const spdlog::spdlog_ex& ex) {
         // spdlog itself failed to initialize — no logger exists, so fall back
         // to a raw stderr write to surface the failure.
@@ -44,7 +45,7 @@ void Core::Initialize(const std::string& log_file_path) {
 }
 
 void Core::Shutdown() {
-    spdlog::info("Shutting down Logestix common library core...");
+    log::info("Shutting down Logestix common library core...");
     spdlog::shutdown();
 }
 

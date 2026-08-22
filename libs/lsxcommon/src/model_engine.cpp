@@ -1,7 +1,6 @@
 #include "lsxcommon/model_engine.h"
 
-#include <spdlog/spdlog.h>
-
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/resource_governor.h"
 
@@ -17,7 +16,7 @@ bool InferenceEngine::InitializeEngine()
 {
     ResourceGovernor::Instance().Initialize(GovernorOptions{});
     initialized_.store(true, std::memory_order_release);
-    spdlog::debug("[model_engine] initialized");
+    log::debug("[model_engine] initialized");
     return true;
 }
 
@@ -25,7 +24,7 @@ void InferenceEngine::ShutdownEngine()
 {
     initialized_.store(false, std::memory_order_release);
     ResourceGovernor::Instance().Shutdown();
-    spdlog::debug("[model_engine] shutdown");
+    log::debug("[model_engine] shutdown");
 }
 
 std::unique_ptr<IModel> InferenceEngine::CreateModel(const ModelInitConfig &cfg)

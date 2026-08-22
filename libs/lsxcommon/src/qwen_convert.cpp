@@ -4,9 +4,9 @@
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
+#include "lsxcommon/log.h"
 
 #include <simdjson.h>
-#include <spdlog/spdlog.h>
 
 #include <cstring>
 #include <fstream>
@@ -19,6 +19,7 @@
 #include <absl/container/flat_hash_set.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 namespace lsxcommon::qwen {
 
@@ -294,8 +295,6 @@ arrow::Status RecomputeQwenVram(const std::string &input_path,
 {
     namespace fs = std::filesystem;
     auto idx = fs::path(output_root) / "logestix" / "model.index.json";
-    if (!fs::exists(idx))
-        idx = fs::path(output_root) / "model.index.json";
     std::ifstream f(idx);
     if (!f) return arrow::Status::IOError("cannot open ", idx.string());
     std::string json((std::istreambuf_iterator<char>(f)),
@@ -361,11 +360,12 @@ arrow::Status RecomputeQwenVram(const std::string &input_path,
          },
          nullptr},
         vg);
-    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+    lsxcommon::log::info(absl::StrFormat(
+        "VRAM profile recomputed: min=%s optimal=%s max=%s (ctx=%d)",
         FormatBytesHuman(profile.min_bytes),
         FormatBytesHuman(profile.optimal_bytes),
         FormatBytesHuman(profile.max_bytes),
-        profile.context_tokens);
+        profile.context_tokens));
 
     std::ofstream out(idx, std::ios::trunc);
     if (!out) return arrow::Status::IOError("cannot write ", idx.string());
@@ -704,11 +704,12 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
              },
              nullptr},
             vg);
-        spdlog::info("VRAM profile: min={} optimal={} max={} (ctx={})",
+        lsxcommon::log::info(absl::StrFormat(
+            "VRAM profile: min=%s optimal=%s max=%s (ctx=%d)",
             lsxcommon::FormatBytesHuman(top.vram.min_bytes),
             lsxcommon::FormatBytesHuman(top.vram.optimal_bytes),
             lsxcommon::FormatBytesHuman(top.vram.max_bytes),
-            top.vram.context_tokens);
+            top.vram.context_tokens));
     }
 
     auto st = WriteQwenModelIndex(output_root, top);

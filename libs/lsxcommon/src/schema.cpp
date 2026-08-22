@@ -1,12 +1,12 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/diagnostics.h"
+#include "lsxcommon/log.h"
 #include <arrow/type_fwd.h>
 #include <arrow/builder.h>
 #include <arrow/ipc/writer.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/io/file.h>
 #include <arrow/io/memory.h>
-#include <spdlog/spdlog.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
@@ -15,6 +15,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace lsxcommon {
 
@@ -474,8 +480,8 @@ DenseNvfp4Schema::UnpackBatch(const std::shared_ptr<arrow::RecordBatch> &batch)
 
         int64_t cb = scale_offsets->Value(i);
         int64_t ce = scale_offsets->Value(i + 1);
-        for (int64_t j = cb; j < ce; ++j)
-            rec.scales.push_back(flat_scales->Value(j));
+        const uint8_t *sraw = flat_scales->raw_values();
+        rec.scales.insert(rec.scales.end(), sraw + cb, sraw + ce);
 
         records.push_back(std::move(rec));
     }
@@ -758,10 +764,9 @@ arrow::Status WriteRecordBatchToFile(
     ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     ARROW_RETURN_NOT_OK(writer->Close());
     ARROW_RETURN_NOT_OK(outfile->Close());
-    spdlog::debug("[DIAG] wrote batch to {} ({} columns, {} rows)",
-                  path.string(),
-                  batch->num_columns(),
-                  batch->num_rows());
+    lsxcommon::log::debug(absl::StrCat(
+        "[DIAG] wrote batch to ", path.string(), " (", batch->num_columns(),
+        " columns, ", batch->num_rows(), " rows)"));
     return arrow::Status::OK();
 }
 
@@ -778,6 +783,239 @@ ReadRecordBatchFromFile(const std::filesystem::path &path)
     ARROW_ASSIGN_OR_RAISE(auto batch, reader->ReadRecordBatch(0));
     diag::ValidateBatchBuffers(*batch, ("Read " + path.filename().string()).c_str());
     return batch;
+}
+
+// ── Zero-copy fast-load views ───────────────────────────────────────────────
+
+namespace {
+
+// Kicks an async kernel-side readahead for the whole file so cold-start disk
+// reads overlap with the GPU upload of previously opened files instead of
+// stalling the first page faults of each mmap view.
+void KickWholeFileReadahead(const std::filesystem::path &path)
+{
+#if defined(__linux__)
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return;
+    struct stat st {};
+    if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
+        (void)::posix_fadvise(fd, 0, st.st_size, POSIX_FADV_WILLNEED);
+    ::close(fd);
+#endif
+}
+
+} // namespace
+
+namespace {
+
+// Holds the mmap input stream + IPC reader + record batch so every buffer
+// slice handed out through the views outlives them.
+struct BatchKeepalive {
+    std::shared_ptr<arrow::io::MemoryMappedFile> infile;
+    std::shared_ptr<arrow::ipc::RecordBatchFileReader> reader;
+    std::shared_ptr<arrow::RecordBatch> batch;
+};
+
+// Order matters on destruction: batch → reader → infile.
+struct KeepaliveBox {
+    std::shared_ptr<BatchKeepalive> k;
+};
+
+} // namespace
+
+namespace {
+
+const int64_t *ShapePtr(const arrow::ListArray &shapes, int64_t i,
+                        const arrow::Int64Array &flat, int64_t *rank)
+{
+    auto offsets = std::dynamic_pointer_cast<arrow::Int32Array>(shapes.offsets());
+    if (!offsets) return nullptr;
+    *rank = offsets->Value(i + 1) - offsets->Value(i);
+    return flat.raw_values() + offsets->Value(i);
+}
+
+} // namespace
+
+arrow::Result<TensorBatchViews>
+LoadTensorBatchViews(const std::filesystem::path &path)
+{
+    KickWholeFileReadahead(path);
+    auto k = std::make_shared<BatchKeepalive>();
+    ARROW_ASSIGN_OR_RAISE(
+        k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
+                                                     arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(
+        k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
+    if (k->reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("No record batches in ", path.string());
+    ARROW_ASSIGN_OR_RAISE(k->batch, k->reader->ReadRecordBatch(0));
+
+    auto names = std::dynamic_pointer_cast<arrow::StringArray>(
+        k->batch->column(PinnedSchema::kIdxName));
+    auto dtypes = std::dynamic_pointer_cast<arrow::StringArray>(
+        k->batch->column(PinnedSchema::kIdxDtype));
+    auto datas = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(PinnedSchema::kIdxData));
+    auto shapes = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(PinnedSchema::kIdxShape));
+    if (!names || !dtypes || !datas || !shapes)
+        return arrow::Status::Invalid("Pinned batch column type mismatch");
+    auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
+    if (!flat_shapes)
+        return arrow::Status::Invalid("Shape array is not int64");
+
+    TensorBatchViews out;
+    out.keepalive = std::make_shared<KeepaliveBox>(KeepaliveBox{k});
+    const int64_t n = k->batch->num_rows();
+    out.tensors.resize(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        TensorView &v = out.tensors[static_cast<size_t>(i)];
+        v.name = names->GetView(i);
+        v.dtype = dtypes->GetView(i);
+        v.shape = ShapePtr(*shapes, i, *flat_shapes, &v.rank);
+        if (!v.shape) return arrow::Status::Invalid("Shape offsets not int32");
+        auto view = datas->GetView(i);
+        v.data = reinterpret_cast<const uint8_t *>(view.data());
+        v.bytes = static_cast<size_t>(view.size());
+    }
+    return out;
+}
+
+arrow::Result<DenseNvfp4BatchViews>
+LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
+{
+    KickWholeFileReadahead(path);
+    auto k = std::make_shared<BatchKeepalive>();
+    ARROW_ASSIGN_OR_RAISE(
+        k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
+                                                     arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(
+        k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
+    if (k->reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("No record batches in ", path.string());
+    ARROW_ASSIGN_OR_RAISE(k->batch, k->reader->ReadRecordBatch(0));
+
+    auto names = std::dynamic_pointer_cast<arrow::StringArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxName));
+    auto shapes = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxShape));
+    auto dtypes = std::dynamic_pointer_cast<arrow::StringArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxDtype));
+    auto packeds = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxPacked));
+    auto scales = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxScales));
+    auto gs_arr = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(DenseNvfp4Schema::kIdxGlobalScale));
+    if (!names || !dtypes || !packeds || !shapes || !scales || !gs_arr)
+        return arrow::Status::Invalid("DenseNvfp4 batch column type mismatch");
+    auto flat_shapes = std::dynamic_pointer_cast<arrow::Int64Array>(shapes->values());
+    auto flat_scales = std::dynamic_pointer_cast<arrow::UInt8Array>(scales->values());
+    if (!flat_shapes || !flat_scales)
+        return arrow::Status::Invalid("DenseNvfp4 list value array type mismatch");
+    {
+        auto shape_offsets =
+            std::dynamic_pointer_cast<arrow::Int32Array>(shapes->offsets());
+        auto scale_offsets =
+            std::dynamic_pointer_cast<arrow::Int32Array>(scales->offsets());
+        if (!shape_offsets || !scale_offsets)
+            return arrow::Status::Invalid("DenseNvfp4 list offsets not int32");
+    }
+
+    DenseNvfp4BatchViews out;
+    out.keepalive = std::make_shared<KeepaliveBox>(KeepaliveBox{k});
+    const int64_t n = k->batch->num_rows();
+    out.records.resize(static_cast<size_t>(n));
+
+    auto scale_offsets =
+        std::dynamic_pointer_cast<arrow::Int32Array>(scales->offsets());
+    for (int64_t i = 0; i < n; ++i) {
+        DenseNvfp4View &v = out.records[static_cast<size_t>(i)];
+        v.name = names->GetView(i);
+        v.dtype = dtypes->GetView(i);
+        v.global_scale = gs_arr->Value(i);
+        v.shape = ShapePtr(*shapes, i, *flat_shapes, &v.rank);
+        if (!v.shape) return arrow::Status::Invalid("Shape offsets not int32");
+        auto pv = packeds->GetView(i);
+        v.packed = reinterpret_cast<const uint8_t *>(pv.data());
+        v.packed_bytes = static_cast<int64_t>(pv.size());
+        const uint8_t *sraw = flat_scales->raw_values();
+        v.scales = sraw + scale_offsets->Value(i);
+        v.scale_bytes = static_cast<int64_t>(scale_offsets->Value(i + 1) -
+                                             scale_offsets->Value(i));
+    }
+    return out;
+}
+
+arrow::Result<SharedExpertBatchViews>
+LoadSharedExpertBatchViews(const std::filesystem::path &path)
+{
+    KickWholeFileReadahead(path);
+    auto k = std::make_shared<BatchKeepalive>();
+    ARROW_ASSIGN_OR_RAISE(
+        k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
+                                                     arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(
+        k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
+    if (k->reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("No record batches in ", path.string());
+    ARROW_ASSIGN_OR_RAISE(k->batch, k->reader->ReadRecordBatch(0));
+
+    auto w1 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1Weight));
+    auto w2 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2Weight));
+    auto w3 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3Weight));
+    auto s1 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1Scale));
+    auto s2 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2Scale));
+    auto s3 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3Scale));
+    auto gs1 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1GlobalScale));
+    auto gs2 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2GlobalScale));
+    auto gs3 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3GlobalScale));
+    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
+        return arrow::Status::Invalid("Shared-expert batch column type mismatch");
+    auto u1 = std::dynamic_pointer_cast<arrow::UInt8Array>(s1->values());
+    auto u2 = std::dynamic_pointer_cast<arrow::UInt8Array>(s2->values());
+    auto u3 = std::dynamic_pointer_cast<arrow::UInt8Array>(s3->values());
+    auto o1 = std::dynamic_pointer_cast<arrow::Int32Array>(s1->offsets());
+    auto o2 = std::dynamic_pointer_cast<arrow::Int32Array>(s2->offsets());
+    auto o3 = std::dynamic_pointer_cast<arrow::Int32Array>(s3->offsets());
+    if (!u1 || !u2 || !u3 || !o1 || !o2 || !o3)
+        return arrow::Status::Invalid("Shared-expert list value/offset mismatch");
+
+    SharedExpertBatchViews out;
+    out.keepalive = std::make_shared<KeepaliveBox>(KeepaliveBox{k});
+    const int64_t n = k->batch->num_rows();
+    out.layers.resize(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        PackedExpertView &v = out.layers[static_cast<size_t>(i)];
+        auto pv1 = w1->GetView(i);
+        v.w1_packed = reinterpret_cast<const uint8_t *>(pv1.data());
+        v.w1_packed_bytes = static_cast<int64_t>(pv1.size());
+        auto pv2 = w2->GetView(i);
+        v.w2_packed = reinterpret_cast<const uint8_t *>(pv2.data());
+        v.w2_packed_bytes = static_cast<int64_t>(pv2.size());
+        auto pv3 = w3->GetView(i);
+        v.w3_packed = reinterpret_cast<const uint8_t *>(pv3.data());
+        v.w3_packed_bytes = static_cast<int64_t>(pv3.size());
+        v.w1_scales = u1->raw_values() + o1->Value(i);
+        v.w1_scale_bytes = o1->Value(i + 1) - o1->Value(i);
+        v.w2_scales = u2->raw_values() + o2->Value(i);
+        v.w2_scale_bytes = o2->Value(i + 1) - o2->Value(i);
+        v.w3_scales = u3->raw_values() + o3->Value(i);
+        v.w3_scale_bytes = o3->Value(i + 1) - o3->Value(i);
+        v.w1_global_scale = gs1->Value(i);
+        v.w2_global_scale = gs2->Value(i);
+        v.w3_global_scale = gs3->Value(i);
+    }
+    return out;
 }
 
 } // namespace lsxcommon

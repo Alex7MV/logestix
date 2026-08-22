@@ -87,10 +87,10 @@ void FreeExpertBlock(GlmExpertDeviceBlock &b)
     b = GlmExpertDeviceBlock{};
 }
 
-const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
-                               const std::string &suffix)
+const TensorView *FindTensor(const TensorBatchViews &tensors,
+                             std::string_view suffix)
 {
-    for (const auto &t : tensors) {
+    for (const auto &t : tensors.tensors) {
         if (t.name.size() >= suffix.size() &&
             t.name.compare(t.name.size() - suffix.size(),
                            suffix.size(), suffix) == 0)
@@ -99,25 +99,14 @@ const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
     return nullptr;
 }
 
-arrow::Result<std::vector<TensorRecord>> LoadArrowFile(const std::string &path)
-{
-    auto mmap_res = arrow::io::MemoryMappedFile::Open(path, arrow::io::FileMode::READ);
-    if (!mmap_res.ok()) return mmap_res.status();
-    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
-    if (!reader_res.ok()) return reader_res.status();
-    auto batch_res = (*reader_res)->ReadRecordBatch(0);
-    if (!batch_res.ok()) return batch_res.status();
-    return PinnedSchema::UnpackBatch(*batch_res);
-}
-
 // Found-but-malformed => error; absent => ok (optional tensor in the
 // heterogeneous layer grid). Validation lives in ValidateJob/UploadJobs.
 
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
                        GlmPinnedWeights &pw, cudaStream_t stream,
-                       std::uint64_t &bytes_acc)
+                       std::uint64_t &bytes_acc, PinnedStagingRing &ring)
 {
-    auto tensors_res = LoadArrowFile((pinned_dir / "global.arrow").string());
+    auto tensors_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
     if (!tensors_res.ok()) {
         log::error("[glm_load] ERROR loading global.arrow: "
                    + tensors_res.status().ToString());
@@ -125,12 +114,9 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     }
     auto &tensors = *tensors_res;
 
-    PinnedStagingRing ring;
-    if (!ring.ok()) return cudaErrorMemoryAllocation;
-
     auto *embed = FindTensor(tensors, "embed_tokens.weight");
-    if (embed && embed->shape.size() >= 2 &&
-        embed->data.size() >=
+    if (embed && embed->rank >= 2 &&
+        embed->bytes >=
             static_cast<size_t>(embed->shape[0]) *
                 static_cast<size_t>(embed->shape[1]) * 2) {
         pw.vocab_size = static_cast<int>(embed->shape[0]);
@@ -138,7 +124,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         cudaError_t e = cudaMalloc(&pw.d_embed,
             static_cast<size_t>(pw.vocab_size) * pw.hidden * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(embed->data.data(),
+        e = ring.UploadBf16AsFp16(embed->data,
                                   static_cast<int64_t>(pw.vocab_size) *
                                       pw.hidden,
                                   pw.d_embed, stream, bytes_acc);
@@ -153,14 +139,14 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         return cudaErrorInvalidValue;
     }
     auto *head = FindTensor(tensors, "lm_head.weight");
-    if (head && head->shape.size() >= 2 && head != embed &&
-        head->data.size() >=
+    if (head && head->rank >= 2 && head != embed &&
+        head->bytes >=
             static_cast<size_t>(head->shape[0]) *
                 static_cast<size_t>(head->shape[1]) * 2) {
         int64_t numel = head->shape[0] * head->shape[1];
         cudaError_t e = cudaMalloc(&pw.d_head, static_cast<size_t>(numel) * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(head->data.data(), numel, pw.d_head,
+        e = ring.UploadBf16AsFp16(head->data, numel, pw.d_head,
                                   stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] head upload failed: ")
@@ -169,12 +155,12 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         }
     }
     auto *norm = FindTensor(tensors, "model.norm.weight");
-    if (norm && norm->shape.size() == 1 && norm->shape[0] > 0 &&
-        norm->data.size() >= static_cast<size_t>(norm->shape[0]) * 2) {
+    if (norm && norm->rank == 1 && norm->shape[0] > 0 &&
+        norm->bytes >= static_cast<size_t>(norm->shape[0]) * 2) {
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
                                    static_cast<size_t>(norm->shape[0]) * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(norm->data.data(), norm->shape[0],
+        e = ring.UploadBf16AsFp16(norm->data, norm->shape[0],
                                   pw.d_final_norm, stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[glm_load] model.norm upload failed: ")
@@ -201,7 +187,7 @@ struct StreamDrain {
 };
 
 struct Fp16Job {
-    const TensorRecord *t;
+    const TensorView *t;
     __half **dst;
     int64_t *rows;   // optional row capture (2D only)
     int64_t *cols;   // optional col capture (2D only)
@@ -214,19 +200,19 @@ struct JobShape {
 
 cudaError_t ValidateJob(const Fp16Job &j, JobShape &sh)
 {
-    const auto &s = j.t->shape;
-    if (s.size() == 1 && s[0] > 0) {
+    if (j.t->rank == 1 && j.t->shape[0] > 0) {
         sh.is_2d = false;
-        sh.numel = static_cast<size_t>(s[0]);
-    } else if (s.size() == 2 && s[0] > 0 && s[1] > 0) {
+        sh.numel = static_cast<size_t>(j.t->shape[0]);
+    } else if (j.t->rank == 2 && j.t->shape[0] > 0 && j.t->shape[1] > 0) {
         sh.is_2d = true;
-        sh.numel = static_cast<size_t>(s[0]) * static_cast<size_t>(s[1]);
+        sh.numel = static_cast<size_t>(j.t->shape[0]) *
+                   static_cast<size_t>(j.t->shape[1]);
     } else {
-        log::error("[glm_load] malformed tensor '" + j.t->name + "'");
+        log::error("[glm_load] malformed tensor '" + std::string(j.t->name) + "'");
         return cudaErrorInvalidValue;
     }
-    if (j.t->data.size() < sh.numel * 2) {
-        log::error("[glm_load] malformed tensor '" + j.t->name + "'");
+    if (j.t->bytes < sh.numel * 2) {
+        log::error("[glm_load] malformed tensor '" + std::string(j.t->name) + "'");
         return cudaErrorInvalidValue;
     }
     return cudaSuccess;
@@ -240,6 +226,7 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
                        cudaStream_t stream, PinnedStagingRing &ring,
                        std::uint64_t &bytes_acc)
 {
+
     std::vector<JobShape> shapes(jobs.size());
     for (size_t i = 0; i < jobs.size(); ++i) {
         if (!jobs[i].t) continue;
@@ -274,7 +261,7 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
         *j.dst = view;
         if (shapes[i].is_2d && j.rows)
             { *j.rows = j.t->shape[0]; *j.cols = j.t->shape[1]; }
-        cudaError_t e = ring.UploadBf16AsFp16(j.t->data.data(),
+        cudaError_t e = ring.UploadBf16AsFp16(j.t->data,
                             static_cast<int64_t>(shapes[i].numel),
                             view, stream, bytes_acc);
         if (e != cudaSuccess) return e;
@@ -286,12 +273,11 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
 
 } // anonymous namespace
 
-cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
+cudaError_t LoadSingleLayer(const TensorBatchViews &tensors,
                             GlmLayerWeights &lw, cudaStream_t stream,
-                            std::uint64_t &bytes_acc)
+                            std::uint64_t &bytes_acc,
+                            PinnedStagingRing &ring)
 {
-    PinnedStagingRing ring;
-    if (!ring.ok()) return cudaErrorMemoryAllocation;
 
     // Required-for-type validation (heterogeneous-grid rules):
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
@@ -361,14 +347,14 @@ cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
     if (router) {
         auto *gate_bias =
             FindTensor(tensors, "mlp.gate.e_score_correction_bias");
-        if (gate_bias && gate_bias->shape.size() == 1 &&
-            gate_bias->data.size() >=
+        if (gate_bias && gate_bias->rank == 1 &&
+            gate_bias->bytes >=
                 static_cast<size_t>(gate_bias->shape[0]) * 4) {
             int n = static_cast<int>(gate_bias->shape[0]);
             if (cudaMallocHost(&lw.h_gate_bias,
                                static_cast<size_t>(n) * sizeof(float))
                 == cudaSuccess) {
-                std::memcpy(lw.h_gate_bias, gate_bias->data.data(),
+                std::memcpy(lw.h_gate_bias, gate_bias->data,
                             static_cast<size_t>(n) * sizeof(float));
                 lw.gate_bias_n = n;
             }
@@ -376,12 +362,12 @@ cudaError_t LoadSingleLayer(const std::vector<TensorRecord> &tensors,
     }
 
     auto *k_bias = FindTensor(tensors, "self_attn.indexer.k_norm.bias");
-    if (k_bias && !k_bias->data.empty()) {
+    if (k_bias && k_bias->bytes > 0) {
         void *d = nullptr;
-        cudaError_t ke = cudaMalloc(&d, k_bias->data.size());
+        cudaError_t ke = cudaMalloc(&d, k_bias->bytes);
         if (ke != cudaSuccess) return ke;
         lw.d_idx_k_norm_bias = static_cast<float *>(d);
-        ke = ring.UploadRaw(k_bias->data.data(), d, k_bias->data.size(),
+        ke = ring.UploadRaw(k_bias->data, d, k_bias->bytes,
                             stream, bytes_acc);
         if (ke != cudaSuccess) return ke;
     }
@@ -442,6 +428,7 @@ void GlmPinnedWeights::Free()
     for (auto &l : layers) l.Free();
     layers.clear();
     shared_host.clear();
+    shared_keepalive.reset();
 }
 
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
@@ -462,11 +449,9 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     //   <model>/logestix/pinned/...   (model dir, like the DeepSeek loader)
     //   <logestix>/pinned/...         (converter output_root)
     fs::path pinned_dir = fs::path(model_path) / "logestix" / "pinned";
-    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned")) {
+    if (!fs::exists(pinned_dir) && fs::exists(fs::path(model_path) / "pinned"))
         pinned_dir = fs::path(model_path) / "pinned";
-        index_path = fs::path(model_path) / "model.index.json";
-    }
+    fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
 
     // Topology: number of layers sizes the layers vector (heterogeneous grid).
     auto topo = load_topology(index_path.string());
@@ -480,7 +465,12 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     // dies while a DMA transfer is still in flight.
     StreamDrain drain{stream};
 
-    auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes);
+    // One staging ring for the whole load: constructing/destructing pinned
+    // buffers per layer cost ~10 ms x layers in cudaMallocHost/cudaFreeHost.
+    PinnedStagingRing ring;
+    if (!ring.ok()) return cudaErrorMemoryAllocation;
+
+    auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes, ring);
     if (err != cudaSuccess) return err;
 
     for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
@@ -495,7 +485,7 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
             pw.Free();
             return cudaErrorInvalidValue;
         }
-        auto tensors_res = LoadArrowFile(layer_path.string());
+        auto tensors_res = LoadTensorBatchViews(layer_path);
         if (!tensors_res.ok()) {
             log::error("[glm_load] ERROR loading " + fn + ": "
                        + tensors_res.status().ToString());
@@ -504,37 +494,33 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
         }
         cudaError_t lerr =
             LoadSingleLayer(*tensors_res, pw.layers[static_cast<size_t>(l)],
-                            stream, pw.resident_bytes);
+                            stream, pw.resident_bytes, ring);
         if (lerr != cudaSuccess) {
             pw.Free();
             return lerr;
         }
     }
 
-    // Shared experts: one NVFP4-packed PackedExpert per layer in
-    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up). Kept host-side in
-    // pw.shared_host (index = layer); the faithful generation pass stages each
-    // layer's shared expert into the reusable per-expert device staging
-    // buffers on demand, so the ~1.4 GiB shared set costs no VRAM.
-    pw.shared_host.assign(pw.layers.size(), PackedExpert{});
+    // Shared experts: one NVFP4-packed shared expert per layer in
+    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up). Zero-copy views
+    // into the memory-mapped file, kept host-side in pw.shared_host (index =
+    // layer); the faithful generation pass stages each layer's shared expert
+    // into the reusable per-expert device staging buffers on demand, so the
+    // ~1.4 GiB shared set costs no VRAM.
+    pw.shared_host.assign(pw.layers.size(), PackedExpertView{});
     auto se_path = pinned_dir / "shared_experts.arrow";
     if (fs::exists(se_path)) {
-        auto se_batch_res = ReadRecordBatchFromFile(se_path);
-        if (se_batch_res.ok()) {
-            auto sh_res = SharedExpertSchema::UnpackBatch(*se_batch_res);
-            if (sh_res.ok()) {
-                auto &sh = *sh_res;
-                for (size_t l = 0;
-                     l < sh.size() && l < pw.layers.size(); ++l) {
-                    pw.shared_host[l] = std::move(sh[l]);
-                }
-            } else {
-                log::warn("[glm_load] shared_experts.arrow unpack failed: " +
-                          sh_res.status().ToString());
+        auto se_res = LoadSharedExpertBatchViews(se_path);
+        if (se_res.ok()) {
+            pw.shared_keepalive = se_res->keepalive;
+            auto &sh = se_res->layers;
+            for (size_t l = 0;
+                 l < sh.size() && l < pw.layers.size(); ++l) {
+                pw.shared_host[l] = sh[l];
             }
         } else {
             log::warn("[glm_load] shared_experts.arrow read failed: " +
-                      se_batch_res.status().ToString());
+                      se_res.status().ToString());
         }
     }
 
@@ -617,9 +603,6 @@ cudaError_t LoadGlmExpertTables(const std::string &model_path,
         exp_dir = fs::path(model_path) / "experts";
 
     fs::path index_path = fs::path(model_path) / "logestix" / "model.index.json";
-    if (!fs::exists(index_path) &&
-        fs::exists(fs::path(model_path) / "model.index.json"))
-        index_path = fs::path(model_path) / "model.index.json";
 
     auto topo = load_topology(index_path.string());
     if (!topo.error_msg.empty()) {
