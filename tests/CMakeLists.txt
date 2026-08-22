@@ -660,6 +660,25 @@ endif()
 
 add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
 
+# ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
+foreach(qt test_gemma4_norm test_gemma4_rotary)
+    add_executable(${qt} ${qt}.cpp)
+    target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 # ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
