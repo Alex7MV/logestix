@@ -75,10 +75,55 @@ std::uint64_t ResourceGovernor::GrantableVramLocked() const
                : 0;
 }
 
-// Defined in later tasks (declared now so the header stays stable):
-bool ResourceGovernor::ResizeLease(Lease &, std::uint64_t) { return false; }
-bool ResourceGovernor::ReconcileVram(std::uint64_t, std::uint64_t) { return true; }
-bool ResourceGovernor::ReconcileVram() { return true; }
+// ── Adaptive resize + drift reconciliation ──────────────────────────────────
+
+bool ResourceGovernor::ResizeLease(Lease &lease, std::uint64_t new_bytes)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!initialized_ || lease.gov_ != this) return false;
+    if (lease.bytes_ == new_bytes) return true;
+
+    new_bytes = std::clamp(new_bytes, lease.min_bytes_, lease.max_bytes_);
+    if (new_bytes == lease.bytes_) return true;
+
+    const bool vram = IsVramLease(lease.kind_);
+    std::uint64_t &committed = vram ? vram_committed_ : ram_committed_;
+    const std::uint64_t grantable =
+        vram ? GrantableVramLocked() : hw_.ram_total_bytes;
+
+    if (new_bytes > lease.bytes_ &&
+        committed - lease.bytes_ + new_bytes > grantable) {
+        spdlog::info("[governor] resize {} -> {} REFUSED (budget occupied)",
+                     lease.bytes_, new_bytes);
+        return false;  // soft: caller keeps the current size
+    }
+    committed = committed - lease.bytes_ + new_bytes;
+    lease.bytes_ = new_bytes;
+    return true;
+}
+
+bool ResourceGovernor::ReconcileVram(std::uint64_t queried_free_vram_bytes,
+                                     std::uint64_t slack_bytes)
+{
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!initialized_) return false;
+    if (queried_free_vram_bytes + vram_committed_ >
+        hw_.vram_total_bytes + slack_bytes) {
+        spdlog::warn("[governor] VRAM bookkeeping drift: free {} MiB + "
+                     "committed {} MiB > total {} MiB + slack {} MiB",
+                     queried_free_vram_bytes >> 20, vram_committed_ >> 20,
+                     hw_.vram_total_bytes >> 20, slack_bytes >> 20);
+        return false;
+    }
+    return true;
+}
+
+bool ResourceGovernor::ReconcileVram()
+{
+    std::size_t fb = 0, tb = 0;
+    if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) return false;
+    return ReconcileVram(fb, 256ull << 20);
+}
 
 // ── Leases ──────────────────────────────────────────────────────────────────
 
