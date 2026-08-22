@@ -1,7 +1,12 @@
 // Тест Gemma-4 конвертера: классификатор имён тензоров + NVFP4-политика.
 #include <catch2/catch_test_macros.hpp>
 
+#include "gemma4_test_fixture.h"
+
+#include <filesystem>
+
 #include "lsxcommon/gemma4_convert.h"
+#include "lsxcommon/model_integrity.h"
 
 using lsxcommon::gemma::classify_gemma_tensor;
 using K = lsxcommon::gemma::TensorKind;
@@ -65,4 +70,116 @@ TEST_CASE("nvfp4 policy: experts only", "[gemma][convert]") {
     CHECK_FALSE(gemma_tensor_is_nvfp4(K::FinalNorm));
     CHECK_FALSE(gemma_tensor_is_nvfp4(K::MlpGate));
     CHECK_FALSE(gemma_tensor_is_nvfp4(K::RouterProj));
+}
+
+TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_conv_test";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
+
+    auto top = lsxcommon::gemma::load_gemma_topology((tmp / "config.json").string());
+    REQUIRE(top.error_msg.empty());
+    CHECK(top.num_layers == 4);
+    CHECK(top.hidden_size == 64);
+    CHECK(top.vocab_size == 64);
+    CHECK(top.num_experts == 8);
+    CHECK(top.top_k_experts == 2);
+    CHECK(top.moe_intermediate_size == 16);
+    CHECK(top.num_global_key_value_heads == 1);
+    CHECK(top.global_head_dim == 32);
+    CHECK(top.sliding_window == 8);
+    CHECK(top.bos_id == 2);
+    CHECK(top.eos_id == 1); // first element of eos array [1, 106]
+    CHECK(top.layer_types.size() == 4);
+
+    auto out = tmp / "out";
+    auto cst = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    // GLM-style layout: pinned raw + per-expert NVFP4 files.
+    CHECK(exists(out / "logestix" / "pinned" / "global.arrow"));
+    CHECK(exists(out / "logestix" / "pinned" / "layer_0.arrow"));
+    CHECK_FALSE(exists(out / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
+    for (int l = 0; l < 4; ++l)
+        for (int e = 0; e < 8; ++e)
+            CHECK(exists(out / "logestix" / "experts" /
+                         ("layer_" + std::to_string(l)) /
+                         ("exp_" + std::to_string(e) + ".arrow")));
+
+    // Index round-trip.
+    auto top2 = lsxcommon::gemma::load_gemma_topology(
+        (out / "logestix" / "model.index.json").string());
+    // The index has no text_config nesting; parse must still succeed via
+    // top-level keys written by WriteGemmaModelIndex.
+    CHECK(top2.error_msg.empty());
+    CHECK(top2.num_layers == 4);
+    CHECK(top2.num_experts == 8);
+    CHECK(top2.vram.min_bytes > 0);
+    CHECK(top2.total_pinned_tensors > 0);
+
+    // Output verification (format tag logestix-gemma).
+    auto rep = lsxcommon::integrity::VerifyConvertedModel(out);
+    REQUIRE(rep.ok());
+    CHECK(rep->pinned_tensor_count > 0);
+
+    remove_all(tmp);
+}
+
+TEST_CASE("convert fails without config.json", "[gemma][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_conv_noconf";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
+
+    auto out = tmp / "out";
+    auto st = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
+    REQUIRE_FALSE(st.ok());
+    remove_all(tmp);
+}
+
+TEST_CASE("convert fails on layer_types contradicting tensor shapes",
+          "[gemma][convert]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_conv_badlt";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
+
+    // Flip layer 3 to sliding in the config while its q_proj keeps the
+    // full-attention width -> geometry gate must reject.
+    auto cfg = tmp / "config.json";
+    std::ifstream in(cfg);
+    std::string json((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    in.close();
+    auto pos = json.find("\"full_attention\"");
+    REQUIRE(pos != std::string::npos);
+    json.replace(pos, strlen("\"full_attention\""), "\"sliding_attention\"");
+    { std::ofstream out(cfg, std::ios::trunc); out << json; }
+
+    auto out = tmp / "out";
+    auto st = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
+    REQUIRE_FALSE(st.ok());
+    remove_all(tmp);
 }
