@@ -14,6 +14,9 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
+#include <spdlog/spdlog.h>
+
+#include <chrono>
 namespace {
 
 constexpr int kStressCycles = 3;
@@ -57,6 +60,8 @@ TEST_CASE("DeepSeek-V4-Flash SelfCheck: 'The capital of France is' -> 'Paris', "
     const std::filesystem::path model = DeepSeekModelPath();
     if (!std::filesystem::exists(model / "logestix" / "pinned"))
         SKIP("DeepSeek real model directory not present");
+
+    spdlog::flush_every(std::chrono::seconds(1));
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();

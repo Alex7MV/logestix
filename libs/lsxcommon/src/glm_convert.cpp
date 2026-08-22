@@ -427,6 +427,85 @@ void WriteGlmModelIndex(
 
 } // namespace
 
+// VRAM profile recompute for an already-converted GLM model (migration of
+// index files produced before the mandatory "vram" block). Shares the
+// converter's classification and geometry derivation.
+arrow::Status RecomputeGlmVram(
+    const std::string &input_path,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+    auto index_path = fs::path(output_root) / "model.index.json";
+    std::ifstream f(index_path);
+    if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                      input_path);
+
+    Topology topo = load_topology(index_path.string());
+    if (topo.num_layers == 0) {
+        // Old index without the vram block: recover the grid from tensors.
+        absl::btree_set<int> moe, dense;
+        int max_layer = -1;
+        for (auto &shard : model.shards)
+            for (auto &t : shard.tensors) {
+                auto p = classify(t.name);
+                if (p.kind == TensorKind::RoutedExpert) {
+                    moe.insert(p.layer);
+                    max_layer = std::max(max_layer, p.layer);
+                } else if (p.kind == TensorKind::DenseMlp) {
+                    dense.insert(p.layer);
+                    max_layer = std::max(max_layer, p.layer);
+                } else if (p.layer >= 0) {
+                    max_layer = std::max(max_layer, p.layer);
+                }
+            }
+        topo.num_layers = max_layer + 1;
+        topo.moe_layers.assign(moe.begin(), moe.end());
+        topo.dense_layers.assign(dense.begin(), dense.end());
+    }
+
+    VramGeometry vg;
+    vg.hidden_dim = 0;
+    vg.num_attn_layers = static_cast<int>(topo.num_layers);
+    vg.num_moe_layers = static_cast<int>(topo.moe_layers.size());
+    vg.experts_per_layer = static_cast<int>(topo.experts_per_layer);
+    vg.context_length = ReadContextLength(
+        (fs::path(input_path) / "config.json").string());
+    for (const auto &shard : model.shards) {
+        for (const auto &t : shard.tensors) {
+            if (vg.kv_dim == 0 && t.shape.size() >= 2 &&
+                t.name.find("kv_a_proj_with_mqa") != std::string::npos) {
+                vg.kv_dim = static_cast<int>(t.shape[0]);
+                vg.hidden_dim = static_cast<int>(t.shape[1]);
+            }
+        }
+    }
+    if (vg.hidden_dim <= 0) vg.hidden_dim = 4096;
+
+    std::vector<VramTensorInfo> inventory;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors)
+            inventory.push_back({t.name, t.numel(), t.byte_size()});
+
+    VramProfile profile = EstimateVram(inventory,
+                                       {&GlmIsNvfp4Tensor, &GlmMemClass}, vg);
+    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+        FormatBytesHuman(profile.min_bytes),
+        FormatBytesHuman(profile.optimal_bytes),
+        FormatBytesHuman(profile.max_bytes),
+        profile.context_tokens);
+
+    std::ofstream out(index_path, std::ios::trunc);
+    if (!out) return arrow::Status::IOError("cannot write ", index_path.string());
+    out << ReplaceVramBlock(json, profile);
+    return arrow::Status::OK();
+}
+
 arrow::Status ConvertGlmModel(
     const std::string &input_path,
     const std::filesystem::path &output_root)

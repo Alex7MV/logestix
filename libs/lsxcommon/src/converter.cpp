@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <regex>
 #include <absl/container/btree_map.h>
+#include <absl/container/btree_set.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
@@ -107,8 +108,13 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
 
 bool DsIsNvfp4Tensor(const std::string &name)
 {
-    return parse_expert_name(name).has_value()
+    // Only the packed nibble weights are NVFP4; their E8M0 scale tensors
+    // stay byte-sized (counting them through the packed formula would halve
+    // real scale bytes).
+    const bool is_expert = parse_expert_name(name).has_value()
         || parse_shared_expert_name(name).has_value();
+    return is_expert && name.size() >= 7 &&
+           name.compare(name.size() - 7, 7, ".weight") == 0;
 }
 
 VramTensorClass DsMemClass(const std::string &name)
@@ -889,6 +895,101 @@ arrow::Status RepackRoutedExperts(
     return arrow::Status::OK();
 }
 
+// ── VRAM profile recompute (migration of pre-existing index files) ─────────
+
+arrow::Status RecomputeVramBlock(
+    const std::string &input_path,
+    const std::filesystem::path &output_root)
+{
+    namespace fs = std::filesystem;
+    auto index_path = fs::path(output_root) / "model.index.json";
+    std::ifstream f(index_path);
+    if (!f) return arrow::Status::IOError("cannot open ", index_path.string());
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                      input_path);
+
+    // Layer grid from routed-expert names.
+    int max_layer = 0;
+    absl::btree_map<int, absl::btree_set<int>> experts_by_layer;
+    for (auto &shard : model.shards) {
+        for (auto &t : shard.tensors) {
+            if (auto p = parse_expert_name(t.name)) {
+                experts_by_layer[p->layer].insert(p->expert);
+                max_layer = std::max(max_layer, p->layer + 1);
+            }
+        }
+    }
+    int experts_per_layer = 0;
+    for (auto &[_, s] : experts_by_layer)
+        experts_per_layer = std::max(experts_per_layer,
+                                     static_cast<int>(s.size()));
+
+    VramGeometry vg;
+    vg.num_attn_layers = max_layer;
+    vg.num_moe_layers = static_cast<int>(experts_by_layer.size());
+    vg.experts_per_layer = experts_per_layer;
+    vg.nvfp4_scale_block = 32;   // DeepSeek sources ship fp4, 32 elems/scale
+    vg.context_length = ReadContextLength(
+        (fs::path(input_path) / "config.json").string());
+    for (const auto &shard : model.shards) {
+        for (const auto &t : shard.tensors) {
+            if (vg.kv_dim == 0 && t.shape.size() >= 2 &&
+                t.name.find("wkv.weight") != std::string::npos) {
+                vg.kv_dim = static_cast<int>(t.shape[0]);
+                vg.hidden_dim = static_cast<int>(t.shape[1]);
+            }
+        }
+    }
+
+    // Per-layer KV compression from config (DeepSeek CSA).
+    {
+        std::ifstream cf((fs::path(input_path) / "config.json"));
+        if (cf) {
+            std::string cj((std::istreambuf_iterator<char>(cf)),
+                           std::istreambuf_iterator<char>());
+            simdjson::ondemand::parser cp;
+            simdjson::padded_string cpj(cj.data(), cj.size());
+            simdjson::ondemand::document cd;
+            if (cp.iterate(cpj).get(cd) == simdjson::SUCCESS) {
+                auto root = cd.get_object();
+                if (root.error() == simdjson::SUCCESS) {
+                    if (auto arr = root.value()["compress_ratios"].get_array();
+                        arr.error() == simdjson::SUCCESS) {
+                        for (auto v : arr.value()) {
+                            int64_t x;
+                            if (v.get_int64().get(x) == simdjson::SUCCESS)
+                                vg.kv_compress_ratios.push_back(x);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<VramTensorInfo> inventory;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors)
+            inventory.push_back({t.name, t.numel(), t.byte_size()});
+
+    VramProfile profile = EstimateVram(
+        inventory, {&DsIsNvfp4Tensor, &DsMemClass}, vg);
+    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+        FormatBytesHuman(profile.min_bytes),
+        FormatBytesHuman(profile.optimal_bytes),
+        FormatBytesHuman(profile.max_bytes),
+        profile.context_tokens);
+
+    std::ofstream out(index_path, std::ios::trunc);
+    if (!out) return arrow::Status::IOError("cannot write ", index_path.string());
+    out << ReplaceVramBlock(json, profile);
+    return arrow::Status::OK();
+}
+
 // ── Model index ─────────────────────────────────────────────────────────────
 
 arrow::Status WriteModelIndex(
@@ -1266,6 +1367,7 @@ arrow::Status Converter::Run()
     vg.experts_per_layer = max_experts_per_layer;
     vg.context_length = ReadContextLength(
         (fs::path(impl_->input_path) / "config.json").string());
+    vg.nvfp4_scale_block = 32;   // DeepSeek sources ship fp4, 32 elems/scale
     // Per-layer KV compression (DeepSeek-V4 CSA): stored tokens = ctx/ratio.
     {
         std::ifstream cf((fs::path(impl_->input_path) / "config.json"));

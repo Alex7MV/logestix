@@ -53,6 +53,31 @@ TEST_CASE("NVFP4 packing math: numel/2 packed + numel/16 scales", "[vram]")
     CHECK(p.max_bytes == 9216ull + 37748736ull);         // 16384/2 + 16384/16
 }
 
+TEST_CASE("NVFP4 scale block 32 (DeepSeek fp4 passthrough)", "[vram]")
+{
+    std::vector<VramTensorInfo> tensors = {
+        {"layers.0.ffn.experts.0.w1.weight", 16384, 0},
+    };
+    auto g = BaseGeom();
+    g.nvfp4_scale_block = 32;
+    auto p = lsxcommon::EstimateVram(tensors, {kAllNvfp4, kAllRouted}, g);
+    // 16384/2 packed + ceil(16384/32) scales = 8192 + 512 = 8704.
+    CHECK(p.max_bytes - p.optimal_bytes == 8704ull);
+
+    // Scale tensors themselves stay raw byte-sized.
+    std::vector<VramTensorInfo> with_scales = {
+        {"layers.0.ffn.experts.0.w1.weight", 16384, 0},
+        {"layers.0.ffn.experts.0.w1.scale", 512, 512},
+    };
+    auto g2 = BaseGeom();
+    g2.nvfp4_scale_block = 32;
+    auto p2 = lsxcommon::EstimateVram(with_scales,
+        {+[](const std::string &n) {
+             return n.find(".weight") != std::string::npos;
+         }, kAllRouted}, g2);
+    CHECK(p2.max_bytes - p2.optimal_bytes == 8704ull + 512ull);
+}
+
 TEST_CASE("Non-quantized tensors keep raw dtype size", "[vram]")
 {
     std::vector<VramTensorInfo> tensors = {

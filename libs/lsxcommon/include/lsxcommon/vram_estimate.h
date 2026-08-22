@@ -35,6 +35,9 @@ struct VramGeometry {
     // a layer storing ctx/ratio cached tokens; 0 = full-context storage).
     // Empty -> every attention layer stores the full context.
     std::vector<std::int64_t> kv_compress_ratios;
+    // Elements per E4M3 scale byte in the NVFP4 layout. 16 = canonical NVFP4
+    // (GLM/Qwen packers); DeepSeek sources ship fp4 with 32-element blocks.
+    std::int64_t nvfp4_scale_block = 16;
 };
 
 // Three VRAM parameters computed at conversion time.
@@ -67,6 +70,12 @@ std::string FormatVramJson(const VramProfile &p);
 // Returns false and fills err when the block is missing/malformed/inconsistent.
 bool ParseVramBlock(const std::string &index_json_text,
                     VramProfile &out, std::string &err);
+
+// Returns index_json_text with the "vram" block replaced by the rendered
+// profile. When the document has no block yet, it is inserted before the
+// final closing brace (with the preceding line terminated by a comma).
+std::string ReplaceVramBlock(const std::string &index_json_text,
+                             const VramProfile &p);
 
 // Human-readable byte size ("123 GiB" / "45 MiB" / ...).
 std::string FormatBytesHuman(std::uint64_t bytes);

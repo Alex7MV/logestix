@@ -83,4 +83,10 @@ arrow::Status ConvertQwenModel(
     const std::string &input_path,
     const std::string &output_root);
 
+// Recomputes the conversion-time VRAM profile from the SOURCE safetensors
+// inventory and rewrites the "vram" block of the model.index.json under
+// output_root.
+arrow::Status RecomputeQwenVram(const std::string &input_path,
+                                const std::string &output_root);
+
 } // namespace lsxcommon::qwen

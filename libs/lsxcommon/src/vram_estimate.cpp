@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <iterator>
+#include <regex>
 
 namespace lsxcommon {
 
@@ -19,10 +20,11 @@ constexpr std::int64_t kDefaultContextTokens = 2048;
 // while the KV cache honestly scales with the full context length.
 constexpr std::int64_t kPrefillChunkTokens = 2048;
 
-// NVFP4 converted size: packed E2M1 nibbles + E4M3 scales (block of 16).
-std::int64_t Nvfp4ConvertedBytes(std::int64_t numel)
+// NVFP4 converted size: packed E2M1 nibbles + E4M3 scales.
+std::int64_t Nvfp4ConvertedBytes(std::int64_t numel, std::int64_t scale_block)
 {
-    return numel / 2 + numel / 16;
+    const std::int64_t blk = scale_block > 0 ? scale_block : 16;
+    return numel / 2 + (numel + blk - 1) / blk;
 }
 
 } // namespace
@@ -45,7 +47,8 @@ VramProfile EstimateVram(const std::vector<VramTensorInfo> &tensors,
         const bool quantized =
             policy.is_nvfp4 && policy.is_nvfp4(t.name);
         const std::uint64_t bytes = quantized
-            ? static_cast<std::uint64_t>(Nvfp4ConvertedBytes(t.numel))
+            ? static_cast<std::uint64_t>(
+                  Nvfp4ConvertedBytes(t.numel, geom.nvfp4_scale_block))
             : static_cast<std::uint64_t>(t.raw_bytes);
         const bool routed = policy.mem_class &&
             policy.mem_class(t.name) == VramTensorClass::RoutedExpert;
@@ -183,6 +186,31 @@ bool ParseVramBlock(const std::string &index_json_text,
     out.max_bytes = static_cast<std::uint64_t>(mx);
     out.context_tokens = ct;
     return true;
+}
+
+std::string ReplaceVramBlock(const std::string &index_json_text,
+                             const VramProfile &p)
+{
+    // The block is machine-rendered by FormatVramJson (no nested braces),
+    // so a non-greedy brace scan is safe.
+    static const std::regex re(R"("vram"\s*:\s*\{[^{}]*\})");
+    const std::string block = FormatVramJson(p);
+
+    std::string out = std::regex_replace(index_json_text, re, block);
+    if (out == index_json_text) {
+        // No existing block: insert before the final closing brace.
+        const auto pos = index_json_text.rfind('}');
+        if (pos == std::string::npos) return index_json_text;
+        std::string head = index_json_text.substr(0, pos);
+        // Ensure the preceding content line ends with a comma.
+        while (!head.empty() && (head.back() == ' ' || head.back() == '\t' ||
+                                 head.back() == '\r' || head.back() == '\n'))
+            head.pop_back();
+        if (!head.empty() && head.back() != ',') head += ',';
+        out = head + "\n" + block + "\n}" +
+              index_json_text.substr(pos + 1);
+    }
+    return out;
 }
 
 std::string FormatBytesHuman(std::uint64_t bytes)

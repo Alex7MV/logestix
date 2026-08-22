@@ -287,6 +287,92 @@ QwenTopology load_qwen_topology(const std::string &index_path)
     return top;
 }
 
+// VRAM profile recompute for an already-converted Qwen model (migration of
+// index files produced before the mandatory "vram" block).
+arrow::Status RecomputeQwenVram(const std::string &input_path,
+                                const std::string &output_root)
+{
+    namespace fs = std::filesystem;
+    auto idx = fs::path(output_root) / "logestix" / "model.index.json";
+    if (!fs::exists(idx))
+        idx = fs::path(output_root) / "model.index.json";
+    std::ifstream f(idx);
+    if (!f) return arrow::Status::IOError("cannot open ", idx.string());
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+
+    auto model = lsxcommon::scan_directory(input_path);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                      input_path);
+
+    // Lenient geometry read (the old index has no "vram", so the strict
+    // load_qwen_topology would reject it).
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS)
+        return arrow::Status::Invalid("JSON parse error in ", idx.string());
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS)
+        return arrow::Status::Invalid("expected JSON object in ",
+                                      idx.string());
+    QwenTopology top;
+    {
+        int64_t v;
+        if (root["num_layers"].get_int64().get(v) == simdjson::SUCCESS)
+            top.num_layers = static_cast<int>(v);
+        if (root["hidden_size"].get_int64().get(v) == simdjson::SUCCESS)
+            top.hidden_size = static_cast<int>(v);
+        if (root["num_key_value_heads"].get_int64().get(v) == simdjson::SUCCESS)
+            top.num_key_value_heads = static_cast<int>(v);
+        if (root["head_dim"].get_int64().get(v) == simdjson::SUCCESS)
+            top.head_dim = static_cast<int>(v);
+        if (auto arr = root["layer_types"].get_array();
+            arr.error() == simdjson::SUCCESS) {
+            for (auto x : arr.value()) {
+                std::string_view sv;
+                if (x.get_string().get(sv) == simdjson::SUCCESS)
+                    top.layer_types.emplace_back(sv);
+            }
+        }
+    }
+
+    VramGeometry vg;
+    vg.hidden_dim = top.hidden_size;
+    vg.kv_dim = top.head_dim > 0
+        ? top.head_dim * top.num_key_value_heads : 0;
+    int full_attn_layers = 0;
+    for (const auto &lt : top.layer_types)
+        if (lt == "full_attention") ++full_attn_layers;
+    vg.num_attn_layers = full_attn_layers;
+    vg.context_length = ReadContextLength(
+        (fs::path(input_path) / "config.json").string());
+
+    std::vector<VramTensorInfo> vram_inventory;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors)
+            vram_inventory.push_back({t.name, t.numel(), t.byte_size()});
+
+    // Qwen is dense: no routed experts, mem_class stays nullptr.
+    VramProfile profile = EstimateVram(vram_inventory,
+        {+[](const std::string &n) {
+             return qwen_tensor_is_nvfp4(classify_qwen_tensor(n).kind);
+         },
+         nullptr},
+        vg);
+    spdlog::info("VRAM profile recomputed: min={} optimal={} max={} (ctx={})",
+        FormatBytesHuman(profile.min_bytes),
+        FormatBytesHuman(profile.optimal_bytes),
+        FormatBytesHuman(profile.max_bytes),
+        profile.context_tokens);
+
+    std::ofstream out(idx, std::ios::trunc);
+    if (!out) return arrow::Status::IOError("cannot write ", idx.string());
+    out << ReplaceVramBlock(json, profile);
+    return arrow::Status::OK();
+}
+
 arrow::Status WriteQwenModelIndex(const std::string &output_root, const QwenTopology &top)
 {
     namespace fs = std::filesystem;

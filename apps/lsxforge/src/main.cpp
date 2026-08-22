@@ -13,6 +13,8 @@
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/qwen_convert.h"
 #include <arrow/api.h>
+#include <fstream>
+#include <iterator>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -36,6 +38,9 @@ ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
 ABSL_FLAG(bool, glm, false, "GLM-5.2 conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
+ABSL_FLAG(bool, vram_recompute, false,
+          "recompute the vram block of a converted model.index.json "
+          "(--input = source safetensors dir, --output = converted root)");
 // Generation path execution option: routes the resolved prompt straight into
 // the tokenizer encode channel and the single end-to-end cudaStream_t
 // Prefill->Decode autogeneration sequence loop (IModel::Infer), bypassing the
@@ -258,6 +263,38 @@ int main(int argc, char* argv[]) {
         }
         spdlog::info("Verify OK — {} model tensors across {} arrow files",
                      vres->pinned_tensor_count, vres->arrow_files_checked);
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (absl::GetFlag(FLAGS_vram_recompute)) {
+        // Detect the converted format from the index and dispatch to the
+        // matching family recompute.
+        namespace fs = std::filesystem;
+        auto idx = fs::path(output_path) / "model.index.json";
+        if (!fs::exists(idx))
+            idx = fs::path(output_path) / "logestix" / "model.index.json";
+        std::ifstream f(idx);
+        if (!f) {
+            spdlog::error("model.index.json not found under {}", output_path);
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        std::string json((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+        arrow::Status st = arrow::Status::Invalid("unknown index format");
+        if (json.find("logestix-glm") != std::string::npos)
+            st = lsxcommon::glm::RecomputeGlmVram(input_path, output_path);
+        else if (json.find("logestix-qwen") != std::string::npos)
+            st = lsxcommon::qwen::RecomputeQwenVram(input_path, output_path);
+        else
+            st = lsxcommon::RecomputeVramBlock(input_path, output_path);
+        if (!st.ok()) {
+            spdlog::error("VRAM recompute failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("VRAM recompute complete -> {}", idx.string());
         lsxcommon::Core::Shutdown();
         return 0;
     }

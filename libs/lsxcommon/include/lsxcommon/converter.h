@@ -48,6 +48,14 @@ arrow::Status WriteModelIndex(
     const VramProfile &vram,
     const std::filesystem::path &output_root);
 
+// Recomputes the conversion-time VRAM profile from the SOURCE safetensors
+// inventory (DeepSeek logestix-v1 family) and rewrites the "vram" block of
+// <output_root>/model.index.json. Migrates pre-existing converted models
+// without a full re-conversion.
+arrow::Status RecomputeVramBlock(
+    const std::string &input_path,
+    const std::filesystem::path &output_root);
+
 class Converter {
 public:
     Converter();
