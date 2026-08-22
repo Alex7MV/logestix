@@ -45,12 +45,37 @@ LifecyclePlan GeneralStrategy::BuildPlan(const LifecycleInput &in,
     return p;
 }
 
+LifecyclePlan MoEStrategy::BuildPlan(const LifecycleInput &in,
+                                     const HardwareProfile &hw,
+                                     std::uint64_t vram_keep_out_bytes) const
+{
+    LifecyclePlan p = GeneralStrategy::BuildPlan(in, hw, vram_keep_out_bytes);
+    if (p.expert_cache_max_bytes > 0 && in.expert_mean_bytes > 0) {
+        const std::size_t fit = static_cast<std::size_t>(
+            p.expert_cache_max_bytes / in.expert_mean_bytes);
+        TuningBounds b;
+        b.expert_cache_slots_min = 4;
+        b.expert_cache_slots_max = std::clamp<std::size_t>(fit, 4, 4096);
+        p.tuner_bounds = b;
+        p.expert_cache_slots =
+            std::clamp(fit, b.expert_cache_slots_min, b.expert_cache_slots_max);
+        p.expert_cache_min_bytes =
+            static_cast<std::uint64_t>(b.expert_cache_slots_min) *
+            in.expert_mean_bytes;
+        p.expert_prefetch_batch = 4;
+    }
+    return p;
+}
+
 const ILifecycleStrategy &ResolveStrategy(Archetype archetype,
                                           const std::string &model_type)
 {
     static GeneralStrategy general;
-    if (archetype == Archetype::MoE) return general;  // replaced in Task 6
-    (void)model_type;
+    static MoEStrategy moe;
+    static Glm52Strategy glm52;
+    // Per-model override first (spec: layered strategies), then archetype.
+    if (model_type == "glm-5.2") return glm52;  // GlmV5Model::kType
+    if (archetype == Archetype::MoE) return moe;
     return general;
 }
 

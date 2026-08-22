@@ -80,3 +80,79 @@ TEST_CASE("general plan handles keep-out margin", "[lifecycle]")
     const auto p = s.BuildPlan(in, FakeHw(10), 3ull << 30);  // grantable 7 GiB
     REQUIRE(p.permanent_weight_bytes == (4ull << 30));
 }
+
+TEST_CASE("moe plan sizes expert cache from mean expert bytes", "[lifecycle]")
+{
+    MoEStrategy s;
+    const auto in = MakeInput(FakeVram(4, 4, 6), Archetype::MoE,
+                              /*mean_expert*/ 512ull << 20);
+    const auto p = s.BuildPlan(in, FakeHw(10), kKeepOut);
+    // cache_budget = 10 GiB - 4 GiB permanent - 2 GiB arena reserve = 4 GiB
+    REQUIRE(p.expert_cache_max_bytes == (4ull << 30));
+    // fit = 4 GiB / 512 MiB = 8 slots
+    REQUIRE(p.expert_cache_slots == 8);
+    REQUIRE(p.tuner_bounds.expert_cache_slots_min == 4);
+    REQUIRE(p.tuner_bounds.expert_cache_slots_max == 8);
+    REQUIRE(p.expert_cache_min_bytes == 4ull * (512ull << 20));
+    REQUIRE(p.expert_prefetch_batch == 4);
+}
+
+TEST_CASE("moe plan clamps slots into sane bounds", "[lifecycle]")
+{
+    MoEStrategy s;
+    SECTION("tiny experts would explode slot count -> clamped at 4096")
+    {
+        const auto in = MakeInput(FakeVram(1, 1, 2), Archetype::MoE,
+                                  /*mean_expert*/ 1ull << 20);
+        const auto p = s.BuildPlan(in, FakeHw(64), kKeepOut);
+        REQUIRE(p.expert_cache_slots <= p.tuner_bounds.expert_cache_slots_max);
+        REQUIRE(p.tuner_bounds.expert_cache_slots_max == 4096);
+    }
+    SECTION("huge experts -> floor of 4 slots")
+    {
+        const auto in = MakeInput(FakeVram(4, 4, 6), Archetype::MoE,
+                                  /*mean_expert*/ 8ull << 30);
+        const auto p = s.BuildPlan(in, FakeHw(10), kKeepOut);
+        REQUIRE(p.expert_cache_slots == 4);
+    }
+}
+
+TEST_CASE("glm-5.2 resolves the Glm52 strategy via the registry", "[lifecycle]")
+{
+    auto &gov = ResourceGovernor::Instance();
+    gov.Shutdown();
+    GovernorOptions gopts;
+    gopts.override_hw = true;
+    gopts.hw_override = FakeHw(10);
+    gopts.vram_keep_out_bytes = 0;
+    REQUIRE(gov.Initialize(gopts));
+
+    ResetPlanCache();
+    LifecycleInput in;
+    in.model_type = "glm-5.2";
+    in.archetype = Archetype::MoE;
+    in.vram = FakeVram(4, 4, 6);
+    in.expert_mean_bytes = 512ull << 20;
+    const auto &a = GetOrBuildPlan(in);
+    const auto &b = GetOrBuildPlan(in);
+    REQUIRE(&a == &b);  // cached: identical object
+    REQUIRE(a.expert_prefetch_batch == 4);
+    REQUIRE(a.pin_dense_layers);
+    ResetPlanCache();
+    gov.Shutdown();
+}
+
+TEST_CASE("plan building is deterministic", "[lifecycle]")
+{
+    MoEStrategy s;
+    const auto in = MakeInput(FakeVram(4, 4, 6), Archetype::MoE,
+                              512ull << 20);
+    const auto p1 = s.BuildPlan(in, FakeHw(10), kKeepOut);
+    const auto p2 = s.BuildPlan(in, FakeHw(10), kKeepOut);
+    REQUIRE(p1.permanent_weight_bytes == p2.permanent_weight_bytes);
+    REQUIRE(p1.expert_cache_slots == p2.expert_cache_slots);
+    REQUIRE(p1.expert_cache_max_bytes == p2.expert_cache_max_bytes);
+    REQUIRE(p1.tuner_bounds.expert_cache_slots_max ==
+            p2.tuner_bounds.expert_cache_slots_max);
+    REQUIRE(p1.host_upload_threads == p2.host_upload_threads);
+}
