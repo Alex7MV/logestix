@@ -1,10 +1,11 @@
 #include "deepseek_v4_flash_model.h"
 
-#include <spdlog/spdlog.h>
-
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/sampling.h"
+
+#include <absl/strings/str_cat.h>
 
 #include "deepseek_inference_load.cuh"
 
@@ -19,6 +20,7 @@ InferenceResult RunInferenceModel(
     const std::vector<int32_t> &input_ids,
     int max_gen_tokens,
     ::lsxcommon::ArrowTokenizerDb &tok_db,
+    gpu::PinnedWeights &pw,
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler());
 } // namespace gpu
@@ -33,10 +35,26 @@ bool DeepSeekV4FlashModel::Load()
     if (!BeginLoad(cfg_.model_path)) return false;
     auto topo = gpu::load_topology(cfg_.model_path);
     if (!topo.error_msg.empty()) {
-        spdlog::error("[deepseek-model] topology error: {}", topo.error_msg);
+        lsxcommon::log::error(absl::StrCat(
+            "[deepseek-model] topology error: ", topo.error_msg));
         return false;
     }
     vram_ = topo.vram;
+
+    // Fast-load the pinned weights ONCE (GLM-parity ownership model):
+    // Infer/Benchmark reuse them instead of paying full load cost per call.
+    if (!stream_) {
+        if (cudaStreamCreate(&stream_) != cudaSuccess) {
+            lsxcommon::log::error("[deepseek-model] stream create failed");
+            return false;
+        }
+    }
+    if (gpu::load_pinned_weights(cfg_.model_path, pw_, stream_)
+        != cudaSuccess) {
+        lsxcommon::log::error("[deepseek-model] pinned weight load failed");
+        pw_.Free();
+        return false;
+    }
     FinishLoad();
     return true;
 }
@@ -45,13 +63,15 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
+    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
     return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
-                                  req.max_gen_tokens, *tok_db_);
+                                  req.max_gen_tokens, *tok_db_, pw_);
 }
 
 void DeepSeekV4FlashModel::Unload()
 {
-    // RunInferenceModel loads pinned weights per-call and frees them on return.
+    pw_.Free();
+    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
     tok_db_.reset();
     loaded_ = false;
 }
@@ -67,7 +87,7 @@ gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
     const std::vector<int32_t> prompt = {0};
     auto res = gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
-                                      *tok_db_);
+                                      *tok_db_, pw_);
     if (!res.ok) { r.error_msg = res.error_msg; return r; }
     r.ok = true;
     r.num_tokens = res.num_tokens;
