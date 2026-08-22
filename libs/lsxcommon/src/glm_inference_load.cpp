@@ -104,7 +104,7 @@ const TensorView *FindTensor(const TensorBatchViews &tensors,
 
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
                        GlmPinnedWeights &pw, cudaStream_t stream,
-                       std::uint64_t &bytes_acc)
+                       std::uint64_t &bytes_acc, PinnedStagingRing &ring)
 {
     auto tensors_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
     if (!tensors_res.ok()) {
@@ -113,9 +113,6 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
         return cudaErrorInvalidValue;
     }
     auto &tensors = *tensors_res;
-
-    PinnedStagingRing ring;
-    if (!ring.ok()) return cudaErrorMemoryAllocation;
 
     auto *embed = FindTensor(tensors, "embed_tokens.weight");
     if (embed && embed->rank >= 2 &&
@@ -229,6 +226,7 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
                        cudaStream_t stream, PinnedStagingRing &ring,
                        std::uint64_t &bytes_acc)
 {
+
     std::vector<JobShape> shapes(jobs.size());
     for (size_t i = 0; i < jobs.size(); ++i) {
         if (!jobs[i].t) continue;
@@ -277,10 +275,9 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
 
 cudaError_t LoadSingleLayer(const TensorBatchViews &tensors,
                             GlmLayerWeights &lw, cudaStream_t stream,
-                            std::uint64_t &bytes_acc)
+                            std::uint64_t &bytes_acc,
+                            PinnedStagingRing &ring)
 {
-    PinnedStagingRing ring;
-    if (!ring.ok()) return cudaErrorMemoryAllocation;
 
     // Required-for-type validation (heterogeneous-grid rules):
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
@@ -431,6 +428,7 @@ void GlmPinnedWeights::Free()
     for (auto &l : layers) l.Free();
     layers.clear();
     shared_host.clear();
+    shared_keepalive.reset();
 }
 
 cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
@@ -467,7 +465,12 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
     // dies while a DMA transfer is still in flight.
     StreamDrain drain{stream};
 
-    auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes);
+    // One staging ring for the whole load: constructing/destructing pinned
+    // buffers per layer cost ~10 ms x layers in cudaMallocHost/cudaFreeHost.
+    PinnedStagingRing ring;
+    if (!ring.ok()) return cudaErrorMemoryAllocation;
+
+    auto err = LoadGlobal(pinned_dir, pw, stream, pw.resident_bytes, ring);
     if (err != cudaSuccess) return err;
 
     for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
@@ -491,37 +494,33 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
         }
         cudaError_t lerr =
             LoadSingleLayer(*tensors_res, pw.layers[static_cast<size_t>(l)],
-                            stream, pw.resident_bytes);
+                            stream, pw.resident_bytes, ring);
         if (lerr != cudaSuccess) {
             pw.Free();
             return lerr;
         }
     }
 
-    // Shared experts: one NVFP4-packed PackedExpert per layer in
-    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up). Kept host-side in
-    // pw.shared_host (index = layer); the faithful generation pass stages each
-    // layer's shared expert into the reusable per-expert device staging
-    // buffers on demand, so the ~1.4 GiB shared set costs no VRAM.
-    pw.shared_host.assign(pw.layers.size(), PackedExpert{});
+    // Shared experts: one NVFP4-packed shared expert per layer in
+    // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up). Zero-copy views
+    // into the memory-mapped file, kept host-side in pw.shared_host (index =
+    // layer); the faithful generation pass stages each layer's shared expert
+    // into the reusable per-expert device staging buffers on demand, so the
+    // ~1.4 GiB shared set costs no VRAM.
+    pw.shared_host.assign(pw.layers.size(), PackedExpertView{});
     auto se_path = pinned_dir / "shared_experts.arrow";
     if (fs::exists(se_path)) {
-        auto se_batch_res = ReadRecordBatchFromFile(se_path);
-        if (se_batch_res.ok()) {
-            auto sh_res = SharedExpertSchema::UnpackBatch(*se_batch_res);
-            if (sh_res.ok()) {
-                auto &sh = *sh_res;
-                for (size_t l = 0;
-                     l < sh.size() && l < pw.layers.size(); ++l) {
-                    pw.shared_host[l] = std::move(sh[l]);
-                }
-            } else {
-                log::warn("[glm_load] shared_experts.arrow unpack failed: " +
-                          sh_res.status().ToString());
+        auto se_res = LoadSharedExpertBatchViews(se_path);
+        if (se_res.ok()) {
+            pw.shared_keepalive = se_res->keepalive;
+            auto &sh = se_res->layers;
+            for (size_t l = 0;
+                 l < sh.size() && l < pw.layers.size(); ++l) {
+                pw.shared_host[l] = sh[l];
             }
         } else {
             log::warn("[glm_load] shared_experts.arrow read failed: " +
-                      se_batch_res.status().ToString());
+                      se_res.status().ToString());
         }
     }
 

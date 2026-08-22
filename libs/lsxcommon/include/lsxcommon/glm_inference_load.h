@@ -105,13 +105,16 @@ struct GlmPinnedWeights {
     int hidden = 0;
     std::vector<GlmLayerWeights> layers;    // indexed by layer 0..num_layers-1
 
-    // Shared experts: one NVFP4-packed PackedExpert per MoE layer (3-77) from
+    // Shared experts: one NVFP4-packed shared expert per MoE layer (3-77) from
     // pinned/shared_experts.arrow (w1=gate, w2=down, w3=up — same layout as a
-    // routed expert). Kept HOST-side only: the generation pass stages each
-    // layer's shared expert into the reusable per-expert device staging
-    // buffers on demand, so the ~1.4 GiB shared set never has to live in VRAM
-    // alongside the ~31 GiB pinned set. Index = layer; empty for dense layers.
-    std::vector<PackedExpert> shared_host;
+    // routed expert). Zero-copy views INTO the memory-mapped arrow file; the
+    // keepalive holds the mapping for the lifetime of the weights. Kept
+    // HOST-side only: the generation pass stages each layer's shared expert
+    // into the reusable per-expert device staging buffers on demand, so the
+    // ~1.4 GiB shared set never has to live in VRAM alongside the ~31 GiB
+    // pinned set. Index = layer; null pointers for dense layers.
+    std::vector<PackedExpertView> shared_host;
+    std::shared_ptr<void> shared_keepalive;
 
     // Peak device-resident weight set uploaded by LoadGlmPinnedWeights (embed
     // + head + final_norm + per-layer tensors), in bytes. Host-side data

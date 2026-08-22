@@ -947,4 +947,75 @@ LoadDenseNvfp4BatchViews(const std::filesystem::path &path)
     return out;
 }
 
+arrow::Result<SharedExpertBatchViews>
+LoadSharedExpertBatchViews(const std::filesystem::path &path)
+{
+    KickWholeFileReadahead(path);
+    auto k = std::make_shared<BatchKeepalive>();
+    ARROW_ASSIGN_OR_RAISE(
+        k->infile, arrow::io::MemoryMappedFile::Open(path.string(),
+                                                     arrow::io::FileMode::READ));
+    ARROW_ASSIGN_OR_RAISE(
+        k->reader, arrow::ipc::RecordBatchFileReader::Open(k->infile.get()));
+    if (k->reader->num_record_batches() == 0)
+        return arrow::Status::Invalid("No record batches in ", path.string());
+    ARROW_ASSIGN_OR_RAISE(k->batch, k->reader->ReadRecordBatch(0));
+
+    auto w1 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1Weight));
+    auto w2 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2Weight));
+    auto w3 = std::dynamic_pointer_cast<arrow::LargeBinaryArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3Weight));
+    auto s1 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1Scale));
+    auto s2 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2Scale));
+    auto s3 = std::dynamic_pointer_cast<arrow::ListArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3Scale));
+    auto gs1 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW1GlobalScale));
+    auto gs2 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW2GlobalScale));
+    auto gs3 = std::dynamic_pointer_cast<arrow::FloatArray>(
+        k->batch->column(SharedExpertSchema::kIdxW3GlobalScale));
+    if (!w1 || !w2 || !w3 || !s1 || !s2 || !s3 || !gs1 || !gs2 || !gs3)
+        return arrow::Status::Invalid("Shared-expert batch column type mismatch");
+    auto u1 = std::dynamic_pointer_cast<arrow::UInt8Array>(s1->values());
+    auto u2 = std::dynamic_pointer_cast<arrow::UInt8Array>(s2->values());
+    auto u3 = std::dynamic_pointer_cast<arrow::UInt8Array>(s3->values());
+    auto o1 = std::dynamic_pointer_cast<arrow::Int32Array>(s1->offsets());
+    auto o2 = std::dynamic_pointer_cast<arrow::Int32Array>(s2->offsets());
+    auto o3 = std::dynamic_pointer_cast<arrow::Int32Array>(s3->offsets());
+    if (!u1 || !u2 || !u3 || !o1 || !o2 || !o3)
+        return arrow::Status::Invalid("Shared-expert list value/offset mismatch");
+
+    SharedExpertBatchViews out;
+    out.keepalive = std::make_shared<KeepaliveBox>(KeepaliveBox{k});
+    const int64_t n = k->batch->num_rows();
+    out.layers.resize(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        PackedExpertView &v = out.layers[static_cast<size_t>(i)];
+        auto pv1 = w1->GetView(i);
+        v.w1_packed = reinterpret_cast<const uint8_t *>(pv1.data());
+        v.w1_packed_bytes = static_cast<int64_t>(pv1.size());
+        auto pv2 = w2->GetView(i);
+        v.w2_packed = reinterpret_cast<const uint8_t *>(pv2.data());
+        v.w2_packed_bytes = static_cast<int64_t>(pv2.size());
+        auto pv3 = w3->GetView(i);
+        v.w3_packed = reinterpret_cast<const uint8_t *>(pv3.data());
+        v.w3_packed_bytes = static_cast<int64_t>(pv3.size());
+        v.w1_scales = u1->raw_values() + o1->Value(i);
+        v.w1_scale_bytes = o1->Value(i + 1) - o1->Value(i);
+        v.w2_scales = u2->raw_values() + o2->Value(i);
+        v.w2_scale_bytes = o2->Value(i + 1) - o2->Value(i);
+        v.w3_scales = u3->raw_values() + o3->Value(i);
+        v.w3_scale_bytes = o3->Value(i + 1) - o3->Value(i);
+        v.w1_global_scale = gs1->Value(i);
+        v.w2_global_scale = gs2->Value(i);
+        v.w3_global_scale = gs3->Value(i);
+    }
+    return out;
+}
+
 } // namespace lsxcommon

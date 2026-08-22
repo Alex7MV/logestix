@@ -64,6 +64,24 @@ std::vector<lsxcommon::DenseNvfp4Record> SampleNvfp4()
     return recs;
 }
 
+std::vector<lsxcommon::PackedExpert> SampleSharedExperts()
+{
+    std::vector<lsxcommon::PackedExpert> layers(2);
+    for (int l = 0; l < 2; ++l) {
+        auto &e = layers[static_cast<size_t>(l)];
+        e.w1_packed.assign({1, 2, 3, 4});
+        e.w2_packed.assign({5, 6, 7, 8});
+        e.w3_packed.assign({9, 10, 11, 12});
+        e.w1_scales.assign({100});
+        e.w2_scales.assign({101, 102});
+        e.w3_scales.assign({103});
+        e.w1_global_scale = 0.5f + static_cast<float>(l);
+        e.w2_global_scale = 0.25f;
+        e.w3_global_scale = 0.125f;
+    }
+    return layers;
+}
+
 fs::path WritePinnedFile(const fs::path &dir,
                          const std::vector<lsxcommon::TensorRecord> &tensors)
 {
@@ -172,6 +190,61 @@ TEST_CASE("DenseNvfp4Schema zero-copy views round-trip and keepalive",
     fs::remove_all(tmp);
 }
 
+TEST_CASE("SharedExpertSchema zero-copy views round-trip and keepalive",
+          "[schema][views][shared-experts]")
+{
+    auto tmp = fs::temp_directory_path() /
+               ("lsx_schema_views_shared_" + std::to_string(::getpid()));
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+
+    const auto layers = SampleSharedExperts();
+    auto batch = lsxcommon::SharedExpertSchema::MakeBatch(layers);
+    REQUIRE(batch.ok());
+    const auto path = tmp / "shared_experts.arrow";
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(*batch, path).ok());
+
+    auto views_res = lsxcommon::LoadSharedExpertBatchViews(path);
+    REQUIRE(views_res.ok());
+    auto views = std::move(*views_res);
+
+    REQUIRE(views.layers.size() == layers.size());
+    for (size_t i = 0; i < views.layers.size(); ++i) {
+        const auto &v = views.layers[i];
+        const auto &ref = layers[i];
+        REQUIRE(std::memcmp(v.w1_packed, ref.w1_packed.data(),
+                            ref.w1_packed.size()) == 0);
+        REQUIRE(v.w1_packed_bytes == static_cast<int64_t>(ref.w1_packed.size()));
+        REQUIRE(std::memcmp(v.w2_packed, ref.w2_packed.data(),
+                            ref.w2_packed.size()) == 0);
+        REQUIRE(v.w2_packed_bytes == static_cast<int64_t>(ref.w2_packed.size()));
+        REQUIRE(std::memcmp(v.w3_packed, ref.w3_packed.data(),
+                            ref.w3_packed.size()) == 0);
+        REQUIRE(v.w3_packed_bytes == static_cast<int64_t>(ref.w3_packed.size()));
+        REQUIRE(std::memcmp(v.w1_scales, ref.w1_scales.data(),
+                            ref.w1_scales.size()) == 0);
+        REQUIRE(v.w1_scale_bytes == static_cast<int64_t>(ref.w1_scales.size()));
+        REQUIRE(std::memcmp(v.w2_scales, ref.w2_scales.data(),
+                            ref.w2_scales.size()) == 0);
+        REQUIRE(v.w2_scale_bytes == static_cast<int64_t>(ref.w2_scales.size()));
+        REQUIRE(std::memcmp(v.w3_scales, ref.w3_scales.data(),
+                            ref.w3_scales.size()) == 0);
+        REQUIRE(v.w3_scale_bytes == static_cast<int64_t>(ref.w3_scales.size()));
+        REQUIRE(v.w1_global_scale == ref.w1_global_scale);
+        REQUIRE(v.w2_global_scale == ref.w2_global_scale);
+        REQUIRE(v.w3_global_scale == ref.w3_global_scale);
+    }
+
+    // Views stay valid while only the views struct itself is alive.
+    auto *p1 = views.layers[0].w1_packed;
+    auto n1 = views.layers[0].w1_packed_bytes;
+    auto moved = std::move(views);
+    REQUIRE(moved.keepalive != nullptr);
+    REQUIRE(std::memcmp(p1, layers[0].w1_packed.data(), n1) == 0);
+
+    fs::remove_all(tmp);
+}
+
 TEST_CASE("View loaders report missing files as errors",
           "[schema][views][errors]")
 {
@@ -180,4 +253,6 @@ TEST_CASE("View loaders report missing files as errors",
     REQUIRE_FALSE(r1.ok());
     auto r2 = lsxcommon::LoadDenseNvfp4BatchViews(missing);
     REQUIRE_FALSE(r2.ok());
+    auto r3 = lsxcommon::LoadSharedExpertBatchViews(missing);
+    REQUIRE_FALSE(r3.ok());
 }

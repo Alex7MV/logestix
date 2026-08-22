@@ -54,6 +54,31 @@ struct DenseNvfp4BatchViews {
     std::vector<DenseNvfp4View> records;
 };
 
+// Non-owning view of one NVFP4-packed shared-expert row (w1=gate, w2=down,
+// w3=up; same 9-column layout as ExpertSchema).
+struct PackedExpertView {
+    const uint8_t *w1_packed = nullptr;
+    int64_t w1_packed_bytes = 0;
+    const uint8_t *w2_packed = nullptr;
+    int64_t w2_packed_bytes = 0;
+    const uint8_t *w3_packed = nullptr;
+    int64_t w3_packed_bytes = 0;
+    const uint8_t *w1_scales = nullptr;
+    int64_t w1_scale_bytes = 0;
+    const uint8_t *w2_scales = nullptr;
+    int64_t w2_scale_bytes = 0;
+    const uint8_t *w3_scales = nullptr;
+    int64_t w3_scale_bytes = 0;
+    float w1_global_scale = 1.0f;
+    float w2_global_scale = 1.0f;
+    float w3_global_scale = 1.0f;
+};
+
+struct SharedExpertBatchViews {
+    std::shared_ptr<void> keepalive;
+    std::vector<PackedExpertView> layers;
+};
+
 // Opens `path` memory-mapped, reads record batch 0 and builds zero-copy
 // views. Error on any missing/malformed input.
 arrow::Result<TensorBatchViews>
@@ -61,6 +86,9 @@ LoadTensorBatchViews(const std::filesystem::path &path);
 
 arrow::Result<DenseNvfp4BatchViews>
 LoadDenseNvfp4BatchViews(const std::filesystem::path &path);
+
+arrow::Result<SharedExpertBatchViews>
+LoadSharedExpertBatchViews(const std::filesystem::path &path);
 
 
 struct ExpertData {

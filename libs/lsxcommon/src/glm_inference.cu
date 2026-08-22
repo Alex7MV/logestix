@@ -1301,7 +1301,7 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
 // One layer of the real GLM-5.2 forward for a single token at position `pos`
 // (its K/V is stored at cache slot `pos`). d_hid is the in/out residual stream.
 cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
-                            const PackedExpert *shared_host)
+                            const PackedExpertView *shared_host)
 {
     const GlmPinnedWeights &pw = *c.pw;
     const GlmLayerWeights &lw = pw.layers[static_cast<size_t>(l)];
@@ -1435,16 +1435,13 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
     constexpr int64_t kPackPerMat = kGlmExpertMatEl / 2;
     constexpr int64_t kScalePerMat = kGlmExpertMatEl / kGlmNvfp4Block;
     bool shared_ok = false;
-    if (shared_host && !shared_host->w1_packed.empty() &&
-        !shared_host->w2_packed.empty() && !shared_host->w3_packed.empty() &&
-        !shared_host->w1_scales.empty() && !shared_host->w2_scales.empty() &&
-        !shared_host->w3_scales.empty() &&
-        shared_host->w1_packed.size() == static_cast<size_t>(kPackPerMat) &&
-        shared_host->w2_packed.size() == static_cast<size_t>(kPackPerMat) &&
-        shared_host->w3_packed.size() == static_cast<size_t>(kPackPerMat) &&
-        shared_host->w1_scales.size() == static_cast<size_t>(kScalePerMat) &&
-        shared_host->w2_scales.size() == static_cast<size_t>(kScalePerMat) &&
-        shared_host->w3_scales.size() == static_cast<size_t>(kScalePerMat)) {
+    if (shared_host && shared_host->w1_packed_bytes ==
+                           static_cast<int64_t>(kPackPerMat) &&
+        shared_host->w2_packed_bytes == static_cast<int64_t>(kPackPerMat) &&
+        shared_host->w3_packed_bytes == static_cast<int64_t>(kPackPerMat) &&
+        shared_host->w1_scale_bytes == static_cast<int64_t>(kScalePerMat) &&
+        shared_host->w2_scale_bytes == static_cast<int64_t>(kScalePerMat) &&
+        shared_host->w3_scale_bytes == static_cast<int64_t>(kScalePerMat)) {
         uint8_t *p1 = c.d_pack;
         uint8_t *p2 = p1 + kPackPerMat;
         uint8_t *p3 = p2 + kPackPerMat;
@@ -1464,27 +1461,27 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         seb.w3_global_scale = shared_host->w3_global_scale;
         seb.w3_packed_bytes = kPackPerMat;
         seb.w3_scale_bytes = kScalePerMat;
-        e = cudaMemcpyAsync(p1, shared_host->w1_packed.data(),
+        e = cudaMemcpyAsync(p1, shared_host->w1_packed,
                             static_cast<size_t>(kPackPerMat),
                             cudaMemcpyHostToDevice, c.st);
         if (e == cudaSuccess)
-            e = cudaMemcpyAsync(p2, shared_host->w2_packed.data(),
+            e = cudaMemcpyAsync(p2, shared_host->w2_packed,
                                 static_cast<size_t>(kPackPerMat),
                                 cudaMemcpyHostToDevice, c.st);
         if (e == cudaSuccess)
-            e = cudaMemcpyAsync(p3, shared_host->w3_packed.data(),
+            e = cudaMemcpyAsync(p3, shared_host->w3_packed,
                                 static_cast<size_t>(kPackPerMat),
                                 cudaMemcpyHostToDevice, c.st);
         if (e == cudaSuccess)
-            e = cudaMemcpyAsync(s1, shared_host->w1_scales.data(),
+            e = cudaMemcpyAsync(s1, shared_host->w1_scales,
                                 static_cast<size_t>(kScalePerMat),
                                 cudaMemcpyHostToDevice, c.st);
         if (e == cudaSuccess)
-            e = cudaMemcpyAsync(s2, shared_host->w2_scales.data(),
+            e = cudaMemcpyAsync(s2, shared_host->w2_scales,
                                 static_cast<size_t>(kScalePerMat),
                                 cudaMemcpyHostToDevice, c.st);
         if (e == cudaSuccess)
-            e = cudaMemcpyAsync(s3, shared_host->w3_scales.data(),
+            e = cudaMemcpyAsync(s3, shared_host->w3_scales,
                                 static_cast<size_t>(kScalePerMat),
                                 cudaMemcpyHostToDevice, c.st);
         if (e != cudaSuccess) return e;
@@ -1585,7 +1582,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaEventRecord(t_start, stream);
 
     const int hidden = pw.hidden;
-    const auto shared_for = [&pw](int l) -> const PackedExpert * {
+    const auto shared_for = [&pw](int l) -> const PackedExpertView * {
         return (l >= 0 && static_cast<size_t>(l) < pw.shared_host.size())
                    ? &pw.shared_host[static_cast<size_t>(l)]
                    : nullptr;
