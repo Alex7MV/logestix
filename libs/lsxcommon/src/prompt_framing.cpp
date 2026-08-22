@@ -13,8 +13,22 @@ constexpr FramingDescriptor kGlmFraming = {
     3, 3,
 };
 
-constexpr std::array<FramingDescriptor, 1> kFramings = {kGlmFraming};
+// Gemma-4 canonical chat template (chat_template.jinja, generation prompt):
+//   <|turn>user\n{prompt}<turn|>\n<|turn>model\n
+// Sentinel strings verified against the real checkpoint tokenizer.json:
+// <|turn>=105, <turn|>=106, "\n"=107; "user"/"model" are single vocab keys.
+// The optional empty-thinking suffix (<|channel>thought...<channel|>) is not
+// representable as single-token sentinels and is omitted (thinking-enabled
+// framing).
+constexpr FramingDescriptor kGemma4Framing = {
+    "gemma-4-26b-a4b-it",
+    {"<|turn>", "user", "\n"},
+    {"<turn|>", "\n", "<|turn>", "model", "\n"},
+    3, 5,
+};
 
+constexpr std::array<FramingDescriptor, 2> kFramings = {kGlmFraming,
+                                                        kGemma4Framing};
 bool IsBlank(std::string_view s)
 {
     for (char c : s)
@@ -37,7 +51,7 @@ bool BuildPromptInputIds(std::string_view model_type,
                          std::vector<int32_t> &out_ids)
 {
     const FramingDescriptor *frame = LookupFraming(model_type);
-    int32_t sentinel[6];
+    int32_t sentinel[16];
     bool complete = frame != nullptr;
     if (frame) {
         for (size_t i = 0; i < frame->leading_count; ++i)

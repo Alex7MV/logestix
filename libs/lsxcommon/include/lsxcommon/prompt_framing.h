@@ -11,11 +11,12 @@ namespace prompt {
 
 // Ordered chat-template sentinel descriptor for one model. Sentinels are
 // resolved via arrow_tokenizer_lookup at encode time; a model with no entry
-// (or an incomplete sentinel set) encodes raw.
+// (or an incomplete sentinel set) encodes raw. Arrays hold up to 8 sentinels
+// per side (Gemma-4 needs 5 trailing); unused tail slots stay default.
 struct FramingDescriptor {
     std::string_view model_type;
-    std::string_view leading[3];
-    std::string_view trailing[3];
+    std::string_view leading[8];
+    std::string_view trailing[8];
     std::size_t leading_count = 0;
     std::size_t trailing_count = 0;
 };

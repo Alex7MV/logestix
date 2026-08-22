@@ -599,6 +599,23 @@ endif()
 
 add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
 
+# ── Тест Gemma-4 prompt framing helper (host-only, сентинелы tokenizer.json) ─────
+add_executable(test_gemma_prompt_framing test_gemma_prompt_framing.cpp)
+target_compile_definitions(test_gemma_prompt_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_prompt_framing POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_prompt_framing>"
+    )
+endif()
+
+add_test(NAME test_gemma_prompt_framing COMMAND test_gemma_prompt_framing)
+
 # ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
