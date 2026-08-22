@@ -1216,3 +1216,21 @@ if(WIN32)
 endif()
 
 add_test(NAME test_resource_governor COMMAND test_resource_governor)
+
+add_executable(test_hardware_profile test_hardware_profile.cpp)
+target_link_libraries(test_hardware_profile PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_hardware_profile POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_hardware_profile>"
+    )
+    add_custom_command(TARGET test_hardware_profile POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_hardware_profile>"
+    )
+endif()
+
+add_test(NAME test_hardware_profile COMMAND test_hardware_profile)
