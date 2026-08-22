@@ -6,6 +6,8 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/sampling.h"
 
+#include "deepseek_inference_load.cuh"
+
 namespace lsxcommon {
 
 const std::string DeepSeekV4FlashModel::kType = "deepseek-v4-flash";
@@ -29,6 +31,12 @@ DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
 bool DeepSeekV4FlashModel::Load()
 {
     if (!BeginLoad(cfg_.model_path)) return false;
+    auto topo = gpu::load_topology(cfg_.model_path);
+    if (!topo.error_msg.empty()) {
+        spdlog::error("[deepseek-model] topology error: {}", topo.error_msg);
+        return false;
+    }
+    vram_ = topo.vram;
     FinishLoad();
     return true;
 }

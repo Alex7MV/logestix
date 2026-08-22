@@ -35,6 +35,7 @@ public:
 
     SafetensorsModel Inspect() override;
     std::uint64_t ResidentWeightBytes() const override { return resident_bytes_; }
+    const VramProfile &VramRequirements() const override { return vram_; }
 
 protected:
     // Shared Load-preamble (triplicated in DeepSeek/GLM/Qwen): loaded_ early-out,
@@ -46,6 +47,10 @@ protected:
     // Persistent device-resident weight set (pinned for MoE GLM/DeepSeek; full
     // for dense Qwen). Assign in subclass Load/Unload. See spec 3.3.
     std::uint64_t resident_bytes_ = 0;
+
+    // Conversion-time VRAM requirements; populated by subclass Load() from
+    // the model's model.index.json "vram" block.
+    VramProfile vram_;
 
     ~ModelBase() override = default;
 };

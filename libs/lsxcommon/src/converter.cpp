@@ -1312,7 +1312,10 @@ arrow::Status Converter::Run()
         int embed_vocab = 0, embed_hidden = 0;
         for (auto &shard : model.shards) {
             for (auto &t : shard.tensors) {
-                if (t.name == "model.embed_tokens.weight" && t.shape.size() >= 2) {
+                // DeepSeek sources name the embedding "embed.weight"
+                // (no "model." prefix); accept both spellings.
+                if ((t.name == "model.embed_tokens.weight" ||
+                     t.name == "embed.weight") && t.shape.size() >= 2) {
                     embed_vocab = static_cast<int>(t.shape[0]);
                     embed_hidden = static_cast<int>(t.shape[1]);
                 }

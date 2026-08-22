@@ -11,6 +11,7 @@
 #include "lsxcommon/safetensors.h"     // SafetensorsModel
 #include "lsxcommon/tokenizer.h"       // ArrowTokenizerDb
 #include "lsxcommon/benchmark_gpu.h"   // gpu::BenchmarkResult
+#include "lsxcommon/vram_estimate.h"   // VramProfile
 
 namespace lsxcommon {
 
@@ -62,6 +63,13 @@ public:
     // Peak resident weight set (pinned + arena + staged experts), in bytes.
     // Default 0 keeps the interface additive for test fakes.
     virtual std::uint64_t ResidentWeightBytes() const { return 0; }
+
+    // VRAM requirements computed at conversion time ("vram" block of
+    // model.index.json). Default: empty profile keeps test fakes additive.
+    virtual const VramProfile &VramRequirements() const
+    {
+        return kEmptyVramProfile;
+    }
 
     virtual const std::string &Type() const = 0;
     virtual ArrowTokenizerDb &Tokenizer() = 0;

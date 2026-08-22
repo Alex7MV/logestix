@@ -7,7 +7,10 @@
 
 #include "lsxcommon/glm_inference.h"
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/glm_convert.h"
 #include "lsxcommon/model_runtime.h"
+
+#include <filesystem>
 
 namespace lsxcommon {
 
@@ -21,6 +24,19 @@ GlmV5Model::~GlmV5Model() { Unload(); }
 bool GlmV5Model::Load()
 {
     if (!BeginLoad(cfg_.model_path)) return false;
+
+    namespace fs = std::filesystem;
+    fs::path idx = fs::path(cfg_.model_path) / "logestix" / "model.index.json";
+    if (!fs::exists(idx))
+        idx = fs::path(cfg_.model_path) / "model.index.json";
+    auto topo = glm::load_topology(idx.string());
+    if (!topo.error_msg.empty()) {
+        spdlog::error("[glm-model] topology error in {}: {}",
+                      idx.string(), topo.error_msg);
+        return false;
+    }
+    vram_ = topo.vram;
+
     FinishLoad();
     return true;
 }

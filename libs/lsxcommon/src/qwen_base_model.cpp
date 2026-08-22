@@ -36,6 +36,7 @@ bool QwenBaseModel::Load()
             // Dense residency (spec 3.3): the entire model is resident after
             // Load(), so ResidentWeightBytes() reports the full persistent set.
             resident_bytes_ = pw_.resident_bytes;
+            vram_ = pw_.top.vram;
             spdlog::info("[qwen-model] pinned weights loaded: {} layers "
                          "({} bytes resident)",
                          pw_.layers.size(), pw_.resident_bytes);
