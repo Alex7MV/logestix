@@ -7,6 +7,8 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <vector>
 
@@ -107,6 +109,59 @@ TEST_CASE("Qwen loader reads topology and sizes layers")
     remove_all(tmp);
 }
 
+static bool InArena(const void *d_arena, size_t arena_bytes, const void *p)
+{
+    auto base = reinterpret_cast<uintptr_t>(d_arena);
+    auto ptr = reinterpret_cast<uintptr_t>(p);
+    return d_arena != nullptr && ptr >= base && ptr < base + arena_bytes;
+}
+
+TEST_CASE("Qwen loader fast path: arena-backed layer uploads")
+{
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "qwen_load_arena_test";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = qwentest::BuildSyntheticQwenModel();
+    qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    qwentest::WriteConfig(tmp);
+    WriteToken(tmp);
+    REQUIRE(ConvertQwenModel(tmp.string(), tmp.string()).ok());
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    QwenPinnedWeights pw;
+    REQUIRE(LoadQwenPinnedWeights(tmp.string(), pw, stream));
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
+        const auto &lw = pw.layers[static_cast<size_t>(l)];
+        INFO("layer " << l);
+        REQUIRE(lw.loaded);
+        CHECK(lw.d_arena != nullptr);
+        CHECK(lw.arena_bytes > 0);
+        // Every converted/raw 1D tensor view lives inside the layer arena.
+        CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_input_norm));
+        CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_post_norm));
+        if (lw.is_linear) {
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_conv1d));
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_A_log));
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_dt_bias));
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_attn_norm));
+        } else {
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_q_norm));
+            CHECK(InArena(lw.d_arena, lw.arena_bytes, lw.d_k_norm));
+        }
+    }
+
+    // Free() releases the arena and clears the arena bookkeeping.
+    pw.Free();
+    CHECK(pw.layers.empty());
+    cudaStreamDestroy(stream);
+    remove_all(tmp);
+}
+
 TEST_CASE("Qwen loader BF16->FP16 values")
 {
     using namespace std::filesystem;
@@ -129,6 +184,39 @@ TEST_CASE("Qwen loader BF16->FP16 values")
     // final norm weight stored as raw BF16 values 0.00,0.01,0.02,...
     // fixture: MakeBf16Values(pattern(i)=(float)i*0.01f)
     CHECK(std::abs(ReadHalf(pw.d_final_norm, 5) - 0.05f) < 1e-3f);
+
+    // Fast-path bit-exactness: every converted tensor must match the legacy
+    // scalar formula (bf16 bits<<16 -> FP32 -> __float2half nearest-even).
+    auto bf16_expected = [](int64_t i) {
+        uint32_t bits = static_cast<uint32_t>(i % 65536) << 16;
+        float f;
+        std::memcpy(&f, &bits, sizeof(f));
+        return __float2half(f);
+    };
+    auto bf16_bits = [&](int64_t i) {
+        __half h = bf16_expected(i);
+        return *reinterpret_cast<const uint16_t *>(&h);
+    };
+    const auto &l0 = pw.layers[0];   // linear attention
+    {
+        __half v;
+        cudaMemcpy(&v, l0.d_conv1d + 7, sizeof(__half), cudaMemcpyDeviceToHost);
+        CHECK(*reinterpret_cast<uint16_t *>(&v) == bf16_bits(7));
+        cudaMemcpy(&v, l0.d_attn_norm + 3, sizeof(__half), cudaMemcpyDeviceToHost);
+        CHECK(*reinterpret_cast<uint16_t *>(&v) == bf16_bits(3));
+        // A_log / dt_bias are raw F32 passthroughs: exact patterns.
+        float fv;
+        cudaMemcpy(&fv, l0.d_A_log + 2, sizeof(float), cudaMemcpyDeviceToHost);
+        CHECK(fv == 2.0f);           // i*0.5 + 1.0
+        cudaMemcpy(&fv, l0.d_dt_bias + 3, sizeof(float), cudaMemcpyDeviceToHost);
+        CHECK(fv == 0.3f);           // i*0.1
+    }
+    const auto &l3 = pw.layers[3];   // full attention
+    {
+        __half v;
+        cudaMemcpy(&v, l3.d_q_norm + 31, sizeof(__half), cudaMemcpyDeviceToHost);
+        CHECK(*reinterpret_cast<uint16_t *>(&v) == bf16_bits(31));
+    }
 
     pw.Free();
     cudaStreamDestroy(stream);

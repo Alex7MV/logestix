@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -67,6 +68,12 @@ struct QwenLayerWeights {
     QwenNvfp4Weight mlp_gate; // hidden -> intermediate
     QwenNvfp4Weight mlp_up;   // hidden -> intermediate
     QwenNvfp4Weight mlp_down; // intermediate -> hidden
+
+    // Non-null when the layer was uploaded arena-backed: every d_* 1D tensor
+    // pointer above is a view into this single allocation and Free() releases
+    // the arena instead of the individual pointers.
+    void *d_arena = nullptr;
+    size_t arena_bytes = 0;
 
     void Free();
 };
