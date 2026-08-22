@@ -1252,3 +1252,21 @@ if(WIN32)
 endif()
 
 add_test(NAME test_lifecycle_plan COMMAND test_lifecycle_plan)
+
+add_executable(test_runtime_tuner test_runtime_tuner.cpp)
+target_link_libraries(test_runtime_tuner PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_runtime_tuner POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_runtime_tuner>"
+    )
+    add_custom_command(TARGET test_runtime_tuner POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_runtime_tuner>"
+    )
+endif()
+
+add_test(NAME test_runtime_tuner COMMAND test_runtime_tuner)

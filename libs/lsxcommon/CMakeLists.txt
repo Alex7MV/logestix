@@ -42,6 +42,7 @@ add_library(lsxcommon STATIC
     src/qwen_v5_model.cpp
     src/qwen_base_model.cpp
     src/resource_governor.cpp
+    src/runtime_tuner.cpp
     src/schema.cpp
     src/tokenizer.cpp
     src/tokenizer_convert.cpp
