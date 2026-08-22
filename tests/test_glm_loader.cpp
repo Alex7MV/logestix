@@ -64,8 +64,17 @@ TEST_CASE("GLM loader uploads global tensors BF16→FP16", "[glm][loader]")
     t.push_back({"model.norm.weight", "BF16", {2},
         glmtest::MakeBf16Values(2, [](int64_t i) { return 1.0f + static_cast<float>(i) * 0.25f; })});
     // A 1-layer model keeps the topology num_layers >= 1 (as any real model).
+    // Strict loading requires every dense layer to carry both norms + MLP.
     t.push_back({"model.layers.0.input_layernorm.weight", "BF16", {2},
         glmtest::MakeBf16Values(2, [](int64_t i) { return 0.25f + static_cast<float>(i); })});
+    t.push_back({"model.layers.0.post_attention_layernorm.weight", "BF16", {2},
+        glmtest::MakeBf16Values(2, [](int64_t i) { return 0.5f + static_cast<float>(i); })});
+    t.push_back({"model.layers.0.mlp.gate_proj.weight", "BF16", {2, 2},
+        glmtest::MakeBf16Values(4, [](int64_t i) { return static_cast<float>(i); })});
+    t.push_back({"model.layers.0.mlp.down_proj.weight", "BF16", {2, 2},
+        glmtest::MakeBf16Values(4, [](int64_t i) { return static_cast<float>(i); })});
+    t.push_back({"model.layers.0.mlp.up_proj.weight", "BF16", {2, 2},
+        glmtest::MakeBf16Values(4, [](int64_t i) { return static_cast<float>(i); })});
     glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", t);
     glmtest::WriteConfig(in, /*num_layers=*/1, /*hidden=*/2, /*vocab=*/4,
                          /*experts=*/0);
@@ -208,6 +217,8 @@ TEST_CASE("GLM loader writes correct FP16 values per layer", "[glm][loader]")
         glmtest::MakeBf16Values(16, [](int64_t i) { return 1.0f + static_cast<float>(i) * 0.25f; })});
     t.push_back({"model.layers.0.input_layernorm.weight", "BF16", {16},
         glmtest::MakeBf16Values(16, [](int64_t i) { return 0.5f + static_cast<float>(i); })});
+    t.push_back({"model.layers.0.post_attention_layernorm.weight", "BF16", {16},
+        glmtest::MakeBf16Values(16, [](int64_t i) { return 1.0f + static_cast<float>(i); })});
     t.push_back({"model.layers.0.mlp.gate_proj.weight", "BF16", {16, 16},
         glmtest::MakeBf16Values(256, [](int64_t i) { return static_cast<float>(i) * 0.125f; })});
     t.push_back({"model.layers.0.mlp.up_proj.weight", "BF16", {16, 16},
@@ -244,5 +255,78 @@ TEST_CASE("GLM loader writes correct FP16 values per layer", "[glm][loader]")
 
     pw.Free();
     DestroyStream(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("GLM loader errors on missing layer file", "[glm][loader]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_glm_loader_missing";
+    fs::remove_all(base);
+    auto in = base / "model";
+    auto out = base / "converted";
+    fs::create_directories(in);
+
+    glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                              glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(in);
+    glmtest::WriteTokenizer(in);
+    auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
+    REQUIRE(st.ok());
+
+    auto victim = out / "logestix" / "pinned" / "layer_5.arrow";
+    if (!fs::exists(victim))
+        victim = out / "pinned" / "layer_5.arrow";
+    REQUIRE(fs::exists(victim));
+    fs::remove(victim);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    GlmPinnedWeights pw;
+    auto err = lsxcommon::glm::LoadGlmPinnedWeights(out.string(), pw, stream);
+    CHECK(err == cudaErrorInvalidValue);
+    CHECK(pw.layers.empty());
+
+    cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("GLM loader errors on malformed tensor shape", "[glm][loader]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_glm_loader_badshape";
+    fs::remove_all(base);
+    auto in = base / "model";
+    auto out = base / "converted";
+    fs::create_directories(in);
+
+    glmtest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                              glmtest::BuildSyntheticModel());
+    glmtest::WriteConfig(in);
+    glmtest::WriteTokenizer(in);
+    auto st = lsxcommon::glm::ConvertGlmModel(in.string(), out);
+    REQUIRE(st.ok());
+
+    std::vector<lsxcommon::TensorRecord> bad;
+    bad.push_back({"input_layernorm.weight", "BF16", {}, {}});
+    bad.push_back({"post_attention_layernorm.weight", "BF16", {16},
+                   std::vector<uint8_t>(16 * 2)});
+    auto batch_res = lsxcommon::PinnedSchema::MakeBatch(bad);
+    REQUIRE(batch_res.ok());
+    auto pinned_bad = out / "logestix" / "pinned" / "layer_5.arrow";
+    if (!fs::exists(out / "logestix" / "pinned"))
+        pinned_bad = out / "pinned" / "layer_5.arrow";
+    auto wres = lsxcommon::WriteRecordBatchToFile(*batch_res, pinned_bad);
+    REQUIRE(wres.ok());
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    GlmPinnedWeights pw;
+    auto err = lsxcommon::glm::LoadGlmPinnedWeights(out.string(), pw, stream);
+    CHECK(err == cudaErrorInvalidValue);
+
+    cudaStreamDestroy(stream);
     fs::remove_all(base);
 }
