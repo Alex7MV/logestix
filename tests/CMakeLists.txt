@@ -660,6 +660,30 @@ endif()
 
 add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
 
+# ── Тест Gemma-4 модели (фабрика + Load + Infer, синтетическая геометрия) ────
+add_executable(test_gemma4_model test_gemma4_model.cpp)
+target_compile_definitions(test_gemma4_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+endif()
+
+add_test(NAME test_gemma4_model COMMAND test_gemma4_model)
+set_tests_properties(test_gemma4_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
 foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn test_gemma4_moe)
     add_executable(${qt} ${qt}.cpp)

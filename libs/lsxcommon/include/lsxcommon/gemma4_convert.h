@@ -4,8 +4,6 @@
 #include <string>
 #include <vector>
 
-#include "absl/container/btree_map.h"
-#include "absl/container/flat_hash_set.h"
 #include "arrow/api.h"
 #include "lsxcommon/vram_estimate.h"
 

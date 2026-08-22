@@ -25,6 +25,8 @@ add_library(lsxcommon STATIC
     src/glm_v5_model.cpp
     src/gemma4_convert.cpp
     src/gemma4_inference_load.cpp
+    src/gemma_base_model.cpp
+    src/gemma_4_26b_a4b_model.cpp
     src/loader.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp

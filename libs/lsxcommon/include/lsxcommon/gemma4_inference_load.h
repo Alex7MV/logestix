@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "lsxcommon/expert_store.h"
+#include "lsxcommon/gemma4_convert.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -78,9 +79,26 @@ struct GemmaPinnedWeights {
     int hidden = 0;
     std::vector<GemmaLayerWeights> layers;
 
+    // Topology from <root>/logestix/model.index.json (present for converted
+    // models). error_msg set when the index is missing/malformed.
+    GemmaTopology top;
+
     // Peak device-resident weight set (VRAM only; host data excluded).
     std::uint64_t resident_bytes = 0;
 
+    void Free();
+};
+
+// Persistent per-session KV cache: per-layer k/v rows sized by that layer's
+// attention geometry (sliding: kv_heads*head_dim; full: gkv*g_head_dim).
+struct GemmaKvCache {
+    std::vector<__half *> dk;            // per layer [max_total][kv_rows]
+    std::vector<__half *> dv;
+    int max_total = 0;
+    std::uint64_t cache_bytes = 0;
+
+    bool allocated() const { return !dk.empty(); }
+    cudaError_t Allocate(const GemmaPinnedWeights &pw, int max_total);
     void Free();
 };
 

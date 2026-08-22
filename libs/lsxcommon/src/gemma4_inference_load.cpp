@@ -384,10 +384,60 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
     }
 
     pw.resident_bytes = bytes_acc;
+
+    // Topology from the index (mandatory for generation; the loader still
+    // succeeds without it so weight-only tooling keeps working).
+    auto idx_path = fs::path(model_path) / "logestix" / "model.index.json";
+    if (!fs::exists(idx_path))
+        idx_path = fs::path(model_path) / "model.index.json";
+    if (fs::exists(idx_path)) {
+        pw.top = load_gemma_topology(idx_path.string());
+        if (!pw.top.error_msg.empty())
+            log::error("[gemma_load] index topology parse failed: " +
+                       pw.top.error_msg);
+    }
+
     return cudaSuccess;
 }
 
 // ── Expert store wiring ─────────────────────────────────────────────────────
+
+cudaError_t GemmaKvCache::Allocate(const GemmaPinnedWeights &pw, int max_total)
+{
+    Free();
+    if (!pw.top.error_msg.empty() || pw.layers.empty() || max_total <= 0)
+        return cudaErrorInvalidValue;
+    dk.resize(pw.layers.size(), nullptr);
+    dv.resize(pw.layers.size(), nullptr);
+    std::uint64_t bytes = 0;
+    for (size_t l = 0; l < pw.layers.size(); ++l) {
+        const int64_t stride = pw.layers[l].kv_rows; // kv_heads * head_dim
+        if (stride <= 0) {
+            Free();
+            return cudaErrorInvalidValue;
+        }
+        size_t sz = static_cast<size_t>(stride) * max_total * 2;
+        if (cudaMalloc(&dk[l], sz) != cudaSuccess ||
+            cudaMalloc(&dv[l], sz) != cudaSuccess) {
+            Free();
+            return cudaErrorMemoryAllocation;
+        }
+        bytes += 2 * sz;
+    }
+    this->max_total = max_total;
+    cache_bytes = bytes;
+    return cudaSuccess;
+}
+
+void GemmaKvCache::Free()
+{
+    for (auto p : dk) if (p) cudaFree(p);
+    for (auto p : dv) if (p) cudaFree(p);
+    dk.clear();
+    dv.clear();
+    max_total = 0;
+    cache_bytes = 0;
+}
 
 GemmaExpertDb load_gemma_expert_index(const std::string &model_path,
                                       int num_layers, int experts_per_layer)

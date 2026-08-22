@@ -4,6 +4,10 @@
 #include <cuda_fp16.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
+
+#include "lsxcommon/gemma4_inference_load.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -70,6 +74,26 @@ cudaError_t RunGemmaRouterTopK(const __half *d_router_proj,
 cudaError_t RunGemmaMoECombine(const __half *const *d_expert_outs,
                                const float *d_weights, const float *d_router_scale,
                                __half *d_out, int hidden, int k, cudaStream_t stream);
+
+// ── Generation ──────────────────────────────────────────────────────────────
+struct GemmaGenerationResult {
+    bool ok = false;
+    std::string error_msg;
+    std::vector<int32_t> tokens;
+    std::vector<float> final_logits;   // last decode step (softcapped)
+    double ttft_ms = 0.0;
+    double total_ms = 0.0;
+    bool eos_terminated = false;
+};
+
+// Full generation loop: prefill(input) + up to max_gen_tokens decode steps on
+// ONE stream (no cudaDeviceSynchronize in the loop; per-token D2H argmax via
+// pinned handshake). kv must be pre-allocated for prompt+gen capacity.
+// Applies final RMSNorm, tied-head logits and softcap tanh(l/cap)*cap.
+cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
+                               GemmaExpertDb &db, const std::vector<int32_t> &input_ids,
+                               int max_gen_tokens, int eos_id, float softcap,
+                               GemmaGenerationResult &out, GemmaKvCache &kv);
 
 } // namespace gemma
 } // namespace lsxcommon

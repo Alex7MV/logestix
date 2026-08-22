@@ -1,6 +1,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include "deepseek_v4_flash_model.h"
+#include "gemma_4_26b_a4b_model.h"
 #include "glm_v5_model.h"
 #include "qwen_v5_model.h"
 #include "qwen_3_8_27b_model.h"
@@ -25,6 +26,10 @@ void EnsureModelRegistry()
         LsxModelFactory::Register(Qwen3_8_27BModel::kType,
             [](const ModelInitConfig &cfg) {
                 return std::make_unique<Qwen3_8_27BModel>(cfg);
+            });
+        LsxModelFactory::Register(Gemma4_26BA4BModel::kType,
+            [](const ModelInitConfig &cfg) {
+                return std::make_unique<Gemma4_26BA4BModel>(cfg);
             });
         return true;
     }();
