@@ -1198,3 +1198,21 @@ if(WIN32)
 endif()
 
 add_test(NAME test_vram_estimate COMMAND test_vram_estimate)
+
+add_executable(test_resource_governor test_resource_governor.cpp)
+target_link_libraries(test_resource_governor PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_resource_governor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_resource_governor>"
+    )
+    add_custom_command(TARGET test_resource_governor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_resource_governor>"
+    )
+endif()
+
+add_test(NAME test_resource_governor COMMAND test_resource_governor)
