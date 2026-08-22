@@ -1,9 +1,16 @@
 #pragma once
 
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+
+#include <cstdint>
+#include <memory>
 #include <string>
 
 #include "lsxcommon/glm_inference_load.h"
+#include "lsxcommon/lifecycle_strategy.h"
 #include "lsxcommon/model_base.h"
+#include "lsxcommon/runtime_tuner.h"
 
 namespace lsxcommon {
 
@@ -21,8 +28,25 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // Diagnostics/test hook: the persistent pinned weight set. Valid between
+    // Load() and Unload(); pointer identity is stable across Infer calls
+    // (weights are loaded ONCE, spec: load-once lifecycle).
+    const glm::GlmPinnedWeights &PinnedWeights() const { return pw_; }
+
 private:
+    bool EnsureExecutionContext();
+    std::uint64_t EstimateExpertMeanBytes() const;
+    void TeardownWeights();
+
     glm::GlmPinnedWeights pw_;
+    glm::GlmExpertDb experts_{};
+    cublasHandle_t cublas_ = nullptr;
+    cudaStream_t stream_ = nullptr;
+    Lease permanent_lease_;
+    Lease cache_lease_;
+    std::unique_ptr<lifecycle::RuntimeTuner> tuner_;
+    std::int64_t tuner_last_hits_ = 0;
+    std::int64_t tuner_last_misses_ = 0;
 };
 
 } // namespace lsxcommon

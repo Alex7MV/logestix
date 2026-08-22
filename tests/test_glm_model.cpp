@@ -39,27 +39,25 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
     REQUIRE(m != nullptr);
     CHECK(m->Type() == "glm-5.2");
 
-    REQUIRE(m->Load());
-    CHECK(m->Tokenizer().valid());
+    // Load-once lifecycle (ResourceGovernor spec): Load() uploads the pinned
+    // weights and validates them against the frozen geometry constants. A
+    // synthetic model (hidden=16) fails that validation cleanly.
+    REQUIRE_FALSE(m->Load());
+    CHECK(!m->Inspect().shards.empty());  // Inspect needs no residency
 
-    auto info = m->Inspect();
-    REQUIRE(!info.shards.empty());
-
-    // Guard semantics (ModelBase::ValidateInferRequest): a loaded model with a
-    // synthetic dir and zero max_gen_tokens must reject the request; no real
-    // 79-layer weights are needed.
+    // Guard semantics: an unloaded model rejects every request at the
+    // ModelBase preamble ("model not loaded") — including SelfCheck's forced
+    // max_gen_tokens (the forced value is applied inside the generation call,
+    // after the guard).
     lsxcommon::ModelRequest zero;
     zero.input_ids = {154826};
     zero.max_gen_tokens = 0;
     auto r0 = m->Infer(zero);
     CHECK(!r0.ok);
-    CHECK(r0.error_msg == "max_gen_tokens must be positive");
+    CHECK(r0.error_msg == "model not loaded");
 
     auto sc0 = m->SelfCheck(zero);
     CHECK(!sc0.ok);
-    // SelfCheck forces max_gen_tokens = max(2, ...) before Infer, so the guard
-    // message does not surface here; the synthetic dir then fails at pinned
-    // weight load. Only require a non-empty error.
     CHECK(!sc0.error_msg.empty());
 
     lsxcommon::ModelRequest empty;
@@ -67,8 +65,9 @@ TEST_CASE("GLM factory autodetects and creates glm-5.2 model", "[glm][model]")
     empty.max_gen_tokens = 8;
     auto rem = m->Infer(empty);
     CHECK(!rem.ok);
-    CHECK(rem.error_msg == "empty input_ids");
+    CHECK(rem.error_msg == "model not loaded");
 
+    m->Unload();  // idempotent after failed load
     m->Unload();
     fs::remove_all(base);
 }
