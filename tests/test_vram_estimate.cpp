@@ -115,6 +115,28 @@ TEST_CASE("Zero context_length falls back to 2048", "[vram]")
     CHECK(p.context_tokens == 2048);
 }
 
+TEST_CASE("Compressed KV ratios shrink the stored token count", "[vram]")
+{
+    std::vector<VramTensorInfo> tensors = {
+        {"model.embed_tokens.weight", 1000, 2000},
+    };
+    auto g = BaseGeom();   // kv_dim=512, 1 attn layer, ctx=2048
+    // Full-context layer + /4 layer + /128 layer:
+    // tokens = 2048 + 512 + 16 = 2576; KV bytes = tokens*512*2*2.
+    g.kv_compress_ratios = {0, 4, 128};
+    auto p = lsxcommon::EstimateVram(tensors, {kNoneNvfp4, kAllResident}, g);
+    const std::uint64_t kv =
+        (2048ull + 2048ull / 4 + 2048ull / 128) * 512 * 2 * 2;
+    const std::uint64_t ws = 2048ull * 4096 * 1 * 2 * 2;
+    CHECK(p.optimal_bytes - p.min_bytes == kv + ws);
+
+    // Empty ratios keep the legacy full-context behavior for all layers.
+    auto g2 = BaseGeom();
+    auto p2 = lsxcommon::EstimateVram(tensors, {kNoneNvfp4, kAllResident}, g2);
+    CHECK(p2.optimal_bytes - p2.min_bytes ==
+          2048ull * 1 * 512 * 2 * 2 + ws);
+}
+
 TEST_CASE("kEmptyVramProfile is all zeros", "[vram]")
 {
     CHECK(lsxcommon::kEmptyVramProfile.min_bytes == 0);

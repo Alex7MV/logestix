@@ -1266,6 +1266,30 @@ arrow::Status Converter::Run()
     vg.experts_per_layer = max_experts_per_layer;
     vg.context_length = ReadContextLength(
         (fs::path(impl_->input_path) / "config.json").string());
+    // Per-layer KV compression (DeepSeek-V4 CSA): stored tokens = ctx/ratio.
+    {
+        std::ifstream cf((fs::path(impl_->input_path) / "config.json"));
+        if (cf) {
+            std::string cj((std::istreambuf_iterator<char>(cf)),
+                           std::istreambuf_iterator<char>());
+            simdjson::ondemand::parser cp;
+            simdjson::padded_string cpj(cj.data(), cj.size());
+            simdjson::ondemand::document cd;
+            if (cp.iterate(cpj).get(cd) == simdjson::SUCCESS) {
+                auto root = cd.get_object();
+                if (root.error() == simdjson::SUCCESS) {
+                    if (auto arr = root.value()["compress_ratios"].get_array();
+                        arr.error() == simdjson::SUCCESS) {
+                        for (auto v : arr.value()) {
+                            int64_t x;
+                            if (v.get_int64().get(x) == simdjson::SUCCESS)
+                                vg.kv_compress_ratios.push_back(x);
+                        }
+                    }
+                }
+            }
+        }
+    }
     for (const auto &shard : model.shards) {
         for (const auto &t : shard.tensors) {
             if (vg.kv_dim == 0 && t.shape.size() >= 2 &&

@@ -31,6 +31,10 @@ struct VramGeometry {
     int num_moe_layers = 0;
     int experts_per_layer = 0;
     std::int64_t context_length = 0; // from source config.json
+    // Per-layer KV token-count divisors (e.g. DeepSeek-V4 "compress_ratios":
+    // a layer storing ctx/ratio cached tokens; 0 = full-context storage).
+    // Empty -> every attention layer stores the full context.
+    std::vector<std::int64_t> kv_compress_ratios;
 };
 
 // Three VRAM parameters computed at conversion time.

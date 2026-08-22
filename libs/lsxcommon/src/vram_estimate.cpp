@@ -63,10 +63,21 @@ VramProfile EstimateVram(const std::vector<VramTensorInfo> &tensors,
     const std::int64_t hidden =
         geom.hidden_dim > 0 ? geom.hidden_dim : 4096;
 
-    // KV cache scales with the config-declared context length; the transient
-    // workspace is computed from a bounded prefill chunk (full-context
-    // workspace would scale absurdly: ~739 GiB at a 1M-token context).
-    const std::int64_t kv_cache = ctx * attn * kv_dim * 2 * 2;      // K+V, FP16
+    // KV cache scales with the config-declared context length; per-layer
+    // compress_ratios shrink the stored token count where the architecture
+    // uses compressed attention (DeepSeek-V4 CSA). The transient workspace is
+    // computed from a bounded prefill chunk (full-context workspace would
+    // scale absurdly: ~739 GiB at a 1M-token context).
+    std::int64_t total_kv_tokens = 0;
+    if (!geom.kv_compress_ratios.empty()) {
+        for (const std::int64_t r : geom.kv_compress_ratios) {
+            const std::int64_t div = r > 1 ? r : 1;
+            total_kv_tokens += (ctx + div - 1) / div;
+        }
+    } else {
+        total_kv_tokens = ctx * attn;
+    }
+    const std::int64_t kv_cache = total_kv_tokens * kv_dim * 2 * 2;  // K+V, FP16
     const std::int64_t workspace =
         kPrefillChunkTokens * hidden * attn * 2 * 2;                // FP16
 

@@ -88,12 +88,18 @@ Converted tensor size:
 - Other tensors: `raw_bytes` (norms and biases stay BF16/FP16 — precision
   invariant preserved).
 
-Components (same formulas as `print_model()`, `converter.cpp:263–273`, but
-with `context_length` from config instead of hardcoded 2048):
+Components:
 
 ```
-kv_cache   = context_tokens * num_attn_layers * kv_dim * 2 * 2   // K+V, FP16
-workspace  = 1 * context_tokens * hidden_dim * num_attn_layers * 2 * 2
+kv_tokens  = sum over attention layers of ceil(context_tokens / ratio)
+             (ratio = per-layer KV compression from config "compress_ratios";
+              ratio <= 1 or absent entry -> full-context storage;
+              empty list -> every layer stores the full context)
+kv_cache   = kv_tokens * kv_dim * 2 * 2          // K+V, FP16
+workspace  = prefill_chunk * hidden_dim * num_attn_layers * 2 * 2   // FP16
+             (prefill_chunk = 2048 tokens: decode is single-token and prefill
+              runs in bounded chunks, so transient workspace must not scale
+              with the full context)
 expert_pool = num_moe_layers * experts_per_layer * per_expert_converted_bytes
 
 min_bytes     = sum(converted sizes, excluding routed-expert tensors)
