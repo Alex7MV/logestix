@@ -218,33 +218,40 @@ std::vector<std::string> generate_gemma_expected_names(const GemmaTopology &top)
     expected.push_back("model.language_model.embed_tokens.weight");
     expected.push_back("model.language_model.norm.weight");
 
-    static const char *kPerLayer[] = {
-        "input_layernorm.weight",
-        "post_attention_layernorm.weight",
-        "pre_feedforward_layernorm.weight",
-        "post_feedforward_layernorm.weight",
-        "pre_feedforward_layernorm_2.weight",
-        "post_feedforward_layernorm_2.weight",
-        "layer_scalar",
-        "mlp.gate_proj.weight",
-        "mlp.up_proj.weight",
-        "mlp.down_proj.weight",
-        "experts.gate_up_proj",
-        "experts.down_proj",
-        "router.proj.weight",
-        "router.scale",
-        "router.per_expert_scale",
-        "self_attn.q_proj.weight",
-        "self_attn.k_proj.weight",
-        "self_attn.v_proj.weight",
-        "self_attn.o_proj.weight",
-        "self_attn.q_norm.weight",
-        "self_attn.k_norm.weight",
-    };
-    for (int l = 0; l < top.num_layers; ++l)
-        for (const char *s : kPerLayer)
-            expected.push_back(
-                absl::StrCat("model.language_model.layers.", l, ".", s));
+    for (int l = 0; l < top.num_layers; ++l) {
+        std::string base =
+            absl::StrCat("model.language_model.layers.", l, ".");
+        bool full = static_cast<size_t>(l) < top.layer_types.size() &&
+                    top.layer_types[static_cast<size_t>(l)] ==
+                        "full_attention";
+        for (const char *s : {
+                 "input_layernorm.weight",
+                 "post_attention_layernorm.weight",
+                 "pre_feedforward_layernorm.weight",
+                 "post_feedforward_layernorm.weight",
+                 "pre_feedforward_layernorm_2.weight",
+                 "post_feedforward_layernorm_2.weight",
+                 "layer_scalar",
+                 "mlp.gate_proj.weight",
+                 "mlp.up_proj.weight",
+                 "mlp.down_proj.weight",
+                 "experts.gate_up_proj",
+                 "experts.down_proj",
+                 "router.proj.weight",
+                 "router.scale",
+                 "router.per_expert_scale",
+                 "self_attn.q_proj.weight",
+                 "self_attn.k_proj.weight",
+                 // Full-attention layers tie V to K (attention_k_eq_v):
+                 // no self_attn.v_proj tensor exists in the checkpoint.
+                 full ? nullptr : "self_attn.v_proj.weight",
+                 "self_attn.o_proj.weight",
+                 "self_attn.q_norm.weight",
+                 "self_attn.k_norm.weight",
+             }) {
+            if (s) expected.push_back(base + s);
+        }
+    }
     return expected;
 }
 

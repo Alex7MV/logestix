@@ -180,7 +180,8 @@ inline std::vector<FakeTensor> BuildSyntheticGemmaModel()
                          return 0.5f + 0.01f * static_cast<float>(i);
                      })});
 
-        // Attention: geometry depends on the layer type.
+        // Attention: geometry depends on the layer type. Full-attention
+        // layers tie V to K (attention_k_eq_v): no v_proj tensor.
         int q_rows = full ? FullQRows() : SlidingQRows();
         int kv_rows = full ? FullKVRows() : SlidingKVRows();
         auto sa = lp + "self_attn.";
@@ -188,8 +189,9 @@ inline std::vector<FakeTensor> BuildSyntheticGemmaModel()
                      MakeBf16(q_rows * H)});
         t.push_back({sa + "k_proj.weight", "BF16", {kv_rows, H},
                      MakeBf16(kv_rows * H)});
-        t.push_back({sa + "v_proj.weight", "BF16", {kv_rows, H},
-                     MakeBf16(kv_rows * H)});
+        if (!full)
+            t.push_back({sa + "v_proj.weight", "BF16", {kv_rows, H},
+                         MakeBf16(kv_rows * H)});
         t.push_back({sa + "o_proj.weight", "BF16", {H, q_rows},
                      MakeBf16(H * q_rows)});
         int norm_len = full ? c.global_head_dim : c.head_dim;

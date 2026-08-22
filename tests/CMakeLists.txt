@@ -684,6 +684,32 @@ add_test(NAME test_gemma4_model COMMAND test_gemma4_model)
 set_tests_properties(test_gemma4_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Тест Gemma-4 SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
+#    селфчек на реальной модели, минимум 3 цикла стресса (переопределяется
+#    LSX_TEST_GEMMA_SELFCHECK_CYCLES), бит-точная детерминированность
+#    final_logits, exit 0. SKIP без чекпоинта.
+add_executable(test_gemma4_selfcheck test_gemma4_selfcheck.cpp)
+target_compile_definitions(test_gemma4_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma4_selfcheck COMMAND test_gemma4_selfcheck)
+set_tests_properties(test_gemma4_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
 foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn test_gemma4_moe)
     add_executable(${qt} ${qt}.cpp)

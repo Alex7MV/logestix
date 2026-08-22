@@ -669,16 +669,20 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                     stream);
     if (e != cudaSuccess) return e;
 
-    // 2) q/k/v projections.
+    // 2) q/k/v projections. Full-attention layers tie V to K
+    //    (attention_k_eq_v): no v_proj weights exist, so v := k.
+    const bool v_tied_to_k = (lw.d_v == nullptr);
     e = Matmul(lw.d_q, ws.d_normed, ws.d_qr, q_rows, static_cast<int>(H), seq,
                stream);
     if (e != cudaSuccess) return e;
     e = Matmul(lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
                static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) return e;
-    e = Matmul(lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
-               static_cast<int>(H), seq, stream);
-    if (e != cudaSuccess) return e;
+    if (!v_tied_to_k) {
+        e = Matmul(lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
+                   static_cast<int>(H), seq, stream);
+        if (e != cudaSuccess) return e;
+    }
 
     // 3) QK-norms (per-head, offset weights).
     {
@@ -696,6 +700,14 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
             ws.d_kr, lw.d_k_norm, ws.d_kr, seq, kv_heads, head_dim,
             top.rms_norm_eps);
         e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+    // Full-attention layers tie V to K (attention_k_eq_v): values are the
+    // NORMALIZED, UNROTATED keys. Snapshot them before RoPE.
+    if (v_tied_to_k) {
+        e = cudaMemcpyAsync(ws.d_vr, ws.d_kr,
+                            static_cast<size_t>(kv_heads * head_dim) * seq * 2,
+                            cudaMemcpyDeviceToDevice, stream);
         if (e != cudaSuccess) return e;
     }
 
@@ -718,7 +730,8 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
         if (e != cudaSuccess) return e;
     }
 
-    // 5) Append k/v rows to the cache (D2D, stream-ordered).
+    // 5) Append k/v rows to the cache (D2D, stream-ordered). For tied-V
+    // layers dv rows hold the unrotated normalized keys.
     const size_t row_bytes = static_cast<size_t>(kv_stride) * 2;
     e = cudaMemcpyAsync(dk + static_cast<int64_t>(pos_base) * kv_stride,
                         ws.d_kr, row_bytes * seq, cudaMemcpyDeviceToDevice,
