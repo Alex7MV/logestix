@@ -21,6 +21,8 @@ add_test(NAME test_core COMMAND test_core)
 # ── Тест DeepSeek round-trip загрузчика ─────────────────────────────────
 add_executable(test_deepseek_loader test_deepseek_loader.cpp)
 target_link_libraries(test_deepseek_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_loader PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 
 if(WIN32)
     add_custom_command(TARGET test_deepseek_loader POST_BUILD

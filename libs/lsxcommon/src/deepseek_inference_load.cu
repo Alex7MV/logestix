@@ -2,6 +2,8 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/fast_load.h"
+#include "fast_load_internal.h"
 #include "deepseek_inference_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -9,6 +11,8 @@
 #include <arrow/api.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <chrono>
+#include <tuple>
 #include "lsxcommon/log.h"
 #include <vector>
 #include <string>
@@ -23,48 +27,6 @@ namespace lsxcommon {
 namespace gpu {
 
 namespace {
-
-// Upload BF16 host data → device FP16.
-// Convert BF16 → FP16 on host, then upload. Avoids temporary device buffers
-// that can cause memory corruption with large tensors (1GB+ embed/head).
-cudaError_t upload_bf16_to_half(const uint8_t *src_bytes, int64_t numel,
-                                 __half **d_out, cudaStream_t stream,
-                                 std::uint64_t &bytes_acc)
-{
-    // Host-side BF16 → FP16 conversion
-    std::vector<__half> h_half(static_cast<size_t>(numel));
-    const uint16_t *src_u16 = reinterpret_cast<const uint16_t *>(src_bytes);
-    for (int64_t i = 0; i < numel; ++i) {
-        uint32_t f32_bits = static_cast<uint32_t>(src_u16[i]) << 16;
-        float f32;
-        std::memcpy(&f32, &f32_bits, sizeof(f32));
-        h_half[static_cast<size_t>(i)] = __float2half(f32);
-    }
-    // Allocate device buffer and copy
-    cudaError_t e = cudaMalloc(d_out, static_cast<size_t>(numel) * sizeof(__half));
-    if (e != cudaSuccess) return e;
-    bytes_acc += static_cast<std::uint64_t>(numel) * sizeof(__half);
-    e = cudaMemcpyAsync(*d_out, h_half.data(),
-                        static_cast<size_t>(numel) * sizeof(__half),
-                        cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { cudaFree(*d_out); *d_out = nullptr; return e; }
-    return cudaSuccess;
-}
-
-// Checked wrapper: logs and propagates upload failures instead of silently
-// dropping the status (a failed upload left a null pointer that surfaced much
-// later as an unrelated kernel error).
-cudaError_t upload_bf16_checked(const char *what, const uint8_t *src_bytes,
-                                int64_t numel, __half **d_out,
-                                cudaStream_t stream, std::uint64_t &bytes_acc)
-{
-    cudaError_t e = upload_bf16_to_half(src_bytes, numel, d_out, stream,
-                                        bytes_acc);
-    if (e != cudaSuccess)
-        log::error(std::string("bf16 upload failed: ") + what + ": " +
-                   cudaGetErrorString(e));
-    return e;
-}
 
 const TensorRecord *find_tensor_suffix(
     const std::vector<TensorRecord> &tensors,
@@ -89,95 +51,134 @@ const TensorRecord *find_tensor_substr(
     return nullptr;
 }
 
-// Upload raw F8_E4M3 / F8_E8M0 bytes host → device (no conversion).
-static cudaError_t upload_f8_bytes(const std::vector<uint8_t> &data,
-                                   const uint8_t **d_out, cudaStream_t stream,
-                                   std::uint64_t &bytes_acc)
-{
-    if (data.empty()) return cudaSuccess;
-    uint8_t *d = nullptr;
-    cudaError_t e = cudaMalloc(&d, data.size());
-    if (e != cudaSuccess) return e;
-    bytes_acc += data.size();
-    e = cudaMemcpyAsync(d, data.data(), data.size(),
-                        cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { cudaFree(d); return e; }
-    *d_out = d;
-    return cudaSuccess;
-}
+constexpr size_t kArenaAlign = 256;
 
-// Upload raw FP32 bytes host → device.
-static cudaError_t upload_f32_bytes(const std::vector<uint8_t> &data,
-                                    float **d_out, cudaStream_t stream,
-                                    std::uint64_t &bytes_acc)
-{
-    if (data.empty()) return cudaSuccess;
-    float *d = nullptr;
-    cudaError_t e = cudaMalloc(&d, data.size());
-    if (e != cudaSuccess) return e;
-    bytes_acc += data.size();
-    e = cudaMemcpyAsync(d, data.data(), data.size(),
-                        cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { cudaFree(d); return e; }
-    *d_out = d;
-    return cudaSuccess;
-}
+size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
-// Load one F8 attention weight + its per-tile scale from the arrow batch.
-static cudaError_t load_attn_weight(
-    const std::vector<TensorRecord> &tensors,
-    const std::string &weight_suffix, const std::string &scale_suffix,
-    const uint8_t **d_w, const uint8_t **d_scale,
-    int64_t &n, int64_t &scale_n, int &rows, int &cols,
-    cudaStream_t stream, std::uint64_t &bytes_acc)
+// Drains the stream on scope exit so pinned staging buffers never die while
+// a DMA transfer is still in flight (mirrors the GLM loader guard).
+struct StreamDrain {
+    cudaStream_t s;
+    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
+};
+
+// One planned upload into the per-layer arena. BF16 jobs upload through the
+// staging ring with an on-device BF16→FP16 conversion; raw jobs upload bytes
+// verbatim (F32 / F8_E4M3 / F8_E8M0 payloads). The typed constructors route
+// the job: __half** ⇒ FP16 conversion, everything else ⇒ raw bytes.
+struct ArenaJob {
+    const TensorRecord *t;
+    void **dst;
+    bool to_fp16;
+    int64_t *bytes_cap = nullptr;   // optional: uploaded byte count
+    int *rows_cap = nullptr;        // optional: shape[0] when 2D
+    int *cols_cap = nullptr;        // optional: shape[1] when 2D
+
+    ArenaJob(const TensorRecord *t_, __half **dst_)
+        : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(true) {}
+    ArenaJob(const TensorRecord *t_, float **dst_)
+        : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(false) {}
+    ArenaJob(const TensorRecord *t_, uint8_t **dst_,
+             int64_t *bytes_cap_ = nullptr, int *rows_cap_ = nullptr,
+             int *cols_cap_ = nullptr)
+        : t(t_), dst(reinterpret_cast<void **>(dst_)), to_fp16(false),
+          bytes_cap(bytes_cap_), rows_cap(rows_cap_), cols_cap(cols_cap_) {}
+    ArenaJob(const TensorRecord *t_, const uint8_t **dst_,
+             int64_t *bytes_cap_ = nullptr, int *rows_cap_ = nullptr,
+             int *cols_cap_ = nullptr)
+        : t(t_), dst(reinterpret_cast<void **>(
+                     const_cast<uint8_t **>(dst_))),
+          to_fp16(false), bytes_cap(bytes_cap_), rows_cap(rows_cap_),
+          cols_cap(cols_cap_) {}
+};
+
+cudaError_t ValidateArenaJob(const ArenaJob &j, size_t &upload_bytes)
 {
-    const TensorRecord *wt = find_tensor_suffix(tensors, weight_suffix);
-    if (!wt) return cudaSuccess;
-    if (wt->shape.size() >= 2) {
-        rows = static_cast<int>(wt->shape[0]);
-        cols = static_cast<int>(wt->shape[1]);
-    }
-    n = static_cast<int64_t>(wt->data.size());
-    cudaError_t e = upload_f8_bytes(wt->data, d_w, stream, bytes_acc);
-    if (e != cudaSuccess) {
-        log::error("[deepseek_load] weight upload failed for '"
-                   + weight_suffix + "': " + cudaGetErrorString(e));
-        return e;
-    }
-    const TensorRecord *st = find_tensor_suffix(tensors, scale_suffix);
-    if (st) {
-        scale_n = static_cast<int64_t>(st->data.size());
-        e = upload_f8_bytes(st->data, d_scale, stream, bytes_acc);
-        if (e != cudaSuccess) {
-            // The weight upload above already succeeded and *d_w is a live
-            // device pointer, but without its matching scale a dequant
-            // kernel would read a null/garbage scale against a valid weight
-            // buffer — an inconsistent, not deterministically-zero, state.
-            // Roll the weight back too so this attention weight is either
-            // fully present or (matching every other partial-load path in
-            // this loader) cleanly absent.
-            log::error("[deepseek_load] scale upload failed for '"
-                       + scale_suffix + "', rolling back weight '"
-                       + weight_suffix + "': " + cudaGetErrorString(e));
-            cudaFree(const_cast<uint8_t *>(*d_w));
-            *d_w = nullptr;
-            n = 0;
-            return e;
+    const auto &s = j.t->shape;
+    if (j.to_fp16) {
+        if (s.size() == 1 && s[0] > 0)
+            upload_bytes = static_cast<size_t>(s[0]) * 2;
+        else if (s.size() == 2 && s[0] > 0 && s[1] > 0)
+            upload_bytes = static_cast<size_t>(s[0])
+                         * static_cast<size_t>(s[1]) * 2;
+        else {
+            log::error("[load_pinned] malformed BF16 tensor '" + j.t->name
+                       + "'");
+            return cudaErrorInvalidValue;
+        }
+        if (j.t->data.size() < upload_bytes) {
+            log::error("[load_pinned] truncated BF16 tensor '" + j.t->name
+                       + "'");
+            return cudaErrorInvalidValue;
+        }
+    } else {
+        upload_bytes = j.t->data.size();
+        if (upload_bytes == 0) {
+            log::error("[load_pinned] empty byte tensor '" + j.t->name + "'");
+            return cudaErrorInvalidValue;
         }
     }
     return cudaSuccess;
 }
 
-// Load one FP32 HC tensor (fn / base / scale) from the arrow batch.
-static cudaError_t load_hc_f32(
-    const std::vector<TensorRecord> &tensors,
-    const std::string &suffix,
-    float **d_out, cudaStream_t stream,
-    std::uint64_t &bytes_acc)
+// Validates every job, issues ONE arena allocation sized to the layer's total
+// upload footprint and streams each tensor through the pinned staging ring
+// into its 256-byte-aligned arena view. On success lw.d_arena/arena_bytes own
+// the block and every *dst points inside it. Any failure aborts the whole
+// layer (caller frees the weights).
+cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
+                            cudaStream_t stream,
+                            lsxcommon::fastload::PinnedStagingRing &ring,
+                            std::uint64_t &bytes_acc)
 {
-    const TensorRecord *t = find_tensor_suffix(tensors, suffix);
-    if (!t) return cudaSuccess;
-    return upload_f32_bytes(t->data, d_out, stream, bytes_acc);
+    std::vector<size_t> sz(jobs.size(), 0);
+    size_t total = 0;
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        if (!jobs[i].t) continue;
+        cudaError_t e = ValidateArenaJob(jobs[i], sz[i]);
+        if (e != cudaSuccess) return e;
+        total = AlignUp(total, kArenaAlign) + sz[i];
+    }
+
+    void *arena = nullptr;
+    if (total > 0) {
+        cudaError_t e = cudaMalloc(&arena, total);
+        if (e != cudaSuccess) {
+            log::error(std::string("[load_pinned] layer arena alloc failed: ")
+                       + cudaGetErrorString(e));
+            return e;
+        }
+    }
+    lw.d_arena = arena;
+    lw.arena_bytes = total;
+
+    uint8_t *base = static_cast<uint8_t *>(arena);
+    size_t off = 0;
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        const auto &j = jobs[i];
+        if (!j.t) continue;
+        off = AlignUp(off, kArenaAlign);
+        void *view = base + off;
+        *j.dst = view;
+        if (j.bytes_cap) *j.bytes_cap = static_cast<int64_t>(sz[i]);
+        if ((j.rows_cap || j.cols_cap) && j.t->shape.size() == 2) {
+            if (j.rows_cap) *j.rows_cap = static_cast<int>(j.t->shape[0]);
+            if (j.cols_cap) *j.cols_cap = static_cast<int>(j.t->shape[1]);
+        }
+        cudaError_t e = j.to_fp16
+            ? ring.UploadBf16AsFp16(j.t->data.data(),
+                  static_cast<int64_t>(sz[i] / 2),
+                  static_cast<__half *>(view), stream, bytes_acc)
+            : ring.UploadRaw(j.t->data.data(), view, sz[i], stream,
+                             bytes_acc);
+        if (e != cudaSuccess) {
+            log::error("[load_pinned] upload failed for '" + j.t->name
+                       + "': " + cudaGetErrorString(e));
+            return e;
+        }
+        off += sz[i];
+    }
+    return cudaSuccess;
 }
 
 arrow::Result<std::vector<TensorRecord>> load_arrow_file(const std::string &path)
@@ -301,6 +302,13 @@ void free_expert_index(ExpertDb &db) { db.Free(); }
 
 void LayerWeights::Free()
 {
+    if (d_arena) {
+        if (h_tid2eid)   cudaFreeHost(h_tid2eid);
+        if (h_gate_bias) cudaFreeHost(h_gate_bias);
+        cudaFree(d_arena);
+        *this = LayerWeights{};
+        return;
+    }
     if (d_ffn_norm)     cudaFree(d_ffn_norm);
     if (d_gate_weight)  cudaFree(d_gate_weight);
     if (d_shared_w1)    cudaFree(d_shared_w1);
@@ -364,409 +372,420 @@ cudaError_t load_pinned_weights(
     cudaStream_t stream)
 {
     namespace fs = std::filesystem;
+
+    // Idempotent re-load: drop any previously uploaded set first so calling
+    // Load twice cannot leak the old device allocations.
+    pw.Free();
+
+    const auto t0 = std::chrono::steady_clock::now();
+
     auto pinned_dir = fs::path(model_path) / "logestix" / "pinned";
 
+    // Drains the stream on every error exit below so pinned staging never
+    // dies while a DMA transfer is still in flight.
+    StreamDrain drain{stream};
+
+    lsxcommon::fastload::PinnedStagingRing ring;
+    if (!ring.ok()) return cudaErrorMemoryAllocation;
+
+    // ── Topology: layer count comes from model.index.json (was hardcoded) ──
+    auto topo = load_topology(model_path);
+    if (!topo.error_msg.empty() || topo.num_layers <= 0) {
+        log::error("[load_pinned] topology error: "
+                   + (topo.error_msg.empty()
+                          ? std::string("num_layers <= 0")
+                          : topo.error_msg));
+        return cudaErrorInvalidValue;
+    }
+
+    // Per-layer compress_ratio table (decoder grid of DeepSeek-V4-Flash:
+    // pure MLA=0, CSA>0; ratio==4 uses coff=2 overlap).
+    static const int compress_ratios[] = {
+        0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
+        4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4
+    };
+    constexpr int kRatioTableSize =
+        static_cast<int>(sizeof(compress_ratios) / sizeof(compress_ratios[0]));
+    const int num_layers = topo.num_layers;
+    if (num_layers > kRatioTableSize) {
+        log::error("[load_pinned] topology num_layers="
+                   + std::to_string(num_layers)
+                   + " exceeds supported decoder grid (" +
+                   std::to_string(kRatioTableSize) + ")");
+        return cudaErrorInvalidValue;
+    }
+    pw.layers.resize(static_cast<size_t>(num_layers));
+
+    std::uint64_t rb = 0;   // device-resident byte total (weights only)
+
+    // ── global.arrow ──────────────────────────────────────────────────────
     auto global_path = pinned_dir / "global.arrow";
     auto global_tensors_res = load_arrow_file(global_path.string());
     if (!global_tensors_res.ok()) {
         log::error("[load_pinned] ERROR loading global.arrow: "
-            + global_tensors_res.status().ToString());
-        return cudaErrorUnknown;
+                   + global_tensors_res.status().ToString());
+        return cudaErrorInvalidValue;
     }
-    auto &global_tensors = *global_tensors_res;
-    std::uint64_t rb = 0;   // device-resident byte total (weights only)
+    auto &gt = *global_tensors_res;
 
-    // Debug: print first 10 tensor names
-    for (int di = 0; di < std::min(10, static_cast<int>(global_tensors.size())); ++di) {
-        const auto &t = global_tensors[di];
-        std::string shape;
-        for (size_t si = 0; si < t.shape.size(); ++si)
-            shape += (si > 0 ? "," : "") + std::to_string(t.shape[si]);
-        std::ostringstream raw;
-        for (size_t bi = 0; bi < std::min<size_t>(8, t.data.size() / 2); ++bi) {
-            uint16_t u = static_cast<uint16_t>(t.data[bi * 2])
-                       | (static_cast<uint16_t>(t.data[bi * 2 + 1]) << 8);
-            raw << " " << std::hex << u << std::dec;
+    // Strict global set: embed/head/norm are mandatory (the model cannot
+    // run without them).
+    auto *embed_t = find_tensor_suffix(gt, "embed.weight");
+    auto *head_t  = find_tensor_suffix(gt, "head.weight");
+    auto *norm_t  = find_tensor_suffix(gt, "norm.weight");
+    if (!embed_t || embed_t->shape.size() != 2 ||
+        embed_t->data.size() <
+            static_cast<size_t>(embed_t->shape[0]) *
+                static_cast<size_t>(embed_t->shape[1]) * 2) {
+        log::error("[load_pinned] embed.weight missing/malformed in "
+                   "global.arrow");
+        return cudaErrorInvalidValue;
+    }
+    if (!head_t || head_t == embed_t || head_t->shape.size() != 2 ||
+        head_t->data.size() <
+            static_cast<size_t>(head_t->shape[0]) *
+                static_cast<size_t>(head_t->shape[1]) * 2) {
+        log::error("[load_pinned] head.weight missing/malformed in "
+                   "global.arrow");
+        return cudaErrorInvalidValue;
+    }
+    if (!norm_t || norm_t->shape.size() != 1 ||
+        norm_t->data.size() < static_cast<size_t>(norm_t->shape[0]) * 2) {
+        log::error("[load_pinned] norm.weight missing/malformed in "
+                   "global.arrow");
+        return cudaErrorInvalidValue;
+    }
+
+    pw.vocab_size = static_cast<int>(embed_t->shape[0]);
+    {
+        int64_t numel =
+            static_cast<int64_t>(embed_t->shape[0]) * embed_t->shape[1];
+        cudaError_t ge = cudaMalloc(&pw.d_embed,
+                                    static_cast<size_t>(numel) * 2);
+        if (ge != cudaSuccess) return ge;
+        rb += static_cast<std::uint64_t>(numel) * 2;
+        ge = ring.UploadBf16AsFp16(embed_t->data.data(), numel,
+                                   pw.d_embed, stream, rb);
+        if (ge != cudaSuccess) {
+            log::error(std::string("[load_pinned] embed upload failed: ")
+                       + cudaGetErrorString(ge));
+            return ge;
         }
-        log::info("[load_pinned] global tensor[" + std::to_string(di)
-            + "] name='" + t.name + "' dtype=" + t.dtype + " shape=[" + shape + "] data_sz="
-            + std::to_string(t.data.size()) + " raw_u16[0..7]=" + raw.str());
     }
-
-    // Upload via upload_bf16_to_half (two-step: host→device copy, then kernel)
-    auto *embed_t = find_tensor_suffix(global_tensors, "embed.weight");
-    auto *head_t = find_tensor_suffix(global_tensors, "head.weight");
-    auto *norm_t = find_tensor_suffix(global_tensors, "norm.weight");
-
-    if (embed_t && embed_t->shape.size() >= 2) {
-        pw.vocab_size = static_cast<int>(embed_t->shape[0]);
-        int64_t numel = embed_t->shape[0] * embed_t->shape[1];
-        cudaError_t e = upload_bf16_to_half(embed_t->data.data(), numel,
-                                             &pw.d_embed, stream, rb);
-        if (e != cudaSuccess) { log::error("embed upload failed"); return e; }
+    {
+        int64_t numel =
+            static_cast<int64_t>(head_t->shape[0]) * head_t->shape[1];
+        cudaError_t ge = cudaMalloc(&pw.d_head,
+                                    static_cast<size_t>(numel) * 2);
+        if (ge != cudaSuccess) return ge;
+        rb += static_cast<std::uint64_t>(numel) * 2;
+        ge = ring.UploadBf16AsFp16(head_t->data.data(), numel,
+                                   pw.d_head, stream, rb);
+        if (ge != cudaSuccess) {
+            log::error(std::string("[load_pinned] head upload failed: ")
+                       + cudaGetErrorString(ge));
+            return ge;
+        }
     }
-    if (norm_t && !norm_t->shape.empty()) {
+    {
         int64_t numel = norm_t->shape[0];
-        cudaError_t e = upload_bf16_to_half(norm_t->data.data(), numel,
-                                             &pw.d_final_norm, stream, rb);
-        if (e != cudaSuccess) { log::error("norm upload failed"); return e; }
-    }
-    if (head_t && head_t->shape.size() >= 2) {
-        if (pw.vocab_size == 0)
-            pw.vocab_size = static_cast<int>(head_t->shape[0]);
-        int64_t numel = head_t->shape[0] * head_t->shape[1];
-        cudaError_t e = upload_bf16_to_half(head_t->data.data(), numel,
-                                             &pw.d_head, stream, rb);
-        if (e != cudaSuccess) { log::error("head upload failed"); return e; }
+        cudaError_t ge = cudaMalloc(&pw.d_final_norm,
+                                    static_cast<size_t>(numel) * 2);
+        if (ge != cudaSuccess) return ge;
+        rb += static_cast<std::uint64_t>(numel) * 2;
+        ge = ring.UploadBf16AsFp16(norm_t->data.data(), numel,
+                                   pw.d_final_norm, stream, rb);
+        if (ge != cudaSuccess) {
+            log::error(std::string("[load_pinned] final_norm upload failed: ")
+                       + cudaGetErrorString(ge));
+            return ge;
+        }
     }
 
-    // Hyper-Connections head (FP32, in global.arrow)
-    auto *hc_head_fn = find_tensor_suffix(global_tensors, "hc_head_fn");
-    auto *hc_head_base = find_tensor_suffix(global_tensors, "hc_head_base");
-    auto *hc_head_scale = find_tensor_suffix(global_tensors, "hc_head_scale");
-    if (hc_head_fn) upload_f32_bytes(hc_head_fn->data, &pw.d_hc_head_fn, stream, rb);
-    if (hc_head_base) upload_f32_bytes(hc_head_base->data, &pw.d_hc_head_base, stream, rb);
-    if (hc_head_scale) upload_f32_bytes(hc_head_scale->data, &pw.d_hc_head_scale, stream, rb);
+    // HC head (FP32) — strict presence and status checks.
+    for (auto [suffix, dst] : std::initializer_list<
+             std::pair<const char *, float **>>{
+             {"hc_head_fn", &pw.d_hc_head_fn},
+             {"hc_head_base", &pw.d_hc_head_base},
+             {"hc_head_scale", &pw.d_hc_head_scale}}) {
+        auto *t = find_tensor_suffix(gt, suffix);
+        if (!t || t->data.empty()) {
+            log::error(std::string("[load_pinned] hc head tensor missing: ")
+                       + suffix);
+            return cudaErrorInvalidValue;
+        }
+        cudaError_t he = cudaMalloc(dst, t->data.size());
+        if (he != cudaSuccess) return he;
+        rb += t->data.size();
+        he = ring.UploadRaw(t->data.data(), *dst, t->data.size(), stream, rb);
+        if (he != cudaSuccess) {
+            log::error(std::string("[load_pinned] upload failed for ")
+                       + suffix + ": " + cudaGetErrorString(he));
+            return he;
+        }
+    }
 
-    pw.layers.resize(kNumLayers);
-    for (int l = 0; l < kNumLayers; ++l) {
+    // ── Per-layer files (strict: every layer file MUST exist) ─────────────
+    for (int l = 0; l < num_layers; ++l) {
         auto fn = "layer_" + std::to_string(l) + ".arrow";
         auto layer_path = pinned_dir / fn;
-
-        if (!fs::exists(layer_path)) continue;
-
+        if (!fs::exists(layer_path)) {
+            log::error("[load_pinned] required layer file missing: " + fn);
+            pw.Free();
+            return cudaErrorInvalidValue;
+        }
         auto tensors_res = load_arrow_file(layer_path.string());
         if (!tensors_res.ok()) {
             log::error("[load_pinned] ERROR loading " + fn + ": "
-                + tensors_res.status().ToString());
-            continue;
+                       + tensors_res.status().ToString());
+            pw.Free();
+            return cudaErrorInvalidValue;
         }
         auto &lt = *tensors_res;
         auto &lw = pw.layers[l];
 
-        // Set compress_ratio and rope_theta per layer from config.
-        // config.compress_ratios has 44 entries; entry 43 is the MTP block.
-        // Decoder layers 0..42 map to config indices 0..42 (pure MLA=0, CSA>0).
-        static const int compress_ratios[] = {
-            0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128,
-            4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4
-        };
-        lw.compress_ratio = (l < 43) ? compress_ratios[l] : 0;
+        lw.compress_ratio = compress_ratios[l];
         lw.rope_theta = (lw.compress_ratio > 0) ? 160000.0f : 10000.0f;
-        // CSA overlap: ratio==4 uses coff=2 (reference Compressor: coff = 1 + overlap).
+        // CSA overlap: ratio==4 uses coff=2 (reference Compressor:
+        // coff = 1 + overlap).
         lw.comp_coff = (lw.compress_ratio == 4) ? 2 : 1;
-        for (int di = 0; di < std::min(5, static_cast<int>(lt.size())); ++di) {
-            const auto &t = lt[di];
-            std::string shape;
-            for (size_t si = 0; si < t.shape.size(); ++si)
-                shape += (si > 0 ? "," : "") + std::to_string(t.shape[si]);
-            log::debug(std::string("[load_pinned]   layer_")
-                + (l < 10 ? "00" : (l < 100 ? "0" : "")) + std::to_string(l)
-                + " tensor[" + std::to_string(di) + "] name='" + t.name
-                + "' shape=[" + shape + "]");
+
+        std::vector<ArenaJob> jobs = {
+            {find_tensor_substr(lt, "ffn_norm.weight"), &lw.d_ffn_norm},
+            {find_tensor_substr(lt, "ffn.gate.weight"), &lw.d_gate_weight},
+            {find_tensor_suffix(lt, "attn.q_norm.weight"), &lw.d_q_norm},
+            {find_tensor_suffix(lt, "attn.kv_norm.weight"), &lw.d_kv_norm},
+            {find_tensor_suffix(lt, "attn_norm.weight"), &lw.d_attn_norm},
+        };
+
+        // CSA Compressor (ratio>0): wkv/wgate BF16, ape F32, norm BF16.
+        if (lw.compress_ratio > 0) {
+            jobs.push_back({find_tensor_suffix(lt,
+                 "attn.compressor.wkv.weight"), &lw.d_comp_wkv});
+            jobs.push_back({find_tensor_suffix(lt,
+                 "attn.compressor.wgate.weight"), &lw.d_comp_wgate});
+            jobs.push_back({find_tensor_suffix(lt, "attn.compressor.ape"),
+                            &lw.d_comp_ape});
+            jobs.push_back({find_tensor_suffix(lt,
+                 "attn.compressor.norm.weight"), &lw.d_comp_norm});
+
+            // CSA Indexer (ratio==4 only).
+            if (lw.compress_ratio == 4) {
+                auto *idx_w = find_tensor_suffix(lt,
+                    "attn.indexer.wq_b.weight");
+                auto *idx_s = find_tensor_suffix(lt,
+                    "attn.indexer.wq_b.scale");
+                if (idx_w) {
+                    if (!idx_s) {
+                        log::error("[load_pinned] indexer wq_b scale "
+                                   "missing in " + fn);
+                        pw.Free();
+                        return cudaErrorInvalidValue;
+                    }
+                    lw.idx_wq_b_rows = 8192;   // canonical geometry
+                    lw.idx_wq_b_cols = 1024;
+                    jobs.push_back({idx_w, &lw.d_idx_wq_b,
+                                    nullptr, &lw.idx_wq_b_rows,
+                                    &lw.idx_wq_b_cols});
+                    jobs.push_back({idx_s, &lw.d_idx_wq_b_scales});
+                }
+                jobs.push_back({find_tensor_suffix(lt,
+                     "attn.indexer.weights_proj.weight"),
+                     &lw.d_idx_weights_proj});
+                jobs.push_back({find_tensor_suffix(lt,
+                     "attn.indexer.compressor.wkv.weight"),
+                     &lw.d_idx_comp_wkv});
+                jobs.push_back({find_tensor_suffix(lt,
+                     "attn.indexer.compressor.wgate.weight"),
+                     &lw.d_idx_comp_wgate});
+                jobs.push_back({find_tensor_suffix(lt,
+                     "attn.indexer.compressor.ape"),
+                     &lw.d_idx_comp_ape});
+                jobs.push_back({find_tensor_suffix(lt,
+                     "attn.indexer.compressor.norm.weight"),
+                     &lw.d_idx_comp_norm});
+            }
         }
 
-        auto *ffn_norm = find_tensor_substr(lt, "ffn_norm.weight");
-        if (ffn_norm && !ffn_norm->shape.empty()) {
-            cudaError_t ue = upload_bf16_checked("ffn_norm", ffn_norm->data.data(), ffn_norm->shape[0],
-                                                 &lw.d_ffn_norm, stream, rb);
-            if (ue != cudaSuccess) return ue;
+        // MLA attention weights (F8_E4M3 + F8_E8M0 scales, strict pairing:
+        // an attention slot present without its scale is fatal).
+        const std::pair<const char *, const char *> attn_pairs[] = {
+            {"attn.wq_a.weight", "attn.wq_a.scale"},
+            {"attn.wq_b.weight", "attn.wq_b.scale"},
+            {"attn.wkv.weight",  "attn.wkv.scale"},
+            {"attn.wo_a.weight", "attn.wo_a.scale"},
+            {"attn.wo_b.weight", "attn.wo_b.scale"},
+        };
+        const std::tuple<const uint8_t **, const uint8_t **,
+                         int64_t *, int64_t *, int *, int *> attn_fields[] = {
+            {&lw.d_wq_a, &lw.d_wq_a_scales, &lw.wq_a_n, &lw.wq_a_s_n,
+             &lw.wq_a_rows, &lw.wq_a_cols},
+            {&lw.d_wq_b, &lw.d_wq_b_scales, &lw.wq_b_n, &lw.wq_b_s_n,
+             &lw.wq_b_rows, &lw.wq_b_cols},
+            {&lw.d_wkv,  &lw.d_wkv_scales,  &lw.wkv_n,  &lw.wkv_s_n,
+             &lw.wkv_rows, &lw.wkv_cols},
+            {&lw.d_wo_a, &lw.d_wo_a_scales, &lw.wo_a_n, &lw.wo_a_s_n,
+             &lw.wo_a_rows, &lw.wo_a_cols},
+            {&lw.d_wo_b, &lw.d_wo_b_scales, &lw.wo_b_n, &lw.wo_b_s_n,
+             &lw.wo_b_rows, &lw.wo_b_cols},
+        };
+        for (int p = 0; p < 5; ++p) {
+            auto *wt = find_tensor_suffix(lt, attn_pairs[p].first);
+            if (!wt) continue;   // absent attention slot stays legal
+            auto *st = find_tensor_suffix(lt, attn_pairs[p].second);
+            if (!st) {
+                log::error("[load_pinned] scale missing for '"
+                           + std::string(attn_pairs[p].first) + "' in "
+                           + fn);
+                pw.Free();
+                return cudaErrorInvalidValue;
+            }
+            auto [dw, dsc, wn, sn, rw, cw] = attn_fields[p];
+            jobs.push_back({wt, dw, wn, rw, cw});
+            jobs.push_back({st, dsc, sn});
         }
 
-        auto *gate = find_tensor_substr(lt, "ffn.gate.weight");
-        if (gate && gate->shape.size() >= 2) {
-            int64_t numel = gate->shape[0] * gate->shape[1];
-            // Use upload_bf16_checked which does proper host→device copy first
-            cudaError_t ue = upload_bf16_checked("ffn.gate", gate->data.data(), numel,
-                                                 &lw.d_gate_weight, stream, rb);
-            if (ue != cudaSuccess) return ue;
+        // Attention sink + Hyper-Connections (FP32).
+        jobs.push_back({find_tensor_suffix(lt, "attn.attn_sink"),
+                        &lw.d_attn_sink});
+        for (auto [suffix, dst] :
+             std::initializer_list<std::pair<const char *, float **>>{
+                 {"hc_attn_fn", &lw.d_hc_attn_fn},
+                 {"hc_attn_base", &lw.d_hc_attn_base},
+                 {"hc_attn_scale", &lw.d_hc_attn_scale},
+                 {"hc_ffn_fn", &lw.d_hc_ffn_fn},
+                 {"hc_ffn_base", &lw.d_hc_ffn_base},
+                 {"hc_ffn_scale", &lw.d_hc_ffn_scale}}) {
+            jobs.push_back({find_tensor_suffix(lt, suffix), dst});
         }
 
-        // Router selection bias (F32, non-hash layers only) — host copy.
+        cudaError_t le = UploadLayerJobs(std::move(jobs), lw, stream, ring,
+                                         rb);
+        if (le != cudaSuccess) {
+            pw.Free();
+            return le;
+        }
+
+        // Router selection bias (F32) + hash table (I64) — host pinned.
         auto *gate_bias = find_tensor_substr(lt, "ffn.gate.bias");
         if (gate_bias && gate_bias->shape.size() == 1 &&
             gate_bias->dtype == "F32") {
             int n = static_cast<int>(gate_bias->shape[0]);
-            if (cudaMallocHost(&lw.h_gate_bias, static_cast<size_t>(n) * sizeof(float))
-                    == cudaSuccess) {
+            if (cudaMallocHost(&lw.h_gate_bias,
+                               static_cast<size_t>(n) * sizeof(float))
+                == cudaSuccess) {
                 std::memcpy(lw.h_gate_bias, gate_bias->data.data(),
                             static_cast<size_t>(n) * sizeof(float));
                 lw.gate_bias_n = n;
             }
         }
-
-        // Hash-routing table (I64 [vocab, topk], hash layers only) — host copy.
         auto *tid2eid = find_tensor_substr(lt, "ffn.gate.tid2eid");
         if (tid2eid && tid2eid->shape.size() == 2 &&
             tid2eid->dtype == "I64") {
             int64_t numel = tid2eid->shape[0] * tid2eid->shape[1];
-            if (cudaMallocHost(&lw.h_tid2eid, static_cast<size_t>(numel) * sizeof(int64_t))
-                    == cudaSuccess) {
+            if (cudaMallocHost(&lw.h_tid2eid,
+                               static_cast<size_t>(numel) * sizeof(int64_t))
+                == cudaSuccess) {
                 std::memcpy(lw.h_tid2eid, tid2eid->data.data(),
                             static_cast<size_t>(numel) * sizeof(int64_t));
                 lw.tid2eid_vocab = static_cast<int>(tid2eid->shape[0]);
                 lw.tid2eid_topk  = static_cast<int>(tid2eid->shape[1]);
             }
         }
-
-        // MLA attention weights (F8_E4M3 + per-tile F8_E8M0 scales)
-        load_attn_weight(lt, "attn.wq_a.weight", "attn.wq_a.scale",
-                         &lw.d_wq_a, &lw.d_wq_a_scales, lw.wq_a_n, lw.wq_a_s_n,
-                         lw.wq_a_rows, lw.wq_a_cols, stream, rb);
-        load_attn_weight(lt, "attn.wq_b.weight", "attn.wq_b.scale",
-                         &lw.d_wq_b, &lw.d_wq_b_scales, lw.wq_b_n, lw.wq_b_s_n,
-                         lw.wq_b_rows, lw.wq_b_cols, stream, rb);
-        load_attn_weight(lt, "attn.wkv.weight", "attn.wkv.scale",
-                         &lw.d_wkv, &lw.d_wkv_scales, lw.wkv_n, lw.wkv_s_n,
-                         lw.wkv_rows, lw.wkv_cols, stream, rb);
-        load_attn_weight(lt, "attn.wo_a.weight", "attn.wo_a.scale",
-                         &lw.d_wo_a, &lw.d_wo_a_scales, lw.wo_a_n, lw.wo_a_s_n,
-                         lw.wo_a_rows, lw.wo_a_cols, stream, rb);
-        load_attn_weight(lt, "attn.wo_b.weight", "attn.wo_b.scale",
-                         &lw.d_wo_b, &lw.d_wo_b_scales, lw.wo_b_n, lw.wo_b_s_n,
-                         lw.wo_b_rows, lw.wo_b_cols, stream, rb);
-
-        // Attention norms (BF16) + sink (FP32)
-        auto *q_norm = find_tensor_suffix(lt, "attn.q_norm.weight");
-        if (q_norm && !q_norm->shape.empty()) {
-            cudaError_t ue = upload_bf16_checked("attn.q_norm", q_norm->data.data(), q_norm->shape[0],
-                                                 &lw.d_q_norm, stream, rb);
-            if (ue != cudaSuccess) return ue;
-        }
-        auto *kv_norm = find_tensor_suffix(lt, "attn.kv_norm.weight");
-        if (kv_norm && !kv_norm->shape.empty()) {
-            cudaError_t ue = upload_bf16_checked("attn.kv_norm", kv_norm->data.data(), kv_norm->shape[0],
-                                                 &lw.d_kv_norm, stream, rb);
-            if (ue != cudaSuccess) return ue;
-        }
-        auto *attn_norm = find_tensor_suffix(lt, "attn_norm.weight");
-        if (attn_norm && !attn_norm->shape.empty()) {
-            cudaError_t ue = upload_bf16_checked("attn_norm", attn_norm->data.data(), attn_norm->shape[0],
-                                                 &lw.d_attn_norm, stream, rb);
-            if (ue != cudaSuccess) return ue;
-        }
-        auto *attn_sink = find_tensor_suffix(lt, "attn.attn_sink");
-        if (attn_sink)
-            upload_f32_bytes(attn_sink->data, &lw.d_attn_sink, stream, rb);
-
-        // Hyper-Connections (FP32)
-        load_hc_f32(lt, "hc_attn_fn", &lw.d_hc_attn_fn, stream, rb);
-        load_hc_f32(lt, "hc_attn_base", &lw.d_hc_attn_base, stream, rb);
-        load_hc_f32(lt, "hc_attn_scale", &lw.d_hc_attn_scale, stream, rb);
-        load_hc_f32(lt, "hc_ffn_fn", &lw.d_hc_ffn_fn, stream, rb);
-        load_hc_f32(lt, "hc_ffn_base", &lw.d_hc_ffn_base, stream, rb);
-        load_hc_f32(lt, "hc_ffn_scale", &lw.d_hc_ffn_scale, stream, rb);
-
-        if (l == 0) {
-            std::ostringstream oss;
-            oss << "[load_pinned] layer0 attn: wq_a=" << (lw.d_wq_a ? "yes" : "no")
-                << " (" << lw.wq_a_n << ") wq_b=" << (lw.d_wq_b ? "yes" : "no")
-                << " (" << lw.wq_b_n << ") wkv=" << (lw.d_wkv ? "yes" : "no")
-                << " (" << lw.wkv_n << ") wo_a=" << (lw.d_wo_a ? "yes" : "no")
-                << " (" << lw.wo_a_n << ") wo_b=" << (lw.d_wo_b ? "yes" : "no")
-                << " (" << lw.wo_b_n << ")";
-            log::info(oss.str());
-            std::ostringstream oss2;
-            oss2 << "[load_pinned] layer0 hc: attn_fn=" << (lw.d_hc_attn_fn ? "yes" : "no")
-                << " ffn_fn=" << (lw.d_hc_ffn_fn ? "yes" : "no")
-                << " sink=" << (lw.d_attn_sink ? "yes" : "no")
-                << " q_norm=" << (lw.d_q_norm ? "yes" : "no")
-                << " kv_norm=" << (lw.d_kv_norm ? "yes" : "no")
-                << " attn_norm=" << (lw.d_attn_norm ? "yes" : "no");
-            log::info(oss2.str());
-        }
-
-        // ── CSA Compressor (layers 2-41) ──────────────────────────────────
-        if (lw.compress_ratio > 0) {
-            if (l == 2) log::info("[load_pinned] layer2 CSA loading (ratio=" + std::to_string(lw.compress_ratio) + ")");
-            int coff = lw.comp_coff;
-            int comp_out = coff * kHeadDim;  // 1024 for ratio=4, 512 for ratio=128
-
-            auto *t_comp_wkv = find_tensor_suffix(lt, "attn.compressor.wkv.weight");
-            if (t_comp_wkv && !t_comp_wkv->data.empty()) {
-                cudaError_t ue = upload_bf16_checked("csa.comp.wkv", t_comp_wkv->data.data(),
-                    static_cast<int64_t>(comp_out) * kHiddenDim,
-                    &lw.d_comp_wkv, stream, rb);
-                if (ue != cudaSuccess) return ue;
-            }
-
-            auto *t_comp_wgate = find_tensor_suffix(lt, "attn.compressor.wgate.weight");
-            if (t_comp_wgate && !t_comp_wgate->data.empty()) {
-                cudaError_t ue = upload_bf16_checked("csa.comp.wgate", t_comp_wgate->data.data(),
-                    static_cast<int64_t>(comp_out) * kHiddenDim,
-                    &lw.d_comp_wgate, stream, rb);
-                if (ue != cudaSuccess) return ue;
-            }
-
-            auto *t_comp_ape = find_tensor_suffix(lt, "attn.compressor.ape");
-            if (t_comp_ape && !t_comp_ape->data.empty()) {
-                std::ostringstream aoss;
-                aoss << "[load_pinned] layer CSA ape shape=[";
-                for (size_t ai = 0; ai < t_comp_ape->shape.size(); ++ai) {
-                    if (ai) aoss << ",";
-                    aoss << t_comp_ape->shape[ai];
-                }
-                aoss << "] dsz=" << t_comp_ape->data.size();
-                if (l == 2) log::info(aoss.str());
-                upload_f32_bytes(t_comp_ape->data, &lw.d_comp_ape, stream, rb);
-            }
-
-            auto *t_comp_norm = find_tensor_suffix(lt, "attn.compressor.norm.weight");
-            if (t_comp_norm && !t_comp_norm->data.empty()) {
-                cudaError_t ue = upload_bf16_checked("csa.comp.norm", t_comp_norm->data.data(),
-                    static_cast<int64_t>(kHeadDim), &lw.d_comp_norm, stream, rb);
-                if (ue != cudaSuccess) return ue;
-            }
-
-            // ── CSA Indexer (ratio=4 only) ─────────────────────────────────
-            if (lw.compress_ratio == 4) {
-                // indexer.wq_b: F8_E4M3 [8192, 1024] + F8_E8M0 scale [64, 8]
-                auto *t_idx_wq_b = find_tensor_suffix(lt, "attn.indexer.wq_b.weight");
-                auto *t_idx_wq_b_s = find_tensor_suffix(lt, "attn.indexer.wq_b.scale");
-                if (t_idx_wq_b && !t_idx_wq_b->data.empty()) {
-                    int64_t wq_n = static_cast<int64_t>(t_idx_wq_b->data.size());
-                    uint8_t *d_raw = nullptr;
-                    cudaError_t ce = cudaMalloc(&d_raw, wq_n);
-                    if (ce != cudaSuccess) { log::error("indexer wq_b alloc failed"); return ce; }
-                    ce = cudaMemcpyAsync(d_raw, t_idx_wq_b->data.data(), wq_n,
-                        cudaMemcpyHostToDevice, stream);
-                    if (ce != cudaSuccess) {
-                        cudaFree(d_raw);
-                        log::error("indexer wq_b upload failed");
-                        return ce;
-                    }
-                    rb += static_cast<std::uint64_t>(wq_n);
-                    lw.d_idx_wq_b = d_raw;
-                    lw.idx_wq_b_rows = 8192;
-                    lw.idx_wq_b_cols = 1024;
-                }
-                if (t_idx_wq_b_s && !t_idx_wq_b_s->data.empty()) {
-                    int64_t sc_n = static_cast<int64_t>(t_idx_wq_b_s->data.size());
-                    uint8_t *d_sc = nullptr;
-                    cudaError_t ce = cudaMalloc(&d_sc, sc_n);
-                    if (ce != cudaSuccess) { log::error("indexer wq_b scale alloc failed"); return ce; }
-                    ce = cudaMemcpyAsync(d_sc, t_idx_wq_b_s->data.data(), sc_n,
-                        cudaMemcpyHostToDevice, stream);
-                    if (ce != cudaSuccess) {
-                        cudaFree(d_sc);
-                        log::error("indexer wq_b scale upload failed");
-                        return ce;
-                    }
-                    rb += static_cast<std::uint64_t>(sc_n);
-                    lw.d_idx_wq_b_scales = d_sc;
-                }
-                // indexer.weights_proj: BF16 [64, 4096]
-                auto *t_idx_wp = find_tensor_suffix(lt, "attn.indexer.weights_proj.weight");
-                if (t_idx_wp && !t_idx_wp->data.empty()) {
-                    cudaError_t ue = upload_bf16_checked("indexer.weights_proj", t_idx_wp->data.data(),
-                        64LL * kHiddenDim, &lw.d_idx_weights_proj, stream, rb);
-                    if (ue != cudaSuccess) return ue;
-                }
-                // indexer.compressor.* (head_dim=128)
-                auto *t_ic_wkv = find_tensor_suffix(lt, "attn.indexer.compressor.wkv.weight");
-                if (t_ic_wkv && !t_ic_wkv->data.empty()) {
-                    cudaError_t ue = upload_bf16_checked("indexer.comp.wkv", t_ic_wkv->data.data(),
-                        256LL * kHiddenDim, &lw.d_idx_comp_wkv, stream, rb);
-                    if (ue != cudaSuccess) return ue;
-                }
-                auto *t_ic_wgate = find_tensor_suffix(lt, "attn.indexer.compressor.wgate.weight");
-                if (t_ic_wgate && !t_ic_wgate->data.empty()) {
-                    cudaError_t ue = upload_bf16_checked("indexer.comp.wgate", t_ic_wgate->data.data(),
-                        256LL * kHiddenDim, &lw.d_idx_comp_wgate, stream, rb);
-                    if (ue != cudaSuccess) return ue;
-                }
-                auto *t_ic_ape = find_tensor_suffix(lt, "attn.indexer.compressor.ape");
-                if (t_ic_ape && !t_ic_ape->data.empty())
-                    upload_f32_bytes(t_ic_ape->data, &lw.d_idx_comp_ape, stream, rb);
-                auto *t_ic_norm = find_tensor_suffix(lt, "attn.indexer.compressor.norm.weight");
-                if (t_ic_norm && !t_ic_norm->data.empty()) {
-                    cudaError_t ue = upload_bf16_checked("indexer.comp.norm", t_ic_norm->data.data(),
-                        128LL, &lw.d_idx_comp_norm, stream, rb);
-                    if (ue != cudaSuccess) return ue;
-                }
-            }
-
-            if (l == 2)
-                log::info("[load_pinned] layer2 CSA: comp_wkv=" + std::string(lw.d_comp_wkv ? "yes" : "no")
-                    + " comp_wgate=" + std::string(lw.d_comp_wgate ? "yes" : "no")
-                    + " comp_ape=" + std::string(lw.d_comp_ape ? "yes" : "no")
-                    + " comp_norm=" + std::string(lw.d_comp_norm ? "yes" : "no")
-                    + " idx_wq_b=" + std::string(lw.d_idx_wq_b ? "yes" : "no")
-                    + " idx_weights_proj=" + std::string(lw.d_idx_weights_proj ? "yes" : "no"));
-        }
-
     }
 
     // Shared experts: NVFP4-packed metadata from pinned/shared_experts.arrow.
-    // Loaded AFTER the layer loop so the descriptor registry lives independently
-    // of the per-layer pinned files.
+    // Loaded AFTER the layer loop so the descriptor registry lives
+    // independently of the per-layer pinned files. Absent file stays legal;
+    // present-but-broken file is fatal.
     {
         auto shared_path = pinned_dir / "shared_experts.arrow";
         if (fs::exists(shared_path)) {
             auto mmap_res = arrow::io::MemoryMappedFile::Open(
                 shared_path.string(), arrow::io::FileMode::READ);
-            if (mmap_res.ok()) {
-                SharedExpertDb db;
-                auto st = load_shared_experts_metadata(*mmap_res, db);
-                if (!st.ok()) {
-                    log::error("[load_pinned] ERROR shared_experts metadata: "
-                        + st.ToString());
-                } else {
-                    log::info("[load_pinned] shared_experts: "
-                        + std::to_string(db.num_layers()) + " layers");
-                    if (db.num_layers() > 0) {
-                        std::ostringstream gs_oss;
-                        gs_oss << "[load_pinned] layer0 shared: w1_bytes="
-                               << db.w1[0].packed_bytes
-                               << " w1_gs=" << db.w1[0].global_scale
-                               << " w2_bytes=" << db.w2[0].packed_bytes
-                               << " w2_gs=" << db.w2[0].global_scale
-                               << " w3_bytes=" << db.w3[0].packed_bytes
-                               << " w3_gs=" << db.w3[0].global_scale
-                               << " w1_scale_bytes=" << db.w1[0].scale_bytes
-                               << " w1_numel=" << db.w1[0].num_elements;
-                        log::info(gs_oss.str());
+            if (!mmap_res.ok()) {
+                log::error("[load_pinned] shared_experts open failed: "
+                           + mmap_res.status().ToString());
+                pw.Free();
+                return cudaErrorInvalidValue;
+            }
+            SharedExpertDb db;
+            auto st = load_shared_experts_metadata(*mmap_res, db);
+            if (!st.ok()) {
+                log::error("[load_pinned] shared_experts metadata: "
+                           + st.ToString());
+                pw.Free();
+                return cudaErrorInvalidValue;
+            }
+            log::info("[load_pinned] shared_experts: "
+                      + std::to_string(db.num_layers()) + " layers");
+            for (int l = 0; l < db.num_layers() &&
+                            l < static_cast<int>(pw.layers.size()); ++l) {
+                auto &lw = pw.layers[l];
+                auto upload = [&](const SharedExpertDescriptor &desc,
+                                  uint8_t *&d_buf, uint8_t *&d_scales,
+                                  float &gs, int64_t &nbytes) -> cudaError_t {
+                    nbytes = desc.packed_bytes;
+                    if (nbytes <= 0) return cudaSuccess;
+                    cudaError_t ue = cudaMalloc(
+                        &d_buf, static_cast<size_t>(desc.packed_bytes));
+                    if (ue != cudaSuccess) return ue;
+                    rb += static_cast<std::uint64_t>(desc.packed_bytes);
+                    ue = ring.UploadRaw(desc.host_ptr, d_buf,
+                                        static_cast<size_t>(desc.packed_bytes),
+                                        stream, rb);
+                    if (ue != cudaSuccess) return ue;
+                    if (desc.scale_bytes > 0) {
+                        ue = cudaMalloc(&d_scales,
+                                        static_cast<size_t>(desc.scale_bytes));
+                        if (ue != cudaSuccess) return ue;
+                        rb += static_cast<std::uint64_t>(desc.scale_bytes);
+                        ue = ring.UploadRaw(desc.scale_host_ptr, d_scales,
+                                            static_cast<size_t>(desc.scale_bytes),
+                                            stream, rb);
+                        if (ue != cudaSuccess) return ue;
                     }
-                    for (int l = 0; l < db.num_layers() &&
-                                    l < static_cast<int>(pw.layers.size()); ++l) {
-                        auto &lw = pw.layers[l];
-                        auto upload = [&](const SharedExpertDescriptor &desc,
-                                          uint8_t *&d_buf, uint8_t *&d_scales,
-                                          float &gs, int64_t &nbytes)
-                        {
-                            nbytes = desc.packed_bytes;
-                            if (nbytes <= 0) return;
-                            cudaError_t e = cudaMalloc(&d_buf,
-                                static_cast<size_t>(desc.packed_bytes));
-                            if (e != cudaSuccess) return;
-                            rb += static_cast<std::uint64_t>(desc.packed_bytes);
-                            cudaMemcpyAsync(d_buf, desc.host_ptr,
-                                static_cast<size_t>(desc.packed_bytes),
-                                cudaMemcpyHostToDevice, stream);
-                            if (desc.scale_bytes > 0) {
-                                cudaMalloc(&d_scales,
-                                    static_cast<size_t>(desc.scale_bytes));
-                                rb += static_cast<std::uint64_t>(desc.scale_bytes);
-                                cudaMemcpyAsync(d_scales, desc.scale_host_ptr,
-                                    static_cast<size_t>(desc.scale_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                            }
-                            gs = desc.global_scale;
-                        };
-                        upload(db.w1[l], lw.d_shared_w1, lw.d_shared_w1_scales,
-                               lw.shared_w1_global_scale, lw.shared_w1_bytes);
-                        upload(db.w2[l], lw.d_shared_w2, lw.d_shared_w2_scales,
-                               lw.shared_w2_global_scale, lw.shared_w2_bytes);
-                        upload(db.w3[l], lw.d_shared_w3, lw.d_shared_w3_scales,
-                               lw.shared_w3_global_scale, lw.shared_w3_bytes);
-                    }
+                    gs = desc.global_scale;
+                    return cudaSuccess;
+                };
+                cudaError_t ue = upload(db.w1[l], lw.d_shared_w1,
+                                        lw.d_shared_w1_scales,
+                                        lw.shared_w1_global_scale,
+                                        lw.shared_w1_bytes);
+                if (ue == cudaSuccess)
+                    ue = upload(db.w2[l], lw.d_shared_w2,
+                                lw.d_shared_w2_scales,
+                                lw.shared_w2_global_scale,
+                                lw.shared_w2_bytes);
+                if (ue == cudaSuccess)
+                    ue = upload(db.w3[l], lw.d_shared_w3,
+                                lw.d_shared_w3_scales,
+                                lw.shared_w3_global_scale,
+                                lw.shared_w3_bytes);
+                if (ue != cudaSuccess) {
+                    log::error("[load_pinned] shared expert upload failed "
+                               "(layer " + std::to_string(l) + "): "
+                               + cudaGetErrorString(ue));
+                    pw.Free();
+                    return ue;
                 }
             }
         }
     }
 
     pw.resident_bytes = rb;
+
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    const double gib =
+        static_cast<double>(rb) / (1024.0 * 1024.0 * 1024.0);
+    const double gibs = (ms > 0.0) ? (gib / (ms / 1000.0)) : 0.0;
+    log::info("[load_pinned] pinned weights: " + std::to_string(rb >> 20)
+              + " MiB in " + std::to_string(static_cast<int>(ms + 0.5))
+              + " ms (" + std::to_string(gibs) + " GiB/s)");
+
     return cudaSuccess;
 }
 
