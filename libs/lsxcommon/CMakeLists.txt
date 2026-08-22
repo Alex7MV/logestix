@@ -96,6 +96,7 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_inference_attn.cu
     src/deepseek_inference_csa.cu
     src/deepseek_inference_pipeline.cu
+    src/bf16_convert.cu
     src/deepseek_norm_kernels.cu
     src/shared_experts.cu
     src/sampling.cu

@@ -539,6 +539,31 @@ endif()
 add_test(NAME test_qwen_selfcheck COMMAND test_qwen_selfcheck)
 set_tests_properties(test_qwen_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Qwen3.8-27B SelfCheck (реальная модель) ─────────────────────────────
+#    Селфчек на реальной модели, минимум 3 цикла, детерминированный final_logits.
+#    SKIP без чекпоинта.
+add_executable(test_qwen_3_8_27b_selfcheck test_qwen_3_8_27b_selfcheck.cpp)
+target_compile_definitions(test_qwen_3_8_27b_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_3_8_27b_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_3_8_27b_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_3_8_27b_selfcheck>"
+    )
+    add_custom_command(TARGET test_qwen_3_8_27b_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_3_8_27b_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_qwen_3_8_27b_selfcheck COMMAND test_qwen_3_8_27b_selfcheck)
+set_tests_properties(test_qwen_3_8_27b_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест фабрики моделей ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -1207,6 +1232,53 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_model_lifecycle COMMAND test_glm_model_lifecycle)
+
+# ── Тест общих fast-load примитивов (GPU BF16→FP16 + pinned ring) ───────────
+# Same OBJECT-lib pattern as test_glm_load_fast_cu.
+add_library(test_deepseek_load_fast_cu OBJECT test_deepseek_load_fast.cu)
+set_target_properties(test_deepseek_load_fast_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_load_fast_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_load_fast_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+)
+target_compile_definitions(test_deepseek_load_fast_cu PRIVATE
+    LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_deepseek_load_fast_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_load_fast)
+set_target_properties(test_deepseek_load_fast PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_load_fast PRIVATE
+    test_deepseek_load_fast_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_load_fast>"
+    )
+    add_custom_command(TARGET test_deepseek_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_load_fast>"
+    )
+endif()
+
+add_test(NAME test_deepseek_load_fast COMMAND test_deepseek_load_fast)
 
 # �� ���� model-metadata vault path registry �����������������������������
 add_executable(test_path_registry test_path_registry.cpp)
