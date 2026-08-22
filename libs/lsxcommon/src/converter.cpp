@@ -214,92 +214,9 @@ void print_model(const SafetensorsModel &model)
         spdlog::info("  {:<22} {:>6} tensors, {}",
             cat, cnt, format_size(cat_bytes[cat]));
     }
-
-    spdlog::info("--- Runtime memory estimate ---");
-
-    struct LayerExpertInfo {
-        int64_t total_expert_bytes = 0;
-        int expert_count = 0;
-    };
-    absl::btree_map<int, LayerExpertInfo> moe_layers;
-    absl::btree_map<int, bool> layers_with_attention;
-    int hidden_dim = 0;
-    int kv_latent_dim = 0;
-    int total_layers = 0;
-
-    for (auto &shard : model.shards) {
-        for (auto &t : shard.tensors) {
-            int layer_num = -1;
-            if (t.name.rfind("layers.", 0) == 0) {
-                auto dot = t.name.find('.', 7);
-                if (dot != std::string::npos) {
-                    const std::string lv = t.name.substr(7, dot - 7);
-                    if (!absl::SimpleAtoi(lv, &layer_num)) layer_num = -1;
-                    total_layers = std::max(total_layers, layer_num + 1);
-                }
-            }
-
-            if (is_staged_tensor(t.name) && layer_num >= 0) {
-                moe_layers[layer_num].expert_count++;
-                moe_layers[layer_num].total_expert_bytes += t.byte_size();
-            }
-
-            if (layer_num >= 0 && t.name.find(".attn.") != std::string::npos && t.name.find(".weight") != std::string::npos) {
-                layers_with_attention[layer_num] = true;
-                if (t.name.find("wkv.weight") != std::string::npos) {
-                    kv_latent_dim = static_cast<int>(t.shape[0]);
-                    hidden_dim = static_cast<int>(t.shape[1]);
-                }
-            }
-        }
-    }
-
-    int num_moe_layers = static_cast<int>(moe_layers.size());
-    int num_attn_layers = static_cast<int>(layers_with_attention.size());
-    int experts_per_layer = 0;
-    int64_t per_expert_bytes = 0;
-    if (!moe_layers.empty()) {
-        for (auto &[_, info] : moe_layers) {
-            experts_per_layer = std::max(experts_per_layer, info.expert_count);
-        }
-        int64_t total_expert_bytes = 0;
-        for (auto &[_, info] : moe_layers)
-            total_expert_bytes += info.total_expert_bytes;
-        int64_t total_experts = static_cast<int64_t>(num_moe_layers) * experts_per_layer;
-        if (total_experts > 0)
-            per_expert_bytes = total_expert_bytes / total_experts;
-    }
-
-    if (hidden_dim == 0) hidden_dim = 4096;
-    if (kv_latent_dim == 0) kv_latent_dim = 512;
-    if (num_attn_layers == 0) num_attn_layers = total_layers;
-    if (num_moe_layers == 0) num_moe_layers = total_layers;
-
-    const int ring_buffer_size = 1;
-    const int seq_len = 2048;
-    const int batch_size = 1;
-
-    int64_t expert_ring_buffer = static_cast<int64_t>(ring_buffer_size) *
-                                 per_expert_bytes * num_moe_layers;
-    int bytes_per_elem = 2;
-    int64_t kv_cache = static_cast<int64_t>(seq_len) * num_attn_layers *
-                       kv_latent_dim * 2 * bytes_per_elem;
-    int64_t workspace = static_cast<int64_t>(batch_size) * seq_len * hidden_dim *
-                        num_attn_layers * bytes_per_elem * 2;
-
-    spdlog::info("  Expert Ring Buffer (ring_size={}): {}",
-        ring_buffer_size, format_size(expert_ring_buffer));
-    spdlog::info("  KV Cache ({} layers, seq_len={}):  {}",
-        num_attn_layers, seq_len, format_size(kv_cache));
-    spdlog::info("  Workspace (batch={}, seq_len={}):  {}",
-        batch_size, seq_len, format_size(workspace));
-
-    int64_t runtime_total = pinned_bytes + expert_ring_buffer + kv_cache + workspace;
-    spdlog::info("  Total runtime (pinned+ring+cache+ws): {}",
-        format_size(runtime_total));
-    int64_t gpu_min = pinned_bytes + expert_ring_buffer + kv_cache;
-    spdlog::info("  Minimum VRAM (pinned+ring+cache): {}",
-        format_size(gpu_min));
+    // Runtime VRAM estimates (min/optimal/max) are no longer guessed here:
+    // they are computed at conversion time and reported via the "vram" block
+    // of model.index.json / IModel::VramRequirements() (see vram_estimate).
 }
 
 void print_nvfp4_forecast(const SafetensorsModel &model)

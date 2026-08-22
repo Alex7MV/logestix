@@ -14,6 +14,11 @@ namespace {
 
 constexpr std::int64_t kDefaultContextTokens = 2048;
 
+// Transient activations never span the whole context: decode is one token,
+// prefill runs in bounded chunks. Workspace is estimated from this chunk,
+// while the KV cache honestly scales with the full context length.
+constexpr std::int64_t kPrefillChunkTokens = 2048;
+
 // NVFP4 converted size: packed E2M1 nibbles + E4M3 scales (block of 16).
 std::int64_t Nvfp4ConvertedBytes(std::int64_t numel)
 {
@@ -58,10 +63,12 @@ VramProfile EstimateVram(const std::vector<VramTensorInfo> &tensors,
     const std::int64_t hidden =
         geom.hidden_dim > 0 ? geom.hidden_dim : 4096;
 
-    // Same formulas as print_model() (converter.cpp) but with the
-    // config-declared context length instead of hardcoded 2048.
+    // KV cache scales with the config-declared context length; the transient
+    // workspace is computed from a bounded prefill chunk (full-context
+    // workspace would scale absurdly: ~739 GiB at a 1M-token context).
     const std::int64_t kv_cache = ctx * attn * kv_dim * 2 * 2;      // K+V, FP16
-    const std::int64_t workspace = ctx * hidden * attn * 2 * 2;     // FP16
+    const std::int64_t workspace =
+        kPrefillChunkTokens * hidden * attn * 2 * 2;                // FP16
 
     p.min_bytes = resident;
     p.optimal_bytes =

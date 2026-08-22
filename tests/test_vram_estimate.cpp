@@ -74,7 +74,7 @@ TEST_CASE("Hierarchy invariant min <= optimal <= max", "[vram]")
     CHECK(p.optimal_bytes <= p.max_bytes);
 }
 
-TEST_CASE("KV cache and workspace scale with context length", "[vram]")
+TEST_CASE("KV cache scales with context, workspace stays chunk-bounded", "[vram]")
 {
     std::vector<VramTensorInfo> tensors = {
         {"model.embed_tokens.weight", 1000, 2000},
@@ -84,10 +84,17 @@ TEST_CASE("KV cache and workspace scale with context length", "[vram]")
     auto p1 = lsxcommon::EstimateVram(tensors, {kNoneNvfp4, kAllResident}, g);
     g.context_length = 4096;
     auto p2 = lsxcommon::EstimateVram(tensors, {kNoneNvfp4, kAllResident}, g);
-    // kv = ctx*attn*kv_dim*2*2; ws = ctx*hidden*attn*2*2 -> both double.
-    CHECK(p2.optimal_bytes - p2.min_bytes ==
-          2 * (p1.optimal_bytes - p1.min_bytes));
+    // kv = ctx*attn*kv_dim*2*2 scales linearly with ctx; the workspace is
+    // computed from a fixed 2048-token prefill chunk and does not grow.
+    // kv delta: 2048 extra tokens * 1 attn layer * 512 kv_dim * 2(K+V) * 2(FP16)
+    constexpr std::uint64_t kKvDelta =
+        2048ull * 1 * 512 * 2 * 2;   // 4 MiB
+    CHECK(p2.optimal_bytes - p1.optimal_bytes == kKvDelta);
     CHECK(p2.context_tokens == 4096);
+
+    // Workspace component (fixed): 2048 * hidden(4096) * 1 * 2 * 2 = 32 MiB.
+    CHECK(p1.optimal_bytes - p1.min_bytes - kKvDelta ==
+          2048ull * 4096 * 1 * 2 * 2);
 }
 
 TEST_CASE("Empty inventory yields zero profile", "[vram]")
