@@ -24,9 +24,15 @@ public:
 
     // Takes ownership of the cache lease. slots_ starts at
     // lease.Bytes() / slot_stride_bytes clamped into bounds.
+    // NOTE: no default `const Config &cfg = {}` argument here — a default
+    // argument referencing a nested class with NSDMIs is ill-formed C++
+    // (the type must be complete before the end of the enclosing class;
+    // GCC 15+ rejects what GCC 13 tolerated). Use the 4-argument overload.
+    RuntimeTuner(ResourceGovernor *gov, Lease lease,
+                 std::uint64_t slot_stride_bytes, const TuningBounds &bounds);
     RuntimeTuner(ResourceGovernor *gov, Lease lease,
                  std::uint64_t slot_stride_bytes, const TuningBounds &bounds,
-                 const Config &cfg = {});
+                 const Config &cfg);
 
     // Feed one report (hits/misses deltas since the previous call).
     void Report(std::int64_t hits_delta, std::int64_t misses_delta);
