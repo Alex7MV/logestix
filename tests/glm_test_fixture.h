@@ -34,6 +34,12 @@ inline std::vector<uint8_t> MakeBf16(int64_t n, float base = 0.0f)
     return out;
 }
 
+// Single source of truth with MakeBf16: element i holds these BF16 bits.
+inline uint16_t MakeBf16BitsAt(int64_t i)
+{
+    return static_cast<uint16_t>(i % 65536);
+}
+
 // Round-to-nearest-even float → bf16 bits (host-side, no CUDA dependency).
 inline uint16_t FloatToBf16(float v)
 {
