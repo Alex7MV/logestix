@@ -638,6 +638,28 @@ endif()
 
 add_test(NAME test_gemma4_convert COMMAND test_gemma4_convert)
 
+# ── Тест Gemma-4 загрузчика (BF16→FP16 in-place, арена, expert LRU) ─────────
+add_executable(test_gemma4_loader test_gemma4_loader.cpp)
+target_compile_definitions(test_gemma4_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+endif()
+
+add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
+
 # ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
