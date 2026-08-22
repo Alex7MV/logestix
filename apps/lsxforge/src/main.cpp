@@ -10,6 +10,7 @@
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/tokenizer.h"
+#include "lsxcommon/gemma4_convert.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/qwen_convert.h"
 #include <arrow/api.h>
@@ -38,6 +39,7 @@ ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
 ABSL_FLAG(bool, glm, false, "GLM-5.2 conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
+ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -226,6 +228,7 @@ int main(int argc, char* argv[]) {
     bool verify_only = absl::GetFlag(FLAGS_verify);
     bool glm = absl::GetFlag(FLAGS_glm);
     bool qwen = absl::GetFlag(FLAGS_qwen);
+    bool gemma4 = absl::GetFlag(FLAGS_gemma4);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
@@ -357,6 +360,19 @@ int main(int argc, char* argv[]) {
     }
 
     spdlog::info("Converting model: {} -> {}", input_path, output_path);
+    if (gemma4) {
+        spdlog::info("Gemma-4 pipeline (logestix-gemma layout)");
+        auto st = lsxcommon::gemma::ConvertGemmaModel(input_path, output_path);
+        if (!st.ok()) {
+            spdlog::error("Gemma conversion failed: {}", st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        spdlog::info("Gemma conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
     if (qwen) {
         spdlog::info("Qwen3.5 pipeline (logestix-qwen layout)");
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
