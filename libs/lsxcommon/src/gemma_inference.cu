@@ -285,5 +285,163 @@ cudaError_t RunGemmaAttention(const __half *d_q, const __half *d_k,
     return cudaGetLastError();
 }
 
+// ── Dense MLP + MoE ─────────────────────────────────────────────────────────
+
+__device__ __forceinline__ float gelu_tanh_dev(float v)
+{
+    const float k0 = 0.7978845608028654f; // sqrt(2/pi)
+    return 0.5f * v * (1.0f + tanhf(k0 * (v + 0.044715f * v * v * v)));
+}
+
+// out[t,c] = sum_i down[c,i] * gelu(gate[i]@x_t) * (up[i]@x_t)
+__global__ void gemma_dense_mlp_kernel(const __half *__restrict__ gate,
+                                       const __half *__restrict__ up,
+                                       const __half *__restrict__ down,
+                                       int64_t I, int64_t H,
+                                       const __half *__restrict__ x,
+                                       __half *__restrict__ out, int seq)
+{
+    // grid: (seq, H); one thread per output element.
+    const int t = blockIdx.x;
+    const int c = blockIdx.y;
+    if (t >= seq || c >= H) return;
+    const __half *xr = x + static_cast<int64_t>(t) * H;
+    float acc = 0.f;
+    for (int64_t i = 0; i < I; ++i) {
+        float g = 0.f, u = 0.f;
+        for (int64_t d = 0; d < H; ++d) {
+            float xv = __half2float(xr[d]);
+            g += xv * __half2float(gate[i * H + d]);
+            u += xv * __half2float(up[i * H + d]);
+        }
+        acc += gelu_tanh_dev(g) * u *
+               __half2float(down[c * I + i]);
+    }
+    out[static_cast<int64_t>(t) * H + c] = __float2half(acc);
+}
+
+cudaError_t RunGemmaDenseMLP(const __half *d_gate, const __half *d_up,
+                             const __half *d_down, int64_t I, int64_t H,
+                             const __half *d_x, __half *d_out, int seq,
+                             cudaStream_t stream)
+{
+    if (!d_gate || !d_up || !d_down || !d_x || !d_out || I <= 0 || H <= 0 ||
+        seq <= 0)
+        return cudaErrorInvalidValue;
+    dim3 grid(static_cast<unsigned>(seq), static_cast<unsigned>(H));
+    gemma_dense_mlp_kernel<<<grid, 1, 0, stream>>>(d_gate, d_up, d_down, I, H,
+                                                   d_x, d_out, seq);
+    return cudaGetLastError();
+}
+
+// One block per token: computes logits, deterministic insertion top-k with
+// lower-index tie-break, softmax over the selected logits.
+__global__ void gemma_router_topk_kernel(
+    const __half *__restrict__ proj, const float *__restrict__ per_expert_scale,
+    const __half *__restrict__ x, int E, int H, int K,
+    int32_t *__restrict__ sel, float *__restrict__ weights)
+{
+    const int t = blockIdx.x;
+    if (t >= gridDim.x) return;
+    const __half *xr = x + static_cast<int64_t>(t) * H;
+
+    extern __shared__ float sh[];
+    float *logits = sh;             // [E]
+
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        float dot = 0.f;
+        for (int d = 0; d < H; ++d)
+            dot += __half2float(proj[static_cast<int64_t>(e) * H + d]) *
+                   __half2float(xr[d]);
+        logits[e] = dot;
+    }
+    __syncthreads();
+
+    // Thread 0: insertion top-k, lower index wins ties.
+    if (threadIdx.x == 0) {
+        int idx[16];   // top_k <= 16 supported
+        float val[16];
+        int n = 0;
+        for (int e = 0; e < E; ++e) {
+            float v = logits[e];
+            int pos = n;
+            while (pos > 0 &&
+                   (val[pos - 1] < v ||
+                    (val[pos - 1] == v && idx[pos - 1] > e))) {
+                if (pos < K) { val[pos] = val[pos - 1]; idx[pos] = idx[pos - 1]; }
+                --pos;
+            }
+            if (pos < K) {
+                val[pos] = v;
+                idx[pos] = e;
+                if (n < K) ++n;
+            }
+        }
+        float m = val[0];
+        for (int i = 1; i < K; ++i) m = fmaxf(m, val[i]);
+        float z = 0.f;
+        for (int i = 0; i < K; ++i) {
+            z += expf(val[i] - m);
+        }
+        for (int i = 0; i < K; ++i) {
+            sel[static_cast<int64_t>(t) * K + i] = idx[i];
+            float w = expf(val[i] - m) / z;
+            if (per_expert_scale) w *= per_expert_scale[idx[i]];
+            weights[static_cast<int64_t>(t) * K + i] = w;
+        }
+    }
+}
+
+cudaError_t RunGemmaRouterTopK(const __half *d_router_proj,
+                               const float *d_per_expert_scale,
+                               const __half *d_x, int num_experts,
+                               int hidden, int top_k, int32_t *d_sel_experts,
+                               float *d_sel_weights, int seq,
+                               cudaStream_t stream)
+{
+    if (!d_router_proj || !d_x || !d_sel_experts || !d_sel_weights ||
+        num_experts <= 0 || hidden <= 0 || top_k <= 0 || top_k > 16 ||
+        seq <= 0)
+        return cudaErrorInvalidValue;
+    gemma_router_topk_kernel<<<seq, 128,
+                               static_cast<size_t>(num_experts) *
+                                   sizeof(float),
+                               stream>>>(d_router_proj, d_per_expert_scale,
+                                         d_x, num_experts, hidden, top_k,
+                                         d_sel_experts, d_sel_weights);
+    return cudaGetLastError();
+}
+
+// out[t,h] = router_scale[h] * sum_k w_tk * expert_outs[k][t,h]
+__global__ void gemma_moe_combine_kernel(__half *__restrict__ out,
+                                         const __half *const *__restrict__ eos,
+                                         const float *__restrict__ w,
+                                         const float *__restrict__ rscale,
+                                         int H, int K)
+{
+    const int t = blockIdx.x;
+    for (int h = threadIdx.x; h < H; h += blockDim.x) {
+        float acc = 0.f;
+        for (int k = 0; k < K; ++k)
+            acc += w[static_cast<int64_t>(t) * K + k] *
+                   __half2float(eos[k][static_cast<int64_t>(t) * H + h]);
+        if (rscale) acc *= rscale[h];
+        out[static_cast<int64_t>(t) * H + h] = __float2half(acc);
+    }
+}
+
+cudaError_t RunGemmaMoECombine(const __half *const *d_expert_outs,
+                               const float *d_weights,
+                               const float *d_router_scale, __half *d_out,
+                               int hidden, int k, cudaStream_t stream)
+{
+    if (!d_expert_outs || !d_weights || !d_out || hidden <= 0 || k <= 0)
+        return cudaErrorInvalidValue;
+    constexpr int kBlock = 256;
+    gemma_moe_combine_kernel<<<1, kBlock, 0, stream>>>(
+        d_out, d_expert_outs, d_weights, d_router_scale, hidden, k);
+    return cudaGetLastError();
+}
+
 } // namespace gemma
 } // namespace lsxcommon

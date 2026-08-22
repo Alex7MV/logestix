@@ -45,5 +45,31 @@ cudaError_t RunGemmaAttention(const __half *d_q, const __half *d_k,
                               int kv_heads, int head_dim, int window,
                               float scale, cudaStream_t stream);
 
+// ── Dense MLP + MoE ─────────────────────────────────────────────────────────
+// out = down @ (gelu_tanh(gate @ x) * (up @ x)); weights [rows, hidden]
+// row-major; x [seq, hidden]; out [seq, hidden].
+cudaError_t RunGemmaDenseMLP(const __half *d_gate, const __half *d_up,
+                             const __half *d_down, int64_t I, int64_t H,
+                             const __half *d_x, __half *d_out, int seq,
+                             cudaStream_t stream);
+
+// Router: logits[e] = router_proj[e] . x; top-k selection with deterministic
+// lower-index tie-break; weights = softmax(selected logits). When
+// d_per_expert_scale is non-null each selected weight is additionally
+// multiplied by per_expert_scale[e]. Outputs d_sel_experts [seq, top_k] and
+// d_sel_weights [seq, top_k].
+cudaError_t RunGemmaRouterTopK(const __half *d_router_proj,
+                               const float *d_per_expert_scale,
+                               const __half *d_x, int num_experts,
+                               int hidden, int top_k, int32_t *d_sel_experts,
+                               float *d_sel_weights, int seq,
+                               cudaStream_t stream);
+
+// Weighted expert-output combine: out[h] = router_scale[h] *
+// sum_k w_k * expert_out_k[h]. Null d_router_scale skips the channel scale.
+cudaError_t RunGemmaMoECombine(const __half *const *d_expert_outs,
+                               const float *d_weights, const float *d_router_scale,
+                               __half *d_out, int hidden, int k, cudaStream_t stream);
+
 } // namespace gemma
 } // namespace lsxcommon

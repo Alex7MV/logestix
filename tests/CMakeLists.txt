@@ -661,7 +661,7 @@ endif()
 add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
 
 # ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
-foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn)
+foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn test_gemma4_moe)
     add_executable(${qt} ${qt}.cpp)
     target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
     if(WIN32)
