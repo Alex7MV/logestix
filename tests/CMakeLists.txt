@@ -1161,6 +1161,53 @@ endif()
 
 add_test(NAME test_glm_load_fast COMMAND test_glm_load_fast)
 
+# ── Тест жизненного цикла GLM-5.2 (ResourceGovernor load-once + leases) ────
+add_library(test_glm_model_lifecycle_cu OBJECT test_glm_model_lifecycle.cu)
+set_target_properties(test_glm_model_lifecycle_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_glm_model_lifecycle_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_glm_model_lifecycle_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+)
+target_compile_definitions(test_glm_model_lifecycle_cu PRIVATE
+    LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_model_lifecycle_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_glm_model_lifecycle)
+set_target_properties(test_glm_model_lifecycle PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_glm_model_lifecycle PRIVATE
+    test_glm_model_lifecycle_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_model_lifecycle POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_model_lifecycle>"
+    )
+    add_custom_command(TARGET test_glm_model_lifecycle POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_model_lifecycle>"
+    )
+endif()
+
+add_test(NAME test_glm_model_lifecycle COMMAND test_glm_model_lifecycle)
+
 # �� ���� model-metadata vault path registry �����������������������������
 add_executable(test_path_registry test_path_registry.cpp)
 target_link_libraries(test_path_registry PRIVATE lsxcommon Catch2::Catch2WithMain)
