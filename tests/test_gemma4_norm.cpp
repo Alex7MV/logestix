@@ -1,12 +1,21 @@
 // Тест Gemma-4 RMSNorm (offset-weight форма) против CPU FP64-референса.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cmath>
 #include <random>
 #include <vector>
 
 #include "lsxcommon/gemma4_inference.h"
+
+namespace {
+inline bool BfTol(float got, double want)
+{
+    // BF16 storage: 8-bit mantissa => relative ulp ~2^-8.
+    return std::abs(got - want) <=
+           std::max(0.03, 0.01 * std::abs(want));
+}
+} // namespace
 
 TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
     constexpr int rows = 3, hidden = 64;
@@ -26,11 +35,11 @@ TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
         inv[r] = 1.0 / std::sqrt(ss / hidden + eps);
     }
 
-    std::vector<__half> hx(rows * hidden), hw(hidden);
-    for (int i = 0; i < rows * hidden; ++i) hx[i] = __float2half(x[i]);
-    for (int i = 0; i < hidden; ++i) hw[i] = __float2half(w[i]);
+    std::vector<__nv_bfloat16> hx(rows * hidden), hw(hidden);
+    for (int i = 0; i < rows * hidden; ++i) hx[i] = __float2bfloat16(x[i]);
+    for (int i = 0; i < hidden; ++i) hw[i] = __float2bfloat16(w[i]);
 
-    __half *dx, *dw, *dout;
+    __nv_bfloat16 *dx, *dw, *dout;
     REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dw, hw.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dout, hx.size() * 2) == cudaSuccess);
@@ -42,7 +51,7 @@ TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
     REQUIRE(lsxcommon::gemma::RunGemmaRMSNorm(dx, dw, dout, rows, hidden, eps,
                                               nullptr) == cudaSuccess);
 
-    std::vector<__half> hout(rows * hidden);
+    std::vector<__nv_bfloat16> hout(rows * hidden);
     REQUIRE(cudaMemcpy(hout.data(), dout, hout.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
@@ -50,9 +59,9 @@ TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
         for (int c = 0; c < hidden; ++c) {
             double want = double(x[r * hidden + c]) * inv[r] *
                           (1.0 + double(w[c]));
-            double got = double(__half2float(hout[r * hidden + c]));
+            double got = double(__bfloat162float(hout[r * hidden + c]));
             INFO("r=" << r << " c=" << c << " got=" << got << " want=" << want);
-            CHECK(std::abs(got - want) < 4e-3);
+            CHECK(BfTol(got, want));
         }
 
     cudaFree(dx);
@@ -62,13 +71,13 @@ TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
 
 TEST_CASE("RunGemmaRMSNorm handles multi-block-hidden rows", "[gemma][kernels]") {
     constexpr int rows = 2, hidden = 1024; // > blockDim (256): grid-stride path
-    std::vector<__half> hx(rows * hidden), hw(hidden), hout(rows * hidden);
+    std::vector<__nv_bfloat16> hx(rows * hidden), hw(hidden), hout(rows * hidden);
     for (int i = 0; i < rows * hidden; ++i)
-        hx[i] = __float2half(((i % 17) - 8) * 0.25f);
+        hx[i] = __float2bfloat16(((i % 17) - 8) * 0.25f);
     for (int i = 0; i < hidden; ++i)
-        hw[i] = __float2half(0.01f * (i % 7));
+        hw[i] = __float2bfloat16(0.01f * (i % 7));
 
-    __half *dx, *dw, *dout;
+    __nv_bfloat16 *dx, *dw, *dout;
     REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dw, hw.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dout, hx.size() * 2) == cudaSuccess);
@@ -85,14 +94,13 @@ TEST_CASE("RunGemmaRMSNorm handles multi-block-hidden rows", "[gemma][kernels]")
     for (int r = 0; r < rows; ++r) {
         double ss = 0;
         for (int c = 0; c < hidden; ++c)
-            ss += double(__half2float(hx[r * hidden + c])) *
-                  double(__half2float(hx[r * hidden + c]));
+            ss += double(__bfloat162float(hx[r * hidden + c])) *
+                  double(__bfloat162float(hx[r * hidden + c]));
         double inv = 1.0 / std::sqrt(ss / hidden + 1e-6);
         for (int c = 0; c < hidden; ++c) {
-            double want = double(__half2float(hx[r * hidden + c])) * inv *
-                          (1.0 + double(__half2float(hw[c])));
-            CHECK(std::abs(double(__half2float(hout[r * hidden + c])) - want) <
-                  1e-3);
+            double want = double(__bfloat162float(hx[r * hidden + c])) * inv *
+                          (1.0 + double(__bfloat162float(hw[c])));
+            CHECK(BfTol(__bfloat162float(hout[r * hidden + c]), want));
         }
     }
 
@@ -100,3 +108,6 @@ TEST_CASE("RunGemmaRMSNorm handles multi-block-hidden rows", "[gemma][kernels]")
     cudaFree(dw);
     cudaFree(dout);
 }
+
+
+

@@ -1,67 +1,83 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <cublas_v2.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 #include "lsxcommon/gemma4_inference.h"
 #include "lsxcommon/gemma4_inference_load.h"
-#include "lsxcommon/shared_experts.h"
+
+#include "nvfp4_codec.h"
 
 namespace lsxcommon {
 namespace gemma {
 
-namespace {
-
-__device__ __forceinline__ unsigned int bf16_bits_wide(unsigned short bits)
+__device__ __forceinline__ float gelu_tanh_dev(float v)
 {
-    return static_cast<unsigned int>(bits) << 16;
+    const float k0 = 0.7978845608028654f; // sqrt(2/pi)
+    return 0.5f * v * (1.0f + tanhf(k0 * (v + 0.044715f * v * v * v)));
 }
 
-__global__ void gemma_bf16_to_half_inplace_kernel(unsigned short *buf,
-                                                  long long n)
+// ── NVFP4 dequant to BF16 ───────────────────────────────────────────────────
+// value = E2M1(nibble) * E4M3(block_scale) * global_scale; lo nibble first.
+__global__ void gemma_dequant_nvfp4_kernel(const uint8_t *__restrict__ packed,
+                                           const uint8_t *__restrict__ scales,
+                                           float global_scale,
+                                           __nv_bfloat16 *__restrict__ out,
+                                           int64_t num_elements)
 {
-    long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    unsigned int wide = bf16_bits_wide(buf[i]);
-    float f = __uint_as_float(wide);
-    __half h = __float2half(f);
-    buf[i] = __half_as_ushort(h);
+    constexpr int kBlk = 16;
+    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    int64_t total = num_elements / 2; // 2 elems per byte
+    for (; i < total;
+         i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        uint8_t byte = packed[i];
+        int64_t elem = i * 2;
+        float s = gpu::nvfp4::E4M3ScaleToFloat(scales[elem / kBlk]) *
+                  global_scale;
+        out[elem] = __float2bfloat16(gpu::nvfp4::kE2M1Table[byte & 0xF] * s);
+        out[elem + 1] =
+            __float2bfloat16(gpu::nvfp4::kE2M1Table[byte >> 4] * s);
+    }
 }
 
-} // namespace
-
-cudaError_t GemmaBf16ToHalfInPlace(uint16_t *d_buf, int64_t numel,
-                                   cudaStream_t stream)
+static cudaError_t DequantNvfp4(cudaStream_t stream, const uint8_t *d_packed,
+                                int64_t packed_bytes, const uint8_t *d_scales,
+                                int64_t scales_bytes, float global_scale,
+                                __nv_bfloat16 *d_out, int64_t num_elements)
 {
-    if (!d_buf || numel <= 0) return cudaErrorInvalidValue;
-    if (reinterpret_cast<uintptr_t>(d_buf) % 16 != 0)
+    if (!d_packed || !d_scales || !d_out || packed_bytes <= 0 ||
+        scales_bytes <= 0 || num_elements <= 0)
         return cudaErrorInvalidValue;
+    if (packed_bytes * 2 != num_elements) return cudaErrorInvalidValue;
+    if (num_elements / 2 < scales_bytes) return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    long long grid = (numel + kBlock - 1) / kBlock;
-    if (grid > 2147483647LL) grid = 2147483647LL;
-    gemma_bf16_to_half_inplace_kernel<<<static_cast<int>(grid), kBlock, 0,
-                                        stream>>>(reinterpret_cast<unsigned short *>(d_buf),
-                                                  numel);
+    int64_t total = num_elements / 2;
+    int grid = static_cast<int>((total + kBlock - 1) / kBlock);
+    gemma_dequant_nvfp4_kernel<<<grid, kBlock, 0, stream>>>(
+        d_packed, d_scales, global_scale, d_out, num_elements);
     return cudaGetLastError();
 }
 
 // ── RMSNorm (offset-weight form) ────────────────────────────────────────────
 
-__global__ void gemma_rmsnorm_kernel(const __half *__restrict__ x,
-                                     const __half *__restrict__ w,
-                                     __half *out, int rows, int hidden,
+__global__ void gemma_rmsnorm_kernel(const __nv_bfloat16 *__restrict__ x,
+                                     const __nv_bfloat16 *__restrict__ w,
+                                     __nv_bfloat16 *out, int rows, int hidden,
                                      float eps)
 {
     const int row = blockIdx.x;
     if (row >= rows) return;
-    const __half *xr = x + static_cast<int64_t>(row) * hidden;
-    __half *orow = out + static_cast<int64_t>(row) * hidden;
+    const __nv_bfloat16 *xr = x + static_cast<int64_t>(row) * hidden;
+    __nv_bfloat16 *orow = out + static_cast<int64_t>(row) * hidden;
     extern __shared__ float squares[];
     float sum = 0.0f;
     for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float v = __half2float(xr[j]);
+        float v = __bfloat162float(xr[j]);
         sum += v * v;
     }
     squares[threadIdx.x] = sum;
@@ -72,12 +88,12 @@ __global__ void gemma_rmsnorm_kernel(const __half *__restrict__ x,
     }
     const float inv = rsqrtf(squares[0] / static_cast<float>(hidden) + eps);
     for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float wf = __half2float(w[j]);
-        orow[j] = __float2half(__half2float(xr[j]) * inv * (1.0f + wf));
+        float wf = __bfloat162float(w[j]);
+        orow[j] = __float2bfloat16(__bfloat162float(xr[j]) * inv * (1.0f + wf));
     }
 }
 
-cudaError_t RunGemmaRMSNorm(const __half *d_x, const __half *d_w, __half *d_out,
+cudaError_t RunGemmaRMSNorm(const __nv_bfloat16 *d_x, const __nv_bfloat16 *d_w, __nv_bfloat16 *d_out,
                             int rows, int hidden, float eps,
                             cudaStream_t stream)
 {
@@ -92,8 +108,8 @@ cudaError_t RunGemmaRMSNorm(const __half *d_x, const __half *d_w, __half *d_out,
 // ── RoPE ────────────────────────────────────────────────────────────────────
 
 __global__ void gemma_rope_cos_sin_kernel(const int32_t *__restrict__ pos,
-                                          __half *__restrict__ cos_buf,
-                                          __half *__restrict__ sin_buf,
+                                          __nv_bfloat16 *__restrict__ cos_buf,
+                                          __nv_bfloat16 *__restrict__ sin_buf,
                                           int seq, int rotary_dim, double theta)
 {
     const int64_t total = static_cast<int64_t>(seq) * (rotary_dim / 2);
@@ -105,16 +121,16 @@ __global__ void gemma_rope_cos_sin_kernel(const int32_t *__restrict__ pos,
         double inv =
             1.0 / pow(theta, static_cast<double>(2 * d) / rotary_dim);
         double ang = static_cast<double>(pos[t]) * inv;
-        cos_buf[idx] = __float2half(static_cast<float>(cos(ang)));
-        sin_buf[idx] = __float2half(static_cast<float>(sin(ang)));
+        cos_buf[idx] = __float2bfloat16(static_cast<float>(cos(ang)));
+        sin_buf[idx] = __float2bfloat16(static_cast<float>(sin(ang)));
     }
 }
 
 // HF rotate_half pairing: pair (j, j+rot/2); cos/sin layout [seq, rot/2].
-__global__ void gemma_partial_rope_kernel(const __half *__restrict__ x,
-                                          const __half *__restrict__ cos_buf,
-                                          const __half *__restrict__ sin_buf,
-                                          __half *__restrict__ out, int seq,
+__global__ void gemma_partial_rope_kernel(const __nv_bfloat16 *__restrict__ x,
+                                          const __nv_bfloat16 *__restrict__ cos_buf,
+                                          const __nv_bfloat16 *__restrict__ sin_buf,
+                                          __nv_bfloat16 *__restrict__ out, int seq,
                                           int heads, int head_dim,
                                           int rotary_dim)
 {
@@ -129,13 +145,13 @@ __global__ void gemma_partial_rope_kernel(const __half *__restrict__ x,
         const int j = static_cast<int>(idx % half);
         const int h = static_cast<int>((idx / half) % heads);
         const int t = static_cast<int>(idx / (static_cast<int64_t>(half) * heads));
-        const float c = __half2float(cos_buf[t * half + j]);
-        const float s = __half2float(sin_buf[t * half + j]);
+        const float c = __bfloat162float(cos_buf[t * half + j]);
+        const float s = __bfloat162float(sin_buf[t * half + j]);
         const int64_t row = (static_cast<int64_t>(t) * heads + h) * head_dim;
-        const float x1 = __half2float(x[row + j]);
-        const float x2 = __half2float(x[row + j + half]);
-        out[row + j] = __float2half(x1 * c - x2 * s);
-        out[row + j + half] = __float2half(x2 * c + x1 * s);
+        const float x1 = __bfloat162float(x[row + j]);
+        const float x2 = __bfloat162float(x[row + j + half]);
+        out[row + j] = __float2bfloat16(x1 * c - x2 * s);
+        out[row + j + half] = __float2bfloat16(x2 * c + x1 * s);
     }
 
     // Pass-through tail.
@@ -153,8 +169,8 @@ __global__ void gemma_partial_rope_kernel(const __half *__restrict__ x,
     }
 }
 
-cudaError_t RunGemmaRopeCosSin(const int32_t *d_pos, __half *d_cos,
-                               __half *d_sin, int seq, int rotary_dim,
+cudaError_t RunGemmaRopeCosSin(const int32_t *d_pos, __nv_bfloat16 *d_cos,
+                               __nv_bfloat16 *d_sin, int seq, int rotary_dim,
                                double theta, cudaStream_t stream)
 {
     if (!d_pos || !d_cos || !d_sin || seq <= 0 || rotary_dim <= 0 ||
@@ -170,8 +186,8 @@ cudaError_t RunGemmaRopeCosSin(const int32_t *d_pos, __half *d_cos,
     return cudaGetLastError();
 }
 
-cudaError_t RunGemmaPartialRope(const __half *d_x, const __half *d_cos,
-                                const __half *d_sin, __half *d_out, int seq,
+cudaError_t RunGemmaPartialRope(const __nv_bfloat16 *d_x, const __nv_bfloat16 *d_cos,
+                                const __nv_bfloat16 *d_sin, __nv_bfloat16 *d_out, int seq,
                                 int heads, int head_dim, int rotary_dim,
                                 cudaStream_t stream)
 {
@@ -191,8 +207,8 @@ cudaError_t RunGemmaPartialRope(const __half *d_x, const __half *d_cos,
 // iterates slots sequentially per (d). Out-of-band slots never enter any
 // reduction (band predicate checked before scoring).
 __global__ void gemma_attention_kernel(
-    const __half *__restrict__ q, const __half *__restrict__ k,
-    const __half *__restrict__ v, __half *__restrict__ out, int seq,
+    const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
+    const __nv_bfloat16 *__restrict__ v, __nv_bfloat16 *__restrict__ out, int seq,
     int total_slots, int pos_base, int q_heads, int kv_heads, int head_dim,
     int window, float scale)
 {
@@ -201,14 +217,14 @@ __global__ void gemma_attention_kernel(
     if (t >= seq || h >= q_heads) return;
 
     const int kvh = h / (q_heads / kv_heads);
-    const __half *qr = q + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
-    __half *orr = out + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
+    const __nv_bfloat16 *qr = q + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
+    __nv_bfloat16 *orr = out + (static_cast<int64_t>(t) * q_heads + h) * head_dim;
     const int last = pos_base + t;
     const int first =
         (window > 0) ? (last - window + 1 > 0 ? last - window + 1 : 0) : 0;
     const int n_valid = last - first + 1;
     if (n_valid <= 0) {
-        for (int d = threadIdx.x; d < head_dim; d += blockDim.x) orr[d] = __float2half(0.f);
+        for (int d = threadIdx.x; d < head_dim; d += blockDim.x) orr[d] = __float2bfloat16(0.f);
         return;
     }
 
@@ -218,10 +234,10 @@ __global__ void gemma_attention_kernel(
     // Pass A: global max score.
     float local_max = -1e30f;
     for (int s = first + threadIdx.x; s <= last; s += blockDim.x) {
-        const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+        const __nv_bfloat16 *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
         float dot = 0.f;
         for (int d = 0; d < head_dim; ++d)
-            dot += __half2float(qr[d]) * __half2float(kr[d]);
+            dot += __bfloat162float(qr[d]) * __bfloat162float(kr[d]);
         dot *= scale;
         local_max = fmaxf(local_max, dot);
     }
@@ -237,10 +253,10 @@ __global__ void gemma_attention_kernel(
     // Pass B: normalizer.
     float local_sum = 0.f;
     for (int s = first + threadIdx.x; s <= last; s += blockDim.x) {
-        const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+        const __nv_bfloat16 *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
         float dot = 0.f;
         for (int d = 0; d < head_dim; ++d)
-            dot += __half2float(qr[d]) * __half2float(kr[d]);
+            dot += __bfloat162float(qr[d]) * __bfloat162float(kr[d]);
         local_sum += expf(dot * scale - s_max);
     }
     red[threadIdx.x] = local_sum;
@@ -256,21 +272,21 @@ __global__ void gemma_attention_kernel(
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
         float acc = 0.f;
         for (int s = first; s <= last; ++s) {
-            const __half *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
+            const __nv_bfloat16 *kr = k + (static_cast<int64_t>(s) * kv_heads + kvh) * head_dim;
             float dot = 0.f;
             for (int dd = 0; dd < head_dim; ++dd)
-                dot += __half2float(qr[dd]) * __half2float(kr[dd]);
+                dot += __bfloat162float(qr[dd]) * __bfloat162float(kr[dd]);
             const float p = expf(dot * scale - s_max) / s_sum;
-            acc += p * __half2float(v[(static_cast<int64_t>(s) * kv_heads + kvh) *
+            acc += p * __bfloat162float(v[(static_cast<int64_t>(s) * kv_heads + kvh) *
                                        head_dim +
                                        d]);
         }
-        orr[d] = __float2half(acc);
+        orr[d] = __float2bfloat16(acc);
     }
 }
 
-cudaError_t RunGemmaAttention(const __half *d_q, const __half *d_k,
-                              const __half *d_v, __half *d_out, int seq,
+cudaError_t RunGemmaAttention(const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k,
+                              const __nv_bfloat16 *d_v, __nv_bfloat16 *d_out, int seq,
                               int total_slots, int pos_base, int q_heads,
                               int kv_heads, int head_dim, int window,
                               float scale, cudaStream_t stream)
@@ -290,42 +306,36 @@ cudaError_t RunGemmaAttention(const __half *d_q, const __half *d_k,
 
 // ── Dense MLP + MoE ─────────────────────────────────────────────────────────
 
-__device__ __forceinline__ float gelu_tanh_dev(float v)
-{
-    const float k0 = 0.7978845608028654f; // sqrt(2/pi)
-    return 0.5f * v * (1.0f + tanhf(k0 * (v + 0.044715f * v * v * v)));
-}
-
 // out[t,c] = sum_i down[c,i] * gelu(gate[i]@x_t) * (up[i]@x_t)
-__global__ void gemma_dense_mlp_kernel(const __half *__restrict__ gate,
-                                       const __half *__restrict__ up,
-                                       const __half *__restrict__ down,
+__global__ void gemma_dense_mlp_kernel(const __nv_bfloat16 *__restrict__ gate,
+                                       const __nv_bfloat16 *__restrict__ up,
+                                       const __nv_bfloat16 *__restrict__ down,
                                        int64_t I, int64_t H,
-                                       const __half *__restrict__ x,
-                                       __half *__restrict__ out, int seq)
+                                       const __nv_bfloat16 *__restrict__ x,
+                                       __nv_bfloat16 *__restrict__ out, int seq)
 {
     // grid: (seq, H); one thread per output element.
     const int t = blockIdx.x;
     const int c = blockIdx.y;
     if (t >= seq || c >= H) return;
-    const __half *xr = x + static_cast<int64_t>(t) * H;
+    const __nv_bfloat16 *xr = x + static_cast<int64_t>(t) * H;
     float acc = 0.f;
     for (int64_t i = 0; i < I; ++i) {
         float g = 0.f, u = 0.f;
         for (int64_t d = 0; d < H; ++d) {
-            float xv = __half2float(xr[d]);
-            g += xv * __half2float(gate[i * H + d]);
-            u += xv * __half2float(up[i * H + d]);
+            float xv = __bfloat162float(xr[d]);
+            g += xv * __bfloat162float(gate[i * H + d]);
+            u += xv * __bfloat162float(up[i * H + d]);
         }
         acc += gelu_tanh_dev(g) * u *
-               __half2float(down[c * I + i]);
+               __bfloat162float(down[c * I + i]);
     }
-    out[static_cast<int64_t>(t) * H + c] = __float2half(acc);
+    out[static_cast<int64_t>(t) * H + c] = __float2bfloat16(acc);
 }
 
-cudaError_t RunGemmaDenseMLP(const __half *d_gate, const __half *d_up,
-                             const __half *d_down, int64_t I, int64_t H,
-                             const __half *d_x, __half *d_out, int seq,
+cudaError_t RunGemmaDenseMLP(const __nv_bfloat16 *d_gate, const __nv_bfloat16 *d_up,
+                             const __nv_bfloat16 *d_down, int64_t I, int64_t H,
+                             const __nv_bfloat16 *d_x, __nv_bfloat16 *d_out, int seq,
                              cudaStream_t stream)
 {
     if (!d_gate || !d_up || !d_down || !d_x || !d_out || I <= 0 || H <= 0 ||
@@ -340,13 +350,13 @@ cudaError_t RunGemmaDenseMLP(const __half *d_gate, const __half *d_up,
 // One block per token: computes logits, deterministic insertion top-k with
 // lower-index tie-break, softmax over the selected logits.
 __global__ void gemma_router_topk_kernel(
-    const __half *__restrict__ proj, const float *__restrict__ per_expert_scale,
-    const __half *__restrict__ x, int E, int H, int K,
+    const __nv_bfloat16 *__restrict__ proj, const float *__restrict__ per_expert_scale,
+    const __nv_bfloat16 *__restrict__ x, int E, int H, int K,
     int32_t *__restrict__ sel, float *__restrict__ weights)
 {
     const int t = blockIdx.x;
     if (t >= gridDim.x) return;
-    const __half *xr = x + static_cast<int64_t>(t) * H;
+    const __nv_bfloat16 *xr = x + static_cast<int64_t>(t) * H;
 
     extern __shared__ float sh[];
     float *logits = sh;             // [E]
@@ -354,8 +364,8 @@ __global__ void gemma_router_topk_kernel(
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
         float dot = 0.f;
         for (int d = 0; d < H; ++d)
-            dot += __half2float(proj[static_cast<int64_t>(e) * H + d]) *
-                   __half2float(xr[d]);
+            dot += __bfloat162float(proj[static_cast<int64_t>(e) * H + d]) *
+                   __bfloat162float(xr[d]);
         logits[e] = dot;
     }
     __syncthreads();
@@ -395,9 +405,9 @@ __global__ void gemma_router_topk_kernel(
     }
 }
 
-cudaError_t RunGemmaRouterTopK(const __half *d_router_proj,
+cudaError_t RunGemmaRouterTopK(const __nv_bfloat16 *d_router_proj,
                                const float *d_per_expert_scale,
-                               const __half *d_x, int num_experts,
+                               const __nv_bfloat16 *d_x, int num_experts,
                                int hidden, int top_k, int32_t *d_sel_experts,
                                float *d_sel_weights, int seq,
                                cudaStream_t stream)
@@ -416,8 +426,8 @@ cudaError_t RunGemmaRouterTopK(const __half *d_router_proj,
 }
 
 // out[t,h] = router_scale[h] * sum_k w_tk * expert_outs[k][t,h]
-__global__ void gemma_moe_combine_kernel(__half *__restrict__ out,
-                                         const __half *const *__restrict__ eos,
+__global__ void gemma_moe_combine_kernel(__nv_bfloat16 *__restrict__ out,
+                                         const __nv_bfloat16 *const *__restrict__ eos,
                                          const float *__restrict__ w,
                                          const float *__restrict__ rscale,
                                          int H, int K)
@@ -427,15 +437,15 @@ __global__ void gemma_moe_combine_kernel(__half *__restrict__ out,
         float acc = 0.f;
         for (int k = 0; k < K; ++k)
             acc += w[static_cast<int64_t>(t) * K + k] *
-                   __half2float(eos[k][static_cast<int64_t>(t) * H + h]);
+                   __bfloat162float(eos[k][static_cast<int64_t>(t) * H + h]);
         if (rscale) acc *= rscale[h];
-        out[static_cast<int64_t>(t) * H + h] = __float2half(acc);
+        out[static_cast<int64_t>(t) * H + h] = __float2bfloat16(acc);
     }
 }
 
-cudaError_t RunGemmaMoECombine(const __half *const *d_expert_outs,
+cudaError_t RunGemmaMoECombine(const __nv_bfloat16 *const *d_expert_outs,
                                const float *d_weights,
-                               const float *d_router_scale, __half *d_out,
+                               const float *d_router_scale, __nv_bfloat16 *d_out,
                                int hidden, int k, cudaStream_t stream)
 {
     if (!d_expert_outs || !d_weights || !d_out || hidden <= 0 || k <= 0)
@@ -448,9 +458,9 @@ cudaError_t RunGemmaMoECombine(const __half *const *d_expert_outs,
 
 // ── Generation building blocks ──────────────────────────────────────────────
 
-__global__ void gemma_embed_kernel(const __half *__restrict__ embed,
+__global__ void gemma_embed_kernel(const __nv_bfloat16 *__restrict__ embed,
                                    const int32_t *__restrict__ ids,
-                                   __half *__restrict__ out, int hidden)
+                                   __nv_bfloat16 *__restrict__ out, int hidden)
 {
     const int t = blockIdx.x;
     for (int d = threadIdx.x; d < hidden; d += blockDim.x)
@@ -459,48 +469,54 @@ __global__ void gemma_embed_kernel(const __half *__restrict__ embed,
 }
 
 // out[t,r] = sum_d W[r,d] * x[t,d]   (W [rows, cols] row-major)
-__global__ void gemma_matmul_kernel(const __half *__restrict__ w,
-                                    const __half *__restrict__ x,
-                                    __half *__restrict__ out, int rows,
-                                    int cols, int seq)
+// cuBLAS FP16 GEMM (FP32 compute): row-major trick via column-major views —
+//   C_cm[rows x seq] = W_cmᵀ[rows x cols] · X_cm[cols x seq]
+__global__ void gemma_matmul_kernel_unused_guard() {}
+
+static cudaError_t Matmul(cublasHandle_t cublas, const __nv_bfloat16 *w,
+                          const __nv_bfloat16 *x, __nv_bfloat16 *out, int rows, int cols,
+                          int seq, cudaStream_t stream)
 {
-    const int r = blockIdx.y;
-    if (r >= rows) return;
-    for (int t = blockIdx.x; t < seq; t += gridDim.x) {
-        const __half *xr = x + static_cast<int64_t>(t) * cols;
-        float acc = 0.f;
-        for (int d = 0; d < cols; ++d)
-            acc += __half2float(w[static_cast<int64_t>(r) * cols + d]) *
-                   __half2float(xr[d]);
-        out[static_cast<int64_t>(t) * rows + r] = __float2half(acc);
-    }
+    // Compute type FP32 => alpha/beta must be host floats.
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasSetStream(cublas, stream);
+    cublasStatus_t st = cublasGemmEx(
+        cublas, CUBLAS_OP_T, CUBLAS_OP_N, rows, seq, cols, &alpha, w,
+        CUDA_R_16BF, cols, x, CUDA_R_16BF, cols, &beta, out, CUDA_R_16BF,
+        rows, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
 }
 
-static cudaError_t Matmul(const __half *w, const __half *x, __half *out,
-                          int rows, int cols, int seq, cudaStream_t stream)
+// h[t,i] = gelu_tanh(g[t,i]) * u[t,i]
+__global__ void gemma_geglu_kernel(const __nv_bfloat16 *__restrict__ g,
+                                   const __nv_bfloat16 *__restrict__ u,
+                                   __nv_bfloat16 *__restrict__ h, int64_t numel)
 {
-    dim3 grid(static_cast<unsigned>(std::min(seq, 1024)),
-              static_cast<unsigned>(rows));
-    gemma_matmul_kernel<<<grid, 1, 0, stream>>>(w, x, out, rows, cols, seq);
-    return cudaGetLastError();
+    const int64_t i =
+        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < numel)
+        h[i] = __float2bfloat16(gelu_tanh_dev(__bfloat162float(g[i])) *
+                            __bfloat162float(u[i]));
 }
 
 // Per-head RMSNorm with (1+w) offset over packed [seq, heads*dim].
-__global__ void gemma_head_norm_kernel(const __half *__restrict__ x,
-                                       const __half *__restrict__ w,
-                                       __half *__restrict__ out, int seq,
-                                       int heads, int dim, float eps)
+__global__ void gemma_head_norm_kernel(const __nv_bfloat16 *__restrict__ x,
+                                       const __nv_bfloat16 *__restrict__ w,
+                                       __nv_bfloat16 *__restrict__ out, int seq,
+                                       int heads, int dim, float eps,
+                                       bool plain)
 {
     extern __shared__ float squares[];
     const int t = blockIdx.x;
     const int h = blockIdx.y;
     const int base = h * dim;
-    const __half *xr = x + static_cast<int64_t>(t) * heads * dim + base;
-    __half *orr = out + static_cast<int64_t>(t) * heads * dim + base;
+    const __nv_bfloat16 *xr = x + static_cast<int64_t>(t) * heads * dim + base;
+    __nv_bfloat16 *orr = out + static_cast<int64_t>(t) * heads * dim + base;
 
     float sum = 0.f;
     for (int j = threadIdx.x; j < dim; j += blockDim.x) {
-        float v = __half2float(xr[j]);
+        float v = __bfloat162float(xr[j]);
         sum += v * v;
     }
     squares[threadIdx.x] = sum;
@@ -510,38 +526,51 @@ __global__ void gemma_head_norm_kernel(const __half *__restrict__ x,
         __syncthreads();
     }
     const float inv = rsqrtf(squares[0] / static_cast<float>(dim) + eps);
-    for (int j = threadIdx.x; j < dim; j += blockDim.x)
-        orr[j] = __float2half(__half2float(xr[j]) * inv *
-                              (1.0f + __half2float(w[j])));
+    // plain=true: LSX_GEMMA_QKNORM_MODE=plain (w without the Gemma (1+w) offset).
+    for (int j = threadIdx.x; j < dim; j += blockDim.x) {
+        float wv = __bfloat162float(w[j]);
+        if (!plain) wv = 1.0f + wv;
+        orr[j] = __float2bfloat16(__bfloat162float(xr[j]) * inv * wv);
+    }
+}
+
+// dst *= scalar (elementwise)
+__global__ void gemma_scale_kernel(__nv_bfloat16 *__restrict__ dst, float scalar,
+                                   int64_t numel)
+{
+    const int64_t i =
+        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < numel)
+        dst[i] = __float2bfloat16(__bfloat162float(dst[i]) * scalar);
 }
 
 // dst[t,d] += scalar * src[t,d]
-__global__ void gemma_axpy_kernel(__half *__restrict__ dst,
-                                  const __half *__restrict__ src,
+__global__ void gemma_axpy_kernel(__nv_bfloat16 *__restrict__ dst,
+                                  const __nv_bfloat16 *__restrict__ src,
                                   float scalar, int64_t numel)
 {
     const int64_t i =
         static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < numel)
-        dst[i] = __float2half(__half2float(dst[i]) +
-                              scalar * __half2float(src[i]));
+        dst[i] = __float2bfloat16(__bfloat162float(dst[i]) +
+                              scalar * __bfloat162float(src[i]));
 }
 
 // dst[t,d] *= scale[d]
-__global__ void gemma_hadamard_kernel(__half *__restrict__ dst,
+__global__ void gemma_hadamard_kernel(__nv_bfloat16 *__restrict__ dst,
                                       const float *__restrict__ scale,
                                       int hidden, int seq)
 {
     const int t = blockIdx.x;
     for (int d = threadIdx.x; d < hidden; d += blockDim.x)
-        dst[static_cast<int64_t>(t) * hidden + d] = __float2half(
-            __half2float(dst[static_cast<int64_t>(t) * hidden + d]) *
+        dst[static_cast<int64_t>(t) * hidden + d] = __float2bfloat16(
+            __bfloat162float(dst[static_cast<int64_t>(t) * hidden + d]) *
             scale[d]);
 }
 
 // logits[v] = dot(embed[v], x); then softcap tanh(l/cap)*cap; block-0 argmax.
-__global__ void gemma_logits_argmax_kernel(const __half *__restrict__ embed,
-                                           const __half *__restrict__ x,
+__global__ void gemma_logits_argmax_kernel(const __nv_bfloat16 *__restrict__ embed,
+                                           const __nv_bfloat16 *__restrict__ x,
                                            int vocab, int hidden, float cap,
                                            int32_t *__restrict__ d_argmax,
                                            float *__restrict__ d_maxlogit,
@@ -551,10 +580,10 @@ __global__ void gemma_logits_argmax_kernel(const __half *__restrict__ embed,
     float local_best = -1e30f;
     int local_arg = 0;
     for (int v = threadIdx.x; v < vocab; v += blockDim.x) {
-        const __half *row = embed + static_cast<int64_t>(v) * hidden;
+        const __nv_bfloat16 *row = embed + static_cast<int64_t>(v) * hidden;
         float acc = 0.f;
         for (int d = 0; d < hidden; ++d)
-            acc += __half2float(row[d]) * __half2float(x[d]);
+            acc += __bfloat162float(row[d]) * __bfloat162float(x[d]);
         if (cap > 0.f) acc = tanhf(acc / cap) * cap;
         d_logits[v] = acc;
         if (acc > local_best) { local_best = acc; local_arg = v; }
@@ -578,19 +607,68 @@ __global__ void gemma_logits_argmax_kernel(const __half *__restrict__ embed,
 
 namespace {
 
+// Debug aid (LSX_TEST_GEMMA_DEBUG_SYNC=1): sync+check after every stage of
+// ForwardLayer to pinpoint asynchronous faults on real checkpoints.
+bool GemmaDebugSync(cudaStream_t stream, const char *stage, int layer,
+                    cudaError_t &e)
+{
+    static const bool on =
+        std::getenv("LSX_TEST_GEMMA_DEBUG_SYNC") != nullptr;
+    if (!on) return false;
+    e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess) {
+        printf("[gemma-dbg] fault after stage='%s' layer=%d: %s\n", stage,
+               layer, cudaGetErrorString(e));
+        fflush(stdout);
+        return true;
+    }
+    return false;
+}
+
+// Debug switches (NaN bisection on real checkpoints).
+bool GemmaSkipBranch(const char *name){
+    static const bool no_attn =
+        std::getenv("LSX_TEST_GEMMA_NO_ATTN") != nullptr;
+    static const bool no_dense =
+        std::getenv("LSX_TEST_GEMMA_NO_DENSE") != nullptr;
+    static const bool no_moe =
+        std::getenv("LSX_TEST_GEMMA_NO_MOE") != nullptr;
+    if (std::strcmp(name, "attn") == 0) return no_attn;
+    if (std::strcmp(name, "dense") == 0) return no_dense;
+    return no_moe; // "moe"
+}
+
+// layer_scalar application policy (LSX_GEMMA_SCALAR_MODE):
+//   all  (default) -> scale every branch residual
+//   attn           -> attention branch only
+//   moe            -> MoE branch only
+//   none           -> ignore layer_scalar entirely (scalar = 1)
+void GemmaScalarMode(float &s_attn, float &s_dense, float &s_moe)
+{
+    const char *m = std::getenv("LSX_GEMMA_SCALAR_MODE");
+    if (!m || std::strcmp(m, "all") == 0) {
+        // caller keeps raw layer_scalar everywhere
+        return;
+    }
+    if (std::strcmp(m, "attn") == 0) { s_dense = 1.f; s_moe = 1.f; }
+    else if (std::strcmp(m, "moe") == 0) { s_attn = 1.f; s_dense = 1.f; }
+    else if (std::strcmp(m, "none") == 0) { s_attn = s_dense = s_moe = 1.f; }
+}
+
 // File-scope expert db reference used inside ForwardLayer (set by
 // RunGemmaGeneration; single-threaded generation contract).
 GemmaExpertDb *g_expert_db = nullptr;
 
 struct GenWorkspace {
-    __half *d_x = nullptr;        // [seq0][H]
-    __half *d_normed = nullptr;   // [seq0][H]
-    __half *d_tmp = nullptr;      // [seq0][q_rows_max]
-    __half *d_qr = nullptr;       // [seq0][q_rows_max]
-    __half *d_kr = nullptr;       // [seq0][kv_rows_max]
-    __half *d_vr = nullptr;
-    __half *d_cos = nullptr;      // [seq0][rot_half]
-    __half *d_sin = nullptr;
+    __nv_bfloat16 *d_x = nullptr;        // [seq0][H]
+    __nv_bfloat16 *d_normed = nullptr;   // [seq0][H]
+    __nv_bfloat16 *d_tmp = nullptr;      // [seq0][q_rows_max]
+    __nv_bfloat16 *d_qr = nullptr;       // [seq0][q_rows_max]
+    __nv_bfloat16 *d_kr = nullptr;       // [seq0][kv_rows_max]
+    __nv_bfloat16 *d_tmp2 = nullptr;      // [seq0][kv_rows_max]
+    __nv_bfloat16 *d_vr = nullptr;
+    __nv_bfloat16 *d_cos = nullptr;      // [seq0][rot_half]
+    __nv_bfloat16 *d_sin = nullptr;
     int32_t *d_pos = nullptr;     // [seq0]
     float *d_logits = nullptr;    // [vocab]
     int32_t *d_argmax = nullptr;
@@ -601,9 +679,13 @@ struct GenWorkspace {
     int32_t *h_arg = nullptr;     // pinned
     uint8_t *d_p1 = nullptr, *d_s1 = nullptr, *d_p2 = nullptr;
     uint8_t *d_s2 = nullptr, *d_p3 = nullptr, *d_s3 = nullptr;
-    __half *d_w1 = nullptr, *d_w3 = nullptr, *d_w2 = nullptr;
-    __half *d_eout = nullptr;     // [1][H]
-    __half *d_acc = nullptr;      // [seq0][H]
+    __nv_bfloat16 *d_w1 = nullptr, *d_w3 = nullptr, *d_w2 = nullptr;
+    __nv_bfloat16 *d_eout = nullptr;     // [1][H]
+    __nv_bfloat16 *d_acc = nullptr;      // [seq0][H]
+    __nv_bfloat16 *d_gg = nullptr;       // [seq0][I_max] dense-branch gate/geglu
+    __nv_bfloat16 *d_gu = nullptr;       // [seq0][I_max] dense-branch up
+    __nv_bfloat16 *d_eg = nullptr;       // [MI] expert gate/geglu
+    __nv_bfloat16 *d_eu = nullptr;       // [MI] expert up
 
     size_t seq0 = 0, q_rows_max = 0, kv_rows_max = 0, rot_half_max = 0;
     int K = 0;
@@ -613,6 +695,7 @@ struct GenWorkspace {
         auto F = [](void **p) { if (*p) { cudaFree(*p); *p = nullptr; } };
         F((void **)&d_x); F((void **)&d_normed); F((void **)&d_tmp);
         F((void **)&d_qr); F((void **)&d_kr); F((void **)&d_vr);
+        F((void **)&d_tmp2);
         F((void **)&d_cos); F((void **)&d_sin); F((void **)&d_pos);
         F((void **)&d_logits); F((void **)&d_argmax);
         F((void **)&d_sel); F((void **)&d_selw);
@@ -620,6 +703,8 @@ struct GenWorkspace {
         F((void **)&d_s2); F((void **)&d_p3); F((void **)&d_s3);
         F((void **)&d_w1); F((void **)&d_w3); F((void **)&d_w2);
         F((void **)&d_eout); F((void **)&d_acc);
+        F((void **)&d_gg); F((void **)&d_gu);
+        F((void **)&d_eg); F((void **)&d_eu);
         if (h_sel) { cudaFreeHost(h_sel); h_sel = nullptr; }
         if (h_selw) { cudaFreeHost(h_selw); h_selw = nullptr; }
         if (h_arg) { cudaFreeHost(h_arg); h_arg = nullptr; }
@@ -630,10 +715,11 @@ struct GenWorkspace {
 
 // Forward `seq` tokens (hidden states in ws.d_x) through one layer; writes
 // k/v rows at [pos_base .. pos_base+seq) of the layer cache.
-cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
+cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
+                         const GemmaPinnedWeights &pw,
                          const GemmaLayerWeights &lw, int layer_idx,
-                         GenWorkspace &ws, int seq, int pos_base, __half *dk,
-                         __half *dv)
+                         GenWorkspace &ws, int seq, int pos_base, __nv_bfloat16 *dk,
+                         __nv_bfloat16 *dv)
 {
     const auto &top = pw.top;
     const int64_t H = top.hidden_size;
@@ -653,14 +739,17 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     const float theta = full ? top.rope_theta_full : top.rope_theta_sliding;
     const int window = full ? 0 : top.sliding_window;
     const int64_t kv_stride = kv_heads * head_dim;
-    float layer_scalar = 1.0f;
+    float s_attn = 1.0f, s_dense = 1.0f, s_moe = 1.0f;
     if (lw.d_layer_scalar) {
-        cudaError_t e = cudaMemcpyAsync(&layer_scalar, lw.d_layer_scalar,
+        cudaError_t e = cudaMemcpyAsync(&s_attn, lw.d_layer_scalar,
                                         sizeof(float), cudaMemcpyDeviceToHost,
                                         stream);
         if (e != cudaSuccess) return e;
         e = cudaStreamSynchronize(stream);
         if (e != cudaSuccess) return e;
+        s_dense = s_attn;
+        s_moe = s_attn;
+        GemmaScalarMode(s_attn, s_dense, s_moe);
     }
 
     // 1) input RMSNorm.
@@ -672,47 +761,65 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     // 2) q/k/v projections. Full-attention layers tie V to K
     //    (attention_k_eq_v): no v_proj weights exist, so v := k.
     const bool v_tied_to_k = (lw.d_v == nullptr);
-    e = Matmul(lw.d_q, ws.d_normed, ws.d_qr, q_rows, static_cast<int>(H), seq,
-               stream);
+    e = Matmul(cublas, lw.d_q, ws.d_normed, ws.d_qr, q_rows,
+               static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) return e;
-    e = Matmul(lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
+    e = Matmul(cublas, lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
                static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) return e;
     if (!v_tied_to_k) {
-        e = Matmul(lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
+        e = Matmul(cublas, lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
                    static_cast<int>(H), seq, stream);
         if (e != cudaSuccess) return e;
     }
+    if (GemmaDebugSync(stream, "qkv", layer_idx, e)) return e;
 
-    // 3) QK-norms (per-head, offset weights).
+    // 3) QK-norms (per-head; offset form unless LSX_GEMMA_QKNORM_MODE=plain).
     {
+        static const bool qk_plain = [] {
+            const char *m = std::getenv("LSX_GEMMA_QKNORM_MODE");
+            return m && std::strcmp(m, "plain") == 0;
+        }();
         dim3 grid(static_cast<unsigned>(seq), static_cast<unsigned>(heads));
         gemma_head_norm_kernel<<<grid, 128, 128 * sizeof(float), stream>>>(
             ws.d_qr, lw.d_q_norm, ws.d_qr, seq, heads, head_dim,
-            top.rms_norm_eps);
+            top.rms_norm_eps, qk_plain);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
-    }
-    {
-        dim3 grid(static_cast<unsigned>(seq),
-                  static_cast<unsigned>(kv_heads));
-        gemma_head_norm_kernel<<<grid, 128, 128 * sizeof(float), stream>>>(
+        dim3 grid2(static_cast<unsigned>(seq),
+                   static_cast<unsigned>(kv_heads));
+        gemma_head_norm_kernel<<<grid2, 128, 128 * sizeof(float), stream>>>(
             ws.d_kr, lw.d_k_norm, ws.d_kr, seq, kv_heads, head_dim,
-            top.rms_norm_eps);
+            top.rms_norm_eps, qk_plain);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
-    // Full-attention layers tie V to K (attention_k_eq_v): values are the
-    // NORMALIZED, UNROTATED keys. Snapshot them before RoPE.
+    // Full-attention layers tie V to K (attention_k_eq_v). Mode via
+    // LSX_GEMMA_V_MODE: prenorm_rot (default: normalized, unrotated keys),
+    // rotated (normalized, rotated keys), raw (raw k proj).
     if (v_tied_to_k) {
-        e = cudaMemcpyAsync(ws.d_vr, ws.d_kr,
-                            static_cast<size_t>(kv_heads * head_dim) * seq * 2,
-                            cudaMemcpyDeviceToDevice, stream);
-        if (e != cudaSuccess) return e;
+        const char *vm = std::getenv("LSX_GEMMA_V_MODE");
+        if (vm && std::strcmp(vm, "raw") == 0) {
+            // values = raw k projection: re-run k matmul into vr
+            e = Matmul(cublas, lw.d_k, ws.d_normed,
+                       ws.d_vr, kv_heads * head_dim, static_cast<int>(H),
+                       seq, stream);
+            if (e != cudaSuccess) return e;
+        } else {
+            e = cudaMemcpyAsync(
+                ws.d_vr, ws.d_kr,
+                static_cast<size_t>(kv_heads * head_dim) * seq * 2,
+                cudaMemcpyDeviceToDevice, stream);
+            if (e != cudaSuccess) return e;
+        }
     }
+    if (GemmaDebugSync(stream, "qknorm-snapshot", layer_idx, e)) return e;
 
-    // 4) RoPE.
+    // 4) RoPE (LSX_TEST_GEMMA_NO_ROPE=1 skips rotation entirely for bisection).
     {
+        static const bool no_rope =
+            std::getenv("LSX_TEST_GEMMA_NO_ROPE") != nullptr;
+        if (!no_rope) {
         std::vector<int32_t> pos(static_cast<size_t>(seq));
         for (int i = 0; i < seq; ++i)
             pos[static_cast<size_t>(i)] = pos_base + i;
@@ -725,9 +832,30 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
         e = RunGemmaPartialRope(ws.d_qr, ws.d_cos, ws.d_sin, ws.d_qr, seq,
                                 heads, head_dim, rotary_dim, stream);
         if (e != cudaSuccess) return e;
-        e = RunGemmaPartialRope(ws.d_kr, ws.d_cos, ws.d_sin, ws.d_kr, seq,
-                                kv_heads, head_dim, rotary_dim, stream);
-        if (e != cudaSuccess) return e;
+        {
+            const char *vm = std::getenv("LSX_GEMMA_V_MODE");
+            const bool rot_v = vm && std::strcmp(vm, "rotated") == 0;
+            e = RunGemmaPartialRope(ws.d_kr, ws.d_cos, ws.d_sin,
+                                    rot_v ? ws.d_kr : ws.d_tmp2, seq, kv_heads,
+                                    head_dim, rotary_dim, stream);
+            if (e != cudaSuccess) return e;
+            if (rot_v) {
+                // rotated keys: v snapshot must be the rotated variant
+                e = cudaMemcpyAsync(
+                    ws.d_vr, ws.d_kr,
+                    static_cast<size_t>(kv_heads * head_dim) * seq * 2,
+                    cudaMemcpyDeviceToDevice, stream);
+                if (e != cudaSuccess) return e;
+            } else {
+                // keys live in tmp2; copy back for cache write
+                e = cudaMemcpyAsync(
+                    ws.d_kr, ws.d_tmp2,
+                    static_cast<size_t>(kv_heads * head_dim) * seq * 2,
+                    cudaMemcpyDeviceToDevice, stream);
+                if (e != cudaSuccess) return e;
+            }
+        }
+        }
     }
 
     // 5) Append k/v rows to the cache (D2D, stream-ordered). For tied-V
@@ -743,16 +871,23 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     if (e != cudaSuccess) return e;
 
     // 6) Attention over the cache (band mask for sliding layers).
-    e = RunGemmaAttention(ws.d_qr, dk, dv, ws.d_tmp, seq,
-                          static_cast<int>(pos_base + seq), pos_base, heads,
-                          kv_heads, head_dim, window,
-                          1.0f / std::sqrt(static_cast<float>(head_dim)),
-                          stream);
-    if (e != cudaSuccess) return e;
+    if (!GemmaSkipBranch("attn")) {
+        e = RunGemmaAttention(ws.d_qr, dk, dv, ws.d_tmp, seq,
+                              static_cast<int>(pos_base + seq), pos_base,
+                              heads, kv_heads, head_dim, window,
+                              1.0f / std::sqrt(static_cast<float>(head_dim)),
+                              stream);
+        if (e != cudaSuccess) return e;
+    } else {
+        e = cudaMemcpyAsync(ws.d_tmp, ws.d_qr, sizeof(__nv_bfloat16) * seq * q_rows,
+                            cudaMemcpyDeviceToDevice, stream);
+        if (e != cudaSuccess) return e;
+    }
+    if (GemmaDebugSync(stream, "attn", layer_idx, e)) return e;
 
     // 7) o_proj + sandwich post-norm + residual.
-    e = Matmul(lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows, seq,
-               stream);
+    e = Matmul(cublas, lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows,
+               seq, stream);
     if (e != cudaSuccess) return e;
     e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_norm, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
@@ -760,26 +895,52 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     {
         const int64_t numel = static_cast<int64_t>(seq) * H;
         gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
-                            stream>>>(ws.d_x, ws.d_normed, layer_scalar, numel);
+                            stream>>>(ws.d_x, ws.d_normed, s_attn, numel);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
 
-    // 8) Dense MLP branch (sandwich norms).
+    // 8) Dense MLP branch (sandwich norms): gate/up GEMMs -> GeGLU -> down.
     e = RunGemmaRMSNorm(ws.d_x, lw.d_pre_ffn, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
     if (e != cudaSuccess) return e;
-    e = RunGemmaDenseMLP(lw.d_mlp_gate, lw.d_mlp_up, lw.d_mlp_down,
-                         top.intermediate_size, H, ws.d_normed, ws.d_qr, seq,
-                         stream);
-    if (e != cudaSuccess) return e;
-    e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_ffn, ws.d_normed, seq,
-                        static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) return e;
-    {
-        const int64_t numel = static_cast<int64_t>(seq) * H;
-        gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
-                            stream>>>(ws.d_x, ws.d_normed, layer_scalar, numel);
+    if (!GemmaSkipBranch("dense")) {
+        {
+            const int64_t I = top.intermediate_size;
+            const int64_t numel = static_cast<int64_t>(seq) * I;
+            e = Matmul(cublas, lw.d_mlp_gate, ws.d_normed, ws.d_gg,
+                       static_cast<int>(I), static_cast<int>(H), seq, stream);
+            if (e != cudaSuccess) return e;
+            e = Matmul(cublas, lw.d_mlp_up, ws.d_normed, ws.d_gu,
+                       static_cast<int>(I), static_cast<int>(H), seq, stream);
+            if (e != cudaSuccess) return e;
+            gemma_geglu_kernel<<<static_cast<unsigned>((numel + 255) / 256),
+                                 256, 0, stream>>>(ws.d_gg, ws.d_gu, ws.d_gg,
+                                                   numel);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return e;
+            e = Matmul(cublas, lw.d_mlp_down, ws.d_gg, ws.d_qr,
+                       static_cast<int>(H), static_cast<int>(I), seq, stream);
+            if (e != cudaSuccess) return e;
+        }
+        e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_ffn, ws.d_normed, seq,
+                            static_cast<int>(H), top.rms_norm_eps, stream);
+        if (e != cudaSuccess) return e;
+        {
+            const int64_t numel = static_cast<int64_t>(seq) * H;
+            gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256),
+                                256, 0, stream>>>(ws.d_x, ws.d_normed,
+                                                  s_dense, numel);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return e;
+        }
+    } else {
+        // Zero the branch output so the residual add is a no-op.
+        e = cudaMemsetAsync(ws.d_normed, 0, sizeof(__nv_bfloat16) * seq * H, stream);
+        if (e != cudaSuccess) return e;
+        gemma_axpy_kernel<<<static_cast<unsigned>((seq * H + 255) / 256), 256,
+                            0, stream>>>(ws.d_x, ws.d_normed, 0.0f,
+                                         static_cast<int64_t>(seq) * H);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
@@ -788,10 +949,38 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     e = RunGemmaRMSNorm(ws.d_x, lw.d_pre_ffn2, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
     if (e != cudaSuccess) return e;
+    if (GemmaDebugSync(stream, "dense-branch", layer_idx, e)) return e;
+    {
+        static const bool probe =
+            std::getenv("LSX_TEST_GEMMA_PROBE") != nullptr;
+        if (probe) {
+            static const float *sink = nullptr;
+            std::vector<__nv_bfloat16> h(8);
+            e = cudaMemcpyAsync(h.data(), ws.d_x, 8 * 2,
+                                cudaMemcpyDeviceToHost, stream);
+            if (e == cudaSuccess) {
+                e = cudaStreamSynchronize(stream);
+                if (e == cudaSuccess) {
+                    printf("[probe] layer=%d x0..7=", layer_idx);
+                    for (int i = 0; i < 8; ++i)
+                        printf("%g ", __bfloat162float(h[i]));
+                    printf("\n");
+                    fflush(stdout);
+                }
+            }
+            (void)sink;
+        }
+    }
 
     const int E = top.num_experts;
     const int K = top.top_k_experts;
     const int64_t MI = top.moe_intermediate_size;
+    bool skip_moe = GemmaSkipBranch("moe");
+    if (skip_moe) {
+        // Zero the MoE branch output: post-norm(0)=0, residual add no-op.
+        e = cudaMemsetAsync(ws.d_acc, 0, sizeof(__nv_bfloat16) * seq * H, stream);
+        if (e != cudaSuccess) return e;
+    } else {
     e = RunGemmaRouterTopK(lw.d_router_proj, lw.d_per_expert_scale,
                            ws.d_normed, E, static_cast<int>(H), K, ws.d_sel,
                            ws.d_selw, seq, stream);
@@ -805,7 +994,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     e = cudaStreamSynchronize(stream);
     if (e != cudaSuccess) return e;
 
-    e = cudaMemsetAsync(ws.d_acc, 0, sizeof(__half) * seq * H, stream);
+    e = cudaMemsetAsync(ws.d_acc, 0, sizeof(__nv_bfloat16) * seq * H, stream);
     if (e != cudaSuccess) return e;
 
     for (int t = 0; t < seq; ++t) {
@@ -847,25 +1036,35 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
 
-            e = gpu::dequant_shared_nvfp4(stream, ws.d_p1, ent.w1_bytes,
-                                          ws.d_s1, ent.w1_scales_bytes,
-                                          ent.w1_global_scale, ws.d_w1,
-                                          MI * H);
+            e = DequantNvfp4(stream, ws.d_p1, ent.w1_bytes, ws.d_s1,
+                             ent.w1_scales_bytes, ent.w1_global_scale,
+                             ws.d_w1, MI * H);
             if (e != cudaSuccess) return e;
-            e = gpu::dequant_shared_nvfp4(stream, ws.d_p2, ent.w2_bytes,
-                                          ws.d_s2, ent.w2_scales_bytes,
-                                          ent.w2_global_scale, ws.d_w2,
-                                          H * MI);
+            e = DequantNvfp4(stream, ws.d_p2, ent.w2_bytes, ws.d_s2,
+                             ent.w2_scales_bytes, ent.w2_global_scale,
+                             ws.d_w2, H * MI);
             if (e != cudaSuccess) return e;
-            e = gpu::dequant_shared_nvfp4(stream, ws.d_p3, ent.w3_bytes,
-                                          ws.d_s3, ent.w3_scales_bytes,
-                                          ent.w3_global_scale, ws.d_w3,
-                                          MI * H);
+            e = DequantNvfp4(stream, ws.d_p3, ent.w3_bytes, ws.d_s3,
+                             ent.w3_scales_bytes, ent.w3_global_scale,
+                             ws.d_w3, MI * H);
             if (e != cudaSuccess) return e;
 
-            e = RunGemmaDenseMLP(ws.d_w1, ws.d_w3, ws.d_w2, MI, H,
-                                 ws.d_normed + static_cast<int64_t>(t) * H,
-                                 ws.d_eout, /*seq=*/1, stream);
+            // Expert FFN: out_e[t] = w2 @ (gelu(w1 @ x) * (w3 @ x)) —
+            // cuBLAS GEMMs + elementwise GeGLU.
+            const __nv_bfloat16 *x_t =
+                ws.d_normed + static_cast<int64_t>(t) * H;
+            e = Matmul(cublas, ws.d_w1, x_t, ws.d_eg, static_cast<int>(MI),
+                       static_cast<int>(H), 1, stream);
+            if (e != cudaSuccess) return e;
+            e = Matmul(cublas, ws.d_w3, x_t, ws.d_eu, static_cast<int>(MI),
+                       static_cast<int>(H), 1, stream);
+            if (e != cudaSuccess) return e;
+            gemma_geglu_kernel<<<static_cast<unsigned>((MI + 255) / 256), 256,
+                                 0, stream>>>(ws.d_eg, ws.d_eu, ws.d_eg, MI);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) return e;
+            e = Matmul(cublas, ws.d_w2, ws.d_eg, ws.d_eout, static_cast<int>(H),
+                       static_cast<int>(MI), 1, stream);
             if (e != cudaSuccess) return e;
 
             gemma_axpy_kernel<<<static_cast<unsigned>((H + 255) / 256), 256, 0,
@@ -873,8 +1072,10 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
                 ws.d_acc + static_cast<int64_t>(t) * H, ws.d_eout, weight, H);
             e = cudaGetLastError();
             if (e != cudaSuccess) return e;
+            if (GemmaDebugSync(stream, "moe-expert", layer_idx, e)) return e;
         }
     }
+    } // !skip_moe
 
     // Channel scale (router.scale) + sandwich post-norm + residual.
     gemma_hadamard_kernel<<<static_cast<unsigned>(seq), 256, 0, stream>>>(
@@ -887,7 +1088,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, const GemmaPinnedWeights &pw,
     {
         const int64_t numel = static_cast<int64_t>(seq) * H;
         gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
-                            stream>>>(ws.d_x, ws.d_normed, layer_scalar, numel);
+                            stream>>>(ws.d_x, ws.d_normed, s_moe, numel);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
@@ -915,9 +1116,17 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     const int64_t V = pw.vocab_size;
     const int K = top.top_k_experts;
     const int64_t MI = top.moe_intermediate_size;
+    const int64_t I_max =
+        std::max(top.intermediate_size, top.moe_intermediate_size);
     if (input_ids.empty() || max_gen_tokens <= 0 || H <= 0 || V <= 0 ||
         pw.layers.empty() || !kv.allocated())
         return cudaErrorInvalidValue;
+
+    cublasHandle_t cublas = nullptr;
+    if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS) {
+        out.error_msg = "cublas create failed";
+        return cudaErrorInvalidValue;
+    }
 
     const int P = static_cast<int>(input_ids.size());
     if (kv.max_total < P + max_gen_tokens) {
@@ -949,6 +1158,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         (e = A((void **)&ws.d_qr, S * q_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_kr, S * kv_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_vr, S * kv_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_tmp2, S * kv_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_cos, S * rot_half_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_sin, S * rot_half_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_pos, S * 4)) != cudaSuccess ||
@@ -967,6 +1177,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         (e = A((void **)&ws.d_w2, MI * H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_eout, H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_acc, S * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gg, S * I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gu, S * I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_eg, MI * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_eu, MI * 2)) != cudaSuccess ||
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
@@ -979,13 +1193,20 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     // ── Prefill ─────────────────────────────────────────────────────────────
     e = cudaMemcpyAsync(ws.d_pos, input_ids.data(), sizeof(int32_t) * P,
                         cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+    if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
     {
         dim3 grid(static_cast<unsigned>(P));
         gemma_embed_kernel<<<grid, 256, 0, stream>>>(
             pw.d_embed, ws.d_pos, ws.d_x, static_cast<int>(H));
         e = cudaGetLastError();
-        if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+        if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
+        // Gemma scales embeddings by sqrt(hidden_size).
+        const float normalizer = std::sqrt(static_cast<float>(H));
+        const int64_t numel = static_cast<int64_t>(P) * H;
+        gemma_scale_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256,
+                             0, stream>>>(ws.d_x, normalizer, numel);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
     }
     cudaEvent_t ev0, ev_ttft, ev_end;
     cudaEventCreateWithFlags(&ev0, cudaEventDisableTiming);
@@ -994,8 +1215,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     cudaEventRecord(ev0, stream);
 
     for (size_t l = 0; l < pw.layers.size(); ++l) {
-        e = ForwardLayer(stream, pw, pw.layers[l], static_cast<int>(l), ws, P,
-                         0, kv.dk[l], kv.dv[l]);
+        e = ForwardLayer(stream, cublas, pw, pw.layers[l],
+                         static_cast<int>(l), ws, P, 0, kv.dk[l], kv.dv[l]);
         if (e != cudaSuccess) {
             out.error_msg = "prefill layer " + std::to_string(l) + ": " +
                             cudaGetErrorString(e);
@@ -1049,10 +1270,19 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                                   static_cast<int>(H));
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
+        {
+            const int64_t numel = H;
+            gemma_scale_kernel<<<static_cast<unsigned>((numel + 255) / 256),
+                                 256, 0, stream>>>(
+                ws.d_x, std::sqrt(static_cast<float>(H)), numel);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) break;
+        }
         bool failed = false;
         for (size_t l = 0; l < pw.layers.size(); ++l) {
-            e = ForwardLayer(stream, pw, pw.layers[l], static_cast<int>(l),
-                             ws, /*seq=*/1, pos, kv.dk[l], kv.dv[l]);
+            e = ForwardLayer(stream, cublas, pw, pw.layers[l],
+                             static_cast<int>(l), ws, /*seq=*/1, pos,
+                             kv.dk[l], kv.dv[l]);
             if (e != cudaSuccess) { failed = true; break; }
         }
         if (failed) break;
@@ -1089,6 +1319,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     cudaEventDestroy(ev_ttft);
     cudaEventDestroy(ev_end);
     g_expert_db = nullptr;
+    cublasDestroy(cublas);
     out.ok = (e == cudaSuccess);
     if (e != cudaSuccess && out.error_msg.empty())
         out.error_msg = "decode: " + std::string(cudaGetErrorString(e));
@@ -1097,4 +1328,14 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 
 } // namespace gemma
 } // namespace lsxcommon
+
+
+
+
+
+
+
+
+
+
 

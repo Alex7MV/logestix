@@ -161,7 +161,7 @@ void GemmaBaseModel::Unload()
 
 gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
 {
-    // Gemma chat framing: <|turn>user\n{prompt}<turn|>\n<|turn>model\n.
+    // Gemma chat framing + leading <bos>: <|turn>user\n{prompt}<turn|>\n<|turn>model\n
     ModelRequest framed = req;
     if (tok_db_ && !prompt::BuildPromptInputIds(type_, *tok_db_,
                                                 "The capital of France is",
@@ -169,6 +169,13 @@ gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
         gpu::InferenceResult r;
         r.error_msg = "selfcheck prompt framing failed";
         return r;
+    }
+    // Gemma templates start with <bos>; the framing registry covers only the
+    // turn sentinels, so prepend the model's BOS id here.
+    if (!framed.input_ids.empty() &&
+        (tok_db_ ? tok_db_->bos_id : -1) >= 0 &&
+        framed.input_ids.front() != tok_db_->bos_id) {
+        framed.input_ids.insert(framed.input_ids.begin(), tok_db_->bos_id);
     }
     return runtime::RunParisSelfCheck(*this, framed);
 }

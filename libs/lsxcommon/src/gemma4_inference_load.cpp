@@ -56,7 +56,7 @@ size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
 
 struct Fp16Job {
     const TensorRecord *t;
-    __half **dst;
+    __nv_bfloat16 **dst;
     int64_t *rows; // optional dim0 capture (2D only)
     int64_t *cols; // optional dim1 capture (2D only)
 };
@@ -119,15 +119,16 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GemmaLayerWeights &lw,
         const auto &j = jobs[i];
         if (!j.t) continue;
         off = AlignUp(off, kArenaAlign);
-        __half *view = static_cast<__half *>(arena) + off / 2;
+        __nv_bfloat16 *view =
+            static_cast<__nv_bfloat16 *>(arena) + off / 2;
         *j.dst = view;
         if (shapes[i].is_2d && j.rows) {
             *j.rows = j.t->shape[0];
             if (j.cols) *j.cols = j.t->shape[1];
         }
-        cudaError_t e = ring.UploadBf16AsFp16(j.t->data.data(),
-                                              static_cast<int64_t>(shapes[i].numel),
-                                              view, stream, bytes_acc);
+        // BF16 storage: raw passthrough upload (no conversion).
+        cudaError_t e = ring.UploadRaw(j.t->data.data(), view,
+                                       shapes[i].numel * 2, stream, bytes_acc);
         if (e != cudaSuccess) return e;
         off += shapes[i].numel * 2;
     }
@@ -193,10 +194,9 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaPinnedWeights &pw,
             &pw.d_embed,
             static_cast<size_t>(pw.vocab_size) * pw.hidden * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(embed->data.data(),
-                                  static_cast<int64_t>(pw.vocab_size) *
-                                      pw.hidden,
-                                  pw.d_embed, stream, bytes_acc);
+        e = ring.UploadRaw(embed->data.data(), pw.d_embed,
+                           static_cast<size_t>(pw.vocab_size) * pw.hidden * 2,
+                           stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[gemma_load] embed upload failed: ") +
                        cudaGetErrorString(e));
@@ -214,8 +214,9 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaPinnedWeights &pw,
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
                                    static_cast<size_t>(norm->shape[0]) * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(norm->data.data(), norm->shape[0],
-                                  pw.d_final_norm, stream, bytes_acc);
+        e = ring.UploadRaw(norm->data.data(), pw.d_final_norm,
+                           static_cast<size_t>(norm->shape[0]) * 2, stream,
+                           bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[gemma_load] final norm upload failed: ") +
                        cudaGetErrorString(e));
@@ -281,10 +282,17 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
 
     // F32 / BF16-scalar side uploads.
     if (auto *sc = FindTensor(tensors, "layer_scalar");
-        sc && sc->dtype == "F32" && sc->shape.size() == 1 &&
-        sc->data.size() >= sizeof(float)) {
-        e = UploadF32(reinterpret_cast<const float *>(sc->data.data()), 1,
-                      &lw.d_layer_scalar, stream, ring, bytes_acc);
+        sc && sc->shape.size() == 1 && sc->data.size() >= sizeof(float)) {
+        if (sc->dtype == "F32") {
+            e = UploadF32(reinterpret_cast<const float *>(sc->data.data()), 1,
+                          &lw.d_layer_scalar, stream, ring, bytes_acc);
+        } else if (sc->dtype == "BF16") {
+            auto f32 = Bf16BytesToF32(sc->data, 1);
+            e = UploadF32(f32.data(), 1, &lw.d_layer_scalar, stream, ring,
+                          bytes_acc);
+        } else {
+            e = cudaErrorInvalidValue;
+        }
         if (e != cudaSuccess) return e;
     }
     if (auto *pes = FindTensor(tensors, "router.per_expert_scale");
@@ -461,3 +469,5 @@ void free_gemma_expert_index(GemmaExpertDb &db) { db.Free(); }
 
 } // namespace gemma
 } // namespace lsxcommon
+
+

@@ -2,7 +2,7 @@
 // dense MLP (GELU-tanh) и NVFP4 expert FFN против CPU-референсов.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -11,10 +11,10 @@
 
 namespace {
 
-std::vector<__half> ToHalf(const std::vector<float> &v)
+std::vector<__nv_bfloat16> ToHalf(const std::vector<float> &v)
 {
-    std::vector<__half> h(v.size());
-    for (size_t i = 0; i < v.size(); ++i) h[i] = __float2half(v[i]);
+    std::vector<__nv_bfloat16> h(v.size());
+    for (size_t i = 0; i < v.size(); ++i) h[i] = __float2bfloat16(v[i]);
     return h;
 }
 
@@ -23,6 +23,12 @@ float GeluTanh(float v)
     const float k0 = 0.7978845608028654f; // sqrt(2/pi)
     return 0.5f * v *
            (1.f + std::tanh(k0 * (v + 0.044715f * v * v * v)));
+}
+
+inline bool BfTol(float got, double want)
+{
+    return std::abs(got - want) <=
+           std::max(0.05, 0.0125 * std::abs(want));
 }
 
 } // namespace
@@ -42,7 +48,7 @@ TEST_CASE("RunGemmaDenseMLP matches CPU (gelu tanh geglu)", "[gemma][moe]") {
     auto hu = ToHalf(uf);
     auto hd = ToHalf(df);
 
-    __half *dx, *dg, *du, *dd, *dout;
+    __nv_bfloat16 *dx, *dg, *du, *dd, *dout;
     REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dg, hg.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&du, hu.size() * 2) == cudaSuccess);
@@ -60,7 +66,7 @@ TEST_CASE("RunGemmaDenseMLP matches CPU (gelu tanh geglu)", "[gemma][moe]") {
     REQUIRE(lsxcommon::gemma::RunGemmaDenseMLP(dg, du, dd, I, H, dx, dout, seq,
                                                nullptr) == cudaSuccess);
 
-    std::vector<__half> hout(seq * H);
+    std::vector<__nv_bfloat16> hout(seq * H);
     REQUIRE(cudaMemcpy(hout.data(), dout, hout.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
@@ -79,8 +85,8 @@ TEST_CASE("RunGemmaDenseMLP matches CPU (gelu tanh geglu)", "[gemma][moe]") {
             for (int i = 0; i < I; ++i)
                 acc += act[i] * double(df[c * I + i]);
             INFO("t=" << t << " c=" << c << " got="
-                      << __half2float(hout[t * H + c]) << " want=" << acc);
-            CHECK(std::abs(__half2float(hout[t * H + c]) - acc) < 5e-3);
+                      << __bfloat162float(hout[t * H + c]) << " want=" << acc);
+            CHECK(BfTol(__bfloat162float(hout[t * H + c]), acc));
         }
     }
 
@@ -102,7 +108,7 @@ TEST_CASE("router top-k deterministic with lower-index tie-break",
     auto hp = ToHalf(pf);
     auto hx = ToHalf(xf);
 
-    __half *dp, *dx;
+    __nv_bfloat16 *dp, *dx;
     int32_t *dsel;
     float *dw;
     REQUIRE(cudaMalloc(&dp, hp.size() * 2) == cudaSuccess);
@@ -140,3 +146,5 @@ TEST_CASE("router top-k deterministic with lower-index tie-break",
 
     cudaFree(dp); cudaFree(dx); cudaFree(dsel); cudaFree(dw);
 }
+
+

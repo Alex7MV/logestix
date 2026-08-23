@@ -77,3 +77,4 @@ TEST_CASE("factory creates registered gemma model on synthetic fixture",
     model->Unload();
     fs::remove_all(out.parent_path());
 }
+

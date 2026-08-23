@@ -4,15 +4,21 @@
 // GemmaBaseModel::SelfCheck via the prompt_framing registry.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
+#include <lsxcommon/model_runtime.h>
 #include <lsxcommon/path_registry.h>
+#include <lsxcommon/prompt_framing.h>
 
 namespace {
 
@@ -60,6 +66,53 @@ TEST_CASE("Gemma-4-26B-A4B SelfCheck: framed 'The capital of France is' -> "
 
     auto sc0 = m->SelfCheck(req);
     if (!sc0.ok) FAIL("SelfCheck failed: " << sc0.error_msg);
+
+    // Diagnostics (LSX_TEST_GEMMA_DEBUG=1): framed ids, decode, top-5.
+    if (std::getenv("LSX_TEST_GEMMA_DEBUG")) {
+        auto &tok = m->Tokenizer();
+        std::string decoded;
+        if (!sc0.gen_tokens.empty())
+            decoded = lsxcommon::runtime::DecodeGeneratedText(tok,
+                                                              sc0.gen_tokens);
+        // Decode the framed prompt back for sanity.
+        std::vector<int32_t> framed;
+        lsxcommon::prompt::BuildPromptInputIds(
+            "gemma-4-26b-a4b-it", tok, "The capital of France is", framed);
+        std::string prompt_text = lsxcommon::runtime::DecodeGeneratedText(
+            tok, framed);
+        std::printf("[dbg] framed_ids(%zu):", framed.size());
+        for (auto id : framed) std::printf(" %d", id);
+        std::printf("\n[dbg] framed_decode: ");
+        for (auto id : framed) {
+            std::string piece = lsxcommon::runtime::DecodeGeneratedText(
+                tok, std::vector<int32_t>{id});
+            std::printf("[%d='%s'] ", id, piece.c_str());
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+        float mn = 1e30f, mx = -1e30f;
+        size_t nans = 0;
+        for (float v : sc0.final_logits) {
+            if (std::isnan(v)) ++nans;
+            else { mn = std::min(mn, v); mx = std::max(mx, v); }
+        }
+        // Top-5 tokens by logit.
+        std::vector<std::pair<float, int>> top;
+        for (size_t i = 0; i < sc0.final_logits.size(); ++i)
+            top.push_back({sc0.final_logits[i], static_cast<int>(i)});
+        std::sort(top.begin(), top.end(), [](auto &a, auto &b) {
+            return a.first > b.first;
+        });
+        std::printf("[dbg] framed_ids=%zu prompt_decode='%s'\n", framed.size(),
+                    prompt_text.c_str());
+        std::printf("[dbg] logits min=%g max=%g nan=%zu gen=%s\n", mn, mx,
+                    nans, decoded.c_str());
+        for (int i = 0; i < 5 && i < static_cast<int>(top.size()); ++i)
+            std::printf("[dbg] top%d: id=%d logit=%g\n", i, top[i].second,
+                        top[i].first);
+        std::fflush(stdout);
+    }
+
     REQUIRE(sc0.selfcheck_passed);
     REQUIRE(sc0.first_gen_text == "Paris");
     REQUIRE(!sc0.final_logits.empty());

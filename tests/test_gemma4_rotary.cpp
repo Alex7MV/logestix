@@ -1,12 +1,20 @@
 // Тест Gemma-4 partial RoPE против CPU FP64-референса (HF rotate_half).
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cmath>
 #include <random>
 #include <vector>
 
 #include "lsxcommon/gemma4_inference.h"
+
+namespace {
+inline bool BfTol(float got, double want)
+{
+    return std::abs(got - want) <=
+           std::max(0.03, 0.01 * std::abs(want));
+}
+} // namespace
 
 TEST_CASE("RunGemmaPartialRope matches CPU FP64", "[gemma][kernels]") {
     constexpr int seq = 4, heads = 2, head_dim = 16, rotary_dim = 8;
@@ -45,17 +53,17 @@ TEST_CASE("RunGemmaPartialRope matches CPU FP64", "[gemma][kernels]") {
                 ref[row + p] = x[row + p];
         }
 
-    std::vector<__half> hx(x.size());
-    for (size_t i = 0; i < x.size(); ++i) hx[i] = __float2half(x[i]);
-    std::vector<__half> hcos(seq * half), hsin(seq * half);
+    std::vector<__nv_bfloat16> hx(x.size());
+    for (size_t i = 0; i < x.size(); ++i) hx[i] = __float2bfloat16(x[i]);
+    std::vector<__nv_bfloat16> hcos(seq * half), hsin(seq * half);
     for (int i = 0; i < seq * half; ++i) {
-        hcos[i] = __float2half(static_cast<float>(cosv[i]));
-        hsin[i] = __float2half(static_cast<float>(sinv[i]));
+        hcos[i] = __float2bfloat16(static_cast<float>(cosv[i]));
+        hsin[i] = __float2bfloat16(static_cast<float>(sinv[i]));
     }
     std::vector<int32_t> pos(seq);
     for (int t = 0; t < seq; ++t) pos[t] = t + 1;
 
-    __half *dx, *dcos, *dsin, *dout;
+    __nv_bfloat16 *dx, *dcos, *dsin, *dout;
     int32_t *dpos;
     REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dout, hx.size() * 2) == cudaSuccess);
@@ -78,14 +86,14 @@ TEST_CASE("RunGemmaPartialRope matches CPU FP64", "[gemma][kernels]") {
                                                   heads, head_dim, rotary_dim,
                                                   nullptr) == cudaSuccess);
 
-    std::vector<__half> hout(hx.size());
+    std::vector<__nv_bfloat16> hout(hx.size());
     REQUIRE(cudaMemcpy(hout.data(), dout, hout.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
     for (size_t i = 0; i < ref.size(); ++i) {
-        INFO("i=" << i << " got=" << __half2float(hout[i]) << " want="
+        INFO("i=" << i << " got=" << __bfloat162float(hout[i]) << " want="
                   << ref[i]);
-        CHECK(std::abs(__half2float(hout[i]) - ref[i]) < 4e-3);
+        CHECK(BfTol(__bfloat162float(hout[i]), ref[i]));
     }
 
     cudaFree(dx);
@@ -94,3 +102,5 @@ TEST_CASE("RunGemmaPartialRope matches CPU FP64", "[gemma][kernels]") {
     cudaFree(dsin);
     cudaFree(dpos);
 }
+
+

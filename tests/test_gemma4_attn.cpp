@@ -1,7 +1,7 @@
 // Тесты Gemma-4 attention: band-mask скольжения + full attention (GQA).
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -11,11 +11,17 @@
 
 namespace {
 
-std::vector<__half> RandHalves(size_t n, std::mt19937 &rng)
+inline bool BfTol(float got, double want)
+{
+    return std::abs(got - want) <=
+           std::max(0.03, 0.01 * std::abs(want));
+}
+
+std::vector<__nv_bfloat16> RandHalves(size_t n, std::mt19937 &rng)
 {
     std::normal_distribution<float> nd(0.f, 1.f);
-    std::vector<__half> h(n);
-    for (auto &v : h) v = __float2half(nd(rng));
+    std::vector<__nv_bfloat16> h(n);
+    for (auto &v : h) v = __float2bfloat16(nd(rng));
     return h;
 }
 
@@ -31,13 +37,13 @@ TEST_CASE("sliding window band mask ignores out-of-window junk",
     auto v = RandHalves(static_cast<size_t>(slots) * kv_heads * head_dim, rng);
 
     // Query rows: deterministic; the query at t=11 attends to slots 4..11.
-    std::vector<__half> q(seq * heads * head_dim);
+    std::vector<__nv_bfloat16> q(seq * heads * head_dim);
     for (size_t i = 0; i < q.size(); ++i)
-        q[i] = __float2half(((i % 13) - 6) * 0.3f);
+        q[i] = __float2bfloat16(((i % 13) - 6) * 0.3f);
 
-    auto run = [&](const std::vector<__half> &kk,
-                   const std::vector<__half> &vv) {
-        __half *dq, *dk, *dv, *dout;
+    auto run = [&](const std::vector<__nv_bfloat16> &kk,
+                   const std::vector<__nv_bfloat16> &vv) {
+        __nv_bfloat16 *dq, *dk, *dv, *dout;
         cudaMalloc(&dq, q.size() * 2);
         cudaMalloc(&dk, kk.size() * 2);
         cudaMalloc(&dv, vv.size() * 2);
@@ -48,7 +54,7 @@ TEST_CASE("sliding window band mask ignores out-of-window junk",
         REQUIRE(lsxcommon::gemma::RunGemmaAttention(
                     dq, dk, dv, dout, seq, slots, pos_base, heads, kv_heads,
                     head_dim, window, /*scale=*/0.5f, nullptr) == cudaSuccess);
-        std::vector<__half> out(q.size());
+        std::vector<__nv_bfloat16> out(q.size());
         REQUIRE(cudaMemcpy(out.data(), dout, out.size() * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
         cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
@@ -62,18 +68,18 @@ TEST_CASE("sliding window band mask ignores out-of-window junk",
     auto v2 = v;
     for (int s = 0; s < 4; ++s)
         for (int d = 0; d < head_dim; ++d) {
-            k2[s * head_dim + d] = __float2half(7.7f);
-            v2[s * head_dim + d] = __float2half(-9.9f);
+            k2[s * head_dim + d] = __float2bfloat16(7.7f);
+            v2[s * head_dim + d] = __float2bfloat16(-9.9f);
         }
     auto b = run(k2, v2);
 
     const int64_t row11 = static_cast<int64_t>(11) * heads * head_dim;
     for (int d = 0; d < head_dim; ++d)
-        INFO("d=" << d << " a=" << __half2float(a[row11 + d]) << " b="
-                  << __half2float(b[row11 + d]));
+        INFO("d=" << d << " a=" << __bfloat162float(a[row11 + d]) << " b="
+                  << __bfloat162float(b[row11 + d]));
     // Bitwise identical: out-of-band values never entered the reduction.
     CHECK(std::memcmp(a.data() + row11, b.data() + row11,
-                      head_dim * sizeof(__half)) == 0);
+                      head_dim * sizeof(__nv_bfloat16)) == 0);
 }
 
 TEST_CASE("full attention matches CPU FP64 (GQA)", "[gemma][kernels]") {
@@ -123,14 +129,14 @@ TEST_CASE("full attention matches CPU FP64 (GQA)", "[gemma][kernels]") {
             }
         }
 
-    std::vector<__half> q(qf.size()), k(kf.size()), v(vf.size());
-    for (size_t i = 0; i < qf.size(); ++i) q[i] = __float2half(qf[i]);
+    std::vector<__nv_bfloat16> q(qf.size()), k(kf.size()), v(vf.size());
+    for (size_t i = 0; i < qf.size(); ++i) q[i] = __float2bfloat16(qf[i]);
     for (size_t i = 0; i < kf.size(); ++i) {
-        k[i] = __float2half(kf[i]);
-        v[i] = __float2half(vf[i]);
+        k[i] = __float2bfloat16(kf[i]);
+        v[i] = __float2bfloat16(vf[i]);
     }
 
-    __half *dq, *dk, *dv, *dout;
+    __nv_bfloat16 *dq, *dk, *dv, *dout;
     REQUIRE(cudaMalloc(&dq, q.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dk, k.size() * 2) == cudaSuccess);
     REQUIRE(cudaMalloc(&dv, v.size() * 2) == cudaSuccess);
@@ -145,15 +151,18 @@ TEST_CASE("full attention matches CPU FP64 (GQA)", "[gemma][kernels]") {
                 dq, dk, dv, dout, seq, slots, pos_base, heads, kv_heads,
                 head_dim, window, scale, nullptr) == cudaSuccess);
 
-    std::vector<__half> out(q.size());
+    std::vector<__nv_bfloat16> out(q.size());
     REQUIRE(cudaMemcpy(out.data(), dout, out.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
     for (size_t i = 0; i < ref.size(); ++i) {
-        INFO("i=" << i << " got=" << __half2float(out[i]) << " want="
+        INFO("i=" << i << " got=" << __bfloat162float(out[i]) << " want="
                   << ref[i]);
-        CHECK(std::abs(__half2float(out[i]) - ref[i]) < 5e-3);
+        CHECK(BfTol(__bfloat162float(out[i]), ref[i]));
     }
 
     cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
 }
+
+
+

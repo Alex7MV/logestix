@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -12,12 +12,6 @@
 
 namespace lsxcommon {
 namespace gemma {
-
-// In-place device BF16-bit -> FP16-bit conversion, nearest-even, bit-identical
-// to the host scalar path (pattern: GlmBf16ToHalfInPlace). d_buf must be
-// 16-byte aligned.
-cudaError_t GemmaBf16ToHalfInPlace(uint16_t *d_buf, int64_t numel,
-                                   cudaStream_t stream);
 
 // ── Geometry constants (real checkpoint; tests bypass via
 //    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY in GemmaBaseModel::ValidateGeometry) ──
@@ -34,12 +28,12 @@ constexpr int kGemmaTopK = 8;
 // Per-layer pinned weights. All FP16 tensors are 256-byte-aligned views of one
 // arena allocation (GLM-style); F32 tensors get their own allocations.
 struct alignas(16) GemmaLayerWeights {
-    __half *d_input_norm = nullptr;
-    __half *d_post_norm = nullptr;       // post_attention_layernorm
-    __half *d_pre_ffn = nullptr;         // pre_feedforward_layernorm   (dense branch)
-    __half *d_post_ffn = nullptr;        // post_feedforward_layernorm  (dense branch)
-    __half *d_pre_ffn2 = nullptr;        // pre_feedforward_layernorm_2 (MoE branch)
-    __half *d_post_ffn2 = nullptr;       // post_feedforward_layernorm_2(MoE branch)
+    __nv_bfloat16 *d_input_norm = nullptr;
+    __nv_bfloat16 *d_post_norm = nullptr;       // post_attention_layernorm
+    __nv_bfloat16 *d_pre_ffn = nullptr;         // pre_feedforward_layernorm   (dense branch)
+    __nv_bfloat16 *d_post_ffn = nullptr;        // post_feedforward_layernorm  (dense branch)
+    __nv_bfloat16 *d_pre_ffn2 = nullptr;        // pre_feedforward_layernorm_2 (MoE branch)
+    __nv_bfloat16 *d_post_ffn2 = nullptr;       // post_feedforward_layernorm_2(MoE branch)
 
     float *d_layer_scalar = nullptr;     // F32 [1]
     float *d_router_scale = nullptr;     // F32-uploaded BF16 [hidden]
@@ -48,21 +42,21 @@ struct alignas(16) GemmaLayerWeights {
     // Attention projections (FP16). Sliding layers use q/k/v with
     // kv_heads=8/head_dim=256 rows; full-attention layers carry the global
     // geometry heads=16/global_head_dim=512, kv_heads=2.
-    __half *d_q = nullptr;
-    __half *d_k = nullptr;
-    __half *d_v = nullptr;
-    __half *d_o = nullptr;
-    __half *d_q_norm = nullptr;          // per-head RMSNorm weights
-    __half *d_k_norm = nullptr;
+    __nv_bfloat16 *d_q = nullptr;
+    __nv_bfloat16 *d_k = nullptr;
+    __nv_bfloat16 *d_v = nullptr;
+    __nv_bfloat16 *d_o = nullptr;
+    __nv_bfloat16 *d_q_norm = nullptr;          // per-head RMSNorm weights
+    __nv_bfloat16 *d_k_norm = nullptr;
     int64_t q_rows = 0, o_cols = 0, kv_rows = 0;
 
     // Dense MLP branch (FP16).
-    __half *d_mlp_gate = nullptr;
-    __half *d_mlp_up = nullptr;
-    __half *d_mlp_down = nullptr;
+    __nv_bfloat16 *d_mlp_gate = nullptr;
+    __nv_bfloat16 *d_mlp_up = nullptr;
+    __nv_bfloat16 *d_mlp_down = nullptr;
 
     // Router logits projection (FP16) [num_experts, hidden].
-    __half *d_router_proj = nullptr;
+    __nv_bfloat16 *d_router_proj = nullptr;
 
     // Non-null when uploaded arena-backed: every d_* half pointer above is a
     // view into this single allocation and Free() releases it as a whole.
@@ -73,8 +67,8 @@ struct alignas(16) GemmaLayerWeights {
 };
 
 struct GemmaPinnedWeights {
-    __half *d_embed = nullptr;           // tied: also serves as the LM head
-    __half *d_final_norm = nullptr;
+    __nv_bfloat16 *d_embed = nullptr;           // tied: also serves as the LM head
+    __nv_bfloat16 *d_final_norm = nullptr;
     int vocab_size = 0;
     int hidden = 0;
     std::vector<GemmaLayerWeights> layers;
@@ -92,8 +86,8 @@ struct GemmaPinnedWeights {
 // Persistent per-session KV cache: per-layer k/v rows sized by that layer's
 // attention geometry (sliding: kv_heads*head_dim; full: gkv*g_head_dim).
 struct GemmaKvCache {
-    std::vector<__half *> dk;            // per layer [max_total][kv_rows]
-    std::vector<__half *> dv;
+    std::vector<__nv_bfloat16 *> dk;            // per layer [max_total][kv_rows]
+    std::vector<__nv_bfloat16 *> dv;
     int max_total = 0;
     std::uint64_t cache_bytes = 0;
 
@@ -143,3 +137,4 @@ void free_gemma_expert_index(GemmaExpertDb &db);
 
 } // namespace gemma
 } // namespace lsxcommon
+
