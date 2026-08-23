@@ -40,6 +40,18 @@ cudaError_t KimiInt4DequantToBf16(const int *d_packed,
     return cudaGetLastError();
 }
 
+size_t KimiExpertFfnStagingBytes()
+{
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int Hd = kKimiHidden;
+    const int64_t w13_el = static_cast<int64_t>(I) * Hd;
+    auto align_up = [](size_t v) { return (v + 255) / 256 * 256; };
+    size_t packed = align_up(w13_el / 2) * 2 + align_up(static_cast<size_t>(Hd) * I / 2);
+    size_t scales = align_up(w13_el / 16) * 2 + align_up(static_cast<size_t>(Hd) * I / 16);
+    size_t dq = w13_el * sizeof(__half) * 3;
+    size_t acts = (I * 3 + Hd) * sizeof(__half);
+    return align_up(packed + scales) + dq + acts;
+}
 } // namespace kimi
 } // namespace lsxcommon
 
@@ -462,24 +474,30 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                    cudaMemcpyHostToDevice);
     }
 
-    __half *d_qa = nullptr;     // [seq x 1536]
-    __half *d_qall = nullptr;   // [seq x 12288]
-    __half *d_kvfull = nullptr; // [seq x 576]
-    __half *d_attn = nullptr;   // [seq x 7168]
-    __half *d_oproj = nullptr;  // [seq x 7168]
-    cudaError_t e = cudaSuccess;
-#define KIMI_ALLOC(var, count)                                             \
-    if (e == cudaSuccess)                                                  \
-        e = cudaMallocAsync(reinterpret_cast<void **>(&var),               \
-                            static_cast<size_t>(count) * sizeof(__half),   \
-                            stream)
-    KIMI_ALLOC(d_qa, 1536 * seq);
-    KIMI_ALLOC(d_qall, 12288 * seq);
-    KIMI_ALLOC(d_kvfull, 576 * seq);
-    KIMI_ALLOC(d_attn, 7168 * seq);
-    KIMI_ALLOC(d_oproj, 7168 * seq);
-#undef KIMI_ALLOC
-    if (e != cudaSuccess) return e;
+    // Persistent workspace (single-consumer contract, like GlmMoEArena):
+    // grown on demand, never freed until process exit. Avoids per-token
+    // allocation churn entirely.
+    constexpr size_t kMaxSeqChunk = 4096;
+    const size_t need_elems =
+        static_cast<size_t>(seq) *
+        (1536 + 12288 + 576 + 7168 + 7168);
+    (void)kMaxSeqChunk;
+    static __half *ws = nullptr;
+    static size_t ws_elems = 0;
+    if (ws_elems < need_elems) {
+        if (ws) cudaFree(ws);
+        if (cudaMalloc(&ws, need_elems * sizeof(__half)) != cudaSuccess) {
+            ws = nullptr;
+            ws_elems = 0;
+            return cudaErrorMemoryAllocation;
+        }
+        ws_elems = need_elems;
+    }
+    __half *d_qa = ws;                 // [seq x 1536]
+    __half *d_qall = d_qa + (size_t)seq * 1536;      // [seq x 12288]
+    __half *d_kvfull = d_qall + (size_t)seq * 12288; // [seq x 576]
+    __half *d_attn = d_kvfull + (size_t)seq * 576;   // [seq x 7168]
+    __half *d_oproj = d_attn + (size_t)seq * 7168;   // [seq x 7168]
 
     // 1. q_a projection.
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -540,12 +558,172 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
             d_hidden, d_oproj, d_out, total);
     }
 
-    // 10. Free the stream-ordered workspace (async, ordered after use).
-    cudaFreeAsync(d_qa, stream);
-    cudaFreeAsync(d_qall, stream);
-    cudaFreeAsync(d_kvfull, stream);
-    cudaFreeAsync(d_attn, stream);
-    cudaFreeAsync(d_oproj, stream);
+    return cudaGetLastError();
+}
+
+// ── Routed-expert NVFP4 FFN (SwiGLU) ───────────────────────────────────────
+
+#include "nvfp4_codec.h"
+#include <cfloat>
+
+namespace {
+
+__device__ __forceinline__ float KimiE4M3(uint8_t b)
+{
+    if (b == 0) return 0.0f;
+    if (b == 0xFF) return FLT_MAX;
+    return __uint_as_float(static_cast<uint32_t>(b) << 23);
+}
+
+// Dequantizes one NVFP4 tensor (packed nibbles lo-first + per-16 E4M3 scales +
+// global scale) into an FP16 buffer. One thread per element.
+__global__ void kimi_nvfp4_dequant_kernel(const uint8_t *__restrict__ packed,
+                                          const uint8_t *__restrict__ scales,
+                                          float global_scale,
+                                          __half *__restrict__ out,
+                                          int64_t numel)
+{
+    const int64_t i =
+        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= numel) return;
+    const uint8_t byte = packed[i >> 1];
+    const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
+    const float block_scale = KimiE4M3(scales[i >> 4]) * global_scale;
+    out[i] = __float2half(lsxcommon::gpu::nvfp4::kE2M1Table[nib] * block_scale);
+}
+
+// SwiGLU: h = silu(gate) * up.
+__global__ void kimi_swiglu_kernel(const __half *__restrict__ gate,
+                                   const __half *__restrict__ up,
+                                   __half *__restrict__ h, int64_t n)
+{
+    const int64_t i =
+        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    const float g = __half2float(gate[i]);
+    h[i] = __float2half(g / (1.0f + __expf(-g)) * __half2float(up[i]));
+}
+
+// d_out += weight * y (elementwise over the hidden row).
+__global__ void kimi_accum_kernel(const __half *__restrict__ y, float weight,
+                                  __half *__restrict__ out, int64_t n)
+{
+    const int64_t i =
+        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    out[i] = __float2half(__half2float(out[i]) +
+                          weight * __half2float(y[i]));
+}
+
+} // namespace
+
+cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
+                             const KimiExpertEntry &expert,
+                             float expert_weight, const __half *d_x,
+                             __half *d_out, void *d_staging,
+                             size_t staging_bytes)
+{
+    if (!expert.host_w1 || !expert.host_w2 || !expert.host_w3 || !d_staging)
+        return cudaErrorInvalidValue;
+
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int Hd = kKimiHidden;
+    const int64_t w13_el = static_cast<int64_t>(I) * Hd;
+
+    auto align_up = [](size_t v) {
+        return (v + 255) / 256 * 256;
+    };
+    size_t off_p_w1 = 0;
+    size_t off_p_w3 = off_p_w1 + align_up(expert.w1_bytes);
+    size_t off_p_w2 = off_p_w3 + align_up(expert.w3_bytes);
+    size_t off_s_w1 = off_p_w2 + align_up(expert.w2_bytes);
+    size_t off_s_w3 = off_s_w1 + align_up(expert.w1_scales_bytes);
+    size_t off_s_w2 = off_s_w3 + align_up(expert.w3_scales_bytes);
+    size_t off_dq_gate = align_up(off_s_w2 + expert.w2_scales_bytes);
+    size_t off_dq_up = off_dq_gate + w13_el * sizeof(__half);
+    size_t off_dq_down = off_dq_up + w13_el * sizeof(__half);
+    size_t off_act_g = off_dq_down + w13_el * sizeof(__half);
+    size_t off_act_u = off_act_g + I * sizeof(__half);
+    size_t off_act_h = off_act_u + I * sizeof(__half);
+    size_t off_y = off_act_h + I * sizeof(__half);
+    size_t need = off_y + Hd * sizeof(__half);
+
+    if (staging_bytes < need) return cudaErrorInvalidValue;
+
+    uint8_t *base = static_cast<uint8_t *>(d_staging);
+    uint8_t *p_w1 = base + off_p_w1;
+    uint8_t *p_w3 = base + off_p_w3;
+    uint8_t *p_w2 = base + off_p_w2;
+    uint8_t *p_s1 = base + off_s_w1;
+    uint8_t *p_s3 = base + off_s_w3;
+    uint8_t *p_s2 = base + off_s_w2;
+    __half *dq_gate = reinterpret_cast<__half *>(base + off_dq_gate);
+    __half *dq_up = reinterpret_cast<__half *>(base + off_dq_up);
+    __half *dq_down = reinterpret_cast<__half *>(base + off_dq_down);
+    __half *act_g = reinterpret_cast<__half *>(base + off_act_g);
+    __half *act_u = reinterpret_cast<__half *>(base + off_act_u);
+    __half *act_h = reinterpret_cast<__half *>(base + off_act_h);
+    __half *y = reinterpret_cast<__half *>(base + off_y);
+
+    // H2D of the mmap'd payloads + dequant.
+    cudaError_t e = cudaSuccess;
+    e = cudaMemcpyAsync(p_w1, expert.host_w1, expert.w1_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(p_w3, expert.host_w3, expert.w3_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(p_w2, expert.host_w2, expert.w2_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(p_s1, expert.host_w1_scales, expert.w1_scales_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(p_s3, expert.host_w3_scales, expert.w3_scales_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(p_s2, expert.host_w2_scales, expert.w2_scales_bytes,
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) return e;
+
+    auto dequant = [&](const uint8_t *packed, const uint8_t *scales,
+                       float gscale, __half *dst, int64_t numel) {
+        const int block = 256;
+        const int64_t grid = (numel + block - 1) / block;
+        kimi_nvfp4_dequant_kernel<<<static_cast<unsigned>(grid), block, 0,
+                                    stream>>>(packed, scales, gscale, dst,
+                                              numel);
+    };
+    dequant(p_w1, p_s1, expert.w1_global_scale, dq_gate, w13_el);
+    dequant(p_w3, p_s3, expert.w3_global_scale, dq_up, w13_el);
+
+    cublasSetStream(cublas_h, stream);
+    const float alpha = 1.0f, beta0 = 0.0f;
+
+    // gate/up projections: [I x 1] = W(I x Hd)^T @ x(Hd).
+    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                 I, 1, Hd, &alpha, dq_gate, CUDA_R_16F, Hd,
+                 d_x, CUDA_R_16F, Hd, &beta0,
+                 act_g, CUDA_R_16F, I, CUBLAS_COMPUTE_32F,
+                 CUBLAS_GEMM_DEFAULT);
+    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                 I, 1, Hd, &alpha, dq_up, CUDA_R_16F, Hd,
+                 d_x, CUDA_R_16F, Hd, &beta0,
+                 act_u, CUDA_R_16F, I, CUBLAS_COMPUTE_32F,
+                 CUBLAS_GEMM_DEFAULT);
+
+    kimi_swiglu_kernel<<<static_cast<unsigned>((I + 255) / 256), 256, 0,
+                         stream>>>(act_g, act_u, act_h, I);
+
+    // down projection: y(Hd) = W_down(Hd x I)^T @ h(I).
+    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                 Hd, 1, I, &alpha, dq_down, CUDA_R_16F, I,
+                 act_h, CUDA_R_16F, I, &beta0,
+                 y, CUDA_R_16F, Hd, CUBLAS_COMPUTE_32F,
+                 CUBLAS_GEMM_DEFAULT);
+
+    kimi_accum_kernel<<<static_cast<unsigned>((Hd + 255) / 256), 256, 0,
+                        stream>>>(y, expert_weight, d_out, Hd);
 
     return cudaGetLastError();
 }

@@ -36,5 +36,19 @@ cudaError_t KimiRouterTopK(const float *d_scores, const float *d_bias,
                            int *d_out_ids, float *d_out_weights,
                            cudaStream_t stream);
 
+// Routed-expert NVFP4 FFN for ONE token: dequantizes the expert's three
+// projections from the mmap'd entry, applies gate/up GEMMs + SwiGLU + down
+// GEMM and accumulates `expert_weight * y` into d_out (caller pre-zeroes or
+// seeds d_out). d_staging must hold >= RunKimiExpertFfnStagingBytes bytes.
+// Staging layout is internal; sizes are derived from kKimi* geometry.
+cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
+                             const KimiExpertEntry &expert,
+                             float expert_weight, const __half *d_x,
+                             __half *d_out, void *d_staging,
+                             size_t staging_bytes);
+
+// Upper bound of the staging requirement of RunKimiExpertFfn.
+size_t KimiExpertFfnStagingBytes();
+
 } // namespace kimi
 } // namespace lsxcommon
