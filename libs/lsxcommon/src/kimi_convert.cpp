@@ -211,7 +211,31 @@ KimiTopology kimi_load_topology(const std::string &index_json_path)
     }
     simdjson::ondemand::object weight_map;
     if (root["weight_map"].get_object().get(weight_map) != simdjson::SUCCESS) {
-        topo.error_msg = "missing weight_map in " + index_json_path;
+        // Not an HF source index — accept the converted "logestix-kimi"
+        // summary index (num_layers / experts_per_layer / layer lists).
+        int64_t nl = 0, epl = 0;
+        root["num_layers"].get_int64().get(nl);
+        root["experts_per_layer"].get_int64().get(epl);
+        if (nl <= 0) {
+            topo.error_msg = "no weight_map/num_layers in " + index_json_path;
+            return topo;
+        }
+        auto read_arr = [&](const char *key,
+                            std::vector<long long> &out) -> bool {
+            simdjson::ondemand::array arr;
+            if (root[key].get_array().get(arr) != simdjson::SUCCESS)
+                return false;
+            for (simdjson::ondemand::value v : arr) {
+                int64_t x = 0;
+                if (v.get_int64().get(x) != simdjson::SUCCESS) return false;
+                out.push_back(static_cast<long long>(x));
+            }
+            return true;
+        };
+        (void)read_arr("moe_layers", topo.moe_layers);
+        (void)read_arr("dense_layers", topo.dense_layers);
+        topo.num_layers = static_cast<long long>(nl);
+        topo.experts_per_layer = static_cast<long long>(epl);
         return topo;
     }
 
@@ -675,6 +699,17 @@ arrow::Status ConvertKimiModel(
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
         log_root);
+
+    // (8) Build and verify the binary tokenizer (mandatory). Kimi ships a
+    // tiktoken ranks file instead of HF tokenizer.json.
+    auto tiktoken_path = fs::path(input_path) / "tiktoken.model";
+    if (!fs::exists(tiktoken_path))
+        return arrow::Status::Invalid("tiktoken.model not found in ",
+                                      input_path);
+    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFilesTikToken(
+        tiktoken_path.string(),
+        (fs::path(input_path) / "tokenizer_config.json").string(),
+        log_root / "pinned"));
 
     lsxcommon::log::info(absl::StrCat(
         "Done — ", pinned_processed, " pinned tensors, ", experts_processed,

@@ -1483,3 +1483,25 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_tokenizer COMMAND test_kimi_tokenizer)
+
+# ── Тест Kimi pinned-загрузчика ───────────────────────────────────────────
+add_executable(test_kimi_loader test_kimi_loader.cpp)
+target_compile_definitions(test_kimi_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_loader>"
+    )
+    add_custom_command(TARGET test_kimi_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_loader>"
+    )
+endif()
+
+add_test(NAME test_kimi_loader COMMAND test_kimi_loader)
