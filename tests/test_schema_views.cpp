@@ -17,8 +17,6 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
-
 namespace {
 
 namespace fs = std::filesystem;

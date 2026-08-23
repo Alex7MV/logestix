@@ -1561,6 +1561,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     }
 
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
+    cudaEvent_t tok_ready = nullptr; // per-step fence for the D2H argmax readback
     auto fail = [&](cudaError_t err) -> cudaError_t {
         result.ok = false;
         result.error_msg = cudaGetErrorString(err);
@@ -1569,6 +1570,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         if (t_start) cudaEventDestroy(t_start);
         if (t_ttft) cudaEventDestroy(t_ttft);
         if (t_stop) cudaEventDestroy(t_stop);
+        if (tok_ready) cudaEventDestroy(tok_ready);
         c.Free();
         return err;
     };
@@ -1577,6 +1579,8 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     // t_ttft at the first generated token, t_stop after the final head copy.
     e = cudaEventCreate(&t_start);
     if (e == cudaSuccess) e = cudaEventCreate(&t_ttft);
+    if (e == cudaSuccess) e = cudaEventCreateWithFlags(&tok_ready,
+                                                       cudaEventDisableTiming);
     if (e == cudaSuccess) e = cudaEventCreate(&t_stop);
     if (e != cudaSuccess) return fail(e);
     cudaEventRecord(t_start, stream);
@@ -1648,7 +1652,10 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         if (e != cudaSuccess) return fail(e);
         e = cudaMemcpyAsync(c.h_argmax, c.d_argmax, sizeof(GlmArgmaxSlot),
                             cudaMemcpyDeviceToHost, stream);        if (e != cudaSuccess) return fail(e);
-        e = cudaStreamSynchronize(stream);
+        // Event-scoped fence instead of a full stream barrier (audit F-03):
+        // only the argmax readback must complete before the host proceeds.
+        cudaEventRecord(tok_ready, stream);
+        e = cudaEventSynchronize(tok_ready);
         if (e != cudaSuccess) return fail(e);
         const int best = c.h_argmax->best;
         result.tokens.push_back(best);
@@ -1662,14 +1669,15 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
 
         g_stage = "decode";
         const int pos = last_idx + 1;
-        e = cudaMemcpyAsync(c.d_ids, &best, sizeof(int32_t),
-                            cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) return fail(e);
+        // Device-side token feed (audit F-03): the sampled id already lives
+        // on device in d_argmax->best (first member of GlmArgmaxSlot), so the
+        // embed kernel reads it directly — no H2D roundtrip through c.d_ids.
         {
             const int blocks = (hidden + kGlmLoopBlock - 1) / kGlmLoopBlock;
             GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
-                pw.d_embed, c.d_ids, c.d_cur + static_cast<size_t>(pos) * hidden,
-                1, hidden);
+                pw.d_embed,
+                reinterpret_cast<const int32_t *>(&c.d_argmax->best),
+                c.d_cur + static_cast<size_t>(pos) * hidden, 1, hidden);
             e = cudaGetLastError();
             if (e != cudaSuccess) return fail(e);
         }

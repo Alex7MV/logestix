@@ -769,7 +769,10 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
     }
 
     INFER_CHECK(cudaEventRecord(t_stop, stream));
-    INFER_CHECK(cudaDeviceSynchronize());
+    // Stream-scoped teardown fence (audit F-04): this pipeline owns a single
+    // stream (created above), so a device-wide barrier here would only stall
+    // unrelated streams/models sharing the GPU.
+    INFER_CHECK(cudaStreamSynchronize(stream));
 
     // Compute metrics
     {

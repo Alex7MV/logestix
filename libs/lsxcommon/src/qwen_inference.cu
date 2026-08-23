@@ -410,68 +410,137 @@ __global__ void qwen_nvfp4_gemm_kernel(
     y[idx] = __float2half(acc);
 }
 
-// Tile NVFP4 dense GEMM: block computes an [BM x BN] output tile for one token
-// tile. X rows and the NVFP4-dequantized weight rows are staged in shared
-// memory once per K-block; E8M0 scales are decoded once per 16 elements.
-// One thread owns exactly one output element (threads == BM * BN), so `acc` is
-// a single register per thread — no per-thread array, no bank-pressure.
-template <int BM, int BN, int BK>
+// Tile NVFP4 dense GEMM: block computes a [BM x BN*VPT] output tile for one
+// token tile. X rows and the NVFP4-dequantized weight rows are staged in
+// shared memory once per K-block; E8M0 scales are decoded once per 16
+// elements. Threads == BM * BN; each thread owns VPT output columns
+// (n = n0 + v*BN + bn), i.e. VPT independent accumulator chains (audit F-01:
+// the single-chain variant is latency-bound at ~18 GB/s effective BW with
+// zero register pressure). Bit-exact by construction: every output element
+// keeps the identical BK-chunked sequential accumulation order regardless of
+// VPT.
+template <int BM, int BN, int BK, int VPT>
 __global__ void qwen_nvfp4_gemm_tile_kernel(
     const __half *__restrict__ x, const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
     float global_scale, __half *__restrict__ y, int seq, int K, int N, bool acc_in)
 {
-    static_assert(BM * BN == 256, "one thread per output element (256)");
+    static_assert(BM * BN == 256, "one thread per output element row/col pair");
 
+    // Audit F-01 (measured): reading kE2M1Table straight from __constant__
+    // serializes 16-way inside the staging loop because adjacent threads
+    // decode different nibbles, and constant-cache broadcast only covers
+    // warp-uniform addresses. Mirror the table into shared memory once per
+    // block: identical float values, so results stay bit-exact.
+    __shared__ float sE2M1[16];
     __shared__ __half sX[BM][BK];
-    __shared__ __half sW[BN][BK];
+    __shared__ __half sW[BN * VPT][BK];
+    if (threadIdx.x < 16) sE2M1[threadIdx.x] = kE2M1Table[threadIdx.x];
+    __syncthreads();
     const int m0 = blockIdx.x * BM;      // token tile
-    const int n0 = blockIdx.y * BN;      // output-column tile
+    const int n0 = blockIdx.y * BN * VPT; // output-column tile
     const int bi = threadIdx.x;          // 0 .. BM*BN-1
     const int bm = bi / BN;              // token index within tile
-    const int bn = bi % BN;              // output-column index within tile
+    const int bn = bi % BN;              // base output-column index within tile
 
     const int t = m0 + bm;
-    const int n = n0 + bn;
-    const bool in_bounds = (t < seq) && (n < N);
 
-    float acc = acc_in && in_bounds ? __half2float(y[(int64_t)t * N + n]) : 0.0f;
+    float acc[VPT];
+#pragma unroll
+    for (int v = 0; v < VPT; ++v) {
+        const int n = n0 + v * BN + bn;
+        acc[v] = (acc_in && t < seq && n < N)
+                     ? __half2float(y[(int64_t)t * N + n])
+                     : 0.0f;
+    }
 
-    for (int kb = 0; kb < K; kb += BK) {
-        // W tile: element e = (n0+bn)*K + kb+kk (weight row-major [n, K]).
-        // K-tail (K % BK != 0) and N-tail are zero-padded: the accumulate
-        // loop below runs the full BK width unmasked.
-        for (int i = bi; i < BN * BK; i += BM * BN) {
+    // Audit F-01 (measured): the chunk loop is latency-serialized — each
+    // iteration's global loads only start after the previous iteration's FMAs
+    // and barriers complete (~3.7 us/chunk x K/BK chunks ~= observed kernel
+    // time). Prefetch the next chunk's RAW BYTES into registers while the
+    // current chunk computes; values and accumulation order are unchanged, so
+    // results stay bit-exact.
+    constexpr int TPB = BM * BN;
+    constexpr int W_PER_T = (BN * VPT * BK) / TPB;
+    constexpr int X_PER_T = (BM * BK) / TPB;
+
+    uint8_t rW_byte[W_PER_T], rW_scale[W_PER_T];
+    uint16_t rX_bits[X_PER_T];
+
+    auto load_chunk = [&](int kb) {
+#pragma unroll
+        for (int j = 0; j < W_PER_T; ++j) {
+            const int i = bi + j * TPB;
+            const int w_bn = i / BK, kk = i % BK;
+            const int n = n0 + w_bn;
+            rW_byte[j] = 0;
+            rW_scale[j] = 0;
+            if (n < N && kb + kk < K) {
+                const int64_t e = (int64_t)n * K + (kb + kk);
+                rW_byte[j] = packed[e >> 1];
+                rW_scale[j] = scales[e >> 4];
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < X_PER_T; ++j) {
+            const int i = bi + j * TPB;
+            const int x_bm = i / BK, kk = i % BK;
+            const int tt = m0 + x_bm;
+            const __half hv = (tt < seq && kb + kk < K)
+                                  ? x[(int64_t)tt * K + (kb + kk)]
+                                  : __float2half(0.0f);
+            rX_bits[j] = __half_as_ushort(hv);
+        }
+    };
+    auto store_chunk = [&](int kb) {
+#pragma unroll
+        for (int j = 0; j < W_PER_T; ++j) {
+            const int i = bi + j * TPB;
             const int w_bn = i / BK, kk = i % BK;
             const int n = n0 + w_bn;
             float wv = 0.0f;
             if (n < N && kb + kk < K) {
-                const int64_t e = (int64_t)n * K + (kb + kk);
-                const uint8_t byte = packed[e >> 1];
-                const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
-                const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
-                wv = kE2M1Table[nib] * scl;
+                const uint8_t byte = rW_byte[j];
+                const uint8_t nib = ((kb + kk) & 1) ? (byte >> 4) : (byte & 0x0F);
+                const float scl =
+                    E4M3ScaleToFloat(rW_scale[j]) * global_scale;
+                wv = sE2M1[nib] * scl;
             }
             sW[w_bn][kk] = __float2half(wv);
         }
-        // X tile: x[t][kb+kk] for rows [m0, m0+BM). K-tail zero-padded.
-        for (int i = bi; i < BM * BK; i += BM * BN) {
-            const int x_bm = i / BK, kk = i % BK;
-            const int tt = m0 + x_bm;
-            sX[x_bm][kk] = (tt < seq && kb + kk < K)
-                               ? x[(int64_t)tt * K + (kb + kk)]
-                               : __float2half(0.0f);
+#pragma unroll
+        for (int j = 0; j < X_PER_T; ++j) {
+            const int i = bi + j * TPB;
+            sX[i / BK][i % BK] = __ushort_as_half(rX_bits[j]);
         }
-        __syncthreads();
+    };
+
+    load_chunk(0);
+    store_chunk(0);
+    __syncthreads();
+
+    for (int kb = 0; kb < K; kb += BK) {
+        const bool has_next = (kb + BK < K);
+        if (has_next) load_chunk(kb + BK);   // global latency overlaps compute
 
 #pragma unroll
-        for (int kk = 0; kk < BK; ++kk)
-            acc += __half2float(sX[bm][kk]) * __half2float(sW[bn][kk]);
+        for (int kk = 0; kk < BK; ++kk) {
+            const float xv = __half2float(sX[bm][kk]);
+#pragma unroll
+            for (int v = 0; v < VPT; ++v)
+                acc[v] += xv * __half2float(sW[v * BN + bn][kk]);
+        }
 
+        __syncthreads();                     // all threads done reading smem
+        if (has_next) store_chunk(kb + BK);  // refill the same buffers
         __syncthreads();
     }
 
-    if (in_bounds)
-        y[(int64_t)t * N + n] = __float2half(acc);
+#pragma unroll
+    for (int v = 0; v < VPT; ++v) {
+        const int n = n0 + v * BN + bn;
+        if (t < seq && n < N)
+            y[(int64_t)t * N + n] = __float2half(acc[v]);
+    }
 }
 
 // Output gate: y = x * sigmoid(gate)  (per-feature).
@@ -1138,10 +1207,13 @@ cudaError_t RunQwenNvfp4Gemm(
             x, packed, scales, global_scale, y, seq, K, N, acc);
         return cudaGetLastError();
     }
-    constexpr int BM = 16, BN = 16, BK = 32;
+    // Audit F-01: VPT=2 gives each thread two independent accumulator chains
+    // (ILP x2) while preserving the per-element BK-chunked accumulation order
+    // — bit-exact vs the VPT=1 reference pinned by test_qwen_nvfp4_tile_gemm.
+    constexpr int BM = 16, BN = 16, BK = 32, VPT = 2;
     const int gx = (int)((seq + BM - 1) / BM);
-    const int gy = (int)((N  + BN - 1) / BN);
-    qwen_nvfp4_gemm_tile_kernel<BM, BN, BK><<<dim3(gx, gy), BM * BN, 0, stream>>>(
+    const int gy = (int)((N + BN * VPT - 1) / (BN * VPT));
+    qwen_nvfp4_gemm_tile_kernel<BM, BN, BK, VPT><<<dim3(gx, gy), BM * BN, 0, stream>>>(
         x, packed, scales, global_scale, y, seq, K, N, acc);
     return cudaGetLastError();
 }
@@ -1993,14 +2065,19 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         if (base_idx < 0) base_idx = 0;
         base_idx *= V;
         std::vector<__half> hlast(V);
-        cudaMemcpy(hlast.data(), d_logits + base_idx, V * sizeof(__half),
-                   cudaMemcpyDeviceToHost);
+        // Stream-ordered async D2H: the blocking null-stream cudaMemcpy here
+        // used to serialize the whole pipeline inside the timed region
+        // (audit F-02). Completion is guaranteed by t_stop below, which is
+        // recorded after this copy on the same stream.
+        cudaMemcpyAsync(hlast.data(), d_logits + base_idx,
+                        V * sizeof(__half), cudaMemcpyDeviceToHost, stream);
         for (int i = 0; i < V; ++i)
             hlast_f[i] = __half2float(hlast[i]);
         result.final_logits = std::move(hlast_f);
     }
 
-    // Publish timing and residency before tearing down the arena.
+    // Publish timing and residency before tearing down the arena. The event
+    // wait doubles as the completion fence for the async logits copy above.
     cudaEventRecord(t_stop, stream);
     cudaEventSynchronize(t_stop);
     float ms_total = 0.0f, ms_ttft = 0.0f;

@@ -154,13 +154,14 @@ add_library(test_qwen_cu OBJECT
     test_qwen_fused_decode_attn.cu
     test_qwen_fused_mlp.cu
     test_qwen_fused_linear_attn.cu
+    test_blackwell_micro_gemm.cu
 )
 set_target_properties(test_qwen_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES OFF
 )
 target_compile_options(test_qwen_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
     --generate-code=arch=compute_120,code=sm_120;
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
@@ -181,7 +182,7 @@ target_compile_definitions(test_qwen_cu PRIVATE
 )
 target_link_libraries(test_qwen_cu PRIVATE Catch2::Catch2WithMain)
 
-foreach(qt test_qwen_shuffle_reduce test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_full_attn_parallel test_qwen_linear_attn test_qwen_fused_decode_attn test_qwen_fused_mlp test_qwen_fused_linear_attn)
+foreach(qt test_qwen_shuffle_reduce test_qwen_mlp test_qwen_nvfp4_dense test_qwen_nvfp4_tile_gemm test_qwen_full_attn test_qwen_full_attn_parallel test_qwen_linear_attn test_qwen_fused_decode_attn test_qwen_fused_mlp test_qwen_fused_linear_attn test_blackwell_micro_gemm)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_qwen_cu lsxcommon Catch2::Catch2WithMain)
@@ -464,6 +465,67 @@ endif()
 
 add_test(NAME test_glm_selfcheck COMMAND test_glm_selfcheck)
 set_tests_properties(test_glm_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Blackwell audit Phase 0: GLM-5.2 perf baseline harness (reporting test,
+#    SKIP без чекпоинта). Число генерируемых токенов — LSX_TEST_PERF_GEN_TOKENS.
+add_executable(test_blackwell_perf_glm test_blackwell_perf_glm.cpp)
+target_link_libraries(test_blackwell_perf_glm PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_glm COMMAND test_blackwell_perf_glm)
+set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Blackwell audit Phase 0: Qwen3.5-9B perf baseline harness.
+add_executable(test_blackwell_perf_qwen test_blackwell_perf_qwen.cpp)
+target_link_libraries(test_blackwell_perf_qwen PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_qwen POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_qwen POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_qwen COMMAND test_blackwell_perf_qwen)
+set_tests_properties(test_blackwell_perf_qwen PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
+add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
+target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_deepseek COMMAND test_blackwell_perf_deepseek)
+set_tests_properties(test_blackwell_perf_deepseek PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
 #    block_rows = P (полная длина промпта), каждый промпт-токен занимает один

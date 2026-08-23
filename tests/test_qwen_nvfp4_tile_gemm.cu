@@ -126,6 +126,75 @@ TEST_CASE("RunQwenNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvf
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
 
+// Host replica of the TILE kernel's exact math (not the legacy per-element
+// path): weight dequant is rounded to FP16 before the multiply, accumulation
+// runs in BK=32 chunks with zero-padded tails. Bit-exact mirror of
+// qwen_nvfp4_gemm_tile_kernel, used to pin the seq==1 decode specialization.
+void HostRefTileGemm(const __half *x, const uint8_t *packed, const uint8_t *scales,
+                     float global_scale, __half *out, int seq, int K, int N)
+{
+    constexpr int BK = 32;
+    for (int t = 0; t < seq; ++t)
+        for (int n = 0; n < N; ++n) {
+            float acc = 0.0f;
+            for (int kb = 0; kb < K; kb += BK)
+                for (int kk = 0; kk < BK; ++kk) {
+                    const int k = kb + kk;
+                    const float xv =
+                        (k < K) ? __half2float(x[(int64_t)t * K + k]) : 0.0f;
+                    float wv = 0.0f;
+                    if (k < K) {
+                        const int64_t e = (int64_t)n * K + k;
+                        const uint8_t byte = packed[e >> 1];
+                        const uint8_t nib =
+                            (e & 1) ? (byte >> 4) : (byte & 0x0F);
+                        wv = kE2M1TestTable[nib] *
+                             E4M3ScaleToFloatHost(scales[e >> 4]) * global_scale;
+                    }
+                    // smem round-trip: dequantized weight stored as FP16.
+                    acc += xv * __half2float(__float2half(wv));
+                }
+            out[(int64_t)t * N + n] = __float2half(acc);
+        }
+}
+
+TEST_CASE("RunQwenNvfp4Gemm seq==1 decode path is bit-exact vs tile-kernel "
+          "host replica (incl. K/N tails)",
+          "[qwen][gemm][nvfp4][decode]")
+{
+    constexpr int seq = 1, K = 5136, N = 520;   // K%32!=0, N%256!=0 tails
+    std::vector<__half> hx((size_t)seq * K);
+    std::vector<uint8_t> hp((size_t)((int64_t)K * N / 2)), hs((size_t)((int64_t)K * N / 16));
+    for (int i = 0; i < seq * K; ++i)
+        hx[i] = __float2half(float((i % 13) - 6) * 0.25f);
+    for (int i = 0; i < (int)hp.size(); ++i) hp[i] = (uint8_t)((i * 29) & 0xFF);
+    for (int i = 0; i < (int)hs.size(); ++i) hs[i] = (uint8_t)(128 + (i % 48));
+    const float gs = 0.125f;
+
+    std::vector<__half> h_ref((size_t)seq * N);
+    HostRefTileGemm(hx.data(), hp.data(), hs.data(), gs, h_ref.data(), seq, K, N);
+
+    __half *dx, *dy;  uint8_t *dp, *ds;
+    cudaMalloc(&dx, (size_t)seq * K * 2);
+    cudaMalloc(&dp, hp.size());
+    cudaMalloc(&ds, hs.size());
+    cudaMalloc(&dy, (size_t)seq * N * 2);
+    cudaMemcpy(dx, hx.data(), (size_t)seq * K * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
+
+    REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
+                nullptr, dx, dp, ds, gs, dy, seq, K, N) == cudaSuccess);
+
+    std::vector<__half> hy((size_t)seq * N);
+    cudaMemcpy(hy.data(), dy, (size_t)seq * N * 2, cudaMemcpyDeviceToHost);
+    // Bit-exact contract: not a tolerance check.
+    CHECK(std::memcmp(hy.data(), h_ref.data(),
+                      hy.size() * sizeof(__half)) == 0);
+
+    cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
+}
+
 TEST_CASE("RunQwenNvfp4Gemm tile matches host reference at large K", "[qwen][gemm][nvfp4]")
 {
     constexpr int seq = 2, K = 5120, N = 512;
