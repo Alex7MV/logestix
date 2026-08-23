@@ -1665,3 +1665,21 @@ endif()
 
 add_test(NAME test_kimi_selfcheck COMMAND test_kimi_selfcheck)
 set_tests_properties(test_kimi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест Kimi full inference (реальные веса; SKIP без модели) ─────────────
+add_executable(test_kimi_inference test_kimi_inference.cpp)
+target_compile_definitions(test_kimi_inference PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_inference POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_inference>"
+    )
+endif()
+
+add_test(NAME test_kimi_inference COMMAND test_kimi_inference)
+set_tests_properties(test_kimi_inference PROPERTIES SKIP_RETURN_CODE 4)

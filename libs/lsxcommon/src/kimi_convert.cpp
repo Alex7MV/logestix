@@ -711,6 +711,15 @@ arrow::Status ConvertKimiModel(
         (fs::path(input_path) / "tokenizer_config.json").string(),
         log_root / "pinned"));
 
+    // (9) The converted output must be a loadable, verified model.
+    auto vres = integrity::VerifyConvertedModel(output_root);
+    if (!vres.ok()) {
+        lsxcommon::log::error(absl::StrCat(
+            "Kimi output verification failed: ", vres.status().ToString()));
+        return arrow::Status::Invalid("output verification failed: ",
+                                      vres.status().ToString());
+    }
+
     lsxcommon::log::info(absl::StrCat(
         "Done — ", pinned_processed, " pinned tensors, ", experts_processed,
         " experts processed, incomplete ", partial_int4.size()));
