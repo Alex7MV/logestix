@@ -32,6 +32,26 @@ Notable pre-fix observations:
 - Qwen ttft ~7s for a 6-token prompt also indicates prefill-side overhead, not
   just first-token latency.
 
+## Post-fix measurements (Phase 1 wrap-up)
+
+Same machine/build/prompt. Debug build — treat deltas as directional, not
+absolute.
+
+| Model | tok/s | ttft_ms | total_ms | Delta vs baseline |
+|---|---|---|---|---|
+| qwen3.5-9b | 0.6 | 6457.2 | 25997.0 | ttft -6.8% |
+| deepseek-v4-flash | 0.3 | 26561.9 | 59059.0 | ttft -28.6%, total -27.4% |
+
+Full suite after fixes: `ctest -R "glm|deepseek|qwen|blackwell"` -> 49/49
+passed (7 SKIP by design: GLM real-model tests without weights,
+test_qwen_kv_cache).
+
+## New findings discovered during execution
+
+| ID | Sev | Dimension | Evidence | Summary | Status |
+|---|---|---|---|---|---|
+| F-07 | P1 | E | tests/test_schema_views.cpp:20 | Dead `#include <unistd.h>` broke MSVC build of the whole test tree (committed from Linux; symbol unused) | fixed (d4c26e7) |
+
 ## New findings discovered during execution
 
 Append below with next free F-nn.
