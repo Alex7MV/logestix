@@ -3,8 +3,10 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/expert_store.h"
 
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -150,6 +152,40 @@ void ensure_kimi_expert_resident(KimiExpertDb &db, int layer, int expert,
 
 // Releases all expert mmaps.
 void free_kimi_expert_index(KimiExpertDb &db);
+
+// ── MLA attention state ────────────────────────────────────────────────────
+// Latent KV cache: compressed KV latents (512 FP16) + shared yarn-roped keys
+// (64 FP16) per slot. One allocation, 16-byte aligned arrays.
+constexpr int kKimiMaxSlots = 1024;
+
+struct alignas(16) KimiMlaState {
+    __half kv[kKimiMaxSlots][kKimiKvLoraRank];    // cached latents
+    __half k_rope[kKimiMaxSlots][kKimiQkRope];    // shared roped keys
+    int n_used = 0;        // occupied slot count
+    int turn_id = -1;      // last appended turn
+};
+
+static_assert(offsetof(KimiMlaState, kv) % 16 == 0 &&
+                  offsetof(KimiMlaState, k_rope) % 16 == 0,
+              "MLA cache arrays must stay 16-byte aligned");
+
+// Async zero-reset of the state (n_used=0 etc.) before first use.
+cudaError_t KimiMlaReset(KimiMlaState *d_state, cudaStream_t stream);
+
+// One-layer MLA decode/prefill attention (DeepSeek-V3 math, absorbed form):
+//   q = q_b(RMSNorm(q_a(x)))            split per head: 128 nope + 64 rope
+//   c_kv = RMSNorm(kv_a[0:512](x))      latent, appended to cache
+//   k_rope = yarn_rope(kv_a[512:576](x))
+//   score[h,s] = dot(W_k(h)·q_nope_h, c_s)/sqrt(192)*mscale
+//              + dot(q_rope_h, krope_s)/sqrt(192)*mscale
+//   out_h = W_v(h)·Σ_s p[h,s]·c_s       (absorbed value path)
+//   d_out = d_hidden + o_proj(concat heads)
+// Whole pass async on the caller's stream (no host sync inside).
+cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
+                                const KimiLayerWeights &lw, int seq,
+                                const __half *d_hidden, __half *d_out,
+                                KimiMlaState *d_state,
+                                cublasHandle_t cublas_h);
 
 } // namespace kimi
 } // namespace lsxcommon
