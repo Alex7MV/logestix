@@ -82,3 +82,21 @@ Conclusion: scalar NVFP4 path plateaus at ~20 GB/s effective; dequant
 arithmetic (~30 instr/element, 2x the MAC work) is the floor. Reaching tens of
 tok/s requires Phase 3: native `mma.sync.kind::mxf4nvf4.block_scale` tensor
 cores (hardware dequant+MAC fusion).
+
+### Phase 3 Task 1 status (2026-08-23, branch feat/blackwell-phase3-tensorcore)
+
+`mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X
+.f32.e2m1.e2m1.f32.ue4m3` ASSEMBLES AND RUNS on RTX 5060 Ti via
+`--generate-code=arch=compute_120a,code=sm_120a` (test_blackwell_tc_mma).
+Calibration facts (empirical, harness committed):
+
+- e2m1 relative values match std table {0,.5,1,1.5,2,3,4,6} exactly; absolute
+  per-element product carries an unexplained 1/16.
+- Scale-byte response D(E) = 2^(E-1) => effective per-side decode
+  f(E)=2^((E-7)/2): half the repo decoder exponent ((e4+120)<<23 = 2^(E-7)).
+- Byte-position anomaly: SFA byte0-only yields 4x the all-four-bytes result,
+  contradicting the documented "all four bytes contribute" for scale_vec::4X.
+
+Next steps: asymmetric A/B metadata probes + mantissa-response sweep to pin
+the operand semantics; then fragment-layout derivation via the committed
+single-bit calibration sweeps (A-slot and PAIR modes already in the harness).
