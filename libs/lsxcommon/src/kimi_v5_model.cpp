@@ -1,0 +1,176 @@
+#include "kimi_v5_model.h"
+
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+
+#include <filesystem>
+#include <shared_mutex>
+
+#include "kimi_inference_kernels.h"
+#include "lsxcommon/kimi_convert.h"
+#include "lsxcommon/log.h"
+#include "lsxcommon/model_runtime.h"
+#include "lsxcommon/resource_governor.h"
+
+namespace lsxcommon {
+
+const std::string KimiK27CodeModel::kType = "kimi-k2.7-code";
+
+KimiK27CodeModel::KimiK27CodeModel(ModelInitConfig cfg)
+    : ModelBase{std::move(cfg)} {}
+
+KimiK27CodeModel::~KimiK27CodeModel() { Unload(); }
+
+bool KimiK27CodeModel::EnsureExecutionContext()
+{
+    if (!stream_ && cudaStreamCreateWithFlags(&stream_,
+                                              cudaStreamNonBlocking) !=
+                        cudaSuccess) {
+        stream_ = nullptr;
+        return false;
+    }
+    if (!cublas_ && cublasCreate(&cublas_) != CUBLAS_STATUS_SUCCESS) {
+        cublas_ = nullptr;
+        return false;
+    }
+    cublasSetStream(cublas_, stream_);
+    return true;
+}
+
+void KimiK27CodeModel::TeardownWeights()
+{
+    permanent_lease_ = {};
+    kimi::free_kimi_expert_index(experts_);
+    pw_.Free();
+    if (cublas_) { cublasDestroy(cublas_); cublas_ = nullptr; }
+    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    resident_bytes_ = 0;
+}
+
+bool KimiK27CodeModel::Load()
+{
+    Unload();  // idempotent re-load support
+    if (!BeginLoad(cfg_.model_path)) return false;
+
+    namespace fs = std::filesystem;
+
+    if (!EnsureExecutionContext()) {
+        log::error("[kimi-model] cublas/stream init failed");
+        tok_db_.reset();
+        return false;
+    }
+
+    const cudaError_t e =
+        kimi::LoadKimiPinnedWeights(cfg_.model_path, pw_, stream_);
+    if (e != cudaSuccess ||
+        pw_.hidden != kimi::kKimiHidden ||
+        pw_.layers.size() != static_cast<size_t>(kimi::kKimiNumLayers) ||
+        !pw_.d_embed || !pw_.d_head) {
+        log::error(std::string(
+                       "[kimi-model] pinned-weight load/validation failed: ") +
+                   (e != cudaSuccess ? cudaGetErrorString(e)
+                                     : "geometry mismatch"));
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    experts_ = kimi::load_kimi_expert_index(cfg_.model_path,
+                                            kimi::kKimiNumLayers,
+                                            kimi::kKimiNumRouted);
+    if (experts_.num_layers != kimi::kKimiNumLayers ||
+        experts_.experts_per_layer != kimi::kKimiNumRouted) {
+        log::error("[kimi-model] expert index incomplete");
+        TeardownWeights();
+        tok_db_.reset();
+        return false;
+    }
+
+    auto &gov = ResourceGovernor::Instance();
+    if (!permanent_lease_.Valid() && gov.IsInitialized()) {
+        permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
+                                       pw_.resident_bytes, LeasePolicy{});
+        if (!permanent_lease_.Valid() &&
+            !gov.options().relax_memory_refusal) {
+            log::error("[kimi-model] permanent-weight lease refused");
+            TeardownWeights();
+            tok_db_.reset();
+            return false;
+        }
+    }
+
+    resident_bytes_ = pw_.resident_bytes;
+    log::info("[kimi-model] loaded once: resident="
+              + std::to_string(pw_.resident_bytes) + " bytes");
+    FinishLoad();
+    return true;
+}
+
+gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
+{
+    gpu::InferenceResult r;
+    if (!ValidateInferRequest(req, r)) return r;
+    if (!loaded_ || !pw_.d_embed) {
+        r.error_msg = "model not loaded (call Load(); weights are no longer "
+                      "reloaded per Infer call)";
+        r.ok = false;
+        return r;
+    }
+
+    kimi::KimiGenerationResult gen;
+    {
+        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
+        const cudaError_t e = kimi::RunKimiGeneration(
+            cublas_, stream_, pw_, experts_, req.input_ids,
+            req.max_gen_tokens, gen);
+        if (e != cudaSuccess || !gen.ok) {
+            r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;
+            r.ok = false;
+            return r;
+        }
+    }
+
+    r.ok = true;
+    r.num_tokens = static_cast<int>(gen.tokens.size());
+    r.num_layers = kimi::kKimiNumLayers;
+    if (!gen.tokens.empty()) {
+        r.first_gen_tok_id = gen.tokens[0];
+        r.first_gen_maxv = gen.first_maxv;
+    }
+    r.gen_tokens = std::move(gen.tokens);
+    r.final_logits = std::move(gen.final_logits);
+    r.kv_slots_used = gen.kv_slots_used;
+    r.ttft_ms = gen.ttft_ms;
+    r.total_time_ms = gen.total_ms;
+    r.tokens_per_sec = (gen.total_ms > 0.0)
+                           ? (r.gen_tokens.size() / (gen.total_ms / 1000.0))
+                           : 0.0;
+    r.eos_terminated = gen.eos_terminated;
+    r.weight_resident_bytes = resident_bytes_;
+
+    if (!r.gen_tokens.empty())
+        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
+    return r;
+}
+
+void KimiK27CodeModel::Unload()
+{
+    TeardownWeights();
+    tok_db_.reset();
+    loaded_ = false;
+}
+
+gpu::InferenceResult KimiK27CodeModel::SelfCheck(const ModelRequest &req)
+{
+    return runtime::RunParisSelfCheck(*this, req);
+}
+
+gpu::BenchmarkResult KimiK27CodeModel::Benchmark(int num_tokens)
+{
+    // Kimi benchmark harness lands with the real-model validation task.
+    (void)num_tokens;
+    return {};
+}
+
+} // namespace lsxcommon

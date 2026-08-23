@@ -2,6 +2,7 @@
 
 #include "deepseek_v4_flash_model.h"
 #include "glm_v5_model.h"
+#include "kimi_v5_model.h"
 #include "qwen_v5_model.h"
 #include "qwen_3_8_27b_model.h"
 
@@ -17,6 +18,10 @@ void EnsureModelRegistry()
         LsxModelFactory::Register(GlmV5Model::kType,
             [](const ModelInitConfig &cfg) {
                 return std::make_unique<GlmV5Model>(cfg);
+            });
+        LsxModelFactory::Register(KimiK27CodeModel::kType,
+            [](const ModelInitConfig &cfg) {
+                return std::make_unique<KimiK27CodeModel>(cfg);
             });
         LsxModelFactory::Register(Qwen3_5_9BModel::kType,
             [](const ModelInitConfig &cfg) {

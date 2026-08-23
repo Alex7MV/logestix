@@ -728,5 +728,393 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
     return cudaGetLastError();
 }
 
+// ── Full generation loop (greedy decode, single stream) ────────────────────
+
+namespace {
+
+__global__ void kimi_embed_kernel(const __half *__restrict__ embed,
+                                  const int *__restrict__ ids, int n_tokens,
+                                  int hidden, __half *__restrict__ out)
+{
+    const int t = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= hidden) return;
+    out[(size_t)t * hidden + i] = embed[(size_t)ids[t] * hidden + i];
+}
+
+// Out-of-place RMSNorm rows [seq x n]: dst = LN(src).
+__global__ void kimi_rmsnorm_rows_op_kernel(const __half *__restrict__ src,
+                                            const __half *__restrict__ w,
+                                            __half *__restrict__ dst, int n)
+{
+    const int token = blockIdx.x;
+    __shared__ float s_ss;
+    if (threadIdx.x == 0) s_ss = 0.0f;
+    __syncthreads();
+    const __half *srow = src + (size_t)token * n;
+    __half *drow = dst + (size_t)token * n;
+    float ss = 0.0f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        ss += __half2float(srow[i]) * __half2float(srow[i]);
+    atomicAdd(&s_ss, ss);
+    __syncthreads();
+    const float inv = rsqrtf(s_ss / static_cast<float>(n) + kKimiRmsEps);
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        drow[i] =
+            __float2half(__half2float(srow[i]) * __half2float(w[i]) * inv);
+}
+
+// Argmax over one FP32 logits row; deterministic lowest-id tie-break.
+__global__ void kimi_argmax_kernel(const float *__restrict__ logits, int n,
+                                   int *__restrict__ best_id,
+                                   float *__restrict__ best_val)
+{
+    __shared__ float s_val[kRouterMaxBlock];
+    __shared__ int s_idx[kRouterMaxBlock];
+    const int tid = threadIdx.x;
+    float local = -INFINITY;
+    int idx = -1;
+    for (int i = tid; i < n; i += blockDim.x)
+        if (logits[i] > local) {
+            local = logits[i];
+            idx = i;
+        }
+    s_val[tid] = local;
+    s_idx[tid] = idx;
+    __syncthreads();
+    if (tid == 0) {
+        float m = -INFINITY;
+        int bi = -1;
+        for (int i = 0; i < blockDim.x; ++i)
+            if (s_idx[i] >= 0 && s_val[i] > m) {
+                m = s_val[i];
+                bi = s_idx[i];
+            }
+        *best_id = bi;
+        *best_val = m;
+    }
+}
+
+} // namespace
+
+namespace {
+
+cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
+                           const KimiPinnedWeights &pw, KimiExpertDb &db,
+                           KimiMlaState *d_states, float *d_bias_all,
+                           void *d_staging, size_t staging_bytes,
+                           __half *d_scratch_a, __half *d_scratch_b,
+                           __half *d_mlp_g, __half *d_mlp_u, __half *d_mlp_h,
+                           float *d_scores, int *d_top_ids, float *d_top_w,
+                           int turn, int base, int seq)
+{
+    cublasSetStream(cublas_h, stream);
+    const float alpha = 1.0f, beta0 = 0.0f;
+
+    for (int l = 0; l < kKimiNumLayers; ++l) {
+        const KimiLayerWeights &lw = pw.layers[l];
+
+        // 1. input_layernorm -> scratch_b.
+        kimi_rmsnorm_rows_op_kernel<<<dim3(seq), 256, 0, stream>>>(
+            d_scratch_a + (size_t)base * kKimiHidden, lw.d_input_norm,
+            d_scratch_b + (size_t)base * kKimiHidden, kKimiHidden);
+
+        // 2. MLA attention: out = normed + attn(normed) -> scratch_a.
+        cudaError_t ae = RunKimiMlaAttention(
+            stream, turn, lw, seq,
+            d_scratch_b + (size_t)base * kKimiHidden,
+            d_scratch_a + (size_t)base * kKimiHidden,
+            d_states + l, cublas_h);
+        if (ae != cudaSuccess) return ae;
+
+        // 3. post_attention_layernorm -> scratch_b.
+        kimi_rmsnorm_rows_op_kernel<<<dim3(seq), 256, 0, stream>>>(
+            d_scratch_a + (size_t)base * kKimiHidden, lw.d_post_attn_norm,
+            d_scratch_b + (size_t)base * kKimiHidden, kKimiHidden);
+
+        if (lw.d_router_gate) {
+            // ── MoE path ──
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                         kKimiNumRouted, seq, kKimiHidden, &alpha,
+                         lw.d_router_gate, CUDA_R_16F, kKimiHidden,
+                         d_scratch_b + (size_t)base * kKimiHidden,
+                         CUDA_R_16F, kKimiHidden, &beta0,
+                         d_scores, CUDA_R_32F, kKimiNumRouted,
+                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+
+            // Residual seed: acc rows start as the normed activations.
+            cudaMemcpyAsync(d_scratch_a + (size_t)base * kKimiHidden,
+                            d_scratch_b + (size_t)base * kKimiHidden,
+                            (size_t)seq * kKimiHidden * sizeof(__half),
+                            cudaMemcpyDeviceToDevice, stream);
+
+            // Shared expert (weight 1.0).
+            if ((int)pw.shared_host.size() > l &&
+                pw.shared_host[l].w1_packed) {
+                const PackedExpertView &v = pw.shared_host[l];
+                KimiExpertEntry se;
+                se.host_w1 = v.w1_packed;
+                se.host_w2 = v.w2_packed;
+                se.host_w3 = v.w3_packed;
+                se.host_w1_scales = v.w1_scales;
+                se.host_w2_scales = v.w2_scales;
+                se.host_w3_scales = v.w3_scales;
+                se.w1_global_scale = v.w1_global_scale;
+                se.w2_global_scale = v.w2_global_scale;
+                se.w3_global_scale = v.w3_global_scale;
+                se.w1_bytes = v.w1_packed_bytes;
+                se.w2_bytes = v.w2_packed_bytes;
+                se.w3_bytes = v.w3_packed_bytes;
+                se.w1_scales_bytes = v.w1_scale_bytes;
+                se.w2_scales_bytes = v.w2_scale_bytes;
+                se.w3_scales_bytes = v.w3_scale_bytes;
+                for (int t = 0; t < seq; ++t) {
+                    cudaError_t ee = RunKimiExpertFfn(
+                        cublas_h, stream, se, 1.0f,
+                        d_scratch_b + (size_t)(base + t) * kKimiHidden,
+                        d_scratch_a + (size_t)(base + t) * kKimiHidden,
+                        d_staging, staging_bytes);
+                    if (ee != cudaSuccess) return ee;
+                }
+            }
+
+            // Routed top-k per token row.
+            for (int t = 0; t < seq; ++t) {
+                const __half *row =
+                    d_scratch_b + (size_t)(base + t) * kKimiHidden;
+                __half *acc =
+                    d_scratch_a + (size_t)(base + t) * kKimiHidden;
+                cudaError_t re = KimiRouterTopK(
+                    d_scores, d_bias_all + (size_t)l * kKimiNumRouted,
+                    kKimiNumRouted, kKimiTopK, d_top_ids, d_top_w, stream);
+                if (re != cudaSuccess) return re;
+                int h_ids[kKimiTopK];
+                float h_w[kKimiTopK];
+                cudaMemcpyAsync(h_ids, d_top_ids, sizeof(h_ids),
+                                cudaMemcpyDeviceToHost, stream);
+                cudaMemcpyAsync(h_w, d_top_w, sizeof(h_w),
+                                cudaMemcpyDeviceToHost, stream);
+                cudaStreamSynchronize(stream);   // ids needed on host
+                for (int k = 0; k < kKimiTopK; ++k) {
+                    ensure_kimi_expert_resident(db, l, h_ids[k], stream);
+                    cudaError_t fe = RunKimiExpertFfn(
+                        cublas_h, stream,
+                        db.entries[(size_t)l * kKimiNumRouted + h_ids[k]],
+                        h_w[k], row, acc, d_staging, staging_bytes);
+                    if (fe != cudaSuccess) return fe;
+                }
+            }
+        } else {
+            // ── Dense MLP path (layer 0) ──
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                         kKimiDenseIntermediate, seq, kKimiHidden, &alpha,
+                         lw.d_mlp_gate, CUDA_R_16F, kKimiHidden,
+                         d_scratch_b + (size_t)base * kKimiHidden,
+                         CUDA_R_16F, kKimiHidden, &beta0,
+                         d_mlp_g, CUDA_R_16F, kKimiDenseIntermediate,
+                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                         kKimiDenseIntermediate, seq, kKimiHidden, &alpha,
+                         lw.d_mlp_up, CUDA_R_16F, kKimiHidden,
+                         d_scratch_b + (size_t)base * kKimiHidden,
+                         CUDA_R_16F, kKimiHidden, &beta0,
+                         d_mlp_u, CUDA_R_16F, kKimiDenseIntermediate,
+                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            {
+                const int64_t n = (int64_t)seq * kKimiDenseIntermediate;
+                kimi_swiglu_kernel<<<static_cast<unsigned>((n + 255) / 256),
+                                     256, 0, stream>>>(d_mlp_g, d_mlp_u,
+                                                       d_mlp_h, n);
+            }
+            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                         kKimiHidden, seq, kKimiDenseIntermediate, &alpha,
+                         lw.d_mlp_down, CUDA_R_16F, kKimiDenseIntermediate,
+                         d_mlp_h, CUDA_R_16F, kKimiDenseIntermediate, &beta0,
+                         d_mlp_g, CUDA_R_16F, kKimiHidden,
+                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+            {
+                int total = seq * kKimiHidden;
+                int block = 256;
+                int grid = (total + block - 1) / block;
+                kimi_residual_add_kernel<<<grid, block, 0, stream>>>(
+                    d_scratch_a + (size_t)base * kKimiHidden, d_mlp_g,
+                    d_scratch_a + (size_t)base * kKimiHidden, total);
+            }
+        }
+    }
+    return cudaSuccess;
+}
+
+} // namespace
+
+cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+                              const KimiPinnedWeights &pw, KimiExpertDb &db,
+                              const std::vector<int> &prompt_ids,
+                              int max_gen_tokens, KimiGenerationResult &gen)
+{
+    gen = {};
+    if (!pw.d_embed || !pw.d_head ||
+        pw.layers.size() != static_cast<size_t>(kKimiNumLayers)) {
+        gen.error_msg = "weights not loaded / geometry mismatch";
+        return cudaErrorInvalidValue;
+    }
+    if (prompt_ids.empty() || max_gen_tokens <= 0) {
+        gen.error_msg = "empty prompt / bad max_gen_tokens";
+        return cudaErrorInvalidValue;
+    }
+
+    cublasSetStream(cublas_h, stream);
+    const auto t0 = std::chrono::steady_clock::now();
+
+    KimiMlaState *d_states = nullptr;
+    if (cudaMalloc(&d_states, kKimiNumLayers * sizeof(KimiMlaState)) !=
+        cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    for (int l = 0; l < kKimiNumLayers; ++l)
+        KimiMlaReset(d_states + l, stream);
+
+    float *d_bias_all = nullptr;
+    if (cudaMalloc(&d_bias_all,
+                   (size_t)kKimiNumLayers * kKimiNumRouted * sizeof(float)) !=
+        cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    for (int l = 0; l < kKimiNumLayers; ++l) {
+        const KimiLayerWeights &lw = pw.layers[l];
+        if (lw.h_gate_bias && lw.gate_bias_n == kKimiNumRouted)
+            cudaMemcpyAsync(d_bias_all + (size_t)l * kKimiNumRouted,
+                            lw.h_gate_bias, kKimiNumRouted * sizeof(float),
+                            cudaMemcpyHostToDevice, stream);
+    }
+
+    void *d_staging = nullptr;
+    const size_t staging_bytes = KimiExpertFfnStagingBytes();
+    if (cudaMalloc(&d_staging, staging_bytes) != cudaSuccess)
+        return cudaErrorMemoryAllocation;
+
+    std::vector<int> ids = prompt_ids;
+    const int prefill_seq = static_cast<int>(ids.size());
+    const int max_total = prefill_seq + max_gen_tokens;
+
+    int *d_ids = nullptr;
+    if (cudaMalloc(&d_ids, (size_t)max_total * sizeof(int)) !=
+        cudaSuccess)
+        return cudaErrorMemoryAllocation;
+    cudaMemcpyAsync(d_ids, ids.data(), ids.size() * sizeof(int),
+                    cudaMemcpyHostToDevice, stream);
+
+    __half *d_hidden = nullptr, *d_scratch_b = nullptr;
+    __half *d_mlp_g = nullptr, *d_mlp_u = nullptr, *d_mlp_h = nullptr;
+    float *d_scores = nullptr, *d_logits = nullptr, *d_bestv = nullptr;
+    float *d_top_w = nullptr;
+    int *d_top_ids = nullptr, *d_best = nullptr;
+    cudaError_t e = cudaSuccess;
+#define KIMI_ALLOC(var, count)                                             \
+    if (e == cudaSuccess)                                                  \
+        e = cudaMalloc(reinterpret_cast<void **>(&var),                    \
+                       static_cast<size_t>(count) * sizeof(*var))
+    KIMI_ALLOC(d_hidden, (size_t)max_total * kKimiHidden);
+    KIMI_ALLOC(d_scratch_b, (size_t)max_total * kKimiHidden);
+    KIMI_ALLOC(d_mlp_g, (size_t)max_total * kKimiDenseIntermediate);
+    KIMI_ALLOC(d_mlp_u, (size_t)max_total * kKimiDenseIntermediate);
+    KIMI_ALLOC(d_mlp_h, (size_t)max_total * kKimiDenseIntermediate);
+    KIMI_ALLOC(d_scores, kKimiNumRouted);
+    KIMI_ALLOC(d_logits, kKimiVocab);
+    KIMI_ALLOC(d_bestv, 1);
+    KIMI_ALLOC(d_top_ids, kKimiTopK);
+    KIMI_ALLOC(d_top_w, kKimiTopK);
+    KIMI_ALLOC(d_best, 1);
+#undef KIMI_ALLOC
+    if (e != cudaSuccess) {
+        gen.error_msg = "workspace alloc failed";
+        return e;
+    }
+
+    int generated = 0;
+    for (int step = 0; step <= max_gen_tokens; ++step) {
+        if (step == 0) {
+            dim3 grid((kKimiHidden + 255) / 256, prefill_seq);
+            kimi_embed_kernel<<<grid, 256, 0, stream>>>(
+                pw.d_embed, d_ids, prefill_seq, kKimiHidden, d_hidden);
+        } else {
+            dim3 grid((kKimiHidden + 255) / 256, 1);
+            kimi_embed_kernel<<<grid, 256, 0, stream>>>(
+                pw.d_embed, d_ids + prefill_seq + step - 1, 1, kKimiHidden,
+                d_hidden + (size_t)(prefill_seq + step - 1) * kKimiHidden);
+        }
+
+        const int base = (step == 0) ? 0 : (prefill_seq + step - 1);
+        const int seq = (step == 0) ? prefill_seq : 1;
+        e = KimiLayerStack(cublas_h, stream, pw, db, d_states, d_bias_all,
+                           d_staging, staging_bytes, d_hidden, d_scratch_b,
+                           d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
+                           d_top_w, step, base, seq);
+        if (e != cudaSuccess) {
+            gen.error_msg = "layer stack failed";
+            return e;
+        }
+
+        // Final norm (last row) -> logits -> argmax.
+        kimi_rmsnorm_rows_op_kernel<<<dim3(1), 256, 0, stream>>>(
+            d_hidden + (size_t)(base + seq - 1) * kKimiHidden,
+            pw.d_final_norm, d_scratch_b, kKimiHidden);
+        cublasSetStream(cublas_h, stream);
+        const float alpha = 1.0f, beta0 = 0.0f;
+        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                     kKimiVocab, 1, kKimiHidden, &alpha,
+                     pw.d_head, CUDA_R_16F, kKimiHidden,
+                     d_scratch_b, CUDA_R_16F, kKimiHidden, &beta0,
+                     d_logits, CUDA_R_32F, kKimiVocab,
+                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
+            d_logits, kKimiVocab, d_best, d_bestv);
+
+        int next_id = -1;
+        float next_maxv = 0.0f;
+        cudaMemcpyAsync(&next_id, d_best, sizeof(int),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);   // greedy decode needs the id
+
+        if (step == 0) {
+            gen.ttft_ms =
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+        }
+        if (next_id < 0) {
+            gen.error_msg = "argmax failed";
+            return cudaErrorUnknown;
+        }
+
+        if (step > 0 || true) {
+            // Every loop iteration produces one token (prefill pass produces
+            // the first sampled token from the full prompt).
+            gen.tokens.push_back(next_id);
+            ++generated;
+            if (generated == 1) gen.first_maxv = next_maxv;
+            ids.push_back(next_id);
+            cudaMemcpyAsync(d_ids + prefill_seq + step, &next_id,
+                            sizeof(int), cudaMemcpyHostToDevice, stream);
+        }
+
+        constexpr int kKimiEosId = 163586;
+        if (next_id == kKimiEosId) {
+            gen.eos_terminated = true;
+            break;
+        }
+        if (generated >= max_gen_tokens) break;
+    }
+
+    gen.final_logits.resize(kKimiVocab);
+    cudaMemcpy(gen.final_logits.data(), d_logits,
+               kKimiVocab * sizeof(float), cudaMemcpyDeviceToHost);
+    gen.kv_slots_used = prefill_seq + generated;
+    gen.ok = true;
+    gen.total_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    return cudaSuccess;
+}
+
 } // namespace kimi
 } // namespace lsxcommon

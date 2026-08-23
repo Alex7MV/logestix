@@ -23,6 +23,7 @@ add_library(lsxcommon STATIC
     src/glm_convert.cpp
     src/kimi_convert.cpp
     src/kimi_inference_load.cpp
+    src/kimi_v5_model.cpp
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp
     src/loader.cpp

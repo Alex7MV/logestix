@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace lsxcommon {
 namespace kimi {
@@ -49,6 +50,27 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
 
 // Upper bound of the staging requirement of RunKimiExpertFfn.
 size_t KimiExpertFfnStagingBytes();
+
+struct KimiGenerationResult {
+    std::vector<int> tokens;      // generated tokens only (never the prompt)
+    float first_maxv = 0.0f;
+    bool ok = false;
+    bool eos_terminated = false;
+    int kv_slots_used = 0;
+    double ttft_ms = 0.0;
+    double total_ms = 0.0;
+    std::string error_msg;
+    std::vector<float> final_logits;
+};
+
+// Greedy full generation: embed -> 61-layer stack (MLA + MoE) per step ->
+// final norm + lm_head + argmax. Prefill covers the whole prompt in one pass;
+// every decoded step runs seq=1. Entire loop async on `stream`; the only
+// synchronization happens when the caller drains results.
+cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+                              const KimiPinnedWeights &pw, KimiExpertDb &db,
+                              const std::vector<int> &prompt_ids,
+                              int max_gen_tokens, KimiGenerationResult &gen);
 
 } // namespace kimi
 } // namespace lsxcommon
