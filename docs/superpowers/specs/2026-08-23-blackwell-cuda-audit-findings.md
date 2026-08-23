@@ -15,8 +15,22 @@ status, and before/after measurements when available.
 
 ## Baseline measurements (Phase 0)
 
-Filled during execution. Format per model:
-`<model> @ <gpu>: <tok/s> decode, ttft <ms>, total <ms> (<gen tokens>)`
+Machine: RTX 5060 Ti 16GB, Windows 11, Debug build (`windows-debug` preset),
+prompt "The capital of France is", `LSX_TEST_PERF_GEN_TOKENS=16` default.
+GLM-5.2 SKIP: checkpoint not present on this machine (vault has
+DeepSeek-V4-Flash + Qwen3.5-9B only).
+
+| Model | tok/s | ttft_ms | total_ms | gen_tokens | resident_mb |
+|---|---|---|---|---|---|
+| qwen3.5-9b | 0.6 | 6931.4 | 26458.4 | 16 | 8755 |
+| deepseek-v4-flash | 0.2 | 37187.0 | 81292.1 | 17 | 11694 |
+| glm-5.2 | n/a | n/a | n/a | n/a | n/a |
+
+Notable pre-fix observations:
+- DeepSeek ttft (37s) dwarfs decode — prefill path dominates; F-04 sync sits at
+  the end of that pipeline.
+- Qwen ttft ~7s for a 6-token prompt also indicates prefill-side overhead, not
+  just first-token latency.
 
 ## New findings discovered during execution
 
