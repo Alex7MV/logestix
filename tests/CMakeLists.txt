@@ -464,6 +464,46 @@ endif()
 add_test(NAME test_blackwell_perf_glm COMMAND test_blackwell_perf_glm)
 set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Blackwell audit Phase 0: Qwen3.5-9B perf baseline harness.
+add_executable(test_blackwell_perf_qwen test_blackwell_perf_qwen.cpp)
+target_link_libraries(test_blackwell_perf_qwen PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_qwen POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_qwen POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_qwen COMMAND test_blackwell_perf_qwen)
+set_tests_properties(test_blackwell_perf_qwen PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
+add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
+target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_deepseek POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_deepseek>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_deepseek COMMAND test_blackwell_perf_deepseek)
+set_tests_properties(test_blackwell_perf_deepseek PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
 #    block_rows = P (полная длина промпта), каждый промпт-токен занимает один
 #    IndexShare KV-слот. FAIL при коллапсе строк (kv_slots_used != P + gen),

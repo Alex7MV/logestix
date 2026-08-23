@@ -1,0 +1,86 @@
+// TDD — Blackwell perf baseline for DeepSeek-V4-Flash (audit Phase 0).
+// Reporting test: measures decode throughput and logs a machine-readable
+// summary. SKIPs without the real model (SKIP_RETURN_CODE 4).
+#include <catch2/catch_test_macros.hpp>
+
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include <spdlog/spdlog.h>
+
+#include <lsxcommon/model.h>
+#include <lsxcommon/model_factory.h>
+#include <lsxcommon/path_registry.h>
+#include <lsxcommon/tokenizer.h>
+
+namespace {
+
+std::filesystem::path DeepSeekModelPath()
+{
+    const char *env = std::getenv("LSX_TEST_DEEPSEEK_MODEL_PATH");
+    return env ? std::filesystem::path(env)
+               : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
+                     "DeepSeek-V4-Flash";
+}
+
+int PerfGenTokens()
+{
+    if (const char *p = std::getenv("LSX_TEST_PERF_GEN_TOKENS")) {
+        const int n = std::atoi(p);
+        if (n >= 1) return n;
+    }
+    return 16;
+}
+
+// DeepSeek consumes the raw prompt (no chat-template framing).
+std::vector<int32_t> EncodePerfPrompt(lsxcommon::ArrowTokenizerDb &tok)
+{
+    const char *prompt = "The capital of France is";
+    std::vector<int32_t> ids(512, 0);
+    size_t cap = ids.size();
+    const int32_t n = lsxcommon::arrow_tokenizer_encode(
+        tok, prompt, std::strlen(prompt), ids.data(), &cap);
+    if (n <= 0) return {};
+    ids.resize(static_cast<size_t>(n));
+    return ids;
+}
+
+} // namespace
+
+TEST_CASE("DeepSeek-V4-Flash perf baseline: decode throughput",
+          "[deepseek][perf][real-model]")
+{
+    const std::filesystem::path model = DeepSeekModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("DeepSeek real model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Type() == "deepseek-v4-flash");
+    REQUIRE(m->Load());
+
+    const std::vector<int32_t> ids = EncodePerfPrompt(m->Tokenizer());
+    REQUIRE(ids.size() > 0);
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = PerfGenTokens();
+
+    auto r = m->Infer(req);
+    REQUIRE(r.ok);
+    REQUIRE(!r.gen_tokens.empty());
+
+    SPDLOG_INFO("[PERF][deepseek-v4-flash] tok/s={:.1f} ttft_ms={:.2f} "
+                "total_ms={:.2f} gen_tokens={} resident_mb={:.0f}",
+                r.tokens_per_sec, r.ttft_ms, r.total_time_ms,
+                r.gen_tokens.size(),
+                static_cast<double>(r.weight_resident_bytes) /
+                    (1024.0 * 1024.0));
+
+    m->Unload();
+}
