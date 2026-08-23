@@ -1089,6 +1089,25 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                                    static_cast<int64_t>(seq) * H);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
+    {
+        static const bool probe =
+            std::getenv("LSX_TEST_GEMMA_PROBE") != nullptr;
+        if (probe && layer_idx == 0 && seq > 0) {
+            std::vector<__nv_bfloat16> h(8);
+            cudaError_t pe = cudaMemcpyAsync(h.data(), ws.d_x, 8 * 2,
+                                             cudaMemcpyDeviceToHost, stream);
+            if (pe == cudaSuccess) {
+                pe = cudaStreamSynchronize(stream);
+                if (pe == cudaSuccess) {
+                    printf("[probe0] x0..7=");
+                    for (int i = 0; i < 8; ++i)
+                        printf("%g ", __bfloat162float(h[i]));
+                    printf("\n");
+                    fflush(stdout);
+                }
+            }
+        }
+    }
     return cudaSuccess;
 }
 
