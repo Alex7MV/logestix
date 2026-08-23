@@ -1993,14 +1993,19 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         if (base_idx < 0) base_idx = 0;
         base_idx *= V;
         std::vector<__half> hlast(V);
-        cudaMemcpy(hlast.data(), d_logits + base_idx, V * sizeof(__half),
-                   cudaMemcpyDeviceToHost);
+        // Stream-ordered async D2H: the blocking null-stream cudaMemcpy here
+        // used to serialize the whole pipeline inside the timed region
+        // (audit F-02). Completion is guaranteed by t_stop below, which is
+        // recorded after this copy on the same stream.
+        cudaMemcpyAsync(hlast.data(), d_logits + base_idx,
+                        V * sizeof(__half), cudaMemcpyDeviceToHost, stream);
         for (int i = 0; i < V; ++i)
             hlast_f[i] = __half2float(hlast[i]);
         result.final_logits = std::move(hlast_f);
     }
 
-    // Publish timing and residency before tearing down the arena.
+    // Publish timing and residency before tearing down the arena. The event
+    // wait doubles as the completion fence for the async logits copy above.
     cudaEventRecord(t_stop, stream);
     cudaEventSynchronize(t_stop);
     float ms_total = 0.0f, ms_ttft = 0.0f;

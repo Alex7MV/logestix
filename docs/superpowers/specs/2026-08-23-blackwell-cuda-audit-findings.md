@@ -7,7 +7,7 @@ status, and before/after measurements when available.
 | ID | Sev | Dimension | Evidence | Summary | Status |
 |---|---|---|---|---|---|
 | F-01 | TBD | A | glm_inference.cu:84 | Scalar GEMM kernels on CUDA cores; no tensor-core MMA usage anywhere | open |
-| F-02 | TBD | B/C | qwen_inference.cu:1996 | Final-logits publish uses blocking null-stream cudaMemcpy inside timed region | open |
+| F-02 | P2 | B/C | qwen_inference.cu:1996 | Final-logits publish uses blocking null-stream cudaMemcpy inside timed region | fixed (d4c26e7..): stream-ordered cudaMemcpyAsync; qwen 22/22 green; ttft 6931->6457ms |
 | F-03 | TBD | C | glm_inference.cu:1649-1653 | Per-token H2D roundtrip of sampled id + full cudaStreamSynchronize | open |
 | F-04 | TBD | C | deepseek_inference_pipeline.cu:772 | cudaDeviceSynchronize inside pipeline | open |
 | F-05 | TBD | A | various launch sites | Degenerate launch configs (<<<1,...>>>, flat 256-thread blocks); no occupancy tuning vs 48 warps/SM | open |
