@@ -422,8 +422,16 @@ __global__ void qwen_nvfp4_gemm_tile_kernel(
 {
     static_assert(BM * BN == 256, "one thread per output element (256)");
 
+    // Audit F-01 (measured): reading kE2M1Table straight from __constant__
+    // serializes 16-way inside the staging loop because adjacent threads
+    // decode different nibbles, and constant-cache broadcast only covers
+    // warp-uniform addresses. Mirror the table into shared memory once per
+    // block: identical float values, so results stay bit-exact.
+    __shared__ float sE2M1[16];
     __shared__ __half sX[BM][BK];
     __shared__ __half sW[BN][BK];
+    if (threadIdx.x < 16) sE2M1[threadIdx.x] = kE2M1Table[threadIdx.x];
+    __syncthreads();
     const int m0 = blockIdx.x * BM;      // token tile
     const int n0 = blockIdx.y * BN;      // output-column tile
     const int bi = threadIdx.x;          // 0 .. BM*BN-1
@@ -449,7 +457,7 @@ __global__ void qwen_nvfp4_gemm_tile_kernel(
                 const uint8_t byte = packed[e >> 1];
                 const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
                 const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
-                wv = kE2M1Table[nib] * scl;
+                wv = sE2M1[nib] * scl;
             }
             sW[w_bn][kk] = __float2half(wv);
         }

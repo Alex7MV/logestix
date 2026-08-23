@@ -57,6 +57,11 @@ set_target_properties(lsxcommon PROPERTIES
 
 enable_language(CUDA)
 
+# Opt-in per-kernel resource report (registers / smem / local memory) printed
+# by nvcc at compile time. Diagnostic only — zero effect on generated code.
+option(LSX_NVCC_RES_USAGE
+    "Pass -res-usage to nvcc (print register/smem usage per kernel)" OFF)
+
 # Shared CUDA-target plumbing for the two OBJECT libraries below (NVCC include
 # paths + CCCL/MSVC compile definitions). lsxcommon_cu carries the general
 # kernels (NVFP4 quantizer, benchmark, DeepSeek inference); lsxcommon_glm_cu
@@ -107,8 +112,9 @@ set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
 target_include_directories(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_DEFS})
@@ -130,8 +136,9 @@ set_target_properties(lsxcommon_glm_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_glm_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
 target_include_directories(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_DEFS})
@@ -150,8 +157,9 @@ set_target_properties(lsxcommon_qwen_cu PROPERTIES
     CUDA_STANDARD_REQUIRED ON
 )
 target_compile_options(lsxcommon_qwen_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
 target_include_directories(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_DEFS})

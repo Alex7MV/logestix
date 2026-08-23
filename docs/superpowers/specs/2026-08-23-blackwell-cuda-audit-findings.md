@@ -6,7 +6,7 @@ status, and before/after measurements when available.
 
 | ID | Sev | Dimension | Evidence | Summary | Status |
 |---|---|---|---|---|---|
-| F-01 | TBD | A | glm_inference.cu:84 | Scalar GEMM kernels on CUDA cores; no tensor-core MMA usage anywhere | open |
+| F-01 | P0 | A | glm_inference.cu:84; qwen_inference.cu:388-475 | Scalar GEMM kernels on CUDA cores; no tensor-core MMA usage anywhere. MEASURED (micro-bench `test_blackwell_micro_gemm`): NVFP4 tile GEMM ~17-19 GB/s effective vs 448 GB/s roofline (~25x gap) on sm_120; ptxas: 32 regs / 2112 B smem / no spills -> latency-bound single dependent-FMA chain, NOT resource-bound. Root cause of missing "tens of tok/s" | open -> Phase 3 (native mxf4nvf4 tensor-core MMA) |
 | F-02 | P2 | B/C | qwen_inference.cu:1996 | Final-logits publish uses blocking null-stream cudaMemcpy inside timed region | fixed (d4c26e7..): stream-ordered cudaMemcpyAsync; qwen 22/22 green; ttft 6931->6457ms |
 | F-03 | P1 | C | glm_inference.cu:1649-1653 | Per-token H2D roundtrip of sampled id + full cudaStreamSynchronize | fixed: device-side embed feed from d_argmax->best + event-scoped fence; glm 19/19 green (реальные веса GLM отсутствуют на стенде — прогон без real-model тестов) |
 | F-04 | P1 | C | deepseek_inference_pipeline.cu:772 | cudaDeviceSynchronize inside pipeline | fixed: stream-scoped fence (pipeline owns a single stream); deepseek 8/8 green; ttft 37187->26562ms (-29%), total 81292->59059ms (-27%), tok/s 0.2->0.3 |
@@ -52,6 +52,18 @@ test_qwen_kv_cache).
 |---|---|---|---|---|---|
 | F-07 | P1 | E | tests/test_schema_views.cpp:20 | Dead `#include <unistd.h>` broke MSVC build of the whole test tree (committed from Linux; symbol unused) | fixed (d4c26e7) |
 
-## New findings discovered during execution
+### Compiler flags audit (2026-08-23)
 
-Append below with next free F-nn.
+- `-G` (device debug, kills ptxas optimizations): ABSENT from all configs
+  (CMakeCache + vcxproj verified). Debug builds keep device code at ptxas -O3;
+  only host code is unoptimized.
+- `--expt-relaxed-constexpr` ADDED to lsxcommon_cu / lsxcommon_glm_cu /
+  lsxcommon_qwen_cu / test_qwen_cu: without it, calling a host-side constexpr
+  function from device code outside constant-evaluation context is formal UB
+  (CUDA 13.3 docs); belt-and-braces alongside --extended-lambda.
+- `LSX_NVCC_RES_USAGE=ON` CMake option added: passes nvcc `-res-usage`
+  (registers/smem per kernel). Diagnostic-only, zero codegen effect.
+  Profiled: qwen_nvfp4_gemm_tile_kernel<16,16,32> = 32 regs / 2112 B smem /
+  1 barrier; no spills in lsxcommon_qwen_cu.
+- Bit-exactness re-verified after flag changes: test_qwen_nvfp4_tile_gemm
+  green (incl. memcmp bit-exact case); perf unchanged (24647 ms total).
