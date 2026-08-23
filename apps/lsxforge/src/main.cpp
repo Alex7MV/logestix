@@ -11,6 +11,7 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/glm_convert.h"
+#include "lsxcommon/kimi_convert.h"
 #include "lsxcommon/qwen_convert.h"
 #include "lsxcommon/log.h"
 #include <arrow/api.h>
@@ -38,6 +39,7 @@ ABSL_FLAG(bool, repack_shared, false, "re-pack shared experts into shared_expert
 ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)");
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
 ABSL_FLAG(bool, glm, false, "GLM-5.2 conversion pipeline");
+ABSL_FLAG(bool, kimi, false, "Kimi-K2.7-Code conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
@@ -226,6 +228,7 @@ int main(int argc, char* argv[]) {
     }
     bool verify_only = absl::GetFlag(FLAGS_verify);
     bool glm = absl::GetFlag(FLAGS_glm);
+    bool kimi = absl::GetFlag(FLAGS_kimi);
     bool qwen = absl::GetFlag(FLAGS_qwen);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
@@ -378,6 +381,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("GLM conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (kimi) {
+        lsxcommon::log::info("Kimi-K2.7-Code pipeline (logestix-kimi layout)");
+        auto st = lsxcommon::kimi::ConvertKimiModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat("Kimi conversion failed: {}", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Kimi conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
