@@ -3,6 +3,7 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/expert_store.h"
 
+#include <cuda_bf16.h>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -52,17 +53,17 @@ constexpr int kKimiORows = kKimiHidden;                                   // 716
 // layer file lacks the tensor.
 struct KimiLayerWeights {
     // Layer norms
-    __half *d_input_norm = nullptr;
-    __half *d_post_attn_norm = nullptr;
+    __nv_bfloat16 *d_input_norm = nullptr;
+    __nv_bfloat16 *d_post_attn_norm = nullptr;
 
     // MLA attention (raw BF16 → FP16)
-    __half *d_q_a_proj = nullptr;
-    __half *d_q_a_norm = nullptr;
-    __half *d_q_b_proj = nullptr;
-    __half *d_kv_a_proj = nullptr;
-    __half *d_kv_a_norm = nullptr;
-    __half *d_kv_b_proj = nullptr;
-    __half *d_o_proj = nullptr;
+    __nv_bfloat16 *d_q_a_proj = nullptr;
+    __nv_bfloat16 *d_q_a_norm = nullptr;
+    __nv_bfloat16 *d_q_b_proj = nullptr;
+    __nv_bfloat16 *d_kv_a_proj = nullptr;
+    __nv_bfloat16 *d_kv_a_norm = nullptr;
+    __nv_bfloat16 *d_kv_b_proj = nullptr;
+    __nv_bfloat16 *d_o_proj = nullptr;
     int64_t q_a_rows = 0, q_a_cols = 0;
     int64_t q_b_rows = 0, q_b_cols = 0;
     int64_t kv_a_rows = 0, kv_a_cols = 0;
@@ -70,14 +71,14 @@ struct KimiLayerWeights {
     int64_t o_rows = 0, o_cols = 0;
 
     // Router (MoE layers 1..60): mlp.gate.weight + e_score_correction_bias
-    __half *d_router_gate = nullptr;
+    __nv_bfloat16 *d_router_gate = nullptr;
     float *h_gate_bias = nullptr;
     int gate_bias_n = 0;
 
     // Dense MLP (layer 0 only)
-    __half *d_mlp_gate = nullptr;
-    __half *d_mlp_down = nullptr;
-    __half *d_mlp_up = nullptr;
+    __nv_bfloat16 *d_mlp_gate = nullptr;
+    __nv_bfloat16 *d_mlp_down = nullptr;
+    __nv_bfloat16 *d_mlp_up = nullptr;
 
     // Non-null when the layer was uploaded arena-backed: every d_* pointer
     // above is a view into this single allocation and Free() releases the
@@ -89,9 +90,9 @@ struct KimiLayerWeights {
 };
 
 struct KimiPinnedWeights {
-    __half *d_embed = nullptr;
-    __half *d_head = nullptr;
-    __half *d_final_norm = nullptr;
+    __nv_bfloat16 *d_embed = nullptr;
+    __nv_bfloat16 *d_head = nullptr;
+    __nv_bfloat16 *d_final_norm = nullptr;
     int vocab_size = 0;
     int hidden = 0;
     std::vector<KimiLayerWeights> layers;   // indexed by layer 0..60
@@ -159,8 +160,8 @@ void free_kimi_expert_index(KimiExpertDb &db);
 constexpr int kKimiMaxSlots = 1024;
 
 struct alignas(16) KimiMlaState {
-    __half kv[kKimiMaxSlots][kKimiKvLoraRank];    // cached latents
-    __half k_rope[kKimiMaxSlots][kKimiQkRope];    // shared roped keys
+    __nv_bfloat16 kv[kKimiMaxSlots][kKimiKvLoraRank];    // cached latents
+    __nv_bfloat16 k_rope[kKimiMaxSlots][kKimiQkRope];    // shared roped keys
     int n_used = 0;        // occupied slot count
     int turn_id = -1;      // last appended turn
 };
@@ -185,8 +186,8 @@ cudaError_t KimiMlaReset(KimiMlaState *d_state, cudaStream_t stream);
 // pos_offset: absolute RoPE position of the first row of this pass.
 cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 const KimiLayerWeights &lw, int seq,
-                                const __half *d_hidden,
-                                const __half *d_residual, __half *d_out,
+                                const __nv_bfloat16 *d_hidden,
+                                const __nv_bfloat16 *d_residual, __nv_bfloat16 *d_out,
                                 KimiMlaState *d_state,
                                 cublasHandle_t cublas_h, int base_slot,
                                 int pos_offset);

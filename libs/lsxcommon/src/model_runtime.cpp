@@ -81,8 +81,9 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req)
         }
     }
     lsxcommon::log::info(absl::StrFormat(
-        "[selfcheck] top1_tok={} text='{}' passed={}", r.first_gen_tok_id,
-        r.first_gen_text, r.selfcheck_passed ? "true" : "false"));
+        "[selfcheck] top1_tok=%d text='%s' passed=%s",
+        static_cast<int>(r.first_gen_tok_id), r.first_gen_text.c_str(),
+        r.selfcheck_passed ? "true" : "false"));
     return r;
 }
 

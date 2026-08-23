@@ -34,15 +34,15 @@ float Frand(int seed, int i)
     return (static_cast<float>(v % 20001) - 10000.0f) / 10000.0f;
 }
 
-__half *DevHalf(const std::vector<float> &host)
+__nv_bfloat16 *DevHalf(const std::vector<float> &host)
 {
-    __half *d = nullptr;
-    if (cudaMalloc(&d, host.size() * sizeof(__half)) != cudaSuccess)
+    __nv_bfloat16 *d = nullptr;
+    if (cudaMalloc(&d, host.size() * sizeof(__nv_bfloat16)) != cudaSuccess)
         return nullptr;
-    std::vector<__half> tmp(host.size());
+    std::vector<__nv_bfloat16> tmp(host.size());
     for (size_t i = 0; i < host.size(); ++i)
-        tmp[i] = __float2half(host[i]);
-    cudaMemcpy(d, tmp.data(), tmp.size() * sizeof(__half),
+        tmp[i] = __float2bfloat16_rn(host[i]);
+    cudaMemcpy(d, tmp.data(), tmp.size() * sizeof(__nv_bfloat16),
                cudaMemcpyHostToDevice);
     return d;
 }
@@ -220,9 +220,9 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     std::vector<float> xf(H * seq);
     for (size_t i = 0; i < xf.size(); ++i)
         xf[i] = 0.5f * Frand(7, static_cast<int>(i));
-    __half *d_x = DevHalf(xf);
-    __half *d_out = nullptr;
-    cudaMalloc(&d_out, H * seq * sizeof(__half));
+    __nv_bfloat16 *d_x = DevHalf(xf);
+    __nv_bfloat16 *d_out = nullptr;
+    cudaMalloc(&d_out, H * seq * sizeof(__nv_bfloat16));
 
     KimiMlaState *d_state = nullptr;
     cudaMalloc(&d_state, sizeof(KimiMlaState));
@@ -245,8 +245,8 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
     }
 
-    std::vector<__half> out(H * seq);
-    cudaMemcpy(out.data(), d_out, H * seq * sizeof(__half),
+    std::vector<__nv_bfloat16> out(H * seq);
+    cudaMemcpy(out.data(), d_out, H * seq * sizeof(__nv_bfloat16),
                cudaMemcpyDeviceToHost);
 
     std::vector<float> ref(H * seq, 0.0f);
@@ -259,17 +259,17 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
         for (int i = 0; i < H; ++i)
             terr = std::max(terr,
                 static_cast<double>(std::fabs(
-                    __half2float(out[t * H + i]) - ref[t * H + i])));
+                    __bfloat162float(out[t * H + i]) - ref[t * H + i])));
         WARN("token " << t << " max abs error: " << terr
-             << " gpu[0..2]=[" << __half2float(out[t * H])
-             << "," << __half2float(out[t * H + 1]) << ","
-             << __half2float(out[t * H + 2]) << "]"
+             << " gpu[0..2]=[" << __bfloat162float(out[t * H])
+             << "," << __bfloat162float(out[t * H + 1]) << ","
+             << __bfloat162float(out[t * H + 2]) << "]"
              << " ref[0..2]=[" << ref[t * H] << "," << ref[t * H + 1]
              << "," << ref[t * H + 2] << "]");
     }
     for (size_t i = 0; i < out.size(); ++i)
         max_err = std::max(max_err,
-                static_cast<double>(std::fabs(__half2float(out[i]) - ref[i])));
+                static_cast<double>(std::fabs(__bfloat162float(out[i]) - ref[i])));
     INFO("max abs error: " << max_err);
     CHECK(max_err <= 0.35);
 
@@ -279,17 +279,17 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     CHECK(st_host.n_used == seq);
     for (int t = 0; t < seq; ++t)
         WARN("slot" << t << " c[0..2]=["
-             << __half2float(st_host.kv[t][0]) << ","
-             << __half2float(st_host.kv[t][1]) << ","
-             << __half2float(st_host.kv[t][2]) << "]"
-             << " kr[0..1]=[" << __half2float(st_host.k_rope[t][0])
-             << "," << __half2float(st_host.k_rope[t][1]) << "]");
+             << __bfloat162float(st_host.kv[t][0]) << ","
+             << __bfloat162float(st_host.kv[t][1]) << ","
+             << __bfloat162float(st_host.kv[t][2]) << "]"
+             << " kr[0..1]=[" << __bfloat162float(st_host.k_rope[t][0])
+             << "," << __bfloat162float(st_host.k_rope[t][1]) << "]");
 
     // ── Batched prefill cross-check ──
     {
         REQUIRE(KimiMlaReset(d_state, stream) == cudaSuccess);
-        std::vector<__half> out_b(H * seq, __float2half(0.f));
-        cudaMemcpy(d_out, out_b.data(), out_b.size() * sizeof(__half),
+        std::vector<__nv_bfloat16> out_b(H * seq, __float2bfloat16_rn(0.f));
+        cudaMemcpy(d_out, out_b.data(), out_b.size() * sizeof(__nv_bfloat16),
                    cudaMemcpyHostToDevice);
         cudaError_t err =
             RunKimiMlaAttention(stream, 0, lw, seq, d_x, d_x, d_out,
@@ -301,18 +301,18 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
                    cudaMemcpyDeviceToHost);
         for (int t = 0; t < seq; ++t)
             WARN("bslot" << t << " c[0..2]=["
-                 << __half2float(st_b.kv[t][0]) << ","
-                 << __half2float(st_b.kv[t][1]) << ","
-                 << __half2float(st_b.kv[t][2]) << "]");
-        std::vector<__half> ob(H * seq);
-        cudaMemcpy(ob.data(), d_out, ob.size() * sizeof(__half),
+                 << __bfloat162float(st_b.kv[t][0]) << ","
+                 << __bfloat162float(st_b.kv[t][1]) << ","
+                 << __bfloat162float(st_b.kv[t][2]) << "]");
+        std::vector<__nv_bfloat16> ob(H * seq);
+        cudaMemcpy(ob.data(), d_out, ob.size() * sizeof(__nv_bfloat16),
                    cudaMemcpyDeviceToHost);
         for (int t = 0; t < seq; ++t) {
             double terr = 0.0;
             for (int i = 0; i < H; ++i)
                 terr = std::max(terr,
                     static_cast<double>(std::fabs(
-                        __half2float(ob[t * H + i]) - ref[t * H + i])));
+                        __bfloat162float(ob[t * H + i]) - ref[t * H + i])));
             WARN("batched token " << t << " err=" << terr);
         }
     }

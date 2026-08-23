@@ -70,10 +70,10 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         cudaError_t e = cudaMalloc(&pw.d_embed,
             static_cast<size_t>(pw.vocab_size) * pw.hidden * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(embed->data,
-                                  static_cast<int64_t>(pw.vocab_size) *
-                                      pw.hidden,
-                                  pw.d_embed, stream, bytes_acc);
+        e = ring.UploadRaw(embed->data, pw.d_embed,
+                                  static_cast<size_t>(pw.vocab_size) *
+                                      pw.hidden * 2,
+                                  stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] embed upload failed: ")
                        + cudaGetErrorString(e));
@@ -92,7 +92,8 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         int64_t numel = head->shape[0] * head->shape[1];
         cudaError_t e = cudaMalloc(&pw.d_head, static_cast<size_t>(numel) * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(head->data, numel, pw.d_head,
+        e = ring.UploadRaw(head->data, pw.d_head,
+                                  static_cast<size_t>(numel) * 2,
                                   stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] head upload failed: ")
@@ -107,8 +108,9 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
                                    static_cast<size_t>(norm->shape[0]) * 2);
         if (e != cudaSuccess) return e;
-        e = ring.UploadBf16AsFp16(norm->data, norm->shape[0],
-                                  pw.d_final_norm, stream, bytes_acc);
+        e = ring.UploadRaw(norm->data, pw.d_final_norm,
+                                  static_cast<size_t>(norm->shape[0]) * 2,
+                                  stream, bytes_acc);
         if (e != cudaSuccess) {
             log::error(std::string("[kimi_load] model.norm upload failed: ")
                        + cudaGetErrorString(e));
@@ -124,7 +126,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
 
 struct Fp16Job {
     const TensorView *t;
-    __half **dst;
+    __nv_bfloat16 **dst;
     int64_t *rows;   // optional row capture (2D only)
     int64_t *cols;   // optional col capture (2D only)
 };
@@ -191,13 +193,12 @@ cudaError_t UploadJobs(std::vector<Fp16Job> jobs, KimiLayerWeights &lw,
         const auto &j = jobs[i];
         if (!j.t) continue;
         off = AlignUp(off, kArenaAlign);
-        __half *view = static_cast<__half *>(arena) + off / 2;
+        __nv_bfloat16 *view = static_cast<__nv_bfloat16 *>(arena) + off / 2;
         *j.dst = view;
         if (shapes[i].is_2d && j.rows)
             { *j.rows = j.t->shape[0]; *j.cols = j.t->shape[1]; }
-        cudaError_t e = ring.UploadBf16AsFp16(j.t->data,
-                            static_cast<int64_t>(shapes[i].numel),
-                            view, stream, bytes_acc);
+        cudaError_t e = ring.UploadRaw(j.t->data, view,
+                            shapes[i].numel * 2, stream, bytes_acc);
         if (e != cudaSuccess) return e;
         off += shapes[i].numel * 2;
     }

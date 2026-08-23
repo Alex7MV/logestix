@@ -44,8 +44,8 @@ cudaError_t KimiRouterTopK(const float *d_scores, const float *d_bias,
 // Staging layout is internal; sizes are derived from kKimi* geometry.
 cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                              const KimiExpertEntry &expert,
-                             float expert_weight, const __half *d_x,
-                             __half *d_out, void *d_staging,
+                             float expert_weight, const __nv_bfloat16 *d_x,
+                             __nv_bfloat16 *d_out, void *d_staging,
                              size_t staging_bytes);
 
 // Upper bound of the staging requirement of RunKimiExpertFfn.

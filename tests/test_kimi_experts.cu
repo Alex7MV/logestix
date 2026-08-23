@@ -104,15 +104,15 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     // Input row.
     std::vector<float> xf(Hd);
     for (int i = 0; i < Hd; ++i) xf[i] = 0.5f * Frand(7, i);
-    __half *d_x = nullptr;
+    __nv_bfloat16 *d_x = nullptr;
     {
-        std::vector<__half> tmp(Hd);
-        for (int i = 0; i < Hd; ++i) tmp[i] = __float2half(xf[i]);
+        std::vector<__nv_bfloat16> tmp(Hd);
+        for (int i = 0; i < Hd; ++i) tmp[i] = __float2bfloat16_rn(xf[i]);
         REQUIRE(cudaMalloc(&d_x, Hd * 2) == cudaSuccess);
         REQUIRE(cudaMemcpy(d_x, tmp.data(), Hd * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
     }
-    __half *d_out = nullptr;
+    __nv_bfloat16 *d_out = nullptr;
     REQUIRE(cudaMalloc(&d_out, Hd * 2) == cudaSuccess);
     REQUIRE(cudaMemset(d_out, 0, Hd * 2) == cudaSuccess);
 
@@ -130,7 +130,7 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     REQUIRE(err == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
-    std::vector<__half> out_h(Hd);
+    std::vector<__nv_bfloat16> out_h(Hd);
     REQUIRE(cudaMemcpy(out_h.data(), d_out, Hd * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
@@ -155,7 +155,7 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     for (int k = 0; k < I; ++k) {
         double g = 0, u = 0;
         for (int j = 0; j < Hd; ++j) {
-            double xv = __half2float(__float2half(xf[j]));
+            double xv = __bfloat162float(__float2bfloat16_rn(xf[j]));
             g += dw1[static_cast<size_t>(k) * Hd + j] * xv;
             u += dw3[static_cast<size_t>(k) * Hd + j] * xv;
         }
@@ -166,7 +166,7 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
         double acc = 0.0;
         for (int k = 0; k < I; ++k)
             acc += h_act[k] * dw2[static_cast<size_t>(o) * I + k];
-        double got = __half2float(out_h[o]);
+        double got = __bfloat162float(out_h[o]);
         ref_scale = std::max(ref_scale, std::abs(acc));
         max_abs = std::max(max_abs, std::abs(got - acc));
     }
