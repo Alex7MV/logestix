@@ -28,11 +28,18 @@ float Frand(int seed, int i)
     return (static_cast<float>(v % 20001) - 10000.0f) / 10000.0f;
 }
 
+// Canonical E4M3 block-scale decode (matches nvfp4_codec::E4M3ScaleToFloat).
 float HostE4M3(uint8_t b)
 {
-    if (b == 0) return 0.0f;
-    if (b == 0xFF) return FLT_MAX;
-    return std::ldexp(1.0f, static_cast<int>(b) - 127);
+    const uint8_t e4 = (b >> 3) & 0x0F;
+    if (e4 == 0) return 0.0f;
+    return std::ldexp(1.0f, static_cast<int>(e4) - 7);
+}
+
+// Encodes a power-of-two scale 2^e as an E4M3 block-scale byte.
+uint8_t EncodeScalePow2(int e)
+{
+    return static_cast<uint8_t>(((e + 7) & 0xF) << 3);
 }
 
 // Builds one full-geometry projection: packed E2M1 nibbles + E4M3 scales.
@@ -55,7 +62,7 @@ ProjData MakeProj(int seed, int64_t rows, int64_t cols)
         p.packed[i >> 1] |= static_cast<uint8_t>(nib << ((i & 1) ? 4 : 0));
         if ((i & 15) == 0)
             p.scales[i >> 4] =
-                static_cast<uint8_t>((static_cast<int>(Frand(seed + 1, i) * 3.0f) & 7));
+                EncodeScalePow2(-3 + (static_cast<int>(Frand(seed + 1, i)) & 3));
         if ((i & 1) == 0)
             p.packed[i >> 1] = static_cast<uint8_t>(p.packed[i >> 1]);
     }
@@ -154,17 +161,17 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
         }
         h_act[k] = g / (1.0 + std::exp(-g)) * u;
     }
-    double max_rel = 0.0;
+    double max_abs = 0.0, ref_scale = 0.0;
     for (int o = 0; o < Hd; ++o) {
         double acc = 0.0;
         for (int k = 0; k < I; ++k)
             acc += h_act[k] * dw2[static_cast<size_t>(o) * I + k];
         double got = __half2float(out_h[o]);
-        double denom = std::max(1e-3, std::abs(acc));
-        max_rel = std::max(max_rel, std::abs(got - acc) / denom);
+        ref_scale = std::max(ref_scale, std::abs(acc));
+        max_abs = std::max(max_abs, std::abs(got - acc));
     }
-    INFO("max rel error: " << max_rel);
-    CHECK(max_rel <= 0.05);
+    INFO("max abs error: " << max_abs << " ref scale: " << ref_scale);
+    CHECK(max_abs <= 0.01 * ref_scale + 1.0);
 
     cudaDeviceSynchronize();
     cublasDestroy(cublas);

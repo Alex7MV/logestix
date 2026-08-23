@@ -179,13 +179,17 @@ cudaError_t KimiMlaReset(KimiMlaState *d_state, cudaStream_t stream);
 //   score[h,s] = dot(W_k(h)·q_nope_h, c_s)/sqrt(192)*mscale
 //              + dot(q_rope_h, krope_s)/sqrt(192)*mscale
 //   out_h = W_v(h)·Σ_s p[h,s]·c_s       (absorbed value path)
-//   d_out = d_hidden + o_proj(concat heads)
+//   d_out = d_residual + o_proj(concat heads)
 // Whole pass async on the caller's stream (no host sync inside).
+// base_slot: first cache slot owned by this pass (chronological order);
+// pos_offset: absolute RoPE position of the first row of this pass.
 cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 const KimiLayerWeights &lw, int seq,
-                                const __half *d_hidden, __half *d_out,
+                                const __half *d_hidden,
+                                const __half *d_residual, __half *d_out,
                                 KimiMlaState *d_state,
-                                cublasHandle_t cublas_h);
+                                cublasHandle_t cublas_h, int base_slot,
+                                int pos_offset);
 
 } // namespace kimi
 } // namespace lsxcommon

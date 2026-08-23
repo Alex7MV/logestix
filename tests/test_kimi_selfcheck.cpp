@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -67,11 +68,22 @@ TEST_CASE("Kimi-K2.7-Code SelfCheck: 'The capital of France is' -> 'Paris', "
     const std::vector<int32_t> ids = EncodeSelfCheckPrompt(m->Tokenizer());
     REQUIRE(ids.size() > 0);
 
+    // DEBUG: decode round-trip of the prompt.
+    {
+        std::vector<char> buf(1024, 0);
+        size_t cap2 = buf.size();
+        lsxcommon::arrow_tokenizer_decode(
+            m->Tokenizer(), ids.data(), ids.size(), buf.data(), &cap2);
+        std::string decoded(buf.data(), cap2);
+        CHECK(decoded == "The capital of France is");   // encode round-trip
+    }
+
     lsxcommon::ModelRequest req;
     req.input_ids = ids;
     req.max_gen_tokens = 2;
 
     auto sc0 = m->SelfCheck(req);
+    if (!sc0.ok) FAIL("Infer not ok: " + sc0.error_msg);
     REQUIRE(sc0.ok);
     REQUIRE(sc0.selfcheck_passed);
     CHECK(!sc0.final_logits.empty());

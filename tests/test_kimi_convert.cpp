@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsxcommon/kimi_inference_load.h"
 #include "lsxcommon/kimi_convert.h"
+#include "lsxcommon/model_integrity.h"
+#include "lsxcommon/path_registry.h"
 
 using lsxcommon::kimi::kimi_classify;
 using K = lsxcommon::kimi::KimiTensorKind;
@@ -106,4 +108,22 @@ TEST_CASE("ConvertKimiModel produces logestix-kimi layout", "[kimi][convert]") {
     REQUIRE(fs::exists(log_root / "pinned" / "layer_0.arrow"));
     REQUIRE(fs::exists(log_root / "pinned" / "layer_1.arrow"));
     REQUIRE(fs::exists(log_root / "pinned" / "layer_2.arrow"));
+}
+
+#include <cstdlib>
+
+TEST_CASE("Kimi vault conversion passes integrity verification",
+          "[kimi][convert][real-model]")
+{
+    const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
+    auto dir = env ? std::filesystem::path(env)
+                   : std::filesystem::path(
+                         lsxcommon::lsx_model_models_dir()) /
+                         "Kimi-K2.7-Code";
+    if (!std::filesystem::exists(dir / "logestix" / "model.index.json"))
+        SKIP("converted Kimi model not present");
+
+    auto vres = lsxcommon::integrity::VerifyConvertedModel(dir);
+    if (!vres.ok()) FAIL(vres.status().ToString());
+    REQUIRE(vres.ok());
 }

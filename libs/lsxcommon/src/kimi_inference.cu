@@ -180,6 +180,7 @@ cudaError_t KimiRouterTopK(const float *d_scores, const float *d_bias,
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <cmath>
+#include <cstdlib>
 #include <vector>
 
 namespace lsxcommon {
@@ -189,10 +190,12 @@ namespace {
 
 constexpr int kRopePairs = kKimiQkRope / 2;
 // YaRN attention-scale multiplier: mscale / sqrt(qk_nope + qk_rope).
+// HF DeepseekV3Attention: softmax_scale = q_head_dim^-0.5 * mscale^2
+// with mscale = yarn_get_mscale(factor, mscale_all_dim) = 0.1*ln(factor)+1.
 __device__ __host__ __forceinline__ float KimiAttnScale()
 {
-    return (0.1f * logf(kKimiYarnFactor) + 1.0f) *
-           rsqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
+    const float m = 0.1f * logf(kKimiYarnFactor) + 1.0f;
+    return m * m * rsqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
 }
 
 double YarnCorrectionDim(double num_rotations, double dim, double base,
@@ -204,28 +207,27 @@ double YarnCorrectionDim(double num_rotations, double dim, double base,
 
 std::vector<float> BuildYarnInvFreq()
 {
+    // Exact HF DeepseekV3RotaryEmbedding._set_cos_sin_cache math:
+    //   ramp(i)   = clamp((i - low) / (high - low), 0, 1)
+    //   inv_freq  = freq_inter * ramp + freq_extra * (1 - ramp)
+    // interpolated linearly over the PAIR INDEX (not the wavelength).
     const double dim = kKimiQkRope;
     const double base = kKimiRopeTheta;
     const double max_pos = kKimiYarnOriginalMaxPos;
-    const double low = std::floor(YarnCorrectionDim(32.0, dim, base, max_pos));
-    const double high = std::ceil(YarnCorrectionDim(1.0, dim, base, max_pos));
-    const double wl_low = 2.0 * M_PI * std::pow(base, 2.0 * low / dim);
-    const double wl_high = 2.0 * M_PI * std::pow(base, 2.0 * high / dim);
+    const double low =
+        std::floor(YarnCorrectionDim(32.0, dim, base, max_pos));
+    const double high =
+        std::ceil(YarnCorrectionDim(1.0, dim, base, max_pos));
 
     std::vector<float> inv_freq(kRopePairs);
     for (int i = 0; i < kRopePairs; ++i) {
-        const double f0 = std::pow(base, -2.0 * i / dim);
-        const double wavelen = 2.0 * M_PI / f0;
-        double out;
-        if (wavelen < wl_low) {
-            out = f0;
-        } else if (wavelen > wl_high) {
-            out = f0 / kKimiYarnFactor;
-        } else {
-            const double alpha = (wavelen - wl_high) / (wl_low - wl_high);
-            out = (1.0 - alpha) * (f0 / kKimiYarnFactor) + alpha * f0;
-        }
-        inv_freq[i] = static_cast<float>(out);
+        const double extra = std::pow(base, -2.0 * i / dim);
+        const double inter = extra / kKimiYarnFactor;
+        double ramp = (high != low)
+                          ? (static_cast<double>(i) - low) / (high - low)
+                          : 1.0;
+        ramp = std::min(std::max(ramp, 0.0), 1.0);
+        inv_freq[i] = static_cast<float>(inter * ramp + extra * (1.0 - ramp));
     }
     return inv_freq;
 }
@@ -237,10 +239,11 @@ std::vector<float> BuildYarnInvFreq()
 __global__ void kimi_kv_postprocess_kernel(__half *__restrict__ kvfull,
                                            __half *__restrict__ q_all,
                                            const __half *__restrict__ kv_a_norm,
-                                           int seq,
+                                           int pos_offset,
                                            const float *__restrict__ inv_freq)
 {
     const int token = blockIdx.x;
+    const int abs_pos = pos_offset + token;
     __shared__ float s_ss;
 
     __half *c = kvfull + (size_t)token * kKimiKvaRows;
@@ -263,8 +266,8 @@ __global__ void kimi_kv_postprocess_kernel(__half *__restrict__ kvfull,
     for (int pair = threadIdx.x; pair < kRopePairs; pair += blockDim.x) {
         __half *kr = c + kKimiKvLoraRank;
         float freq = inv_freq[pair];
-        float cs = cosf(freq * static_cast<float>(token));
-        float sn = sinf(freq * static_cast<float>(token));
+        float cs = cosf(freq * static_cast<float>(abs_pos));
+        float sn = sinf(freq * static_cast<float>(abs_pos));
         float x = __half2float(kr[pair]);
         float y = __half2float(kr[kRopePairs + pair]);
         kr[pair] = __float2half(x * cs - y * sn);
@@ -277,8 +280,8 @@ __global__ void kimi_kv_postprocess_kernel(__half *__restrict__ kvfull,
         __half *qr = qtok + h * (kKimiQkNope + kKimiQkRope) + kKimiQkNope;
         for (int pair = threadIdx.x; pair < kRopePairs; pair += blockDim.x) {
             float freq = inv_freq[pair];
-            float cs = cosf(freq * static_cast<float>(token));
-            float sn = sinf(freq * static_cast<float>(token));
+            float cs = cosf(freq * static_cast<float>(abs_pos));
+            float sn = sinf(freq * static_cast<float>(abs_pos));
             float x = __half2float(qr[pair]);
             float y = __half2float(qr[kRopePairs + pair]);
             qr[pair] = __float2half(x * cs - y * sn);
@@ -290,15 +293,12 @@ __global__ void kimi_kv_postprocess_kernel(__half *__restrict__ kvfull,
 // Appends this turn's latents + roped keys to cache slots.
 __global__ void kimi_mla_append_kernel(KimiMlaState *__restrict__ st,
                                        const __half *__restrict__ kvfull,
-                                       int seq)
+                                       int seq, int base_slot)
 {
-    __shared__ int s_slot;
-    if (threadIdx.x == 0)
-        s_slot = atomicAdd(&st->n_used, 1);
-    __syncthreads();
-    const int slot = s_slot;
+    const int slot = base_slot + blockIdx.x;
     const int token = blockIdx.x;
     const int j = threadIdx.x;
+    if (token == 0 && j == 0) st->n_used = base_slot + seq;
     const __half *c = kvfull + (size_t)token * kKimiKvaRows;
     if (j < kKimiKvLoraRank) st->kv[slot][j] = c[j];
     else if (j < kKimiKvLoraRank + kKimiQkRope)
@@ -322,18 +322,21 @@ __global__ void kimi_mla_attn_kernel(
     const __half *__restrict__ kv_b,          // [16384 x 512] row-major fp16
     const KimiMlaState *__restrict__ st,
     __half *__restrict__ attn_out,            // [seq x 7168] row-major fp16
-    int seq)
+    int seq, int base_slot)
 {
     const int token = blockIdx.x;
     const int head = blockIdx.y;
     const int tid = threadIdx.x;
+    // Causal visibility: this token may attend to slots strictly below its
+    // own chronological position (its own slot included).
+    const int visible = base_slot + token + 1;
 
     const size_t qbase =
         (size_t)token * (kKimiNumHeads * (kKimiQkNope + kKimiQkRope)) +
         head * (kKimiQkNope + kKimiQkRope);
     const size_t kvrow_k = (size_t)head * 256;
     const size_t kvrow_v = (size_t)head * 256 + kKimiQkNope;
-    const int n_slots = st->n_used;
+    const int n_slots = visible;
 
     __shared__ float s_qeff[kKimiKvLoraRank];
     __shared__ float s_exp[1024];
@@ -415,7 +418,7 @@ __global__ void kimi_mla_attn_kernel(
         float acc = 0.0f;
         for (int j = 0; j < kKimiKvLoraRank; ++j)
             acc += __half2float(wrow[j]) * s_m[j];
-        attn_out[(size_t)token * kKimiHidden +
+        attn_out[(size_t)token * (kKimiNumHeads * kKimiHeadV) +
                  head * kKimiHeadV + j2] = __float2half(acc);
     }
 }
@@ -453,9 +456,11 @@ __global__ void kimi_rmsnorm_rows_kernel(__half *__restrict__ x,
 
 cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 const KimiLayerWeights &lw, int seq,
-                                const __half *d_hidden, __half *d_out,
+                                const __half *d_hidden,
+                                const __half *d_residual, __half *d_out,
                                 KimiMlaState *d_state,
-                                cublasHandle_t cublas_h)
+                                cublasHandle_t cublas_h, int base_slot,
+                                int pos_offset)
 {
     if (!lw.d_q_a_proj || !lw.d_kv_a_proj || !lw.d_o_proj || !d_state ||
         seq <= 0 || turn < 0)
@@ -480,7 +485,8 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
     constexpr size_t kMaxSeqChunk = 4096;
     const size_t need_elems =
         static_cast<size_t>(seq) *
-        (1536 + 12288 + 576 + 7168 + 7168);
+        (1536 + 12288 + 576 + kKimiNumHeads * kKimiHeadV +
+         kKimiHidden);
     (void)kMaxSeqChunk;
     static __half *ws = nullptr;
     static size_t ws_elems = 0;
@@ -496,8 +502,10 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
     __half *d_qa = ws;                 // [seq x 1536]
     __half *d_qall = d_qa + (size_t)seq * 1536;      // [seq x 12288]
     __half *d_kvfull = d_qall + (size_t)seq * 12288; // [seq x 576]
-    __half *d_attn = d_kvfull + (size_t)seq * 576;   // [seq x 7168]
-    __half *d_oproj = d_attn + (size_t)seq * 7168;   // [seq x 7168]
+    __half *d_attn =
+        d_kvfull + (size_t)seq * 576;                // [seq x 8192]
+    __half *d_oproj =
+        d_attn + (size_t)seq * (kKimiNumHeads * kKimiHeadV); // [seq x 7168]
 
     // 1. q_a projection.
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -529,17 +537,18 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 
     // 5. Postprocess: latent norm + key/query yarn rope.
     kimi_kv_postprocess_kernel<<<dim3(seq), 256, 0, stream>>>(
-        d_kvfull, d_qall, lw.d_kv_a_norm, seq, d_inv_freq);
+        d_kvfull, d_qall, lw.d_kv_a_norm, pos_offset, d_inv_freq);
 
-    // 6. Append latents+keys to cache slots.
+    // 6. Append latents+keys to cache slots (chronological, deterministic).
     kimi_mla_append_kernel<<<dim3(seq), kKimiKvLoraRank + kKimiQkRope, 0,
-                             stream>>>(d_state, d_kvfull, seq);
+                             stream>>>(d_state, d_kvfull, seq, base_slot);
+
 
     // 7. Fused absorbed attention.
     dim3 attn_grid(seq, kKimiNumHeads);
     kimi_mla_attn_kernel<<<attn_grid, 512,
                            0, stream>>>(d_qall, lw.d_kv_b_proj, d_state,
-                                        d_attn, seq);
+                                        d_attn, seq, base_slot);
 
     // 8. o_proj.
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -549,13 +558,14 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                  d_oproj, CUDA_R_16F, kKimiORows,
                  CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
+
     // 9. Residual add.
     {
         int total = seq * kKimiHidden;
         int block = 256;
         int grid = (total + block - 1) / block;
         kimi_residual_add_kernel<<<grid, block, 0, stream>>>(
-            d_hidden, d_oproj, d_out, total);
+            d_residual, d_oproj, d_out, total);
     }
 
     return cudaGetLastError();
@@ -568,11 +578,11 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 
 namespace {
 
+// Canonical E4M3 block-scale decode (nvfp4_codec semantics): only the
+// 4-bit exponent field participates; e4==0 -> 0.0.
 __device__ __forceinline__ float KimiE4M3(uint8_t b)
 {
-    if (b == 0) return 0.0f;
-    if (b == 0xFF) return FLT_MAX;
-    return __uint_as_float(static_cast<uint32_t>(b) << 23);
+    return lsxcommon::gpu::nvfp4::E4M3ScaleToFloat(b);
 }
 
 // Dequantizes one NVFP4 tensor (packed nibbles lo-first + per-16 E4M3 scales +
@@ -696,6 +706,8 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
     };
     dequant(p_w1, p_s1, expert.w1_global_scale, dq_gate, w13_el);
     dequant(p_w3, p_s3, expert.w3_global_scale, dq_up, w13_el);
+    dequant(p_w2, p_s2, expert.w2_global_scale, dq_down,
+            static_cast<int64_t>(Hd) * I);
 
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
@@ -724,6 +736,7 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
 
     kimi_accum_kernel<<<static_cast<unsigned>((Hd + 255) / 256), 256, 0,
                         stream>>>(y, expert_weight, d_out, Hd);
+
 
     return cudaGetLastError();
 }
@@ -806,7 +819,8 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                            __half *d_scratch_a, __half *d_scratch_b,
                            __half *d_mlp_g, __half *d_mlp_u, __half *d_mlp_h,
                            float *d_scores, int *d_top_ids, float *d_top_w,
-                           int turn, int base, int seq)
+                           int turn, int base, int seq, int base_slot,
+                           int pos_offset)
 {
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
@@ -814,6 +828,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
     for (int l = 0; l < kKimiNumLayers; ++l) {
         const KimiLayerWeights &lw = pw.layers[l];
 
+        cudaError_t trace_e = cudaGetLastError();   // clear
         // 1. input_layernorm -> scratch_b.
         kimi_rmsnorm_rows_op_kernel<<<dim3(seq), 256, 0, stream>>>(
             d_scratch_a + (size_t)base * kKimiHidden, lw.d_input_norm,
@@ -822,9 +837,10 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
         // 2. MLA attention: out = normed + attn(normed) -> scratch_a.
         cudaError_t ae = RunKimiMlaAttention(
             stream, turn, lw, seq,
-            d_scratch_b + (size_t)base * kKimiHidden,
-            d_scratch_a + (size_t)base * kKimiHidden,
-            d_states + l, cublas_h);
+            d_scratch_b + (size_t)base * kKimiHidden,   // normed input
+            d_scratch_a + (size_t)base * kKimiHidden,   // residual = x
+            d_scratch_a + (size_t)base * kKimiHidden,   // out
+            d_states + l, cublas_h, base_slot, pos_offset);
         if (ae != cudaSuccess) return ae;
 
         // 3. post_attention_layernorm -> scratch_b.
@@ -842,11 +858,8 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                          d_scores, CUDA_R_32F, kKimiNumRouted,
                          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
-            // Residual seed: acc rows start as the normed activations.
-            cudaMemcpyAsync(d_scratch_a + (size_t)base * kKimiHidden,
-                            d_scratch_b + (size_t)base * kKimiHidden,
-                            (size_t)seq * kKimiHidden * sizeof(__half),
-                            cudaMemcpyDeviceToDevice, stream);
+            // Residual contract: scratch_a still holds x (post-attention);
+            // expert FFNs accumulate their weighted outputs onto it.
 
             // Shared expert (weight 1.0).
             if ((int)pw.shared_host.size() > l &&
@@ -885,7 +898,8 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 __half *acc =
                     d_scratch_a + (size_t)(base + t) * kKimiHidden;
                 cudaError_t re = KimiRouterTopK(
-                    d_scores, d_bias_all + (size_t)l * kKimiNumRouted,
+                    d_scores + static_cast<size_t>(t) * kKimiNumRouted,
+                    d_bias_all + (size_t)l * kKimiNumRouted,
                     kKimiNumRouted, kKimiTopK, d_top_ids, d_top_w, stream);
                 if (re != cudaSuccess) return re;
                 int h_ids[kKimiTopK];
@@ -1017,7 +1031,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     KIMI_ALLOC(d_mlp_g, (size_t)max_total * kKimiDenseIntermediate);
     KIMI_ALLOC(d_mlp_u, (size_t)max_total * kKimiDenseIntermediate);
     KIMI_ALLOC(d_mlp_h, (size_t)max_total * kKimiDenseIntermediate);
-    KIMI_ALLOC(d_scores, kKimiNumRouted);
+    KIMI_ALLOC(d_scores, (size_t)max_total * kKimiNumRouted);
     KIMI_ALLOC(d_logits, kKimiVocab);
     KIMI_ALLOC(d_bestv, 1);
     KIMI_ALLOC(d_top_ids, kKimiTopK);
@@ -1044,12 +1058,14 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
 
         const int base = (step == 0) ? 0 : (prefill_seq + step - 1);
         const int seq = (step == 0) ? prefill_seq : 1;
+        const int base_slot = (step == 0) ? 0 : (prefill_seq + step - 1);
         e = KimiLayerStack(cublas_h, stream, pw, db, d_states, d_bias_all,
                            d_staging, staging_bytes, d_hidden, d_scratch_b,
                            d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
-                           d_top_w, step, base, seq);
+                           d_top_w, step, base, seq, base_slot, base);
         if (e != cudaSuccess) {
-            gen.error_msg = "layer stack failed";
+            gen.error_msg = std::string("layer stack failed: ") +
+                            cudaGetErrorString(e);
             return e;
         }
 
@@ -1067,6 +1083,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
             d_logits, kKimiVocab, d_best, d_bestv);
+
 
         int next_id = -1;
         float next_maxv = 0.0f;
