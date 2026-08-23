@@ -189,13 +189,13 @@ namespace kimi {
 namespace {
 
 constexpr int kRopePairs = kKimiQkRope / 2;
-// YaRN attention-scale multiplier: mscale / sqrt(qk_nope + qk_rope).
-// HF DeepseekV3Attention: softmax_scale = q_head_dim^-0.5 * mscale^2
-// with mscale = yarn_get_mscale(factor, mscale_all_dim) = 0.1*ln(factor)+1.
+// YaRN attention-scale: softmax_scale = q_head_dim^-0.5 * attn_factor.
+// Kimi config sets mscale = mscale_all_dim = 1.0, so the HF factor
+// yarn_get_mscale(f,mscale)/yarn_get_mscale(f,mscale_all_dim) is 1.0
+// and the scale degenerates to the plain inverse sqrt (no mscale boost).
 __device__ __host__ __forceinline__ float KimiAttnScale()
 {
-    const float m = 0.1f * logf(kKimiYarnFactor) + 1.0f;
-    return m * m * rsqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
+    return rsqrtf(static_cast<float>(kKimiQkNope + kKimiQkRope));
 }
 
 double YarnCorrectionDim(double num_rotations, double dim, double base,
@@ -214,6 +214,8 @@ std::vector<float> BuildYarnInvFreq()
     const double dim = kKimiQkRope;
     const double base = kKimiRopeTheta;
     const double max_pos = kKimiYarnOriginalMaxPos;
+    // Kimi rope_scaling config: beta_fast = 32.0, beta_slow = 1.0
+    // (NOT the DeepSeek default beta_slow = 128).
     const double low =
         std::floor(YarnCorrectionDim(32.0, dim, base, max_pos));
     const double high =
