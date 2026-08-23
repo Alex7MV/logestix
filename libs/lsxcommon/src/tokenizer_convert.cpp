@@ -488,9 +488,16 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
                     best_b = ib->second;
                 }
             }
-            if (best_a < 0)
-                return arrow::Status::Invalid(
-                    "tokenizer: no valid BPE split for id ", id);
+            if (best_a < 0) {
+                // Unreachable-from-bytes token (no binary split whose both
+                // halves are lower-id vocab members). It can never be
+                // produced by pairwise BPE, so skip it from the merges table;
+                // encoding of ordinary text is unaffected.
+                lsxcommon::log::debug(absl::StrCat(
+                    "tokenizer: no valid BPE split for id ", id,
+                    " (unreachable; skipped)"));
+                continue;
+            }
             MergeRow r;
             r.merge_left = best_a;
             r.merge_right = best_b;

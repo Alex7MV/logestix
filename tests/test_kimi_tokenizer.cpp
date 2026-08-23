@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxcommon/converter.h"
+#include "lsxcommon/path_registry.h"
 #include "lsxcommon/schema.h"
 
 #include <arrow/io/file.h>
@@ -186,4 +187,26 @@ TEST_CASE("BuildTokenizerArrowFilesTikToken fills sparse id gaps",
     auto vrows = TokenizerVocabSchema::UnpackBatch(*vres);
     REQUIRE(vrows.ok());
     REQUIRE(vrows->size() == 301);   // ids 0..300
+}
+
+#include <cstdlib>
+
+TEST_CASE("Kimi real vault tokenizer builds", "[kimi][tokenizer][real-model]")
+{
+    namespace fs = std::filesystem;
+    const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
+    auto dir = env ? fs::path(env)
+                   : fs::path(lsxcommon::lsx_model_models_dir()) /
+                         "Kimi-K2.7-Code";
+    if (!fs::exists(dir / "tiktoken.model"))
+        SKIP("vault Kimi tokenizer not present");
+
+    auto pinned = fs::temp_directory_path() / "kimi_tok_vault";
+    fs::remove_all(pinned);
+    fs::create_directories(pinned);
+    auto st = BuildTokenizerArrowFilesTikToken(
+        (dir / "tiktoken.model").string(),
+        (dir / "tokenizer_config.json").string(), pinned);
+    if (!st.ok()) FAIL(st.ToString());
+    REQUIRE(st.ok());
 }
