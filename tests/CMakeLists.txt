@@ -1642,3 +1642,26 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_model COMMAND test_kimi_model)
+
+# ── Тест Kimi SelfCheck (реальные веса; SKIP без модели) ──────────────────
+add_executable(test_kimi_selfcheck test_kimi_selfcheck.cpp)
+target_compile_definitions(test_kimi_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_selfcheck>"
+    )
+    add_custom_command(TARGET test_kimi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_kimi_selfcheck COMMAND test_kimi_selfcheck)
+set_tests_properties(test_kimi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
