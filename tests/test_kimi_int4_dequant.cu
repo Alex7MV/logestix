@@ -41,8 +41,9 @@ TEST_CASE("Kimi INT4 dequant matches CPU reference", "[kimi][int4]")
             scales[static_cast<size_t>(r) * groups + g] = FloatToBf16(s);
         }
         for (int c = 0; c < cols; ++c) {
+            // compressed-tensors pack-quantized symmetric int4: unsigned
+            // nibble with implicit zero-point 8 (offset binary).
             int nib = (r * 131 + c * 17) % 15;
-            if (nib > 7) nib -= 16;
             float s;
             {
                 uint32_t bits = static_cast<uint32_t>(
@@ -50,7 +51,7 @@ TEST_CASE("Kimi INT4 dequant matches CPU reference", "[kimi][int4]")
                 std::memcpy(&s, &bits, sizeof(s));
             }
             ref[static_cast<size_t>(r) * cols + c] =
-                FloatToBf16(static_cast<float>(nib) * s);
+                FloatToBf16(static_cast<float>(nib - 8) * s);
             packed[static_cast<size_t>(r) * words_per_row + c / 8] |=
                 ((nib & 0xF) << (4 * (c % 8)));
         }
@@ -89,46 +90,56 @@ TEST_CASE("Kimi INT4 dequant matches CPU reference", "[kimi][int4]")
     cudaFree(d_out);
 }
 
-TEST_CASE("Kimi INT4 dequant sign extends negative nibbles", "[kimi][int4]")
+TEST_CASE("Kimi INT4 dequant zero point maps nibble 8 to 0 and nibble 9 to +1",
+          "[kimi][int4]")
 {
     const int rows = 1;
     const int cols = 64;
     const int words_per_row = cols / 8;
 
-    std::vector<int> packed(words_per_row, 0x99999999); // nibble 9 -> -7
+    // compressed-tensors symmetric int4: unsigned nibble, implicit zero-point
+    // 8. Nibble 9 -> (9 - 8) * 0.5 = 0.5; nibble 0 -> -4.0.
+    std::vector<int> zeros(words_per_row, 0x88888888);
+    std::vector<int> nines(words_per_row, 0x99999999);
     std::vector<uint16_t> scales(cols / 32, FloatToBf16(0.5f));
-    uint16_t expected = FloatToBf16(-3.5f);
+    uint16_t expected_zero = FloatToBf16(0.0f);
+    uint16_t expected_nine = FloatToBf16(0.5f);
 
-    int *d_packed = nullptr;
-    uint16_t *d_scales = nullptr;
-    uint16_t *d_out = nullptr;
-    REQUIRE(cudaMalloc(&d_packed, packed.size() * sizeof(int)) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_scales, scales.size() * sizeof(uint16_t)) ==
-            cudaSuccess);
-    REQUIRE(cudaMalloc(&d_out,
-                       static_cast<size_t>(rows) * cols * sizeof(uint16_t)) ==
-            cudaSuccess);
-    REQUIRE(cudaMemcpy(d_packed, packed.data(), packed.size() * sizeof(int),
-                       cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(cudaMemcpy(d_scales, scales.data(),
-                       scales.size() * sizeof(uint16_t),
-                       cudaMemcpyHostToDevice) == cudaSuccess);
+    for (const auto &[packed_data, expected] :
+         {std::pair{&zeros, expected_zero}, {&nines, expected_nine}}) {
+        int *d_packed = nullptr;
+        uint16_t *d_scales = nullptr;
+        uint16_t *d_out = nullptr;
+        REQUIRE(cudaMalloc(&d_packed, packed_data->size() * sizeof(int)) ==
+                cudaSuccess);
+        REQUIRE(cudaMalloc(&d_scales, scales.size() * sizeof(uint16_t)) ==
+                cudaSuccess);
+        REQUIRE(cudaMalloc(&d_out,
+                           static_cast<size_t>(rows) * cols *
+                               sizeof(uint16_t)) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d_packed, packed_data->data(),
+                           packed_data->size() * sizeof(int),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d_scales, scales.data(),
+                           scales.size() * sizeof(uint16_t),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
 
-    cudaStream_t stream;
-    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
-    REQUIRE(KimiInt4DequantToBf16(d_packed, d_scales, rows, cols, d_out,
-                                  stream) == cudaSuccess);
-    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        cudaStream_t stream;
+        REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+        REQUIRE(KimiInt4DequantToBf16(d_packed, d_scales, rows, cols, d_out,
+                                      stream) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
-    std::vector<uint16_t> out(static_cast<size_t>(rows) * cols);
-    REQUIRE(cudaMemcpy(out.data(), d_out,
-                       out.size() * sizeof(uint16_t),
-                       cudaMemcpyDeviceToHost) == cudaSuccess);
-    for (uint16_t v : out)
-        REQUIRE(v == expected);
+        std::vector<uint16_t> out(static_cast<size_t>(rows) * cols);
+        REQUIRE(cudaMemcpy(out.data(), d_out,
+                           out.size() * sizeof(uint16_t),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        for (uint16_t v : out)
+            REQUIRE(v == expected);
 
-    cudaStreamDestroy(stream);
-    cudaFree(d_packed);
-    cudaFree(d_scales);
-    cudaFree(d_out);
+        cudaStreamDestroy(stream);
+        cudaFree(d_packed);
+        cudaFree(d_scales);
+        cudaFree(d_out);
+    }
 }

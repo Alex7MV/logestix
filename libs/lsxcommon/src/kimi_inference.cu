@@ -18,9 +18,10 @@ __global__ void kimi_int4_dequant_kernel(const int *__restrict__ packed,
         &scales[static_cast<size_t>(r) * (cols >> 5) + (c0 >> 5)]));
 #pragma unroll
     for (int k = 0; k < 8; ++k) {
+        // compressed-tensors pack-quantized symmetric int4: unsigned nibble
+        // with implicit zero-point 8 (offset binary), low nibble first.
         const int nib = (word >> (4 * k)) & 0xF;
-        const float v =
-            static_cast<float>(nib > 7 ? nib - 16 : nib) * s;
+        const float v = static_cast<float>(nib - 8) * s;
         __nv_bfloat16 h(v);
         out[static_cast<size_t>(r) * cols + c0 + k] =
             *reinterpret_cast<uint16_t *>(&h);
@@ -249,14 +250,21 @@ __global__ void kimi_kv_postprocess_kernel(__nv_bfloat16 *__restrict__ kvfull,
     __shared__ float s_ss;
 
     __nv_bfloat16 *c = kvfull + (size_t)token * kKimiKvaRows;
-    if (threadIdx.x == 0) s_ss = 0.0f;
-    __syncthreads();
+    // Deterministic block reduction (fixed-order partials + thread-0 commit):
+    // float atomicAdd would introduce run-to-run rounding nondeterminism.
+    __shared__ float s_part[256];
     float ss = 0.0f;
     for (int i = threadIdx.x; i < kKimiKvLoraRank; i += blockDim.x) {
         float v = __bfloat162float(c[i]);
         ss += v * v;
     }
-    atomicAdd(&s_ss, ss);
+    s_part[threadIdx.x] = ss;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float total = 0.0f;
+        for (int i = 0; i < blockDim.x; ++i) total += s_part[i];
+        s_ss = total;
+    }
     __syncthreads();
     const float inv =
         rsqrtf(s_ss / static_cast<float>(kKimiKvLoraRank) + kKimiRmsEps);
@@ -436,17 +444,22 @@ namespace {
 
 // RMSNorm of contiguous FP16 rows [seq x n] in place.
 __global__ void kimi_rmsnorm_rows_kernel(__nv_bfloat16 *__restrict__ x,
-                                         const __nv_bfloat16 *__restrict__ w, int n)
+                                          const __nv_bfloat16 *__restrict__ w, int n)
 {
     const int token = blockIdx.x;
     __shared__ float s_ss;
-    if (threadIdx.x == 0) s_ss = 0.0f;
-    __syncthreads();
+    __shared__ float s_part[256];
     __nv_bfloat16 *row = x + (size_t)token * n;
     float ss = 0.0f;
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         ss += __bfloat162float(row[i]) * __bfloat162float(row[i]);
-    atomicAdd(&s_ss, ss);
+    s_part[threadIdx.x] = ss;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float total = 0.0f;
+        for (int i = 0; i < blockDim.x; ++i) total += s_part[i];
+        s_ss = total;
+    }
     __syncthreads();
     const float inv = rsqrtf(s_ss / static_cast<float>(n) + kKimiRmsEps);
     for (int i = threadIdx.x; i < n; i += blockDim.x)
@@ -813,14 +826,19 @@ __global__ void kimi_rmsnorm_rows_op_kernel(const __nv_bfloat16 *__restrict__ sr
 {
     const int token = blockIdx.x;
     __shared__ float s_ss;
-    if (threadIdx.x == 0) s_ss = 0.0f;
-    __syncthreads();
+    __shared__ float s_part[256];
     const __nv_bfloat16 *srow = src + (size_t)token * n;
     __nv_bfloat16 *drow = dst + (size_t)token * n;
     float ss = 0.0f;
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         ss += __bfloat162float(srow[i]) * __bfloat162float(srow[i]);
-    atomicAdd(&s_ss, ss);
+    s_part[threadIdx.x] = ss;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float total = 0.0f;
+        for (int i = 0; i < blockDim.x; ++i) total += s_part[i];
+        s_ss = total;
+    }
     __syncthreads();
     const float inv = rsqrtf(s_ss / static_cast<float>(n) + kKimiRmsEps);
     for (int i = threadIdx.x; i < n; i += blockDim.x)

@@ -1,45 +1,38 @@
 # Kimi-K2.7-Code: план продолжения отладки SelfCheck
 
-Состояние: инференс проходит все 61 слой end-to-end (BF16 runtime,
-коммит caea23f), 9/11 kimi-тестов зелёные. SelfCheck выполняется, но
-top-1 неверный ('foss' вместо 'Paris').
+РЕШЕНО 2026-08-24. SelfCheck проходит: 'The capital of France is' → 'Paris'
+(top-1 tok=17374), 3+ циклов с бит-точной детерминированностью final_logits.
 
-## Следующий шаг: независимая валидация слоя 1
+## Root causes (найдены независимой валидацией слоя 1)
 
-Все эталонные сверки layer-0 были "круговыми" (мой C++ против моего
-numpy по моему же описанию семантики). Нужна проверка ПОЛНОГО слоя 1
-(MoE) против оригинальных INT4 safetensors в torch.
+1. **INT4 zero-point convention** (`kimi_int4_dequant_kernel`): compressed-tensors
+   pack-quantized symmetric int4 хранит unsigned нимбл с неявным zero-point 8
+   (offset binary), а ядро декодировало как two's complement (`nib>7 ? nib-16 :
+   nib`). Правильно: `(nib - 8) * scale`. Диагностика: гистограмма нимблов
+   исходного чекпоинта симметрична вокруг q=8; group-mean статистика ~0 только
+   при offset-binary; corr(NVFP4, INT4 twos-comp)=0.994 подтверждает, что
+   конвертер закодировал неверные веса. Юнит-тест кодировал ту же ошибку
+   (круговая проверка) — переписан на offset-binary. Модель переконвертирована.
 
-1. C++: добавить env-gated дамп (`LSX_KIMI_DUMP_LAYER=1:<file>`)
-   скрытого состояния после слоя N префилла в `KimiLayerStack`
-   (`libs/lsxcommon/src/kimi_inference.cu`).
-2. Torch (/tmp/opencode): свежий скрипт по HF-семантике kimi_k2
-   (DeepSeekV2-стиль):
-   - MLA: q_a_proj→q_a_layernorm→q_b_proj; kv_a_proj_with_m→kv_a_layernorm
-     →kv_b_proj; yarn-rope(theta=50000, factor=64, beta_fast=32,
-     beta_slow=128, orig_max_pos=4096); softmax_scale = mscale²/sqrt(192),
-     mscale = 0.1*ln(factor)+1.
-   - MoE: scores=sigmoid(gate(x)); top-8 по score+bias;
-     w = renorm(sigmoid[top8]) * routed_scaling_factor(2.827);
-     out = sum(w_i * expert_i) + shared_expert; routed experts из
-     compressed-tensors INT4 group dequant.
-3. Подать один и тот же вход (дамп после слоя 0), сравнить выход слоя 1.
+2. **Недетерминированный float atomicAdd** в трёх RMSNorm-ядрах
+   (`kimi_rmsnorm_rows_kernel`, `kimi_rmsnorm_rows_op_kernel`,
+   `kimi_kv_postprocess_kernel`): порядок суммирования варпов менялся между
+   запусками → биты final_logits гуляли. Заменено на детерминированную редукцию:
+   partials в shared memory + фиксированный последовательный сумминг thread 0.
 
-## Зоны подозрения (в порядке вероятности)
+## Что НЕ было причиной
 
-- [ИСПРАВЛЕНО 2026-08-23] mscale: config задаёт mscale=mscale_all_dim=1.0
-  -> attention factor = 1.0, KimiAttnScale = 1/sqrt(192) без буста.
-  beta_slow=1.0 уже был верен в BuildYarnInvFreq.
-  Top-1 НЕ изменился ('foss') -> основная ошибка в другом.
-- применение kv_b_proj и восстановление q_nope через absorption
-  (проверить знак/порядок: HF: q_nope = q_b[..., :nope] проходит через
-  latent; scores_nope = einsum(q_nope_absorbed, k_latent))
-- renorm весов роутера до/после scaling (HF: w = w/sum * scaling)
-- позиционные смещения rope между prefill/decode
-- СЛЕДУЮЩИЙ ШАГ остаётся: дамп после слоя N + свежий torch-референс
-  слоя 1 из оригинальных INT4 safetensors
+- yarn attention scale: softmax-scale = 1/sqrt(192) верен для этого конфига
+  (mscale=mscale_all_dim=1.0); HF DeepseekV3Attention применяет mscale²-буст
+  через yarn_get_mscale(factor, mscale_all_dim) — но это отдельная величина от
+  rotary attention_factor; проверено численно слоем 1 (attention residual
+  сходится с max|d|=0.0017).
+- Absorption kv_b_proj, renorm роутера (w = sigmoid/sum * 2.827 — совпадает с
+  HF до 1e-5), позиционные смещения rope, shared_experts (вес 1.0) — всё
+  сверено поэлементно против свежего torch-референса из оригинальных INT4.
 
-## Запуск
+## Методика (для следующих моделей)
 
-ctest --preset linux-debug -R kimi
-./build/linux-debug/tests/test_kimi_selfcheck
+Env-gated дампы скрытого состояния после слоя N префилла + свежий torch-референс
+слоя из оригинальных safetensors (не своих конвертированных файлов) локализуют
+расхождение за минуты: attention residual → MoE → shared/routed → router.
