@@ -443,6 +443,27 @@ endif()
 add_test(NAME test_glm_selfcheck COMMAND test_glm_selfcheck)
 set_tests_properties(test_glm_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Blackwell audit Phase 0: GLM-5.2 perf baseline harness (reporting test,
+#    SKIP без чекпоинта). Число генерируемых токенов — LSX_TEST_PERF_GEN_TOKENS.
+add_executable(test_blackwell_perf_glm test_blackwell_perf_glm.cpp)
+target_link_libraries(test_blackwell_perf_glm PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_glm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_glm>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_glm COMMAND test_blackwell_perf_glm)
+set_tests_properties(test_blackwell_perf_glm PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
 #    block_rows = P (полная длина промпта), каждый промпт-токен занимает один
 #    IndexShare KV-слот. FAIL при коллапсе строк (kv_slots_used != P + gen),
