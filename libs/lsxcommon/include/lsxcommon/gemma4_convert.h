@@ -35,6 +35,7 @@ enum class TensorKind {
     PostFFN,
     PreFFN2,
     PostFFN2,
+    PostFFN1,
     LayerScalar,
 };
 

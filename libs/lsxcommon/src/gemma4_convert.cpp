@@ -75,6 +75,7 @@ ParsedTensor classify_gemma_tensor(const std::string &name)
     if (auto p = P(K::LayerScalar,          R"(layer_scalar$)"))                         return *p;
     if (auto p = P(K::PreFFN2,              R"(pre_feedforward_layernorm_2\.weight$)"))  return *p;
     if (auto p = P(K::PostFFN2,             R"(post_feedforward_layernorm_2\.weight$)")) return *p;
+    if (auto p = P(K::PostFFN1,             R"(post_feedforward_layernorm_1\.weight$)")) return *p;
     if (auto p = P(K::PreFFN,               R"(pre_feedforward_layernorm\.weight$)"))    return *p;
     if (auto p = P(K::PostFFN,              R"(post_feedforward_layernorm\.weight$)"))   return *p;
     if (auto p = P(K::AttnQNorm,            R"(self_attn\.q_norm\.weight$)"))            return *p;
@@ -230,8 +231,9 @@ std::vector<std::string> generate_gemma_expected_names(const GemmaTopology &top)
                  "pre_feedforward_layernorm.weight",
                  "post_feedforward_layernorm.weight",
                  "pre_feedforward_layernorm_2.weight",
-                 "post_feedforward_layernorm_2.weight",
-                 "layer_scalar",
+"post_feedforward_layernorm_2.weight",
+        "post_feedforward_layernorm_1.weight",
+        "layer_scalar",
                  "mlp.gate_proj.weight",
                  "mlp.up_proj.weight",
                  "mlp.down_proj.weight",

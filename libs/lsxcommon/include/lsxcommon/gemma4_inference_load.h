@@ -30,10 +30,11 @@ constexpr int kGemmaTopK = 8;
 struct alignas(16) GemmaLayerWeights {
     __nv_bfloat16 *d_input_norm = nullptr;
     __nv_bfloat16 *d_post_norm = nullptr;       // post_attention_layernorm
-    __nv_bfloat16 *d_pre_ffn = nullptr;         // pre_feedforward_layernorm   (dense branch)
-    __nv_bfloat16 *d_post_ffn = nullptr;        // post_feedforward_layernorm  (dense branch)
-    __nv_bfloat16 *d_pre_ffn2 = nullptr;        // pre_feedforward_layernorm_2 (MoE branch)
-    __nv_bfloat16 *d_post_ffn2 = nullptr;       // post_feedforward_layernorm_2(MoE branch)
+    __nv_bfloat16 *d_pre_ffn = nullptr;         // pre_feedforward_layernorm
+    __nv_bfloat16 *d_post_ffn = nullptr;        // post_feedforward_layernorm
+    __nv_bfloat16 *d_post_ffn1 = nullptr;       // post_feedforward_layernorm_1 (MLP out)
+    __nv_bfloat16 *d_pre_ffn2 = nullptr;        // pre_feedforward_layernorm_2 (MoE)
+    __nv_bfloat16 *d_post_ffn2 = nullptr;       // post_feedforward_layernorm_2 (MoE out)
 
     float *d_layer_scalar = nullptr;     // F32 [1]
     float *d_router_scale = nullptr;     // F32-uploaded BF16 [hidden]
