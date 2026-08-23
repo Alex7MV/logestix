@@ -81,6 +81,7 @@ TEST_CASE("ConvertKimiModel produces logestix-kimi layout", "[kimi][convert]") {
     kimitest::WriteKimiConfig(in);
     kimitest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
                                kimitest::BuildSyntheticKimiModel(3));
+    kimitest::WriteKimiTokenizerFiles(in);
 
     REQUIRE(lsxcommon::kimi::ConvertKimiModel(in.string(), out).ok());
 

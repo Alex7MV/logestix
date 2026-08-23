@@ -128,4 +128,32 @@ inline void WriteKimiConfig(const std::filesystem::path &dir)
       << R"("text_config":{"model_type":"kimi_k2","hidden_act":"silu"}})";
 }
 
+// Writes the minimal tiktoken ranks + tokenizer_config pair the converter's
+// mandatory tokenizer step needs (complete byte alphabet, no merges needed).
+inline void WriteKimiTokenizerFiles(const std::filesystem::path &dir)
+{
+    const char *b64 =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    auto enc1 = [&](uint8_t b) {
+        std::string out;
+        out += b64[(b >> 2) & 63];
+        out += b64[(b & 3) << 4];
+        out += "==";
+        return out;
+    };
+    {
+        std::ofstream f(dir / "tiktoken.model");
+        for (int b = 0; b < 256; ++b)
+            f << enc1(static_cast<uint8_t>(b)) << " " << b << "\n";
+    }
+    {
+        std::ofstream f(dir / "tokenizer_config.json");
+        f << "{\"bos_token\":\"[BOS]\",\"eos_token\":\"[EOS]\","
+             "\"pad_token\":\"[PAD]\",\"added_tokens_decoder\":{"
+             "\"256\":{\"content\":\"[BOS]\",\"special\":true},"
+             "\"257\":{\"content\":\"[EOS]\",\"special\":true},"
+             "\"258\":{\"content\":\"[PAD]\",\"special\":true}}}";
+    }
+}
+
 } // namespace kimitest

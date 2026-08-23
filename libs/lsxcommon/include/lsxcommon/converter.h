@@ -79,4 +79,15 @@ arrow::Status BuildTokenizerArrowFiles(
     const std::string &tokenizer_json_path,
     const std::filesystem::path &pinned_dir);
 
+// TikToken (Kimi-K2.7-Code) tokenizer bridge. Parses the tiktoken ranks file
+// ("base64 id" lines) plus the special tokens of tokenizer_config.json
+// (added_tokens_decoder), reconstructs BPE merges from ranks and writes the
+// same tokenizer_vocab.arrow / tokenizer_merges.arrow pair as
+// BuildTokenizerArrowFiles. Sparse id ranges between base ranks and special
+// ids are filled with placeholder rows.
+arrow::Status BuildTokenizerArrowFilesTikToken(
+    const std::string &tiktoken_model_path,
+    const std::string &tokenizer_config_path,
+    const std::filesystem::path &pinned_dir);
+
 } // namespace lsxcommon

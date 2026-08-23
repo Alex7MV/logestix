@@ -1469,3 +1469,17 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_int4_dequant COMMAND test_kimi_int4_dequant)
+
+# ── Тест Kimi tiktoken-токенизатора ───────────────────────────────────────
+add_executable(test_kimi_tokenizer test_kimi_tokenizer.cpp)
+target_link_libraries(test_kimi_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_tokenizer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_tokenizer>"
+    )
+endif()
+
+add_test(NAME test_kimi_tokenizer COMMAND test_kimi_tokenizer)
