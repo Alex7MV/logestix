@@ -156,6 +156,47 @@ add_library(test_qwen_cu OBJECT
     test_qwen_fused_linear_attn.cu
     test_blackwell_micro_gemm.cu
 )
+
+# ── Blackwell tensor-core probe tests: kind::mxf4nvf4 assembles ONLY on the
+#    arch-'a' targets (sm_120a/sm_121a), so this OBJECT lib carries its own
+#    --generate-code set (PTX ISA 8.7+, CUDA 13.3 ships 9.3).
+add_library(test_blackwell_tc_cu OBJECT
+    test_blackwell_tc_mma.cu
+)
+set_target_properties(test_blackwell_tc_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_blackwell_tc_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+    --generate-code=arch=compute_120a,code=sm_120a;
+    --generate-code=arch=compute_121a,code=sm_121a;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_blackwell_tc_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+)
+target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain)
+
+foreach(qt test_blackwell_tc_mma)
+    add_executable(${qt})
+    set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(${qt} PRIVATE test_blackwell_tc_cu lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 set_target_properties(test_qwen_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES OFF
