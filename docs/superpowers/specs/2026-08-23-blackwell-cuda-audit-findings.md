@@ -85,18 +85,24 @@ cores (hardware dequant+MAC fusion).
 
 ### Phase 3 Task 1 status (2026-08-23, branch feat/blackwell-phase3-tensorcore)
 
-`mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X
-.f32.e2m1.e2m1.f32.ue4m3` ASSEMBLES AND RUNS on RTX 5060 Ti via
-`--generate-code=arch=compute_120a,code=sm_120a` (test_blackwell_tc_mma).
-Calibration facts (empirical, harness committed):
+**SOLVED.** `mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale
+.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3` fully verified on RTX 5060 Ti
+(`--generate-code=arch=compute_120a,code=sm_120a`; plain sm_120 does NOT
+assemble this). Empirical semantics (test_blackwell_tc_mma, all stages green):
 
-- e2m1 relative values match std table {0,.5,1,1.5,2,3,4,6} exactly; absolute
-  per-element product carries an unexplained 1/16.
-- Scale-byte response D(E) = 2^(E-1) => effective per-side decode
-  f(E)=2^((E-7)/2): half the repo decoder exponent ((e4+120)<<23 = 2^(E-7)).
-- Byte-position anomaly: SFA byte0-only yields 4x the all-four-bytes result,
-  contradicting the documented "all four bytes contribute" for scale_vec::4X.
+- e2m1 operands: standard table {0,.5,1,1.5,2,3,4,6}; nibble pairs low-first;
+  A reg r holds elements 8r..8r+7; rows alternate every 8 elements
+  (g / g+8), cols tig*8+(i&7) then +32.
+- ue4m3 scale decode: value = 2^(E-7) — BIT-IDENTICAL to the repo's existing
+  `E4M3ScaleToFloat` ((e4+120)<<23). Zero exponent byte (E=0) -> 0.
+- SFA metadata: lane tig==0 carries row g's chunk scales in bytes 0..3,
+  lane tig==1 carries row g+8's; lanes tig>=2 are IGNORED by hardware.
+- SFB metadata: byte c = chunk c for column lane>>2 (all lanes read).
+- Selectors {byte-id,thread-id} = {0,0} as documented.
 
-Next steps: asymmetric A/B metadata probes + mantissa-response sweep to pin
-the operand semantics; then fragment-layout derivation via the committed
-single-bit calibration sweeps (A-slot and PAIR modes already in the harness).
+Earlier "anomalies" (half-exponent response, 1/16 factor) were a calibration-
+harness bug: hardcoded 0x18181818 scales instead of kScale1.
+
+Next steps (per docs/superpowers/plans/2026-08-23-blackwell-audit-phase3.md):
+Task 2 activation quantization kernel; Task 3 TC tile GEMM; Task 4 --fast-math
+plumbing.
