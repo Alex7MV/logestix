@@ -1450,6 +1450,8 @@ target_include_directories(test_kimi_int4_dequant_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_compile_definitions(test_kimi_int4_dequant_cu PRIVATE LOGESTIX_HAS_CUDA)
 target_link_libraries(test_kimi_int4_dequant_cu PRIVATE Catch2::Catch2WithMain)
@@ -1505,3 +1507,41 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_loader COMMAND test_kimi_loader)
+
+# ── Тест Kimi MoE-роутера ─────────────────────────────────────────────────
+add_library(test_kimi_router_cu OBJECT test_kimi_router.cu)
+set_target_properties(test_kimi_router_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_router_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_router_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+)
+target_compile_definitions(test_kimi_router_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_router_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_router_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_moe_router)
+set_target_properties(test_kimi_moe_router PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_moe_router PRIVATE
+    test_kimi_router_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_router POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_router>"
+    )
+endif()
+
+add_test(NAME test_kimi_moe_router COMMAND test_kimi_moe_router)
