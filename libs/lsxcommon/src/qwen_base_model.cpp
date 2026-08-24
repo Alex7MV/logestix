@@ -79,16 +79,15 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
         // Incremental session policy (spec item 15): a request whose input_ids
     // exactly match the previous call's generated tail continues the session
     // KV cache from {kv_->last_tok}; anything else starts a fresh session.
-    const bool is_continuation =
-        kv_ && kv_->allocated() && !session_tail_.empty() &&
-        req.input_ids == session_tail_;
-    if (!is_continuation) {
+    const qwen::SessionDecision session = qwen::DecideSession(
+        kv_ && kv_->allocated(),
+        kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
+    if (!session.is_continuation) {
         kv_.reset();
         kv_ = std::make_unique<qwen::QwenKvCache>();
         session_tail_.clear();
     }
-    const std::vector<int32_t> gen_input =
-        is_continuation ? std::vector<int32_t>{kv_->last_tok} : req.input_ids;
+    const std::vector<int32_t> &gen_input = session.gen_input;
 
     qwen::QwenGenerationResult gen;
     auto run = [&]() -> cudaError_t {

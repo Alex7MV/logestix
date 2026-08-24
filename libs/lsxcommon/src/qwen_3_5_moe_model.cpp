@@ -146,16 +146,15 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
     }
 
     // Incremental session policy (mirrors QwenBaseModel).
-    const bool is_continuation =
-        kv_ && kv_->allocated() && !session_tail_.empty() &&
-        req.input_ids == session_tail_;
-    if (!is_continuation) {
+    const qwen::SessionDecision session = qwen::DecideSession(
+        kv_ && kv_->allocated(),
+        kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
+    if (!session.is_continuation) {
         kv_.reset();
         kv_ = std::make_unique<qwen::QwenKvCache>();
         session_tail_.clear();
     }
-    const std::vector<int32_t> gen_input =
-        is_continuation ? std::vector<int32_t>{kv_->last_tok} : req.input_ids;
+    const std::vector<int32_t> &gen_input = session.gen_input;
 
     qwen::QwenGenerationResult gen;
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;

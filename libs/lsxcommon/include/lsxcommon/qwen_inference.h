@@ -13,6 +13,29 @@
 namespace lsxcommon {
 namespace qwen {
 
+// Result of the shared incremental-session policy (model-unification 2026-08):
+// a request whose input_ids exactly match the previous call's generated tail
+// continues the session KV cache from {kv_last_tok}; anything else starts a
+// fresh session with the full request as prefill input.
+struct SessionDecision {
+    bool is_continuation = false;
+    std::vector<int32_t> gen_input;  // {kv_last_tok} on continuation
+};
+
+inline SessionDecision DecideSession(bool kv_allocated, int32_t kv_last_tok,
+                                     const std::vector<int32_t> &session_tail,
+                                     const std::vector<int32_t> &req_input_ids)
+{
+    SessionDecision d;
+    d.is_continuation = kv_allocated && !session_tail.empty() &&
+                        req_input_ids == session_tail;
+    if (d.is_continuation)
+        d.gen_input = std::vector<int32_t>{kv_last_tok};
+    else
+        d.gen_input = req_input_ids;
+    return d;
+}
+
 // ── Numeric kernels (TDD-testable, FP16 in / FP16 or FP32 out) ──────────────
 
 // RMSNorm, offset-weight form: out = rmsnorm(x) * (1 + w), eps=1e-6.

@@ -13,6 +13,7 @@ using Catch::Approx;
 #include <lsxcommon/converter.h>
 #include <lsxcommon/model_base.h>
 #include <lsxcommon/model_runtime.h>
+#include <lsxcommon/qwen_inference.h>
 #include <lsxcommon/tokenizer.h>
 #include <lsxcommon/benchmark_gpu.h>
 
@@ -287,4 +288,30 @@ TEST_CASE("FillBenchmarkResult computes tokens-per-second", "[model_runtime]")
     CHECK(r.total_time_ms == 200.0);
     CHECK(r.tokens_per_sec == Approx(500.0));
     CHECK(r.resident_bytes == 9999);
+}
+
+// ── Shared incremental-session decision (qwen families) ─────────────────────
+
+TEST_CASE("DecideSession continuation vs fresh", "[session]")
+{
+    using namespace lsxcommon::qwen;
+    const std::vector<int32_t> tail{5, 6};
+    const std::vector<int32_t> req{5, 6};
+    auto d = DecideSession(/*kv_allocated=*/true, /*last_tok=*/6, tail, req);
+    CHECK(d.is_continuation);
+    CHECK((d.gen_input == std::vector<int32_t>{6}));
+
+    d = DecideSession(true, 6, tail, {1, 2});
+    CHECK_FALSE(d.is_continuation);
+    CHECK((d.gen_input == std::vector<int32_t>{1, 2}));
+
+    d = DecideSession(false, 6, tail, req);  // kv dead -> fresh
+    CHECK_FALSE(d.is_continuation);
+    CHECK((d.gen_input == std::vector<int32_t>{5, 6}));
+
+    d = DecideSession(true, 6, {}, req);  // no tail -> fresh
+    CHECK_FALSE(d.is_continuation);
+
+    d = DecideSession(true, 6, tail, {6});  // partial match -> fresh
+    CHECK_FALSE(d.is_continuation);
 }
