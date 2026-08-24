@@ -106,3 +106,23 @@ harness bug: hardcoded 0x18181818 scales instead of kScale1.
 Next steps (per docs/superpowers/plans/2026-08-23-blackwell-audit-phase3.md):
 Task 2 activation quantization kernel; Task 3 TC tile GEMM; Task 4 --fast-math
 plumbing.
+
+### Phase 3 Tasks 1-3 status (2026-08-24, same branch)
+
+- Task 2 DONE: `QuantizeActsNvfp4` (qwen_tc_gemm.cu) — per-16 pow2-E4M3 scale
+  + E2M1 nibble pack, repo-codec-compatible. Round-trip test green (err <=
+  1/3 block absmax, the NVFP4-pow2 theoretical bound).
+- Task 3 CORE DONE: `RunQwenTcNvfp4Gemm` — 64x64 tile, 8 warps 4x2, four
+  m16n8k64 mxf4nvf4 atoms per warp per k-chunk; weights consumed in the
+  EXISTING [N,K] packed layout (no repack); activations quantized on the fly
+  into stream-ordered cudaMallocAsync scratch; epilogue x global_scale.
+  Verified vs exact host reference at seq=3/K=544/N=36 incl. K%64 and N%8
+  tails: max_abs_err 0.234 @ ref 1085 (0.02%).
+  MEASURED (Debug, seq=1): attn_qkv_o 466->291 us (1.60x), mlp_gate_up
+  1142->784 us (1.46x), mlp_down 1351->713 us (1.90x).
+- Hardware ue4m3 nuance discovered: e4==0 with M!=0 decodes as SUBNORMAL on
+  sm_120a while the repo decoder says 0. Production pow2 scales never hit
+  this; test data now uses repo-valid bytes only.
+
+Remaining: fragment smem-staging + vectorized loads (headroom to several more x),
+Task 4 --fast-math runtime plumbing, end-to-end tok/s measurement.
