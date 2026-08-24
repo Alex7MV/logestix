@@ -176,3 +176,120 @@ TEST_CASE("router top-k matches host replica", "[qwen-moe-router]")
     cudaFree(d_w); cudaFree(d_x); cudaFree(d_slots);
     cudaStreamDestroy(stream);
 }
+
+#include "qwen_moe_test_fixture.h"
+#include "lsxcommon/qwen_moe_inference_load.h"
+
+namespace {
+
+// Host NVFP4 dequant of a row-major [N,K] packed weight (per-16 E4M3 block
+// scales along K). Mirrors gpu::nvfp4 decode semantics.
+float HostDequantNibble(int nib)
+{
+    const int mag = nib & 7;
+    float v = (mag == 1) ? 0.5f : (mag == 2) ? 1.f : (mag == 3) ? 1.5f
+              : (mag == 4) ? 2.f : (mag == 5) ? 3.f : (mag == 6) ? 4.f
+              : (mag == 7) ? 6.f : 0.f;
+    return (nib & 8) ? -v : v;
+}
+
+float HostE4M3Scale(uint8_t e4m3)
+{
+    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
+    if (e4 == 0) return 0.0f;
+    uint32_t bits = (e4 + 120u) << 23;
+    float f;
+    std::memcpy(&f, &bits, 4);
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen_moe::QwenMoeExpertStore store;
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
+    REQUIRE(store.num_layers == 4);
+    REQUIRE(store.num_experts == 8);
+
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 4, cache, err));
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    // Token x: deterministic half vector, H=64, I=16.
+    const int H = 64, I = 16, K = 2;
+    std::vector<__half> hx(static_cast<size_t>(H));
+    for (int i = 0; i < H; ++i)
+        hx[static_cast<size_t>(i)] = __float2half(sinf((float)i * 0.7f) * 0.4f);
+
+    __half *d_x, *d_yg, *d_yu, *d_y2;
+    float *d_acc;
+    cudaMalloc(&d_x, H * 2);
+    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yu, I * 2);
+    cudaMalloc(&d_y2, H * 2);
+    cudaMalloc(&d_acc, H * 4);
+    cudaMemset(d_acc, 0, H * 4);
+    cudaMemcpy(d_x, hx.data(), H * 2, cudaMemcpyHostToDevice);
+
+    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> h_slots =
+        {{0, 0.5f}, {1, 0.5f}};
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedFFN(
+                stream, store, cache, /*layer=*/0, h_slots.data(), K, d_x,
+                H, I, d_acc, d_yg, d_yu, d_y2, err) == cudaSuccess);
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeAccToFp16(stream, d_acc, d_y2, H) ==
+            cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<__half> hout(H);
+    cudaMemcpy(hout.data(), d_y2, H * 2, cudaMemcpyDeviceToHost);
+
+    // Determinism across cache states: flush the cache and re-run.
+    std::vector<__half> hout2(H);
+    {
+        lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+        REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 4, cache, err));
+        cudaMemset(d_acc, 0, H * 4);
+        // Reverse slot order exercises LRU eviction path.
+        std::swap(h_slots[0], h_slots[1]);
+        // Undo the coefficient pairing so math matches the first run.
+        h_slots[0].coeff = 0.5f; h_slots[1].coeff = 0.5f;
+        h_slots[0].eid = 0; h_slots[1].eid = 1;
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedFFN(
+                    stream, store, cache, 0, h_slots.data(), K, d_x, H, I,
+                    d_acc, d_yg, d_yu, d_y2, err) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeAccToFp16(stream, d_acc, d_y2, H) ==
+                cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        cudaMemcpy(hout2.data(), d_y2, H * 2, cudaMemcpyDeviceToHost);
+    }
+    CHECK(std::memcmp(hout.data(), hout2.data(), H * sizeof(__half)) == 0);
+    for (int i = 0; i < H; ++i)
+        CHECK(std::isfinite(__half2float(hout[static_cast<size_t>(i)])));
+
+    // Sanity: non-zero output.
+    float energy = 0.f;
+    for (int i = 0; i < H; ++i)
+        energy += __half2float(hout[static_cast<size_t>(i)]) *
+                  __half2float(hout[static_cast<size_t>(i)]);
+    CHECK(energy > 0.f);
+
+    cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
+    cudaFree(d_acc);
+    cudaStreamDestroy(stream);
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    store.Free();
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}

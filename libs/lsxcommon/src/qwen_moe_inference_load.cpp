@@ -645,4 +645,250 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
     return true;
 }
 
+// ── Routed-expert host store ──────────────────────────────────────────────
+
+void QwenMoeExpertStore::Free()
+{
+    for (auto &p : h_slabs)
+        if (p) cudaFreeHost(p);
+    h_slabs.clear();
+    slab_bytes.clear();
+    records.clear();
+    num_layers = 0;
+    num_experts = 0;
+}
+
+bool LoadQwenMoeExpertStore(const std::string &model_path,
+                            QwenMoeExpertStore &store, std::string &error)
+{
+    namespace fs = std::filesystem;
+    store.Free();
+    error.clear();
+
+    const fs::path base = fs::path(model_path) / "logestix-qwen35moe";
+    const fs::path experts_dir = base / "experts";
+
+    // Discover layer count from directory names.
+    int max_layer = -1;
+    for (fs::directory_iterator it(experts_dir), end; it != end; ++it) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("layer_", 0) == 0) {
+            int l = 0;
+            if (absl::SimpleAtoi(name.substr(6), &l))
+                max_layer = std::max(max_layer, l);
+        }
+    }
+    if (max_layer < 0) {
+        error = "no expert layer dirs under " + experts_dir.string();
+        return false;
+    }
+    store.num_layers = max_layer + 1;
+    store.records.resize(static_cast<size_t>(store.num_layers));
+    store.h_slabs.assign(static_cast<size_t>(store.num_layers), nullptr);
+    store.slab_bytes.assign(static_cast<size_t>(store.num_layers), 0);
+
+    for (int l = 0; l < store.num_layers; ++l) {
+        const fs::path layer_dir = experts_dir / absl::StrCat("layer_", l);
+
+        // Expert count from files present in layer 0; strict afterwards.
+        int E = store.num_experts;
+        if (E <= 0) {
+            E = 0;
+            for (fs::directory_iterator it(layer_dir), end; it != end; ++it) {
+                const std::string name = it->path().filename().string();
+                if (name.rfind("exp_", 0) == 0 && name.find(".arrow") != std::string::npos) {
+                    int e = 0;
+                    if (absl::SimpleAtoi(name.substr(4, name.find('.') - 4), &e))
+                        E = std::max(E, e + 1);
+                }
+            }
+            store.num_experts = E;
+        }
+        if (E <= 0) {
+            error = absl::StrCat("no expert files in layer_", l);
+            return false;
+        }
+
+        // Build all records first, then one pinned slab per layer.
+        auto &recs = store.records[static_cast<size_t>(l)];
+        recs.assign(static_cast<size_t>(E), {});
+        size_t total = 0;
+        for (int e = 0; e < E; ++e) {
+            const std::string path =
+                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
+            auto batch_res = ReadRecordBatchFromFile(path);
+            if (!batch_res.ok()) {
+                error = absl::StrCat("read failed: ", path);
+                return false;
+            }
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            if (!pe_res.ok()) {
+                error = absl::StrCat("unpack failed: ", path);
+                return false;
+            }
+            auto &pe = *pe_res;
+            auto &r = recs[static_cast<size_t>(e)];
+            r.w1_off = total; r.w1_bytes = pe.w1_packed.size();
+            total += r.w1_bytes;
+            r.w2_off = total; r.w2_bytes = pe.w2_packed.size();
+            total += r.w2_bytes;
+            r.w3_off = total; r.w3_bytes = pe.w3_packed.size();
+            total += r.w3_bytes;
+            r.gs1 = pe.w1_global_scale;
+            r.gs2 = pe.w2_global_scale;
+            r.gs3 = pe.w3_global_scale;
+            // Scales stored after the packed region with 16B alignment.
+            total = AlignUp(total, 16);
+            r.s1_off = total; r.s1_bytes = pe.w1_scales.size(); total += r.s1_bytes;
+            r.s2_off = total; r.s2_bytes = pe.w2_scales.size(); total += r.s2_bytes;
+            r.s3_off = total; r.s3_bytes = pe.w3_scales.size(); total += r.s3_bytes;
+        }
+        store.slab_bytes[static_cast<size_t>(l)] = total;
+
+        uint8_t *slab = nullptr;
+        if (cudaMallocHost(reinterpret_cast<void **>(&slab), total) !=
+            cudaSuccess) {
+            error = absl::StrCat("pinned slab alloc failed (layer ", l, ")");
+            return false;
+        }
+        store.h_slabs[static_cast<size_t>(l)] = slab;
+
+        // Second pass: copy payloads into the slab.
+        for (int e = 0; e < E; ++e) {
+            const std::string path =
+                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
+            auto pe_res = ExpertSchema::UnpackBatch(
+                *ReadRecordBatchFromFile(path));
+            if (!pe_res.ok()) {
+                error = absl::StrCat("re-read failed: ", path);
+                return false;
+            }
+            auto &pe = *pe_res;
+            const auto &r = recs[static_cast<size_t>(e)];
+            std::memcpy(slab + r.w1_off, pe.w1_packed.data(), r.w1_bytes);
+            std::memcpy(slab + r.w2_off, pe.w2_packed.data(), r.w2_bytes);
+            std::memcpy(slab + r.w3_off, pe.w3_packed.data(), r.w3_bytes);
+            std::memcpy(slab + r.s1_off, pe.w1_scales.data(), r.s1_bytes);
+            std::memcpy(slab + r.s2_off, pe.w2_scales.data(), r.s2_bytes);
+            std::memcpy(slab + r.s3_off, pe.w3_scales.data(), r.s3_bytes);
+        }
+        log::info(absl::StrCat("[qwen_moe_load] layer_", l, ": ", E,
+                               " experts, ", total >> 10, " KiB pinned"));
+    }
+    return true;
+}
+
+bool AllocateQwenMoeExpertCache(QwenMoeExpertStore &store, int slots,
+                                QwenMoeExpertDeviceCache &cache,
+                                std::string &error)
+{
+    if (slots <= 0 || store.num_layers <= 0 || store.num_experts <= 0 ||
+        store.h_slabs.empty() || !store.h_slabs[0]) {
+        error = "expert store not loaded";
+        return false;
+    }
+    // Slot strides sized to the largest expert payload across layers.
+    size_t max_pack = 0, max_scale = 0;
+    for (int l = 0; l < store.num_layers; ++l) {
+        for (const auto &r : store.records[static_cast<size_t>(l)]) {
+            const size_t pack = static_cast<size_t>(r.w1_bytes + r.w2_bytes +
+                                                    r.w3_bytes);
+            const size_t scale = static_cast<size_t>(r.s1_bytes + r.s2_bytes +
+                                                     r.s3_bytes);
+            max_pack = std::max(max_pack, pack);
+            max_scale = std::max(max_scale, scale);
+        }
+    }
+    cache.slots = slots;
+    cache.total_experts = store.num_layers * store.num_experts;
+    cache.pack_stride = AlignUp(max_pack, kArenaAlign);
+    cache.scale_stride = AlignUp(max_scale, kArenaAlign);
+    const size_t bytes = cache.DeviceBytes();
+
+    void *base = nullptr;
+    if (cudaMalloc(&base, bytes) != cudaSuccess) {
+        error = absl::StrCat("expert device block alloc failed: ",
+                             cudaGetErrorString(cudaGetLastError()),
+                             " (", (bytes >> 20), " MiB requested)");
+        return false;
+    }
+    cache.d_base = static_cast<uint8_t *>(base);
+    cache.d_pack = cache.d_base;
+    cache.d_scale = cache.d_base +
+                    static_cast<int64_t>(slots) * cache.pack_stride;
+    // Host LRU bookkeeping owned by the cache allocation.
+    cache.h_slot_of = new int32_t[static_cast<size_t>(cache.total_experts)];
+    cache.h_slot_owner = new int32_t[static_cast<size_t>(slots)];
+    cache.h_lru = new int32_t[static_cast<size_t>(slots)];
+    for (int i = 0; i < cache.total_experts; ++i)
+        cache.h_slot_of[i] = -1;
+    for (int i = 0; i < slots; ++i) {
+        cache.h_slot_owner[i] = -1;
+        cache.h_lru[i] = i;
+    }
+    cache.hits = 0;
+    cache.misses = 0;
+    return true;
+}
+
+void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache)
+{
+    if (cache.d_base) {
+        cudaFree(cache.d_base);
+        cache.d_base = nullptr;
+    }
+    delete[] cache.h_slot_of;
+    delete[] cache.h_slot_owner;
+    delete[] cache.h_lru;
+    cache.h_slot_of = nullptr;
+    cache.h_slot_owner = nullptr;
+    cache.h_lru = nullptr;
+    cache.d_pack = nullptr;
+    cache.d_scale = nullptr;
+    cache.slots = 0;
+}
+
+int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
+                                QwenMoeExpertDeviceCache &cache,
+                                cudaStream_t stream, std::string &error)
+{
+    if (layer < 0 || layer >= store.num_layers || eid < 0 ||
+        eid >= store.num_experts) {
+        error = absl::StrCat("expert out of range: layer ", layer, " eid ", eid);
+        return -1;
+    }
+    const int flat = layer * store.num_experts + eid;
+    int slot = QwenMoeExpertCacheLookup(cache, flat);
+    if (slot >= 0) return slot;
+    slot = QwenMoeExpertCacheInsert(cache, flat);
+
+    const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
+    if (!slab) {
+        error = "expert slab not allocated";
+        return -1;
+    }
+    const auto &r = store.records[static_cast<size_t>(layer)]
+                                  [static_cast<size_t>(eid)];
+    uint8_t *dst_pack =
+        cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
+    uint8_t *dst_scale =
+        cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
+    // Packed w1|w2|w3 are contiguous inside the record; scales too.
+    const size_t pack_bytes =
+        static_cast<size_t>(r.w3_off + r.w3_bytes - r.w1_off);
+    const size_t scale_bytes = static_cast<size_t>(r.s1_bytes + r.s2_bytes +
+                                                   r.s3_bytes);
+    if (cudaMemcpyAsync(dst_pack, slab + r.w1_off, pack_bytes,
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+        error = "expert H2D pack staging failed";
+        return -1;
+    }
+    if (cudaMemcpyAsync(dst_scale, slab + r.s1_off, scale_bytes,
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+        error = "expert H2D scale staging failed";
+        return -1;
+    }
+    return slot;
+}
+
 } // namespace lsxcommon::qwen_moe

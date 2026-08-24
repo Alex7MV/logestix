@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <string>
 
 namespace lsxcommon::qwen_moe {
 
@@ -28,5 +29,24 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,
                                  const __half *normed,           // [seq,H]
                                  int seq, int E, int K, int H,
                                  QwenMoeRoutedSlot *d_slots);    // [seq*K]
+
+// Forward decls from the loader side (pinned store + LRU device cache).
+struct QwenMoeExpertStore;
+struct QwenMoeExpertDeviceCache;
+
+// Processes one token's K routed slots (ascending-k deterministic fp32
+// accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
+// misses via EnsureQwenMoeExpertResident. Scratch: d_yg/d_yu [I], d_y2 [H].
+cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
+                                QwenMoeExpertStore &store,
+                                QwenMoeExpertDeviceCache &cache, int layer,
+                                const QwenMoeRoutedSlot *h_slots, int K,
+                                const __half *d_x, int H, int I,
+                                float *d_acc, __half *d_yg, __half *d_yu,
+                                __half *d_y2, std::string &error);
+
+// Casts the routed-accumulation buffer to FP16.
+cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
+                                __half *d_out, int n);
 
 } // namespace lsxcommon::qwen_moe
