@@ -45,22 +45,6 @@ GlmV5Model::GlmV5Model(ModelInitConfig cfg)
 
 GlmV5Model::~GlmV5Model() { Unload(); }
 
-bool GlmV5Model::EnsureExecutionContext()
-{
-    if (!stream_ && cudaStreamCreateWithFlags(&stream_,
-                                              cudaStreamNonBlocking) !=
-                        cudaSuccess) {
-        stream_ = nullptr;
-        return false;
-    }
-    if (!cublas_ && cublasCreate(&cublas_) != CUBLAS_STATUS_SUCCESS) {
-        cublas_ = nullptr;
-        return false;
-    }
-    cublasSetStream(cublas_, stream_);
-    return true;
-}
-
 std::uint64_t GlmV5Model::EstimateExpertMeanBytes() const
 {
     // NVFP4 routed expert: three [kGlmMoeIntermediate x kGlmHidden] matrices,
@@ -78,8 +62,7 @@ void GlmV5Model::TeardownWeights()
     cache_lease_ = {};
     glm::free_glm_expert_index(experts_);
     pw_.Free();
-    if (cublas_) { cublasDestroy(cublas_); cublas_ = nullptr; }
-    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    TeardownContext();
     resident_bytes_ = 0;
 }
 
@@ -110,14 +93,14 @@ bool GlmV5Model::Load()
         }
     }
 
-    if (!EnsureExecutionContext()) {
+    if (!EnsureContext(/*with_cublas=*/true)) {
         log::error("[glm-model] cublas/stream init failed");
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
 
-    const cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, stream_);
+    const cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, stream());
     if (e != cudaSuccess ||
         pw_.hidden != glm::kGlmHidden ||
         pw_.layers.size() != static_cast<size_t>(glm::kGlmNumLayers) ||
@@ -195,7 +178,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     {
         std::shared_lock<std::shared_mutex> residency(residency_mutex_);
         const cudaError_t e = glm::RunGlmRealGeneration(
-            cublas_, stream_, pw_, experts_, req.input_ids,
+            cublas(), stream(), pw_, experts_, req.input_ids,
             req.max_gen_tokens, gen);
         if (e != cudaSuccess || !gen.ok) {
             r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;
@@ -257,7 +240,7 @@ gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
     {
         std::shared_lock<std::shared_mutex> residency(residency_mutex_);
         const cudaError_t e = glm::RunGlmRealGeneration(
-            cublas_, stream_, pw_, experts_, prompt, num_tokens, gr);
+            cublas(), stream(), pw_, experts_, prompt, num_tokens, gr);
         if (e != cudaSuccess || !gr.ok) {
             r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
             return r;

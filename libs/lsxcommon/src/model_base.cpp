@@ -87,4 +87,35 @@ bool ModelBase::ValidateInferRequest(const ModelRequest &req, gpu::InferenceResu
     return true;
 }
 
+// ── Persistent CUDA execution context (model-unification 2026-08) ───────────
+
+bool ModelBase::EnsureContext(bool with_cublas)
+{
+    if (!ctx_stream_ &&
+        cudaStreamCreateWithFlags(&ctx_stream_, cudaStreamNonBlocking) !=
+            cudaSuccess) {
+        ctx_stream_ = nullptr;
+        return false;
+    }
+    if (with_cublas && !ctx_cublas_ &&
+        cublasCreate(&ctx_cublas_) != CUBLAS_STATUS_SUCCESS) {
+        ctx_cublas_ = nullptr;
+        return false;
+    }
+    if (ctx_cublas_) cublasSetStream(ctx_cublas_, ctx_stream_);
+    return true;
+}
+
+void ModelBase::TeardownContext()
+{
+    if (ctx_cublas_) {
+        cublasDestroy(ctx_cublas_);
+        ctx_cublas_ = nullptr;
+    }
+    if (ctx_stream_) {
+        cudaStreamDestroy(ctx_stream_);
+        ctx_stream_ = nullptr;
+    }
+}
+
 } // namespace lsxcommon

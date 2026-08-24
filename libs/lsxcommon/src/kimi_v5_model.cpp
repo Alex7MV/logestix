@@ -22,29 +22,12 @@ KimiK27CodeModel::KimiK27CodeModel(ModelInitConfig cfg)
 
 KimiK27CodeModel::~KimiK27CodeModel() { Unload(); }
 
-bool KimiK27CodeModel::EnsureExecutionContext()
-{
-    if (!stream_ && cudaStreamCreateWithFlags(&stream_,
-                                              cudaStreamNonBlocking) !=
-                        cudaSuccess) {
-        stream_ = nullptr;
-        return false;
-    }
-    if (!cublas_ && cublasCreate(&cublas_) != CUBLAS_STATUS_SUCCESS) {
-        cublas_ = nullptr;
-        return false;
-    }
-    cublasSetStream(cublas_, stream_);
-    return true;
-}
-
 void KimiK27CodeModel::TeardownWeights()
 {
     permanent_lease_ = {};
     kimi::free_kimi_expert_index(experts_);
     pw_.Free();
-    if (cublas_) { cublasDestroy(cublas_); cublas_ = nullptr; }
-    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    TeardownContext();
     resident_bytes_ = 0;
 }
 
@@ -55,14 +38,14 @@ bool KimiK27CodeModel::Load()
 
     namespace fs = std::filesystem;
 
-    if (!EnsureExecutionContext()) {
+    if (!EnsureContext(/*with_cublas=*/true)) {
         log::error("[kimi-model] cublas/stream init failed");
         tok_db_.reset();
         return false;
     }
 
     const cudaError_t e =
-        kimi::LoadKimiPinnedWeights(cfg_.model_path, pw_, stream_);
+        kimi::LoadKimiPinnedWeights(cfg_.model_path, pw_, stream());
     if (e != cudaSuccess ||
         pw_.hidden != kimi::kKimiHidden ||
         pw_.layers.size() != static_cast<size_t>(kimi::kKimiNumLayers) ||
@@ -122,7 +105,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     {
         std::shared_lock<std::shared_mutex> residency(residency_mutex_);
         const cudaError_t e = kimi::RunKimiGeneration(
-            cublas_, stream_, pw_, experts_, req.input_ids,
+            cublas(), stream(), pw_, experts_, req.input_ids,
             req.max_gen_tokens, gen);
         if (e != cudaSuccess || !gen.ok) {
             r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;

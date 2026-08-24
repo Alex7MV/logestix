@@ -315,3 +315,76 @@ TEST_CASE("DecideSession continuation vs fresh", "[session]")
     d = DecideSession(true, 6, tail, {6});  // partial match -> fresh
     CHECK_FALSE(d.is_continuation);
 }
+
+// ── ModelBase persistent CUDA execution context ─────────────────────────────
+
+#include <cublas_v2.h>
+
+namespace {
+
+class ContextProbe final : public lsxcommon::ModelBase {
+public:
+    using ModelBase::ModelBase;
+    using ModelBase::EnsureContext;
+    using ModelBase::TeardownContext;
+    using ModelBase::stream;
+    using ModelBase::cublas;
+
+    bool Load() override { return false; }
+    lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &) override
+    {
+        return {};
+    }
+    void Unload() override {}
+    lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &) override
+    {
+        return {};
+    }
+    const std::string &Type() const override
+    {
+        static std::string t{"context-probe"};
+        return t;
+    }
+};
+
+} // namespace
+
+TEST_CASE("ModelBase context is lazy, idempotent and teardown-safe",
+          "[model_base][gpu]")
+{
+    ContextProbe m{lsxcommon::ModelInitConfig{}};
+    CHECK(m.stream() == nullptr);
+    CHECK(m.cublas() == nullptr);
+
+    // Stream-only context.
+    REQUIRE(m.EnsureContext(/*with_cublas=*/false));
+    cudaStream_t s1 = m.stream();
+    REQUIRE(s1 != nullptr);
+    CHECK(m.cublas() == nullptr);
+
+    // Idempotent: same stream, no churn; upgrades to cublas on request.
+    REQUIRE(m.EnsureContext(false));
+    CHECK(m.stream() == s1);
+    REQUIRE(m.EnsureContext(true));
+    cublasHandle_t h1 = m.cublas();
+    REQUIRE(h1 != nullptr);
+    REQUIRE(m.EnsureContext(true));
+    CHECK(m.cublas() == h1);
+    CHECK(m.stream() == s1);
+
+    // Teardown releases both; safe to call twice.
+    m.TeardownContext();
+    CHECK(m.stream() == nullptr);
+    CHECK(m.cublas() == nullptr);
+    m.TeardownContext();
+}
+
+TEST_CASE("EnsureContext binds cuBLAS to the owned stream", "[model_base][gpu]")
+{
+    ContextProbe m{lsxcommon::ModelInitConfig{}};
+    REQUIRE(m.EnsureContext(/*with_cublas=*/true));
+    cudaStream_t s = nullptr;
+    CHECK(cublasGetStream(m.cublas(), &s) == CUBLAS_STATUS_SUCCESS);
+    CHECK(s == m.stream());
+    m.TeardownContext();
+}

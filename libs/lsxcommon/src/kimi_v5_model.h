@@ -31,13 +31,10 @@ public:
     const kimi::KimiPinnedWeights &PinnedWeights() const { return pw_; }
 
 private:
-    bool EnsureExecutionContext();
     void TeardownWeights();
 
     kimi::KimiPinnedWeights pw_;
     kimi::KimiExpertDb experts_{};
-    cublasHandle_t cublas_ = nullptr;
-    cudaStream_t stream_ = nullptr;
     Lease permanent_lease_;
 };
 

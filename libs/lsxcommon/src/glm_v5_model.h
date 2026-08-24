@@ -39,14 +39,11 @@ public:
     const glm::GlmPinnedWeights &PinnedWeights() const { return pw_; }
 
 private:
-    bool EnsureExecutionContext();
     std::uint64_t EstimateExpertMeanBytes() const;
     void TeardownWeights();
 
     glm::GlmPinnedWeights pw_;
     glm::GlmExpertDb experts_{};
-    cublasHandle_t cublas_ = nullptr;
-    cudaStream_t stream_ = nullptr;
     Lease permanent_lease_;
     Lease cache_lease_;
     std::unique_ptr<lifecycle::RuntimeTuner> tuner_;
