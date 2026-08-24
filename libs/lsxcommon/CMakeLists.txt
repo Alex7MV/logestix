@@ -26,6 +26,10 @@ add_library(lsxcommon STATIC
     src/kimi_v5_model.cpp
     src/glm_inference_load.cpp
     src/glm_v5_model.cpp
+    src/gemma4_convert.cpp
+    src/gemma4_inference_load.cpp
+    src/gemma_base_model.cpp
+    src/gemma_4_26b_a4b_model.cpp
     src/loader.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
@@ -192,7 +196,29 @@ target_link_libraries(lsxcommon_kimi_cu
     arrow_shared
     arrow_cuda_shared
 )
-target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsxcommon_qwen_cu lsxcommon_kimi_cu lsx_tune)
+
+add_library(lsxcommon_gemma_cu OBJECT
+    src/gemma_inference.cu
+)
+set_target_properties(lsxcommon_gemma_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_gemma_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_gemma_cu
+    "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_CUBLAS_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+)
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
+    lsxcommon_qwen_cu lsxcommon_kimi_cu lsxcommon_gemma_cu lsx_tune)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP

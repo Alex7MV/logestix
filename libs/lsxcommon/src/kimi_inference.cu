@@ -642,7 +642,7 @@ __global__ void kimi_nvfp4_dequant_kernel(const uint8_t *__restrict__ packed,
     const uint8_t byte = packed[i >> 1];
     const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
     const float block_scale = KimiE4M3(scales[i >> 4]) * global_scale;
-    out[i] = __float2bfloat16_rn(lsxcommon::gpu::nvfp4::kE2M1Table[nib] * block_scale);
+    out[i] = __float2bfloat16_rn(lsxcommon::gpu::nvfp4::E2M1Value(nib) * block_scale);
 }
 
 // SwiGLU: h = silu(gate) * up.

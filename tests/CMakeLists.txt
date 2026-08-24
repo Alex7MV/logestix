@@ -730,6 +730,136 @@ endif()
 
 add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
 
+# ── Тест Gemma-4 prompt framing helper (host-only, сентинелы tokenizer.json) ─────
+add_executable(test_gemma_prompt_framing test_gemma_prompt_framing.cpp)
+target_compile_definitions(test_gemma_prompt_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_prompt_framing POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_prompt_framing>"
+    )
+endif()
+
+add_test(NAME test_gemma_prompt_framing COMMAND test_gemma_prompt_framing)
+
+# ── Тест Gemma-4 конвертера (классификатор имён + NVFP4-политика) ──────────
+add_executable(test_gemma4_convert test_gemma4_convert.cpp)
+target_compile_definitions(test_gemma4_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_convert>"
+    )
+    add_custom_command(TARGET test_gemma4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_convert>"
+    )
+endif()
+
+add_test(NAME test_gemma4_convert COMMAND test_gemma4_convert)
+
+# ── Тест Gemma-4 загрузчика (BF16→FP16 in-place, арена, expert LRU) ─────────
+add_executable(test_gemma4_loader test_gemma4_loader.cpp)
+target_compile_definitions(test_gemma4_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+endif()
+
+add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
+
+# ── Тест Gemma-4 модели (фабрика + Load + Infer, синтетическая геометрия) ────
+add_executable(test_gemma4_model test_gemma4_model.cpp)
+target_compile_definitions(test_gemma4_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+endif()
+
+add_test(NAME test_gemma4_model COMMAND test_gemma4_model)
+set_tests_properties(test_gemma4_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Тест Gemma-4 SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
+#    селфчек на реальной модели, минимум 3 цикла стресса (переопределяется
+#    LSX_TEST_GEMMA_SELFCHECK_CYCLES), бит-точная детерминированность
+#    final_logits, exit 0. SKIP без чекпоинта.
+add_executable(test_gemma4_selfcheck test_gemma4_selfcheck.cpp)
+target_compile_definitions(test_gemma4_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma4_selfcheck COMMAND test_gemma4_selfcheck)
+set_tests_properties(test_gemma4_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
+foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn test_gemma4_moe)
+    add_executable(${qt} ${qt}.cpp)
+    target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 # ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE

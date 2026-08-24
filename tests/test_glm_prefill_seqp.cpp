@@ -50,8 +50,7 @@ TEST_CASE("GLM seq-P prefill stores P KV rows and stays bit-exact", "[glm][model
     // Tokenizer-encoded prompt of length P >= 8 so the MoE prefill sees seq > 1.
     const std::string text = "The capital of France is the city of";
     std::vector<int32_t> input_ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds(
-        m->Type(), m->Tokenizer(), text, input_ids));
+    REQUIRE(m->BuildPromptInputIds(m->Tokenizer(), text, input_ids));
     const int P = static_cast<int>(input_ids.size());
     REQUIRE(P >= 8);
 

@@ -129,8 +129,8 @@ int RunCliGeneration(const GenerationCliArgs &args)
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
-    if (!lsxcommon::prompt::BuildPromptInputIds(
-            m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
+    if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
+                                      input_ids)) {
         lsxcommon::log::error(
             absl::StrFormat("Tokenizer encode failed for prompt: {}",
                             args.prompt));
@@ -156,8 +156,8 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
-    if (!lsxcommon::prompt::BuildPromptInputIds(
-            m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
+    if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
+                                      input_ids)) {
         lsxcommon::log::error("Tokenizer encode failed");
         m.model->Unload();
         return 1;

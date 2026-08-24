@@ -24,7 +24,7 @@ namespace {
 // Decode primitives live in the shared nvfp4_codec.h (kE2M1Table /
 // E4M3ScaleToFloat); alias them into this anonymous namespace so existing
 // call sites compile unchanged.
-using nvfp4::kE2M1Table;
+using nvfp4::E2M1Value;
 using nvfp4::E4M3ScaleToFloat;
 
 // F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float.
@@ -78,10 +78,10 @@ __device__ __forceinline__ void unpack_nibbles8(uint32_t u, float scale, uint32_
     uint32_t n6 = (u >> 24) & 0x0F;
     uint32_t n7 =  u >> 28;
 
-    __half2 h01 = __floats2half2_rn(kE2M1Table[n0] * scale, kE2M1Table[n1] * scale);
-    __half2 h23 = __floats2half2_rn(kE2M1Table[n2] * scale, kE2M1Table[n3] * scale);
-    __half2 h45 = __floats2half2_rn(kE2M1Table[n4] * scale, kE2M1Table[n5] * scale);
-    __half2 h67 = __floats2half2_rn(kE2M1Table[n6] * scale, kE2M1Table[n7] * scale);
+    __half2 h01 = __floats2half2_rn(E2M1Value(n0) * scale, E2M1Value(n1) * scale);
+    __half2 h23 = __floats2half2_rn(E2M1Value(n2) * scale, E2M1Value(n3) * scale);
+    __half2 h45 = __floats2half2_rn(E2M1Value(n4) * scale, E2M1Value(n5) * scale);
+    __half2 h67 = __floats2half2_rn(E2M1Value(n6) * scale, E2M1Value(n7) * scale);
 
     w[0] = half2_raw_bits(h01);
     w[1] = half2_raw_bits(h23);
@@ -135,7 +135,7 @@ __global__ void dequant_shared_nvfp4_kernel(
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
         const float scale = nvfp4::E4M3ScaleToFloat(scales[i >> 4]) * global_scale;
-        output[i] = __float2half(kE2M1Table[nibble] * scale);
+        output[i] = __float2half(E2M1Value(nibble) * scale);
     }
 }
 
@@ -182,7 +182,7 @@ __global__ void dequant_fp4_e8m0_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        output[i] = __float2half(kE2M1Table[nibble]
+        output[i] = __float2half(E2M1Value(nibble)
                                  * e8m0_scale_to_float(scales[i >> 5]));
     }
 }
@@ -421,7 +421,7 @@ __global__ void dequant_shared_nvfp4_f32_kernel(
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
         const float scale = nvfp4::E4M3ScaleToFloat(scales[i >> 4]) * global_scale;
-        output[i] = kE2M1Table[nibble] * scale;
+        output[i] = E2M1Value(nibble) * scale;
     }
 }
 
@@ -478,22 +478,22 @@ __global__ void dequant_fp4_e8m0_f32_kernel(
         // Unpack 32 nibbles into 32 floats
         uint32_t u = p.x;
         for (int i = 0; i < 8; ++i) {
-            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            output[base + i] = E2M1Value(u & 0x0F) * scl;
             u >>= 4;
         }
         u = p.y;
         for (int i = 8; i < 16; ++i) {
-            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            output[base + i] = E2M1Value(u & 0x0F) * scl;
             u >>= 4;
         }
         u = p.z;
         for (int i = 16; i < 24; ++i) {
-            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            output[base + i] = E2M1Value(u & 0x0F) * scl;
             u >>= 4;
         }
         u = p.w;
         for (int i = 24; i < 32; ++i) {
-            output[base + i] = kE2M1Table[u & 0x0F] * scl;
+            output[base + i] = E2M1Value(u & 0x0F) * scl;
             u >>= 4;
         }
         return;
@@ -503,7 +503,7 @@ __global__ void dequant_fp4_e8m0_f32_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        output[i] = kE2M1Table[nibble] * e8m0_scale_to_float(scales[i >> 5]);
+        output[i] = E2M1Value(nibble) * e8m0_scale_to_float(scales[i >> 5]);
     }
 }
 
@@ -732,7 +732,7 @@ __global__ void dequant_fp4_e8m0_actscale_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        output[i] = __float2half(kE2M1Table[nibble]
+        output[i] = __float2half(E2M1Value(nibble)
                                  * e8m0_scale_to_float(scales[i >> 5])
                                  * act_scales[(i % K) >> 7]);
     }

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -36,11 +37,33 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: root is not an object");
 
-absl::flat_hash_map<std::string, int32_t> key_to_id;
+    absl::flat_hash_map<std::string, int32_t> key_to_id;
     absl::flat_hash_map<int32_t, std::string> id_to_key;
     absl::flat_hash_set<int32_t> special_ids;
     absl::flat_hash_map<int32_t, std::string> added_content;
     bool has_added = false;
+
+    // SentencePiece-style vocabularies (Gemma-4) mark word-leading spaces
+    // with U+2581 '▁'. The engine operates in GPT-2 byte-glyph space where
+    // byte 0x20 maps to U+0120 'Ġ'. Normalize SP markers into engine keys so
+    // vocab entries and merges resolve against the byte-level BPE.
+    auto EngineKey = [](std::string_view k) {
+        std::string out;
+        out.reserve(k.size());
+        for (size_t i = 0; i < k.size();) {
+            if (i + 2 < k.size() &&
+                static_cast<uint8_t>(k[i]) == 0xE2 &&
+                static_cast<uint8_t>(k[i + 1]) == 0x96 &&
+                static_cast<uint8_t>(k[i + 2]) == 0x81) {
+                out += "\xC4\xA0"; // U+0120 'Ġ' == byte-glyph(0x20)
+                i += 3;
+            } else {
+                out += k[i];
+                ++i;
+            }
+        }
+        return out;
+    };
 
     // added_tokens precede "model" in the JSON. Read them first so the shared
     // simdjson token stream never rewinds past the model object.
@@ -59,10 +82,14 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
                 if (at_obj["special"].get_bool().get(special) != simdjson::SUCCESS) special = false;
                 if (id < 0) continue;
                 auto i = static_cast<int32_t>(id);
-                auto k = std::string(content);
-                added_content[i] = k;
-                key_to_id[k] = i;
-                id_to_key[i] = k;
+                // Added/special tokens are stored VERBATIM: the SP '▁' ->
+                // 'Ġ' normalization is a byte-level-BPE vocabulary concern
+                // only, and rewriting control-token content (e.g.
+                // "<|fim▁hole|>") would corrupt decode. (EngineKey is applied
+                // to model.vocab entries below.)
+                added_content[i] = content;
+                key_to_id[std::string(content)] = i;
+                id_to_key[i] = content;
                 if (special) special_ids.insert(i);
             }
         }
@@ -88,7 +115,7 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
             int64_t id;
             if (entry.unescaped_key().get(key) != simdjson::SUCCESS) continue;
             if (entry.value().get_int64().get(id) != simdjson::SUCCESS) continue;
-            auto k = std::string(key);
+            auto k = EngineKey(key);
             auto i = static_cast<int32_t>(id);
             key_to_id[k] = i;
             if (id_to_key.find(i) == id_to_key.end())
@@ -193,14 +220,28 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
         }
     }
 
-    // byte_to_token_id via vocab lookup of the GPT-2 byte table.
+    // byte_to_token_id via vocab lookup of the GPT-2 byte table. Tokenizers
+    // without full GPT-2 glyph coverage (e.g. Gemma-4: SentencePiece-style
+    // <0xXX> byte-fallback tokens) fall back to the "<0xXX>" hex form.
     std::array<int32_t, 256> byte_to_token_id{};
     for (int b = 0; b < 256; ++b) {
         uint8_t b8 = static_cast<uint8_t>(b);
         std::string key = byte_unicode::bytes_to_key(&b8, 1);
         auto it = key_to_id.find(key);
-        if (it == key_to_id.end())
-            return arrow::Status::Invalid("tokenizer: byte token missing in vocab: '", key, "'");
+        if (it == key_to_id.end()) {
+            char hex[8];
+            std::snprintf(hex, sizeof(hex), "<0x%02X>", b);
+            it = key_to_id.find(hex);
+            if (it == key_to_id.end()) {
+                // Lowercase hex variant used by some tokenizers.
+                char lox[8];
+                std::snprintf(lox, sizeof(lox), "<0x%02x>", b);
+                it = key_to_id.find(lox);
+            }
+            if (it == key_to_id.end())
+                return arrow::Status::Invalid(
+                    "tokenizer: byte token missing in vocab: '", key, "'");
+        }
         byte_to_token_id[static_cast<size_t>(b)] = it->second;
     }
 
@@ -237,24 +278,28 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
                     B = std::string(b_sv);
                 }
 
-                auto itL = key_to_id.find(A);
-                auto itR = key_to_id.find(B);
-                if (itL == key_to_id.end() || itR == key_to_id.end())
-                    return arrow::Status::Invalid("tokenizer: merge operand missing in vocab: '", A, "'/'", B, "'");
+                auto itL = key_to_id.find(EngineKey(A));
+                auto itR = key_to_id.find(EngineKey(B));
+                // Gemma-4-style tokenizers carry raw-text (non byte-glyph)
+                // merges and occasional empty operands. Such merges cannot be
+                // represented in the byte-level engine; skip them (ASCII text
+                // still encodes exactly; other scripts fall back to byte
+                // tokens) instead of failing the whole conversion.
+                if (itL == key_to_id.end() || itR == key_to_id.end() ||
+                    A.empty() || B.empty())
+                    continue;
 
                 std::vector<uint8_t> bytesA, bytesB;
-                if (!byte_unicode::key_to_bytes(A, bytesA) ||
-                    !byte_unicode::key_to_bytes(B, bytesB))
-                    return arrow::Status::Invalid("tokenizer: merge operand not byte-level: '", A, "'/'", B, "'");
+                if (!byte_unicode::key_to_bytes(EngineKey(A), bytesA) ||
+                    !byte_unicode::key_to_bytes(EngineKey(B), bytesB))
+                    continue;
 
                 std::vector<uint8_t> merged_bytes = bytesA;
                 merged_bytes.insert(merged_bytes.end(), bytesB.begin(), bytesB.end());
                 std::string merged_key =
                     byte_unicode::bytes_to_key(merged_bytes.data(), merged_bytes.size());
                 auto itM = key_to_id.find(merged_key);
-                if (itM == key_to_id.end())
-                    return arrow::Status::Invalid("tokenizer: merge product missing in vocab: '",
-                                                  merged_key, "'");
+                if (itM == key_to_id.end()) continue;
 
                 MergeRow r;
                 r.merge_left = itL->second;

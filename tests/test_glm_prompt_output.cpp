@@ -48,8 +48,7 @@ TEST_CASE("GLM-5.2 Infer: meaningful output_text on the test prompt",
 
     const char *prompt = "The capital of France is";
     std::vector<int32_t> ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds(
-        m->Type(), m->Tokenizer(), prompt, ids));
+    REQUIRE(m->BuildPromptInputIds(m->Tokenizer(), prompt, ids));
     REQUIRE(ids.size() > 6);
 
     lsxcommon::ModelRequest req;

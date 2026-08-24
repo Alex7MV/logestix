@@ -17,6 +17,29 @@ namespace lsxcommon {
 
 const std::string GlmV5Model::kType = "glm-5.2";
 
+// GLM-5.2 chat framing — model-owned (prompt_framing.h declares the symbol).
+namespace glm {
+const prompt::FramingDescriptor kFraming = {
+    {"[gMASK]", "<sop>", "<|user|>"},
+    {"<|assistant|>", "<think>", "</think>"},
+    3, 3,
+    /*leading_bos=*/false,
+};
+bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                         std::string_view raw_prompt,
+                         std::vector<int32_t> &out_ids)
+{
+    return prompt::ApplyFraming(kFraming, tok, raw_prompt, out_ids);
+}
+} // namespace glm
+
+bool GlmV5Model::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                     std::string_view raw_prompt,
+                                     std::vector<int32_t> &out_ids) const
+{
+    return glm::BuildPromptInputIds(tok, raw_prompt, out_ids);
+}
+
 GlmV5Model::GlmV5Model(ModelInitConfig cfg)
     : ModelBase{std::move(cfg)} {}
 

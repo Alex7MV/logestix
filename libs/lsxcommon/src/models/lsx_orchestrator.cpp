@@ -208,8 +208,8 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
             ModelRequest req;
             if (glm_ != nullptr) {
                 req.max_gen_tokens = (cc.max_tokens > 0) ? cc.max_tokens : 64;
-                if (!lsxcommon::prompt::BuildPromptInputIds(
-                        cc.model, glm_->Tokenizer(), cc.content, req.input_ids)) {
+                if (!glm_->BuildPromptInputIds(
+                        glm_->Tokenizer(), cc.content, req.input_ids)) {
                     spdlog::warn("[orchestrator] glm-5.2 prompt tokenization failed");
                 }
                 std::shared_lock<std::shared_mutex> res_lock(glm_->ResidencyMutex());
@@ -230,8 +230,8 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
             ModelRequest req;
             if (deepseek_ != nullptr) {
                 req.max_gen_tokens = (cc.max_tokens > 0) ? cc.max_tokens : 64;
-                if (!lsxcommon::prompt::BuildPromptInputIds(
-                        cc.model, deepseek_->Tokenizer(), cc.content, req.input_ids)) {
+                if (!deepseek_->BuildPromptInputIds(
+                        deepseek_->Tokenizer(), cc.content, req.input_ids)) {
                     spdlog::warn("[orchestrator] deepseek-v4-flash prompt tokenization failed");
                 }
                 // DeepSeek-V4-Flash execution branch -> gpu::RunInferenceModel.

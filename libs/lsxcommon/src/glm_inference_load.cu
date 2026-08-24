@@ -40,7 +40,7 @@ constexpr int kGlmRmsBlock = 256;
 // text source. Bit-exact on valid power-of-two block scales (note: the shared
 // E4M3ScaleToFloat guards on e4==0, equal to the previous E4M3ScaleToFloat
 // e4m3==0 guard for mantissa-zero scales).
-using gpu::nvfp4::kE2M1Table;
+using gpu::nvfp4::E2M1Value;
 using gpu::nvfp4::E4M3ScaleToFloat;
 
 constexpr int kGlmDequantThreads = 256;
@@ -72,10 +72,10 @@ __global__ void GlmDequantNvfp4Kernel(
         const uint8_t nib3 = b1 >> 4;
         const float sc = E4M3ScaleToFloat(scales[i0 >> 4]) * global_modifier;
         uint2 ov;
-        const __half h0 = __float2half(kE2M1Table[nib0] * sc);
-        const __half h1 = __float2half(kE2M1Table[nib1] * sc);
-        const __half h2 = __float2half(kE2M1Table[nib2] * sc);
-        const __half h3 = __float2half(kE2M1Table[nib3] * sc);
+        const __half h0 = __float2half(E2M1Value(nib0) * sc);
+        const __half h1 = __float2half(E2M1Value(nib1) * sc);
+        const __half h2 = __float2half(E2M1Value(nib2) * sc);
+        const __half h3 = __float2half(E2M1Value(nib3) * sc);
         ov.x = static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h0)) |
                (static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h1)) << 16);
         ov.y = static_cast<uint32_t>(*reinterpret_cast<const uint16_t *>(&h2)) |
@@ -88,7 +88,7 @@ __global__ void GlmDequantNvfp4Kernel(
         const uint8_t nib = (i & 1) ? static_cast<uint8_t>(b >> 4)
                                     : static_cast<uint8_t>(b & 0x0Fu);
         const float sc = E4M3ScaleToFloat(scales[i >> 4]) * global_modifier;
-        out[i] = __float2half(kE2M1Table[nib] * sc);
+        out[i] = __float2half(E2M1Value(nib) * sc);
     }
 }
 

@@ -259,7 +259,8 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
     if (root["format"].get_string().get(fmt) != simdjson::SUCCESS)
         return arrow::Status::Invalid("index missing 'format' tag");
     static const std::string_view kKnownFmts[] = {
-        "logestix-qwen", "logestix-glm", "logestix-kimi", "logestix-v1"};
+        "logestix-qwen", "logestix-glm", "logestix-kimi", "logestix-v1",
+        "logestix-gemma"};
     bool known = false;
     for (auto kf : kKnownFmts)
         if (fmt == kf) { known = true; break; }

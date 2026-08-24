@@ -13,6 +13,7 @@
 #include "lsxcommon/tokenizer.h"       // ArrowTokenizerDb
 #include "lsxcommon/benchmark_gpu.h"   // gpu::BenchmarkResult
 #include "lsxcommon/vram_estimate.h"   // VramProfile
+#include "lsxcommon/prompt_framing.h"  // prompt framing utilities
 
 namespace lsxcommon {
 
@@ -74,6 +75,17 @@ public:
 
     virtual const std::string &Type() const = 0;
     virtual ArrowTokenizerDb &Tokenizer() = 0;
+
+    // Token bridge (Model Ingestion Protocol stage 4): frame a raw user
+    // prompt into model input ids. Each framed model owns its chat-template
+    // semantics and overrides this; the default is the raw BPE encode (the
+    // tokenizer auto-prepends bos_id when it defines one).
+    virtual bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                     std::string_view raw_prompt,
+                                     std::vector<int32_t> &out_ids) const
+    {
+        return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    }
 
     // Concurrency groundwork (spec: leases and residency locks). Infer()
     // takes a shared lock; unload-during-inference / parallel dispatch take

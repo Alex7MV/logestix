@@ -34,7 +34,7 @@ namespace {
 // Process-lifetime synthetic tokenizer DB shared by every FakeModel. Built on
 // first use; mmap handles stay open for the process so ArrowTokenizerDb's
 // views remain valid across the whole suite (Catch2 runs test cases
-// sequentially). Lets the orchestrator tokenize prompts (prompt::BuildPromptInputIds)
+// sequentially). Lets the orchestrator tokenize prompts (IModel::BuildPromptInputIds)
 // without loading a real model's vocab.
 lsxcommon::ArrowTokenizerDb& SharedSyntheticTokDb() {
     static lsxcommon::ArrowTokenizerDb db = [] {
