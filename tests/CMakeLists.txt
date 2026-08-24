@@ -1941,3 +1941,20 @@ add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
 # Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
 set_tests_properties(test_qwen_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+add_executable(test_qwen_moe_kernels test_qwen_moe_kernels.cu)
+set_target_properties(test_qwen_moe_kernels PROPERTIES LANGUAGE CUDA
+    CUDA_ARCHITECTURES "120-real;121-real")
+target_compile_options(test_qwen_moe_kernels PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
+target_link_libraries(test_qwen_moe_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_kernels>"
+    )
+endif()
+
+add_test(NAME test_qwen_moe_kernels COMMAND test_qwen_moe_kernels)
