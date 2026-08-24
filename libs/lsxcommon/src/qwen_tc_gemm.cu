@@ -98,7 +98,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ bp,
                              const uint8_t *__restrict__ bs,
                              float wgs, __half *__restrict__ y,
-                             int seq, int K, int N)
+                             int seq, int K, int N, bool acc_in)
 {
     const int tid = threadIdx.x;
     const int warp = tid >> 5;
@@ -120,6 +120,27 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int k_chunks = (K + 15) >> 4;
 
     float d[4][4] = {};
+
+    // Accumulate-in: seed D from existing y (fp16 residual) once; the mma
+    // chains C=D across all k-chunks.
+    if (acc_in && seq > 0) {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
+            const int r0 = row_base + g;
+            if (r0 < seq && n0 < N)
+                d[j][0] = __half2float(y[static_cast<int64_t>(r0) * N + n0]);
+            if (r0 < seq && n0 + 1 < N)
+                d[j][1] =
+                    __half2float(y[static_cast<int64_t>(r0) * N + n0 + 1]);
+            if (r0 + 8 < seq && n0 < N)
+                d[j][2] =
+                    __half2float(y[static_cast<int64_t>(r0 + 8) * N + n0]);
+            if (r0 + 8 < seq && n0 + 1 < N)
+                d[j][3] =
+                    __half2float(y[static_cast<int64_t>(r0 + 8) * N + n0 + 1]);
+        }
+    }
 
     int a_row[32], a_koff[32];
 #pragma unroll
@@ -285,7 +306,7 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
 cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,
                                const uint8_t *w_scales, float w_global_scale,
-                               __half *y, int seq, int K, int N)
+                               __half *y, int seq, int K, int N, bool acc)
 {
     if (!x_fp16 || !w_packed || !w_scales || !y || seq <= 0 || K <= 0 ||
         N <= 0 || (K & 15))
@@ -319,7 +340,7 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
         TcGemmKernel<<<grid, 256, 0, stream>>>(
             static_cast<uint8_t *>(ap_scratch),
             static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-            w_global_scale, y, seq, K, N);
+            w_global_scale, y, seq, K, N, acc);
         e = cudaGetLastError();
     }
     cudaFreeAsync(ap_scratch, stream);
@@ -330,3 +351,5 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon
+
+

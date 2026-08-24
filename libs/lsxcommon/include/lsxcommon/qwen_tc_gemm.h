@@ -31,7 +31,8 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
 cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,
                                const uint8_t *w_scales, float w_global_scale,
-                               __half *y, int seq, int K, int N);
+                               __half *y, int seq, int K, int N,
+                               bool acc = false);
 
 } // namespace tc
 } // namespace qwen

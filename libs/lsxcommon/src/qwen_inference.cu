@@ -1367,10 +1367,10 @@ cudaError_t RunQwenNvfp4Gemm(
     // MMA. Tolerance-class numerics -- only reachable when the runtime
     // fast-math toggle is set. Falls back to the bit-exact scalar path on
     // unsupported devices/shapes (NotSupported / InvalidValue).
-    if (g_qwen_tc_fast_math.load(std::memory_order_relaxed) && !acc &&
+    if (g_qwen_tc_fast_math.load(std::memory_order_relaxed) &&
         (K & 15) == 0 && N >= 8 && K >= 64) {
         const cudaError_t tc = qwen::tc::RunQwenTcNvfp4Gemm(
-            stream, x, packed, scales, global_scale, y, seq, K, N);
+            stream, x, packed, scales, global_scale, y, seq, K, N, acc);
         if (tc != cudaErrorNotSupported && tc != cudaErrorInvalidValue)
             return tc;
     }
