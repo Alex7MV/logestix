@@ -179,18 +179,26 @@ inline std::vector<FakeTensor> BuildSyntheticMoeTensors()
                                        [](int64_t i) { return (float)i * 0.1f; })});
         }
 
-        // MoE block (all layers).
-        t.push_back({lp + "mlp.gate.weight", "BF16", {E, H}, MakeBf16(E * H)});
+        // MoE block (all layers). Weight-like float patterns (denormal-heavy
+        // index patterns collapse to identical NVFP4 nibble packs, which
+        // would defeat the split-distinctness assertions).
+        auto weight_pattern = [](int64_t i) {
+            return ((static_cast<float>(i * 37 % 251)) / 251.0f) - 0.5f;
+        };
+        t.push_back({lp + "mlp.gate.weight", "BF16", {E, H},
+                     MakeBf16Values(E * H, weight_pattern)});
         t.push_back({lp + "mlp.experts.gate_up_proj", "BF16", {E, 2 * I, H},
-                     MakeBf16(static_cast<int64_t>(E) * 2 * I * H)});
+                     MakeBf16Values(static_cast<int64_t>(E) * 2 * I * H,
+                                    weight_pattern)});
         t.push_back({lp + "mlp.experts.down_proj", "BF16", {E, H, I},
-                     MakeBf16(static_cast<int64_t>(E) * H * I)});
+                     MakeBf16Values(static_cast<int64_t>(E) * H * I,
+                                    weight_pattern)});
         t.push_back({lp + "mlp.shared_expert.gate_proj.weight", "BF16", {SI, H},
-                     MakeBf16(SI * H)});
+                     MakeBf16Values(SI * H, weight_pattern)});
         t.push_back({lp + "mlp.shared_expert.up_proj.weight", "BF16", {SI, H},
-                     MakeBf16(SI * H)});
+                     MakeBf16Values(SI * H, weight_pattern)});
         t.push_back({lp + "mlp.shared_expert.down_proj.weight", "BF16", {H, SI},
-                     MakeBf16(H * SI)});
+                     MakeBf16Values(H * SI, weight_pattern)});
         t.push_back({lp + "mlp.shared_expert_gate.weight", "BF16", {1, H},
                      MakeBf16Values(H, [](int64_t i) { return -0.5f + (float)i * 0.01f; })});
     }

@@ -114,3 +114,106 @@ TEST_CASE("MoE quantization policy keeps norms/router/gates high precision",
     CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::LinearAttnALog));
     CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::LinearAttnDt));
 }
+
+TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
+          "[qwen-moe-convert]")
+{
+    fs::path in = fs::temp_directory_path() / "lsx_qwen_moe_in";
+    fs::path out = fs::temp_directory_path() / "lsx_qwen_moe_out";
+    fs::remove_all(in); fs::remove_all(out);
+    REQUIRE(qwen_moe_test::BuildSyntheticMoeCheckpoint(in) > 0);
+
+    auto st = ConvertQwen35MoeModel(in.string(), out.string());
+    if (!st.ok()) WARN(st.ToString());
+    REQUIRE(st.ok());
+
+    const fs::path base = out / "logestix-qwen35moe";
+
+    // 1) Index with format tag and MoE fields.
+    REQUIRE(fs::exists(base / "model.index.json"));
+    {
+        std::ifstream f(base / "model.index.json");
+        std::stringstream ss; ss << f.rdbuf();
+        const std::string j = ss.str();
+        CHECK(j.find("\"logestix-qwen35moe\"") != std::string::npos);
+        CHECK(j.find("\"num_experts\": 8") != std::string::npos);
+        CHECK(j.find("\"hidden_size\": 64") != std::string::npos);
+        CHECK(j.find("\"skipped_visual_tensors\": 2") != std::string::npos);
+    }
+
+    // 2) Expert split: gate/up halves differ (fused rows were split).
+    {
+        auto batch = lsxcommon::ReadRecordBatchFromFile(
+            base / "experts" / "layer_0" / "exp_3.arrow").ValueOrDie();
+        auto pe = lsxcommon::ExpertSchema::UnpackBatch(batch).ValueOrDie();
+        const int64_t elems = 16 * 64;  // I*H
+        // ExpertSchema stores packed payloads only; shapes come from topology.
+        CHECK(pe.w1_packed.size() * 2 >= static_cast<size_t>(elems));
+        CHECK(pe.w2_packed.size() * 2 >= static_cast<size_t>(elems));
+        // Distinct deterministic input data => halves must differ.
+        CHECK(pe.w1_packed != pe.w3_packed);
+    }
+
+    // 3) Dense layer records keep original names.
+    {
+        auto names = qwentest::TensorNamesIn(base / "pinned" / "layer_0.arrow");
+        bool has_norm = false;
+        for (auto &n : names)
+            if (n.find("input_layernorm") != std::string::npos) has_norm = true;
+        CHECK(has_norm);
+    }
+
+    // 4) Router stored raw BF16: E*H elements x 2 bytes.
+    {
+        auto batch = lsxcommon::ReadRecordBatchFromFile(
+            base / "router" / "layer_0.arrow").ValueOrDie();
+        auto recs = lsxcommon::PinnedSchema::UnpackBatch(batch).ValueOrDie();
+        REQUIRE(recs.size() == 1);
+        CHECK(recs[0].name.find("mlp.gate.weight") != std::string::npos);
+        CHECK(static_cast<int64_t>(recs[0].data.size()) == 8 * 64 * 2);
+    }
+
+    // 5) Norms stay BF16 (dtype string preserved, not nvfp4-packed).
+    {
+        auto batch = lsxcommon::ReadRecordBatchFromFile(
+            base / "pinned" / "layer_0.arrow").ValueOrDie();
+        auto recs = lsxcommon::PinnedSchema::UnpackBatch(batch).ValueOrDie();
+        bool checked = false;
+        for (auto &r : recs) {
+            if (r.name.find("input_layernorm") != std::string::npos) {
+                CHECK(r.dtype == "BF16");
+                CHECK(r.data.size() == 64 * 2);
+                checked = true;
+            }
+        }
+        CHECK(checked);
+    }
+
+    // 6) Shared expert files present.
+    CHECK(fs::exists(base / "shared" / "layer_0_nvfp4.arrow"));
+    CHECK(fs::exists(base / "shared" / "layer_0_gate.arrow"));
+
+    // 7) MTP stored but separate from the live path.
+    CHECK(fs::exists(base / "mtp" / "mtp_nvfp4.arrow"));
+
+    // 8) Determinism: byte-identical index on re-conversion.
+    {
+        fs::path out2 = fs::temp_directory_path() / "lsx_qwen_moe_out2";
+        fs::remove_all(out2);
+        REQUIRE(ConvertQwen35MoeModel(in.string(), out2.string()).ok());
+        std::ifstream a(base / "model.index.json"), b(out2 / "logestix-qwen35moe" / "model.index.json");
+        std::stringstream sa, sb; sa << a.rdbuf(); sb << b.rdbuf();
+        CHECK(sa.str() == sb.str());
+        fs::remove_all(out2);
+    }
+
+    // 9) All 4x8 expert files exist.
+    for (int l = 0; l < 4; ++l)
+        for (int e = 0; e < 8; ++e)
+            CHECK(fs::exists(base / "experts" / ("layer_" + std::to_string(l)) /
+                             ("exp_" + std::to_string(e) + ".arrow")));
+
+    std::error_code ec;
+    fs::remove_all(in, ec);
+    fs::remove_all(out, ec);
+}

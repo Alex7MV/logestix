@@ -1938,3 +1938,6 @@ if(WIN32)
 endif()
 
 add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
+# Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
+set_tests_properties(test_qwen_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
