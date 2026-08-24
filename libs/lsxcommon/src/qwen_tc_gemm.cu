@@ -123,7 +123,7 @@ __device__ __forceinline__ void cp_async_wait0()
 // pair per chunk beyond the consumer fence -- the pipeline keeps ~one chunk
 // of load latency in flight, which is what separates ~100 GB/s naive staging
 // from the >300 GB/s needed for the 70-80 tok/s target (audit F-01).
-constexpr int kDecCols = 64;              // n-columns per block
+constexpr int kDecCols = 128;             // n-columns per block (8 warps x 4 atoms x 8)
 constexpr int kDecChunkBytes = 32;        // packed bytes per column per k64
 
 __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
@@ -574,7 +574,9 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                           static_cast<uint8_t *>(ap_scratch),
                           static_cast<uint8_t *>(as_scratch));
     bool handled = false;
-#if 0 // decode-specialized kernel: OOB shared read under investigation (sanitizer)
+    // Decode-specialized kernel: faster in isolation (micro-bench 84-172us)
+    // but net-slower end-to-end than the v2 tile kernel on this workload
+    // (12.9 vs 14.8 tok/s A/B). Kept for future multi-stage pipeline work.
     if (seq == 1 && (K & 63) == 0 &&
         (((reinterpret_cast<uintptr_t>(w_packed) |
            reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0) &&
@@ -587,7 +589,6 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
         e = cudaGetLastError();
         handled = e == cudaSuccess;
     }
-#endif
     if (!handled && e == cudaSuccess) {
         dim3 grid((N + kTileN - 1) / kTileN, (seq + kTileM - 1) / kTileM);
         TcGemmKernel<<<grid, 256, 0, stream>>>(
@@ -604,6 +605,9 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon
+
+
+
 
 
 

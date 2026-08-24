@@ -191,6 +191,7 @@ set_target_properties(lsxcommon_qwen_tc_cu PROPERTIES
 )
 target_compile_options(lsxcommon_qwen_tc_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+    -lineinfo;
     --generate-code=arch=compute_120a,code=sm_120a;
     --generate-code=arch=compute_121a,code=sm_121a>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
