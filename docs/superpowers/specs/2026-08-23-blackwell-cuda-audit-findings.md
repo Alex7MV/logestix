@@ -207,3 +207,21 @@ Full suite: 95/98 (3 failed = F-08..F-10; 7 SKIP by design).
 **Qwen3.5-9B decode @ RTX 5060 Ti: 0.6 -> 14.8 tok/s (x24.7), ttft 6226 ->
 262 ms.** Default scalar path bit-exact and untouched; fast-math behind
 ModelInitConfig::fast_math / LSX_TEST_FAST_MATH=1.
+
+### Optimization round 4 (2026-08-24) — WIP state at session end
+
+- attn qkv/z/a/b routed through the TC GEMM on the fast path (warpdot kept as
+  fallback): attn phase 182 -> 154 ms / 8 steps; e2e 15.4 tok/s.
+- cp.async double-buffered decode-specialized kernel (TcGemmDecodeKernel)
+  written but DISABLED (#if 0 in qwen_tc_gemm.cu): compute-sanitizer reports
+  `Invalid __shared__ read` (constant addresses ~0x1f81, warps 7+, only at
+  K=4096/9728, not at K=64). All apparent indices are bounds-checked; needs
+  SASS-level investigation next session. v2 tile kernel handles all shapes
+  correctly meanwhile.
+- Target math for 70-80 tok/s: 5.04 GB weights / 448 GB/s = 11.2 ms/token
+  ceiling (~89 tok/s); requires ~380 GB/s effective weight streaming
+  (currently ~100 GB/s in TC path, ~21% roofline).
+
+Next session queue: (1) debug decode kernel OOB via SASS/-lineinfo,
+(2) gate+up weight concatenation at load -> single GEMM + single act-quant,
+(3) swiglu fused into TC epilogue, (4) prefill TC path tuning (ttft 262 ms).
