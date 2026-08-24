@@ -130,19 +130,49 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     for (int kb = 0; kb < K; kb += 64) {
         // ---- Cooperative streaming stage (4096 + 512 bytes per slab set).
-        for (int idx = tid; idx < kTileM * 32; idx += 256) {
-            const int r = idx / 32, b = idx % 32;
-            sA[r][b] = (row_base + r < seq)
-                           ? ap[static_cast<int64_t>(row_base + r) * k_half +
-                                kb / 2 + b]
-                           : uint8_t{0};
-        }
-        for (int idx = tid; idx < kTileN * 32; idx += 256) {
-            const int c = idx / 32, b = idx % 32;
-            sB[c][b] = (col_base + c < N)
-                           ? bp[static_cast<int64_t>(col_base + c) * k_half +
-                                kb / 2 + b]
-                           : uint8_t{0};
+        // Fast path: uint4 vectorized copies when the whole slab set is
+        // 16B-aligned (K % 64 == 0 guarantees every row start lands on a
+        // 16-byte boundary since k_half % 32 == 0). Tail-K falls back to
+        // scalar byte staging.
+        const bool vec_ok = ((K & 63) == 0) &&
+                            (((reinterpret_cast<uintptr_t>(ap) |
+                               reinterpret_cast<uintptr_t>(bp)) & 15) == 0);
+        if (vec_ok) {
+            const uint4 *a4 = reinterpret_cast<const uint4 *>(
+                ap + static_cast<int64_t>(row_base) * k_half + kb / 2);
+            uint4 *sa4 = reinterpret_cast<uint4 *>(sA);
+            for (int idx = tid; idx < kTileM * 2; idx += 256) {
+                const int r = idx >> 1;
+                uint4 v = make_uint4(0, 0, 0, 0);
+                if (row_base + r < seq)
+                    v = a4[static_cast<int64_t>(r) * (k_half / 16) + (idx & 1)];
+                sa4[idx] = v;
+            }
+            const uint4 *b4 = reinterpret_cast<const uint4 *>(
+                bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
+            uint4 *sb4 = reinterpret_cast<uint4 *>(sB);
+            for (int idx = tid; idx < kTileN * 2; idx += 256) {
+                const int c = idx >> 1;
+                uint4 v = make_uint4(0, 0, 0, 0);
+                if (col_base + c < N)
+                    v = b4[static_cast<int64_t>(c) * (k_half / 16) + (idx & 1)];
+                sb4[idx] = v;
+            }
+        } else {
+            for (int idx = tid; idx < kTileM * 32; idx += 256) {
+                const int r = idx / 32, b = idx % 32;
+                sA[r][b] = (row_base + r < seq)
+                               ? ap[static_cast<int64_t>(row_base + r) *
+                                        k_half + kb / 2 + b]
+                               : uint8_t{0};
+            }
+            for (int idx = tid; idx < kTileN * 32; idx += 256) {
+                const int c = idx / 32, b = idx % 32;
+                sB[c][b] = (col_base + c < N)
+                               ? bp[static_cast<int64_t>(col_base + c) *
+                                        k_half + kb / 2 + b]
+                               : uint8_t{0};
+            }
         }
         for (int idx = tid; idx < kTileM * 4; idx += 256) {
             const int r = idx / 4, ch = idx % 4;
