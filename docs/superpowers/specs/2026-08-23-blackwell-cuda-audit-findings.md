@@ -269,3 +269,30 @@ streaming must rise from ~150 GB/s to ~380 GB/s (85% roofline). Required
 (next sessions): TMA bulk copies or wider multi-chunk staging, swiglu-in-
 epilogue fusion, gate+up concatenation at load time, Release-build profiling
 of the full per-token launch graph.
+
+### Phase A — CUDA kernel unification (2026-08-24, branch feat/blackwell-phase4)
+
+Shared header-template library (all byte-equal per cluster equivalence tests,
+`tests/test_lsx_kernels.cu`):
+
+- `lsx_kernels_quant.cuh`: Nvfp4DequantKernel<OutT>, F8E4m3ToFloat,
+  E8m0ToFloat/E8m0ClampedToFloat, QuantizeE2m1TieUp/Nearest. Removed 5
+  elementwise dequant copies, 3 F8/E8M0 decoder twins, benchmark legacy
+  kernel + dead deepseek externs.
+- `lsx_kernels_common.cuh`: CastIn/CastOut, ExpFlavor (Fast/Precise/Glibc).
+  Shared math uses explicit *_rn intrinsics -> results independent of the
+  historical -fmad object-lib flags (anomaly resolved flag-independently).
+- `lsx_kernels_math.cuh`: AddInPlace/AddOut/EmbedGather/F32toT — replaced
+  ~12 per-model copies across qwen/qwen_moe/glm/kimi.
+- `lsx_kernels_act.cuh`: SwigluKernel (division form) + SwigluSigKernel
+  (sigmoid form) x exp flavor x clamp — replaced 7 copies. Kept
+  family-local: qwen dense silu_device form, deepseek asymmetric silu_mul.
+- `lsx_kernels_norm.cuh`: RmsNormTreeKernel<T,NormWeight> — replaced qwen
+  offset + gemma direct/plain. GLM/Kimi sequential-scan bit-exact kernels
+  and DeepSeek F32 stay family-local.
+
+Documented deviations: router top-k kernels NOT unified (qwen_moe vs gemma
+differ in probs rounding path/dtype/output format — 2 sites only); glm
+load-time vectorized dequant kept (perf-specialized).
+
+Full suite 104/104 green, zero expectation changes.
