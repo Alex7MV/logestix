@@ -13,6 +13,7 @@
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
 #include "lsxcommon/deepseek_inference_csa.h"
+#include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/vram_estimate.h"
 
@@ -105,32 +106,14 @@ void ensure_expert_resident(ExpertDb &db, int layer, int expert,
 void free_expert_index(ExpertDb &db);
 
 // ── Device-side resident-expert cache (Blackwell H2D-traffic elimination) ────
-// Keeps the packed NVFP4 payloads + E8M0 scales of the hottest routed experts
-// resident in VRAM so repeated selections skip the ~13 MB per-expert H2D
-// staging entirely. All device access happens on the caller's single compute
-// stream, so stream ordering alone makes slot reuse safe (a slot is only
-// overwritten by copies enqueued after every prior kernel reading it).
-// Host bookkeeping only — no device-side structures, no absl (NVCC-safe).
-struct ExpertDeviceCache {
-    uint8_t* d_base = nullptr;        // one device block: [pack region][scale region]
-    uint8_t* d_pack = nullptr;        // [slots][pack_stride]
-    uint8_t* d_scale = nullptr;       // [slots][scale_stride]
-    int slots = 0;
-    int64_t pack_stride = 0;
-    int64_t scale_stride = 0;
-    int total_experts = 0;
-    // Host bookkeeping (caller-owned storage; pipeline wires std::vector data()).
-    int32_t* h_slot_of = nullptr;     // [total_experts] flat idx -> slot, -1 = miss
-    int32_t* h_slot_owner = nullptr;  // [slots] flat idx or -1
-    int32_t* h_lru = nullptr;         // [slots]; h_lru[0] = MRU slot
-
-    std::size_t DeviceBytes() const
-    {
-        return slots > 0
-            ? static_cast<std::size_t>(slots * (pack_stride + scale_stride))
-            : 0;
-    }
-};
+// Unified implementation: lsxcommon/expert_device_cache.h (model-unification
+// 2026-08). Keeps the packed NVFP4 payloads + E8M0 scales of the hottest
+// routed experts resident in VRAM so repeated selections skip the ~13 MB
+// per-expert H2D staging entirely. All device access happens on the caller's
+// single compute stream, so stream ordering alone makes slot reuse safe (a
+// slot is only overwritten by copies enqueued after every prior kernel
+// reading it). Host bookkeeping only — no device-side structures, no absl.
+#include "lsxcommon/expert_device_cache.h"
 
 inline int moe_route(int token_idx, int layer_idx, int experts_per_layer)
 {

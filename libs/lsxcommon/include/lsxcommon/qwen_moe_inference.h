@@ -11,6 +11,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/qwen_moe_expert_cache.h"
 
 namespace lsxcommon::qwen_moe {
 
@@ -37,7 +38,6 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,
 
 // Forward decls from the loader side (pinned store + LRU device cache).
 struct QwenMoeExpertStore;
-struct QwenMoeExpertDeviceCache;
 struct QwenMoePinnedWeights;
 
 // Processes one token's K routed slots (ascending-k deterministic fp32
