@@ -1474,13 +1474,23 @@ cudaError_t RunQwenMLP(cudaStream_t stream,
 
     cudaError_t e;
     if (!lw.mlp_gate.d_packed) return cudaErrorInvalidValue;
-    e = LaunchNvfp4Gemm(lw.mlp_gate, d_in, seq, d_gate, stream); if (e) return e;
-    e = LaunchNvfp4Gemm(lw.mlp_up,   d_in, seq, d_up, stream);   if (e) return e;
     const int64_t n_act = (int64_t)seq * I;
     const int threads = 256;
     const int blocks = (int)((n_act + threads - 1) / threads);
-    qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
-    e = cudaGetLastError(); if (e) return e;
+    if (lw.mlp_gate_up.d_packed) {
+        // B1 fast path: one GEMM over the fused [2I,K] weight, then swiglu
+        // across the column halves. Scratch holds [seq, 2I] == old gate+up.
+        e = LaunchNvfp4Gemm(lw.mlp_gate_up, d_in, seq, d_gate, stream);
+        if (e) return e;
+        qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(
+            d_gate, d_up, d_gate, n_act);
+        e = cudaGetLastError(); if (e) return e;
+    } else {
+        e = LaunchNvfp4Gemm(lw.mlp_gate, d_in, seq, d_gate, stream); if (e) return e;
+        e = LaunchNvfp4Gemm(lw.mlp_up,   d_in, seq, d_up, stream);   if (e) return e;
+        qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
+        e = cudaGetLastError(); if (e) return e;
+    }
     e = LaunchNvfp4Gemm(lw.mlp_down, d_gate, seq, d_out, stream);
     return e;
 }
@@ -1508,20 +1518,33 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
     __half *d_up   = d_scratch + (int64_t)seq * I;
 
     cudaError_t e;
-    e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
-                         lw.mlp_gate.global_scale, d_gate, seq, H, I,
-                         /*acc=*/false);
-    if (e) return e;
-    e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_up.d_packed, lw.mlp_up.d_scales,
-                         lw.mlp_up.global_scale, d_up, seq, H, I,
-                         /*acc=*/false);
-    if (e) return e;
     const int64_t n_act = (int64_t)seq * I;
     const int threads = 256;
     const int blocks = (int)((n_act + threads - 1) / threads);
-    qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
-    e = cudaGetLastError();
-    if (e) return e;
+    if (lw.mlp_gate_up.d_packed) {
+        // B1 fast path: single fused-weight GEMM into [seq, 2I].
+        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate_up.d_packed,
+                             lw.mlp_gate_up.d_scales,
+                             lw.mlp_gate_up.global_scale, d_gate, seq, H, 2 * I,
+                             /*acc=*/false);
+        if (e) return e;
+        qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(
+            d_gate, d_up, d_gate, n_act);
+        e = cudaGetLastError();
+        if (e) return e;
+    } else {
+        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
+                             lw.mlp_gate.global_scale, d_gate, seq, H, I,
+                             /*acc=*/false);
+        if (e) return e;
+        e = RunQwenNvfp4Gemm(stream, d_in, lw.mlp_up.d_packed, lw.mlp_up.d_scales,
+                             lw.mlp_up.global_scale, d_up, seq, H, I,
+                             /*acc=*/false);
+        if (e) return e;
+        qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(d_gate, d_up, d_gate, n_act);
+        e = cudaGetLastError();
+        if (e) return e;
+    }
     return RunQwenNvfp4Gemm(stream, d_gate, lw.mlp_down.d_packed,
                             lw.mlp_down.d_scales, lw.mlp_down.global_scale,
                             d_resid, seq, I, H, /*acc=*/true);

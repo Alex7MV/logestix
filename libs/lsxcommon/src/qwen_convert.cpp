@@ -593,6 +593,26 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
     std::vector<DenseNvfp4Record> global_nvfp4;
     std::vector<TensorRecord> global_raw;
 
+    // B1 gate+up fusion: hold the raw gate_proj bytes until the matching
+    // up_proj arrives (same layer), then quantize [2I,K] jointly so both
+    // halves share ONE global scale — required by the W4A4 tensor-core path
+    // (single epilogue scalar) and enables the single-GEMM fast MLP.
+    struct PendingGate {
+        std::vector<uint8_t> data;
+        std::vector<int64_t> shape;
+        std::string dtype;
+        std::string name;
+    };
+    absl::btree_map<int, PendingGate> pending_gate;
+
+    auto fused_gate_up_name = [](const std::string &src) {
+        const std::string from = "gate_proj";
+        const std::string to = "gate_up_proj";
+        const size_t pos = src.rfind(from);
+        return pos == std::string::npos ? src : src.substr(0, pos) + to +
+                                                    src.substr(pos + from.size());
+    };
+
     int64_t total_pinned = 0;
     for (auto &shard : model.shards) {
         for (auto &t : shard.tensors) {
@@ -634,6 +654,45 @@ arrow::Status ConvertQwenModel(const std::string &input_path, const std::string 
 
             int layer = p.layer;
             if (nvfp4) {
+                // B1: intercept gate/up pair for joint quantization.
+                if (p.kind == TensorKind::MlpGate) {
+                    PendingGate &pg = pending_gate[layer];
+                    pg.data = std::move(data);
+                    pg.shape = t.shape;
+                    pg.dtype = t.dtype;
+                    pg.name = t.name;
+                    continue;   // counted when the fused record is emitted
+                }
+                if (p.kind == TensorKind::MlpUp) {
+                    auto it = pending_gate.find(layer);
+                    if (it != pending_gate.end()) {
+                        const PendingGate &pg = it->second;
+                        const int64_t rows = t.shape[0];
+                        const int64_t cols = t.shape[1];
+                        std::vector<uint8_t> fused(pg.data.size() +
+                                                   data.size());
+                        std::memcpy(fused.data(), pg.data.data(),
+                                    pg.data.size());
+                        std::memcpy(fused.data() + pg.data.size(),
+                                    data.data(), data.size());
+                        std::vector<int64_t> fused_shape = {rows * 2, cols};
+                        DenseNvfp4Record r;
+                        r.name = fused_gate_up_name(pg.name);
+                        r.shape = fused_shape;
+                        r.dtype = pg.dtype;
+                        if (!gpu::quantize_tensor_gpu(
+                                fused.data(), rows * 2 * cols, pg.dtype,
+                                nullptr, fused_shape, {}, r.packed, r.scales,
+                                r.global_scale))
+                            r.packed.clear();
+                        nvfp4_by_layer[layer].push_back(std::move(r));
+                        pending_gate.erase(it);
+                        ++total_pinned;
+                        continue;
+                    }
+                    // Unpaired up (gate missing): fall through to the normal
+                    // separate path so conversion still succeeds.
+                }
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
                 if (!gpu::quantize_tensor_gpu(data.data(), t.numel(), t.dtype,
