@@ -75,6 +75,25 @@ inline std::vector<uint8_t> MakeF32Values(
     return out;
 }
 
+// BF16 payload from an f32 pattern (round-to-nearest-even via bit shift is
+// fine for the values used here).
+inline std::vector<uint8_t> MakeBf16Values(
+    int64_t n, const std::function<float(int64_t)> &pattern)
+{
+    std::vector<uint8_t> out(static_cast<size_t>(n) * 2);
+    for (int64_t i = 0; i < n; ++i) {
+        uint32_t u;
+        float v = pattern(i);
+        std::memcpy(&u, &v, 4);
+        const uint16_t bits = static_cast<uint16_t>((u + 0x7fffU) >> 16);
+        out[static_cast<size_t>(i) * 2 + 0] =
+            static_cast<uint8_t>(bits & 0xff);
+        out[static_cast<size_t>(i) * 2 + 1] =
+            static_cast<uint8_t>(bits >> 8);
+    }
+    return out;
+}
+
 struct FakeTensor {
     std::string name;
     std::string dtype;
@@ -156,12 +175,17 @@ inline std::vector<FakeTensor> BuildSyntheticGemmaModel()
                      MakeBf16(H)});
         t.push_back({lp + "post_feedforward_layernorm.weight", "BF16", {H},
                      MakeBf16(H)});
+        t.push_back({lp + "post_feedforward_layernorm_1.weight", "BF16", {H},
+                     MakeBf16(H)});
         t.push_back({lp + "pre_feedforward_layernorm_2.weight", "BF16", {H},
                      MakeBf16(H)});
         t.push_back({lp + "post_feedforward_layernorm_2.weight", "BF16", {H},
                      MakeBf16(H)});
-        t.push_back({lp + "layer_scalar", "F32", {1},
-                     MakeF32Values(1, [](int64_t) { return 1.0f; })});
+        // Real checkpoints store layer_scalar / per_expert_scale as BF16;
+        // keep the fixture faithful to that (regression: the loader used to
+        // skip BF16 scalars due to an F32-sized guard).
+        t.push_back({lp + "layer_scalar", "BF16", {1},
+                     MakeBf16Values(1, [](int64_t) { return 1.0f; })});
 
         // Dense MLP branch.
         t.push_back({lp + "mlp.gate_proj.weight", "BF16", {I, H}, MakeBf16(I * H)});
@@ -175,8 +199,8 @@ inline std::vector<FakeTensor> BuildSyntheticGemmaModel()
                      MakeBf16(E * H * MI)});
         t.push_back({lp + "router.proj.weight", "BF16", {E, H}, MakeBf16(E * H)});
         t.push_back({lp + "router.scale", "BF16", {H}, MakeBf16(H)});
-        t.push_back({lp + "router.per_expert_scale", "F32", {E},
-                     MakeF32Values(E, [](int64_t i) {
+        t.push_back({lp + "router.per_expert_scale", "BF16", {E},
+                     MakeBf16Values(E, [](int64_t i) {
                          return 0.5f + 0.01f * static_cast<float>(i);
                      })});
 

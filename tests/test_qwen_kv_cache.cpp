@@ -21,9 +21,9 @@ TEST_CASE("Qwen incremental KV continuation equals a single full run",
     }
 
     std::vector<int32_t> input_ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds(
-        model->Type(), model->Tokenizer(), "The capital of France is",
-        input_ids));
+    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                       "The capital of France is",
+                                       input_ids));
     REQUIRE_FALSE(input_ids.empty());
 
     // Baseline: a single 8-token run (full prefill + incremental decode).

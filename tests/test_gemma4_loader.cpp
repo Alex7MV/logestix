@@ -59,10 +59,22 @@ TEST_CASE("LoadGemmaPinnedWeights arena layout", "[gemma][loader]") {
             CHECK(static_cast<const void *>(p) >= base);
             CHECK(static_cast<const void *>(p) < end);
         }
-        // F32 side allocations are separate from the arena.
+        // F32 side allocations are separate from the arena. BF16-stored
+        // scalars must be converted and uploaded (regression: BF16
+        // layer_scalar / per_expert_scale used to be silently skipped).
         CHECK(lw.d_layer_scalar != nullptr);
         CHECK(lw.d_per_expert_scale != nullptr);
         CHECK(lw.d_router_scale != nullptr);
+        if (lw.d_layer_scalar && lw.d_per_expert_scale) {
+            float scalar = 0.f;
+            REQUIRE(cudaMemcpy(&scalar, lw.d_layer_scalar, sizeof(float),
+                               cudaMemcpyDeviceToHost) == cudaSuccess);
+            CHECK(scalar == 1.0f);
+            float pes0 = 0.f;
+            REQUIRE(cudaMemcpy(&pes0, lw.d_per_expert_scale, sizeof(float),
+                               cudaMemcpyDeviceToHost) == cudaSuccess);
+            CHECK(pes0 == 0.5f);   // fixture pattern: 0.5 + 0.01 * e
+        }
         // Full-attention layer (3) carries global geometry.
         bool full = (l == 3);
         CHECK(lw.q_rows == (full ? 4 * 32 : 4 * 16));

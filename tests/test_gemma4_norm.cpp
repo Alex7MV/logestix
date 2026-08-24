@@ -1,4 +1,4 @@
-// Тест Gemma-4 RMSNorm (offset-weight форма) против CPU FP64-референса.
+// Тест Gemma-4 RMSNorm (w-form: output = rms(x) * w) против CPU FP64-референса.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
@@ -17,7 +17,7 @@ inline bool BfTol(float got, double want)
 }
 } // namespace
 
-TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
+TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (w-form)", "[gemma][kernels]") {
     constexpr int rows = 3, hidden = 64;
     std::mt19937 rng(7);
     std::normal_distribution<float> nd(0.f, 1.f);
@@ -57,8 +57,9 @@ TEST_CASE("RunGemmaRMSNorm matches CPU FP64 (1+w offset)", "[gemma][kernels]") {
 
     for (int r = 0; r < rows; ++r)
         for (int c = 0; c < hidden; ++c) {
+            // Gemma-4 authentic HF semantics: plain weight multiply (no +1).
             double want = double(x[r * hidden + c]) * inv[r] *
-                          (1.0 + double(w[c]));
+                          double(w[c]);
             double got = double(__bfloat162float(hout[r * hidden + c]));
             INFO("r=" << r << " c=" << c << " got=" << got << " want=" << want);
             CHECK(BfTol(got, want));
@@ -99,7 +100,7 @@ TEST_CASE("RunGemmaRMSNorm handles multi-block-hidden rows", "[gemma][kernels]")
         double inv = 1.0 / std::sqrt(ss / hidden + 1e-6);
         for (int c = 0; c < hidden; ++c) {
             double want = double(__bfloat162float(hx[r * hidden + c])) * inv *
-                          (1.0 + double(__bfloat162float(hw[c])));
+                          double(__bfloat162float(hw[c]));
             CHECK(BfTol(__bfloat162float(hout[r * hidden + c]), want));
         }
     }

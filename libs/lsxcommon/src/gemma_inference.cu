@@ -4,6 +4,7 @@
 #include <cublas_v2.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <vector>
@@ -37,11 +38,12 @@ __global__ void gemma_dequant_nvfp4_kernel(const uint8_t *__restrict__ packed,
          i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
         uint8_t byte = packed[i];
         int64_t elem = i * 2;
-        float s = gpu::nvfp4::E4M3ScaleToFloat(scales[elem / kBlk]) *
-                  global_scale;
-        out[elem] = __float2bfloat16(gpu::nvfp4::kE2M1Table[byte & 0xF] * s);
+        const float s = gpu::nvfp4::E4M3ScaleToFloat(scales[elem / kBlk]) *
+                        global_scale;
+        out[elem] =
+            __float2bfloat16(gpu::nvfp4::E2M1Value(byte & 0xF) * s);
         out[elem + 1] =
-            __float2bfloat16(gpu::nvfp4::kE2M1Table[byte >> 4] * s);
+            __float2bfloat16(gpu::nvfp4::E2M1Value(byte >> 4) * s);
     }
 }
 
@@ -697,23 +699,6 @@ bool GemmaSkipBranch(const char *name){
     return no_moe; // "moe"
 }
 
-// layer_scalar application policy (LSX_GEMMA_SCALAR_MODE):
-//   all  (default) -> scale every branch residual
-//   attn           -> attention branch only
-//   moe            -> MoE branch only
-//   none           -> ignore layer_scalar entirely (scalar = 1)
-void GemmaScalarMode(float &s_attn, float &s_dense, float &s_moe)
-{
-    const char *m = std::getenv("LSX_GEMMA_SCALAR_MODE");
-    if (!m || std::strcmp(m, "all") == 0) {
-        // caller keeps raw layer_scalar everywhere
-        return;
-    }
-    if (std::strcmp(m, "attn") == 0) { s_dense = 1.f; s_moe = 1.f; }
-    else if (std::strcmp(m, "moe") == 0) { s_attn = 1.f; s_dense = 1.f; }
-    else if (std::strcmp(m, "none") == 0) { s_attn = s_dense = s_moe = 1.f; }
-}
-
 // File-scope expert db reference used inside ForwardLayer (set by
 // RunGemmaGeneration; single-threaded generation contract).
 GemmaExpertDb *g_expert_db = nullptr;
@@ -897,7 +882,10 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         e = RunGemmaAttention(ws.d_qr, dk, dv, ws.d_tmp, seq,
                               static_cast<int>(pos_base + seq), pos_base,
                               heads, kv_heads, head_dim, window,
-                              1.0f / std::sqrt(static_cast<float>(head_dim)),
+                              // HF Gemma4TextAttention uses scaling = 1.0:
+                              // q/k are per-head RMS-normalized, so there is
+                              // no additional 1/sqrt(head_dim) factor.
+                              1.0f,
                               stream);
         if (e != cudaSuccess) return e;
     } else {
@@ -1089,25 +1077,6 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                                    static_cast<int64_t>(seq) * H);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    {
-        static const bool probe =
-            std::getenv("LSX_TEST_GEMMA_PROBE") != nullptr;
-        if (probe && layer_idx == 0 && seq > 0) {
-            std::vector<__nv_bfloat16> h(8);
-            cudaError_t pe = cudaMemcpyAsync(h.data(), ws.d_x, 8 * 2,
-                                             cudaMemcpyDeviceToHost, stream);
-            if (pe == cudaSuccess) {
-                pe = cudaStreamSynchronize(stream);
-                if (pe == cudaSuccess) {
-                    printf("[probe0] x0..7=");
-                    for (int i = 0; i < 8; ++i)
-                        printf("%g ", __bfloat162float(h[i]));
-                    printf("\n");
-                    fflush(stdout);
-                }
-            }
-        }
-    }
     return cudaSuccess;
 }
 
@@ -1224,11 +1193,12 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         e = cudaGetLastError();
         if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
     }
-    cudaEvent_t ev0, ev_ttft, ev_end;
-    cudaEventCreateWithFlags(&ev0, cudaEventDisableTiming);
-    cudaEventCreateWithFlags(&ev_ttft, cudaEventDisableTiming);
-    cudaEventCreateWithFlags(&ev_end, cudaEventDisableTiming);
-    cudaEventRecord(ev0, stream);
+    // Wall-clock timing via std::chrono: the previous cudaEvent-based TTFT
+    // measurement returned a sticky "invalid resource handle" from
+    // cudaEventElapsedTime on cudaEventDisableTiming events, which the decode
+    // loop's error checks then misread as a generation failure after the
+    // first token.
+    const auto t0 = std::chrono::steady_clock::now();
 
     for (size_t l = 0; l < pw.layers.size(); ++l) {
         e = ForwardLayer(stream, cublas, pw, pw.layers[l],
@@ -1263,10 +1233,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
     e = cudaStreamSynchronize(stream);
     if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
-    cudaEventRecord(ev_ttft, stream);
-    cudaEventSynchronize(ev_ttft);
-    float ttft_ms = 0.f;
-    cudaEventElapsedTime(&ttft_ms, ev0, ev_ttft);
+    const double ttft_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0)
+            .count();
     out.ttft_ms = ttft_ms;
 
     int32_t tok = ws.h_arg[0];
@@ -1279,6 +1249,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             break;
         }
         const int pos = P + step - 1;
+        fflush(stdout);
         e = cudaMemcpyAsync(ws.d_pos, &tok, 4, cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) break;
         gemma_embed_kernel<<<1, 256, 0, stream>>>(pw.d_embed, ws.d_pos,
@@ -1325,15 +1296,11 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                         V * sizeof(float), cudaMemcpyDeviceToHost, stream);
     if (e == cudaSuccess) e = cudaStreamSynchronize(stream);
 
-    cudaEventRecord(ev_end, stream);
-    cudaEventSynchronize(ev_end);
-    float total_ms = 0.f;
-    cudaEventElapsedTime(&total_ms, ev0, ev_end);
-    out.total_ms = total_ms;
+    out.total_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0)
+            .count();
 
-    cudaEventDestroy(ev0);
-    cudaEventDestroy(ev_ttft);
-    cudaEventDestroy(ev_end);
     g_expert_db = nullptr;
     cublasDestroy(cublas);
     out.ok = (e == cudaSuccess);

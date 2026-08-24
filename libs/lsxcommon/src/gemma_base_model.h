@@ -9,6 +9,7 @@
 #include "lsxcommon/gemma4_inference.h"
 #include "lsxcommon/gemma4_inference_load.h"
 #include "lsxcommon/model_base.h"
+#include "lsxcommon/prompt_framing.h"
 
 namespace lsxcommon {
 
@@ -27,6 +28,14 @@ public:
 
     const std::string &Type() const override { return type_; }
     void SetType(std::string t) { type_ = std::move(t); }
+
+    // Gemma-4 chat framing — model-owned token bridge (BOS-led template).
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override
+    {
+        return gemma::BuildPromptInputIds(tok, raw_prompt, out_ids);
+    }
 
 protected:
     // Hard geometry gate (protocol step 3): false when the loaded topology

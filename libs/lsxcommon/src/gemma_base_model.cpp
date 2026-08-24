@@ -3,12 +3,41 @@
 #include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstdlib>
+#include <string>
 
+#include <absl/strings/str_format.h>
+
+#include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
 
 namespace lsxcommon {
+
+// Gemma-4 canonical chat template (chat_template.jinja, generation prompt;
+// enable_thinking defaults to false -> the EMPTY thinking channel is part of
+// the generation prompt):
+//   {{ bos_token }}<|turn>user\n{prompt}<turn|>\n<|turn>model\n
+//   <|channel>thought\n<channel|>
+// Sentinel strings verified against the real checkpoint tokenizer.json:
+// <|turn>=105, <turn|>=106, "\n"=107, <|channel>=100, thought=45518,
+// <channel|>=101; "user"/"model" are single vocab keys.
+namespace gemma {
+const prompt::FramingDescriptor kFraming = {
+    {"<|turn>", "user", "\n"},
+    {"<turn|>", "\n", "<|turn>", "model", "\n",
+     "<|channel>", "thought", "\n", "<channel|>"},
+    3, 9,
+    /*leading_bos=*/true,
+};
+bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                         std::string_view raw_prompt,
+                         std::vector<int32_t> &out_ids)
+{
+    return prompt::ApplyFraming(kFraming, tok, raw_prompt, out_ids);
+}
+} // namespace gemma
 
 bool GemmaBaseModel::SyntheticGeometryAllowed()
 {
@@ -161,23 +190,47 @@ void GemmaBaseModel::Unload()
 
 gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
 {
-    // Gemma chat framing + leading <bos>: <|turn>user\n{prompt}<turn|>\n<|turn>model\n
+    // Gemma chat framing + leading <bos> (model-owned, leading_bos policy):
+    // <|turn>user\n{prompt}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>
     ModelRequest framed = req;
-    if (tok_db_ && !prompt::BuildPromptInputIds(type_, *tok_db_,
-                                                "The capital of France is",
-                                                framed.input_ids)) {
+    framed.max_gen_tokens = std::max(req.max_gen_tokens, 8);
+    if (tok_db_ && !BuildPromptInputIds(*tok_db_,
+                                        "The capital of France is",
+                                        framed.input_ids)) {
         gpu::InferenceResult r;
         r.error_msg = "selfcheck prompt framing failed";
         return r;
     }
-    // Gemma templates start with <bos>; the framing registry covers only the
-    // turn sentinels, so prepend the model's BOS id here.
-    if (!framed.input_ids.empty() &&
-        (tok_db_ ? tok_db_->bos_id : -1) >= 0 &&
-        framed.input_ids.front() != tok_db_->bos_id) {
-        framed.input_ids.insert(framed.input_ids.begin(), tok_db_->bos_id);
+
+    gpu::InferenceResult r = Infer(framed);
+    if (!r.ok) {
+        r.selfcheck_passed = false;
+        return r;
     }
-    return runtime::RunParisSelfCheck(*this, framed);
+
+    // Pass criterion: this checkpoint greedily begins its answer with
+    // "The capital of France is **Paris**" (verified against HF transformers
+    // greedy decode with the identical framing), so the canonical answer
+    // string must appear within the first generated tokens rather than be
+    // the literal first token.
+    if (!r.gen_tokens.empty() && tok_db_) {
+        constexpr size_t kAnswerWindow = 12;
+        const size_t n = std::min(r.gen_tokens.size(), kAnswerWindow);
+        r.first_gen_text = runtime::DecodeGeneratedText(*tok_db_,
+            std::vector<int32_t>(r.gen_tokens.begin(),
+                                 r.gen_tokens.begin() +
+                                     static_cast<long>(n)));
+        r.selfcheck_passed =
+            r.first_gen_text.find("Paris") != std::string::npos;
+    } else {
+        r.selfcheck_passed = false;
+    }
+
+    log::info(absl::StrFormat(
+        "[selfcheck] top1_tok=%d text='%s' passed=%s",
+        static_cast<int>(r.first_gen_tok_id), r.first_gen_text.c_str(),
+        r.selfcheck_passed ? "true" : "false"));
+    return r;
 }
 
 gpu::BenchmarkResult GemmaBaseModel::Benchmark(int num_tokens)

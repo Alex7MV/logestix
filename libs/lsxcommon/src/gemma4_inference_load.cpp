@@ -282,9 +282,13 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
     cudaError_t e = UploadJobs(std::move(jobs), lw, stream, ring, bytes_acc);
     if (e != cudaSuccess) return e;
 
-    // F32 / BF16-scalar side uploads.
+    // F32 / BF16-scalar side uploads. Real checkpoints store layer_scalar
+    // and router.per_expert_scale as BF16 (2 bytes/value) — the size guards
+    // below must follow the dtype, not sizeof(float).
     if (auto *sc = FindTensor(tensors, "layer_scalar");
-        sc && sc->shape.size() == 1 && sc->data.size() >= sizeof(float)) {
+        sc && sc->shape.size() == 1 &&
+        ((sc->dtype == "F32" && sc->data.size() >= sizeof(float)) ||
+         (sc->dtype == "BF16" && sc->data.size() >= 2))) {
         if (sc->dtype == "F32") {
             e = UploadF32(reinterpret_cast<const float *>(sc->data.data()), 1,
                           &lw.d_layer_scalar, stream, ring, bytes_acc);
@@ -298,11 +302,21 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
         if (e != cudaSuccess) return e;
     }
     if (auto *pes = FindTensor(tensors, "router.per_expert_scale");
-        pes && pes->dtype == "F32" && pes->shape.size() == 1 &&
-        pes->data.size() >= static_cast<size_t>(pes->shape[0]) * 4) {
-        e = UploadF32(reinterpret_cast<const float *>(pes->data.data()),
-                      pes->shape[0], &lw.d_per_expert_scale, stream, ring,
-                      bytes_acc);
+        pes && pes->shape.size() == 1 &&
+        ((pes->dtype == "F32" &&
+          pes->data.size() >=
+              static_cast<size_t>(pes->shape[0]) * sizeof(float)) ||
+         (pes->dtype == "BF16" &&
+          pes->data.size() >= static_cast<size_t>(pes->shape[0]) * 2))) {
+        const size_t n = static_cast<size_t>(pes->shape[0]);
+        if (pes->dtype == "F32") {
+            e = UploadF32(reinterpret_cast<const float *>(pes->data.data()),
+                          n, &lw.d_per_expert_scale, stream, ring, bytes_acc);
+        } else {
+            auto f32 = Bf16BytesToF32(pes->data, n);
+            e = UploadF32(f32.data(), n, &lw.d_per_expert_scale, stream, ring,
+                          bytes_acc);
+        }
         if (e != cudaSuccess) return e;
     }
     if (auto *rs = FindTensor(tensors, "router.scale");
