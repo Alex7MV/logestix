@@ -236,6 +236,11 @@ std::string detect_model_type(const std::string &model_path)
 {
     std::string result;
     auto ipath = std::filesystem::path(model_path) / "logestix" / "model.index.json";
+    const auto moe_ipath =
+        std::filesystem::path(model_path) / "logestix-qwen35moe" /
+        "model.index.json";
+    if (!std::filesystem::exists(ipath) && std::filesystem::exists(moe_ipath))
+        ipath = moe_ipath;
     const auto vault = std::filesystem::path(
         lsxcommon::lsx_model_metadata("manifests/model.index.json"));
     if (!std::filesystem::exists(ipath) && std::filesystem::exists(vault))

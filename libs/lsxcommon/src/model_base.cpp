@@ -13,6 +13,17 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
     if (tok_db_) return true;
     tok_db_ = std::make_unique<ArrowTokenizerDb>();
     auto pinned = std::filesystem::path(model_path) / "logestix" / "pinned";
+    // MoE layouts keep their own root (e.g. logestix-qwen35moe/pinned).
+    if (!std::filesystem::exists(pinned)) {
+        for (const char *alt : {"logestix-qwen35moe", "logestix-glm",
+                                "logestix-kimi", "logestix-gemma"}) {
+            auto cand = std::filesystem::path(model_path) / alt / "pinned";
+            if (std::filesystem::exists(cand)) {
+                pinned = cand;
+                break;
+            }
+        }
+    }
     auto v = arrow::io::MemoryMappedFile::Open(
         (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
     auto m = arrow::io::MemoryMappedFile::Open(
