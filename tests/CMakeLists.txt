@@ -1947,7 +1947,8 @@ set_target_properties(test_qwen_moe_kernels PROPERTIES LANGUAGE CUDA
     CUDA_ARCHITECTURES "120-real;121-real")
 target_compile_options(test_qwen_moe_kernels PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
-target_link_libraries(test_qwen_moe_kernels PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_qwen_moe_kernels PRIVATE
+    lsxcommon_qwen_moe_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
