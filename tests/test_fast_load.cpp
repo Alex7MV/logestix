@@ -196,6 +196,39 @@ TEST_CASE("RunUploadJobs captures optional 2-D shapes", "[fastload][gpu]")
     cudaFree(arena);
 }
 
+TEST_CASE("RunUploadJobs kBf16Raw keeps bits untouched", "[fastload][gpu]")
+{
+    using namespace lsxcommon::fastload;
+    PinnedStagingRing ring;
+    REQUIRE(ring.ok());
+
+    // Raw BF16 payload must be uploaded byte-exact (no FP16 conversion).
+    std::vector<uint8_t> bf16(8, 0x9C);
+    const int64_t shape[1] = {4};
+    lsxcommon::TensorView tv{};
+    tv.name = "bf16_raw";
+    tv.rank = 1;
+    tv.shape = shape;
+    tv.bytes = bf16.size();
+    tv.data = bf16.data();
+
+    void *dst = nullptr;
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::uint64_t acc = 0;
+    std::string err;
+    cudaError_t e = RunUploadJobs({{&tv, &dst, CvKind::kBf16Raw}}, &arena,
+                                  &arena_bytes, 0, ring, acc, &err);
+    REQUIRE(e == cudaSuccess);
+    CHECK(arena_bytes == 8);
+    CHECK(acc == 8);
+
+    std::vector<uint8_t> back(8);
+    cudaMemcpy(back.data(), dst, 8, cudaMemcpyDeviceToHost);
+    CHECK(back == bf16);
+    cudaFree(arena);
+}
+
 TEST_CASE("UploadNvfp4Weight uploads packed+scales and fills metadata",
           "[fastload][gpu]")
 {

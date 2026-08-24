@@ -87,21 +87,6 @@ void FreeExpertBlock(GlmExpertDeviceBlock &b)
     b = GlmExpertDeviceBlock{};
 }
 
-const TensorView *FindTensor(const TensorBatchViews &tensors,
-                             std::string_view suffix)
-{
-    for (const auto &t : tensors.tensors) {
-        if (t.name.size() >= suffix.size() &&
-            t.name.compare(t.name.size() - suffix.size(),
-                           suffix.size(), suffix) == 0)
-            return &t;
-    }
-    return nullptr;
-}
-
-// Found-but-malformed => error; absent => ok (optional tensor in the
-// heterogeneous layer grid). Validation lives in ValidateJob/UploadJobs.
-
 cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
                        GlmPinnedWeights &pw, cudaStream_t stream,
                        std::uint64_t &bytes_acc, PinnedStagingRing &ring)
@@ -114,7 +99,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
     }
     auto &tensors = *tensors_res;
 
-    auto *embed = FindTensor(tensors, "embed_tokens.weight");
+    auto *embed = fastload::FindTensorSuffix(tensors, "embed_tokens.weight");
     if (embed && embed->rank >= 2 &&
         embed->bytes >=
             static_cast<size_t>(embed->shape[0]) *
@@ -138,7 +123,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
                    "global.arrow — model cannot run without it");
         return cudaErrorInvalidValue;
     }
-    auto *head = FindTensor(tensors, "lm_head.weight");
+    auto *head = fastload::FindTensorSuffix(tensors, "lm_head.weight");
     if (head && head->rank >= 2 && head != embed &&
         head->bytes >=
             static_cast<size_t>(head->shape[0]) *
@@ -154,7 +139,7 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
             return e;
         }
     }
-    auto *norm = FindTensor(tensors, "model.norm.weight");
+    auto *norm = fastload::FindTensorSuffix(tensors, "model.norm.weight");
     if (norm && norm->rank == 1 && norm->shape[0] > 0 &&
         norm->bytes >= static_cast<size_t>(norm->shape[0]) * 2) {
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
@@ -177,99 +162,6 @@ cudaError_t LoadGlobal(const std::filesystem::path &pinned_dir,
 
 
 
-constexpr size_t kArenaAlign = 256;
-
-size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
-
-struct StreamDrain {
-    cudaStream_t s;
-    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
-};
-
-struct Fp16Job {
-    const TensorView *t;
-    __half **dst;
-    int64_t *rows;   // optional row capture (2D only)
-    int64_t *cols;   // optional col capture (2D only)
-};
-
-struct JobShape {
-    bool is_2d = false;
-    size_t numel = 0;
-};
-
-cudaError_t ValidateJob(const Fp16Job &j, JobShape &sh)
-{
-    if (j.t->rank == 1 && j.t->shape[0] > 0) {
-        sh.is_2d = false;
-        sh.numel = static_cast<size_t>(j.t->shape[0]);
-    } else if (j.t->rank == 2 && j.t->shape[0] > 0 && j.t->shape[1] > 0) {
-        sh.is_2d = true;
-        sh.numel = static_cast<size_t>(j.t->shape[0]) *
-                   static_cast<size_t>(j.t->shape[1]);
-    } else {
-        log::error("[glm_load] malformed tensor '" + std::string(j.t->name) + "'");
-        return cudaErrorInvalidValue;
-    }
-    if (j.t->bytes < sh.numel * 2) {
-        log::error("[glm_load] malformed tensor '" + std::string(j.t->name) + "'");
-        return cudaErrorInvalidValue;
-    }
-    return cudaSuccess;
-}
-
-// Validates every job, issues ONE arena allocation sized to the layer's FP16
-// footprint and uploads each tensor through the pinned ring into its
-// 256-byte-aligned arena view. On success lw.d_arena/arena_bytes own the
-// block; every *j.dst points inside it.
-cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GlmLayerWeights &lw,
-                       cudaStream_t stream, PinnedStagingRing &ring,
-                       std::uint64_t &bytes_acc)
-{
-
-    std::vector<JobShape> shapes(jobs.size());
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        cudaError_t e = ValidateJob(jobs[i], shapes[i]);
-        if (e != cudaSuccess) return e;
-    }
-
-    size_t total = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        total = AlignUp(total, kArenaAlign) + shapes[i].numel * 2;
-    }
-
-    void *arena = nullptr;
-    if (total > 0) {
-        cudaError_t e = cudaMalloc(&arena, total);
-        if (e != cudaSuccess) {
-            log::error("[glm_load] arena alloc failed: " +
-                       std::string(cudaGetErrorString(e)));
-            return e;
-        }
-    }
-    lw.d_arena = arena;
-    lw.arena_bytes = total;
-
-    size_t off = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto &j = jobs[i];
-        if (!j.t) continue;
-        off = AlignUp(off, kArenaAlign);
-        __half *view = static_cast<__half *>(arena) + off / 2;
-        *j.dst = view;
-        if (shapes[i].is_2d && j.rows)
-            { *j.rows = j.t->shape[0]; *j.cols = j.t->shape[1]; }
-        cudaError_t e = ring.UploadBf16AsFp16(j.t->data,
-                            static_cast<int64_t>(shapes[i].numel),
-                            view, stream, bytes_acc);
-        if (e != cudaSuccess) return e;
-        off += shapes[i].numel * 2;
-    }
-    return cudaSuccess;
-}
-
 
 } // anonymous namespace
 
@@ -280,73 +172,113 @@ cudaError_t LoadSingleLayer(const TensorBatchViews &tensors,
 {
 
     // Required-for-type validation (heterogeneous-grid rules):
-    auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
-    auto *post_norm = FindTensor(tensors, "post_attention_layernorm.weight");
+    auto *in_norm = fastload::FindTensorSuffix(tensors, "input_layernorm.weight");
+    auto *post_norm = fastload::FindTensorSuffix(tensors, "post_attention_layernorm.weight");
     if (!in_norm || !post_norm) {
         log::error("[glm_load] layer missing layernorm tensors");
         return cudaErrorInvalidValue;
     }
-    const bool moe = FindTensor(tensors, "mlp.gate.weight") != nullptr;
-    if (!moe && !FindTensor(tensors, "mlp.gate_proj.weight")) {
+    const bool moe = fastload::FindTensorSuffix(tensors, "mlp.gate.weight") != nullptr;
+    if (!moe && !fastload::FindTensorSuffix(tensors, "mlp.gate_proj.weight")) {
         log::error("[glm_load] dense layer missing mlp.gate_proj");
         return cudaErrorInvalidValue;
     }
 
-    std::vector<Fp16Job> jobs = {
-        {in_norm,   &lw.d_input_norm,     nullptr, nullptr},
-        {post_norm, &lw.d_post_attn_norm, nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.q_a_proj.weight"),
-                    &lw.d_q_a_proj,       &lw.q_a_rows, &lw.q_a_cols},
-        {FindTensor(tensors, "self_attn.q_a_layernorm.weight"),
-                    &lw.d_q_a_norm,       nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.q_b_proj.weight"),
-                    &lw.d_q_b_proj,       &lw.q_b_rows, &lw.q_b_cols},
-        {FindTensor(tensors, "self_attn.kv_a_proj_with_mqa.weight"),
-                    &lw.d_kv_a_proj,      &lw.kv_a_rows, &lw.kv_a_cols},
-        {FindTensor(tensors, "self_attn.kv_a_layernorm.weight"),
-                    &lw.d_kv_a_norm,      nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.kv_b_proj.weight"),
-                    &lw.d_kv_b_proj,      &lw.kv_b_rows, &lw.kv_b_cols},
-        {FindTensor(tensors, "self_attn.o_proj.weight"),
-                    &lw.d_o_proj,         &lw.o_rows, &lw.o_cols},
+    using fastload::CvKind;
+    std::vector<fastload::UploadJob> jobs = {
+        {in_norm,   reinterpret_cast<void **>(&lw.d_input_norm),
+                    CvKind::kBf16ToHalf},
+        {post_norm, reinterpret_cast<void **>(&lw.d_post_attn_norm),
+                    CvKind::kBf16ToHalf},
+        {fastload::FindTensorSuffix(tensors, "self_attn.q_a_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_q_a_proj),
+                    CvKind::kBf16ToHalf, &lw.q_a_rows, &lw.q_a_cols},
+        {fastload::FindTensorSuffix(tensors,
+                                    "self_attn.q_a_layernorm.weight"),
+                    reinterpret_cast<void **>(&lw.d_q_a_norm),
+                    CvKind::kBf16ToHalf},
+        {fastload::FindTensorSuffix(tensors, "self_attn.q_b_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_q_b_proj),
+                    CvKind::kBf16ToHalf, &lw.q_b_rows, &lw.q_b_cols},
+        {fastload::FindTensorSuffix(
+             tensors, "self_attn.kv_a_proj_with_mqa.weight"),
+                    reinterpret_cast<void **>(&lw.d_kv_a_proj),
+                    CvKind::kBf16ToHalf, &lw.kv_a_rows, &lw.kv_a_cols},
+        {fastload::FindTensorSuffix(tensors,
+                                    "self_attn.kv_a_layernorm.weight"),
+                    reinterpret_cast<void **>(&lw.d_kv_a_norm),
+                    CvKind::kBf16ToHalf},
+        {fastload::FindTensorSuffix(tensors, "self_attn.kv_b_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_kv_b_proj),
+                    CvKind::kBf16ToHalf, &lw.kv_b_rows, &lw.kv_b_cols},
+        {fastload::FindTensorSuffix(tensors, "self_attn.o_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_o_proj),
+                    CvKind::kBf16ToHalf, &lw.o_rows, &lw.o_cols},
     };
 
     if (moe) {
-        jobs.push_back({FindTensor(tensors, "mlp.gate.weight"),
-                        &lw.d_router_gate, nullptr, nullptr});
+        jobs.push_back({fastload::FindTensorSuffix(tensors,
+                                                   "mlp.gate.weight"),
+                        reinterpret_cast<void **>(&lw.d_router_gate),
+                        CvKind::kBf16ToHalf});
     } else {
-        jobs.push_back({FindTensor(tensors, "mlp.gate_proj.weight"),
-                        &lw.d_mlp_gate, nullptr, nullptr});
-        jobs.push_back({FindTensor(tensors, "mlp.down_proj.weight"),
-                        &lw.d_mlp_down, nullptr, nullptr});
-        jobs.push_back({FindTensor(tensors, "mlp.up_proj.weight"),
-                        &lw.d_mlp_up, nullptr, nullptr});
+        jobs.push_back({fastload::FindTensorSuffix(
+                            tensors, "mlp.gate_proj.weight"),
+                        reinterpret_cast<void **>(&lw.d_mlp_gate),
+                        CvKind::kBf16ToHalf});
+        jobs.push_back({fastload::FindTensorSuffix(
+                            tensors, "mlp.down_proj.weight"),
+                        reinterpret_cast<void **>(&lw.d_mlp_down),
+                        CvKind::kBf16ToHalf});
+        jobs.push_back({fastload::FindTensorSuffix(
+                            tensors, "mlp.up_proj.weight"),
+                        reinterpret_cast<void **>(&lw.d_mlp_up),
+                        CvKind::kBf16ToHalf});
     }
 
-    jobs.push_back({FindTensor(tensors, "self_attn.indexer.wq_b.weight"),
-                    &lw.d_idx_wq_b, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "self_attn.indexer.wk.weight"),
-                    &lw.d_idx_wk, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "self_attn.indexer.weights_proj.weight"),
-                    &lw.d_idx_weights_proj, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "self_attn.indexer.k_norm.weight"),
-                    &lw.d_idx_k_norm, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "eh_proj.weight"),
-                    &lw.d_eh_proj, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "enorm.weight"),
-                    &lw.d_enorm, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "hnorm.weight"),
-                    &lw.d_hnorm, nullptr, nullptr});
-    jobs.push_back({FindTensor(tensors, "shared_head.norm.weight"),
-                    &lw.d_shared_head_norm, nullptr, nullptr});
+    jobs.push_back({fastload::FindTensorSuffix(
+                        tensors, "self_attn.indexer.wq_b.weight"),
+                    reinterpret_cast<void **>(&lw.d_idx_wq_b),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(
+                        tensors, "self_attn.indexer.wk.weight"),
+                    reinterpret_cast<void **>(&lw.d_idx_wk),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(
+                        tensors, "self_attn.indexer.weights_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_idx_weights_proj),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(
+                        tensors, "self_attn.indexer.k_norm.weight"),
+                    reinterpret_cast<void **>(&lw.d_idx_k_norm),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(tensors, "eh_proj.weight"),
+                    reinterpret_cast<void **>(&lw.d_eh_proj),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(tensors, "enorm.weight"),
+                    reinterpret_cast<void **>(&lw.d_enorm),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(tensors, "hnorm.weight"),
+                    reinterpret_cast<void **>(&lw.d_hnorm),
+                    CvKind::kBf16ToHalf});
+    jobs.push_back({fastload::FindTensorSuffix(
+                        tensors, "shared_head.norm.weight"),
+                    reinterpret_cast<void **>(&lw.d_shared_head_norm),
+                    CvKind::kBf16ToHalf});
 
-    cudaError_t e = UploadJobs(std::move(jobs), lw, stream, ring, bytes_acc);
+    void *glm_arena = nullptr;
+    size_t glm_arena_bytes = 0;
+    cudaError_t e = fastload::RunUploadJobs(std::move(jobs), &glm_arena,
+                                            &glm_arena_bytes, stream, ring,
+                                            bytes_acc, nullptr);
+    lw.d_arena = glm_arena;
+    lw.arena_bytes = glm_arena_bytes;
     if (e != cudaSuccess) return e;
 
-    auto *router = FindTensor(tensors, "mlp.gate.weight");
+    auto *router = fastload::FindTensorSuffix(tensors, "mlp.gate.weight");
     if (router) {
         auto *gate_bias =
-            FindTensor(tensors, "mlp.gate.e_score_correction_bias");
+            fastload::FindTensorSuffix(tensors, "mlp.gate.e_score_correction_bias");
         if (gate_bias && gate_bias->rank == 1 &&
             gate_bias->bytes >=
                 static_cast<size_t>(gate_bias->shape[0]) * 4) {
@@ -361,7 +293,7 @@ cudaError_t LoadSingleLayer(const TensorBatchViews &tensors,
         }
     }
 
-    auto *k_bias = FindTensor(tensors, "self_attn.indexer.k_norm.bias");
+    auto *k_bias = fastload::FindTensorSuffix(tensors, "self_attn.indexer.k_norm.bias");
     if (k_bias && k_bias->bytes > 0) {
         void *d = nullptr;
         cudaError_t ke = cudaMalloc(&d, k_bias->bytes);
@@ -463,7 +395,7 @@ cudaError_t LoadGlmPinnedWeights(const std::string &model_path,
 
     // Drains the stream on every error exit below so pinned staging never
     // dies while a DMA transfer is still in flight.
-    StreamDrain drain{stream};
+    fastload::StreamDrain drain{stream};
 
     // One staging ring for the whole load: constructing/destructing pinned
     // buffers per layer cost ~10 ms x layers in cudaMallocHost/cudaFreeHost.

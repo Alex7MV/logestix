@@ -27,26 +27,6 @@ namespace {
 
 using fastload::PinnedStagingRing;
 
-constexpr size_t kArenaAlign = 256;
-
-size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
-
-struct StreamDrain {
-    cudaStream_t s;
-    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
-};
-
-const TensorView *FindTensor(const TensorBatchViews &tensors,
-                             std::string_view suffix)
-{
-    for (const auto &t : tensors.tensors) {
-        if (t.name.size() >= suffix.size() &&
-            t.name.compare(t.name.size() - suffix.size(),
-                           suffix.size(), suffix) == 0)
-            return &t;
-    }
-    return nullptr;
-}
 
 cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
                        cudaStream_t stream, std::uint64_t &bytes_acc,
@@ -60,7 +40,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
     }
     auto &tensors = *tensors_res;
 
-    auto *embed = FindTensor(tensors, "embed_tokens.weight");
+    auto *embed = fastload::FindTensorSuffix(tensors, "embed_tokens.weight");
     if (embed && embed->rank >= 2 &&
         embed->bytes >=
             static_cast<size_t>(embed->shape[0]) *
@@ -84,7 +64,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
                    "global.arrow — model cannot run without it");
         return cudaErrorInvalidValue;
     }
-    auto *head = FindTensor(tensors, "lm_head.weight");
+    auto *head = fastload::FindTensorSuffix(tensors, "lm_head.weight");
     if (head && head->rank >= 2 && head != embed &&
         head->bytes >=
             static_cast<size_t>(head->shape[0]) *
@@ -101,8 +81,8 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
             return e;
         }
     }
-    auto *norm = FindTensor(tensors, "norm.weight");
-    if (!norm) norm = FindTensor(tensors, "model.norm.weight");
+    auto *norm = fastload::FindTensorSuffix(tensors, "norm.weight");
+    if (!norm) norm = fastload::FindTensorSuffix(tensors, "model.norm.weight");
     if (norm && norm->rank == 1 && norm->shape[0] > 0 &&
         norm->bytes >= static_cast<size_t>(norm->shape[0]) * 2) {
         cudaError_t e = cudaMalloc(&pw.d_final_norm,
@@ -124,87 +104,6 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
     return cudaSuccess;
 }
 
-struct Fp16Job {
-    const TensorView *t;
-    __nv_bfloat16 **dst;
-    int64_t *rows;   // optional row capture (2D only)
-    int64_t *cols;   // optional col capture (2D only)
-};
-
-struct JobShape {
-    bool is_2d = false;
-    size_t numel = 0;
-};
-
-cudaError_t ValidateJob(const Fp16Job &j, JobShape &sh)
-{
-    if (j.t->rank == 1 && j.t->shape[0] > 0) {
-        sh.is_2d = false;
-        sh.numel = static_cast<size_t>(j.t->shape[0]);
-    } else if (j.t->rank == 2 && j.t->shape[0] > 0 && j.t->shape[1] > 0) {
-        sh.is_2d = true;
-        sh.numel = static_cast<size_t>(j.t->shape[0]) *
-                   static_cast<size_t>(j.t->shape[1]);
-    } else {
-        log::error("[kimi_load] malformed tensor '" + std::string(j.t->name) + "'");
-        return cudaErrorInvalidValue;
-    }
-    if (j.t->bytes < sh.numel * 2) {
-        log::error("[kimi_load] malformed tensor '" + std::string(j.t->name) + "'");
-        return cudaErrorInvalidValue;
-    }
-    return cudaSuccess;
-}
-
-// Validates every job, issues ONE arena allocation sized to the layer's FP16
-// footprint and uploads each tensor through the pinned ring into its
-// 256-byte-aligned arena view.
-cudaError_t UploadJobs(std::vector<Fp16Job> jobs, KimiLayerWeights &lw,
-                       cudaStream_t stream, PinnedStagingRing &ring,
-                       std::uint64_t &bytes_acc)
-{
-    std::vector<JobShape> shapes(jobs.size());
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        cudaError_t e = ValidateJob(jobs[i], shapes[i]);
-        if (e != cudaSuccess) return e;
-    }
-
-    size_t total = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        total = AlignUp(total, kArenaAlign) + shapes[i].numel * 2;
-    }
-
-    void *arena = nullptr;
-    if (total > 0) {
-        cudaError_t e = cudaMalloc(&arena, total);
-        if (e != cudaSuccess) {
-            log::error("[kimi_load] arena alloc failed: " +
-                       std::string(cudaGetErrorString(e)));
-            return e;
-        }
-    }
-    lw.d_arena = arena;
-    lw.arena_bytes = total;
-
-    size_t off = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto &j = jobs[i];
-        if (!j.t) continue;
-        off = AlignUp(off, kArenaAlign);
-        __nv_bfloat16 *view = static_cast<__nv_bfloat16 *>(arena) + off / 2;
-        *j.dst = view;
-        if (shapes[i].is_2d && j.rows)
-            { *j.rows = j.t->shape[0]; *j.cols = j.t->shape[1]; }
-        cudaError_t e = ring.UploadRaw(j.t->data, view,
-                            shapes[i].numel * 2, stream, bytes_acc);
-        if (e != cudaSuccess) return e;
-        off += shapes[i].numel * 2;
-    }
-    return cudaSuccess;
-}
-
 } // anonymous namespace
 
 cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
@@ -213,56 +112,83 @@ cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
                                 PinnedStagingRing &ring)
 {
     // Required-for-type validation (uniform grid: layer N type by content).
-    auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
-    auto *post_norm = FindTensor(tensors, "post_attention_layernorm.weight");
+    auto *in_norm = fastload::FindTensorSuffix(tensors, "input_layernorm.weight");
+    auto *post_norm = fastload::FindTensorSuffix(tensors, "post_attention_layernorm.weight");
     if (!in_norm || !post_norm) {
         log::error("[kimi_load] layer missing layernorm tensors");
         return cudaErrorInvalidValue;
     }
-    const bool moe = FindTensor(tensors, "mlp.gate.weight") != nullptr;
-    if (!moe && !FindTensor(tensors, "mlp.gate_proj.weight")) {
+    const bool moe = fastload::FindTensorSuffix(tensors, "mlp.gate.weight") != nullptr;
+    if (!moe && !fastload::FindTensorSuffix(tensors, "mlp.gate_proj.weight")) {
         log::error("[kimi_load] dense layer missing mlp.gate_proj");
         return cudaErrorInvalidValue;
     }
 
-    std::vector<Fp16Job> jobs = {
-        {in_norm,   &lw.d_input_norm,     nullptr, nullptr},
-        {post_norm, &lw.d_post_attn_norm, nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.q_a_proj.weight"),
-                    &lw.d_q_a_proj,       &lw.q_a_rows, &lw.q_a_cols},
-        {FindTensor(tensors, "self_attn.q_a_layernorm.weight"),
-                    &lw.d_q_a_norm,       nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.q_b_proj.weight"),
-                    &lw.d_q_b_proj,       &lw.q_b_rows, &lw.q_b_cols},
-        {FindTensor(tensors, "self_attn.kv_a_proj_with_mqa.weight"),
-                    &lw.d_kv_a_proj,      &lw.kv_a_rows, &lw.kv_a_cols},
-        {FindTensor(tensors, "self_attn.kv_a_layernorm.weight"),
-                    &lw.d_kv_a_norm,      nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.kv_b_proj.weight"),
-                    &lw.d_kv_b_proj,      &lw.kv_b_rows, &lw.kv_b_cols},
-        {FindTensor(tensors, "self_attn.o_proj.weight"),
-                    &lw.d_o_proj,         &lw.o_rows, &lw.o_cols},
+    using fastload::CvKind;
+    auto bf16job = [&](const TensorView *t, void **dst,
+                       int64_t *rows = nullptr, int64_t *cols = nullptr) {
+        return fastload::UploadJob{t, dst, CvKind::kBf16Raw, rows, cols};
+    };
+    std::vector<fastload::UploadJob> jobs = {
+        bf16job(in_norm,   reinterpret_cast<void **>(&lw.d_input_norm)),
+        bf16job(post_norm, reinterpret_cast<void **>(&lw.d_post_attn_norm)),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.q_a_proj.weight"),
+                reinterpret_cast<void **>(&lw.d_q_a_proj),
+                &lw.q_a_rows, &lw.q_a_cols),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.q_a_layernorm.weight"),
+                reinterpret_cast<void **>(&lw.d_q_a_norm)),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.q_b_proj.weight"),
+                reinterpret_cast<void **>(&lw.d_q_b_proj),
+                &lw.q_b_rows, &lw.q_b_cols),
+        bf16job(fastload::FindTensorSuffix(
+                    tensors, "self_attn.kv_a_proj_with_mqa.weight"),
+                reinterpret_cast<void **>(&lw.d_kv_a_proj),
+                &lw.kv_a_rows, &lw.kv_a_cols),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.kv_a_layernorm.weight"),
+                reinterpret_cast<void **>(&lw.d_kv_a_norm)),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.kv_b_proj.weight"),
+                reinterpret_cast<void **>(&lw.d_kv_b_proj),
+                &lw.kv_b_rows, &lw.kv_b_cols),
+        bf16job(fastload::FindTensorSuffix(tensors,
+                                           "self_attn.o_proj.weight"),
+                reinterpret_cast<void **>(&lw.d_o_proj),
+                &lw.o_rows, &lw.o_cols),
     };
 
     if (moe) {
-        jobs.push_back({FindTensor(tensors, "mlp.gate.weight"),
-                        &lw.d_router_gate, nullptr, nullptr});
+        jobs.push_back(bf16job(
+            fastload::FindTensorSuffix(tensors, "mlp.gate.weight"),
+            reinterpret_cast<void **>(&lw.d_router_gate)));
     } else {
-        jobs.push_back({FindTensor(tensors, "mlp.gate_proj.weight"),
-                        &lw.d_mlp_gate, nullptr, nullptr});
-        jobs.push_back({FindTensor(tensors, "mlp.down_proj.weight"),
-                        &lw.d_mlp_down, nullptr, nullptr});
-        jobs.push_back({FindTensor(tensors, "mlp.up_proj.weight"),
-                        &lw.d_mlp_up, nullptr, nullptr});
+        jobs.push_back(bf16job(
+            fastload::FindTensorSuffix(tensors, "mlp.gate_proj.weight"),
+            reinterpret_cast<void **>(&lw.d_mlp_gate)));
+        jobs.push_back(bf16job(
+            fastload::FindTensorSuffix(tensors, "mlp.down_proj.weight"),
+            reinterpret_cast<void **>(&lw.d_mlp_down)));
+        jobs.push_back(bf16job(
+            fastload::FindTensorSuffix(tensors, "mlp.up_proj.weight"),
+            reinterpret_cast<void **>(&lw.d_mlp_up)));
     }
 
-    cudaError_t e = UploadJobs(std::move(jobs), lw, stream, ring, bytes_acc);
+    void *kimi_arena = nullptr;
+    size_t kimi_arena_bytes = 0;
+    cudaError_t e = fastload::RunUploadJobs(std::move(jobs), &kimi_arena,
+                                            &kimi_arena_bytes, stream, ring,
+                                            bytes_acc, nullptr);
+    lw.d_arena = kimi_arena;
+    lw.arena_bytes = kimi_arena_bytes;
     if (e != cudaSuccess) return e;
 
-    auto *router = FindTensor(tensors, "mlp.gate.weight");
+    auto *router = fastload::FindTensorSuffix(tensors, "mlp.gate.weight");
     if (router) {
         auto *gate_bias =
-            FindTensor(tensors, "mlp.gate.e_score_correction_bias");
+            fastload::FindTensorSuffix(tensors, "mlp.gate.e_score_correction_bias");
         if (gate_bias && gate_bias->rank == 1 &&
             gate_bias->bytes >=
                 static_cast<size_t>(gate_bias->shape[0]) * 4) {
@@ -364,7 +290,7 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
 
     // Drains the stream on every error exit below so pinned staging never
     // dies while a DMA transfer is still in flight.
-    StreamDrain drain{stream};
+    fastload::StreamDrain drain{stream};
 
     PinnedStagingRing ring;
     if (!ring.ok()) return cudaErrorMemoryAllocation;

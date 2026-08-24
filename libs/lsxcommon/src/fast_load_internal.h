@@ -175,6 +175,7 @@ inline const DenseNvfp4View *FindNvfp4Suffix(const DenseNvfp4BatchViews &recs,
 
 enum class CvKind {
     kBf16ToHalf,  // raw BF16 bits -> FP16 on device (in-place kernel)
+    kBf16Raw,     // raw BF16 passthrough (Kimi keeps BF16 weights resident)
     kF32Raw,      // raw F32 passthrough
     kF32ToHalf,   // host scalar F32 -> FP16 (tiny tensors only)
     kBf16ToF32,   // host scalar BF16 bits -> F32 (tiny tensors only)
@@ -322,6 +323,10 @@ inline cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
             e = ring.UploadBf16AsFp16(j.t->data, n,
                                       reinterpret_cast<__half *>(view),
                                       stream, bytes_acc);
+            break;
+        case CvKind::kBf16Raw:
+            e = ring.UploadRaw(j.t->data, view,
+                               static_cast<size_t>(n) * 2, stream, bytes_acc);
             break;
         case CvKind::kF32Raw:
             e = ring.UploadRaw(j.t->data, view,
