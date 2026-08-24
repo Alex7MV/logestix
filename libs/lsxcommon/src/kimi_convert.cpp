@@ -23,7 +23,6 @@
 #include <fstream>
 #include <optional>
 #include <regex>
-#include <set>
 #include <sstream>
 #include <utility>
 
@@ -239,7 +238,7 @@ KimiTopology kimi_load_topology(const std::string &index_json_path)
         return topo;
     }
 
-    std::set<long long> moe, dense;
+    absl::btree_set<long long> moe, dense;
     long long max_layer = -1;
     long long max_expert = -1;
     for (simdjson::ondemand::field field : weight_map) {
