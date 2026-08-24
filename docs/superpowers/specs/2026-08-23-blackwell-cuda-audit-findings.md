@@ -247,3 +247,25 @@ Path to 70-80 (next session, ranked): multi-stage cp.async pipeline depth
 (currently 1 chunk in flight; target 3-4), gate+up concat at load, swiglu-in-
 epilogue fusion, prefill TC tuning, Release-build measurement (Debug host
 code adds per-launch overhead).
+
+### Optimization round 6 (2026-08-24)
+
+- cp.async ring deepened to kDecBufs=4 (wait_group<2> before compute).
+- Fragment build rewritten: layout identity means each 32-bit fragment
+  register = ONE aligned smem u32 load (packed nibble pairs land exactly in
+  hardware bit positions) -- zero shift/mask work. Dead byte-gather code
+  removed.
+- Micro: attn_qkv_o 72 us (6.5x), mlp_gate_up 106 us (9.4x), mlp_down
+  171 us (6.6x) vs scalar.
+- END-TO-END: **18.3 tok/s** / ttft 214 ms / total 876 ms. 26/26 green.
+
+### Cumulative
+
+**Qwen3.5-9B decode @ RTX 5060 Ti: 0.6 -> 18.3 tok/s (x30.5), ttft 6226 ->
+214 ms** (fast-math path; bit-exact scalar default untouched).
+
+Path to 70-80 tok/s remains bandwidth-bound engineering: effective weight
+streaming must rise from ~150 GB/s to ~380 GB/s (85% roofline). Required
+(next sessions): TMA bulk copies or wider multi-chunk staging, swiglu-in-
+epilogue fusion, gate+up concatenation at load time, Release-build profiling
+of the full per-token launch graph.
