@@ -6,6 +6,7 @@
 #include "kimi_v5_model.h"
 #include "qwen_v5_model.h"
 #include "qwen_3_8_27b_model.h"
+#include "qwen_3_5_moe_model.h"
 
 namespace lsxcommon {
 
@@ -35,6 +36,10 @@ void EnsureModelRegistry()
         LsxModelFactory::Register(Gemma4_26BA4BModel::kType,
             [](const ModelInitConfig &cfg) {
                 return std::make_unique<Gemma4_26BA4BModel>(cfg);
+            });
+        LsxModelFactory::Register(Qwen35MoeModel::kType,
+            [](const ModelInitConfig &cfg) {
+                return std::make_unique<Qwen35MoeModel>(cfg);
             });
         return true;
     }();

@@ -44,6 +44,7 @@ add_library(lsxcommon STATIC
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
     src/qwen_3_8_27b_model.cpp
+    src/qwen_3_5_moe_model.cpp
     src/qwen_convert.cpp
     src/qwen_moe_convert.cpp
     src/qwen_moe_inference_load.cpp

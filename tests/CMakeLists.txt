@@ -1982,3 +1982,18 @@ endif()
 add_test(NAME test_qwen_moe_loader COMMAND test_qwen_moe_loader)
 set_tests_properties(test_qwen_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+add_executable(test_qwen_moe_model test_qwen_moe_model.cpp)
+target_include_directories(test_qwen_moe_model PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_qwen_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_model>"
+    )
+endif()
+add_test(NAME test_qwen_moe_model COMMAND test_qwen_moe_model)
+set_tests_properties(test_qwen_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
