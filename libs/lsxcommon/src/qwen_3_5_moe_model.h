@@ -63,7 +63,6 @@ private:
     qwen_moe::QwenMoeExpertDeviceCache cache_{};
     std::unique_ptr<qwen::QwenKvCache> kv_;
     std::vector<int32_t> session_tail_;
-    cudaStream_t stream_ = nullptr;
 };
 
 } // namespace lsxcommon

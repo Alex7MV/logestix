@@ -60,6 +60,7 @@ protected:
     void TeardownContext();
     cudaStream_t stream() const { return ctx_stream_; }
     cublasHandle_t cublas() const { return ctx_cublas_; }
+    bool ContextReady() const { return ctx_stream_ != nullptr; }
 
     // Persistent device-resident weight set (pinned for MoE GLM/DeepSeek; full
     // for dense Qwen). Assign in subclass Load/Unload. See spec 3.3.

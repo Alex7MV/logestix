@@ -12,6 +12,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
+#include "fast_load_internal.h"
 
 namespace lsxcommon {
 
@@ -63,13 +64,11 @@ bool GemmaBaseModel::Load()
     tokenizer_optional_ = true;
     if (!BeginLoad(cfg_.model_path)) return false;
     if (!weights_loaded_) {
-        cudaStream_t st = nullptr;
-        if (cudaStreamCreate(&st) == cudaSuccess) {
-            cudaError_t lrc =
-                gemma::LoadGemmaPinnedWeights(cfg_.model_path, pw_, st);
+        if (EnsureContext(/*with_cublas=*/false)) {
+            cudaError_t lrc = gemma::LoadGemmaPinnedWeights(
+                cfg_.model_path, pw_, stream());
+            fastload::StreamDrain{stream()};
             bool ok = (lrc == cudaSuccess);
-            cudaStreamSynchronize(st);
-            cudaStreamDestroy(st);
             weights_loaded_ = ok;
             if (!ok) {
                 spdlog::error(
@@ -101,12 +100,11 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
 
-    cudaStream_t st = nullptr;
-    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
-    if (!st_ok) {
+    if (!EnsureContext(/*with_cublas=*/false)) {
         r.error_msg = "cuda stream create failed";
         return r;
     }
+    cudaStream_t st = stream();
 
     // Session policy: every request runs a fresh prefill+decode (the
     // generation loop always prefills its input); session_tail_ tracks the
@@ -128,7 +126,6 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     if (e != cudaSuccess) {
         r.error_msg = "kv alloc failed";
         free_gemma_expert_index(expert_db);
-        cudaStreamDestroy(st);
         return r;
     }
 
@@ -150,7 +147,6 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
         r.ok = false;
         kv_.reset();
         session_tail_.clear();
-        cudaStreamDestroy(st);
         return r;
     }
 
@@ -170,7 +166,6 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
 
-    cudaStreamDestroy(st);
     return r;
 }
 
@@ -182,6 +177,7 @@ void GemmaBaseModel::Unload()
     tok_db_.reset();
     kv_.reset();
     session_tail_.clear();
+    TeardownContext();
     loaded_ = false;
 }
 

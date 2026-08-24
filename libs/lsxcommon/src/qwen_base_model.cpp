@@ -8,6 +8,7 @@
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
+#include "fast_load_internal.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/tokenizer.h"
 
@@ -33,11 +34,10 @@ bool QwenBaseModel::Load()
     tokenizer_optional_ = true;
     if (!BeginLoad(cfg_.model_path)) return false;
     if (!weights_loaded_) {
-        cudaStream_t st = nullptr;
-        if (cudaStreamCreate(&st) == cudaSuccess) {
-            bool ok = qwen::LoadQwenPinnedWeights(cfg_.model_path, pw_, st);
-            cudaStreamSynchronize(st);
-            cudaStreamDestroy(st);
+        if (EnsureContext(/*with_cublas=*/false)) {
+            bool ok = qwen::LoadQwenPinnedWeights(cfg_.model_path, pw_,
+                                                  stream());
+            fastload::StreamDrain{stream()};
             weights_loaded_ = ok;
             if (!ok) {
                 lsxcommon::log::error(
@@ -70,11 +70,14 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
 
-    cublasHandle_t ch = nullptr;
-    cudaStream_t   st = nullptr;
-    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
-    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
-    if (ch_ok && st_ok) cublasSetStream(ch, st);
+    // Persistent execution context: created once in Load(), reused for
+    // every request (no temp-per-call stream/cuBLAS churn).
+    if (!EnsureContext(/*with_cublas=*/true)) {
+        r.error_msg = "cuda/cublas init failed";
+        return r;
+    }
+    cudaStream_t st = stream();
+    cublasHandle_t ch = cublas();
 
         // Incremental session policy (spec item 15): a request whose input_ids
     // exactly match the previous call's generated tail continues the session
@@ -106,8 +109,6 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
         // session so the next call starts fresh.
         kv_.reset();
         session_tail_.clear();
-        if (st) cudaStreamDestroy(st);
-        if (ch) cublasDestroy(ch);
         return r;
     }
 
@@ -134,8 +135,6 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
 
-    if (st) cudaStreamDestroy(st);
-    if (ch) cublasDestroy(ch);
     return r;
 }
 
@@ -147,6 +146,7 @@ void QwenBaseModel::Unload()
     tok_db_.reset();
     kv_.reset();
     session_tail_.clear();
+    TeardownContext();
     loaded_ = false;
 }
 
@@ -162,22 +162,13 @@ gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
     const std::vector<int32_t> prompt = {0};
     // Mirror Infer: open a stream, run RunQwenGeneration, map the result.
     qwen::QwenGenerationResult gr;
-    cudaStream_t st = nullptr;
-    cublasHandle_t ch = nullptr;
-    const bool ch_ok = (cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
-    const bool st_ok = (cudaStreamCreate(&st) == cudaSuccess);
-    if (ch_ok && st_ok) cublasSetStream(ch, st);
-    if (!ch_ok || !st_ok) {
+    if (!EnsureContext(/*with_cublas=*/true)) {
         r.error_msg = "cuda/cublas init failed";
-        if (st) cudaStreamDestroy(st);
-        if (ch) cublasDestroy(ch);
         return r;
     }
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-    cudaError_t e = qwen::RunQwenGeneration(st, pw_, prompt, num_tokens,
+    cudaError_t e = qwen::RunQwenGeneration(stream(), pw_, prompt, num_tokens,
                                             eos_id, gr);
-    if (st) cudaStreamDestroy(st);
-    if (ch) cublasDestroy(ch);
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gr.error_msg;
         return r;

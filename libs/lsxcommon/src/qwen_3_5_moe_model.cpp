@@ -26,17 +26,6 @@ Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
 
 Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 
-bool Qwen35MoeModel::EnsureExecutionContext()
-{
-    if (!stream_ &&
-        cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking) !=
-            cudaSuccess) {
-        stream_ = nullptr;
-        return false;
-    }
-    return true;
-}
-
 void Qwen35MoeModel::TeardownWeights()
 {
     qwen_moe::FreeQwenMoeExpertCache(cache_);
@@ -44,7 +33,7 @@ void Qwen35MoeModel::TeardownWeights()
     qwen_moe::FreeQwenMoePinnedWeights(pw_);
     kv_.reset();
     session_tail_.clear();
-    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    TeardownContext();
     resident_bytes_ = 0;
 }
 
@@ -90,14 +79,14 @@ bool Qwen35MoeModel::Load()
     Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
 
-    if (!EnsureExecutionContext()) {
+    if (!EnsureContext(/*with_cublas=*/false)) {
         log::error("[qwen-moe-model] stream init failed");
         tok_db_.reset();
         return false;
     }
 
     std::string err;
-    if (!qwen_moe::LoadQwenMoeDenseWeights(cfg_.model_path, pw_, stream_, err)) {
+    if (!qwen_moe::LoadQwenMoeDenseWeights(cfg_.model_path, pw_, stream(), err)) {
         log::error("[qwen-moe-model] dense load failed: " + err);
         TeardownWeights();
         tok_db_.reset();
@@ -140,7 +129,7 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
         r.error_msg = "model not loaded";
         return r;
     }
-    if (!stream_) {
+    if (!ContextReady()) {
         r.error_msg = "execution context missing";
         return r;
     }
@@ -159,7 +148,7 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
     qwen::QwenGenerationResult gen;
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
     cudaError_t e = qwen_moe::RunQwenMoeGeneration(
-        stream_, pw_, experts_, cache_, gen_input, req.max_gen_tokens,
+        stream(), pw_, experts_, cache_, gen_input, req.max_gen_tokens,
         eos_id, gen, lsxcommon::sample::DefaultSampler(), kv_.get());
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;

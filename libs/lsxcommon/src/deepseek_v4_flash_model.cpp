@@ -43,13 +43,11 @@ bool DeepSeekV4FlashModel::Load()
 
     // Fast-load the pinned weights ONCE (GLM-parity ownership model):
     // Infer/Benchmark reuse them instead of paying full load cost per call.
-    if (!stream_) {
-        if (cudaStreamCreate(&stream_) != cudaSuccess) {
-            lsxcommon::log::error("[deepseek-model] stream create failed");
-            return false;
-        }
+    if (!EnsureContext(/*with_cublas=*/false)) {
+        lsxcommon::log::error("[deepseek-model] stream create failed");
+        return false;
     }
-    if (gpu::load_pinned_weights(cfg_.model_path, pw_, stream_)
+    if (gpu::load_pinned_weights(cfg_.model_path, pw_, stream())
         != cudaSuccess) {
         lsxcommon::log::error("[deepseek-model] pinned weight load failed");
         pw_.Free();
@@ -71,7 +69,7 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
 void DeepSeekV4FlashModel::Unload()
 {
     pw_.Free();
-    if (stream_) { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    TeardownContext();
     tok_db_.reset();
     loaded_ = false;
 }

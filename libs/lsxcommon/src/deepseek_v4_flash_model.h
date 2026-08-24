@@ -25,7 +25,6 @@ public:
 
 private:
     gpu::PinnedWeights pw_;
-    cudaStream_t stream_ = nullptr;
 };
 
 } // namespace lsxcommon
