@@ -148,3 +148,20 @@ Task 4 --fast-math runtime plumbing, end-to-end tok/s measurement.
 
 Next: TC GEMM optimization (smem staging/vectorized loads), MLP gate+up fuse,
 attention tuning -> target tens of tok/s.
+
+### Phase 3 optimization round 1 (2026-08-24)
+
+- TC GEMM v2: shared-memory staging of raw packed K64 slabs (A 64x32B,
+  B 64x32B + scale slabs); fragments built from smem; global traffic purely
+  streaming. Micro: attn_qkv_o 466->144 us, mlp_gate_up 1142->267 us
+  (3.8x), mlp_down 1351->313 us (3.6x) vs scalar.
+- Event-pair phase instrumentation (LSX_PERF_PHASES=1, no pipeline syncs,
+  capped at first 8 steps). Decode-step GPU budget @ fast-math:
+  attn ~23 ms/step (32 layers), mlp+norm ~66 ms/step.
+- END-TO-END progression (Qwen3.5-9B @ RTX 5060 Ti, Debug, 16 tokens):
+  audit start 0.6 tok/s / ttft 6226 ms -> now **8.3 tok/s** / ttft 474 ms /
+  total 1925 ms. Full suite 51/51 green.
+
+Remaining levers (ranked): act-quant launch overhead inside MLP (~226 launches
+per run), gate+up GEMM fusion (halve MLP atom count), attention warpdot
+tuning, prefill path (still scalar tile kernel at seq>1).
