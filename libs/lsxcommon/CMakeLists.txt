@@ -227,6 +227,7 @@ target_include_directories(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_tc_cu
     "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_DRIVER_LIBRARY}"
 )
 
 add_library(lsxcommon_kimi_cu OBJECT

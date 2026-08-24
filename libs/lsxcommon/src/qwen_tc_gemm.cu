@@ -10,8 +10,12 @@
 //    in the EXISTING repo layout ([N,K] nibbles + [N,K/16] pow2-E4M3 scales).
 #include "lsxcommon/qwen_tc_gemm.h"
 
+#include <cuda.h>
+
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 #include "nvfp4_codec.h"
 
@@ -151,19 +155,20 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
     const int k_half = K / 2;
     const int k_chunks = K >> 4;
 
-    // Static activation side: packed row (K/2 bytes, <= 2048 for the models
-    // in play) plus per-16 scale bytes.
-    __shared__ uint8_t sXp[2048];
-    __shared__ uint8_t sXsc[256];
+    // Dynamic activation side: packed row (K/2 bytes) + per-16 scale bytes,
+    // sized from K at launch. Removes the old K<=4096 static cap that forced
+    // mlp_down (K=12288) onto the tile-kernel fallback every decode token.
+    extern __shared__ __align__(16) uint8_t sXp[];   // [k_half] then [k_chunks]
+    uint8_t *const sXsc = sXp + ((k_half + 15) & ~15);
     // Double-buffered weight slab + scales.
     __shared__ __align__(16) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
     __shared__ uint8_t sWs[kDecBufs][kDecCols][4];
 
 
     // One-time activation load (row 0 is the only row at seq == 1).
-    for (int i = tid; i < k_half && i < 2048; i += 256)
+    for (int i = tid; i < k_half; i += 256)
         sXp[i] = ap[i];
-    for (int c = tid; c < k_chunks && c < 256; c += 256)
+    for (int c = tid; c < k_chunks; c += 256)
         sXsc[c] = as[c];
     __syncthreads();
 
@@ -535,10 +540,13 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     // (12.9 vs 14.8 tok/s A/B). Kept for future multi-stage pipeline work.
     if (seq == 1 && (K & 63) == 0 &&
         (((reinterpret_cast<uintptr_t>(w_packed) |
-           reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0) &&
-        K / 2 <= 2048 && ((K + 15) / 16) <= 256) {
+           reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0)) {
+        const int k_half = K / 2;
+        const int k_chunks = K >> 4;
+        const size_t dec_smem = static_cast<size_t>(
+            ((k_half + 15) & ~15) + ((k_chunks + 15) & ~15));
         dim3 dgrid((N + kDecCols - 1) / kDecCols);
-        TcGemmDecodeKernel<<<dgrid, 256, 0, stream>>>(
+        TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
             static_cast<uint8_t *>(ap_scratch),
             static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
             w_global_scale, y, K, N);
@@ -558,17 +566,98 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     return e;
 }
 
+// ── B3 capability probe: single-warp cp.async.bulk.tensor.2d round trip ────
+namespace {
+
+constexpr int kTmaRows = 64;
+constexpr int kTmaRowBytes = 64;
+constexpr int kTmaBoxRows = 8;
+
+__global__ void TmaProbeKernel(const __grid_constant__ CUtensorMap tmap,
+                               const uint8_t *__restrict__ expect,
+                               int *__restrict__ ok)
+{
+    __shared__ __align__(128) uint8_t dst[kTmaBoxRows * kTmaRowBytes];
+    __shared__ __align__(8) unsigned long long mbar;
+    const unsigned mb =
+        static_cast<unsigned>(__cvta_generic_to_shared(&mbar));
+    const unsigned dd =
+        static_cast<unsigned>(__cvta_generic_to_shared(dst));
+    if (threadIdx.x == 0) {
+        asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(mb));
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
+                     "r"(mb), "r"(kTmaBoxRows * kTmaRowBytes));
+        asm volatile(
+            "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
+            "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dd),
+            "l"(reinterpret_cast<unsigned long long>(&tmap)), "r"(0),
+            "r"(0), "r"(mb)
+            : "memory");
+    }
+    asm volatile(
+        "{\n\t.reg .pred p;\n\tWAIT:\n\t"
+        "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], 0;\n\t"
+        "@!p bra WAIT;\n\t}" ::"r"(mb));
+    __syncthreads();
+    bool good = true;
+    for (int i = threadIdx.x; i < kTmaBoxRows * kTmaRowBytes; i += blockDim.x)
+        good &= dst[i] == expect[i];
+    if (!good) *ok = 0;
+}
+
+} // namespace
+
+cudaError_t ProbeTmaBulkCopy(cudaStream_t stream)
+{
+    CUtensorMap tmap{};
+    std::vector<uint8_t> host(kTmaRows * kTmaRowBytes);
+    for (int r = 0; r < kTmaRows; ++r)
+        for (int c = 0; c < kTmaRowBytes; ++c)
+            host[static_cast<size_t>(r) * kTmaRowBytes + c] =
+                static_cast<uint8_t>((r * 31 + c * 7) & 0xFF);
+    uint8_t *d_src = nullptr;
+    int *d_ok = nullptr;
+    cudaError_t e = cudaMalloc(&d_src, host.size());
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(d_src, host.data(), host.size(),
+                        cudaMemcpyHostToDevice, stream);
+    if (e != cudaSuccess) { cudaFree(d_src); return e; }
+    e = cudaMalloc(&d_ok, sizeof(int));
+    if (e != cudaSuccess) { cudaFree(d_src); return e; }
+    e = cudaMemsetAsync(d_ok, 1, sizeof(int), stream);
+    if (e != cudaSuccess) { cudaFree(d_src); cudaFree(d_ok); return e; }
+
+    const cuuint64_t gdim[2] = {kTmaRowBytes, kTmaRows};
+    const cuuint64_t gstride[1] = {kTmaRowBytes};
+    const cuuint32_t bdim[2] = {kTmaRowBytes, kTmaBoxRows};
+    const cuuint32_t estride[2] = {1, 1};
+    const CUresult cr = cuTensorMapEncodeTiled(
+        &tmap, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, d_src, gdim, gstride, bdim,
+        estride, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    if (cr != CUDA_SUCCESS) {
+        cudaFree(d_src); cudaFree(d_ok);
+        return cudaErrorNotSupported;
+    }
+    TmaProbeKernel<<<1, 128, 0, stream>>>(tmap, d_src, d_ok);
+    e = cudaGetLastError();
+    if (e == cudaSuccess) {
+        int h_ok = 0;
+        e = cudaMemcpyAsync(&h_ok, d_ok, sizeof(int), cudaMemcpyDeviceToHost,
+                            stream);
+        if (e == cudaSuccess)
+            e = cudaStreamSynchronize(stream) == cudaSuccess
+                    ? (h_ok ? cudaSuccess : cudaErrorUnknown)
+                    : cudaErrorInvalidValue;
+    }
+    cudaFree(d_src);
+    cudaFree(d_ok);
+    return e;
+}
+
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon
-
-
-
-
-
-
-
-
-
-
-
