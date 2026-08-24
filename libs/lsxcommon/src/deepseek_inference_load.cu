@@ -28,15 +28,10 @@ namespace gpu {
 
 namespace {
 
-const TensorView *find_tensor_suffix(const TensorBatchViews &tensors,
-                                     std::string_view suffix)
+inline const TensorView *find_tensor_suffix(
+    const TensorBatchViews &tensors, std::string_view suffix)
 {
-    for (const auto &t : tensors.tensors) {
-        if (t.name.size() >= suffix.size() &&
-            t.name.compare(t.name.size() - suffix.size(), suffix.size(), suffix) == 0)
-            return &t;
-    }
-    return nullptr;
+    return lsxcommon::fastload::FindTensorSuffix(tensors, suffix);
 }
 
 const TensorView *find_tensor_substr(const TensorBatchViews &tensors,
@@ -49,17 +44,15 @@ const TensorView *find_tensor_substr(const TensorBatchViews &tensors,
     return nullptr;
 }
 
-constexpr size_t kArenaAlign = 256;
+// kArenaAlign / AlignUp / StreamDrain come from fast_load_internal.h
+// (shared across all loaders).
 
-size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
-
-// Drains the stream on scope exit so pinned staging buffers never die while
-// a DMA transfer is still in flight (mirrors the GLM loader guard).
-struct StreamDrain {
-    cudaStream_t s;
-    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
-};
-
+// NOTE (model-unification audit): unlike the other five loaders, DeepSeek
+// keeps its typed ArenaJob/UploadLayerJobs engine family-local. It uploads
+// F8_E4M3/F8_E8M0 payloads byte-verbatim (byte-count-based, not element-based)
+// and captures dimensions through int* fields wired directly into
+// kernel-visible LayerWeights — generalizing fastload::UploadJob for this
+// would either change kernel-facing types or bloat the shared struct.
 // One planned upload into the per-layer arena. BF16 jobs upload through the
 // staging ring with an on-device BF16→FP16 conversion; raw jobs upload bytes
 // verbatim (F32 / F8_E4M3 / F8_E8M0 payloads). The typed constructors route
@@ -135,7 +128,7 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
         if (!jobs[i].t) continue;
         cudaError_t e = ValidateArenaJob(jobs[i], sz[i]);
         if (e != cudaSuccess) return e;
-        total = AlignUp(total, kArenaAlign) + sz[i];
+        total = fastload::AlignUp(total, fastload::kArenaAlign) + sz[i];
     }
 
     void *arena = nullptr;
@@ -155,7 +148,7 @@ cudaError_t UploadLayerJobs(std::vector<ArenaJob> jobs, LayerWeights &lw,
     for (size_t i = 0; i < jobs.size(); ++i) {
         const auto &j = jobs[i];
         if (!j.t) continue;
-        off = AlignUp(off, kArenaAlign);
+        off = fastload::AlignUp(off, fastload::kArenaAlign);
         void *view = base + off;
         *j.dst = view;
         if (j.bytes_cap) *j.bytes_cap = static_cast<int64_t>(sz[i]);
@@ -378,7 +371,7 @@ cudaError_t load_pinned_weights(
 
     // Drains the stream on every error exit below so pinned staging never
     // dies while a DMA transfer is still in flight.
-    StreamDrain drain{stream};
+    fastload::StreamDrain drain{stream};
 
     lsxcommon::fastload::PinnedStagingRing ring;
     if (!ring.ok()) return cudaErrorMemoryAllocation;

@@ -313,9 +313,9 @@ inline cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
         uint8_t *view = static_cast<uint8_t *>(arena) + off;
         *j.dst = view;
         const int64_t n = numels[i];
-        if (j.rows && j.t->rank == 2) {
-            *j.rows = j.t->shape[0];
-            *j.cols = j.t->shape[1];
+        if (j.t->rank == 2) {
+            if (j.rows) *j.rows = j.t->shape[0];
+            if (j.cols) *j.cols = j.t->shape[1];
         }
         cudaError_t e = cudaSuccess;
         switch (j.kind) {

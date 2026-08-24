@@ -50,91 +50,6 @@ arrow::Result<std::vector<TensorRecord>> LoadArrowFile(const std::string &path)
     return PinnedSchema::UnpackBatch(*batch_res);
 }
 
-constexpr size_t kArenaAlign = 256;
-
-size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
-
-struct Fp16Job {
-    const TensorRecord *t;
-    __nv_bfloat16 **dst;
-    int64_t *rows; // optional dim0 capture (2D only)
-    int64_t *cols; // optional dim1 capture (2D only)
-};
-
-cudaError_t ValidateJob(const Fp16Job &j, size_t &numel, bool &is_2d)
-{
-    const auto &s = j.t->shape;
-    if (s.size() == 1 && s[0] > 0) {
-        is_2d = false;
-        numel = static_cast<size_t>(s[0]);
-    } else if (s.size() == 2 && s[0] > 0 && s[1] > 0) {
-        is_2d = true;
-        numel = static_cast<size_t>(s[0]) * static_cast<size_t>(s[1]);
-    } else {
-        log::error("[gemma_load] malformed tensor '" + j.t->name + "'");
-        return cudaErrorInvalidValue;
-    }
-    if (j.t->data.size() < numel * 2) {
-        log::error("[gemma_load] malformed tensor '" + j.t->name + "'");
-        return cudaErrorInvalidValue;
-    }
-    return cudaSuccess;
-}
-
-cudaError_t UploadJobs(std::vector<Fp16Job> jobs, GemmaLayerWeights &lw,
-                       cudaStream_t stream, PinnedStagingRing &ring,
-                       std::uint64_t &bytes_acc)
-{
-    struct Shape {
-        size_t numel = 0;
-        bool is_2d = false;
-    };
-    std::vector<Shape> shapes(jobs.size());
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        cudaError_t e = ValidateJob(jobs[i], shapes[i].numel, shapes[i].is_2d);
-        if (e != cudaSuccess) return e;
-    }
-
-    size_t total = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        total = AlignUp(total, kArenaAlign) + shapes[i].numel * 2;
-    }
-
-    void *arena = nullptr;
-    if (total > 0) {
-        cudaError_t e = cudaMalloc(&arena, total);
-        if (e != cudaSuccess) {
-            log::error("[gemma_load] arena alloc failed: " +
-                       std::string(cudaGetErrorString(e)));
-            return e;
-        }
-    }
-    lw.d_arena = arena;
-    lw.arena_bytes = total;
-
-    size_t off = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto &j = jobs[i];
-        if (!j.t) continue;
-        off = AlignUp(off, kArenaAlign);
-        __nv_bfloat16 *view =
-            static_cast<__nv_bfloat16 *>(arena) + off / 2;
-        *j.dst = view;
-        if (shapes[i].is_2d && j.rows) {
-            *j.rows = j.t->shape[0];
-            if (j.cols) *j.cols = j.t->shape[1];
-        }
-        // BF16 storage: raw passthrough upload (no conversion).
-        cudaError_t e = ring.UploadRaw(j.t->data.data(), view,
-                                       shapes[i].numel * 2, stream, bytes_acc);
-        if (e != cudaSuccess) return e;
-        off += shapes[i].numel * 2;
-    }
-    return cudaSuccess;
-}
-
 // BF16 host -> F32 host (exact: BF16 is a truncated F32).
 std::vector<float> Bf16BytesToF32(const std::vector<uint8_t> &data,
                                   int64_t numel)
@@ -244,42 +159,72 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
         return cudaErrorInvalidValue;
     }
 
-    std::vector<Fp16Job> jobs = {
-        {in_norm, &lw.d_input_norm, nullptr, nullptr},
-        {post_norm, &lw.d_post_norm, nullptr, nullptr},
-        {FindTensor(tensors, "pre_feedforward_layernorm_2.weight"),
-         &lw.d_pre_ffn2, nullptr, nullptr},
-        {FindTensor(tensors, "post_feedforward_layernorm_2.weight"),
-         &lw.d_post_ffn2, nullptr, nullptr},
-        {FindTensor(tensors, "pre_feedforward_layernorm.weight"),
-         &lw.d_pre_ffn, nullptr, nullptr},
-        {FindTensor(tensors, "post_feedforward_layernorm.weight"),
-         &lw.d_post_ffn, nullptr, nullptr},
-        {FindTensor(tensors, "post_feedforward_layernorm_1.weight"),
-         &lw.d_post_ffn1, nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.q_proj.weight"), &lw.d_q,
-         &lw.q_rows, nullptr},
-        {FindTensor(tensors, "self_attn.k_proj.weight"), &lw.d_k,
-         &lw.kv_rows, nullptr},
-        {FindTensor(tensors, "self_attn.v_proj.weight"), &lw.d_v,
-         nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.o_proj.weight"), &lw.d_o,
-         nullptr, &lw.o_cols},
-        {FindTensor(tensors, "self_attn.q_norm.weight"), &lw.d_q_norm,
-         nullptr, nullptr},
-        {FindTensor(tensors, "self_attn.k_norm.weight"), &lw.d_k_norm,
-         nullptr, nullptr},
-        {FindTensor(tensors, "mlp.gate_proj.weight"), &lw.d_mlp_gate,
-         nullptr, nullptr},
-        {FindTensor(tensors, "mlp.up_proj.weight"), &lw.d_mlp_up,
-         nullptr, nullptr},
-        {FindTensor(tensors, "mlp.down_proj.weight"), &lw.d_mlp_down,
-         nullptr, nullptr},
-        {FindTensor(tensors, "router.proj.weight"), &lw.d_router_proj,
-         nullptr, nullptr},
+    // Adapter: the shared fastload engine consumes TensorView; the Gemma4
+    // pinned schema keeps owning TensorRecords.
+    auto view_of = [](const TensorRecord &r) {
+        lsxcommon::TensorView v{};
+        v.name = r.name;
+        v.rank = static_cast<int64_t>(r.shape.size());
+        v.shape = r.shape.data();
+        v.bytes = r.data.size();
+        v.data = r.data.data();
+        return v;
+    };
+    // Keep TensorView adapters in a local vector so shape/data pointers stay
+    // stable for the duration of the RunUploadJobs call.
+    std::vector<lsxcommon::TensorView> views;
+    views.reserve(17);  // job count below; prevents pointer-invalidating growth
+    auto make_job = [&](const TensorRecord *t, void **dst,
+                        int64_t *rows, int64_t *cols) {
+        if (t) views.push_back(view_of(*t));
+        return fastload::UploadJob{t ? &views.back() : nullptr, dst,
+                                   fastload::CvKind::kBf16Raw, rows, cols};
+    };
+    std::vector<fastload::UploadJob> jobs = {
+        make_job(in_norm, reinterpret_cast<void **>(&lw.d_input_norm),
+                 nullptr, nullptr),
+        make_job(post_norm, reinterpret_cast<void **>(&lw.d_post_norm),
+                 nullptr, nullptr),
+        make_job(FindTensor(tensors, "pre_feedforward_layernorm_2.weight"),
+                 reinterpret_cast<void **>(&lw.d_pre_ffn2), nullptr, nullptr),
+        make_job(FindTensor(tensors, "post_feedforward_layernorm_2.weight"),
+                 reinterpret_cast<void **>(&lw.d_post_ffn2), nullptr, nullptr),
+        make_job(FindTensor(tensors, "pre_feedforward_layernorm.weight"),
+                 reinterpret_cast<void **>(&lw.d_pre_ffn), nullptr, nullptr),
+        make_job(FindTensor(tensors, "post_feedforward_layernorm.weight"),
+                 reinterpret_cast<void **>(&lw.d_post_ffn), nullptr, nullptr),
+        make_job(FindTensor(tensors, "post_feedforward_layernorm_1.weight"),
+                 reinterpret_cast<void **>(&lw.d_post_ffn1), nullptr, nullptr),
+        make_job(FindTensor(tensors, "self_attn.q_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_q), &lw.q_rows, nullptr),
+        make_job(FindTensor(tensors, "self_attn.k_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_k), &lw.kv_rows, nullptr),
+        make_job(FindTensor(tensors, "self_attn.v_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_v), nullptr, nullptr),
+        make_job(FindTensor(tensors, "self_attn.o_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_o), nullptr, &lw.o_cols),
+        make_job(FindTensor(tensors, "self_attn.q_norm.weight"),
+                 reinterpret_cast<void **>(&lw.d_q_norm), nullptr, nullptr),
+        make_job(FindTensor(tensors, "self_attn.k_norm.weight"),
+                 reinterpret_cast<void **>(&lw.d_k_norm), nullptr, nullptr),
+        make_job(FindTensor(tensors, "mlp.gate_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_mlp_gate), nullptr, nullptr),
+        make_job(FindTensor(tensors, "mlp.up_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_mlp_up), nullptr, nullptr),
+        make_job(FindTensor(tensors, "mlp.down_proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_mlp_down), nullptr, nullptr),
+        make_job(FindTensor(tensors, "router.proj.weight"),
+                 reinterpret_cast<void **>(&lw.d_router_proj), nullptr,
+                 nullptr),
     };
 
-    cudaError_t e = UploadJobs(std::move(jobs), lw, stream, ring, bytes_acc);
+    void *gemma_arena = nullptr;
+    size_t gemma_arena_bytes = 0;
+    cudaError_t e = fastload::RunUploadJobs(
+        std::move(jobs), &gemma_arena, &gemma_arena_bytes, stream, ring,
+        bytes_acc, nullptr);
+    lw.d_arena = gemma_arena;
+    lw.arena_bytes = gemma_arena_bytes;
     if (e != cudaSuccess) return e;
 
     // F32 / BF16-scalar side uploads. Real checkpoints store layer_scalar
