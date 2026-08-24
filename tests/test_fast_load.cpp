@@ -61,3 +61,186 @@ TEST_CASE("FindNvfp4Suffix matches by record name suffix", "[fastload]")
     CHECK(hit->name == "blk.0.attn_q.weight");
     CHECK(FindNvfp4Suffix(batch, "attn_k.weight") == nullptr);
 }
+
+// ── Arena upload-job engine (GPU: uses device allocs + default stream) ──────
+
+#include <cuda_runtime.h>
+
+#include <string>
+#include <vector>
+
+namespace {
+
+// Minimal weight receiver satisfying the UploadNvfp4Weight contract
+// (rows/cols/global_scale/packed_bytes/scale_bytes/d_packed/d_scales/Free).
+struct FakeNvfp4Weight {
+    int rows = 0;
+    int cols = 0;
+    float global_scale = 0.f;
+    int64_t packed_bytes = 0;
+    int64_t scale_bytes = 0;
+    const uint8_t *d_packed = nullptr;
+    const uint8_t *d_scales = nullptr;
+    void Free()
+    {
+        if (d_packed) cudaFree(const_cast<uint8_t *>(d_packed));
+        if (d_scales) cudaFree(const_cast<uint8_t *>(d_scales));
+        d_packed = nullptr;
+        d_scales = nullptr;
+    }
+};
+
+lsxcommon::TensorView MakeBf16View(std::vector<uint8_t> &storage,
+                                   const int64_t shape[2], const char *name)
+{
+    lsxcommon::TensorView tv{};
+    tv.name = name;
+    tv.rank = 2;
+    tv.shape = shape;
+    tv.bytes = storage.size();
+    tv.data = storage.data();
+    return tv;
+}
+
+} // namespace
+
+TEST_CASE("RunUploadJobs allocates one arena and uploads both jobs",
+          "[fastload][gpu]")
+{
+    using namespace lsxcommon::fastload;
+    PinnedStagingRing ring;
+    REQUIRE(ring.ok());
+
+    std::vector<uint8_t> bf16_a(12, 0xAB);  // 2x3 BF16 elements
+    std::vector<uint8_t> bf16_b(8, 0xCD);   // 2x2 BF16 elements
+    const int64_t shape_a[2] = {2, 3};
+    const int64_t shape_b[2] = {2, 2};
+    lsxcommon::TensorView a = MakeBf16View(bf16_a, shape_a, "a");
+    lsxcommon::TensorView b = MakeBf16View(bf16_b, shape_b, "b");
+
+    void *dst_a = nullptr;
+    void *dst_b = nullptr;
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::uint64_t acc = 0;
+    std::string err;
+
+    cudaError_t e =
+        RunUploadJobs({{&a, &dst_a, CvKind::kBf16ToHalf},
+                       {&b, &dst_b, CvKind::kBf16ToHalf}},
+                      &arena, &arena_bytes, /*stream=*/0, ring, acc, &err);
+    REQUIRE(e == cudaSuccess);
+    CHECK(err.empty());
+    // 12 bytes then align-up to 256 plus 8 payload bytes.
+    CHECK(arena_bytes == 264);
+    REQUIRE(arena != nullptr);
+    CHECK(dst_a == arena);  // first view starts at offset 0
+    auto off_b = static_cast<const uint8_t *>(dst_b) -
+                 static_cast<const uint8_t *>(arena);
+    CHECK(off_b % kArenaAlign == 0);  // second view is 256-aligned
+    CHECK(acc == 20);
+
+    cudaFree(arena);
+}
+
+TEST_CASE("RunUploadJobs rejects malformed tensors", "[fastload][gpu]")
+{
+    using namespace lsxcommon::fastload;
+    PinnedStagingRing ring;
+    REQUIRE(ring.ok());
+
+    const int64_t bad_shape[1] = {0};
+    lsxcommon::TensorView bad{};
+    bad.name = "broken";
+    bad.rank = 1;
+    bad.shape = bad_shape;
+    bad.bytes = 4;
+    static uint8_t dummy[4] = {};
+    bad.data = dummy;
+
+    void *dst = nullptr;
+    void *arena = nullptr;
+    size_t arena_bytes = 99;
+    std::uint64_t acc = 0;
+    std::string err = "sentinel";
+    cudaError_t e = RunUploadJobs({{&bad, &dst, CvKind::kBf16ToHalf}}, &arena,
+                                  &arena_bytes, 0, ring, acc, &err);
+    CHECK(e == cudaErrorInvalidValue);
+    CHECK(err.find("malformed tensor 'broken'") != std::string::npos);
+    CHECK(arena == nullptr);
+}
+
+TEST_CASE("RunUploadJobs captures optional 2-D shapes", "[fastload][gpu]")
+{
+    using namespace lsxcommon::fastload;
+    PinnedStagingRing ring;
+    REQUIRE(ring.ok());
+
+    std::vector<uint8_t> bf16(16, 0);
+    const int64_t shape[2] = {4, 2};
+    lsxcommon::TensorView tv = MakeBf16View(bf16, shape, "w");
+
+    void *dst = nullptr;
+    int64_t rows = -1;
+    int64_t cols = -1;
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::uint64_t acc = 0;
+    std::string err;
+    cudaError_t e = RunUploadJobs(
+        {{&tv, &dst, CvKind::kBf16ToHalf, &rows, &cols}}, &arena,
+        &arena_bytes, 0, ring, acc, &err);
+    REQUIRE(e == cudaSuccess);
+    CHECK(rows == 4);
+    CHECK(cols == 2);
+    cudaFree(arena);
+}
+
+TEST_CASE("UploadNvfp4Weight uploads packed+scales and fills metadata",
+          "[fastload][gpu]")
+{
+    using namespace lsxcommon::fastload;
+    PinnedStagingRing ring;
+    REQUIRE(ring.ok());
+
+    std::vector<uint8_t> packed(64, 0x5A);
+    std::vector<uint8_t> scales(8, 0x7E);
+    lsxcommon::DenseNvfp4View rec{};
+    rec.name = "expert.w1";
+    rec.rank = 2;
+    const int64_t shape[2] = {32, 32};
+    rec.shape = shape;
+    rec.packed = packed.data();
+    rec.packed_bytes = static_cast<int64_t>(packed.size());
+    rec.scales = scales.data();
+    rec.scale_bytes = static_cast<int64_t>(scales.size());
+    rec.global_scale = 2.5f;
+
+    FakeNvfp4Weight w;
+    std::uint64_t acc = 0;
+    std::string err;
+    cudaError_t e =
+        UploadNvfp4Weight(&rec, w, /*stream=*/0, ring, acc, &err);
+    REQUIRE(e == cudaSuccess);
+    CHECK(w.rows == 32);
+    CHECK(w.cols == 32);
+    CHECK(w.global_scale == 2.5f);
+    CHECK(w.packed_bytes == 64);
+    CHECK(w.scale_bytes == 8);
+    REQUIRE(w.d_packed != nullptr);
+    REQUIRE(w.d_scales != nullptr);
+    CHECK(acc == 72);
+
+    // Device contents match the host buffers.
+    std::vector<uint8_t> back(64);
+    cudaMemcpy(back.data(), w.d_packed, 64, cudaMemcpyDeviceToHost);
+    CHECK(back == packed);
+
+    w.Free();
+    CHECK(w.d_packed == nullptr);
+
+    // Null record is a no-op success.
+    FakeNvfp4Weight w2;
+    CHECK(UploadNvfp4Weight(nullptr, w2, 0, ring, acc, &err) == cudaSuccess);
+}
+

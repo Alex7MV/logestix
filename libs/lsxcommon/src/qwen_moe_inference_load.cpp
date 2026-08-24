@@ -18,203 +18,14 @@
 namespace lsxcommon::qwen_moe {
 namespace {
 
-constexpr size_t kArenaAlign = 256;
-
-size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
-
-// Drains the stream on scope exit so pinned staging never dies while a DMA
-// transfer is still in flight (error paths of LoadQwenMoeDenseWeights).
-struct StreamDrain {
-    cudaStream_t s;
-    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
-};
-
-enum class CvKind {
-    kBf16ToHalf,  // raw BF16 bits -> FP16 on device (in-place kernel)
-    kF32Raw,      // raw F32 passthrough
-    kF32ToHalf,   // host scalar F32 -> FP16 (tiny tensors only)
-    kBf16ToF32,   // host scalar BF16 bits -> F32 (tiny tensors only)
-};
-
-size_t OutElemSize(CvKind k)
-{
-    return (k == CvKind::kF32Raw || k == CvKind::kBf16ToF32) ? 4 : 2;
-}
-
-struct UploadJob {
-    const TensorView *t;     // null = absent tensor, skipped
-    void **dst;
-    CvKind kind;
-};
-
-cudaError_t ValidateJob(const UploadJob &j, int64_t &numel,
-                        std::string &error)
-{
-    if (j.t->rank <= 0) {
-        error = absl::StrCat("malformed tensor '", j.t->name, "' rank=0");
-        return cudaErrorInvalidValue;
-    }
-    numel = 1;
-    for (int64_t d = 0; d < j.t->rank; ++d) {
-        if (j.t->shape[d] <= 0) {
-            error = absl::StrCat("malformed tensor '", j.t->name, "'");
-            return cudaErrorInvalidValue;
-        }
-        numel *= j.t->shape[d];
-    }
-    size_t in_bytes = (j.kind == CvKind::kF32Raw || j.kind == CvKind::kF32ToHalf)
-                          ? 4 : 2;
-    if (j.t->bytes < static_cast<size_t>(numel) * in_bytes) {
-        error = absl::StrCat("malformed tensor '", j.t->name, "': data ",
-                             j.t->bytes, " < needed ",
-                             static_cast<uint64_t>(numel) * in_bytes);
-        return cudaErrorInvalidValue;
-    }
-    return cudaSuccess;
-}
-
-// Validates every job, issues ONE arena allocation sized to the layer's
-// converted footprint and uploads each tensor through the pinned ring into
-// its 256-byte-aligned arena view. (Adapted from qwen_inference_load.cpp.)
-cudaError_t RunUploadJobs(std::vector<UploadJob> jobs,
-                          void **arena_out, size_t *arena_bytes_out,
-                          cudaStream_t stream,
-                          fastload::PinnedStagingRing &ring,
-                          std::uint64_t &bytes_acc, std::string &error)
-{
-    std::vector<int64_t> numels(jobs.size(), 0);
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        cudaError_t e = ValidateJob(jobs[i], numels[i], error);
-        if (e != cudaSuccess) return e;
-    }
-
-    size_t total = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        if (!jobs[i].t) continue;
-        total = AlignUp(total, kArenaAlign) +
-                static_cast<size_t>(numels[i]) * OutElemSize(jobs[i].kind);
-    }
-
-    void *arena = nullptr;
-    if (total > 0) {
-        cudaError_t e = cudaMalloc(&arena, total);
-        if (e != cudaSuccess) {
-            error = absl::StrCat("arena alloc failed: ",
-                                 cudaGetErrorString(e));
-            return e;
-        }
-    }
-    *arena_out = arena;
-    *arena_bytes_out = total;
-
-    size_t off = 0;
-    for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto &j = jobs[i];
-        if (!j.t) continue;
-        off = AlignUp(off, kArenaAlign);
-        uint8_t *view = static_cast<uint8_t *>(arena) + off;
-        *j.dst = view;
-        const int64_t n = numels[i];
-        cudaError_t e = cudaSuccess;
-        switch (j.kind) {
-        case CvKind::kBf16ToHalf:
-            e = ring.UploadBf16AsFp16(j.t->data, n,
-                                      reinterpret_cast<__half *>(view),
-                                      stream, bytes_acc);
-            break;
-        case CvKind::kF32Raw:
-            e = ring.UploadRaw(j.t->data, view,
-                               static_cast<size_t>(n) * 4, stream, bytes_acc);
-            break;
-        default: {
-            size_t bytes = static_cast<size_t>(n) * OutElemSize(j.kind);
-            std::vector<uint8_t> h(bytes);
-            if (j.kind == CvKind::kF32ToHalf) {
-                const float *src =
-                    reinterpret_cast<const float *>(j.t->data);
-                __half *dst = reinterpret_cast<__half *>(h.data());
-                for (int64_t k = 0; k < n; ++k)
-                    dst[k] = __float2half(src[k]);
-            } else {
-                const uint16_t *src =
-                    reinterpret_cast<const uint16_t *>(j.t->data);
-                float *dst = reinterpret_cast<float *>(h.data());
-                for (int64_t k = 0; k < n; ++k) {
-                    uint32_t bits = static_cast<uint32_t>(src[k]) << 16;
-                    std::memcpy(&dst[k], &bits, sizeof(bits));
-                }
-            }
-            e = cudaMemcpyAsync(view, h.data(), bytes,
-                                cudaMemcpyHostToDevice, stream);
-            if (e == cudaSuccess) bytes_acc += bytes;
-            break;
-        }
-        }
-        if (e != cudaSuccess) {
-            error = absl::StrCat("upload failed for '", j.t->name,
-                                 "': ", cudaGetErrorString(e));
-            return e;
-        }
-        off += static_cast<size_t>(numels[i]) * OutElemSize(j.kind);
-    }
-    return cudaSuccess;
-}
-
-// Uploads one NVFP4 weight as two raw device blocks staged through the ring.
-// (Adapted from qwen_inference_load.cpp.)
-cudaError_t UploadNvfp4Weight(const DenseNvfp4View *r, qwen::QwenNvfp4Weight &w,
-                              cudaStream_t stream,
-                              fastload::PinnedStagingRing &ring,
-                              std::uint64_t &bytes_acc, std::string &error)
-{
-    if (!r || r->packed_bytes == 0) return cudaSuccess;
-    w.rows = r->rank >= 2 ? static_cast<int>(r->shape[0]) : 0;
-    w.cols = r->rank >= 2 ? static_cast<int>(r->shape[1]) : 0;
-    w.global_scale = r->global_scale;
-    w.packed_bytes = r->packed_bytes;
-    w.scale_bytes = r->scale_bytes;
-    void *d1 = nullptr;
-    cudaError_t e = cudaMalloc(&d1, static_cast<size_t>(r->packed_bytes));
-    if (e != cudaSuccess) { w.Free(); return e; }
-    e = ring.UploadRaw(r->packed, d1, static_cast<size_t>(r->packed_bytes),
-                       stream, bytes_acc);
-    if (e != cudaSuccess) { cudaFree(d1); w.Free(); return e; }
-    void *d2 = nullptr;
-    e = cudaMalloc(&d2, static_cast<size_t>(r->scale_bytes));
-    if (e != cudaSuccess) { cudaFree(d1); w.Free(); return e; }
-    e = ring.UploadRaw(r->scales, d2, static_cast<size_t>(r->scale_bytes),
-                       stream, bytes_acc);
-    if (e != cudaSuccess) { cudaFree(d1); cudaFree(d2); w.Free(); return e; }
-    w.d_packed = static_cast<const uint8_t*>(d1);
-    w.d_scales = static_cast<const uint8_t*>(d2);
-    error.clear();
-    return cudaSuccess;
-}
-
-const TensorView *FindRaw(const TensorBatchViews &tensors,
-                          std::string_view suffix)
-{
-    for (const auto &t : tensors.tensors) {
-        if (t.name.size() >= suffix.size() &&
-            t.name.compare(t.name.size() - suffix.size(), suffix.size(),
-                           suffix) == 0)
-            return &t;
-    }
-    return nullptr;
-}
-
-const DenseNvfp4View *FindNvfp4(const DenseNvfp4BatchViews &recs,
-                                std::string_view suffix)
-{
-    for (const auto &r : recs.records) {
-        if (r.name.size() >= suffix.size() &&
-            r.name.compare(r.name.size() - suffix.size(), suffix.size(),
-                           suffix) == 0)
-            return &r;
-    }
-    return nullptr;
-}
+using fastload::CvKind;
+using fastload::OutElemSize;
+using fastload::UploadJob;
+using fastload::kArenaAlign;
+using fastload::AlignUp;
+using fastload::StreamDrain;
+using fastload::RunUploadJobs;
+using fastload::UploadNvfp4Weight;
 
 CvKind NormKind(const TensorView *t)
 {
@@ -387,7 +198,7 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
             error = "global.arrow read failed: " + raw_res.status().ToString();
             return false;
         }
-        auto *fn = FindRaw(*raw_res, "norm.weight");
+        auto *fn = fastload::FindTensorSuffix(*raw_res, "norm.weight");
         if (fn && fn->rank > 0) {
             int64_t n = fn->shape[0];
             pw.final_norm_size = static_cast<int>(n);
@@ -421,11 +232,11 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
             return false;
         }
         std::string dummy;
-        cudaError_t e = UploadNvfp4Weight(FindNvfp4(*nv_res, "embed_tokens.weight"),
-                                          pw.embed, stream, ring, bytes_acc, dummy);
+        cudaError_t e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv_res, "embed_tokens.weight"),
+                                          pw.embed, stream, ring, bytes_acc, &dummy);
         if (e == cudaSuccess)
-            e = UploadNvfp4Weight(FindNvfp4(*nv_res, "lm_head.weight"),
-                                  pw.head, stream, ring, bytes_acc, dummy);
+            e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv_res, "lm_head.weight"),
+                                  pw.head, stream, ring, bytes_acc, &dummy);
         if (e != cudaSuccess || !pw.embed.d_packed || !pw.head.d_packed) {
             error = "embed/lm_head missing or upload failed";
             pw.Free();
@@ -469,10 +280,10 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
 
         // Dense attention block (adapted from qwen LoadLayer minus MLP).
         lw.attn.is_linear = is_linear;
-        auto *in_norm = FindRaw(*raw, "input_layernorm.weight");
+        auto *in_norm = fastload::FindTensorSuffix(*raw, "input_layernorm.weight");
         if (in_norm && in_norm->rank > 0)
             lw.attn.norm_size = static_cast<int>(in_norm->shape[0]);
-        auto *post_norm = FindRaw(*raw, "post_attention_layernorm.weight");
+        auto *post_norm = fastload::FindTensorSuffix(*raw, "post_attention_layernorm.weight");
 
         std::string job_error;
         std::vector<UploadJob> jobs = {
@@ -482,7 +293,7 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
              reinterpret_cast<void **>(&lw.attn.d_post_norm), NormKind(post_norm)},
         };
         if (is_linear) {
-            auto *conv = FindRaw(*raw, "linear_attn.conv1d.weight");
+            auto *conv = fastload::FindTensorSuffix(*raw, "linear_attn.conv1d.weight");
             if (conv && conv->rank > 0) {
                 lw.attn.conv_dim = static_cast<int>(conv->shape[0]);
                 lw.attn.conv_kernel = conv->rank >= 3
@@ -491,21 +302,21 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
             }
             jobs.push_back({conv, reinterpret_cast<void **>(&lw.attn.d_conv1d),
                             CvKind::kBf16ToHalf});
-            jobs.push_back({FindRaw(*raw, "linear_attn.A_log"),
+            jobs.push_back({fastload::FindTensorSuffix(*raw, "linear_attn.A_log"),
                             reinterpret_cast<void **>(&lw.attn.d_A_log),
-                            CvKindFromDtype(FindRaw(*raw, "linear_attn.A_log"),
+                            CvKindFromDtype(fastload::FindTensorSuffix(*raw, "linear_attn.A_log"),
                                             CvKind::kF32Raw)});
-            jobs.push_back({FindRaw(*raw, "linear_attn.dt_bias"),
+            jobs.push_back({fastload::FindTensorSuffix(*raw, "linear_attn.dt_bias"),
                             reinterpret_cast<void **>(&lw.attn.d_dt_bias),
                             CvKind::kBf16ToF32});
-            auto *an = FindRaw(*raw, "linear_attn.norm.weight");
+            auto *an = fastload::FindTensorSuffix(*raw, "linear_attn.norm.weight");
             if (an && an->rank > 0)
                 lw.attn.attn_norm_size = static_cast<int>(an->shape[0]);
             jobs.push_back({an, reinterpret_cast<void **>(&lw.attn.d_attn_norm),
                             NormKind(an)});
         } else {
-            auto *qn = FindRaw(*raw, "self_attn.q_norm.weight");
-            auto *kn = FindRaw(*raw, "self_attn.k_norm.weight");
+            auto *qn = fastload::FindTensorSuffix(*raw, "self_attn.q_norm.weight");
+            auto *kn = fastload::FindTensorSuffix(*raw, "self_attn.k_norm.weight");
             if (qn && qn->rank > 0)
                 lw.attn.q_norm_size = static_cast<int>(qn->shape[0]);
             if (kn && kn->rank > 0)
@@ -518,7 +329,7 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
 
         cudaError_t e = RunUploadJobs(std::move(jobs), &lw.attn.d_arena,
                                       &lw.attn.arena_bytes, stream, ring,
-                                      bytes_acc, job_error);
+                                      bytes_acc, &job_error);
         if (e != cudaSuccess) {
             error = absl::StrCat("layer_", l, ": ", job_error);
             pw.Free();
@@ -526,16 +337,16 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
         }
 
         if (is_linear) {
-            e = UploadNvfp4Weight(FindNvfp4(*nv, "linear_attn.in_proj_qkv.weight"), lw.attn.qkv, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "linear_attn.in_proj_z.weight"), lw.attn.z, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "linear_attn.in_proj_b.weight"), lw.attn.b, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "linear_attn.in_proj_a.weight"), lw.attn.a, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "linear_attn.out_proj.weight"), lw.attn.out, stream, ring, bytes_acc, job_error);
+            e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "linear_attn.in_proj_qkv.weight"), lw.attn.qkv, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "linear_attn.in_proj_z.weight"), lw.attn.z, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "linear_attn.in_proj_b.weight"), lw.attn.b, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "linear_attn.in_proj_a.weight"), lw.attn.a, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "linear_attn.out_proj.weight"), lw.attn.out, stream, ring, bytes_acc, &job_error);
         } else {
-            e = UploadNvfp4Weight(FindNvfp4(*nv, "self_attn.q_proj.weight"), lw.attn.q, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "self_attn.k_proj.weight"), lw.attn.k, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "self_attn.v_proj.weight"), lw.attn.v, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*nv, "self_attn.o_proj.weight"), lw.attn.o, stream, ring, bytes_acc, job_error);
+            e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "self_attn.q_proj.weight"), lw.attn.q, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "self_attn.k_proj.weight"), lw.attn.k, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "self_attn.v_proj.weight"), lw.attn.v, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv, "self_attn.o_proj.weight"), lw.attn.o, stream, ring, bytes_acc, &job_error);
         }
         if (e != cudaSuccess) {
             error = absl::StrCat("layer_", l, ": ", job_error);
@@ -564,7 +375,7 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
-            auto *gate = FindRaw(*rr, "mlp.gate.weight");
+            auto *gate = fastload::FindTensorSuffix(*rr, "mlp.gate.weight");
             if (!gate || gate->rank != 2) {
                 error = absl::StrCat("router/layer_", l, ": mlp.gate.weight missing");
                 pw.Free();
@@ -595,9 +406,9 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
-            e = UploadNvfp4Weight(FindNvfp4(*sv, "shared_expert.gate_proj.weight"), lw.shared_w1, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*sv, "shared_expert.down_proj.weight"), lw.shared_w2, stream, ring, bytes_acc, job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(FindNvfp4(*sv, "shared_expert.up_proj.weight"), lw.shared_w3, stream, ring, bytes_acc, job_error);
+            e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*sv, "shared_expert.gate_proj.weight"), lw.shared_w1, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*sv, "shared_expert.down_proj.weight"), lw.shared_w2, stream, ring, bytes_acc, &job_error);
+            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*sv, "shared_expert.up_proj.weight"), lw.shared_w3, stream, ring, bytes_acc, &job_error);
             if (e != cudaSuccess || !lw.shared_w1.d_packed ||
                 !lw.shared_w2.d_packed || !lw.shared_w3.d_packed) {
                 error = absl::StrCat("shared/layer_", l, ": weights incomplete");
@@ -613,7 +424,7 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
-            auto *sg = FindRaw(*gr, "shared_expert_gate.weight");
+            auto *sg = fastload::FindTensorSuffix(*gr, "shared_expert_gate.weight");
             if (!sg || sg->rank < 1) {
                 error = absl::StrCat("shared/layer_", l, ": gate row missing");
                 pw.Free();
