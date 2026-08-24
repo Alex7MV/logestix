@@ -89,6 +89,244 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
 constexpr int kTileM = 64;
 constexpr int kTileN = 64;
 
+// ---- cp.async primitives (sm_80+, supported on sm_120a) --------------------
+__device__ __forceinline__ void cp_async16(void *smem_dst, const void *gmem)
+{
+    const unsigned s =
+        static_cast<unsigned>(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s),
+                 "l"(gmem));
+}
+
+__device__ __forceinline__ void cp_async_commit()
+{
+    asm volatile("cp.async.commit_group;\n");
+}
+
+__device__ __forceinline__ void cp_async_wait1()
+{
+    asm volatile("cp.async.wait_group 1;\n");
+}
+
+__device__ __forceinline__ void cp_async_wait0()
+{
+    asm volatile("cp.async.wait_group 0;\n");
+}
+
+// Decode-specialized GEMM (seq == 1, K % 64 == 0, 16B-aligned buffers).
+//
+// At seq==1 the whole op is a weight-streaming GEMV batch: the quantized
+// activation row (2 KB packed + scales) is static across the K loop and is
+// loaded into shared memory exactly once; ONLY the weight slabs stream, one
+// 64-column x 64-k chunk at a time, double-buffered through cp.async so the
+// next chunk's global loads overlap the current chunk's MMAs. No syncthreads
+// pair per chunk beyond the consumer fence -- the pipeline keeps ~one chunk
+// of load latency in flight, which is what separates ~100 GB/s naive staging
+// from the >300 GB/s needed for the 70-80 tok/s target (audit F-01).
+constexpr int kDecCols = 64;              // n-columns per block
+constexpr int kDecChunkBytes = 32;        // packed bytes per column per k64
+
+__global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
+                                   const uint8_t *__restrict__ as,
+                                   const uint8_t *__restrict__ bp,
+                                   const uint8_t *__restrict__ bs,
+                                   float wgs, __half *__restrict__ y,
+                                   int K, int N)
+{
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int wn = warp >> 1;             // 0..1
+    const int g = lane >> 2;
+    const int tig = lane & 3;
+
+    const int col_base = blockIdx.x * kDecCols;
+    const int k_half = K / 2;
+    const int k_chunks = K >> 4;
+
+    // Static activation side: packed row (K/2 bytes, <= 2048 for the models
+    // in play) plus per-16 scale bytes.
+    __shared__ uint8_t sXp[2048];
+    __shared__ uint8_t sXsc[256];
+    // Double-buffered weight slab + scales.
+    __shared__ __align__(16) uint8_t sW[2][kDecCols][kDecChunkBytes];
+    __shared__ uint8_t sWs[2][kDecCols][4];
+
+
+    // One-time activation load (row 0 is the only row at seq == 1).
+    for (int i = tid; i < k_half && i < 2048; i += 256)
+        sXp[i] = ap[i];
+    for (int c = tid; c < k_chunks && c < 256; c += 256)
+        sXsc[c] = as[c];
+    __syncthreads();
+
+    // SFA per lane: carrier lanes tig0/tig1 hold row 0 chunk bytes; for
+    // k64 atoms the four bytes are chunks kb/16 .. kb/16+3.
+    auto sfa_for = [&](int kb) {
+        uint32_t v = 0;
+#pragma unroll
+        for (int c = 0; c < 4; ++c) {
+            const int ch = kb / 16 + c;
+            v |= uint32_t(ch < k_chunks ? sXsc[ch] : uint8_t{0}) << (c * 8);
+        }
+        return v;
+    };
+
+    // ---- Prologue: stage weight chunk 0 into buffer 0.
+    {
+        const uint4 *b4 = reinterpret_cast<const uint4 *>(
+            bp + static_cast<int64_t>(col_base) * k_half);
+        uint4 *d4 = reinterpret_cast<uint4 *>(&sW[0][0][0]);
+        for (int idx = tid; idx < kDecCols * 2; idx += 256) {
+            const int c = idx >> 1;
+            uint4 v = make_uint4(0, 0, 0, 0);
+            if (col_base + c < N)
+                cp_async16(&d4[idx],
+                           b4 + static_cast<int64_t>(c) * (k_half / 16) +
+                               (idx & 1));
+            else
+                d4[idx] = v;
+        }
+        for (int idx = tid; idx < kDecCols; idx += 256) {
+            const int c = idx;
+            for (int t = 0; t < 4 && t < k_chunks; ++t) {
+                sWs[0][c][t] =
+                    (col_base + c < N)
+                        ? bs[static_cast<int64_t>(col_base + c) * k_chunks +
+                             t]
+                        : uint8_t{0};
+            }
+        }
+        cp_async_commit();
+    }
+
+    int a_row[32], a_koff[32];
+#pragma unroll
+    for (int i = 0; i < 32; ++i) {
+        a_row[i] = 0;   // seq == 1: only row 0 carries activations
+        a_koff[i] = tig * 8 + (i & 7) + ((i >= 16) ? 32 : 0);
+    }
+
+    float d[4][4] = {};
+
+    for (int kb = 0, buf = 0; kb < K; kb += 64, buf ^= 1) {
+        const bool has_next = kb + 64 < K;
+        if (has_next) {
+            // ---- Issue next weight chunk into the other buffer.
+#if 0   // BISECT: disabled
+            const uint4 *b4 = reinterpret_cast<const uint4 *>(
+                bp + static_cast<int64_t>(col_base) * k_half +
+                (kb + 64) / 2);
+            uint4 *d4 = reinterpret_cast<uint4 *>(&sW[buf ^ 1][0][0]);
+            for (int idx = tid; idx < kDecCols * 2; idx += 256) {
+                const int c = idx >> 1;
+                if (col_base + c < N)
+                    cp_async16(
+                        &d4[idx],
+                        b4 + static_cast<int64_t>(c) * (k_half / 16) +
+                            (idx & 1));
+            }
+            for (int idx = tid; idx < kDecCols; idx += 256) {
+                const int c = idx;
+                const int ch_g = (kb + 64) / 16;
+            for (int t = 0; t < 4; ++t) {
+                const int chg = ch_g + t;
+                sWs[buf ^ 1][c][t] =
+                    (col_base + c < N && chg < k_chunks)
+                        ? bs[static_cast<int64_t>(col_base + c) * k_chunks +
+                             chg]
+                        : uint8_t{0};
+            }
+            }
+            cp_async_commit();
+#endif
+            // BISECT fallback: synchronous restage of the next chunk.
+            const uint4 *b4s = reinterpret_cast<const uint4 *>(
+                bp + static_cast<int64_t>(col_base) * k_half +
+                (kb + 64) / 2);
+            uint4 *d4s = reinterpret_cast<uint4 *>(&sW[buf ^ 1][0][0]);
+            for (int idx = tid; idx < kDecCols * 2; idx += 256) {
+                const int c = idx >> 1;
+                uint4 v = make_uint4(0, 0, 0, 0);
+                if (col_base + c < N)
+                    v = b4s[static_cast<int64_t>(c) * (k_half / 16) +
+                            (idx & 1)];
+                d4s[idx] = v;
+            }
+            for (int idx = tid; idx < kDecCols; idx += 256) {
+                const int c = idx;
+                const int ch_g = (kb + 64) / 16;
+                for (int t = 0; t < 4; ++t) {
+                    const int chg = ch_g + t;
+                    sWs[buf ^ 1][c][t] =
+                        (col_base + c < N && chg < k_chunks)
+                            ? bs[static_cast<int64_t>(col_base + c) *
+                                     k_chunks + chg]
+                            : uint8_t{0};
+                }
+            }
+            __syncthreads();
+        } else {
+            cp_async_wait0();
+            __syncthreads();
+        }
+
+        // ---- Build fragments from the current buffer.
+        uint32_t ar[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int kk = a_koff[i];
+            const uint8_t byte = sXp[kk >> 1];
+            const uint8_t code = (kk & 1) ? static_cast<uint8_t>(byte >> 4)
+                                          : static_cast<uint8_t>(byte & 0x0F);
+            ar[i / 8] |= uint32_t(code)
+                         << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
+        }
+        const uint32_t sfa = sfa_for(kb);
+
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int n_local = wn * 32 + j * 8 + g;
+            uint32_t br[2] = {0, 0};
+#pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                const int kk = tig * 8 + (i & 7) + ((i >= 8) ? 32 : 0);
+                const uint8_t byte = sW[buf][n_local][kk >> 1];
+                const uint8_t code =
+                    (kk & 1) ? static_cast<uint8_t>(byte >> 4)
+                             : static_cast<uint8_t>(byte & 0x0F);
+                br[i / 8] |= uint32_t(code)
+                             << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
+            }
+            const uint32_t sfb =
+                uint32_t(sWs[buf][n_local][0]) |
+                (uint32_t(sWs[buf][n_local][1]) << 8) |
+                (uint32_t(sWs[buf][n_local][2]) << 16) |
+                (uint32_t(sWs[buf][n_local][3]) << 24);
+
+            float &d0 = d[j][0], &d1 = d[j][1], &d2 = d[j][2], &d3 = d[j][3];
+            asm volatile(
+                "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale"
+                ".scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+                "%14, {0, 0}, %15, {0, 0};\n"
+                : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                : "r"(ar[0]), "r"(ar[1]), "r"(ar[2]), "r"(ar[3]),
+                  "r"(br[0]), "r"(br[1]), "f"(d0), "f"(d1), "f"(d2), "f"(d3),
+                  "r"(sfa), "r"(sfb));
+        }
+        __syncthreads();   // all lanes done reading buf before next overwrite
+    }
+
+    // ---- Epilogue: D * global_scale -> y row 0.
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
+        if (n0 < N) y[n0] = __float2half(d[j][0] * wgs);
+        if (n0 + 1 < N) y[n0 + 1] = __float2half(d[j][1] * wgs);
+    }
+}
+
 // Tile GEMM: block computes a [64 x 64] output tile; 256 threads = 8 warps
 // arranged 4x2; each warp covers 16 rows x 32 cols via four m16n8k64 mxf4nvf4
 // atoms per K64 chunk. Fragment packing matches the empirically verified
@@ -111,8 +349,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int row_base = blockIdx.y * kTileM;
     const int col_base = blockIdx.x * kTileN;
 
-    __shared__ uint8_t sA[kTileM][32];   // [m-row][packed byte over k64]
-    __shared__ uint8_t sB[kTileN][32];   // [n-col][packed byte over k64]
+    __shared__ __align__(16) uint8_t sA[kTileM][32];   // [m-row][packed byte over k64]
+    __shared__ __align__(16) uint8_t sB[kTileN][32];   // [n-col][packed byte over k64]
     __shared__ uint8_t sAs[kTileM][4];   // activation chunk scales
     __shared__ uint8_t sBs[kTileN][4];   // weight chunk scales
 
@@ -335,7 +573,22 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     e = QuantizeActsNvfp4(stream, x_fp16, seq, K,
                           static_cast<uint8_t *>(ap_scratch),
                           static_cast<uint8_t *>(as_scratch));
-    if (e == cudaSuccess) {
+    bool handled = false;
+#if 0 // decode-specialized kernel: OOB shared read under investigation (sanitizer)
+    if (seq == 1 && (K & 63) == 0 &&
+        (((reinterpret_cast<uintptr_t>(w_packed) |
+           reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0) &&
+        K / 2 <= 2048 && ((K + 15) / 16) <= 256) {
+        dim3 dgrid((N + kDecCols - 1) / kDecCols);
+        TcGemmDecodeKernel<<<dgrid, 256, 0, stream>>>(
+            static_cast<uint8_t *>(ap_scratch),
+            static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+            w_global_scale, y, K, N);
+        e = cudaGetLastError();
+        handled = e == cudaSuccess;
+    }
+#endif
+    if (!handled && e == cudaSuccess) {
         dim3 grid((N + kTileN - 1) / kTileN, (seq + kTileM - 1) / kTileM);
         TcGemmKernel<<<grid, 256, 0, stream>>>(
             static_cast<uint8_t *>(ap_scratch),
@@ -351,5 +604,8 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon
+
+
+
 
 
