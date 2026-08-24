@@ -87,8 +87,8 @@ void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running,
         auto model = lsxcommon::LsxModelFactory::Create(cfg);
         if (model && model->Load()) {
             std::vector<int32_t> input_ids;
-            if (lsxcommon::prompt::BuildPromptInputIds(
-                    model->Type(), model->Tokenizer(), prompt, input_ids)) {
+            if (model->BuildPromptInputIds(
+                    model->Tokenizer(), prompt, input_ids)) {
                 lsxcommon::ModelRequest req{std::move(input_ids), 64};
                 auto result = model->Infer(req);
                 if (result.ok && !result.output_text.empty()) {

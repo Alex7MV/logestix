@@ -81,8 +81,9 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req)
         }
     }
     lsxcommon::log::info(absl::StrFormat(
-        "[selfcheck] top1_tok={} text='{}' passed={}", r.first_gen_tok_id,
-        r.first_gen_text, r.selfcheck_passed ? "true" : "false"));
+        "[selfcheck] top1_tok=%d text='%s' passed=%s",
+        static_cast<int>(r.first_gen_tok_id), r.first_gen_text.c_str(),
+        r.selfcheck_passed ? "true" : "false"));
     return r;
 }
 
@@ -128,8 +129,8 @@ int RunCliGeneration(const GenerationCliArgs &args)
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
-    if (!lsxcommon::prompt::BuildPromptInputIds(
-            m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
+    if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
+                                      input_ids)) {
         lsxcommon::log::error(
             absl::StrFormat("Tokenizer encode failed for prompt: {}",
                             args.prompt));
@@ -155,8 +156,8 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
-    if (!lsxcommon::prompt::BuildPromptInputIds(
-            m.model->Type(), m.model->Tokenizer(), args.prompt, input_ids)) {
+    if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
+                                      input_ids)) {
         lsxcommon::log::error("Tokenizer encode failed");
         m.model->Unload();
         return 1;

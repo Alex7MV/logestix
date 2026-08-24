@@ -81,7 +81,7 @@ TEST_CASE("prompt_framing: GLM chat-template framing order", "[prompt_framing]")
     expected.push_back(ethink);
 
     std::vector<int32_t> ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds("glm-5.2", db, prompt, ids));
+    REQUIRE(lsxcommon::glm::BuildPromptInputIds(db, prompt, ids));
     REQUIRE(ids == expected);
     REQUIRE(ids.size() == expected.size());
 
@@ -96,8 +96,8 @@ TEST_CASE("prompt_framing: non-GLM model type is encoded raw", "[prompt_framing]
     const std::vector<int32_t> expected = RawEncode(f.db, prompt);
 
     std::vector<int32_t> ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds(
-        "deepseek-v4-flash", f.db, prompt, ids));
+    // Non-framed models use the IModel default (raw encode).
+    REQUIRE(lsxcommon::prompt::EncodeRawPrompt(f.db, prompt, ids));
     REQUIRE(ids == expected);
 
     f.db = lsxcommon::ArrowTokenizerDb{};
@@ -111,7 +111,7 @@ TEST_CASE("prompt_framing: GLM falls back to raw when specials missing", "[promp
     const std::vector<int32_t> expected = RawEncode(f.db, prompt);
 
     std::vector<int32_t> ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds("glm-5.2", f.db, prompt, ids));
+    REQUIRE(lsxcommon::glm::BuildPromptInputIds(f.db, prompt, ids));
     REQUIRE(ids == expected);
 
     f.db = lsxcommon::ArrowTokenizerDb{};
@@ -122,7 +122,7 @@ TEST_CASE("prompt_framing: empty prompt is rejected", "[prompt_framing]")
 {
     DbFiles f = BuildDb("synthetic_tok.json");
     std::vector<int32_t> ids(4, 0);
-    REQUIRE_FALSE(lsxcommon::prompt::BuildPromptInputIds("glm-5.2", f.db, "", ids));
+    REQUIRE_FALSE(lsxcommon::glm::BuildPromptInputIds(f.db, "", ids));
     f.db = lsxcommon::ArrowTokenizerDb{};
     fs::remove_all(f.pinned);
 }
@@ -134,8 +134,7 @@ TEST_CASE("prompt_framing: long prompt grows past the initial capacity", "[promp
     for (int i = 0; i < 1200; ++i) long_text += "ab ";
 
     std::vector<int32_t> ids;
-    REQUIRE(lsxcommon::prompt::BuildPromptInputIds(
-        "glm-5.2", f.db, long_text, ids));
+    REQUIRE(lsxcommon::glm::BuildPromptInputIds(f.db, long_text, ids));
     REQUIRE(ids.size() > 256);
     REQUIRE(ids[0] == lsxcommon::arrow_tokenizer_lookup(f.db, "[gMASK]", 7));
     REQUIRE(ids[1] == lsxcommon::arrow_tokenizer_lookup(f.db, "<sop>", 5));
@@ -144,20 +143,17 @@ TEST_CASE("prompt_framing: long prompt grows past the initial capacity", "[promp
     f.db = lsxcommon::ArrowTokenizerDb{};
     fs::remove_all(f.pinned);
 }
-TEST_CASE("prompt_framing: LookupFraming returns the GLM descriptor", "[prompt_framing]")
+TEST_CASE("prompt_framing: GLM descriptor is model-owned", "[prompt_framing]")
 {
-    const auto *f = lsxcommon::prompt::LookupFraming("glm-5.2");
-    REQUIRE(f != nullptr);
-    REQUIRE(f->model_type == "glm-5.2");
-    REQUIRE(f->leading_count == 3);
-    REQUIRE(f->trailing_count == 3);
-    REQUIRE(f->leading[0] == "[gMASK]");
-    REQUIRE(f->leading[1] == "<sop>");
-    REQUIRE(f->leading[2] == "<|user|>");
-    REQUIRE(f->trailing[0] == "<|assistant|>");
-    REQUIRE(f->trailing[1] == "<think>");
-    REQUIRE(f->trailing[2] == "</think>");
-
-    REQUIRE(lsxcommon::prompt::LookupFraming("deepseek-v4-flash") == nullptr);
-    REQUIRE(lsxcommon::prompt::LookupFraming("qwen3.5-9b") == nullptr);
+    const auto &f = lsxcommon::glm::kFraming;
+    REQUIRE(f.leading_count == 3);
+    REQUIRE(f.trailing_count == 3);
+    REQUIRE(f.leading[0] == "[gMASK]");
+    REQUIRE(f.leading[1] == "<sop>");
+    REQUIRE(f.leading[2] == "<|user|>");
+    REQUIRE(f.trailing[0] == "<|assistant|>");
+    REQUIRE(f.trailing[1] == "<think>");
+    REQUIRE(f.trailing[2] == "</think>");
+    // GLM-5.2 has no BOS token: framing must stay BOS-free.
+    REQUIRE_FALSE(f.leading_bos);
 }

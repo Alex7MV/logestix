@@ -6,6 +6,8 @@
 #include <simdjson.h>
 #include <algorithm>
 #include <array>
+#include <climits>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -35,11 +37,33 @@ arrow::Status BuildTokenizerArrowFiles(const std::string &tokenizer_json_path,
     if (doc.get_object().get(root) != simdjson::SUCCESS)
         return arrow::Status::Invalid("tokenizer: root is not an object");
 
-absl::flat_hash_map<std::string, int32_t> key_to_id;
+    absl::flat_hash_map<std::string, int32_t> key_to_id;
     absl::flat_hash_map<int32_t, std::string> id_to_key;
     absl::flat_hash_set<int32_t> special_ids;
     absl::flat_hash_map<int32_t, std::string> added_content;
     bool has_added = false;
+
+    // SentencePiece-style vocabularies (Gemma-4) mark word-leading spaces
+    // with U+2581 '▁'. The engine operates in GPT-2 byte-glyph space where
+    // byte 0x20 maps to U+0120 'Ġ'. Normalize SP markers into engine keys so
+    // vocab entries and merges resolve against the byte-level BPE.
+    auto EngineKey = [](std::string_view k) {
+        std::string out;
+        out.reserve(k.size());
+        for (size_t i = 0; i < k.size();) {
+            if (i + 2 < k.size() &&
+                static_cast<uint8_t>(k[i]) == 0xE2 &&
+                static_cast<uint8_t>(k[i + 1]) == 0x96 &&
+                static_cast<uint8_t>(k[i + 2]) == 0x81) {
+                out += "\xC4\xA0"; // U+0120 'Ġ' == byte-glyph(0x20)
+                i += 3;
+            } else {
+                out += k[i];
+                ++i;
+            }
+        }
+        return out;
+    };
 
     // added_tokens precede "model" in the JSON. Read them first so the shared
     // simdjson token stream never rewinds past the model object.
@@ -58,10 +82,14 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
                 if (at_obj["special"].get_bool().get(special) != simdjson::SUCCESS) special = false;
                 if (id < 0) continue;
                 auto i = static_cast<int32_t>(id);
-                auto k = std::string(content);
-                added_content[i] = k;
-                key_to_id[k] = i;
-                id_to_key[i] = k;
+                // Added/special tokens are stored VERBATIM: the SP '▁' ->
+                // 'Ġ' normalization is a byte-level-BPE vocabulary concern
+                // only, and rewriting control-token content (e.g.
+                // "<|fim▁hole|>") would corrupt decode. (EngineKey is applied
+                // to model.vocab entries below.)
+                added_content[i] = content;
+                key_to_id[std::string(content)] = i;
+                id_to_key[i] = content;
                 if (special) special_ids.insert(i);
             }
         }
@@ -87,7 +115,7 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
             int64_t id;
             if (entry.unescaped_key().get(key) != simdjson::SUCCESS) continue;
             if (entry.value().get_int64().get(id) != simdjson::SUCCESS) continue;
-            auto k = std::string(key);
+            auto k = EngineKey(key);
             auto i = static_cast<int32_t>(id);
             key_to_id[k] = i;
             if (id_to_key.find(i) == id_to_key.end())
@@ -192,14 +220,28 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
         }
     }
 
-    // byte_to_token_id via vocab lookup of the GPT-2 byte table.
+    // byte_to_token_id via vocab lookup of the GPT-2 byte table. Tokenizers
+    // without full GPT-2 glyph coverage (e.g. Gemma-4: SentencePiece-style
+    // <0xXX> byte-fallback tokens) fall back to the "<0xXX>" hex form.
     std::array<int32_t, 256> byte_to_token_id{};
     for (int b = 0; b < 256; ++b) {
         uint8_t b8 = static_cast<uint8_t>(b);
         std::string key = byte_unicode::bytes_to_key(&b8, 1);
         auto it = key_to_id.find(key);
-        if (it == key_to_id.end())
-            return arrow::Status::Invalid("tokenizer: byte token missing in vocab: '", key, "'");
+        if (it == key_to_id.end()) {
+            char hex[8];
+            std::snprintf(hex, sizeof(hex), "<0x%02X>", b);
+            it = key_to_id.find(hex);
+            if (it == key_to_id.end()) {
+                // Lowercase hex variant used by some tokenizers.
+                char lox[8];
+                std::snprintf(lox, sizeof(lox), "<0x%02x>", b);
+                it = key_to_id.find(lox);
+            }
+            if (it == key_to_id.end())
+                return arrow::Status::Invalid(
+                    "tokenizer: byte token missing in vocab: '", key, "'");
+        }
         byte_to_token_id[static_cast<size_t>(b)] = it->second;
     }
 
@@ -236,24 +278,28 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
                     B = std::string(b_sv);
                 }
 
-                auto itL = key_to_id.find(A);
-                auto itR = key_to_id.find(B);
-                if (itL == key_to_id.end() || itR == key_to_id.end())
-                    return arrow::Status::Invalid("tokenizer: merge operand missing in vocab: '", A, "'/'", B, "'");
+                auto itL = key_to_id.find(EngineKey(A));
+                auto itR = key_to_id.find(EngineKey(B));
+                // Gemma-4-style tokenizers carry raw-text (non byte-glyph)
+                // merges and occasional empty operands. Such merges cannot be
+                // represented in the byte-level engine; skip them (ASCII text
+                // still encodes exactly; other scripts fall back to byte
+                // tokens) instead of failing the whole conversion.
+                if (itL == key_to_id.end() || itR == key_to_id.end() ||
+                    A.empty() || B.empty())
+                    continue;
 
                 std::vector<uint8_t> bytesA, bytesB;
-                if (!byte_unicode::key_to_bytes(A, bytesA) ||
-                    !byte_unicode::key_to_bytes(B, bytesB))
-                    return arrow::Status::Invalid("tokenizer: merge operand not byte-level: '", A, "'/'", B, "'");
+                if (!byte_unicode::key_to_bytes(EngineKey(A), bytesA) ||
+                    !byte_unicode::key_to_bytes(EngineKey(B), bytesB))
+                    continue;
 
                 std::vector<uint8_t> merged_bytes = bytesA;
                 merged_bytes.insert(merged_bytes.end(), bytesB.begin(), bytesB.end());
                 std::string merged_key =
                     byte_unicode::bytes_to_key(merged_bytes.data(), merged_bytes.size());
                 auto itM = key_to_id.find(merged_key);
-                if (itM == key_to_id.end())
-                    return arrow::Status::Invalid("tokenizer: merge product missing in vocab: '",
-                                                  merged_key, "'");
+                if (itM == key_to_id.end()) continue;
 
                 MergeRow r;
                 r.merge_left = itL->second;
@@ -322,4 +368,251 @@ absl::flat_hash_map<std::string, int32_t> key_to_id;
     return arrow::Status::OK();
 }
 
+
+// ── TikToken bridge (Kimi-K2.7-Code) ───────────────────────────────────────
+
+namespace {
+
+// RFC 4648 base64 decode (standard alphabet, '=' padding).
+bool Base64Decode(const std::string &in, std::vector<uint8_t> &out)
+{
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    int buf = 0, bits = 0;
+    for (char c : in) {
+        if (c == '=') break;
+        int v = val(c);
+        if (v < 0) return false;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+arrow::Status BuildTokenizerArrowFilesTikToken(
+    const std::string &tiktoken_model_path,
+    const std::string &tokenizer_config_path,
+    const std::filesystem::path &pinned_dir)
+{
+    absl::flat_hash_map<std::string, int32_t> key_to_id;
+    absl::flat_hash_map<int32_t, std::string> id_to_key;
+    absl::flat_hash_set<int32_t> special_ids;
+
+    // (1) Base ranks: "base64 id" lines; ids may be sparse but normally are
+    // dense 0..N-1.
+    {
+        std::ifstream f(tiktoken_model_path);
+        if (!f)
+            return arrow::Status::IOError("cannot open ", tiktoken_model_path);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.empty()) continue;
+            auto sp = line.find(' ');
+            if (sp == std::string::npos) continue;
+            std::vector<uint8_t> bytes;
+            if (!Base64Decode(line.substr(0, sp), bytes))
+                return arrow::Status::Invalid(
+                    "tokenizer: bad base64 in ", tiktoken_model_path);
+            int64_t id = -1;
+            if (!absl::SimpleAtoi(line.substr(sp + 1), &id) || id < 0)
+                return arrow::Status::Invalid("tokenizer: bad rank line");
+            auto key = byte_unicode::bytes_to_key(bytes.data(), bytes.size());
+            auto i = static_cast<int32_t>(id);
+            key_to_id[key] = i;
+            id_to_key[i] = std::move(key);
+        }
+    }
+
+    // (2) Special tokens from tokenizer_config.json added_tokens_decoder +
+    // authoritative bos/eos/pad names.
+    int32_t bos_id = -1, eos_id = -1, pad_id = -1;
+    {
+        std::ifstream cf(tokenizer_config_path);
+        if (!cf)
+            return arrow::Status::IOError("cannot open ",
+                                          tokenizer_config_path);
+        std::string cj((std::istreambuf_iterator<char>(cf)),
+                       std::istreambuf_iterator<char>());
+        simdjson::padded_string cpad(cj.data(), cj.size());
+        simdjson::ondemand::parser cparser;
+        simdjson::ondemand::document cdoc;
+        if (cparser.iterate(cpad).get(cdoc) != simdjson::SUCCESS)
+            return arrow::Status::Invalid(
+                "tokenizer_config.json parse failed");
+        simdjson::ondemand::object croot;
+        if (cdoc.get_object().get(croot) != simdjson::SUCCESS)
+            return arrow::Status::Invalid(
+                "tokenizer_config.json root not an object");
+
+        simdjson::ondemand::object atd;
+        if (croot["added_tokens_decoder"].get_object().get(atd) ==
+            simdjson::SUCCESS) {
+            for (simdjson::ondemand::field field : atd) {
+                std::string_view key_sv;
+                int64_t id = -1;
+                if (field.unescaped_key().get(key_sv) == simdjson::SUCCESS)
+                    (void)absl::SimpleAtoi(std::string(key_sv), &id);
+                simdjson::ondemand::object obj;
+                if (field.value().get_object().get(obj) != simdjson::SUCCESS)
+                    continue;
+                std::string_view content;
+                if (obj["content"].get_string().get(content) !=
+                    simdjson::SUCCESS)
+                    continue;
+                bool special = false;
+                (void)obj["special"].get_bool().get(special);
+                auto i = static_cast<int32_t>(id);
+                key_to_id[std::string(content)] = i;
+                id_to_key[i] = std::string(content);
+                if (special) special_ids.insert(i);
+            }
+        }
+
+        auto find_exact = [&](const std::string &name) -> int32_t {
+            auto it = key_to_id.find(name);
+            return it == key_to_id.end() ? -1 : it->second;
+        };
+        std::string_view name_sv;
+        if (croot["bos_token"].get_string().get(name_sv) == simdjson::SUCCESS)
+            bos_id = find_exact(std::string(name_sv));
+        if (croot["eos_token"].get_string().get(name_sv) == simdjson::SUCCESS)
+            eos_id = find_exact(std::string(name_sv));
+        if (croot["pad_token"].get_string().get(name_sv) == simdjson::SUCCESS)
+            pad_id = find_exact(std::string(name_sv));
+    }
+
+    // (3) Merge reconstruction: walk base tokens by ascending id; every
+    // multi-byte token decomposes into the pair of lower-id pieces that
+    // minimizes the max piece id (BPE priority order). Specials never merge.
+    std::vector<MergeRow> merges;
+    {
+        std::vector<int32_t> ids;
+        ids.reserve(id_to_key.size());
+        for (auto &[id, k] : id_to_key)
+            if (special_ids.count(id) == 0) ids.push_back(id);
+        std::sort(ids.begin(), ids.end());
+
+        int64_t rank = 0;
+        for (int32_t id : ids) {
+            const std::string &key = id_to_key[id];
+            std::vector<uint8_t> bytes;
+            if (!byte_unicode::key_to_bytes(key, bytes) || bytes.size() < 2)
+                continue;
+            int32_t best_a = -1, best_b = -1;
+            int32_t best_max = INT32_MAX;
+            for (size_t split = 1; split < bytes.size(); ++split) {
+                std::string ka = byte_unicode::bytes_to_key(bytes.data(),
+                                                            split);
+                std::string kb =
+                    byte_unicode::bytes_to_key(bytes.data() + split,
+                                               bytes.size() - split);
+                auto ia = key_to_id.find(ka);
+                auto ib = key_to_id.find(kb);
+                if (ia == key_to_id.end() || ib == key_to_id.end()) continue;
+                if (ia->second >= id || ib->second >= id) continue;
+                int32_t mx = std::max(ia->second, ib->second);
+                if (mx < best_max ||
+                    (mx == best_max &&
+                     std::min(ia->second, ib->second) <
+                         std::min(best_a, best_b))) {
+                    best_max = mx;
+                    best_a = ia->second;
+                    best_b = ib->second;
+                }
+            }
+            if (best_a < 0) {
+                // Unreachable-from-bytes token (no binary split whose both
+                // halves are lower-id vocab members). It can never be
+                // produced by pairwise BPE, so skip it from the merges table;
+                // encoding of ordinary text is unaffected.
+                lsxcommon::log::debug(absl::StrCat(
+                    "tokenizer: no valid BPE split for id ", id,
+                    " (unreachable; skipped)"));
+                continue;
+            }
+            MergeRow r;
+            r.merge_left = best_a;
+            r.merge_right = best_b;
+            r.merge_rank = static_cast<int32_t>(rank++);
+            r.merge_token_id = id;
+            merges.push_back(r);
+        }
+        std::sort(merges.begin(), merges.end(),
+                  [](const MergeRow &a, const MergeRow &b) {
+                      if (a.merge_left != b.merge_left)
+                          return a.merge_left < b.merge_left;
+                      return a.merge_right < b.merge_right;
+                  });
+    }
+
+    // (4) byte_to_token_id via single-byte vocab lookup.
+    std::array<int32_t, 256> byte_to_token_id{};
+    for (int b = 0; b < 256; ++b) {
+        uint8_t b8 = static_cast<uint8_t>(b);
+        std::string key = byte_unicode::bytes_to_key(&b8, 1);
+        auto it = key_to_id.find(key);
+        if (it == key_to_id.end())
+            return arrow::Status::Invalid(
+                "tokenizer: byte token missing in vocab: '", key, "'");
+        byte_to_token_id[static_cast<size_t>(b)] = it->second;
+    }
+
+    // (5) Vocab rows indexed by token id; sparse gaps get placeholder rows.
+    int32_t vocab_size = 0;
+    for (auto &[id, k] : id_to_key) vocab_size = std::max(vocab_size, id + 1);
+
+    std::vector<VocabRow> vocab_rows;
+    vocab_rows.resize(static_cast<size_t>(vocab_size));
+    for (int32_t id = 0; id < vocab_size; ++id) {
+        auto it = id_to_key.find(id);
+        auto &row = vocab_rows[static_cast<size_t>(id)];
+        row.token_id = id;
+        if (it == id_to_key.end()) {
+            row.is_special = 0;   // gap placeholder, never referenced
+            continue;
+        }
+        row.is_special = special_ids.count(id) > 0 ? 1 : 0;
+        std::vector<uint8_t> bytes;
+        if (!byte_unicode::key_to_bytes(it->second, bytes)) {
+            row.token_bytes.assign(
+                reinterpret_cast<const uint8_t *>(it->second.data()),
+                reinterpret_cast<const uint8_t *>(it->second.data()) +
+                    it->second.size());
+        } else {
+            row.token_bytes = std::move(bytes);
+        }
+    }
+
+    TokenizerVocabMeta meta;
+    meta.bos_id = bos_id;
+    meta.eos_id = eos_id;
+    meta.pad_id = pad_id;
+    meta.vocab_size = vocab_size;
+    meta.byte_to_token_id = byte_to_token_id;
+
+    auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
+    if (!vbatch.ok()) return vbatch.status();
+    auto mbatch = TokenizerMergesSchema::MakeBatch(
+        merges, static_cast<int32_t>(merges.size()));
+    if (!mbatch.ok()) return mbatch.status();
+
+    ARROW_RETURN_NOT_OK(
+        WriteRecordBatchToFile(*vbatch, pinned_dir / "tokenizer_vocab.arrow"));
+    ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(
+        *mbatch, pinned_dir / "tokenizer_merges.arrow"));
+    return arrow::Status::OK();
+}
 } // namespace lsxcommon

@@ -417,6 +417,28 @@ endif()
 
 add_test(NAME test_glm_convert COMMAND test_glm_convert)
 
+# ── Тест Kimi-K2.7-Code конвертера (геометрия, классификатор, топология) ──
+add_executable(test_kimi_convert test_kimi_convert.cpp)
+target_compile_definitions(test_kimi_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_convert>"
+    )
+    add_custom_command(TARGET test_kimi_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_convert>"
+    )
+endif()
+
+add_test(NAME test_kimi_convert COMMAND test_kimi_convert)
+
 # ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_loader test_glm_loader.cpp)
 target_compile_definitions(test_glm_loader PRIVATE
@@ -750,6 +772,136 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_prompt_framing COMMAND test_glm_prompt_framing)
+
+# ── Тест Gemma-4 prompt framing helper (host-only, сентинелы tokenizer.json) ─────
+add_executable(test_gemma_prompt_framing test_gemma_prompt_framing.cpp)
+target_compile_definitions(test_gemma_prompt_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma_prompt_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma_prompt_framing POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_prompt_framing>"
+    )
+endif()
+
+add_test(NAME test_gemma_prompt_framing COMMAND test_gemma_prompt_framing)
+
+# ── Тест Gemma-4 конвертера (классификатор имён + NVFP4-политика) ──────────
+add_executable(test_gemma4_convert test_gemma4_convert.cpp)
+target_compile_definitions(test_gemma4_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_convert>"
+    )
+    add_custom_command(TARGET test_gemma4_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_convert>"
+    )
+endif()
+
+add_test(NAME test_gemma4_convert COMMAND test_gemma4_convert)
+
+# ── Тест Gemma-4 загрузчика (BF16→FP16 in-place, арена, expert LRU) ─────────
+add_executable(test_gemma4_loader test_gemma4_loader.cpp)
+target_compile_definitions(test_gemma4_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+    add_custom_command(TARGET test_gemma4_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_loader>"
+    )
+endif()
+
+add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
+
+# ── Тест Gemma-4 модели (фабрика + Load + Infer, синтетическая геометрия) ────
+add_executable(test_gemma4_model test_gemma4_model.cpp)
+target_compile_definitions(test_gemma4_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+    add_custom_command(TARGET test_gemma4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_model>"
+    )
+endif()
+
+add_test(NAME test_gemma4_model COMMAND test_gemma4_model)
+set_tests_properties(test_gemma4_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# ── Тест Gemma-4 SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
+#    селфчек на реальной модели, минимум 3 цикла стресса (переопределяется
+#    LSX_TEST_GEMMA_SELFCHECK_CYCLES), бит-точная детерминированность
+#    final_logits, exit 0. SKIP без чекпоинта.
+add_executable(test_gemma4_selfcheck test_gemma4_selfcheck.cpp)
+target_compile_definitions(test_gemma4_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_gemma4_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+    add_custom_command(TARGET test_gemma4_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma4_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_gemma4_selfcheck COMMAND test_gemma4_selfcheck)
+set_tests_properties(test_gemma4_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Gemma-4 kernel reference tests (norm / rotary) ──────────────────────────
+foreach(qt test_gemma4_norm test_gemma4_rotary test_gemma4_attn test_gemma4_moe)
+    add_executable(${qt} ${qt}.cpp)
+    target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
 
 # ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
@@ -1516,3 +1668,294 @@ if(WIN32)
 endif()
 
 add_test(NAME test_runtime_tuner COMMAND test_runtime_tuner)
+
+# ── Тест Kimi INT4→BF16 деquant-ядра ──────────────────────────────────────
+add_library(test_kimi_int4_dequant_cu OBJECT test_kimi_int4_dequant.cu)
+set_target_properties(test_kimi_int4_dequant_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_int4_dequant_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_int4_dequant_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+)
+target_compile_definitions(test_kimi_int4_dequant_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_int4_dequant_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_int4_dequant_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_int4_dequant)
+set_target_properties(test_kimi_int4_dequant PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_int4_dequant PRIVATE
+    test_kimi_int4_dequant_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_int4_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_int4_dequant>"
+    )
+endif()
+
+add_test(NAME test_kimi_int4_dequant COMMAND test_kimi_int4_dequant)
+
+# ── Тест Kimi tiktoken-токенизатора ───────────────────────────────────────
+add_executable(test_kimi_tokenizer test_kimi_tokenizer.cpp)
+target_link_libraries(test_kimi_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_tokenizer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_tokenizer>"
+    )
+endif()
+
+add_test(NAME test_kimi_tokenizer COMMAND test_kimi_tokenizer)
+
+# ── Тест Kimi pinned-загрузчика ───────────────────────────────────────────
+add_executable(test_kimi_loader test_kimi_loader.cpp)
+target_compile_definitions(test_kimi_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_loader>"
+    )
+    add_custom_command(TARGET test_kimi_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_loader>"
+    )
+endif()
+
+add_test(NAME test_kimi_loader COMMAND test_kimi_loader)
+
+# ── Тест Kimi MoE-роутера ─────────────────────────────────────────────────
+add_library(test_kimi_router_cu OBJECT test_kimi_router.cu)
+set_target_properties(test_kimi_router_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_router_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_router_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+)
+target_compile_definitions(test_kimi_router_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_router_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_router_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_moe_router)
+set_target_properties(test_kimi_moe_router PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_moe_router PRIVATE
+    test_kimi_router_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_router POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_router>"
+    )
+endif()
+
+add_test(NAME test_kimi_moe_router COMMAND test_kimi_moe_router)
+
+# ── Тест Kimi MLA attention ───────────────────────────────────────────────
+add_library(test_kimi_attention_cu OBJECT test_kimi_attention.cu)
+set_target_properties(test_kimi_attention_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_attention_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_attention_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+)
+target_compile_definitions(test_kimi_attention_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_attention_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_attention_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_attention)
+set_target_properties(test_kimi_attention PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_attention PRIVATE
+    test_kimi_attention_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_attention POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_attention>"
+    )
+endif()
+
+add_test(NAME test_kimi_attention COMMAND test_kimi_attention)
+
+# ── Тест Kimi routed-expert FFN ───────────────────────────────────────────
+add_library(test_kimi_experts_cu OBJECT test_kimi_experts.cu)
+set_target_properties(test_kimi_experts_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_experts_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_experts_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+)
+target_compile_definitions(test_kimi_experts_cu PRIVATE
+    LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_experts_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_experts_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_experts)
+set_target_properties(test_kimi_experts PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_experts PRIVATE
+    test_kimi_experts_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_experts POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_experts>"
+    )
+endif()
+
+add_test(NAME test_kimi_experts COMMAND test_kimi_experts)
+
+# ── Тест Kimi модели (фабрика + lifecycle) ────────────────────────────────
+add_executable(test_kimi_model test_kimi_model.cpp)
+target_compile_definitions(test_kimi_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_model>"
+    )
+endif()
+
+add_test(NAME test_kimi_model COMMAND test_kimi_model)
+
+# ── Тест Kimi SelfCheck (реальные веса; SKIP без модели) ──────────────────
+add_executable(test_kimi_selfcheck test_kimi_selfcheck.cpp)
+target_compile_definitions(test_kimi_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_selfcheck>"
+    )
+    add_custom_command(TARGET test_kimi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_selfcheck>"
+    )
+endif()
+
+add_test(NAME test_kimi_selfcheck COMMAND test_kimi_selfcheck)
+set_tests_properties(test_kimi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест Kimi full inference (реальные веса; SKIP без модели) ─────────────
+add_executable(test_kimi_inference test_kimi_inference.cpp)
+target_compile_definitions(test_kimi_inference PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_inference POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_inference>"
+    )
+endif()
+
+add_test(NAME test_kimi_inference COMMAND test_kimi_inference)
+set_tests_properties(test_kimi_inference PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест Kimi конвертации на реальном чекпойнте (SKIP без модели) ─────────
+add_library(test_kimi_int4_real_cu OBJECT test_kimi_int4_real.cu)
+set_target_properties(test_kimi_int4_real_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_int4_real_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_int4_real_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_kimi_int4_real_cu PRIVATE LOGESTIX_HAS_CUDA)
+target_link_libraries(test_kimi_int4_real_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_int4_real_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_int4_real)
+set_target_properties(test_kimi_int4_real PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_int4_real PRIVATE
+    test_kimi_int4_real_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_int4_real POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_int4_real>"
+    )
+endif()
+
+add_test(NAME test_kimi_int4_real COMMAND test_kimi_int4_real)
+set_tests_properties(test_kimi_int4_real PROPERTIES SKIP_RETURN_CODE 4)

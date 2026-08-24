@@ -398,7 +398,7 @@ namespace {
 
 // Shared NVFP4 decode primitives (nvfp4_codec.h). Aliased into this anonymous
 // namespace so existing call sites stay unchanged.
-using gpu::nvfp4::kE2M1Table;
+using gpu::nvfp4::E2M1Value;
 using gpu::nvfp4::E4M3ScaleToFloat;
 
 // Fused NVFP4 dense GEMM: y[t][n] = sum_k x[t*K+k] * W[n*K+k], where W is the
@@ -424,7 +424,7 @@ __global__ void qwen_nvfp4_gemm_kernel(
         const uint8_t byte = packed[e >> 1];
         const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
         const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
-        acc += __half2float(xrow[k]) * kE2M1Table[nib] * scl;
+        acc += __half2float(xrow[k]) * E2M1Value(nib) * scl;
     }
     y[idx] = __float2half(acc);
 }
@@ -453,7 +453,7 @@ __global__ void qwen_nvfp4_gemm_tile_kernel(
     __shared__ float sE2M1[16];
     __shared__ __half sX[BM][BK];
     __shared__ __half sW[BN * VPT][BK];
-    if (threadIdx.x < 16) sE2M1[threadIdx.x] = kE2M1Table[threadIdx.x];
+    if (threadIdx.x < 16) sE2M1[threadIdx.x] = E2M1Value(threadIdx.x);
     __syncthreads();
     const int m0 = blockIdx.x * BM;      // token tile
     const int n0 = blockIdx.y * BN * VPT; // output-column tile
@@ -788,25 +788,25 @@ __global__ void fused_qkv_kernel(
             const int64_t e = (int64_t)qcol * H + k;
             const uint8_t b = qw.d_packed[e>>1];
             const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
-            qv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
+            qv += xv * E2M1Value(nib) * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
         }
         {
             const int64_t e = (int64_t)gcol * H + k;
             const uint8_t b = qw.d_packed[e>>1];
             const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
-            gv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
+            gv += xv * E2M1Value(nib) * (E4M3ScaleToFloat(qw.d_scales[e>>4]) * qw.global_scale);
         }
         {
             const int64_t e = (int64_t)kcol * H + k;
             const uint8_t b = kw.d_packed[e>>1];
             const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
-            kv_ += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(kw.d_scales[e>>4]) * kw.global_scale);
+            kv_ += xv * E2M1Value(nib) * (E4M3ScaleToFloat(kw.d_scales[e>>4]) * kw.global_scale);
         }
         {
             const int64_t e = (int64_t)kcol * H + k;
             const uint8_t b = vw.d_packed[e>>1];
             const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
-            vv += xv * kE2M1Table[nib] * (E4M3ScaleToFloat(vw.d_scales[e>>4]) * vw.global_scale);
+            vv += xv * E2M1Value(nib) * (E4M3ScaleToFloat(vw.d_scales[e>>4]) * vw.global_scale);
         }
     }
     // 2. per-head RMSNorm(q) and RMSNorm(k) — offset form.
@@ -911,7 +911,7 @@ __global__ void fused_o_proj_kernel(
         const uint8_t b = o_packed[e>>1];
         const uint8_t nib = (e&1) ? (b>>4) : (b&0xF);
         const float scl = E4M3ScaleToFloat(o_scales[e>>4]) * o_gs;
-        acc += oh * kE2M1Table[nib] * scl;
+        acc += oh * E2M1Value(nib) * scl;
     }
     out_acc[n] = acc;
 }
@@ -949,7 +949,7 @@ __global__ void fused_linear_qkv_kernel(
             const float scl = E4M3ScaleToFloat(qkv.d_scales[e >> 4]) * qkv.global_scale;
             // Tile-GEMM parity: dequantized weight is rounded to half before
             // the product (mirrors qwen_nvfp4_gemm_tile_kernel sW staging).
-            const __half wv = __float2half(kE2M1Table[nib] * scl);
+            const __half wv = __float2half(E2M1Value(nib) * scl);
             acc += __half2float(x[(int64_t)t * K + k]) * __half2float(wv);
         }
         d_qkv[((int64_t)kv_base + t) * S + c] = __float2half(acc);
@@ -1026,7 +1026,7 @@ __global__ void fused_linear_conv_zab_kernel(
                 const uint8_t byte = z.d_packed[e >> 1];
                 const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
                 const float scl = E4M3ScaleToFloat(z.d_scales[e >> 4]) * z.global_scale;
-                const __half wv = __float2half(kE2M1Table[nib] * scl);
+                const __half wv = __float2half(E2M1Value(nib) * scl);
                 acc += __half2float(xrow[k]) * __half2float(wv);
             }
             d_z[(int64_t)t * VD + c] = __float2half(acc);
@@ -1042,13 +1042,13 @@ __global__ void fused_linear_conv_zab_kernel(
                 const uint8_t na = (ea & 1) ? (ba >> 4) : (ba & 0x0F);
                 const float sa = E4M3ScaleToFloat(a.d_scales[ea >> 4]) * a.global_scale;
                 acca += __half2float(xrow[k]) *
-                        __half2float(__float2half(kE2M1Table[na] * sa));
+                        __half2float(__float2half(E2M1Value(na) * sa));
                 const int64_t eb = (int64_t)c * H + k;
                 const uint8_t bb = b.d_packed[eb >> 1];
                 const uint8_t nb = (eb & 1) ? (bb >> 4) : (bb & 0x0F);
                 const float sb = E4M3ScaleToFloat(b.d_scales[eb >> 4]) * b.global_scale;
                 accb += __half2float(xrow[k]) *
-                        __half2float(__float2half(kE2M1Table[nb] * sb));
+                        __half2float(__float2half(E2M1Value(nb) * sb));
             }
             a_buf[(int64_t)t * nv + c] = __float2half(acca);
             b_buf[(int64_t)t * nv + c] = __float2half(accb);
