@@ -30,7 +30,6 @@ add_library(lsxcommon STATIC
     src/gemma4_inference_load.cpp
     src/gemma_base_model.cpp
     src/gemma_4_26b_a4b_model.cpp
-    src/loader.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp
@@ -105,7 +104,6 @@ add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
     src/benchmark_gpu.cu
     src/deepseek_inference_load.cu
-    src/deepseek_inference_norm.cu
     src/deepseek_inference_moe.cu
     src/deepseek_inference_head.cu
     src/deepseek_inference_attn.cu

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <lsxcommon/schema.h>
-#include <lsxcommon/loader.h>
+#include <arrow/io/file.h>
+#include <arrow/ipc/reader.h>
 #include <arrow/api.h>
 #include <cstring>
 #include <filesystem>
@@ -58,31 +59,38 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[deepseek][loader]")
     auto st = lsxcommon::WriteRecordBatchToFile(batch, path);
     REQUIRE(st.ok());
 
-    lsxcommon::Loader loader;
-    {
-        auto load_result = loader.LoadExpertFromArrow(path.string());
-        REQUIRE(load_result.ok());
-        auto loaded = *load_result;
+    // Read the batch back and decode through the canonical ExpertSchema
+    // path (the legacy per-model Loader was removed as prod-dead).
+    auto mmap_res = arrow::io::MemoryMappedFile::Open(
+        path.string(), arrow::io::FileMode::READ);
+    REQUIRE(mmap_res.ok());
+    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
+    REQUIRE(reader_res.ok());
+    auto batch_back = (*reader_res)->ReadRecordBatch(0);
+    REQUIRE(batch_back.ok());
 
-        CHECK(loaded.w1_weight_size == 1024);
-        CHECK(loaded.w2_weight_size == 1024);
-        CHECK(loaded.w3_weight_size == 512);
-        CHECK(loaded.w1_scale_count == 4);
-        CHECK(loaded.w2_scale_count == 2);
-        CHECK(loaded.w3_scale_count == 1);
+    auto loaded_result = lsxcommon::ExpertSchema::UnpackBatch(*batch_back);
+    REQUIRE(loaded_result.ok());
+    const auto &loaded = *loaded_result;
 
-        CHECK(memcmp(loaded.w1_weight, expert.w1_packed.data(), 1024) == 0);
-        CHECK(memcmp(loaded.w2_weight, expert.w2_packed.data(), 1024) == 0);
-        CHECK(memcmp(loaded.w3_weight, expert.w3_packed.data(), 512) == 0);
+    CHECK(loaded.w1_packed.size() == 1024);
+    CHECK(loaded.w2_packed.size() == 1024);
+    CHECK(loaded.w3_packed.size() == 512);
+    CHECK(loaded.w1_scales.size() == 4);
+    CHECK(loaded.w2_scales.size() == 2);
+    CHECK(loaded.w3_scales.size() == 1);
 
-        CHECK(memcmp(loaded.w1_scale, expert.w1_scales.data(), 4) == 0);
-        CHECK(memcmp(loaded.w2_scale, expert.w2_scales.data(), 2) == 0);
-        CHECK(memcmp(loaded.w3_scale, expert.w3_scales.data(), 1) == 0);
+    CHECK(memcmp(loaded.w1_packed.data(), expert.w1_packed.data(), 1024) == 0);
+    CHECK(memcmp(loaded.w2_packed.data(), expert.w2_packed.data(), 1024) == 0);
+    CHECK(memcmp(loaded.w3_packed.data(), expert.w3_packed.data(), 512) == 0);
 
-        CHECK(loaded.w1_global_scale == expert.w1_global_scale);
-        CHECK(loaded.w2_global_scale == expert.w2_global_scale);
-        CHECK(loaded.w3_global_scale == expert.w3_global_scale);
-    }
+    CHECK(memcmp(loaded.w1_scales.data(), expert.w1_scales.data(), 4) == 0);
+    CHECK(memcmp(loaded.w2_scales.data(), expert.w2_scales.data(), 2) == 0);
+    CHECK(memcmp(loaded.w3_scales.data(), expert.w3_scales.data(), 1) == 0);
+
+    CHECK(loaded.w1_global_scale == expert.w1_global_scale);
+    CHECK(loaded.w2_global_scale == expert.w2_global_scale);
+    CHECK(loaded.w3_global_scale == expert.w3_global_scale);
     fs::remove(path);
 }
 
@@ -252,27 +260,32 @@ TEST_CASE("Load expert with empty w1 fields", "[deepseek][loader][edge]")
     auto path = TempExpertPath();
     REQUIRE(lsxcommon::WriteRecordBatchToFile(batch, path).ok());
 
-    lsxcommon::Loader loader;
-    {
-        auto load_result = loader.LoadExpertFromArrow(path.string());
-        REQUIRE(load_result.ok());
-        auto loaded = *load_result;
+    auto mmap_res = arrow::io::MemoryMappedFile::Open(
+        path.string(), arrow::io::FileMode::READ);
+    REQUIRE(mmap_res.ok());
+    auto reader_res = arrow::ipc::RecordBatchFileReader::Open(mmap_res->get());
+    REQUIRE(reader_res.ok());
+    auto batch_back = (*reader_res)->ReadRecordBatch(0);
+    REQUIRE(batch_back.ok());
 
-        CHECK(loaded.w1_weight_size == 0);
-        CHECK(loaded.w1_scale_count == 0);
+    auto loaded_result = lsxcommon::ExpertSchema::UnpackBatch(*batch_back);
+    REQUIRE(loaded_result.ok());
+    const auto &loaded = *loaded_result;
 
-        CHECK(loaded.w2_weight_size == 1024);
-        CHECK(loaded.w3_weight_size == 512);
-        CHECK(loaded.w2_scale_count == 2);
-        CHECK(loaded.w3_scale_count == 1);
+    CHECK(loaded.w1_packed.empty());
+    CHECK(loaded.w1_scales.empty());
 
-        CHECK(memcmp(loaded.w2_weight, expert.w2_packed.data(), 1024) == 0);
-        CHECK(memcmp(loaded.w3_weight, expert.w3_packed.data(), 512) == 0);
+    CHECK(loaded.w2_packed.size() == 1024);
+    CHECK(loaded.w3_packed.size() == 512);
+    CHECK(loaded.w2_scales.size() == 2);
+    CHECK(loaded.w3_scales.size() == 1);
 
-        CHECK(loaded.w1_global_scale == expert.w1_global_scale);
-        CHECK(loaded.w2_global_scale == expert.w2_global_scale);
-        CHECK(loaded.w3_global_scale == expert.w3_global_scale);
-    }
+    CHECK(memcmp(loaded.w2_packed.data(), expert.w2_packed.data(), 1024) == 0);
+    CHECK(memcmp(loaded.w3_packed.data(), expert.w3_packed.data(), 512) == 0);
+
+    CHECK(loaded.w1_global_scale == expert.w1_global_scale);
+    CHECK(loaded.w2_global_scale == expert.w2_global_scale);
+    CHECK(loaded.w3_global_scale == expert.w3_global_scale);
     fs::remove(path);
 }
 
