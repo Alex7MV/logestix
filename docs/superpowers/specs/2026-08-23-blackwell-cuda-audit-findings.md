@@ -296,3 +296,37 @@ differ in probs rounding path/dtype/output format — 2 sites only); glm
 load-time vectorized dequant kept (perf-specialized).
 
 Full suite 104/104 green, zero expectation changes.
+
+### Optimization round 7 (2026-08-24, feat/blackwell-phase4)
+
+- Phase A dedup: shared `lsx_kernels_{common,quant,math,act,norm}.cuh`;
+  ~25 kernel copies removed, byte-equal per cluster (see Phase A summary).
+- B1 gate+up fusion moved to the CONVERTER: joint [2I,K] quantization with a
+  single global scale (`mlp.gate_up_proj.weight`) — loader derives gate/up
+  as non-owning views; pre-fusion artifacts load unchanged. Dense fast path:
+  one GEMM + one act quant per MLP.
+- Decode-kernel K-cap removed via dynamic shared memory for activations:
+  mlp_down (K=12288) left the tile-kernel fallback (~183 us) for the decode
+  kernel (~55 us). This was the single largest e2e win of the round.
+- END-TO-END @ RTX 5090 (Release, qwen3.5-9b): fast-math **51.1 tok/s** /
+  ttft 83 ms (42.3 before this round); scalar default 14.4 tok/s untouched.
+  NOTE: LSX_TEST_FAST_MATH is presence-checked — setting it to "0" ENABLES
+  fast-math; unset the variable for scalar A/B.
+
+### TMA integration status (blocked, next session)
+
+Single-block probe and a minimal multi-block repro (exact decode geometry,
+box {32B x 128 rows}, coords (kb/2, col_base)) both PASS on HW + sanitizer.
+Integrating the same staging INTO TcGemmDecodeKernel faults (HW: illegal
+address 700; sanitizer: out-of-range shared / NONCGA_CTA_ID emulation
+asserts with .shared::cluster form). Differences vs repro: dynamic-smem
+activation section coexistence, larger K grid of chunks in flight. Needs a
+dedicated session: ncu/SASS walk of the faulting launch, try
+cudaFuncAttributeMaxDynamicSharedMemorySize interplay, and mbarrier phase
+accounting per buffer. cp.async ring retained in production meanwhile.
+
+Path to 280-320 tok/s @5090 (next sessions, ranked): (1) resolve TMA
+staging in decode kernel -> effective streaming toward roofline,
+(2) swiglu-in-epilogue (paired-col variant), (3) linear-attn stage fusion
+(conv_norm + gated_delta = 20% of GPU time), (4) act-quant caching across
+GEMM calls.
