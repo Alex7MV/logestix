@@ -1095,7 +1095,7 @@ __global__ void warpdot_nvfp4_kernel(
         const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
         const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
         acc += __half2float(x[k]) *
-               __half2float(__float2half(kE2M1Table[nib] * scl));
+               __half2float(__float2half(E2M1Value(nib) * scl));
     }
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1)
@@ -2326,3 +2326,4 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
 
 } // namespace qwen
 } // namespace lsxcommon
+
