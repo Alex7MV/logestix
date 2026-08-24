@@ -199,5 +199,77 @@ cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
     return cudaGetLastError();
 }
 
+// ── Shared expert + gate combine ──────────────────────────────────────────
+namespace {
+
+// g[t] = sigmoid(dot(shared_gate_row, x[t])) — one block per token.
+// RMW isolation: the single output write happens on thread 0 after a
+// block-wide tree reduction in shared memory.
+__global__ void qwen_moe_shared_gate_kernel(const __half *__restrict__ gate,
+                                            const __half *__restrict__ x,
+                                            int H, float *__restrict__ g_out)
+{
+    const int t = blockIdx.x;
+    const __half *xr = x + static_cast<int64_t>(t) * H;
+    extern __shared__ float sh[];  // [blockDim.x] partial dots
+    const int tid = threadIdx.x;
+    float part = 0.f;
+    for (int d = tid; d < H; d += blockDim.x)
+        part += __half2float(gate[d]) * __half2float(xr[d]);
+    sh[tid] = part;
+    __syncthreads();
+    if (tid == 0) {
+        float s = 0.f;
+        for (int i = 0; i < blockDim.x; ++i) s += sh[i];
+        g_out[t] = 1.f / (1.f + expf(-s));
+    }
+}
+
+// out[j] = fp2h(acc[j]) + g[j/H] * y_shared[j]
+__global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
+                                        const float *__restrict__ g,
+                                        const __half *__restrict__ y_shared,
+                                        __half *__restrict__ out, int total,
+                                        int H)
+{
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= total) return;
+    out[j] = __float2half(acc[j] +
+                          g[j / H] * __half2float(y_shared[j]));
+}
+
+} // namespace
+
+cudaError_t RunQwenMoeSharedCombine(
+    cudaStream_t stream, const qwen::QwenNvfp4Weight &sw1,
+    const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
+    const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
+    const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
+    float *d_gate_val, __half *d_out)
+{
+    // Shared expert MLP on all tokens at once.
+    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
+                               sw1.global_scale, d_scratch_i, seq, H, SI,
+                               false) != cudaSuccess)
+        return cudaErrorInvalidValue;
+    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
+                               sw3.global_scale, d_scratch_h, seq, H, SI,
+                               false) != cudaSuccess)
+        return cudaErrorInvalidValue;
+    qwen_moe_swiglu_kernel<<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(
+        d_scratch_i, d_scratch_h, d_scratch_i, seq * SI);
+    if (qwen::RunQwenNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
+                               sw2.global_scale, d_scratch_h, seq, SI, H,
+                               false) != cudaSuccess)
+        return cudaErrorInvalidValue;
+    // Scalar gate per token.
+    qwen_moe_shared_gate_kernel<<<seq, kEltBlock, kEltBlock * sizeof(float),
+                                  stream>>>(d_shared_gate, d_x, H, d_gate_val);
+    // Combine routed accumulation + gated shared expert.
+    qwen_moe_combine_kernel<<<EltGrid(seq * H), kEltBlock, 0, stream>>>(
+        d_routed_acc, d_gate_val, d_scratch_h, d_out, seq * H, H);
+    return cudaGetLastError();
+}
+
 } // namespace qwen_moe
 } // namespace lsxcommon

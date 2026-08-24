@@ -293,3 +293,69 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
 }
+
+TEST_CASE("shared expert gate combine", "[qwen-moe-experts]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_sh_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_sh_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen_moe::QwenMoePinnedWeights pw;
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
+
+    const int H = 64, SI = 16, seq = 2;
+    const auto &lw = pw.layers[0];
+
+    // x rows deterministic; routed acc zeros -> out == g * shared(x).
+    std::vector<__half> hx(static_cast<size_t>(seq) * H);
+    for (size_t i = 0; i < hx.size(); ++i)
+        hx[i] = __float2half(sinf((float)i) * 0.4f);
+
+    __half *d_x, *d_si, *d_sh, *d_out;
+    float *d_acc, *d_g;
+    cudaMalloc(&d_x, hx.size() * 2);
+    cudaMalloc(&d_si, static_cast<size_t>(seq) * SI * 2);
+    cudaMalloc(&d_sh, static_cast<size_t>(seq) * H * 2);
+    cudaMalloc(&d_out, static_cast<size_t>(seq) * H * 2);
+    cudaMalloc(&d_acc, static_cast<size_t>(seq) * H * 4);
+    cudaMalloc(&d_g, seq * 4);
+    cudaMemset(d_acc, 0, static_cast<size_t>(seq) * H * 4);
+    cudaMemcpy(d_x, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
+
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeSharedCombine(
+                stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
+                lw.d_shared_gate, d_x, seq, H, SI, d_acc, d_si, d_sh, d_g,
+                d_out) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<__half> hout(static_cast<size_t>(seq) * H);
+    cudaMemcpy(hout.data(), d_out, hout.size() * 2, cudaMemcpyDeviceToHost);
+    float energy = 0.f;
+    for (auto v : hout) energy += __half2float(v) * __half2float(v);
+    CHECK(energy > 0.f);
+    for (auto v : hout) CHECK(std::isfinite(__half2float(v)));
+
+    // Determinism: bit-identical repeat.
+    std::vector<__half> hout2(hout.size());
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeSharedCombine(
+                stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
+                lw.d_shared_gate, d_x, seq, H, SI, d_acc, d_si, d_sh, d_g,
+                d_out) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    cudaMemcpy(hout2.data(), d_out, hout2.size() * 2, cudaMemcpyDeviceToHost);
+    CHECK(std::memcmp(hout.data(), hout2.data(), hout.size() * 2) == 0);
+
+    cudaFree(d_x); cudaFree(d_si); cudaFree(d_sh); cudaFree(d_out);
+    cudaFree(d_acc); cudaFree(d_g);
+    cudaStreamDestroy(stream);
+    lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
