@@ -8,6 +8,7 @@
 
 #include "qwen_test_fixture.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -20,6 +21,27 @@ using qwentest::MakeBf16;
 using qwentest::MakeBf16Values;
 using qwentest::MakeF32Values;
 using qwentest::WriteSafetensors;
+
+// Cross-platform env gate set/clear: setenv/unsetenv are POSIX-only; MSVC uses
+// _putenv_s, where an empty value removes the variable (verified 2026-08; the
+// LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY gate only checks getenv() presence).
+inline void MoeSetEnv(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+inline void MoeUnsetEnv(const char *name)
+{
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
 
 // Tiny MoE geometry. Attention side matches qwentest::TestCfg() defaults so
 // both fixtures agree on dense record shapes:
