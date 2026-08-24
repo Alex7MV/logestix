@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "nvfp4_codec.h"
@@ -137,7 +138,59 @@ constexpr int kDecCols = 128;             // n-columns per block (8 warps x 4 at
 constexpr int kDecBufs = 4;               // cp.async pipeline depth (chunks in flight + 1)
 constexpr int kDecChunkBytes = 32;        // packed bytes per column per k64
 
-__global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
+// ── B3: TMA weight-map cache ────────────────────────────────────────────────
+// cuTensorMapEncodeTiled costs ~1-2us host-side and decode GEMMs repeat with
+// identical (ptr,K,N) across tokens -> encode once, reuse from a bounded map.
+namespace {
+
+struct WeightMapKey {
+    const void *ptr;
+    int k_half;
+    int n;
+    bool operator==(const WeightMapKey &o) const {
+        return ptr == o.ptr && k_half == o.k_half && n == o.n;
+    }
+};
+
+constexpr int kMaxCachedMaps = 512;
+std::mutex g_tma_mu;
+std::vector<std::pair<WeightMapKey, CUtensorMap>> g_tma_cache;
+
+cudaError_t GetWeightTmaMap(const uint8_t *w_packed, int N, int k_half,
+                            CUtensorMap *out)
+{
+    const WeightMapKey key{w_packed, k_half, N};
+    {
+        std::lock_guard<std::mutex> lk(g_tma_mu);
+        for (auto &kv : g_tma_cache)
+            if (kv.first == key) { *out = kv.second; return cudaSuccess; }
+    }
+    if ((reinterpret_cast<uintptr_t>(w_packed) & 15) != 0 || (k_half & 15) != 0)
+        return cudaErrorInvalidValue;   // TMA global-address / stride alignment
+    CUtensorMap tmap{};
+    const cuuint64_t gdim[2] = {static_cast<cuuint64_t>(k_half),
+                                static_cast<cuuint64_t>(N)};
+    const cuuint64_t gstride[1] = {static_cast<cuuint64_t>(k_half)};
+    const cuuint32_t bdim[2] = {kDecChunkBytes, kDecCols};
+    const cuuint32_t estride[2] = {1, 1};
+    const CUresult cr = cuTensorMapEncodeTiled(
+        &tmap, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2,
+        const_cast<uint8_t *>(w_packed), gdim, gstride, bdim, estride,
+        CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+        CU_TENSOR_MAP_L2_PROMOTION_NONE, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    if (cr != CUDA_SUCCESS) return cudaErrorNotSupported;
+    std::lock_guard<std::mutex> lk(g_tma_mu);
+    if (g_tma_cache.size() < kMaxCachedMaps)
+        g_tma_cache.emplace_back(key, tmap);
+    *out = tmap;
+    return cudaSuccess;
+}
+
+} // namespace
+
+__global__ void TcGemmDecodeKernel(
+    const __grid_constant__ CUtensorMap wtmap,   // B3 TMA view of weights
+    const uint8_t *__restrict__ ap,
                                    const uint8_t *__restrict__ as,
                                    const uint8_t *__restrict__ bp,
                                    const uint8_t *__restrict__ bs,
@@ -160,9 +213,20 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
     // mlp_down (K=12288) onto the tile-kernel fallback every decode token.
     extern __shared__ __align__(16) uint8_t sXp[];   // [k_half] then [k_chunks]
     uint8_t *const sXsc = sXp + ((k_half + 15) & ~15);
-    // Double-buffered weight slab + scales.
-    __shared__ __align__(16) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
+    // Double-buffered weight slab + scales. B3 root cause (empirical):
+    // bulk-tensor dst requires 128-BYTE alignment (16 is not enough).
+    __shared__ __align__(128) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
     __shared__ uint8_t sWs[kDecBufs][kDecCols][4];
+    __shared__ __align__(8) unsigned long long sMbar[kDecBufs];
+    if (tid == 0) {
+#pragma unroll
+        for (int b = 0; b < kDecBufs; ++b) {
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::
+                         "r"(static_cast<unsigned>(
+                             __cvta_generic_to_shared(&sMbar[b]))));
+        }
+    }
+    __syncthreads();
 
 
     // One-time activation load (row 0 is the only row at seq == 1).
@@ -186,19 +250,27 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
 
     // ---- cp.async pipeline: stage_chunk() copies one k64 weight chunk
     // into ring buffer `buf`; up to kDecBufs chunks stay in flight.
+    // ---- B3 TMA pipeline: one bulk-tensor copy stages a whole [128 cols x
+    // 32 bytes] k64 chunk (OOB rows zero-filled by hardware); scales remain
+    // synchronous plain stores. Thread 0 arms the buffer mbarrier with
+    // expect_tx and issues the copy (.shared::cta dst, 128B aligned).
     auto stage_chunk = [&](int chunk, int buf) {
         const int kb = chunk * 64;
-        const uint4 *b4 = reinterpret_cast<const uint4 *>(
-            bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
-        uint4 *d4 = reinterpret_cast<uint4 *>(&sW[buf][0][0]);
-        for (int idx = tid; idx < kDecCols * 2; idx += 256) {
-            const int c = idx >> 1;
-            if (col_base + c < N)
-                cp_async16(&d4[idx],
-                           b4 + static_cast<int64_t>(c) * (k_half / 16) +
-                               (idx & 1));
-            else
-                d4[idx] = make_uint4(0, 0, 0, 0);
+        if (tid == 0) {
+            const unsigned mb = static_cast<unsigned>(
+                __cvta_generic_to_shared(&sMbar[buf]));
+            const unsigned dst = static_cast<unsigned>(
+                __cvta_generic_to_shared(sW[buf][0]));
+            asm volatile(
+                "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
+                    "r"(mb), "r"(kDecCols * kDecChunkBytes));
+            asm volatile(
+                "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
+                "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
+                "l"(reinterpret_cast<unsigned long long>(&wtmap)),
+                "r"(static_cast<unsigned>(kb / 2)),
+                "r"(static_cast<unsigned>(col_base)), "r"(mb)
+                : "memory");
         }
         for (int idx = tid; idx < kDecCols; idx += 256) {
             const int c = idx;
@@ -211,7 +283,6 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
                         : uint8_t{0};
             }
         }
-        cp_async_commit();
     };
 
     const int n_k64 = K >> 6;
@@ -233,7 +304,15 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
         const int nxt = i + kDecBufs - 1;
         if (nxt < n_k64) stage_chunk(nxt, nxt & (kDecBufs - 1));
         // Chunks i..min(i+3,n-1) may be outstanding; chunk i must be done.
-        cp_async_wait<kDecBufs - 2>();
+        {
+            const unsigned mb = static_cast<unsigned>(
+                __cvta_generic_to_shared(&sMbar[buf]));
+            asm volatile(
+                "{\n\t.reg .pred p;\n\t"
+                "WAIT:\n\t"
+                "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], %1;\n\t"
+                "@!p bra WAIT;\n\t}" ::"r"(mb), "r"((i >> 2) & 1));
+        }
         __syncthreads();
         const int kb = i * 64;
 
@@ -541,17 +620,23 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     if (seq == 1 && (K & 63) == 0 &&
         (((reinterpret_cast<uintptr_t>(w_packed) |
            reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0)) {
-        const int k_half = K / 2;
-        const int k_chunks = K >> 4;
-        const size_t dec_smem = static_cast<size_t>(
-            ((k_half + 15) & ~15) + ((k_chunks + 15) & ~15));
-        dim3 dgrid((N + kDecCols - 1) / kDecCols);
-        TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
-            static_cast<uint8_t *>(ap_scratch),
-            static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-            w_global_scale, y, K, N);
-        e = cudaGetLastError();
-        handled = e == cudaSuccess;
+        CUtensorMap wtmap{};
+        e = GetWeightTmaMap(w_packed, N, K / 2, &wtmap);
+        if (e == cudaSuccess) {
+            const int k_half = K / 2;
+            const int k_chunks = K >> 4;
+            const size_t dec_smem = static_cast<size_t>(
+                ((k_half + 15) & ~15) + ((k_chunks + 15) & ~15));
+            dim3 dgrid((N + kDecCols - 1) / kDecCols);
+            TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
+                wtmap, static_cast<uint8_t *>(ap_scratch),
+                static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+                w_global_scale, y, K, N);
+            e = cudaGetLastError();
+            handled = e == cudaSuccess;
+        } else if (e == cudaErrorNotSupported) {
+            e = cudaSuccess;   // tile-kernel fallback below
+        }
     }
     if (!handled && e == cudaSuccess) {
         dim3 grid((N + kTileN - 1) / kTileN, (seq + kTileM - 1) / kTileM);

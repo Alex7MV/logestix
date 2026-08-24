@@ -855,3 +855,107 @@ TEST_CASE("tma mini multi-block repro", "[tc][tma]")
     cudaFree(d_src);
     cudaFree(d_ok);
 }
+
+namespace tma_mini {
+
+// Step-A variant: identical to MiniKernel but with a dynamic smem section
+// coexisting with the TMA ring (isolate dynamic/static interaction).
+__global__ void MiniDynKernel(const __grid_constant__ CUtensorMap tmap,
+                              const uint8_t *__restrict__ gsrc,
+                              int *__restrict__ ok)
+{
+    extern __shared__ __align__(16) uint8_t dyn[];
+    const int k_half = 4864;
+    uint8_t *const sxp = dyn;                       // [k_half]
+    uint8_t *const sxsc = sxp + ((k_half + 15) & ~15);
+    // Step-B: ring + mbarriers live in the DYNAMIC section too.
+    // HYPOTHESIS under test: bulk-tensor dst needs 128B (not just 16B)
+    // alignment -> round the section start up to 128.
+    uintptr_t rb = reinterpret_cast<uintptr_t>(
+        sxsc + ((k_half / 16 + 15) & ~15));
+    rb = (rb + 127) & ~(uintptr_t)127;
+    uint8_t (*ring)[kRows][kRowBytes] =
+        reinterpret_cast<uint8_t (*)[kRows][kRowBytes]>(rb);
+    unsigned long long *mbar = reinterpret_cast<unsigned long long *>(
+        reinterpret_cast<uint8_t *>(ring) + 2 * kRows * kRowBytes);
+    const int tid = threadIdx.x;
+    for (int i = tid; i < k_half; i += blockDim.x) sxp[i] = gsrc[i];
+    for (int c = tid; c < k_half / 16; c += blockDim.x) sxsc[c] = 1;
+    if (tid == 0) {
+        for (int b = 0; b < 2; ++b)
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::
+                         "r"(static_cast<unsigned>(
+                             __cvta_generic_to_shared(&mbar[b]))));
+    }
+    __syncthreads();
+    if (tid == 0) {
+        const unsigned mb = static_cast<unsigned>(
+            __cvta_generic_to_shared(&mbar[0]));
+        const unsigned dst =
+            static_cast<unsigned>(__cvta_generic_to_shared(ring[0][0]));
+        if (blockIdx.x == 0)
+            printf("DBG dyn base=%p ring0=%p cvta=%u (%%16==%u)\n",
+                   (void *)dyn, (void *)ring[0][0], dst, dst % 16);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
+                     "r"(mb), "r"(kRows * kRowBytes));
+        asm volatile(
+            "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
+            "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
+            "l"(reinterpret_cast<unsigned long long>(&tmap)), "r"(0),
+            "r"(blockIdx.x * kRows), "r"(mb) : "memory");
+    }
+    {
+        const unsigned mb =
+            static_cast<unsigned>(__cvta_generic_to_shared(&mbar[0]));
+        asm volatile("{\n\t.reg .pred p;\n\tWAIT:\n\t"
+                     "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], 0;\n\t"
+                     "@!p bra WAIT;\n\t}" ::"r"(mb));
+    }
+    __syncthreads();
+    bool good = true;
+    const int col0 = blockIdx.x * kRows;
+    for (int i = tid; i < kRows * kRowBytes; i += blockDim.x)
+        good &= ring[0][0][i] == gsrc[(col0 + i / kRowBytes) * kKH +
+                                      (i % kRowBytes)];
+    if (!good) *ok = 0;
+    // Touch dynamic section so it cannot be dead-stripped.
+    if (sxp[blockIdx.x] == 0xFF) *ok = 7;
+}
+
+} // namespace tma_mini
+
+TEST_CASE("tma mini stepA dyn-smem coexistence", "[tc][tma]")
+{
+    using namespace tma_mini;
+    uint8_t *d_src = nullptr;
+    int *d_ok = nullptr;
+    const size_t bytes = static_cast<size_t>(kN) * kKH;
+    REQUIRE(cudaMalloc(&d_src, bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ok, 4) == cudaSuccess);
+    std::vector<uint8_t> h(bytes);
+    for (size_t i = 0; i < h.size(); ++i) h[i] = static_cast<uint8_t>(i * 7);
+    REQUIRE(cudaMemcpy(d_src, h.data(), h.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_ok, 1, 4) == cudaSuccess);
+
+    CUtensorMap tmap{};
+    const cuuint64_t gdim[2] = {kKH, kN};
+    const cuuint64_t gstride[1] = {kKH};
+    const cuuint32_t bdim[2] = {kRowBytes, kRows};
+    const cuuint32_t estride[2] = {1, 1};
+    REQUIRE(cuTensorMapEncodeTiled(
+                &tmap, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, d_src, gdim,
+                gstride, bdim, estride, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+                CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) == CUDA_SUCCESS);
+
+    const size_t dyn_bytes = ((kKH + 15) & ~15) + ((kKH / 16 + 15) & ~15) +
+                             2 * kRows * kRowBytes + 32 + 128;
+    MiniDynKernel<<<kN / kRows, 256, dyn_bytes>>>(tmap, d_src, d_ok);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    int h_ok = 0;
+    REQUIRE(cudaMemcpy(&h_ok, d_ok, 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(h_ok != 0);
+    cudaFree(d_src);
+    cudaFree(d_ok);
+}
