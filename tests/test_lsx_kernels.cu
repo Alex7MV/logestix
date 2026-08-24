@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "lsx_kernels_quant.cuh"
+#include "lsx_kernels_math.cuh"
 
 namespace {
 
@@ -210,4 +211,101 @@ TEST_CASE("e2m1 encode ties: tie-up and nearest both replicated", "[lsxk][quant]
         REQUIRE(lsxcommon::kernels::QuantizeE2m1Nearest(-v) ==
                 ref::quantize_e2m1_nearest(-v));
     }
+}
+
+// ── Task 3: math cluster references (verbatim ports) ───────────────────────
+namespace ref {
+
+// qwen_inference.cu qwen_add_kernel verbatim.
+__global__ void add_half(const __half* __restrict__ src,
+                         __half* __restrict__ dst, int64_t n) {
+    const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    dst[idx] = __float2half(__half2float(dst[idx]) + __half2float(src[idx]));
+}
+
+// glm_inference.cu GlmEmbedKernel verbatim.
+__global__ void embed_half(const __half* __restrict__ embed,
+                           const int32_t* __restrict__ ids,
+                           __half* __restrict__ out, int seq, int hidden) {
+    const int64_t total = static_cast<int64_t>(seq) * hidden;
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= total) return;
+    const int t = static_cast<int>(i / hidden);
+    const int h = static_cast<int>(i - static_cast<int64_t>(t) * hidden);
+    out[i] = embed[static_cast<int64_t>(ids[t]) * hidden + h];
+}
+
+// qwen_moe f2h verbatim.
+__global__ void f2h(const float* __restrict__ src, __half* __restrict__ dst,
+                    int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(src[i]);
+}
+
+} // namespace ref
+
+TEST_CASE("math kernels match refs", "[lsxk][math]") {
+    constexpr int kN = 2048, kSeq = 4, kHid = 128;
+    uint32_t st = 777;
+    std::vector<uint16_t> raw(kN);
+    for (auto& r : raw) r = static_cast<uint16_t>(LcgNext(st) & 0xFFFF);
+
+    __half *d_a, *d_dst_ref, *d_dst_uni;
+    cudaMalloc(&d_a, kN * 2);
+    cudaMalloc(&d_dst_ref, kN * 2);
+    cudaMalloc(&d_dst_uni, kN * 2);
+    cudaMemcpy(d_a, raw.data(), kN * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dst_ref, d_a, kN * 2, cudaMemcpyDeviceToDevice);
+    cudaMemcpy(d_dst_uni, d_a, kN * 2, cudaMemcpyDeviceToDevice);
+
+    constexpr int blk = 256;
+    const int grid = (kN + blk - 1) / blk;
+    ref::add_half<<<grid, blk>>>(d_a, d_dst_ref, kN);
+    lsxcommon::kernels::AddInPlaceKernel<__half>
+        <<<grid, blk>>>(d_a, d_dst_uni, kN);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    RequireDeviceEqual(d_dst_ref, d_dst_uni, kN);
+
+    // Embed gather.
+    std::vector<uint16_t> table_raw(kSeq * kHid);
+    for (auto& r : table_raw) r = static_cast<uint16_t>(LcgNext(st) & 0xFFFF);
+    std::vector<int32_t> ids = {3, 0, 2, 1};
+    __half *d_tab_ref, *d_tab_uni, *d_out_ref, *d_out_uni;
+    int32_t* d_ids;
+    cudaMalloc(&d_tab_ref, kSeq * kHid * 2);
+    cudaMalloc(&d_tab_uni, kSeq * kHid * 2);
+    cudaMemcpy(d_tab_ref, table_raw.data(), kSeq * kHid * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tab_uni, d_tab_ref, kSeq * kHid * 2, cudaMemcpyDeviceToDevice);
+    cudaMalloc(&d_ids, ids.size() * 4);
+    cudaMemcpy(d_ids, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_out_ref, kSeq * kHid * 2);
+    cudaMalloc(&d_out_uni, kSeq * kHid * 2);
+    ref::embed_half<<<(kSeq * kHid + blk - 1) / blk, blk>>>(
+        d_tab_ref, d_ids, d_out_ref, kSeq, kHid);
+    lsxcommon::kernels::EmbedGatherKernel<__half>
+        <<<(kSeq * kHid + blk - 1) / blk, blk>>>(d_tab_uni, d_ids, d_out_uni,
+                                                 kSeq, kHid);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    RequireDeviceEqual(d_out_ref, d_out_uni, kSeq * kHid);
+
+    // F32 -> T convert.
+    std::vector<float> fsrc(kN);
+    for (auto& f : fsrc) f = static_cast<float>(LcgNext(st) % 2000) / 7.f - 100.f;
+    float* d_f; __half *d_h_ref, *d_h_uni;
+    cudaMalloc(&d_f, kN * 4);
+    cudaMemcpy(d_f, fsrc.data(), kN * 4, cudaMemcpyHostToDevice);
+    cudaMalloc(&d_h_ref, kN * 2);
+    cudaMalloc(&d_h_uni, kN * 2);
+    ref::f2h<<<grid, blk>>>(d_f, d_h_ref, kN);
+    lsxcommon::kernels::F32toTKernel<__half>
+        <<<grid, blk>>>(d_f, d_h_uni, kN);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    RequireDeviceEqual(d_h_ref, d_h_uni, kN);
+
+    cudaFree(d_a); cudaFree(d_dst_ref); cudaFree(d_dst_uni);
+    cudaFree(d_tab_ref); cudaFree(d_tab_uni); cudaFree(d_ids);
+    cudaFree(d_out_ref); cudaFree(d_out_uni);
+    cudaFree(d_f); cudaFree(d_h_ref); cudaFree(d_h_uni);
 }

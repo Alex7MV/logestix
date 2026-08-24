@@ -20,10 +20,8 @@
 #include <cfloat>
 #include <cstring>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <cuda_bf16.h>
-
 #include "nvfp4_codec.h"
+#include "lsx_kernels_common.cuh"
 
 namespace lsxcommon {
 namespace kernels {
@@ -78,23 +76,7 @@ __host__ __device__ __forceinline__ float E8m0ClampedToFloat(uint8_t b)
 
 // ── NVFP4 elementwise dequant ───────────────────────────────────────────────
 
-namespace detail {
-
-template <typename OutT> __device__ __forceinline__ OutT CastOut(float v);
-template <> __device__ __forceinline__ __half CastOut<__half>(float v)
-{
-    return __float2half(v);
-}
-template <> __device__ __forceinline__ __nv_bfloat16 CastOut<__nv_bfloat16>(float v)
-{
-    return __float2bfloat16_rn(v);
-}
-template <> __device__ __forceinline__ float CastOut<float>(float v)
-{
-    return v;
-}
-
-} // namespace detail
+// CastOut lives in lsx_kernels_common.cuh.
 
 __device__ __forceinline__ float Nvfp4DecodeScale(uint8_t scale_e4m3,
                                                   float global_scale)

@@ -4,6 +4,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
 #include "nvfp4_codec.h"
+#include "lsx_kernels_math.cuh"
 #include "qwen_reduce.cuh"
 
 #include <cuda_runtime.h>
@@ -202,18 +203,7 @@ __global__ void partial_rope_kernel(const __half *__restrict__ q, const __half *
     }
 }
 
-// ── Embed ───────────────────────────────────────────────────────────────────
-__global__ void embed_kernel(const __half *__restrict__ embed, const int32_t *__restrict__ ids,
-                             __half *out, int seq, int hidden)
-{
-    const int64_t total = (int64_t)seq * hidden;
-    for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-         i < total; i += (int64_t)blockDim.x * gridDim.x) {
-        const int t = (int)(i / hidden);
-        const int h = (int)(i % hidden);
-        out[i] = embed[ids[t] * (int64_t)hidden + h];
-    }
-}
+// Embed gather: unified kernels::EmbedGatherKernel (lsx_kernels_math.cuh).
 
 // ── GatedDeltaNet causal conv1d (depthwise, kernel per channel) ─────────────
 // mixed: [seq, conv_dim]; w: [conv_dim, kernel]; out: [seq, conv_dim].
@@ -388,7 +378,7 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *embed,
 {
     const int threads = 256;
     const int blocks = (int)(((int64_t)seq * hidden + threads - 1) / threads);
-    embed_kernel<<<blocks, threads, 0, stream>>>(embed, ids, out, seq, hidden);
+    lsxcommon::kernels::EmbedGatherKernel<__half><<<blocks, threads, 0, stream>>>(embed, ids, out, seq, hidden);
     return cudaGetLastError();
 }
 
@@ -581,13 +571,7 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
     y[idx] = __float2half(silu_dev(__half2float(a[idx])) * __half2float(b[idx]));
 }
 
-// elementwise: dst[i] += src[i].
-__global__ void qwen_add_kernel(const __half *__restrict__ src, __half *__restrict__ dst, int64_t n)
-{
-    const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= n) return;
-    dst[idx] = __float2half(__half2float(dst[idx]) + __half2float(src[idx]));
-}
+// Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 
 cudaError_t LaunchNorm1d(const __half *x, const __half *w, __half *y,
                          int rows, int hidden, double eps, cudaStream_t stream)
@@ -916,12 +900,7 @@ __global__ void fused_o_proj_kernel(
     out_acc[n] = acc;
 }
 
-// Convert a float accumulator row [H] to half out [H].
-__global__ void qwen_f2h_acc_kernel(const float *__restrict__ in, __half *__restrict__ out, int n)
-{
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) out[idx] = __float2half(in[idx]);
-}
+// F32->FP16 convert: unified kernels::F32toTKernel (lsx_kernels_math.cuh).
 
 // ── Fused linear-attention front stage A: raw qkv NVFP4 GEMM into the
 // persistent d_qkv history. One block per token row t; blockDim = pow2(kd).
@@ -1405,7 +1384,7 @@ cudaError_t RunQwenFusedOProj(
     }
     if (!e) {
         const int blocks = (int)((H + 255) / 256);
-        qwen_f2h_acc_kernel<<<blocks, 256, 0, stream>>>(out_acc, out, H);
+        lsxcommon::kernels::F32toTKernel<__half><<<blocks, 256, 0, stream>>>(out_acc, out, H);
         e = cudaGetLastError();
     }
     return e;
@@ -2132,7 +2111,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 // residual: d_act = d_act + d_attn_out
                 {
                     const int64_t n = (int64_t)seq * H;
-                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                    lsxcommon::kernels::AddInPlaceKernel<__half><<<(int)((n + threads - 1) / threads), threads,
                                       0, stream>>>(d_attn_out, d_act, n);
                     e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
                 }
@@ -2267,7 +2246,7 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 // residual: d_act = d_act + d_attn_out
                 {
                     const int64_t n = (int64_t)seq * H;
-                    qwen_add_kernel<<<(int)((n + threads - 1) / threads), threads,
+                    lsxcommon::kernels::AddInPlaceKernel<__half><<<(int)((n + threads - 1) / threads), threads,
                                       0, stream>>>(d_attn_out, d_act, n);
                     e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
                 }
