@@ -80,6 +80,12 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
 // (FP32 accumulate). Dispatches to a shared-memory tile kernel for N>=8 && K>=16,
 // else a per-element kernel for tiny shapes. Numeric contract: FP32 accumulate,
 // k-order free.
+// Blackwell tensor-core fast-path toggle (audit Phase 3): when enabled,
+// RunQwenNvfp4Gemm dispatches to the sm_120a mxf4nvf4 kernel for supported
+// shapes and falls back to the scalar path otherwise. Default off.
+void SetQwenTcFastMath(bool on);
+bool QwenTcFastMath();
+
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
