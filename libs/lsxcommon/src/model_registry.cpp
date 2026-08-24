@@ -13,34 +13,13 @@ namespace lsxcommon {
 void EnsureModelRegistry()
 {
     static bool init = [] {
-        LsxModelFactory::Register(DeepSeekV4FlashModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<DeepSeekV4FlashModel>(cfg);
-            });
-        LsxModelFactory::Register(GlmV5Model::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<GlmV5Model>(cfg);
-            });
-        LsxModelFactory::Register(KimiK27CodeModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<KimiK27CodeModel>(cfg);
-            });
-        LsxModelFactory::Register(Qwen3_5_9BModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<Qwen3_5_9BModel>(cfg);
-            });
-        LsxModelFactory::Register(Qwen3_8_27BModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<Qwen3_8_27BModel>(cfg);
-            });
-        LsxModelFactory::Register(Gemma4_26BA4BModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<Gemma4_26BA4BModel>(cfg);
-            });
-        LsxModelFactory::Register(Qwen35MoeModel::kType,
-            [](const ModelInitConfig &cfg) {
-                return std::make_unique<Qwen35MoeModel>(cfg);
-            });
+        LsxModelFactory::Register<DeepSeekV4FlashModel>();
+        LsxModelFactory::Register<GlmV5Model>();
+        LsxModelFactory::Register<KimiK27CodeModel>();
+        LsxModelFactory::Register<Qwen3_5_9BModel>();
+        LsxModelFactory::Register<Qwen3_8_27BModel>();
+        LsxModelFactory::Register<Gemma4_26BA4BModel>();
+        LsxModelFactory::Register<Qwen35MoeModel>();
         return true;
     }();
     (void)init;

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <shared_mutex>
 #include <filesystem>
 #include <string>
 
@@ -83,4 +84,52 @@ TEST_CASE("Create + Load + Inspect on real model dir", "[factory]")
     auto info = m->Inspect();
     REQUIRE(!info.shards.empty());
     m->Unload();
+}
+namespace {
+
+class TypedProbe final : public lsxcommon::IModel {
+public:
+    static const std::string kType;
+    explicit TypedProbe(const lsxcommon::ModelInitConfig &) {}
+    bool Load() override { return false; }
+    lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    void Unload() override {}
+    lsxcommon::SafetensorsModel Inspect() override { return {}; }
+    lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    const std::string &Type() const override
+    {
+        static std::string t{"typed-probe"};
+        return t;
+    }
+    lsxcommon::ArrowTokenizerDb &Tokenizer() override
+    {
+        static lsxcommon::ArrowTokenizerDb db{};
+        return db;
+    }
+    std::shared_mutex &ResidencyMutex() override
+    {
+        static std::shared_mutex m;
+        return m;
+    }
+};
+const std::string TypedProbe::kType = "typed-probe";
+
+} // namespace
+
+TEST_CASE("Typed Register<T>() resolves kType and constructs", "[factory]")
+{
+    lsxcommon::LsxModelFactory::Register<TypedProbe>();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_type = "typed-probe";
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    CHECK(m->Type() == "typed-probe");
 }

@@ -13,6 +13,17 @@ using CreateModelFn = std::function<std::unique_ptr<IModel>(const ModelInitConfi
 class LsxModelFactory {
 public:
     static void Register(const std::string &type, CreateModelFn fn);
+
+    // Typed registration: registers `T::kType` constructing std::make_unique<T>
+    // (model-unification 2026-08: collapses the per-model lambda boilerplate).
+    template <typename T>
+    static void Register()
+    {
+        Register(T::kType, [](const ModelInitConfig &cfg) {
+            return std::unique_ptr<IModel>(new T(cfg));
+        });
+    }
+
     static std::unique_ptr<IModel> Create(const ModelInitConfig &cfg);
     static std::string DetectType(const std::string &model_path);
 };
