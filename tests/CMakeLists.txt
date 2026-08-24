@@ -1916,3 +1916,25 @@ endif()
 
 add_test(NAME test_kimi_int4_real COMMAND test_kimi_int4_real)
 set_tests_properties(test_kimi_int4_real PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тесты Qwen3.5-35B-A3B (MoE) ───────────────────────────────────────────
+add_executable(test_qwen_moe_convert test_qwen_moe_convert.cpp)
+target_compile_definitions(test_qwen_moe_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_convert>"
+    )
+    add_custom_command(TARGET test_qwen_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_convert>"
+    )
+endif()
+
+add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
