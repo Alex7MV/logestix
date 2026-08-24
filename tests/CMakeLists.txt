@@ -18,6 +18,14 @@ endif()
 
 add_test(NAME test_core COMMAND test_core)
 
+# ── Тест shared fastload-хелперов (host-only, без CUDA-аллокаций) ────────
+add_executable(test_fast_load test_fast_load.cpp)
+target_link_libraries(test_fast_load PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_fast_load PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_fast_load COMMAND test_fast_load)
+
+
 # ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
 add_executable(test_schema_views test_schema_views.cpp)
 target_link_libraries(test_schema_views PRIVATE lsxcommon Catch2::Catch2WithMain)

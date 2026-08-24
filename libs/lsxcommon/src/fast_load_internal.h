@@ -3,10 +3,13 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 
 #include "lsxcommon/fast_load.h"
+#include "lsxcommon/schema.h"
 
 namespace lsxcommon {
 namespace fastload {
@@ -121,6 +124,46 @@ private:
     uint8_t *bufs_[2];
     cudaEvent_t ev_[2];
 };
+
+// ── Shared loader helpers (deduplicated 2026-08: were copied per loader) ────
+
+// Device-arena view alignment for coalesced access.
+inline constexpr size_t kArenaAlign = 256;
+
+inline size_t AlignUp(size_t v, size_t a) { return (v + a - 1) / a * a; }
+
+// Drains the stream on scope exit so pinned staging never dies while a DMA
+// transfer is still in flight (error paths of pinned-weight loaders).
+struct StreamDrain {
+    cudaStream_t s;
+    ~StreamDrain() { if (s) cudaStreamSynchronize(s); }
+};
+
+// Returns the tensor whose name ends with `suffix`, or nullptr.
+inline const TensorView *FindTensorSuffix(const TensorBatchViews &tensors,
+                                          std::string_view suffix)
+{
+    for (const auto &t : tensors.tensors) {
+        if (t.name.size() >= suffix.size() &&
+            t.name.compare(t.name.size() - suffix.size(), suffix.size(),
+                           suffix) == 0)
+            return &t;
+    }
+    return nullptr;
+}
+
+// Same suffix lookup over NVFP4 record batches.
+inline const DenseNvfp4View *FindNvfp4Suffix(const DenseNvfp4BatchViews &recs,
+                                             std::string_view suffix)
+{
+    for (const auto &r : recs.records) {
+        if (r.name.size() >= suffix.size() &&
+            r.name.compare(r.name.size() - suffix.size(), suffix.size(),
+                           suffix) == 0)
+            return &r;
+    }
+    return nullptr;
+}
 
 } // namespace fastload
 } // namespace lsxcommon
