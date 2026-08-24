@@ -165,3 +165,21 @@ attention tuning -> target tens of tok/s.
 Remaining levers (ranked): act-quant launch overhead inside MLP (~226 launches
 per run), gate+up GEMM fusion (halve MLP atom count), attention warpdot
 tuning, prefill path (still scalar tile kernel at seq>1).
+
+### Optimization round 2 (2026-08-24)
+
+- uint4-vectorized slab staging in TcGemmKernel (K%64 fast path, scalar
+  fallback for tails): attn_qkv_o 144->112 us (4.35x vs scalar),
+  mlp_gate_up 267->236 us (5.0x), mlp_down 313->243 us (5.0x).
+- End-to-end unchanged at ~8.2 tok/s: the micro-level GEMM gain is absorbed
+  elsewhere — measured mlp_norm phase (~2.06 ms/layer) exceeds the sum of
+  its TC GEMMs (~0.75 ms/layer @ I=12288, H=4096, 25 MB weights each).
+  Gap = act-quant launches + swiglu + unaccounted per-layer overhead;
+  ncu GPU perf counters now ENABLED on this machine for precise attribution.
+- MLP decode is weight-bandwidth bound: 75 MB weights/layer/token; achieved
+  effective BW in TC path still far below the 448 GB/s roofline -> further
+  staging/pipeline work has large headroom.
+
+Session totals (Qwen3.5-9B @ RTX 5060 Ti, Debug, 16 tokens):
+audit start 0.6 tok/s / ttft 6226 ms -> **8.2 tok/s** / ttft 491 ms.
+Suite state: qwen+blackwell 26/26 green.
