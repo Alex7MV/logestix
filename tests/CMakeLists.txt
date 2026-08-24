@@ -1958,3 +1958,26 @@ if(WIN32)
 endif()
 
 add_test(NAME test_qwen_moe_kernels COMMAND test_qwen_moe_kernels)
+
+add_executable(test_qwen_moe_loader test_qwen_moe_loader.cpp)
+target_compile_definitions(test_qwen_moe_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_loader>"
+    )
+    add_custom_command(TARGET test_qwen_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_loader>"
+    )
+endif()
+
+add_test(NAME test_qwen_moe_loader COMMAND test_qwen_moe_loader)
+set_tests_properties(test_qwen_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")

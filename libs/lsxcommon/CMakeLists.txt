@@ -46,6 +46,7 @@ add_library(lsxcommon STATIC
     src/qwen_3_8_27b_model.cpp
     src/qwen_convert.cpp
     src/qwen_moe_convert.cpp
+    src/qwen_moe_inference_load.cpp
     src/qwen_inference_load.cpp
     src/qwen_v5_model.cpp
     src/qwen_base_model.cpp
