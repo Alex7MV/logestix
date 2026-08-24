@@ -620,33 +620,13 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 // ── Routed-expert NVFP4 FFN (SwiGLU) ───────────────────────────────────────
 
 #include "nvfp4_codec.h"
+#include "lsx_kernels_quant.cuh"
 #include <cfloat>
 
 namespace {
 
-// Canonical E4M3 block-scale decode (nvfp4_codec semantics): only the
-// 4-bit exponent field participates; e4==0 -> 0.0.
-__device__ __forceinline__ float KimiE4M3(uint8_t b)
-{
-    return lsxcommon::gpu::nvfp4::E4M3ScaleToFloat(b);
-}
-
-// Dequantizes one NVFP4 tensor (packed nibbles lo-first + per-16 E4M3 scales +
-// global scale) into an FP16 buffer. One thread per element.
-__global__ void kimi_nvfp4_dequant_kernel(const uint8_t *__restrict__ packed,
-                                          const uint8_t *__restrict__ scales,
-                                          float global_scale,
-                                          __nv_bfloat16 *__restrict__ out,
-                                          int64_t numel)
-{
-    const int64_t i =
-        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= numel) return;
-    const uint8_t byte = packed[i >> 1];
-    const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-    const float block_scale = KimiE4M3(scales[i >> 4]) * global_scale;
-    out[i] = __float2bfloat16_rn(lsxcommon::gpu::nvfp4::E2M1Value(nib) * block_scale);
-}
+// NVFP4 elementwise dequant: unified kernels::Nvfp4DequantKernel
+// (lsx_kernels_quant.cuh), byte-equal to the former kimi_nvfp4_dequant_kernel.
 
 // SwiGLU: h = silu(gate) * up.
 __global__ void kimi_swiglu_kernel(const __nv_bfloat16 *__restrict__ gate,
@@ -746,9 +726,9 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                        float gscale, __nv_bfloat16 *dst, int64_t numel) {
         const int block = 256;
         const int64_t grid = (numel + block - 1) / block;
-        kimi_nvfp4_dequant_kernel<<<static_cast<unsigned>(grid), block, 0,
-                                    stream>>>(packed, scales, gscale, dst,
-                                              numel);
+        lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
+            <<<static_cast<unsigned>(grid), block, 0, stream>>>(
+                packed, scales, gscale, dst, numel);
     };
     dequant(p_w1, p_s1, expert.w1_global_scale, dq_gate, w13_el);
     dequant(p_w3, p_s3, expert.w3_global_scale, dq_up, w13_el);

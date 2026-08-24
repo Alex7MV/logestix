@@ -1,4 +1,5 @@
 #include "lsxcommon/safetensors_gpu.h"
+#include "lsx_kernels_quant.cuh"
 #include "lsxcommon/diagnostics.h"
 #include "lsxcommon/schema.h"
 
@@ -60,33 +61,7 @@ __device__ float dev_bf16_to_float(const uint8_t *p)
 
 // Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
 // 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
-__device__ float dev_f8e4m3_to_float(uint8_t b)
-{
-    if (!b || b == 0x80) return 0.0f;
-    if ((b & 0x7F) == 0x7F) return __int_as_float(0x7FC00000);
-    int s = (b >> 7) & 1;
-    int e = (b >> 3) & 0x0F;
-    int m = b & 0x07;
-    if (e == 0) {
-        float v = static_cast<float>(m) * 0.001953125f;  // m * 2^-9
-        return s ? -v : v;
-    }
-    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
-                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
-                 | (static_cast<uint32_t>(m) << 20);
-    float v;
-    memcpy(&v, &f32, sizeof(v));
-    return v;
-}
 
-__device__ float dev_f8e8m0_to_float(uint8_t b)
-{
-    if (!b) return 0.0f;
-    uint32_t bits = static_cast<uint32_t>(b) << 23;
-    float v;
-    memcpy(&v, &bits, sizeof(v));
-    return v;
-}
 
 __device__ float dev_i8_to_float(uint8_t b)
 {
@@ -95,22 +70,7 @@ __device__ float dev_i8_to_float(uint8_t b)
 
 __device__ uint8_t dev_quantize_nvfp4(float val)
 {
-    if (val == 0.0f) return 0;
-    int sign = val < 0 ? 1 : 0;
-    float abs_val = fabsf(val);
-
-    // NVFP4 E2M1 positive magnitudes (must match the E2M1 decode used by
-    // the dequant kernels — e.g. nvfp4_to_float in benchmark_gpu.cu)
-    static const float levels[8] = {
-        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f
-    };
-    int best = 0;
-    float best_diff = fabsf(abs_val - levels[0]);
-    for (int i = 1; i < 8; i++) {
-        float d = fabsf(abs_val - levels[i]);
-        if (d < best_diff) { best_diff = d; best = i; }
-    }
-    return static_cast<uint8_t>((sign << 3) | best);
+    return kernels::QuantizeE2m1Nearest(val);
 }
 
 // ── Kernels ──────────────────────────────────────────────────────────────────
@@ -129,8 +89,8 @@ __global__ void convert_kernel(const uint8_t *__restrict__ input,
         float v;
         switch (dtype_code) {
         case 0: v = dev_bf16_to_float(input + i * 2); break;
-        case 1: v = dev_f8e4m3_to_float(input[i]);    break;
-        case 2: v = dev_f8e8m0_to_float(input[i]);    break;
+        case 1: v = kernels::F8E4m3ToFloat(input[i]);    break;
+        case 2: v = kernels::E8m0ToFloat(input[i]);    break;
         case 3: memcpy(&v, input + i * 4, sizeof(v)); break;
         case 4: v = dev_i8_to_float(input[i]);         break;
         default: v = 0.0f;
@@ -142,7 +102,7 @@ __global__ void convert_kernel(const uint8_t *__restrict__ input,
             int64_t c = i % C;
             int64_t sr = r / block_r;
             int64_t sc = c / block_c;
-            v *= dev_f8e8m0_to_float(e8m0_scales[sr * SC + sc]);
+            v *= kernels::E8m0ToFloat(e8m0_scales[sr * SC + sc]);
         }
         output[i] = v;
     }

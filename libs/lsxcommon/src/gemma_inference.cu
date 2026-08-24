@@ -13,6 +13,7 @@
 #include "lsxcommon/gemma4_inference_load.h"
 
 #include "nvfp4_codec.h"
+#include "lsx_kernels_quant.cuh"
 
 namespace lsxcommon {
 namespace gemma {
@@ -23,29 +24,8 @@ __device__ __forceinline__ float gelu_tanh_dev(float v)
     return 0.5f * v * (1.0f + tanhf(k0 * (v + 0.044715f * v * v * v)));
 }
 
-// ── NVFP4 dequant to BF16 ───────────────────────────────────────────────────
-// value = E2M1(nibble) * E4M3(block_scale) * global_scale; lo nibble first.
-__global__ void gemma_dequant_nvfp4_kernel(const uint8_t *__restrict__ packed,
-                                           const uint8_t *__restrict__ scales,
-                                           float global_scale,
-                                           __nv_bfloat16 *__restrict__ out,
-                                           int64_t num_elements)
-{
-    constexpr int kBlk = 16;
-    int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    int64_t total = num_elements / 2; // 2 elems per byte
-    for (; i < total;
-         i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-        uint8_t byte = packed[i];
-        int64_t elem = i * 2;
-        const float s = gpu::nvfp4::E4M3ScaleToFloat(scales[elem / kBlk]) *
-                        global_scale;
-        out[elem] =
-            __float2bfloat16(gpu::nvfp4::E2M1Value(byte & 0xF) * s);
-        out[elem + 1] =
-            __float2bfloat16(gpu::nvfp4::E2M1Value(byte >> 4) * s);
-    }
-}
+// NVFP4 elementwise dequant: unified kernels::Nvfp4DequantKernel<__nv_bfloat16>
+// (lsx_kernels_quant.cuh), byte-equal to the former gemma_dequant_nvfp4_kernel.
 
 static cudaError_t DequantNvfp4(cudaStream_t stream, const uint8_t *d_packed,
                                 int64_t packed_bytes, const uint8_t *d_scales,
@@ -58,10 +38,10 @@ static cudaError_t DequantNvfp4(cudaStream_t stream, const uint8_t *d_packed,
     if (packed_bytes * 2 != num_elements) return cudaErrorInvalidValue;
     if (num_elements / 2 < scales_bytes) return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    int64_t total = num_elements / 2;
-    int grid = static_cast<int>((total + kBlock - 1) / kBlock);
-    gemma_dequant_nvfp4_kernel<<<grid, kBlock, 0, stream>>>(
-        d_packed, d_scales, global_scale, d_out, num_elements);
+    int grid = static_cast<int>((num_elements + kBlock - 1) / kBlock);
+    lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
+        <<<grid, kBlock, 0, stream>>>(d_packed, d_scales, global_scale,
+                                      d_out, num_elements);
     return cudaGetLastError();
 }
 

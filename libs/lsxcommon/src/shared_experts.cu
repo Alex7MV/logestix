@@ -1,6 +1,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_codec.h"
+#include "lsx_kernels_quant.cuh"
 
 #include <cfloat>
 #include <cstdint>
@@ -27,36 +28,10 @@ namespace {
 using nvfp4::E2M1Value;
 using nvfp4::E4M3ScaleToFloat;
 
-// F8_E4M3 (full 8-bit float: 1 sign + 4 exp + 3 mantissa, bias=7) → float.
-// Decode semantics per cuda_fp8.hpp __nv_cvt_fp8_to_halfraw (__NV_E4M3):
-// 0x7F/0xFF -> canonical NaN, e == 0 && m != 0 -> subnormal m*2^-9.
-__device__ __forceinline__ float f8e4m3_to_float(uint8_t b)
-{
-    if (!b || b == 0x80) return 0.0f;
-    if ((b & 0x7F) == 0x7F) return __int_as_float(0x7FC00000);
-    int s = (b >> 7) & 1;
-    int e = (b >> 3) & 0x0F;
-    int m = b & 0x07;
-    if (e == 0) {
-        float v = static_cast<float>(m) * 0.001953125f;  // m * 2^-9
-        return s ? -v : v;
-    }
-    uint32_t f32 = (static_cast<uint32_t>(s) << 31)
-                 | (static_cast<uint32_t>(e + 127 - 7) << 23)
-                 | (static_cast<uint32_t>(m) << 20);
-    float v;
-    std::memcpy(&v, &f32, sizeof(v));
-    return v;
-}
+
 
 // NVFP4 E4M3/E2M1 decode primitives now live in nvfp4_codec.h (aliased above).
-// F8_E8M0 scale: scale = 2^(e-127); 0 is a valid encoding of 0.
-__device__ __forceinline__ float e8m0_scale_to_float(uint8_t b)
-{
-    if (b == 0) return 0.0f;
-    if (b == 0xFF) return FLT_MAX;
-    return __uint_as_float((static_cast<uint32_t>(b) - 127 + 127) << 23);
-}
+
 
 __device__ __forceinline__ uint32_t half2_raw_bits(__half2 h)
 {
@@ -161,7 +136,7 @@ __global__ void dequant_fp4_e8m0_kernel(
 
     if (base + ELEMS_PER_THREAD <= num_elements) {
         const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
-        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+        const float scl = kernels::E8m0ClampedToFloat(scales[base >> 5]);
 
         uint32_t w[16];
         unpack_nibbles8(p.x, scl, &w[0]);
@@ -183,7 +158,7 @@ __global__ void dequant_fp4_e8m0_kernel(
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
         output[i] = __float2half(E2M1Value(nibble)
-                                 * e8m0_scale_to_float(scales[i >> 5]));
+                                 * kernels::E8m0ClampedToFloat(scales[i >> 5]));
     }
 }
 
@@ -206,7 +181,7 @@ __global__ void dequant_f8_e8m0_kernel(
         const int64_t c = base - r * C;          // multiple of 16
         const int64_t sr = r / block_r;
         const int64_t sc = c / block_c;
-        const float sv = e8m0_scale_to_float(scales[sr * SC + sc]);
+        const float sv = kernels::E8m0ClampedToFloat(scales[sr * SC + sc]);
         const uint4 ww = *reinterpret_cast<const uint4*>(w + base);
         const uint8_t bytes[ELEMS] = {
             uint8_t(ww.x & 0xFF), uint8_t((ww.x >> 8) & 0xFF),
@@ -220,7 +195,7 @@ __global__ void dequant_f8_e8m0_kernel(
         __half vals[ELEMS];
         #pragma unroll
         for (int j = 0; j < ELEMS; ++j)
-            vals[j] = __float2half(f8e4m3_to_float(bytes[j]) * sv);
+            vals[j] = __float2half(kernels::F8E4m3ToFloat(bytes[j]) * sv);
         uint4* out4 = reinterpret_cast<uint4*>(out + base);
         out4[0] = *reinterpret_cast<const uint4*>(vals);
         out4[1] = *reinterpret_cast<const uint4*>(vals + 8);
@@ -231,7 +206,7 @@ __global__ void dequant_f8_e8m0_kernel(
         int64_t c = i % C;
         int64_t sr = r / block_r;
         int64_t sc = c / block_c;
-        float v = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
+        float v = kernels::F8E4m3ToFloat(w[i]) * kernels::E8m0ClampedToFloat(scales[sr * SC + sc]);
         out[i] = __float2half(v);
     }
 }
@@ -474,7 +449,7 @@ __global__ void dequant_fp4_e8m0_f32_kernel(
 
     if (base + ELEMS_PER_THREAD <= num_elements) {
         const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
-        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+        const float scl = kernels::E8m0ClampedToFloat(scales[base >> 5]);
         // Unpack 32 nibbles into 32 floats
         uint32_t u = p.x;
         for (int i = 0; i < 8; ++i) {
@@ -503,7 +478,7 @@ __global__ void dequant_fp4_e8m0_f32_kernel(
         const uint8_t nibble = (i & 1)
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
-        output[i] = E2M1Value(nibble) * e8m0_scale_to_float(scales[i >> 5]);
+        output[i] = E2M1Value(nibble) * kernels::E8m0ClampedToFloat(scales[i >> 5]);
     }
 }
 
@@ -523,7 +498,7 @@ __global__ void dequant_f8_e8m0_f32_kernel(
         const int64_t c = base - r * C;
         const int64_t sr = r / block_r;
         const int64_t sc = c / block_c;
-        const float sv = e8m0_scale_to_float(scales[sr * SC + sc]);
+        const float sv = kernels::E8m0ClampedToFloat(scales[sr * SC + sc]);
         const uint4 ww = *reinterpret_cast<const uint4*>(w + base);
         const uint8_t bytes[ELEMS] = {
             uint8_t(ww.x & 0xFF), uint8_t((ww.x >> 8) & 0xFF),
@@ -537,7 +512,7 @@ __global__ void dequant_f8_e8m0_f32_kernel(
         float vals[ELEMS];
         #pragma unroll
         for (int j = 0; j < ELEMS; ++j)
-            vals[j] = f8e4m3_to_float(bytes[j]) * sv;
+            vals[j] = kernels::F8E4m3ToFloat(bytes[j]) * sv;
         float4* out4 = reinterpret_cast<float4*>(out + base);
         out4[0] = *reinterpret_cast<const float4*>(vals);
         out4[1] = *reinterpret_cast<const float4*>(vals + 4);
@@ -550,7 +525,7 @@ __global__ void dequant_f8_e8m0_f32_kernel(
         int64_t c = i % C;
         int64_t sr = r / block_r;
         int64_t sc = c / block_c;
-        out[i] = f8e4m3_to_float(w[i]) * e8m0_scale_to_float(scales[sr * SC + sc]);
+        out[i] = kernels::F8E4m3ToFloat(w[i]) * kernels::E8m0ClampedToFloat(scales[sr * SC + sc]);
     }
 }
 
@@ -708,7 +683,7 @@ __global__ void dequant_fp4_e8m0_actscale_kernel(
 
     if (base + ELEMS_PER_THREAD <= num_elements) {
         const uint4 p = *reinterpret_cast<const uint4*>(packed + (base >> 1));
-        const float scl = e8m0_scale_to_float(scales[base >> 5]);
+        const float scl = kernels::E8m0ClampedToFloat(scales[base >> 5]);
         // K % 128 == 0 and base % 32 == 0 → the whole 32-element group shares
         // one activation scale (worst case k0%128 == 96, 96+31 == 127).
         const float ascl = act_scales[(base % K) >> 7];
@@ -733,7 +708,7 @@ __global__ void dequant_fp4_e8m0_actscale_kernel(
             ? (packed[byte_idx] >> 4)
             : (packed[byte_idx] & 0x0F);
         output[i] = __float2half(E2M1Value(nibble)
-                                 * e8m0_scale_to_float(scales[i >> 5])
+                                 * kernels::E8m0ClampedToFloat(scales[i >> 5])
                                  * act_scales[(i % K) >> 7]);
     }
 }

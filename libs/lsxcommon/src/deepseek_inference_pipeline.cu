@@ -22,9 +22,6 @@ namespace lsxcommon {
 namespace gpu {
 
 // Forward declarations from other .cu files
-extern __global__ void dequant_nvfp4_to_half_kernel(
-    const uint8_t* __restrict__, const uint8_t* __restrict__, float,
-    __half* __restrict__, int);
 
 // half_to_float_kernel / float_to_half_kernel are defined once in
 // deepseek_inference_load.cuh (included above) and shared by every .cu
