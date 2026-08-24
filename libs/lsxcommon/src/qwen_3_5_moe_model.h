@@ -23,23 +23,8 @@ class Qwen35MoeModel final : public ModelBase {
 public:
     static const std::string kType;  // "qwen3.5-35b-a3b"
 
-    static constexpr int kHidden = 2048;
-    static constexpr int kLayers = 40;
-    static constexpr int kFullAttnInterval = 4;
-    static constexpr int kHeads = 16;
-    static constexpr int kKVHeads = 2;
-    static constexpr int kHeadDim = 256;
-    static constexpr int kVocab = 248320;
-    static constexpr int kNumExperts = 256;
-    static constexpr int kTopK = 8;
-    static constexpr int kMoeIntermediate = 512;
-    static constexpr int kSharedIntermediate = 512;
-
-    static_assert(kTopK <= kNumExperts, "top-k exceeds expert count");
-    static_assert(kLayers % kFullAttnInterval == 0,
-                  "hybrid interval pattern incomplete");
-    static_assert(kMoeIntermediate > 0 && kSharedIntermediate > 0,
-                  "bad MoE geometry");
+    // Frozen geometry lives once in src/qwen_moe_constants.h
+    // (namespace qwen_moe::frozen); ValidateGeometry cross-checks against it.
 
     explicit Qwen35MoeModel(ModelInitConfig cfg);
     ~Qwen35MoeModel() override;

@@ -39,6 +39,19 @@ bool DeepSeekV4FlashModel::Load()
             "[deepseek-model] topology error: ", topo.error_msg));
         return false;
     }
+    // Frozen-geometry passport cross-check (MODEL INGEST INVARIANT step 3):
+    // the converted index must match the compile-time locked architecture.
+    // Synthetic test fixtures bypass via LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY
+    // (same policy as every other family).
+    if (!SyntheticGeometryAllowed() &&
+        (topo.num_layers != gpu::kNumLayers ||
+         topo.experts_per_layer != gpu::kNumRouted)) {
+        lsxcommon::log::error(absl::StrCat(
+            "[deepseek-model] topology mismatches frozen passport: layers ",
+            topo.num_layers, " != ", gpu::kNumLayers, " or experts ",
+            topo.experts_per_layer, " != ", gpu::kNumRouted));
+        return false;
+    }
     vram_ = topo.vram;
 
     // Fast-load the pinned weights ONCE (GLM-parity ownership model):

@@ -28,5 +28,12 @@ inline constexpr int kMoeIntermediate = 512;
 inline constexpr int kSharedIntermediate = 512;
 inline constexpr double kRmsNormEps = 1e-6;
 
+// Frozen-geometry passport invariants (MODEL INGEST INVARIANT step 3).
+static_assert(kTopK <= kNumExperts, "top-k exceeds expert count");
+static_assert(kLayers % kFullAttnInterval == 0,
+              "hybrid interval pattern incomplete");
+static_assert(kMoeIntermediate > 0 && kSharedIntermediate > 0,
+              "bad MoE geometry");
+
 } // namespace frozen
 } // namespace lsxcommon::qwen_moe

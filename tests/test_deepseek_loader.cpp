@@ -1,10 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
+#include <lsxcommon/model_factory.h>
 #include <lsxcommon/schema.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/api.h>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 namespace fs = std::filesystem;
 
@@ -367,5 +369,45 @@ TEST_CASE("DeepSeek loader errors on malformed tensor",
     pw.Free();
 
     cudaStreamDestroy(stream);
+    fs::remove_all(base);
+}
+
+TEST_CASE("DeepSeek model Load rejects topology mismatching the passport",
+          "[deepseek][loader][passport]")
+{
+    namespace fs = std::filesystem;
+    auto base = fs::temp_directory_path() / "logestix_ds_passport";
+    fs::remove_all(base);
+    auto model = base / "model";
+    REQUIRE(dsfixtest::BuildSyntheticModel(model).ok());
+
+    // Rewrite the index with a layer count that violates the frozen passport
+    // of the real architecture.
+    {
+        std::ofstream f(model / "logestix" / "model.index.json");
+        f << "{\n"
+          << "  \"model\": \"DeepSeek-V4-Flash\",\n"
+          << "  \"num_layers\": "
+          << lsxcommon::gpu::kNumLayers + 1 << ",\n"
+          << "  \"experts_per_layer\": "
+          << lsxcommon::gpu::kNumRouted << ",\n"
+          << "  \"total_experts\": "
+          << ((lsxcommon::gpu::kNumLayers + 1) * lsxcommon::gpu::kNumRouted)
+          << ",\n"
+          << "  \"vram\": {\n"
+          << "    \"min_bytes\": 1024,\n"
+          << "    \"optimal_bytes\": 2048,\n"
+          << "    \"max_bytes\": 4096,\n"
+          << "    \"context_tokens\": 2048\n"
+          << "  }\n"
+          << "}\n";
+    }
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    cfg.model_type = "deepseek-v4-flash";
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    CHECK_FALSE(m->Load());  // hard failure: topology vs passport mismatch
     fs::remove_all(base);
 }

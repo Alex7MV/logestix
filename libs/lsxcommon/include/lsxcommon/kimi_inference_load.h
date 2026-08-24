@@ -21,6 +21,10 @@ namespace kimi {
 // values are cross-checked at Load() and any mismatch is a hard error.
 constexpr int kKimiHidden = 7168;
 constexpr int kKimiNumLayers = 61;
+
+// Frozen-geometry passport (MODEL INGEST INVARIANT step 3).
+static_assert(kKimiHidden == 7168 && kKimiNumLayers == 61,
+              "Kimi-K2.7 frozen passport drifted");
 constexpr int kKimiNumHeads = 64;
 constexpr int kKimiKvLoraRank = 512;   // compressed KV latent
 constexpr int kKimiQLoraRank = 1536;   // q_lora_rank

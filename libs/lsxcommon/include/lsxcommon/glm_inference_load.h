@@ -28,6 +28,11 @@ constexpr int kGlmQLoraRank = 2048;
 constexpr int kGlmKVLoraRank = 512;
 constexpr int kGlmMoeIntermediate = 2048;
 constexpr int kGlmNumRouted = 256;
+
+// Frozen-geometry passport (MODEL INGEST INVARIANT step 3).
+static_assert(kGlmHidden == 6144 && kGlmNumLayers == 79,
+              "GLM-5.2 frozen passport drifted");
+static_assert(kGlmNumRouted == 256, "GLM-5.2 routed expert count locked");
 constexpr int kGlmNumShared = 1;
 constexpr int kGlmIndexNHeads = 32;
 constexpr int kGlmIndexHeadDim = 128;

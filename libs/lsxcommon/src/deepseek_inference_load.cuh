@@ -26,6 +26,15 @@ constexpr int kNumRouted = 256;
 constexpr int kTopK = 6;
 constexpr int kIntermediateDim = 2048;
 
+// Frozen-geometry passport (MODEL INGEST INVARIANT step 3): compile-time
+// relations lock the architecture against accidental drift.
+static_assert(kTopK > 0 && kTopK <= kNumRouted,
+              "top-k exceeds routed expert count");
+static_assert(kHiddenDim % 256 == 0,
+              "hidden must tile cleanly on Blackwell (256-wide)");
+static_assert(kNumLayers > 0 && kIntermediateDim > 0,
+              "bad MLP/layer geometry");
+
 // DeepSeek-V4 MLA / Hyper-Connections geometry (from config.json)
 constexpr int kHcMult = 4;                 // hc_mult: copies of hidden state
 constexpr int kHcMix = (2 + kHcMult) * kHcMult;  // 24
