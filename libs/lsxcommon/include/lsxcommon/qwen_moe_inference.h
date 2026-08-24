@@ -6,8 +6,11 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
+#include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon::qwen_moe {
 
@@ -35,6 +38,7 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,
 // Forward decls from the loader side (pinned store + LRU device cache).
 struct QwenMoeExpertStore;
 struct QwenMoeExpertDeviceCache;
+struct QwenMoePinnedWeights;
 
 // Processes one token's K routed slots (ascending-k deterministic fp32
 // accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
@@ -62,5 +66,15 @@ cudaError_t RunQwenMoeSharedCombine(
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out);
+
+// Incremental single-stream generation driver (MoE FFN call site). Requires
+// a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
+// handshake and final-logits publication.
+cudaError_t RunQwenMoeGeneration(
+    cudaStream_t stream, const QwenMoePinnedWeights &pw,
+    QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    const std::vector<int32_t> &prompt, int max_new, int eos_id,
+    lsxcommon::qwen::QwenGenerationResult &result,
+    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv);
 
 } // namespace lsxcommon::qwen_moe

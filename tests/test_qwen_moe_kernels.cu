@@ -359,3 +359,56 @@ TEST_CASE("shared expert gate combine", "[qwen-moe-experts]")
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
 }
+
+TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_gen_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_gen_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen_moe::QwenMoePinnedWeights pw;
+    lsxcommon::qwen_moe::QwenMoeExpertStore store;
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 8, cache, err));
+
+    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
+        lsxcommon::qwen::QwenKvCache kv;
+        lsxcommon::sample::GreedySampler sampler;
+        std::vector<int32_t> prompt = {1, 2, 3};
+        return lsxcommon::qwen_moe::RunQwenMoeGeneration(
+            stream, pw, store, cache, prompt, /*max_new=*/4,
+            /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
+    };
+
+    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    cudaError_t e1 = run_once(r1);
+    if (e1 != cudaSuccess) WARN(r1.error_msg);
+    REQUIRE(e1 == cudaSuccess);
+    CHECK(static_cast<int>(r1.tokens.size()) == 4);
+    for (auto t : r1.tokens) CHECK((t >= 0 && t < pw.top.vocab_size));
+
+    cudaError_t e2 = run_once(r2);
+    REQUIRE(e2 == cudaSuccess);
+    CHECK(r1.tokens == r2.tokens);
+    REQUIRE(r1.final_logits.size() == r2.final_logits.size());
+    CHECK(std::memcmp(r1.final_logits.data(), r2.final_logits.data(),
+                      r1.final_logits.size() * sizeof(float)) == 0);
+    for (auto v : r1.final_logits) CHECK(std::isfinite(v));
+    CHECK(r1.ok); CHECK(r2.ok);
+
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    store.Free();
+    lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
+    cudaStreamDestroy(stream);
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
