@@ -66,6 +66,8 @@ Proven consolidation precedents in this repo: `PinnedStagingRing`,
 `PinnedStagingRing`):
 
 ```
+// kind: generalized conversion tag (raw copy / BF16→FP16 / …),
+// unifying the per-loader job-struct variants
 struct UploadJob { const TensorRecord* rec; void* dst; CvKind kind; };
 cudaError_t ValidateJobs(span<const UploadJob>, std::string* error);
 cudaError_t RunUploadJobs(          // validate → single arena cudaMalloc →
@@ -205,4 +207,6 @@ Red→green on every step:
 - DeepSeek/GLM/Kimi satisfy protocol step 3 compile-time locking.
 - Full ctest suite green; new characterization tests pin consolidated units.
 - Net reduction ≈ 2–2.5 kLOC of duplication without behavior change except
-  the four listed intentional fixes.
+  the intentional fixes listed in §2.4 and §4 (Gemma load-once index +
+  session policy, QwenBase context churn, residency lock for all models,
+  Gemma SelfCheck folded into the shared harness).
