@@ -183,3 +183,27 @@ tuning, prefill path (still scalar tile kernel at seq>1).
 Session totals (Qwen3.5-9B @ RTX 5060 Ti, Debug, 16 tokens):
 audit start 0.6 tok/s / ttft 6226 ms -> **8.2 tok/s** / ttft 491 ms.
 Suite state: qwen+blackwell 26/26 green.
+
+### Optimization round 3 + main sync (2026-08-24)
+
+- TC path extended to accumulate-in GEMMs (mlp down-proj acc=true was silently
+  running the SCALAR tile kernel): **14.8 tok/s end-to-end**, ttft 262 ms
+  (prefill GEMMs now also route through tensor cores).
+- Merged origin/main (gemma4 + kimi models). Synced qwen warp-dot kernels to
+  the renamed codec (kE2M1Table -> E2M1Value). Full rebuild green.
+- Pre-existing Windows/MSVC defects inherited from main (NOT caused by this
+  branch; filed here for the mainline owners):
+
+| ID | Sev | Evidence | Summary |
+|---|---|---|---|
+| F-08 | P2 | test_schema_views (3/78 asserts fail) | Shared-memory schema views fail on MSVC |
+| F-09 | P2 | test_gemma_prompt_framing | Path concat missing separator: `Temp\logestix_gpf_C:\Users\...` |
+| F-10 | P1 | test_kimi_attention SegFault | New kimi kernel crashes at runtime on sm_120 |
+
+Full suite: 95/98 (3 failed = F-08..F-10; 7 SKIP by design).
+
+### Cumulative session result
+
+**Qwen3.5-9B decode @ RTX 5060 Ti: 0.6 -> 14.8 tok/s (x24.7), ttft 6226 ->
+262 ms.** Default scalar path bit-exact and untouched; fast-math behind
+ModelInitConfig::fast_math / LSX_TEST_FAST_MATH=1.
