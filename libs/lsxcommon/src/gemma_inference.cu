@@ -14,6 +14,7 @@
 
 #include "nvfp4_codec.h"
 #include "lsx_kernels_quant.cuh"
+#include "lsx_kernels_norm.cuh"
 
 namespace lsxcommon {
 namespace gemma {
@@ -47,60 +48,8 @@ static cudaError_t DequantNvfp4(cudaStream_t stream, const uint8_t *d_packed,
 
 // ── RMSNorm (offset-weight form) ────────────────────────────────────────────
 
-__global__ void gemma_rmsnorm_kernel(const __nv_bfloat16 *__restrict__ x,
-                                     const __nv_bfloat16 *__restrict__ w,
-                                     __nv_bfloat16 *out, int rows, int hidden,
-                                     float eps)
-{
-    const int row = blockIdx.x;
-    if (row >= rows) return;
-    const __nv_bfloat16 *xr = x + static_cast<int64_t>(row) * hidden;
-    __nv_bfloat16 *orow = out + static_cast<int64_t>(row) * hidden;
-    extern __shared__ float squares[];
-    float sum = 0.0f;
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float v = __bfloat162float(xr[j]);
-        sum += v * v;
-    }
-    squares[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) squares[threadIdx.x] += squares[threadIdx.x + s];
-        __syncthreads();
-    }
-const float inv = rsqrtf(squares[0] / static_cast<float>(hidden) + eps);
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float wf = __bfloat162float(w[j]);
-        // Gemma4 RMSNorm: output = rms(x) * w   (NOT the Gemma3 (1+w) offset).
-        orow[j] = __float2bfloat16(__bfloat162float(xr[j]) * inv * wf);
-    }
-}
-
-// Plain RMSNorm (with_scale=False: router norm / v_norm) — no weight scaling.
-__global__ void gemma_rmsnorm_plain_kernel(const __nv_bfloat16 *__restrict__ x,
-                                           __nv_bfloat16 *out, int rows,
-                                           int hidden, float eps)
-{
-    const int row = blockIdx.x;
-    if (row >= rows) return;
-    const __nv_bfloat16 *xr = x + static_cast<int64_t>(row) * hidden;
-    __nv_bfloat16 *orow = out + static_cast<int64_t>(row) * hidden;
-    extern __shared__ float squares[];
-    float sum = 0.0f;
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float v = __bfloat162float(xr[j]);
-        sum += v * v;
-    }
-    squares[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s) squares[threadIdx.x] += squares[threadIdx.x + s];
-        __syncthreads();
-    }
-    const float inv = rsqrtf(squares[0] / static_cast<float>(hidden) + eps);
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
-        orow[j] = __float2bfloat16(__bfloat162float(xr[j]) * inv);
-}
+// RMSNorm (direct weight): unified kernels::RmsNormTreeKernel.
+// RMSNorm (no weight): unified kernels::RmsNormTreeKernel<None>.
 
 static cudaError_t RunGemmaRmsNormPlain(const __nv_bfloat16 *d_x,
                                         __nv_bfloat16 *d_out, int rows,
@@ -110,8 +59,8 @@ static cudaError_t RunGemmaRmsNormPlain(const __nv_bfloat16 *d_x,
     if (!d_x || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    gemma_rmsnorm_plain_kernel<<<rows, kBlock, kBlock * sizeof(float), stream>>>(
-        d_x, d_out, rows, hidden, eps);
+    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock, kBlock * sizeof(float), stream>>>(
+        d_x, nullptr, d_out, rows, hidden, eps);
     return cudaGetLastError();
 }
 
@@ -122,7 +71,7 @@ cudaError_t RunGemmaRMSNorm(const __nv_bfloat16 *d_x, const __nv_bfloat16 *d_w, 
     if (!d_x || !d_w || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    gemma_rmsnorm_kernel<<<rows, kBlock, kBlock * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::Direct><<<rows, kBlock, kBlock * sizeof(float), stream>>>(
         d_x, d_w, d_out, rows, hidden, eps);
     return cudaGetLastError();
 }

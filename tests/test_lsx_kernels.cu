@@ -14,6 +14,7 @@
 #include "lsx_kernels_quant.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
+#include "lsx_kernels_norm.cuh"
 
 namespace {
 
@@ -412,4 +413,65 @@ TEST_CASE("swiglu flavors match refs bit-for-bit", "[lsxk][act]") {
         RequireDeviceEqual(d_gr, d_gx, kN);
         cudaFree(d_gr); cudaFree(d_ur); cudaFree(d_gx); cudaFree(d_ux);
     }
+}
+
+// ── Task 5: norm cluster references ────────────────────────────────────────
+namespace ref {
+
+// gemma_rmsnorm_plain_kernel verbatim (tree reduction, no weight).
+__global__ void rms_tree_bf16_plain(const __nv_bfloat16* __restrict__ x,
+                                    const __nv_bfloat16* __restrict__ w,
+                                    __nv_bfloat16* __restrict__ out, int rows,
+                                    int hidden, float eps) {
+    const int row = blockIdx.x;
+    if (row >= rows) return;
+    const __nv_bfloat16* xr = x + static_cast<int64_t>(row) * hidden;
+    __nv_bfloat16* orow = out + static_cast<int64_t>(row) * hidden;
+    extern __shared__ float squares[];
+    float sum = 0.0f;
+    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
+        float v = __bfloat162float(xr[j]);
+        sum += v * v;
+    }
+    squares[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) squares[threadIdx.x] += squares[threadIdx.x + s];
+        __syncthreads();
+    }
+    const float inv = rsqrtf(squares[0] / static_cast<float>(hidden) + eps);
+    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+        orow[j] = __float2bfloat16(__bfloat162float(xr[j]) * inv);
+}
+
+} // namespace ref
+
+TEST_CASE("rmsnorm tree kernel matches refs", "[lsxk][norm]") {
+    constexpr int kRows = 3, kHid = 256;
+    constexpr int blk = 128;
+    std::vector<uint16_t> xr(kRows * kHid), wr(kHid);
+    uint32_t st = 99;
+    for (auto& r : xr) r = static_cast<uint16_t>(LcgNext(st) & 0xFFFF);
+    for (auto& r : wr) r = static_cast<uint16_t>(LcgNext(st) & 0xFFFF);
+
+    __nv_bfloat16 *d_xr, *d_xu, *d_wr, *d_wu, *d_or, *d_ou;
+    cudaMalloc(&d_xr, xr.size() * 2); cudaMalloc(&d_xu, xr.size() * 2);
+    cudaMemcpy(d_xr, xr.data(), xr.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_xu, d_xr, xr.size() * 2, cudaMemcpyDeviceToDevice);
+    cudaMalloc(&d_wr, wr.size() * 2); cudaMalloc(&d_wu, wr.size() * 2);
+    cudaMemcpy(d_wr, wr.data(), wr.size() * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_wu, d_wr, wr.size() * 2, cudaMemcpyDeviceToDevice);
+    cudaMalloc(&d_or, xr.size() * 2); cudaMalloc(&d_ou, xr.size() * 2);
+
+    ref::rms_tree_bf16_plain<<<kRows, blk, blk * sizeof(float)>>>(
+        d_xr, d_wr, d_or, kRows, kHid, 1e-5f);
+    lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16,
+        lsxcommon::kernels::NormWeight::None>
+        <<<kRows, blk, blk * sizeof(float)>>>(d_xu, d_wu, d_ou, kRows, kHid,
+                                              1e-5f);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    RequireDeviceEqual(d_or, d_ou, kRows * kHid);
+
+    cudaFree(d_xr); cudaFree(d_xu); cudaFree(d_wr); cudaFree(d_wu);
+    cudaFree(d_or); cudaFree(d_ou);
 }

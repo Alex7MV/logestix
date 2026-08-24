@@ -5,6 +5,7 @@
 #include "lsxcommon/sampling.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
+#include "lsx_kernels_norm.cuh"
 #include "qwen_reduce.cuh"
 
 #include <cuda_runtime.h>
@@ -53,37 +54,8 @@ __device__ __forceinline__ float softplus_dev(float x)
     return log1pf(expf(x));
 }
 
-// ── RMSNorm, offset-weight form: out = rmsnorm(x) * (1 + w) ────────────────
-// grid-stride reduction: each thread processes multiple elements when
-// hidden > blockDim.x (supports arbitrary hidden up to 4096+).
-__global__ void rmsnorm_offset_kernel(const __half *__restrict__ x, const __half *__restrict__ w,
-                                      __half *out, int rows, int hidden,
-                                      double eps)
-{
-    const int row = blockIdx.x;
-    if (row >= rows) return;
-    const __half *xr = x + (int64_t)row * hidden;
-    __half *orow = out + (int64_t)row * hidden;
-    extern __shared__ float sarray[];
-    float *squares = sarray;
-    float sum = 0.0f;
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float v = __half2float(xr[j]);
-        sum += v * v;
-    }
-    squares[threadIdx.x] = sum;
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (threadIdx.x < s)
-            squares[threadIdx.x] += squares[threadIdx.x + s];
-        __syncthreads();
-    }
-    const float inv = rsqrtf(squares[0] / (float)hidden + (float)eps);
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float wf = __half2float(w[j]);
-        orow[j] = __float2half(__half2float(xr[j]) * inv * (1.0f + wf));
-    }
-}
+// RMSNorm (offset 1+w): unified kernels::RmsNormTreeKernel
+// <__half, Offset1PlusW> (lsx_kernels_norm.cuh).
 
 // ── RMSNormGated: out = rmsnorm(x) * head * silu(z) ────────────────────────
 // grid-stride reduction (same pattern).
@@ -329,7 +301,7 @@ cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w
 {
     if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
     const int threads = std::min(hidden, 256);
-    rmsnorm_offset_kernel<<<rows, threads, threads * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float), stream>>>(
         x, w, out, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -577,7 +549,7 @@ cudaError_t LaunchNorm1d(const __half *x, const __half *w, __half *y,
                          int rows, int hidden, double eps, cudaStream_t stream)
 {
     const int threads = std::min(hidden, 256);
-    rmsnorm_offset_kernel<<<rows, threads, threads * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float), stream>>>(
         x, w, y, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -1337,7 +1309,7 @@ cudaError_t RunQwenFusedQkv(
     if (cudaMallocAsync(&d_tmp, (size_t)H * 2, stream) != cudaSuccess)
         return cudaErrorMemoryAllocation;
     const int th = std::min(H, 256);
-    rmsnorm_offset_kernel<<<1, th, th * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<1, th, th * sizeof(float), stream>>>(
         x, input_norm, d_tmp, 1, H, (double)eps);
     cudaError_t e = cudaGetLastError();
     if (!e) {
