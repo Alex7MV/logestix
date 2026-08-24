@@ -1,10 +1,13 @@
 // qwen_tc_gemm.cu - Blackwell tensor-core NVFP4 W4A4 fast path (audit Phase 3,
 // F-01). See qwen_tc_gemm.h for the compilation-target constraint.
 //
-// Task 2: activation quantization. One thread per 16-element block computes
-// the block absmax, encodes a power-of-two E4M3 scale (same math as
-// lsxcommon::float_to_e4m3_p2 / nvfp4_codec.h E4M3ScaleToFloat: value
-// = 2^(e4-7), e4==0 -> 0), and packs 16 E2M1 nibbles (low nibble = even k).
+// Contents:
+//  * ActQuantKernel + helpers: FP16 -> NVFP4 activation quantization
+//    (per-16 pow2-E4M3 scale + E2M1 nibble pairs, repo-codec-compatible).
+//  * TcGemmKernel: 64x64 tile GEMM on warp-level mxf4nvf4 block-scaled MMA.
+//    Raw packed K64-slabs are staged in shared memory; fragments are built
+//    from smem; the hardware MMA performs all decoding. Weights are consumed
+//    in the EXISTING repo layout ([N,K] nibbles + [N,K/16] pow2-E4M3 scales).
 #include "lsxcommon/qwen_tc_gemm.h"
 
 #include <cmath>
@@ -26,9 +29,6 @@ __device__ __forceinline__ uint8_t Pow2E4m3Encode(float s)
     if (!(s > 0.0f)) return 0; // zero / NaN guard: zero scale zeroes the block
     int exp;
     (void)frexpf(s, &exp); // s = m * 2^exp, m in [0.5, 1)
-    // ceil-log2(s): log2(s) = exp + log2(m) with log2(m) in [-1, 0),
-    // so ceil == exp except when m == 0.5 exactly (log2 == exp-1 -> an
-    // exact power of two, already minimal).
     const int e4 = exp + 7;
     if (e4 < 1) return static_cast<uint8_t>(1 << 3);      // smallest positive
     if (e4 > 15) return static_cast<uint8_t>(15 << 3);    // saturate at 2^8
@@ -60,8 +60,9 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
                         threadIdx.x;
     const int64_t base = blk * 16;
     if (base >= n) return;
-    const int len = static_cast<int>(min(static_cast<long long>(16),
-                                         n - base));
+    const int len =
+        static_cast<int>(min(static_cast<long long>(16),
+                             static_cast<long long>(n - base)));
 
     float absmax = 0.0f;
     for (int i = 0; i < len; ++i) {
@@ -85,51 +86,13 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     }
 }
 
-} // namespace
-
-cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
-                              int K, uint8_t *d_packed, uint8_t *d_scales)
-{
-    if (!x || !d_packed || !d_scales || seq <= 0 || K <= 0 || (K & 15))
-        return cudaErrorInvalidValue;
-    const int64_t n = static_cast<int64_t>(seq) * K;
-    const int64_t blocks16 = (n + 15) / 16;
-    const int threads = 256;
-    const int64_t grid = (blocks16 + threads - 1) / threads;
-    if (grid > 0x7FFFFFFFLL) return cudaErrorInvalidValue;
-    ActQuantKernel<<<static_cast<int>(grid), threads, 0, stream>>>(
-        x, n, d_packed, d_scales);
-    return cudaGetLastError();
-}
-
-// ── Task 3: tensor-core tile GEMM ───────────────────────────────────────────
-//
-// Block = 256 threads = 8 warps arranged 4x2; tile = 64 rows x 64 cols.
-// Warp (wm, wn) covers 16 rows x 32 cols = four m16n8k64 mma atoms per
-// k-chunk. Fragment packing matches the empirically verified layout in
-// test_blackwell_tc_mma.cu:
-//   A: reg r = elements 8r..8r+7; row = g / g+8 alternating every 8 elems;
-//      col = tig*8 + (i&7) [+32 for i>=16]; low nibble = even k.
-//   SFA: lane tig==0 -> row g's chunk bytes [0..3], tig==1 -> row g+8,
-//        lanes >= 2 ignored.
-//   B: reg r = elements 8r..8r+7 over k = tig*8+(i&7) [+32]; col = lane>>2.
-//   SFB: byte c = chunk c of column lane>>2.
-namespace {
-
 constexpr int kTileM = 64;
 constexpr int kTileN = 64;
 
-__device__ __forceinline__ uint8_t FetchCode(const uint8_t *packed,
-                                             int64_t row_stride_elems,
-                                             int row, int k)
-{
-    if (row < 0 || k < 0) return 0;
-    const int64_t e = static_cast<int64_t>(row) * row_stride_elems + k;
-    const uint8_t byte = packed[e >> 1];
-    return (k & 1) ? static_cast<uint8_t>(byte >> 4)
-                   : static_cast<uint8_t>(byte & 0x0F);
-}
-
+// Tile GEMM: block computes a [64 x 64] output tile; 256 threads = 8 warps
+// arranged 4x2; each warp covers 16 rows x 32 cols via four m16n8k64 mxf4nvf4
+// atoms per K64 chunk. Fragment packing matches the empirically verified
+// layout in test_blackwell_tc_mma.cu.
 __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ as,
                              const uint8_t *__restrict__ bp,
@@ -145,15 +108,19 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int g = lane >> 2;
     const int tig = lane & 3;
 
-    const int row_base = blockIdx.y * kTileM + wm * 16;
-    const int col_base = blockIdx.x * kTileN + wn * 32;
+    const int row_base = blockIdx.y * kTileM;
+    const int col_base = blockIdx.x * kTileN;
 
+    __shared__ uint8_t sA[kTileM][32];   // [m-row][packed byte over k64]
+    __shared__ uint8_t sB[kTileN][32];   // [n-col][packed byte over k64]
+    __shared__ uint8_t sAs[kTileM][4];   // activation chunk scales
+    __shared__ uint8_t sBs[kTileN][4];   // weight chunk scales
+
+    const int k_half = K / 2;
     const int k_chunks = (K + 15) >> 4;
 
-    // Accumulators: 4 n-atoms x 4 f32.
     float d[4][4] = {};
 
-    // Precompute A fragment element (row, k-offset-within-chunk) table.
     int a_row[32], a_koff[32];
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
@@ -162,66 +129,78 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     }
 
     for (int kb = 0; kb < K; kb += 64) {
-        // ---- Build A fragment regs (one m16k64 atom covering all 4 n-atoms).
+        // ---- Cooperative streaming stage (4096 + 512 bytes per slab set).
+        for (int idx = tid; idx < kTileM * 32; idx += 256) {
+            const int r = idx / 32, b = idx % 32;
+            sA[r][b] = (row_base + r < seq)
+                           ? ap[static_cast<int64_t>(row_base + r) * k_half +
+                                kb / 2 + b]
+                           : uint8_t{0};
+        }
+        for (int idx = tid; idx < kTileN * 32; idx += 256) {
+            const int c = idx / 32, b = idx % 32;
+            sB[c][b] = (col_base + c < N)
+                           ? bp[static_cast<int64_t>(col_base + c) * k_half +
+                                kb / 2 + b]
+                           : uint8_t{0};
+        }
+        for (int idx = tid; idx < kTileM * 4; idx += 256) {
+            const int r = idx / 4, ch = idx % 4;
+            const int ch_g = kb / 16 + ch;
+            sAs[r][ch] = (row_base + r < seq && ch_g < k_chunks)
+                             ? as[static_cast<int64_t>(row_base + r) *
+                                      k_chunks + ch_g]
+                             : uint8_t{0};
+        }
+        for (int idx = tid; idx < kTileN * 4; idx += 256) {
+            const int c = idx / 4, ch = idx % 4;
+            const int ch_g = kb / 16 + ch;
+            sBs[c][ch] = (col_base + c < N && ch_g < k_chunks)
+                             ? bs[static_cast<int64_t>(col_base + c) *
+                                      k_chunks + ch_g]
+                             : uint8_t{0};
+        }
+        __syncthreads();
+
+        // ---- Build A fragment regs from smem.
         uint32_t ar[4] = {0, 0, 0, 0};
 #pragma unroll
         for (int i = 0; i < 32; ++i) {
-            const int r = row_base + a_row[i];
-            const int kk = kb + a_koff[i];
-            const bool valid = r < seq && kk < K && r >= 0;
+            const uint8_t byte = sA[a_row[i]][a_koff[i] >> 1];
             const uint8_t code =
-                valid ? FetchCode(ap, K, r, kk) : uint8_t{0};
+                (a_koff[i] & 1) ? static_cast<uint8_t>(byte >> 4)
+                                : static_cast<uint8_t>(byte & 0x0F);
             ar[i / 8] |= uint32_t(code)
                          << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
         }
-
-        // SFA: carrier lanes tig 0/1 hold rows g / g+8 chunk scales.
-        uint32_t sfa = 0;
+        // SFA: carrier lanes tig 0/1 hold rows g / g+8 chunk bytes [0..3].
+        uint32_t sfa;
         {
-            const int srow_local = (tig == 1) ? (g + 8) : g;
-            const int sr = row_base + srow_local;
-            uint32_t v = 0;
-#pragma unroll
-            for (int c = 0; c < 4; ++c) {
-                const int ch = kb / 16 + c;
-                const uint8_t byte =
-                    (sr < seq && ch < k_chunks)
-                        ? as[static_cast<int64_t>(sr) * k_chunks + ch]
-                        : uint8_t{0};
-                v |= uint32_t(byte) << (c * 8);
-            }
-            sfa = v;
+            const int sr = (tig == 1) ? (g + 8) : g;
+            sfa = uint32_t(sAs[sr][0]) | (uint32_t(sAs[sr][1]) << 8) |
+                  (uint32_t(sAs[sr][2]) << 16) | (uint32_t(sAs[sr][3]) << 24);
         }
 
-        // ---- Per-n-atom B fragments + mma.
+        // ---- Four n-atoms.
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            const int n_atom = col_base + j * 8;
+            const int n_local = wn * 32 + j * 8 + g;
             uint32_t br[2] = {0, 0};
 #pragma unroll
             for (int i = 0; i < 16; ++i) {
-                const int kk = kb + tig * 8 + (i & 7) +
-                               ((i >= 8) ? 32 : 0);
-                const int nn = n_atom + g;
-                const bool valid = nn < N && kk < K;
+                const int kk = tig * 8 + (i & 7) + ((i >= 8) ? 32 : 0);
+                const uint8_t byte = sB[n_local][kk >> 1];
                 const uint8_t code =
-                    valid ? FetchCode(bp, K, nn, kk) : uint8_t{0};
+                    (kk & 1) ? static_cast<uint8_t>(byte >> 4)
+                             : static_cast<uint8_t>(byte & 0x0F);
                 br[i / 8] |= uint32_t(code)
                              << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
             }
-            uint32_t sfb = 0;
-            {
-                const int nn = n_atom + g;
-#pragma unroll
-                for (int c = 0; c < 4; ++c) {
-                    const int ch = kb / 16 + c;
-                    const uint8_t byte =
-                        (nn < N && ch < k_chunks)
-                            ? bs[static_cast<int64_t>(nn) * k_chunks + ch]
-                            : uint8_t{0};
-                    sfb |= uint32_t(byte) << (c * 8);
-                }
-            }
+            const uint32_t sfb =
+                uint32_t(sBs[n_local][0]) | (uint32_t(sBs[n_local][1]) << 8) |
+                (uint32_t(sBs[n_local][2]) << 16) |
+                (uint32_t(sBs[n_local][3]) << 24);
+
             float &d0 = d[j][0], &d1 = d[j][1], &d2 = d[j][2], &d3 = d[j][3];
             asm volatile(
                 "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale"
@@ -233,12 +212,13 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                   "r"(br[0]), "r"(br[1]), "f"(d0), "f"(d1), "f"(d2), "f"(d3),
                   "r"(sfa), "r"(sfb));
         }
+        __syncthreads();   // slab reuse guard
     }
 
     // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        const int n0 = col_base + j * 8 + tig * 2;
+        const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
         const int r0 = row_base + g;
         if (r0 < seq && n0 < N)
             y[static_cast<int64_t>(r0) * N + n0] =
@@ -256,6 +236,21 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 }
 
 } // namespace
+
+cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
+                              int K, uint8_t *d_packed, uint8_t *d_scales)
+{
+    if (!x || !d_packed || !d_scales || seq <= 0 || K <= 0 || (K & 15))
+        return cudaErrorInvalidValue;
+    const int64_t n = static_cast<int64_t>(seq) * K;
+    const int64_t blocks16 = (n + 15) / 16;
+    const int threads = 256;
+    const int64_t grid = (blocks16 + threads - 1) / threads;
+    if (grid > 0x7FFFFFFFLL) return cudaErrorInvalidValue;
+    ActQuantKernel<<<static_cast<int>(grid), threads, 0, stream>>>(
+        x, n, d_packed, d_scales);
+    return cudaGetLastError();
+}
 
 cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,

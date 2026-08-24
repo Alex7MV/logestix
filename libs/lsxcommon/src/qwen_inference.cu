@@ -2136,29 +2136,30 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         int32_t cur = prompt[0];
         int32_t tok = -1;
         int generated = 0;
-        // Audit profiling hook (LSX_PERF_PHASES=1): per-phase GPU totals.
+        // Audit profiling hook (LSX_PERF_PHASES=1): per-phase event pairs,
+        // NO intermediate syncs (true pipeline timing). Capped at the first
+        // 8 steps -- enough for a stable sample.
         const bool perf_phases_enabled = perf_phases_env;
-        cudaEvent_t ph_ev0 = nullptr, ph_ev1 = nullptr;
-        double ph_lin = 0, ph_full = 0, ph_mlp = 0, ph_norm = 0;
+        const int prof_steps =
+            perf_phases_env ? std::min(total_steps, 8) : 0;
+        const int prof_pairs_per_step =
+            2 * static_cast<int>(pw.layers.size());
+        std::vector<cudaEvent_t> ph_a, ph_b;
         if (perf_phases_enabled) {
-            cudaEventCreate(&ph_ev0);
-            cudaEventCreate(&ph_ev1);
+            ph_a.resize(static_cast<size_t>(prof_steps) *
+                        prof_pairs_per_step);
+            ph_b.resize(ph_a.size());
+            for (size_t i = 0; i < ph_a.size(); ++i) {
+                cudaEventCreate(&ph_a[i]);
+                cudaEventCreate(&ph_b[i]);
+            }
         }
+        int ph_idx = 0;
+        const bool perf_phases_cap = perf_phases_enabled &&
+                                     (ph_idx < prof_steps *
+                                      prof_pairs_per_step - 1);
         for (int step = 0; step < total_steps; ++step) {
             const int seq = 1;
-            // Audit profiling hook (LSX_PERF_PHASES=1): aggregate GPU time
-            // per layer phase across decode steps.
-            const bool perf_phases = perf_phases_enabled;
-            auto phase_ms = [&](double &acc, cudaError_t err) -> cudaError_t {
-                if (perf_phases) {
-                    cudaEventRecord(ph_ev1, stream);
-                    cudaEventSynchronize(ph_ev1);
-                    float ms = 0.f;
-                    cudaEventElapsedTime(&ms, ph_ev0, ph_ev1);
-                    acc += ms;
-                }
-                return err;
-            };
             const int kv_base = kv->kv_rows;
             if (have_h_step) {
                 int32_t *slot = h_step + 2 * step;
@@ -2181,32 +2182,28 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             int full_idx = 0, lin_idx = 0;
             for (int l = 0; l < (int)pw.layers.size(); ++l) {
                 const QwenLayerWeights &lw = pw.layers[l];
+                if (step < prof_steps) cudaEventRecord(ph_a[ph_idx], stream);
                 // input RMSNorm
-                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
                                    seq, H, eps);
-                e = phase_ms(ph_norm, e);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
-                    if (perf_phases) cudaEventRecord(ph_ev0, stream);
                     e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                         d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
                         kv_base,
                         kv->d_col + (int64_t)lin_idx * nv * vd * kd);
-                    e = phase_ms(ph_lin, e);
                     ++lin_idx;
                 } else {
-                    if (perf_phases) cudaEventRecord(ph_ev0, stream);
                     e = RunQwenFullAttention(stream, lw, top, seq,
                         d_normed, d_attn_out, d_qc, d_q, d_qgate,
                         kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
                         kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
                         d_attn, d_cos, d_sin, d_pos, kv_base);
-                    e = phase_ms(ph_full, e);
                     ++full_idx;
                 }
+                if (step < prof_steps) cudaEventRecord(ph_b[ph_idx], stream);
                 if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
                 // residual: d_act = d_act + d_attn_out
                 {
@@ -2215,17 +2212,18 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                                       0, stream>>>(d_attn_out, d_act, n);
                     e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
                 }
+                if (step < prof_steps) cudaEventRecord(ph_a[ph_idx + 1], stream);
                 // post RMSNorm
-                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
                                    seq, H, eps);
-                e = phase_ms(ph_norm, e);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
                 // fused MLP (down-GEMM accumulates into d_act residual)
-                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
                                     d_gate);
-                e = phase_ms(ph_mlp, e);
+                if (step < prof_steps) {
+                    cudaEventRecord(ph_b[ph_idx + 1], stream);
+                    ph_idx += 2;
+                }
                 if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
             }
 
@@ -2264,15 +2262,25 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         }
         kv->last_tok = tok;
 
-        if (perf_phases_enabled) {
+        if (perf_phases_enabled && ph_idx > 0) {
+            // Drain the pipeline, then reduce event pairs (no per-phase syncs).
+            cudaEventSynchronize(ph_b[ph_idx - 1]);
+            double attn = 0.0, mlpnorm = 0.0;
+            for (int p = 0; p < ph_idx; ++p) {
+                float ms = 0.f;
+                cudaEventElapsedTime(&ms, ph_a[p], ph_b[p]);
+                if (p % 2 == 0) attn += ms; else mlpnorm += ms;
+            }
             char msg[256];
             snprintf(msg, sizeof(msg),
-                     "[PHASES][qwen] linear_attn_ms=%.1f full_attn_ms=%.1f "
-                     "mlp_ms=%.1f norm_ms=%.1f (steps=%d)",
-                     ph_lin, ph_full, ph_mlp, ph_norm, total_steps);
+                     "[PHASES][qwen] attn_ms=%.1f mlp_norm_ms=%.1f "
+                     "(pairs=%d steps=%d)",
+                     attn, mlpnorm, ph_idx, total_steps);
             log::info(msg);
-            cudaEventDestroy(ph_ev0);
-            cudaEventDestroy(ph_ev1);
+            for (size_t i = 0; i < ph_a.size(); ++i) {
+                cudaEventDestroy(ph_a[i]);
+                cudaEventDestroy(ph_b[i]);
+            }
         }
     }
     {
