@@ -131,23 +131,17 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
         }
     }
 
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gen.tokens.size());
-    r.num_layers = kimi::kKimiNumLayers;
-    if (!gen.tokens.empty()) {
-        r.first_gen_tok_id = gen.tokens[0];
-        r.first_gen_maxv = gen.first_maxv;
-    }
-    r.gen_tokens = std::move(gen.tokens);
-    r.final_logits = std::move(gen.final_logits);
-    r.kv_slots_used = gen.kv_slots_used;
-    r.ttft_ms = gen.ttft_ms;
-    r.total_time_ms = gen.total_ms;
-    r.tokens_per_sec = (gen.total_ms > 0.0)
-                           ? (r.gen_tokens.size() / (gen.total_ms / 1000.0))
-                           : 0.0;
-    r.eos_terminated = gen.eos_terminated;
-    r.weight_resident_bytes = resident_bytes_;
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = gen.kv_slots_used,
+            .first_maxv = gen.first_maxv,
+            .resident_bytes = resident_bytes_},
+        kimi::kKimiNumLayers);
 
     if (!r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);

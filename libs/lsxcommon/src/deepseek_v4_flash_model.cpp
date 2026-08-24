@@ -89,12 +89,9 @@ gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
     auto res = gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
                                       *tok_db_, pw_);
     if (!res.ok) { r.error_msg = res.error_msg; return r; }
-    r.ok = true;
-    r.num_tokens = res.num_tokens;
-    r.num_layers = res.num_layers;
-    r.total_time_ms = res.total_time_ms;
-    r.tokens_per_sec = res.tokens_per_sec;
-    r.resident_bytes = res.weight_resident_bytes;
+    runtime::FillBenchmarkResult(r, res.total_time_ms, res.num_tokens,
+                                 res.num_layers,
+                                 res.weight_resident_bytes);
     return r;
 }
 

@@ -112,28 +112,26 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
         return r;
     }
 
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gen.tokens.size());
-    r.num_layers = pw_.top.num_layers;
-    if (!gen.tokens.empty())
-        r.first_gen_tok_id = gen.tokens[0];
-    r.gen_tokens = std::move(gen.tokens);
-    session_tail_ = r.gen_tokens;
-    r.final_logits = std::move(gen.final_logits);
-    r.ttft_ms = gen.ttft_ms;
-    r.total_time_ms = gen.total_ms;
-    r.tokens_per_sec = (gen.total_ms > 0.0)
-                           ? (r.num_tokens / (gen.total_ms / 1000.0))
-                           : 0.0;
-    r.eos_terminated = gen.eos_terminated;
     // Occupancy (spec item 15): the incremental cache holds prompt + generated
     // rows once the pending last-token row is counted (kv_rows + 1). The
     // fallback (non-incremental) mirrors the same prompt + gen semantic.
-    r.kv_slots_used =
+    const int kv_slots =
         (kv_ && kv_->allocated())
             ? kv_->kv_rows + 1
-            : r.num_tokens + static_cast<int>(req.input_ids.size());
-    r.weight_resident_bytes = gen.resident_bytes;
+            : static_cast<int>(gen.tokens.size()) +
+                  static_cast<int>(req.input_ids.size());
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = kv_slots,
+            .first_maxv = 0.f,
+            .resident_bytes = gen.resident_bytes},
+        pw_.top.num_layers);
+    session_tail_ = r.gen_tokens;
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
 
@@ -185,12 +183,10 @@ gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gr.error_msg;
         return r;
     }
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gr.tokens.size());
-    r.total_time_ms = gr.total_ms;
-    r.tokens_per_sec = gr.total_ms > 0.0
-        ? (static_cast<double>(r.num_tokens) / gr.total_ms) * 1000.0 : 0.0;
-    r.resident_bytes = gr.resident_bytes;
+    runtime::FillBenchmarkResult(r, gr.total_ms,
+                                 static_cast<int>(gr.tokens.size()),
+                                 /*num_layers=*/pw_.top.num_layers,
+                                 gr.resident_bytes);
     return r;
 }
 

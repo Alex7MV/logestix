@@ -154,22 +154,19 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
         return r;
     }
 
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gen.tokens.size());
-    r.num_layers = static_cast<int>(pw_.layers.size());
-    if (!gen.tokens.empty()) r.first_gen_tok_id = gen.tokens[0];
-    r.gen_tokens = std::move(gen.tokens);
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = static_cast<int>(gen_input.size()) +
+                             static_cast<int>(gen.tokens.size()),
+            .first_maxv = 0.f,
+            .resident_bytes = resident_bytes_},
+        static_cast<int>(pw_.layers.size()));
     session_tail_ = r.gen_tokens;
-    r.final_logits = std::move(gen.final_logits);
-    r.ttft_ms = gen.ttft_ms;
-    r.total_time_ms = gen.total_ms;
-    r.tokens_per_sec =
-        (gen.total_ms > 0.0)
-            ? (r.num_tokens / (gen.total_ms / 1000.0))
-            : 0.0;
-    r.eos_terminated = gen.eos_terminated;
-    r.kv_slots_used = static_cast<int>(gen_input.size()) + r.num_tokens;
-    r.weight_resident_bytes = resident_bytes_;
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
 
@@ -244,13 +241,13 @@ gpu::BenchmarkResult GemmaBaseModel::Benchmark(int num_tokens)
     req.input_ids = {2}; // <bos>
     req.max_gen_tokens = num_tokens;
     auto res = Infer(req);
-    r.ok = res.ok;
-    r.total_time_ms = res.total_time_ms;
-    r.tokens_per_sec = res.tokens_per_sec;
-    r.num_tokens = res.num_tokens;
-    r.num_layers = res.num_layers;
-    r.resident_bytes = res.weight_resident_bytes;
-    if (!res.ok) r.error_msg = res.error_msg;
+    lsxcommon::runtime::FillBenchmarkResult(r, res.total_time_ms,
+                                            res.num_tokens, res.num_layers,
+                                            res.weight_resident_bytes);
+    if (!res.ok) {
+        r.ok = false;
+        r.error_msg = res.error_msg;
+    }
     return r;
 }
 

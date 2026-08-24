@@ -170,23 +170,23 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
         return r;
     }
 
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gen.tokens.size());
-    r.num_layers = pw_.top.num_layers;
-    if (!gen.tokens.empty())
-        r.first_gen_tok_id = gen.tokens[0];
-    r.gen_tokens = std::move(gen.tokens);
+    const int kv_slots =
+        (kv_ && kv_->allocated())
+            ? kv_->kv_rows + 1
+            : static_cast<int>(gen.tokens.size()) +
+                  static_cast<int>(req.input_ids.size());
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = kv_slots,
+            .first_maxv = 0.f,
+            .resident_bytes = gen.resident_bytes},
+        pw_.top.num_layers);
     session_tail_ = r.gen_tokens;
-    r.final_logits = std::move(gen.final_logits);
-    r.ttft_ms = gen.ttft_ms;
-    r.total_time_ms = gen.total_ms;
-    r.tokens_per_sec = (gen.total_ms > 0.0)
-                           ? (r.num_tokens / (gen.total_ms / 1000.0))
-                           : 0.0;
-    r.eos_terminated = gen.eos_terminated;
-    r.kv_slots_used = (kv_ && kv_->allocated()) ? kv_->kv_rows + 1
-                                                : r.num_tokens + static_cast<int>(req.input_ids.size());
-    r.weight_resident_bytes = gen.resident_bytes;
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
     return r;

@@ -213,23 +213,17 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
         ResourceGovernor::Instance().ReconcileVram();
     }
 
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gen.tokens.size());
-    r.num_layers = glm::kGlmNumLayers;
-    if (!gen.tokens.empty()) {
-        r.first_gen_tok_id = gen.tokens[0];
-        r.first_gen_maxv = gen.first_maxv;
-    }
-    r.gen_tokens = std::move(gen.tokens);
-    r.final_logits = std::move(gen.final_logits);
-    r.kv_slots_used = gen.kv_slots_used;
-    r.ttft_ms = gen.ttft_ms;
-    r.total_time_ms = gen.total_ms;
-    r.tokens_per_sec = (gen.total_ms > 0.0)
-                           ? (r.gen_tokens.size() / (gen.total_ms / 1000.0))
-                           : 0.0;
-    r.eos_terminated = gen.eos_terminated;
-    r.weight_resident_bytes = gen.resident_bytes;
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = gen.kv_slots_used,
+            .first_maxv = gen.first_maxv,
+            .resident_bytes = gen.resident_bytes},
+        glm::kGlmNumLayers);
 
     // Decode the generated token stream into output_text (gen.tokens carries
     // only generated tokens, never the prompt). A decode failure leaves
@@ -269,13 +263,9 @@ gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
             return r;
         }
     }
-    r.ok = true;
-    r.num_tokens = static_cast<int>(gr.tokens.size());
-    r.num_layers = glm::kGlmNumLayers;
-    r.total_time_ms = gr.total_ms;
-    r.tokens_per_sec = gr.total_ms > 0.0
-        ? (static_cast<double>(r.num_tokens) / gr.total_ms) * 1000.0 : 0.0;
-    r.resident_bytes = gr.resident_bytes;
+    runtime::FillBenchmarkResult(r, gr.total_ms,
+                                 static_cast<int>(gr.tokens.size()),
+                                 glm::kGlmNumLayers, gr.resident_bytes);
     return r;
 }
 
