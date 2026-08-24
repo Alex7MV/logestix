@@ -225,3 +225,25 @@ ModelInitConfig::fast_math / LSX_TEST_FAST_MATH=1.
 Next session queue: (1) debug decode kernel OOB via SASS/-lineinfo,
 (2) gate+up weight concatenation at load -> single GEMM + single act-quant,
 (3) swiglu fused into TC epilogue, (4) prefill TC path tuning (ttft 262 ms).
+
+### Optimization round 5 (2026-08-24) — decode kernel fixed & enabled
+
+ROOT CAUSE of the OOB found (lineinfo + sanitizer): the decode kernel used
+`wn = warp & 1` (2 col-groups x 32 = 64 cols) while kDecCols was later raised
+to 128 with `wn = warp >> 1` (4 col-groups); warps 4-7 indexed
+sW[buf][64..151][...] past the slab. Fixed by kDecCols=128 matching the
+8-warp/4-col-group geometry.
+
+- Decode kernel re-enabled with DYNAMIC shared memory (sW|sWs|sXp|sXsc sized
+  at launch) — removes the K/2<=2048 static limit; any K%64==0 supported.
+- Micro: attn_qkv_o 84 us (5.8x), mlp_gate_up 136 us (9.4x), mlp_down
+  172 us (7.5x) vs scalar. Sanitizer: 0 errors.
+- END-TO-END: **17.0-17.4 tok/s** (ttft ~228 ms), qwen+blackwell 26/26 green.
+- A/B noise lesson: single-run deltas on this box are +-15%; use >=3 runs.
+
+Cumulative: **0.6 -> ~17 tok/s (x28)**.
+
+Path to 70-80 (next session, ranked): multi-stage cp.async pipeline depth
+(currently 1 chunk in flight; target 3-4), gate+up concat at load, swiglu-in-
+epilogue fusion, prefill TC tuning, Release-build measurement (Debug host
+code adds per-launch overhead).
