@@ -1,5 +1,8 @@
 // TDD — ModelBase (host-only, no CUDA, no real model).
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
+
+using Catch::Approx;
 
 #include <arrow/io/file.h>
 #include <cstring>
@@ -225,4 +228,63 @@ TEST_CASE("kv_slots_used contract defaults and monotonicity", "[model_runtime]")
     r.kv_slots_used = 7 + 3;
     r.num_tokens = 3;
     REQUIRE(r.kv_slots_used == 7 + r.num_tokens);
+}
+
+// ── FillInferenceResult / FillBenchmarkResult (unified result mapping) ──────
+
+TEST_CASE("FillInferenceResult maps tokens, timings and eos", "[model_runtime]")
+{
+    using namespace lsxcommon;
+    gpu::InferenceResult r;
+    std::vector<int32_t> toks{7, 8, 9};
+    std::vector<float> logits{0.1f, 0.2f};
+    std::string err;
+    runtime::GenResultView g{&toks, &logits, 12.5, 100.0, &err,
+                             /*eos_terminated=*/true, /*kv_slots_used=*/17,
+                             /*first_maxv=*/3.25f, /*resident_bytes=*/12345};
+    runtime::FillInferenceResult(r, g, /*num_layers=*/79);
+    CHECK(r.ok);
+    CHECK(r.num_tokens == 3);
+    CHECK(r.num_layers == 79);
+    CHECK(r.first_gen_tok_id == 7);
+    CHECK(r.gen_tokens == toks);
+    CHECK(r.final_logits == logits);
+    CHECK(r.ttft_ms == 12.5);
+    CHECK(r.total_time_ms == 100.0);
+    CHECK(r.tokens_per_sec == Approx(30.0));  // 3 tok / 0.1 s
+    CHECK(r.eos_terminated);
+    CHECK(r.kv_slots_used == 17);
+    CHECK(r.weight_resident_bytes == 12345);
+    CHECK(r.output_text.empty());  // Fill must NOT decode text (caller does)
+}
+
+TEST_CASE("FillInferenceResult handles empty stream and null optionals",
+          "[model_runtime]")
+{
+    using namespace lsxcommon;
+    gpu::InferenceResult r;
+    std::vector<int32_t> toks;
+    runtime::GenResultView g{&toks, nullptr, 0, 0, nullptr, false,
+                             /*kv_slots_used=*/-1, 0.f, 0};
+    runtime::FillInferenceResult(r, g, 40);
+    CHECK(r.ok);
+    CHECK(r.num_tokens == 0);
+    CHECK(r.first_gen_tok_id == -1);
+    CHECK(r.kv_slots_used == -1);  // caller fallback preserved
+    CHECK(r.final_logits.empty());
+}
+
+TEST_CASE("FillBenchmarkResult computes tokens-per-second", "[model_runtime]")
+{
+    lsxcommon::gpu::BenchmarkResult r;
+    lsxcommon::runtime::FillBenchmarkResult(r, /*total_ms=*/200.0,
+                                            /*num_tokens=*/100,
+                                            /*num_layers=*/43,
+                                            /*resident_bytes=*/9999);
+    CHECK(r.ok);
+    CHECK(r.num_tokens == 100);
+    CHECK(r.num_layers == 43);
+    CHECK(r.total_time_ms == 200.0);
+    CHECK(r.tokens_per_sec == Approx(500.0));
+    CHECK(r.resident_bytes == 9999);
 }
