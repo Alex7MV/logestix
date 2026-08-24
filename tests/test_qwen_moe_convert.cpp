@@ -44,3 +44,73 @@ TEST_CASE("ParseQwenMoeConfig fails on missing config", "[qwen-moe-convert]")
     auto top = ParseQwenMoeConfig("/nonexistent_dir_lsx_qwen_moe");
     REQUIRE_FALSE(top.error_msg.empty());
 }
+
+TEST_CASE("MoE tensor classification", "[qwen-moe-convert]")
+{
+    using K = lsxcommon::qwen_moe::MoeTensorKind;
+    auto cl = [](const std::string &n) {
+        return lsxcommon::qwen_moe::classify_qwen_moe_tensor(n);
+    };
+    CHECK(cl("model.language_model.embed_tokens.weight").kind == K::Embed);
+    CHECK(cl("lm_head.weight").kind == K::LmHead);
+    CHECK(cl("model.language_model.norm.weight").kind == K::FinalNorm);
+    CHECK(cl("model.language_model.layers.3.self_attn.q_proj.weight").kind ==
+          K::FullAttnQ);
+    CHECK(cl("model.language_model.layers.3.self_attn.q_proj.weight").layer == 3);
+    CHECK(cl("model.language_model.layers.0.linear_attn.in_proj_qkv.weight")
+              .kind == K::LinearAttnQkv);
+    CHECK(cl("model.language_model.layers.0.linear_attn.A_log").layer == 0);
+    CHECK(cl("model.language_model.layers.7.self_attn.q_norm.weight").kind ==
+          K::FullAttnQNorm);
+    CHECK(cl("model.language_model.layers.2.input_layernorm.weight").kind ==
+          K::InputNorm);
+    CHECK(cl("model.language_model.layers.2.post_attention_layernorm.weight")
+              .kind == K::PostNorm);
+    CHECK(cl("model.language_model.layers.5.mlp.gate.weight").kind ==
+          K::RouterGate);
+    CHECK(cl("model.language_model.layers.5.mlp.experts.gate_up_proj").kind ==
+          K::FusedExpertsGateUp);
+    CHECK(cl("model.language_model.layers.5.mlp.experts.gate_up_proj").layer == 5);
+    CHECK(cl("model.language_model.layers.5.mlp.experts.down_proj").kind ==
+          K::FusedExpertsDown);
+    CHECK(cl("model.language_model.layers.1.mlp.shared_expert.gate_proj.weight")
+              .kind == K::SharedExpertGateProj);
+    CHECK(cl("model.language_model.layers.1.mlp.shared_expert.up_proj.weight")
+              .kind == K::SharedExpertUpProj);
+    CHECK(cl("model.language_model.layers.1.mlp.shared_expert.down_proj.weight")
+              .kind == K::SharedExpertDownProj);
+    CHECK(cl("model.language_model.layers.1.mlp.shared_expert_gate.weight")
+              .kind == K::SharedExpertGate);
+    CHECK(cl("mtp.fc.weight").kind == K::Mtp);
+    CHECK(cl("model.visual.blocks.0.attn.qkv.weight").kind == K::Visual);
+    CHECK(cl("totally.unknown.name").kind == K::Unknown);
+}
+
+TEST_CASE("MoE quantization policy keeps norms/router/gates high precision",
+          "[qwen-moe-convert]")
+{
+    using K = lsxcommon::qwen_moe::MoeTensorKind;
+    using lsxcommon::qwen_moe::qwen_moe_tensor_is_nvfp4;
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FullAttnQ));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FullAttnK));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FullAttnV));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FullAttnO));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::LinearAttnOut));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FusedExpertsGateUp));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::FusedExpertsDown));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::SharedExpertGateProj));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::SharedExpertUpProj));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::SharedExpertDownProj));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::Embed));
+    CHECK(qwen_moe_tensor_is_nvfp4(K::LmHead));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::RouterGate));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::SharedExpertGate));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::InputNorm));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::PostNorm));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::FullAttnQNorm));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::FullAttnKNorm));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::FinalNorm));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::LinearAttnConv));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::LinearAttnALog));
+    CHECK_FALSE(qwen_moe_tensor_is_nvfp4(K::LinearAttnDt));
+}

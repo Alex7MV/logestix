@@ -108,8 +108,107 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir)
     return top;
 }
 
-ParsedMoeTensor classify_qwen_moe_tensor(const std::string &) { return {}; }
-bool qwen_moe_tensor_is_nvfp4(MoeTensorKind) { return false; }
+ParsedMoeTensor classify_qwen_moe_tensor(const std::string &name)
+{
+    ParsedMoeTensor r;
+    if (name.rfind("mtp.", 0) == 0) {
+        r.kind = MoeTensorKind::Mtp;
+        return r;
+    }
+    if (name.find("visual") != std::string::npos) {
+        r.kind = MoeTensorKind::Visual;
+        return r;
+    }
+    if (name == "lm_head.weight") {
+        r.kind = MoeTensorKind::LmHead;
+        return r;
+    }
+    const std::string kPrefix = "model.language_model.";
+    if (name.rfind(kPrefix, 0) != 0)
+        return r;
+    const std::string rest = name.substr(kPrefix.size());
+    if (rest == "embed_tokens.weight") {
+        r.kind = MoeTensorKind::Embed;
+        return r;
+    }
+    if (rest == "norm.weight") {
+        r.kind = MoeTensorKind::FinalNorm;
+        return r;
+    }
+
+    // Extract "layers.<N>." index and the per-layer body.
+    std::string body = rest;
+    const std::string kLayers = "layers.";
+    if (rest.rfind(kLayers, 0) == 0) {
+        const auto digits_start = kLayers.size();
+        const auto digits_end = rest.find('.', digits_start);
+        if (digits_end == std::string::npos)
+            return r;
+        r.layer =
+            std::stoi(rest.substr(digits_start, digits_end - digits_start));
+        body = rest.substr(digits_end + 1);
+    }
+
+    using K = MoeTensorKind;
+    static const std::pair<const char *, K> kMap[] = {
+        {"input_layernorm.weight", K::InputNorm},
+        {"post_attention_layernorm.weight", K::PostNorm},
+        {"self_attn.q_proj.weight", K::FullAttnQ},
+        {"self_attn.k_proj.weight", K::FullAttnK},
+        {"self_attn.v_proj.weight", K::FullAttnV},
+        {"self_attn.o_proj.weight", K::FullAttnO},
+        {"self_attn.q_norm.weight", K::FullAttnQNorm},
+        {"self_attn.k_norm.weight", K::FullAttnKNorm},
+        {"linear_attn.in_proj_qkv.weight", K::LinearAttnQkv},
+        {"linear_attn.in_proj_z.weight", K::LinearAttnZ},
+        {"linear_attn.in_proj_b.weight", K::LinearAttnB},
+        {"linear_attn.in_proj_a.weight", K::LinearAttnA},
+        {"linear_attn.out_proj.weight", K::LinearAttnOut},
+        {"linear_attn.conv1d.weight", K::LinearAttnConv},
+        {"linear_attn.norm.weight", K::LinearAttnNorm},
+        {"linear_attn.A_log", K::LinearAttnALog},
+        {"linear_attn.dt_bias", K::LinearAttnDt},
+        {"mlp.gate.weight", K::RouterGate},
+        {"mlp.experts.gate_up_proj", K::FusedExpertsGateUp},
+        {"mlp.experts.down_proj", K::FusedExpertsDown},
+        {"mlp.shared_expert.gate_proj.weight", K::SharedExpertGateProj},
+        {"mlp.shared_expert.up_proj.weight", K::SharedExpertUpProj},
+        {"mlp.shared_expert.down_proj.weight", K::SharedExpertDownProj},
+        {"mlp.shared_expert_gate.weight", K::SharedExpertGate},
+    };
+    for (const auto &[suffix, kind] : kMap) {
+        if (body == suffix) {
+            r.kind = kind;
+            return r;
+        }
+    }
+    return r;
+}
+
+bool qwen_moe_tensor_is_nvfp4(MoeTensorKind kind)
+{
+    switch (kind) {
+    case MoeTensorKind::Embed:
+    case MoeTensorKind::LmHead:
+    case MoeTensorKind::FullAttnQ:
+    case MoeTensorKind::FullAttnK:
+    case MoeTensorKind::FullAttnV:
+    case MoeTensorKind::FullAttnO:
+    case MoeTensorKind::LinearAttnQkv:
+    case MoeTensorKind::LinearAttnZ:
+    case MoeTensorKind::LinearAttnB:
+    case MoeTensorKind::LinearAttnA:
+    case MoeTensorKind::LinearAttnOut:
+    case MoeTensorKind::FusedExpertsGateUp:
+    case MoeTensorKind::FusedExpertsDown:
+    case MoeTensorKind::SharedExpertGateProj:
+    case MoeTensorKind::SharedExpertUpProj:
+    case MoeTensorKind::SharedExpertDownProj:
+        return true;
+    default:
+        return false;
+    }
+}
 
 arrow::Status ConvertQwen35MoeModel(const std::string &, const std::string &)
 {
