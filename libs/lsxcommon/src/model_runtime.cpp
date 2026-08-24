@@ -47,37 +47,73 @@ std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
     return {};
 }
 
-gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req)
+gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
+                                       const ParisSelfCheckOptions &opts)
 {
     ModelRequest sc_req = req;
-    sc_req.max_gen_tokens = std::max(2, req.max_gen_tokens);
+    if (opts.frame_prompt) {
+        if (!model.BuildPromptInputIds(model.Tokenizer(),
+                                       "The capital of France is",
+                                       sc_req.input_ids)) {
+            gpu::InferenceResult r;
+            r.error_msg = "selfcheck prompt framing failed";
+            return r;
+        }
+    }
+    sc_req.max_gen_tokens = std::max(opts.min_tokens, req.max_gen_tokens);
     gpu::InferenceResult r = model.Infer(sc_req);
     if (!r.ok) {
         r.selfcheck_passed = false;
         return r;
     }
+    constexpr char kNeedle[] = "Paris";
     if (!r.gen_tokens.empty()) {
-        char buf[512];
-        for (int ntok : {1, 2}) {
-            if (ntok > static_cast<int>(r.gen_tokens.size())) break;
-            size_t cap = sizeof(buf);
-            if (arrow_tokenizer_decode(model.Tokenizer(), r.gen_tokens.data(),
-                                       static_cast<size_t>(ntok), buf, &cap) != 0)
-                continue;
-            std::string t(buf, cap);
-            absl::StripAsciiWhitespace(&t);
-            r.first_gen_text = t;
-            if (r.first_gen_text == "Paris") {
-                r.selfcheck_passed = true;
-                break;
+        if (opts.substring_match) {
+            // Window semantics (Gemma parity): the canonical answer must
+            // appear within the first `answer_window` generated tokens.
+            const size_t n = std::min(r.gen_tokens.size(),
+                                      static_cast<size_t>(opts.answer_window));
+            size_t cap = 4096;
+            std::string out(cap, '\0');
+            if (arrow_tokenizer_decode(model.Tokenizer(),
+                                       r.gen_tokens.data(), n, out.data(),
+                                       &cap) == 0) {
+                out.resize(cap);
+                r.first_gen_text = out;
+                r.selfcheck_passed =
+                    r.first_gen_text.find(kNeedle) != std::string::npos;
             }
-        }
-        if (!r.selfcheck_passed && r.first_gen_text.empty()) {
-            size_t cap = sizeof(buf);
-            if (arrow_tokenizer_decode(model.Tokenizer(), r.gen_tokens.data(),
-                                       std::min(static_cast<int>(r.gen_tokens.size()), 8),
-                                       buf, &cap) == 0)
-                r.first_gen_text = std::string(buf, cap);
+        } else {
+            // Legacy strict contract: stripped equality on short prefixes.
+            char buf[512];
+            const int window =
+                std::min(opts.answer_window, 2);
+            for (int ntok = 1; ntok <= window; ++ntok) {
+                if (ntok > static_cast<int>(r.gen_tokens.size())) break;
+                size_t cap = sizeof(buf);
+                if (arrow_tokenizer_decode(model.Tokenizer(),
+                                           r.gen_tokens.data(),
+                                           static_cast<size_t>(ntok), buf,
+                                           &cap) != 0)
+                    continue;
+                std::string t(buf, cap);
+                absl::StripAsciiWhitespace(&t);
+                r.first_gen_text = t;
+                if (r.first_gen_text == kNeedle) {
+                    r.selfcheck_passed = true;
+                    break;
+                }
+            }
+            if (!r.selfcheck_passed && r.first_gen_text.empty()) {
+                size_t cap = sizeof(buf);
+                if (arrow_tokenizer_decode(model.Tokenizer(),
+                                           r.gen_tokens.data(),
+                                           std::min(static_cast<int>(
+                                                        r.gen_tokens.size()),
+                                                    8),
+                                           buf, &cap) == 0)
+                    r.first_gen_text = std::string(buf, cap);
+            }
         }
     }
     lsxcommon::log::info(absl::StrFormat(

@@ -399,3 +399,76 @@ TEST_CASE("RunUnderResidencyLock executes and releases", "[model_base]")
     // The shared lock must be released afterwards: unique_lock succeeds.
     std::unique_lock<std::shared_mutex> ul(m.ResidencyMutex());
 }
+
+// ── Option-driven Paris SelfCheck (unified harness) ─────────────────────────
+
+TEST_CASE("RunParisSelfCheck options: substring window match", "[selfcheck]")
+{
+    // Gemma semantics: decode an N-token window, pass iff it CONTAINS "Paris".
+    const std::string root = BuildPinnedTokenizerDir("synthetic_paris_tok.json");
+    FakeModel m("gemma4-26b-a4b");
+    m.cfg_.model_path = root;
+    REQUIRE(m.Load());
+
+    std::vector<int32_t> paris(256, 0);
+    size_t cap = paris.size();
+    const int32_t np = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), "Paris", 5, paris.data(), &cap);
+    REQUIRE(np > 0);
+    paris.resize(static_cast<size_t>(np));
+
+    lsxcommon::ModelRequest req{{1}, 4};
+    lsxcommon::runtime::ParisSelfCheckOptions opts;
+    opts.min_tokens = 8;
+    opts.answer_window = 12;
+    opts.substring_match = true;
+
+    // "is in Paris" — the canonical answer appears mid-window.
+    std::vector<int32_t> phrase(256, 0);
+    cap = phrase.size();
+    const int32_t nph = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), "is in Paris", 11, phrase.data(), &cap);
+    REQUIRE(nph > 0);
+    phrase.resize(static_cast<size_t>(nph));
+    m.scripted_.ok = true;
+    m.scripted_.gen_tokens = phrase;
+
+    auto r = lsxcommon::runtime::RunParisSelfCheck(m, req, opts);
+    REQUIRE(r.ok);
+    CHECK(r.selfcheck_passed);
+
+    // Without substring mode the same stream must fail the strict
+    // first-token equality contract.
+    auto r2 = lsxcommon::runtime::RunParisSelfCheck(m, req);
+    REQUIRE(r2.ok);
+    CHECK_FALSE(r2.selfcheck_passed);
+
+    m.Unload();
+}
+
+TEST_CASE("RunParisSelfCheck default options preserve legacy behavior",
+          "[selfcheck]")
+{
+    const std::string root = BuildPinnedTokenizerDir("synthetic_paris_tok.json");
+    FakeModel m("glm-5.2");
+    m.cfg_.model_path = root;
+    REQUIRE(m.Load());
+
+    std::vector<int32_t> paris(256, 0);
+    size_t cap = paris.size();
+    const int32_t np = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), "Paris", 5, paris.data(), &cap);
+    REQUIRE(np > 0);
+    paris.resize(static_cast<size_t>(np));
+    m.scripted_.ok = true;
+    m.scripted_.gen_tokens = paris;
+    m.scripted_.first_gen_tok_id = paris.front();
+
+    lsxcommon::ModelRequest req{{1, 2}, 1};
+    // Explicit defaults must behave exactly like the old 2-arg call.
+    lsxcommon::runtime::ParisSelfCheckOptions defaults;
+    auto r = lsxcommon::runtime::RunParisSelfCheck(m, req, defaults);
+    REQUIRE(r.ok);
+    CHECK(r.selfcheck_passed);
+    m.Unload();
+}

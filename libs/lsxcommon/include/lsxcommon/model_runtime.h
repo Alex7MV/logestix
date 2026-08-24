@@ -18,10 +18,27 @@ namespace runtime {
 std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
                                 const std::vector<int32_t> &ids);
 
-// Item 3 — unified SelfCheck. Forces max(2, req.max_gen_tokens), delegates to
-// model.Infer, then matches the decoded 1->2-token prefix against "Paris".
+// Options for the unified Paris SelfCheck harness (model-unification
+// 2026-08). Defaults reproduce the original strict contract exactly:
+// force max(2, max_gen_tokens), decode the first generated token(s) and pass
+// iff the stripped 1->2-token prefix equals "Paris".
+struct ParisSelfCheckOptions {
+    bool frame_prompt = false;   // rebuild input_ids from "The capital of
+                                 // France is" via model.BuildPromptInputIds
+    int min_tokens = 2;          // forced lower bound on max_gen_tokens
+    int answer_window = 2;       // decode stripped prefixes of length
+                                 // 1..min(answer_window, len) and require
+                                 // equality; with substring_match, decode the
+                                 // whole window instead
+    bool substring_match = false;// pass iff decoded window CONTAINS "Paris"
+                                 // instead of stripped equality
+};
+
+// Item 3 — unified SelfCheck. Forces max(opts.min_tokens, req.max_gen_tokens),
+// delegates to model.Infer, then matches decoded prefixes against "Paris".
 // Returns the InferenceResult with selfcheck_passed filled.
-gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req);
+gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
+                                       const ParisSelfCheckOptions &opts = {});
 
 // Non-owning view over the five same-shaped per-family XxxGenerationResult
 // structs (tokens, final_logits, ttft_ms, total_ms, error_msg,
