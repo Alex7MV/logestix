@@ -169,7 +169,32 @@ target_link_libraries(lsxcommon_qwen_cu
     arrow_shared
     arrow_cuda_shared
 )
-target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsxcommon_qwen_cu lsx_tune)
+
+# Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
+# assembles ONLY on the arch-'a' targets, so this object lib carries its own
+# --generate-code set (sm_120a / sm_121a). Plain sm_120/121 SASS for the
+# scalar path is unaffected.
+add_library(lsxcommon_qwen_tc_cu OBJECT
+    src/qwen_tc_gemm.cu
+)
+set_target_properties(lsxcommon_qwen_tc_cu PROPERTIES
+    CUDA_ARCHITECTURES OFF
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_qwen_tc_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+    --generate-code=arch=compute_120a,code=sm_120a;
+    --generate-code=arch=compute_121a,code=sm_121a>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_qwen_tc_cu
+    "${CUDA_CUDART_LIBRARY}"
+)
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu lsxcommon_qwen_cu lsxcommon_qwen_tc_cu lsx_tune)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP

@@ -6,8 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 #include <cstdint>
 #include <vector>
+
+#include "lsxcommon/qwen_tc_gemm.h"
 
 namespace {
 
@@ -327,4 +330,108 @@ TEST_CASE("sm_120a nvfp4 mma SFA single-byte position map",
         }
     }
     CHECK(true);
+}
+
+TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    // Odd tail: K = 80 (5 blocks), seq = 3.
+    constexpr int seq = 3, K = 80;
+    std::vector<__half> hx(static_cast<size_t>(seq) * K);
+    // Deterministic small-magnitude pattern built from exact half values
+    // (avoids any host-side float->half conversion edge cases).
+    const float vals[16] = {0.f,   0.25f, -0.5f, 1.f,  -1.5f, 2.f,
+                            -2.5f, 3.f,   -3.5f, 4.f,  -4.5f, 5.f,
+                            -5.f,  6.f,   -6.f,  0.75f};
+    for (size_t i = 0; i < hx.size(); ++i)
+        hx[i] = __float2half(vals[(i * 7 + i / 16) % 16]);
+    hx[0] = __float2half(0.0f);   // zero block edge
+    for (int i = 64; i < 80; ++i) hx[i] = __float2half(0.0f);
+
+    __half *dx;
+    uint8_t *dp, *ds;
+    const size_t packed_n = hx.size() / 2, scales_n = hx.size() / 16;
+    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dp, packed_n) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, scales_n) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, seq, K, dp,
+                                                   ds) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<uint8_t> hp(packed_n), hs(scales_n);
+    REQUIRE(cudaMemcpy(hp.data(), dp, packed_n,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(hs.data(), ds, scales_n,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    // Host decode with the repo codec semantics and check quantization error.
+    auto dec_scale = [](uint8_t b) -> float {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        if (e4 == 0) return 0.0f;
+        union { uint32_t u; float f; } bits{};
+        bits.u = (e4 + 120u) << 23;
+        return bits.f;
+    };
+    const float levels[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+                              -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
+                              -6.0f};
+    // Metric: per-block error normalized by the BLOCK absmax (per-element
+    // relative error is unbounded for tiny elements in dynamic blocks --
+    // inherent to NVFP4 pow2 scales). Sound bound: snap error <= 1*s and
+    // s <= absmax/3 -> <= 1/3 of block absmax.
+    double max_rel = 0.0;
+    size_t worst_idx = 0; float worst_got = 0.f, worst_want = 0.f;
+    uint8_t worst_sb = 0, worst_code = 0;
+    for (int b = 0; b < static_cast<int>(scales_n); ++b) {
+        const float s = dec_scale(hs[b]);
+        float block_absmax = 0.f;
+        for (int j = 0; j < 16; ++j) {
+            const size_t idx = static_cast<size_t>(b) * 16 + j;
+            block_absmax =
+                std::max(block_absmax, std::abs(__half2float(hx[idx])));
+        }
+        if (block_absmax == 0.0f) continue;
+        for (int j = 0; j < 16; ++j) {
+            const size_t idx = static_cast<size_t>(b) * 16 + j;
+            const uint8_t byte = hp[idx / 2];
+            const uint8_t code = (j & 1) ? (byte >> 4) : (byte & 0x0F);
+            const float got = levels[code] * s;
+            const float want = __half2float(hx[idx]);
+            if (want == 0.0f && got == 0.0f) continue;
+            const double rel =
+                std::abs(got - want) / block_absmax;
+            if (rel > max_rel) {
+                max_rel = rel;
+                worst_idx = idx; worst_got = got; worst_want = want;
+                worst_sb = hs[b]; worst_code = code;
+            }
+        }
+    }
+    INFO("max quantization rel err=" << max_rel << " at idx=" << worst_idx
+         << " got=" << worst_got << " want=" << worst_want
+         << " scale_byte=0x" << std::hex << int(worst_sb) << std::dec
+         << " code=" << int(worst_code));
+    WARN("actquant max_rel=" << max_rel << " idx=" << worst_idx
+         << " got=" << worst_got << " want=" << worst_want
+         << " sb=0x" << std::hex << int(worst_sb) << std::dec
+         << " code=" << int(worst_code));
+    WARN("block0: sb=0x" << std::hex << int(hs[0]) << std::dec
+         << " packed=" << int(hp[0]) << "," << int(hp[1]) << ","
+         << int(hp[2]));
+    WARN("sanity f2h(5)=" << __half2float(__float2half(5.0f))
+         << " f2h(-2.5)=" << __half2float(__float2half(-2.5f)));
+    for (int j = 0; j < 16; ++j)
+        WARN("hx[" << j << "]=" << __half2float(hx[j]));
+    // pow2 scale + nearest-level: worst case ~1/3 relative.
+    CHECK(max_rel < 0.34);
+
+    cudaFree(dx); cudaFree(dp); cudaFree(ds);
 }
