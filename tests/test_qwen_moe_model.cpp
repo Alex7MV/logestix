@@ -4,6 +4,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "qwen_3_5_moe_model.h"
+#include "lsxcommon/lifecycle_strategy.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -79,4 +80,34 @@ TEST_CASE("geometry mismatch rejected at load", "[qwen-moe-model]")
 
     // Synthetic escape hatch re-enabled for other tests in this binary.
     setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+}
+
+TEST_CASE("lifecycle MoE plan bounds for qwen3.5-35b-a3b", "[qwen-moe-model]")
+{
+    using namespace lsxcommon::lifecycle;
+    auto &gov = ResourceGovernor::Instance();
+    gov.Shutdown();
+    GovernorOptions gopts;
+    gopts.override_hw = true;
+    HardwareProfile hw;
+    hw.cpu_cores = 16;
+    hw.ram_total_bytes = hw.ram_available_bytes = 64ull << 30;
+    hw.gpu_name = "FakeGPU";
+    hw.vram_total_bytes = hw.vram_free_bytes = 32ull << 30;
+    gopts.hw_override = hw;
+    gopts.vram_keep_out_bytes = 0;
+    REQUIRE(gov.Initialize(gopts));
+
+    LifecycleInput in;
+    in.archetype = Archetype::MoE;
+    in.model_type = "qwen3.5-35b-a3b";  // archetype fallback (no named strategy)
+    in.expert_mean_bytes = 2ull << 20;  // ~2 MiB NVFP4 expert payload
+    ResetPlanCache();
+    const auto &plan = GetOrBuildPlan(in);
+    CHECK(plan.expert_cache_slots >= plan.tuner_bounds.expert_cache_slots_min);
+    CHECK(plan.expert_cache_slots <= plan.tuner_bounds.expert_cache_slots_max);
+    CHECK(plan.expert_cache_min_bytes > 0);
+    CHECK(plan.tuner_bounds.expert_cache_slots_max >= 4);
+    ResetPlanCache();
+    gov.Shutdown();
 }
