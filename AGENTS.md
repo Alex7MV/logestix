@@ -153,6 +153,11 @@ ctest --preset windows-debug    # Windows 11
   - `libs/lsxcommon/src/model_factory.cpp` + `model_registry.cpp` + `include/lsxcommon/model_factory.h` — `LsxModelFactory` + IModel registry
   - `libs/lsxcommon/src/models/lsx_orchestrator.cpp` + `include/lsxcommon/lsx_orchestrator.h` — TaskMosaic оркестратор: lock-free SPSC dispatch GLM-5.2 / DeepSeek / unknown
   - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_inference_load.cuh` + `deepseek_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
+  - `libs/lsxcommon/src/qwen_moe_convert.cpp` + `include/lsxcommon/qwen_moe_convert.h` — Qwen3.5-35B-A3B MoE конвертер `ConvertQwen35MoeModel` (формат `logestix-qwen35moe`): fused-expert split gate_up [E,2I,H] → w1/w3 (HF parity: gate=rows[0,I)), per-expert `experts/layer_N/exp_E.arrow`, router BF16, shared expert NVFP4 + FP16 scalar gate, MTP stored-not-applied, vision отсекается с подсчётом; frozen-геометрия в `src/qwen_moe_constants.h`
+  - `libs/lsxcommon/src/qwen_moe_inference_load.cpp` + `include/lsxcommon/qwen_moe_inference_load.h` — MoE loader: dense pinned upload (reuse qwen ring machinery), router/shared device upload, pinned expert store (`LoadQwenMoeExpertStore`) + LRU device cache alloc/residency (`AllocateQwenMoeExpertCache`, `EnsureQwenMoeExpertResident`)
+  - `libs/lsxcommon/include/lsxcommon/qwen_moe_expert_cache.h` — LRU device-slot кэш экспертов (адаптация GlmExpertDeviceCache), host-bookkeeping unit-testable без CUDA
+  - `libs/lsxcommon/src/qwen_3_5_moe_model.{h,cpp}` — `Qwen35MoeModel` (ModelBase, registry `qwen3.5-35b-a3b`); static_assert геометрия (hidden=2048, layers=40, E=256, top-k=8, moe_i=512); incremental session policy как QwenBaseModel; SelfCheck через runtime::RunParisSelfCheck
+  - `libs/lsxcommon/src/qwen_moe_inference.cu` (OBJECT `lsxcommon_qwen_moe_cu`, `-fmad=false`) — router softmax→top-8→renorm ядро (HF parity, thread-0 selection), routed FFN slot chain на RunQwenNvfp4Gemm + swiglu/coeff-add, shared-gate combine, инкрементальный single-stream драйвер `RunQwenMoeGeneration`
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode-таблицы (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
   - `libs/lsxcommon/src/benchmark_gpu.cu` + `include/lsxcommon/benchmark_gpu.h` — `--benchmark` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunBenchmark()`, BenchmarkResult
@@ -185,6 +190,7 @@ ctest --preset windows-debug    # Windows 11
   - `tests/test_model_factory.cpp` — LsxModelFactory/registry; 5 test cases, 4 assertions (real-model tests SKIP без модели)
   - `tests/test_tokenizer.cpp` — токенизатор (unicode, schema, arrow-конвертация, pre-tokenizer, encode/decode); 14 test cases, 236 assertions
   - `tests/test_glm_*.cpp` — GLM-5.2 suite (12 executables): convert, loader, model, compute, dense_compute, moe_router, experts, moe_compute, attention, inference, full_compute, selfcheck (~541k assertions, real-model tests SKIP без GLM; test_glm_selfcheck — 3-цикловый stress SelfCheck с бит-точной детерминированностью `final_logits` (3 циклов достаточно для подачи нагрузки; переопределяется `LSX_TEST_GLM_SELFCHECK_CYCLES`), exit 0)
+  - `tests/test_qwen_moe_{convert,loader,model}.cpp`, `tests/test_qwen_moe_kernels.cu`, `tests/test_qwen_moe_selfcheck.cpp` + `qwen_moe_test_fixture.h` — Qwen3.5-35B-A3B suite: конвертер/классификатор/расщепление fused gate_up (119 assertions), loader roundtrip+strictness (49), LRU-кэш/роутер/routed-FFN/shared-combine/generation-driver детерминизм (~500 assertions в kernels), реальный селфчек "Paris" 3 бит-точных цикла (`LSX_TEST_QWEN_MOE_SELFCHECK_CYCLES`, SKIP_RETURN_CODE 4)
   - `tests/test_mosaic_network.cpp` — lsxnetwork (FrameQueue SPSC, zero-copy); 8 test cases, ~2M assertions
   - `tests/test_integrated_pipeline.cpp` — TaskMosaic оркестратор (GLM + DeepSeek burst); 4 test cases, 8026 assertions
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
@@ -294,7 +300,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 ## CMake Key Points
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + benchmark) и `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
+- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + benchmark), `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) и `lsxcommon_qwen_moe_cu` (Qwen3.5-35B-A3B MoE kernels, `-fmad=false`) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
 - `lsxcommon_cu`/`lsxcommon_glm_cu` линкуются с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
   Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
   а не через жёсткие пути `C:/Program Files/...
