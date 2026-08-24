@@ -33,6 +33,10 @@ struct ModelInitConfig {
     std::string model_path;   // required
     std::string model_type;   // empty = autodetect from logestix/model.index.json
     int max_gen_tokens = 64;
+    // Blackwell fast path (audit Phase 3, F-01): route NVFP4 GEMMs through
+    // native tensor-core mxf4nvf4 on sm_120a/sm_121a. Tolerance-class
+    // numerics; default OFF keeps the bit-exact scalar path.
+    bool fast_math = false;
 };
 
 struct ModelRequest {

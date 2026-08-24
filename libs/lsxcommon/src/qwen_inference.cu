@@ -1,4 +1,6 @@
 #include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
 #include "nvfp4_codec.h"
@@ -8,12 +10,29 @@
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
 namespace lsxcommon {
 namespace qwen {
+
+// Blackwell tensor-core fast-path toggle (audit Phase 3). Process-wide;
+// flipped from ModelInitConfig::fast_math at model construction.
+static std::atomic<bool> g_qwen_tc_fast_math{false};
+
+void SetQwenTcFastMath(bool on)
+{
+    g_qwen_tc_fast_math.store(on, std::memory_order_relaxed);
+}
+
+bool QwenTcFastMath()
+{
+    return g_qwen_tc_fast_math.load(std::memory_order_relaxed);
+}
 
 namespace {
 
@@ -1050,6 +1069,107 @@ __global__ void fused_linear_conv_zab_kernel(
 // ── Fused linear-attention (GatedDeltaNet) front-end entry ──────────────────
 // Fused F1 + F2 replace the split front of RunQwenLinearAttention; the
 // gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
+
+// Decode fast path (audit F-05, measured): the block-per-token design below
+// collapses to a single 128-thread block at seq==1 and costs ~30 ms per layer
+// in the qkv projection alone. These variants assign ONE WARP per output
+// column (grid scales with n_out), lanes striding K -- coalesced nibble reads
+// plus a shfl reduction. Accumulation order differs from the scalar path;
+// Qwen numerics are tolerance-class, and run-to-run determinism is kept.
+__global__ void warpdot_nvfp4_kernel(
+    const __half *__restrict__ x,           // [1, H] (single token row)
+    const uint8_t *__restrict__ packed,
+    const uint8_t *__restrict__ scales,
+    float global_scale, int H, int n_out,
+    __half *__restrict__ out)
+{
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int c = blockIdx.x * 8 + warp;
+    if (c >= n_out) return;
+    const int64_t cbase = static_cast<int64_t>(c) * H;
+    float acc = 0.0f;
+    for (int k = lane; k < H; k += 32) {
+        const int64_t e = cbase + k;
+        const uint8_t byte = packed[e >> 1];
+        const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
+        const float scl = E4M3ScaleToFloat(scales[e >> 4]) * global_scale;
+        acc += __half2float(x[k]) *
+               __half2float(__float2half(kE2M1Table[nib] * scl));
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) out[c] = __float2half(acc);
+}
+
+// conv1d+silu+l2norm(q,k) only (the z/a/b dots moved to warpdot launches).
+__global__ void fused_linear_conv_norm_kernel(
+    const __half *__restrict__ d_qkv,
+    const __half *__restrict__ conv_w,
+    int seq, int nk, int kd, int nv, int vd, int kernel, int kv_base,
+    __half *__restrict__ d_conv)
+{
+    const int t = blockIdx.x;
+    const int S = nk * kd * 2 + nv * vd;
+    const int KD = nk * kd;
+    for (int c = threadIdx.x; c < S; c += blockDim.x) {
+        float acc = 0.0f;
+        for (int k = 0; k < kernel; ++k) {
+            const int tt = kv_base + t - k;
+            if (tt < 0) continue;
+            const float wv =
+                __half2float(conv_w[(int64_t)c * kernel + (kernel - 1 - k)]);
+            const float mv = __half2float(d_qkv[(int64_t)tt * S + c]);
+            acc += wv * mv;
+        }
+        d_conv[(int64_t)t * S + c] = __float2half(silu_dev(acc));
+    }
+    __syncthreads();
+
+    __shared__ float svals[256], sred[256], sinv;
+    const float q_scale = 1.0f / sqrtf(static_cast<float>(kd));
+    for (int h = 0; h < nk; ++h) {
+        for (int slice = 0; slice < 2; ++slice) {
+            const int head_off = (slice == 0) ? 0 : KD;
+            const float extra = (slice == 0) ? q_scale : 1.0f;
+            const int lane = threadIdx.x;
+            const int c = head_off + h * kd + lane;
+            float v = 0.0f;
+            if (lane < kd) v = __half2float(d_conv[(int64_t)t * S + c]);
+            svals[lane] = v; sred[lane] = v * v;
+            __syncthreads();
+            for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+                if (lane < s) sred[lane] += sred[lane + s];
+                __syncthreads();
+            }
+            if (lane == 0) sinv = rsqrtf(sred[0] + 1e-6f) * extra;
+            __syncthreads();
+            if (lane < kd)
+                d_conv[(int64_t)t * S + c] = __float2half(svals[lane] * sinv);
+            __syncthreads();
+        }
+    }
+}
+
+// gating prep (beta / g) from the precomputed a|b buffer, single-token layout.
+__global__ void gating_prep_kernel(const __half *__restrict__ a_buf,
+                                   const __half *__restrict__ b_buf,
+                                   const float *__restrict__ A_log,
+                                   const float *__restrict__ dt_bias,
+                                   float *__restrict__ d_g,
+                                   float *__restrict__ d_beta, int nv)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= nv) return;
+    const float a_v = __half2float(a_buf[c]);
+    const float b_v = __half2float(b_buf[c]);
+    d_beta[c] = sigmoid_dev(b_v);
+    d_g[c] = -__expf(A_log[c]) * softplus_dev(a_v + dt_bias[c]);
+}
+
+// Fused F1 + F2 replace the split front of RunQwenLinearAttention; the
+// gated-delta recurrence, RMSNormGated and out_proj tail are unchanged.
 cudaError_t RunQwenFusedLinearAttnKernel(
     cudaStream_t stream,
     const QwenLayerWeights &lw, const QwenTopology &top, int seq,
@@ -1071,6 +1191,49 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     if (lw.qkv.cols <= 0) return cudaErrorInvalidValue;
     cudaError_t e;
 
+    if (seq == 1) {
+        // Decode fast path (audit F-05): warp-per-output dots + split
+        // conv/norm and gating stages. Grid scales with output count instead
+        // of collapsing to one 128-thread block.
+        const int H = lw.qkv.cols;          // input dim (K)
+        const int S = KD * 2 + VD;
+        {
+            const int grid = (S + 7) / 8;
+            warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                d_normed, lw.qkv.d_packed, lw.qkv.d_scales,
+                lw.qkv.global_scale, H, S,
+                d_qkv + static_cast<int64_t>(kv_base) * S);
+            e = cudaGetLastError(); if (e) return e;
+        }
+        // conv1d+silu+l2norm(q,k)
+        fused_linear_conv_norm_kernel<<<seq, 256, 0, stream>>>(
+            d_qkv, lw.d_conv1d, seq, nk, kd, nv, vd, lw.conv_kernel,
+            kv_base, d_conv);
+        e = cudaGetLastError(); if (e) return e;
+        // z / a / b projections (a|b share one buffer: [nv | nv]).
+        {
+            const __half *xrow = d_normed;   // t == 0
+            int grid = (VD + 7) / 8;
+            warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                xrow, lw.z.d_packed, lw.z.d_scales, lw.z.global_scale,
+                H, VD, d_z);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+            __half *a_buf = d_ab;
+            __half *b_buf = d_ab + static_cast<int64_t>(seq) * nv;
+            grid = (nv + 7) / 8;
+            warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                xrow, lw.a.d_packed, lw.a.d_scales, lw.a.global_scale,
+                H, nv, a_buf);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+            warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                xrow, lw.b.d_packed, lw.b.d_scales, lw.b.global_scale,
+                H, nv, b_buf);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+            gating_prep_kernel<<<(nv + 255) / 256, 256, 0, stream>>>(
+                a_buf, b_buf, lw.d_A_log, lw.d_dt_bias, d_g, d_beta, nv);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+        }
+    } else {
     // Stage A: raw qkv GEMM into the persistent history (own launch — stage B
     // conv reads rows written by other tokens of this call).
     int nthreads = 1;
@@ -1085,6 +1248,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
         seq, nk, kd, nv, vd, lw.z.cols, lw.conv_kernel, kv_base,
         d_qkv, d_conv, d_z, d_ab, d_g, d_beta);
     e = cudaGetLastError(); if (e) return e;
+    }
 
     // Tail (unchanged, mirrors RunQwenLinearAttention stages 4-6).
     {
@@ -1199,6 +1363,17 @@ cudaError_t RunQwenNvfp4Gemm(
 {
     if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
+    // Blackwell tensor-core fast path (audit Phase 3 / F-01): W4A4 mxf4nvf4
+    // MMA. Tolerance-class numerics -- only reachable when the runtime
+    // fast-math toggle is set. Falls back to the bit-exact scalar path on
+    // unsupported devices/shapes (NotSupported / InvalidValue).
+    if (g_qwen_tc_fast_math.load(std::memory_order_relaxed) && !acc &&
+        (K & 15) == 0 && N >= 8 && K >= 64) {
+        const cudaError_t tc = qwen::tc::RunQwenTcNvfp4Gemm(
+            stream, x, packed, scales, global_scale, y, seq, K, N);
+        if (tc != cudaErrorNotSupported && tc != cudaErrorInvalidValue)
+            return tc;
+    }
     if (N < 8 || K < 16) {
         const int threads = 256;
         const int64_t total = (int64_t)seq * N;
@@ -1833,6 +2008,9 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
     int32_t *h_step = nullptr;
     bool have_h_step = false;
 
+    // Audit profiling hook (LSX_PERF_PHASES=1).
+    const bool perf_phases_env = std::getenv("LSX_PERF_PHASES") != nullptr;
+
     // Wall-clock timing (stream-delta): t_start at entry, t_ttft at the first
     // generated token, t_stop after the final decode row.
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
@@ -1958,8 +2136,29 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
         int32_t cur = prompt[0];
         int32_t tok = -1;
         int generated = 0;
+        // Audit profiling hook (LSX_PERF_PHASES=1): per-phase GPU totals.
+        const bool perf_phases_enabled = perf_phases_env;
+        cudaEvent_t ph_ev0 = nullptr, ph_ev1 = nullptr;
+        double ph_lin = 0, ph_full = 0, ph_mlp = 0, ph_norm = 0;
+        if (perf_phases_enabled) {
+            cudaEventCreate(&ph_ev0);
+            cudaEventCreate(&ph_ev1);
+        }
         for (int step = 0; step < total_steps; ++step) {
             const int seq = 1;
+            // Audit profiling hook (LSX_PERF_PHASES=1): aggregate GPU time
+            // per layer phase across decode steps.
+            const bool perf_phases = perf_phases_enabled;
+            auto phase_ms = [&](double &acc, cudaError_t err) -> cudaError_t {
+                if (perf_phases) {
+                    cudaEventRecord(ph_ev1, stream);
+                    cudaEventSynchronize(ph_ev1);
+                    float ms = 0.f;
+                    cudaEventElapsedTime(&ms, ph_ev0, ph_ev1);
+                    acc += ms;
+                }
+                return err;
+            };
             const int kv_base = kv->kv_rows;
             if (have_h_step) {
                 int32_t *slot = h_step + 2 * step;
@@ -1983,23 +2182,29 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             for (int l = 0; l < (int)pw.layers.size(); ++l) {
                 const QwenLayerWeights &lw = pw.layers[l];
                 // input RMSNorm
+                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenRMSNorm(stream, d_act, lw.d_input_norm, d_normed,
                                    seq, H, eps);
+                e = phase_ms(ph_norm, e);
                 if (e != cudaSuccess) return fail(e, std::string("inputnorm l")+std::to_string(l));
                 if (lw.is_linear) {
+                    if (perf_phases) cudaEventRecord(ph_ev0, stream);
                     e = RunQwenFusedLinearAttnKernel(stream, lw, top, seq,
                         d_normed, d_attn_out,
                         kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                         d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
                         kv_base,
                         kv->d_col + (int64_t)lin_idx * nv * vd * kd);
+                    e = phase_ms(ph_lin, e);
                     ++lin_idx;
                 } else {
+                    if (perf_phases) cudaEventRecord(ph_ev0, stream);
                     e = RunQwenFullAttention(stream, lw, top, seq,
                         d_normed, d_attn_out, d_qc, d_q, d_qgate,
                         kv->d_kv_k + (int64_t)full_idx * kv->max_total * NKV * HD,
                         kv->d_kv_v + (int64_t)full_idx * kv->max_total * NKV * HD,
                         d_attn, d_cos, d_sin, d_pos, kv_base);
+                    e = phase_ms(ph_full, e);
                     ++full_idx;
                 }
                 if (e != cudaSuccess) return fail(e, std::string("attn l")+std::to_string(l));
@@ -2011,12 +2216,16 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                     e = cudaGetLastError(); if (e) return fail(e, std::string("res1 l")+std::to_string(l));
                 }
                 // post RMSNorm
+                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenRMSNorm(stream, d_act, lw.d_post_norm, d_postin,
                                    seq, H, eps);
+                e = phase_ms(ph_norm, e);
                 if (e != cudaSuccess) return fail(e, std::string("postnorm l")+std::to_string(l));
                 // fused MLP (down-GEMM accumulates into d_act residual)
+                if (perf_phases) cudaEventRecord(ph_ev0, stream);
                 e = RunQwenFusedMLP(stream, lw, top, seq, d_postin, d_act,
                                     d_gate);
+                e = phase_ms(ph_mlp, e);
                 if (e != cudaSuccess) return fail(e, std::string("mlp l")+std::to_string(l));
             }
 
@@ -2054,10 +2263,18 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             }
         }
         kv->last_tok = tok;
-    }
 
-    // Publish last-row logits (final row) for the regression harness, while
-    // the arena is still alive.
+        if (perf_phases_enabled) {
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "[PHASES][qwen] linear_attn_ms=%.1f full_attn_ms=%.1f "
+                     "mlp_ms=%.1f norm_ms=%.1f (steps=%d)",
+                     ph_lin, ph_full, ph_mlp, ph_norm, total_steps);
+            log::info(msg);
+            cudaEventDestroy(ph_ev0);
+            cudaEventDestroy(ph_ev1);
+        }
+    }
     {
         std::vector<float> hlast_f(V);
         // Incremental path always produces the final row at index 0 (seq == 1).

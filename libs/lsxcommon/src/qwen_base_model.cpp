@@ -31,6 +31,9 @@ QwenBaseModel::~QwenBaseModel() { Unload(); }
 bool QwenBaseModel::Load()
 {
     tokenizer_optional_ = true;
+    // Blackwell tensor-core fast path (audit Phase 3): opt-in via
+    // ModelInitConfig::fast_math. Default off = bit-exact scalar path.
+    qwen::SetQwenTcFastMath(cfg_.fast_math);
     if (!BeginLoad(cfg_.model_path)) return false;
     if (!weights_loaded_) {
         cudaStream_t st = nullptr;

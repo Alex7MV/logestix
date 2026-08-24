@@ -61,6 +61,8 @@ TEST_CASE("Qwen3.5-9B perf baseline: decode throughput",
 
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model.string();
+    // LSX_TEST_FAST_MATH=1 -> tensor-core W4A4 path (audit Phase 3).
+    cfg.fast_math = std::getenv("LSX_TEST_FAST_MATH") != nullptr;
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
     REQUIRE(m->Type() == "qwen3.5-9b");
