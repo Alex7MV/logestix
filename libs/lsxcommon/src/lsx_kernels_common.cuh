@@ -16,6 +16,8 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
+#include "glm_device_math.h"
+
 namespace lsxcommon {
 namespace kernels {
 
@@ -61,6 +63,10 @@ template <> __device__ __forceinline__ float ExpF<ExpFlavor::Fast>(float x)
 template <> __device__ __forceinline__ float ExpF<ExpFlavor::Precise>(float x)
 {
     return expf(x);
+}
+template <> __device__ __forceinline__ float ExpF<ExpFlavor::Glibc>(float x)
+{
+    return glm::device::GlmExpfGlibc(x);
 }
 
 } // namespace kernels

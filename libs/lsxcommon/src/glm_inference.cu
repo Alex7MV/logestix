@@ -14,6 +14,7 @@
 
 #include "glm_device_math.h"
 #include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
 #include "glm_expert_kernels.cuh"
 
 namespace lsxcommon {
@@ -46,20 +47,7 @@ constexpr int kGlmRmsBlock = 256;
 // GlmRmsNormKernel / GlmGemmFp64Kernel / GlmRealSwigluKernel: single textual
 // source in glm_expert_kernels.cuh (bit-exact, -fmad=false), included above.
 
-__global__ void GlmSwigluClampKernel(__half *__restrict__ gate,
-                                     const __half *__restrict__ up,
-                                     int n, float limit)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float g = __half2float(gate[i]);
-    float u = __half2float(up[i]);
-    if (g > limit) g = limit;
-    if (u > limit) u = limit;
-    if (u < -limit) u = -limit;
-    float s = g / (1.0f + GlmExpfGlibc(-g));
-    gate[i] = __float2half(s * u);
-}
+// Clamped SwiGLU: unified kernels::SwigluKernel<Glibc,true>.
 
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 
@@ -108,8 +96,8 @@ cudaError_t RunDenseMLPLayer(cublasHandle_t cublas_h, cudaStream_t stream,
                     inter, hidden, seq);
     if (e != cudaSuccess) return e;
     const int n_act = seq * inter;
-    GlmSwigluClampKernel<<<(n_act + 255) / 256, 256, 0, stream>>>(
-        d_gate, d_up, n_act, kGlmSwigluLimit);
+    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, true><<<(n_act + 255) / 256, 256, 0, stream>>>(
+        d_gate, d_up, d_gate, n_act, kGlmSwigluLimit);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     e = RunGemmFp64(stream, lw.d_mlp_down, d_gate, d_y,
@@ -1367,8 +1355,8 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         e = RunGemmFp64(c.st, lw.d_mlp_up, c.d_mlpn, c.d_dup,
                         kGlmDenseInter, hidden, 1);
         if (e != cudaSuccess) return e;
-        GlmRealSwigluKernel<<<(kGlmDenseInter + 255) / 256, 256, 0, c.st>>>(
-            c.d_dgate, c.d_dup, kGlmDenseInter);
+        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, false><<<(kGlmDenseInter + 255) / 256, 256, 0, c.st>>>(
+            c.d_dgate, c.d_dup, c.d_dgate, kGlmDenseInter, 0.f);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
         e = RunGemmFp64(c.st, lw.d_mlp_down, c.d_dgate, c.d_off, hidden,

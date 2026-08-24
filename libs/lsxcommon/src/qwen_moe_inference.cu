@@ -15,6 +15,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -112,16 +113,7 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
 // ── Routed expert FFN slot chain ──────────────────────────────────────────
 namespace {
 
-// y = silu(gate) * up  (HF: act_fn(gate) * up, act = silu)
-__global__ void qwen_moe_swiglu_kernel(const __half *__restrict__ g,
-                                       const __half *__restrict__ u,
-                                       __half *__restrict__ y, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    const float gv = __half2float(g[i]);
-    y[i] = __float2half(gv / (1.f + expf(-gv)) * __half2float(u[i]));
-}
+// SwiGLU: unified kernels::SwigluKernel (lsx_kernels_act.cuh).
 
 // Deterministic ascending-k accumulation into an fp32 accumulator.
 __global__ void qwen_moe_coeff_add_kernel(const __half *__restrict__ y2,
@@ -177,8 +169,8 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1, H, I,
                              false) != cudaSuccess)
             { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
-        qwen_moe_swiglu_kernel<<<EltGrid(I), kEltBlock, 0, stream>>>(
-            d_yg, d_yu, d_yg, I);
+        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
+            <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
         if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1, I, H,
                              false) != cudaSuccess)
             { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
@@ -252,8 +244,9 @@ cudaError_t RunQwenMoeSharedCombine(
                                sw3.global_scale, d_scratch_h, seq, H, SI,
                                false) != cudaSuccess)
         return cudaErrorInvalidValue;
-    qwen_moe_swiglu_kernel<<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(
-        d_scratch_i, d_scratch_h, d_scratch_i, seq * SI);
+    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
+        <<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(d_scratch_i, d_scratch_h,
+                                                      d_scratch_i, seq * SI, 0.f);
     if (qwen::RunQwenNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
                                sw2.global_scale, d_scratch_h, seq, SI, H,
                                false) != cudaSuccess)

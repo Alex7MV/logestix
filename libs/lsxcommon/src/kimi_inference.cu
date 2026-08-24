@@ -1,6 +1,7 @@
 #include "kimi_inference_kernels.h"
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
 #include "lsx_kernels_quant.cuh"
 #include "nvfp4_codec.h"
 
@@ -622,17 +623,7 @@ namespace {
 // NVFP4 elementwise dequant: unified kernels::Nvfp4DequantKernel
 // (lsx_kernels_quant.cuh), byte-equal to the former kimi_nvfp4_dequant_kernel.
 
-// SwiGLU: h = silu(gate) * up.
-__global__ void kimi_swiglu_kernel(const __nv_bfloat16 *__restrict__ gate,
-                                   const __nv_bfloat16 *__restrict__ up,
-                                   __nv_bfloat16 *__restrict__ h, int64_t n)
-{
-    const int64_t i =
-        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    const float g = __bfloat162float(gate[i]);
-    h[i] = __float2bfloat16_rn(g / (1.0f + __expf(-g)) * __bfloat162float(up[i]));
-}
+// SwiGLU: unified kernels::SwigluKernel (lsx_kernels_act.cuh).
 
 // d_out += weight * y (elementwise over the hidden row).
 __global__ void kimi_accum_kernel(const __nv_bfloat16 *__restrict__ y, float weight,
@@ -758,8 +749,9 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                         cudaGetErrorString(ce_), __LINE__);
         } while (0);
 
-    kimi_swiglu_kernel<<<static_cast<unsigned>((I + 255) / 256), 256, 0,
-                         stream>>>(act_g, act_u, act_h, I);
+    ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
+        <<<static_cast<unsigned>((I + 255) / 256), 256, 0, stream>>>(
+            act_g, act_u, act_h, I, 0.f);
 
     // down projection: y(Hd) = W_down(Hd x I)^T @ h(I).
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -998,9 +990,9 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
         } while (0);
             {
                 const int64_t n = (int64_t)seq * kKimiDenseIntermediate;
-                kimi_swiglu_kernel<<<static_cast<unsigned>((n + 255) / 256),
-                                     256, 0, stream>>>(d_mlp_g, d_mlp_u,
-                                                       d_mlp_h, n);
+                ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
+                <<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
+                    d_mlp_g, d_mlp_u, d_mlp_h, n, 0.f);
             }
             cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                          kKimiHidden, seq, kKimiDenseIntermediate, &alpha,

@@ -13,6 +13,7 @@
 
 #include "lsx_kernels_quant.cuh"
 #include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
 
 namespace {
 
@@ -308,4 +309,107 @@ TEST_CASE("math kernels match refs", "[lsxk][math]") {
     cudaFree(d_tab_ref); cudaFree(d_tab_uni); cudaFree(d_ids);
     cudaFree(d_out_ref); cudaFree(d_out_uni);
     cudaFree(d_f); cudaFree(d_h_ref); cudaFree(d_h_uni);
+}
+
+// ── Task 4: act cluster references (verbatim ports) ────────────────────────
+namespace ref {
+
+// qwen_moe_inference.cu qwen_moe_swiglu_kernel verbatim (division, Precise).
+__global__ void swiglu_div_precise(const __half* __restrict__ g,
+                                   const __half* __restrict__ u,
+                                   __half* __restrict__ y, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float gv = __half2float(g[i]);
+    y[i] = __float2half(gv / (1.f + expf(-gv)) * __half2float(u[i]));
+}
+
+// glm_inference.cu GlmSwigluClampKernel verbatim (Glibc + clamp).
+__global__ void swiglu_glibc_clamp(__half* __restrict__ gate,
+                                   const __half* __restrict__ up,
+                                   int n, float limit) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float g = __half2float(gate[i]);
+    float u = __half2float(up[i]);
+    if (g > limit) g = limit;
+    if (u > limit) u = limit;
+    if (u < -limit) u = -limit;
+    float s = g / (1.0f + lsxcommon::glm::device::GlmExpfGlibc(-g));
+    gate[i] = __float2half(s * u);
+}
+
+// deepseek swiglu_clamp_kernel verbatim (sig form, Precise).
+__global__ void swiglu_sig_precise(__half* __restrict__ d_gate_vec,
+                                   const __half* __restrict__ d_up_vec,
+                                   int n, float limit) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float g = __half2float(d_gate_vec[i]);
+    float u = __half2float(d_up_vec[i]);
+    if (g > limit) g = limit;
+    if (u >  limit) u =  limit;
+    if (u < -limit) u = -limit;
+    float sig = 1.0f / (1.0f + expf(-g));
+    d_gate_vec[i] = __float2half(sig * g * u);
+}
+
+} // namespace ref
+
+namespace {
+void FillHalfRand(__half* d, size_t n, uint32_t seed) {
+    std::vector<uint16_t> raw(n);
+    for (auto& r : raw) r = static_cast<uint16_t>(LcgNext(seed) & 0xFFFF);
+    cudaMemcpy(d, raw.data(), n * 2, cudaMemcpyHostToDevice);
+}
+} // namespace
+
+TEST_CASE("swiglu flavors match refs bit-for-bit", "[lsxk][act]") {
+    constexpr int kN = 1024;
+    constexpr int blk = 256;
+    const int grid = (kN + blk - 1) / blk;
+
+    // Division form, Precise, no clamp.
+    {
+        __half *d_g, *d_u, *d_r, *d_x;
+        cudaMalloc(&d_g, kN * 2); cudaMalloc(&d_u, kN * 2);
+        cudaMalloc(&d_r, kN * 2); cudaMalloc(&d_x, kN * 2);
+        FillHalfRand(d_g, kN, 42); cudaMemcpy(d_u, d_g, kN * 2, cudaMemcpyDeviceToDevice);
+        ref::swiglu_div_precise<<<grid, blk>>>(d_g, d_u, d_r, kN);
+        lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Precise, false>
+            <<<grid, blk>>>(d_g, d_u, d_x, kN, 0.f);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        RequireDeviceEqual(d_r, d_x, kN);
+        cudaFree(d_g); cudaFree(d_u); cudaFree(d_r); cudaFree(d_x);
+    }
+    // Glibc clamp (in-place out==gate).
+    {
+        __half *d_gr, *d_ur, *d_gx, *d_ux;
+        cudaMalloc(&d_gr, kN * 2); cudaMalloc(&d_ur, kN * 2);
+        cudaMalloc(&d_gx, kN * 2); cudaMalloc(&d_ux, kN * 2);
+        FillHalfRand(d_gr, kN, 43); cudaMemcpy(d_ur, d_gr, kN * 2, cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_gx, d_gr, kN * 2, cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_ux, d_ur, kN * 2, cudaMemcpyDeviceToDevice);
+        ref::swiglu_glibc_clamp<<<grid, blk>>>(d_gr, d_ur, kN, 10.f);
+        lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc, true>
+            <<<grid, blk>>>(d_gx, d_ux, d_gx, kN, 10.f);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        RequireDeviceEqual(d_gr, d_gx, kN);
+        cudaFree(d_gr); cudaFree(d_ur); cudaFree(d_gx); cudaFree(d_ux);
+    }
+    // Sig form, Precise, clamp.
+    {
+        __half *d_gr, *d_ur, *d_gx, *d_ux;
+        cudaMalloc(&d_gr, kN * 2); cudaMalloc(&d_ur, kN * 2);
+        cudaMalloc(&d_gx, kN * 2); cudaMalloc(&d_ux, kN * 2);
+        FillHalfRand(d_gr, kN, 44); cudaMemcpy(d_ur, d_gr, kN * 2, cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_gx, d_gr, kN * 2, cudaMemcpyDeviceToDevice);
+        cudaMemcpy(d_ux, d_ur, kN * 2, cudaMemcpyDeviceToDevice);
+        ref::swiglu_sig_precise<<<grid, blk>>>(d_gr, d_ur, kN, 7.f);
+        lsxcommon::kernels::SwigluSigKernel<__half, lsxcommon::kernels::ExpFlavor::Precise, true>
+            <<<grid, blk>>>(d_gx, d_ux, d_gx, kN, 7.f);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        RequireDeviceEqual(d_gr, d_gx, kN);
+        cudaFree(d_gr); cudaFree(d_ur); cudaFree(d_gx); cudaFree(d_ux);
+    }
 }
