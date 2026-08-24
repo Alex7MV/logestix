@@ -36,7 +36,6 @@ protected:
     // environment, the frozen-geometry gate is bypassed so synthetic tiny
     // fixtures can exercise converter/loader/kernel paths. Production binaries
     // never set it and keep the hard gate.
-    static bool SyntheticGeometryAllowed();
 
     std::string type_;
     qwen::QwenPinnedWeights pw_;

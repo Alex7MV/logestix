@@ -319,6 +319,7 @@ TEST_CASE("DecideSession continuation vs fresh", "[session]")
 // ── ModelBase persistent CUDA execution context ─────────────────────────────
 
 #include <cublas_v2.h>
+#include <shared_mutex>
 
 namespace {
 
@@ -329,6 +330,7 @@ public:
     using ModelBase::TeardownContext;
     using ModelBase::stream;
     using ModelBase::cublas;
+    using ModelBase::RunUnderResidencyLock;
 
     bool Load() override { return false; }
     lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &) override
@@ -387,4 +389,13 @@ TEST_CASE("EnsureContext binds cuBLAS to the owned stream", "[model_base][gpu]")
     CHECK(cublasGetStream(m.cublas(), &s) == CUBLAS_STATUS_SUCCESS);
     CHECK(s == m.stream());
     m.TeardownContext();
+}
+
+TEST_CASE("RunUnderResidencyLock executes and releases", "[model_base]")
+{
+    ContextProbe m{lsxcommon::ModelInitConfig{}};
+    int v = m.RunUnderResidencyLock([] { return 42; });
+    CHECK(v == 42);
+    // The shared lock must be released afterwards: unique_lock succeeds.
+    std::unique_lock<std::shared_mutex> ul(m.ResidencyMutex());
 }

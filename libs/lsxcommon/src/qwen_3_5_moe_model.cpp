@@ -14,13 +14,6 @@ namespace lsxcommon {
 
 const std::string Qwen35MoeModel::kType = "qwen3.5-35b-a3b";
 
-namespace {
-bool SyntheticGeometryAllowed()
-{
-    return std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
-}
-} // namespace
-
 Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
     : ModelBase{std::move(cfg)} {}
 
@@ -43,24 +36,21 @@ bool Qwen35MoeModel::ValidateGeometry(
     using namespace qwen_moe::frozen;
     if (SyntheticGeometryAllowed()) return true;
 
-    auto check = [&](bool ok, const char *what) {
-        if (!ok)
-            log::error(absl::StrCat("[qwen-moe-model] geometry mismatch: ",
-                                    what));
-        return ok;
+    const GeoFieldCheck fields[] = {
+        {"hidden_size", kHidden, top.hidden_size},
+        {"num_layers", kLayers, top.num_layers},
+        {"num_attention_heads", kHeads, top.num_attention_heads},
+        {"num_key_value_heads", kKVHeads, top.num_key_value_heads},
+        {"head_dim", kHeadDim, top.head_dim},
+        {"vocab_size", kVocab, top.vocab_size},
+        {"num_experts", kNumExperts, top.num_experts},
+        {"num_experts_per_tok", kTopK, top.num_experts_per_tok},
+        {"moe_intermediate_size", kMoeIntermediate,
+         top.moe_intermediate_size},
+        {"shared_expert_intermediate_size", kSharedIntermediate,
+         top.shared_expert_intermediate_size},
     };
-    if (!check(top.hidden_size == kHidden, "hidden_size")) return false;
-    if (!check(top.num_layers == kLayers, "num_layers")) return false;
-    if (!check(top.num_attention_heads == kHeads, "num_attention_heads")) return false;
-    if (!check(top.num_key_value_heads == kKVHeads, "num_key_value_heads")) return false;
-    if (!check(top.head_dim == kHeadDim, "head_dim")) return false;
-    if (!check(top.vocab_size == kVocab, "vocab_size")) return false;
-    if (!check(top.num_experts == kNumExperts, "num_experts")) return false;
-    if (!check(top.num_experts_per_tok == kTopK, "num_experts_per_tok")) return false;
-    if (!check(top.moe_intermediate_size == kMoeIntermediate,
-               "moe_intermediate_size")) return false;
-    if (!check(top.shared_expert_intermediate_size == kSharedIntermediate,
-               "shared_expert_intermediate_size")) return false;
+    if (!CheckGeometryFields("qwen-moe-model", fields, 10)) return false;
     for (int l = 0; l < top.num_layers; ++l) {
         const std::string want =
             (l % kFullAttnInterval == kFullAttnInterval - 1) ? "full_attention"

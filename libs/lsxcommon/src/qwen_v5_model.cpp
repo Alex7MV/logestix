@@ -16,23 +16,17 @@ Qwen3_5_9BModel::Qwen3_5_9BModel(ModelInitConfig cfg)
 bool Qwen3_5_9BModel::ValidateGeometry(const qwen::QwenTopology &top) const
 {
     if (SyntheticGeometryAllowed()) return true;
-    auto check = [&](const char *name, int expected, int actual) {
-        if (expected != actual) {
-            lsxcommon::log::error(absl::StrCat(
-                "[qwen3.5-9b] geometry mismatch: ", name, " expected=",
-                expected, " got=", actual));
-            return false;
-        }
-        return true;
+    const GeoFieldCheck fields[] = {
+        {"hidden_size", kHiddenSize, top.hidden_size},
+        {"num_layers", kNumLayers, top.num_layers},
+        {"num_attention_heads", kNumHeads, top.num_attention_heads},
+        {"num_key_value_heads", kNumKVHeads, top.num_key_value_heads},
+        {"head_dim", kHeadDim, top.head_dim},
+        {"intermediate_size", kIntermediateSize, top.intermediate_size},
+        {"linear_num_value_heads", kLinearNumValueHeads,
+         top.linear_num_value_heads},
     };
-    return check("hidden_size", kHiddenSize, top.hidden_size) &&
-           check("num_layers", kNumLayers, top.num_layers) &&
-           check("num_attention_heads", kNumHeads, top.num_attention_heads) &&
-           check("num_key_value_heads", kNumKVHeads, top.num_key_value_heads) &&
-           check("head_dim", kHeadDim, top.head_dim) &&
-           check("intermediate_size", kIntermediateSize, top.intermediate_size) &&
-           check("linear_num_value_heads", kLinearNumValueHeads,
-                 top.linear_num_value_heads);
+    return CheckGeometryFields("qwen3.5-9b", fields, 7);
 }
 
 } // namespace lsxcommon

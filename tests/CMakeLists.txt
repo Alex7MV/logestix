@@ -25,6 +25,11 @@ target_include_directories(test_fast_load PRIVATE
     ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_fast_load COMMAND test_fast_load)
 
+# ── Тест общего geometry-валидатора ModelBase (host-only) ────────────────
+add_executable(test_geometry_guard test_geometry_guard.cpp)
+target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_geometry_guard COMMAND test_geometry_guard)
+
 
 # ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
 add_executable(test_schema_views test_schema_views.cpp)

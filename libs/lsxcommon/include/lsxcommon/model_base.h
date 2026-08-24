@@ -43,6 +43,14 @@ public:
     std::uint64_t ResidentWeightBytes() const override { return resident_bytes_; }
     const VramProfile &VramRequirements() const override { return vram_; }
 
+    // One frozen-geometry expectation row: field name, expected value from
+    // the compile-time passport, actual value parsed from model.index.json.
+    struct GeoFieldCheck {
+        const char *name;
+        long long expected;
+        long long actual;
+    };
+
 protected:
     // Shared Load-preamble (triplicated in DeepSeek/GLM/Qwen): loaded_ early-out,
     // empty model_path guard, LoadTokenizerDb. Callers keep any model-specific
@@ -69,6 +77,16 @@ protected:
     // Conversion-time VRAM requirements; populated by subclass Load() from
     // the model's model.index.json "vram" block.
     VramProfile vram_;
+
+    // ── Shared geometry validation (model-unification 2026-08) ─────────────
+    // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY env gate (was triplicated per family).
+    static bool SyntheticGeometryAllowed();
+
+    // Logs one uniform error line per mismatch and returns false at the first
+    // mismatch; true when every field matches. Synthetic bypass remains the
+    // CALLER's decision (some validators gate extra loops, e.g. layer_types).
+    bool CheckGeometryFields(const char *tag, const GeoFieldCheck *fields,
+                             size_t n) const;
 
     // Runs `fn` under the shared residency lock: unload-during-inference and
     // parallel dispatch serialize behind a unique_lock, while generation

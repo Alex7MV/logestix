@@ -42,7 +42,6 @@ protected:
     // does not match the frozen compile-time constants.
     virtual bool ValidateGeometry(const gemma::GemmaTopology &top) const;
 
-    static bool SyntheticGeometryAllowed();
 
     std::string type_;
     gemma::GemmaPinnedWeights pw_;

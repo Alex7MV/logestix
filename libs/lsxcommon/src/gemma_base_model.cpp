@@ -40,13 +40,6 @@ bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
 }
 } // namespace gemma
 
-bool GemmaBaseModel::SyntheticGeometryAllowed()
-{
-    static const bool allowed =
-        std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
-    return allowed;
-}
-
 // Base default: no frozen geometry. Concrete models override with the
 // compile-time constants gate.
 bool GemmaBaseModel::ValidateGeometry(const gemma::GemmaTopology &) const

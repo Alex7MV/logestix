@@ -29,18 +29,21 @@ static_assert(kLayers > 0, "num layers must be positive");
 bool Gemma4_26BA4BModel::ValidateGeometry(
     const gemma::GemmaTopology &top) const
 {
-    if (SyntheticGeometryAllowed() || top.error_msg.empty() == false) {
-        // Synthetic fixtures bypass; malformed topology still fails below.
-        if (!SyntheticGeometryAllowed()) return false;
-        return true;
-    }
-    return top.hidden_size == kHidden && top.num_layers == kLayers &&
-           top.num_attention_heads == kHeads &&
-           top.num_key_value_heads == kKVHeads &&
-           top.num_global_key_value_heads == kGlobalKVHeads &&
-           top.head_dim == kHeadDim &&
-           top.global_head_dim == kGlobalHeadDim &&
-           top.num_experts == kExperts && top.top_k_experts == kTopK;
+    if (!top.error_msg.empty()) return false;
+    if (SyntheticGeometryAllowed()) return true;
+    const GeoFieldCheck fields[] = {
+        {"hidden_size", kHidden, top.hidden_size},
+        {"num_layers", kLayers, top.num_layers},
+        {"num_attention_heads", kHeads, top.num_attention_heads},
+        {"num_key_value_heads", kKVHeads, top.num_key_value_heads},
+        {"num_global_key_value_heads", kGlobalKVHeads,
+         top.num_global_key_value_heads},
+        {"head_dim", kHeadDim, top.head_dim},
+        {"global_head_dim", kGlobalHeadDim, top.global_head_dim},
+        {"num_experts", kExperts, top.num_experts},
+        {"top_k_experts", kTopK, top.top_k_experts},
+    };
+    return CheckGeometryFields("gemma4-26b-a4b", fields, 9);
 }
 
 } // namespace lsxcommon

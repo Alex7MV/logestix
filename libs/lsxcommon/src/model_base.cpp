@@ -2,6 +2,7 @@
 
 #include <absl/strings/str_format.h>
 #include <arrow/io/file.h>
+#include <cstdlib>
 #include <filesystem>
 
 #include "lsxcommon/log.h"
@@ -118,4 +119,31 @@ void ModelBase::TeardownContext()
     }
 }
 
+// ── Shared geometry validation (model-unification 2026-08) ──────────────────
+
+bool ModelBase::SyntheticGeometryAllowed()
+{
+    static const bool allowed =
+        std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
+    return allowed;
+}
+
+bool ModelBase::CheckGeometryFields(const char *tag,
+                                    const GeoFieldCheck *fields,
+                                    size_t n) const
+{
+    for (size_t i = 0; i < n; ++i) {
+        const auto &f = fields[i];
+        if (f.expected != f.actual) {
+            log::error(std::string("[") + tag +
+                       "] geometry mismatch: " + f.name + ": expected " +
+                       std::to_string(f.expected) + ", got " +
+                       std::to_string(f.actual));
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace lsxcommon
+
