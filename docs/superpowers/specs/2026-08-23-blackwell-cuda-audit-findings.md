@@ -340,3 +340,15 @@ kernel in steps (dyn+static coexistence -> dst-in-dynamic at 16B = fault ->
 128B-rounded = pass). TMA staging now live in TcGemmDecodeKernel: static
 128B-aligned ring + per-buffer mbarrier parity waits (.shared::cta form),
 host-side tensormap cache keyed by (ptr,K,N). e2e @5090: 51.1 -> 53.1 tok/s.
+
+### Round 8 profile post-TMA (2026-08-25)
+
+TcGemmDecodeKernel = 78.7% GPU time (4980 launches, avg 45.7us / med 32.9).
+Effective weight streaming ~245 GB/s = 13.7% of 5090 HBM peak -> the decode
+path is LATENCY/LAUNCH-bound, not bandwidth-bound: ~310 kernel launches per
+token. Reaching 280-320 tok/s @5090 requires structural work, not staging
+tuning: persistent megakernel or CUDA Graphs for the per-token launch graph,
+wider output tiles (kDecCols=128 -> 256), fusing linear-attn stages
+(conv_norm + gated_delta ~= 10% GPU), act-quant reuse across GEMM calls.
+Extrapolated 5060 Ti at current efficiency: ~14 tok/s-equivalent BW share;
+the 70-80 target rides on the same structural fixes.
