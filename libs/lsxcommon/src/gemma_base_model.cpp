@@ -130,11 +130,13 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     }
 
     gemma::GemmaGenerationResult gen;
-    e = gemma::RunGemmaGeneration(
-        st, pw_, expert_db, gen_input, req.max_gen_tokens,
-        tok_db_ ? tok_db_->eos_id : -1,
-        pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f, gen,
-        *kv_);
+    e = RunUnderResidencyLock([&] {
+        return gemma::RunGemmaGeneration(
+            st, pw_, expert_db, gen_input, req.max_gen_tokens,
+            tok_db_ ? tok_db_->eos_id : -1,
+            pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
+            gen, *kv_);
+    });
     if (e != cudaSuccess)
         spdlog::error("[gemma-model] RunGemmaGeneration rc={} ({}) gen_err='{}'",
                       static_cast<int>(e), cudaGetErrorString(e), gen.error_msg);

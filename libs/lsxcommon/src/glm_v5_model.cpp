@@ -175,16 +175,15 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     }
 
     glm::GlmGenerationResult gen;
-    {
-        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
-        const cudaError_t e = glm::RunGlmRealGeneration(
-            cublas(), stream(), pw_, experts_, req.input_ids,
-            req.max_gen_tokens, gen);
-        if (e != cudaSuccess || !gen.ok) {
-            r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;
-            r.ok = false;
-            return r;
-        }
+    const cudaError_t err = RunUnderResidencyLock([&] {
+        return glm::RunGlmRealGeneration(cublas(), stream(), pw_, experts_,
+                                         req.input_ids, req.max_gen_tokens,
+                                         gen);
+    });
+    if (err != cudaSuccess || !gen.ok) {
+        r.error_msg = gen.ok ? cudaGetErrorString(err) : gen.error_msg;
+        r.ok = false;
+        return r;
     }
 
     if (tuner_) {  // between requests: adapt the expert cache (spec 4)
@@ -237,14 +236,13 @@ gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
     const std::vector<int32_t> prompt = {0, 0, 0, 0};
 
     glm::GlmGenerationResult gr;
-    {
-        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
-        const cudaError_t e = glm::RunGlmRealGeneration(
-            cublas(), stream(), pw_, experts_, prompt, num_tokens, gr);
-        if (e != cudaSuccess || !gr.ok) {
-            r.error_msg = gr.ok ? cudaGetErrorString(e) : gr.error_msg;
-            return r;
-        }
+    const cudaError_t berr = RunUnderResidencyLock([&] {
+        return glm::RunGlmRealGeneration(cublas(), stream(), pw_, experts_,
+                                         prompt, num_tokens, gr);
+    });
+    if (berr != cudaSuccess || !gr.ok) {
+        r.error_msg = gr.ok ? cudaGetErrorString(berr) : gr.error_msg;
+        return r;
     }
     runtime::FillBenchmarkResult(r, gr.total_ms,
                                  static_cast<int>(gr.tokens.size()),

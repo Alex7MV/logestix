@@ -147,9 +147,11 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
 
     qwen::QwenGenerationResult gen;
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-    cudaError_t e = qwen_moe::RunQwenMoeGeneration(
-        stream(), pw_, experts_, cache_, gen_input, req.max_gen_tokens,
-        eos_id, gen, lsxcommon::sample::DefaultSampler(), kv_.get());
+    cudaError_t e = RunUnderResidencyLock([&] {
+        return qwen_moe::RunQwenMoeGeneration(
+            stream(), pw_, experts_, cache_, gen_input, req.max_gen_tokens,
+            eos_id, gen, lsxcommon::sample::DefaultSampler(), kv_.get());
+    });
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
         r.ok = false;

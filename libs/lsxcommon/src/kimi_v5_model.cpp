@@ -102,16 +102,15 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     }
 
     kimi::KimiGenerationResult gen;
-    {
-        std::shared_lock<std::shared_mutex> residency(residency_mutex_);
-        const cudaError_t e = kimi::RunKimiGeneration(
-            cublas(), stream(), pw_, experts_, req.input_ids,
-            req.max_gen_tokens, gen);
-        if (e != cudaSuccess || !gen.ok) {
-            r.error_msg = gen.ok ? cudaGetErrorString(e) : gen.error_msg;
-            r.ok = false;
-            return r;
-        }
+    const cudaError_t err = RunUnderResidencyLock([&] {
+        return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
+                                       req.input_ids, req.max_gen_tokens,
+                                       gen);
+    });
+    if (err != cudaSuccess || !gen.ok) {
+        r.error_msg = gen.ok ? cudaGetErrorString(err) : gen.error_msg;
+        r.ok = false;
+        return r;
     }
 
     runtime::FillInferenceResult(

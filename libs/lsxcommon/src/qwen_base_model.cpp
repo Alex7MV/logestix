@@ -101,7 +101,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
                                        kv_.get());
     };
 
-    cudaError_t e = run();
+    cudaError_t e = RunUnderResidencyLock(run);
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
         r.ok = false;

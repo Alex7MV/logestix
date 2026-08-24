@@ -70,6 +70,17 @@ protected:
     // the model's model.index.json "vram" block.
     VramProfile vram_;
 
+    // Runs `fn` under the shared residency lock: unload-during-inference and
+    // parallel dispatch serialize behind a unique_lock, while generation
+    // itself stays shared-safe. Every Infer/Benchmark implementation MUST
+    // route its generation call through this helper (uniform preamble).
+    template <typename F>
+    auto RunUnderResidencyLock(F &&fn) -> decltype(fn())
+    {
+        std::shared_lock<std::shared_mutex> lock(residency_mutex_);
+        return fn();
+    }
+
     // Persistent CUDA execution context (see EnsureContext above).
     cudaStream_t ctx_stream_ = nullptr;
     cublasHandle_t ctx_cublas_ = nullptr;

@@ -62,8 +62,10 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
-    return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
-                                  req.max_gen_tokens, *tok_db_, pw_);
+    return RunUnderResidencyLock([&] {
+        return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
+                                      req.max_gen_tokens, *tok_db_, pw_);
+    });
 }
 
 void DeepSeekV4FlashModel::Unload()
