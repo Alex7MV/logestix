@@ -175,6 +175,8 @@ target_compile_options(test_blackwell_tc_cu PRIVATE
 target_include_directories(test_blackwell_tc_cu PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
 target_link_libraries(test_blackwell_tc_cu PRIVATE Catch2::Catch2WithMain)
 

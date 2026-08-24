@@ -102,6 +102,206 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
     return cudaGetLastError();
 }
 
+// ── Task 3: tensor-core tile GEMM ───────────────────────────────────────────
+//
+// Block = 256 threads = 8 warps arranged 4x2; tile = 64 rows x 64 cols.
+// Warp (wm, wn) covers 16 rows x 32 cols = four m16n8k64 mma atoms per
+// k-chunk. Fragment packing matches the empirically verified layout in
+// test_blackwell_tc_mma.cu:
+//   A: reg r = elements 8r..8r+7; row = g / g+8 alternating every 8 elems;
+//      col = tig*8 + (i&7) [+32 for i>=16]; low nibble = even k.
+//   SFA: lane tig==0 -> row g's chunk bytes [0..3], tig==1 -> row g+8,
+//        lanes >= 2 ignored.
+//   B: reg r = elements 8r..8r+7 over k = tig*8+(i&7) [+32]; col = lane>>2.
+//   SFB: byte c = chunk c of column lane>>2.
+namespace {
+
+constexpr int kTileM = 64;
+constexpr int kTileN = 64;
+
+__device__ __forceinline__ uint8_t FetchCode(const uint8_t *packed,
+                                             int64_t row_stride_elems,
+                                             int row, int k)
+{
+    if (row < 0 || k < 0) return 0;
+    const int64_t e = static_cast<int64_t>(row) * row_stride_elems + k;
+    const uint8_t byte = packed[e >> 1];
+    return (k & 1) ? static_cast<uint8_t>(byte >> 4)
+                   : static_cast<uint8_t>(byte & 0x0F);
+}
+
+__global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
+                             const uint8_t *__restrict__ as,
+                             const uint8_t *__restrict__ bp,
+                             const uint8_t *__restrict__ bs,
+                             float wgs, __half *__restrict__ y,
+                             int seq, int K, int N)
+{
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int wm = warp >> 1;          // 0..3
+    const int wn = warp & 1;           // 0..1
+    const int g = lane >> 2;
+    const int tig = lane & 3;
+
+    const int row_base = blockIdx.y * kTileM + wm * 16;
+    const int col_base = blockIdx.x * kTileN + wn * 32;
+
+    const int k_chunks = (K + 15) >> 4;
+
+    // Accumulators: 4 n-atoms x 4 f32.
+    float d[4][4] = {};
+
+    // Precompute A fragment element (row, k-offset-within-chunk) table.
+    int a_row[32], a_koff[32];
+#pragma unroll
+    for (int i = 0; i < 32; ++i) {
+        a_row[i] = (i < 8 || (i >= 16 && i < 24)) ? g : g + 8;
+        a_koff[i] = tig * 8 + (i & 7) + ((i >= 16) ? 32 : 0);
+    }
+
+    for (int kb = 0; kb < K; kb += 64) {
+        // ---- Build A fragment regs (one m16k64 atom covering all 4 n-atoms).
+        uint32_t ar[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int r = row_base + a_row[i];
+            const int kk = kb + a_koff[i];
+            const bool valid = r < seq && kk < K && r >= 0;
+            const uint8_t code =
+                valid ? FetchCode(ap, K, r, kk) : uint8_t{0};
+            ar[i / 8] |= uint32_t(code)
+                         << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
+        }
+
+        // SFA: carrier lanes tig 0/1 hold rows g / g+8 chunk scales.
+        uint32_t sfa = 0;
+        {
+            const int srow_local = (tig == 1) ? (g + 8) : g;
+            const int sr = row_base + srow_local;
+            uint32_t v = 0;
+#pragma unroll
+            for (int c = 0; c < 4; ++c) {
+                const int ch = kb / 16 + c;
+                const uint8_t byte =
+                    (sr < seq && ch < k_chunks)
+                        ? as[static_cast<int64_t>(sr) * k_chunks + ch]
+                        : uint8_t{0};
+                v |= uint32_t(byte) << (c * 8);
+            }
+            sfa = v;
+        }
+
+        // ---- Per-n-atom B fragments + mma.
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int n_atom = col_base + j * 8;
+            uint32_t br[2] = {0, 0};
+#pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                const int kk = kb + tig * 8 + (i & 7) +
+                               ((i >= 8) ? 32 : 0);
+                const int nn = n_atom + g;
+                const bool valid = nn < N && kk < K;
+                const uint8_t code =
+                    valid ? FetchCode(bp, K, nn, kk) : uint8_t{0};
+                br[i / 8] |= uint32_t(code)
+                             << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
+            }
+            uint32_t sfb = 0;
+            {
+                const int nn = n_atom + g;
+#pragma unroll
+                for (int c = 0; c < 4; ++c) {
+                    const int ch = kb / 16 + c;
+                    const uint8_t byte =
+                        (nn < N && ch < k_chunks)
+                            ? bs[static_cast<int64_t>(nn) * k_chunks + ch]
+                            : uint8_t{0};
+                    sfb |= uint32_t(byte) << (c * 8);
+                }
+            }
+            float &d0 = d[j][0], &d1 = d[j][1], &d2 = d[j][2], &d3 = d[j][3];
+            asm volatile(
+                "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale"
+                ".scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3 "
+                "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+                "%14, {0, 0}, %15, {0, 0};\n"
+                : "=f"(d0), "=f"(d1), "=f"(d2), "=f"(d3)
+                : "r"(ar[0]), "r"(ar[1]), "r"(ar[2]), "r"(ar[3]),
+                  "r"(br[0]), "r"(br[1]), "f"(d0), "f"(d1), "f"(d2), "f"(d3),
+                  "r"(sfa), "r"(sfb));
+        }
+    }
+
+    // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int n0 = col_base + j * 8 + tig * 2;
+        const int r0 = row_base + g;
+        if (r0 < seq && n0 < N)
+            y[static_cast<int64_t>(r0) * N + n0] =
+                __float2half(d[j][0] * wgs);
+        if (r0 < seq && n0 + 1 < N)
+            y[static_cast<int64_t>(r0) * N + n0 + 1] =
+                __float2half(d[j][1] * wgs);
+        if (r0 + 8 < seq && n0 < N)
+            y[static_cast<int64_t>(r0 + 8) * N + n0] =
+                __float2half(d[j][2] * wgs);
+        if (r0 + 8 < seq && n0 + 1 < N)
+            y[static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
+                __float2half(d[j][3] * wgs);
+    }
+}
+
+} // namespace
+
+cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
+                               const uint8_t *w_packed,
+                               const uint8_t *w_scales, float w_global_scale,
+                               __half *y, int seq, int K, int N)
+{
+    if (!x_fp16 || !w_packed || !w_scales || !y || seq <= 0 || K <= 0 ||
+        N <= 0 || (K & 15))
+        return cudaErrorInvalidValue;
+
+    int dev = 0;
+    cudaError_t e = cudaGetDevice(&dev);
+    if (e != cudaSuccess) return e;
+    cudaDeviceProp prop{};
+    e = cudaGetDeviceProperties(&prop, dev);
+    if (e != cudaSuccess) return e;
+    if (prop.major != 12) return cudaErrorNotSupported;
+
+    // Stream-ordered scratch for quantized activations.
+    const size_t packed_bytes = static_cast<size_t>(seq) * (K / 2);
+    const size_t scale_bytes = static_cast<size_t>(seq) * ((K + 15) / 16);
+    void *ap_scratch = nullptr, *as_scratch = nullptr;
+    e = cudaMallocAsync(&ap_scratch, packed_bytes ? packed_bytes : 1, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMallocAsync(&as_scratch, scale_bytes ? scale_bytes : 1, stream);
+    if (e != cudaSuccess) {
+        cudaFreeAsync(ap_scratch, stream);
+        return e;
+    }
+
+    e = QuantizeActsNvfp4(stream, x_fp16, seq, K,
+                          static_cast<uint8_t *>(ap_scratch),
+                          static_cast<uint8_t *>(as_scratch));
+    if (e == cudaSuccess) {
+        dim3 grid((N + kTileN - 1) / kTileN, (seq + kTileM - 1) / kTileM);
+        TcGemmKernel<<<grid, 256, 0, stream>>>(
+            static_cast<uint8_t *>(ap_scratch),
+            static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+            w_global_scale, y, seq, K, N);
+        e = cudaGetLastError();
+    }
+    cudaFreeAsync(ap_scratch, stream);
+    cudaFreeAsync(as_scratch, stream);
+    return e;
+}
+
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon

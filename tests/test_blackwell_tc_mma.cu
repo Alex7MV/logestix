@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/qwen_inference.h"
 
 namespace {
 
@@ -434,4 +435,314 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     CHECK(max_rel < 0.34);
 
     cudaFree(dx); cudaFree(dp); cudaFree(ds);
+}
+
+
+TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    constexpr int seq = 3, K = 544, N = 36; // full: tails + multi-warp
+    std::vector<__half> hx(static_cast<size_t>(seq) * K);
+    const float xvals[16] = {0.f, 0.25f, -0.5f, 1.f,  -1.5f, 2.f, -2.5f, 3.f,
+                             -3.5f, 4.f, -4.5f, 5.f, -5.f, 6.f, -6.f, 0.75f};
+    for (size_t i = 0; i < hx.size(); ++i)
+        hx[i] = __float2half(xvals[(i * 7 + i / 16) % 16]);
+
+    const size_t wp_n = static_cast<size_t>(N) * K / 2;
+    const size_t ws_n = static_cast<size_t>(N) * ((K + 15) / 16);
+    std::vector<uint8_t> hp(wp_n), hs(ws_n);
+    for (size_t i = 0; i < wp_n; ++i)
+        hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+    for (size_t i = 0; i < ws_n; ++i)
+        hs[i] = static_cast<uint8_t>((1 + ((i * 3) % 15)) << 3); // repo-valid pow2 (e4 1..15, M=0)
+
+    __half *dx, *dy;
+    uint8_t *dp, *ds, *wp, *ws;
+    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, static_cast<size_t>(seq) * N * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&wp, wp_n) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ws, ws_n) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(wp, hp.data(), wp_n,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ws, hs.data(), ws_n,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    const float wgs = 0.125f;
+    REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(nullptr, dx, wp, ws, wgs,
+                                                    dy, seq, K, N)
+            == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> hy(static_cast<size_t>(seq) * N);
+    REQUIRE(cudaMemcpy(hy.data(), dy, hy.size() * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    // ---- Host reference mirroring the kernel's math exactly.
+    const float lv[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+                          -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
+                          -6.0f};
+    auto dec_scale = [](uint8_t b) -> float {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        if (e4 == 0) return 0.0f;
+        union { uint32_t u; float f; } bits{};
+        bits.u = (e4 + 120u) << 23;
+        return bits.f;
+    };
+    auto enc_pow2 = [](float s) -> uint8_t {
+        // ceil-log2 pow2 encode: byte = (e+7)<<3 with value 2^(e-7); s>0.
+        int e;
+        std::frexp(s, &e); // s in [2^(e-1), 2^e): ceil-log2 = e
+        return static_cast<uint8_t>((e + 7) << 3);
+    };
+    auto snap_e2m1 = [](float v) -> float {
+        const bool neg = v < 0.f;
+        const float a = std::abs(v);
+        float m;
+        if (a < 0.25f) m = 0.f;
+        else if (a < 0.75f) m = 0.5f;
+        else if (a < 1.25f) m = 1.f;
+        else if (a < 1.75f) m = 1.5f;
+        else if (a < 2.5f) m = 2.f;
+        else if (a < 3.5f) m = 3.f;
+        else if (a < 5.0f) m = 4.f;
+        else m = 6.f;
+        return neg ? -m : m;
+    };
+
+    // Quantized activations (dequant values), mirroring ActQuantKernel.
+    std::vector<float> av(hx.size());
+    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::max(absmax,
+                              std::abs(__half2float(hx[b + j])));
+        const uint8_t sb =
+            absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
+        const float s = dec_scale(sb);
+        for (int j = 0; j < 16; ++j)
+            av[b + j] =
+                s > 0.f
+                    ? snap_e2m1(__half2float(hx[b + j]) / s) * s
+                    : 0.f;
+    }
+
+    double max_err = 0.0, max_ref = 0.0;
+    for (int m = 0; m < seq; ++m)
+        for (int n = 0; n < N; ++n) {
+            float acc = 0.f;
+            for (int k = 0; k < K; ++k) {
+                const size_t we = static_cast<size_t>(n) * K + k;
+                const uint8_t wb = hp[we / 2];
+                const uint8_t wn =
+                    (k & 1) ? static_cast<uint8_t>(wb >> 4)
+                            : static_cast<uint8_t>(wb & 0x0F);
+                const float wv =
+                    lv[wn] *
+                    dec_scale(hs[static_cast<size_t>(n) * ((K + 15) / 16) +
+                                 k / 16]);
+                acc += av[static_cast<size_t>(m) * K + k] * wv;
+            }
+            const float want = acc * wgs;
+            const float got =
+                __half2float(hy[static_cast<size_t>(m) * N + n]);
+            max_err = std::max<double>(max_err, std::abs(got - want));
+            max_ref = std::max<double>(max_ref, std::abs(want));
+        }
+    WARN("tcgemm max_abs_err=" << max_err << " max_ref=" << max_ref);
+    int shown = 0;
+    for (int m = 0; m < seq && shown < 6; ++m)
+        for (int n = 0; n < N && shown < 6; ++n) {
+            const float want = [&] {
+                float acc = 0.f;
+                for (int k = 0; k < K; ++k) {
+                    const size_t we2 = static_cast<size_t>(n) * K + k;
+                    const uint8_t wb2 = hp[we2 / 2];
+                    const uint8_t wn2 =
+                        (k & 1) ? static_cast<uint8_t>(wb2 >> 4)
+                                : static_cast<uint8_t>(wb2 & 0x0F);
+                    acc += av[static_cast<size_t>(m) * K + k] *
+                           lv[wn2] *
+                           dec_scale(hs[static_cast<size_t>(n) *
+                                            ((K + 15) / 16) +
+                                        k / 16]);
+                }
+                return acc * wgs;
+            }();
+            const float got =
+                __half2float(hy[static_cast<size_t>(m) * N + n]);
+            if (std::abs(got - want) >
+                1e-2f * std::abs(want) + 1e-3f) {
+                WARN("cell [" << m << "," << n << "] got=" << got
+                              << " want=" << want);
+                ++shown;
+            }
+        }
+    CHECK(max_err <= 2e-2f * static_cast<float>(max_ref) + 1e-3f);
+
+    cudaFree(dx); cudaFree(dy); cudaFree(wp); cudaFree(ws);
+}
+
+TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
+{
+    WARN("delta: entered");
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    constexpr int seq = 3, K = 544, N = 36; // full: tails + multi-warp
+    const size_t wp_n = static_cast<size_t>(N) * K / 2;
+    const size_t ws_n = static_cast<size_t>(N) * ((K + 15) / 16);
+    std::vector<uint8_t> hp(wp_n), hs(ws_n);
+    for (size_t i = 0; i < wp_n; ++i)
+        hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+    for (size_t i = 0; i < ws_n; ++i)
+        hs[i] = static_cast<uint8_t>((1 + ((i * 3) % 15)) << 3); // repo-valid pow2 (e4 1..15, M=0)
+
+    __half *dx, *dy;
+    uint8_t *wp, *ws;
+    REQUIRE(cudaMalloc(&dx, K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, N * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&wp, wp_n) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ws, ws_n) == cudaSuccess);
+    REQUIRE(cudaMemcpy(wp, hp.data(), wp_n, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ws, hs.data(), ws_n, cudaMemcpyHostToDevice) == cudaSuccess);
+
+    auto dec_scale = [](uint8_t b) -> float {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        if (e4 == 0) return 0.0f;
+        union { uint32_t u; float f; } bits{};
+        bits.u = (e4 + 120u) << 23;
+        return bits.f;
+    };
+    const float lv[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
+                          -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
+                          -6.0f};
+
+    for (int pulse_k : {0, 1, 9, 17, 33}) {
+        std::vector<__half> hx(K, __float2half(0.0f));
+        hx[pulse_k] = __float2half(1.0f);
+        REQUIRE(cudaMemcpy(dx, hx.data(), K * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                    nullptr, dx, wp, ws, 1.0f, dy, 1, K, N) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        std::vector<__half> hy(N);
+        REQUIRE(cudaMemcpy(hy.data(), dy, N * 2,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        // Expected: y[n] = w_deq(pulse_k, n); quantized av(1.0) may snap:
+        // block absmax=1 -> s=pow2ceil(1/6)=2^-3=0.125 -> av=4*0.125=1.
+        for (int n = 0; n < N; ++n) {
+            const size_t we = static_cast<size_t>(n) * K + pulse_k;
+            const uint8_t wb = hp[we / 2];
+            const uint8_t wn =
+                (pulse_k & 1) ? static_cast<uint8_t>(wb >> 4)
+                              : static_cast<uint8_t>(wb & 0x0F);
+            const float want =
+                lv[wn] * dec_scale(hs[static_cast<size_t>(n) * 4 +
+                                      pulse_k / 16]);
+            const float got = __half2float(hy[n]);
+            if (std::abs(got - want) > 1e-3f * (std::abs(want) + 0.1f))
+                WARN("pulse k=" << pulse_k << " n=" << n << " got=" << got
+                                << " want=" << want);
+        }
+    }
+    CHECK(true);
+    cudaFree(dx); cudaFree(dy); cudaFree(wp); cudaFree(ws);
+}
+
+TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    struct S { int K, N; const char *label; };
+    const S shapes[] = {{4096, 4096, "attn_qkv_o"},
+                        {4096, 9728, "mlp_gate_up"},
+                        {9728, 4096, "mlp_down"}};
+
+    cudaStream_t st = nullptr;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+    cudaEvent_t t0, t1;
+    REQUIRE(cudaEventCreate(&t0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&t1) == cudaSuccess);
+
+    for (const auto &sh : shapes) {
+        const int K = sh.K, N = sh.N;
+        std::vector<__half> hx(K);
+        for (int i = 0; i < K; ++i)
+            hx[i] = __float2half(static_cast<float>((i % 13) - 6) * 0.25f);
+        std::vector<uint8_t> hp(static_cast<size_t>(K) * N / 2),
+            hs(static_cast<size_t>(K) * N / 16);
+        for (size_t i = 0; i < hp.size(); ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hs.size(); ++i)
+            hs[i] = static_cast<uint8_t>((1 + ((i * 3) % 15)) << 3);
+
+        __half *dx, *dy;
+        uint8_t *dp, *ds, *wp, *ws;
+        REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy, static_cast<size_t>(N) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&wp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ws, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp, hp.data(), hp.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds, hs.data(), hs.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(wp, hp.data(), hp.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ws, hs.data(), hs.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+
+        auto bench = [&](bool tc, float &us) {
+            using lsxcommon::qwen::RunQwenNvfp4Gemm;
+            for (int w = 0; w < 5; ++w) {
+                cudaError_t e = tc
+                    ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                          st, dx, wp, ws, 0.125f, dy, 1, K, N)
+                    : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                REQUIRE(e == cudaSuccess);
+            }
+            REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+            constexpr int iters = 50;
+            REQUIRE(cudaEventRecord(t0, st) == cudaSuccess);
+            for (int it = 0; it < iters; ++it) {
+                cudaError_t e = tc
+                    ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                          st, dx, wp, ws, 0.125f, dy, 1, K, N)
+                    : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                REQUIRE(e == cudaSuccess);
+            }
+            REQUIRE(cudaEventRecord(t1, st) == cudaSuccess);
+            REQUIRE(cudaEventSynchronize(t1) == cudaSuccess);
+            float ms = -1.f;
+            REQUIRE(cudaEventElapsedTime(&ms, t0, t1) == cudaSuccess);
+            us = ms * 1000.f / iters;
+        };
+        float us_scalar = 0.f, us_tc = 0.f;
+        bench(false, us_scalar);
+        bench(true, us_tc);
+        WARN("[TCBENCH][" << sh.label << "] scalar=" << us_scalar
+                          << " us  tensorcore=" << us_tc << " us  speedup="
+                          << us_scalar / us_tc);
+
+        cudaFree(dx); cudaFree(dy); cudaFree(dp); cudaFree(ds);
+        cudaFree(wp); cudaFree(ws);
+    }
+    cudaEventDestroy(t0); cudaEventDestroy(t1); cudaStreamDestroy(st);
 }
