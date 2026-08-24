@@ -330,3 +330,13 @@ staging in decode kernel -> effective streaming toward roofline,
 (2) swiglu-in-epilogue (paired-col variant), (3) linear-attn stage fusion
 (conv_norm + gated_delta = 20% of GPU time), (4) act-quant caching across
 GEMM calls.
+
+### Round 7 addendum — TMA RESOLVED (2026-08-25)
+
+Root cause of the round-7 integration fault: the cp.async.bulk.tensor
+shared-memory DESTINATION must be 128-byte aligned (16 is insufficient).
+Isolated empirically by walking a working multi-block repro toward the
+kernel in steps (dyn+static coexistence -> dst-in-dynamic at 16B = fault ->
+128B-rounded = pass). TMA staging now live in TcGemmDecodeKernel: static
+128B-aligned ring + per-buffer mbarrier parity waits (.shared::cta form),
+host-side tensormap cache keyed by (ptr,K,N). e2e @5090: 51.1 -> 53.1 tok/s.
