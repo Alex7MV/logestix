@@ -126,3 +126,25 @@ plumbing.
 
 Remaining: fragment smem-staging + vectorized loads (headroom to several more x),
 Task 4 --fast-math runtime plumbing, end-to-end tok/s measurement.
+
+### Phase 3 Task 4 + decode-path breakthrough (2026-08-24)
+
+- `--fast-math` plumbed: ModelInitConfig::fast_math -> SetQwenTcFastMath
+  toggle -> RunQwenNvfp4Gemm dispatch (TC for supported shapes, scalar
+  fallback otherwise). Default OFF = bit-exact.
+- **Dominant bottleneck found & fixed (F-05 extreme case)**: ncu (GPU perf
+  counters enabled) showed fused_linear_qkv_kernel at 29.6 ms/invocation and
+  fused_linear_conv_zab_kernel at 16.6 ms with grids (1,1,1)x128 and
+  (2,1,1)x128 — the whole GatedDeltaNet QKV projection on a single block.
+  Replaced on the seq==1 path with warp-per-output kernels
+  (warpdot_nvfp4_kernel, ~1024 blocks, coalesced nibble reads, shfl reduce)
+  plus split conv/norm and gating launches.
+- END-TO-END (RTX 5060 Ti, Debug, 16 tokens): scalar 0.6 -> 4.2 tok/s
+  (x6.6); fast-math 5.4 tok/s; ttft 6226 -> 729 ms. qwen suite 26/26 green.
+- Phase breakdown WITH instrumentation overhead (fast-math): MLP 2730 ms,
+  linear_attn 831 ms, full_attn 437 ms, norm 49 ms over 20 steps.
+- Hardware nuance: sm_120a ue4m3 e4==0 & M!=0 decodes as subnormal; repo
+  decoder says 0. Production pow2 scales never hit this.
+
+Next: TC GEMM optimization (smem staging/vectorized loads), MLP gate+up fuse,
+attention tuning -> target tens of tok/s.
