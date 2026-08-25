@@ -26,17 +26,16 @@ struct DbFiles {
     lsxcommon::ArrowTokenizerDb db;
 };
 
-DbFiles BuildDb(const std::string &fixture_name)
+DbFiles BuildDb(const std::string &pinned_suffix, const std::string &tok_json)
 {
     DbFiles out;
-    out.pinned = fs::temp_directory_path() / ("logestix_gpf_" + fixture_name);
+    // pinned_suffix must be a bare name: path::append() REPLACES the left side
+    // when the right side is (or contains) an absolute path, so concatenating
+    // a full json path here produced an invalid "logestix_gpf_C:\..." name.
+    out.pinned = fs::temp_directory_path() / ("logestix_gpf_" + pinned_suffix);
     fs::remove_all(out.pinned);
     fs::create_directories(out.pinned);
-    const std::string tok_dir = fs::path(fixture_name).is_absolute()
-                                    ? fixture_name
-                                    : std::string(TOKENIZER_TEST_DATA_DIR "/") +
-                                          fixture_name;
-    auto st = lsxcommon::BuildTokenizerArrowFiles(tok_dir, out.pinned);
+    auto st = lsxcommon::BuildTokenizerArrowFiles(tok_json, out.pinned);
     if (!st.ok()) FAIL(st.ToString());
     
     auto v = arrow::io::MemoryMappedFile::Open(
@@ -130,7 +129,7 @@ TEST_CASE("gemma framing descriptor is registered", "[gemma][framing]") {
 TEST_CASE("gemma framing places a single leading BOS outside the turn frame",
           "[gemma][framing]")
 {
-    DbFiles f = BuildDb(WriteGemmaTokJson());
+    DbFiles f = BuildDb("gemma4_framing", WriteGemmaTokJson());
 
     const int32_t bos = f.db.bos_id;
     REQUIRE(bos >= 0);
