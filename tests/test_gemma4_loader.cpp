@@ -115,3 +115,22 @@ TEST_CASE("gemma expert store resolves all synthetic experts",
     std::filesystem::remove_all(out.parent_path());
 }
 
+TEST_CASE("gemma expert store parse counters", "[gemma][loader]") {
+    auto out = MakeConvertedSynthetic();
+
+    auto db = lsxcommon::gemma::load_gemma_expert_index(
+        out.string(), /*num_layers=*/4, /*experts_per_layer=*/8);
+    REQUIRE(db.error_msg.empty());
+    // Warm-up parses every file exactly once.
+    CHECK(db.parse_calls == 32);
+    CHECK(db.parse_ok == 32);
+
+    // A resident entry must not trigger a re-parse.
+    const int64_t after_load = db.parse_calls;
+    lsxcommon::gemma::ensure_gemma_expert_resident(db, 2, 5, nullptr);
+    CHECK(db.parse_calls == after_load);
+
+    lsxcommon::gemma::free_gemma_expert_index(db);
+    std::filesystem::remove_all(out.parent_path());
+}
+
