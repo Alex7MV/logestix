@@ -122,6 +122,16 @@ __device__ __forceinline__ void cp_async16(void *smem_dst,
                  "l"(gmem_src), "r"(src_bytes));
 }
 
+__device__ __forceinline__ void cp_async_wait3()
+{
+    asm volatile("cp.async.wait_group 3;\n");
+}
+
+__device__ __forceinline__ void cp_async_wait2()
+{
+    asm volatile("cp.async.wait_group 2;\n");
+}
+
 __device__ __forceinline__ void cp_async_wait1()
 {
     asm volatile("cp.async.wait_group 1;\n");
@@ -417,10 +427,13 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     // Double-buffered slabs: chunk i+1 streams via cp.async while chunk i
     // computes (removes the per-chunk staging stall; ~30% of GEMM time).
-    __shared__ __align__(16) uint8_t sA[2][kTileM][32];
-    __shared__ __align__(16) uint8_t sB[2][kTileN][32];
-    __shared__ uint8_t sAs[2][kTileM][4];
-    __shared__ uint8_t sBs[2][kTileN][4];
+    // 4-deep slab ring: deeper pipeline hides more DRAM latency at
+    // decode (few CTAs, long K-chunk chains). Numerically identical.
+    constexpr int kPipe = 4;
+    __shared__ __align__(16) uint8_t sA[kPipe][kTileM][32];
+    __shared__ __align__(16) uint8_t sB[kPipe][kTileN][32];
+    __shared__ uint8_t sAs[kPipe][kTileM][4];
+    __shared__ uint8_t sBs[kPipe][kTileN][4];
 
     const int k_half = K / 2;
     const int k_chunks = (K + 15) >> 4;
@@ -532,16 +545,24 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         cp_async_commit();
     };
 
-    stage_slabs(0, 0);
-    for (int c64 = k_lo / 64; c64 < (k_hi + 63) / 64; ++c64) {
-        const int buf = c64 & 1;
-        const bool has_next = c64 + 1 < k_chunks_total;
-        if (has_next) stage_slabs((c64 + 1) * 64, buf ^ 1);
-        cp_async_commit();
-        if (has_next)
-            cp_async_wait<1>();      // current slab done, next in flight
+    const int c_begin = k_lo / 64;
+    const int c_end = (k_hi + 63) / 64;
+    const int n_loc = c_end - c_begin;
+    for (int j = 0; j < n_loc && j < kPipe - 1; ++j)
+        stage_slabs((c_begin + j) * 64, j % kPipe);
+    for (int i = 0; i < n_loc; ++i) {
+        const int buf = i % kPipe;
+        const int nxt = i + kPipe - 1;
+        if (nxt < n_loc) stage_slabs((c_begin + nxt) * 64, nxt % kPipe);
+        const int w = (nxt < n_loc) ? kPipe - 1 : (n_loc - 1 - i);
+        if (w >= 3)
+            cp_async_wait3();
+        else if (w == 2)
+            cp_async_wait2();
+        else if (w == 1)
+            cp_async_wait1();
         else
-            cp_async_wait<0>();      // tail: everything drained
+            cp_async_wait0();
         __syncthreads();
 
         // ---- Build A fragment regs from smem.

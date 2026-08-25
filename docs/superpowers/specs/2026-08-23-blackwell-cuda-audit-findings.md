@@ -511,3 +511,19 @@ Lessons:
 - micro-benchmarks without L2 pressure mislead; always A/B both regimes
 - verify a bottleneck hypothesis by implementing its fix BEFORE building
   out infrastructure around it (transpose cost one session; cp.async won)
+
+### Optimization round 13 (2026-08-25) — 4-deep slab pipeline: +28% e2e
+
+Post-r12 profile: TcGemmKernel still 84.6% of GPU (avg 69us vs 36-40us
+L2-hot micro). Cold-GEMM time is a per-chunk latency chain (64 chunks x
+~2.5us), not bandwidth. Deepened the cp.async slab ring from 2 to 4 buffers
+(wait_group 3/2/1/0 by position, numerically identical accumulation order).
+
+Micro @5090 (hot): ~36us flat across shapes. e2e @5090: **38.1 -> 48.8
+tok/s (+28%), ttft 110 -> 87ms**, " Paris." stable x4 runs. 105/105 tests,
+sanitizer clean.
+
+Cumulative fast-math: scalar 14.4 -> **48.8 tok/s (x3.4)**.
+Remaining tail: conv_norm 3.8%, ActQuant 3.4%, gated_delta 2.6%,
+RmsNormTree 2.7%; GEMM still ~80% and now latency-vs-bandwidth balanced --
+next levers: wider split-K revisit, ActQuant fusion into staging.
