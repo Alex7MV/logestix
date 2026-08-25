@@ -535,16 +535,30 @@ cudaError_t RunQwenMoeGeneration(
             e = RunQwenMoeRouterTopK(stream, reinterpret_cast<const __nv_bfloat16 *>(lw.d_router),
                                      d_postin, seq, E, K, H, d_slots);
             if (e != cudaSuccess) return fail(e, "router l" + std::to_string(l));
+            {
+                // Accumulator init is independent of the routing result; enqueue
+                // it behind the router so the GPU has work queued while the
+                // host waits for the slot readback below.
+                const int64_t n = seq * H;
+                qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
+                                           threads, 0, stream>>>(d_act, d_moe_acc,
+                                                                 n);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
+            }
             // Host needs the selected ids to stage experts: small D2H +
-            // event handshake once per layer (etalon: GLM routing staging).
+            // event fence once per layer. Busy-poll the event instead of the
+            // blocking cudaEventSynchronize — with K layers × steps handshakes
+            // per generation, host wake latency is pure GPU idle time.
             cudaMemcpyAsync(h_slots, d_slots, sizeof(QwenMoeRoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready, stream);
-            cudaEventSynchronize(tok_ready);
+            {
+                cudaError_t q;
+                while ((q = cudaEventQuery(tok_ready)) == cudaErrorNotReady) {}
+                (void)q;
+            }
             QwenMoeRoutedSlot *slots_host = h_slots;
-            qwen_moe_init_acc_kernel<<<(int)((seq * H + threads - 1) / threads),
-                                       threads, 0, stream>>>(d_act, d_moe_acc,
-                                                             seq * H);
             e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host, K,
                                     d_postin, H, I, d_moe_acc, d_yg, d_yu,
                                     d_y2, moe_error);
