@@ -2,6 +2,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/log.h"
 #include "deepseek_inference_load.cuh"
+#include "lsx_kernels_act.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
@@ -15,9 +16,6 @@ namespace lsxcommon {
 namespace gpu {
 
 // Dequant kernel from benchmark (extern declaration)
-extern __global__ void dequant_nvfp4_to_half_kernel(
-    const uint8_t* __restrict__, const uint8_t* __restrict__, float,
-    __half* __restrict__, int);
 
 // ── Per-128-block activation quantization (matching reference act_quant) ─────
 // Computes per-128-element block scales, quantizes activations to FP8_E4M3,
@@ -156,21 +154,7 @@ __global__ void silu_mul_kernel(__half *d_act, const __half *d_gate, int n, floa
 // SwiGLU with clamp, FP32 inputs → FP32 output (no FP16 intermediate overflow).
 // NOTE: deliberately NOT __restrict__ — the shared-experts call site passes
 // d_out aliased to d_gate (element-wise, same-index in-place update).
-__global__ void swiglu_clamp_f32f_kernel(
-    const float* d_gate,
-    const float* d_up,
-    float* d_out, int n, float limit)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float g = d_gate[i];
-    float u = d_up[i];
-    if (g > limit) g = limit;
-    if (u >  limit) u =  limit;
-    if (u < -limit) u = -limit;
-    float sig = 1.0f / (1.0f + expf(-g));
-    d_out[i] = sig * g * u;
-}
+// SwiGLU (sig form): unified kernels::SwigluSigKernel (lsx_kernels_act.cuh).
 
 // Apply scalar multiplier to a float buffer (in-place)
 __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
@@ -186,19 +170,7 @@ __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
 
 // SwiGLU with swiglu_limit: gate clamped to (-inf, limit], up to [-limit, limit].
 // d_gate_vec = silu(clamp(d_gate_vec, max=limit)) * clamp(d_up_vec, +/-limit)
-__global__ void swiglu_clamp_kernel(
-    __half *d_gate_vec, const __half *d_up_vec, int n, float limit)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float g = __half2float(d_gate_vec[i]);
-    float u = __half2float(d_up_vec[i]);
-    if (g > limit) g = limit;
-    if (u >  limit) u =  limit;
-    if (u < -limit) u = -limit;
-    float sig = 1.0f / (1.0f + expf(-g));
-    d_gate_vec[i] = __float2half(sig * g * u);
-}
+// SwiGLU FP16 (sig form): unified kernels::SwigluSigKernel.
 
 // Shared experts FFN: dequant F8_E4M3 x F8_E8M0 (128x128 tile) -> FP16,
 // FP16 tensor-core GEMMs (FP32 accumulate/output), SiLU activation. Verified
@@ -284,7 +256,7 @@ cudaError_t run_shared_experts_ffn(
     {
         int block = 256;
         int grid = (intermediate_dim + block - 1) / block;
-        swiglu_clamp_f32f_kernel<<<grid, block, 0, stream>>>(
+        ::lsxcommon::kernels::SwigluSigKernel<float, ::lsxcommon::kernels::ExpFlavor::Precise, true><<<grid, block, 0, stream>>>(
             d_intermediate_f32, d_gate_f32, d_intermediate_f32,
             intermediate_dim, 10.0f);
     }
@@ -408,7 +380,7 @@ cudaError_t run_routed_expert_ffn(
     // ── SwiGLU in FP32: silu(clamp(gate,max=10)) * clamp(up,±10) → FP32 ─────
     if (kIntermediateDim > 0) {
         int grid = (kIntermediateDim + block - 1) / block;
-        swiglu_clamp_f32f_kernel<<<grid, block, 0, stream>>>(
+        ::lsxcommon::kernels::SwigluSigKernel<float, ::lsxcommon::kernels::ExpFlavor::Precise, true><<<grid, block, 0, stream>>>(
             d_gate_f32, d_up_f32, d_swiglu_out, kIntermediateDim, 10.0f);
         // Apply routing weight (norm_topk_prob * 1.5) in FP32 BEFORE W2
         scale_float_kernel<<<grid, block, 0, stream>>>(

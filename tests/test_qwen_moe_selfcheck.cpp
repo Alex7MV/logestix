@@ -28,18 +28,15 @@ int SelfCheckCycles()
     return kStressCycles;
 }
 
-// The converted root (contains logestix-qwen35moe/). Default: sibling of the
-// source checkpoint in the models vault.
+// Converted root: unified vault convention <model>/logestix.
 std::filesystem::path QwenMoeConvertedPath()
 {
     if (const char *env = std::getenv("LSX_TEST_QWEN_MOE_MODEL_PATH"))
         return std::filesystem::path(env);
     const char *src = std::getenv("LSX_TEST_QWEN_MOE_SOURCE_PATH");
-    const std::filesystem::path base =
-        src ? std::filesystem::path(src)
-            : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
-                  "Qwen3.5-35B-A3B";
-    return base.parent_path() / (base.filename().string() + "-logestix");
+    return src ? std::filesystem::path(src)
+               : std::filesystem::path(lsxcommon::lsx_model_models_dir()) /
+                     "Qwen3.5-35B-A3B";
 }
 
 std::vector<int32_t> EncodeSelfCheckPrompt(lsxcommon::ArrowTokenizerDb &tok)
@@ -61,7 +58,10 @@ TEST_CASE("Qwen3.5-35B-A3B SelfCheck: 'The capital of France is' -> 'Paris', "
           "[qwen-moe][model][selfcheck][real-model]")
 {
     const std::filesystem::path model_dir = QwenMoeConvertedPath();
-    if (!std::filesystem::exists(model_dir / "logestix-qwen35moe" / "pinned"))
+    const bool have_pinned =
+        std::filesystem::exists(model_dir / "logestix" / "pinned") ||
+        std::filesystem::exists(model_dir / "logestix-qwen35moe" / "pinned");
+    if (!have_pinned)
         SKIP("Qwen3.5-35B-A3B converted model directory not present");
 
     lsxcommon::ModelInitConfig cfg;

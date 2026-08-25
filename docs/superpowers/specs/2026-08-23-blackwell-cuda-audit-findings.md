@@ -269,3 +269,156 @@ streaming must rise from ~150 GB/s to ~380 GB/s (85% roofline). Required
 (next sessions): TMA bulk copies or wider multi-chunk staging, swiglu-in-
 epilogue fusion, gate+up concatenation at load time, Release-build profiling
 of the full per-token launch graph.
+
+### Phase A — CUDA kernel unification (2026-08-24, branch feat/blackwell-phase4)
+
+Shared header-template library (all byte-equal per cluster equivalence tests,
+`tests/test_lsx_kernels.cu`):
+
+- `lsx_kernels_quant.cuh`: Nvfp4DequantKernel<OutT>, F8E4m3ToFloat,
+  E8m0ToFloat/E8m0ClampedToFloat, QuantizeE2m1TieUp/Nearest. Removed 5
+  elementwise dequant copies, 3 F8/E8M0 decoder twins, benchmark legacy
+  kernel + dead deepseek externs.
+- `lsx_kernels_common.cuh`: CastIn/CastOut, ExpFlavor (Fast/Precise/Glibc).
+  Shared math uses explicit *_rn intrinsics -> results independent of the
+  historical -fmad object-lib flags (anomaly resolved flag-independently).
+- `lsx_kernels_math.cuh`: AddInPlace/AddOut/EmbedGather/F32toT — replaced
+  ~12 per-model copies across qwen/qwen_moe/glm/kimi.
+- `lsx_kernels_act.cuh`: SwigluKernel (division form) + SwigluSigKernel
+  (sigmoid form) x exp flavor x clamp — replaced 7 copies. Kept
+  family-local: qwen dense silu_device form, deepseek asymmetric silu_mul.
+- `lsx_kernels_norm.cuh`: RmsNormTreeKernel<T,NormWeight> — replaced qwen
+  offset + gemma direct/plain. GLM/Kimi sequential-scan bit-exact kernels
+  and DeepSeek F32 stay family-local.
+
+Documented deviations: router top-k kernels NOT unified (qwen_moe vs gemma
+differ in probs rounding path/dtype/output format — 2 sites only); glm
+load-time vectorized dequant kept (perf-specialized).
+
+Full suite 104/104 green, zero expectation changes.
+
+### Optimization round 7 (2026-08-24, feat/blackwell-phase4)
+
+- Phase A dedup: shared `lsx_kernels_{common,quant,math,act,norm}.cuh`;
+  ~25 kernel copies removed, byte-equal per cluster (see Phase A summary).
+- B1 gate+up fusion moved to the CONVERTER: joint [2I,K] quantization with a
+  single global scale (`mlp.gate_up_proj.weight`) — loader derives gate/up
+  as non-owning views; pre-fusion artifacts load unchanged. Dense fast path:
+  one GEMM + one act quant per MLP.
+- Decode-kernel K-cap removed via dynamic shared memory for activations:
+  mlp_down (K=12288) left the tile-kernel fallback (~183 us) for the decode
+  kernel (~55 us). This was the single largest e2e win of the round.
+- END-TO-END @ RTX 5090 (Release, qwen3.5-9b): fast-math **51.1 tok/s** /
+  ttft 83 ms (42.3 before this round); scalar default 14.4 tok/s untouched.
+  NOTE: LSX_TEST_FAST_MATH is presence-checked — setting it to "0" ENABLES
+  fast-math; unset the variable for scalar A/B.
+
+### TMA integration status (blocked, next session)
+
+Single-block probe and a minimal multi-block repro (exact decode geometry,
+box {32B x 128 rows}, coords (kb/2, col_base)) both PASS on HW + sanitizer.
+Integrating the same staging INTO TcGemmDecodeKernel faults (HW: illegal
+address 700; sanitizer: out-of-range shared / NONCGA_CTA_ID emulation
+asserts with .shared::cluster form). Differences vs repro: dynamic-smem
+activation section coexistence, larger K grid of chunks in flight. Needs a
+dedicated session: ncu/SASS walk of the faulting launch, try
+cudaFuncAttributeMaxDynamicSharedMemorySize interplay, and mbarrier phase
+accounting per buffer. cp.async ring retained in production meanwhile.
+
+Path to 280-320 tok/s @5090 (next sessions, ranked): (1) resolve TMA
+staging in decode kernel -> effective streaming toward roofline,
+(2) swiglu-in-epilogue (paired-col variant), (3) linear-attn stage fusion
+(conv_norm + gated_delta = 20% of GPU time), (4) act-quant caching across
+GEMM calls.
+
+### Round 7 addendum — TMA RESOLVED (2026-08-25)
+
+Root cause of the round-7 integration fault: the cp.async.bulk.tensor
+shared-memory DESTINATION must be 128-byte aligned (16 is insufficient).
+Isolated empirically by walking a working multi-block repro toward the
+kernel in steps (dyn+static coexistence -> dst-in-dynamic at 16B = fault ->
+128B-rounded = pass). TMA staging now live in TcGemmDecodeKernel: static
+128B-aligned ring + per-buffer mbarrier parity waits (.shared::cta form),
+host-side tensormap cache keyed by (ptr,K,N). e2e @5090: 51.1 -> 53.1 tok/s.
+
+### Round 8 profile post-TMA (2026-08-25)
+
+TcGemmDecodeKernel = 78.7% GPU time (4980 launches, avg 45.7us / med 32.9).
+Effective weight streaming ~245 GB/s = 13.7% of 5090 HBM peak -> the decode
+path is LATENCY/LAUNCH-bound, not bandwidth-bound: ~310 kernel launches per
+token. Reaching 280-320 tok/s @5090 requires structural work, not staging
+tuning: persistent megakernel or CUDA Graphs for the per-token launch graph,
+wider output tiles (kDecCols=128 -> 256), fusing linear-attn stages
+(conv_norm + gated_delta ~= 10% GPU), act-quant reuse across GEMM calls.
+Extrapolated 5060 Ti at current efficiency: ~14 tok/s-equivalent BW share;
+the 70-80 target rides on the same structural fixes.
+
+### Round 8 CORRECTNESS INVESTIGATION (2026-08-25) — fast-math was broken
+
+Systematic debugging (triggered by a new acc-contract test) exposed that the
+fast-math path produced GARBAGE TOKENS end-to-end on the real model despite
+green perf harnesses (they never checked output text). Findings:
+
+1. TcGemmDecodeKernel fails host-reference validation at ALL shapes
+   (test "[tc][gemm][acc]" now locks this; LSX_DEC_ENABLE=1 debug-only).
+   Production routes seq==1 to the verified tile kernel.
+2. TILE kernel acc=true multiplied the SEEDED RESIDUAL by wgs
+   ((prev+sum)*wgs instead of prev+sum*wgs) — fixed at the D-seed site.
+3. With both fixes, fast-math e2e @5090: **32.9 tok/s, output " Paris"**
+   (correct!). Previous 42-53 tok/s figures were garbage-generation rates.
+4. Perf-harness lesson: ALWAYS decode and print gen_tokens in throughput
+   tests (now permanent in test_blackwell_perf_qwen).
+5. LSX_TEST_FAST_MATH presence-check trap documented ("=0" enables).
+
+Remaining gap to targets is now measured against a CORRECT baseline:
+32.9 -> 70-80 (5060 Ti) / 280-320 (5090). Next levers (ranked): wider decode
+tiles / more blocks (N=4096 -> only 32 CTAs on 170 SMs), linear-attn stage
+fusion (~10% GPU), act-quant reuse across GEMM calls, CUDA Graphs.
+
+### Round 8 final state (2026-08-25)
+
+Shipped fixes: decode-kernel A-fragment register map corrected (K-halves were
+fed into row-g+8 slots), epilogue row-0 guard (g==0) added, tile acc=true
+residual scaling fixed, production dispatch routes seq==1 to the verified
+tile kernel (decode kernel behind LSX_DEC_ENABLE for debugging).
+Fast-math e2e @5090 real model: **32.9 tok/s with correct " Paris" output**
+(vs 14.4 scalar; earlier 42-53 tok/s figures were garbage-generation).
+
+OPEN ISSUE (next session, top priority): synthetic host-model validation of
+TC kernels at seq==1 with K>=256 deviates beyond tolerance IDENTICALLY for
+both kernels (e.g. got=198 vs want=23 at K=256/N=128), while K=64 passes and
+the REAL model validates end-to-end. Independent Python NVFP4 model confirms
+the C++ host reference is correct -> the deviation is in the kernels' shared
+input path (act-quant scratch or weight-upload conventions under synthetic
+generators). Requires a dedicated session with compute-sanitizer + per-stage
+dumps; do NOT raise tolerances to mask it.
+
+Structural perf queue (unchanged): wider tiles / more CTAs (N=4096 -> 32
+blocks on 170 SMs), linear-attn fusion (~10% GPU), act-quant reuse, CUDA
+Graphs. MoE models (35B-A3B, gemma-26B) suggested by operator as additional
+measurement targets once fast-path correctness work concludes.
+
+### Round 8 RESOLUTION (2026-08-25, later) — decode kernel FIXED
+
+Three root causes found and fixed in TcGemmDecodeKernel (each isolated via
+per-chunk d-trajectory dumps vs an independent Python NVFP4 model):
+1. A-fragment register map: K-halves fed into row-g+8 slots ({lo,hi,0,0}
+   instead of {row-g-lo, row8-lo, row-g-hi, row8-hi}).
+2. Epilogue raced four lanes per output cell (m16n8 D layout: only g==0
+   lanes hold row 0); added the missing guard.
+3. A-fragment k-offset lost the per-chunk base (sXp[koff>>1] instead of
+   sXp[(kb+koff)>>1]) -> every chunk consumed chunk-0 activations.
+Plus the earlier tile acc=true residual-scaling fix.
+
+Post-fix validation: host-ref sweep {1,64..4096} all PASS with errors
+<=0.37 (tolerance ~12+), identical to the tile kernel; act quant proven
+byte-exact at seq1/K256 ("[tc][actquant][k256]").
+
+ROUTING DECISION (measured): despite decode winning isolated micro-benchmarks,
+the TILE kernel is faster end-to-end (32.9 vs 31.1 tok/s @5090, correct
+" Paris" both) -- confirming the Phase-3 A/B conclusion. Production default
+= tile; LSX_DEC_ENABLE=1 opts into the now-correct decode kernel.
+
+Fast-math honest baseline: **32.9 tok/s** (x2.3 vs scalar 14.4). Perf queue
+unchanged: wider tiles/more CTAs, linear-attn fusion, act-quant reuse,
+CUDA Graphs; MoE models as additional targets.

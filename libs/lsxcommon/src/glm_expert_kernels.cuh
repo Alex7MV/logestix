@@ -29,16 +29,8 @@ namespace {
 using device::GlmExpfGlibc;
 using device::GlmRsqrtfGlibc;
 
-// Silu SwiGLU, no clamp (FP32 math, FP16 in/out).
-__global__ void GlmRealSwigluKernel(__half *__restrict__ gate,
-                                    const __half *__restrict__ up, int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    const float g = __half2float(gate[i]);
-    const float u = __half2float(up[i]);
-    gate[i] = __float2half((g / (1.0f + GlmExpfGlibc(-g))) * u);
-}
+// SwiGLU (no clamp): unified kernels::SwigluKernel<Glibc,false>
+// (lsx_kernels_act.cuh) — byte-equal instantiation.
 
 // RMSNorm over a [rows, dim] FP16 matrix, one block per row. Single sequential
 // fp32 scan over 0..dim-1 for the square sum, GlmRsqrtfGlibc(acc/dim + eps).

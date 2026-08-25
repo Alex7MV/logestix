@@ -13,6 +13,7 @@
 
 #include "glm_device_math.h"
 #include "glm_expert_kernels.cuh"
+#include "lsx_kernels_act.cuh"
 #include "nvfp4_codec.h"
 #include "lsxcommon/fast_load.h"
 #include "lsxcommon/log.h"
@@ -624,8 +625,8 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
     }
 
     // swiglu: inter = silu(inter) * gate, in place (FP32 math)
-    GlmRealSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
-        d_inter, d_gate, kGlmMoeIntermediate);
+    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, false><<<inter_blocks, kBlock, 0, stream>>>(
+        d_inter, d_gate, d_inter, kGlmMoeIntermediate, 0.f);
     e = cudaGetLastError();
     if (e != cudaSuccess) {
         log::error("[glm_expert] swiglu fault: " +
@@ -1423,8 +1424,8 @@ cudaError_t RunGlmMoESlices(
         if (e != cudaSuccess) break;
 
         // swiglu: inter = silu(inter) * gate
-        GlmRealSwigluKernel<<<inter_blocks, kBlock, 0, stream>>>(
-            d_inter, d_gate, kGlmMoeIntermediate);
+        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, false><<<inter_blocks, kBlock, 0, stream>>>(
+            d_inter, d_gate, d_inter, kGlmMoeIntermediate, 0.f);
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
 

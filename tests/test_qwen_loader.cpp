@@ -222,3 +222,45 @@ TEST_CASE("Qwen loader BF16->FP16 values")
     cudaStreamDestroy(stream);
     remove_all(tmp);
 }
+TEST_CASE("Qwen converter emits fused mlp.gate_up_proj; loader uploads it")
+{
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "qwen_load_fused_test";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = qwentest::BuildSyntheticQwenModel();
+    qwentest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    qwentest::WriteConfig(tmp);
+    WriteToken(tmp);
+    auto cst = ConvertQwenModel(tmp.string(), tmp.string());
+    if (!cst.ok()) FAIL(cst.ToString());
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    QwenPinnedWeights pw;
+    REQUIRE(LoadQwenPinnedWeights(tmp.string(), pw, stream));
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    const int I = pw.top.intermediate_size;
+    for (const auto &lw : pw.layers) {
+        if (!lw.loaded) continue;
+        REQUIRE(lw.mlp_gate_up.d_packed != nullptr);
+        // Fused rows: [0,I) gate, [I,2I) up.
+        CHECK(lw.mlp_gate_up.rows == 2 * I);
+        CHECK(lw.mlp_gate_up.cols == lw.mlp_gate.cols);
+        // Packed bytes must equal gate-packed followed by up-packed
+        // (row-major nibble packing is per-row contiguous).
+        REQUIRE(lw.mlp_gate_up.packed_bytes ==
+                lw.mlp_gate.packed_bytes + lw.mlp_up.packed_bytes);
+        std::vector<uint8_t> fused(lw.mlp_gate_up.packed_bytes),
+            gate(lw.mlp_gate.packed_bytes), up(lw.mlp_up.packed_bytes);
+        REQUIRE(cudaMemcpy(fused.data(), lw.mlp_gate_up.d_packed,
+                           fused.size(), cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(gate.data(), lw.mlp_gate.d_packed, gate.size(),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(up.data(), lw.mlp_up.d_packed, up.size(),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        CHECK(std::memcmp(fused.data(), gate.data(), gate.size()) == 0);
+        CHECK(std::memcmp(fused.data() + gate.size(), up.data(), up.size()) == 0);
+    }
+}

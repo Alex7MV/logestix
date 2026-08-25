@@ -39,7 +39,7 @@ struct QwenMoePinnedWeights {
 };
 
 // Loads dense parts (globals, attention, norms, router, shared expert) from
-// <model_path>/logestix-qwen35moe/. Routed experts are NOT resident; they go
+// <model_path>/logestix/ (legacy logestix-qwen35moe/ still read). Routed experts are NOT resident; they go
 // through QwenMoeExpertStore separately. Strict: returns false and fills
 // `error` on any missing/malformed input.
 bool LoadQwenMoeDenseWeights(const std::string &model_path,
@@ -74,7 +74,7 @@ struct QwenMoeExpertStore {
 };
 
 // Loads every experts/layer_<l>/exp_<e>.arrow under
-// <model_path>/logestix-qwen35moe/ into pinned host memory. Strict errors.
+// <model_path>/logestix/ into pinned host memory. Strict errors.
 bool LoadQwenMoeExpertStore(const std::string &model_path,
                             QwenMoeExpertStore &store, std::string &error);
 

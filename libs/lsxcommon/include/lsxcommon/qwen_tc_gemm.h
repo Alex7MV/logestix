@@ -34,6 +34,13 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                __half *y, int seq, int K, int N,
                                bool acc = false);
 
+// B3 capability probe: encodes a 2D CUtensorMap over a synthetic weight-like
+// buffer, performs ONE cp.async.bulk.tensor.2d into dynamic shared memory
+// behind an mbarrier and verifies the tile contents. Returns cudaSuccess iff
+// TMA bulk-tensor staging works on this device. Stream-ordered, allocates
+// nothing persistent.
+cudaError_t ProbeTmaBulkCopy(cudaStream_t stream);
+
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon

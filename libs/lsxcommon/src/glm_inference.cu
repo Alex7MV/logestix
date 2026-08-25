@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "glm_device_math.h"
+#include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
 #include "glm_expert_kernels.cuh"
 
 namespace lsxcommon {
@@ -45,29 +47,9 @@ constexpr int kGlmRmsBlock = 256;
 // GlmRmsNormKernel / GlmGemmFp64Kernel / GlmRealSwigluKernel: single textual
 // source in glm_expert_kernels.cuh (bit-exact, -fmad=false), included above.
 
-__global__ void GlmSwigluClampKernel(__half *__restrict__ gate,
-                                     const __half *__restrict__ up,
-                                     int n, float limit)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    float g = __half2float(gate[i]);
-    float u = __half2float(up[i]);
-    if (g > limit) g = limit;
-    if (u > limit) u = limit;
-    if (u < -limit) u = -limit;
-    float s = g / (1.0f + GlmExpfGlibc(-g));
-    gate[i] = __float2half(s * u);
-}
+// Clamped SwiGLU: unified kernels::SwigluKernel<Glibc,true>.
 
-__global__ void GlmAddResidualKernel(__half *__restrict__ dst,
-                                     const __half *__restrict__ base,
-                                     int n)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] = __float2half(__half2float(dst[i]) + __half2float(base[i]));
-}
+// Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 
 // FP64-accumulate FP16 GEMM: out[t][i] = H((float)Σ_q F(w[i][q])·F(x[t][q]))
 // over ascending q — a bit-exact mirror of the host MatMulFp16 reference
@@ -114,15 +96,15 @@ cudaError_t RunDenseMLPLayer(cublasHandle_t cublas_h, cudaStream_t stream,
                     inter, hidden, seq);
     if (e != cudaSuccess) return e;
     const int n_act = seq * inter;
-    GlmSwigluClampKernel<<<(n_act + 255) / 256, 256, 0, stream>>>(
-        d_gate, d_up, n_act, kGlmSwigluLimit);
+    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, true><<<(n_act + 255) / 256, 256, 0, stream>>>(
+        d_gate, d_up, d_gate, n_act, kGlmSwigluLimit);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     e = RunGemmFp64(stream, lw.d_mlp_down, d_gate, d_y,
                     hidden, inter, seq);
     if (e != cudaSuccess) return e;
     const int n_out = seq * hidden;
-    GlmAddResidualKernel<<<(n_out + 255) / 256, 256, 0, stream>>>(d_y, d_x, n_out);
+    ::lsxcommon::kernels::AddInPlaceKernel<__half><<<(n_out + 255) / 256, 256, 0, stream>>>(d_x, d_y, n_out);
     return cudaGetLastError();
 }
 
@@ -160,18 +142,7 @@ constexpr int kGlmLoopBlock = 256;
 constexpr int kGlmEosIds[3] = {154820, 154827, 154829};
 
 
-__global__ void GlmEmbedKernel(const __half *__restrict__ embed,
-                               const int32_t *__restrict__ ids,
-                               __half *__restrict__ out, int seq, int hidden)
-{
-    const int64_t total = static_cast<int64_t>(seq) * hidden;
-    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-                      threadIdx.x;
-    if (i >= total) return;
-    const int t = static_cast<int>(i / hidden);
-    const int h = static_cast<int>(i - static_cast<int64_t>(t) * hidden);
-    out[i] = embed[static_cast<int64_t>(ids[t]) * hidden + h];
-}
+// Embed gather: unified kernels::EmbedGatherKernel (lsx_kernels_math.cuh).
 
 __global__ void GlmCopyKernel(const __half *__restrict__ src,
                               __half *__restrict__ dst, int64_t n)
@@ -191,16 +162,7 @@ __global__ void GlmCopyRow0Kernel(const __half *__restrict__ src,
     if (h < hidden) dst[h] = src[h];
 }
 
-// out[i] = fp16(a[i] + b[i]): elementwise residual blend (MoE / MTP).
-__global__ void GlmResidualKernel(__half *__restrict__ out,
-                                  const __half *__restrict__ a,
-                                  const __half *__restrict__ b, int64_t n)
-{
-    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-                      threadIdx.x;
-    if (i < n)
-        out[i] = __float2half(__half2float(a[i]) + __half2float(b[i]));
-}
+// Residual blend: unified kernels::AddOutKernel (lsx_kernels_math.cuh).
 
 // Greedy argmax over a [vocab] FP32 logits row, matching the host baseline,
 // which stores the lm_head row as FP16 and argmaxes over the de-quantized
@@ -414,8 +376,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
         if (e != cudaSuccess) return e;
         e = RunLoopExpertStack(c, 78);
         if (e != cudaSuccess) return e;
-        GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
-            c.d_h78, c.d_hmtp, c.d_moe, hidden);
+        ::lsxcommon::kernels::AddOutKernel<__half><<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(c.d_hmtp, c.d_moe, c.d_h78, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
         e = RunGlmRmsNorm(c.st, c.d_h78, lw.d_shared_head_norm, c.d_hn,
@@ -456,8 +417,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
     if (e != cudaSuccess) return e;
     e = RunLoopExpertStack(c, l);
     if (e != cudaSuccess) return e;
-    GlmResidualKernel<<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(
-        d_out, c.d_moe, c.d_hidrow, hidden);
+    ::lsxcommon::kernels::AddOutKernel<__half><<<row0_blocks, kGlmLoopBlock, 0, c.st>>>(c.d_moe, c.d_hidrow, d_out, hidden);
     return cudaGetLastError();
 }
 
@@ -472,7 +432,7 @@ cudaError_t RunGlmEmbed(cudaStream_t stream, const __half *d_embed,
     const int64_t total = static_cast<int64_t>(seq) * hidden;
     const int blocks = static_cast<int>((total + kGlmLoopBlock - 1) /
                                         kGlmLoopBlock);
-    GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+    ::lsxcommon::kernels::EmbedGatherKernel<__half><<<blocks, kGlmLoopBlock, 0, stream>>>(
         d_embed, d_ids, d_out, seq, hidden);
     return cudaGetLastError();
 }
@@ -695,7 +655,7 @@ if (on_demand) {
     if (e != cudaSuccess) return fail(e);
     const int emb_blocks = static_cast<int>(
         (static_cast<size_t>(P) * hidden + kGlmLoopBlock - 1) / kGlmLoopBlock);
-    GlmEmbedKernel<<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
+    ::lsxcommon::kernels::EmbedGatherKernel<__half><<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
         pw.d_embed, arena.d_ids, arena.d_cur, P, hidden);
     e = cudaGetLastError();
     if (e != cudaSuccess) return fail(e);
@@ -753,7 +713,7 @@ if (on_demand) {
                             cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) return fail(e);
         const int emb_blocks = (hidden + kGlmLoopBlock - 1) / kGlmLoopBlock;
-        GlmEmbedKernel<<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
+        ::lsxcommon::kernels::EmbedGatherKernel<__half><<<emb_blocks, kGlmLoopBlock, 0, stream>>>(
             pw.d_embed, arena.d_ids, arena.d_cur, 1, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return fail(e);
@@ -1379,7 +1339,7 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
     e = RunGemmFp64(c.st, lw.d_o_proj, c.d_attn, c.d_off, hidden,
                     kGlmNumHeads * kGlmHeadV, 1);
     if (e != cudaSuccess) return e;
-    GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+    ::lsxcommon::kernels::AddInPlaceKernel<__half><<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_off, c.d_hid, hidden);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
 
@@ -1395,14 +1355,14 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         e = RunGemmFp64(c.st, lw.d_mlp_up, c.d_mlpn, c.d_dup,
                         kGlmDenseInter, hidden, 1);
         if (e != cudaSuccess) return e;
-        GlmRealSwigluKernel<<<(kGlmDenseInter + 255) / 256, 256, 0, c.st>>>(
-            c.d_dgate, c.d_dup, kGlmDenseInter);
+        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Glibc, false><<<(kGlmDenseInter + 255) / 256, 256, 0, c.st>>>(
+            c.d_dgate, c.d_dup, c.d_dgate, kGlmDenseInter, 0.f);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
         e = RunGemmFp64(c.st, lw.d_mlp_down, c.d_dgate, c.d_off, hidden,
                         kGlmDenseInter, 1);
         if (e != cudaSuccess) return e;
-        GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+        ::lsxcommon::kernels::AddInPlaceKernel<__half><<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_off, c.d_hid, hidden);
         return cudaGetLastError();
     }
 
@@ -1500,11 +1460,10 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         if (e != cudaSuccess) return e;
     }
     // mlp_out = routed + shared; residual: hid += mlp_out.
-    GlmResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(
-        c.d_off, c.d_routed, c.d_shared, hidden);
+    ::lsxcommon::kernels::AddOutKernel<__half><<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_routed, c.d_shared, c.d_off, hidden);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
-    GlmAddResidualKernel<<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_hid, c.d_off, hidden);
+    ::lsxcommon::kernels::AddInPlaceKernel<__half><<<(hidden + 255) / 256, 256, 0, c.st>>>(c.d_off, c.d_hid, hidden);
     return cudaGetLastError();
 }
 
@@ -1602,7 +1561,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         const int blocks = static_cast<int>(
             (static_cast<size_t>(P) * hidden + kGlmLoopBlock - 1) /
             kGlmLoopBlock);
-        GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+        ::lsxcommon::kernels::EmbedGatherKernel<__half><<<blocks, kGlmLoopBlock, 0, stream>>>(
             pw.d_embed, c.d_ids, c.d_cur, P, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return fail(e);
@@ -1674,7 +1633,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         // embed kernel reads it directly — no H2D roundtrip through c.d_ids.
         {
             const int blocks = (hidden + kGlmLoopBlock - 1) / kGlmLoopBlock;
-            GlmEmbedKernel<<<blocks, kGlmLoopBlock, 0, stream>>>(
+            ::lsxcommon::kernels::EmbedGatherKernel<__half><<<blocks, kGlmLoopBlock, 0, stream>>>(
                 pw.d_embed,
                 reinterpret_cast<const int32_t *>(&c.d_argmax->best),
                 c.d_cur + static_cast<size_t>(pos) * hidden, 1, hidden);

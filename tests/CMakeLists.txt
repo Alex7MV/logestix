@@ -212,6 +212,42 @@ foreach(qt test_blackwell_tc_mma)
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
+# Shared lsx_kernels_* equivalence harness (Phase A). Generic kernels: plain
+# 120/121 code, no arch-'a' PTX required.
+add_library(test_lsx_kernels_cu OBJECT
+    test_lsx_kernels.cu
+)
+set_target_properties(test_lsx_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_lsx_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_lsx_kernels_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_lsx_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+foreach(qt test_lsx_kernels)
+    add_executable(${qt})
+    set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(${qt} PRIVATE test_lsx_kernels_cu lsxcommon Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 set_target_properties(test_qwen_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES OFF

@@ -156,6 +156,10 @@ target_link_libraries(lsxcommon_glm_cu
     arrow_shared
     arrow_cuda_shared
 )
+# FMA policy: object-lib -fmad flags are historical (qwen_moe/glm/kimi off,
+# qwen dense on). Shared kernels in lsx_kernels_*.cuh use explicit *_rn
+# intrinsics and are therefore flag-independent; DO NOT rely on contraction
+# in any new kernel.
 add_library(lsxcommon_qwen_cu OBJECT
     src/qwen_inference.cu
 )
@@ -223,6 +227,7 @@ target_include_directories(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES}
 target_compile_definitions(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_tc_cu
     "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_DRIVER_LIBRARY}"
 )
 
 add_library(lsxcommon_kimi_cu OBJECT

@@ -22,8 +22,17 @@ struct QwenNvfp4Weight {
     int cols = 0;   // input dim (K)
     int64_t packed_bytes = 0;
     int64_t scale_bytes = 0;
+    // True when d_packed/d_scales alias another weight's allocation
+    // (gate/up views into a fused gate_up buffer) and Free() must not
+    // release them.
+    bool view_only = false;
 
     void Free() {
+        if (view_only) {
+            d_packed = nullptr; d_scales = nullptr;
+            view_only = false;
+            return;
+        }
         cudaFree(const_cast<uint8_t*>(d_packed));
         cudaFree(const_cast<uint8_t*>(d_scales));
         d_packed = nullptr; d_scales = nullptr;
@@ -68,6 +77,12 @@ struct QwenLayerWeights {
     QwenNvfp4Weight mlp_gate; // hidden -> intermediate
     QwenNvfp4Weight mlp_up;   // hidden -> intermediate
     QwenNvfp4Weight mlp_down; // intermediate -> hidden
+    // Optional fused gate+up ([2I, K], rows [0,I)=gate, [I,2I)=up) emitted by
+    // the converter when it quantizes both projections jointly with a single
+    // global scale. Present only in models converted after 2026-08-24; the
+    // fast-math path prefers it (one GEMM + one act quant), the bit-exact
+    // scalar path keeps using mlp_gate/mlp_up.
+    QwenNvfp4Weight mlp_gate_up;
 
     // Non-null when the layer was uploaded arena-backed: every d_* 1D tensor
     // pointer above is a view into this single allocation and Free() releases

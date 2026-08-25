@@ -35,7 +35,7 @@ void QwenLayerWeights::Free() {
         d_q_norm = nullptr; d_k_norm = nullptr;
         qkv.Free(); z.Free(); b.Free(); a.Free(); out.Free();
         q.Free(); k.Free(); v.Free(); o.Free();
-        mlp_gate.Free(); mlp_up.Free(); mlp_down.Free();
+        mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
         norm_size = attn_norm_size = 0;
         conv_dim = conv_kernel = 0;
         q_norm_size = k_norm_size = 0;
@@ -52,7 +52,7 @@ void QwenLayerWeights::Free() {
     q.Free(); k.Free(); v.Free(); o.Free();
     cudaFree(d_q_norm); d_q_norm = nullptr;
     cudaFree(d_k_norm); d_k_norm = nullptr;
-    mlp_gate.Free(); mlp_up.Free(); mlp_down.Free();
+    mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
     loaded = false;
 }
 
@@ -176,6 +176,34 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
     if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "mlp.gate_proj.weight"), lw.mlp_gate, stream, ring, bytes_acc, nullptr);
     if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "mlp.up_proj.weight"),   lw.mlp_up,   stream, ring, bytes_acc, nullptr);
     if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "mlp.down_proj.weight"), lw.mlp_down, stream, ring, bytes_acc, nullptr);
+    // Optional fused gate+up (converter-joint quantization): absent in models
+    // converted before 2026-08-24 — UploadNvfp4Weight(nullptr) is a no-op.
+    if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(nv, "mlp.gate_up_proj.weight"), lw.mlp_gate_up, stream, ring, bytes_acc, nullptr);
+    if (e != cudaSuccess) return e;
+    if (lw.mlp_gate_up.d_packed) {
+        // Derive mlp_gate/mlp_up as non-owning row-slices of the fused
+        // buffer: [N,K] nibble packing is per-row contiguous, so the byte
+        // split at I rows is exact for both packed data and per-16 scales.
+        const int64_t I = lw.mlp_gate_up.rows / 2;
+        const int64_t gate_packed = lw.mlp_gate_up.packed_bytes / 2;
+        const int64_t gate_scales = lw.mlp_gate_up.scale_bytes / 2;
+        auto make_view = [&](QwenNvfp4Weight &w, const uint8_t *packed,
+                             const uint8_t *scales) {
+            w.d_packed = packed;
+            w.d_scales = scales;
+            w.global_scale = lw.mlp_gate_up.global_scale;
+            w.rows = static_cast<int>(I);
+            w.cols = lw.mlp_gate_up.cols;
+            w.packed_bytes = gate_packed;
+            w.scale_bytes = gate_scales;
+            w.view_only = true;
+        };
+        make_view(lw.mlp_gate, lw.mlp_gate_up.d_packed,
+                  lw.mlp_gate_up.d_scales);
+        make_view(lw.mlp_up,
+                  lw.mlp_gate_up.d_packed + gate_packed,
+                  lw.mlp_gate_up.d_scales + gate_scales);
+    }
     if (e != cudaSuccess) return e;
 
     // Mark the layer usable only when its essential weights actually uploaded;

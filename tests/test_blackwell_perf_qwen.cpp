@@ -79,12 +79,28 @@ TEST_CASE("Qwen3.5-9B perf baseline: decode throughput",
     REQUIRE(r.ok);
     REQUIRE(!r.gen_tokens.empty());
 
+    const std::vector<int32_t> gen_ids(r.gen_tokens.begin(),
+                                       r.gen_tokens.end());
+    std::string text(64 * gen_ids.size() + 1, '\0');
+    size_t text_cap = text.size() - 1;
+    lsxcommon::arrow_tokenizer_decode(m->Tokenizer(), gen_ids.data(),
+                                      static_cast<int>(gen_ids.size()),
+                                      text.data(), &text_cap);
+    text.resize(text_cap);
     SPDLOG_INFO("[PERF][qwen3.5-9b] tok/s={:.1f} ttft_ms={:.2f} "
-                "total_ms={:.2f} gen_tokens={} resident_mb={:.0f}",
+                "total_ms={:.2f} gen_tokens={} resident_mb={:.0f} "
+                "text='{}'",
                 r.tokens_per_sec, r.ttft_ms, r.total_time_ms,
                 r.gen_tokens.size(),
                 static_cast<double>(r.weight_resident_bytes) /
-                    (1024.0 * 1024.0));
-
+                    (1024.0 * 1024.0),
+                text + " ids[0..5]=[" +
+                    [&] {
+                        std::string s;
+                        for (size_t i = 0;
+                             i < gen_ids.size() && i < 6; ++i)
+                            s += std::to_string(gen_ids[i]) + " ";
+                        return s;
+                    }() + "]");
     m->Unload();
 }

@@ -1,4 +1,9 @@
 #include "kimi_inference_kernels.h"
+#include "lsx_kernels_common.cuh"
+#include "lsx_kernels_math.cuh"
+#include "lsx_kernels_act.cuh"
+#include "lsx_kernels_quant.cuh"
+#include "nvfp4_codec.h"
 
 #include <cuda_bf16.h>
 
@@ -319,15 +324,7 @@ __global__ void kimi_mla_append_kernel(KimiMlaState *__restrict__ st,
             c[kKimiKvLoraRank + (j - kKimiKvLoraRank)];
 }
 
-// Residual add: d_out[t*H+i] = hidden + proj.
-__global__ void kimi_residual_add_kernel(const __nv_bfloat16 *__restrict__ hidden,
-                                         const __nv_bfloat16 *__restrict__ proj,
-                                         __nv_bfloat16 *__restrict__ out, int n_total)
-{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n_total) return;
-    out[i] = __float2bfloat16_rn(__bfloat162float(hidden[i]) + __bfloat162float(proj[i]));
-}
+// Residual adds: unified kernels::AddOutKernel/AddInPlaceKernel.
 
 // Fused absorbed attention: grid (seq, heads), block 512 threads.
 __global__ void kimi_mla_attn_kernel(
@@ -610,8 +607,8 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
         int total = seq * kKimiHidden;
         int block = 256;
         int grid = (total + block - 1) / block;
-        kimi_residual_add_kernel<<<grid, block, 0, stream>>>(
-            d_residual, d_oproj, d_out, total);
+        ::lsxcommon::kernels::AddOutKernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
+            d_oproj, d_residual, d_out, total);
     }
 
     return cudaGetLastError();
@@ -619,46 +616,14 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 
 // ── Routed-expert NVFP4 FFN (SwiGLU) ───────────────────────────────────────
 
-#include "nvfp4_codec.h"
 #include <cfloat>
 
 namespace {
 
-// Canonical E4M3 block-scale decode (nvfp4_codec semantics): only the
-// 4-bit exponent field participates; e4==0 -> 0.0.
-__device__ __forceinline__ float KimiE4M3(uint8_t b)
-{
-    return lsxcommon::gpu::nvfp4::E4M3ScaleToFloat(b);
-}
+// NVFP4 elementwise dequant: unified kernels::Nvfp4DequantKernel
+// (lsx_kernels_quant.cuh), byte-equal to the former kimi_nvfp4_dequant_kernel.
 
-// Dequantizes one NVFP4 tensor (packed nibbles lo-first + per-16 E4M3 scales +
-// global scale) into an FP16 buffer. One thread per element.
-__global__ void kimi_nvfp4_dequant_kernel(const uint8_t *__restrict__ packed,
-                                          const uint8_t *__restrict__ scales,
-                                          float global_scale,
-                                          __nv_bfloat16 *__restrict__ out,
-                                          int64_t numel)
-{
-    const int64_t i =
-        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= numel) return;
-    const uint8_t byte = packed[i >> 1];
-    const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-    const float block_scale = KimiE4M3(scales[i >> 4]) * global_scale;
-    out[i] = __float2bfloat16_rn(lsxcommon::gpu::nvfp4::E2M1Value(nib) * block_scale);
-}
-
-// SwiGLU: h = silu(gate) * up.
-__global__ void kimi_swiglu_kernel(const __nv_bfloat16 *__restrict__ gate,
-                                   const __nv_bfloat16 *__restrict__ up,
-                                   __nv_bfloat16 *__restrict__ h, int64_t n)
-{
-    const int64_t i =
-        blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
-    if (i >= n) return;
-    const float g = __bfloat162float(gate[i]);
-    h[i] = __float2bfloat16_rn(g / (1.0f + __expf(-g)) * __bfloat162float(up[i]));
-}
+// SwiGLU: unified kernels::SwigluKernel (lsx_kernels_act.cuh).
 
 // d_out += weight * y (elementwise over the hidden row).
 __global__ void kimi_accum_kernel(const __nv_bfloat16 *__restrict__ y, float weight,
@@ -746,9 +711,9 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                        float gscale, __nv_bfloat16 *dst, int64_t numel) {
         const int block = 256;
         const int64_t grid = (numel + block - 1) / block;
-        kimi_nvfp4_dequant_kernel<<<static_cast<unsigned>(grid), block, 0,
-                                    stream>>>(packed, scales, gscale, dst,
-                                              numel);
+        ::lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
+            <<<static_cast<unsigned>(grid), block, 0, stream>>>(
+                packed, scales, gscale, dst, numel);
     };
     dequant(p_w1, p_s1, expert.w1_global_scale, dq_gate, w13_el);
     dequant(p_w3, p_s3, expert.w3_global_scale, dq_up, w13_el);
@@ -784,8 +749,9 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                         cudaGetErrorString(ce_), __LINE__);
         } while (0);
 
-    kimi_swiglu_kernel<<<static_cast<unsigned>((I + 255) / 256), 256, 0,
-                         stream>>>(act_g, act_u, act_h, I);
+    ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
+        <<<static_cast<unsigned>((I + 255) / 256), 256, 0, stream>>>(
+            act_g, act_u, act_h, I, 0.f);
 
     // down projection: y(Hd) = W_down(Hd x I)^T @ h(I).
     cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
@@ -812,15 +778,7 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
 
 namespace {
 
-__global__ void kimi_embed_kernel(const __nv_bfloat16 *__restrict__ embed,
-                                  const int *__restrict__ ids, int n_tokens,
-                                  int hidden, __nv_bfloat16 *__restrict__ out)
-{
-    const int t = blockIdx.y;
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= hidden) return;
-    out[(size_t)t * hidden + i] = embed[(size_t)ids[t] * hidden + i];
-}
+// Embed gather: unified kernels::EmbedGatherKernel (lsx_kernels_math.cuh).
 
 // Out-of-place RMSNorm rows [seq x n]: dst = LN(src).
 __global__ void kimi_rmsnorm_rows_op_kernel(const __nv_bfloat16 *__restrict__ src,
@@ -1032,9 +990,9 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
         } while (0);
             {
                 const int64_t n = (int64_t)seq * kKimiDenseIntermediate;
-                kimi_swiglu_kernel<<<static_cast<unsigned>((n + 255) / 256),
-                                     256, 0, stream>>>(d_mlp_g, d_mlp_u,
-                                                       d_mlp_h, n);
+                ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
+                <<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
+                    d_mlp_g, d_mlp_u, d_mlp_h, n, 0.f);
             }
             cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                          kKimiHidden, seq, kKimiDenseIntermediate, &alpha,
@@ -1053,8 +1011,8 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 int total = seq * kKimiHidden;
                 int block = 256;
                 int grid = (total + block - 1) / block;
-                kimi_residual_add_kernel<<<grid, block, 0, stream>>>(
-                    d_scratch_a + (size_t)base * kKimiHidden, d_mlp_g,
+                ::lsxcommon::kernels::AddInPlaceKernel<__nv_bfloat16><<<grid, block, 0, stream>>>(
+                    d_mlp_g,
                     d_scratch_a + (size_t)base * kKimiHidden, total);
             }
         }
@@ -1149,14 +1107,16 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     int generated = 0;
     for (int step = 0; step <= max_gen_tokens; ++step) {
         if (step == 0) {
-            dim3 grid((kKimiHidden + 255) / 256, prefill_seq);
-            kimi_embed_kernel<<<grid, 256, 0, stream>>>(
-                pw.d_embed, d_ids, prefill_seq, kKimiHidden, d_hidden);
+            ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
+                <<<(int)((prefill_seq * kKimiHidden + 255) / 256), 256, 0,
+                   stream>>>(pw.d_embed, d_ids, d_hidden, prefill_seq,
+                             kKimiHidden);
         } else {
-            dim3 grid((kKimiHidden + 255) / 256, 1);
-            kimi_embed_kernel<<<grid, 256, 0, stream>>>(
-                pw.d_embed, d_ids + prefill_seq + step - 1, 1, kKimiHidden,
-                d_hidden + (size_t)(prefill_seq + step - 1) * kKimiHidden);
+            ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
+                <<<(int)((kKimiHidden + 255) / 256), 256, 0, stream>>>(
+                    pw.d_embed, d_ids + prefill_seq + step - 1,
+                    d_hidden + (size_t)(prefill_seq + step - 1) * kKimiHidden,
+                    1, kKimiHidden);
         }
 
         const int base = (step == 0) ? 0 : (prefill_seq + step - 1);

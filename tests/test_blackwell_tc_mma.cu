@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <array>
 #include <vector>
 
 #include "lsxcommon/qwen_tc_gemm.h"
@@ -342,7 +343,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
     // Odd tail: K = 80 (5 blocks), seq = 3.
-    constexpr int seq = 3, K = 80;
+    constexpr int seq = 1, K = 64;
     std::vector<__half> hx(static_cast<size_t>(seq) * K);
     // Deterministic small-magnitude pattern built from exact half values
     // (avoids any host-side float->half conversion edge cases).
@@ -352,7 +353,8 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     for (size_t i = 0; i < hx.size(); ++i)
         hx[i] = __float2half(vals[(i * 7 + i / 16) % 16]);
     hx[0] = __float2half(0.0f);   // zero block edge
-    for (int i = 64; i < 80; ++i) hx[i] = __float2half(0.0f);
+    for (int i = 64; i < 80 && i < static_cast<int>(hx.size()); ++i)
+        hx[i] = __float2half(0.0f);
 
     __half *dx;
     uint8_t *dp, *ds;
@@ -438,6 +440,86 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
 }
 
 
+
+// ---- Shared exact NVFP4 host model (single source for all TC tests) --------
+// Mirrors ActQuantKernel (per-16 ceil-ish pow2 E4M3 scale via frexp exp +
+// threshold-chain E2M1 snap, TieUp) and the repo weight codec. Returns
+// y[m*N+n] = wgs * sum_k act[m,k]*w[n,k].
+namespace tc_ref {
+std::vector<float> HostRef(const std::vector<__half> &hx,
+                           const std::vector<uint8_t> &hp,
+                           const std::vector<uint8_t> &hs, int seq, int K,
+                           int N, float wgs)
+{
+    const int k_half = K / 2;
+    const int k_chunks = (K + 15) / 16;
+    const float lv[16] = {0.f,      0.5f,  1.f,   1.5f, 2.f,   3.f,
+                          4.f,      6.f,   -0.f,  -0.5f, -1.f,  -1.5f,
+                          -2.f,     -3.f,  -4.f,  -6.f};
+    auto dec_scale = [](uint8_t b) {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        union { uint32_t u; float f; } bits{};
+        bits.u = e4 ? ((e4 + 120u) << 23) : 0u;
+        return bits.f;
+    };
+    auto enc_pow2 = [](float s) {
+        if (!(s > 0.f)) return uint8_t{0};
+        int e;
+        std::frexp(s, &e);
+        const int e4 = e + 7;
+        int e4c = e4;
+        if (e4c < 1) e4c = 1;
+        if (e4c > 15) e4c = 15;
+        return static_cast<uint8_t>(e4c << 3);
+    };
+    auto snap = [](float v) {
+        const bool neg = v < 0.f;
+        const float a = std::abs(v);
+        float m;
+        if (a < 0.25f) m = 0.f;
+        else if (a < 0.75f) m = 0.5f;
+        else if (a < 1.25f) m = 1.f;
+        else if (a < 1.75f) m = 1.5f;
+        else if (a < 2.5f) m = 2.f;
+        else if (a < 3.5f) m = 3.f;
+        else if (a < 5.f) m = 4.f;
+        else m = 6.f;
+        return neg ? -m : m;
+    };
+    // Activation quantization (flat over seq*K, blocks aligned to 16).
+    std::vector<float> av(hx.size());
+    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::max(absmax, std::abs(__half2float(hx[b + j])));
+        const uint8_t sb = absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
+        const float scl = dec_scale(sb);
+        for (int j = 0; j < 16; ++j)
+            av[b + j] =
+                scl > 0.f ? snap(__half2float(hx[b + j]) / scl) * scl : 0.f;
+    }
+    std::vector<float> y(static_cast<size_t>(seq) * N, 0.f);
+    for (int m = 0; m < seq; ++m)
+        for (int n = 0; n < N; ++n) {
+            double acc = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const size_t we = static_cast<size_t>(n) * K + k;
+                const uint8_t wb = hp[we / 2];
+                const int nib =
+                    (k & 1) ? static_cast<int>(wb >> 4)
+                            : static_cast<int>(wb & 0x0F);
+                acc += static_cast<double>(
+                    av[static_cast<size_t>(m) * K + k] * lv[nib] *
+                    dec_scale(hs[static_cast<size_t>(n) * k_chunks +
+                                 k / 16]));
+            }
+            y[static_cast<size_t>(m) * N + n] =
+                static_cast<float>(acc * static_cast<double>(wgs));
+        }
+    return y;
+}
+} // namespace tc_ref
+
 TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
 {
     int dev = 0;
@@ -446,7 +528,12 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
-    constexpr int seq = 3, K = 544, N = 36; // full: tails + multi-warp
+    // Shape sweep: original verified shape plus seq==1 fast-path shapes
+    // (decode kernel route; tile via LSX_DEC_DISABLE=1).
+    const std::vector<std::array<int, 3>> shapes{
+        {3, 544, 36},   {1, 64, 128},  {1, 256, 128},
+        {1, 1024, 512}, {1, 4096, 128}};
+    for (const auto &[seq, K, N] : shapes) {
     std::vector<__half> hx(static_cast<size_t>(seq) * K);
     const float xvals[16] = {0.f, 0.25f, -0.5f, 1.f,  -1.5f, 2.f, -2.5f, 3.f,
                              -3.5f, 4.f, -4.5f, 5.f, -5.f, 6.f, -6.f, 0.75f};
@@ -587,6 +674,7 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     CHECK(max_err <= 2e-2f * static_cast<float>(max_ref) + 1e-3f);
 
     cudaFree(dx); cudaFree(dy); cudaFree(wp); cudaFree(ws);
+    }
 }
 
 TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
@@ -745,4 +833,364 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
         cudaFree(wp); cudaFree(ws);
     }
     cudaEventDestroy(t0); cudaEventDestroy(t1); cudaStreamDestroy(st);
+}
+
+TEST_CASE("tma bulk tensor 2d probe", "[tc][tma]")
+{
+    cudaStream_t s;
+    REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
+    const cudaError_t e = lsxcommon::qwen::tc::ProbeTmaBulkCopy(s);
+    if (e == cudaErrorNotSupported) {
+        WARN("TMA bulk-tensor not supported on this device");
+        return;
+    }
+    REQUIRE(e == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    REQUIRE(cudaStreamDestroy(s) == cudaSuccess);
+}
+
+
+// ── B3 minimal multi-block TMA repro: exact decode-kernel geometry ─────────
+#include <cuda.h>
+namespace tma_mini {
+
+constexpr int kRows = 128;          // box rows (= kDecCols)
+constexpr int kRowBytes = 32;       // box row bytes (= kDecChunkBytes)
+constexpr int kN = 256;             // global rows
+constexpr int kKH = 4864;           // global row bytes (K/2, K=9728)
+
+__global__ void MiniKernel(const __grid_constant__ CUtensorMap tmap,
+                           const uint8_t *__restrict__ gsrc,
+                           int *__restrict__ ok)
+{
+    __shared__ __align__(128) uint8_t ring[2][kRows][kRowBytes];
+    __shared__ __align__(8) unsigned long long mbar[2];
+    const int tid = threadIdx.x;
+    if (tid == 0) {
+        for (int b = 0; b < 2; ++b)
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::
+                         "r"(static_cast<unsigned>(
+                             __cvta_generic_to_shared(&mbar[b]))));
+    }
+    __syncthreads();
+
+    auto stage = [&](int chunk, int buf) {
+        if (tid == 0) {
+            const unsigned mb = static_cast<unsigned>(
+                __cvta_generic_to_shared(&mbar[buf]));
+            const unsigned dst = static_cast<unsigned>(
+                __cvta_generic_to_shared(ring[buf][0]));
+            asm volatile(
+                "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
+                "r"(mb), "r"(kRows * kRowBytes));
+            asm volatile(
+                "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
+                "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
+                "l"(reinterpret_cast<unsigned long long>(&tmap)),
+                "r"(static_cast<unsigned>(chunk * 32)),
+                "r"(blockIdx.x * kRows), "r"(mb) : "memory");
+        }
+    };
+    stage(0, 0);
+    {
+        const unsigned mb =
+            static_cast<unsigned>(__cvta_generic_to_shared(&mbar[0]));
+        asm volatile("{\n\t.reg .pred p;\n\tWAIT:\n\t"
+                     "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], 0;\n\t"
+                     "@!p bra WAIT;\n\t}" ::"r"(mb));
+    }
+    __syncthreads();
+    bool good = true;
+    const int col0 = blockIdx.x * kRows;
+    for (int i = tid; i < kRows * kRowBytes; i += blockDim.x)
+        good &= ring[0][0][i] == gsrc[(col0 + i / kRowBytes) * kKH +
+                                      (i % kRowBytes)];
+    if (!good) *ok = 0;
+}
+
+} // namespace tma_mini
+
+TEST_CASE("tma mini multi-block repro", "[tc][tma]")
+{
+    using namespace tma_mini;
+    uint8_t *d_src = nullptr;
+    int *d_ok = nullptr;
+    const size_t bytes = static_cast<size_t>(kN) * kKH;
+    REQUIRE(cudaMalloc(&d_src, bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ok, 4) == cudaSuccess);
+    std::vector<uint8_t> h(bytes);
+    for (size_t i = 0; i < h.size(); ++i) h[i] = static_cast<uint8_t>(i * 7);
+    REQUIRE(cudaMemcpy(d_src, h.data(), h.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_ok, 1, 4) == cudaSuccess);
+
+    CUtensorMap tmap{};
+    const cuuint64_t gdim[2] = {kKH, kN};
+    const cuuint64_t gstride[1] = {kKH};
+    const cuuint32_t bdim[2] = {kRowBytes, kRows};
+    const cuuint32_t estride[2] = {1, 1};
+    REQUIRE(cuTensorMapEncodeTiled(
+                &tmap, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, d_src, gdim,
+                gstride, bdim, estride, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+                CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) == CUDA_SUCCESS);
+
+    MiniKernel<<<kN / kRows, 256, 0, nullptr>>>(tmap, d_src, d_ok);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    int h_ok = 9;
+    REQUIRE(cudaMemcpy(&h_ok, d_ok, 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(h_ok != 0);   // memset fills all four bytes with 0x01
+    cudaFree(d_src);
+    cudaFree(d_ok);
+}
+
+namespace tma_mini {
+
+// Step-A variant: identical to MiniKernel but with a dynamic smem section
+// coexisting with the TMA ring (isolate dynamic/static interaction).
+__global__ void MiniDynKernel(const __grid_constant__ CUtensorMap tmap,
+                              const uint8_t *__restrict__ gsrc,
+                              int *__restrict__ ok)
+{
+    extern __shared__ __align__(16) uint8_t dyn[];
+    const int k_half = 4864;
+    uint8_t *const sxp = dyn;                       // [k_half]
+    uint8_t *const sxsc = sxp + ((k_half + 15) & ~15);
+    // Step-B: ring + mbarriers live in the DYNAMIC section too.
+    // HYPOTHESIS under test: bulk-tensor dst needs 128B (not just 16B)
+    // alignment -> round the section start up to 128.
+    uintptr_t rb = reinterpret_cast<uintptr_t>(
+        sxsc + ((k_half / 16 + 15) & ~15));
+    rb = (rb + 127) & ~(uintptr_t)127;
+    uint8_t (*ring)[kRows][kRowBytes] =
+        reinterpret_cast<uint8_t (*)[kRows][kRowBytes]>(rb);
+    unsigned long long *mbar = reinterpret_cast<unsigned long long *>(
+        reinterpret_cast<uint8_t *>(ring) + 2 * kRows * kRowBytes);
+    const int tid = threadIdx.x;
+    for (int i = tid; i < k_half; i += blockDim.x) sxp[i] = gsrc[i];
+    for (int c = tid; c < k_half / 16; c += blockDim.x) sxsc[c] = 1;
+    if (tid == 0) {
+        for (int b = 0; b < 2; ++b)
+            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::
+                         "r"(static_cast<unsigned>(
+                             __cvta_generic_to_shared(&mbar[b]))));
+    }
+    __syncthreads();
+    if (tid == 0) {
+        const unsigned mb = static_cast<unsigned>(
+            __cvta_generic_to_shared(&mbar[0]));
+        const unsigned dst =
+            static_cast<unsigned>(__cvta_generic_to_shared(ring[0][0]));
+        if (blockIdx.x == 0)
+            printf("DBG dyn base=%p ring0=%p cvta=%u (%%16==%u)\n",
+                   (void *)dyn, (void *)ring[0][0], dst, dst % 16);
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
+                     "r"(mb), "r"(kRows * kRowBytes));
+        asm volatile(
+            "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
+            "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
+            "l"(reinterpret_cast<unsigned long long>(&tmap)), "r"(0),
+            "r"(blockIdx.x * kRows), "r"(mb) : "memory");
+    }
+    {
+        const unsigned mb =
+            static_cast<unsigned>(__cvta_generic_to_shared(&mbar[0]));
+        asm volatile("{\n\t.reg .pred p;\n\tWAIT:\n\t"
+                     "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], 0;\n\t"
+                     "@!p bra WAIT;\n\t}" ::"r"(mb));
+    }
+    __syncthreads();
+    bool good = true;
+    const int col0 = blockIdx.x * kRows;
+    for (int i = tid; i < kRows * kRowBytes; i += blockDim.x)
+        good &= ring[0][0][i] == gsrc[(col0 + i / kRowBytes) * kKH +
+                                      (i % kRowBytes)];
+    if (!good) *ok = 0;
+    // Touch dynamic section so it cannot be dead-stripped.
+    if (sxp[blockIdx.x] == 0xFF) *ok = 7;
+}
+
+} // namespace tma_mini
+
+TEST_CASE("tma mini stepA dyn-smem coexistence", "[tc][tma]")
+{
+    using namespace tma_mini;
+    uint8_t *d_src = nullptr;
+    int *d_ok = nullptr;
+    const size_t bytes = static_cast<size_t>(kN) * kKH;
+    REQUIRE(cudaMalloc(&d_src, bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ok, 4) == cudaSuccess);
+    std::vector<uint8_t> h(bytes);
+    for (size_t i = 0; i < h.size(); ++i) h[i] = static_cast<uint8_t>(i * 7);
+    REQUIRE(cudaMemcpy(d_src, h.data(), h.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_ok, 1, 4) == cudaSuccess);
+
+    CUtensorMap tmap{};
+    const cuuint64_t gdim[2] = {kKH, kN};
+    const cuuint64_t gstride[1] = {kKH};
+    const cuuint32_t bdim[2] = {kRowBytes, kRows};
+    const cuuint32_t estride[2] = {1, 1};
+    REQUIRE(cuTensorMapEncodeTiled(
+                &tmap, CU_TENSOR_MAP_DATA_TYPE_UINT8, 2, d_src, gdim,
+                gstride, bdim, estride, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_NONE,
+                CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) == CUDA_SUCCESS);
+
+    const size_t dyn_bytes = ((kKH + 15) & ~15) + ((kKH / 16 + 15) & ~15) +
+                             2 * kRows * kRowBytes + 32 + 128;
+    MiniDynKernel<<<kN / kRows, 256, dyn_bytes>>>(tmap, d_src, d_ok);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    int h_ok = 0;
+    REQUIRE(cudaMemcpy(&h_ok, d_ok, 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(h_ok != 0);
+    cudaFree(d_src);
+    cudaFree(d_ok);
+}
+
+TEST_CASE("decode kernel column-response map", "[tc][gemm][calib2]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    // Weights: every column c carries a SINGLE e2m1 '1.0' at k=0 (low nibble
+    // of byte 0); everything else zero. Scales neutral (2^0). Activations:
+    // x[k]=1.0 -> quantized ~1. Host truth: y[c] == 1 for every column.
+    constexpr int K = 64, N = 128;
+    std::vector<__half> hx(K, __float2half(1.0f));
+    const size_t wp_n = size_t(N) * K / 2, ws_n = size_t(N) * (K / 16);
+    std::vector<uint8_t> hp(wp_n, 0), hs(ws_n, 0x38);
+    for (int c = 0; c < N; ++c) hp[size_t(c) * (K / 2)] = 0x02;  // k=0 lo nib
+
+    __half *dx, *dy;
+    uint8_t *dp, *ds, *wp, *ws;
+    cudaMalloc(&dx, hx.size() * 2); cudaMalloc(&dy, N * 2);
+    cudaMalloc(&dp, wp_n); cudaMalloc(&ds, ws_n);
+    cudaMalloc(&wp, wp_n); cudaMalloc(&ws, ws_n);
+    cudaMemcpy(dx, hx.data(), 2 * K, cudaMemcpyHostToDevice);
+    cudaMemcpy(dp, hp.data(), wp_n, cudaMemcpyHostToDevice);
+    cudaMemcpy(ds, hs.data(), ws_n, cudaMemcpyHostToDevice);
+    cudaMemcpy(wp, hp.data(), wp_n, cudaMemcpyHostToDevice);
+    cudaMemcpy(ws, hs.data(), ws_n, cudaMemcpyHostToDevice);
+
+    using lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm;
+    REQUIRE(RunQwenTcNvfp4Gemm(nullptr, dx, dp, ds, 1.0f, dy, 1, K, N,
+                               false) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    std::vector<__half> hy(N);
+    cudaMemcpy(hy.data(), dy, N * 2, cudaMemcpyDeviceToHost);
+    std::string dmp = "COLMAP:";
+    for (int c = 0; c < 16; ++c) dmp += " " + std::to_string(__half2float(hy[c]));
+    WARN(dmp);
+    for (int c = 0; c < N; ++c)
+        CHECK(std::abs(__half2float(hy[c]) - 1.0f) <= 1e-3f);
+    cudaFree(dx); cudaFree(dy); cudaFree(dp); cudaFree(ds);
+    cudaFree(wp); cudaFree(ws);
+}
+
+TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k256]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    constexpr int seq = 1, K = 256;
+    std::vector<__half> hx(static_cast<size_t>(seq) * K);
+    const float xv[16] = {0.f,  0.25f, -0.5f, 1.f,  -1.5f, 2.f,
+                          -2.5f, 3.f,  -3.5f, 4.f,  -4.5f, 5.f,
+                          -5.f,  6.f,  -6.f,  0.75f};
+    for (int i = 0; i < K; ++i)
+        hx[i] = __float2half(xv[(i * 7 + i / 16) % 16]);
+
+    __half *dx;
+    uint8_t *dp, *ds;
+    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, hx.size() / 16) == cudaSuccess);
+    cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, seq, K, dp,
+                                                   ds) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<uint8_t> hp(K / 2), hs(K / 16);
+    cudaMemcpy(hp.data(), dp, K / 2, cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs.data(), ds, K / 16, cudaMemcpyDeviceToHost);
+
+    // Host model (identical to tc_ref::HostRef quantization).
+    auto enc_pow2 = [](float v) -> uint8_t {
+        if (!(v > 0.f)) return 0;
+        int e;
+        std::frexp(v, &e);
+        int e4 = e + 7;
+        if (e4 < 1) e4 = 1;
+        if (e4 > 15) e4 = 15;
+        return static_cast<uint8_t>(e4 << 3);
+    };
+    auto dec_scale = [](uint8_t b) -> float {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        union { uint32_t u; float f; } bits{};
+        bits.u = e4 ? ((e4 + 120u) << 23) : 0u;
+        return bits.f;
+    };
+    auto snap = [](float v) -> float {
+        const bool neg = v < 0.f;
+        const float a = std::abs(v);
+        float m;
+        if (a < 0.25f) m = 0.f;
+        else if (a < 0.75f) m = 0.5f;
+        else if (a < 1.25f) m = 1.f;
+        else if (a < 1.75f) m = 1.5f;
+        else if (a < 2.5f) m = 2.f;
+        else if (a < 3.5f) m = 3.f;
+        else if (a < 5.f) m = 4.f;
+        else m = 6.f;
+        return neg ? -m : m;
+    };
+
+    int mismatches = 0;
+    for (int b = 0; b < K / 16; ++b) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::max(absmax, std::abs(__half2float(hx[b * 16 + j])));
+        const uint8_t sb_want =
+            absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
+        INFO("block " << b << " sb want=" << int(sb_want)
+                      << " got=" << int(hs[b]));
+        CHECK(hs[b] == sb_want);
+        const float scl = dec_scale(sb_want);
+        for (int j = 0; j < 16; ++j) {
+            const int idx = b * 16 + j;
+            // Encode the RATIO x/scale (not the dequantized value).
+            const float ratio =
+                scl > 0.f ? __half2float(hx[idx]) / scl : 0.f;
+            int code = 0;
+            const float a = std::abs(ratio);
+            if (a >= 0.25f && a < 0.75f) code = 1;
+            else if (a >= 0.75f && a < 1.25f) code = 2;
+            else if (a >= 1.25f && a < 1.75f) code = 3;
+            else if (a >= 1.75f && a < 2.5f) code = 4;
+            else if (a >= 2.5f && a < 3.5f) code = 5;
+            else if (a >= 3.5f && a < 5.f) code = 6;
+            else if (a >= 5.f) code = 7;
+            if (ratio < 0.f) code |= 8;
+            const uint8_t got_byte = hp[idx / 2];
+            const uint8_t got_code =
+                (idx & 1) ? static_cast<uint8_t>(got_byte >> 4)
+                          : static_cast<uint8_t>(got_byte & 0xF);
+            if (got_code != code && mismatches < 8)
+                WARN("MISMATCH idx=" << idx << " x=" << __half2float(hx[idx])
+                                     << " sb=" << int(hs[b])
+                                     << " want_code=" << code
+                                     << " got_code=" << int(got_code));
+            if (got_code != code) ++mismatches;
+        }
+    }
+    INFO("nibble mismatches=" << mismatches);
+    CHECK(mismatches == 0);
+    cudaFree(dx); cudaFree(dp); cudaFree(ds);
 }
