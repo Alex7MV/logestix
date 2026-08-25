@@ -763,8 +763,14 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     const float theta = full ? top.rope_theta_full : top.rope_theta_sliding;
     const int window = full ? 0 : top.sliding_window;
     const int64_t kv_stride = kv_heads * head_dim;
+    // layer_scalar is a constant weight: take the host mirror uploaded at
+    // Load instead of a device readback + full stream sync per layer per
+    // forward (bit-identical value).
     float layer_scalar = 1.0f;
-    if (lw.d_layer_scalar) {
+    if (layer_idx >= 0 &&
+        static_cast<size_t>(layer_idx) < pw.h_layer_scalar.size())
+        layer_scalar = pw.h_layer_scalar[static_cast<size_t>(layer_idx)];
+    else if (lw.d_layer_scalar) {
         cudaError_t e = cudaMemcpyAsync(&layer_scalar, lw.d_layer_scalar,
                                         sizeof(float), cudaMemcpyDeviceToHost,
                                         stream);

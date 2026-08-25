@@ -146,7 +146,8 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaPinnedWeights &pw,
 }
 
 cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
-                      GemmaLayerWeights &lw, cudaStream_t stream,
+                      GemmaLayerWeights &lw, float *h_layer_scalar,
+                      cudaStream_t stream,
                       std::uint64_t &bytes_acc)
 {
     PinnedStagingRing ring;
@@ -237,10 +238,14 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
         if (sc->dtype == "F32") {
             e = UploadF32(reinterpret_cast<const float *>(sc->data.data()), 1,
                           &lw.d_layer_scalar, stream, ring, bytes_acc);
+            if (h_layer_scalar)
+                *h_layer_scalar =
+                    *reinterpret_cast<const float *>(sc->data.data());
         } else if (sc->dtype == "BF16") {
             auto f32 = Bf16BytesToF32(sc->data, 1);
             e = UploadF32(f32.data(), 1, &lw.d_layer_scalar, stream, ring,
                           bytes_acc);
+            if (h_layer_scalar) *h_layer_scalar = f32[0];
         } else {
             e = cudaErrorInvalidValue;
         }
@@ -298,6 +303,7 @@ void GemmaPinnedWeights::Free()
     resident_bytes = 0;
     for (auto &l : layers) l.Free();
     layers.clear();
+    h_layer_scalar.clear();
 }
 
 cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
@@ -347,12 +353,16 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
                        tensors_res.status().ToString());
             return cudaErrorInvalidValue;
         }
-        e = LoadLayer(*tensors_res, pw.layers[static_cast<size_t>(l)], stream,
-                      bytes_acc);
+        e = LoadLayer(*tensors_res, pw.layers[static_cast<size_t>(l)],
+                      pw.h_layer_scalar.empty()
+                          ? nullptr
+                          : &pw.h_layer_scalar[static_cast<size_t>(l)],
+                      stream, bytes_acc);
         if (e != cudaSuccess) return e;
     }
 
     pw.resident_bytes = bytes_acc;
+    pw.h_layer_scalar.resize(pw.layers.size(), 1.0f);
 
     // Topology from the index (mandatory for generation; the loader still
     // succeeds without it so weight-only tooling keeps working).
