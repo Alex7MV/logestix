@@ -32,7 +32,24 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,
                                const uint8_t *w_scales, float w_global_scale,
                                __half *y, int seq, int K, int N,
-                               bool acc = false);
+                               bool acc = false,
+                               const float *seg_wgs_dev = nullptr,
+                               const int *seg_bounds_dev = nullptr);
+
+// Builds (once, cached) the N-concatenation of four NVFP4 weight matrices
+// sharing one input K, so several projections can run as a single GEMM.
+// All segments must have identical K (k_half = K/2, k_chunks = K/16).
+// Returns cached device buffers; they live for the process lifetime.
+cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
+                                  const uint8_t *s1, int n1, const uint8_t *p2,
+                                  const uint8_t *s2, int n2, const uint8_t *p3,
+                                  const uint8_t *s3, int n3, const uint8_t *p4,
+                                  const uint8_t *s4, int n4, int k_half,
+                                  int k_chunks, float g1, float g2, float g3,
+                                  float g4, const uint8_t **packed_out,
+                                  const uint8_t **scales_out,
+                                  const float **wgs_out,
+                                  const int **bounds_out, int *n_total);
 
 // B3 capability probe: encodes a 2D CUtensorMap over a synthetic weight-like
 // buffer, performs ONE cp.async.bulk.tensor.2d into dynamic shared memory

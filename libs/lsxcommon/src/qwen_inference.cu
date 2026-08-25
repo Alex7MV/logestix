@@ -1153,17 +1153,48 @@ cudaError_t RunQwenFusedLinearAttnKernel(
             __half *qkv_row =
                 d_qkv + static_cast<int64_t>(kv_base) * S;
             if (tc_attn) {
-                // Tensor-core W4A4 route: streamed slab staging + hardware
-                // mxf4nvf4 MMA (audit F-01).
-                e = tc::RunQwenTcNvfp4Gemm(stream, d_normed, lw.qkv.d_packed,
-                                           lw.qkv.d_scales,
-                                           lw.qkv.global_scale, qkv_row,
-                                           1, H, S);
-                if (e != cudaErrorNotSupported &&
-                    e != cudaErrorInvalidValue) {
+                // Tensor-core W4A4 route: ONE fused GEMM for
+                // qkv|z|a|b (same input row), per-segment global scales
+                // applied by the kernel epilogue. Cuts 3 ActQuant passes
+                // and 3 launches per layer per decode step.
+                const uint8_t *fp = nullptr, *fs = nullptr;
+                const float *fw = nullptr;
+                const int *fb = nullptr;
+                int fn = 0;
+                const int VDl = nv * vd;
+                e = tc::BuildFusedGemmWeights(
+                    stream, lw.qkv.d_packed, lw.qkv.d_scales, S,
+                    lw.z.d_packed, lw.z.d_scales, VDl,
+                    lw.a.d_packed, lw.a.d_scales, nv,
+                    lw.b.d_packed, lw.b.d_scales, nv,
+                    H / 2, (H + 15) / 16, lw.qkv.global_scale,
+                    lw.z.global_scale, lw.a.global_scale,
+                    lw.b.global_scale, &fp, &fs, &fw, &fb, &fn);
+                if (e == cudaSuccess) {
+                    __half *fy = nullptr;
+                    e = cudaMallocAsync(&fy, sizeof(__half) * fn, stream);
+                    if (e != cudaSuccess) return e;
+                    e = tc::RunQwenTcNvfp4Gemm(stream, d_normed, fp, fs,
+                                               1.0f, fy, 1, H, fn, false,
+                                               fw, fb);
+                    if (e == cudaSuccess) {
+                        // Split the fused output: qkv stays contiguous;
+                        // z | a | b land in their own buffers.
+                        e = cudaMemcpyAsync(qkv_row, fy, sizeof(__half) * S,
+                                            cudaMemcpyDeviceToDevice,
+                                            stream);
+                        if (e == cudaSuccess)
+                            e = cudaMemcpyAsync(
+                                d_z, fy + S, sizeof(__half) * VDl,
+                                cudaMemcpyDeviceToDevice, stream);
+                        if (e == cudaSuccess)
+                            e = cudaMemcpyAsync(
+                                d_ab, fy + S + VDl, sizeof(__half) * 2 * nv,
+                                cudaMemcpyDeviceToDevice, stream);
+                    }
+                    cudaFreeAsync(fy, stream);
                     if (e != cudaSuccess) return e;
                 } else {
-                    e = cudaSuccess;
                     const int grid = (S + 7) / 8;
                     warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
                         d_normed, lw.qkv.d_packed, lw.qkv.d_scales,
@@ -1183,46 +1214,13 @@ cudaError_t RunQwenFusedLinearAttnKernel(
             d_qkv, lw.d_conv1d, seq, nk, kd, nv, vd, lw.conv_kernel,
             kv_base, d_conv);
         e = cudaGetLastError(); if (e) return e;
-        // z / a / b projections (a|b share one buffer: [nv | nv]).
+        // z / a / b projections: already produced by the fused qkv|z|a|b
+        // GEMM above when tc_attn; scalar fallback below keeps parity.
         {
             const __half *xrow = d_normed;   // t == 0
             __half *a_buf = d_ab;
             __half *b_buf = d_ab + static_cast<int64_t>(seq) * nv;
-            if (tc_attn) {
-                e = tc::RunQwenTcNvfp4Gemm(stream, xrow, lw.z.d_packed,
-                                           lw.z.d_scales, lw.z.global_scale,
-                                           d_z, 1, H, VD);
-                if (e != cudaErrorNotSupported &&
-                    e != cudaErrorInvalidValue) {
-                    if (e != cudaSuccess) return e;
-                    e = tc::RunQwenTcNvfp4Gemm(stream, xrow, lw.a.d_packed,
-                                               lw.a.d_scales,
-                                               lw.a.global_scale, a_buf,
-                                               1, H, nv);
-                    if (e != cudaSuccess) return e;
-                    e = tc::RunQwenTcNvfp4Gemm(stream, xrow, lw.b.d_packed,
-                                               lw.b.d_scales,
-                                               lw.b.global_scale, b_buf,
-                                               1, H, nv);
-                    if (e != cudaSuccess) return e;
-                } else {
-                    e = cudaSuccess;
-                    int grid = (VD + 7) / 8;
-                    warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
-                        xrow, lw.z.d_packed, lw.z.d_scales,
-                        lw.z.global_scale, H, VD, d_z);
-                    if ((e = cudaGetLastError()) != cudaSuccess) return e;
-                    grid = (nv + 7) / 8;
-                    warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
-                        xrow, lw.a.d_packed, lw.a.d_scales,
-                        lw.a.global_scale, H, nv, a_buf);
-                    if ((e = cudaGetLastError()) != cudaSuccess) return e;
-                    warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
-                        xrow, lw.b.d_packed, lw.b.d_scales,
-                        lw.b.global_scale, H, nv, b_buf);
-                    if ((e = cudaGetLastError()) != cudaSuccess) return e;
-                }
-            } else {
+            if (!tc_attn) {
                 int grid = (VD + 7) / 8;
                 warpdot_nvfp4_kernel<<<grid, 256, 0, stream>>>(
                     xrow, lw.z.d_packed, lw.z.d_scales,

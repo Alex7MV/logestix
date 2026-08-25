@@ -538,3 +538,18 @@ changed the rounding trajectory): " Paris." stable x4.
 
 e2e @5090: **48.8 -> 53.9 tok/s (+10%), ttft 87 -> 79ms**. 105/105 tests,
 sanitizer clean. Cumulative: scalar 14.4 -> **53.9 tok/s (x3.7)**.
+
+### Optimization round 15 (2026-08-25) — fused qkv|z|a|b input GEMM: 59.7 tok/s
+
+The four linear-attn decode projections share one input row but ran as 4
+GEMMs (4 ActQuant passes, 4 launches). Added BuildFusedGemmWeights: cached
+N-concatenation of the packed matrices + a device per-segment global-scale
+vector; TcGemmKernel epilogue and split-K finalize select wgs by output
+column (4 ranges). Numerically identical per column.
+
+kTileN=32 experiment (2x CTAs): helped qkv_o micro (36->24us) but broke
+split-K conditions for MLP shapes -> e2e regression, reverted.
+
+e2e @5090: **53.9 -> 59.7 tok/s (+11%), ttft 79 -> 72ms**, " Paris." x2.
+105/105 tests, sanitizer clean. Cumulative: scalar 14.4 -> **59.7 tok/s
+(x4.1)**.

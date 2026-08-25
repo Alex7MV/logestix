@@ -407,8 +407,22 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ bs,
                              float wgs, __half *__restrict__ y,
                              int seq, int K, int N, bool acc_in,
-                             int split_k, float *__restrict__ y_f32)
+                             int split_k, float *__restrict__ y_f32,
+                             const float *__restrict__ seg_wgs,
+                             const int *__restrict__ seg_bounds)
 {
+    // Segment epilogue: when seg_wgs != nullptr, output columns are split
+    // into 4 ranges (bounds from seg_bounds) each scaled by its own
+    // global_scale -- used by the fused qkv|z|a|b input GEMM.
+
+    auto seg_scale = [&](int col) {
+        if (!seg_wgs) return wgs;
+        if (col < seg_bounds[0]) return seg_wgs[0];
+        if (col < seg_bounds[1]) return seg_wgs[1];
+        if (col < seg_bounds[2]) return seg_wgs[2];
+        return seg_wgs[3];
+    };
+
     // split_k > 1: blockIdx.z owns a K-slice; RAW fp32 partials land in
     // y_f32[z*N+n] (disjoint, deterministic); TcSplitKFinalize sums the
     // slices and applies wgs (+acc) afterwards.
@@ -644,25 +658,28 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                     d[j][3];
             continue;
         }
+        const float ws = seg_scale(n0);
         if (r0 < seq && n0 < N)
             y[static_cast<int64_t>(r0) * N + n0] =
-                __float2half(d[j][0] * wgs);
+                __float2half(d[j][0] * ws);
         if (r0 < seq && n0 + 1 < N)
             y[static_cast<int64_t>(r0) * N + n0 + 1] =
-                __float2half(d[j][1] * wgs);
+                __float2half(d[j][1] * ws);
         if (r0 + 8 < seq && n0 < N)
             y[static_cast<int64_t>(r0 + 8) * N + n0] =
-                __float2half(d[j][2] * wgs);
+                __float2half(d[j][2] * ws);
         if (r0 + 8 < seq && n0 + 1 < N)
             y[static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
-                __float2half(d[j][3] * wgs);
+                __float2half(d[j][3] * ws);
     }
 }
 
-// Split-K finalize: y[i] = (acc ? prev : 0) + wgs * sum_z partial[z,i].
+// Split-K finalize: y[i] = (acc ? prev : 0) + wgs(col(i)) * sum_z partial.
 __global__ void TcSplitKFinalize(const float *__restrict__ partials,
                                  __half *__restrict__ y, float wgs, bool acc,
-                                 int seq, int N, int split_k)
+                                 int seq, int N, int split_k,
+                                 const float *__restrict__ seg_wgs,
+                                 const int *__restrict__ seg_bounds)
 {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
                       threadIdx.x;
@@ -670,8 +687,17 @@ __global__ void TcSplitKFinalize(const float *__restrict__ partials,
     float sum = 0.f;
     for (int z = 0; z < split_k; ++z)
         sum += partials[static_cast<int64_t>(z) * seq * N + i];
+    float ws = wgs;
+    if (seg_wgs) {
+        const int col = static_cast<int>(i % N);
+        ws = (col < seg_bounds[0])
+                 ? seg_wgs[0]
+                 : (col < seg_bounds[1])
+                       ? seg_wgs[1]
+                       : (col < seg_bounds[2]) ? seg_wgs[2] : seg_wgs[3];
+    }
     const float prev = acc ? __half2float(y[i]) : 0.f;
-    y[i] = __float2half(prev + sum * wgs);
+    y[i] = __float2half(prev + sum * ws);
 }
 
 } // namespace
@@ -694,7 +720,9 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
 cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,
                                const uint8_t *w_scales, float w_global_scale,
-                               __half *y, int seq, int K, int N, bool acc)
+                               __half *y, int seq, int K, int N, bool acc,
+                               const float *seg_wgs_dev,
+                               const int *seg_bounds_dev)
 {
     if (!x_fp16 || !w_packed || !w_scales || !y || seq <= 0 || K <= 0 ||
         N <= 0 || (K & 15))
@@ -781,7 +809,8 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
             TcGemmKernel<<<grid3, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
                 static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-                w_global_scale, y, seq, K, N, acc, split_k, partials);
+                w_global_scale, y, seq, K, N, acc, split_k, partials,
+                seg_wgs_dev, seg_bounds_dev);
             e = cudaGetLastError();
             if (e == cudaSuccess) {
                 const int threads = 256;
@@ -791,7 +820,9 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                    threads, 0, stream>>>(partials, y,
                                                          w_global_scale,
                                                          acc, seq, N,
-                                                         split_k);
+                                                         split_k,
+                                                         seg_wgs_dev,
+                                                         seg_bounds_dev);
                 e = cudaGetLastError();
             }
             cudaFreeAsync(partials, stream);
@@ -799,7 +830,8 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
             TcGemmKernel<<<grid, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
                 static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-                w_global_scale, y, seq, K, N, acc, 1, nullptr);
+                w_global_scale, y, seq, K, N, acc, 1, nullptr,
+                seg_wgs_dev, seg_bounds_dev);
             e = cudaGetLastError();
         }
     }
@@ -898,6 +930,132 @@ cudaError_t ProbeTmaBulkCopy(cudaStream_t stream)
     cudaFree(d_src);
     cudaFree(d_ok);
     return e;
+}
+
+
+// ── Fused input GEMM weights ────────────────────────────────────────────────
+// Several projections sharing one input (qkv, z, a, b of the linear-attn
+// block) can run as ONE NVFP4 GEMM by concatenating the packed matrices
+// along N. Weights are immutable once loaded -> build the device-side
+// concatenation once and cache it on the four source pointers. Per-column
+// k-accumulation order is unchanged, so numerics match the split calls.
+namespace {
+
+struct FusedSegKey {
+    const void *p[4];
+    int n[4];
+    int k_half, k_chunks;
+};
+
+struct FusedW {
+    uint8_t *packed;
+    uint8_t *scales;
+    float *d_wgs;
+    int *d_bounds;
+    int n_total;
+};
+
+std::mutex g_fw_mu;
+std::vector<std::pair<FusedSegKey, FusedW>> g_fw_cache;
+
+} // namespace
+
+cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
+                                  const uint8_t *s1, int n1, const uint8_t *p2,
+                                  const uint8_t *s2, int n2, const uint8_t *p3,
+                                  const uint8_t *s3, int n3, const uint8_t *p4,
+                                  const uint8_t *s4, int n4, int k_half,
+                                  int k_chunks, float g1, float g2, float g3,
+                                  float g4, const uint8_t **packed_out,
+                                  const uint8_t **scales_out,
+                                  const float **wgs_out,
+                                  const int **bounds_out, int *n_total)
+{
+    if (!p1 || !s1 || !p2 || !s2 || !p3 || !s3 || !p4 || !s4 || n1 <= 0 ||
+        n2 < 0 || n3 < 0 || n4 < 0)
+        return cudaErrorInvalidValue;
+
+    std::lock_guard<std::mutex> lk(g_fw_mu);
+    FusedSegKey key{{p1, p2, p3, p4}, {n1, n2, n3, n4}, k_half, k_chunks};
+    for (auto &kv : g_fw_cache)
+        if (kv.first.p[0] == key.p[0] && kv.first.p[1] == key.p[1] &&
+            kv.first.p[2] == key.p[2] && kv.first.p[3] == key.p[3] &&
+            kv.first.n[0] == key.n[0] && kv.first.n[1] == key.n[1] &&
+            kv.first.n[2] == key.n[2] && kv.first.n[3] == key.n[3]) {
+            *packed_out = kv.second.packed;
+            *scales_out = kv.second.scales;
+            *wgs_out = kv.second.d_wgs;
+            *bounds_out = kv.second.d_bounds;
+            *n_total = kv.second.n_total;
+            return cudaSuccess;
+        }
+
+    const auto seg_bytes_packed = [&](int n) {
+        return static_cast<size_t>(n) * k_half;
+    };
+    const auto seg_bytes_scales = [&](int n) {
+        return static_cast<size_t>(n) * k_chunks;
+    };
+    const int nt = n1 + n2 + n3 + n4;
+    uint8_t *cp = nullptr, *cs = nullptr;
+    cudaError_t e = cudaMalloc(&cp, seg_bytes_packed(nt));
+    if (e != cudaSuccess) return e;
+    e = cudaMalloc(&cs, seg_bytes_scales(nt));
+    if (e != cudaSuccess) {
+        cudaFree(cp);
+        return e;
+    }
+    size_t po = 0, so = 0;
+    const uint8_t *ps[4] = {p1, p2, p3, p4};
+    const uint8_t *ss[4] = {s1, s2, s3, s4};
+    const int ns[4] = {n1, n2, n3, n4};
+    for (int i = 0; i < 4; ++i) {
+        if (ns[i] <= 0) continue;
+        if ((e = cudaMemcpyAsync(cp + po, ps[i], seg_bytes_packed(ns[i]),
+                                 cudaMemcpyDeviceToDevice,
+                                 stream)) != cudaSuccess) {
+            cudaFree(cp); cudaFree(cs);
+            return e;
+        }
+        if ((e = cudaMemcpyAsync(cs + so, ss[i], seg_bytes_scales(ns[i]),
+                                 cudaMemcpyDeviceToDevice,
+                                 stream)) != cudaSuccess) {
+            cudaFree(cp); cudaFree(cs);
+            return e;
+        }
+        po += seg_bytes_packed(ns[i]);
+        so += seg_bytes_scales(ns[i]);
+    }
+    const float hwgs[4] = {g1, g2, g3, g4};
+    const int hb[3] = {n1, n1 + n2, n1 + n2 + n3};
+    float *dw = nullptr;
+    int *db = nullptr;
+    e = cudaMalloc(&dw, sizeof(hwgs));
+    if (e != cudaSuccess) {
+        cudaFree(cp); cudaFree(cs);
+        return e;
+    }
+    e = cudaMalloc(&db, sizeof(hb));
+    if (e != cudaSuccess) {
+        cudaFree(cp); cudaFree(cs); cudaFree(dw);
+        return e;
+    }
+    if ((e = cudaMemcpyAsync(dw, hwgs, sizeof(hwgs),
+                             cudaMemcpyHostToDevice,
+                             stream)) != cudaSuccess ||
+        (e = cudaMemcpyAsync(db, hb, sizeof(hb), cudaMemcpyHostToDevice,
+                             stream)) != cudaSuccess) {
+        cudaFree(cp); cudaFree(cs); cudaFree(dw); cudaFree(db);
+        return e;
+    }
+    FusedW w{cp, cs, dw, db, nt};
+    g_fw_cache.emplace_back(key, w);
+    *packed_out = cp;
+    *scales_out = cs;
+    *wgs_out = dw;
+    *bounds_out = db;
+    *n_total = nt;
+    return cudaSuccess;
 }
 
 } // namespace tc
