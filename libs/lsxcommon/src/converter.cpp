@@ -103,7 +103,10 @@ std::optional<ParsedName> parse_shared_expert_name(const std::string &name)
     return p;
 }
 
-} // anonymous namespace
+bool is_staged_tensor(const std::string &name)
+{
+    return name.find(".ffn.experts.") != std::string::npos;
+}
 
 // ── VRAM profile classification (spec 2026-08-21) ───────────────────────────
 
@@ -125,12 +128,9 @@ VramTensorClass DsMemClass(const std::string &name)
         : VramTensorClass::Resident;
 }
 
-// ── Safetensors public API ───────────────────────────────────────────────────
+} // anonymous namespace
 
-bool is_staged_tensor(const std::string &name)
-{
-    return name.find(".ffn.experts.") != std::string::npos;
-}
+// ── Safetensors public API ───────────────────────────────────────────────────
 
 static std::string pinned_category_name(const std::string &name)
 {
@@ -226,59 +226,6 @@ void print_model(const SafetensorsModel &model)
     // Runtime VRAM estimates (min/optimal/max) are no longer guessed here:
     // they are computed at conversion time and reported via the "vram" block
     // of model.index.json / IModel::VramRequirements() (see vram_estimate).
-}
-
-void print_nvfp4_forecast(const SafetensorsModel &model)
-{
-    struct CatStats {
-        int64_t orig_bytes = 0;
-        int64_t nvfp4_bytes = 0;
-        int count = 0;
-    };
-    absl::btree_map<std::string, CatStats> cats;
-
-    int64_t total_orig = 0;
-    int64_t total_nvfp4 = 0;
-
-    for (auto &shard : model.shards) {
-        for (auto &t : shard.tensors) {
-            auto cat = is_staged_tensor(t.name)
-                ? std::string("MoE Experts")
-                : pinned_category_name(t.name);
-            int64_t orig = t.byte_size();
-            int64_t nvfp4 = t.numel() / 2;
-            cats[cat].orig_bytes += orig;
-            cats[cat].nvfp4_bytes += nvfp4;
-            cats[cat].count++;
-            total_orig += orig;
-            total_nvfp4 += nvfp4;
-        }
-    }
-
-    lsxcommon::log::info("=== NVFP4 Quantization Forecast ===");
-    for (auto &[cat, s] : cats) {
-        double ratio = s.nvfp4_bytes > 0
-            ? static_cast<double>(s.orig_bytes) / s.nvfp4_bytes
-            : 0.0;
-        lsxcommon::log::info(absl::StrFormat(
-            "  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
-            cat, s.count,
-            format_size(s.orig_bytes),
-            format_size(s.nvfp4_bytes),
-            ratio));
-    }
-
-    double total_ratio = total_nvfp4 > 0
-        ? static_cast<double>(total_orig) / total_nvfp4
-        : 0.0;
-    int64_t cat_count = 0;
-    for (auto &[_, s] : cats) cat_count += s.count;
-    lsxcommon::log::info(absl::StrFormat(
-        "  {:<22} {:>6} tensors, {} -> {} ({:.1f}x)",
-        "Total", cat_count,
-        format_size(total_orig),
-        format_size(total_nvfp4),
-        total_ratio));
 }
 
 // ── Safetensors file parser ──────────────────────────────────────────────────
@@ -557,7 +504,7 @@ arrow::Status SaveExpertToArrow(
 
 // ── Save all pinned tensors ─────────────────────────────────────────────────
 
-arrow::Status SavePinnedTensors(
+static arrow::Status SavePinnedTensors(
     const std::vector<TensorRecord> &tensors,
     const std::filesystem::path &output_root)
 {
@@ -769,20 +716,6 @@ arrow::Status RepackRoutedExperts(
     if (model.shards.empty())
         return arrow::Status::Invalid("no safetensors shards found in ",
                                        input_path);
-
-    struct ExpertKey {
-        int layer;
-        int expert;
-        bool operator==(const ExpertKey &o) const {
-            return layer == o.layer && expert == o.expert;
-        }
-    };
-    struct ExpertKeyHash {
-        std::size_t operator()(const ExpertKey &k) const {
-            return static_cast<std::size_t>(k.layer) * 65536U
-                 + static_cast<std::size_t>(k.expert);
-        }
-    };
 
     absl::flat_hash_map<ExpertKey, ExpertData, ExpertKeyHash> partial;
     int shard_idx = 0;
@@ -1010,7 +943,7 @@ arrow::Status RecomputeVramBlock(
 
 // ── Model index ─────────────────────────────────────────────────────────────
 
-arrow::Status WriteModelIndex(
+static arrow::Status WriteModelIndex(
     const std::string &model_name,
     int num_layers,
     int experts_per_layer,

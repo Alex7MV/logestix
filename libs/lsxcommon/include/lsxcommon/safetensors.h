@@ -29,10 +29,7 @@ struct SafetensorsModel {
 SafetensorsModel::Shard read_safetensors_file(const std::string &path);
 SafetensorsModel scan_directory(const std::string &path);
 
-bool is_staged_tensor(const std::string &name);
-
 void print_shard(const SafetensorsModel::Shard &shard);
 void print_model(const SafetensorsModel &model);
-void print_nvfp4_forecast(const SafetensorsModel &model);
 
 } // namespace lsxcommon

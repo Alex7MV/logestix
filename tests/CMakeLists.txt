@@ -2152,3 +2152,18 @@ if(WIN32)
 endif()
 add_test(NAME test_qwen_moe_selfcheck COMMAND test_qwen_moe_selfcheck)
 set_tests_properties(test_qwen_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест NVFP4-упаковки экспертов (passthrough + GPU quantize contract) ───
+add_executable(test_nvfp4_pack test_nvfp4_pack.cpp)
+target_link_libraries(test_nvfp4_pack PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_nvfp4_pack POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nvfp4_pack>"
+    )
+endif()
+
+add_test(NAME test_nvfp4_pack COMMAND test_nvfp4_pack)
+set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)

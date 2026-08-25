@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <string>
 
-#include "lsxcommon/converter.h"
 #include "lsxcommon/glm_convert.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
