@@ -524,7 +524,12 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
             return false;
         }
 
-        // Build all records first, then one pinned slab per layer.
+        // Build all records, staging payloads once (single disk pass), then
+        // one pinned slab per layer.
+        struct StagedExpert {
+            std::vector<uint8_t> w1, w2, w3, s1, s2, s3;
+        };
+        std::vector<StagedExpert> staged(static_cast<size_t>(E));
         auto &recs = store.records[static_cast<size_t>(l)];
         recs.assign(static_cast<size_t>(E), {});
         size_t total = 0;
@@ -542,21 +547,28 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
                 return false;
             }
             auto &pe = *pe_res;
+            auto &st = staged[static_cast<size_t>(e)];
+            st.w1 = std::move(pe.w1_packed);
+            st.w2 = std::move(pe.w2_packed);
+            st.w3 = std::move(pe.w3_packed);
+            st.s1 = std::move(pe.w1_scales);
+            st.s2 = std::move(pe.w2_scales);
+            st.s3 = std::move(pe.w3_scales);
             auto &r = recs[static_cast<size_t>(e)];
-            r.w1_off = total; r.w1_bytes = pe.w1_packed.size();
+            r.w1_off = total; r.w1_bytes = static_cast<int64_t>(st.w1.size());
             total += r.w1_bytes;
-            r.w2_off = total; r.w2_bytes = pe.w2_packed.size();
+            r.w2_off = total; r.w2_bytes = static_cast<int64_t>(st.w2.size());
             total += r.w2_bytes;
-            r.w3_off = total; r.w3_bytes = pe.w3_packed.size();
+            r.w3_off = total; r.w3_bytes = static_cast<int64_t>(st.w3.size());
             total += r.w3_bytes;
             r.gs1 = pe.w1_global_scale;
             r.gs2 = pe.w2_global_scale;
             r.gs3 = pe.w3_global_scale;
             // Scales stored after the packed region with 16B alignment.
             total = AlignUp(total, 16);
-            r.s1_off = total; r.s1_bytes = pe.w1_scales.size(); total += r.s1_bytes;
-            r.s2_off = total; r.s2_bytes = pe.w2_scales.size(); total += r.s2_bytes;
-            r.s3_off = total; r.s3_bytes = pe.w3_scales.size(); total += r.s3_bytes;
+            r.s1_off = total; r.s1_bytes = static_cast<int64_t>(st.s1.size()); total += r.s1_bytes;
+            r.s2_off = total; r.s2_bytes = static_cast<int64_t>(st.s2.size()); total += r.s2_bytes;
+            r.s3_off = total; r.s3_bytes = static_cast<int64_t>(st.s3.size()); total += r.s3_bytes;
         }
         store.slab_bytes[static_cast<size_t>(l)] = total;
 
@@ -568,25 +580,18 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
         }
         store.h_slabs[static_cast<size_t>(l)] = slab;
 
-        // Second pass: copy payloads into the slab.
         for (int e = 0; e < E; ++e) {
-            const std::string path =
-                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
-            auto pe_res = ExpertSchema::UnpackBatch(
-                *ReadRecordBatchFromFile(path));
-            if (!pe_res.ok()) {
-                error = absl::StrCat("re-read failed: ", path);
-                return false;
-            }
-            auto &pe = *pe_res;
+            const auto &st = staged[static_cast<size_t>(e)];
             const auto &r = recs[static_cast<size_t>(e)];
-            std::memcpy(slab + r.w1_off, pe.w1_packed.data(), r.w1_bytes);
-            std::memcpy(slab + r.w2_off, pe.w2_packed.data(), r.w2_bytes);
-            std::memcpy(slab + r.w3_off, pe.w3_packed.data(), r.w3_bytes);
-            std::memcpy(slab + r.s1_off, pe.w1_scales.data(), r.s1_bytes);
-            std::memcpy(slab + r.s2_off, pe.w2_scales.data(), r.s2_bytes);
-            std::memcpy(slab + r.s3_off, pe.w3_scales.data(), r.s3_bytes);
+            std::memcpy(slab + r.w1_off, st.w1.data(), r.w1_bytes);
+            std::memcpy(slab + r.w2_off, st.w2.data(), r.w2_bytes);
+            std::memcpy(slab + r.w3_off, st.w3.data(), r.w3_bytes);
+            std::memcpy(slab + r.s1_off, st.s1.data(), r.s1_bytes);
+            std::memcpy(slab + r.s2_off, st.s2.data(), r.s2_bytes);
+            std::memcpy(slab + r.s3_off, st.s3.data(), r.s3_bytes);
         }
+        staged.clear();
+        staged.shrink_to_fit();
         log::info(absl::StrCat("[qwen_moe_load] layer_", l, ": ", E,
                                " experts, ", total >> 10, " KiB pinned"));
     }
