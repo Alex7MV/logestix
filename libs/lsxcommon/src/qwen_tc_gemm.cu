@@ -17,6 +17,7 @@
 #include <cstring>
 #include <cstdio>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 #include "nvfp4_codec.h"
@@ -107,6 +108,18 @@ __device__ __forceinline__ void cp_async16(void *smem_dst, const void *gmem)
 __device__ __forceinline__ void cp_async_commit()
 {
     asm volatile("cp.async.commit_group;\n");
+}
+
+// 16-byte async copy with zero-fill predicate (src_size=0 -> dst zeroed).
+__device__ __forceinline__ void cp_async16(void *smem_dst,
+                                           const void *gmem_src, bool valid)
+{
+    const unsigned saddr = static_cast<unsigned>(
+        __cvta_generic_to_shared(smem_dst));
+    const int src_bytes = valid ? 16 : 0;
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(
+        saddr),
+                 "l"(gmem_src), "r"(src_bytes));
 }
 
 __device__ __forceinline__ void cp_async_wait1()
@@ -455,27 +468,27 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                             (((reinterpret_cast<uintptr_t>(ap) |
                                reinterpret_cast<uintptr_t>(bp)) & 15) == 0);
         if (vec_ok) {
-            const uint4 *a4 = reinterpret_cast<const uint4 *>(
-                ap + static_cast<int64_t>(row_base) * k_half + kb / 2);
-            uint4 *sa4 = reinterpret_cast<uint4 *>(&sA[buf][0][0]);
+            // Slab traffic is issued via cp.async so the NEXT chunk streams
+            // while the current one computes (no blocking store->sync chain).
+            const char *a_g = reinterpret_cast<const char *>(ap) +
+                              static_cast<int64_t>(row_base) * k_half + kb / 2;
+            uint8_t *a_s = &sA[buf][0][0];
             for (int idx = tid; idx < kTileM * 2; idx += 256) {
                 const int r = idx >> 1;
-                uint4 v = make_uint4(0, 0, 0, 0);
-                if (row_base + r < seq)
-                    v = a4[static_cast<int64_t>(r) * (k_half / 16) +
-                           (idx & 1)];
-                sa4[idx] = v;
+                cp_async16(a_s + idx * 16,
+                           a_g + static_cast<int64_t>(r) * k_half +
+                               (idx & 1) * 16,
+                           row_base + r < seq);
             }
-            const uint4 *b4 = reinterpret_cast<const uint4 *>(
-                bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
-            uint4 *sb4 = reinterpret_cast<uint4 *>(&sB[buf][0][0]);
+            const char *b_g = reinterpret_cast<const char *>(bp) +
+                              static_cast<int64_t>(col_base) * k_half + kb / 2;
+            uint8_t *b_s = &sB[buf][0][0];
             for (int idx = tid; idx < kTileN * 2; idx += 256) {
                 const int c = idx >> 1;
-                uint4 v = make_uint4(0, 0, 0, 0);
-                if (col_base + c < N)
-                    v = b4[static_cast<int64_t>(c) * (k_half / 16) +
-                           (idx & 1)];
-                sb4[idx] = v;
+                cp_async16(b_s + idx * 16,
+                           b_g + static_cast<int64_t>(c) * k_half +
+                               (idx & 1) * 16,
+                           col_base + c < N);
             }
         } else {
             // Tail-K: clamp byte reads to the row (k_half may not be a

@@ -825,6 +825,57 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
         float us_scalar = 0.f, us_tc = 0.f;
         bench(false, us_scalar);
         bench(true, us_tc);
+
+        // L2-cold variant: evict the weight between iterations with a large
+        // streaming write, mirroring real decode where the layer working set
+        // (~100 MB+) thrashes L2. Reports the DRAM-bound rate.
+        const size_t flush_bytes = 256ull << 20;
+        char *flush_buf = nullptr;
+        REQUIRE(cudaMalloc(&flush_buf, flush_bytes) == cudaSuccess);
+        auto bench_cold = [&](bool tc, float &us) {
+            auto run1 = [&](bool with_flush) {
+                for (int w = 0; w < 3; ++w) {
+                    if (with_flush)
+                        REQUIRE(cudaMemsetAsync(flush_buf, 0, flush_bytes,
+                                                st) == cudaSuccess);
+                    cudaError_t e =
+                        tc ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                                 st, dx, wp, ws, 0.125f, dy, 1, K, N)
+                           : lsxcommon::qwen::RunQwenNvfp4Gemm(
+                                 st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                    REQUIRE(e == cudaSuccess);
+                }
+                REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+                constexpr int iters = 20;
+                REQUIRE(cudaEventRecord(t0, st) == cudaSuccess);
+                for (int it = 0; it < iters; ++it) {
+                    if (with_flush)
+                        REQUIRE(cudaMemsetAsync(flush_buf, 0, flush_bytes,
+                                                st) == cudaSuccess);
+                    cudaError_t e =
+                        tc ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                                 st, dx, wp, ws, 0.125f, dy, 1, K, N)
+                           : lsxcommon::qwen::RunQwenNvfp4Gemm(
+                                 st, dx, dp, ds, 0.125f, dy, 1, K, N);
+                    REQUIRE(e == cudaSuccess);
+                }
+                REQUIRE(cudaEventRecord(t1, st) == cudaSuccess);
+                REQUIRE(cudaEventSynchronize(t1) == cudaSuccess);
+                float ms = -1.f;
+                REQUIRE(cudaEventElapsedTime(&ms, t0, t1) == cudaSuccess);
+                return ms * 1000.f / iters;
+            };
+            const float both = run1(true), only_memset = run1(false);
+            us = both - only_memset;
+            if (us < 0.f) us = 0.f;
+        };
+        float us_tc_cold = 0.f;
+        bench_cold(true, us_tc_cold);
+        WARN("[TCBENCH][l2cold][" << sh.label
+                                  << "] tensorcore=" << us_tc_cold
+                                  << " us");
+        cudaFree(flush_buf);
+
         WARN("[TCBENCH][" << sh.label << "] scalar=" << us_scalar
                           << " us  tensorcore=" << us_tc << " us  speedup="
                           << us_scalar / us_tc);

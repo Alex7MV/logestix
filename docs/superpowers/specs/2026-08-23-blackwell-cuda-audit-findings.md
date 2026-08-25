@@ -451,3 +451,63 @@ split is therefore restricted to K>=8192 (mlp_down class) where quality is
 bit-stable. e2e @5090: **33.3 tok/s** with correct output; the aggressive
 variant reached 37.8 and is worth revisiting once fast-path numerics are
 quality-audited.
+
+### Optimization round 11 (2026-08-25) — linear-attn fusion: closed as low-value
+
+Fast-math profile after r10 (LSX_TEST_FAST_MATH=1): TcGemmKernel 86.6%,
+fused_linear_conv_norm_kernel 3.3% (480x32us, single block),
+qwen_gated_delta_kernel 2.8% (bandwidth-bound: 16MB state r/w per call).
+
+Implemented column/head-parallel split of conv+l2norm (bit-exact tree
+order): correct, all tests green, but e2e UNCHANGED (33.2 vs 33.3 tok/s,
+x3 runs each). The decode segment is launch-bound, not compute-bound;
+splitting one launch into two eats the parallelism gain. REVERTED.
+
+Conclusions:
+- remaining non-GEMM kernels total <14% and are individually small;
+  kernel-by-kernel micro-fusion here is exhausted
+- the path to targets is GEMM-wide tiles (more work per CTA at seq==1)
+  and/or CUDA Graphs for launch overhead
+- NOTE: one anomalous run produced fluent-but-wrong text ("A. True B.
+  False...") right after rebuild; subsequent x6 runs stable " Paris".
+  Treat single-run text anomalies with suspicion; re-run before diagnosing.
+
+### ROOT CAUSE (round 12, 2026-08-25): W4 weight streaming is latency-bound
+
+New [tc][gemm][perf] l2cold variant (256 MB L2-flush between iterations):
+attn_qkv_o 23 -> 171 us, gate_up 47 -> 174 us, down 42 -> 169 us (~x4,
+size-INDEPENDENT). Micro-benchmarks were L2-resident (weights <= 19 MB vs
+96 MB L2) and hid the real decode behavior: in e2e each layer's ~100 MB
+working set evicts weights -> DRAM reads at ~110-250 GB/s effective.
+
+Cause: B-staging reads 32 B per column with a K/2-byte stride (row-major
+[N, K/2] packed layout); every cp.async lands on a different DRAM row.
+
+Fix direction: transposed device layout [K/2][N] built once at load time
+(nibble-preserving byte shuffle kernel); TcGemmKernel stages contiguous
+runs along N. Expected: x3-7 GEMM improvement -> e2e toward ~80 tok/s.
+
+### Optimization round 12 (2026-08-25) — real cp.async pipeline: +14% e2e
+
+Investigated why e2e GEMM (avg 81us) ran ~4x slower than micro-benchmarks
+of the same shapes. Built an L2-flush variant of [tc][gemm][perf]: cold runs
+are 4x slower and size-independent -> suspected strided DRAM reads.
+
+Tested the fix (transposed weight layout [K/2][N], byte-transpose is
+nibble-safe because packed bytes already hold (k,k+1) pairs; lazy cache +
+InvalidateTransposedCache hook): NO GAIN, hot even regressed. Root cause was
+NOT bandwidth: TcGemmKernel spends ~4us/64-chunk in MMA and the rest in the
+synchronous staging chain (plain stores + syncthreads per chunk). Reverted
+the transpose machinery entirely.
+
+Kept: true cp.async staging (cp.async.cg 16B with zero-fill predicate) for
+A/B slabs in vec_ok path -- next chunk streams while current computes.
+Micro @5090: qkv_o 49->39.7us, gate_up 47->39.5us, down 42->35.9us.
+e2e @5090: **33.3 -> 38.1 tok/s (+14%), ttft 125 -> 110ms**, " Paris." OK,
+104/104 tests green, sanitizer clean. Cumulative fast-math: 14.4 -> 38.1
+tok/s (x2.65).
+
+Lessons:
+- micro-benchmarks without L2 pressure mislead; always A/B both regimes
+- verify a bottleneck hypothesis by implementing its fix BEFORE building
+  out infrastructure around it (transpose cost one session; cp.async won)
