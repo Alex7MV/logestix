@@ -397,3 +397,28 @@ Structural perf queue (unchanged): wider tiles / more CTAs (N=4096 -> 32
 blocks on 170 SMs), linear-attn fusion (~10% GPU), act-quant reuse, CUDA
 Graphs. MoE models (35B-A3B, gemma-26B) suggested by operator as additional
 measurement targets once fast-path correctness work concludes.
+
+### Round 8 RESOLUTION (2026-08-25, later) — decode kernel FIXED
+
+Three root causes found and fixed in TcGemmDecodeKernel (each isolated via
+per-chunk d-trajectory dumps vs an independent Python NVFP4 model):
+1. A-fragment register map: K-halves fed into row-g+8 slots ({lo,hi,0,0}
+   instead of {row-g-lo, row8-lo, row-g-hi, row8-hi}).
+2. Epilogue raced four lanes per output cell (m16n8 D layout: only g==0
+   lanes hold row 0); added the missing guard.
+3. A-fragment k-offset lost the per-chunk base (sXp[koff>>1] instead of
+   sXp[(kb+koff)>>1]) -> every chunk consumed chunk-0 activations.
+Plus the earlier tile acc=true residual-scaling fix.
+
+Post-fix validation: host-ref sweep {1,64..4096} all PASS with errors
+<=0.37 (tolerance ~12+), identical to the tile kernel; act quant proven
+byte-exact at seq1/K256 ("[tc][actquant][k256]").
+
+ROUTING DECISION (measured): despite decode winning isolated micro-benchmarks,
+the TILE kernel is faster end-to-end (32.9 vs 31.1 tok/s @5090, correct
+" Paris" both) -- confirming the Phase-3 A/B conclusion. Production default
+= tile; LSX_DEC_ENABLE=1 opts into the now-correct decode kernel.
+
+Fast-math honest baseline: **32.9 tok/s** (x2.3 vs scalar 14.4). Perf queue
+unchanged: wider tiles/more CTAs, linear-attn fusion, act-quant reuse,
+CUDA Graphs; MoE models as additional targets.

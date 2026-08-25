@@ -307,7 +307,7 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
             const int arow = (i2 < 8 || (i2 >= 16 && i2 < 24)) ? g : g + 8;
             if (arow != 0) continue;          // seq == 1: only row 0 exists
             const int koff = tig * 8 + (i2 & 7) + ((i2 >= 16) ? 32 : 0);
-            const uint8_t byte = sXp[koff >> 1];
+            const uint8_t byte = sXp[(kb + koff) >> 1];   // absolute k
             const uint8_t code =
                 (koff & 1) ? static_cast<uint8_t>(byte >> 4)
                            : static_cast<uint8_t>(byte & 0x0F);
@@ -632,9 +632,14 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     if (seq == 1 && (K & 63) == 0 &&
         (((reinterpret_cast<uintptr_t>(w_packed) |
            reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0)) {
-        static const bool kDecDisable =
-            std::getenv("LSX_DEC_DISABLE") != nullptr;
-        if (!kDecDisable) {
+        // ROUTING (measured @5090, qwen3.5-9B e2e): the tile kernel beats
+        // the decode-specialized kernel end-to-end (32.9 vs 31.1 tok/s)
+        // despite losing isolated micro-benchmarks -- same conclusion as
+        // the Phase-3 A/B. Default = tile; LSX_DEC_ENABLE=1 opts into the
+        // decode kernel for experiments.
+        static const bool kDecEnable =
+            std::getenv("LSX_DEC_ENABLE") != nullptr;
+        if (kDecEnable) {
             const int k_half = K / 2;
             const int k_chunks = K >> 4;
             const size_t dec_smem = static_cast<size_t>(

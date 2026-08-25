@@ -528,14 +528,11 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
-    // Shape sweep: original verified shape plus a seq==1 fast-path shape.
-    // KNOWN OPEN ISSUE (findings round 8): synthetic shapes with K>=256 at
-    // seq==1 deviate from the exact NVFP4 host model beyond tolerance for
-    // BOTH TC kernels (identically), while the real-model fast path
-    // validates (" Paris"). Excluded here; dedicated numerics session
-    // required -- do NOT silently raise tolerance.
-    const std::vector<std::array<int, 3>> shapes{{3, 544, 36},
-                                                 {1, 64, 128}};
+    // Shape sweep: original verified shape plus seq==1 fast-path shapes
+    // (decode kernel route; tile via LSX_DEC_DISABLE=1).
+    const std::vector<std::array<int, 3>> shapes{
+        {3, 544, 36},   {1, 64, 128},  {1, 256, 128},
+        {1, 1024, 512}, {1, 4096, 128}};
     for (const auto &[seq, K, N] : shapes) {
     std::vector<__half> hx(static_cast<size_t>(seq) * K);
     const float xvals[16] = {0.f, 0.25f, -0.5f, 1.f,  -1.5f, 2.f, -2.5f, 3.f,
@@ -1092,4 +1089,108 @@ TEST_CASE("decode kernel column-response map", "[tc][gemm][calib2]")
         CHECK(std::abs(__half2float(hy[c]) - 1.0f) <= 1e-3f);
     cudaFree(dx); cudaFree(dy); cudaFree(dp); cudaFree(ds);
     cudaFree(wp); cudaFree(ws);
+}
+
+TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k256]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    constexpr int seq = 1, K = 256;
+    std::vector<__half> hx(static_cast<size_t>(seq) * K);
+    const float xv[16] = {0.f,  0.25f, -0.5f, 1.f,  -1.5f, 2.f,
+                          -2.5f, 3.f,  -3.5f, 4.f,  -4.5f, 5.f,
+                          -5.f,  6.f,  -6.f,  0.75f};
+    for (int i = 0; i < K; ++i)
+        hx[i] = __float2half(xv[(i * 7 + i / 16) % 16]);
+
+    __half *dx;
+    uint8_t *dp, *ds;
+    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, hx.size() / 16) == cudaSuccess);
+    cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, seq, K, dp,
+                                                   ds) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<uint8_t> hp(K / 2), hs(K / 16);
+    cudaMemcpy(hp.data(), dp, K / 2, cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs.data(), ds, K / 16, cudaMemcpyDeviceToHost);
+
+    // Host model (identical to tc_ref::HostRef quantization).
+    auto enc_pow2 = [](float v) -> uint8_t {
+        if (!(v > 0.f)) return 0;
+        int e;
+        std::frexp(v, &e);
+        int e4 = e + 7;
+        if (e4 < 1) e4 = 1;
+        if (e4 > 15) e4 = 15;
+        return static_cast<uint8_t>(e4 << 3);
+    };
+    auto dec_scale = [](uint8_t b) -> float {
+        const uint32_t e4 = (b >> 3) & 0xFu;
+        union { uint32_t u; float f; } bits{};
+        bits.u = e4 ? ((e4 + 120u) << 23) : 0u;
+        return bits.f;
+    };
+    auto snap = [](float v) -> float {
+        const bool neg = v < 0.f;
+        const float a = std::abs(v);
+        float m;
+        if (a < 0.25f) m = 0.f;
+        else if (a < 0.75f) m = 0.5f;
+        else if (a < 1.25f) m = 1.f;
+        else if (a < 1.75f) m = 1.5f;
+        else if (a < 2.5f) m = 2.f;
+        else if (a < 3.5f) m = 3.f;
+        else if (a < 5.f) m = 4.f;
+        else m = 6.f;
+        return neg ? -m : m;
+    };
+
+    int mismatches = 0;
+    for (int b = 0; b < K / 16; ++b) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::max(absmax, std::abs(__half2float(hx[b * 16 + j])));
+        const uint8_t sb_want =
+            absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
+        INFO("block " << b << " sb want=" << int(sb_want)
+                      << " got=" << int(hs[b]));
+        CHECK(hs[b] == sb_want);
+        const float scl = dec_scale(sb_want);
+        for (int j = 0; j < 16; ++j) {
+            const int idx = b * 16 + j;
+            // Encode the RATIO x/scale (not the dequantized value).
+            const float ratio =
+                scl > 0.f ? __half2float(hx[idx]) / scl : 0.f;
+            int code = 0;
+            const float a = std::abs(ratio);
+            if (a >= 0.25f && a < 0.75f) code = 1;
+            else if (a >= 0.75f && a < 1.25f) code = 2;
+            else if (a >= 1.25f && a < 1.75f) code = 3;
+            else if (a >= 1.75f && a < 2.5f) code = 4;
+            else if (a >= 2.5f && a < 3.5f) code = 5;
+            else if (a >= 3.5f && a < 5.f) code = 6;
+            else if (a >= 5.f) code = 7;
+            if (ratio < 0.f) code |= 8;
+            const uint8_t got_byte = hp[idx / 2];
+            const uint8_t got_code =
+                (idx & 1) ? static_cast<uint8_t>(got_byte >> 4)
+                          : static_cast<uint8_t>(got_byte & 0xF);
+            if (got_code != code && mismatches < 8)
+                WARN("MISMATCH idx=" << idx << " x=" << __half2float(hx[idx])
+                                     << " sb=" << int(hs[b])
+                                     << " want_code=" << code
+                                     << " got_code=" << int(got_code));
+            if (got_code != code) ++mismatches;
+        }
+    }
+    INFO("nibble mismatches=" << mismatches);
+    CHECK(mismatches == 0);
+    cudaFree(dx); cudaFree(dp); cudaFree(ds);
 }
