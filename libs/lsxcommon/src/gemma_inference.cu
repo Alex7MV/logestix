@@ -769,6 +769,50 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
     return cudaSuccess;
 }
 
+GemmaGenContext *g_gen_ctx = nullptr;
+
+// LRU device slot cache for routed experts: [slots] × (pack|scales), one
+// slot per flat expert id. Strides derive from the uniform expert geometry
+// (+16B scale slack, matching the ws.d_s* scratch sizing).
+cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
+                                   const GemmaPinnedWeights &pw,
+                                   const GemmaExpertDb &db)
+{
+    if (ctx.ec.slots > 0) return cudaSuccess;
+    const int64_t MIH = static_cast<int64_t>(pw.top.moe_intermediate_size) *
+                        pw.top.hidden_size;
+    const int64_t pack = MIH / 2 * 3;
+    const int64_t scale = MIH / 16 + 16;
+    int slots = db.num_layers * db.experts_per_layer;
+    if (const char *env = std::getenv("LSX_GEMMA_EXPERT_CACHE_SLOTS")) {
+        const int v = std::atoi(env);
+        if (v > 0) slots = std::min(slots, v);
+    }
+    slots = std::min(slots, 1024);
+    if (slots <= 0) return cudaErrorInvalidValue;
+
+    ctx.pack_stride = pack;
+    ctx.scale_stride = scale;
+    ctx.ec.slots = slots;
+    ctx.ec.total_experts = db.num_layers * db.experts_per_layer;
+    void *base = nullptr;
+    cudaError_t e = cudaMalloc(&base, ctx.ec.DeviceBytes());
+    if (e != cudaSuccess) return e;
+    ctx.ec.d_base = static_cast<uint8_t *>(base);
+    ctx.ec.d_pack = ctx.ec.d_base;
+    ctx.ec.d_scale = ctx.ec.d_base +
+                     static_cast<int64_t>(slots) * ctx.pack_stride;
+    ctx.ec.h_slot_of = new int32_t[static_cast<size_t>(ctx.ec.total_experts)];
+    ctx.ec.h_slot_owner = new int32_t[static_cast<size_t>(slots)];
+    ctx.ec.h_lru = new int32_t[static_cast<size_t>(slots)];
+    for (int i = 0; i < ctx.ec.total_experts; ++i) ctx.ec.h_slot_of[i] = -1;
+    for (int i = 0; i < slots; ++i) {
+        ctx.ec.h_slot_owner[i] = -1;
+        ctx.ec.h_lru[i] = i;
+    }
+    return cudaSuccess;
+}
+
 // Forward `seq` tokens (hidden states in ws.d_x) through one layer; writes
 // k/v rows at [pos_base .. pos_base+seq) of the layer cache.
 cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
@@ -989,48 +1033,72 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                 ws.h_sel[static_cast<size_t>(t) * K + k];
             const float weight =
                 ws.h_selw[static_cast<size_t>(t) * K + k];
-            ensure_gemma_expert_resident(*g_expert_db, layer_idx, expert,
-                                         stream);
             const auto &ent =
                 g_expert_db->entries[static_cast<size_t>(layer_idx) *
                                          static_cast<size_t>(E) +
                                      static_cast<size_t>(expert)];
             if (!ent.host_w1 || !ent.host_w2) continue;
 
-            e = cudaMemcpyAsync(ws.d_p1, ent.host_w1,
-                                static_cast<size_t>(ent.w1_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(ws.d_s1, ent.host_w1_scales,
-                                static_cast<size_t>(ent.w1_scales_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(ws.d_p2, ent.host_w2,
-                                static_cast<size_t>(ent.w2_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(ws.d_s2, ent.host_w2_scales,
-                                static_cast<size_t>(ent.w2_scales_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(ws.d_p3, ent.host_w3,
-                                static_cast<size_t>(ent.w3_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(ws.d_s3, ent.host_w3_scales,
-                                static_cast<size_t>(ent.w3_scales_bytes),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
+            gpu::ExpertDeviceCache &ec = g_gen_ctx->ec;
+            const int flat = layer_idx * E + expert;
+            int slot = ec.Lookup(flat);
+            const bool miss = slot < 0;
+            if (miss) slot = ec.Insert(flat);
+            uint8_t *slot_pack = ec.d_pack +
+                static_cast<int64_t>(slot) * g_gen_ctx->pack_stride;
+            uint8_t *slot_scale = ec.d_scale +
+                static_cast<int64_t>(slot) * g_gen_ctx->scale_stride;
+            if (miss) {
+                // Stream-ordered writes into the slot: safe against prior
+                // same-stream readers of an evicted victim slot. Host mmaps
+                // never evict (max_open=7000 > total experts), so no munmap
+                // barrier is needed here.
+                uint8_t *pk = slot_pack;
+                uint8_t *sc = slot_scale;
+                e = cudaMemcpyAsync(pk, ent.host_w1,
+                                    static_cast<size_t>(ent.w1_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                pk += ent.w1_bytes;
+                e = cudaMemcpyAsync(pk, ent.host_w2,
+                                    static_cast<size_t>(ent.w2_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                pk += ent.w2_bytes;
+                e = cudaMemcpyAsync(pk, ent.host_w3,
+                                    static_cast<size_t>(ent.w3_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(sc, ent.host_w1_scales,
+                                    static_cast<size_t>(ent.w1_scales_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                sc += ent.w1_scales_bytes;
+                e = cudaMemcpyAsync(sc, ent.host_w2_scales,
+                                    static_cast<size_t>(ent.w2_scales_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+                sc += ent.w2_scales_bytes;
+                e = cudaMemcpyAsync(sc, ent.host_w3_scales,
+                                    static_cast<size_t>(ent.w3_scales_bytes),
+                                    cudaMemcpyHostToDevice, stream);
+                if (e != cudaSuccess) return e;
+            }
 
-            e = DequantNvfp4(stream, ws.d_p1, ent.w1_bytes, ws.d_s1,
+            e = DequantNvfp4(stream, slot_pack, ent.w1_bytes, slot_scale,
                              ent.w1_scales_bytes, ent.w1_global_scale,
                              ws.d_w1, MI * H);
             if (e != cudaSuccess) return e;
-            e = DequantNvfp4(stream, ws.d_p2, ent.w2_bytes, ws.d_s2,
+            e = DequantNvfp4(stream, slot_pack + ent.w1_bytes, ent.w2_bytes,
+                             slot_scale + ent.w1_scales_bytes,
                              ent.w2_scales_bytes, ent.w2_global_scale,
                              ws.d_w2, H * MI);
             if (e != cudaSuccess) return e;
-            e = DequantNvfp4(stream, ws.d_p3, ent.w3_bytes, ws.d_s3,
+            e = DequantNvfp4(stream,
+                             slot_pack + ent.w1_bytes + ent.w2_bytes,
+                             ent.w3_bytes,
+                             slot_scale + ent.w1_scales_bytes +
+                                 ent.w2_scales_bytes,
                              ent.w3_scales_bytes, ent.w3_global_scale,
                              ws.d_w3, MI * H);
             if (e != cudaSuccess) return e;
@@ -1157,25 +1225,32 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     ws.rot_half_max = rot_half_max;
     ws.K = K;
 
+    e = EnsureGemmaExpertCache(c, pw, db);
+    if (e != cudaSuccess) {
+        out.error_msg = "expert cache alloc failed";
+        return e;
+    }
+    g_gen_ctx = &c;
+
     g_expert_db = &db;
 
     // ── Prefill ─────────────────────────────────────────────────────────────
     e = cudaMemcpyAsync(ws.d_pos, input_ids.data(), sizeof(int32_t) * P,
                         cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+    if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
     {
         dim3 grid(static_cast<unsigned>(P));
         gemma_embed_kernel<<<grid, 256, 0, stream>>>(
             pw.d_embed, ws.d_pos, ws.d_x, static_cast<int>(H));
         e = cudaGetLastError();
-        if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+        if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
         // Gemma scales embeddings by sqrt(hidden_size).
         const float normalizer = std::sqrt(static_cast<float>(H));
         const int64_t numel = static_cast<int64_t>(P) * H;
         gemma_scale_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256,
                              0, stream>>>(ws.d_x, normalizer, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+        if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
     }
     // Wall-clock timing via std::chrono: the previous cudaEvent-based TTFT
     // measurement returned a sticky "invalid resource handle" from
@@ -1190,7 +1265,9 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         if (e != cudaSuccess) {
             out.error_msg = "prefill layer " + std::to_string(l) + ": " +
                             cudaGetErrorString(e);
-            g_expert_db = nullptr;
+        g_expert_db = nullptr;
+        g_gen_ctx = nullptr;
+            g_gen_ctx = nullptr;
             return e;
         }
     }
@@ -1214,9 +1291,9 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     }
     e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4, cudaMemcpyDeviceToHost,
                         stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+    if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
     e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
+    if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
     const double ttft_ms =
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0)
@@ -1286,6 +1363,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             .count();
 
     g_expert_db = nullptr;
+    g_gen_ctx = nullptr;
     out.ok = (e == cudaSuccess);
     if (e != cudaSuccess && out.error_msg.empty())
         out.error_msg = "decode: " + std::string(cudaGetErrorString(e));
