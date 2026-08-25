@@ -759,7 +759,7 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
         // TcSplitKFinalize (deterministic slice order).
         int split_k = 1;
         float *partials = nullptr;
-        if (seq == 1 && !acc && K >= 8192 && grid.x < 96 && (K % 512) == 0) {
+        if (seq == 1 && !acc && K >= 2048 && grid.x < 192 && (K % 512) == 0) {
             for (int cand : {8, 4, 2}) {
                 if ((K / 64) % cand == 0 && grid.x * cand >= 96) {
                     split_k = cand;

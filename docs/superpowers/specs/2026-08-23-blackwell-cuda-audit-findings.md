@@ -527,3 +527,14 @@ Cumulative fast-math: scalar 14.4 -> **48.8 tok/s (x3.4)**.
 Remaining tail: conv_norm 3.8%, ActQuant 3.4%, gated_delta 2.6%,
 RmsNormTree 2.7%; GEMM still ~80% and now latency-vs-bandwidth balanced --
 next levers: wider split-K revisit, ActQuant fusion into staging.
+
+### Optimization round 14 (2026-08-25) — split-K widened: 53.9 tok/s
+
+kPipe=8 experiment: no change (cold latency is CTA-count bound, ~64 CTAs <
+170 SMs, per-SM MSHR limits) -> reverted to 4. The real parallelism lever is
+split-K: widened to K>=2048, grid.x<192 (covers attention qkv/o). The
+r10 top-1 shift did NOT reproduce in the current numeric context (pipe-4
+changed the rounding trajectory): " Paris." stable x4.
+
+e2e @5090: **48.8 -> 53.9 tok/s (+10%), ttft 87 -> 79ms**. 105/105 tests,
+sanitizer clean. Cumulative: scalar 14.4 -> **53.9 tok/s (x3.7)**.
