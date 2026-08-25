@@ -301,7 +301,7 @@ cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w
 {
     if (!x || !w || !out || rows <= 0 || hidden <= 0) return cudaErrorInvalidValue;
     const int threads = std::min(hidden, 256);
-    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float) + std::min(hidden * int(sizeof(__half)), 48 * 1024), stream>>>(
         x, w, out, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -549,7 +549,7 @@ cudaError_t LaunchNorm1d(const __half *x, const __half *w, __half *y,
                          int rows, int hidden, double eps, cudaStream_t stream)
 {
     const int threads = std::min(hidden, 256);
-    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<rows, threads, threads * sizeof(float) + std::min(hidden * int(sizeof(__half)), 48 * 1024), stream>>>(
         x, w, y, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -1103,6 +1103,51 @@ __global__ void fused_linear_conv_norm_kernel(
     }
 }
 
+// Decode split of fused_linear_conv_norm_kernel: the monolithic variant runs
+// the whole S-column conv and all 2*nk head norms in ONE 256-thread block.
+// Column-parallel conv + block-per-head l2norm keep the exact same
+// accumulation order (tree reduce) while filling the SM array.
+__global__ void conv_silu_cols_kernel(const __half *__restrict__ d_qkv,
+                                      const __half *__restrict__ conv_w,
+                                      int S, int kernel, int kv_base,
+                                      __half *__restrict__ d_conv)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= S) return;
+    float acc = 0.0f;
+    for (int k = 0; k < kernel; ++k) {
+        const int tt = kv_base - k;   // decode: t == 0
+        if (tt < 0) continue;
+        const float wv =
+            __half2float(conv_w[(int64_t)c * kernel + (kernel - 1 - k)]);
+        const float mv = __half2float(d_qkv[(int64_t)tt * S + c]);
+        acc += wv * mv;
+    }
+    d_conv[c] = __float2half(silu_dev(acc));
+}
+
+__global__ void l2norm_qk_heads_kernel(__half *__restrict__ d_conv, int nk,
+                                       int kd, int KD, float q_scale)
+{
+    const bool is_q = blockIdx.x < (unsigned)nk;
+    const int h = is_q ? blockIdx.x : blockIdx.x - nk;
+    const int off = (is_q ? 0 : KD) + h * kd;
+    const int lane = threadIdx.x;
+    __shared__ float sred[256];
+    float v = 0.0f;
+    if (lane < kd) v = __half2float(d_conv[off + lane]);
+    sred[lane] = v * v;
+    __syncthreads();
+    for (int sz = blockDim.x / 2; sz > 0; sz >>= 1) {
+        if (lane < sz) sred[lane] += sred[lane + sz];
+        __syncthreads();
+    }
+    if (lane == 0)
+        sred[0] = rsqrtf(sred[0] + 1e-6f) * (is_q ? q_scale : 1.0f);
+    __syncthreads();
+    if (lane < kd) d_conv[off + lane] = __float2half(v * sred[0]);
+}
+
 // gating prep (beta / g) from the precomputed a|b buffer, single-token layout.
 __global__ void gating_prep_kernel(const __half *__restrict__ a_buf,
                                    const __half *__restrict__ b_buf,
@@ -1209,10 +1254,13 @@ cudaError_t RunQwenFusedLinearAttnKernel(
                 if ((e = cudaGetLastError()) != cudaSuccess) return e;
             }
         }
-        // conv1d+silu+l2norm(q,k)
-        fused_linear_conv_norm_kernel<<<seq, 256, 0, stream>>>(
-            d_qkv, lw.d_conv1d, seq, nk, kd, nv, vd, lw.conv_kernel,
-            kv_base, d_conv);
+        // conv1d+silu+l2norm(q,k): column/head-parallel decode split
+        // (bit-exact tree order; fills the SM array at seq==1).
+        conv_silu_cols_kernel<<<(S + 255) / 256, 256, 0, stream>>>(
+            d_qkv, lw.d_conv1d, S, lw.conv_kernel, kv_base, d_conv);
+        e = cudaGetLastError(); if (e) return e;
+        l2norm_qk_heads_kernel<<<2 * nk, 256, 0, stream>>>(
+            d_conv, nk, kd, KD, 1.0f / sqrtf(static_cast<float>(kd)));
         e = cudaGetLastError(); if (e) return e;
         // z / a / b projections: already produced by the fused qkv|z|a|b
         // GEMM above when tc_attn; scalar fallback below keeps parity.

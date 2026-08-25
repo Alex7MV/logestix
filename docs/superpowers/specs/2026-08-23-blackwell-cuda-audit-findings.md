@@ -553,3 +553,15 @@ split-K conditions for MLP shapes -> e2e regression, reverted.
 e2e @5090: **53.9 -> 59.7 tok/s (+11%), ttft 79 -> 72ms**, " Paris." x2.
 105/105 tests, sanitizer clean. Cumulative: scalar 14.4 -> **59.7 tok/s
 (x4.1)**.
+
+### Optimization round 16 (2026-08-25) — decode tail cleanup: 62.8 tok/s
+
+- RmsNormTreeKernel: x cached in dynamic smem on pass 1, pass 2 reads smem
+  (values identical -> accumulation order unchanged); launch sites size the
+  extra smem (qwen/gemma/tests). Single-block rows stop re-reading global.
+- conv/l2norm parallel split from r11 restored: with the GEMM pipeline now
+  dense it converts to e2e (r11 was launch-bound when GEMM had gaps).
+
+e2e @5090: **59.7 -> 62.8 tok/s (+5%), ttft 72 -> 69ms**, " Paris." x3.
+105/105 tests, sanitizer clean. Cumulative: scalar 14.4 -> **62.8 tok/s
+(x4.4)**.

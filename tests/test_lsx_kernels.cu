@@ -467,8 +467,8 @@ TEST_CASE("rmsnorm tree kernel matches refs", "[lsxk][norm]") {
         d_xr, d_wr, d_or, kRows, kHid, 1e-5f);
     lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16,
         lsxcommon::kernels::NormWeight::None>
-        <<<kRows, blk, blk * sizeof(float)>>>(d_xu, d_wu, d_ou, kRows, kHid,
-                                              1e-5f);
+        <<<kRows, blk, blk * sizeof(float) + kHid * int(sizeof(__nv_bfloat16))>>>(
+            d_xu, d_wu, d_ou, kRows, kHid, 1e-5f);
     REQUIRE(cudaGetLastError() == cudaSuccess);
     RequireDeviceEqual(d_or, d_ou, kRows * kHid);
 

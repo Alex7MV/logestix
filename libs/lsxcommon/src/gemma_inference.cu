@@ -59,7 +59,7 @@ static cudaError_t RunGemmaRmsNormPlain(const __nv_bfloat16 *d_x,
     if (!d_x || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock, kBlock * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock, kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
         d_x, nullptr, d_out, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -71,7 +71,8 @@ cudaError_t RunGemmaRMSNorm(const __nv_bfloat16 *d_x, const __nv_bfloat16 *d_w, 
     if (!d_x || !d_w || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::Direct><<<rows, kBlock, kBlock * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::Direct><<<rows, kBlock,
+        kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
         d_x, d_w, d_out, rows, hidden, eps);
     return cudaGetLastError();
 }

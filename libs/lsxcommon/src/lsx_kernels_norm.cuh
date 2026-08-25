@@ -27,9 +27,16 @@ __global__ void RmsNormTreeKernel(const T* __restrict__ x,
     const T* xr = x + static_cast<int64_t>(row) * hidden;
     T* orow = out + static_cast<int64_t>(row) * hidden;
     extern __shared__ float squares[];
+    // Decode rows are single-block; caching x in smem removes the second
+    // global read pass (values identical -> accumulation order unchanged).
+    T* xcache = reinterpret_cast<T*>(squares + blockDim.x);
+    const bool cache_ok =
+        hidden * static_cast<int>(sizeof(T)) <= 48 * 1024 - blockDim.x *
+                                                          sizeof(float);
     float sum = 0.0f;
     for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
         const float v = detail::CastIn(xr[j]);
+        if (cache_ok) xcache[j] = xr[j];
         sum = __fadd_rn(sum, __fmul_rn(v, v));
     }
     squares[threadIdx.x] = sum;
@@ -43,7 +50,7 @@ __global__ void RmsNormTreeKernel(const T* __restrict__ x,
     const float inv =
         rsqrtf(__fadd_rn(__fdiv_rn(squares[0], static_cast<float>(hidden)), eps));
     for (int j = threadIdx.x; j < hidden; j += blockDim.x) {
-        float v = detail::CastIn(xr[j]);
+        float v = detail::CastIn(cache_ok ? xcache[j] : xr[j]);
         if (W == NormWeight::None) {
             orow[j] = detail::CastOut<T>(__fmul_rn(v, inv));
         } else if (W == NormWeight::Direct) {
