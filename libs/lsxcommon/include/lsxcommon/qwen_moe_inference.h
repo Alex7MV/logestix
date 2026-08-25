@@ -43,13 +43,23 @@ struct QwenMoePinnedWeights;
 // Processes one token's K routed slots (ascending-k deterministic fp32
 // accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
 // misses via EnsureQwenMoeExpertResident. Scratch: d_yg/d_yu [I], d_y2 [H].
+//
+// Copy-stream mode: when `copy_stream` != nullptr, cache-miss H2D staging is
+// enqueued there instead of `stream`; `ev_uploads` (K caller-owned disabled-
+// timing events) fence each upload and `ev_front` must be recorded-or-null —
+// the implementation records it on `stream` before staging so the copy stream
+// never overwrites a slot still being read by previously enqueued compute.
+// Numerics are unchanged (same kernels, same accumulation order).
 cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
                                 QwenMoeExpertStore &store,
                                 QwenMoeExpertDeviceCache &cache, int layer,
                                 const QwenMoeRoutedSlot *h_slots, int K,
                                 const __half *d_x, int H, int I,
                                 float *d_acc, __half *d_yg, __half *d_yu,
-                                __half *d_y2, std::string &error);
+                                __half *d_y2, std::string &error,
+                                cudaStream_t copy_stream = nullptr,
+                                cudaEvent_t *ev_uploads = nullptr,
+                                cudaEvent_t ev_front = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,

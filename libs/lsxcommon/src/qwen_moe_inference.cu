@@ -138,15 +138,48 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 const QwenMoeRoutedSlot *h_slots, int K,
                                 const __half *d_x, int H, int I,
                                 float *d_acc, __half *d_yg, __half *d_yu,
-                                __half *d_y2, std::string &error)
+                                __half *d_y2, std::string &error,
+                                cudaStream_t copy_stream,
+                                cudaEvent_t *ev_uploads, cudaEvent_t ev_front)
 {
+    // Pass 1 (staging): resolve residency for all K slots up front so miss
+    // uploads can stream on the copy channel while the compute chain runs.
+    int dev_slots[16];
+    bool missed[16];
+    if (K > 16) { error = "routed slots exceed staging capacity";
+        return cudaErrorInvalidValue; }
+    if (copy_stream) {
+        if (!ev_uploads) { error = "bad copy-stream args";
+            return cudaErrorInvalidValue; }
+        // Fence: never overwrite a cache slot that previously enqueued compute
+        // may still be reading. ev_front is recorded BEFORE this layer's work;
+        // once the copy stream passes the wait, all prior compute has retired.
+        cudaError_t e = cudaEventRecord(ev_front, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaStreamWaitEvent(copy_stream, ev_front, 0);
+        if (e != cudaSuccess) return e;
+    }
+    for (int k = 0; k < K; ++k) {
+        missed[k] = false;
+        dev_slots[k] = EnsureQwenMoeExpertResident(
+            store, layer, h_slots[k].eid, cache, stream, error, copy_stream,
+            copy_stream ? &missed[k] : nullptr);
+        if (dev_slots[k] < 0) return cudaErrorInvalidValue;
+    }
+    if (copy_stream) {
+        for (int k = 0; k < K; ++k) {
+            if (!missed[k]) continue;
+            // Uploads of distinct slots were already serialized on the copy
+            // stream in pass-1 order; one event per expert is enough.
+            cudaError_t e = cudaEventRecord(ev_uploads[k], copy_stream);
+            if (e != cudaSuccess) return e;
+        }
+    }
+
     for (int k = 0; k < K; ++k) {
         // Ascending-k accumulation keeps the fp32 add order deterministic.
         const QwenMoeRoutedSlot &slot = h_slots[k];
-        const int dev_slot =
-            EnsureQwenMoeExpertResident(store, layer, slot.eid, cache, stream,
-                                        error);
-        if (dev_slot < 0) return cudaErrorInvalidValue;
+        const int dev_slot = dev_slots[k];
 
         const auto &rec = store.records[static_cast<size_t>(layer)]
                                         [static_cast<size_t>(slot.eid)];
@@ -161,6 +194,11 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         const uint8_t *s1 = scale;
         const uint8_t *s2 = scale + rec.s1_bytes;
         const uint8_t *s3 = scale + rec.s1_bytes + rec.s2_bytes;
+
+        if (copy_stream && missed[k]) {
+            cudaError_t e = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
+            if (e != cudaSuccess) return e;
+        }
 
         // y_g = w1 . x   [I,H]; y_u = w3 . x; y_2 = w2 . silu(y_g)*y_u   [H,I]
         if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1, H, I,
@@ -455,6 +493,22 @@ cudaError_t RunQwenMoeGeneration(
     cudaEventCreate(&tok_ready);
     cudaEventRecord(t_start, stream);
 
+    // Copy channel for cache-miss expert uploads (task-2 audit item): H2D
+    // staging overlaps the routed-expert compute chain instead of serializing
+    // with it. Events fence each upload; ev_front guards slot reuse.
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t ev_uploads[16] = {};
+    cudaEvent_t ev_front = nullptr;
+    bool have_copy =
+        cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) ==
+            cudaSuccess &&
+        cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==
+            cudaSuccess;
+    for (int k = 0; have_copy && k < K && k < 16; ++k)
+        have_copy = cudaEventCreateWithFlags(&ev_uploads[k],
+                                             cudaEventDisableTiming) ==
+                    cudaSuccess;
+
     std::string moe_error;
     auto fail = [&](cudaError_t err, std::string msg) -> cudaError_t {
         result.error_msg = std::move(msg);
@@ -462,6 +516,10 @@ cudaError_t RunQwenMoeGeneration(
         if (t_ttft) cudaEventDestroy(t_ttft);
         if (t_stop) cudaEventDestroy(t_stop);
         if (tok_ready) cudaEventDestroy(tok_ready);
+        if (copy_stream) cudaStreamDestroy(copy_stream);
+        for (int k = 0; k < 16; ++k)
+            if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
+        if (ev_front) cudaEventDestroy(ev_front);
         if (h_step) cudaFreeHost(h_step);
         if (h_slots) cudaFreeHost(h_slots);
         cudaFree(d_argmax);
@@ -561,7 +619,10 @@ cudaError_t RunQwenMoeGeneration(
             QwenMoeRoutedSlot *slots_host = h_slots;
             e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host, K,
                                     d_postin, H, I, d_moe_acc, d_yg, d_yu,
-                                    d_y2, moe_error);
+                                    d_y2, moe_error,
+                                    have_copy ? copy_stream : nullptr,
+                                    have_copy ? ev_uploads : nullptr,
+                                    ev_front);
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
@@ -627,6 +688,10 @@ cudaError_t RunQwenMoeGeneration(
     cudaEventDestroy(t_ttft);
     cudaEventDestroy(t_stop);
     if (tok_ready) cudaEventDestroy(tok_ready);
+    if (copy_stream) cudaStreamDestroy(copy_stream);
+    for (int k = 0; k < 16; ++k)
+        if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
+    if (ev_front) cudaEventDestroy(ev_front);
     if (h_step) cudaFreeHost(h_step);
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);

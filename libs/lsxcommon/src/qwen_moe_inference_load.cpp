@@ -665,8 +665,10 @@ void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache)
 
 int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
                                 QwenMoeExpertDeviceCache &cache,
-                                cudaStream_t stream, std::string &error)
+                                cudaStream_t stream, std::string &error,
+                                cudaStream_t h2d_stream, bool *missed)
 {
+    if (missed) *missed = false;
     if (layer < 0 || layer >= store.num_layers || eid < 0 ||
         eid >= store.num_experts) {
         error = absl::StrCat("expert out of range: layer ", layer, " eid ", eid);
@@ -676,6 +678,7 @@ int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
     int slot = QwenMoeExpertCacheLookup(cache, flat);
     if (slot >= 0) return slot;
     slot = QwenMoeExpertCacheInsert(cache, flat);
+    if (missed) *missed = true;
 
     const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
     if (!slab) {
@@ -693,13 +696,14 @@ int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
         static_cast<size_t>(r.w3_off + r.w3_bytes - r.w1_off);
     const size_t scale_bytes = static_cast<size_t>(r.s1_bytes + r.s2_bytes +
                                                    r.s3_bytes);
+    cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
     if (cudaMemcpyAsync(dst_pack, slab + r.w1_off, pack_bytes,
-                        cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
         error = "expert H2D pack staging failed";
         return -1;
     }
     if (cudaMemcpyAsync(dst_scale, slab + r.s1_off, scale_bytes,
-                        cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
         error = "expert H2D scale staging failed";
         return -1;
     }
