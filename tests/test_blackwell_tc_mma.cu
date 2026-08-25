@@ -35,7 +35,7 @@ struct DeviceBuffer {
     DeviceBuffer(const DeviceBuffer&) = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
     template <typename T>
-    T* get()
+    [[nodiscard]] T* get()
     {
         return static_cast<T*>(raw);
     }

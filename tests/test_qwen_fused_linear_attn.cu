@@ -1,7 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
 #include <cmath>
-#include <cstring>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "lsxcommon/qwen_inference.h"
