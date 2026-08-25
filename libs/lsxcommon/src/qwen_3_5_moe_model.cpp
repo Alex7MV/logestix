@@ -94,8 +94,15 @@ bool Qwen35MoeModel::Load()
         return false;
     }
     // Cache slots: lifecycle-driven start value; bounded by expert count.
+    // LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides for VRAM sweeps (parity with
+    // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS); values < 1 keep the default bound.
     int slots = static_cast<int>(experts_.num_layers * experts_.num_experts);
     slots = std::min(slots, 64);  // TuningBounds default upper bound
+    if (const char *env_slots = std::getenv("LSX_QWEN_MOE_EXPERT_CACHE_SLOTS")) {
+        const int v = std::atoi(env_slots);
+        if (v > 0) slots = std::min(v, static_cast<int>(experts_.num_layers *
+                                                        experts_.num_experts));
+    }
     if (slots <= 0) slots = 4;
     if (!qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_, err)) {
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
