@@ -98,7 +98,7 @@ bool Qwen35MoeModel::Load()
     // LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides for VRAM sweeps (parity with
     // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS); values < 1 keep the default bound.
     int slots = static_cast<int>(experts_.num_layers * experts_.num_experts);
-    slots = std::min(slots, 64);  // TuningBounds default upper bound
+    slots = std::min(slots, 512);  // VRAM-bounded default (~0.9 GB at 1.73 MB/expert)
     if (const char *env_slots = std::getenv("LSX_QWEN_MOE_EXPERT_CACHE_SLOTS")) {
         const int v = std::atoi(env_slots);
         if (v > 0) slots = std::min(v, static_cast<int>(experts_.num_layers *
