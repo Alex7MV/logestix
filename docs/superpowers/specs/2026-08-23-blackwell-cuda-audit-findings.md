@@ -352,3 +352,25 @@ wider output tiles (kDecCols=128 -> 256), fusing linear-attn stages
 (conv_norm + gated_delta ~= 10% GPU), act-quant reuse across GEMM calls.
 Extrapolated 5060 Ti at current efficiency: ~14 tok/s-equivalent BW share;
 the 70-80 target rides on the same structural fixes.
+
+### Round 8 CORRECTNESS INVESTIGATION (2026-08-25) — fast-math was broken
+
+Systematic debugging (triggered by a new acc-contract test) exposed that the
+fast-math path produced GARBAGE TOKENS end-to-end on the real model despite
+green perf harnesses (they never checked output text). Findings:
+
+1. TcGemmDecodeKernel fails host-reference validation at ALL shapes
+   (test "[tc][gemm][acc]" now locks this; LSX_DEC_ENABLE=1 debug-only).
+   Production routes seq==1 to the verified tile kernel.
+2. TILE kernel acc=true multiplied the SEEDED RESIDUAL by wgs
+   ((prev+sum)*wgs instead of prev+sum*wgs) — fixed at the D-seed site.
+3. With both fixes, fast-math e2e @5090: **32.9 tok/s, output " Paris"**
+   (correct!). Previous 42-53 tok/s figures were garbage-generation rates.
+4. Perf-harness lesson: ALWAYS decode and print gen_tokens in throughput
+   tests (now permanent in test_blackwell_perf_qwen).
+5. LSX_TEST_FAST_MATH presence-check trap documented ("=0" enables).
+
+Remaining gap to targets is now measured against a CORRECT baseline:
+32.9 -> 70-80 (5060 Ti) / 280-320 (5090). Next levers (ranked): wider decode
+tiles / more blocks (N=4096 -> only 32 CTAs on 170 SMs), linear-attn stage
+fusion (~10% GPU), act-quant reuse across GEMM calls, CUDA Graphs.

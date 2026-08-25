@@ -195,7 +195,7 @@ __global__ void TcGemmDecodeKernel(
                                    const uint8_t *__restrict__ bp,
                                    const uint8_t *__restrict__ bs,
                                    float wgs, __half *__restrict__ y,
-                                   int K, int N)
+                                   int K, int N, bool acc, bool use_cpasync)
 {
     const int tid = threadIdx.x;
     const int warp = tid >> 5;
@@ -254,9 +254,10 @@ __global__ void TcGemmDecodeKernel(
     // 32 bytes] k64 chunk (OOB rows zero-filled by hardware); scales remain
     // synchronous plain stores. Thread 0 arms the buffer mbarrier with
     // expect_tx and issues the copy (.shared::cta dst, 128B aligned).
+    const bool dec_use_cpasync = use_cpasync;
     auto stage_chunk = [&](int chunk, int buf) {
         const int kb = chunk * 64;
-        if (tid == 0) {
+        if (!dec_use_cpasync && tid == 0) {
             const unsigned mb = static_cast<unsigned>(
                 __cvta_generic_to_shared(&sMbar[buf]));
             const unsigned dst = static_cast<unsigned>(
@@ -271,6 +272,19 @@ __global__ void TcGemmDecodeKernel(
                 "r"(static_cast<unsigned>(kb / 2)),
                 "r"(static_cast<unsigned>(col_base)), "r"(mb)
                 : "memory");
+        } else {
+            const uint4 *b4 = reinterpret_cast<const uint4 *>(
+                bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
+            uint4 *d4 = reinterpret_cast<uint4 *>(&sW[buf][0][0]);
+            for (int idx = tid; idx < kDecCols * 2; idx += 256) {
+                const int c = idx >> 1;
+                d4[idx] =
+                    (col_base + c < N)
+                        ? b4[static_cast<int64_t>(c) * (k_half / 16) +
+                             (idx & 1)]
+                        : make_uint4(0, 0, 0, 0);
+            }
+            cp_async_commit();
         }
         for (int idx = tid; idx < kDecCols; idx += 256) {
             const int c = idx;
@@ -304,7 +318,9 @@ __global__ void TcGemmDecodeKernel(
         const int nxt = i + kDecBufs - 1;
         if (nxt < n_k64) stage_chunk(nxt, nxt & (kDecBufs - 1));
         // Chunks i..min(i+3,n-1) may be outstanding; chunk i must be done.
-        {
+        if (dec_use_cpasync) {
+            cp_async_wait<kDecBufs - 2>();
+        } else {
             const unsigned mb = static_cast<unsigned>(
                 __cvta_generic_to_shared(&sMbar[buf]));
             asm volatile(
@@ -358,12 +374,21 @@ __global__ void TcGemmDecodeKernel(
         __syncthreads();   // all lanes done reading buf before next overwrite
     }
 
-    // ---- Epilogue: D * global_scale -> y row 0.
+    // ---- Epilogue: D * global_scale -> y row 0 (acc=true: += into the
+    // residual stream, matching the tile-kernel contract).
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
-        if (n0 < N) y[n0] = __float2half(d[j][0] * wgs);
-        if (n0 + 1 < N) y[n0 + 1] = __float2half(d[j][1] * wgs);
+        if (acc) {
+            if (n0 < N)
+                y[n0] = __float2half(__half2float(y[n0]) + d[j][0] * wgs);
+            if (n0 + 1 < N)
+                y[n0 + 1] =
+                    __float2half(__half2float(y[n0 + 1]) + d[j][1] * wgs);
+        } else {
+            if (n0 < N) y[n0] = __float2half(d[j][0] * wgs);
+            if (n0 + 1 < N) y[n0 + 1] = __float2half(d[j][1] * wgs);
+        }
     }
 }
 
@@ -401,16 +426,21 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     // Accumulate-in: seed D from existing y (fp16 residual) once; the mma
     // chains C=D across all k-chunks.
-    if (acc_in && seq > 0) {
+    if (acc_in && seq > 0 && wgs != 0.0f) {
+        // Seed D with prev / wgs so the shared epilogue multiply
+        // ((D) * wgs) yields prev + sum*wgs -- NOT (prev+sum)*wgs.
+        const float inv_wgs = 1.0f / wgs;
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
             const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
             const int r0 = row_base + g;
             if (r0 < seq && n0 < N)
-                d[j][0] = __half2float(y[static_cast<int64_t>(r0) * N + n0]);
+                d[j][0] = __half2float(y[static_cast<int64_t>(r0) * N + n0]) *
+                          inv_wgs;
             if (r0 < seq && n0 + 1 < N)
-                d[j][1] =
-                    __half2float(y[static_cast<int64_t>(r0) * N + n0 + 1]);
+                d[j][1] = __half2float(y[static_cast<int64_t>(r0) * N + n0 +
+                                         1]) *
+                          inv_wgs;
             if (r0 + 8 < seq && n0 < N)
                 d[j][2] =
                     __half2float(y[static_cast<int64_t>(r0 + 8) * N + n0]);
@@ -627,13 +657,25 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
             const int k_chunks = K >> 4;
             const size_t dec_smem = static_cast<size_t>(
                 ((k_half + 15) & ~15) + ((k_chunks + 15) & ~15));
-            dim3 dgrid((N + kDecCols - 1) / kDecCols);
-            TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
-                wtmap, static_cast<uint8_t *>(ap_scratch),
-                static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-                w_global_scale, y, K, N);
-            e = cudaGetLastError();
-            handled = e == cudaSuccess;
+            // CORRECTNESS GATE: TcGemmDecodeKernel currently fails host-
+            // reference validation at ALL shapes (see findings round 8:
+            // "[tc][gemm][acc]"); production routes seq==1 to the verified
+            // tile kernel. LSX_DEC_ENABLE=1 re-enables it for debugging.
+            static const bool kUseCpAsync =
+                std::getenv("LSX_DEC_CPASYNC") != nullptr;
+            static const bool kDecEnable =
+                std::getenv("LSX_DEC_ENABLE") != nullptr;
+            if (kDecEnable) {
+                dim3 dgrid((N + kDecCols - 1) / kDecCols);
+                TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
+                    wtmap, static_cast<uint8_t *>(ap_scratch),
+                    static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+                    w_global_scale, y, K, N, acc, kUseCpAsync);
+                e = cudaGetLastError();
+                handled = e == cudaSuccess;
+            } else {
+                e = cudaSuccess;
+            }
         } else if (e == cudaErrorNotSupported) {
             e = cudaSuccess;   // tile-kernel fallback below
         }
