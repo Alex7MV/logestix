@@ -1,4 +1,5 @@
-// TDD — Blackwell perf baseline for Qwen3.5-9B (audit Phase 0).
+// TDD — Blackwell dense perf baseline for Qwen3.5-9B (audit Phase 0).
+// Dense-model harness; MoE models live in test_blackwell_perf_moe.cpp.
 // Reporting test: measures decode throughput and logs a machine-readable
 // summary. SKIPs without the real model (SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>

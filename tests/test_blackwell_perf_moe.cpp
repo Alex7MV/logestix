@@ -1,6 +1,6 @@
-// MoE decode throughput baseline: Qwen3.5-35B-A3B on real converted weights.
-// Mirrors test_blackwell_perf_qwen.cpp: prints tok/s / ttft and the decoded
-// text every run so fast-path regressions are visible in the log.
+// MoE decode throughput baselines (Qwen3.5-35B-A3B, gemma-4-26B-A4B-it) on
+// real converted weights. Prints tok/s / ttft and the decoded text every run
+// so fast-path regressions are visible in the log.
 #include <catch2/catch_test_macros.hpp>
 
 #include "lsxcommon/model_factory.h"
