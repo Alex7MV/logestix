@@ -60,7 +60,8 @@ static cudaError_t RunGemmaRmsNormPlain(const __nv_bfloat16 *d_x,
     if (!d_x || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
     constexpr int kBlock = 256;
-    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock, kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock,
+        kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
         d_x, nullptr, d_out, rows, hidden, eps);
     return cudaGetLastError();
 }
@@ -634,9 +635,6 @@ bool GemmaSkipBranch(const char *name){
 // RunGemmaGeneration; single-threaded generation contract).
 GemmaExpertDb *g_expert_db = nullptr;
 
-GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
-void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
-
 // Capacity-grown workspace reuse: reallocates only when a request exceeds
 // every recorded capacity. Same allocation layout as the previous per-call
 // path; contents are scratch and never carry values between calls.
@@ -706,8 +704,11 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
     if (ctx.ec.slots > 0) return cudaSuccess;
     const int64_t MIH = static_cast<int64_t>(pw.top.moe_intermediate_size) *
                         pw.top.hidden_size;
+    // Slot layout is w1|w2|w3 packed and s1|s2|s3 scales, so both strides
+    // must hold ALL THREE blocks (mirrors the qwen-moe cache sizing; the
+    // old single-block scale stride overflowed on every expert upload).
     const int64_t pack = MIH / 2 * 3;
-    const int64_t scale = MIH / 16 + 16;
+    const int64_t scale = MIH / 16 * 3 + 16;
     int slots = db.num_layers * db.experts_per_layer;
     if (const char *env = std::getenv("LSX_GEMMA_EXPERT_CACHE_SLOTS")) {
         const int v = std::atoi(env);
@@ -718,6 +719,11 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
 
     ctx.pack_stride = pack;
     ctx.scale_stride = scale;
+    // The cache struct mirrors the strides: DeviceBytes() reads them from
+    // here, so leaving them zero made cudaMalloc(0) hand out a nil base and
+    // every expert upload fail with "invalid argument".
+    ctx.ec.pack_stride = pack;
+    ctx.ec.scale_stride = scale;
     ctx.ec.slots = slots;
     ctx.ec.total_experts = db.num_layers * db.experts_per_layer;
     void *base = nullptr;
@@ -1092,6 +1098,9 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
 }
 
 } // namespace
+
+GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
+void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
 
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db,

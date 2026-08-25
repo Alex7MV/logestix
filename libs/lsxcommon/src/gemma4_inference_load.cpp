@@ -344,6 +344,7 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
     }
     pw.layers.assign(static_cast<size_t>(max_layer + 1), GemmaLayerWeights{});
 
+    pw.h_layer_scalar.resize(pw.layers.size(), 1.0f);
     for (int l = 0; l <= max_layer; ++l) {
         auto path = pinned_dir / absl::StrCat("layer_", l, ".arrow");
         if (!fs::exists(path)) continue; // heterogeneous grid: skip
@@ -362,7 +363,6 @@ cudaError_t LoadGemmaPinnedWeights(const std::string &model_path,
     }
 
     pw.resident_bytes = bytes_acc;
-    pw.h_layer_scalar.resize(pw.layers.size(), 1.0f);
 
     // Topology from the index (mandatory for generation; the loader still
     // succeeds without it so weight-only tooling keeps working).

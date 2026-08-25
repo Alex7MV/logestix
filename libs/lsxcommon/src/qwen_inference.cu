@@ -1407,7 +1407,7 @@ cudaError_t RunQwenFusedQkv(
     if (cudaMallocAsync(&d_tmp, (size_t)H * 2, stream) != cudaSuccess)
         return cudaErrorMemoryAllocation;
     const int th = std::min(H, 256);
-    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<1, th, th * sizeof(float), stream>>>(
+    ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<1, th, th * sizeof(float) + std::min(H * int(sizeof(__half)), 48 * 1024), stream>>>(
         x, input_norm, d_tmp, 1, H, (double)eps);
     cudaError_t e = cudaGetLastError();
     if (!e) {
