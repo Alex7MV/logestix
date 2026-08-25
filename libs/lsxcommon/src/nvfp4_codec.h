@@ -24,7 +24,7 @@ namespace nvfp4 {
 
 // E2M1 decode (indexed by 4-bit nibble, sign bit 3):
 //   magnitude 0..7 -> {0, 0.5, 1, 1.5, 2, 3, 4, 6}, sign bit negates.
-__device__ __forceinline__ float E2M1Value(int nib)
+__host__ __device__ __forceinline__ float E2M1Value(int nib)
 {
     const int mag = nib & 7;
     float v;
@@ -43,11 +43,14 @@ __device__ __forceinline__ float E2M1Value(int nib)
 
 // E4M3 power-of-2 block scale (only exponent bits used). e4==0 -> 0.0;
 // else 2^(e4-7) reconstructed bit-wise as (e4+120)<<23.
-__device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
+__host__ __device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
 {
     const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
     if (e4 == 0) return 0.0f;
-    return __uint_as_float((e4 + 120u) << 23);
+    const uint32_t bits = (e4 + 120u) << 23;
+    float v;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
 }
 
 } // namespace nvfp4

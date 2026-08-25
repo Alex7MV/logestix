@@ -13,6 +13,40 @@
 
 #include "lsxcommon/qwen_tc_gemm.h"
 #include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/schema.h"
+#include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
+#include "lsx_kernels_quant.cuh"
+
+using lsxcommon::gpu::nvfp4::E2M1Value;
+using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
+using lsxcommon::kernels::QuantizeE2m1TieUp;
+
+// Shared host-side mirror of ActQuantKernel's activation quantization,
+// returned as dequantized values. Built on the SAME canonical codec
+// primitives the device kernel uses (nvfp4_scale.h / nvfp4_codec.h /
+// lsx_kernels_quant.cuh), so host/device encoder drift is impossible.
+inline std::vector<float> HostActQuantDequant(const std::vector<__half> &hx)
+{
+    std::vector<float> av(hx.size());
+    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::max(absmax, std::abs(__half2float(hx[b + j])));
+        const uint8_t sb =
+            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3P2(absmax / 6.0f)
+                         : uint8_t{0};
+        const float s = E4M3ScaleToFloat(sb);
+        for (int j = 0; j < 16; ++j)
+            av[b + j] =
+                s > 0.f
+                    ? E2M1Value(QuantizeE2m1TieUp(__half2float(hx[b + j]) /
+                                                  s)) *
+                          s
+                    : 0.f;
+    }
+    return av;
+}
 
 namespace {
 
@@ -375,17 +409,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     REQUIRE(cudaMemcpy(hs.data(), ds, scales_n,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
-    // Host decode with the repo codec semantics and check quantization error.
-    auto dec_scale = [](uint8_t b) -> float {
-        const uint32_t e4 = (b >> 3) & 0xFu;
-        if (e4 == 0) return 0.0f;
-        union { uint32_t u; float f; } bits{};
-        bits.u = (e4 + 120u) << 23;
-        return bits.f;
-    };
-    const float levels[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-                              -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
-                              -6.0f};
+    // Host decode with the shared repo codec primitives; check error.
     // Metric: per-block error normalized by the BLOCK absmax (per-element
     // relative error is unbounded for tiny elements in dynamic blocks --
     // inherent to NVFP4 pow2 scales). Sound bound: snap error <= 1*s and
@@ -394,7 +418,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     size_t worst_idx = 0; float worst_got = 0.f, worst_want = 0.f;
     uint8_t worst_sb = 0, worst_code = 0;
     for (int b = 0; b < static_cast<int>(scales_n); ++b) {
-        const float s = dec_scale(hs[b]);
+        const float s = E4M3ScaleToFloat(hs[b]);
         float block_absmax = 0.f;
         for (int j = 0; j < 16; ++j) {
             const size_t idx = static_cast<size_t>(b) * 16 + j;
@@ -406,7 +430,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
             const size_t idx = static_cast<size_t>(b) * 16 + j;
             const uint8_t byte = hp[idx / 2];
             const uint8_t code = (j & 1) ? (byte >> 4) : (byte & 0x0F);
-            const float got = levels[code] * s;
+            const float got = E2M1Value(code) * s;
             const float want = __half2float(hx[idx]);
             if (want == 0.0f && got == 0.0f) continue;
             const double rel =
@@ -441,11 +465,73 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
 
 
 
+TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
+          "[tc][actquant][regression]")
+{
+    int dev = 0;
+    REQUIRE(cudaGetDevice(&dev) == cudaSuccess);
+    cudaDeviceProp prop{};
+    REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
+    if (prop.major != 12) SKIP("requires Blackwell sm_120");
+
+    // Contract (qwen_tc_gemm.h / ActQuantKernel comments): the per-16 block
+    // scale must byte-match the canonical lsxcommon::float_to_e4m3_p2
+    // (ceil exponent rounding). A frexp-based encode without the
+    // exact-power-of-two check doubles the scale whenever absmax/6 IS a
+    // power of two, wasting one bit of E2M1 dynamic range.
+    const float absmax_cases[5] = {6.0f, 12.0f, 3.0f, 5.7f, 2.4f};
+
+    for (float am : absmax_cases) {
+        std::vector<__half> hx(16);
+        hx[0] = __float2half(am);
+        for (int j = 1; j < 16; ++j)
+            hx[j] = __float2half(am * 0.01f);
+
+        __half *dx;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, 1) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+
+        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, 1, 16,
+                                                       dp, ds) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+        uint8_t sb = 0, p0 = 0;
+        REQUIRE(cudaMemcpy(&sb, ds, 1, cudaMemcpyDeviceToHost) ==
+                cudaSuccess);
+        REQUIRE(cudaMemcpy(&p0, dp, 1, cudaMemcpyDeviceToHost) ==
+                cudaSuccess);
+        cudaFree(dx); cudaFree(dp); cudaFree(ds);
+
+        INFO("absmax=" << am << " got=0x" << std::hex << int(sb) << std::dec
+             << " want=0x"
+             << int(lsxcommon::float_to_e4m3_p2(am / 6.0f)));
+        // Byte parity with the canonical pow2-E4M3 encoder.
+        CHECK(sb == lsxcommon::float_to_e4m3_p2(am / 6.0f));
+
+        // Element 0 packs into the low nibble of byte 0; with a ceil-rounded
+        // scale the block max snaps within the inherent NVFP4 level error
+        // (<= half of the widest top gap => >= 75% preserved).
+        const float got = E2M1Value(p0 & 0x0F) * E4M3ScaleToFloat(sb);
+        INFO("decoded block max=" << got);
+        CHECK(got >= 0.75f * am);
+    }
+}
+
+
+
 // ---- Shared exact NVFP4 host model (single source for all TC tests) --------
 // Mirrors ActQuantKernel (per-16 ceil-ish pow2 E4M3 scale via frexp exp +
 // threshold-chain E2M1 snap, TieUp) and the repo weight codec. Returns
 // y[m*N+n] = wgs * sum_k act[m,k]*w[n,k].
 namespace tc_ref {
+// Host reference mirrors ActQuantKernel via the SAME shared codec primitives
+// (HostActQuantDequant / nvfp4_scale.h) the device kernel uses, so encoder
+// drift between host and device is impossible by design.
 std::vector<float> HostRef(const std::vector<__half> &hx,
                            const std::vector<uint8_t> &hp,
                            const std::vector<uint8_t> &hs, int seq, int K,
@@ -453,51 +539,7 @@ std::vector<float> HostRef(const std::vector<__half> &hx,
 {
     const int k_half = K / 2;
     const int k_chunks = (K + 15) / 16;
-    const float lv[16] = {0.f,      0.5f,  1.f,   1.5f, 2.f,   3.f,
-                          4.f,      6.f,   -0.f,  -0.5f, -1.f,  -1.5f,
-                          -2.f,     -3.f,  -4.f,  -6.f};
-    auto dec_scale = [](uint8_t b) {
-        const uint32_t e4 = (b >> 3) & 0xFu;
-        union { uint32_t u; float f; } bits{};
-        bits.u = e4 ? ((e4 + 120u) << 23) : 0u;
-        return bits.f;
-    };
-    auto enc_pow2 = [](float s) {
-        if (!(s > 0.f)) return uint8_t{0};
-        int e;
-        std::frexp(s, &e);
-        const int e4 = e + 7;
-        int e4c = e4;
-        if (e4c < 1) e4c = 1;
-        if (e4c > 15) e4c = 15;
-        return static_cast<uint8_t>(e4c << 3);
-    };
-    auto snap = [](float v) {
-        const bool neg = v < 0.f;
-        const float a = std::abs(v);
-        float m;
-        if (a < 0.25f) m = 0.f;
-        else if (a < 0.75f) m = 0.5f;
-        else if (a < 1.25f) m = 1.f;
-        else if (a < 1.75f) m = 1.5f;
-        else if (a < 2.5f) m = 2.f;
-        else if (a < 3.5f) m = 3.f;
-        else if (a < 5.f) m = 4.f;
-        else m = 6.f;
-        return neg ? -m : m;
-    };
-    // Activation quantization (flat over seq*K, blocks aligned to 16).
-    std::vector<float> av(hx.size());
-    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
-        float absmax = 0.f;
-        for (int j = 0; j < 16; ++j)
-            absmax = std::max(absmax, std::abs(__half2float(hx[b + j])));
-        const uint8_t sb = absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
-        const float scl = dec_scale(sb);
-        for (int j = 0; j < 16; ++j)
-            av[b + j] =
-                scl > 0.f ? snap(__half2float(hx[b + j]) / scl) * scl : 0.f;
-    }
+    const std::vector<float> av = HostActQuantDequant(hx);
     std::vector<float> y(static_cast<size_t>(seq) * N, 0.f);
     for (int m = 0; m < seq; ++m)
         for (int n = 0; n < N; ++n) {
@@ -509,9 +551,9 @@ std::vector<float> HostRef(const std::vector<__half> &hx,
                     (k & 1) ? static_cast<int>(wb >> 4)
                             : static_cast<int>(wb & 0x0F);
                 acc += static_cast<double>(
-                    av[static_cast<size_t>(m) * K + k] * lv[nib] *
-                    dec_scale(hs[static_cast<size_t>(n) * k_chunks +
-                                 k / 16]));
+                    av[static_cast<size_t>(m) * K + k] *
+                    E2M1Value(nib) * E4M3ScaleToFloat(
+                        hs[static_cast<size_t>(n) * k_chunks + k / 16]));
             }
             y[static_cast<size_t>(m) * N + n] =
                 static_cast<float>(acc * static_cast<double>(wgs));
@@ -571,54 +613,9 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     REQUIRE(cudaMemcpy(hy.data(), dy, hy.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
-    // ---- Host reference mirroring the kernel's math exactly.
-    const float lv[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-                          -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
-                          -6.0f};
-    auto dec_scale = [](uint8_t b) -> float {
-        const uint32_t e4 = (b >> 3) & 0xFu;
-        if (e4 == 0) return 0.0f;
-        union { uint32_t u; float f; } bits{};
-        bits.u = (e4 + 120u) << 23;
-        return bits.f;
-    };
-    auto enc_pow2 = [](float s) -> uint8_t {
-        // ceil-log2 pow2 encode: byte = (e+7)<<3 with value 2^(e-7); s>0.
-        int e;
-        std::frexp(s, &e); // s in [2^(e-1), 2^e): ceil-log2 = e
-        return static_cast<uint8_t>((e + 7) << 3);
-    };
-    auto snap_e2m1 = [](float v) -> float {
-        const bool neg = v < 0.f;
-        const float a = std::abs(v);
-        float m;
-        if (a < 0.25f) m = 0.f;
-        else if (a < 0.75f) m = 0.5f;
-        else if (a < 1.25f) m = 1.f;
-        else if (a < 1.75f) m = 1.5f;
-        else if (a < 2.5f) m = 2.f;
-        else if (a < 3.5f) m = 3.f;
-        else if (a < 5.0f) m = 4.f;
-        else m = 6.f;
-        return neg ? -m : m;
-    };
-
-    // Quantized activations (dequant values), mirroring ActQuantKernel.
-    std::vector<float> av(hx.size());
-    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
-        float absmax = 0.f;
-        for (int j = 0; j < 16; ++j)
-            absmax = std::max(absmax,
-                              std::abs(__half2float(hx[b + j])));
-        const uint8_t sb =
-            absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
-        const float s = dec_scale(sb);
-        for (int j = 0; j < 16; ++j)
-            av[b + j] =
-                s > 0.f
-                    ? snap_e2m1(__half2float(hx[b + j]) / s) * s
-                    : 0.f;
-    }
+    // ---- Host reference mirroring the kernel's math exactly, via the
+    // shared codec primitives (HostActQuantDequant / nvfp4_codec.h).
+    const std::vector<float> av = HostActQuantDequant(hx);
 
     double max_err = 0.0, max_ref = 0.0;
     for (int m = 0; m < seq; ++m)
@@ -631,9 +628,10 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
                     (k & 1) ? static_cast<uint8_t>(wb >> 4)
                             : static_cast<uint8_t>(wb & 0x0F);
                 const float wv =
-                    lv[wn] *
-                    dec_scale(hs[static_cast<size_t>(n) * ((K + 15) / 16) +
-                                 k / 16]);
+                    E2M1Value(wn) *
+                    E4M3ScaleToFloat(
+                        hs[static_cast<size_t>(n) * ((K + 15) / 16) +
+                           k / 16]);
                 acc += av[static_cast<size_t>(m) * K + k] * wv;
             }
             const float want = acc * wgs;
@@ -655,10 +653,11 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
                         (k & 1) ? static_cast<uint8_t>(wb2 >> 4)
                                 : static_cast<uint8_t>(wb2 & 0x0F);
                     acc += av[static_cast<size_t>(m) * K + k] *
-                           lv[wn2] *
-                           dec_scale(hs[static_cast<size_t>(n) *
-                                            ((K + 15) / 16) +
-                                        k / 16]);
+                           E2M1Value(wn2) *
+                           E4M3ScaleToFloat(
+                               hs[static_cast<size_t>(n) *
+                                      ((K + 15) / 16) +
+                                  k / 16]);
                 }
                 return acc * wgs;
             }();
@@ -1172,63 +1171,26 @@ TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k25
     cudaMemcpy(hp.data(), dp, K / 2, cudaMemcpyDeviceToHost);
     cudaMemcpy(hs.data(), ds, K / 16, cudaMemcpyDeviceToHost);
 
-    // Host model (identical to tc_ref::HostRef quantization).
-    auto enc_pow2 = [](float v) -> uint8_t {
-        if (!(v > 0.f)) return 0;
-        int e;
-        std::frexp(v, &e);
-        int e4 = e + 7;
-        if (e4 < 1) e4 = 1;
-        if (e4 > 15) e4 = 15;
-        return static_cast<uint8_t>(e4 << 3);
-    };
-    auto dec_scale = [](uint8_t b) -> float {
-        const uint32_t e4 = (b >> 3) & 0xFu;
-        union { uint32_t u; float f; } bits{};
-        bits.u = e4 ? ((e4 + 120u) << 23) : 0u;
-        return bits.f;
-    };
-    auto snap = [](float v) -> float {
-        const bool neg = v < 0.f;
-        const float a = std::abs(v);
-        float m;
-        if (a < 0.25f) m = 0.f;
-        else if (a < 0.75f) m = 0.5f;
-        else if (a < 1.25f) m = 1.f;
-        else if (a < 1.75f) m = 1.5f;
-        else if (a < 2.5f) m = 2.f;
-        else if (a < 3.5f) m = 3.f;
-        else if (a < 5.f) m = 4.f;
-        else m = 6.f;
-        return neg ? -m : m;
-    };
-
+    // Host model via the shared codec primitives (same source as the device
+    // kernel: nvfp4_scale.h encode + lsx_kernels_quant.cuh E2M1 TieUp).
     int mismatches = 0;
     for (int b = 0; b < K / 16; ++b) {
         float absmax = 0.f;
         for (int j = 0; j < 16; ++j)
             absmax = std::max(absmax, std::abs(__half2float(hx[b * 16 + j])));
         const uint8_t sb_want =
-            absmax > 0.f ? enc_pow2(absmax / 6.0f) : uint8_t{0};
+            absmax > 0.f ? lsxcommon::nvfp4::FloatToE4m3P2(absmax / 6.0f)
+                         : uint8_t{0};
         INFO("block " << b << " sb want=" << int(sb_want)
                       << " got=" << int(hs[b]));
         CHECK(hs[b] == sb_want);
-        const float scl = dec_scale(sb_want);
+        const float scl = E4M3ScaleToFloat(sb_want);
         for (int j = 0; j < 16; ++j) {
             const int idx = b * 16 + j;
             // Encode the RATIO x/scale (not the dequantized value).
             const float ratio =
                 scl > 0.f ? __half2float(hx[idx]) / scl : 0.f;
-            int code = 0;
-            const float a = std::abs(ratio);
-            if (a >= 0.25f && a < 0.75f) code = 1;
-            else if (a >= 0.75f && a < 1.25f) code = 2;
-            else if (a >= 1.25f && a < 1.75f) code = 3;
-            else if (a >= 1.75f && a < 2.5f) code = 4;
-            else if (a >= 2.5f && a < 3.5f) code = 5;
-            else if (a >= 3.5f && a < 5.f) code = 6;
-            else if (a >= 5.f) code = 7;
-            if (ratio < 0.f) code |= 8;
+            const uint8_t code = QuantizeE2m1TieUp(ratio);
             const uint8_t got_byte = hp[idx / 2];
             const uint8_t got_code =
                 (idx & 1) ? static_cast<uint8_t>(got_byte >> 4)

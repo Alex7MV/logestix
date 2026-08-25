@@ -21,6 +21,8 @@
 #include <vector>
 
 #include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
+#include "lsx_kernels_quant.cuh"
 
 namespace lsxcommon {
 namespace qwen {
@@ -28,36 +30,9 @@ namespace tc {
 
 namespace {
 
-// Power-of-two E4M3 encode matching schema.cpp float_to_e4m3_p2 and the
-// device decoder in nvfp4_codec.h: byte = (e4+7)<<3 with value 2^(e4-7).
-// Ceil semantics: smallest power of two >= s.
-__device__ __forceinline__ uint8_t Pow2E4m3Encode(float s)
-{
-    if (!(s > 0.0f)) return 0; // zero / NaN guard: zero scale zeroes the block
-    int exp;
-    (void)frexpf(s, &exp); // s = m * 2^exp, m in [0.5, 1)
-    const int e4 = exp + 7;
-    if (e4 < 1) return static_cast<uint8_t>(1 << 3);      // smallest positive
-    if (e4 > 15) return static_cast<uint8_t>(15 << 3);    // saturate at 2^8
-    return static_cast<uint8_t>(e4 << 3);
-}
-
-__device__ __forceinline__ uint8_t QuantizeE2m1(float v)
-{
-    // Nearest-level E2M1 with sign bit 3; levels match kE2M1Table.
-    const bool neg = v < 0.0f;
-    const float a = fabsf(v);
-    uint8_t mag;
-    if (a < 0.25f) mag = 0;
-    else if (a < 0.75f) mag = 1;
-    else if (a < 1.25f) mag = 2;
-    else if (a < 1.75f) mag = 3;
-    else if (a < 2.5f) mag = 4;
-    else if (a < 3.5f) mag = 5;
-    else if (a < 5.0f) mag = 6;
-    else mag = 7;
-    return neg ? static_cast<uint8_t>(mag | 8) : mag;
-}
+// Block-scale and E2M1 encode primitives are the shared canonical codecs:
+// lsxcommon::nvfp4::FloatToE4m3P2 (nvfp4_scale.h, ceil pow2-E4M3) and
+// lsxcommon::kernels::QuantizeE2m1TieUp (lsx_kernels_quant.cuh).
 
 __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
                                uint8_t *__restrict__ packed,
@@ -78,17 +53,20 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     }
 
     // scale = 2^ceil(log2(absmax/6)); quantized magnitude in [~0.75, 6].
-    const uint8_t sb = Pow2E4m3Encode(absmax * (1.0f / 6.0f));
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
     scales[blk] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
 
     for (int i = 0; i < len; i += 2) {
-        const uint8_t lo = QuantizeE2m1(__half2float(x[base + i]) * inv);
-        const uint8_t hi = (i + 1 < len)
-                               ? QuantizeE2m1(__half2float(x[base + i + 1]) *
-                                              inv)
-                               : 0;
+        const uint8_t lo =
+            kernels::QuantizeE2m1TieUp(__half2float(x[base + i]) * inv);
+        const uint8_t hi =
+            (i + 1 < len)
+                ? kernels::QuantizeE2m1TieUp(__half2float(x[base + i + 1]) *
+                                             inv)
+                : 0;
         packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
     }
 }
