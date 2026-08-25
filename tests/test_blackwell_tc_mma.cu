@@ -487,6 +487,10 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
         for (int j = 1; j < 16; ++j)
             hx[j] = __float2half(am * 0.01f);
 
+        // The device kernel sees the HALF-rounded value; derive the
+        // expectation from it so cases near pow2 boundaries stay exact.
+        const float am_h = __half2float(hx[0]);
+
         __half *dx;
         uint8_t *dp, *ds;
         REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
@@ -509,16 +513,40 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
 
         INFO("absmax=" << am << " got=0x" << std::hex << int(sb) << std::dec
              << " want=0x"
-             << int(lsxcommon::float_to_e4m3_p2(am / 6.0f)));
+             << int(lsxcommon::float_to_e4m3_p2(am_h / 6.0f)));
         // Byte parity with the canonical pow2-E4M3 encoder.
-        CHECK(sb == lsxcommon::float_to_e4m3_p2(am / 6.0f));
+        CHECK(sb == lsxcommon::float_to_e4m3_p2(am_h / 6.0f));
 
         // Element 0 packs into the low nibble of byte 0; with a ceil-rounded
         // scale the block max snaps within the inherent NVFP4 level error
         // (<= half of the widest top gap => >= 75% preserved).
         const float got = E2M1Value(p0 & 0x0F) * E4M3ScaleToFloat(sb);
         INFO("decoded block max=" << got);
-        CHECK(got >= 0.75f * am);
+        CHECK(got >= 0.75f * am_h);
+    }
+
+    // Zero block: reserved scale byte 0, decoded magnitude 0.
+    {
+        std::vector<__half> hx(16, __float2half(0.0f));
+        __half *dx;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, 1) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, 1, 16,
+                                                       dp, ds) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        uint8_t sb = 1, p0 = 1;
+        REQUIRE(cudaMemcpy(&sb, ds, 1, cudaMemcpyDeviceToHost) ==
+                cudaSuccess);
+        REQUIRE(cudaMemcpy(&p0, dp, 1, cudaMemcpyDeviceToHost) ==
+                cudaSuccess);
+        cudaFree(dx); cudaFree(dp); cudaFree(ds);
+        CHECK(sb == 0);
+        CHECK(E2M1Value(p0 & 0x0F) * E4M3ScaleToFloat(sb) == 0.0f);
     }
 }
 
@@ -703,17 +731,6 @@ TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
     REQUIRE(cudaMemcpy(wp, hp.data(), wp_n, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(ws, hs.data(), ws_n, cudaMemcpyHostToDevice) == cudaSuccess);
 
-    auto dec_scale = [](uint8_t b) -> float {
-        const uint32_t e4 = (b >> 3) & 0xFu;
-        if (e4 == 0) return 0.0f;
-        union { uint32_t u; float f; } bits{};
-        bits.u = (e4 + 120u) << 23;
-        return bits.f;
-    };
-    const float lv[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-                          -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f,
-                          -6.0f};
-
     for (int pulse_k : {0, 1, 9, 17, 33}) {
         std::vector<__half> hx(K, __float2half(0.0f));
         hx[pulse_k] = __float2half(1.0f);
@@ -734,8 +751,9 @@ TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
                 (pulse_k & 1) ? static_cast<uint8_t>(wb >> 4)
                               : static_cast<uint8_t>(wb & 0x0F);
             const float want =
-                lv[wn] * dec_scale(hs[static_cast<size_t>(n) * 4 +
-                                      pulse_k / 16]);
+                E2M1Value(wn) *
+                E4M3ScaleToFloat(
+                    hs[static_cast<size_t>(n) * 4 + pulse_k / 16]);
             const float got = __half2float(hy[n]);
             if (std::abs(got - want) > 1e-3f * (std::abs(want) + 0.1f))
                 WARN("pulse k=" << pulse_k << " n=" << n << " got=" << got

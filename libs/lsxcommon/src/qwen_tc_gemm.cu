@@ -53,6 +53,9 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     }
 
     // scale = 2^ceil(log2(absmax/6)); quantized magnitude in [~0.75, 6].
+    // Canonical clamp e4 in [1,14] (nvfp4_scale.h): saturates at 6*2^7=768,
+    // i.e. fp16 activations above ~768 clip one octave earlier than the
+    // historical frexp encode — required canonical parity, do not "fix".
     const uint8_t sb =
         lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
     scales[blk] = sb;

@@ -596,6 +596,13 @@ __global__ void gemma_logits_argmax_kernel(const __nv_bfloat16 *__restrict__ emb
 
 // ── Generation loop ─────────────────────────────────────────────────────────
 
+// Public generation-context lifecycle (declared in gemma4_inference.h with
+// external linkage; consumed by GemmaBaseModel). Must live OUTSIDE any
+// anonymous namespace: an internal-linkage definition here mangles to
+// _GLOBAL__N__... and leaves gemma_base_model.cpp's call unresolved.
+GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
+void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
+
 namespace {
 
 // Debug aid (LSX_TEST_GEMMA_DEBUG_SYNC=1): sync+check after every stage of
@@ -632,9 +639,6 @@ bool GemmaSkipBranch(const char *name){
 // File-scope expert db reference used inside ForwardLayer (set by
 // RunGemmaGeneration; single-threaded generation contract).
 GemmaExpertDb *g_expert_db = nullptr;
-
-GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
-void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
 
 // Capacity-grown workspace reuse: reallocates only when a request exceeds
 // every recorded capacity. Same allocation layout as the previous per-call

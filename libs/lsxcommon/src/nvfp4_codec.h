@@ -1,6 +1,9 @@
-// nvfp4_codec.h — shared device-only NVFP4 decode primitives.
-// Reachable by all CUDA object libraries (lsxcommon_cu / lsxcommon_glm_cu /
-// lsxcommon_qwen_cu / lsxcommon_gemma_cu).
+// nvfp4_codec.h — shared __host__ __device__ NVFP4 decode primitives
+// (E2M1 value LUT + pow2-E4M3 scale decode). Reachable by all CUDA object
+// libraries (lsxcommon_cu / lsxcommon_glm_cu / lsxcommon_qwen_cu /
+// lsxcommon_gemma_cu) and usable from host code in CUDA TUs; the mandatory
+// <cuda_runtime.h> makes it unfit for non-CUDA TUs — those use the
+// CUDA-free codecs in nvfp4_scale.h instead (keep decode semantics in sync).
 //
 // ODR / constant-bank note: the E2M1 decode LUT is intentionally an inline
 // __device__ FUNCTION with immediate values instead of a __constant__ array

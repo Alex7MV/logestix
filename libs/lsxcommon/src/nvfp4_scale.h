@@ -3,7 +3,8 @@
 // runtime act-quant kernel (qwen_tc_gemm.cu) and the TC test host reference.
 // Semantics: exponent rounds UP (ceil) so the block maximum never saturates;
 // exact powers of two map onto themselves. Header-only, CUDA-free, safe to
-// include from non-CUDA TUs.
+// include from non-CUDA TUs. Decode must stay in sync with
+// nvfp4_codec.h E4M3ScaleToFloat (CUDA-TU counterpart).
 #pragma once
 
 #include <cstdint>
