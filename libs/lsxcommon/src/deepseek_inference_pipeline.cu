@@ -140,10 +140,15 @@ InferenceResult RunInferenceModel(
     ::lsxcommon::ArrowTokenizerDb &tok_db,
     PinnedWeights &pw,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler())
+        lsxcommon::sample::DefaultSampler(),
+    cudaStream_t ext_stream = nullptr,
+    cublasHandle_t ext_cublas = nullptr)
 {
     InferenceResult result;
     auto mp = model_path;
+    // Persistent-context mode (ModelBase::EnsureContext): the caller owns the
+    // stream/cuBLAS handle across Infer calls, saving per-call handle setup.
+    const bool own_context = (ext_stream == nullptr);
 
     // 1. Log the incoming prompt tokens
     std::string tok_line;
@@ -273,8 +278,17 @@ InferenceResult RunInferenceModel(
     // ~10-30µs blocking-syscall latency. Host CPU headroom is explicitly not
     // a constrained resource for this project.
     INFER_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
-    INFER_CHECK(cudaStreamCreate(&stream));
-    CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
+    if (own_context) {
+        INFER_CHECK(cudaStreamCreate(&stream));
+        CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
+    } else {
+        stream = ext_stream;
+        cublas_h = ext_cublas;
+        if (!stream || !cublas_h) {
+            result.error_msg = "external context requires stream and cublas";
+            goto cleanup;
+        }
+    }
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
     // The whole per-run footprint (every scratch buffer, KV cache, CSA state,
@@ -836,8 +850,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
     }
 
 cleanup:
-    if (stream)        cudaStreamDestroy(stream);
-    if (cublas_h)      cublasDestroy(cublas_h);
+    if (stream && own_context) cudaStreamDestroy(stream);
+    if (cublas_h && own_context) cublasDestroy(cublas_h);
     arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
     if (expert_cache.d_base) cudaFree(expert_cache.d_base);
     if (t_start)       cudaEventDestroy(t_start);
