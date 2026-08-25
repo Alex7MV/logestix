@@ -36,6 +36,12 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // Test/diagnostics access to persistent generation scratch.
+    const qwen_moe::QwenMoeGenScratch &GenScratchForTest() const
+    {
+        return scratch_;
+    }
+
 private:
     bool EnsureExecutionContext();
     void TeardownWeights();
@@ -46,6 +52,7 @@ private:
     qwen_moe::QwenMoePinnedWeights pw_;
     qwen_moe::QwenMoeExpertStore experts_;
     qwen_moe::QwenMoeExpertDeviceCache cache_{};
+    qwen_moe::QwenMoeGenScratch scratch_{};
     std::unique_ptr<qwen::QwenKvCache> kv_;
     std::vector<int32_t> session_tail_;
 };

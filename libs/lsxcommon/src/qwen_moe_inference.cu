@@ -314,15 +314,69 @@ __global__ void qwen_moe_init_acc_kernel(const __half *__restrict__ resid,
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 } // namespace
 
+cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
+                                 const QwenMoePinnedWeights &pw,
+                                 QwenMoeGenScratch &scratch)
+{
+    const int64_t elems = static_cast<int64_t>(pw.top.vocab_size) *
+                          pw.top.hidden_size;
+    if (scratch.d_embed && scratch.table_elems == elems)
+        return cudaSuccess;
+    FreeQwenMoeGenScratch(scratch);
+    cudaError_t e = cudaMalloc(reinterpret_cast<void **>(&scratch.d_embed),
+                               static_cast<size_t>(elems) * sizeof(__half));
+    if (e != cudaSuccess) return e;
+    e = lsxcommon::gpu::dequant_shared_nvfp4(
+        stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
+        pw.embed.scale_bytes, pw.embed.global_scale, scratch.d_embed, elems);
+    if (e != cudaSuccess) return e;
+    scratch.table_elems = elems;
+    ++scratch.dequant_runs;
+    return cudaSuccess;
+}
+
+cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes)
+{
+    if (scratch.arena && scratch.arena_capacity >= bytes)
+        return cudaSuccess;
+    if (scratch.arena) {
+        cudaFree(scratch.arena);
+        scratch.arena = nullptr;
+    }
+    cudaError_t e = cudaMalloc(&scratch.arena, bytes);
+    if (e != cudaSuccess) {
+        scratch.arena_capacity = 0;
+        return e;
+    }
+    scratch.arena_capacity = bytes;
+    ++scratch.arena_allocs;
+    return cudaSuccess;
+}
+
+void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch)
+{
+    if (scratch.d_embed) cudaFree(scratch.d_embed);
+    if (scratch.arena) cudaFree(scratch.arena);
+    scratch = {};
+}
+
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
     QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
     qwen::QwenKvCache *kv)
 {
     if (!kv)
         return cudaErrorInvalidValue;  // MoE path is incremental-only.
+    {   // Persistent embed table: dequant once, reuse across calls.
+        cudaError_t pre = EnsureQwenMoeScratch(stream, pw, scratch);
+        if (pre != cudaSuccess) {
+            result.error_msg = "scratch ensure failed";
+            return pre;
+        }
+    }
     const qwen::QwenTopology &top = pw.top;
     const int H = top.hidden_size;
     const int NH = top.num_attention_heads, HD = top.head_dim;
@@ -383,7 +437,6 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)max_seq * S,             // d_conv
         (size_t)max_seq * VD,            // d_core
         (size_t)max_seq * VD,            // d_gated
-        (size_t)V * H,                   // d_embed_half
         (size_t)max_seq * V,             // d_logits
         (size_t)max_seq * 2,             // d_ids
         (size_t)max_seq * 2,             // d_pos
@@ -407,9 +460,9 @@ cudaError_t RunQwenMoeGeneration(
     for (auto s : float_sz) float_bytes += s * sizeof(float);
     float_bytes = (float_bytes + 15) & ~static_cast<size_t>(15);
 
-    void *base = nullptr;
-    cudaError_t e = cudaMalloc(&base, half_bytes + float_bytes);
-    if (e != cudaSuccess) { result.error_msg = "arena alloc failed"; return e; }
+    cudaError_t e = ReserveQwenMoeArena(scratch, half_bytes + float_bytes);
+    if (e != cudaSuccess) { result.error_msg = "arena reserve failed"; return e; }
+    void *base = scratch.arena;
 
     auto adv = [&](__half *&p, size_t hs) {
         __half *r = p;
@@ -435,15 +488,15 @@ cudaError_t RunQwenMoeGeneration(
     __half *d_conv = adv(ph, half_sz[15]);
     __half *d_core = adv(ph, half_sz[16]);
     __half *d_gated = adv(ph, half_sz[17]);
-    __half *d_embed_h = adv(ph, half_sz[18]);
-    __half *d_logits = adv(ph, half_sz[19]);
-    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[20]));
-    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[21]));
-    __half *d_yg = adv(ph, half_sz[22]);
-    __half *d_yu = adv(ph, half_sz[23]);
-    __half *d_y2 = adv(ph, half_sz[24]);
-    __half *d_si = adv(ph, half_sz[25]);
-    __half *d_sh = adv(ph, half_sz[26]);
+    __half *d_embed_h = scratch.d_embed;
+    __half *d_logits = adv(ph, half_sz[18]);
+    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[19]));
+    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[20]));
+    __half *d_yg = adv(ph, half_sz[21]);
+    __half *d_yu = adv(ph, half_sz[22]);
+    __half *d_y2 = adv(ph, half_sz[23]);
+    __half *d_si = adv(ph, half_sz[24]);
+    __half *d_sh = adv(ph, half_sz[25]);
     float *pf = reinterpret_cast<float *>((uint8_t *)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
@@ -451,21 +504,14 @@ cudaError_t RunQwenMoeGeneration(
     float *d_moe_acc = pf; pf += float_sz[3];
     float *d_gate_val = pf;
 
-    e = lsxcommon::gpu::dequant_shared_nvfp4(
-        stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
-        pw.embed.scale_bytes, pw.embed.global_scale, d_embed_h,
-        (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant embed"; cudaFree(base); return e; }
-
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
-    if (e != cudaSuccess) { result.error_msg = "argmax alloc"; cudaFree(base); return e; }
+    if (e != cudaSuccess) { result.error_msg = "argmax alloc"; return e; }
     QwenMoeRoutedSlot *d_slots = nullptr;
     e = cudaMalloc(&d_slots, sizeof(QwenMoeRoutedSlot) * static_cast<size_t>(K));
     if (e != cudaSuccess) {
         result.error_msg = "slots alloc";
         cudaFree(d_argmax);
-        cudaFree(base);
         return e;
     }
 
@@ -517,7 +563,6 @@ cudaError_t RunQwenMoeGeneration(
         if (h_slots) cudaFreeHost(h_slots);
         cudaFree(d_argmax);
         cudaFree(d_slots);
-        cudaFree(base);
         return err;
     };
 
@@ -688,7 +733,6 @@ cudaError_t RunQwenMoeGeneration(
     if (h_step) cudaFreeHost(h_step);
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);
-    cudaFree(base);
     result.resident_bytes = pw.resident_bytes + half_bytes + float_bytes +
                             sizeof(int32_t) + kv->Bytes();
     result.ok = true;

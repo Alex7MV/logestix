@@ -2141,6 +2141,8 @@ set_tests_properties(test_qwen_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
+target_include_directories(test_qwen_moe_selfcheck PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )

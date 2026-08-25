@@ -77,12 +77,31 @@ cudaError_t RunQwenMoeSharedCombine(
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out);
 
+// Persistent generation scratch owned by the model: the dequantized FP16
+// embedding table (computed once, byte-identical to per-call dequant) and a
+// capacity-grown workspace arena reused across Infer calls.
+struct QwenMoeGenScratch {
+    __half *d_embed = nullptr;      // [V*H]
+    int64_t table_elems = 0;
+    void *arena = nullptr;
+    size_t arena_capacity = 0;
+    int64_t dequant_runs = 0;       // diagnostics/tests
+    int64_t arena_allocs = 0;       // diagnostics/tests
+};
+
+cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
+                                 const QwenMoePinnedWeights &pw,
+                                 QwenMoeGenScratch &scratch);
+cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes);
+void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch);
+
 // Incremental single-stream generation driver (MoE FFN call site). Requires
 // a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
 // handshake and final-logits publication.
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
     QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::QwenGenerationResult &result,
     lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv);

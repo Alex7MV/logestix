@@ -2,12 +2,14 @@
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
+#include <cublas_v2.h>
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
 #include "lsxcommon/gemma4_inference_load.h"
+#include "lsxcommon/expert_device_cache.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -91,10 +93,85 @@ struct GemmaGenerationResult {
 // pinned handshake). kv must be pre-allocated for prompt+gen capacity.
 // Applies final RMSNorm, tied-head logits and softcap tanh(l/cap)*cap.
 //
-// Opaque persistent generation context: cuBLAS handle + capacity-grown
-// workspace + routed-expert device cache. Owned by the model; created lazily,
-// single-threaded (one consumer).
-struct GemmaGenContext;
+// Persistent generation context: cuBLAS handle + capacity-grown workspace +
+// routed-expert device slot cache. Owned by the model; created lazily,
+// single-threaded (one consumer). Plain host-safe members only (no absl).
+struct GenWorkspace {
+    __nv_bfloat16 *d_x = nullptr;        // [seq0][H]
+    __nv_bfloat16 *d_normed = nullptr;   // [seq0][H]
+    __nv_bfloat16 *d_tmp = nullptr;      // [seq0][q_rows_max]
+    __nv_bfloat16 *d_qr = nullptr;       // [seq0][q_rows_max]
+    __nv_bfloat16 *d_kr = nullptr;       // [seq0][kv_rows_max]
+    __nv_bfloat16 *d_tmp2 = nullptr;     // [seq0][kv_rows_max]
+    __nv_bfloat16 *d_vr = nullptr;
+    __nv_bfloat16 *d_cos = nullptr;      // [seq0][rot_half]
+    __nv_bfloat16 *d_sin = nullptr;
+    int32_t *d_pos = nullptr;     // [seq0]
+    float *d_logits = nullptr;    // [vocab]
+    int32_t *d_argmax = nullptr;
+    int32_t *d_sel = nullptr;     // [seq0*K]
+    float *d_selw = nullptr;      // [seq0*K]
+    int32_t *h_sel = nullptr;     // pinned
+    float *h_selw = nullptr;      // pinned
+    int32_t *h_arg = nullptr;     // pinned
+    uint8_t *d_p1 = nullptr, *d_s1 = nullptr, *d_p2 = nullptr;
+    uint8_t *d_s2 = nullptr, *d_p3 = nullptr, *d_s3 = nullptr;
+    __nv_bfloat16 *d_w1 = nullptr, *d_w3 = nullptr, *d_w2 = nullptr;
+    __nv_bfloat16 *d_eout = nullptr;     // [1][H]
+    __nv_bfloat16 *d_acc = nullptr;      // [seq0][H]
+    __nv_bfloat16 *d_gg = nullptr;       // [seq0][I_max] dense-branch gate/geglu
+    __nv_bfloat16 *d_gu = nullptr;       // [seq0][I_max] dense-branch up
+    __nv_bfloat16 *d_eg = nullptr;       // [MI] expert gate/geglu
+    __nv_bfloat16 *d_eu = nullptr;       // [MI] expert up
+
+    size_t seq0 = 0, q_rows_max = 0, kv_rows_max = 0, rot_half_max = 0;
+    int K = 0;
+
+    void Free()
+    {
+        auto F = [](void **p) { if (*p) { cudaFree(*p); *p = nullptr; } };
+        F((void **)&d_x); F((void **)&d_normed); F((void **)&d_tmp);
+        F((void **)&d_qr); F((void **)&d_kr); F((void **)&d_vr);
+        F((void **)&d_tmp2);
+        F((void **)&d_cos); F((void **)&d_sin); F((void **)&d_pos);
+        F((void **)&d_logits); F((void **)&d_argmax);
+        F((void **)&d_sel); F((void **)&d_selw);
+        F((void **)&d_p1); F((void **)&d_s1); F((void **)&d_p2);
+        F((void **)&d_s2); F((void **)&d_p3); F((void **)&d_s3);
+        F((void **)&d_w1); F((void **)&d_w3); F((void **)&d_w2);
+        F((void **)&d_eout); F((void **)&d_acc);
+        F((void **)&d_gg); F((void **)&d_gu);
+        F((void **)&d_eg); F((void **)&d_eu);
+        if (h_sel) { cudaFreeHost(h_sel); h_sel = nullptr; }
+        if (h_selw) { cudaFreeHost(h_selw); h_selw = nullptr; }
+        if (h_arg) { cudaFreeHost(h_arg); h_arg = nullptr; }
+    }
+
+    ~GenWorkspace() { Free(); }
+};
+
+struct GemmaGenContext {
+    ~GemmaGenContext()
+    {
+        if (cublas) cublasDestroy(cublas);
+        if (ec.d_base) cudaFree(ec.d_base);
+        delete[] ec.h_slot_of;
+        delete[] ec.h_slot_owner;
+        delete[] ec.h_lru;
+        ec = {};
+    }
+    cublasHandle_t cublas = nullptr;
+    GenWorkspace ws;
+    bool ws_ready = false;
+    size_t seq0_cap = 0, q_rows_cap = 0, kv_rows_cap = 0, rot_half_cap = 0;
+    int K_cap = 0;
+    // Routed-expert device slot cache: [slots] × (pack_stride + scale_stride),
+    // one slot per flat expert id. Bookkeeping per gpu::ExpertDeviceCache.
+    gpu::ExpertDeviceCache ec{};
+    int64_t pack_stride = 0;
+    int64_t scale_stride = 0;
+};
+
 GemmaGenContext *CreateGemmaGenContext();
 void DestroyGemmaGenContext(GemmaGenContext *ctx);
 

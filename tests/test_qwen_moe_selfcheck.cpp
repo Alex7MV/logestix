@@ -15,6 +15,8 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
+#include "qwen_3_5_moe_model.h"
+
 namespace {
 
 constexpr int kStressCycles = 3;
@@ -98,6 +100,50 @@ TEST_CASE("Qwen3.5-35B-A3B SelfCheck: 'The capital of France is' -> 'Paris', "
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    m->Unload();
+}
+
+TEST_CASE("Qwen3.5-35B-A3B generation scratch persists across SelfCheck cycles",
+          "[qwen-moe][model]")
+{
+    const std::filesystem::path model_dir = QwenMoeConvertedPath();
+    const bool have_pinned =
+        std::filesystem::exists(model_dir / "logestix" / "pinned") ||
+        std::filesystem::exists(model_dir / "logestix-qwen35moe" / "pinned");
+    if (!have_pinned)
+        SKIP("Qwen3.5-35B-A3B converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model_dir.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    const std::vector<int32_t> ids = EncodeSelfCheckPrompt(m->Tokenizer());
+    REQUIRE(!ids.empty());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 2;
+
+    auto sc0 = m->SelfCheck(req);
+    REQUIRE(sc0.ok);
+
+    auto *qm = dynamic_cast<lsxcommon::Qwen35MoeModel *>(m.get());
+    REQUIRE(qm != nullptr);
+    const auto &scratch = qm->GenScratchForTest();
+    CHECK(scratch.dequant_runs == 1);
+    CHECK(scratch.arena_allocs <= 1);
+
+    auto sc1 = m->SelfCheck(req);
+    REQUIRE(sc1.ok);
+    CHECK(qm->GenScratchForTest().dequant_runs == 1);
+    CHECK(qm->GenScratchForTest().arena_allocs <= 1);
+
+    REQUIRE(sc1.final_logits.size() == sc0.final_logits.size());
+    CHECK(std::memcmp(sc1.final_logits.data(), sc0.final_logits.data(),
+                      sc0.final_logits.size() * sizeof(float)) == 0);
 
     m->Unload();
 }

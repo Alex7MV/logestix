@@ -21,6 +21,7 @@ Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 
 void Qwen35MoeModel::TeardownWeights()
 {
+    qwen_moe::FreeQwenMoeGenScratch(scratch_);
     qwen_moe::FreeQwenMoeExpertCache(cache_);
     experts_.Free();
     qwen_moe::FreeQwenMoePinnedWeights(pw_);
@@ -146,8 +147,9 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
     cudaError_t e = RunUnderResidencyLock([&] {
         return qwen_moe::RunQwenMoeGeneration(
-            stream(), pw_, experts_, cache_, gen_input, req.max_gen_tokens,
-            eos_id, gen, lsxcommon::sample::DefaultSampler(), kv_.get());
+            stream(), pw_, experts_, cache_, scratch_, gen_input,
+            req.max_gen_tokens, eos_id, gen,
+            lsxcommon::sample::DefaultSampler(), kv_.get());
     });
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;

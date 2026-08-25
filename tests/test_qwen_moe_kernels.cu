@@ -475,12 +475,16 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
     REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 8, cache, err));
 
+    lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
+    REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
+            cudaSuccess);
+
     auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
         lsxcommon::qwen::QwenKvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::qwen_moe::RunQwenMoeGeneration(
-            stream, pw, store, cache, prompt, /*max_new=*/4,
+            stream, pw, store, cache, gen_scratch, prompt, /*max_new=*/4,
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
@@ -500,6 +504,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     for (auto v : r1.final_logits) CHECK(std::isfinite(v));
     CHECK(r1.ok); CHECK(r2.ok);
 
+    lsxcommon::qwen_moe::FreeQwenMoeGenScratch(gen_scratch);
     lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
     store.Free();
     lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
