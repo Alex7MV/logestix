@@ -36,6 +36,15 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const float *seg_wgs_dev = nullptr,
                                const int *seg_bounds_dev = nullptr);
 
+// TC GEMM over caller-owned quantized activations: skips the internal
+// ActQuant pass + scratch allocs. Producer kernels that emit both fp16 and
+// NVFP4 forms use this to avoid a separate quant launch per GEMM.
+cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
+                                  const uint8_t *as, const uint8_t *w_packed,
+                                  const uint8_t *w_scales, float w_global_scale,
+                                  __half *y, int seq, int K, int N,
+                                  bool acc = false);
+
 // Builds (once, cached) the N-concatenation of four NVFP4 weight matrices
 // sharing one input K, so several projections can run as a single GEMM.
 // All segments must have identical K (k_half = K/2, k_chunks = K/16).

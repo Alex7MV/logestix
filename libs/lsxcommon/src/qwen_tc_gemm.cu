@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "nvfp4_codec.h"
+#include "lsx_kernels_quant.cuh"
 
 namespace lsxcommon {
 namespace qwen {
@@ -28,36 +29,11 @@ namespace tc {
 
 namespace {
 
-// Power-of-two E4M3 encode matching schema.cpp float_to_e4m3_p2 and the
-// device decoder in nvfp4_codec.h: byte = (e4+7)<<3 with value 2^(e4-7).
-// Ceil semantics: smallest power of two >= s.
-__device__ __forceinline__ uint8_t Pow2E4m3Encode(float s)
-{
-    if (!(s > 0.0f)) return 0; // zero / NaN guard: zero scale zeroes the block
-    int exp;
-    (void)frexpf(s, &exp); // s = m * 2^exp, m in [0.5, 1)
-    const int e4 = exp + 7;
-    if (e4 < 1) return static_cast<uint8_t>(1 << 3);      // smallest positive
-    if (e4 > 15) return static_cast<uint8_t>(15 << 3);    // saturate at 2^8
-    return static_cast<uint8_t>(e4 << 3);
-}
-
-__device__ __forceinline__ uint8_t QuantizeE2m1(float v)
-{
-    // Nearest-level E2M1 with sign bit 3; levels match kE2M1Table.
-    const bool neg = v < 0.0f;
-    const float a = fabsf(v);
-    uint8_t mag;
-    if (a < 0.25f) mag = 0;
-    else if (a < 0.75f) mag = 1;
-    else if (a < 1.25f) mag = 2;
-    else if (a < 1.75f) mag = 3;
-    else if (a < 2.5f) mag = 4;
-    else if (a < 3.5f) mag = 5;
-    else if (a < 5.0f) mag = 6;
-    else mag = 7;
-    return neg ? static_cast<uint8_t>(mag | 8) : mag;
-}
+// Quantization helpers (Pow2E4m3Encode / QuantizeE2m1) live in
+// lsx_kernels_quant.cuh (shared with producer-side fused quant kernels);
+// QuantizeE2m1 there is named QuantizeE2m1TieUp -- identical chain.
+using lsxcommon::kernels::Pow2E4m3Encode;
+using lsxcommon::kernels::QuantizeE2m1TieUp;
 
 __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
                                uint8_t *__restrict__ packed,
@@ -84,11 +60,11 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
 
     for (int i = 0; i < len; i += 2) {
-        const uint8_t lo = QuantizeE2m1(__half2float(x[base + i]) * inv);
-        const uint8_t hi = (i + 1 < len)
-                               ? QuantizeE2m1(__half2float(x[base + i + 1]) *
-                                              inv)
-                               : 0;
+        const uint8_t lo = QuantizeE2m1TieUp(__half2float(x[base + i]) * inv);
+        const uint8_t hi =
+            (i + 1 < len)
+                ? QuantizeE2m1TieUp(__half2float(x[base + i + 1]) * inv)
+                : 0;
         packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
     }
 }
@@ -717,16 +693,18 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
     return cudaGetLastError();
 }
 
-cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
-                               const uint8_t *w_packed,
-                               const uint8_t *w_scales, float w_global_scale,
-                               __half *y, int seq, int K, int N, bool acc,
-                               const float *seg_wgs_dev,
-                               const int *seg_bounds_dev)
+static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
+                                  const uint8_t *ap_in, const uint8_t *as_in,
+                                  const uint8_t *w_packed,
+                                  const uint8_t *w_scales, float w_global_scale,
+                                  __half *y, int seq, int K, int N, bool acc,
+                                  const float *seg_wgs_dev,
+                                  const int *seg_bounds_dev)
 {
-    if (!x_fp16 || !w_packed || !w_scales || !y || seq <= 0 || K <= 0 ||
-        N <= 0 || (K & 15))
+    if (!w_packed || !w_scales || !y || seq <= 0 || K <= 0 || N <= 0 ||
+        (K & 15))
         return cudaErrorInvalidValue;
+    if (!x_fp16 && (!ap_in || !as_in)) return cudaErrorInvalidValue;
 
     int dev = 0;
     cudaError_t e = cudaGetDevice(&dev);
@@ -736,21 +714,28 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     if (e != cudaSuccess) return e;
     if (prop.major != 12) return cudaErrorNotSupported;
 
-    // Stream-ordered scratch for quantized activations.
+    // Pre-quantized activations bypass the scratch + quant pass entirely.
+    void *ap_scratch = nullptr, *as_scratch = nullptr;
     const size_t packed_bytes = static_cast<size_t>(seq) * (K / 2);
     const size_t scale_bytes = static_cast<size_t>(seq) * ((K + 15) / 16);
-    void *ap_scratch = nullptr, *as_scratch = nullptr;
-    e = cudaMallocAsync(&ap_scratch, packed_bytes ? packed_bytes : 1, stream);
-    if (e != cudaSuccess) return e;
-    e = cudaMallocAsync(&as_scratch, scale_bytes ? scale_bytes : 1, stream);
-    if (e != cudaSuccess) {
-        cudaFreeAsync(ap_scratch, stream);
-        return e;
+    if (x_fp16) {
+        e = cudaMallocAsync(&ap_scratch, packed_bytes ? packed_bytes : 1,
+                            stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMallocAsync(&as_scratch, scale_bytes ? scale_bytes : 1,
+                            stream);
+        if (e != cudaSuccess) {
+            cudaFreeAsync(ap_scratch, stream);
+            return e;
+        }
+        e = QuantizeActsNvfp4(stream, x_fp16, seq, K,
+                              static_cast<uint8_t *>(ap_scratch),
+                              static_cast<uint8_t *>(as_scratch));
+    } else {
+        ap_scratch = const_cast<uint8_t *>(ap_in);
+        as_scratch = const_cast<uint8_t *>(as_in);
+        e = cudaSuccess;
     }
-
-    e = QuantizeActsNvfp4(stream, x_fp16, seq, K,
-                          static_cast<uint8_t *>(ap_scratch),
-                          static_cast<uint8_t *>(as_scratch));
     bool handled = false;
     // Decode-specialized kernel: faster in isolation (micro-bench 84-172us)
     // but net-slower end-to-end than the v2 tile kernel on this workload
@@ -835,9 +820,36 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
             e = cudaGetLastError();
         }
     }
-    cudaFreeAsync(ap_scratch, stream);
-    cudaFreeAsync(as_scratch, stream);
+    if (x_fp16) {   // pre-quantized buffers are owned by the caller
+        cudaFreeAsync(ap_scratch, stream);
+        cudaFreeAsync(as_scratch, stream);
+    }
     return e;
+}
+
+cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
+                               const uint8_t *w_packed,
+                               const uint8_t *w_scales, float w_global_scale,
+                               __half *y, int seq, int K, int N, bool acc,
+                               const float *seg_wgs_dev,
+                               const int *seg_bounds_dev)
+{
+    return TcGemmDispatch(stream, x_fp16, nullptr, nullptr, w_packed,
+                          w_scales, w_global_scale, y, seq, K, N, acc,
+                          seg_wgs_dev, seg_bounds_dev);
+}
+
+// TC GEMM over caller-owned quantized activations (producer-fused quant):
+// skips the scratch alloc + ActQuant pass. Returns NotSupported on
+// non-Blackwell devices (caller falls back to the fp16-input path).
+cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
+                                  const uint8_t *as, const uint8_t *w_packed,
+                                  const uint8_t *w_scales, float w_global_scale,
+                                  __half *y, int seq, int K, int N, bool acc)
+{
+    return TcGemmDispatch(stream, nullptr, ap, as, w_packed, w_scales,
+                          w_global_scale, y, seq, K, N, acc, nullptr,
+                          nullptr);
 }
 
 // ── B3 capability probe: single-warp cp.async.bulk.tensor.2d round trip ────

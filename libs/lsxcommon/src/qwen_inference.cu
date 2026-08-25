@@ -6,6 +6,7 @@
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
+#include "lsx_kernels_quant.cuh"
 #include "qwen_reduce.cuh"
 
 #include <cuda_runtime.h>
@@ -541,6 +542,51 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
     const int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
     y[idx] = __float2half(silu_dev(__half2float(a[idx])) * __half2float(b[idx]));
+}
+
+// Producer-fused swiglu + NVFP4 activation quant: one thread per 16-group.
+// Emits the fp16 output AND its quantized form so the following down-GEMM
+// skips the standalone ActQuant pass. Quantization is byte-identical to
+// ActQuantKernel: values are rounded to half BEFORE encoding (same
+// round-trip), same Pow2E4m3Encode / tie-up chain.
+__global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
+                                         const __half *__restrict__ b,
+                                         __half *__restrict__ y,
+                                         uint8_t *__restrict__ packed,
+                                         uint8_t *__restrict__ scales,
+                                         int64_t n)
+{
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    if (base >= n) return;
+    const int len = static_cast<int>(
+        min(static_cast<long long>(16), static_cast<long long>(n - base)));
+
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const __half hv = __float2half(silu_dev(__half2float(a[base + i])) *
+                                       __half2float(b[base + i]));
+        y[base + i] = hv;
+        vals[i] = __half2float(hv);
+        absmax = fmaxf(absmax, fabsf(vals[i]));
+    }
+
+    const uint8_t sb =
+        lsxcommon::kernels::Pow2E4m3Encode(absmax * (1.0f / 6.0f));
+    scales[base / 16] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = (i + 1 < len)
+                               ? lsxcommon::kernels::QuantizeE2m1TieUp(
+                                     vals[i + 1] * inv)
+                               : 0;
+        packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
+    }
 }
 
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
@@ -1580,6 +1626,34 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
                              lw.mlp_gate_up.global_scale, d_gate, seq, H, 2 * I,
                              /*acc=*/false);
         if (e) return e;
+
+        // Producer-fused quant: swiglu emits the NVFP4 form of d_gate so
+        // the down GEMM skips its standalone ActQuant pass (TC only).
+        if (QwenTcFastMath() && (I % 16) == 0) {
+            const size_t qb = static_cast<size_t>(seq) * I / 2;
+            const size_t sb2 = static_cast<size_t>(seq) * ((I + 15) / 16);
+            uint8_t *ap = nullptr, *as = nullptr;
+            cudaError_t e2 = cudaMallocAsync(&ap, qb ? qb : 1, stream);
+            if (e2 == cudaSuccess)
+                e2 = cudaMallocAsync(&as, sb2 ? sb2 : 1, stream);
+            if (e2 != cudaSuccess) return e2;
+            qwen_swiglu_quant_kernel<<<blocks, threads, 0, stream>>>(
+                d_gate, d_up, d_gate, ap, as, n_act);
+            e2 = cudaGetLastError();
+            if (e2 == cudaSuccess)
+                e2 = qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, ap, as, lw.mlp_down.d_packed,
+                    lw.mlp_down.d_scales, lw.mlp_down.global_scale, d_resid,
+                    seq, I, H, /*acc=*/true);
+            cudaFreeAsync(ap, stream);
+            cudaFreeAsync(as, stream);
+            if (e2 == cudaErrorNotSupported ||
+                e2 == cudaErrorInvalidValue) {
+                // fall through to the fp16 path below
+            } else {
+                return e2;
+            }
+        }
         qwen_swiglu_kernel<<<blocks, threads, 0, stream>>>(
             d_gate, d_up, d_gate, n_act);
         e = cudaGetLastError();

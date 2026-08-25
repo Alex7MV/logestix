@@ -599,6 +599,26 @@ endif()
 add_test(NAME test_blackwell_perf_qwen COMMAND test_blackwell_perf_qwen)
 set_tests_properties(test_blackwell_perf_qwen PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── MoE perf baseline harness: Qwen3.5-35B-A3B decode throughput.
+add_executable(test_blackwell_perf_qwen_moe test_blackwell_perf_qwen_moe.cpp)
+target_link_libraries(test_blackwell_perf_qwen_moe PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_blackwell_perf_qwen_moe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen_moe>"
+    )
+    add_custom_command(TARGET test_blackwell_perf_qwen_moe POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_qwen_moe>"
+    )
+endif()
+
+add_test(NAME test_blackwell_perf_qwen_moe COMMAND test_blackwell_perf_qwen_moe)
+set_tests_properties(test_blackwell_perf_qwen_moe PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
 add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)
 target_link_libraries(test_blackwell_perf_deepseek PRIVATE lsxcommon Catch2::Catch2WithMain)
