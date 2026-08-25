@@ -58,6 +58,9 @@ protected:
     // Routed-expert index: parsed once at Load(), reused by every Infer.
     gemma::GemmaExpertDb expert_db_;
     bool expert_db_ready_ = false;
+
+    // Persistent generation context (cublas + workspace [+ expert cache]).
+    gemma::GemmaGenContext *gen_ctx_ = nullptr;
 };
 
 } // namespace lsxcommon

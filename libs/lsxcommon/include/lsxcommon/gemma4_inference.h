@@ -90,10 +90,19 @@ struct GemmaGenerationResult {
 // ONE stream (no cudaDeviceSynchronize in the loop; per-token D2H argmax via
 // pinned handshake). kv must be pre-allocated for prompt+gen capacity.
 // Applies final RMSNorm, tied-head logits and softcap tanh(l/cap)*cap.
+//
+// Opaque persistent generation context: cuBLAS handle + capacity-grown
+// workspace + routed-expert device cache. Owned by the model; created lazily,
+// single-threaded (one consumer).
+struct GemmaGenContext;
+GemmaGenContext *CreateGemmaGenContext();
+void DestroyGemmaGenContext(GemmaGenContext *ctx);
+
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db, const std::vector<int32_t> &input_ids,
                                int max_gen_tokens, int eos_id, float softcap,
-                               GemmaGenerationResult &out, GemmaKvCache &kv);
+                               GemmaGenerationResult &out, GemmaKvCache &kv,
+                               GemmaGenContext *ctx = nullptr);
 
 } // namespace gemma
 } // namespace lsxcommon

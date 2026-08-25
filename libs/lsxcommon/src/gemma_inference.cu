@@ -11,6 +11,7 @@
 
 #include "lsxcommon/gemma4_inference.h"
 #include "lsxcommon/gemma4_inference_load.h"
+#include "lsxcommon/expert_device_cache.h"
 
 #include "nvfp4_codec.h"
 #include "lsx_kernels_quant.cuh"
@@ -686,6 +687,88 @@ struct GenWorkspace {
     ~GenWorkspace() { Free(); }
 };
 
+struct GemmaGenContext {
+    ~GemmaGenContext()
+    {
+        if (cublas) cublasDestroy(cublas);
+        if (ec.d_base) cudaFree(ec.d_base);
+        delete[] ec.h_slot_of;
+        delete[] ec.h_slot_owner;
+        delete[] ec.h_lru;
+        ec = {};
+    }
+    cublasHandle_t cublas = nullptr;
+    GenWorkspace ws;
+    bool ws_ready = false;
+    size_t seq0_cap = 0, q_rows_cap = 0, kv_rows_cap = 0, rot_half_cap = 0;
+    int K_cap = 0;
+    // Routed-expert device slot cache: [slots] × (pack_stride + scale_stride),
+    // one slot per flat expert id. Bookkeeping per gpu::ExpertDeviceCache.
+    gpu::ExpertDeviceCache ec{};
+    int64_t pack_stride = 0;
+    int64_t scale_stride = 0;
+};
+
+GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
+void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
+
+// Capacity-grown workspace reuse: reallocates only when a request exceeds
+// every recorded capacity. Same allocation layout as the previous per-call
+// path; contents are scratch and never carry values between calls.
+cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
+                            int64_t MI, int64_t I_max, size_t S,
+                            size_t q_rows_max, size_t kv_rows_max,
+                            size_t rot_half_max, int K)
+{
+    GenWorkspace &ws = ctx.ws;
+    if (ctx.ws_ready && ctx.seq0_cap >= S && ctx.q_rows_cap >= q_rows_max &&
+        ctx.kv_rows_cap >= kv_rows_max && ctx.rot_half_cap >= rot_half_max &&
+        ctx.K_cap >= K)
+        return cudaSuccess;
+    ws.Free();
+    cudaError_t e = cudaSuccess;
+    auto A = [&](void **p, size_t bytes) { return cudaMalloc(p, bytes); };
+    if ((e = A((void **)&ws.d_x, S * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_normed, S * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_tmp, S * q_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_qr, S * q_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_kr, S * kv_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_vr, S * kv_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_tmp2, S * kv_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_cos, S * rot_half_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_sin, S * rot_half_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_pos, S * 4)) != cudaSuccess ||
+        (e = A((void **)&ws.d_logits, V * sizeof(float))) != cudaSuccess ||
+        (e = A((void **)&ws.d_argmax, 4)) != cudaSuccess ||
+        (e = A((void **)&ws.d_sel, S * K * 4)) != cudaSuccess ||
+        (e = A((void **)&ws.d_selw, S * K * sizeof(float))) != cudaSuccess ||
+        (e = A((void **)&ws.d_p1, MI * H)) != cudaSuccess ||
+        (e = A((void **)&ws.d_s1, MI * H / 16 + 16)) != cudaSuccess ||
+        (e = A((void **)&ws.d_p2, MI * H)) != cudaSuccess ||
+        (e = A((void **)&ws.d_s2, MI * H / 16 + 16)) != cudaSuccess ||
+        (e = A((void **)&ws.d_p3, MI * H)) != cudaSuccess ||
+        (e = A((void **)&ws.d_s3, MI * H / 16 + 16)) != cudaSuccess ||
+        (e = A((void **)&ws.d_w1, MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_w3, MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_w2, MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_eout, H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_acc, S * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gg, S * I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gu, S * I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_eg, MI * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_eu, MI * 2)) != cudaSuccess ||
+        cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
+        cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
+        cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
+        return e != cudaSuccess ? e : cudaErrorMemoryAllocation;
+    }
+    ctx.seq0_cap = S; ctx.q_rows_cap = q_rows_max;
+    ctx.kv_rows_cap = kv_rows_max; ctx.rot_half_cap = rot_half_max;
+    ctx.K_cap = K;
+    ctx.ws_ready = true;
+    return cudaSuccess;
+}
+
 // Forward `seq` tokens (hidden states in ws.d_x) through one layer; writes
 // k/v rows at [pos_base .. pos_base+seq) of the layer cache.
 cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
@@ -1015,7 +1098,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                GemmaExpertDb &db,
                                const std::vector<int32_t> &input_ids,
                                int max_gen_tokens, int eos_id, float softcap,
-                               GemmaGenerationResult &out, GemmaKvCache &kv)
+                               GemmaGenerationResult &out, GemmaKvCache &kv,
+                               GemmaGenContext *ctx)
 {
     out = GemmaGenerationResult{};
     // Clear any sticky context error from prior async work so per-call
@@ -1036,11 +1120,14 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         pw.layers.empty() || !kv.allocated())
         return cudaErrorInvalidValue;
 
-    cublasHandle_t cublas = nullptr;
-    if (cublasCreate(&cublas) != CUBLAS_STATUS_SUCCESS) {
+    GemmaGenContext local_ctx;
+    GemmaGenContext &c = ctx ? *ctx : local_ctx;
+    if (!c.cublas &&
+        cublasCreate(&c.cublas) != CUBLAS_STATUS_SUCCESS) {
         out.error_msg = "cublas create failed";
         return cudaErrorInvalidValue;
     }
+    cublasHandle_t cublas = c.cublas;
 
     const int P = static_cast<int>(input_ids.size());
     if (kv.max_total < P + max_gen_tokens) {
@@ -1057,70 +1144,38 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     const size_t rot_half_max = static_cast<size_t>(head_dim_max / 2);
     const size_t S = static_cast<size_t>(P);
 
-    GenWorkspace ws;
+    cudaError_t e = EnsureWorkspace(c, H, V, MI, I_max, S, q_rows_max,
+                                    kv_rows_max, rot_half_max, K);
+    if (e != cudaSuccess) {
+        out.error_msg = "workspace alloc failed";
+        return e;
+    }
+    GenWorkspace &ws = c.ws;
     ws.seq0 = S;
     ws.q_rows_max = q_rows_max;
     ws.kv_rows_max = kv_rows_max;
     ws.rot_half_max = rot_half_max;
     ws.K = K;
 
-    cudaError_t e = cudaSuccess;
-    auto A = [&](void **p, size_t bytes) { return cudaMalloc(p, bytes); };
-    if ((e = A((void **)&ws.d_x, S * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_normed, S * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_tmp, S * q_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_qr, S * q_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_kr, S * kv_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_vr, S * kv_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_tmp2, S * kv_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_cos, S * rot_half_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_sin, S * rot_half_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_pos, S * 4)) != cudaSuccess ||
-        (e = A((void **)&ws.d_logits, V * sizeof(float))) != cudaSuccess ||
-        (e = A((void **)&ws.d_argmax, 4)) != cudaSuccess ||
-        (e = A((void **)&ws.d_sel, S * K * 4)) != cudaSuccess ||
-        (e = A((void **)&ws.d_selw, S * K * sizeof(float))) != cudaSuccess ||
-        (e = A((void **)&ws.d_p1, MI * H)) != cudaSuccess ||
-        (e = A((void **)&ws.d_s1, MI * H / 16 + 16)) != cudaSuccess ||
-        (e = A((void **)&ws.d_p2, MI * H)) != cudaSuccess ||
-        (e = A((void **)&ws.d_s2, MI * H / 16 + 16)) != cudaSuccess ||
-        (e = A((void **)&ws.d_p3, MI * H)) != cudaSuccess ||
-        (e = A((void **)&ws.d_s3, MI * H / 16 + 16)) != cudaSuccess ||
-        (e = A((void **)&ws.d_w1, MI * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_w3, MI * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_w2, MI * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_eout, H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_acc, S * H * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_gg, S * I_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_gu, S * I_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_eg, MI * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_eu, MI * 2)) != cudaSuccess ||
-        cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
-        cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
-        cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
-        out.error_msg = "workspace alloc failed";
-        return e != cudaSuccess ? e : cudaErrorMemoryAllocation;
-    }
-
     g_expert_db = &db;
 
     // ── Prefill ─────────────────────────────────────────────────────────────
     e = cudaMemcpyAsync(ws.d_pos, input_ids.data(), sizeof(int32_t) * P,
                         cudaMemcpyHostToDevice, stream);
-    if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
+    if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
     {
         dim3 grid(static_cast<unsigned>(P));
         gemma_embed_kernel<<<grid, 256, 0, stream>>>(
             pw.d_embed, ws.d_pos, ws.d_x, static_cast<int>(H));
         e = cudaGetLastError();
-        if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
+        if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
         // Gemma scales embeddings by sqrt(hidden_size).
         const float normalizer = std::sqrt(static_cast<float>(H));
         const int64_t numel = static_cast<int64_t>(P) * H;
         gemma_scale_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256,
                              0, stream>>>(ws.d_x, normalizer, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { g_expert_db = nullptr; cublasDestroy(cublas); return e; }
+        if (e != cudaSuccess) { g_expert_db = nullptr; return e; }
     }
     // Wall-clock timing via std::chrono: the previous cudaEvent-based TTFT
     // measurement returned a sticky "invalid resource handle" from
@@ -1231,7 +1286,6 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             .count();
 
     g_expert_db = nullptr;
-    cublasDestroy(cublas);
     out.ok = (e == cudaSuccess);
     if (e != cudaSuccess && out.error_msg.empty())
         out.error_msg = "decode: " + std::string(cudaGetErrorString(e));
