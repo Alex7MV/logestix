@@ -538,3 +538,40 @@ changed the rounding trajectory): " Paris." stable x4.
 
 e2e @5090: **48.8 -> 53.9 tok/s (+10%), ttft 87 -> 79ms**. 105/105 tests,
 sanitizer clean. Cumulative: scalar 14.4 -> **53.9 tok/s (x3.7)**.
+
+### Host-side pipeline audit + MoE handshake fixes (2026-08-25, branch feat/moe-router-async-handshake)
+
+Second workstation (RTX 5060 Ti, Windows) audited the full inference
+strategy for GPU utilization while the first machine continued TC GEMM
+optimization. Full findings delivered to the operator; the non-conflicting
+subset was implemented here (no overlap with qwen_tc_gemm.cu / fast-math
+dispatch):
+
+| ID | Sev | Fix | Commit |
+|---|---|---|---|
+| H-01 | P0 | DeepSeek route_token split into async begin/finish (event-scoped fence replaces full cudaStreamSynchronize); shared-expert FFN enqueued BETWEEN the phases so the GPU executes it during the host's router roundtrip — was a full drain x43 layers/token. Fused API kept as bit-exact wrapper | 254c931 |
+| H-02 | P0 | Qwen3.5-MoE per-layer slot readback: acc-init kernel moved ahead of the wait; blocking cudaEventSynchronize -> busy-poll cudaEventQuery (wake latency x40 layers/token) | 254c931 |
+| H-03 | P2 | test_schema_views kept mmaps alive across fs::remove_all -> Windows file lock (F-08 closed); gemma path-separator (F-09) already fixed on main | cb9674b |
+| H-04 | P3 | deepseek/glm perf harnesses now decode+print gen text (round-8 garbage-generation lesson ported) | 05a860a |
+| H-05 | P1 | DeepSeek persistent CUDA context via ModelBase::EnsureContext(true); RunInferenceModel accepts external stream/cuBLAS pair | 9bb436f |
+| H-06 | P1 | Qwen3.5-MoE cache-miss H2D moved to a dedicated copy stream: residency resolved up front, per-expert event fences, ev_front guard prevents overwriting slots still read by enqueued compute; driver owns stream+events per generation | 2a4d049 |
+| H-07 | P2 | LSX_QWEN_MOE_EXPERT_CACHE_SLOTS env override for VRAM sweeps (parity with DeepSeek knob) | 89df85d |
+
+Numerics untouched everywhere (ordering of independent work only).
+Verification on this box: 15/15 synthetic suites green (incl. two new TDD
+tests: router split-phase bitwise equivalence score/bias/hash; copy-stream
+path bit-identical to single-stream incl. LRU eviction) + real-model
+selfchecks PASS with the new pipeline: qwen3.5-35b-a3b (3 cycles, " Paris",
+177 s) and gemma-4-26b-a4b-it (87 s).
+
+Deferred to real-HW sessions (blocked locally by weights availability /
+Windows model-test policy): DeepSeek expert-upload copy stream (mmap eviction
+barrier must cover both streams), GLM two-stream production wiring (existing
+plumbing at glm_inference_load.cu:974-1089 is unreachable from
+RunGlmRealGeneration), LSX_QWEN_MOE_EXPERT_CACHE_SLOTS sweep above the 64-slot
+default, e2e tok/s deltas for the touched pipelines.
+
+Still-open structural levers from this audit (unchanged by design, bit-exactness
+contract): batched prefill (both models still token-at-a-time), single-block
+kernels in hot loops, CUDA Graphs for the ~310-launch decode graph, request
+batching in the orchestrator.
