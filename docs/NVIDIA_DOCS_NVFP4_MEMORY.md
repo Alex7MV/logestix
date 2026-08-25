@@ -28,6 +28,30 @@ Historical note: a bare `frexpf`-based encode doubles the scale on exact
 powers of two (`frexp(1.0) = (0.5, 1) → 2·2^0`) — this was a real defect fixed
 by this branch; do not reintroduce.
 
+**Scale-byte zero semantics (regression-pinned)**: the zero test is on the
+e4 FIELD (`(byte >> 3) & 0xF == 0`), never the whole byte. Bytes `0x80..0x87`
+have a zero exponent field and decode to exactly 0. NVIDIA docs agree this is
+the only sound reading: per cuda_fp8 E4M3 semantics those bytes are −0 /
+negative subnormals (−m·2^-9), i.e. never legitimate scale factors, and the
+hardware NVFP4 scale type is **unsigned** `float_ue4m3_t` (Blackwell
+tcgen05-mma narrow-precision table; `nv_float4_t` → SF = UE4M3, vector size
+16 / `.block16` — matching the repo's per-16 blocks). A whole-byte zero check
+instead decoded `0x82` as 2^-7 and silently corrupted every GEMM whose stored
+scale pattern contained such bytes.
+
+## Hardware scale-factor facts (PTX ISA tcgen05 / Blackwell)
+
+- Block-scaled MMA: `D = C + (A × SFA) · (B × SFB)`, scale factors applied
+  along GEMM-K every SV elements (SV = 16 or 32).
+- Valid SF element types: UE8M0 for `mxf8f6f4`/`mxf4`; for NVFP4
+  (`kind::mxf4nvf4`, E2M1 elements) either UE8M0 or **UE4M3** with
+  `.scale_vec::4X` / `.block16` (K-block of 16).
+- UE4M3/UE8M0 are UNSIGNED (no sign bit); repo's pow2-E4M3 payload keeps the
+  byte layout but only ever sets exponent bits via the canonical encoder.
+- Repo's pow2-only scale flavor is an internal deviation from full UE4M3
+  (mantissa bits unused by encode AND ignored by decode — both directions
+  consistent).
+
 ### E2M1 value levels
 
 sign(1) | exp(2, bias=1) | mant(1); no Inf/NaN encoding:

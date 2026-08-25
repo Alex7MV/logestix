@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "lsxcommon/qwen_inference.h"
+#include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
 
 namespace {
 
@@ -58,6 +60,35 @@ void HostRefNvfp4Gemm(const __half *x, const uint8_t *packed, const uint8_t *sca
 
 }  // namespace
 
+// Regression: pow2-E4M3 scale decode must test the e4 FIELD, not the whole
+// byte. Bytes with sign/mantissa bits set but a zero exponent field
+// (0x80..0x87) decode to exactly 0 — the contract shared by nvfp4_codec.h
+// E4M3ScaleToFloat and nvfp4_scale.h E4m3P2ToFloat. A whole-byte zero check
+// instead decodes 0x82 as 2^-7, silently corrupting every GEMM whose stored
+// scale pattern contains such bytes.
+TEST_CASE("pow2-E4M3 scale decode is field-zero based", "[qwen][gemm][nvfp4][regression]")
+{
+    using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
+    using lsxcommon::nvfp4::E4m3P2ToFloat;
+
+    // Zero exponent field -> exactly zero, regardless of sign/mantissa bits.
+    for (uint8_t b : {0x00, 0x01, 0x03, 0x07, 0x80, 0x81, 0x82, 0x84, 0x87}) {
+        INFO("byte=0x" << std::hex << int(b) << std::dec);
+        CHECK(E4M3ScaleToFloat(b) == 0.0f);
+        CHECK(E4m3P2ToFloat(b) == 0.0f);
+    }
+    // Canonical powers of two remain exact (and both decoders agree).
+    const struct { uint8_t b; float v; } cases[] = {
+        {0x08, 0.015625f}, {0x38, 1.0f}, {0x40, 2.0f},
+        {0x78, 256.0f}, {0x88, 0.015625f}, {0xf0, 128.0f}, {0xff, 256.0f},
+    };
+    for (const auto& c : cases) {
+        INFO("byte=0x" << std::hex << int(c.b) << std::dec);
+        CHECK(E4M3ScaleToFloat(c.b) == c.v);
+        CHECK(E4m3P2ToFloat(c.b) == c.v);
+    }
+}
+
 TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen][gemm][nvfp4]")
 {
     constexpr int seq = 2, K = 64, N = 128;   // N>=8, K>=16 -> tile kernel
@@ -85,9 +116,12 @@ TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen
 
     std::vector<__half> hy((size_t)seq * N);
     cudaMemcpy(hy.data(), dy, (size_t)seq * N * 2, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < seq * N; ++i)
+    for (int i = 0; i < seq * N; ++i) {
+        CAPTURE(i, __half2float(hy[i]),
+                __half2float(__float2half(h_ref[(size_t)i])));
         CHECK(std::abs(__half2float(hy[i]) -
                        __half2float(__float2half(h_ref[(size_t)i]))) < 1e-3f);
+    }
 
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
@@ -119,9 +153,12 @@ TEST_CASE("RunQwenNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvf
 
     std::vector<__half> hy((size_t)seq * N);
     cudaMemcpy(hy.data(), dy, (size_t)seq * N * 2, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < seq * N; ++i)
+    for (int i = 0; i < seq * N; ++i) {
+        CAPTURE(i, __half2float(hy[i]),
+                __half2float(__float2half(h_ref[(size_t)i])));
         CHECK(std::abs(__half2float(hy[i]) -
                        __half2float(__float2half(h_ref[(size_t)i]))) < 1e-3f);
+    }
 
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
