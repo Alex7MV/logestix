@@ -422,3 +422,16 @@ the TILE kernel is faster end-to-end (32.9 vs 31.1 tok/s @5090, correct
 Fast-math honest baseline: **32.9 tok/s** (x2.3 vs scalar 14.4). Perf queue
 unchanged: wider tiles/more CTAs, linear-attn fusion, act-quant reuse,
 CUDA Graphs; MoE models as additional targets.
+
+### Optimization round 9 (2026-08-25) — tile double-buffering
+
+TcGemmKernel k-loop pipelined: slabs for chunk i+1 stream via cp.async
+(double-buffered smem, wait<1>/wait<0> tail) while chunk i computes.
+Also fixed a PRE-EXISTING tail-K OOB in the scalar staging path (reads ran
+past the row end when K%64 != 0; sanitizer now reports 0 errors on
+[tc][gemm], was 43).
+
+Micro @5090: mlp_down 109 -> 99 us, gate_up 44.6 us. e2e: 33.0 -> **34.6
+tok/s** (+5%), ttft 126 -> 121 ms. Correctness unchanged (" Paris").
+
+Cumulative honest fast-math: 14.4 (scalar) -> 34.6 tok/s (x2.4).

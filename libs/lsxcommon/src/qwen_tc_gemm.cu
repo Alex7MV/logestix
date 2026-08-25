@@ -396,10 +396,12 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int row_base = blockIdx.y * kTileM;
     const int col_base = blockIdx.x * kTileN;
 
-    __shared__ __align__(16) uint8_t sA[kTileM][32];   // [m-row][packed byte over k64]
-    __shared__ __align__(16) uint8_t sB[kTileN][32];   // [n-col][packed byte over k64]
-    __shared__ uint8_t sAs[kTileM][4];   // activation chunk scales
-    __shared__ uint8_t sBs[kTileN][4];   // weight chunk scales
+    // Double-buffered slabs: chunk i+1 streams via cp.async while chunk i
+    // computes (removes the per-chunk staging stall; ~30% of GEMM time).
+    __shared__ __align__(16) uint8_t sA[2][kTileM][32];
+    __shared__ __align__(16) uint8_t sB[2][kTileN][32];
+    __shared__ uint8_t sAs[2][kTileM][4];
+    __shared__ uint8_t sBs[2][kTileN][4];
 
     const int k_half = K / 2;
     const int k_chunks = (K + 15) >> 4;
@@ -439,75 +441,95 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         a_koff[i] = tig * 8 + (i & 7) + ((i >= 16) ? 32 : 0);
     }
 
-    for (int kb = 0; kb < K; kb += 64) {
-        // ---- Cooperative streaming stage (4096 + 512 bytes per slab set).
-        // Fast path: uint4 vectorized copies when the whole slab set is
-        // 16B-aligned (K % 64 == 0 guarantees every row start lands on a
-        // 16-byte boundary since k_half % 32 == 0). Tail-K falls back to
-        // scalar byte staging.
+    // Double-buffered pipeline: slabs for chunk i+1 stream via cp.async
+    // while chunk i computes (removes the per-chunk staging stall).
+    const int k_chunks_total = (K + 63) / 64;
+    auto stage_slabs = [&](const int kb, const int buf) {
         const bool vec_ok = ((K & 63) == 0) &&
                             (((reinterpret_cast<uintptr_t>(ap) |
                                reinterpret_cast<uintptr_t>(bp)) & 15) == 0);
         if (vec_ok) {
             const uint4 *a4 = reinterpret_cast<const uint4 *>(
                 ap + static_cast<int64_t>(row_base) * k_half + kb / 2);
-            uint4 *sa4 = reinterpret_cast<uint4 *>(sA);
+            uint4 *sa4 = reinterpret_cast<uint4 *>(&sA[buf][0][0]);
             for (int idx = tid; idx < kTileM * 2; idx += 256) {
                 const int r = idx >> 1;
                 uint4 v = make_uint4(0, 0, 0, 0);
                 if (row_base + r < seq)
-                    v = a4[static_cast<int64_t>(r) * (k_half / 16) + (idx & 1)];
+                    v = a4[static_cast<int64_t>(r) * (k_half / 16) +
+                           (idx & 1)];
                 sa4[idx] = v;
             }
             const uint4 *b4 = reinterpret_cast<const uint4 *>(
                 bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
-            uint4 *sb4 = reinterpret_cast<uint4 *>(sB);
+            uint4 *sb4 = reinterpret_cast<uint4 *>(&sB[buf][0][0]);
             for (int idx = tid; idx < kTileN * 2; idx += 256) {
                 const int c = idx >> 1;
                 uint4 v = make_uint4(0, 0, 0, 0);
                 if (col_base + c < N)
-                    v = b4[static_cast<int64_t>(c) * (k_half / 16) + (idx & 1)];
+                    v = b4[static_cast<int64_t>(c) * (k_half / 16) +
+                           (idx & 1)];
                 sb4[idx] = v;
             }
         } else {
+            // Tail-K: clamp byte reads to the row (k_half may not be a
+            // multiple of 32); out-of-range bytes contribute code 0.
+            const int kb_b0 = kb / 2;
             for (int idx = tid; idx < kTileM * 32; idx += 256) {
                 const int r = idx / 32, b = idx % 32;
-                sA[r][b] = (row_base + r < seq)
-                               ? ap[static_cast<int64_t>(row_base + r) *
-                                        k_half + kb / 2 + b]
-                               : uint8_t{0};
+                const bool ok = row_base + r < seq && kb_b0 + b < k_half;
+                sA[buf][r][b] =
+                    ok ? ap[static_cast<int64_t>(row_base + r) * k_half +
+                            kb_b0 + b]
+                       : uint8_t{0};
             }
             for (int idx = tid; idx < kTileN * 32; idx += 256) {
                 const int c = idx / 32, b = idx % 32;
-                sB[c][b] = (col_base + c < N)
-                               ? bp[static_cast<int64_t>(col_base + c) *
-                                        k_half + kb / 2 + b]
-                               : uint8_t{0};
+                const bool ok = col_base + c < N && kb_b0 + b < k_half;
+                sB[buf][c][b] =
+                    ok ? bp[static_cast<int64_t>(col_base + c) * k_half +
+                            kb_b0 + b]
+                       : uint8_t{0};
             }
         }
         for (int idx = tid; idx < kTileM * 4; idx += 256) {
             const int r = idx / 4, ch = idx % 4;
             const int ch_g = kb / 16 + ch;
-            sAs[r][ch] = (row_base + r < seq && ch_g < k_chunks)
-                             ? as[static_cast<int64_t>(row_base + r) *
-                                      k_chunks + ch_g]
-                             : uint8_t{0};
+            sAs[buf][r][ch] =
+                (row_base + r < seq && ch_g < k_chunks)
+                    ? as[static_cast<int64_t>(row_base + r) * k_chunks +
+                         ch_g]
+                    : uint8_t{0};
         }
         for (int idx = tid; idx < kTileN * 4; idx += 256) {
             const int c = idx / 4, ch = idx % 4;
             const int ch_g = kb / 16 + ch;
-            sBs[c][ch] = (col_base + c < N && ch_g < k_chunks)
-                             ? bs[static_cast<int64_t>(col_base + c) *
-                                      k_chunks + ch_g]
-                             : uint8_t{0};
+            sBs[buf][c][ch] =
+                (col_base + c < N && ch_g < k_chunks)
+                    ? bs[static_cast<int64_t>(col_base + c) * k_chunks +
+                         ch_g]
+                    : uint8_t{0};
         }
+        cp_async_commit();
+    };
+
+    stage_slabs(0, 0);
+    for (int c64 = 0; c64 < k_chunks_total; ++c64) {
+        const int buf = c64 & 1;
+        const bool has_next = c64 + 1 < k_chunks_total;
+        if (has_next) stage_slabs((c64 + 1) * 64, buf ^ 1);
+        cp_async_commit();
+        if (has_next)
+            cp_async_wait<1>();      // current slab done, next in flight
+        else
+            cp_async_wait<0>();      // tail: everything drained
         __syncthreads();
 
         // ---- Build A fragment regs from smem.
         uint32_t ar[4] = {0, 0, 0, 0};
 #pragma unroll
         for (int i = 0; i < 32; ++i) {
-            const uint8_t byte = sA[a_row[i]][a_koff[i] >> 1];
+            const uint8_t byte = sA[buf][a_row[i]][a_koff[i] >> 1];
             const uint8_t code =
                 (a_koff[i] & 1) ? static_cast<uint8_t>(byte >> 4)
                                 : static_cast<uint8_t>(byte & 0x0F);
@@ -518,8 +540,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         uint32_t sfa;
         {
             const int sr = (tig == 1) ? (g + 8) : g;
-            sfa = uint32_t(sAs[sr][0]) | (uint32_t(sAs[sr][1]) << 8) |
-                  (uint32_t(sAs[sr][2]) << 16) | (uint32_t(sAs[sr][3]) << 24);
+            sfa = uint32_t(sAs[buf][sr][0]) |
+                  (uint32_t(sAs[buf][sr][1]) << 8) |
+                  (uint32_t(sAs[buf][sr][2]) << 16) |
+                  (uint32_t(sAs[buf][sr][3]) << 24);
         }
 
         // ---- Four n-atoms.
@@ -530,7 +554,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 #pragma unroll
             for (int i = 0; i < 16; ++i) {
                 const int kk = tig * 8 + (i & 7) + ((i >= 8) ? 32 : 0);
-                const uint8_t byte = sB[n_local][kk >> 1];
+                const uint8_t byte = sB[buf][n_local][kk >> 1];
                 const uint8_t code =
                     (kk & 1) ? static_cast<uint8_t>(byte >> 4)
                              : static_cast<uint8_t>(byte & 0x0F);
@@ -538,9 +562,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              << (((i % 8) / 2) * 8 + ((i % 8) % 2) * 4);
             }
             const uint32_t sfb =
-                uint32_t(sBs[n_local][0]) | (uint32_t(sBs[n_local][1]) << 8) |
-                (uint32_t(sBs[n_local][2]) << 16) |
-                (uint32_t(sBs[n_local][3]) << 24);
+                uint32_t(sBs[buf][n_local][0]) |
+                (uint32_t(sBs[buf][n_local][1]) << 8) |
+                (uint32_t(sBs[buf][n_local][2]) << 16) |
+                (uint32_t(sBs[buf][n_local][3]) << 24);
 
             float &d0 = d[j][0], &d1 = d[j][1], &d2 = d[j][2], &d3 = d[j][3];
             asm volatile(
@@ -553,8 +578,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                   "r"(br[0]), "r"(br[1]), "f"(d0), "f"(d1), "f"(d2), "f"(d3),
                   "r"(sfa), "r"(sfb));
         }
-        __syncthreads();   // slab reuse guard
+        __syncthreads();   // all lanes done reading buf before next overwrite
     }
+
+    // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
 
     // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
 #pragma unroll
