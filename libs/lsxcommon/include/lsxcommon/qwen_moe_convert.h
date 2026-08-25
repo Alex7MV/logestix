@@ -93,7 +93,7 @@ struct QwenMoeTopology {
 QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir);
 
 // Converts a Qwen3.5-35B-A3B model directory (safetensors shards +
-// config.json) into the logestix-qwen35moe arrow layout under output_root.
+// config.json) into the unified <output_root>/logestix arrow layout (vault convention).
 arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
                                     const std::string &output_root);
 

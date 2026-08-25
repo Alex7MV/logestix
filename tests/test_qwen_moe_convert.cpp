@@ -127,7 +127,8 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
     if (!st.ok()) WARN(st.ToString());
     REQUIRE(st.ok());
 
-    const fs::path base = out / "logestix-qwen35moe";
+    // Unified vault convention (matches dense converters): <out>/logestix.
+    const fs::path base = out / "logestix";
 
     // 1) Index with format tag and MoE fields.
     REQUIRE(fs::exists(base / "model.index.json"));
@@ -201,7 +202,7 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
         fs::path out2 = fs::temp_directory_path() / "lsx_qwen_moe_out2";
         fs::remove_all(out2);
         REQUIRE(ConvertQwen35MoeModel(in.string(), out2.string()).ok());
-        std::ifstream a(base / "model.index.json"), b(out2 / "logestix-qwen35moe" / "model.index.json");
+        std::ifstream a(base / "model.index.json"), b(out2 / "logestix" / "model.index.json");
         std::stringstream sa, sb; sa << a.rdbuf(); sb << b.rdbuf();
         CHECK(sa.str() == sb.str());
         fs::remove_all(out2);

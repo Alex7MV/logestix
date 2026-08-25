@@ -80,7 +80,7 @@ TEST_CASE("loader strictness on missing layer file", "[qwen-moe-loader]")
     ConvertedFixture fix;
 
     // Break one layer file: strict error naming the failure, no partial load.
-    fs::path victim = fix.out / "logestix-qwen35moe" / "pinned" / "layer_2.arrow";
+    fs::path victim = fix.out / "logestix" / "pinned" / "layer_2.arrow";
     REQUIRE(fs::exists(victim));
     fs::remove(victim);
 

@@ -972,8 +972,8 @@ TEST_CASE("tc decode kernel honors acc=true at seq==1", "[tc][gemm][acc]")
     // Host-side NVFP4 model helpers (same semantics as the verified
     // tensor-core-vs-host test above).
     auto enc_pow2 = [](float v) -> uint8_t {
-        // Canonical ceil-pow2 encode (matches Pow2E4m3Encode / verified
-        // host-ref test): frexp gives v in [2^(e-1), 2^e) -> ceil = 2^e.
+        // EXACT kernel/verified-test semantics: scale = 2^frexp_exp(s)
+        // (NOT true ceil -- an exact-pow2 s rounds UP to the next power).
         if (!(v > 0.f)) return 0;
         int e;
         std::frexp(v, &e);
@@ -1003,8 +1003,11 @@ TEST_CASE("tc decode kernel honors acc=true at seq==1", "[tc][gemm][acc]")
     constexpr int seq = 1, N = 128;
     for (const int K : {64, 256, 1024, 2048, 4096}) {
         std::vector<__half> hx(K);
+        const float xv[16] = {0.f,  0.25f, -0.5f, 1.f,  -1.5f, 2.f,
+                              -2.5f, 3.f,  -3.5f, 4.f,  -4.5f, 5.f,
+                              -5.f,  6.f,  -6.f,  0.75f};
         for (int i = 0; i < K; ++i)
-            hx[i] = __float2half(((i % 13) - 6) * 0.25f);
+            hx[i] = __float2half(xv[(i * 7 + i / 16) % 16]);
         const size_t wp_n = static_cast<size_t>(N) * K / 2;
         const size_t ws_n = static_cast<size_t>(N) * (K / 16);
         std::vector<uint8_t> hp(wp_n), hs(ws_n);
@@ -1081,18 +1084,23 @@ TEST_CASE("tc decode kernel honors acc=true at seq==1", "[tc][gemm][acc]")
         cudaMemcpy(hplain.data(), dy_init, N * 2, cudaMemcpyDeviceToHost);
         cudaMemcpy(hacc.data(), dy_acc, N * 2, cudaMemcpyDeviceToHost);
 
-        // Contract under test: acc=true == prev + gemm, where gemm is the
-        // SAME kernel's acc=false result (magnitude-independent; numeric
-        // accuracy vs the exact NVFP4 host model is owned by the verified
-        // "tensor-core nvfp4 gemm vs host reference" case).
+        // Contract 1: acc=true == prev + gemm (same-kernel consistency).
+        // Contract 2: gemm matches the exact NVFP4 host model within the
+        // verified global-max-relative tolerance.
+        double max_ref = 0.0;
+        for (int n = 0; n < N; ++n)
+            max_ref = std::max<double>(max_ref, std::abs(want0[n]));
         for (int n = 0; n < N; ++n) {
             const float expect =
                 __half2float(hinit[n]) + __half2float(hplain[n]);
             INFO("K=" << K << " n=" << n << " init=" << __half2float(hinit[n])
+                      << " want0=" << want0[n]
                       << " plain=" << __half2float(hplain[n])
                       << " acc=" << __half2float(hacc[n]));
             CHECK(std::abs(__half2float(hacc[n]) - expect) <=
                   2e-2f * std::max(1.f, std::abs(expect)));
+            CHECK(std::abs(__half2float(hplain[n]) - want0[n]) <=
+                  2e-2f * static_cast<float>(max_ref) + 1e-3f);
         }
         cudaFree(dx); cudaFree(dy_acc); cudaFree(dy_init);
         cudaFree(dp); cudaFree(ds); cudaFree(wp); cudaFree(ws);

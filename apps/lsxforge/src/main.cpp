@@ -379,7 +379,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (qwen35moe) {
-        lsxcommon::log::info("Qwen3.5-MoE pipeline (logestix-qwen35moe layout)");
+        lsxcommon::log::info("Qwen3.5-MoE pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe::ConvertQwen35MoeModel(input_path, output_path);
         if (!st.ok()) {
             lsxcommon::log::error(absl::StrFormat("Qwen-MoE conversion failed: {}", st.ToString()));

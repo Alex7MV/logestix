@@ -165,7 +165,9 @@ bool LoadQwenMoeDenseWeights(const std::string &model_path,
     pw.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix-qwen35moe";
+    fs::path base = fs::path(model_path) / "logestix";
+    if (!fs::exists(base))
+        base = fs::path(model_path) / "logestix-qwen35moe";  // legacy layout
     const fs::path pinned_dir = base / "pinned";
     if (!fs::exists(pinned_dir)) {
         error = "no pinned dir under " + base.string();
@@ -476,7 +478,9 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
     store.Free();
     error.clear();
 
-    const fs::path base = fs::path(model_path) / "logestix-qwen35moe";
+    fs::path base = fs::path(model_path) / "logestix";
+    if (!fs::exists(base))
+        base = fs::path(model_path) / "logestix-qwen35moe";  // legacy layout
     const fs::path experts_dir = base / "experts";
 
     // Discover layer count from directory names.

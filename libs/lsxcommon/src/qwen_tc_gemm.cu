@@ -336,14 +336,18 @@ __global__ void TcGemmDecodeKernel(
         // register be ONE aligned smem load -- reg r covers elements
         // 8r..8r+7 whose packed bytes are 4 consecutive bytes at offset
         // tig*4 (first k32 half) / 16+tig*4 (second). Zero shift/mask work.
-        // A: row g contributes low halves, row g+8 high halves. At seq==1
-        // only rows 0/8 exist; other rows staged as zeros.
+        // A-fragment register map (matches the verified tile kernel):
+        //   ar[0] = row g   k32-lo, ar[1] = row g+8 k32-lo,
+        //   ar[2] = row g   k32-hi, ar[3] = row g+8 k32-hi.
+        // At seq==1 rows 8..15 are absent -> ar[1]/ar[3] stay ZERO (the old
+        // {lo, hi, 0, 0} packing fed the second K-half into row-g+8 slots
+        // and left the second K-half uncomputed -- garbage outputs).
         const uint32_t sfa = sfa_for(kb);
         const uint32_t a_lo0 =
             *reinterpret_cast<const uint32_t *>(&sXp[tig * 4]);
         const uint32_t a_hi0 =
             *reinterpret_cast<const uint32_t *>(&sXp[16 + tig * 4]);
-        uint32_t ar[4] = {a_lo0, a_hi0, 0u, 0u};
+        uint32_t ar[4] = {a_lo0, 0u, a_hi0, 0u};
 
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
