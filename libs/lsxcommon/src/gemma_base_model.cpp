@@ -85,6 +85,15 @@ bool GemmaBaseModel::Load()
                       cfg_.model_path);
         return false;
     }
+    if (!expert_db_ready_) {
+        expert_db_ = gemma::load_gemma_expert_index(
+            cfg_.model_path, static_cast<int>(pw_.layers.size()),
+            pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
+        expert_db_ready_ = true;
+        spdlog::info("[gemma-model] expert index ready: {}/{} files parsed",
+                     expert_db_.parse_ok,
+                     expert_db_.num_layers * expert_db_.experts_per_layer);
+    }
     return true;
 }
 
@@ -107,10 +116,7 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     session_tail_.clear();
     const std::vector<int32_t> &gen_input = req.input_ids;
 
-    auto expert_db = gemma::load_gemma_expert_index(
-        cfg_.model_path,
-        static_cast<int>(pw_.layers.size()),
-        pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
+    gemma::GemmaExpertDb &expert_db = expert_db_;
 
     // Capacity: prompt + generation + slack.
     const int need = static_cast<int>(gen_input.size()) +
@@ -118,7 +124,6 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     cudaError_t e = kv_->Allocate(pw_, need);
     if (e != cudaSuccess) {
         r.error_msg = "kv alloc failed";
-        free_gemma_expert_index(expert_db);
         return r;
     }
 
@@ -133,7 +138,6 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     if (e != cudaSuccess)
         spdlog::error("[gemma-model] RunGemmaGeneration rc={} ({}) gen_err='{}'",
                       static_cast<int>(e), cudaGetErrorString(e), gen.error_msg);
-    free_gemma_expert_index(expert_db);
 
     if (e != cudaSuccess || !gen.ok) {
         r.error_msg = gen.error_msg.empty()
@@ -172,6 +176,8 @@ void GemmaBaseModel::Unload()
     tok_db_.reset();
     kv_.reset();
     session_tail_.clear();
+    free_gemma_expert_index(expert_db_);
+    expert_db_ready_ = false;
     TeardownContext();
     loaded_ = false;
 }
