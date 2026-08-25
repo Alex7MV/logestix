@@ -3,7 +3,8 @@
 // libraries (lsxcommon_cu / lsxcommon_glm_cu / lsxcommon_qwen_cu /
 // lsxcommon_gemma_cu) and usable from host code in CUDA TUs; the mandatory
 // <cuda_runtime.h> makes it unfit for non-CUDA TUs — those use the
-// CUDA-free codecs in nvfp4_scale.h instead (keep decode semantics in sync).
+// CUDA-free codecs in nvfp4_scale.h directly; the scale decode here simply
+// delegates to it, so both entry points share one textual source.
 //
 // ODR / constant-bank note: the E2M1 decode LUT is intentionally an inline
 // __device__ FUNCTION with immediate values instead of a __constant__ array
@@ -20,6 +21,8 @@
 
 #include <cstdint>
 #include <cuda_runtime.h>
+
+#include "nvfp4_scale.h"
 
 namespace lsxcommon {
 namespace gpu {
@@ -45,15 +48,11 @@ __host__ __device__ __forceinline__ float E2M1Value(int nib)
 }
 
 // E4M3 power-of-2 block scale (only exponent bits used). e4==0 -> 0.0;
-// else 2^(e4-7) reconstructed bit-wise as (e4+120)<<23.
+// else 2^(e4-7). Delegates to the canonical CUDA-free decode in
+// nvfp4_scale.h — single textual source, no sync-by-comment contract.
 __host__ __device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
 {
-    const uint32_t e4 = (e4m3 >> 3) & 0x0Fu;
-    if (e4 == 0) return 0.0f;
-    const uint32_t bits = (e4 + 120u) << 23;
-    float v;
-    memcpy(&v, &bits, sizeof(v));
-    return v;
+    return nvfp4::E4m3P2ToFloat(e4m3);
 }
 
 } // namespace nvfp4
