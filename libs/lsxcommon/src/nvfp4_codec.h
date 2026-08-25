@@ -52,7 +52,7 @@ __host__ __device__ __forceinline__ float E2M1Value(int nib)
 // nvfp4_scale.h — single textual source, no sync-by-comment contract.
 __host__ __device__ __forceinline__ float E4M3ScaleToFloat(uint8_t e4m3)
 {
-    return nvfp4::E4m3P2ToFloat(e4m3);
+    return lsxcommon::nvfp4::E4m3P2ToFloat(e4m3);
 }
 
 } // namespace nvfp4

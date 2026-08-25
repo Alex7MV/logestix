@@ -22,6 +22,25 @@ using lsxcommon::gpu::nvfp4::E2M1Value;
 using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
 using lsxcommon::kernels::QuantizeE2m1TieUp;
 
+// RAII device buffer owning one cudaMalloc'd region for the enclosing scope.
+// Tests synchronize before teardown, so plain cudaMalloc/cudaFree semantics
+// suffice (stream-ordered cudaMallocAsync pools add nothing here).
+struct DeviceBuffer {
+    void* raw = nullptr;
+    explicit DeviceBuffer(size_t bytes)
+    {
+        REQUIRE(cudaMalloc(&raw, bytes) == cudaSuccess);
+    }
+    ~DeviceBuffer() { if (raw) cudaFree(raw); }
+    DeviceBuffer(const DeviceBuffer&) = delete;
+    DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+    template <typename T>
+    T* get()
+    {
+        return static_cast<T*>(raw);
+    }
+};
+
 // Shared host-side mirror of ActQuantKernel's activation quantization,
 // returned as dequantized values. Built on the SAME canonical codec
 // primitives the device kernel uses (nvfp4_scale.h / nvfp4_codec.h /
@@ -390,23 +409,20 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     for (int i = 64; i < 80 && i < static_cast<int>(hx.size()); ++i)
         hx[i] = __float2half(0.0f);
 
-    __half *dx;
-    uint8_t *dp, *ds;
     const size_t packed_n = hx.size() / 2, scales_n = hx.size() / 16;
-    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&dp, packed_n) == cudaSuccess);
-    REQUIRE(cudaMalloc(&ds, scales_n) == cudaSuccess);
-    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+    DeviceBuffer dx(hx.size() * 2), dp(packed_n), ds(scales_n);
+    REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2,
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, seq, K, dp,
-                                                   ds) == cudaSuccess);
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                nullptr, dx.get<__half>(), seq, K, dp.get<uint8_t>(),
+                ds.get<uint8_t>()) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<uint8_t> hp(packed_n), hs(scales_n);
-    REQUIRE(cudaMemcpy(hp.data(), dp, packed_n,
+    REQUIRE(cudaMemcpy(hp.data(), dp.get<uint8_t>(), packed_n,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
-    REQUIRE(cudaMemcpy(hs.data(), ds, scales_n,
+    REQUIRE(cudaMemcpy(hs.data(), ds.get<uint8_t>(), scales_n,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
     // Host decode with the shared repo codec primitives; check error.
@@ -459,8 +475,6 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
         WARN("hx[" << j << "]=" << __half2float(hx[j]));
     // pow2 scale + nearest-level: worst case ~1/3 relative.
     CHECK(max_rel < 0.34);
-
-    cudaFree(dx); cudaFree(dp); cudaFree(ds);
 }
 
 
@@ -481,6 +495,23 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
     // power of two, wasting one bit of E2M1 dynamic range.
     const float absmax_cases[5] = {6.0f, 12.0f, 3.0f, 5.7f, 2.4f};
 
+    // Quantize one 16-element block on device; yields the scale byte and
+    // the first packed byte (element 0 -> low nibble).
+    const auto quantize_block = [](const std::vector<__half> &hx,
+                                   uint8_t &sb, uint8_t &p0) {
+        DeviceBuffer dx(hx.size() * 2), dp(hx.size() / 2), ds(1);
+        REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                    nullptr, dx.get<__half>(), 1, 16, dp.get<uint8_t>(),
+                    ds.get<uint8_t>()) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        REQUIRE(cudaMemcpy(&sb, ds.get<uint8_t>(), 1,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(&p0, dp.get<uint8_t>(), 1,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+    };
+
     for (float am : absmax_cases) {
         std::vector<__half> hx(16);
         hx[0] = __float2half(am);
@@ -491,25 +522,8 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
         // expectation from it so cases near pow2 boundaries stay exact.
         const float am_h = __half2float(hx[0]);
 
-        __half *dx;
-        uint8_t *dp, *ds;
-        REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
-        REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
-        REQUIRE(cudaMalloc(&ds, 1) == cudaSuccess);
-        REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
-                           cudaMemcpyHostToDevice) == cudaSuccess);
-
-        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, 1, 16,
-                                                       dp, ds) ==
-                cudaSuccess);
-        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
-
         uint8_t sb = 0, p0 = 0;
-        REQUIRE(cudaMemcpy(&sb, ds, 1, cudaMemcpyDeviceToHost) ==
-                cudaSuccess);
-        REQUIRE(cudaMemcpy(&p0, dp, 1, cudaMemcpyDeviceToHost) ==
-                cudaSuccess);
-        cudaFree(dx); cudaFree(dp); cudaFree(ds);
+        quantize_block(hx, sb, p0);
 
         INFO("absmax=" << am << " got=0x" << std::hex << int(sb) << std::dec
              << " want=0x"
@@ -528,23 +542,8 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
     // Zero block: reserved scale byte 0, decoded magnitude 0.
     {
         std::vector<__half> hx(16, __float2half(0.0f));
-        __half *dx;
-        uint8_t *dp, *ds;
-        REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
-        REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
-        REQUIRE(cudaMalloc(&ds, 1) == cudaSuccess);
-        REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
-                           cudaMemcpyHostToDevice) == cudaSuccess);
-        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, 1, 16,
-                                                       dp, ds) ==
-                cudaSuccess);
-        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
         uint8_t sb = 1, p0 = 1;
-        REQUIRE(cudaMemcpy(&sb, ds, 1, cudaMemcpyDeviceToHost) ==
-                cudaSuccess);
-        REQUIRE(cudaMemcpy(&p0, dp, 1, cudaMemcpyDeviceToHost) ==
-                cudaSuccess);
-        cudaFree(dx); cudaFree(dp); cudaFree(ds);
+        quantize_block(hx, sb, p0);
         CHECK(sb == 0);
         CHECK(E2M1Value(p0 & 0x0F) * E4M3ScaleToFloat(sb) == 0.0f);
     }
@@ -553,9 +552,9 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
 
 
 // ---- Shared exact NVFP4 host model (single source for all TC tests) --------
-// Mirrors ActQuantKernel (per-16 ceil-ish pow2 E4M3 scale via frexp exp +
-// threshold-chain E2M1 snap, TieUp) and the repo weight codec. Returns
-// y[m*N+n] = wgs * sum_k act[m,k]*w[n,k].
+// Mirrors ActQuantKernel via the shared canonical codecs (nvfp4_scale.h ceil
+// pow2-E4M3 encode + threshold-chain E2M1 snap TieUp) and the repo weight
+// codec. Returns y[m*N+n] = wgs * sum_k act[m,k]*w[n,k].
 namespace tc_ref {
 // Host reference mirrors ActQuantKernel via the SAME shared codec primitives
 // (HostActQuantDequant / nvfp4_scale.h) the device kernel uses, so encoder
@@ -618,27 +617,24 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
     for (size_t i = 0; i < ws_n; ++i)
         hs[i] = static_cast<uint8_t>((1 + ((i * 3) % 15)) << 3); // repo-valid pow2 (e4 1..15, M=0)
 
-    __half *dx, *dy;
-    uint8_t *dp, *ds, *wp, *ws;
-    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&dy, static_cast<size_t>(seq) * N * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&wp, wp_n) == cudaSuccess);
-    REQUIRE(cudaMalloc(&ws, ws_n) == cudaSuccess);
-    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2,
+    DeviceBuffer dx(hx.size() * 2), dy(static_cast<size_t>(seq) * N * 2),
+        wp(wp_n), ws(ws_n);
+    REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2,
                        cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(cudaMemcpy(wp, hp.data(), wp_n,
+    REQUIRE(cudaMemcpy(wp.get<uint8_t>(), hp.data(), wp_n,
                        cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(cudaMemcpy(ws, hs.data(), ws_n,
+    REQUIRE(cudaMemcpy(ws.get<uint8_t>(), hs.data(), ws_n,
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
     const float wgs = 0.125f;
-    REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(nullptr, dx, wp, ws, wgs,
-                                                    dy, seq, K, N)
+    REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                nullptr, dx.get<__half>(), wp.get<uint8_t>(),
+                ws.get<uint8_t>(), wgs, dy.get<__half>(), seq, K, N)
             == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<__half> hy(static_cast<size_t>(seq) * N);
-    REQUIRE(cudaMemcpy(hy.data(), dy, hy.size() * 2,
+    REQUIRE(cudaMemcpy(hy.data(), dy.get<__half>(), hy.size() * 2,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
 
     // ---- Host reference mirroring the kernel's math exactly, via the
@@ -699,8 +695,6 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
             }
         }
     CHECK(max_err <= 2e-2f * static_cast<float>(max_ref) + 1e-3f);
-
-    cudaFree(dx); cudaFree(dy); cudaFree(wp); cudaFree(ws);
     }
 }
 
@@ -722,25 +716,22 @@ TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
     for (size_t i = 0; i < ws_n; ++i)
         hs[i] = static_cast<uint8_t>((1 + ((i * 3) % 15)) << 3); // repo-valid pow2 (e4 1..15, M=0)
 
-    __half *dx, *dy;
-    uint8_t *wp, *ws;
-    REQUIRE(cudaMalloc(&dx, K * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&dy, N * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&wp, wp_n) == cudaSuccess);
-    REQUIRE(cudaMalloc(&ws, ws_n) == cudaSuccess);
-    REQUIRE(cudaMemcpy(wp, hp.data(), wp_n, cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(cudaMemcpy(ws, hs.data(), ws_n, cudaMemcpyHostToDevice) == cudaSuccess);
+    DeviceBuffer dx(K * 2), dy(N * 2), wp(wp_n), ws(ws_n);
+    REQUIRE(cudaMemcpy(wp.get<uint8_t>(), hp.data(), wp_n, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ws.get<uint8_t>(), hs.data(), ws_n, cudaMemcpyHostToDevice) == cudaSuccess);
 
     for (int pulse_k : {0, 1, 9, 17, 33}) {
         std::vector<__half> hx(K, __float2half(0.0f));
         hx[pulse_k] = __float2half(1.0f);
-        REQUIRE(cudaMemcpy(dx, hx.data(), K * 2,
+        REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), K * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
         REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
-                    nullptr, dx, wp, ws, 1.0f, dy, 1, K, N) == cudaSuccess);
+                    nullptr, dx.get<__half>(), wp.get<uint8_t>(),
+                    ws.get<uint8_t>(), 1.0f, dy.get<__half>(), 1, K, N)
+                == cudaSuccess);
         REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
         std::vector<__half> hy(N);
-        REQUIRE(cudaMemcpy(hy.data(), dy, N * 2,
+        REQUIRE(cudaMemcpy(hy.data(), dy.get<__half>(), N * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
         // Expected: y[n] = w_deq(pulse_k, n); quantized av(1.0) may snap:
         // block absmax=1 -> s=pow2ceil(1/6)=2^-3=0.125 -> av=4*0.125=1.
@@ -761,7 +752,6 @@ TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
         }
     }
     CHECK(true);
-    cudaFree(dx); cudaFree(dy); cudaFree(wp); cudaFree(ws);
 }
 
 TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
@@ -1175,19 +1165,16 @@ TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k25
     for (int i = 0; i < K; ++i)
         hx[i] = __float2half(xv[(i * 7 + i / 16) % 16]);
 
-    __half *dx;
-    uint8_t *dp, *ds;
-    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&dp, hx.size() / 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&ds, hx.size() / 16) == cudaSuccess);
-    cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(nullptr, dx, seq, K, dp,
-                                                   ds) == cudaSuccess);
+    DeviceBuffer dx(hx.size() * 2), dp(hx.size() / 2), ds(hx.size() / 16);
+    cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                nullptr, dx.get<__half>(), seq, K, dp.get<uint8_t>(),
+                ds.get<uint8_t>()) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<uint8_t> hp(K / 2), hs(K / 16);
-    cudaMemcpy(hp.data(), dp, K / 2, cudaMemcpyDeviceToHost);
-    cudaMemcpy(hs.data(), ds, K / 16, cudaMemcpyDeviceToHost);
+    cudaMemcpy(hp.data(), dp.get<uint8_t>(), K / 2, cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs.data(), ds.get<uint8_t>(), K / 16, cudaMemcpyDeviceToHost);
 
     // Host model via the shared codec primitives (same source as the device
     // kernel: nvfp4_scale.h encode + lsx_kernels_quant.cuh E2M1 TieUp).
@@ -1223,5 +1210,4 @@ TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k25
     }
     INFO("nibble mismatches=" << mismatches);
     CHECK(mismatches == 0);
-    cudaFree(dx); cudaFree(dp); cudaFree(ds);
 }
