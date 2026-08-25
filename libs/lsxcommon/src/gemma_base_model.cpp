@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <string>
 
@@ -56,7 +57,9 @@ bool GemmaBaseModel::Load()
 {
     tokenizer_optional_ = true;
     if (!BeginLoad(cfg_.model_path)) return false;
+    double pinned_ms = 0.0;
     if (!weights_loaded_) {
+        const auto t_pinned = std::chrono::steady_clock::now();
         if (EnsureContext(/*with_cublas=*/false)) {
             cudaError_t lrc = gemma::LoadGemmaPinnedWeights(
                 cfg_.model_path, pw_, stream());
@@ -71,6 +74,9 @@ bool GemmaBaseModel::Load()
             }
             resident_bytes_ = pw_.resident_bytes;
             vram_ = pw_.top.vram;
+            pinned_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t_pinned)
+                            .count();
             spdlog::info("[gemma-model] pinned weights loaded: {} layers "
                          "({} bytes resident)",
                          pw_.layers.size(), pw_.resident_bytes);
@@ -86,13 +92,20 @@ bool GemmaBaseModel::Load()
         return false;
     }
     if (!expert_db_ready_) {
+        const auto t_index = std::chrono::steady_clock::now();
         expert_db_ = gemma::load_gemma_expert_index(
             cfg_.model_path, static_cast<int>(pw_.layers.size()),
             pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
         expert_db_ready_ = true;
-        spdlog::info("[gemma-model] expert index ready: {}/{} files parsed",
-                     expert_db_.parse_ok,
-                     expert_db_.num_layers * expert_db_.experts_per_layer);
+        spdlog::info(
+            "[gemma-model] pinned load {:.1f} ms, expert index {:.1f} ms "
+            "({}/{} files parsed)",
+            pinned_ms,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_index)
+                .count(),
+            expert_db_.parse_ok,
+            expert_db_.num_layers * expert_db_.experts_per_layer);
     }
     return true;
 }

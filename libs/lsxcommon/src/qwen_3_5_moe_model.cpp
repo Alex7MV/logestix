@@ -4,6 +4,7 @@
 #include <absl/strings/str_cat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cuda_runtime.h>
 
@@ -11,6 +12,15 @@
 #include "lsxcommon/model_runtime.h"
 
 namespace lsxcommon {
+
+namespace {
+double MsSince(std::chrono::steady_clock::time_point t0)
+{
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0)
+        .count();
+}
+} // namespace
 
 const std::string Qwen35MoeModel::kType = "qwen3.5-35b-a3b";
 
@@ -77,23 +87,29 @@ bool Qwen35MoeModel::Load()
     }
 
     std::string err;
+    const auto t_dense = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeDenseWeights(cfg_.model_path, pw_, stream(), err)) {
         log::error("[qwen-moe-model] dense load failed: " + err);
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    log::info(absl::StrCat("[qwen-moe-model] dense load ", MsSince(t_dense),
+                           " ms"));
     if (!ValidateGeometry(pw_.moe_top)) {
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    const auto t_experts = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[qwen-moe-model] expert store load failed: " + err);
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    log::info(absl::StrCat("[qwen-moe-model] expert store ",
+                           MsSince(t_experts), " ms"));
     // Cache slots: lifecycle-driven start value; bounded by expert count.
     // LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides for VRAM sweeps (parity with
     // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS); values < 1 keep the default bound.
