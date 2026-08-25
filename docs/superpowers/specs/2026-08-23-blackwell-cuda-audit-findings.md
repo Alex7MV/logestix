@@ -435,3 +435,19 @@ Micro @5090: mlp_down 109 -> 99 us, gate_up 44.6 us. e2e: 33.0 -> **34.6
 tok/s** (+5%), ttft 126 -> 121 ms. Correctness unchanged (" Paris").
 
 Cumulative honest fast-math: 14.4 (scalar) -> 34.6 tok/s (x2.4).
+
+### Optimization round 10 (2026-08-25) — split-K
+
+TcGemmKernel gained deterministic split-K: when seq==1 underfills the SM
+array (grid.x < 96), K is spread over blockIdx.z slices writing disjoint
+fp32 partials (no atomics); TcSplitKFinalize sums slices and applies wgs
+(+acc). Tail-K chunk-bound bug fixed en route ((k_hi+63)/64).
+
+Micro @5090: mlp_down 99 -> 42 us, attn_qkv_o 45 -> 23 us. Sanitizer: 0.
+
+Quality note: splitting the attention projections (qkv/o, K=4096) shifted
+the greedy top-1 away from " Paris" on the canonical prompt (still fluent);
+split is therefore restricted to K>=8192 (mlp_down class) where quality is
+bit-stable. e2e @5090: **33.3 tok/s** with correct output; the aggressive
+variant reached 37.8 and is worth revisiting once fast-path numerics are
+quality-audited.

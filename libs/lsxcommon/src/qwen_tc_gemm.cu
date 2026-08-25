@@ -383,8 +383,14 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ bp,
                              const uint8_t *__restrict__ bs,
                              float wgs, __half *__restrict__ y,
-                             int seq, int K, int N, bool acc_in)
+                             int seq, int K, int N, bool acc_in,
+                             int split_k, float *__restrict__ y_f32)
 {
+    // split_k > 1: blockIdx.z owns a K-slice; RAW fp32 partials land in
+    // y_f32[z*N+n] (disjoint, deterministic); TcSplitKFinalize sums the
+    // slices and applies wgs (+acc) afterwards.
+    const int k_lo = static_cast<int>(blockIdx.z) * (K / split_k);
+    const int k_hi = k_lo + K / split_k;
     const int tid = threadIdx.x;
     const int warp = tid >> 5;
     const int lane = tid & 31;
@@ -514,7 +520,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     };
 
     stage_slabs(0, 0);
-    for (int c64 = 0; c64 < k_chunks_total; ++c64) {
+    for (int c64 = k_lo / 64; c64 < (k_hi + 63) / 64; ++c64) {
         const int buf = c64 & 1;
         const bool has_next = c64 + 1 < k_chunks_total;
         if (has_next) stage_slabs((c64 + 1) * 64, buf ^ 1);
@@ -581,13 +587,29 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         __syncthreads();   // all lanes done reading buf before next overwrite
     }
 
-    // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
-
-    // ---- Epilogue: D * global_scale -> y (std m16n8 f32 acc layout).
+    // ---- Epilogue.
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
         const int r0 = row_base + g;
+        if (split_k > 1) {
+            // RAW partial: wgs applied once in TcSplitKFinalize. Partials
+            // are disjoint per z -> deterministic, no atomics.
+            const int64_t zbase =
+                static_cast<int64_t>(blockIdx.z) * seq * N;
+            if (r0 < seq && n0 < N)
+                y_f32[zbase + static_cast<int64_t>(r0) * N + n0] = d[j][0];
+            if (r0 < seq && n0 + 1 < N)
+                y_f32[zbase + static_cast<int64_t>(r0) * N + n0 + 1] =
+                    d[j][1];
+            if (r0 + 8 < seq && n0 < N)
+                y_f32[zbase + static_cast<int64_t>(r0 + 8) * N + n0] =
+                    d[j][2];
+            if (r0 + 8 < seq && n0 + 1 < N)
+                y_f32[zbase + static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
+                    d[j][3];
+            continue;
+        }
         if (r0 < seq && n0 < N)
             y[static_cast<int64_t>(r0) * N + n0] =
                 __float2half(d[j][0] * wgs);
@@ -601,6 +623,21 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
             y[static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
                 __float2half(d[j][3] * wgs);
     }
+}
+
+// Split-K finalize: y[i] = (acc ? prev : 0) + wgs * sum_z partial[z,i].
+__global__ void TcSplitKFinalize(const float *__restrict__ partials,
+                                 __half *__restrict__ y, float wgs, bool acc,
+                                 int seq, int N, int split_k)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (i >= static_cast<int64_t>(seq) * N) return;
+    float sum = 0.f;
+    for (int z = 0; z < split_k; ++z)
+        sum += partials[static_cast<int64_t>(z) * seq * N + i];
+    const float prev = acc ? __half2float(y[i]) : 0.f;
+    y[i] = __float2half(prev + sum * wgs);
 }
 
 } // namespace
@@ -682,11 +719,55 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     }
     if (!handled && e == cudaSuccess) {
         dim3 grid((N + kTileN - 1) / kTileN, (seq + kTileM - 1) / kTileM);
-        TcGemmKernel<<<grid, 256, 0, stream>>>(
-            static_cast<uint8_t *>(ap_scratch),
-            static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-            w_global_scale, y, seq, K, N, acc);
-        e = cudaGetLastError();
+        // Split-K: when seq==1 leaves the SM array underfilled (few x-
+        // blocks), spread K over blockIdx.z slices. Requires K to divide
+        // into 64-wide chunks per slice; RAW fp32 partials are summed by
+        // TcSplitKFinalize (deterministic slice order).
+        int split_k = 1;
+        float *partials = nullptr;
+        if (seq == 1 && !acc && K >= 8192 && grid.x < 96 && (K % 512) == 0) {
+            for (int cand : {8, 4, 2}) {
+                if ((K / 64) % cand == 0 && grid.x * cand >= 96) {
+                    split_k = cand;
+                    break;
+                }
+            }
+        }
+        if (split_k > 1) {
+            const size_t pbytes =
+                static_cast<size_t>(split_k) * N * sizeof(float);
+            e = cudaMallocAsync(&partials, pbytes, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemsetAsync(partials, 0, pbytes, stream);
+            if (e != cudaSuccess) {
+                cudaFreeAsync(partials, stream);
+                return e;
+            }
+            dim3 grid3(grid.x, grid.y, split_k);
+            TcGemmKernel<<<grid3, 256, 0, stream>>>(
+                static_cast<uint8_t *>(ap_scratch),
+                static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+                w_global_scale, y, seq, K, N, acc, split_k, partials);
+            e = cudaGetLastError();
+            if (e == cudaSuccess) {
+                const int threads = 256;
+                const int64_t total = static_cast<int64_t>(seq) * N;
+                TcSplitKFinalize<<<static_cast<int>((total + threads - 1) /
+                                                    threads),
+                                   threads, 0, stream>>>(partials, y,
+                                                         w_global_scale,
+                                                         acc, seq, N,
+                                                         split_k);
+                e = cudaGetLastError();
+            }
+            cudaFreeAsync(partials, stream);
+        } else {
+            TcGemmKernel<<<grid, 256, 0, stream>>>(
+                static_cast<uint8_t *>(ap_scratch),
+                static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+                w_global_scale, y, seq, K, N, acc, 1, nullptr);
+            e = cudaGetLastError();
+        }
     }
     cudaFreeAsync(ap_scratch, stream);
     cudaFreeAsync(as_scratch, stream);
