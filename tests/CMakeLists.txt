@@ -911,6 +911,8 @@ add_test(NAME test_gemma4_loader COMMAND test_gemma4_loader)
 
 # ── Тест Gemma-4 модели (фабрика + Load + Infer, синтетическая геометрия) ────
 add_executable(test_gemma4_model test_gemma4_model.cpp)
+target_include_directories(test_gemma4_model PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_gemma4_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -2165,6 +2167,8 @@ set_tests_properties(test_qwen_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
+target_include_directories(test_qwen_moe_selfcheck PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )

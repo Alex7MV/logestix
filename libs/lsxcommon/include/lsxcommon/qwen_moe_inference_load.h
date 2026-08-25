@@ -86,9 +86,13 @@ void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache);
 
 // Ensures expert `eid` of `layer` is resident in the device cache; stages its
 // payload H2D from the pinned slab on miss. Returns slot index, -1 on error
-// (error text goes to `error` when non-null).
+// (error text goes to `error` when non-null). When `h2d_stream` is provided,
+// miss staging is enqueued on that (copy) stream instead of `stream`; set
+// *missed so the caller can fence the upload before consuming the slot.
 int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
                                 QwenMoeExpertDeviceCache &cache,
-                                cudaStream_t stream, std::string &error);
+                                cudaStream_t stream, std::string &error,
+                                cudaStream_t h2d_stream = nullptr,
+                                bool *missed = nullptr);
 
 } // namespace lsxcommon::qwen_moe

@@ -115,36 +115,38 @@ TEST_CASE("PinnedSchema zero-copy views round-trip and keepalive",
     const auto tensors = SampleTensors();
     const auto path = WritePinnedFile(tmp, tensors);
 
-    auto views_res = lsxcommon::LoadTensorBatchViews(path);
-    REQUIRE(views_res.ok());
-    auto views = std::move(*views_res);
+    {
+        auto views_res = lsxcommon::LoadTensorBatchViews(path);
+        REQUIRE(views_res.ok());
+        auto views = std::move(*views_res);
 
-    REQUIRE(views.tensors.size() == tensors.size());
-    // Keepalive must own the mmap-backed buffers: no other reference exists
-    // at this point, so any readable byte proves the view lifetime contract.
-    int touched = 0;
-    for (size_t i = 0; i < views.tensors.size(); ++i) {
-        const auto &v = views.tensors[i];
-        const auto &ref = tensors[i];
-        REQUIRE(v.name == ref.name);
-        REQUIRE(v.dtype == ref.dtype);
-        REQUIRE(v.rank == static_cast<int64_t>(ref.shape.size()));
-        REQUIRE(std::memcmp(v.shape, ref.shape.data(),
-                            ref.shape.size() * sizeof(int64_t)) == 0);
-        REQUIRE(v.bytes == ref.data.size());
-        REQUIRE(v.data != nullptr);
-        REQUIRE(std::memcmp(v.data, ref.data.data(), ref.data.size()) == 0);
-        touched += static_cast<int>(v.bytes);
+        REQUIRE(views.tensors.size() == tensors.size());
+        // Keepalive must own the mmap-backed buffers: no other reference exists
+        // at this point, so any readable byte proves the view lifetime contract.
+        int touched = 0;
+        for (size_t i = 0; i < views.tensors.size(); ++i) {
+            const auto &v = views.tensors[i];
+            const auto &ref = tensors[i];
+            REQUIRE(v.name == ref.name);
+            REQUIRE(v.dtype == ref.dtype);
+            REQUIRE(v.rank == static_cast<int64_t>(ref.shape.size()));
+            REQUIRE(std::memcmp(v.shape, ref.shape.data(),
+                                ref.shape.size() * sizeof(int64_t)) == 0);
+            REQUIRE(v.bytes == ref.data.size());
+            REQUIRE(v.data != nullptr);
+            REQUIRE(std::memcmp(v.data, ref.data.data(), ref.data.size()) == 0);
+            touched += static_cast<int>(v.bytes);
+        }
+        REQUIRE(touched > 0);
+
+        // Views stay valid while only the views struct itself is alive.
+        auto bytes_copy = views.tensors[0].bytes;
+        auto *data_ptr = views.tensors[0].data;
+        auto moved = std::move(views);
+        REQUIRE(moved.keepalive != nullptr);
+        REQUIRE(std::memcmp(data_ptr, tensors[0].data.data(), bytes_copy) == 0);
     }
-    REQUIRE(touched > 0);
-
-    // Views stay valid while only the views struct itself is alive.
-    auto bytes_copy = views.tensors[0].bytes;
-    auto *data_ptr = views.tensors[0].data;
-    auto moved = std::move(views);
-    REQUIRE(moved.keepalive != nullptr);
-    REQUIRE(std::memcmp(data_ptr, tensors[0].data.data(), bytes_copy) == 0);
-
+    // Views + keepalive released: unmaps the file so Windows can delete it.
     fs::remove_all(tmp);
 }
 
@@ -159,32 +161,34 @@ TEST_CASE("DenseNvfp4Schema zero-copy views round-trip and keepalive",
     const auto recs = SampleNvfp4();
     const auto path = WriteNvfp4File(tmp, recs);
 
-    auto views_res = lsxcommon::LoadDenseNvfp4BatchViews(path);
-    REQUIRE(views_res.ok());
-    auto views = std::move(*views_res);
+    {
+        auto views_res = lsxcommon::LoadDenseNvfp4BatchViews(path);
+        REQUIRE(views_res.ok());
+        auto views = std::move(*views_res);
 
-    REQUIRE(views.records.size() == recs.size());
-    for (size_t i = 0; i < views.records.size(); ++i) {
-        const auto &v = views.records[i];
-        const auto &ref = recs[i];
-        REQUIRE(v.name == ref.name);
-        REQUIRE(v.dtype == ref.dtype);
-        REQUIRE(v.rank == static_cast<int64_t>(ref.shape.size()));
-        REQUIRE(std::memcmp(v.shape, ref.shape.data(),
-                            ref.shape.size() * sizeof(int64_t)) == 0);
-        REQUIRE(v.packed_bytes == static_cast<int64_t>(ref.packed.size()));
-        REQUIRE(v.scale_bytes == static_cast<int64_t>(ref.scales.size()));
-        REQUIRE(v.global_scale == ref.global_scale);
-        REQUIRE(std::memcmp(v.packed, ref.packed.data(), ref.packed.size()) == 0);
-        REQUIRE(std::memcmp(v.scales, ref.scales.data(), ref.scales.size()) == 0);
+        REQUIRE(views.records.size() == recs.size());
+        for (size_t i = 0; i < views.records.size(); ++i) {
+            const auto &v = views.records[i];
+            const auto &ref = recs[i];
+            REQUIRE(v.name == ref.name);
+            REQUIRE(v.dtype == ref.dtype);
+            REQUIRE(v.rank == static_cast<int64_t>(ref.shape.size()));
+            REQUIRE(std::memcmp(v.shape, ref.shape.data(),
+                                ref.shape.size() * sizeof(int64_t)) == 0);
+            REQUIRE(v.packed_bytes == static_cast<int64_t>(ref.packed.size()));
+            REQUIRE(v.scale_bytes == static_cast<int64_t>(ref.scales.size()));
+            REQUIRE(v.global_scale == ref.global_scale);
+            REQUIRE(std::memcmp(v.packed, ref.packed.data(), ref.packed.size()) == 0);
+            REQUIRE(std::memcmp(v.scales, ref.scales.data(), ref.scales.size()) == 0);
+        }
+
+        auto *packed_ptr = views.records[0].packed;
+        auto packed_bytes = views.records[0].packed_bytes;
+        auto moved = std::move(views);
+        REQUIRE(moved.keepalive != nullptr);
+        REQUIRE(std::memcmp(packed_ptr, recs[0].packed.data(), packed_bytes) == 0);
     }
-
-    auto *packed_ptr = views.records[0].packed;
-    auto packed_bytes = views.records[0].packed_bytes;
-    auto moved = std::move(views);
-    REQUIRE(moved.keepalive != nullptr);
-    REQUIRE(std::memcmp(packed_ptr, recs[0].packed.data(), packed_bytes) == 0);
-
+    // Views + keepalive released: unmaps the file so Windows can delete it.
     fs::remove_all(tmp);
 }
 
@@ -202,44 +206,46 @@ TEST_CASE("SharedExpertSchema zero-copy views round-trip and keepalive",
     const auto path = tmp / "shared_experts.arrow";
     REQUIRE(lsxcommon::WriteRecordBatchToFile(*batch, path).ok());
 
-    auto views_res = lsxcommon::LoadSharedExpertBatchViews(path);
-    REQUIRE(views_res.ok());
-    auto views = std::move(*views_res);
+    {
+        auto views_res = lsxcommon::LoadSharedExpertBatchViews(path);
+        REQUIRE(views_res.ok());
+        auto views = std::move(*views_res);
 
-    REQUIRE(views.layers.size() == layers.size());
-    for (size_t i = 0; i < views.layers.size(); ++i) {
-        const auto &v = views.layers[i];
-        const auto &ref = layers[i];
-        REQUIRE(std::memcmp(v.w1_packed, ref.w1_packed.data(),
-                            ref.w1_packed.size()) == 0);
-        REQUIRE(v.w1_packed_bytes == static_cast<int64_t>(ref.w1_packed.size()));
-        REQUIRE(std::memcmp(v.w2_packed, ref.w2_packed.data(),
-                            ref.w2_packed.size()) == 0);
-        REQUIRE(v.w2_packed_bytes == static_cast<int64_t>(ref.w2_packed.size()));
-        REQUIRE(std::memcmp(v.w3_packed, ref.w3_packed.data(),
-                            ref.w3_packed.size()) == 0);
-        REQUIRE(v.w3_packed_bytes == static_cast<int64_t>(ref.w3_packed.size()));
-        REQUIRE(std::memcmp(v.w1_scales, ref.w1_scales.data(),
-                            ref.w1_scales.size()) == 0);
-        REQUIRE(v.w1_scale_bytes == static_cast<int64_t>(ref.w1_scales.size()));
-        REQUIRE(std::memcmp(v.w2_scales, ref.w2_scales.data(),
-                            ref.w2_scales.size()) == 0);
-        REQUIRE(v.w2_scale_bytes == static_cast<int64_t>(ref.w2_scales.size()));
-        REQUIRE(std::memcmp(v.w3_scales, ref.w3_scales.data(),
-                            ref.w3_scales.size()) == 0);
-        REQUIRE(v.w3_scale_bytes == static_cast<int64_t>(ref.w3_scales.size()));
-        REQUIRE(v.w1_global_scale == ref.w1_global_scale);
-        REQUIRE(v.w2_global_scale == ref.w2_global_scale);
-        REQUIRE(v.w3_global_scale == ref.w3_global_scale);
+        REQUIRE(views.layers.size() == layers.size());
+        for (size_t i = 0; i < views.layers.size(); ++i) {
+            const auto &v = views.layers[i];
+            const auto &ref = layers[i];
+            REQUIRE(std::memcmp(v.w1_packed, ref.w1_packed.data(),
+                                ref.w1_packed.size()) == 0);
+            REQUIRE(v.w1_packed_bytes == static_cast<int64_t>(ref.w1_packed.size()));
+            REQUIRE(std::memcmp(v.w2_packed, ref.w2_packed.data(),
+                                ref.w2_packed.size()) == 0);
+            REQUIRE(v.w2_packed_bytes == static_cast<int64_t>(ref.w2_packed.size()));
+            REQUIRE(std::memcmp(v.w3_packed, ref.w3_packed.data(),
+                                ref.w3_packed.size()) == 0);
+            REQUIRE(v.w3_packed_bytes == static_cast<int64_t>(ref.w3_packed.size()));
+            REQUIRE(std::memcmp(v.w1_scales, ref.w1_scales.data(),
+                                ref.w1_scales.size()) == 0);
+            REQUIRE(v.w1_scale_bytes == static_cast<int64_t>(ref.w1_scales.size()));
+            REQUIRE(std::memcmp(v.w2_scales, ref.w2_scales.data(),
+                                ref.w2_scales.size()) == 0);
+            REQUIRE(v.w2_scale_bytes == static_cast<int64_t>(ref.w2_scales.size()));
+            REQUIRE(std::memcmp(v.w3_scales, ref.w3_scales.data(),
+                                ref.w3_scales.size()) == 0);
+            REQUIRE(v.w3_scale_bytes == static_cast<int64_t>(ref.w3_scales.size()));
+            REQUIRE(v.w1_global_scale == ref.w1_global_scale);
+            REQUIRE(v.w2_global_scale == ref.w2_global_scale);
+            REQUIRE(v.w3_global_scale == ref.w3_global_scale);
+        }
+
+        // Views stay valid while only the views struct itself is alive.
+        auto *p1 = views.layers[0].w1_packed;
+        auto n1 = views.layers[0].w1_packed_bytes;
+        auto moved = std::move(views);
+        REQUIRE(moved.keepalive != nullptr);
+        REQUIRE(std::memcmp(p1, layers[0].w1_packed.data(), n1) == 0);
     }
-
-    // Views stay valid while only the views struct itself is alive.
-    auto *p1 = views.layers[0].w1_packed;
-    auto n1 = views.layers[0].w1_packed_bytes;
-    auto moved = std::move(views);
-    REQUIRE(moved.keepalive != nullptr);
-    REQUIRE(std::memcmp(p1, layers[0].w1_packed.data(), n1) == 0);
-
+    // Views + keepalive released: unmaps the file so Windows can delete it.
     fs::remove_all(tmp);
 }
 

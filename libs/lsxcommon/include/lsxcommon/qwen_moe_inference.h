@@ -43,13 +43,23 @@ struct QwenMoePinnedWeights;
 // Processes one token's K routed slots (ascending-k deterministic fp32
 // accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
 // misses via EnsureQwenMoeExpertResident. Scratch: d_yg/d_yu [I], d_y2 [H].
+//
+// Copy-stream mode: when `copy_stream` != nullptr, cache-miss H2D staging is
+// enqueued there instead of `stream`; `ev_uploads` (K caller-owned disabled-
+// timing events) fence each upload and `ev_front` must be recorded-or-null —
+// the implementation records it on `stream` before staging so the copy stream
+// never overwrites a slot still being read by previously enqueued compute.
+// Numerics are unchanged (same kernels, same accumulation order).
 cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
                                 QwenMoeExpertStore &store,
                                 QwenMoeExpertDeviceCache &cache, int layer,
                                 const QwenMoeRoutedSlot *h_slots, int K,
                                 const __half *d_x, int H, int I,
                                 float *d_acc, __half *d_yg, __half *d_yu,
-                                __half *d_y2, std::string &error);
+                                __half *d_y2, std::string &error,
+                                cudaStream_t copy_stream = nullptr,
+                                cudaEvent_t *ev_uploads = nullptr,
+                                cudaEvent_t ev_front = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
@@ -67,12 +77,31 @@ cudaError_t RunQwenMoeSharedCombine(
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out);
 
+// Persistent generation scratch owned by the model: the dequantized FP16
+// embedding table (computed once, byte-identical to per-call dequant) and a
+// capacity-grown workspace arena reused across Infer calls.
+struct QwenMoeGenScratch {
+    __half *d_embed = nullptr;      // [V*H]
+    int64_t table_elems = 0;
+    void *arena = nullptr;
+    size_t arena_capacity = 0;
+    int64_t dequant_runs = 0;       // diagnostics/tests
+    int64_t arena_allocs = 0;       // diagnostics/tests
+};
+
+cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
+                                 const QwenMoePinnedWeights &pw,
+                                 QwenMoeGenScratch &scratch);
+cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes);
+void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch);
+
 // Incremental single-stream generation driver (MoE FFN call site). Requires
 // a KV cache session (kv != nullptr); mirrors RunQwenGeneration's per-token
 // handshake and final-logits publication.
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
     QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::QwenGenerationResult &result,
     lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv);

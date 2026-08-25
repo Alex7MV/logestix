@@ -422,14 +422,47 @@ cudaError_t run_routed_expert_ffn(
 // selection; hash layers 0..2 use tid2eid) → norm_topk_prob → ×route_scale.
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned arena carves sized
 // [num_routed] — route_token performs ZERO CUDA allocations (spec item 12).
-cudaError_t route_token(
+cudaError_t route_token_begin(
     cublasHandle_t cublas_h, cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
     int hidden_dim, int num_routed,
-    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    cudaEvent_t ev)
+{
+    if (num_routed <= 0 || num_routed > kNumRouted)
+        return cudaErrorInvalidValue;
+
+    cublasSetStream(cublas_h, stream);
+    float alpha = 1.0f, beta = 0.0f;
+
+    cublasStatus_t rstat = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                 num_routed, 1, hidden_dim, &alpha,
+                 d_gate, CUDA_R_16F, hidden_dim,
+                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
+                 d_logits_scratch, CUDA_R_16F, num_routed,
+                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    if (rstat != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+
+    // Async readback; the fence is the caller-owned event so the pipeline can
+    // enqueue independent GPU work (shared-expert FFN) before waiting.
+    if (!ev) return cudaErrorInvalidValue;
+    cudaError_t e = cudaMemcpyAsync(h_logits_scratch, d_logits_scratch,
+                                    static_cast<size_t>(num_routed) * sizeof(__half),
+                                    cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess) return e;
+    return cudaEventRecord(ev, stream);
+}
+
+namespace {
+
+// Host-side scoring over the readback logits: identical math to the original
+// fused route_token (sqrt(softplus) scores → biased top-k selection →
+// normalized weights ×route_scale). Bit-exact by construction.
+cudaError_t route_scores_host(
+    int num_routed, int token_id,
+    const int64_t *h_tid2eid, int tid2eid_stride,
     const float *h_gate_bias,
     int topk,
-    __half *d_logits_scratch,
     float *h_logits_scratch,
     int *h_top_indices, float *h_top_weights)
 {
@@ -444,22 +477,6 @@ cudaError_t route_token(
         return cudaErrorInvalidValue;
     if (topk > num_routed) topk = num_routed;
     if (topk <= 0) return cudaErrorInvalidValue;
-
-    cublasSetStream(cublas_h, stream);
-    float alpha = 1.0f, beta = 0.0f;
-
-    cublasStatus_t rstat = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 num_routed, 1, hidden_dim, &alpha,
-                 d_gate, CUDA_R_16F, hidden_dim,
-                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                 d_logits_scratch, CUDA_R_16F, num_routed,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (rstat != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-
-    cudaMemcpyAsync(h_logits_scratch, d_logits_scratch,
-                    static_cast<size_t>(num_routed) * sizeof(__half),
-                    cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
 
     // scores[i] = sqrt(softplus(logit[i]))  (unbiased)
     float scores[kNumRouted];
@@ -532,6 +549,50 @@ cudaError_t route_token(
         h_top_weights[k] *= inv * kRouteScale;
 
     return cudaSuccess;
+}
+
+} // namespace
+
+cudaError_t route_token_finish(
+    int num_routed, int token_id,
+    const int64_t *h_tid2eid, int tid2eid_stride,
+    const float *h_gate_bias,
+    int topk,
+    float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights,
+    cudaEvent_t ev)
+{
+    if (!ev) return cudaErrorInvalidValue;
+    // Event-scoped fence: waits only until the router GEMM + D2H retire, not
+    // for whatever else the pipeline enqueued behind them on this stream.
+    cudaError_t e = cudaEventSynchronize(ev);
+    if (e != cudaSuccess) return e;
+    return route_scores_host(num_routed, token_id, h_tid2eid, tid2eid_stride,
+                             h_gate_bias, topk, h_logits_scratch,
+                             h_top_indices, h_top_weights);
+}
+
+cudaError_t route_token(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
+    const float *h_gate_bias,
+    int topk,
+    __half *d_logits_scratch, float *h_logits_scratch,
+    int *h_top_indices, float *h_top_weights)
+{
+    cudaEvent_t ev = nullptr;
+    cudaError_t e = cudaEventCreate(&ev);
+    if (e != cudaSuccess) return e;
+    e = route_token_begin(cublas_h, stream, d_gate, d_hidden, hidden_dim,
+                          num_routed, d_logits_scratch, h_logits_scratch, ev);
+    if (e == cudaSuccess)
+        e = route_token_finish(num_routed, token_id, h_tid2eid, tid2eid_stride,
+                               h_gate_bias, topk, h_logits_scratch,
+                               h_top_indices, h_top_weights, ev);
+    cudaEventDestroy(ev);
+    return e;
 }
 
 // Runs the top-k routed experts for one token and accumulates their weighted

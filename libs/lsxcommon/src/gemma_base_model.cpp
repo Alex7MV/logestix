@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <string>
 
@@ -56,7 +57,9 @@ bool GemmaBaseModel::Load()
 {
     tokenizer_optional_ = true;
     if (!BeginLoad(cfg_.model_path)) return false;
+    double pinned_ms = 0.0;
     if (!weights_loaded_) {
+        const auto t_pinned = std::chrono::steady_clock::now();
         if (EnsureContext(/*with_cublas=*/false)) {
             cudaError_t lrc = gemma::LoadGemmaPinnedWeights(
                 cfg_.model_path, pw_, stream());
@@ -71,6 +74,9 @@ bool GemmaBaseModel::Load()
             }
             resident_bytes_ = pw_.resident_bytes;
             vram_ = pw_.top.vram;
+            pinned_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t_pinned)
+                            .count();
             spdlog::info("[gemma-model] pinned weights loaded: {} layers "
                          "({} bytes resident)",
                          pw_.layers.size(), pw_.resident_bytes);
@@ -84,6 +90,22 @@ bool GemmaBaseModel::Load()
         spdlog::error("[gemma-model] geometry validation failed for {}",
                       cfg_.model_path);
         return false;
+    }
+    if (!expert_db_ready_) {
+        const auto t_index = std::chrono::steady_clock::now();
+        expert_db_ = gemma::load_gemma_expert_index(
+            cfg_.model_path, static_cast<int>(pw_.layers.size()),
+            pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
+        expert_db_ready_ = true;
+        spdlog::info(
+            "[gemma-model] pinned load {:.1f} ms, expert index {:.1f} ms "
+            "({}/{} files parsed)",
+            pinned_ms,
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_index)
+                .count(),
+            expert_db_.parse_ok,
+            expert_db_.num_layers * expert_db_.experts_per_layer);
     }
     return true;
 }
@@ -107,10 +129,7 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     session_tail_.clear();
     const std::vector<int32_t> &gen_input = req.input_ids;
 
-    auto expert_db = gemma::load_gemma_expert_index(
-        cfg_.model_path,
-        static_cast<int>(pw_.layers.size()),
-        pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
+    gemma::GemmaExpertDb &expert_db = expert_db_;
 
     // Capacity: prompt + generation + slack.
     const int need = static_cast<int>(gen_input.size()) +
@@ -118,22 +137,21 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     cudaError_t e = kv_->Allocate(pw_, need);
     if (e != cudaSuccess) {
         r.error_msg = "kv alloc failed";
-        free_gemma_expert_index(expert_db);
         return r;
     }
 
     gemma::GemmaGenerationResult gen;
+    if (!gen_ctx_) gen_ctx_ = gemma::CreateGemmaGenContext();
     e = RunUnderResidencyLock([&] {
         return gemma::RunGemmaGeneration(
             st, pw_, expert_db, gen_input, req.max_gen_tokens,
             tok_db_ ? tok_db_->eos_id : -1,
             pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
-            gen, *kv_);
+            gen, *kv_, gen_ctx_);
     });
     if (e != cudaSuccess)
         spdlog::error("[gemma-model] RunGemmaGeneration rc={} ({}) gen_err='{}'",
                       static_cast<int>(e), cudaGetErrorString(e), gen.error_msg);
-    free_gemma_expert_index(expert_db);
 
     if (e != cudaSuccess || !gen.ok) {
         r.error_msg = gen.error_msg.empty()
@@ -172,6 +190,10 @@ void GemmaBaseModel::Unload()
     tok_db_.reset();
     kv_.reset();
     session_tail_.clear();
+    free_gemma_expert_index(expert_db_);
+    expert_db_ready_ = false;
+    gemma::DestroyGemmaGenContext(gen_ctx_);
+    gen_ctx_ = nullptr;
     TeardownContext();
     loaded_ = false;
 }

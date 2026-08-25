@@ -4,6 +4,7 @@
 #include <absl/strings/str_cat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cuda_runtime.h>
 
@@ -11,6 +12,15 @@
 #include "lsxcommon/model_runtime.h"
 
 namespace lsxcommon {
+
+namespace {
+double MsSince(std::chrono::steady_clock::time_point t0)
+{
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0)
+        .count();
+}
+} // namespace
 
 const std::string Qwen35MoeModel::kType = "qwen3.5-35b-a3b";
 
@@ -21,6 +31,7 @@ Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 
 void Qwen35MoeModel::TeardownWeights()
 {
+    qwen_moe::FreeQwenMoeGenScratch(scratch_);
     qwen_moe::FreeQwenMoeExpertCache(cache_);
     experts_.Free();
     qwen_moe::FreeQwenMoePinnedWeights(pw_);
@@ -76,26 +87,39 @@ bool Qwen35MoeModel::Load()
     }
 
     std::string err;
+    const auto t_dense = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeDenseWeights(cfg_.model_path, pw_, stream(), err)) {
         log::error("[qwen-moe-model] dense load failed: " + err);
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    log::info(absl::StrCat("[qwen-moe-model] dense load ", MsSince(t_dense),
+                           " ms"));
     if (!ValidateGeometry(pw_.moe_top)) {
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    const auto t_experts = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[qwen-moe-model] expert store load failed: " + err);
         TeardownWeights();
         tok_db_.reset();
         return false;
     }
+    log::info(absl::StrCat("[qwen-moe-model] expert store ",
+                           MsSince(t_experts), " ms"));
     // Cache slots: lifecycle-driven start value; bounded by expert count.
+    // LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides for VRAM sweeps (parity with
+    // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS); values < 1 keep the default bound.
     int slots = static_cast<int>(experts_.num_layers * experts_.num_experts);
-    slots = std::min(slots, 64);  // TuningBounds default upper bound
+    slots = std::min(slots, 512);  // VRAM-bounded default (~0.9 GB at 1.73 MB/expert)
+    if (const char *env_slots = std::getenv("LSX_QWEN_MOE_EXPERT_CACHE_SLOTS")) {
+        const int v = std::atoi(env_slots);
+        if (v > 0) slots = std::min(v, static_cast<int>(experts_.num_layers *
+                                                        experts_.num_experts));
+    }
     if (slots <= 0) slots = 4;
     if (!qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_, err)) {
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
@@ -139,8 +163,9 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
     cudaError_t e = RunUnderResidencyLock([&] {
         return qwen_moe::RunQwenMoeGeneration(
-            stream(), pw_, experts_, cache_, gen_input, req.max_gen_tokens,
-            eos_id, gen, lsxcommon::sample::DefaultSampler(), kv_.get());
+            stream(), pw_, experts_, cache_, scratch_, gen_input,
+            req.max_gen_tokens, eos_id, gen,
+            lsxcommon::sample::DefaultSampler(), kv_.get());
     });
     if (e != cudaSuccess) {
         r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;

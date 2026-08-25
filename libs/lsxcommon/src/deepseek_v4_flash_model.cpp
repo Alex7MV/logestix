@@ -22,7 +22,9 @@ InferenceResult RunInferenceModel(
     ::lsxcommon::ArrowTokenizerDb &tok_db,
     gpu::PinnedWeights &pw,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler());
+        lsxcommon::sample::DefaultSampler(),
+    cudaStream_t ext_stream = nullptr,
+    cublasHandle_t ext_cublas = nullptr);
 } // namespace gpu
 
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
@@ -54,10 +56,10 @@ bool DeepSeekV4FlashModel::Load()
     }
     vram_ = topo.vram;
 
-    // Fast-load the pinned weights ONCE (GLM-parity ownership model):
-    // Infer/Benchmark reuse them instead of paying full load cost per call.
-    if (!EnsureContext(/*with_cublas=*/false)) {
-        lsxcommon::log::error("[deepseek-model] stream create failed");
+    // Persistent execution context (stream + cuBLAS handle created ONCE and
+    // reused across Infer calls; GLM/Qwen-parity ownership model).
+    if (!EnsureContext(/*with_cublas=*/true)) {
+        lsxcommon::log::error("[deepseek-model] context create failed");
         return false;
     }
     if (gpu::load_pinned_weights(cfg_.model_path, pw_, stream())
@@ -77,7 +79,9 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
     return RunUnderResidencyLock([&] {
         return gpu::RunInferenceModel(cfg_.model_path, req.input_ids,
-                                      req.max_gen_tokens, *tok_db_, pw_);
+                                      req.max_gen_tokens, *tok_db_, pw_,
+                                      lsxcommon::sample::DefaultSampler(),
+                                      stream(), cublas());
     });
 }
 
@@ -100,7 +104,9 @@ gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
     const std::vector<int32_t> prompt = {0};
     auto res = gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
-                                      *tok_db_, pw_);
+                                      *tok_db_, pw_,
+                                      lsxcommon::sample::DefaultSampler(),
+                                      stream(), cublas());
     if (!res.ok) { r.error_msg = res.error_msg; return r; }
     runtime::FillBenchmarkResult(r, res.total_time_ms, res.num_tokens,
                                  res.num_layers,

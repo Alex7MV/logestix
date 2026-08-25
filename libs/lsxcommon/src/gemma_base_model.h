@@ -29,6 +29,9 @@ public:
     const std::string &Type() const override { return type_; }
     void SetType(std::string t) { type_ = std::move(t); }
 
+    // Test/diagnostics access to the persistent routed-expert index.
+    const gemma::GemmaExpertDb &ExpertIndexForTest() const { return expert_db_; }
+
     // Gemma-4 chat framing — model-owned token bridge (BOS-led template).
     bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
                              std::string_view raw_prompt,
@@ -51,6 +54,13 @@ protected:
     // the previous generated tail continues the cache; anything else resets.
     std::unique_ptr<gemma::GemmaKvCache> kv_;
     std::vector<int32_t> session_tail_;
+
+    // Routed-expert index: parsed once at Load(), reused by every Infer.
+    gemma::GemmaExpertDb expert_db_;
+    bool expert_db_ready_ = false;
+
+    // Persistent generation context (cublas + workspace [+ expert cache]).
+    gemma::GemmaGenContext *gen_ctx_ = nullptr;
 };
 
 } // namespace lsxcommon

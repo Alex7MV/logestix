@@ -138,15 +138,48 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 const QwenMoeRoutedSlot *h_slots, int K,
                                 const __half *d_x, int H, int I,
                                 float *d_acc, __half *d_yg, __half *d_yu,
-                                __half *d_y2, std::string &error)
+                                __half *d_y2, std::string &error,
+                                cudaStream_t copy_stream,
+                                cudaEvent_t *ev_uploads, cudaEvent_t ev_front)
 {
+    // Pass 1 (staging): resolve residency for all K slots up front so miss
+    // uploads can stream on the copy channel while the compute chain runs.
+    int dev_slots[16];
+    bool missed[16];
+    if (K > 16) { error = "routed slots exceed staging capacity";
+        return cudaErrorInvalidValue; }
+    if (copy_stream) {
+        if (!ev_uploads) { error = "bad copy-stream args";
+            return cudaErrorInvalidValue; }
+        // Fence: never overwrite a cache slot that previously enqueued compute
+        // may still be reading. ev_front is recorded BEFORE this layer's work;
+        // once the copy stream passes the wait, all prior compute has retired.
+        cudaError_t e = cudaEventRecord(ev_front, stream);
+        if (e != cudaSuccess) return e;
+        e = cudaStreamWaitEvent(copy_stream, ev_front, 0);
+        if (e != cudaSuccess) return e;
+    }
+    for (int k = 0; k < K; ++k) {
+        missed[k] = false;
+        dev_slots[k] = EnsureQwenMoeExpertResident(
+            store, layer, h_slots[k].eid, cache, stream, error, copy_stream,
+            copy_stream ? &missed[k] : nullptr);
+        if (dev_slots[k] < 0) return cudaErrorInvalidValue;
+    }
+    if (copy_stream) {
+        for (int k = 0; k < K; ++k) {
+            if (!missed[k]) continue;
+            // Uploads of distinct slots were already serialized on the copy
+            // stream in pass-1 order; one event per expert is enough.
+            cudaError_t e = cudaEventRecord(ev_uploads[k], copy_stream);
+            if (e != cudaSuccess) return e;
+        }
+    }
+
     for (int k = 0; k < K; ++k) {
         // Ascending-k accumulation keeps the fp32 add order deterministic.
         const QwenMoeRoutedSlot &slot = h_slots[k];
-        const int dev_slot =
-            EnsureQwenMoeExpertResident(store, layer, slot.eid, cache, stream,
-                                        error);
-        if (dev_slot < 0) return cudaErrorInvalidValue;
+        const int dev_slot = dev_slots[k];
 
         const auto &rec = store.records[static_cast<size_t>(layer)]
                                         [static_cast<size_t>(slot.eid)];
@@ -161,6 +194,11 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         const uint8_t *s1 = scale;
         const uint8_t *s2 = scale + rec.s1_bytes;
         const uint8_t *s3 = scale + rec.s1_bytes + rec.s2_bytes;
+
+        if (copy_stream && missed[k]) {
+            cudaError_t e = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
+            if (e != cudaSuccess) return e;
+        }
 
         // y_g = w1 . x   [I,H]; y_u = w3 . x; y_2 = w2 . silu(y_g)*y_u   [H,I]
         if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1, H, I,
@@ -276,15 +314,69 @@ __global__ void qwen_moe_init_acc_kernel(const __half *__restrict__ resid,
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 } // namespace
 
+cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
+                                 const QwenMoePinnedWeights &pw,
+                                 QwenMoeGenScratch &scratch)
+{
+    const int64_t elems = static_cast<int64_t>(pw.top.vocab_size) *
+                          pw.top.hidden_size;
+    if (scratch.d_embed && scratch.table_elems == elems)
+        return cudaSuccess;
+    FreeQwenMoeGenScratch(scratch);
+    cudaError_t e = cudaMalloc(reinterpret_cast<void **>(&scratch.d_embed),
+                               static_cast<size_t>(elems) * sizeof(__half));
+    if (e != cudaSuccess) return e;
+    e = lsxcommon::gpu::dequant_shared_nvfp4(
+        stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
+        pw.embed.scale_bytes, pw.embed.global_scale, scratch.d_embed, elems);
+    if (e != cudaSuccess) return e;
+    scratch.table_elems = elems;
+    ++scratch.dequant_runs;
+    return cudaSuccess;
+}
+
+cudaError_t ReserveQwenMoeArena(QwenMoeGenScratch &scratch, size_t bytes)
+{
+    if (scratch.arena && scratch.arena_capacity >= bytes)
+        return cudaSuccess;
+    if (scratch.arena) {
+        cudaFree(scratch.arena);
+        scratch.arena = nullptr;
+    }
+    cudaError_t e = cudaMalloc(&scratch.arena, bytes);
+    if (e != cudaSuccess) {
+        scratch.arena_capacity = 0;
+        return e;
+    }
+    scratch.arena_capacity = bytes;
+    ++scratch.arena_allocs;
+    return cudaSuccess;
+}
+
+void FreeQwenMoeGenScratch(QwenMoeGenScratch &scratch)
+{
+    if (scratch.d_embed) cudaFree(scratch.d_embed);
+    if (scratch.arena) cudaFree(scratch.arena);
+    scratch = {};
+}
+
 cudaError_t RunQwenMoeGeneration(
     cudaStream_t stream, const QwenMoePinnedWeights &pw,
     QwenMoeExpertStore &store, QwenMoeExpertDeviceCache &cache,
+    QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
     qwen::QwenKvCache *kv)
 {
     if (!kv)
         return cudaErrorInvalidValue;  // MoE path is incremental-only.
+    {   // Persistent embed table: dequant once, reuse across calls.
+        cudaError_t pre = EnsureQwenMoeScratch(stream, pw, scratch);
+        if (pre != cudaSuccess) {
+            result.error_msg = "scratch ensure failed";
+            return pre;
+        }
+    }
     const qwen::QwenTopology &top = pw.top;
     const int H = top.hidden_size;
     const int NH = top.num_attention_heads, HD = top.head_dim;
@@ -345,8 +437,6 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)max_seq * S,             // d_conv
         (size_t)max_seq * VD,            // d_core
         (size_t)max_seq * VD,            // d_gated
-        (size_t)V * H,                   // d_embed_half
-        (size_t)V * H,                   // d_head_half
         (size_t)max_seq * V,             // d_logits
         (size_t)max_seq * 2,             // d_ids
         (size_t)max_seq * 2,             // d_pos
@@ -370,9 +460,9 @@ cudaError_t RunQwenMoeGeneration(
     for (auto s : float_sz) float_bytes += s * sizeof(float);
     float_bytes = (float_bytes + 15) & ~static_cast<size_t>(15);
 
-    void *base = nullptr;
-    cudaError_t e = cudaMalloc(&base, half_bytes + float_bytes);
-    if (e != cudaSuccess) { result.error_msg = "arena alloc failed"; return e; }
+    cudaError_t e = ReserveQwenMoeArena(scratch, half_bytes + float_bytes);
+    if (e != cudaSuccess) { result.error_msg = "arena reserve failed"; return e; }
+    void *base = scratch.arena;
 
     auto adv = [&](__half *&p, size_t hs) {
         __half *r = p;
@@ -398,16 +488,15 @@ cudaError_t RunQwenMoeGeneration(
     __half *d_conv = adv(ph, half_sz[15]);
     __half *d_core = adv(ph, half_sz[16]);
     __half *d_gated = adv(ph, half_sz[17]);
-    __half *d_embed_h = adv(ph, half_sz[18]);
-    __half *d_head_h = adv(ph, half_sz[19]);
-    __half *d_logits = adv(ph, half_sz[20]);
-    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[21]));
-    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[22]));
-    __half *d_yg = adv(ph, half_sz[23]);
-    __half *d_yu = adv(ph, half_sz[24]);
-    __half *d_y2 = adv(ph, half_sz[25]);
-    __half *d_si = adv(ph, half_sz[26]);
-    __half *d_sh = adv(ph, half_sz[27]);
+    __half *d_embed_h = scratch.d_embed;
+    __half *d_logits = adv(ph, half_sz[18]);
+    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[19]));
+    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[20]));
+    __half *d_yg = adv(ph, half_sz[21]);
+    __half *d_yu = adv(ph, half_sz[22]);
+    __half *d_y2 = adv(ph, half_sz[23]);
+    __half *d_si = adv(ph, half_sz[24]);
+    __half *d_sh = adv(ph, half_sz[25]);
     float *pf = reinterpret_cast<float *>((uint8_t *)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
@@ -415,26 +504,14 @@ cudaError_t RunQwenMoeGeneration(
     float *d_moe_acc = pf; pf += float_sz[3];
     float *d_gate_val = pf;
 
-    e = lsxcommon::gpu::dequant_shared_nvfp4(
-        stream, pw.embed.d_packed, pw.embed.packed_bytes, pw.embed.d_scales,
-        pw.embed.scale_bytes, pw.embed.global_scale, d_embed_h,
-        (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant embed"; cudaFree(base); return e; }
-    e = lsxcommon::gpu::dequant_shared_nvfp4(
-        stream, pw.head.d_packed, pw.head.packed_bytes, pw.head.d_scales,
-        pw.head.scale_bytes, pw.head.global_scale, d_head_h,
-        (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant head"; cudaFree(base); return e; }
-
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
-    if (e != cudaSuccess) { result.error_msg = "argmax alloc"; cudaFree(base); return e; }
+    if (e != cudaSuccess) { result.error_msg = "argmax alloc"; return e; }
     QwenMoeRoutedSlot *d_slots = nullptr;
     e = cudaMalloc(&d_slots, sizeof(QwenMoeRoutedSlot) * static_cast<size_t>(K));
     if (e != cudaSuccess) {
         result.error_msg = "slots alloc";
         cudaFree(d_argmax);
-        cudaFree(base);
         return e;
     }
 
@@ -455,6 +532,22 @@ cudaError_t RunQwenMoeGeneration(
     cudaEventCreate(&tok_ready);
     cudaEventRecord(t_start, stream);
 
+    // Copy channel for cache-miss expert uploads (task-2 audit item): H2D
+    // staging overlaps the routed-expert compute chain instead of serializing
+    // with it. Events fence each upload; ev_front guards slot reuse.
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t ev_uploads[16] = {};
+    cudaEvent_t ev_front = nullptr;
+    bool have_copy =
+        cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) ==
+            cudaSuccess &&
+        cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==
+            cudaSuccess;
+    for (int k = 0; have_copy && k < K && k < 16; ++k)
+        have_copy = cudaEventCreateWithFlags(&ev_uploads[k],
+                                             cudaEventDisableTiming) ==
+                    cudaSuccess;
+
     std::string moe_error;
     auto fail = [&](cudaError_t err, std::string msg) -> cudaError_t {
         result.error_msg = std::move(msg);
@@ -462,11 +555,14 @@ cudaError_t RunQwenMoeGeneration(
         if (t_ttft) cudaEventDestroy(t_ttft);
         if (t_stop) cudaEventDestroy(t_stop);
         if (tok_ready) cudaEventDestroy(tok_ready);
+        if (copy_stream) cudaStreamDestroy(copy_stream);
+        for (int k = 0; k < 16; ++k)
+            if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
+        if (ev_front) cudaEventDestroy(ev_front);
         if (h_step) cudaFreeHost(h_step);
         if (h_slots) cudaFreeHost(h_slots);
         cudaFree(d_argmax);
         cudaFree(d_slots);
-        cudaFree(base);
         return err;
     };
 
@@ -535,19 +631,36 @@ cudaError_t RunQwenMoeGeneration(
             e = RunQwenMoeRouterTopK(stream, reinterpret_cast<const __nv_bfloat16 *>(lw.d_router),
                                      d_postin, seq, E, K, H, d_slots);
             if (e != cudaSuccess) return fail(e, "router l" + std::to_string(l));
+            {
+                // Accumulator init is independent of the routing result; enqueue
+                // it behind the router so the GPU has work queued while the
+                // host waits for the slot readback below.
+                const int64_t n = seq * H;
+                qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
+                                           threads, 0, stream>>>(d_act, d_moe_acc,
+                                                                 n);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
+            }
             // Host needs the selected ids to stage experts: small D2H +
-            // event handshake once per layer (etalon: GLM routing staging).
+            // event fence once per layer. Busy-poll the event instead of the
+            // blocking cudaEventSynchronize — with K layers × steps handshakes
+            // per generation, host wake latency is pure GPU idle time.
             cudaMemcpyAsync(h_slots, d_slots, sizeof(QwenMoeRoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready, stream);
-            cudaEventSynchronize(tok_ready);
+            {
+                cudaError_t q;
+                while ((q = cudaEventQuery(tok_ready)) == cudaErrorNotReady) {}
+                (void)q;
+            }
             QwenMoeRoutedSlot *slots_host = h_slots;
-            qwen_moe_init_acc_kernel<<<(int)((seq * H + threads - 1) / threads),
-                                       threads, 0, stream>>>(d_act, d_moe_acc,
-                                                             seq * H);
             e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host, K,
                                     d_postin, H, I, d_moe_acc, d_yg, d_yu,
-                                    d_y2, moe_error);
+                                    d_y2, moe_error,
+                                    have_copy ? copy_stream : nullptr,
+                                    have_copy ? ev_uploads : nullptr,
+                                    ev_front);
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
@@ -613,10 +726,13 @@ cudaError_t RunQwenMoeGeneration(
     cudaEventDestroy(t_ttft);
     cudaEventDestroy(t_stop);
     if (tok_ready) cudaEventDestroy(tok_ready);
+    if (copy_stream) cudaStreamDestroy(copy_stream);
+    for (int k = 0; k < 16; ++k)
+        if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
+    if (ev_front) cudaEventDestroy(ev_front);
     if (h_step) cudaFreeHost(h_step);
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);
-    cudaFree(base);
     result.resident_bytes = pw.resident_bytes + half_bytes + float_bytes +
                             sizeof(int32_t) + kv->Bytes();
     result.ok = true;

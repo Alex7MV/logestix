@@ -140,10 +140,15 @@ InferenceResult RunInferenceModel(
     ::lsxcommon::ArrowTokenizerDb &tok_db,
     PinnedWeights &pw,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler())
+        lsxcommon::sample::DefaultSampler(),
+    cudaStream_t ext_stream = nullptr,
+    cublasHandle_t ext_cublas = nullptr)
 {
     InferenceResult result;
     auto mp = model_path;
+    // Persistent-context mode (ModelBase::EnsureContext): the caller owns the
+    // stream/cuBLAS handle across Infer calls, saving per-call handle setup.
+    const bool own_context = (ext_stream == nullptr);
 
     // 1. Log the incoming prompt tokens
     std::string tok_line;
@@ -236,6 +241,7 @@ InferenceResult RunInferenceModel(
     ExpertDb expert_db;
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     cudaEvent_t evict_done = nullptr;   // mmap-eviction barrier (event form)
+    cudaEvent_t ev_route = nullptr;     // router readback fence (async split)
     // Device-side resident-expert cache (see ExpertDeviceCache in
     // deepseek_inference_load.cuh): repeated expert selections skip the
     // ~13 MB per-expert H2D staging entirely.
@@ -272,8 +278,17 @@ InferenceResult RunInferenceModel(
     // ~10-30µs blocking-syscall latency. Host CPU headroom is explicitly not
     // a constrained resource for this project.
     INFER_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
-    INFER_CHECK(cudaStreamCreate(&stream));
-    CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
+    if (own_context) {
+        INFER_CHECK(cudaStreamCreate(&stream));
+        CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
+    } else {
+        stream = ext_stream;
+        cublas_h = ext_cublas;
+        if (!stream || !cublas_h) {
+            result.error_msg = "external context requires stream and cublas";
+            goto cleanup;
+        }
+    }
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
 
     // The whole per-run footprint (every scratch buffer, KV cache, CSA state,
@@ -450,6 +465,7 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaEventCreate(&t_ttft));
     INFER_CHECK(cudaEventCreate(&t_stop));
     INFER_CHECK(cudaEventCreateWithFlags(&evict_done, cudaEventDisableTiming));
+    INFER_CHECK(cudaEventCreateWithFlags(&ev_route, cudaEventDisableTiming));
     INFER_CHECK(cudaEventRecord(t_start, stream));
 
     // 9b. Device-side resident-expert cache. Slot count is overridable via
@@ -588,26 +604,29 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     cudaMemcpyDeviceToDevice, stream));
             }
 
-            // Router: gate GEMM + sqrt(softplus) + top-k (hash/score) + weights
-            if (lw.d_gate_weight) {
-                int num_routed = std::min(kNumRouted, topo.experts_per_layer);
-                const int64_t *tid = lw.h_tid2eid;
-                if (tid && (cur_tok < 0 || cur_tok >= lw.tid2eid_vocab)) tid = nullptr;
-                INFER_CHECK(route_token(cublas_h, stream, lw.d_gate_weight,
-                                        d_normed, kHiddenDim, num_routed,
-                                        tid, lw.tid2eid_topk, cur_tok,
-                                        lw.h_gate_bias,
-                                        kLocalTopK,
-                                        arena.d_routing_scratch,
-                                        arena.h_routing_scratch,
-                                        h_topk, h_top_weights));
+            // Router (async split): begin enqueues gate GEMM + D2H logits and
+            // records ev_route; the host-side scoring happens in finish BELOW,
+            // after the shared-expert FFN has been enqueued — the GPU keeps
+            // executing that FFN while the host waits for the router logits.
+            const bool have_router = (lw.d_gate_weight != nullptr);
+            int num_routed = std::min(kNumRouted, topo.experts_per_layer);
+            const int64_t *tid = lw.h_tid2eid;
+            if (tid && (cur_tok < 0 || cur_tok >= lw.tid2eid_vocab)) tid = nullptr;
+            if (have_router) {
+                INFER_CHECK(route_token_begin(cublas_h, stream, lw.d_gate_weight,
+                                              d_normed, kHiddenDim, num_routed,
+                                              arena.d_routing_scratch,
+                                              arena.h_routing_scratch,
+                                              ev_route));
             } else {
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
                 std::memset(h_top_weights, 0,
                             static_cast<size_t>(kLocalTopK) * sizeof(float));
             }
 
-            // Shared experts FFN: outputs to d_ffn_accum (FP32)
+            // Shared experts FFN: outputs to d_ffn_accum (FP32).
+            // Independent of the routing result; enqueued behind the router GEMM
+            // so it overlaps the host's router-logit wait.
             if (lw.d_shared_w1 && lw.shared_w1_bytes > 0) {
                 // Shared FFN outputs FP16 to d_ffn_out, then convert to FP32 accum
                 INFER_CHECK(run_shared_experts_ffn(
@@ -628,6 +647,19 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             } else {
                 INFER_CHECK(cudaMemsetAsync(d_ffn_accum, 0,
                     static_cast<size_t>(kHiddenDim) * sizeof(float), stream));
+            }
+
+            // Router finish: event-scoped fence + host-side scoring
+            // (sqrt(softplus) + top-k). Stream ordering guarantees the shared
+            // FFN above retires before the routed-expert W2 accumulation below.
+            if (have_router) {
+                INFER_CHECK(route_token_finish(num_routed, cur_tok,
+                                               tid, lw.tid2eid_topk,
+                                               lw.h_gate_bias,
+                                               kLocalTopK,
+                                               arena.h_routing_scratch,
+                                               h_topk, h_top_weights,
+                                               ev_route));
             }
 
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
@@ -818,14 +850,15 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
     }
 
 cleanup:
-    if (stream)        cudaStreamDestroy(stream);
-    if (cublas_h)      cublasDestroy(cublas_h);
+    if (stream && own_context) cudaStreamDestroy(stream);
+    if (cublas_h && own_context) cublasDestroy(cublas_h);
     arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
     if (expert_cache.d_base) cudaFree(expert_cache.d_base);
     if (t_start)       cudaEventDestroy(t_start);
     if (t_ttft)        cudaEventDestroy(t_ttft);
     if (t_stop)        cudaEventDestroy(t_stop);
     if (evict_done)    cudaEventDestroy(evict_done);
+    if (ev_route)      cudaEventDestroy(ev_route);
     free_expert_index(expert_db);
 
     return result;

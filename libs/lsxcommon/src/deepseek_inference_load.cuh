@@ -324,6 +324,28 @@ cudaError_t route_token(
     float *h_logits_scratch,    // caller-owned [num_routed] float (pinned)
     int *h_top_indices, float *h_top_weights);
 
+// Async split of route_token for pipeline overlap: begin enqueues the gate
+// GEMM + D2H logits copy and records @p ev (NO host wait); finish waits on
+// @p ev only (the caller is free to enqueue independent GPU work in between,
+// e.g. the shared-expert FFN) and then runs the identical host-side scoring.
+// Fused route_token == begin + finish, bit-exact.
+cudaError_t route_token_begin(
+    cublasHandle_t cublas_h, cudaStream_t stream,
+    const __half *d_gate, const __half *d_hidden,
+    int hidden_dim, int num_routed,
+    __half *d_logits_scratch,   // caller-owned [num_routed] __half
+    float *h_logits_scratch,    // caller-owned [num_routed] float (pinned)
+    cudaEvent_t ev);
+
+cudaError_t route_token_finish(
+    int num_routed, int token_id,
+    const int64_t *h_tid2eid, int tid2eid_stride,
+    const float *h_gate_bias,
+    int topk,
+    float *h_logits_scratch,    // filled by begin
+    int *h_top_indices, float *h_top_weights,
+    cudaEvent_t ev);
+
 // Global CUDA-allocation counter for per-run inference footprints. The arena's
 // Allocate() increments it by 2 (device + pinned host block); route_token and
 // load_pinned_weights must not touch it. Header-inline function-local static →

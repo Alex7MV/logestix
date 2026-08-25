@@ -41,6 +41,10 @@ struct ExpertStore {
     int experts_per_layer = 0;
     std::string error_msg;
 
+    // Diagnostics: ParseFile invocation / success counters (tests, loaders).
+    int64_t parse_calls = 0;
+    int64_t parse_ok = 0;
+
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
     std::string mmap_fail_verb = "mmap fail ";   // DeepSeek; GLM = "expert mmap fail "
@@ -125,6 +129,7 @@ struct ExpertStore {
 
     bool ParseFile(size_t idx)
     {
+        ++parse_calls;
         auto &apath = paths[idx];
         auto mmap_res = arrow::io::MemoryMappedFile::Open(
             apath, arrow::io::FileMode::READ);
@@ -185,6 +190,7 @@ struct ExpertStore {
             log::info(os.str());
         }
 
+        ++parse_ok;
         mmaps[idx] = std::move(mmap);
         batches[idx] = std::move(batch);
         return true;

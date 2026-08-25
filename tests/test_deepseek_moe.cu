@@ -545,6 +545,111 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
     cudaStreamDestroy(st);
 }
 
+// ── route_token split phases (async handshake) ──────────────────────────────
+// begin/finish must produce results identical to the fused route_token for all
+// three paths; the pipeline relies on this to overlap the shared-expert FFN
+// with the router roundtrip without changing any numerics.
+
+TEST_CASE("route_token split begin/finish matches fused route_token exactly",
+          "[deepseek][moe][router]")
+{
+    cudaFree(0);
+    cublasHandle_t ch;
+    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+
+    constexpr int kHidden = 4096;
+    constexpr int kNumRouted = 64;
+    constexpr int kTopk = 6;
+
+    std::vector<__half> gate(static_cast<size_t>(kHidden) * kNumRouted);
+    for (int e = 0; e < kNumRouted; ++e) {
+        __half v = __float2half_rn(0.00005f * static_cast<float>(e + 1));
+        for (int k = 0; k < kHidden; ++k)
+            gate[static_cast<size_t>(e) * kHidden + k] = v;
+    }
+    std::vector<__half> hidden(static_cast<size_t>(kHidden), __float2half_rn(0.5f));
+
+    __half *d_gate = nullptr, *d_hidden = nullptr;
+    REQUIRE(cudaMalloc(&d_gate, gate.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_hidden, hidden.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_gate, gate.data(), gate.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_hidden, hidden.data(), hidden.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    __half *d_logits_scratch = nullptr;
+    float *h_logits_scratch = nullptr;
+    REQUIRE(cudaMalloc(&d_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMallocHost(&h_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(float)) == cudaSuccess);
+
+    cudaEvent_t ev;
+    REQUIRE(cudaEventCreate(&ev) == cudaSuccess);
+
+    std::vector<float> bias(static_cast<size_t>(kNumRouted), 0.0f);
+    bias[3] = 100.0f;
+    constexpr int kTidStride = kTopk;
+    std::vector<int64_t> tid2eid(static_cast<size_t>(2) * kTidStride);
+    for (int k = 0; k < 2 * kTidStride; ++k)
+        tid2eid[k] = (kNumRouted - 1 - k) % kNumRouted;
+
+    // {label, h_tid2eid, tid2eid_stride, token_id, h_gate_bias}
+    struct Case {
+        const char *label;
+        const int64_t *tid;
+        int stride;
+        int token_id;
+        const float *bias;
+    };
+    const Case cases[] = {
+        {"score", nullptr, 0, 0, nullptr},
+        {"bias", nullptr, 0, 0, bias.data()},
+        {"hash", tid2eid.data(), kTidStride, 1, nullptr},
+    };
+
+    for (const Case &tc : cases) {
+        int fused_idx[kTopk];
+        float fused_w[kTopk];
+        lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
+                                    tc.tid, tc.stride, tc.token_id, tc.bias, kTopk,
+                                    d_logits_scratch, h_logits_scratch,
+                                    fused_idx, fused_w);
+        REQUIRE(cuda_sync_check());
+
+        int split_idx[kTopk];
+        float split_w[kTopk];
+        REQUIRE(lsxcommon::gpu::route_token_begin(ch, st, d_gate, d_hidden,
+                                                  kHidden, kNumRouted,
+                                                  d_logits_scratch,
+                                                  h_logits_scratch,
+                                                  ev) == cudaSuccess);
+        REQUIRE(lsxcommon::gpu::route_token_finish(kNumRouted, tc.token_id,
+                                                   tc.tid, tc.stride, tc.bias,
+                                                   kTopk, h_logits_scratch,
+                                                   split_idx, split_w,
+                                                   ev) == cudaSuccess);
+        REQUIRE(cuda_sync_check());
+
+        for (int k = 0; k < kTopk; ++k) {
+            INFO(tc.label << " topk[" << k << "] fused=" << fused_idx[k]
+                          << " split=" << split_idx[k]);
+            CHECK(split_idx[k] == fused_idx[k]);
+            INFO(tc.label << " w[" << k << "] fused=" << fused_w[k]
+                          << " split=" << split_w[k]);
+            CHECK(split_w[k] == fused_w[k]); // bit-exact: same host math
+        }
+    }
+
+    cudaEventDestroy(ev);
+    cudaFree(d_gate);
+    cudaFree(d_hidden);
+    cudaFree(d_logits_scratch);
+    cudaFreeHost(h_logits_scratch);
+    cublasDestroy(ch);
+    cudaStreamDestroy(st);
+}
+
 // ── run_shared_experts_ffn: F8 shared-expert FFN ────────────────────────────
 
 TEST_CASE("run_shared_experts_ffn computes the F8 SwiGLU FFN correctly",

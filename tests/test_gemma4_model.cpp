@@ -11,6 +11,8 @@
 #include "lsxcommon/gemma4_inference_load.h"
 #include "lsxcommon/model_factory.h"
 
+#include "gemma_base_model.h"
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -78,3 +80,32 @@ TEST_CASE("factory creates registered gemma model on synthetic fixture",
     fs::remove_all(out.parent_path());
 }
 
+
+TEST_CASE("gemma expert index parsed once across Infers", "[gemma][model]") {
+    auto out = MakeConvertedSynthetic();
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = out.string();
+    cfg.model_type = "gemma-4-26b-a4b-it";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = {0, 3, 5, 7};
+    req.max_gen_tokens = 2;
+
+    auto r1 = model->Infer(req);
+    if (!r1.ok) FAIL("first Infer failed: " << r1.error_msg);
+    auto r2 = model->Infer(req);
+    if (!r2.ok) FAIL("second Infer failed: " << r2.error_msg);
+
+    auto *gm = dynamic_cast<lsxcommon::GemmaBaseModel *>(model.get());
+    REQUIRE(gm != nullptr);
+    const auto &idx = gm->ExpertIndexForTest();
+    CHECK(idx.parse_calls == idx.num_layers * idx.experts_per_layer);
+    CHECK(idx.parse_ok == idx.num_layers * idx.experts_per_layer);
+
+    model->Unload();
+    fs::remove_all(out.parent_path());
+}

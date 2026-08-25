@@ -294,6 +294,101 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
 }
 
+// Copy-stream upload path: cache-miss H2D staging runs on a dedicated stream
+// fenced by per-expert events while the compute stream proceeds. Output must
+// be bit-identical to the single-stream path (same math, different ordering
+// of independent work).
+TEST_CASE("routed ffn copy-stream uploads match single-stream reference",
+          "[qwen-moe-experts]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_cs_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_cs_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen_moe::QwenMoeExpertStore store;
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
+
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    // Deliberately small (4 slots < 8 experts over both layers) so the
+    // copy-stream pass also exercises LRU eviction across layers.
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 4, cache, err));
+
+    cudaStream_t stream, copy_stream;
+    REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+    REQUIRE(cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) == cudaSuccess);
+
+    const int H = 64, I = 16, K = 2;
+    std::vector<__half> hx(static_cast<size_t>(H));
+    for (int i = 0; i < H; ++i)
+        hx[static_cast<size_t>(i)] = __float2half(sinf((float)i * 0.7f) * 0.4f);
+
+    __half *d_x, *d_yg, *d_yu, *d_y2;
+    float *d_acc;
+    cudaMalloc(&d_x, H * 2);
+    cudaMalloc(&d_yg, I * 2);
+    cudaMalloc(&d_yu, I * 2);
+    cudaMalloc(&d_y2, H * 2);
+    cudaMalloc(&d_acc, H * 4);
+
+    cudaMemcpy(d_x, hx.data(), H * 2, cudaMemcpyHostToDevice);
+
+    const std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> h_slots =
+        {{0, 0.5f}, {1, 0.5f}};
+
+    auto run_layer = [&](cudaStream_t cs, cudaEvent_t *ev_uploads,
+                         cudaEvent_t ev_front, std::vector<__half> &dst) {
+        cudaMemset(d_acc, 0, H * 4);
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedFFN(
+                    stream, store, cache, /*layer=*/0, h_slots.data(), K, d_x,
+                    H, I, d_acc, d_yg, d_yu, d_y2, err,
+                    cs, ev_uploads, ev_front) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeAccToFp16(stream, d_acc, d_y2, H) ==
+                cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        dst.resize(H);
+        cudaMemcpy(dst.data(), d_y2, H * 2, cudaMemcpyDeviceToHost);
+    };
+
+    // Reference: single-stream path (cold cache).
+    std::vector<__half> ref;
+    run_layer(nullptr, nullptr, nullptr, ref);
+
+    // Copy-stream path: fresh cache -> every expert is a miss staged on
+    // copy_stream, compute fenced by per-expert events.
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 4, cache, err));
+    std::vector<__half> got;
+    {
+        cudaEvent_t ev_uploads[K];
+        cudaEvent_t ev_front;
+        for (int k = 0; k < K; ++k)
+            REQUIRE(cudaEventCreateWithFlags(&ev_uploads[k],
+                                             cudaEventDisableTiming) == cudaSuccess);
+        REQUIRE(cudaEventCreateWithFlags(&ev_front,
+                                         cudaEventDisableTiming) == cudaSuccess);
+        run_layer(copy_stream, ev_uploads, ev_front, got);
+        for (int k = 0; k < K; ++k) cudaEventDestroy(ev_uploads[k]);
+        cudaEventDestroy(ev_front);
+    }
+    REQUIRE(std::memcmp(ref.data(), got.data(), H * sizeof(__half)) == 0);
+    for (int i = 0; i < H; ++i)
+        CHECK(std::isfinite(__half2float(got[static_cast<size_t>(i)])));
+
+    cudaFree(d_x); cudaFree(d_yg); cudaFree(d_yu); cudaFree(d_y2);
+    cudaFree(d_acc);
+    cudaStreamDestroy(stream);
+    cudaStreamDestroy(copy_stream);
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    store.Free();
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
+
 TEST_CASE("shared expert gate combine", "[qwen-moe-experts]")
 {
     namespace fs2 = std::filesystem;
@@ -380,12 +475,16 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
     REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 8, cache, err));
 
+    lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
+    REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
+            cudaSuccess);
+
     auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
         lsxcommon::qwen::QwenKvCache kv;
         lsxcommon::sample::GreedySampler sampler;
         std::vector<int32_t> prompt = {1, 2, 3};
         return lsxcommon::qwen_moe::RunQwenMoeGeneration(
-            stream, pw, store, cache, prompt, /*max_new=*/4,
+            stream, pw, store, cache, gen_scratch, prompt, /*max_new=*/4,
             /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
     };
 
@@ -405,6 +504,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     for (auto v : r1.final_logits) CHECK(std::isfinite(v));
     CHECK(r1.ok); CHECK(r2.ok);
 
+    lsxcommon::qwen_moe::FreeQwenMoeGenScratch(gen_scratch);
     lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
     store.Free();
     lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);

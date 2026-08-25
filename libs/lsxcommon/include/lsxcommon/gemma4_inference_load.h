@@ -74,6 +74,10 @@ struct GemmaPinnedWeights {
     int hidden = 0;
     std::vector<GemmaLayerWeights> layers;
 
+    // Host mirror of per-layer layer_scalar (constant weight; read once at
+    // upload instead of a full stream sync per layer per forward).
+    std::vector<float> h_layer_scalar;
+
     // Topology from <root>/logestix/model.index.json (present for converted
     // models). error_msg set when the index is missing/malformed.
     GemmaTopology top;
