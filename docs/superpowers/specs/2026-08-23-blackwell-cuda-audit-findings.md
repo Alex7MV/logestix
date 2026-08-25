@@ -565,3 +565,13 @@ e2e @5090: **53.9 -> 59.7 tok/s (+11%), ttft 79 -> 72ms**, " Paris." x2.
 e2e @5090: **59.7 -> 62.8 tok/s (+5%), ttft 72 -> 69ms**, " Paris." x3.
 105/105 tests, sanitizer clean. Cumulative: scalar 14.4 -> **62.8 tok/s
 (x4.4)**.
+
+### Optimization round 17 (2026-08-25) — gated-delta state coalescing: 64.2
+
+qwen_gated_delta_kernel state layout transposed [col][kd] -> [kd][vflat]:
+warp lanes now touch consecutive floats when streaming the 8 MB recurrent
+state (was strided by kd per thread, ~600 GB/s effective). Internal
+workspace only; numerically identical per thread.
+
+e2e @5090: **62.8 -> 64.2 tok/s (+2%), ttft 69 -> 68ms**, " Paris." x3.
+Cumulative: scalar 14.4 -> **64.2 tok/s (x4.5)**.

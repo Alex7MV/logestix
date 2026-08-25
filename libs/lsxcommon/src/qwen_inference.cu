@@ -681,12 +681,17 @@ __global__ void qwen_gated_delta_kernel(
     const int d = threadIdx.x;     // value-dim column [0, vd)
     if (d >= vd) return;
 
-    const int seed_off = (vh * vd + d) * kd;
+    // State layout is transposed [kd][nv*vd]: consecutive threads touch
+    // consecutive floats -> coalesced state streaming (the old [col][kd]
+    // layout strided by kd per thread and was bandwidth-bound at ~600 GB/s).
+    const int vflat = vh * vd + d;
+    const int vtotal = nv * vd;
 
     // Registers hold this thread's column [l in 0..kd).
     float col[256];
     for (int l = 0; l < kd; ++l)
-        col[l] = col_seed ? col_seed[seed_off + l] : 0.0f;
+        col[l] = col_seed ? col_seed[static_cast<int64_t>(l) * vtotal + vflat]
+                          : 0.0f;
 
     const __half *qrow = q + (int64_t)t * stride + (int64_t)kh * kd;
 
@@ -704,7 +709,8 @@ __global__ void qwen_gated_delta_kernel(
     }
 
     if (col_seed && t == seq - 1) {
-        for (int l = 0; l < kd; ++l) col_seed[seed_off + l] = col[l];
+        for (int l = 0; l < kd; ++l)
+            col_seed[static_cast<int64_t>(l) * vtotal + vflat] = col[l];
     }
 
     float acc = 0.0f;
