@@ -616,8 +616,14 @@ if(WIN32)
     )
 endif()
 
-add_test(NAME test_blackwell_perf_moe COMMAND test_blackwell_perf_moe)
-set_tests_properties(test_blackwell_perf_moe PROPERTIES SKIP_RETURN_CODE 4)
+# One binary, two ctest entries (Catch2 tag filters) so each MoE model is
+# individually selectable and named in ctest output.
+add_test(NAME test_blackwell_perf_moe_qwen
+         COMMAND test_blackwell_perf_moe "[qwen35moe]")
+add_test(NAME test_blackwell_perf_moe_gemma
+         COMMAND test_blackwell_perf_moe "[gemma26moe]")
+set_tests_properties(test_blackwell_perf_moe_qwen PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_blackwell_perf_moe_gemma PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Blackwell audit Phase 0: DeepSeek-V4-Flash perf baseline harness.
 add_executable(test_blackwell_perf_deepseek test_blackwell_perf_deepseek.cpp)

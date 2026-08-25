@@ -55,7 +55,7 @@ std::vector<int32_t> EncodePerfPrompt(lsxcommon::ArrowTokenizerDb &tok)
 } // namespace
 
 TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
-          "[qwen][moe][perf][real-model]")
+          "[qwen35moe][perf][real-model]")
 {
     const std::filesystem::path model = QwenMoePerfModelPath();
     if (!std::filesystem::exists(model / "logestix" / "pinned"))
@@ -103,7 +103,7 @@ TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
 }
 
 TEST_CASE("gemma-4-26B-A4B-it perf baseline: decode throughput",
-          "[gemma][moe][perf][real-model]")
+          "[gemma26moe][perf][real-model]")
 {
     const std::filesystem::path model = VaultModelPath("gemma-4-26B-A4B-it");
     if (!std::filesystem::exists(model / "logestix" / "pinned"))
