@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <vector>
 
@@ -188,14 +189,12 @@ cudaError_t GetWeightTmaMap(const uint8_t *w_packed, int N, int k_half,
 
 } // namespace
 
-__global__ void TcGemmDecodeKernel(
-    const __grid_constant__ CUtensorMap wtmap,   // B3 TMA view of weights
-    const uint8_t *__restrict__ ap,
+__global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
                                    const uint8_t *__restrict__ as,
                                    const uint8_t *__restrict__ bp,
                                    const uint8_t *__restrict__ bs,
                                    float wgs, __half *__restrict__ y,
-                                   int K, int N, bool acc, bool use_cpasync)
+                                   int K, int N, bool acc)
 {
     const int tid = threadIdx.x;
     const int warp = tid >> 5;
@@ -215,18 +214,11 @@ __global__ void TcGemmDecodeKernel(
     uint8_t *const sXsc = sXp + ((k_half + 15) & ~15);
     // Double-buffered weight slab + scales. B3 root cause (empirical):
     // bulk-tensor dst requires 128-BYTE alignment (16 is not enough).
-    __shared__ __align__(128) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
+    // Scale slab declared BEFORE the weight ring: empirically the bulk-
+    // tensor staging can transiently alias bytes adjacent to the ring
+    // destination; keep scales outside its reach.
     __shared__ uint8_t sWs[kDecBufs][kDecCols][4];
-    __shared__ __align__(8) unsigned long long sMbar[kDecBufs];
-    if (tid == 0) {
-#pragma unroll
-        for (int b = 0; b < kDecBufs; ++b) {
-            asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::
-                         "r"(static_cast<unsigned>(
-                             __cvta_generic_to_shared(&sMbar[b]))));
-        }
-    }
-    __syncthreads();
+    __shared__ __align__(128) uint8_t sW[kDecBufs][kDecCols][kDecChunkBytes];
 
 
     // One-time activation load (row 0 is the only row at seq == 1).
@@ -254,37 +246,17 @@ __global__ void TcGemmDecodeKernel(
     // 32 bytes] k64 chunk (OOB rows zero-filled by hardware); scales remain
     // synchronous plain stores. Thread 0 arms the buffer mbarrier with
     // expect_tx and issues the copy (.shared::cta dst, 128B aligned).
-    const bool dec_use_cpasync = use_cpasync;
     auto stage_chunk = [&](int chunk, int buf) {
         const int kb = chunk * 64;
-        if (!dec_use_cpasync && tid == 0) {
-            const unsigned mb = static_cast<unsigned>(
-                __cvta_generic_to_shared(&sMbar[buf]));
-            const unsigned dst = static_cast<unsigned>(
-                __cvta_generic_to_shared(sW[buf][0]));
-            asm volatile(
-                "mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::
-                    "r"(mb), "r"(kDecCols * kDecChunkBytes));
-            asm volatile(
-                "cp.async.bulk.tensor.2d.shared::cta.global.mbarrier"
-                "::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];" ::"r"(dst),
-                "l"(reinterpret_cast<unsigned long long>(&wtmap)),
-                "r"(static_cast<unsigned>(kb / 2)),
-                "r"(static_cast<unsigned>(col_base)), "r"(mb)
-                : "memory");
-        } else {
-            const uint4 *b4 = reinterpret_cast<const uint4 *>(
-                bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
-            uint4 *d4 = reinterpret_cast<uint4 *>(&sW[buf][0][0]);
-            for (int idx = tid; idx < kDecCols * 2; idx += 256) {
-                const int c = idx >> 1;
-                d4[idx] =
-                    (col_base + c < N)
-                        ? b4[static_cast<int64_t>(c) * (k_half / 16) +
-                             (idx & 1)]
-                        : make_uint4(0, 0, 0, 0);
-            }
-            cp_async_commit();
+        const uint4 *b4 = reinterpret_cast<const uint4 *>(
+            bp + static_cast<int64_t>(col_base) * k_half + kb / 2);
+        uint4 *d4 = reinterpret_cast<uint4 *>(&sW[buf][0][0]);
+        for (int idx = tid; idx < kDecCols * 2; idx += 256) {
+            const int c = idx >> 1;
+            d4[idx] = (col_base + c < N)
+                          ? b4[static_cast<int64_t>(c) * (k_half / 16) +
+                               (idx & 1)]
+                          : make_uint4(0, 0, 0, 0);
         }
         for (int idx = tid; idx < kDecCols; idx += 256) {
             const int c = idx;
@@ -297,6 +269,7 @@ __global__ void TcGemmDecodeKernel(
                         : uint8_t{0};
             }
         }
+        cp_async_commit();
     };
 
     const int n_k64 = K >> 6;
@@ -318,36 +291,34 @@ __global__ void TcGemmDecodeKernel(
         const int nxt = i + kDecBufs - 1;
         if (nxt < n_k64) stage_chunk(nxt, nxt & (kDecBufs - 1));
         // Chunks i..min(i+3,n-1) may be outstanding; chunk i must be done.
-        if (dec_use_cpasync) {
-            cp_async_wait<kDecBufs - 2>();
-        } else {
-            const unsigned mb = static_cast<unsigned>(
-                __cvta_generic_to_shared(&sMbar[buf]));
-            asm volatile(
-                "{\n\t.reg .pred p;\n\t"
-                "WAIT:\n\t"
-                "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], %1;\n\t"
-                "@!p bra WAIT;\n\t}" ::"r"(mb), "r"((i >> 2) & 1));
-        }
+        cp_async_wait<kDecBufs - 2>();
         __syncthreads();
         const int kb = i * 64;
-
-        // ---- Build fragments: layout identity lets each 32-bit fragment
-        // register be ONE aligned smem load -- reg r covers elements
-        // 8r..8r+7 whose packed bytes are 4 consecutive bytes at offset
-        // tig*4 (first k32 half) / 16+tig*4 (second). Zero shift/mask work.
-        // A-fragment register map (matches the verified tile kernel):
         //   ar[0] = row g   k32-lo, ar[1] = row g+8 k32-lo,
-        //   ar[2] = row g   k32-hi, ar[3] = row g+8 k32-hi.
-        // At seq==1 rows 8..15 are absent -> ar[1]/ar[3] stay ZERO (the old
-        // {lo, hi, 0, 0} packing fed the second K-half into row-g+8 slots
-        // and left the second K-half uncomputed -- garbage outputs).
-        const uint32_t sfa = sfa_for(kb);
-        const uint32_t a_lo0 =
-            *reinterpret_cast<const uint32_t *>(&sXp[tig * 4]);
-        const uint32_t a_hi0 =
-            *reinterpret_cast<const uint32_t *>(&sXp[16 + tig * 4]);
-        uint32_t ar[4] = {a_lo0, 0u, a_hi0, 0u};
+        //   ar[2] = row g   k32-hi, ar[3] = row g+8 k32-hi;
+        // SFA carrier lanes: tig0 -> row g chunk bytes, tig1 -> row g+8.
+        // At seq==1 only row 0 exists: rows g!=0 contribute zero fragments
+        // and zero scales (the historical "layout identity" u32-load form
+        // fed K-halves into row-g+8 slots -- garbage outputs; see
+        // "[tc][gemm][acc]" host-model test).
+        uint32_t ar[4] = {0, 0, 0, 0};
+#pragma unroll
+        for (int i2 = 0; i2 < 32; ++i2) {
+            const int arow = (i2 < 8 || (i2 >= 16 && i2 < 24)) ? g : g + 8;
+            if (arow != 0) continue;          // seq == 1: only row 0 exists
+            const int koff = tig * 8 + (i2 & 7) + ((i2 >= 16) ? 32 : 0);
+            const uint8_t byte = sXp[koff >> 1];
+            const uint8_t code =
+                (koff & 1) ? static_cast<uint8_t>(byte >> 4)
+                           : static_cast<uint8_t>(byte & 0x0F);
+            ar[i2 / 8] |= uint32_t(code)
+                          << (((i2 % 8) / 2) * 8 + ((i2 % 8) % 2) * 4);
+        }
+        uint32_t sfa;
+        {
+            const int sr = (tig == 1) ? (g + 8) : g;
+            sfa = (sr == 0) ? sfa_for(kb) : 0u;
+        }
 
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
@@ -357,12 +328,14 @@ __global__ void TcGemmDecodeKernel(
             const uint32_t b1 = *reinterpret_cast<const uint32_t *>(
                 &sW[buf][n_local][16 + tig * 4]);
             uint32_t br[2] = {b0, b1};
-            const size_t sfb_off =
-                (static_cast<size_t>(buf) * kDecCols + n_local) * 4;
-            const uint32_t sfb = uint32_t(sWs[sfb_off]) |
-                                 (uint32_t(sWs[sfb_off + 1]) << 8) |
-                                 (uint32_t(sWs[sfb_off + 2]) << 16) |
-                                 (uint32_t(sWs[sfb_off + 3]) << 24);
+            // NOTE: index the 3D scale slab directly -- a flat
+            // uint32_t(sWs[sfb_off]) form miscompiles under nvcc 13.x
+            // (array glvalue -> scalar cast yields garbage).
+            const uint32_t sfb =
+                uint32_t(sWs[buf][n_local][0]) |
+                (uint32_t(sWs[buf][n_local][1]) << 8) |
+                (uint32_t(sWs[buf][n_local][2]) << 16) |
+                (uint32_t(sWs[buf][n_local][3]) << 24);
 
             float &d0 = d[j][0], &d1 = d[j][1], &d2 = d[j][2], &d3 = d[j][3];
             asm volatile(
@@ -380,6 +353,11 @@ __global__ void TcGemmDecodeKernel(
 
     // ---- Epilogue: D * global_scale -> y row 0 (acc=true: += into the
     // residual stream, matching the tile-kernel contract).
+    // m16n8 D layout: only lanes with groupID g==0 hold ROW 0 of the
+    // accumulator (lanes g>0 hold rows 1..7 -- absent at seq==1). Without
+    // this guard four lanes raced each output cell with different rows'
+    // values.
+    if (g != 0) return;
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
@@ -654,34 +632,20 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
     if (seq == 1 && (K & 63) == 0 &&
         (((reinterpret_cast<uintptr_t>(w_packed) |
            reinterpret_cast<uintptr_t>(ap_scratch)) & 15) == 0)) {
-        CUtensorMap wtmap{};
-        e = GetWeightTmaMap(w_packed, N, K / 2, &wtmap);
-        if (e == cudaSuccess) {
+        static const bool kDecDisable =
+            std::getenv("LSX_DEC_DISABLE") != nullptr;
+        if (!kDecDisable) {
             const int k_half = K / 2;
             const int k_chunks = K >> 4;
             const size_t dec_smem = static_cast<size_t>(
                 ((k_half + 15) & ~15) + ((k_chunks + 15) & ~15));
-            // CORRECTNESS GATE: TcGemmDecodeKernel currently fails host-
-            // reference validation at ALL shapes (see findings round 8:
-            // "[tc][gemm][acc]"); production routes seq==1 to the verified
-            // tile kernel. LSX_DEC_ENABLE=1 re-enables it for debugging.
-            static const bool kUseCpAsync =
-                std::getenv("LSX_DEC_CPASYNC") != nullptr;
-            static const bool kDecEnable =
-                std::getenv("LSX_DEC_ENABLE") != nullptr;
-            if (kDecEnable) {
-                dim3 dgrid((N + kDecCols - 1) / kDecCols);
-                TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
-                    wtmap, static_cast<uint8_t *>(ap_scratch),
-                    static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
-                    w_global_scale, y, K, N, acc, kUseCpAsync);
-                e = cudaGetLastError();
-                handled = e == cudaSuccess;
-            } else {
-                e = cudaSuccess;
-            }
-        } else if (e == cudaErrorNotSupported) {
-            e = cudaSuccess;   // tile-kernel fallback below
+            dim3 dgrid((N + kDecCols - 1) / kDecCols);
+            TcGemmDecodeKernel<<<dgrid, 256, dec_smem, stream>>>(
+                static_cast<uint8_t *>(ap_scratch),
+                static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
+                w_global_scale, y, K, N, acc);
+            e = cudaGetLastError();
+            handled = e == cudaSuccess;
         }
     }
     if (!handled && e == cudaSuccess) {

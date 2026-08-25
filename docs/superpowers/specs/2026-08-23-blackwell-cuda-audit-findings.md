@@ -374,3 +374,26 @@ Remaining gap to targets is now measured against a CORRECT baseline:
 32.9 -> 70-80 (5060 Ti) / 280-320 (5090). Next levers (ranked): wider decode
 tiles / more blocks (N=4096 -> only 32 CTAs on 170 SMs), linear-attn stage
 fusion (~10% GPU), act-quant reuse across GEMM calls, CUDA Graphs.
+
+### Round 8 final state (2026-08-25)
+
+Shipped fixes: decode-kernel A-fragment register map corrected (K-halves were
+fed into row-g+8 slots), epilogue row-0 guard (g==0) added, tile acc=true
+residual scaling fixed, production dispatch routes seq==1 to the verified
+tile kernel (decode kernel behind LSX_DEC_ENABLE for debugging).
+Fast-math e2e @5090 real model: **32.9 tok/s with correct " Paris" output**
+(vs 14.4 scalar; earlier 42-53 tok/s figures were garbage-generation).
+
+OPEN ISSUE (next session, top priority): synthetic host-model validation of
+TC kernels at seq==1 with K>=256 deviates beyond tolerance IDENTICALLY for
+both kernels (e.g. got=198 vs want=23 at K=256/N=128), while K=64 passes and
+the REAL model validates end-to-end. Independent Python NVFP4 model confirms
+the C++ host reference is correct -> the deviation is in the kernels' shared
+input path (act-quant scratch or weight-upload conventions under synthetic
+generators). Requires a dedicated session with compute-sanitizer + per-stage
+dumps; do NOT raise tolerances to mask it.
+
+Structural perf queue (unchanged): wider tiles / more CTAs (N=4096 -> 32
+blocks on 170 SMs), linear-attn fusion (~10% GPU), act-quant reuse, CUDA
+Graphs. MoE models (35B-A3B, gemma-26B) suggested by operator as additional
+measurement targets once fast-path correctness work concludes.
