@@ -44,21 +44,21 @@ One-time Load: dense 1245 MB + expert store 17.3 GB read twice (~35 GB I/O) into
 - **G1** Parse the expert index once in `Load()`; mmap handles live in `GemmaBaseModel`; `Infer` reuses them.
 - **G2** LRU device cache for routed experts, adapted from `QwenMoeExpertCache` (`libs/lsxcommon/include/lsxcommon/qwen_moe_expert_cache.h`; host-bookkeeping already unit-testable without CUDA). Default slots ~1024 (~3.2 GB at avg 3.2 MB/expert).
 - **G3** Single persistent `cublasHandle_t` + persistent workspace arena owned by the model.
-- **G4** Reduce per-layer syncs to a single expert-selection readback per step.
+- **G4** Folded into G2: cache hits eliminate duplicate per-(token,expert) uploads; remaining syncs (per-step argmax handshake) are required for greedy sampling.
 
 ### Qwen MoE (`qwen_3_5_moe_model.cpp`, `qwen_moe_inference.cu`)
 
 - **Q1** Cache dequantized FP16 `embed_tokens` + `lm_head` in the model after first `Infer`; subsequent calls skip dequant.
 - **Q2** Persistent workspace arena (alloc once, reuse).
 - **Q3** Default LRU slots 64 → 512 (~0.9 GB); `LSX_QWEN_MOE_EXPERT_CACHE_SLOTS` knob preserved.
-- **Q4** Batch the 40 per-layer D2H router readbacks of a step into one pinned buffer + one event (selections identical, only transport changes).
+- **Q4** ~~Batch the 40 per-layer D2H router readbacks~~ **Rejected during planning**: layer l+1's router input depends on layer l's MoE output (strict sequential dependency). Replacement: **drop the unused `d_head_h` FP16 table** (V×H ≈ 1 GB allocated + dequanted every call; the head GEMM reads packed NVFP4 directly via `RunQwenNvfp4Gemm`, `qwen_moe_inference.cu:638`).
 - **Q5** Eliminate the double read of the expert store at Load: pass 1 obtains file sizes via filesystem metadata (`std::filesystem::file_size`) instead of fully reading each file → ~35 GB I/O drops to ~17.3 GB.
 
 ### VRAM budget (16 GB)
 
 | Model | Dense | New caches | Workspace/KV | Total est. |
 |---|---|---|---|---|
-| Qwen3.5-35B-A3B | 1.25 GB | embed/head 2.0 + slots 0.9 | ~1 GB | ~5 GB |
+| Qwen3.5-35B-A3B | 1.25 GB | embed table 1.0 + slots 0.9 | ~1 GB | ~4 GB |
 | gemma-4-26B-A4B-it | 4.58 GB | expert slots ~3.2 | ~1 GB | ~9 GB |
 
 Slot defaults are conservative and configurable for longer contexts.
