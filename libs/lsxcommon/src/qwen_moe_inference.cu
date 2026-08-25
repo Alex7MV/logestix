@@ -384,7 +384,6 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)max_seq * VD,            // d_core
         (size_t)max_seq * VD,            // d_gated
         (size_t)V * H,                   // d_embed_half
-        (size_t)V * H,                   // d_head_half
         (size_t)max_seq * V,             // d_logits
         (size_t)max_seq * 2,             // d_ids
         (size_t)max_seq * 2,             // d_pos
@@ -437,15 +436,14 @@ cudaError_t RunQwenMoeGeneration(
     __half *d_core = adv(ph, half_sz[16]);
     __half *d_gated = adv(ph, half_sz[17]);
     __half *d_embed_h = adv(ph, half_sz[18]);
-    __half *d_head_h = adv(ph, half_sz[19]);
-    __half *d_logits = adv(ph, half_sz[20]);
-    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[21]));
-    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[22]));
-    __half *d_yg = adv(ph, half_sz[23]);
-    __half *d_yu = adv(ph, half_sz[24]);
-    __half *d_y2 = adv(ph, half_sz[25]);
-    __half *d_si = adv(ph, half_sz[26]);
-    __half *d_sh = adv(ph, half_sz[27]);
+    __half *d_logits = adv(ph, half_sz[19]);
+    int32_t *d_ids = reinterpret_cast<int32_t *>(adv(ph, half_sz[20]));
+    int32_t *d_pos = reinterpret_cast<int32_t *>(adv(ph, half_sz[21]));
+    __half *d_yg = adv(ph, half_sz[22]);
+    __half *d_yu = adv(ph, half_sz[23]);
+    __half *d_y2 = adv(ph, half_sz[24]);
+    __half *d_si = adv(ph, half_sz[25]);
+    __half *d_sh = adv(ph, half_sz[26]);
     float *pf = reinterpret_cast<float *>((uint8_t *)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
@@ -458,11 +456,6 @@ cudaError_t RunQwenMoeGeneration(
         pw.embed.scale_bytes, pw.embed.global_scale, d_embed_h,
         (int64_t)V * H);
     if (e != cudaSuccess) { result.error_msg = "dequant embed"; cudaFree(base); return e; }
-    e = lsxcommon::gpu::dequant_shared_nvfp4(
-        stream, pw.head.d_packed, pw.head.packed_bytes, pw.head.d_scales,
-        pw.head.scale_bytes, pw.head.global_scale, d_head_h,
-        (int64_t)V * H);
-    if (e != cudaSuccess) { result.error_msg = "dequant head"; cudaFree(base); return e; }
 
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
