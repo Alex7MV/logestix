@@ -26,7 +26,7 @@ struct ConvertedModel {
         std::filesystem::remove_all(in);
         std::filesystem::remove_all(out);
         qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
-        setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+        qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
         auto st = qwen_moe::ConvertQwen35MoeModel(in.string(), out.string());
         if (!st.ok()) FAIL("fixture conversion failed: " + st.ToString());
     }
@@ -69,8 +69,7 @@ TEST_CASE("geometry mismatch rejected at load", "[qwen-moe-model]")
         g << j;
     }
 
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "", 1);   // hard gate ON
-    unsetenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");   // hard gate ON
     ModelInitConfig cfg;
     cfg.model_type = Qwen35MoeModel::kType;
     cfg.model_path = fix.out.string();
@@ -79,7 +78,7 @@ TEST_CASE("geometry mismatch rejected at load", "[qwen-moe-model]")
     CHECK_FALSE(model->Load());
 
     // Synthetic escape hatch re-enabled for other tests in this binary.
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
 }
 
 TEST_CASE("lifecycle MoE plan bounds for qwen3.5-35b-a3b", "[qwen-moe-model]")

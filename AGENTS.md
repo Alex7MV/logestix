@@ -133,6 +133,10 @@ ctest --preset linux-debug      # Ubuntu 26.04
 ctest --preset windows-debug    # Windows 11
 ```
 
+**WINDOWS-ОГРАНИЧЕНИЕ**: под Windows запускать тесты ТОЛЬКО для моделей
+Qwen3.5-9B и gemma-4-26B-A4B-it (фильтр `ctest -R "qwen|gemma"`); остальные
+model-тесты (GLM, DeepSeek и т.д.) на этой OS не запускать.
+
 ## Structure
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`

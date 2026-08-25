@@ -2034,18 +2034,66 @@ add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
 set_tests_properties(test_qwen_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
-add_executable(test_qwen_moe_kernels test_qwen_moe_kernels.cu)
-set_target_properties(test_qwen_moe_kernels PROPERTIES LANGUAGE CUDA
-    CUDA_ARCHITECTURES "120-real;121-real")
-target_compile_options(test_qwen_moe_kernels PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda --expt-relaxed-constexpr>)
+# test_qwen_moe_kernels — MoE kernel tests (router top-k, routed FFN slot
+# chain, shared-expert combine, generation driver). Same OBJECT-lib pattern as
+# test_deepseek_inference_kernels_cu / test_deepseek_moe_cu: passing the .cu
+# to add_executable() and linking lsxcommon (which carries a private
+# "-Xcompiler=/utf-8" CUDA option) makes CMake's Visual Studio generator emit a
+# duplicated, unwrapped bare "/utf-8" on the test's own nvcc line — which
+# nvcc misparses as a second input file ("nvcc fatal: A single input file is
+# required..."). The .cu compiles standalone and links lsxcommon only at the
+# executable's link stage below.
+add_library(test_qwen_moe_kernels_cu OBJECT test_qwen_moe_kernels.cu)
+set_target_properties(test_qwen_moe_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_qwen_moe_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_qwen_moe_kernels_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${CMAKE_BINARY_DIR}/third_party/libzmq"
+    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+    SPDLOG_COMPILED_LIB
+    ZMQ_STATIC
+    SIMDJSON_THREADS_ENABLED=1
+)
+target_link_libraries(test_qwen_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_qwen_moe_kernels)
+set_target_properties(test_qwen_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_qwen_moe_kernels PRIVATE
-    lsxcommon_qwen_moe_cu lsxcommon Catch2::Catch2WithMain)
+    test_qwen_moe_kernels_cu lsxcommon_qwen_moe_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_kernels>"
+    )
+    add_custom_command(TARGET test_qwen_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
             "$<TARGET_FILE_DIR:test_qwen_moe_kernels>"
     )
 endif()
@@ -2104,3 +2152,18 @@ if(WIN32)
 endif()
 add_test(NAME test_qwen_moe_selfcheck COMMAND test_qwen_moe_selfcheck)
 set_tests_properties(test_qwen_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── Тест NVFP4-упаковки экспертов (passthrough + GPU quantize contract) ───
+add_executable(test_nvfp4_pack test_nvfp4_pack.cpp)
+target_link_libraries(test_nvfp4_pack PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_nvfp4_pack POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nvfp4_pack>"
+    )
+endif()
+
+add_test(NAME test_nvfp4_pack COMMAND test_nvfp4_pack)
+set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)

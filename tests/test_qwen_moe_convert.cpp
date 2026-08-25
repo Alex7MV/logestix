@@ -202,9 +202,17 @@ TEST_CASE("ConvertQwen35MoeModel converts synthetic checkpoint",
         fs::path out2 = fs::temp_directory_path() / "lsx_qwen_moe_out2";
         fs::remove_all(out2);
         REQUIRE(ConvertQwen35MoeModel(in.string(), out2.string()).ok());
-        std::ifstream a(base / "model.index.json"), b(out2 / "logestix" / "model.index.json");
-        std::stringstream sa, sb; sa << a.rdbuf(); sb << b.rdbuf();
-        CHECK(sa.str() == sb.str());
+        std::string index_a, index_b;
+        {
+            // Streams must CLOSE before remove_all: Windows refuses to delete
+            // files with open handles (POSIX unlinks them silently).
+            std::ifstream a(base / "model.index.json"),
+                b(out2 / "logestix" / "model.index.json");
+            std::stringstream sa, sb; sa << a.rdbuf(); sb << b.rdbuf();
+            index_a = sa.str();
+            index_b = sb.str();
+        }
+        CHECK(index_a == index_b);
         fs::remove_all(out2);
     }
 

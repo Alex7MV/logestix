@@ -17,10 +17,6 @@ arrow::Status SaveExpertToArrow(
     int expert_idx,
     const std::filesystem::path &output_root);
 
-arrow::Status SavePinnedTensors(
-    const std::vector<TensorRecord> &tensors,
-    const std::filesystem::path &output_root);
-
 // Reads only the shared-expert tensors (w{1,2,3}.weight + w{1,2,3}.scale)
 // from the source safetensors shards and re-packs them into
 // <output_root>/pinned/shared_experts.arrow. Used to regenerate the shared
@@ -37,15 +33,6 @@ arrow::Status RepackSharedExperts(
 // after a converter change without re-converting the full model.
 arrow::Status RepackRoutedExperts(
     const std::string &input_path,
-    const std::filesystem::path &output_root);
-
-arrow::Status WriteModelIndex(
-    const std::string &model_name,
-    int num_layers,
-    int experts_per_layer,
-    int64_t total_pinned,
-    int64_t total_experts,
-    const VramProfile &vram,
     const std::filesystem::path &output_root);
 
 // Recomputes the conversion-time VRAM profile from the SOURCE safetensors

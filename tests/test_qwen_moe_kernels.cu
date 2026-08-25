@@ -212,7 +212,7 @@ TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]
     fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_ffn_out";
     fs2::remove_all(in); fs2::remove_all(out);
     qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
 
     lsxcommon::qwen_moe::QwenMoeExpertStore store;
@@ -301,7 +301,7 @@ TEST_CASE("shared expert gate combine", "[qwen-moe-experts]")
     fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_sh_out";
     fs2::remove_all(in); fs2::remove_all(out);
     qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
 
     lsxcommon::qwen_moe::QwenMoePinnedWeights pw;
@@ -367,7 +367,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
     fs2::path out = fs2::temp_directory_path() / "lsx_qwen_moe_gen_out";
     fs2::remove_all(in); fs2::remove_all(out);
     qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
     REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
 
     lsxcommon::qwen_moe::QwenMoePinnedWeights pw;
