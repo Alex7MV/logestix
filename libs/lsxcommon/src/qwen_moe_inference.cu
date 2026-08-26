@@ -34,6 +34,73 @@ constexpr int kMaxTopK = 16;
 // Gemma-router etalon structure (gemma_inference.cu): one block per token,
 // cooperative logits, thread-0 selection. Dynamic smem holds logits[E] and
 // probs[E] so E up to 256 is supported.
+// Decode-split router: stage 1 computes logits with ONE BLOCK PER EXPERT
+// running the exact same sequential d-loop as the monolithic kernel
+// (bit-identical accumulation order); the E blocks stream their rows from
+// different SMs instead of funneling 1 MB through a single block.
+__global__ void qwen_moe_router_dots_kernel(
+    const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
+    int H, float *__restrict__ logits)
+{
+    const int e = blockIdx.x;
+    if (blockIdx.y != 0 || threadIdx.x != 0) {
+        // single-thread body; extra threads exit (grid kept 1-D friendly)
+        if (threadIdx.x != 0) return;
+    }
+    const __half *xr = x;   // decode: t == 0
+    const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
+    float dot = 0.f;
+    for (int d = 0; d < H; ++d)
+        dot += __bfloat162float(pr[d]) * __half2float(xr[d]);
+    logits[e] = dot;
+}
+
+// Stage 2: softmax -> top-k -> renorm from precomputed logits (unchanged
+// HF-parity selection logic).
+__global__ void qwen_moe_router_select_kernel(
+    const float *__restrict__ logits, int K, int E,
+    QwenMoeRoutedSlot *__restrict__ slots)
+{
+    const int t = blockIdx.x;
+    extern __shared__ float sh[];
+    float *probs = sh;   // [E]
+    if (threadIdx.x == 0) {
+        float m = logits[0];
+        for (int e = 1; e < E; ++e) m = fmaxf(m, logits[e]);
+        float z = 0.f;
+        for (int e = 0; e < E; ++e) {
+            probs[e] = expf(logits[e] - m);
+            z += probs[e];
+        }
+        for (int e = 0; e < E; ++e) probs[e] /= z;
+
+        int idx[kMaxTopK];
+        float val[kMaxTopK];
+        int n = 0;
+        for (int e = 0; e < E; ++e) {
+            float v = probs[e];
+            int pos = n;
+            while (pos > 0 &&
+                   (val[pos - 1] < v || (val[pos - 1] == v && idx[pos - 1] > e))) {
+                if (pos < K) { val[pos] = val[pos - 1]; idx[pos] = idx[pos - 1]; }
+                --pos;
+            }
+            if (pos < K) {
+                val[pos] = v;
+                idx[pos] = e;
+                if (n < K) ++n;
+            }
+        }
+        float sm = 0.f;
+        for (int i = 0; i < K && i <= n; ++i) sm += val[i];
+        QwenMoeRoutedSlot *out = slots + static_cast<int64_t>(t) * K;
+        for (int i = 0; i < K; ++i) {
+            out[i].eid = idx[i];
+            out[i].coeff = val[i] / sm;
+        }
+    }
+}
+
 __global__ void qwen_moe_router_topk_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, int K, int E, QwenMoeRoutedSlot *__restrict__ slots)
@@ -140,6 +207,29 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
     const size_t smem = static_cast<size_t>(E) * 2 * sizeof(float);
     if (smem > 48 * 1024)
         return cudaErrorInvalidValue;
+    if (seq == 1) {
+        // Decode: two-stage split (parallel-per-expert dots + select).
+        static float *d_logits = nullptr;
+        static size_t d_logits_E = 0;
+        if (d_logits_E < static_cast<size_t>(E)) {
+            if (d_logits) cudaFree(d_logits);
+            if (cudaMalloc(&d_logits, static_cast<size_t>(E) *
+                                          sizeof(float)) != cudaSuccess) {
+                d_logits = nullptr;
+                d_logits_E = 0;
+                return cudaErrorMemoryAllocation;
+            }
+            d_logits_E = E;
+        }
+        qwen_moe_router_dots_kernel<<<E, 32, 0, stream>>>(router_w, normed, H,
+                                                          d_logits);
+        cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) return le;
+        qwen_moe_router_select_kernel<<<seq, kRouterBlock,
+                                        sizeof(float) * E, stream>>>(
+            d_logits, K, E, d_slots);
+        return cudaGetLastError();
+    }
     qwen_moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(
         router_w, normed, H, K, E, d_slots);
     return cudaGetLastError();
