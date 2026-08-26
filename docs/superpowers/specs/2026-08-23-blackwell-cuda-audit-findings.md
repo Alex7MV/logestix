@@ -653,3 +653,14 @@ TC route not wired yet).
 Next levers by profile: host launch gaps ~170 ms (CUDA Graphs / batched
 expert execution), TcGemmKernel ~99 ms, gemma TC route. Input quant cache
 landed (launch hygiene) but was e2e-neutral.
+
+### gemma TC expert route experiment (2026-08-26): rejected
+
+Per-expert TC W4A4 substitution (bf16->half token, quant once, three
+PreQuant GEMMs, half geglu, convert back) measured 2.7 tok/s vs 3.0
+baseline AND shifted greedy output away from "**Paris**." — the per-expert
+granularity adds quant/convert launches that outweigh tensor-core gains at
+N=704, and W4A4 numerics move gemma's top-1. Reverted.
+
+If revisited: needs a grouped/batched expert GEMM (all top-K experts in one
+launch over gathered rows) plus a quality audit; not a drop-in swap.
