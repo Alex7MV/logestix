@@ -399,6 +399,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     auto seg_scale = [&](int col) {
         if (!seg_wgs) return wgs;
+        if (!seg_bounds) {
+            // Two-segment split at N/2 (fused gate|up projections).
+            return col < N / 2 ? seg_wgs[0] : seg_wgs[1];
+        }
         if (col < seg_bounds[0]) return seg_wgs[0];
         if (col < seg_bounds[1]) return seg_wgs[1];
         if (col < seg_bounds[2]) return seg_wgs[2];
@@ -672,11 +676,16 @@ __global__ void TcSplitKFinalize(const float *__restrict__ partials,
     float ws = wgs;
     if (seg_wgs) {
         const int col = static_cast<int>(i % N);
-        ws = (col < seg_bounds[0])
-                 ? seg_wgs[0]
-                 : (col < seg_bounds[1])
-                       ? seg_wgs[1]
-                       : (col < seg_bounds[2]) ? seg_wgs[2] : seg_wgs[3];
+        if (!seg_bounds) {
+            ws = col < N / 2 ? seg_wgs[0] : seg_wgs[1];
+        } else {
+            ws = (col < seg_bounds[0])
+                     ? seg_wgs[0]
+                     : (col < seg_bounds[1])
+                           ? seg_wgs[1]
+                           : (col < seg_bounds[2]) ? seg_wgs[2]
+                                                   : seg_wgs[3];
+        }
     }
     const float prev = acc ? __half2float(y[i]) : 0.f;
     y[i] = __float2half(prev + sum * ws);
@@ -989,8 +998,11 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
                                   const float **wgs_out,
                                   const int **bounds_out, int *n_total)
 {
-    if (!p1 || !s1 || !p2 || !s2 || !p3 || !s3 || !p4 || !s4 || n1 <= 0 ||
-        n2 < 0 || n3 < 0 || n4 < 0)
+    // Pointers are only required for segments with rows > 0 (unused
+    // segments may pass nullptr).
+    if (!p1 || !s1 || n1 <= 0 || n2 < 0 || n3 < 0 || n4 < 0) return cudaErrorInvalidValue;
+    if ((n2 > 0 && (!p2 || !s2)) || (n3 > 0 && (!p3 || !s3)) ||
+        (n4 > 0 && (!p4 || !s4)))
         return cudaErrorInvalidValue;
 
     std::lock_guard<std::mutex> lk(g_fw_mu);
@@ -1058,11 +1070,13 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
         cudaFree(cp); cudaFree(cs); cudaFree(dw);
         return e;
     }
-    if ((e = cudaMemcpyAsync(dw, hwgs, sizeof(hwgs),
-                             cudaMemcpyHostToDevice,
-                             stream)) != cudaSuccess ||
-        (e = cudaMemcpyAsync(db, hb, sizeof(hb), cudaMemcpyHostToDevice,
-                             stream)) != cudaSuccess) {
+    // Synchronous copies: sources live on this call's stack; pageable-async
+    // staging would still snapshot them, but the build happens once per
+    // weight set -- correctness beats micro-async here.
+    if ((e = cudaMemcpy(dw, hwgs, sizeof(hwgs),
+                        cudaMemcpyHostToDevice)) != cudaSuccess ||
+        (e = cudaMemcpy(db, hb, sizeof(hb), cudaMemcpyHostToDevice)) !=
+            cudaSuccess) {
         cudaFree(cp); cudaFree(cs); cudaFree(dw); cudaFree(db);
         return e;
     }

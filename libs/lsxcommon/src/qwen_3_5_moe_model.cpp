@@ -25,7 +25,13 @@ double MsSince(std::chrono::steady_clock::time_point t0)
 const std::string Qwen35MoeModel::kType = "qwen3.5-35b-a3b";
 
 Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
-    : ModelBase{std::move(cfg)} {}
+    : ModelBase{cfg}
+{
+    // The TC W4A4 toggle is process-wide; the dense Qwen models flip it in
+    // QwenBaseModel, but this MoE model derives from ModelBase directly and
+    // silently ran every GEMM on the scalar path without this.
+    qwen::SetQwenTcFastMath(cfg_.fast_math);
+}
 
 Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 

@@ -1070,6 +1070,64 @@ __global__ void fused_linear_conv_zab_kernel(
 
 } // namespace
 
+// MoE variant: matches kernels::SwigluKernel<Precise,false> bit-for-bit
+// (sig = 1/(1+exp(-g)); out = sig*(g*u)) before the NVFP4 encode.
+__global__ void qwen_swiglu_precise_quant_kernel(
+    const __half *__restrict__ a, const __half *__restrict__ b,
+    __half *__restrict__ y, uint8_t *__restrict__ packed,
+    uint8_t *__restrict__ scales, int64_t n)
+{
+    const int64_t base =
+        (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * 16;
+    if (base >= n) return;
+    const int len = static_cast<int>(
+        min(static_cast<long long>(16), static_cast<long long>(n - base)));
+
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float g = __half2float(a[base + i]);
+        const float u = __half2float(b[base + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-g)));
+        const __half hv =
+            __float2half(__fmul_rn(sig, __fmul_rn(g, u)));
+        y[base + i] = hv;
+        vals[i] = __half2float(hv);
+        absmax = fmaxf(absmax, fabsf(vals[i]));
+    }
+
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+    scales[base / 16] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = (i + 1 < len)
+                               ? lsxcommon::kernels::QuantizeE2m1TieUp(
+                                     vals[i + 1] * inv)
+                               : 0;
+        packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
+cudaError_t RunQwenSwigluPreciseQuantInternal(cudaStream_t stream,
+                                             const __half *a, const __half *b,
+                                             __half *y, uint8_t *packed,
+                                             uint8_t *scales, int64_t n)
+{
+    if (!a || !b || !y || !packed || !scales || n <= 0)
+        return cudaErrorInvalidValue;
+    const int threads = 256;
+    const int64_t groups = (n + 15) / 16;
+    const int blocks = static_cast<int>((groups + threads - 1) / threads);
+    qwen_swiglu_precise_quant_kernel<<<blocks, threads, 0, stream>>>(
+        a, b, y, packed, scales, n);
+    return cudaGetLastError();
+}
+
 cudaError_t RunQwenSwigluQuant(cudaStream_t stream, const __half *a,
                                const __half *b, __half *y, uint8_t *packed,
                                uint8_t *scales, int64_t n)
@@ -1482,7 +1540,8 @@ cudaError_t RunQwenFusedOProj(
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int seq, int K, int N, bool acc /* = false */)
+    __half *y, int seq, int K, int N, bool acc /* = false */,
+    const float *seg_wgs_dev, const int *seg_bounds_dev)
 {
     if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
@@ -1493,7 +1552,8 @@ cudaError_t RunQwenNvfp4Gemm(
     if (g_qwen_tc_fast_math.load(std::memory_order_relaxed) &&
         (K & 15) == 0 && N >= 8 && K >= 64) {
         const cudaError_t tc = qwen::tc::RunQwenTcNvfp4Gemm(
-            stream, x, packed, scales, global_scale, y, seq, K, N, acc);
+            stream, x, packed, scales, global_scale, y, seq, K, N, acc,
+            seg_wgs_dev, seg_bounds_dev);
         if (tc != cudaErrorNotSupported && tc != cudaErrorInvalidValue)
             return tc;
     }

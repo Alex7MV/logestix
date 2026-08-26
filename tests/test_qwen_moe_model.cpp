@@ -2,6 +2,7 @@
 
 #include "qwen_moe_test_fixture.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "qwen_3_5_moe_model.h"
 #include "lsxcommon/lifecycle_strategy.h"
@@ -49,6 +50,25 @@ TEST_CASE("factory resolves qwen3.5-35b-a3b", "[qwen-moe-model]")
     // No weights behind an empty path: creation must still resolve the type.
     REQUIRE(model != nullptr);
     CHECK(model->Type() == Qwen35MoeModel::kType);
+}
+
+TEST_CASE("fast_math toggle propagates from MoE model construction",
+          "[qwen-moe-model]")
+{
+    EnsureModelRegistry();
+    ModelInitConfig on;
+    on.model_type = Qwen35MoeModel::kType;
+    on.fast_math = true;
+    auto m_on = LsxModelFactory::Create(on);
+    REQUIRE(m_on != nullptr);
+    CHECK(lsxcommon::qwen::QwenTcFastMath());
+
+    ModelInitConfig off;
+    off.model_type = Qwen35MoeModel::kType;
+    off.fast_math = false;
+    auto m_off = LsxModelFactory::Create(off);
+    REQUIRE(m_off != nullptr);
+    CHECK_FALSE(lsxcommon::qwen::QwenTcFastMath());
 }
 
 TEST_CASE("geometry mismatch rejected at load", "[qwen-moe-model]")

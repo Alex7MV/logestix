@@ -70,6 +70,12 @@ struct QwenMoeExpertStore {
     int num_layers = 0;
     int num_experts = 0;
 
+    // Per-expert fused gate/up global scales for the single w13 GEMM:
+    // d_seg_wgs[flat*2] = gs1, [flat*2+1] = gs3; bounds device triplet
+    // {I, I, I} selects segment by output column. Null when unused.
+    float *d_seg_wgs = nullptr;
+    int *d_seg_bounds = nullptr;
+
     void Free();
 };
 

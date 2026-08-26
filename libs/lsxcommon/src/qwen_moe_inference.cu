@@ -13,6 +13,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_inference_load.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/qwen_tc_gemm.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
@@ -33,6 +34,73 @@ constexpr int kMaxTopK = 16;
 // Gemma-router etalon structure (gemma_inference.cu): one block per token,
 // cooperative logits, thread-0 selection. Dynamic smem holds logits[E] and
 // probs[E] so E up to 256 is supported.
+// Decode-split router: stage 1 computes logits with ONE BLOCK PER EXPERT
+// running the exact same sequential d-loop as the monolithic kernel
+// (bit-identical accumulation order); the E blocks stream their rows from
+// different SMs instead of funneling 1 MB through a single block.
+__global__ void qwen_moe_router_dots_kernel(
+    const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
+    int H, float *__restrict__ logits)
+{
+    const int e = blockIdx.x;
+    if (blockIdx.y != 0 || threadIdx.x != 0) {
+        // single-thread body; extra threads exit (grid kept 1-D friendly)
+        if (threadIdx.x != 0) return;
+    }
+    const __half *xr = x;   // decode: t == 0
+    const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
+    float dot = 0.f;
+    for (int d = 0; d < H; ++d)
+        dot += __bfloat162float(pr[d]) * __half2float(xr[d]);
+    logits[e] = dot;
+}
+
+// Stage 2: softmax -> top-k -> renorm from precomputed logits (unchanged
+// HF-parity selection logic).
+__global__ void qwen_moe_router_select_kernel(
+    const float *__restrict__ logits, int K, int E,
+    QwenMoeRoutedSlot *__restrict__ slots)
+{
+    const int t = blockIdx.x;
+    extern __shared__ float sh[];
+    float *probs = sh;   // [E]
+    if (threadIdx.x == 0) {
+        float m = logits[0];
+        for (int e = 1; e < E; ++e) m = fmaxf(m, logits[e]);
+        float z = 0.f;
+        for (int e = 0; e < E; ++e) {
+            probs[e] = expf(logits[e] - m);
+            z += probs[e];
+        }
+        for (int e = 0; e < E; ++e) probs[e] /= z;
+
+        int idx[kMaxTopK];
+        float val[kMaxTopK];
+        int n = 0;
+        for (int e = 0; e < E; ++e) {
+            float v = probs[e];
+            int pos = n;
+            while (pos > 0 &&
+                   (val[pos - 1] < v || (val[pos - 1] == v && idx[pos - 1] > e))) {
+                if (pos < K) { val[pos] = val[pos - 1]; idx[pos] = idx[pos - 1]; }
+                --pos;
+            }
+            if (pos < K) {
+                val[pos] = v;
+                idx[pos] = e;
+                if (n < K) ++n;
+            }
+        }
+        float sm = 0.f;
+        for (int i = 0; i < K && i <= n; ++i) sm += val[i];
+        QwenMoeRoutedSlot *out = slots + static_cast<int64_t>(t) * K;
+        for (int i = 0; i < K; ++i) {
+            out[i].eid = idx[i];
+            out[i].coeff = val[i] / sm;
+        }
+    }
+}
+
 __global__ void qwen_moe_router_topk_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, int K, int E, QwenMoeRoutedSlot *__restrict__ slots)
@@ -46,11 +114,45 @@ __global__ void qwen_moe_router_topk_kernel(
     float *probs = sh + E;          // [E]
 
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
-        float dot = 0.f;
-        for (int d = 0; d < H; ++d)
-            dot += __bfloat162float(proj[static_cast<int64_t>(e) * H + d]) *
-                   __half2float(xr[d]);
-        logits[e] = dot;
+        const __nv_bfloat16 *pr =
+            proj + static_cast<int64_t>(e) * H;
+        if ((H & 7) == 0 &&
+            ((reinterpret_cast<uintptr_t>(pr) |
+              reinterpret_cast<uintptr_t>(xr)) & 15) == 0) {
+            // Vectorized row walk: 8 independent accumulator chains cut the
+            // dependent-add latency chain of the scalar loop (~265us -> tens
+            // of us per token at E=256/H=2048). Fold order is fixed.
+            const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
+            const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
+            const int steps = H / 8;
+            float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+            float a4 = 0.f, a5 = 0.f, a6 = 0.f, a7 = 0.f;
+            for (int i = 0; i < steps; ++i) {
+                const uint4 pv = p4[i];
+                const uint4 xv = x4[i];
+                const __nv_bfloat16 *pb =
+                    reinterpret_cast<const __nv_bfloat16 *>(&pv);
+                const __half *xb = reinterpret_cast<const __half *>(&xv);
+                float f0 = __bfloat162float(pb[0]) * __half2float(xb[0]);
+                float f1 = __bfloat162float(pb[1]) * __half2float(xb[1]);
+                float f2 = __bfloat162float(pb[2]) * __half2float(xb[2]);
+                float f3 = __bfloat162float(pb[3]) * __half2float(xb[3]);
+                float f4 = __bfloat162float(pb[4]) * __half2float(xb[4]);
+                float f5 = __bfloat162float(pb[5]) * __half2float(xb[5]);
+                float f6 = __bfloat162float(pb[6]) * __half2float(xb[6]);
+                float f7 = __bfloat162float(pb[7]) * __half2float(xb[7]);
+                a0 += f0; a1 += f1; a2 += f2; a3 += f3;
+                a4 += f4; a5 += f5; a6 += f6; a7 += f7;
+            }
+            logits[e] = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+        } else {
+            float dot = 0.f;
+            for (int d = 0; d < H; ++d)
+                dot += __bfloat162float(
+                           proj[static_cast<int64_t>(e) * H + d]) *
+                       __half2float(xr[d]);
+            logits[e] = dot;
+        }
     }
     __syncthreads();
 
@@ -105,6 +207,29 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
     const size_t smem = static_cast<size_t>(E) * 2 * sizeof(float);
     if (smem > 48 * 1024)
         return cudaErrorInvalidValue;
+    if (seq == 1) {
+        // Decode: two-stage split (parallel-per-expert dots + select).
+        static float *d_logits = nullptr;
+        static size_t d_logits_E = 0;
+        if (d_logits_E < static_cast<size_t>(E)) {
+            if (d_logits) cudaFree(d_logits);
+            if (cudaMalloc(&d_logits, static_cast<size_t>(E) *
+                                          sizeof(float)) != cudaSuccess) {
+                d_logits = nullptr;
+                d_logits_E = 0;
+                return cudaErrorMemoryAllocation;
+            }
+            d_logits_E = E;
+        }
+        qwen_moe_router_dots_kernel<<<E, 32, 0, stream>>>(router_w, normed, H,
+                                                          d_logits);
+        cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) return le;
+        qwen_moe_router_select_kernel<<<seq, kRouterBlock,
+                                        sizeof(float) * E, stream>>>(
+            d_logits, K, E, d_slots);
+        return cudaGetLastError();
+    }
     qwen_moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(
         router_w, normed, H, K, E, d_slots);
     return cudaGetLastError();
@@ -187,31 +312,76 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             cache.d_pack + static_cast<int64_t>(dev_slot) * cache.pack_stride;
         uint8_t *scale =
             cache.d_scale + static_cast<int64_t>(dev_slot) * cache.scale_stride;
-        // Slot layout mirrors the record: w1|w2|w3 packed, then s1|s2|s3.
-        const uint8_t *w1 = pack;
-        const uint8_t *w2 = pack + rec.w1_bytes;
-        const uint8_t *w3 = pack + rec.w1_bytes + rec.w2_bytes;
-        const uint8_t *s1 = scale;
-        const uint8_t *s2 = scale + rec.s1_bytes;
-        const uint8_t *s3 = scale + rec.s1_bytes + rec.s2_bytes;
+        // Slot layout is STAGED FUSED: [w13 = w1|w3][w2] packed,
+        // [s13 = s1|s3][s2] scales (see EnsureQwenMoeExpertResident). Gate
+        // and up run as ONE GEMM over N=2I; per-segment global scales
+        // {gs1 | gs3} split at N/2 inside the kernel epilogue.
+        const uint8_t *w13 = pack;
+        const uint8_t *w2 = pack + rec.w1_bytes + rec.w3_bytes;
+        const uint8_t *s13 = scale;
+        const uint8_t *s2 = scale + rec.s1_bytes + rec.s3_bytes;
+        const float *seg_wgs =
+            store.d_seg_wgs
+                ? store.d_seg_wgs +
+                      (static_cast<int64_t>(layer) * store.num_experts +
+                       slot.eid) *
+                          2
+                : nullptr;
 
         if (copy_stream && missed[k]) {
             cudaError_t e = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
             if (e != cudaSuccess) return e;
         }
 
-        // y_g = w1 . x   [I,H]; y_u = w3 . x; y_2 = w2 . silu(y_g)*y_u   [H,I]
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1, H, I,
-                             false) != cudaSuccess)
-            { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1, H, I,
-                             false) != cudaSuccess)
-            { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
-        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
-            <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
-        if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1, I, H,
-                             false) != cudaSuccess)
-            { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
+        // y_g|y_u = [w1; w3] . x   [2I,H]; then y_2 = w2 . silu(y_g)*y_u.
+        // Fused single-GEMM form requires the TC epilogue for per-segment
+        // scales; the scalar path ignores them, so it keeps the split pair.
+        const bool tc_fused =
+            qwen::QwenTcFastMath() && store.d_seg_wgs != nullptr &&
+            (I & 15) == 0;
+        const uint8_t *w1_split = pack;
+        const uint8_t *w3_split = pack + rec.w1_bytes;
+        const uint8_t *s1_split = scale;
+        const uint8_t *s3_split = scale + rec.s1_bytes;
+        if (!tc_fused) {
+            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1_split, s1_split,
+                                       rec.gs1, d_yg, 1, H, I,
+                                       false) != cudaSuccess)
+                { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
+            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3_split, s3_split,
+                                       rec.gs3, d_yu, 1, H, I,
+                                       false) != cudaSuccess)
+                { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
+        } else if (qwen::RunQwenNvfp4Gemm(stream, d_x, w13, s13, 1.0f, d_yg,
+                                          1, H, 2 * I, false, seg_wgs,
+                                          nullptr) != cudaSuccess) {
+            { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
+        }
+        // TC: fuse the activation quant into swiglu so the down GEMM skips
+        // its ActQuant pass; scalar path keeps split swiglu + fp16 GEMM.
+        if (tc_fused) {
+            uint8_t *ap = nullptr, *as = nullptr;
+            if (cudaMallocAsync(&ap, static_cast<size_t>(I) / 2, stream) !=
+                    cudaSuccess ||
+                cudaMallocAsync(&as, static_cast<size_t>((I + 15) / 16),
+                                stream) != cudaSuccess)
+                { error = "w2 quant scratch failed"; return cudaErrorInvalidValue; }
+            cudaError_t qe = qwen::RunQwenSwigluPreciseQuantInternal(
+                stream, d_yg, d_yu, d_yg, ap, as, I);
+            if (qe == cudaSuccess)
+                qe = qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
+            cudaFreeAsync(ap, stream);
+            cudaFreeAsync(as, stream);
+            if (qe != cudaSuccess)
+                { error = "w2 prequant gemm failed"; return cudaErrorInvalidValue; }
+        } else {
+            ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
+                <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
+            if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
+                                       I, H, false) != cudaSuccess)
+                { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
+        }
         qwen_moe_coeff_add_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
             d_y2, slot.coeff, d_acc, H);
     }
@@ -266,6 +436,19 @@ __global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
 
 } // namespace
 
+#define LSX_MOE_STAGE(name, expr)                                             \
+    do {                                                                      \
+        cudaError_t se_ = (expr);                                             \
+        cudaError_t le_ = cudaGetLastError();                                 \
+        if (se_ == cudaSuccess) se_ = le_;                                    \
+        if (se_ != cudaSuccess) {                                             \
+            if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG"))                      \
+                std::fprintf(stderr, "[stage] %s: %s\n", name,               \
+                             cudaGetErrorString(se_));                        \
+            return se_;                                                       \
+        }                                                                     \
+    } while (0)
+
 cudaError_t RunQwenMoeSharedCombine(
     cudaStream_t stream, const qwen::QwenNvfp4Weight &sw1,
     const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
@@ -273,18 +456,74 @@ cudaError_t RunQwenMoeSharedCombine(
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out)
 {
-    // Shared expert MLP on all tokens at once.
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
-                               sw1.global_scale, d_scratch_i, seq, H, SI,
-                               false) != cudaSuccess)
-        return cudaErrorInvalidValue;
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
-                               sw3.global_scale, d_scratch_h, seq, H, SI,
-                               false) != cudaSuccess)
-        return cudaErrorInvalidValue;
-    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
-        <<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(d_scratch_i, d_scratch_h,
-                                                      d_scratch_i, seq * SI, 0.f);
+    // Shared expert MLP on all tokens at once. TC path fuses gate+up into
+    // one N=2*SI GEMM (cached N-concatenation of the two packed weights,
+    // per-segment scales via the N/2 half-split); output lands in
+    // d_scratch_i extended over d_scratch_h (arena places them adjacently,
+    // SI <= H keeps 2*SI within the pair). Scalar path: split pair.
+    const bool tc_shared = qwen::QwenTcFastMath() && sw1.d_packed &&
+                           sw3.d_packed && ((2 * SI) & 15) == 0 && SI <= H;
+    __half *up_base = d_scratch_h;
+    if (tc_shared) {
+        static std::mutex sh_mu;
+        struct FusedShared {
+            const uint8_t *p;
+            const uint8_t *s;
+            const float *w;
+            int n;
+        };
+        static std::unordered_map<const void *, FusedShared> sh_cache;
+        const uint8_t *fp = nullptr, *fs = nullptr;
+        const float *fw = nullptr;
+        const int *fb_dummy = nullptr;
+        int fn = 0;
+        {
+            std::lock_guard<std::mutex> lk(sh_mu);
+            auto it = sh_cache.find(sw1.d_packed);
+            if (it == sh_cache.end()) {
+                cudaError_t be = qwen::tc::BuildFusedGemmWeights(
+                    stream, sw1.d_packed, sw1.d_scales, SI, sw3.d_packed,
+                    sw3.d_scales, SI, nullptr, nullptr, 0, nullptr, nullptr,
+                    0, H / 2, (H + 15) / 16, sw1.global_scale,
+                    sw3.global_scale, 1.0f, 1.0f, &fp, &fs, &fw, &fb_dummy,
+                    &fn);
+                if (be != cudaSuccess) return be;
+                sh_cache.emplace(sw1.d_packed, FusedShared{fp, fs, fw, fn});
+            } else {
+                fp = it->second.p;
+                fs = it->second.s;
+                fw = it->second.w;
+                fn = it->second.n;
+            }
+        }
+        LSX_MOE_STAGE("shared_fused_gemm",
+                      qwen::RunQwenNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
+                                             d_scratch_i, seq, H, fn, false,
+                                             fw, nullptr));
+        up_base = d_scratch_i + static_cast<int64_t>(seq) * SI;
+    } else {
+        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
+                                   sw1.global_scale, d_scratch_i, seq, H, SI,
+                                   false) != cudaSuccess)
+            return cudaErrorInvalidValue;
+        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
+                                   sw3.global_scale, d_scratch_h, seq, H, SI,
+                                   false) != cudaSuccess)
+            return cudaErrorInvalidValue;
+    }
+    {
+        ::lsxcommon::kernels::SwigluKernel<__half,
+                                           ::lsxcommon::kernels::ExpFlavor::Precise, false>
+            <<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(
+                d_scratch_i, up_base, d_scratch_i, seq * SI, 0.f);
+        cudaError_t se_ = cudaGetLastError();
+        if (se_ != cudaSuccess) {
+            if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG"))
+                std::fprintf(stderr, "[stage] shared_swiglu: %s\n",
+                             cudaGetErrorString(se_));
+            return se_;
+        }
+    }
     if (qwen::RunQwenNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
                                sw2.global_scale, d_scratch_h, seq, SI, H,
                                false) != cudaSuccess)
@@ -292,10 +531,18 @@ cudaError_t RunQwenMoeSharedCombine(
     // Scalar gate per token.
     qwen_moe_shared_gate_kernel<<<seq, kEltBlock, kEltBlock * sizeof(float),
                                   stream>>>(d_shared_gate, d_x, H, d_gate_val);
+    cudaError_t ge = cudaGetLastError();
+    if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
+        std::fprintf(stderr, "[stage] shared_gate: %s\n",
+                     cudaGetErrorString(ge));
     // Combine routed accumulation + gated shared expert.
     qwen_moe_combine_kernel<<<EltGrid(seq * H), kEltBlock, 0, stream>>>(
         d_routed_acc, d_gate_val, d_scratch_h, d_out, seq * H, H);
-    return cudaGetLastError();
+    ge = cudaGetLastError();
+    if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
+        std::fprintf(stderr, "[stage] combine: %s\n",
+                     cudaGetErrorString(ge));
+    return ge;
 }
 
 // ── Generation driver (incremental path, MoE FFN) ─────────────────────────
