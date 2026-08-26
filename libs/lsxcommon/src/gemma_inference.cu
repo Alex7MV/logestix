@@ -598,6 +598,13 @@ __global__ void gemma_logits_argmax_kernel(const __nv_bfloat16 *__restrict__ emb
 
 // ── Generation loop ─────────────────────────────────────────────────────────
 
+// Public generation-context lifecycle (declared in gemma4_inference.h with
+// external linkage; consumed by GemmaBaseModel). Must live OUTSIDE any
+// anonymous namespace: an internal-linkage definition here mangles to
+// _GLOBAL__N__... and leaves gemma_base_model.cpp's call unresolved.
+GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
+void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
+
 namespace {
 
 // Debug aid (LSX_TEST_GEMMA_DEBUG_SYNC=1): sync+check after every stage of
@@ -1098,9 +1105,6 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
 }
 
 } // namespace
-
-GemmaGenContext *CreateGemmaGenContext() { return new GemmaGenContext(); }
-void DestroyGemmaGenContext(GemmaGenContext *ctx) { delete ctx; }
 
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db,

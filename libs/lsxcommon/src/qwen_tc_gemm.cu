@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
 #include "lsx_kernels_quant.cuh"
 
 namespace lsxcommon {
@@ -29,10 +30,9 @@ namespace tc {
 
 namespace {
 
-// Quantization helpers (Pow2E4m3Encode / QuantizeE2m1) live in
-// lsx_kernels_quant.cuh (shared with producer-side fused quant kernels);
-// QuantizeE2m1 there is named QuantizeE2m1TieUp -- identical chain.
-using lsxcommon::kernels::Pow2E4m3Encode;
+// Block-scale and E2M1 encode primitives are the shared canonical codecs:
+// lsxcommon::nvfp4::FloatToE4m3P2 (nvfp4_scale.h, ceil pow2-E4M3) and
+// lsxcommon::kernels::QuantizeE2m1TieUp (lsx_kernels_quant.cuh).
 using lsxcommon::kernels::QuantizeE2m1TieUp;
 
 __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
@@ -54,16 +54,22 @@ __global__ void ActQuantKernel(const __half *__restrict__ x, int64_t n,
     }
 
     // scale = 2^ceil(log2(absmax/6)); quantized magnitude in [~0.75, 6].
-    const uint8_t sb = Pow2E4m3Encode(absmax * (1.0f / 6.0f));
+    // Canonical clamp e4 in [1,14] (nvfp4_scale.h): saturates at 6*2^7=768,
+    // i.e. fp16 activations above ~768 clip one octave earlier than the
+    // historical frexp encode — required canonical parity, do not "fix".
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
     scales[blk] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
 
     for (int i = 0; i < len; i += 2) {
-        const uint8_t lo = QuantizeE2m1TieUp(__half2float(x[base + i]) * inv);
+        const uint8_t lo =
+            kernels::QuantizeE2m1TieUp(__half2float(x[base + i]) * inv);
         const uint8_t hi =
             (i + 1 < len)
-                ? QuantizeE2m1TieUp(__half2float(x[base + i + 1]) * inv)
+                ? kernels::QuantizeE2m1TieUp(__half2float(x[base + i + 1]) *
+                                             inv)
                 : 0;
         packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
     }

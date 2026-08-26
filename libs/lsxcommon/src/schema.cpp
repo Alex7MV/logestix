@@ -1,6 +1,7 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/diagnostics.h"
 #include "lsxcommon/log.h"
+#include "nvfp4_scale.h"
 #include <arrow/type_fwd.h>
 #include <arrow/builder.h>
 #include <arrow/ipc/writer.h>
@@ -30,33 +31,16 @@ namespace lsxcommon {
 // the allocation. The `raw_values()` pointer from UInt8Array is at least 64-byte aligned.
 
 // float <-> E4M3_P2 scalar conversion (used by the per-block E4M3 quantizer).
+// Implementation lives in the shared nvfp4_scale.h (single source for host
+// converter and device act-quant kernels).
 uint8_t float_to_e4m3_p2(float s)
 {
-    if (s == 0.0f) return 0;
-    uint32_t bits;
-    std::memcpy(&bits, &s, sizeof(bits));
-    int exp8 = (bits >> 23) & 0xFF;
-    // Subnormals (exp8==0) or tiny values that underflow E4M3: clamp to min E4M3 normal
-    // Returning 0 would cause div-by-zero downstream (e4m3_p2_to_float(0)=0.0f → inf in quantizer)
-    if (exp8 == 0) return 0x08;
-    uint32_t mant = bits & 0x7FFFFF;
-    int p2_exp = exp8 - 127;
-    if (mant != 0) ++p2_exp;
-    int e4 = p2_exp + 7;
-    if (e4 < 1) e4 = 1;
-    if (e4 > 14) e4 = 14;
-    return static_cast<uint8_t>(static_cast<uint8_t>(e4) << 3);
+    return nvfp4::FloatToE4m3P2(s);
 }
 
 float e4m3_p2_to_float(uint8_t e4m3)
 {
-    if (e4m3 == 0) return 0.0f;
-    int e4_stored = (e4m3 >> 3) & 0x0F;
-    int exp_unb = e4_stored - 7;
-    uint32_t bits = static_cast<uint32_t>(exp_unb + 127) << 23;
-    float f;
-    std::memcpy(&f, &bits, sizeof(f));
-    return f;
+    return nvfp4::E4m3P2ToFloat(e4m3);
 }
 
 namespace {

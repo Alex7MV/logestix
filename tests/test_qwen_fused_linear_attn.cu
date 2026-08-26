@@ -1,24 +1,16 @@
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
 #include <cmath>
-#include <cstring>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "lsxcommon/qwen_inference.h"
+#include "nvfp4_codec.h"
 
 using namespace lsxcommon::qwen;
+using lsxcommon::gpu::nvfp4::E2M1Value;
+using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
 
 namespace {
-
-__host__ float HostE4M3(uint8_t e4) {
-    // Device parity: only the exponent bits are used (power-of-2 scales),
-    // e4==0 -> 0.0, else 2^(e4-7) as (e4+120)<<23.
-    const uint8_t exp = (e4 >> 3) & 0xF;
-    if (exp == 0) return 0.0f;
-    unsigned bits = ((unsigned)exp + 120u) << 23;
-    float f; std::memcpy(&f, &bits, 4); return f;
-}
-constexpr float kHostE2M1[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
 
 __host__ float HostDeq(const std::vector<uint8_t>& packed, const std::vector<uint8_t>& scales,
                        int K, int N, float gs, int k, int n) {
@@ -26,8 +18,8 @@ __host__ float HostDeq(const std::vector<uint8_t>& packed, const std::vector<uin
     const uint8_t byte = packed[e >> 1];
     const uint8_t nib = (e & 1) ? (byte >> 4) : (byte & 0x0F);
     // Tile-GEMM parity: weight dequantized then rounded to half.
-    const __half wv = __float2half(kHostE2M1[nib & 0x7] * ((nib & 0x8) ? -1.0f : 1.0f)
-                                   * HostE4M3(scales[e >> 4]) * gs);
+    const __half wv = __float2half(E2M1Value(nib)
+                                   * E4M3ScaleToFloat(scales[e >> 4]) * gs);
     return __half2float(wv);
 }
 
