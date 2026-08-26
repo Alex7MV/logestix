@@ -266,8 +266,8 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 __half *d_y2, std::string &error,
                                 cudaStream_t copy_stream,
                                 cudaEvent_t *ev_uploads, cudaEvent_t ev_front,
-                                const uint8_t *xq = nullptr,
-                                const uint8_t *xqs = nullptr)
+                                const uint8_t *xq,
+                                const uint8_t *xqs)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
