@@ -632,3 +632,14 @@ batching in the orchestrator.
 Next levers (profiled): ActQuant fusion for w2 inputs, batched expert
 execution (8 sequential slot chains), CUDA Graphs (~45 launches/layer),
 gemma TC route evaluation.
+
+### MoE campaign addendum (2026-08-26): 37.4 tok/s
+
+Two-stage router at decode: block-per-expert sequential dots (bit-identical)
++ separate HF-parity select kernel. Router GPU time 131 -> ~30 ms.
+e2e @5090: 32.2 -> **37.4 tok/s (+16%)**, campaign cumulative
+8.3 -> **37.4 (x4.5)**, ttft 478 -> 122 ms.
+
+Remaining profile (GPU ~250ms / host-gaps ~170ms): TcGemmKernel ~99ms,
+router dots ~30ms, ActQuant+swiglu_quant ~45ms, host launch gaps now the
+single biggest lever (CUDA Graphs / batched experts).
