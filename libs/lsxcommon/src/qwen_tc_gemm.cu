@@ -860,11 +860,13 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
 cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
                                   const uint8_t *as, const uint8_t *w_packed,
                                   const uint8_t *w_scales, float w_global_scale,
-                                  __half *y, int seq, int K, int N, bool acc)
+                                  __half *y, int seq, int K, int N, bool acc,
+                                  const float *seg_wgs_dev,
+                                  const int *seg_bounds_dev)
 {
     return TcGemmDispatch(stream, nullptr, ap, as, w_packed, w_scales,
-                          w_global_scale, y, seq, K, N, acc, nullptr,
-                          nullptr);
+                          w_global_scale, y, seq, K, N, acc, seg_wgs_dev,
+                          seg_bounds_dev);
 }
 
 // ── B3 capability probe: single-warp cp.async.bulk.tensor.2d round trip ────

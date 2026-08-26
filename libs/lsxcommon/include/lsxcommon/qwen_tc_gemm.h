@@ -43,7 +43,9 @@ cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
                                   const uint8_t *as, const uint8_t *w_packed,
                                   const uint8_t *w_scales, float w_global_scale,
                                   __half *y, int seq, int K, int N,
-                                  bool acc = false);
+                                  bool acc = false,
+                                  const float *seg_wgs_dev = nullptr,
+                                  const int *seg_bounds_dev = nullptr);
 
 // Builds (once, cached) the N-concatenation of four NVFP4 weight matrices
 // sharing one input K, so several projections can run as a single GEMM.

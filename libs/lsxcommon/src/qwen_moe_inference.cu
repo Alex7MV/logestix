@@ -265,7 +265,9 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 float *d_acc, __half *d_yg, __half *d_yu,
                                 __half *d_y2, std::string &error,
                                 cudaStream_t copy_stream,
-                                cudaEvent_t *ev_uploads, cudaEvent_t ev_front)
+                                cudaEvent_t *ev_uploads, cudaEvent_t ev_front,
+                                const uint8_t *xq = nullptr,
+                                const uint8_t *xqs = nullptr)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -352,10 +354,20 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                        rec.gs3, d_yu, 1, H, I,
                                        false) != cudaSuccess)
                 { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
-        } else if (qwen::RunQwenNvfp4Gemm(stream, d_x, w13, s13, 1.0f, d_yg,
-                                          1, H, 2 * I, false, seg_wgs,
-                                          nullptr) != cudaSuccess) {
-            { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
+        } else {
+            cudaError_t ge;
+            if (xq && xqs) {
+                ge = qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, xq, xqs, w13, s13, 1.0f, d_yg, 1, H, 2 * I,
+                    false, seg_wgs, nullptr);
+            } else {
+                ge = qwen::RunQwenNvfp4Gemm(stream, d_x, w13, s13, 1.0f,
+                                            d_yg, 1, H, 2 * I, false,
+                                            seg_wgs, nullptr);
+            }
+            if (ge != cudaSuccess) {
+                { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
+            }
         }
         // TC: fuse the activation quant into swiglu so the down GEMM skips
         // its ActQuant pass; scalar path keeps split swiglu + fp16 GEMM.
@@ -454,7 +466,8 @@ cudaError_t RunQwenMoeSharedCombine(
     const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
-    float *d_gate_val, __half *d_out)
+    float *d_gate_val, __half *d_out, const uint8_t *xq,
+    const uint8_t *xqs)
 {
     // Shared expert MLP on all tokens at once. TC path fuses gate+up into
     // one N=2*SI GEMM (cached N-concatenation of the two packed weights,
@@ -496,10 +509,17 @@ cudaError_t RunQwenMoeSharedCombine(
                 fn = it->second.n;
             }
         }
-        LSX_MOE_STAGE("shared_fused_gemm",
-                      qwen::RunQwenNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
-                                             d_scratch_i, seq, H, fn, false,
-                                             fw, nullptr));
+        if (xq && xqs) {
+            LSX_MOE_STAGE("shared_fused_gemm_pq",
+                          qwen::tc::RunQwenTcGemmPreQuant(
+                              stream, xq, xqs, fp, fs, 1.0f, d_scratch_i,
+                              seq, H, fn, false, fw, nullptr));
+        } else {
+            LSX_MOE_STAGE("shared_fused_gemm",
+                          qwen::RunQwenNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
+                                                 d_scratch_i, seq, H, fn,
+                                                 false, fw, nullptr));
+        }
         up_base = d_scratch_i + static_cast<int64_t>(seq) * SI;
     } else {
         if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
@@ -902,18 +922,51 @@ cudaError_t RunQwenMoeGeneration(
                 (void)q;
             }
             QwenMoeRoutedSlot *slots_host = h_slots;
+            // Quantize the layer input ONCE for all experts + shared GEMMs
+            // (TC path): removes ~8 redundant ActQuant passes per layer.
+            uint8_t *xq = nullptr, *xqs = nullptr;
+            if (qwen::QwenTcFastMath()) {
+                const size_t qb = static_cast<size_t>(seq) * (H / 2);
+                const size_t sbv = static_cast<size_t>(seq) * ((H + 15) / 16);
+                void *pq = nullptr, *ps = nullptr;
+                bool qok = cudaMallocAsync(&pq, qb ? qb : 1, stream) ==
+                               cudaSuccess &&
+                           cudaMallocAsync(&ps, sbv ? sbv : 1, stream) ==
+                               cudaSuccess;
+                if (qok)
+                    qok = lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                              stream, d_postin, seq, H,
+                              static_cast<uint8_t *>(pq),
+                              static_cast<uint8_t *>(ps)) == cudaSuccess;
+                if (qok) {
+                    xq = static_cast<uint8_t *>(pq);
+                    xqs = static_cast<uint8_t *>(ps);
+                } else {
+                    if (pq) cudaFreeAsync(pq, stream);
+                    if (ps) cudaFreeAsync(ps, stream);
+                }
+            }
+            struct XqFreer {
+                cudaStream_t s;
+                void *p1, *p2;
+                ~XqFreer() {
+                    if (p1) cudaFreeAsync(p1, s);
+                    if (p2) cudaFreeAsync(p2, s);
+                }
+            } xq_freer{stream, xq, xqs};
             e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host, K,
                                     d_postin, H, I, d_moe_acc, d_yg, d_yu,
                                     d_y2, moe_error,
                                     have_copy ? copy_stream : nullptr,
                                     have_copy ? ev_uploads : nullptr,
-                                    ev_front);
+                                    ev_front, xq, xqs);
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
                                         lw.shared_w3, lw.d_shared_gate,
                                         d_postin, seq, H, SI, d_moe_acc,
-                                        d_si, d_sh, d_gate_val, d_act);
+                                        d_si, d_sh, d_gate_val, d_act, xq,
+                                        xqs);
             if (e != cudaSuccess) return fail(e, "shared l" + std::to_string(l));
         }
 

@@ -59,7 +59,9 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
                                 __half *d_y2, std::string &error,
                                 cudaStream_t copy_stream = nullptr,
                                 cudaEvent_t *ev_uploads = nullptr,
-                                cudaEvent_t ev_front = nullptr);
+                                cudaEvent_t ev_front = nullptr,
+                                const uint8_t *xq = nullptr,
+                                const uint8_t *xqs = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
@@ -75,7 +77,8 @@ cudaError_t RunQwenMoeSharedCombine(
     const lsxcommon::qwen::QwenNvfp4Weight &sw3,
     const __half *d_shared_gate, const __half *d_x, int seq, int H, int SI,
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
-    float *d_gate_val, __half *d_out);
+    float *d_gate_val, __half *d_out, const uint8_t *xq = nullptr,
+    const uint8_t *xqs = nullptr);
 
 // Persistent generation scratch owned by the model: the dequantized FP16
 // embedding table (computed once, byte-identical to per-call dequant) and a
