@@ -208,6 +208,15 @@ cudaError_t RunQwenFusedMLP(
     const QwenTopology &top, int seq,
     const __half *d_in, __half *d_resid, __half *d_scratch);
 
+// Producer-fused SwiGLU + NVFP4 activation quant: y = silu(a)*b in fp16 AND
+// its quantized form (packed nibbles + pow2-E4M3 scales, one scale per 16
+// consecutive elements). Byte-identical to running qwen_swiglu_kernel and
+// then the standalone act-quant pass on y. n must be a multiple of 16 for a
+// full-coverage guarantee (tail groups are still handled correctly).
+cudaError_t RunQwenSwigluQuant(
+    cudaStream_t stream, const __half *a, const __half *b, __half *y,
+    uint8_t *packed, uint8_t *scales, int64_t n);
+
 // ── Generation ──────────────────────────────────────────────────────────────
 
 struct QwenGenerationResult {

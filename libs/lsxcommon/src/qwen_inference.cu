@@ -7,6 +7,7 @@
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
 #include "lsx_kernels_quant.cuh"
+#include "nvfp4_scale.h"
 #include "qwen_reduce.cuh"
 
 #include <cuda_runtime.h>
@@ -548,7 +549,7 @@ __global__ void qwen_swiglu_kernel(const __half *a, const __half *b,
 // Emits the fp16 output AND its quantized form so the following down-GEMM
 // skips the standalone ActQuant pass. Quantization is byte-identical to
 // ActQuantKernel: values are rounded to half BEFORE encoding (same
-// round-trip), same Pow2E4m3Encode / tie-up chain.
+// round-trip), same canonical FloatToE4m3P2 / tie-up chain.
 __global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
                                          const __half *__restrict__ b,
                                          __half *__restrict__ y,
@@ -573,7 +574,7 @@ __global__ void qwen_swiglu_quant_kernel(const __half *__restrict__ a,
     }
 
     const uint8_t sb =
-        lsxcommon::kernels::Pow2E4m3Encode(absmax * (1.0f / 6.0f));
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
     scales[base / 16] = sb;
     const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
     const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
@@ -1068,6 +1069,20 @@ __global__ void fused_linear_conv_zab_kernel(
 }
 
 } // namespace
+
+cudaError_t RunQwenSwigluQuant(cudaStream_t stream, const __half *a,
+                               const __half *b, __half *y, uint8_t *packed,
+                               uint8_t *scales, int64_t n)
+{
+    if (!a || !b || !y || !packed || !scales || n <= 0)
+        return cudaErrorInvalidValue;
+    const int threads = 256;
+    const int64_t groups = (n + 15) / 16;
+    const int blocks = static_cast<int>((groups + threads - 1) / threads);
+    qwen_swiglu_quant_kernel<<<blocks, threads, 0, stream>>>(a, b, y, packed,
+                                                             scales, n);
+    return cudaGetLastError();
+}
 
 // ── Fused linear-attention (GatedDeltaNet) front-end entry ──────────────────
 // Fused F1 + F2 replace the split front of RunQwenLinearAttention; the

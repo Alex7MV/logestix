@@ -99,19 +99,9 @@ __global__ void Nvfp4DequantKernel(const uint8_t* __restrict__ packed,
         gpu::nvfp4::E2M1Value(nib) * Nvfp4DecodeScale(scales[i >> 4], global_scale));
 }
 
-// Power-of-two E8M0-style scale encode (matches schema.cpp float_to_e4m3_p2
-// and the device decoder in nvfp4_codec.h): byte = (e4+7)<<3, value 2^(e4-7).
-// Ceil semantics: smallest power of two >= s.
-__host__ __device__ __forceinline__ uint8_t Pow2E4m3Encode(float s)
-{
-    if (!(s > 0.0f)) return 0; // zero / NaN guard: zero scale zeroes the block
-    int exp;
-    (void)frexpf(s, &exp); // s = m * 2^exp, m in [0.5, 1)
-    const int e4 = exp + 7;
-    if (e4 < 1) return static_cast<uint8_t>(1 << 3);      // smallest positive
-    if (e4 > 15) return static_cast<uint8_t>(15 << 3);    // saturate at 2^8
-    return static_cast<uint8_t>(e4 << 3);
-}
+// NOTE: a historical frexp-based pow2 encoder (clamped e4<=15, doubling the
+// scale on exact powers of two) was removed -- use the canonical
+// lsxcommon/nvfp4_scale.h FloatToE4m3P2 everywhere.
 
 // ── E2M1 encode (two documented tie flavors) ────────────────────────────────
 
