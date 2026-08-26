@@ -13,6 +13,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_inference_load.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/qwen_tc_gemm.h"
 #include "nvfp4_codec.h"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
@@ -325,6 +326,19 @@ __global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
 
 } // namespace
 
+#define LSX_MOE_STAGE(name, expr)                                             \
+    do {                                                                      \
+        cudaError_t se_ = (expr);                                             \
+        cudaError_t le_ = cudaGetLastError();                                 \
+        if (se_ == cudaSuccess) se_ = le_;                                    \
+        if (se_ != cudaSuccess) {                                             \
+            if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG"))                      \
+                std::fprintf(stderr, "[stage] %s: %s\n", name,               \
+                             cudaGetErrorString(se_));                        \
+            return se_;                                                       \
+        }                                                                     \
+    } while (0)
+
 cudaError_t RunQwenMoeSharedCombine(
     cudaStream_t stream, const qwen::QwenNvfp4Weight &sw1,
     const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
@@ -332,18 +346,74 @@ cudaError_t RunQwenMoeSharedCombine(
     const float *d_routed_acc, __half *d_scratch_i, __half *d_scratch_h,
     float *d_gate_val, __half *d_out)
 {
-    // Shared expert MLP on all tokens at once.
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
-                               sw1.global_scale, d_scratch_i, seq, H, SI,
-                               false) != cudaSuccess)
-        return cudaErrorInvalidValue;
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
-                               sw3.global_scale, d_scratch_h, seq, H, SI,
-                               false) != cudaSuccess)
-        return cudaErrorInvalidValue;
-    ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
-        <<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(d_scratch_i, d_scratch_h,
-                                                      d_scratch_i, seq * SI, 0.f);
+    // Shared expert MLP on all tokens at once. TC path fuses gate+up into
+    // one N=2*SI GEMM (cached N-concatenation of the two packed weights,
+    // per-segment scales via the N/2 half-split); output lands in
+    // d_scratch_i extended over d_scratch_h (arena places them adjacently,
+    // SI <= H keeps 2*SI within the pair). Scalar path: split pair.
+    const bool tc_shared = qwen::QwenTcFastMath() && sw1.d_packed &&
+                           sw3.d_packed && ((2 * SI) & 15) == 0 && SI <= H;
+    __half *up_base = d_scratch_h;
+    if (tc_shared) {
+        static std::mutex sh_mu;
+        struct FusedShared {
+            const uint8_t *p;
+            const uint8_t *s;
+            const float *w;
+            int n;
+        };
+        static std::unordered_map<const void *, FusedShared> sh_cache;
+        const uint8_t *fp = nullptr, *fs = nullptr;
+        const float *fw = nullptr;
+        const int *fb_dummy = nullptr;
+        int fn = 0;
+        {
+            std::lock_guard<std::mutex> lk(sh_mu);
+            auto it = sh_cache.find(sw1.d_packed);
+            if (it == sh_cache.end()) {
+                cudaError_t be = qwen::tc::BuildFusedGemmWeights(
+                    stream, sw1.d_packed, sw1.d_scales, SI, sw3.d_packed,
+                    sw3.d_scales, SI, nullptr, nullptr, 0, nullptr, nullptr,
+                    0, H / 2, (H + 15) / 16, sw1.global_scale,
+                    sw3.global_scale, 1.0f, 1.0f, &fp, &fs, &fw, &fb_dummy,
+                    &fn);
+                if (be != cudaSuccess) return be;
+                sh_cache.emplace(sw1.d_packed, FusedShared{fp, fs, fw, fn});
+            } else {
+                fp = it->second.p;
+                fs = it->second.s;
+                fw = it->second.w;
+                fn = it->second.n;
+            }
+        }
+        LSX_MOE_STAGE("shared_fused_gemm",
+                      qwen::RunQwenNvfp4Gemm(stream, d_x, fp, fs, 1.0f,
+                                             d_scratch_i, seq, H, fn, false,
+                                             fw, nullptr));
+        up_base = d_scratch_i + static_cast<int64_t>(seq) * SI;
+    } else {
+        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw1.d_packed, sw1.d_scales,
+                                   sw1.global_scale, d_scratch_i, seq, H, SI,
+                                   false) != cudaSuccess)
+            return cudaErrorInvalidValue;
+        if (qwen::RunQwenNvfp4Gemm(stream, d_x, sw3.d_packed, sw3.d_scales,
+                                   sw3.global_scale, d_scratch_h, seq, H, SI,
+                                   false) != cudaSuccess)
+            return cudaErrorInvalidValue;
+    }
+    {
+        ::lsxcommon::kernels::SwigluKernel<__half,
+                                           ::lsxcommon::kernels::ExpFlavor::Precise, false>
+            <<<EltGrid(seq * SI), kEltBlock, 0, stream>>>(
+                d_scratch_i, up_base, d_scratch_i, seq * SI, 0.f);
+        cudaError_t se_ = cudaGetLastError();
+        if (se_ != cudaSuccess) {
+            if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG"))
+                std::fprintf(stderr, "[stage] shared_swiglu: %s\n",
+                             cudaGetErrorString(se_));
+            return se_;
+        }
+    }
     if (qwen::RunQwenNvfp4Gemm(stream, d_scratch_i, sw2.d_packed, sw2.d_scales,
                                sw2.global_scale, d_scratch_h, seq, SI, H,
                                false) != cudaSuccess)
@@ -351,10 +421,18 @@ cudaError_t RunQwenMoeSharedCombine(
     // Scalar gate per token.
     qwen_moe_shared_gate_kernel<<<seq, kEltBlock, kEltBlock * sizeof(float),
                                   stream>>>(d_shared_gate, d_x, H, d_gate_val);
+    cudaError_t ge = cudaGetLastError();
+    if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
+        std::fprintf(stderr, "[stage] shared_gate: %s\n",
+                     cudaGetErrorString(ge));
     // Combine routed accumulation + gated shared expert.
     qwen_moe_combine_kernel<<<EltGrid(seq * H), kEltBlock, 0, stream>>>(
         d_routed_acc, d_gate_val, d_scratch_h, d_out, seq * H, H);
-    return cudaGetLastError();
+    ge = cudaGetLastError();
+    if (std::getenv("LSX_TEST_MOE_STAGE_DEBUG") && ge != cudaSuccess)
+        std::fprintf(stderr, "[stage] combine: %s\n",
+                     cudaGetErrorString(ge));
+    return ge;
 }
 
 // ── Generation driver (incremental path, MoE FFN) ─────────────────────────

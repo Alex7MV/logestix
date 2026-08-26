@@ -78,6 +78,7 @@ TEST_CASE("Qwen3.5-35B-A3B perf baseline: decode throughput",
     req.max_gen_tokens = PerfGenTokens();
 
     auto r = m->Infer(req);
+    if (!r.ok) FAIL("Infer failed: " << r.error_msg);
     REQUIRE(r.ok);
     REQUIRE(!r.gen_tokens.empty());
 
@@ -129,6 +130,7 @@ TEST_CASE("gemma-4-26B-A4B-it perf baseline: decode throughput",
     req.max_gen_tokens = PerfGenTokens();
 
     auto r = m->Infer(req);
+    if (!r.ok) FAIL("Infer failed: " << r.error_msg);
     REQUIRE(r.ok);
     REQUIRE(!r.gen_tokens.empty());
 

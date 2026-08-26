@@ -998,8 +998,11 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
                                   const float **wgs_out,
                                   const int **bounds_out, int *n_total)
 {
-    if (!p1 || !s1 || !p2 || !s2 || !p3 || !s3 || !p4 || !s4 || n1 <= 0 ||
-        n2 < 0 || n3 < 0 || n4 < 0)
+    // Pointers are only required for segments with rows > 0 (unused
+    // segments may pass nullptr).
+    if (!p1 || !s1 || n1 <= 0 || n2 < 0 || n3 < 0 || n4 < 0) return cudaErrorInvalidValue;
+    if ((n2 > 0 && (!p2 || !s2)) || (n3 > 0 && (!p3 || !s3)) ||
+        (n4 > 0 && (!p4 || !s4)))
         return cudaErrorInvalidValue;
 
     std::lock_guard<std::mutex> lk(g_fw_mu);
@@ -1067,11 +1070,13 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
         cudaFree(cp); cudaFree(cs); cudaFree(dw);
         return e;
     }
-    if ((e = cudaMemcpyAsync(dw, hwgs, sizeof(hwgs),
-                             cudaMemcpyHostToDevice,
-                             stream)) != cudaSuccess ||
-        (e = cudaMemcpyAsync(db, hb, sizeof(hb), cudaMemcpyHostToDevice,
-                             stream)) != cudaSuccess) {
+    // Synchronous copies: sources live on this call's stack; pageable-async
+    // staging would still snapshot them, but the build happens once per
+    // weight set -- correctness beats micro-async here.
+    if ((e = cudaMemcpy(dw, hwgs, sizeof(hwgs),
+                        cudaMemcpyHostToDevice)) != cudaSuccess ||
+        (e = cudaMemcpy(db, hb, sizeof(hb), cudaMemcpyHostToDevice)) !=
+            cudaSuccess) {
         cudaFree(cp); cudaFree(cs); cudaFree(dw); cudaFree(db);
         return e;
     }

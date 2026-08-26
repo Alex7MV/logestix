@@ -612,3 +612,23 @@ Still-open structural levers from this audit (unchanged by design, bit-exactness
 contract): batched prefill (both models still token-at-a-time), single-block
 kernels in hot loops, CUDA Graphs for the ~310-launch decode graph, request
 batching in the orchestrator.
+
+
+### MoE speed campaign (2026-08-26) — 8.3 -> 32.1 tok/s on Qwen3.5-35B-A3B
+
+- TC fast-math toggle was never set for the MoE model (ModelBase-derived):
+  every GEMM ran the scalar tile kernel. x2.55 from one line.
+- router top-k dot loop vectorized (uint4, 8 accumulator chains): +10%.
+- routed gate+up fused into ONE GEMM per expert: slot staging reordered to
+  [w13=w1|w3][w2]; per-expert {gs1|gs3} device pairs; kernel epilogue
+  half-split at N/2 when seg_bounds==nullptr. Scalar fallback keeps the
+  split pair.
+- shared expert gate+up fused via cached BuildFusedGemmWeights N-concat;
+  BuildFusedGemmWeights validation relaxed to allow null pointers for
+  zero-row segments (was rejecting the 2-segment form outright).
+- e2e @5090: 8.3 -> **32.1 tok/s (x3.9)**, ttft 478 -> 135ms. " Paris."
+  stable everywhere; 107/107 tests.
+
+Next levers (profiled): ActQuant fusion for w2 inputs, batched expert
+execution (8 sequential slot chains), CUDA Graphs (~45 launches/layer),
+gemma TC route evaluation.
