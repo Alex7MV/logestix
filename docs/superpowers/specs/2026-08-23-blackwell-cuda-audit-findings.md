@@ -643,3 +643,13 @@ e2e @5090: 32.2 -> **37.4 tok/s (+16%)**, campaign cumulative
 Remaining profile (GPU ~250ms / host-gaps ~170ms): TcGemmKernel ~99ms,
 router dots ~30ms, ActQuant+swiglu_quant ~45ms, host launch gaps now the
 single biggest lever (CUDA Graphs / batched experts).
+
+### MoE campaign status (2026-08-26, end of session)
+
+Qwen3.5-35B-A3B @5090: **37.4 tok/s** (x4.5 over the 8.3 baseline), ttft
+122 ms. gemma-4-26B-A4B-it baseline: 2.5 tok/s (own dequant+cuBLAS path,
+TC route not wired yet).
+
+Next levers by profile: host launch gaps ~170 ms (CUDA Graphs / batched
+expert execution), TcGemmKernel ~99 ms, gemma TC route. Input quant cache
+landed (launch hygiene) but was e2e-neutral.
