@@ -653,3 +653,72 @@ TC route not wired yet).
 Next levers by profile: host launch gaps ~170 ms (CUDA Graphs / batched
 expert execution), TcGemmKernel ~99 ms, gemma TC route. Input quant cache
 landed (launch hygiene) but was e2e-neutral.
+
+### gemma TC expert route experiment (2026-08-26): rejected
+
+Per-expert TC W4A4 substitution (bf16->half token, quant once, three
+PreQuant GEMMs, half geglu, convert back) measured 2.7 tok/s vs 3.0
+baseline AND shifted greedy output away from "**Paris**." — the per-expert
+granularity adds quant/convert launches that outweigh tensor-core gains at
+N=704, and W4A4 numerics move gemma's top-1. Reverted.
+
+If revisited: needs a grouped/batched expert GEMM (all top-K experts in one
+launch over gathered rows) plus a quality audit; not a drop-in swap.
+
+### Session addendum (2026-08-26): clean-HEAD measurement discipline
+
+After heavy file checkouts the incremental ninja build silently served a
+stale binary: "72 tok/s garbage" readings were an artifact. Full rebuild on
+clean HEAD: **38.7 tok/s**, " Paris..." correct, 107/107 tests.
+RULE: after any git checkout of sources, touch + full rebuild before
+measuring; never trust perf numbers across binary/staleness boundaries.
+
+Batched expert execution prototype was lost in the same checkout churn;
+re-implement on this clean base next session (design is documented above:
+grouped TC GEMM via grid.z groups + strides, gather kernel, flat-indexed
+batched swiglu-quant, serial-order weighted sum).
+
+
+## Round 18 — residency default + profile truthing (2026-08-26)
+
+### Batched grouped-GEMM: PARKED
+Working-tree prototype reverted to HEAD `3babf56` after hypothesis-churn
+(grid.z plumbing produced zeroed groups 1-2; sanitizer showed OOB reads in
+stage_slabs A-side; a masked build error fed stale .o into three test runs).
+Root process lesson recorded: never measure behind a failed library build;
+verify ninja actually relinked (`Linking` line visible) before trusting a
+number. Design notes preserved in history; revisit only after the decode
+GEMV lever below.
+
+### Silent regression found & fixed
+`e010bfe` accidentally rewrote `nvfp4_scale.h` from a pre-416d793 snapshot,
+resurrecting whole-byte E4M3 zero-decode (broke pinned regression test).
+Restored in `3e1e1d1`. Lesson: any commit touching a file should diff it
+against expected content when unrelated hunks appear.
+
+### Full expert residency by default — `17348a1`
+Default expert cache now targets ALL routed experts (VRAM-bounded, 6 GiB
+headroom, shrink-retry onto LRU path). Measured 42.1 -> **65.6 tok/s**
+(release, TC fast-math, 128 tokens, RTX 5090, 35B-A3B). SelfCheck x3 bit-
+stable; suite 107/107.
+
+### Reproducible perf invocation (was mis-measured twice)
+    LSX_TEST_FAST_MATH=1 LSX_TEST_PERF_GEN_TOKENS=128 \
+      ./build/linux-release-znver4/tests/test_blackwell_perf_moe "[qwen35moe]"
+Without LSX_TEST_FAST_MATH=1 the harness silently runs the SCALAR path
+(~10 tok/s) — do not compare those numbers against TC baselines.
+
+### Profile truthing (nsys r2)
+CUPTI tracing inflates small-kernel durations ~4-5x here (gemm_tile med
+68.7 us traced vs ~15 ms/step real wall for >1100 launches — impossible
+otherwise). Trust relative shares, not absolute us, from nsys on this box.
+Post-residency GPU is nearly saturated with qwen_nvfp4_gemm_tile_kernel
+(~88% of traced kernel time, >1100 launches/step incl. split-K inflation).
+
+### Next lever (priority 1): decode-path NVFP4 GEMV
+At seq==1 the routed/shared GEMMs read ~1.73 MB/expert but sustain only
+~30 GB/s effective through the 16x16x32 tile kernel (M=1 wastes the tile
+M-dimension entirely). Bandwidth floor says ~420 us/token of weight
+traffic -> 700+ tok/s realistic ceiling vs current 65. Options: dedicated
+weight-streaming GEMV kernel for seq==1, or cuBLASLt NVFP4 path. Router
+dots/select (~7% traced) second; head GEMM third.
