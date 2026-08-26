@@ -118,12 +118,9 @@ TEST_CASE("RunQwenNvfp4Gemm matches host reference (small-K, tile path)", "[qwen
 
     std::vector<__half> hy((size_t)seq * N);
     cudaMemcpy(hy.data(), dy, (size_t)seq * N * 2, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < seq * N; ++i) {
-        CAPTURE(i, __half2float(hy[i]),
-                __half2float(__float2half(h_ref[(size_t)i])));
+    for (int i = 0; i < seq * N; ++i)
         CHECK(std::abs(__half2float(hy[i]) -
                        __half2float(__float2half(h_ref[(size_t)i]))) < 1e-3f);
-    }
 
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
@@ -155,12 +152,9 @@ TEST_CASE("RunQwenNvfp4Gemm legacy fallback at truly-small K", "[qwen][gemm][nvf
 
     std::vector<__half> hy((size_t)seq * N);
     cudaMemcpy(hy.data(), dy, (size_t)seq * N * 2, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < seq * N; ++i) {
-        CAPTURE(i, __half2float(hy[i]),
-                __half2float(__float2half(h_ref[(size_t)i])));
+    for (int i = 0; i < seq * N; ++i)
         CHECK(std::abs(__half2float(hy[i]) -
                        __half2float(__float2half(h_ref[(size_t)i]))) < 1e-3f);
-    }
 
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
 }
