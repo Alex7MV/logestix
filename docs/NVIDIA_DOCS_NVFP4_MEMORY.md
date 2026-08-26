@@ -1,8 +1,14 @@
-# NVIDIA Docs Reference — NVFP4 Codec & Device Memory (fixed 2026-08-26)
+# NVIDIA Docs Reference — CUDA / Blackwell / NVFP4 / Memory
 
-Authoritative excerpts used by the `fix/nvfp4-scale-dedup` audit/iteration.
-Sources: CUDA C++ Programming Guide §4.3.2 (Memory Management) and the PTX ISA
-`cvt` / block-quantization sections, retrieved via the nvidia-cuda-docs MCP.
+Offline mirror of nvidia-cuda-docs MCP excerpts needed by this project
+(CUDA Toolkit 13.x, Blackwell sm_120/sm_121, NVFP4 inference). Kept in-repo
+because not every dev box has MCP access. Fixed 2026-08-26; sections cite
+their source (Programming Guide §, PTX ISA §, cuda_fp4/cuda_fp8 headers,
+cuBLASLt samples).
+
+Part A covers the NVFP4 codec and stream-ordered memory used by the
+`fix/nvfp4-scale-dedup` iteration; Part B is the broader Blackwell/CUDA
+reference.
 
 ## 1. NVFP4 quantization recipe (Programming Guide, "1D Block Quantization")
 
@@ -106,3 +112,121 @@ Revisit only if tests start allocating per-iteration inside long loops.
   (`QuantizeE2m1TieUp` — runtime act-quant; `QuantizeE2m1Nearest` — offline
   converter). PTX hardware `cvt.rn` uses RNE (ties-to-even), which matches
   NEITHER flavor exactly — never mix hardware-cvt results into these paths.
+
+---
+
+# Part B — CUDA / Blackwell offline reference
+
+## B1. Compute Capability 12.x (Blackwell consumer) hardware limits
+
+(Programming Guide, "Compute Capabilities" appendix, Table 31/32.)
+
+| Limit | CC 12.x value |
+|---|---|
+| Max resident warps per SM | **48** |
+| Max resident threads per SM | **1536** |
+| Max resident blocks per SM | 24 |
+| Registers per SM / per block | 64 K × 32-bit |
+| Max registers per thread | 255 |
+| Shared memory per SM / per block max | **100 KB** / 99 KB |
+| Shared memory banks | 32 |
+| Warp size | 32 |
+| Max threads per block (x*y) / z | 1024 / 64 |
+| Max grid x-dim / y,z-dim | 2^31−1 / 65535 |
+| Max resident grids per device (concurrent kernels) | 128 |
+| Constant memory | 64 KB (8 KB working set/SM) |
+| Local memory per thread | 512 KB |
+
+Occupancy math for this repo MUST use 48 warps/SM and the 100 KB smem budget
+(e.g. a kernel with >99 KB dynamic smem per block cannot launch; >48 warps
+never co-reside). AGENTS.md's "48 warps/SM" is confirmed here.
+
+## B2. Alternate FP data formats (PTX ISA §5.2.3 "Alternate Floating-Point Data Formats")
+
+| Format | Bits (E/M/S) | Inf | NaN encodings | Storage |
+|---|---|---|---|---|
+| `e4m3` | 4/3/+sign | none | **only `0x7f`, `0xff`** | `.b8` |
+| `e5m2` | 5/2/+sign | yes | IEEE-like | `.b8` |
+| `e2m1` | 2/1/+sign | none | **none** | packed `e2m1x2` in `.b8` |
+| `e2m3` / `e3m2` | 6-bit | none | none | packed `.b16`, 2 MSB zero-padded |
+| `ue8m0` | 8/0/unsigned | none | **only `0xff`** | packed `ue8m0x2` in `.b16` |
+| `ue4m3` | 4/3/**unsigned (7 bit)** | none | **only `0x7f`** | `.b8`, **MSB padded with zero** |
+
+Consequences for this repo:
+- A byte with MSB set (`0x80..0xff`) is NOT a valid UE4M3 scale factor; the
+  repo's pow2-E4M3 payload reuses that bit space for its own layout, so scale
+  bytes must always be interpreted through the canonical codecs
+  (`nvfp4_scale.h`), never via raw numeric casts.
+- `cuda_fp8.h` full-E4M3 decode of `0x80..0x87`: −0 and negative subnormals
+  (`−m·2^−9`); NaN only at `0x7f`/`0xff`. Neither yields positive powers of
+  two — field-zero → exactly-0 scale decoding (see Part A) stays the contract.
+
+## B3. cuda_fp4.h conversion API semantics
+
+(`__nv_cvt_float_to_fp4`, `__nv_cvt_float2_to_fp4x2`, … in `cuda_fp4.h`.)
+
+- Rounding: caller-selected mode; hardware default flavor is
+  round-to-nearest-even.
+- Saturation (`__NV_SATFINITE`): out-of-range values saturate to **MAXNORM of
+  the same sign** (E2M1 MAXNORM = ±6).
+- **NaN inputs produce +MAXNORM (+6)**, not a NaN payload (E2M1 has none).
+
+## B4. Blackwell tcgen05 block-scaled MMA (PTX ISA §9.7.17.10)
+
+- Semantics: `D = C + (A × SFA) · (B × SFB)`; scale factors apply along GEMM-K
+  every SV elements (16 or 32 dense).
+- Scale-factor shapes vs `.scale_vectorsize`:
+  - `.scale_vec::1X`/`.block32`: SFA M×1, SFB 1×N;
+  - `.scale_vec::2X`/`.block32`: M×2 / 2×N;
+  - `.scale_vec::4X`/`.block16`: M×4 / 4×N;
+  - `.block16` = alias of `.scale_vec::4X`; `.block32` = `::1X` or `::2X`.
+- Element/SF type combos:
+  - `kind::mxf8f6f4` (E4M3/E5M2/E2M3/E3M2/E2M1) → SF = **UE8M0**, vec 32;
+  - `kind::mxf4` (E2M1) → SF = UE8M0, vec 32;
+  - `kind::mxf4nvf4` (E2M1) → SF = UE8M0 (vec 32) OR **UE4M3 (vec 16,
+    `.block16`)** ← NVFP4 path used by this repo's TC kernels.
+- CUTLASS naming: `nv_float4_t` pairs E2M1 with `float_ue4m3_t` (SF vector 16
+  dense / 32 sparse) and is marked **not OCP-compliant**; OCP MX types pair
+  any-FP4/6/8 with `float_ue8m0_t` vec 32.
+- Only `float_ue8m0_t` and `float_ue4m3_t` can serve as tcgen05 scale-factor
+  operand types on Blackwell.
+
+## B5. cuBLASLt NVFP4 matmul (official sample `LtNvfp4Matmul`)
+
+Facts to mirror when touching `libs/lsxcommon/src/benchmark_gpu.cu` or any
+cuBLASLt-based FP4 path:
+
+- Operands A/B: packed `__nv_fp4_e2m1`; per-tensor scales:
+  `__nv_fp8_e4m3` device pointers (`a_scale`, `b_scale`); accumulate/output
+  in bf16 (`C`), optional FP4 output `D` with its own `c_scale`/`d_scale`/
+  `d_out_scale`.
+- Scaling application controlled per-matrix via
+  `cublasLtMatmulMatrixScale_t` mode flags (AScaleMode/BScaleMode/CScaleMode/
+  DScaleMode/DOutScaleMode).
+- Workspace required to enable split-K algorithms; α/β pointer mode set to
+  host for α while β stays host; tensor-core ops are allowed implicitly —
+  the global cublas handle's math-mode config is bypassed.
+
+## B6. TMA / bulk-asynchronous copies (Programming Guide "Tensor Memory Accelerator", libcu++ pipelining notes)
+
+- Terminology: *bulk-asynchronous copies* (1-D contiguous, no descriptor)
+  vs *bulk-tensor asynchronous copies* (multi-D, needs a tensor map).
+- Tensor map: created host-side via `cuTensorMapEncodeTiled`
+  (`CUtensorMap`), passed to the kernel as a **`const` parameter annotated
+  `__grid_constant__`**; device then copies tiles gmem↔smem.
+- TMA eligibility (`cp.async.bulk` via barrier overload): barrier in shared
+  memory, data 16-byte aligned, source global, destination shared. On
+  Ampere+ plain `cp.async` needs only ≥4-byte alignment (gmem→smem).
+- Up to 5-D arrays supported; copies may also go smem→gmem and
+  smem→distributed-smem (cluster); multicast is optimized for `sm_90a` and
+  may be significantly slower on other targets — avoid assuming multicast
+  speedups on sm_120/sm_121.
+- Transfers are async-proxy operations; completion uses the PTX async
+  completion mechanisms (mbarrier etc.). The initiating thread keeps
+  computing — do not add host syncs around TMA issues.
+
+## B7. Stream-ordered memory management
+
+See Part A §2 (kept there): `cudaMallocAsync`/`cudaFreeAsync` semantics,
+pool/device selection rules, cross-API mixing rules, and the repo decision
+that unit tests use RAII `cudaMalloc`/`cudaFree` (sync-before-free).
