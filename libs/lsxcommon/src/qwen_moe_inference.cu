@@ -34,25 +34,62 @@ constexpr int kMaxTopK = 16;
 // Gemma-router etalon structure (gemma_inference.cu): one block per token,
 // cooperative logits, thread-0 selection. Dynamic smem holds logits[E] and
 // probs[E] so E up to 256 is supported.
+// Shared router row-dot: ONE accumulation order for every caller
+// (prefill monolithic kernel AND decode-split stage 1). Vectorized 8-chain
+// fold when H % 8 == 0 and both rows are 16B-aligned; scalar sequential walk
+// otherwise. The fold order is fixed: ((a0+a1)+(a2+a3))+((a4+a5)+(a6+a7)).
+__device__ __forceinline__ float QwenRouterDotRow(
+    const __nv_bfloat16 *__restrict__ pr, const __half *__restrict__ xr,
+    int H)
+{
+    if ((H & 7) == 0 &&
+        ((reinterpret_cast<uintptr_t>(pr) |
+          reinterpret_cast<uintptr_t>(xr)) & 15) == 0) {
+        const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
+        const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
+        const int steps = H / 8;
+        float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+        float a4 = 0.f, a5 = 0.f, a6 = 0.f, a7 = 0.f;
+        for (int i = 0; i < steps; ++i) {
+            const uint4 pv = p4[i];
+            const uint4 xv = x4[i];
+            const __nv_bfloat16 *pb =
+                reinterpret_cast<const __nv_bfloat16 *>(&pv);
+            const __half *xb = reinterpret_cast<const __half *>(&xv);
+            float f0 = __bfloat162float(pb[0]) * __half2float(xb[0]);
+            float f1 = __bfloat162float(pb[1]) * __half2float(xb[1]);
+            float f2 = __bfloat162float(pb[2]) * __half2float(xb[2]);
+            float f3 = __bfloat162float(pb[3]) * __half2float(xb[3]);
+            float f4 = __bfloat162float(pb[4]) * __half2float(xb[4]);
+            float f5 = __bfloat162float(pb[5]) * __half2float(xb[5]);
+            float f6 = __bfloat162float(pb[6]) * __half2float(xb[6]);
+            float f7 = __bfloat162float(pb[7]) * __half2float(xb[7]);
+            a0 += f0; a1 += f1; a2 += f2; a3 += f3;
+            a4 += f4; a5 += f5; a6 += f6; a7 += f7;
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+    }
+    float dot = 0.f;
+    for (int d = 0; d < H; ++d)
+        dot += __bfloat162float(pr[d]) * __half2float(xr[d]);
+    return dot;
+}
+
 // Decode-split router: stage 1 computes logits with ONE BLOCK PER EXPERT
-// running the exact same sequential d-loop as the monolithic kernel
-// (bit-identical accumulation order); the E blocks stream their rows from
-// different SMs instead of funneling 1 MB through a single block.
+// running the exact same row walk as the monolithic kernel (bit-identical
+// accumulation order via QwenRouterDotRow); the E blocks stream their rows
+// from different SMs instead of funneling 1 MB through a single block. The
+// 8 independent accumulator chains also cut the dependent-add latency chain
+// of the scalar loop (~265us -> tens of us per token at E=256/H=2048).
 __global__ void qwen_moe_router_dots_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, float *__restrict__ logits)
 {
     const int e = blockIdx.x;
-    if (blockIdx.y != 0 || threadIdx.x != 0) {
-        // single-thread body; extra threads exit (grid kept 1-D friendly)
-        if (threadIdx.x != 0) return;
-    }
+    if (threadIdx.x != 0) return;
     const __half *xr = x;   // decode: t == 0
     const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
-    float dot = 0.f;
-    for (int d = 0; d < H; ++d)
-        dot += __bfloat162float(pr[d]) * __half2float(xr[d]);
-    logits[e] = dot;
+    logits[e] = QwenRouterDotRow(pr, xr, H);
 }
 
 // Stage 2: softmax -> top-k -> renorm from precomputed logits (unchanged
@@ -106,7 +143,6 @@ __global__ void qwen_moe_router_topk_kernel(
     int H, int K, int E, QwenMoeRoutedSlot *__restrict__ slots)
 {
     const int t = blockIdx.x;
-    if (t >= gridDim.x) return;
     const __half *xr = x + static_cast<int64_t>(t) * H;
 
     extern __shared__ float sh[];
@@ -116,43 +152,7 @@ __global__ void qwen_moe_router_topk_kernel(
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
         const __nv_bfloat16 *pr =
             proj + static_cast<int64_t>(e) * H;
-        if ((H & 7) == 0 &&
-            ((reinterpret_cast<uintptr_t>(pr) |
-              reinterpret_cast<uintptr_t>(xr)) & 15) == 0) {
-            // Vectorized row walk: 8 independent accumulator chains cut the
-            // dependent-add latency chain of the scalar loop (~265us -> tens
-            // of us per token at E=256/H=2048). Fold order is fixed.
-            const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
-            const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
-            const int steps = H / 8;
-            float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
-            float a4 = 0.f, a5 = 0.f, a6 = 0.f, a7 = 0.f;
-            for (int i = 0; i < steps; ++i) {
-                const uint4 pv = p4[i];
-                const uint4 xv = x4[i];
-                const __nv_bfloat16 *pb =
-                    reinterpret_cast<const __nv_bfloat16 *>(&pv);
-                const __half *xb = reinterpret_cast<const __half *>(&xv);
-                float f0 = __bfloat162float(pb[0]) * __half2float(xb[0]);
-                float f1 = __bfloat162float(pb[1]) * __half2float(xb[1]);
-                float f2 = __bfloat162float(pb[2]) * __half2float(xb[2]);
-                float f3 = __bfloat162float(pb[3]) * __half2float(xb[3]);
-                float f4 = __bfloat162float(pb[4]) * __half2float(xb[4]);
-                float f5 = __bfloat162float(pb[5]) * __half2float(xb[5]);
-                float f6 = __bfloat162float(pb[6]) * __half2float(xb[6]);
-                float f7 = __bfloat162float(pb[7]) * __half2float(xb[7]);
-                a0 += f0; a1 += f1; a2 += f2; a3 += f3;
-                a4 += f4; a5 += f5; a6 += f6; a7 += f7;
-            }
-            logits[e] = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
-        } else {
-            float dot = 0.f;
-            for (int d = 0; d < H; ++d)
-                dot += __bfloat162float(
-                           proj[static_cast<int64_t>(e) * H + d]) *
-                       __half2float(xr[d]);
-            logits[e] = dot;
-        }
+        logits[e] = QwenRouterDotRow(pr, xr, H);
     }
     __syncthreads();
 
@@ -209,25 +209,26 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
         return cudaErrorInvalidValue;
     if (seq == 1) {
         // Decode: two-stage split (parallel-per-expert dots + select).
-        static float *d_logits = nullptr;
-        static size_t d_logits_E = 0;
-        if (d_logits_E < static_cast<size_t>(E)) {
-            if (d_logits) cudaFree(d_logits);
-            if (cudaMalloc(&d_logits, static_cast<size_t>(E) *
-                                          sizeof(float)) != cudaSuccess) {
-                d_logits = nullptr;
-                d_logits_E = 0;
-                return cudaErrorMemoryAllocation;
-            }
-            d_logits_E = E;
-        }
+        // Stage-1 scratch is stream-ordered (pool-backed, non-synchronizing);
+        // no static device state (the old cached cudaMalloc leaked one buffer
+        // per process and was not thread-safe across model instances).
+        float *d_logits = nullptr;
+        cudaError_t le = cudaMallocAsync(&d_logits, static_cast<size_t>(E) *
+                                                          sizeof(float),
+                                         stream);
+        if (le != cudaSuccess) return le;
         qwen_moe_router_dots_kernel<<<E, 32, 0, stream>>>(router_w, normed, H,
                                                           d_logits);
-        cudaError_t le = cudaGetLastError();
-        if (le != cudaSuccess) return le;
-        qwen_moe_router_select_kernel<<<seq, kRouterBlock,
-                                        sizeof(float) * E, stream>>>(
-            d_logits, K, E, d_slots);
+        le = cudaGetLastError();
+        if (le == cudaSuccess)
+            qwen_moe_router_select_kernel<<<seq, kRouterBlock,
+                                            sizeof(float) * E, stream>>>(
+                d_logits, K, E, d_slots);
+        if (le != cudaSuccess) {
+            cudaFreeAsync(d_logits, stream);
+            return le;
+        }
+        cudaFreeAsync(d_logits, stream);
         return cudaGetLastError();
     }
     qwen_moe_router_topk_kernel<<<seq, kRouterBlock, smem, stream>>>(
@@ -267,7 +268,9 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 cudaStream_t copy_stream,
                                 cudaEvent_t *ev_uploads, cudaEvent_t ev_front,
                                 const uint8_t *xq,
-                                const uint8_t *xqs)
+                                const uint8_t *xqs,
+                                uint8_t *d_qpack_scratch,
+                                uint8_t *d_qscales_scratch)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -372,19 +375,32 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         // TC: fuse the activation quant into swiglu so the down GEMM skips
         // its ActQuant pass; scalar path keeps split swiglu + fp16 GEMM.
         if (tc_fused) {
-            uint8_t *ap = nullptr, *as = nullptr;
-            if (cudaMallocAsync(&ap, static_cast<size_t>(I) / 2, stream) !=
-                    cudaSuccess ||
-                cudaMallocAsync(&as, static_cast<size_t>((I + 15) / 16),
-                                stream) != cudaSuccess)
-                { error = "w2 quant scratch failed"; return cudaErrorInvalidValue; }
+            // Quant scratch for the down-GEMM input: caller-provided arena
+            // slice when available (removes two pool alloc/free calls per
+            // expert slot per layer per step); stream-ordered fallback keeps
+            // standalone callers working.
+            uint8_t *ap = d_qpack_scratch, *as = d_qscales_scratch;
+            const bool own_scratch = !ap || !as;
+            if (own_scratch) {
+                ap = nullptr; as = nullptr;
+                if (cudaMallocAsync(&ap, static_cast<size_t>(I) / 2, stream) !=
+                        cudaSuccess ||
+                    cudaMallocAsync(&as, static_cast<size_t>((I + 15) / 16),
+                                    stream) != cudaSuccess) {
+                    if (ap) cudaFreeAsync(ap, stream);
+                    error = "w2 quant scratch failed";
+                    return cudaErrorInvalidValue;
+                }
+            }
             cudaError_t qe = qwen::RunQwenSwigluPreciseQuantInternal(
                 stream, d_yg, d_yu, d_yg, ap, as, I);
             if (qe == cudaSuccess)
                 qe = qwen::tc::RunQwenTcGemmPreQuant(
                     stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
-            cudaFreeAsync(ap, stream);
-            cudaFreeAsync(as, stream);
+            if (own_scratch) {
+                cudaFreeAsync(ap, stream);
+                cudaFreeAsync(as, stream);
+            }
             if (qe != cudaSuccess)
                 { error = "w2 prequant gemm failed"; return cudaErrorInvalidValue; }
         } else {
@@ -726,8 +742,13 @@ cudaError_t RunQwenMoeGeneration(
     size_t float_bytes = 0;
     for (auto s : float_sz) float_bytes += s * sizeof(float);
     float_bytes = (float_bytes + 15) & ~static_cast<size_t>(15);
+    // Tail slice: routed-expert down-GEMM quant scratch (I/2 packed bytes +
+    // ceil(I/16) scale bytes), carved once instead of per expert slot.
+    const size_t qpack_bytes = (static_cast<size_t>(I) / 2 + 15) & ~size_t(15);
+    const size_t qscales_bytes = (static_cast<size_t>(I + 15) / 16 + 15) & ~size_t(15);
 
-    cudaError_t e = ReserveQwenMoeArena(scratch, half_bytes + float_bytes);
+    cudaError_t e = ReserveQwenMoeArena(
+        scratch, half_bytes + float_bytes + qpack_bytes + qscales_bytes);
     if (e != cudaSuccess) { result.error_msg = "arena reserve failed"; return e; }
     void *base = scratch.arena;
 
@@ -770,6 +791,9 @@ cudaError_t RunQwenMoeGeneration(
     float *d_maxv_scratch = pf; pf += float_sz[2];
     float *d_moe_acc = pf; pf += float_sz[3];
     float *d_gate_val = pf;
+    uint8_t *d_qpack_scratch =
+        reinterpret_cast<uint8_t *>(base) + half_bytes + float_bytes;
+    uint8_t *d_qscales_scratch = d_qpack_scratch + qpack_bytes;
 
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
@@ -959,7 +983,8 @@ cudaError_t RunQwenMoeGeneration(
                                     d_y2, moe_error,
                                     have_copy ? copy_stream : nullptr,
                                     have_copy ? ev_uploads : nullptr,
-                                    ev_front, xq, xqs);
+                                    ev_front, xq, xqs,
+                                    d_qpack_scratch, d_qscales_scratch);
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
@@ -1005,18 +1030,24 @@ cudaError_t RunQwenMoeGeneration(
     }
     kv->last_tok = tok;
 
-    // Publish final-row logits for the regression harness (stream-fenced).
+    // Publish final-row logits for the regression harness. The D2H copy is
+    // fenced by t_stop BEFORE any host read of the staging buffer — reading
+    // hlast while the async copy is still in flight is a data race (stale or
+    // garbage final_logits; GLM/DeepSeek pipelines fence identically).
     {
         std::vector<float> hlast_f(V);
         std::vector<__half> hlast(V);
         cudaMemcpyAsync(hlast.data(), d_logits, V * sizeof(__half),
                         cudaMemcpyDeviceToHost, stream);
+        cudaError_t le = cudaGetLastError();
+        if (le != cudaSuccess) return fail(le, "logits copy");
+        cudaEventRecord(t_stop, stream);
+        if (cudaEventSynchronize(t_stop) != cudaSuccess)
+            return fail(cudaGetLastError(), "logits fence");
         for (int i = 0; i < V; ++i) hlast_f[i] = __half2float(hlast[i]);
         result.final_logits = std::move(hlast_f);
     }
 
-    cudaEventRecord(t_stop, stream);
-    cudaEventSynchronize(t_stop);
     float ms_total = 0.0f, ms_ttft = 0.0f;
     cudaEventElapsedTime(&ms_total, t_start, t_stop);
     cudaEventElapsedTime(&ms_ttft, t_start, t_ttft);
@@ -1034,6 +1065,7 @@ cudaError_t RunQwenMoeGeneration(
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);
     result.resident_bytes = pw.resident_bytes + half_bytes + float_bytes +
+                            qpack_bytes + qscales_bytes +
                             sizeof(int32_t) + kv->Bytes();
     result.ok = true;
     return cudaSuccess;

@@ -205,6 +205,72 @@ float HostE4M3Scale(uint8_t e4m3)
 
 } // namespace
 
+// Decode-split router (stage-1 dots + stage-2 select) must produce
+// bit-identical slots to the prefill monolithic kernel for the same token:
+// both stage-1 dots and the monolithic row walk share one accumulation order.
+TEST_CASE("router decode-split matches prefill bit-exact", "[qwen-moe-router]")
+{
+    const int E = 32, K = 8, H = 256;
+    const int seq = 4;
+    std::vector<__nv_bfloat16> w(static_cast<size_t>(E) * H);
+    std::vector<__half> x(static_cast<size_t>(seq) * H);
+    for (size_t i = 0; i < w.size(); ++i)
+        w[i] = __float2bfloat16(((float)(i * 37 % 251) / 251.0f) - 0.5f);
+    for (size_t i = 0; i < x.size(); ++i)
+        x[i] = __float2half(sinf((float)i * 0.37f) * 0.5f +
+                            cosf((float)(i % 64) * 0.11f) * 0.2f);
+
+    __nv_bfloat16 *d_w;
+    __half *d_x;
+    lsxcommon::qwen_moe::QwenMoeRoutedSlot *d_slots_mono, *d_slots_split;
+    cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16));
+    cudaMalloc(&d_x, x.size() * sizeof(__half));
+    cudaMalloc(&d_slots_mono, sizeof(lsxcommon::qwen_moe::QwenMoeRoutedSlot) *
+                                  static_cast<size_t>(seq) * K);
+    cudaMalloc(&d_slots_split, sizeof(lsxcommon::qwen_moe::QwenMoeRoutedSlot) *
+                                   static_cast<size_t>(seq) * K);
+    cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16),
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half), cudaMemcpyHostToDevice);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    // Prefill: one monolithic launch over all tokens.
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRouterTopK(
+                stream, d_w, d_x, seq, E, K, H, d_slots_mono) == cudaSuccess);
+    // Decode: two-stage split, one token at a time.
+    for (int t = 0; t < seq; ++t) {
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRouterTopK(
+                    stream, d_w, d_x + static_cast<size_t>(t) * H, 1, E, K, H,
+                    d_slots_split + static_cast<size_t>(t) * K) == cudaSuccess);
+    }
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> mono(
+        static_cast<size_t>(seq) * K);
+    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> split(
+        static_cast<size_t>(seq) * K);
+    cudaMemcpy(mono.data(), d_slots_mono, mono.size() * sizeof(mono[0]),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(split.data(), d_slots_split, split.size() * sizeof(split[0]),
+               cudaMemcpyDeviceToHost);
+
+    for (int t = 0; t < seq; ++t) {
+        INFO("token " << t);
+        for (int k = 0; k < K; ++k) {
+            const auto &m = mono[static_cast<size_t>(t) * K + static_cast<size_t>(k)];
+            const auto &s = split[static_cast<size_t>(t) * K + static_cast<size_t>(k)];
+            CHECK(m.eid == s.eid);
+            CHECK(std::memcmp(&m.coeff, &s.coeff, sizeof(float)) == 0);
+        }
+    }
+
+    cudaFree(d_w); cudaFree(d_x);
+    cudaFree(d_slots_mono); cudaFree(d_slots_split);
+    cudaStreamDestroy(stream);
+}
+
 TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]")
 {
     namespace fs2 = std::filesystem;

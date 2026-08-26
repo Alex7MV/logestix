@@ -419,3 +419,4 @@ CMake-якоря:
 - The AI agent is the sole creator and editor of code files (`.cu`, `.cpp`, `.h`, `CMakeLists.txt`).
 - The operator manages the process exclusively through high-level prompts and changes to instruction files.
 - If manual code changes are detected outside AI sessions, perform a full diff audit and reconcile with the operator before proceeding.
+- **ЗАПРЕТ на параллельных/субагентов**: использование Task-субагентов (explore/general/parallel agents) запрещено — они допускают много ошибок. Все исследования кодовой базы, аудит и правки выполняются только основной сессией напрямую (Read/Grep/Edit/etc.).

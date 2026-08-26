@@ -767,14 +767,33 @@ __global__ void qwen_gated_delta_kernel(
 
 // ── Fused decoder (seq=1) full-attention segments ─────────────────────────
 // Stage 1: per-head q/k/v+gate (inline NVFP4 dequant to registers) + per-head
-// RMSNorm(q)/(k) + inline RoPE (rotate-half pairing, mirrors
-// partial_rope_kernel) + append k/v to persistent KV row kv_base.
+// RMSNorm(q)/(k) + inline RoPE (rotate-half pairing from PRECOMPUTED half
+// tables, bit-identical values to rope_cos_sin_kernel at seq==1) + append
+// k/v to persistent KV row kv_base. The old per-thread double pow/cos/sin ran
+// NH*HD transcendental evaluations per layer per token; the table variant
+// needs rotary_dim/2 once per token and matches the split path's numerics.
+__global__ void fused_rope_tables_kernel(__half *__restrict__ cos_buf,
+                                         __half *__restrict__ sin_buf,
+                                         int rotary_dim, double theta, int pos)
+{
+    const int64_t total = rotary_dim / 2;
+    for (int64_t idx = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         idx < total; idx += (int64_t)blockDim.x * gridDim.x) {
+        const double inv =
+            1.0 / std::pow(theta, (double)(2 * idx) / (double)rotary_dim);
+        const double ang = (double)pos * inv;
+        cos_buf[idx] = __float2half((float)std::cos(ang));
+        sin_buf[idx] = __float2half((float)std::sin(ang));
+    }
+}
+
 __global__ void fused_qkv_kernel(
     const __half* __restrict__ x,          // input token [H] (already input-normed)
     const QwenNvfp4Weight qw, const QwenNvfp4Weight kw, const QwenNvfp4Weight vw,
     const __half* __restrict__ q_norm, const __half* __restrict__ k_norm,
-    double theta, int rotary_dim, int kv_base,
+    int rotary_dim, int kv_base,
     int NH, int NKV, int HD, int H, float eps,
+    const __half* __restrict__ cos_buf, const __half* __restrict__ sin_buf,
     __half* __restrict__ kv_k, __half* __restrict__ kv_v,
     __half* __restrict__ q_gl, __half* __restrict__ gate_gl)
 {
@@ -830,13 +849,13 @@ __global__ void fused_qkv_kernel(
 
     // 3. inline RoPE (rotate-half pairing) on first rotary_dim dims.
     //    Each thread computes ONLY its own dim `d`, reading the partner from
-    //    the synced sq/sk staging (mirrors partial_rope_kernel).
+    //    the synced sq/sk staging and the half cos/sin tables (layout
+    //    [rotary_dim/2], entry j = pair index — mirrors partial_rope_kernel).
     sq[d] = qv; sk[d] = kv_; __syncthreads();
     if (d < rotary_dim) {
         const int half = rotary_dim / 2;
-        double inv = 1.0 / std::pow(theta, (double)(2*(d % half))/(double)rotary_dim);
-        double ang = (double)kv_base * inv;
-        const float c = (float)std::cos(ang), s = (float)std::sin(ang);
+        const float c = __half2float(cos_buf[d % half]);
+        const float s = __half2float(sin_buf[d % half]);
         if (d < half) {
             qv = sq[d]*c - sq[d+half]*s;      // role j,   out[j]   = x1*c - x2*s
             kv_ = sk[d]*c - sk[d+half]*s;
@@ -1475,18 +1494,31 @@ cudaError_t RunQwenFusedQkv(
         return cudaErrorInvalidValue;
     // Stream-ordered allocation: pool-backed, non-synchronizing (~1µs) — the
     // old cudaMalloc/cudaFree pair could implicitly synchronize the device
-    // and ran once per layer per token.
+    // and ran once per layer per token. One scratch block carries the input
+    // RMSNorm row [H] plus the rotary cos/sin tables [rotary_dim] (halves:
+    // [0, rot/2) = cos, [rot/2, rot) = sin).
+    const int half_rot = rotary_dim / 2;
     __half *d_tmp = nullptr;
-    if (cudaMallocAsync(&d_tmp, (size_t)H * 2, stream) != cudaSuccess)
+    if (cudaMallocAsync(&d_tmp, (static_cast<size_t>(H) + rotary_dim) * 2,
+                        stream) != cudaSuccess)
         return cudaErrorMemoryAllocation;
     const int th = std::min(H, 256);
     ::lsxcommon::kernels::RmsNormTreeKernel<__half, ::lsxcommon::kernels::NormWeight::Offset1PlusW><<<1, th, th * sizeof(float) + std::min(H * int(sizeof(__half)), 48 * 1024), stream>>>(
         x, input_norm, d_tmp, 1, H, (double)eps);
     cudaError_t e = cudaGetLastError();
+    if (!e && rotary_dim > 0) {
+        // Tables once per token (rotary_dim/2 entries) instead of NH*HD
+        // double-precision pow/cos/sin chains inside fused_qkv_kernel.
+        fused_rope_tables_kernel<<<(half_rot + 255) / 256, 256, 0, stream>>>(
+            d_tmp + H, d_tmp + H + half_rot, rotary_dim, theta,
+            /*pos=*/kv_base);
+        e = cudaGetLastError();
+    }
     if (!e) {
         fused_qkv_kernel<<<NH, HD, 0, stream>>>(
-            d_tmp, qw, kw, vw, q_norm, k_norm, theta, rotary_dim, kv_base,
-            NH, NKV, HD, H, eps, kv_k, kv_v, q_gl, gate_gl);
+            d_tmp, qw, kw, vw, q_norm, k_norm, rotary_dim, kv_base,
+            NH, NKV, HD, H, eps, d_tmp + H, d_tmp + H + half_rot,
+            kv_k, kv_v, q_gl, gate_gl);
         e = cudaGetLastError();
     }
     cudaFreeAsync(d_tmp, stream);

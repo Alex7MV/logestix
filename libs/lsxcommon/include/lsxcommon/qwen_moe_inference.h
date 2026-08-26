@@ -61,7 +61,9 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
                                 cudaEvent_t *ev_uploads = nullptr,
                                 cudaEvent_t ev_front = nullptr,
                                 const uint8_t *xq = nullptr,
-                                const uint8_t *xqs = nullptr);
+                                const uint8_t *xqs = nullptr,
+                                uint8_t *d_qpack_scratch = nullptr,
+                                uint8_t *d_qscales_scratch = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
