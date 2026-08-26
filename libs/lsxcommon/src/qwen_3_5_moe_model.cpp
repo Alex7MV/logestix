@@ -116,18 +116,75 @@ bool Qwen35MoeModel::Load()
     }
     log::info(absl::StrCat("[qwen-moe-model] expert store ",
                            MsSince(t_experts), " ms"));
-    // Cache slots: lifecycle-driven start value; bounded by expert count.
-    // LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides for VRAM sweeps (parity with
-    // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS); values < 1 keep the default bound.
-    int slots = static_cast<int>(experts_.num_layers * experts_.num_experts);
-    slots = std::min(slots, 512);  // VRAM-bounded default (~0.9 GB at 1.73 MB/expert)
+    // Cache residency: default to keeping EVERY routed expert device-
+    // resident. Full residency removes all per-token H2D staging stalls
+    // (measured 42 -> 66 tok/s on RTX 5090 / 35B-A3B); the LRU machinery
+    // remains as the graceful-degradation path for tight VRAM.
+    // Bound by free VRAM (dense weights are already uploaded at this
+    // point), reserving headroom for KV cache, activations and the TC
+    // workspace. LSX_QWEN_MOE_EXPERT_CACHE_SLOTS overrides explicitly
+    // (parity with LSX_DEEPSEEK_EXPERT_CACHE_SLOTS).
+    const int total_experts =
+        experts_.num_layers * experts_.num_experts;
+    int slots = total_experts;
+    bool explicit_slots = false;
     if (const char *env_slots = std::getenv("LSX_QWEN_MOE_EXPERT_CACHE_SLOTS")) {
         const int v = std::atoi(env_slots);
-        if (v > 0) slots = std::min(v, static_cast<int>(experts_.num_layers *
-                                                        experts_.num_experts));
+        if (v > 0) {
+            slots = std::min(v, total_experts);
+            explicit_slots = true;
+        }
+    }
+    if (!explicit_slots) {
+        size_t free_bytes = 0, total_bytes = 0;
+        if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
+            constexpr size_t kReserveBytes = size_t{6} << 30;
+            const size_t usable =
+                free_bytes > kReserveBytes ? free_bytes - kReserveBytes : 0;
+            // Worst-case per-expert device footprint mirrors the allocator's
+            // stride math (pack + scale, arena-aligned).
+            size_t max_pack = 0, max_scale = 0;
+            for (int l = 0; l < experts_.num_layers; ++l) {
+                for (const auto &r :
+                     experts_.records[static_cast<size_t>(l)]) {
+                    max_pack = std::max(
+                        max_pack,
+                        static_cast<size_t>(r.w1_bytes + r.w2_bytes +
+                                            r.w3_bytes));
+                    max_scale =
+                        std::max(max_scale,
+                                 static_cast<size_t>(r.s1_bytes + r.s2_bytes +
+                                                     r.s3_bytes));
+                }
+            }
+            constexpr size_t kArenaAlign = 256;
+            const auto align_up = [](size_t v) {
+                return (v + kArenaAlign - 1) & ~(kArenaAlign - 1);
+            };
+            const size_t per_expert =
+                align_up(max_pack) + align_up(max_scale);
+            if (per_expert > 0) {
+                size_t affordable = usable / per_expert;
+                if (affordable < static_cast<size_t>(total_experts))
+                    log::info(absl::StrCat(
+                        "[qwen-moe-model] VRAM allows ", affordable, "/",
+                        total_experts,
+                        " resident experts; LRU covers the rest"));
+                slots = static_cast<int>(std::min<size_t>(
+                    affordable, static_cast<size_t>(total_experts)));
+            }
+        }
     }
     if (slots <= 0) slots = 4;
-    if (!qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_, err)) {
+    // Shrink-retry so an optimistic estimate degrades instead of failing
+    // the lifecycle.
+    while (slots >= 4 &&
+           !qwen_moe::AllocateQwenMoeExpertCache(experts_, slots, cache_,
+                                                 err)) {
+        slots /= 2;
+        cache_ = {};
+    }
+    if (!cache_.d_base) {
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
         TeardownWeights();
         tok_db_.reset();
