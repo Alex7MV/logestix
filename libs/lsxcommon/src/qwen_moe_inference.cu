@@ -267,11 +267,31 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                           nullptr) != cudaSuccess) {
             { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
         }
-        ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
-            <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
-        if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1, I, H,
-                             false) != cudaSuccess)
-            { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
+        // TC: fuse the activation quant into swiglu so the down GEMM skips
+        // its ActQuant pass; scalar path keeps split swiglu + fp16 GEMM.
+        if (tc_fused) {
+            uint8_t *ap = nullptr, *as = nullptr;
+            if (cudaMallocAsync(&ap, static_cast<size_t>(I) / 2, stream) !=
+                    cudaSuccess ||
+                cudaMallocAsync(&as, static_cast<size_t>((I + 15) / 16),
+                                stream) != cudaSuccess)
+                { error = "w2 quant scratch failed"; return cudaErrorInvalidValue; }
+            cudaError_t qe = qwen::RunQwenSwigluPreciseQuantInternal(
+                stream, d_yg, d_yu, d_yg, ap, as, I);
+            if (qe == cudaSuccess)
+                qe = qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
+            cudaFreeAsync(ap, stream);
+            cudaFreeAsync(as, stream);
+            if (qe != cudaSuccess)
+                { error = "w2 prequant gemm failed"; return cudaErrorInvalidValue; }
+        } else {
+            ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
+                <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
+            if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
+                                       I, H, false) != cudaSuccess)
+                { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
+        }
         qwen_moe_coeff_add_kernel<<<EltGrid(H), kEltBlock, 0, stream>>>(
             d_y2, slot.coeff, d_acc, H);
     }

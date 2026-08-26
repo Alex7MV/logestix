@@ -221,6 +221,12 @@ cudaError_t RunQwenSwigluQuant(
     cudaStream_t stream, const __half *a, const __half *b, __half *y,
     uint8_t *packed, uint8_t *scales, int64_t n);
 
+// Internal: Precise-flavor producer-fused swiglu+quant (MoE routed path).
+cudaError_t RunQwenSwigluPreciseQuantInternal(cudaStream_t stream,
+                                              const __half *a, const __half *b,
+                                              __half *y, uint8_t *packed,
+                                              uint8_t *scales, int64_t n);
+
 // ── Generation ──────────────────────────────────────────────────────────────
 
 struct QwenGenerationResult {
