@@ -467,6 +467,10 @@ void QwenMoeExpertStore::Free()
     h_slabs.clear();
     slab_bytes.clear();
     records.clear();
+    if (d_seg_wgs) cudaFree(d_seg_wgs);
+    if (d_seg_bounds) cudaFree(d_seg_bounds);
+    d_seg_wgs = nullptr;
+    d_seg_bounds = nullptr;
     num_layers = 0;
     num_experts = 0;
 }
@@ -595,6 +599,30 @@ bool LoadQwenMoeExpertStore(const std::string &model_path,
         log::info(absl::StrCat("[qwen_moe_load] layer_", l, ": ", E,
                                " experts, ", total >> 10, " KiB pinned"));
     }
+
+    // Device-side per-expert {gs1, gs3} pairs for the fused w13 GEMM
+    // epilogue: the kernel treats a non-null seg_wgs with null bounds as a
+    // two-segment split at N/2 (gate | up).
+    const int flats = store.num_layers * store.num_experts;
+    if (flats > 0) {
+        std::vector<float> hw(static_cast<size_t>(flats) * 2);
+        for (int l = 0; l < store.num_layers; ++l)
+            for (int e = 0; e < store.num_experts; ++e) {
+                const auto &r =
+                    store.records[static_cast<size_t>(l)]
+                                 [static_cast<size_t>(e)];
+                hw[(static_cast<size_t>(l) * store.num_experts + e) * 2] =
+                    static_cast<float>(r.gs1);
+                hw[(static_cast<size_t>(l) * store.num_experts + e) * 2 + 1] =
+                    static_cast<float>(r.gs3);
+            }
+        if (cudaMalloc(&store.d_seg_wgs, hw.size() * sizeof(float)) !=
+            cudaSuccess)
+            return false;
+        if (cudaMemcpy(store.d_seg_wgs, hw.data(), hw.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) != cudaSuccess)
+            return false;
+    }
     return true;
 }
 
@@ -696,21 +724,39 @@ int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
         cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
     uint8_t *dst_scale =
         cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
-    // Packed w1|w2|w3 are contiguous inside the record; scales too.
-    const size_t pack_bytes =
-        static_cast<size_t>(r.w3_off + r.w3_bytes - r.w1_off);
-    const size_t scale_bytes = static_cast<size_t>(r.s1_bytes + r.s2_bytes +
-                                                   r.s3_bytes);
+    // Slot layout is FUSED for inference: [w13 = w1|w3][w2] and
+    // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
+    // per-segment global scales (RunQwenMoeRoutedFFN). The pinned slab keeps
+    // the on-disk order; only this staging reorder differs.
     cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
-    if (cudaMemcpyAsync(dst_pack, slab + r.w1_off, pack_bytes,
-                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
-        error = "expert H2D pack staging failed";
-        return -1;
+    uint8_t *pk = dst_pack;
+    struct PackSeg { int64_t off, bytes; };
+    const PackSeg psegs[3] = {{r.w1_off, r.w1_bytes},
+                              {r.w3_off, r.w3_bytes},
+                              {r.w2_off, r.w2_bytes}};
+    for (const auto &seg : psegs) {
+        if (cudaMemcpyAsync(pk, slab + seg.off,
+                            static_cast<size_t>(seg.bytes),
+                            cudaMemcpyHostToDevice,
+                            copy_stream) != cudaSuccess) {
+            error = "expert H2D pack staging failed";
+            return -1;
+        }
+        pk += seg.bytes;
     }
-    if (cudaMemcpyAsync(dst_scale, slab + r.s1_off, scale_bytes,
-                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
-        error = "expert H2D scale staging failed";
-        return -1;
+    uint8_t *sc = dst_scale;
+    const PackSeg ssegs[3] = {{r.s1_off, r.s1_bytes},
+                              {r.s3_off, r.s3_bytes},
+                              {r.s2_off, r.s2_bytes}};
+    for (const auto &seg : ssegs) {
+        if (cudaMemcpyAsync(sc, slab + seg.off,
+                            static_cast<size_t>(seg.bytes),
+                            cudaMemcpyHostToDevice,
+                            copy_stream) != cudaSuccess) {
+            error = "expert H2D scale staging failed";
+            return -1;
+        }
+        sc += seg.bytes;
     }
     return slot;
 }

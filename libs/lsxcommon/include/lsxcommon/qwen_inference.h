@@ -89,7 +89,11 @@ bool QwenTcFastMath();
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int seq, int K, int N, bool acc = false);
+    __half *y, int seq, int K, int N, bool acc = false,
+    // Optional per-segment global scales for the TC epilogue: two ranges
+    // split at N/2 when bounds is null, else four bounds-driven ranges.
+    // Ignored by the scalar fallback path.
+    const float *seg_wgs_dev = nullptr, const int *seg_bounds_dev = nullptr);
 
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate

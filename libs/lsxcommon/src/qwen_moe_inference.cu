@@ -46,11 +46,45 @@ __global__ void qwen_moe_router_topk_kernel(
     float *probs = sh + E;          // [E]
 
     for (int e = threadIdx.x; e < E; e += blockDim.x) {
-        float dot = 0.f;
-        for (int d = 0; d < H; ++d)
-            dot += __bfloat162float(proj[static_cast<int64_t>(e) * H + d]) *
-                   __half2float(xr[d]);
-        logits[e] = dot;
+        const __nv_bfloat16 *pr =
+            proj + static_cast<int64_t>(e) * H;
+        if ((H & 7) == 0 &&
+            ((reinterpret_cast<uintptr_t>(pr) |
+              reinterpret_cast<uintptr_t>(xr)) & 15) == 0) {
+            // Vectorized row walk: 8 independent accumulator chains cut the
+            // dependent-add latency chain of the scalar loop (~265us -> tens
+            // of us per token at E=256/H=2048). Fold order is fixed.
+            const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
+            const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
+            const int steps = H / 8;
+            float a0 = 0.f, a1 = 0.f, a2 = 0.f, a3 = 0.f;
+            float a4 = 0.f, a5 = 0.f, a6 = 0.f, a7 = 0.f;
+            for (int i = 0; i < steps; ++i) {
+                const uint4 pv = p4[i];
+                const uint4 xv = x4[i];
+                const __nv_bfloat16 *pb =
+                    reinterpret_cast<const __nv_bfloat16 *>(&pv);
+                const __half *xb = reinterpret_cast<const __half *>(&xv);
+                float f0 = __bfloat162float(pb[0]) * __half2float(xb[0]);
+                float f1 = __bfloat162float(pb[1]) * __half2float(xb[1]);
+                float f2 = __bfloat162float(pb[2]) * __half2float(xb[2]);
+                float f3 = __bfloat162float(pb[3]) * __half2float(xb[3]);
+                float f4 = __bfloat162float(pb[4]) * __half2float(xb[4]);
+                float f5 = __bfloat162float(pb[5]) * __half2float(xb[5]);
+                float f6 = __bfloat162float(pb[6]) * __half2float(xb[6]);
+                float f7 = __bfloat162float(pb[7]) * __half2float(xb[7]);
+                a0 += f0; a1 += f1; a2 += f2; a3 += f3;
+                a4 += f4; a5 += f5; a6 += f6; a7 += f7;
+            }
+            logits[e] = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+        } else {
+            float dot = 0.f;
+            for (int d = 0; d < H; ++d)
+                dot += __bfloat162float(
+                           proj[static_cast<int64_t>(e) * H + d]) *
+                       __half2float(xr[d]);
+            logits[e] = dot;
+        }
     }
     __syncthreads();
 
@@ -187,26 +221,51 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             cache.d_pack + static_cast<int64_t>(dev_slot) * cache.pack_stride;
         uint8_t *scale =
             cache.d_scale + static_cast<int64_t>(dev_slot) * cache.scale_stride;
-        // Slot layout mirrors the record: w1|w2|w3 packed, then s1|s2|s3.
-        const uint8_t *w1 = pack;
-        const uint8_t *w2 = pack + rec.w1_bytes;
-        const uint8_t *w3 = pack + rec.w1_bytes + rec.w2_bytes;
-        const uint8_t *s1 = scale;
-        const uint8_t *s2 = scale + rec.s1_bytes;
-        const uint8_t *s3 = scale + rec.s1_bytes + rec.s2_bytes;
+        // Slot layout is STAGED FUSED: [w13 = w1|w3][w2] packed,
+        // [s13 = s1|s3][s2] scales (see EnsureQwenMoeExpertResident). Gate
+        // and up run as ONE GEMM over N=2I; per-segment global scales
+        // {gs1 | gs3} split at N/2 inside the kernel epilogue.
+        const uint8_t *w13 = pack;
+        const uint8_t *w2 = pack + rec.w1_bytes + rec.w3_bytes;
+        const uint8_t *s13 = scale;
+        const uint8_t *s2 = scale + rec.s1_bytes + rec.s3_bytes;
+        const float *seg_wgs =
+            store.d_seg_wgs
+                ? store.d_seg_wgs +
+                      (static_cast<int64_t>(layer) * store.num_experts +
+                       slot.eid) *
+                          2
+                : nullptr;
 
         if (copy_stream && missed[k]) {
             cudaError_t e = cudaStreamWaitEvent(stream, ev_uploads[k], 0);
             if (e != cudaSuccess) return e;
         }
 
-        // y_g = w1 . x   [I,H]; y_u = w3 . x; y_2 = w2 . silu(y_g)*y_u   [H,I]
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1, H, I,
-                             false) != cudaSuccess)
-            { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1, H, I,
-                             false) != cudaSuccess)
-            { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
+        // y_g|y_u = [w1; w3] . x   [2I,H]; then y_2 = w2 . silu(y_g)*y_u.
+        // Fused single-GEMM form requires the TC epilogue for per-segment
+        // scales; the scalar path ignores them, so it keeps the split pair.
+        const bool tc_fused =
+            qwen::QwenTcFastMath() && store.d_seg_wgs != nullptr &&
+            (I & 15) == 0;
+        const uint8_t *w1_split = pack;
+        const uint8_t *w3_split = pack + rec.w1_bytes;
+        const uint8_t *s1_split = scale;
+        const uint8_t *s3_split = scale + rec.s1_bytes;
+        if (!tc_fused) {
+            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1_split, s1_split,
+                                       rec.gs1, d_yg, 1, H, I,
+                                       false) != cudaSuccess)
+                { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
+            if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3_split, s3_split,
+                                       rec.gs3, d_yu, 1, H, I,
+                                       false) != cudaSuccess)
+                { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
+        } else if (qwen::RunQwenNvfp4Gemm(stream, d_x, w13, s13, 1.0f, d_yg,
+                                          1, H, 2 * I, false, seg_wgs,
+                                          nullptr) != cudaSuccess) {
+            { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
+        }
         ::lsxcommon::kernels::SwigluKernel<__half, ::lsxcommon::kernels::ExpFlavor::Precise, false>
             <<<EltGrid(I), kEltBlock, 0, stream>>>(d_yg, d_yu, d_yg, I, 0.f);
         if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1, I, H,

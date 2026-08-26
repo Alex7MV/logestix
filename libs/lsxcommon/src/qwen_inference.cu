@@ -1482,7 +1482,8 @@ cudaError_t RunQwenFusedOProj(
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int seq, int K, int N, bool acc /* = false */)
+    __half *y, int seq, int K, int N, bool acc /* = false */,
+    const float *seg_wgs_dev, const int *seg_bounds_dev)
 {
     if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
@@ -1493,7 +1494,8 @@ cudaError_t RunQwenNvfp4Gemm(
     if (g_qwen_tc_fast_math.load(std::memory_order_relaxed) &&
         (K & 15) == 0 && N >= 8 && K >= 64) {
         const cudaError_t tc = qwen::tc::RunQwenTcNvfp4Gemm(
-            stream, x, packed, scales, global_scale, y, seq, K, N, acc);
+            stream, x, packed, scales, global_scale, y, seq, K, N, acc,
+            seg_wgs_dev, seg_bounds_dev);
         if (tc != cudaErrorNotSupported && tc != cudaErrorInvalidValue)
             return tc;
     }

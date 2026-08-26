@@ -399,6 +399,10 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     auto seg_scale = [&](int col) {
         if (!seg_wgs) return wgs;
+        if (!seg_bounds) {
+            // Two-segment split at N/2 (fused gate|up projections).
+            return col < N / 2 ? seg_wgs[0] : seg_wgs[1];
+        }
         if (col < seg_bounds[0]) return seg_wgs[0];
         if (col < seg_bounds[1]) return seg_wgs[1];
         if (col < seg_bounds[2]) return seg_wgs[2];
@@ -672,11 +676,16 @@ __global__ void TcSplitKFinalize(const float *__restrict__ partials,
     float ws = wgs;
     if (seg_wgs) {
         const int col = static_cast<int>(i % N);
-        ws = (col < seg_bounds[0])
-                 ? seg_wgs[0]
-                 : (col < seg_bounds[1])
-                       ? seg_wgs[1]
-                       : (col < seg_bounds[2]) ? seg_wgs[2] : seg_wgs[3];
+        if (!seg_bounds) {
+            ws = col < N / 2 ? seg_wgs[0] : seg_wgs[1];
+        } else {
+            ws = (col < seg_bounds[0])
+                     ? seg_wgs[0]
+                     : (col < seg_bounds[1])
+                           ? seg_wgs[1]
+                           : (col < seg_bounds[2]) ? seg_wgs[2]
+                                                   : seg_wgs[3];
+        }
     }
     const float prev = acc ? __half2float(y[i]) : 0.f;
     y[i] = __float2half(prev + sum * ws);
