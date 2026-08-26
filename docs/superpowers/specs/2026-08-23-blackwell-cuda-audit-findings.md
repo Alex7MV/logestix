@@ -664,3 +664,16 @@ N=704, and W4A4 numerics move gemma's top-1. Reverted.
 
 If revisited: needs a grouped/batched expert GEMM (all top-K experts in one
 launch over gathered rows) plus a quality audit; not a drop-in swap.
+
+### Session addendum (2026-08-26): clean-HEAD measurement discipline
+
+After heavy file checkouts the incremental ninja build silently served a
+stale binary: "72 tok/s garbage" readings were an artifact. Full rebuild on
+clean HEAD: **38.7 tok/s**, " Paris..." correct, 107/107 tests.
+RULE: after any git checkout of sources, touch + full rebuild before
+measuring; never trust perf numbers across binary/staleness boundaries.
+
+Batched expert execution prototype was lost in the same checkout churn;
+re-implement on this clean base next session (design is documented above:
+grouped TC GEMM via grid.z groups + strides, gather kernel, flat-indexed
+batched swiglu-quant, serial-order weighted sum).
