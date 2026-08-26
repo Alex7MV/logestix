@@ -3,7 +3,8 @@
 // runtime act-quant kernel (qwen_tc_gemm.cu) and the TC test host reference.
 // Semantics: exponent rounds UP (ceil) so the block maximum never saturates;
 // exact powers of two map onto themselves. Header-only, CUDA-free, safe to
-// include from non-CUDA TUs.
+// include from non-CUDA TUs. Decode must stay in sync with
+// nvfp4_codec.h E4M3ScaleToFloat (CUDA-TU counterpart).
 #pragma once
 
 #include <cstdint>
@@ -38,10 +39,15 @@ LSX_NVFP4_SCALE_HD inline uint8_t FloatToE4m3P2(float s)
     return static_cast<uint8_t>(static_cast<uint8_t>(e4) << 3);
 }
 
-// Exact inverse of FloatToE4m3P2: byte -> 2^(e4-7); 0 -> 0.0f.
+// Exact inverse of FloatToE4m3P2: byte -> 2^(e4-7). The ZERO test is on the
+// e4 FIELD, not the whole byte: bytes 0x80..0x87 carry a zero exponent field
+// and decode to exactly 0 (per E4M3 semantics they would be -0/negative
+// subnormals — never legitimate scale factors). Decoding them as 2^-7 via a
+// whole-byte zero check silently corrupts GEMMs whose stored scale patterns
+// contain such bytes (pinned by tests/test_qwen_nvfp4_tile_gemm.cu).
 LSX_NVFP4_SCALE_HD inline float E4m3P2ToFloat(uint8_t e4m3)
 {
-    if (e4m3 == 0) return 0.0f;
+    if (((e4m3 >> 3) & 0x0F) == 0) return 0.0f;
     const int exp_unb = static_cast<int>((e4m3 >> 3) & 0x0F) - 7;
     const uint32_t bits = static_cast<uint32_t>(exp_unb + 127) << 23;
     float f;
