@@ -867,3 +867,61 @@ Interleaved 64-token A/B (release): default 12.9-13.7 vs gemv-experts
 the submission reduction. Absolute tok/s drifts +-20% between sessions on
 this WDDM box; only interleaved same-session comparisons are meaningful.
 Selfcheck x3 green under the flag.
+
+
+### Round 20c — FIXED NEXT STEP: CUDA Graph around the per-layer FFN section
+Preconditions (reuse no-handshake readiness): `QwenMoeGemvNohandshake(store)`
+true AND `LSX_GRAPH_FFN=1`. Both features stay latent on boxes where VRAM
+forces partial residency (this Windows card); engage properly on the
+Linux/5090 full-residency config.
+
+Capture protocol:
+1. Warm-up step must complete through the LEGACY/batched flow so cache
+   fills and all LRU state settles; engagement is evaluated per layer on
+   the SECOND clean pass.
+2. For layer l capture once at first engaged pass: nodes = gather-table ->
+   w13 GEMV batch -> swiglu -> down GEMV batch -> coeff-reduce ->
+   SharedCombine (incl its fused shared weights built before capture).
+   Pointers are session-stable (arena slices round-20b; weights static).
+3. Replay = one cudaGraphLaunch per layer; NO dynamic scalars inside
+   (routed FFN section carries none -- kv_base lives in attention only).
+4. Invalidation: if any miss occurs later (impossible when
+   cache.slots >= total_experts), fall back to chain launch and mark
+   graphs dirty; rebuild after next clean full pass.
+
+Measurement protocol (WDDM box):
+- WALL tok/s: only interleaved same-session comparisons, >= 3 alternations;
+  absolute values drift +-20% between sessions.
+- GPU budget: LSX_AUDIT_STAGES replay averages (stable across sessions);
+  report avg_step_ms per config plus share table.
+
+Acceptance for graphs: audited GPU-step unchanged (numerics bit-identical)
+AND wall tok/s improves >= 10% interleaved on the full-residency box, else
+park like batched experiments.
+
+
+### Round 20d — measurement session results (audit v2: per-round fenced)
+Fixed audit methodology: accumulate event pairs immediately after a
+per-round stream fence (previously reused events were re-recorded before
+readout, scrambling cross-round spans -- head segment showed impossible
+3.6 TB/s). Head now validates against [MICRO][lm_head]: 1.73 ms == 1693 us.
+
+GPU-timeline per decode step (includes ALL submission gaps):
+  default TC    : 40.4 ms/step   share% ff 68.5 | lin-attn 20.6 | full-attn 6.5 | head 4.3
+  gemv-batched  : 42.9 ms/step   share% ffn 74.3 | lin-attn 15.8 | full-attn 5.8 | head 4.0
+Head 272.8 MB @ ~430 GB/s effective (1.7 ms) is near the DRAM roof and
+identical both paths. Estimated pure-kernel compute <= ~8 ms/step; the
+remaining ~32+ ms are submission/fence stalls (WDDM).
+
+WALL interleaved x3 (128 tok): default avg 20.5 tok/s (ttft 508-576ms)
+vs gemv-batched avg 20.8 (+1.5%, within noise). Conclusion unchanged and
+now NUMERICALLY pinned: kernel-level wins cannot move this box until
+submission overhead dies. Phase-B graphs targeting ~35 ms/step of stalls
+is the single highest-leverage item; on native-Linux stacks expect the
+stall fraction materially smaller -- measure there first.
+
+Priorities ladder (post-measurement):
+  P0 (any stack): verify no-handshake/graphs on Linux full-residency.
+  P1 (this stack): CUDA Graph per-layer FFN (round-20c protocol).
+  P2: fuse linear-attn epilogues (lin-attn is 20% of GPU budget, biggest
+      single non-FFN slice; one fused decode kernel could halve it).

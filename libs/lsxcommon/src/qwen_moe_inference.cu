@@ -1549,6 +1549,8 @@ cudaError_t RunQwenMoeGeneration(
         const int nseg = static_cast<int>(nlayers) * 2 + 2;
         std::vector<cudaEvent_t> aev(static_cast<size_t>(nseg) + 1);
         for (auto &ev : aev) cudaEventCreate(&ev);
+        std::vector<double> seg_acc(nseg, 0.0);
+        int rounds_done = 0;
 
         // Routing snapshot for the audited step (previous sampler fence has
         // already synchronized this stream).
@@ -1609,17 +1611,25 @@ cudaError_t RunQwenMoeGeneration(
                                    pw.head.d_scales, pw.head.global_scale,
                                    d_logits, 1, H, V, false);
             stamp();       // tail segment: final norm + head GEMM
+            // Accumulate this round's pairs NOW (events are reused next
+            // round; without a fence their timestamps would be reset before
+            // reading, scrambling cross-round spans).
+            if (cudaStreamSynchronize(stream) == cudaSuccess) {
+                for (int i = 0; i < nseg; ++i) {
+                    float ms = -1.0f;
+                    if (cudaEventElapsedTime(&ms, aev[i], aev[i + 1]) ==
+                        cudaSuccess)
+                        seg_acc[i] += ms;
+                }
+                ++rounds_done;
+            }
         }
         const cudaError_t aerr = cudaStreamSynchronize(stream);
         std::vector<double> seg(nseg);
         double total = 0.0;
         if (aerr == cudaSuccess) {
-            for (int i = 0; i < nseg; ++i) {
-                float ms = -1.0f;
-                if (cudaEventElapsedTime(&ms, aev[i], aev[i + 1]) ==
-                    cudaSuccess)
-                    seg[i] = ms;
-            }
+            const double kR = rounds_done > 0 ? rounds_done : 1;
+            for (int i = 0; i < nseg; ++i) seg[i] = seg_acc[i] / kR;
             // Layout with leading t0 stamp: seg0=embed, seg(1+2l)=attn_l,
             // seg(2+2l)=ffn_l, seg(nseg-1)=final norm + head GEMM.
             double emb = seg[0], attnF = 0.0, attnL = 0.0, ffn = 0.0;
@@ -1637,7 +1647,7 @@ cudaError_t RunQwenMoeGeneration(
                         "[AUDIT] rounds=%d avg_step_ms=%.3f share%% "
                         "embed=%.1f attn_full=%.1f attn_linear=%.1f "
                         "ffn=%.1f head=%.1f\n",
-                        kAuditRounds, total / kAuditRounds,
+                        rounds_done, total,
                         100.0 * emb / total, 100.0 * attnF / total,
                         100.0 * attnL / total, 100.0 * ffn / total,
                         100.0 * headm / total);
