@@ -979,3 +979,10 @@ replay stage auditor, gemma GEMV experiment. All suites green locally;
 default production routing bit-unchanged everywhere. Deferred to Linux/
 5090: no-handshake + graphs validation (round-20c acceptance >= 10% wall),
 gemma numeric-class resolution, linear-attn fusion (P2).
+
+Windows regression gate (final, 2026-08-27, windows-release): PASS --
+micro_gemm, moe_kernels, moe_model, moe_selfcheck(x3), nvfp4_dense,
+nvfp4_gemv(36 cases), nvfp4_tile_gemm. Default routing bit-unchanged
+(all experimental paths env/opt-in gated). Branch ready for merge;
+acceptance metrics for no-handshake/graphs/gemma numerics to be collected
+on the Linux full-residency stack per round 20c/21 protocols.
