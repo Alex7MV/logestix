@@ -53,7 +53,7 @@ TEST_CASE("harness smoke", "[lsxk]") {
 // ── Task 2: quant cluster references (verbatim ports) ──────────────────────
 namespace ref {
 
-// Elementwise NVFP4 dequant, kimi_inference.cu body, __half output.
+// Elementwise NVFP4 dequant, kimi_moe_inference.cu body, __half output.
 __global__ void nvfp4_dequant_half(const uint8_t* __restrict__ packed,
                                    const uint8_t* __restrict__ scales,
                                    float global_scale, __half* __restrict__ out,
@@ -67,7 +67,7 @@ __global__ void nvfp4_dequant_half(const uint8_t* __restrict__ packed,
                           global_scale);
 }
 
-// gemma_inference.cu body: bf16 via __float2bfloat16_rn.
+// gemma_moe_inference.cu body: bf16 via __float2bfloat16_rn.
 __global__ void nvfp4_dequant_bf16(const uint8_t* __restrict__ packed,
                                    const uint8_t* __restrict__ scales,
                                    float global_scale,
@@ -226,7 +226,7 @@ __global__ void add_half(const __half* __restrict__ src,
     dst[idx] = __float2half(__half2float(dst[idx]) + __half2float(src[idx]));
 }
 
-// glm_inference.cu GlmEmbedKernel verbatim.
+// glm_moe_inference.cu GlmEmbedKernel verbatim.
 __global__ void embed_half(const __half* __restrict__ embed,
                            const int32_t* __restrict__ ids,
                            __half* __restrict__ out, int seq, int hidden) {
@@ -325,7 +325,7 @@ __global__ void swiglu_div_precise(const __half* __restrict__ g,
     y[i] = __float2half(gv / (1.f + expf(-gv)) * __half2float(u[i]));
 }
 
-// glm_inference.cu GlmSwigluClampKernel verbatim (Glibc + clamp).
+// glm_moe_inference.cu GlmSwigluClampKernel verbatim (Glibc + clamp).
 __global__ void swiglu_glibc_clamp(__half* __restrict__ gate,
                                    const __half* __restrict__ up,
                                    int n, float limit) {

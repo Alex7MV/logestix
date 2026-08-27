@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include "lsxcommon/gemma4_inference.h"
-#include "lsxcommon/gemma4_inference_load.h"
+#include "lsxcommon/gemma_moe_inference.h"
+#include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/model_base.h"
 #include "lsxcommon/prompt_framing.h"
 

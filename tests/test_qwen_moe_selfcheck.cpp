@@ -15,7 +15,7 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
 
-#include "qwen_3_5_moe_model.h"
+#include "qwen_moe_model.h"
 
 namespace {
 

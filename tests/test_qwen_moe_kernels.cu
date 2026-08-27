@@ -178,7 +178,7 @@ TEST_CASE("router top-k matches host replica", "[qwen-moe-router]")
 }
 
 #include "qwen_moe_test_fixture.h"
-#include "lsxcommon/qwen_moe_inference_load.h"
+#include "lsxcommon/qwen_moe_load.h"
 
 namespace {
 

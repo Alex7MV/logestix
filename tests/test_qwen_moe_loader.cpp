@@ -1,7 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "qwen_moe_test_fixture.h"
-#include "lsxcommon/qwen_moe_inference_load.h"
+#include "lsxcommon/qwen_moe_load.h"
 
 #include <cuda_runtime.h>
 

@@ -11,7 +11,7 @@
 
 #include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/qwen_inference.h"
-#include "lsxcommon/qwen_moe_inference_load.h"
+#include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/qwen_tc_gemm.h"
 #include "nvfp4_codec.h"
@@ -33,7 +33,7 @@ constexpr int kMaxTopK = 16;
 
 // ── Router ────────────────────────────────────────────────────────────────
 
-// Gemma-router etalon structure (gemma_inference.cu): one block per token,
+// Gemma-router etalon structure (gemma_moe_inference.cu): one block per token,
 // cooperative logits, thread-0 selection. Dynamic smem holds logits[E] and
 // probs[E] so E up to 256 is supported.
 // Shared router row-dot: ONE accumulation order for every caller

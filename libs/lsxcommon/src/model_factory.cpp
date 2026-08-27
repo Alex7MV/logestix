@@ -6,7 +6,7 @@
 
 #include "lsxcommon/log.h"
 
-#include "deepseek_inference_load.cuh"
+#include "deepseek_moe_load.cuh"
 
 namespace lsxcommon {
 

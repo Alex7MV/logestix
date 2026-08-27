@@ -16,7 +16,7 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
-#include "glm_device_math.h"
+#include "glm_moe_device_math.h"
 
 namespace lsxcommon {
 namespace kernels {

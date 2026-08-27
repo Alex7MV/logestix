@@ -2,11 +2,11 @@
 
 // Shared fixture builder for Qwen3.5-35B-A3B MoE converter / loader / kernel
 // tests. Builds a synthetic qwen3_5_moe safetensors model directory on disk.
-// Attention geometry mirrors qwentest (qwen_test_fixture.h) exactly so the
+// Attention geometry mirrors qwentest (qwen_dense_test_fixture.h) exactly so the
 // dense-part arrow records stay schema-compatible; adds the MoE block
 // (router / fused experts / shared expert) present in every layer.
 
-#include "qwen_test_fixture.h"
+#include "qwen_dense_test_fixture.h"
 
 #include <cstdlib>
 #include <filesystem>

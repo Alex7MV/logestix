@@ -17,19 +17,19 @@ add_library(lsxcommon STATIC
     src/converter.cpp
     src/core.cpp
     src/common.cpp
-    src/deepseek_v4_flash_model.cpp
+    src/deepseek_moe_model.cpp
     src/benchmark_gpu.cpp
     src/generation_cli.cpp
-    src/glm_convert.cpp
-    src/kimi_convert.cpp
-    src/kimi_inference_load.cpp
-    src/kimi_v5_model.cpp
-    src/glm_inference_load.cpp
-    src/glm_v5_model.cpp
-    src/gemma4_convert.cpp
-    src/gemma4_inference_load.cpp
+    src/glm_moe_convert.cpp
+    src/kimi_moe_convert.cpp
+    src/kimi_moe_load.cpp
+    src/kimi_moe_model.cpp
+    src/glm_moe_load.cpp
+    src/glm_moe_model.cpp
+    src/gemma_moe_convert.cpp
+    src/gemma_moe_load.cpp
     src/gemma_base_model.cpp
-    src/gemma_4_26b_a4b_model.cpp
+    src/gemma_moe_model.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp
@@ -42,13 +42,13 @@ add_library(lsxcommon STATIC
     src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp
     src/pretokenizer.cpp
-    src/qwen_3_8_27b_model.cpp
-    src/qwen_3_5_moe_model.cpp
-    src/qwen_convert.cpp
+    src/qwen_dense_27b_model.cpp
+    src/qwen_moe_model.cpp
+    src/qwen_dense_convert.cpp
     src/qwen_moe_convert.cpp
-    src/qwen_moe_inference_load.cpp
+    src/qwen_moe_load.cpp
     src/qwen_inference_load.cpp
-    src/qwen_v5_model.cpp
+    src/qwen_dense_model.cpp
     src/qwen_base_model.cpp
     src/resource_governor.cpp
     src/runtime_tuner.cpp
@@ -103,14 +103,14 @@ set(LSXCOMMON_CU_DEFS
 add_library(lsxcommon_cu OBJECT
     src/safetensors_gpu.cu
     src/benchmark_gpu.cu
-    src/deepseek_inference_load.cu
-    src/deepseek_inference_moe.cu
-    src/deepseek_inference_head.cu
-    src/deepseek_inference_attn.cu
-    src/deepseek_inference_csa.cu
-    src/deepseek_inference_pipeline.cu
+    src/deepseek_moe_load.cu
+    src/deepseek_moe_inference_moe.cu
+    src/deepseek_moe_inference_head.cu
+    src/deepseek_moe_inference_attn.cu
+    src/deepseek_moe_inference_csa.cu
+    src/deepseek_moe_inference_pipeline.cu
     src/bf16_convert.cu
-    src/deepseek_norm_kernels.cu
+    src/deepseek_moe_norm_kernels.cu
     src/shared_experts.cu
     src/sampling.cu
 )
@@ -135,8 +135,8 @@ target_link_libraries(lsxcommon_cu
 )
 
 add_library(lsxcommon_glm_cu OBJECT
-    src/glm_inference.cu
-    src/glm_inference_load.cu
+    src/glm_moe_inference.cu
+    src/glm_moe_load.cu
 )
 set_target_properties(lsxcommon_glm_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
@@ -231,7 +231,7 @@ target_link_libraries(lsxcommon_qwen_tc_cu
 )
 
 add_library(lsxcommon_kimi_cu OBJECT
-    src/kimi_inference.cu
+    src/kimi_moe_inference.cu
 )
 set_target_properties(lsxcommon_kimi_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
@@ -252,7 +252,7 @@ target_link_libraries(lsxcommon_kimi_cu
 )
 
 add_library(lsxcommon_gemma_cu OBJECT
-    src/gemma_inference.cu
+    src/gemma_moe_inference.cu
 )
 set_target_properties(lsxcommon_gemma_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

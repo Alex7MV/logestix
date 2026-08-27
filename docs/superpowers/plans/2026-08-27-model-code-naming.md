@@ -86,7 +86,7 @@ kimi_test_fixture.h|kimi_moe_test_fixture.h
 gemma4_test_fixture.h|gemma_moe_test_fixture.h
 qwen_test_fixture.h|qwen_dense_test_fixture.h
 test_glm_attention.cpp|test_glm_moe_attention.cpp
-test_glm_compute.cpp|test_glm_moe_compute.cpp
+test_glm_compute.cpp|test_glm_moe_layer_compute.cpp
 test_glm_convert.cpp|test_glm_moe_convert.cpp
 test_glm_dense_compute.cpp|test_glm_moe_dense_compute.cpp
 test_glm_expert_cache.cpp|test_glm_moe_expert_cache.cpp
@@ -389,7 +389,7 @@ kimi_test_fixture.h|kimi_moe_test_fixture.h
 gemma4_test_fixture.h|gemma_moe_test_fixture.h
 qwen_test_fixture.h|qwen_dense_test_fixture.h
 test_glm_attention.cpp|test_glm_moe_attention.cpp
-test_glm_compute.cpp|test_glm_moe_compute.cpp
+test_glm_compute.cpp|test_glm_moe_layer_compute.cpp
 test_glm_convert.cpp|test_glm_moe_convert.cpp
 test_glm_dense_compute.cpp|test_glm_moe_dense_compute.cpp
 test_glm_expert_cache.cpp|test_glm_moe_expert_cache.cpp

@@ -9,11 +9,11 @@
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer.h"
-#include "lsxcommon/gemma4_convert.h"
+#include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
-#include "lsxcommon/glm_convert.h"
-#include "lsxcommon/kimi_convert.h"
-#include "lsxcommon/qwen_convert.h"
+#include "lsxcommon/glm_moe_convert.h"
+#include "lsxcommon/kimi_moe_convert.h"
+#include "lsxcommon/qwen_dense_convert.h"
 #include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <fstream>

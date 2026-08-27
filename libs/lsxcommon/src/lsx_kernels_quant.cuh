@@ -1,9 +1,9 @@
 // lsx_kernels_quant.cuh — unified quantization device kernels (Phase A).
 //
 // Single textual source for the NVFP4/F8 elementwise codecs previously
-// duplicated across shared_experts.cu / gemma_inference.cu / kimi_inference.cu
-// / glm_inference_load.cu / benchmark_gpu.cu / safetensors_gpu.cu /
-// deepseek_inference_attn.cu.
+// duplicated across shared_experts.cu / gemma_moe_inference.cu / kimi_moe_inference.cu
+// / glm_moe_load.cu / benchmark_gpu.cu / safetensors_gpu.cu /
+// deepseek_moe_inference_attn.cu.
 //
 // Byte-equality contracts preserved:
 //   - dequant: canonical nvfp4_codec decode; OutT cast per former site

@@ -4,7 +4,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_convert.h"
-#include "qwen_3_5_moe_model.h"
+#include "qwen_moe_model.h"
 #include "lsxcommon/lifecycle_strategy.h"
 
 #include <cstdlib>

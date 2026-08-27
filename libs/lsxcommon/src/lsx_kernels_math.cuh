@@ -1,6 +1,6 @@
 // lsx_kernels_math.cuh — unified elementwise math kernels (Phase A).
 // Replaces per-model add/convert/embed copies in qwen_inference.cu,
-// qwen_moe_inference.cu, glm_inference.cu, kimi_inference.cu and the
+// qwen_moe_inference.cu, glm_moe_inference.cu, kimi_moe_inference.cu and the
 // deepseek pipeline. Arithmetic in FP32 via explicit intrinsics
 // (fmad-flag independent); output rounding per CastOut.
 #pragma once

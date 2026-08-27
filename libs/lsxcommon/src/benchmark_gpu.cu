@@ -1,7 +1,7 @@
 #include "lsxcommon/benchmark_gpu.h"
 #include "lsxcommon/schema.h"
 #include "lsxcommon/converter.h"
-#include "deepseek_inference_load.cuh"
+#include "deepseek_moe_load.cuh"
 #include "nvfp4_codec.h"
 
 #include <cuda_runtime.h>
@@ -28,7 +28,7 @@ namespace gpu {
 
 // The legacy ping-pong expert benchmark was superseded by IModel::Benchmark
 // (see benchmark_gpu.cpp shim). Its NVFP4 dequant kernel and the dead extern
-// declarations in deepseek_inference_pipeline.cu / deepseek_inference_moe.cu
+// declarations in deepseek_moe_inference_pipeline.cu / deepseek_moe_inference_moe.cu
 // were removed in the Phase-A unification; elementwise NVFP4 dequant lives in
 // lsx_kernels_quant.cuh (Nvfp4DequantKernel).
 

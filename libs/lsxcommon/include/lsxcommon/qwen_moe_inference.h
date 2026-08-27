@@ -10,7 +10,7 @@
 
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
-#include "lsxcommon/qwen_moe_inference_load.h"
+#include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 
@@ -119,7 +119,7 @@ cudaError_t RunQwenMoeRoutedGemmVBatchCore(
     __half *ygu, __half *hbuf, __half *ypart, float *acc);
 
 // Per-expert static device meta for no-handshake decode: definition lives
-// in qwen_moe_inference_load.h (owned by QwenMoeExpertStore).
+// in qwen_moe_load.h (owned by QwenMoeExpertStore).
 
 // Composes the batch GEMV slot table from device-side routing results:
 // tbl[k] = {meta[d_slots[k].eid].*, coeff = d_slots[k].coeff}. Used by the

@@ -1,7 +1,7 @@
 // lsx_kernels_act.cuh — unified SwiGLU activation kernels (Phase A).
-// Replaces per-model copies in qwen_moe_inference.cu, kimi_inference.cu,
-// deepseek_inference_moe.cu (swiglu_clamp / swiglu_clamp_f32f),
-// glm_inference.cu (GlmSwigluClampKernel) and glm_expert_kernels.cuh
+// Replaces per-model copies in qwen_moe_inference.cu, kimi_moe_inference.cu,
+// deepseek_moe_inference_moe.cu (swiglu_clamp / swiglu_clamp_f32f),
+// glm_moe_inference.cu (GlmSwigluClampKernel) and glm_moe_expert_kernels.cuh
 // (GlmRealSwigluKernel).
 //
 // Canonical form: out = clamp(g) * sigmoid(clamp(g)) * clamp(u), where the

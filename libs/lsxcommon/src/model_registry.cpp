@@ -1,12 +1,12 @@
 #include "lsxcommon/model_factory.h"
 
-#include "deepseek_v4_flash_model.h"
-#include "gemma_4_26b_a4b_model.h"
-#include "glm_v5_model.h"
-#include "kimi_v5_model.h"
-#include "qwen_v5_model.h"
-#include "qwen_3_8_27b_model.h"
-#include "qwen_3_5_moe_model.h"
+#include "deepseek_moe_model.h"
+#include "gemma_moe_model.h"
+#include "glm_moe_model.h"
+#include "kimi_moe_model.h"
+#include "qwen_dense_model.h"
+#include "qwen_dense_27b_model.h"
+#include "qwen_moe_model.h"
 
 namespace lsxcommon {
 

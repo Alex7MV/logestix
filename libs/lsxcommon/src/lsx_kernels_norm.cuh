@@ -1,7 +1,7 @@
 // lsx_kernels_norm.cuh — unified RMSNorm (parallel tree-reduction family).
 // Covers qwen_inference.cu rmsnorm_offset_kernel and both gemma kernels
 // (direct-weight / no-weight). Bit-exact models keep their own kernels:
-//   - glm_expert_kernels.cuh GlmRmsNormKernel: thread-0 SEQUENTIAL scan +
+//   - glm_moe_expert_kernels.cuh GlmRmsNormKernel: thread-0 SEQUENTIAL scan +
 //     GlmRsqrtfGlibc (byte-exact host mirror) — not replicable by a tree.
 //   - kimi_rmsnorm_rows*: same sequential structure, BF16.
 //   - deepseek rms_norm_float_kernel: F32 rows, shared via load.cuh pair.

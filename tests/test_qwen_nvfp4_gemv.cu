@@ -631,7 +631,7 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
 // an fp32 accumulator the driver converts/casts for its BF16 pipeline.
 // Host reference mirrors the shared dot contract validated by the qwen
 // suites above, including an adversarial block-alternating scale pattern.
-#include "lsxcommon/gemma4_inference.h"
+#include "lsxcommon/gemma_moe_inference.h"
 
 namespace {
 

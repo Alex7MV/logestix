@@ -8,7 +8,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 
-#include "lsxcommon/qwen_convert.h"
+#include "lsxcommon/qwen_dense_convert.h"
 
 namespace lsxcommon::qwen {
 

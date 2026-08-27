@@ -166,7 +166,7 @@ FetchContent_MakeAvailable(spdlog)
 # char32 string literal with code points above U+10FFFF (0x9999999a, ...).
 # GCC/Clang/MSVC accept those, but the nvcc front end rejects them with
 # "character value is out of range" when a .cu pulls in <spdlog/spdlog.h>
-# (glm_inference_load.cu). Replace the literal with a plain uint32_t array —
+# (glm_moe_load.cu). Replace the literal with a plain uint32_t array —
 # idempotent: both replaces no-op once already applied against v1.15.0.
 set(_spdlog_fmt "${spdlog_SOURCE_DIR}/include/spdlog/fmt/bundled/format.h")
 if(EXISTS "${_spdlog_fmt}")

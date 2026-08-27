@@ -24,7 +24,7 @@
 namespace lsxcommon::qwen_moe {
 namespace {
 
-// simdjson ondemand idioms copied from gemma4_convert.cpp parse_text_config.
+// simdjson ondemand idioms copied from gemma_moe_convert.cpp parse_text_config.
 auto get_i = [](simdjson::ondemand::object &o, const char *k, int dflt) {
     int64_t v;
     if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
@@ -184,7 +184,7 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir)
     top.partial_rotary_factor = get_d(src, "partial_rotary_factor", 0.25);
     top.rope_theta = get_d(src, "rope_theta", 1e7);
 
-    // MoE fields (etalon: gemma4_convert.cpp num_experts parsing).
+    // MoE fields (etalon: gemma_moe_convert.cpp num_experts parsing).
     top.num_experts = get_i(src, "num_experts", 0);
     top.num_experts_per_tok = get_i(src, "num_experts_per_tok", 0);
     top.moe_intermediate_size = get_i(src, "moe_intermediate_size", 0);
