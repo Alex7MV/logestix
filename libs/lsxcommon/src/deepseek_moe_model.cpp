@@ -32,14 +32,21 @@ DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
 
 DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
 
+void DeepSeekV4FlashModel::TeardownWeights()
+{
+    pw_.Free();
+    TeardownContext();
+}
+
 bool DeepSeekV4FlashModel::Load()
 {
+    Unload();  // idempotent re-load support (GLM/Kimi/Qwen parity)
     if (!BeginLoad(cfg_.model_path)) return false;
     auto topo = gpu::load_topology(cfg_.model_path);
     if (!topo.error_msg.empty()) {
         lsxcommon::log::error(absl::StrCat(
             "[deepseek-model] topology error: ", topo.error_msg));
-        return false;
+        return AbortLoad();
     }
     // Frozen-geometry passport cross-check (MODEL INGEST INVARIANT step 3):
     // the converted index must match the compile-time locked architecture.
@@ -52,7 +59,7 @@ bool DeepSeekV4FlashModel::Load()
             "[deepseek-model] topology mismatches frozen passport: layers ",
             topo.num_layers, " != ", gpu::kNumLayers, " or experts ",
             topo.experts_per_layer, " != ", gpu::kNumRouted));
-        return false;
+        return AbortLoad();
     }
     vram_ = topo.vram;
 
@@ -60,14 +67,16 @@ bool DeepSeekV4FlashModel::Load()
     // reused across Infer calls; GLM/Qwen-parity ownership model).
     if (!EnsureContext(/*with_cublas=*/true)) {
         lsxcommon::log::error("[deepseek-model] context create failed");
-        return false;
+        return AbortLoad();
     }
     if (gpu::load_pinned_weights(cfg_.model_path, pw_, stream())
         != cudaSuccess) {
         lsxcommon::log::error("[deepseek-model] pinned weight load failed");
-        pw_.Free();
-        return false;
+        return AbortLoad();
     }
+    // Dense residency disclosure (GLM/Kimi/Qwen parity): publish the pinned
+    // weight set through ResidentWeightBytes().
+    resident_bytes_ = pw_.resident_bytes;
     FinishLoad();
     return true;
 }
@@ -85,13 +94,8 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     });
 }
 
-void DeepSeekV4FlashModel::Unload()
-{
-    pw_.Free();
-    TeardownContext();
-    tok_db_.reset();
-    loaded_ = false;
-}
+// DeepSeekV4FlashModel::Unload — canonical ModelBase template method
+// (TeardownWeights override above); no per-model override.
 
 gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
 {
@@ -101,12 +105,16 @@ gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
 gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
-    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    if (!RequireLoaded(r)) return r;
     const std::vector<int32_t> prompt = {0};
-    auto res = gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
+    // Uniform lock discipline: benchmarks serialize against unload/parallel
+    // dispatch exactly like Infer (GLM parity).
+    auto res = RunUnderResidencyLock([&] {
+        return gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
                                       *tok_db_, pw_,
                                       lsxcommon::sample::DefaultSampler(),
                                       stream(), cublas());
+    });
     if (!res.ok) { r.error_msg = res.error_msg; return r; }
     runtime::FillBenchmarkResult(r, res.total_time_ms, res.num_tokens,
                                  res.num_layers,

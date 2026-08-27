@@ -1,7 +1,6 @@
 #include "gemma_base_model.h"
 
 #include <cuda_runtime.h>
-#include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <chrono>
@@ -53,59 +52,76 @@ GemmaBaseModel::GemmaBaseModel(ModelInitConfig cfg)
 
 GemmaBaseModel::~GemmaBaseModel() { Unload(); }
 
+void GemmaBaseModel::TeardownWeights()
+{
+    pw_.Free();
+    weights_loaded_ = false;
+    kv_.reset();
+    session_tail_.clear();
+    free_gemma_expert_index(expert_db_);
+    expert_db_ready_ = false;
+    gemma::DestroyGemmaGenContext(gen_ctx_);
+    gen_ctx_ = nullptr;
+    TeardownContext();
+}
+
 bool GemmaBaseModel::Load()
 {
+    Unload();  // idempotent re-load support (uniform lifecycle policy)
     tokenizer_optional_ = true;
     if (!BeginLoad(cfg_.model_path)) return false;
     double pinned_ms = 0.0;
-    if (!weights_loaded_) {
-        const auto t_pinned = std::chrono::steady_clock::now();
-        if (EnsureContext(/*with_cublas=*/false)) {
-            cudaError_t lrc = gemma::LoadGemmaPinnedWeights(
-                cfg_.model_path, pw_, stream());
-            fastload::StreamDrain{stream()};
-            bool ok = (lrc == cudaSuccess);
-            weights_loaded_ = ok;
-            if (!ok) {
-                spdlog::error(
-                    "[gemma-model] LoadGemmaPinnedWeights failed: rc={} ({})",
-                    static_cast<int>(lrc), cudaGetErrorString(lrc));
-                return false;
-            }
-            resident_bytes_ = pw_.resident_bytes;
-            vram_ = pw_.top.vram;
-            pinned_ms = std::chrono::duration<double, std::milli>(
-                            std::chrono::steady_clock::now() - t_pinned)
-                            .count();
-            spdlog::info("[gemma-model] pinned weights loaded: {} layers "
-                         "({} bytes resident)",
-                         pw_.layers.size(), pw_.resident_bytes);
-        } else {
-            spdlog::error("[gemma-model] stream create failed");
-            return false;
-        }
+    const auto t_pinned = std::chrono::steady_clock::now();
+    if (!EnsureContext(/*with_cublas=*/false)) {
+        lsxcommon::log::error("[gemma-model] stream create failed");
+        return AbortLoad();
+    }
+    cudaError_t lrc = gemma::LoadGemmaPinnedWeights(
+        cfg_.model_path, pw_, stream());
+    fastload::StreamDrain{stream()};
+    const bool ok = (lrc == cudaSuccess);
+    weights_loaded_ = ok;
+    if (!ok) {
+        lsxcommon::log::error(
+            "[gemma-model] LoadGemmaPinnedWeights failed: rc=" +
+            std::to_string(static_cast<int>(lrc)) + " (" +
+            cudaGetErrorString(lrc) + ")");
+        return AbortLoad();
+    }
+    resident_bytes_ = pw_.resident_bytes;
+    vram_ = pw_.top.vram;
+    pinned_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t_pinned)
+                    .count();
+    lsxcommon::log::info(
+        "[gemma-model] pinned weights loaded: " +
+        std::to_string(pw_.layers.size()) + " layers (" +
+        std::to_string(pw_.resident_bytes) + " bytes resident)");
+    // Geometry gate BEFORE FinishLoad (lifecycle-unification 2026-08): a
+    // failed Load must leave loaded_ == false, otherwise Infer() could run
+    // on an unvalidated topology.
+    if (!ValidateGeometry(pw_.top)) {
+        lsxcommon::log::error("[gemma-model] geometry validation failed for " +
+                              cfg_.model_path);
+        return AbortLoad();
     }
     FinishLoad();
-    if (!ValidateGeometry(pw_.top)) {
-        spdlog::error("[gemma-model] geometry validation failed for {}",
-                      cfg_.model_path);
-        return false;
-    }
     if (!expert_db_ready_) {
         const auto t_index = std::chrono::steady_clock::now();
         expert_db_ = gemma::load_gemma_expert_index(
             cfg_.model_path, static_cast<int>(pw_.layers.size()),
             pw_.top.error_msg.empty() ? pw_.top.num_experts : 1);
         expert_db_ready_ = true;
-        spdlog::info(
-            "[gemma-model] pinned load {:.1f} ms, expert index {:.1f} ms "
-            "({}/{} files parsed)",
-            pinned_ms,
-            std::chrono::duration<double, std::milli>(
+        lsxcommon::log::info(
+            "[gemma-model] pinned load " +
+            absl::StrFormat("%.1f", pinned_ms) + " ms, expert index " +
+            absl::StrFormat("%.1f", std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - t_index)
-                .count(),
-            expert_db_.parse_ok,
-            expert_db_.num_layers * expert_db_.experts_per_layer);
+                .count()) + " ms (" +
+            std::to_string(expert_db_.parse_ok) + "/" +
+            std::to_string(expert_db_.num_layers *
+                           expert_db_.experts_per_layer) +
+            " files parsed)");
     }
     return true;
 }
@@ -150,13 +166,13 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
             gen, *kv_, gen_ctx_);
     });
     if (e != cudaSuccess)
-        spdlog::error("[gemma-model] RunGemmaGeneration rc={} ({}) gen_err='{}'",
-                      static_cast<int>(e), cudaGetErrorString(e), gen.error_msg);
+        lsxcommon::log::error(
+            "[gemma-model] RunGemmaGeneration rc=" +
+            std::to_string(static_cast<int>(e)) + " (" +
+            cudaGetErrorString(e) + ") gen_err='" + gen.error_msg + "'");
 
     if (e != cudaSuccess || !gen.ok) {
-        r.error_msg = gen.error_msg.empty()
-                          ? std::string(cudaGetErrorString(e))
-                          : gen.error_msg;
+        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
         r.ok = false;
         kv_.reset();
         session_tail_.clear();
@@ -182,21 +198,8 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     return r;
 }
 
-void GemmaBaseModel::Unload()
-{
-    pw_.Free();
-    weights_loaded_ = false;
-    resident_bytes_ = 0;
-    tok_db_.reset();
-    kv_.reset();
-    session_tail_.clear();
-    free_gemma_expert_index(expert_db_);
-    expert_db_ready_ = false;
-    gemma::DestroyGemmaGenContext(gen_ctx_);
-    gen_ctx_ = nullptr;
-    TeardownContext();
-    loaded_ = false;
-}
+// GemmaBaseModel::Unload — canonical ModelBase template method
+// (TeardownWeights override above); no per-model override.
 
 gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
 {
@@ -216,10 +219,7 @@ gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
 gpu::BenchmarkResult GemmaBaseModel::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
-    if (!loaded_) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
+    if (!RequireLoaded(r)) return r;
     ModelRequest req;
     req.input_ids = {2}; // <bos>
     req.max_gen_tokens = num_tokens;

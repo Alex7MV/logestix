@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cuda_runtime.h>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -10,6 +12,12 @@
 
 namespace lsxcommon {
 namespace runtime {
+
+// Single error format for the Infer/Benchmark tails that receive both a
+// cudaError_t status and a family generation-error string: family error wins
+// on a clean CUDA status, the CUDA string alone otherwise, and both present
+// join as "<cuda-string> / <family-error>" (lifecycle-unification 2026-08).
+std::string CombineGenError(cudaError_t err, const std::string &gen_error);
 
 // Item 2 — unified decode capacity-retry. Decodes a generated token stream
 // into text. Grows the output buffer on the tokenizer's -2 (capacity too

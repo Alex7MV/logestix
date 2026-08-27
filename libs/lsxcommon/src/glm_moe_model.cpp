@@ -63,7 +63,6 @@ void GlmV5Model::TeardownWeights()
     glm::free_glm_expert_index(experts_);
     pw_.Free();
     TeardownContext();
-    resident_bytes_ = 0;
 }
 
 bool GlmV5Model::Load()
@@ -77,8 +76,7 @@ bool GlmV5Model::Load()
     if (!topo.error_msg.empty()) {
         lsxcommon::log::error("[glm-model] topology error in "
                               + idx.string() + ": " + topo.error_msg);
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
     vram_ = topo.vram;
 
@@ -88,16 +86,13 @@ bool GlmV5Model::Load()
         GovernorOptions gopts;
         if (!gov.Initialize(gopts)) {
             log::error("[glm-model] governor init failed");
-            tok_db_.reset();
-            return false;
+            return AbortLoad();
         }
     }
 
     if (!EnsureContext(/*with_cublas=*/true)) {
         log::error("[glm-model] cublas/stream init failed");
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     const cudaError_t e = glm::LoadGlmPinnedWeights(cfg_.model_path, pw_, stream());
@@ -108,9 +103,7 @@ bool GlmV5Model::Load()
         log::error(std::string("[glm-model] pinned-weight load/validation failed: ")
                    + (e != cudaSuccess ? cudaGetErrorString(e)
                                        : "geometry mismatch"));
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     experts_ = glm::load_glm_expert_index(cfg_.model_path, glm::kGlmNumLayers,
@@ -118,9 +111,7 @@ bool GlmV5Model::Load()
     if (experts_.num_layers != glm::kGlmNumLayers ||
         experts_.experts_per_layer != glm::kGlmNumRouted) {
         log::error("[glm-model] expert index incomplete");
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     lifecycle::LifecycleInput in;
@@ -135,9 +126,7 @@ bool GlmV5Model::Load()
     if (!permanent_lease_.Valid() && !gov.options().relax_memory_refusal) {
         log::error("[glm-model] permanent-weight lease refused ("
                    + std::to_string(pw_.resident_bytes) + " bytes)");
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     LeasePolicy adaptive{LeasePolicy::Mode::kAdaptive,
@@ -181,7 +170,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
                                          gen);
     });
     if (err != cudaSuccess || !gen.ok) {
-        r.error_msg = gen.ok ? cudaGetErrorString(err) : gen.error_msg;
+        r.error_msg = runtime::CombineGenError(err, gen.error_msg);
         r.ok = false;
         return r;
     }
@@ -216,12 +205,8 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     return r;
 }
 
-void GlmV5Model::Unload()
-{
-    TeardownWeights();
-    tok_db_.reset();
-    loaded_ = false;
-}
+// GlmV5Model::Unload — canonical ModelBase template method (TeardownWeights
+// override above); no per-model override.
 
 gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
 {
@@ -241,7 +226,7 @@ gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
                                          prompt, num_tokens, gr);
     });
     if (berr != cudaSuccess || !gr.ok) {
-        r.error_msg = gr.ok ? cudaGetErrorString(berr) : gr.error_msg;
+        r.error_msg = runtime::CombineGenError(berr, gr.error_msg);
         return r;
     }
     runtime::FillBenchmarkResult(r, gr.total_ms,

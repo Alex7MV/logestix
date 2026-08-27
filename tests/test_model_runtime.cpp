@@ -17,6 +17,9 @@ using Catch::Approx;
 #include <lsxcommon/tokenizer.h>
 #include <lsxcommon/benchmark_gpu.h>
 
+#include "kimi_moe_model.h"
+#include "qwen_moe_model.h"
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -43,11 +46,8 @@ public:
         loaded_ = true;
         return true;
     }
-    void Unload() override
-    {
-        tok_db_.reset();
-        loaded_ = false;
-    }
+    // Unload is the canonical ModelBase template method (final); the fake
+    // relies on it releasing tok_db_ and clearing loaded_.
     lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &req) override
     {
         lsxcommon::gpu::InferenceResult r;
@@ -337,7 +337,6 @@ public:
     {
         return {};
     }
-    void Unload() override {}
     lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &) override
     {
         return {};
@@ -398,6 +397,137 @@ TEST_CASE("RunUnderResidencyLock executes and releases", "[model_base]")
     CHECK(v == 42);
     // The shared lock must be released afterwards: unique_lock succeeds.
     std::unique_lock<std::shared_mutex> ul(m.ResidencyMutex());
+}
+
+// ── Canonical lifecycle contract (lifecycle-unification 2026-08) ────────────
+//
+// ModelBase owns the Unload template method (final): TeardownWeights() ->
+// tokenizer db -> loaded_ flag. Subclasses only override TeardownWeights().
+// AbortLoad() is the canonical Load-failure tail. RequireLoaded() is the
+// canonical Benchmark guard. runtime::CombineGenError is the single error
+// format for cudaError_t + family-error tails.
+
+#include <cuda_runtime.h>
+
+namespace {
+
+class LifecycleProbe final : public lsxcommon::ModelBase {
+public:
+    using ModelBase::ModelBase;
+    using ModelBase::AbortLoad;
+    using ModelBase::RequireLoaded;
+    using ModelBase::resident_bytes_;
+
+    int teardowns = 0;
+
+    void TeardownWeights() override { ++teardowns; }
+    bool Load() override { return false; }
+    lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    const std::string &Type() const override
+    {
+        static std::string t{"lifecycle-probe"};
+        return t;
+    }
+};
+
+} // namespace
+
+TEST_CASE("ModelBase canonical Unload: teardown + tokenizer + flags",
+          "[model_base][lifecycle]")
+{
+    const std::string root = BuildPinnedTokenizerDir("synthetic_tok.json");
+    LifecycleProbe p{lsxcommon::ModelInitConfig{}};
+    p.cfg_.model_path = root;
+    REQUIRE(p.LoadTokenizerDb(p.cfg_.model_path));
+    p.loaded_ = true;
+    p.resident_bytes_ = 12345;
+    REQUIRE(p.tok_db_ != nullptr);
+
+    p.Unload();
+    CHECK(p.teardowns == 1);
+    CHECK(p.tok_db_ == nullptr);
+    CHECK_FALSE(p.loaded_);
+    CHECK(p.ResidentWeightBytes() == 0);
+
+    p.Unload();  // idempotent: still safe, state unchanged
+    CHECK(p.tok_db_ == nullptr);
+    CHECK_FALSE(p.loaded_);
+    fs::remove_all(root);
+}
+
+TEST_CASE("ModelBase AbortLoad: failed Load leaves a clean state",
+          "[model_base][lifecycle]")
+{
+    const std::string root = BuildPinnedTokenizerDir("synthetic_tok.json");
+    LifecycleProbe p{lsxcommon::ModelInitConfig{}};
+    p.cfg_.model_path = root;
+    REQUIRE(p.LoadTokenizerDb(p.cfg_.model_path));
+    p.loaded_ = true;
+    p.resident_bytes_ = 999;
+
+    // Canonical Load-failure tail: returns false for `return AbortLoad();`
+    CHECK_FALSE(p.AbortLoad());
+    CHECK(p.teardowns == 1);
+    CHECK(p.tok_db_ == nullptr);
+    CHECK_FALSE(p.loaded_);
+    CHECK(p.ResidentWeightBytes() == 0);
+    fs::remove_all(root);
+}
+
+TEST_CASE("RequireLoaded: canonical Benchmark guard", "[model_base][lifecycle]")
+{
+    LifecycleProbe p{lsxcommon::ModelInitConfig{}};
+    lsxcommon::gpu::BenchmarkResult r;
+    CHECK_FALSE(p.RequireLoaded(r));
+    CHECK_FALSE(r.ok);
+    CHECK(r.error_msg == "model not loaded");
+
+    p.loaded_ = true;
+    lsxcommon::gpu::BenchmarkResult r2;
+    CHECK(p.RequireLoaded(r2));
+    CHECK(r2.error_msg.empty());
+}
+
+TEST_CASE("runtime::CombineGenError is the single error format",
+          "[model_runtime][lifecycle]")
+{
+    using lsxcommon::runtime::CombineGenError;
+    // Family error wins when the CUDA status is clean.
+    CHECK(CombineGenError(cudaSuccess, "gen failed") == "gen failed");
+    // CUDA status alone.
+    CHECK(CombineGenError(cudaErrorUnknown, "") ==
+          std::string(cudaGetErrorString(cudaErrorUnknown)));
+    // Both present: CUDA string first, then the family tail.
+    CHECK(CombineGenError(cudaErrorUnknown, "gen failed") ==
+          std::string(cudaGetErrorString(cudaErrorUnknown)) + " / gen failed");
+    // Both empty.
+    CHECK(CombineGenError(cudaSuccess, "").empty());
+}
+
+TEST_CASE("Concrete unloaded models report 'model not loaded' from Benchmark",
+          "[lifecycle][models]")
+{
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = "unused";
+
+    lsxcommon::Qwen35MoeModel q{cfg};
+    auto rq = q.Benchmark();
+    CHECK_FALSE(rq.ok);
+    CHECK(rq.error_msg == "model not loaded");
+
+    lsxcommon::KimiK27CodeModel k{cfg};
+    auto rk = k.Benchmark();
+    CHECK_FALSE(rk.ok);
+    CHECK(rk.error_msg == "model not loaded");
 }
 
 // ── Option-driven Paris SelfCheck (unified harness) ─────────────────────────

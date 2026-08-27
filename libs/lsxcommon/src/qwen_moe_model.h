@@ -31,8 +31,8 @@ public:
 
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return kType; }
 
@@ -43,8 +43,7 @@ public:
     }
 
 private:
-    bool EnsureExecutionContext();
-    void TeardownWeights();
+    void TeardownWeights() override;
 
     // Runtime geometry gate: parsed index vs frozen constants.
     bool ValidateGeometry(const qwen_moe::QwenMoeTopology &top) const;

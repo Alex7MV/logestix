@@ -986,6 +986,8 @@ add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
+target_include_directories(test_model_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── Тест InferenceEngine singleton + TokenChunk streaming/abort (host-only) ──

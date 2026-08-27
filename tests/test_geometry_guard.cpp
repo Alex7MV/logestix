@@ -21,7 +21,6 @@ public:
     {
         return {};
     }
-    void Unload() override {}
     lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &)
         override
     {

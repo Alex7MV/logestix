@@ -26,7 +26,8 @@ public:
         loaded_ = true;
         return true;
     }
-    void Unload() override { loaded_ = false; }
+    // Unload is the canonical ModelBase template method (final): clears
+    // loaded_ without an override.
     lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &req) override
     {
         infer_calls++;

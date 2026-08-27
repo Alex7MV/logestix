@@ -22,7 +22,6 @@ public:
 
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
     gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
@@ -44,6 +43,10 @@ protected:
     // Hard geometry gate (protocol step 3): false when the loaded topology
     // does not match the frozen compile-time constants.
     virtual bool ValidateGeometry(const gemma::GemmaTopology &top) const;
+
+    // Canonical ModelBase teardown: pinned weights, session/KV state, expert
+    // index, generation context.
+    void TeardownWeights() override;
 
 
     std::string type_;

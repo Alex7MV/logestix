@@ -22,42 +22,52 @@ QwenBaseModel::QwenBaseModel(ModelInitConfig cfg)
 
 QwenBaseModel::~QwenBaseModel() { Unload(); }
 
+void QwenBaseModel::TeardownWeights()
+{
+    pw_.Free();
+    weights_loaded_ = false;
+    kv_.reset();
+    session_tail_.clear();
+    TeardownContext();
+}
+
 bool QwenBaseModel::Load()
 {
+    Unload();  // idempotent re-load support (uniform lifecycle policy)
     tokenizer_optional_ = true;
     // Blackwell tensor-core fast path (audit Phase 3): opt-in via
     // ModelInitConfig::fast_math. Default off = bit-exact scalar path.
     qwen::SetQwenTcFastMath(cfg_.fast_math);
     if (!BeginLoad(cfg_.model_path)) return false;
-    if (!weights_loaded_) {
-        if (EnsureContext(/*with_cublas=*/false)) {
-            bool ok = qwen::LoadQwenPinnedWeights(cfg_.model_path, pw_,
-                                                  stream());
-            fastload::StreamDrain{stream()};
-            weights_loaded_ = ok;
-            if (!ok) {
-                lsxcommon::log::error(
-                    "[qwen-model] LoadQwenPinnedWeights failed");
-                return false;
-            }
-            // Dense residency (spec 3.3): the entire model is resident after
-            // Load(), so ResidentWeightBytes() reports the full persistent set.
-            resident_bytes_ = pw_.resident_bytes;
-            vram_ = pw_.top.vram;
-            lsxcommon::log::info(absl::StrCat(
-                "[qwen-model] pinned weights loaded: ", pw_.layers.size(),
-                " layers (", pw_.resident_bytes, " bytes resident)"));
-        } else {
-            lsxcommon::log::error("[qwen-model] stream create failed");
-            return false;
-        }
+    if (!EnsureContext(/*with_cublas=*/false)) {
+        lsxcommon::log::error("[qwen-model] stream create failed");
+        return AbortLoad();
     }
-    FinishLoad();
+    const bool ok = qwen::LoadQwenPinnedWeights(cfg_.model_path, pw_,
+                                                stream());
+    fastload::StreamDrain{stream()};
+    weights_loaded_ = ok;
+    if (!ok) {
+        lsxcommon::log::error(
+            "[qwen-model] LoadQwenPinnedWeights failed");
+        return AbortLoad();
+    }
+    // Dense residency (spec 3.3): the entire model is resident after
+    // Load(), so ResidentWeightBytes() reports the full persistent set.
+    resident_bytes_ = pw_.resident_bytes;
+    vram_ = pw_.top.vram;
+    lsxcommon::log::info(absl::StrCat(
+        "[qwen-model] pinned weights loaded: ", pw_.layers.size(),
+        " layers (", pw_.resident_bytes, " bytes resident)"));
+    // Geometry gate BEFORE FinishLoad (lifecycle-unification 2026-08): a
+    // failed Load must leave loaded_ == false, otherwise Infer() could run
+    // on an unvalidated topology.
     if (!ValidateGeometry(pw_.top)) {
         lsxcommon::log::error(absl::StrCat(
             "[qwen-model] geometry validation failed for ", cfg_.model_path));
-        return false;
+        return AbortLoad();
     }
+    FinishLoad();
     return true;
 }
 
@@ -99,7 +109,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
 
     cudaError_t e = RunUnderResidencyLock(run);
     if (e != cudaSuccess) {
-        r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
+        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
         r.ok = false;
         // A failed continuation may have advanced kv_rows mid-stream; drop the
         // session so the next call starts fresh.
@@ -134,17 +144,8 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     return r;
 }
 
-void QwenBaseModel::Unload()
-{
-    pw_.Free();
-    weights_loaded_ = false;
-    resident_bytes_ = 0;
-    tok_db_.reset();
-    kv_.reset();
-    session_tail_.clear();
-    TeardownContext();
-    loaded_ = false;
-}
+// QwenBaseModel::Unload — canonical ModelBase template method
+// (TeardownWeights override above); no per-model override.
 
 gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
 {
@@ -154,19 +155,21 @@ gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
 gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
-    if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    if (!RequireLoaded(r)) return r;
     const std::vector<int32_t> prompt = {0};
-    // Mirror Infer: open a stream, run RunQwenGeneration, map the result.
+    // Mirror Infer: persistent context, single residency-locked generation.
     qwen::QwenGenerationResult gr;
     if (!EnsureContext(/*with_cublas=*/true)) {
         r.error_msg = "cuda/cublas init failed";
         return r;
     }
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-    cudaError_t e = qwen::RunQwenGeneration(stream(), pw_, prompt, num_tokens,
-                                            eos_id, gr);
+    cudaError_t e = RunUnderResidencyLock([&] {
+        return qwen::RunQwenGeneration(stream(), pw_, prompt, num_tokens,
+                                       eos_id, gr);
+    });
     if (e != cudaSuccess) {
-        r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gr.error_msg;
+        r.error_msg = runtime::CombineGenError(e, gr.error_msg);
         return r;
     }
     runtime::FillBenchmarkResult(r, gr.total_ms,

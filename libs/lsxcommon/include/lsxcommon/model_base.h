@@ -43,6 +43,12 @@ public:
     std::uint64_t ResidentWeightBytes() const override { return resident_bytes_; }
     const VramProfile &VramRequirements() const override { return vram_; }
 
+    // Canonical lifecycle template method (lifecycle-unification 2026-08):
+    // every model tears down through the same sequence — subclass weight
+    // teardown (virtual), tokenizer db release, residency flags. Subclasses
+    // MUST NOT override Unload; they put their state into TeardownWeights().
+    void Unload() final;
+
     // One frozen-geometry expectation row: field name, expected value from
     // the compile-time passport, actual value parsed from model.index.json.
     struct GeoFieldCheck {
@@ -57,6 +63,22 @@ protected:
     // weight-pin between BeginLoad and FinishLoad.
     bool BeginLoad(const std::string &model_path);
     void FinishLoad() { loaded_ = true; }
+
+    // Canonical Load-failure tail: full teardown (subclass weights, tokenizer
+    // db, residency flags) and `return false` semantics. Every Load() failure
+    // path MUST end with `return AbortLoad();` so a failed Load leaves the
+    // instance exactly as Unload() would (loaded_==false invariant).
+    bool AbortLoad();
+
+    // Canonical Benchmark guard: false (with "model not loaded" + ok=false)
+    // when the model is not loaded; true otherwise. Every Benchmark()
+    // implementation MUST start with `if (!RequireLoaded(r)) return r;`.
+    bool RequireLoaded(gpu::BenchmarkResult &r) const;
+
+    // Subclass-owned GPU/pinned state teardown. Called by Unload(), by
+    // AbortLoad() and therefore by every destructor via `~Model() { Unload(); }`.
+    // Must be safe on a never-loaded (empty) instance and idempotent.
+    virtual void TeardownWeights() {}
 
     // ── Persistent CUDA execution context (model-unification 2026-08) ──────
     // Lazy-creates a non-blocking stream (and optionally a cuBLAS handle bound

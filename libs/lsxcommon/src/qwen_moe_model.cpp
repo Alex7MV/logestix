@@ -45,7 +45,6 @@ void Qwen35MoeModel::TeardownWeights()
     kv_.reset();
     session_tail_.clear();
     TeardownContext();
-    resident_bytes_ = 0;
 }
 
 bool Qwen35MoeModel::ValidateGeometry(
@@ -89,31 +88,24 @@ bool Qwen35MoeModel::Load()
 
     if (!EnsureContext(/*with_cublas=*/false)) {
         log::error("[qwen-moe-model] stream init failed");
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     std::string err;
     const auto t_dense = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeDenseWeights(cfg_.model_path, pw_, stream(), err)) {
         log::error("[qwen-moe-model] dense load failed: " + err);
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
     log::info(absl::StrCat("[qwen-moe-model] dense load ", MsSince(t_dense),
                            " ms"));
     if (!ValidateGeometry(pw_.moe_top)) {
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
     const auto t_experts = std::chrono::steady_clock::now();
     if (!qwen_moe::LoadQwenMoeExpertStore(cfg_.model_path, experts_, err)) {
         log::error("[qwen-moe-model] expert store load failed: " + err);
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
     log::info(absl::StrCat("[qwen-moe-model] expert store ",
                            MsSince(t_experts), " ms"));
@@ -183,9 +175,7 @@ bool Qwen35MoeModel::Load()
     }
     if (!cache_.d_base) {
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     resident_bytes_ = pw_.resident_bytes;
@@ -227,8 +217,10 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
             req.max_gen_tokens, eos_id, gen,
             lsxcommon::sample::DefaultSampler(), kv_.get());
     });
-    if (e != cudaSuccess) {
-        r.error_msg = std::string(cudaGetErrorString(e)) + " / " + gen.error_msg;
+    // Uniform failure contract (GLM/Kimi parity): both a CUDA error and a
+    // family-level generation failure abort the request and drop the session.
+    if (e != cudaSuccess || !gen.ok) {
+        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
         r.ok = false;
         kv_.reset();
         session_tail_.clear();
@@ -257,15 +249,45 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
     return r;
 }
 
-void Qwen35MoeModel::Unload()
-{
-    TeardownWeights();
-    loaded_ = false;
-}
+// Qwen35MoeModel::Unload — canonical ModelBase template method
+// (TeardownWeights override above); no per-model override. This also releases
+// the tokenizer db like every other family (divergence fixed 2026-08).
 
 gpu::InferenceResult Qwen35MoeModel::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+gpu::BenchmarkResult Qwen35MoeModel::Benchmark(int num_tokens)
+{
+    gpu::BenchmarkResult r;
+    if (!RequireLoaded(r)) return r;
+    if (!ContextReady()) {
+        r.error_msg = "execution context missing";
+        return r;
+    }
+
+    // Fresh session (benchmark semantics; GLM/Kimi/QwenBase parity: the
+    // harness must not touch the caller's incremental session tail). The
+    // generation driver allocates/ensures KV capacity internally, mirroring
+    // the fresh-session path of Infer().
+    auto kv = std::make_unique<qwen::QwenKvCache>();
+
+    qwen::QwenGenerationResult gen;
+    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+    cudaError_t e = RunUnderResidencyLock([&] {
+        return qwen_moe::RunQwenMoeGeneration(
+            stream(), pw_, experts_, cache_, scratch_, {0}, num_tokens,
+            eos_id, gen, lsxcommon::sample::DefaultSampler(), kv.get());
+    });
+    if (e != cudaSuccess || !gen.ok) {
+        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
+        return r;
+    }
+    runtime::FillBenchmarkResult(r, gen.total_ms,
+                                 static_cast<int>(gen.tokens.size()),
+                                 pw_.top.num_layers, gen.resident_bytes);
+    return r;
 }
 
 } // namespace lsxcommon

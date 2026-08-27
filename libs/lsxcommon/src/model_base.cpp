@@ -9,6 +9,33 @@
 
 namespace lsxcommon {
 
+// ── Canonical lifecycle sequence (lifecycle-unification 2026-08) ────────────
+
+void ModelBase::Unload()
+{
+    TeardownWeights();
+    tok_db_.reset();
+    loaded_ = false;
+    resident_bytes_ = 0;
+}
+
+bool ModelBase::AbortLoad()
+{
+    TeardownWeights();
+    tok_db_.reset();
+    loaded_ = false;
+    resident_bytes_ = 0;
+    return false;
+}
+
+bool ModelBase::RequireLoaded(gpu::BenchmarkResult &r) const
+{
+    if (loaded_) return true;
+    r.ok = false;
+    r.error_msg = "model not loaded";
+    return false;
+}
+
 bool ModelBase::LoadTokenizerDb(const std::string &model_path)
 {
     if (tok_db_) return true;

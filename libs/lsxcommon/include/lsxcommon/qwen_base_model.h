@@ -19,7 +19,6 @@ public:
 
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
     gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
@@ -29,13 +28,15 @@ public:
 protected:
     // Hard geometry gate (Model Ingestion Protocol step 3): returns false when
     // the loaded topology does not match the model's frozen compile-time
-    // constants; Load() fails in that case.
+    // constants; Load() fails in that case. Test-only opt-out: when
+    // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY is set, the gate is bypassed
+    // (ModelBase::SyntheticGeometryAllowed) so synthetic tiny fixtures can
+    // exercise converter/loader/kernel paths. Production binaries never set
+    // it and keep the hard gate.
     virtual bool ValidateGeometry(const qwen::QwenTopology &top) const;
 
-    // Test-only opt-out: when LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY is set in the
-    // environment, the frozen-geometry gate is bypassed so synthetic tiny
-    // fixtures can exercise converter/loader/kernel paths. Production binaries
-    // never set it and keep the hard gate.
+    // Canonical ModelBase teardown: pinned weights, session state, context.
+    void TeardownWeights() override;
 
     std::string type_;
     qwen::QwenPinnedWeights pw_;

@@ -22,6 +22,19 @@ constexpr size_t kInitialDecodeCap = 4096;
 constexpr int kMaxDecodeAttempts = 8;
 } // namespace
 
+std::string CombineGenError(cudaError_t err, const std::string &gen_error)
+{
+    const char *cuda_str =
+        (err != cudaSuccess) ? cudaGetErrorString(err) : nullptr;
+    const bool has_cuda = cuda_str != nullptr && *cuda_str != '\0';
+    const bool has_gen = !gen_error.empty();
+    if (has_cuda && has_gen)
+        return std::string(cuda_str) + " / " + gen_error;
+    if (has_gen) return gen_error;
+    if (has_cuda) return std::string(cuda_str);
+    return {};
+}
+
 std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
                                 const std::vector<int32_t> &ids)
 {

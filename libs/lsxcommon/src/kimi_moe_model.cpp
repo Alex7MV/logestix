@@ -29,7 +29,6 @@ void KimiK27CodeModel::TeardownWeights()
     kimi::free_kimi_expert_index(experts_);
     pw_.Free();
     TeardownContext();
-    resident_bytes_ = 0;
 }
 
 bool KimiK27CodeModel::Load()
@@ -41,8 +40,7 @@ bool KimiK27CodeModel::Load()
 
     if (!EnsureContext(/*with_cublas=*/true)) {
         log::error("[kimi-model] cublas/stream init failed");
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     const cudaError_t e =
@@ -55,9 +53,7 @@ bool KimiK27CodeModel::Load()
                        "[kimi-model] pinned-weight load/validation failed: ") +
                    (e != cudaSuccess ? cudaGetErrorString(e)
                                      : "geometry mismatch"));
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
     experts_ = kimi::load_kimi_expert_index(cfg_.model_path,
@@ -67,21 +63,28 @@ bool KimiK27CodeModel::Load()
     if (experts_.num_layers != kimi::kKimiNumLayers ||
         experts_.experts_per_layer != kimi::kKimiNumRouted) {
         log::error("[kimi-model] expert index incomplete");
-        TeardownWeights();
-        tok_db_.reset();
-        return false;
+        return AbortLoad();
     }
 
+    // Governor parity with GLM (lifecycle-unification 2026-08): standalone
+    // init when the engine never initialized it, then the permanent-weight
+    // lease.
     auto &gov = ResourceGovernor::Instance();
-    if (!permanent_lease_.Valid() && gov.IsInitialized()) {
+    if (!gov.IsInitialized()) {
+        log::warn("[kimi-model] governor not initialized; standalone init");
+        GovernorOptions gopts;
+        if (!gov.Initialize(gopts)) {
+            log::error("[kimi-model] governor init failed");
+            return AbortLoad();
+        }
+    }
+    if (!permanent_lease_.Valid()) {
         permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
                                        pw_.resident_bytes, LeasePolicy{});
         if (!permanent_lease_.Valid() &&
             !gov.options().relax_memory_refusal) {
             log::error("[kimi-model] permanent-weight lease refused");
-            TeardownWeights();
-            tok_db_.reset();
-            return false;
+            return AbortLoad();
         }
     }
 
@@ -110,7 +113,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
                                        gen, &expert_cache_);
     });
     if (err != cudaSuccess || !gen.ok) {
-        r.error_msg = gen.ok ? cudaGetErrorString(err) : gen.error_msg;
+        r.error_msg = runtime::CombineGenError(err, gen.error_msg);
         r.ok = false;
         return r;
     }
@@ -132,12 +135,8 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     return r;
 }
 
-void KimiK27CodeModel::Unload()
-{
-    TeardownWeights();
-    tok_db_.reset();
-    loaded_ = false;
-}
+// KimiK27CodeModel::Unload — canonical ModelBase template method
+// (TeardownWeights override above); no per-model override.
 
 gpu::InferenceResult KimiK27CodeModel::SelfCheck(const ModelRequest &req)
 {
@@ -146,9 +145,30 @@ gpu::InferenceResult KimiK27CodeModel::SelfCheck(const ModelRequest &req)
 
 gpu::BenchmarkResult KimiK27CodeModel::Benchmark(int num_tokens)
 {
-    // Kimi benchmark harness lands with the real-model validation task.
-    (void)num_tokens;
-    return {};
+    gpu::BenchmarkResult r;
+    if (!RequireLoaded(r)) return r;
+    if (!pw_.d_embed) {
+        r.error_msg = "model not loaded";
+        return r;
+    }
+    // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times
+    // (GLM parity).
+    const std::vector<int32_t> prompt = {0, 0, 0, 0};
+
+    kimi::KimiGenerationResult gr;
+    const cudaError_t berr = RunUnderResidencyLock([&] {
+        return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
+                                       prompt, num_tokens, gr,
+                                       &expert_cache_);
+    });
+    if (berr != cudaSuccess || !gr.ok) {
+        r.error_msg = runtime::CombineGenError(berr, gr.error_msg);
+        return r;
+    }
+    runtime::FillBenchmarkResult(r, gr.total_ms,
+                                 static_cast<int>(gr.tokens.size()),
+                                 kimi::kKimiNumLayers, resident_bytes_);
+    return r;
 }
 
 } // namespace lsxcommon

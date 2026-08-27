@@ -22,7 +22,6 @@ public:
 
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
     gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
@@ -32,7 +31,7 @@ public:
     const kimi::KimiPinnedWeights &PinnedWeights() const { return pw_; }
 
 private:
-    void TeardownWeights();
+    void TeardownWeights() override;
 
     kimi::KimiPinnedWeights pw_;
     kimi::KimiExpertDb experts_{};

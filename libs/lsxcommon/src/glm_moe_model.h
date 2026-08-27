@@ -22,7 +22,6 @@ public:
 
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    void Unload() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
     gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
@@ -40,7 +39,7 @@ public:
 
 private:
     std::uint64_t EstimateExpertMeanBytes() const;
-    void TeardownWeights();
+    void TeardownWeights() override;
 
     glm::GlmPinnedWeights pw_;
     glm::GlmExpertDb experts_{};
