@@ -58,7 +58,10 @@ CMakeLists, AGENTS.md). Файлы данных моделей (`.arrow`, `model
 | `qwen_convert.{cpp,h}` | `qwen_dense_convert.{cpp,h}` |
 | `qwen_v5_model.{cpp,h}` | `qwen_dense_model.{cpp,h}` |
 | `qwen_3_8_27b_model.{cpp,h}` | `qwen_dense_27b_model.{cpp,h}` |
-| `qwen_inference.cu` | `qwen_dense_inference.cu` |
+
+**Уточнение по верификации (планирование):** строка `qwen_inference.cu → qwen_dense_inference.cu`
+удалена — grep показал включения `qwen_inference.h` из `qwen_moe_inference.{h,cu}`,
+`qwen_3_5_moe_model.h` и MoE-тестов, т.е. файл кросс-типовый → переехал в allowlist (п.4).
 
 ### Qwen MoE
 
@@ -110,7 +113,7 @@ CMakeLists, AGENTS.md). Файлы данных моделей (`.arrow`, `model
   `prompt_framing.*`, `log.cpp`, `common.*`, `core.cpp`, `expert_store.*`, `fast_load.*`,
   `inference_gpu.h`, `diagnostics.h`, `shared_experts.*`, `byte_unicode.h` и т.п.;
 - кросс-типовые файлы Qwen: `qwen_base_model.{cpp,h}`, `qwen_inference_load.{cpp,h}`,
-  `qwen_device_math.h`, `qwen_reduce.cuh`, `qwen_tc_gemm.{cu,h}`;
+  `qwen_inference.{h,cu}`, `qwen_device_math.h`, `qwen_reduce.cuh`, `qwen_tc_gemm.{cu,h}`;
 - база Gemma: `gemma_base_model.{cpp,h}`.
 
 Принадлежность каждого «пограничного» файла верифицируется grep'ом включений на этапе
