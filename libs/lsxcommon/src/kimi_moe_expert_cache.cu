@@ -28,15 +28,7 @@ size_t KimiScaleStride(const KimiExpertEntry &e)
 
 } // namespace
 
-struct KimiMoeExpertDeviceCache {
-    unsigned char *d_pack = nullptr;   // slots * pack_stride  [w1|w3|w2]
-    unsigned char *d_scale = nullptr;  // slots * scale_stride [s1|s3|s2]
-    size_t pack_stride = 0;
-    size_t scale_stride = 0;
-    int slots = 0;
-    cudaStream_t copy_stream = nullptr;
-    cudaEvent_t ready = nullptr;       // recorded after each batch upload
-};
+struct KimiMoeExpertDeviceCache;   // definition in kimi_moe_expert_cache.h
 
 KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
                                     int slot, const KimiExpertEntry &e)
@@ -55,7 +47,7 @@ KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
     return v;
 }
 
-cudaError_t AllocateKimiMoeExpertCache(const KimiExpertDb &db, int slots,
+cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db, int slots,
                                        KimiMoeExpertDeviceCache *&out,
                                        std::string &err)
 {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 
+#include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
 #include "lsxcommon/lifecycle_strategy.h"
 #include "lsxcommon/model_base.h"
@@ -35,6 +36,7 @@ private:
 
     kimi::KimiPinnedWeights pw_;
     kimi::KimiExpertDb experts_{};
+    kimi::KimiExpertCacheState expert_cache_{};
     Lease permanent_lease_;
 };
 

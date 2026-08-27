@@ -24,6 +24,7 @@ KimiK27CodeModel::~KimiK27CodeModel() { Unload(); }
 
 void KimiK27CodeModel::TeardownWeights()
 {
+    kimi::FreeKimiMoeExpertDeviceCache(expert_cache_.device);
     permanent_lease_ = {};
     kimi::free_kimi_expert_index(experts_);
     pw_.Free();
@@ -62,6 +63,7 @@ bool KimiK27CodeModel::Load()
     experts_ = kimi::load_kimi_expert_index(cfg_.model_path,
                                             kimi::kKimiNumLayers,
                                             kimi::kKimiNumRouted);
+    expert_cache_.plan.Init(0, kimi::kKimiNumLayers * kimi::kKimiNumRouted);
     if (experts_.num_layers != kimi::kKimiNumLayers ||
         experts_.experts_per_layer != kimi::kKimiNumRouted) {
         log::error("[kimi-model] expert index incomplete");
@@ -105,7 +107,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     const cudaError_t err = RunUnderResidencyLock([&] {
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
-                                       gen);
+                                       gen, &expert_cache_);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = gen.ok ? cudaGetErrorString(err) : gen.error_msg;

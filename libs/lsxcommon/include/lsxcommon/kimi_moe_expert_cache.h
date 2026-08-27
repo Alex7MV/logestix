@@ -24,9 +24,10 @@
 
 #include "lsxcommon/resource_governor.h"
 
-struct KimiExpertEntry;
-
 namespace lsxcommon {
+namespace kimi {
+struct KimiExpertEntry;   // defined in kimi_moe_load.h
+} // namespace kimi
 namespace gpu {
 namespace expert_store {
 template <typename TEntry>
@@ -34,7 +35,7 @@ struct ExpertStore;
 } // namespace expert_store
 } // namespace gpu
 
-using KimiExpertDb = gpu::expert_store::ExpertStore<KimiExpertEntry>;
+using KimiExpertDb = gpu::expert_store::ExpertStore<kimi::KimiExpertEntry>;
 
 template <typename TEntry>
 struct ExpertStore;
@@ -178,7 +179,19 @@ struct KimiMoeSlotView {
     const unsigned char *p_s2;
 };
 
-struct KimiMoeExpertDeviceCache;   // CUDA arena payload, defined in the .cu
+// CUDA arena: packed weights [w1|w3|w2] + scales [s1|s3|s2] per slot, a
+// dedicated copy stream for batch uploads and the fence event recorded
+// after each upload batch. Defined in the header so the inference TU can
+// read the fence/stream members; owned exclusively by the .cu functions.
+struct KimiMoeExpertDeviceCache {
+    unsigned char *d_pack = nullptr;   // slots * pack_stride  [w1|w3|w2]
+    unsigned char *d_scale = nullptr;  // slots * scale_stride [s1|s3|s2]
+    size_t pack_stride = 0;
+    size_t scale_stride = 0;
+    int slots = 0;
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t ready = nullptr;       // recorded after each batch upload
+};
 
 // Host state owned by the model across turns.
 struct KimiExpertCacheState {

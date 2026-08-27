@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
 
 #include <cuda_runtime.h>
@@ -70,7 +71,8 @@ struct KimiGenerationResult {
 cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
-                              int max_gen_tokens, KimiGenerationResult &gen);
+                              int max_gen_tokens, KimiGenerationResult &gen,
+                              KimiExpertCacheState *cache);
 
 } // namespace kimi
 } // namespace lsxcommon
