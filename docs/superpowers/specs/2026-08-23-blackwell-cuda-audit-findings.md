@@ -850,3 +850,20 @@ with a large-N parity pin ({256,65536} and {2048,20000}).
 ### Test suite footprint
 test_qwen_nvfp4_gemv now 32 cases / 141856 assertions (Debug+Release green);
 qwen selfcheck x3 green; default dispatch bit-unchanged when flags off.
+
+
+### Round 20b — persistent decode scratch (launch-overhead pass, phase A)
+Replaced the hot-loop cudaMallocAsync/FreeAsync pairs with arena slices:
+(1) per-layer activation quantize (was 2 alloc+2 free x 40 layers/step),
+(2) batched-GEMV scratch {table,ygu,hbuf,ypart} in both the handshake and
+no-handshake paths (was 4+4 driver calls per layer). RoutedFFN signature
+grows trailing optional scratch params (header synced). Also fixed a
+round-19b refactor slip: the handshake branch passed a DEVICE table into
+the H2D wrapper -- it now targets MoeGemmVBatchCore directly with the
+same host-table memcpy.
+
+Interleaved 64-token A/B (release): default 12.9-13.7 vs gemv-experts
+14.2-16.0 tok/s (+10..17%) -- batched chain benefits consistently from
+the submission reduction. Absolute tok/s drifts +-20% between sessions on
+this WDDM box; only interleaved same-session comparisons are meaningful.
+Selfcheck x3 green under the flag.

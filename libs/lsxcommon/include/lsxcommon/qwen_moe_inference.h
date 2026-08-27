@@ -41,6 +41,15 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,
 struct QwenMoeExpertStore;
 struct QwenMoePinnedWeights;
 
+// Per-slot device table for the batched routed GEMV chain (built host-side
+// in the handshake flow or on device by the no-handshake gather kernel;
+// 8-byte-aligned 24B payload).
+struct alignas(8) QwenMoeGvSlotDev {
+    int32_t dev_slot;
+    float gs1, gs3, gs2;
+    float coeff;
+};
+
 // Processes one token's K routed slots (ascending-k deterministic fp32
 // accumulation): d_acc += coeff_k * FFN_eidk(x). Stages experts H2D on cache
 // misses via EnsureQwenMoeExpertResident. Scratch: d_yg/d_yu [I], d_y2 [H].
@@ -64,19 +73,15 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
                                 const uint8_t *xq = nullptr,
                                 const uint8_t *xqs = nullptr,
                                 uint8_t *d_qpack_scratch = nullptr,
-                                uint8_t *d_qscales_scratch = nullptr);
+                                uint8_t *d_qscales_scratch = nullptr,
+                                __half *ygu_batch = nullptr,
+                                __half *hbuf_batch = nullptr,
+                                __half *ypart_batch = nullptr,
+                                QwenMoeGvSlotDev *d_gemv_tbl = nullptr);
 
 // Casts the routed-accumulation buffer to FP16.
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
                                 __half *d_out, int n);
-
-// Per-slot device table for RunQwenMoeRoutedGemmVBatch (built host-side each
-// decode step from the resolved residency slots; 8-byte-aligned 24B payload).
-struct alignas(8) QwenMoeGvSlotDev {
-    int32_t dev_slot;
-    float gs1, gs3, gs2;
-    float coeff;
-};
 
 // Batched routed-expert chain for seq==1 GEMV mode: replaces the per-slot
 // {w1,w3,w2} launch loop (K x 5 kernels/layer) with 4 launches total:

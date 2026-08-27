@@ -260,6 +260,17 @@ inline int EltGrid(int n) { return (n + kEltBlock - 1) / kEltBlock; }
 
 } // namespace
 
+// Defined below (batched-GEMV section); lets the handshake routed-FFN
+// branch target the device-table core directly.
+static cudaError_t MoeGemmVBatchCore(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *slots_dev, int k_slots,
+    int64_t w13_bytes, int64_t s13_bytes,
+    int H, int I, const __half *d_x,
+    __half *ygu, __half *hbuf, __half *ypart, float *acc);
+
 cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 QwenMoeExpertDeviceCache &cache, int layer,
                                 const QwenMoeRoutedSlot *h_slots, int K,
@@ -271,7 +282,11 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
                                 const uint8_t *xq,
                                 const uint8_t *xqs,
                                 uint8_t *d_qpack_scratch,
-                                uint8_t *d_qscales_scratch)
+                                uint8_t *d_qscales_scratch,
+                                __half *ygu_batch,
+                                __half *hbuf_batch,
+                                __half *ypart_batch,
+                                QwenMoeGvSlotDev *d_gemv_tbl)
 {
     // Pass 1 (staging): resolve residency for all K slots up front so miss
     // uploads can stream on the copy channel while the compute chain runs.
@@ -325,38 +340,44 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             tbl[k].gs2 = rec.gs2;
             tbl[k].coeff = h_slots[k].coeff;
         }
-        QwenMoeGvSlotDev *d_tbl = nullptr;
-        __half *ygu_b = nullptr, *hbuf_b = nullptr, *ypart_b = nullptr;
-        if (cudaMallocAsync(&d_tbl, sizeof(QwenMoeGvSlotDev) * K, stream) ==
-                cudaSuccess &&
-            cudaMallocAsync(&ygu_b,
-                            static_cast<size_t>(K) * 2 * I * sizeof(__half),
-                            stream) == cudaSuccess &&
-            cudaMallocAsync(&hbuf_b, static_cast<size_t>(K) * I *
-                                          sizeof(__half),
-                            stream) == cudaSuccess &&
-            cudaMallocAsync(&ypart_b, static_cast<size_t>(K) * H *
-                                           sizeof(__half),
-                            stream) == cudaSuccess) {
-            cudaMemcpyAsync(d_tbl, tbl, sizeof(QwenMoeGvSlotDev) * K,
+        // Scratch: reuse caller-provided arena slices when present; fall
+        // back to async pool allocations otherwise (tests / ad-hoc calls).
+        QwenMoeGvSlotDev *tbl_d = d_gemv_tbl;
+        __half *ygu_b = ygu_batch, *hbuf_b = hbuf_batch,
+               *ypart_b = ypart_batch;
+        bool owned = false;
+        if (!tbl_d) {
+            if (cudaMallocAsync(&tbl_d, sizeof(QwenMoeGvSlotDev) * K,
+                                stream) == cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&ygu_b),
+                                static_cast<size_t>(K) * 2 * I *
+                                    sizeof(__half),
+                                stream) == cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&hbuf_b),
+                                static_cast<size_t>(K) * I * sizeof(__half),
+                                stream) == cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&ypart_b),
+                                static_cast<size_t>(K) * H * sizeof(__half),
+                                stream) == cudaSuccess)
+                owned = true;
+            else {
+                if (tbl_d) cudaFreeAsync(tbl_d, stream);
+                if (ygu_b) cudaFreeAsync(ygu_b, stream);
+                if (hbuf_b) cudaFreeAsync(hbuf_b, stream);
+                if (ypart_b) cudaFreeAsync(ypart_b, stream);
+            }
+        }
+        if (!owned && tbl_d && ygu_b && hbuf_b && ypart_b) {
+            cudaMemcpyAsync(tbl_d, tbl, sizeof(QwenMoeGvSlotDev) * K,
                             cudaMemcpyHostToDevice, stream);
-            const cudaError_t be = RunQwenMoeRoutedGemmVBatch(
+            const cudaError_t be = MoeGemmVBatchCore(
                 stream, cache.d_pack, cache.d_scale, cache.pack_stride,
-                cache.scale_stride, d_tbl, K, w13_b, s13_b, H, I, d_x,
+                cache.scale_stride, tbl_d, K, w13_b, s13_b, H, I, d_x,
                 ygu_b, hbuf_b, ypart_b, d_acc);
-            cudaFreeAsync(d_tbl, stream);
-            cudaFreeAsync(ygu_b, stream);
-            cudaFreeAsync(hbuf_b, stream);
-            cudaFreeAsync(ypart_b, stream);
             if (be == cudaSuccess)
                 return cudaGetLastError();
             return be;
         }
-        // Scratch allocation failed -> fall through to the legacy path.
-        if (d_tbl) cudaFreeAsync(d_tbl, stream);
-        if (ygu_b) cudaFreeAsync(ygu_b, stream);
-        if (hbuf_b) cudaFreeAsync(hbuf_b, stream);
-        if (ypart_b) cudaFreeAsync(ypart_b, stream);
     }
     if (copy_stream) {
         for (int k = 0; k < K; ++k) {
@@ -849,12 +870,15 @@ bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store)
 
 // Router-readback-free routed FFN for decode: composes the GEMV slot table
 // from d_slots + the device meta mirror, runs the batched chain, no host
-// synchronization at any point.
+// synchronization at any point. Scratch slices are caller-owned when the
+// generation arena provides them; nulls fall back to cudaMallocAsync.
 static cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
     cudaStream_t stream, QwenMoeExpertStore &store,
     QwenMoeExpertDeviceCache &cache, int layer,
     const QwenMoeRoutedSlot *d_slots, int K,
     const __half *d_x, int H, int I, float *d_acc,
+    __half *ygu_b, __half *hbuf_b, __half *ypart_b,
+    QwenMoeGvSlotDev *d_tbl,
     std::string &error)
 {
     const size_t flat_base =
@@ -865,22 +889,8 @@ static cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
     const int64_t s13_b =
         static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
 
-    QwenMoeGvSlotDev *d_tbl = nullptr;
-    __half *ygu_b = nullptr, *hbuf_b = nullptr, *ypart_b = nullptr;
-    if (cudaMallocAsync(&d_tbl, sizeof(QwenMoeGvSlotDev) * K, stream) !=
-            cudaSuccess ||
-        cudaMallocAsync(&ygu_b,
-                        static_cast<size_t>(K) * 2 * I * sizeof(__half),
-                        stream) != cudaSuccess ||
-        cudaMallocAsync(&hbuf_b, static_cast<size_t>(K) * I * sizeof(__half),
-                        stream) != cudaSuccess ||
-        cudaMallocAsync(&ypart_b, static_cast<size_t>(K) * H * sizeof(__half),
-                        stream) != cudaSuccess) {
-        error = "no-handshake scratch alloc failed";
-        if (d_tbl) cudaFreeAsync(d_tbl, stream);
-        if (ygu_b) cudaFreeAsync(ygu_b, stream);
-        if (hbuf_b) cudaFreeAsync(hbuf_b, stream);
-        if (ypart_b) cudaFreeAsync(ypart_b, stream);
+    if (!ygu_b || !hbuf_b || !ypart_b || !d_tbl) {
+        error = "no-handshake scratch missing";
         return cudaErrorInvalidValue;
     }
     cudaError_t e = RunQwenMoeGemvGatherTable(stream, d_slots, K,
@@ -891,10 +901,6 @@ static cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
                               cache.pack_stride, cache.scale_stride, d_tbl,
                               K, w13_b, s13_b, H, I, d_x, ygu_b, hbuf_b,
                               ypart_b, d_acc);
-    cudaFreeAsync(d_tbl, stream);
-    cudaFreeAsync(ygu_b, stream);
-    cudaFreeAsync(hbuf_b, stream);
-    cudaFreeAsync(ypart_b, stream);
     return e == cudaSuccess ? cudaGetLastError() : e;
 }
 
@@ -1203,6 +1209,10 @@ cudaError_t RunQwenMoeGeneration(
         (size_t)H,                       // d_y2
         (size_t)SI,                      // d_si (shared scratch)
         (size_t)H,                       // d_sh
+        // Batched-GEMV decode scratch (no-handshake / probe paths):
+        (size_t)kMaxTopK * 2 * I,        // d_ygu_batch [Ktop,2I]
+        (size_t)kMaxTopK * I,            // d_h_batch   [Ktop,I]
+        (size_t)kMaxTopK * H,            // d_yp_batch  [Ktop,H]
     };
     size_t float_sz[] = {
         (size_t)max_seq * nv,   // d_gf
@@ -1221,9 +1231,22 @@ cudaError_t RunQwenMoeGeneration(
     // ceil(I/16) scale bytes), carved once instead of per expert slot.
     const size_t qpack_bytes = (static_cast<size_t>(I) / 2 + 15) & ~size_t(15);
     const size_t qscales_bytes = (static_cast<size_t>(I + 15) / 16 + 15) & ~size_t(15);
+    // Persistent activation-quant buffers (round-20 launch-overhead pass):
+    // replace the per-layer cudaMallocAsync/FreeAsync pairs with arena
+    // slices -- seq==1 decode re-uses the same bytes every layer/step on
+    // one stream, so no extra synchronization is needed.
+    const size_t xact_q_bytes =
+        ((static_cast<size_t>(H) / 2 + 63) / 64) * 64;
+    const size_t xact_qs_bytes =
+        (((static_cast<size_t>(H) + 15) / 16) + 63) / 64 * 64;
+    const size_t gemv_tbl_bytes = ((sizeof(QwenMoeGvSlotDev) *
+                                        static_cast<size_t>(kMaxTopK)) +
+                                   63) /
+                                  64 * 64;
 
     cudaError_t e = ReserveQwenMoeArena(
-        scratch, half_bytes + float_bytes + qpack_bytes + qscales_bytes);
+        scratch, half_bytes + float_bytes + qpack_bytes + qscales_bytes +
+                     xact_q_bytes + xact_qs_bytes + gemv_tbl_bytes);
     if (e != cudaSuccess) { result.error_msg = "arena reserve failed"; return e; }
     void *base = scratch.arena;
 
@@ -1260,6 +1283,9 @@ cudaError_t RunQwenMoeGeneration(
     __half *d_y2 = adv(ph, half_sz[23]);
     __half *d_si = adv(ph, half_sz[24]);
     __half *d_sh = adv(ph, half_sz[25]);
+    __half *d_ygu_batch = adv(ph, half_sz[26]);
+    __half *d_h_batch = adv(ph, half_sz[27]);
+    __half *d_yp_batch = adv(ph, half_sz[28]);
     float *pf = reinterpret_cast<float *>((uint8_t *)base + half_bytes);
     float *d_gf = pf; pf += float_sz[0];
     float *d_betaf = pf; pf += float_sz[1];
@@ -1269,6 +1295,10 @@ cudaError_t RunQwenMoeGeneration(
     uint8_t *d_qpack_scratch =
         reinterpret_cast<uint8_t *>(base) + half_bytes + float_bytes;
     uint8_t *d_qscales_scratch = d_qpack_scratch + qpack_bytes;
+    uint8_t *d_xact_q = d_qscales_scratch + qscales_bytes;
+    uint8_t *d_xact_qs = d_xact_q + xact_q_bytes;
+    QwenMoeGvSlotDev *d_gemv_tbl =
+        reinterpret_cast<QwenMoeGvSlotDev *>(d_xact_qs + xact_qs_bytes);
 
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
@@ -1434,40 +1464,23 @@ cudaError_t RunQwenMoeGeneration(
             QwenMoeRoutedSlot *slots_host = h_slots;
             // Quantize the layer input ONCE for all experts + shared GEMMs
             // (TC path): removes ~8 redundant ActQuant passes per layer.
+            // Buffers are persistent arena slices (round-20 pass) -- the
+            // old cudaMallocAsync/FreeAsync pairs cost two driver calls
+            // per layer on WDDM for bytes that never outlive this layer.
             uint8_t *xq = nullptr, *xqs = nullptr;
             if (qwen::QwenTcFastMath()) {
-                const size_t qb = static_cast<size_t>(seq) * (H / 2);
-                const size_t sbv = static_cast<size_t>(seq) * ((H + 15) / 16);
-                void *pq = nullptr, *ps = nullptr;
-                bool qok = cudaMallocAsync(&pq, qb ? qb : 1, stream) ==
-                               cudaSuccess &&
-                           cudaMallocAsync(&ps, sbv ? sbv : 1, stream) ==
-                               cudaSuccess;
-                if (qok)
-                    qok = lsxcommon::qwen::tc::QuantizeActsNvfp4(
-                              stream, d_postin, seq, H,
-                              static_cast<uint8_t *>(pq),
-                              static_cast<uint8_t *>(ps)) == cudaSuccess;
-                if (qok) {
-                    xq = static_cast<uint8_t *>(pq);
-                    xqs = static_cast<uint8_t *>(ps);
-                } else {
-                    if (pq) cudaFreeAsync(pq, stream);
-                    if (ps) cudaFreeAsync(ps, stream);
-                }
+                xq = d_xact_q;
+                xqs = d_xact_qs;
+                if (lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                        stream, d_postin, seq, H, xq, xqs) != cudaSuccess)
+                    return fail(cudaGetLastError(), "actquant l" +
+                                                        std::to_string(l));
             }
-            struct XqFreer {
-                cudaStream_t s;
-                void *p1, *p2;
-                ~XqFreer() {
-                    if (p1) cudaFreeAsync(p1, s);
-                    if (p2) cudaFreeAsync(p2, s);
-                }
-            } xq_freer{stream, xq, xqs};
             if (nohandshake) {
                 e = RunQwenMoeRoutedGemmVNoHandshake(
                     stream, store, cache, l, d_slots, K, d_postin, H, I,
-                    d_moe_acc, moe_error);
+                    d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
+                    d_gemv_tbl, moe_error);
             } else {
                 e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host,
                                         K, d_postin, H, I, d_moe_acc, d_yg,
@@ -1476,7 +1489,8 @@ cudaError_t RunQwenMoeGeneration(
                                         have_copy ? ev_uploads : nullptr,
                                         ev_front, xq, xqs,
                                         d_qpack_scratch,
-                                        d_qscales_scratch);
+                                        d_qscales_scratch, d_ygu_batch,
+                                        d_h_batch, d_yp_batch, d_gemv_tbl);
             }
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
@@ -1681,7 +1695,8 @@ cudaError_t RunQwenMoeGeneration(
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);
     result.resident_bytes = pw.resident_bytes + half_bytes + float_bytes +
-                            qpack_bytes + qscales_bytes +
+                            qpack_bytes + qscales_bytes + xact_q_bytes +
+                            xact_qs_bytes + gemv_tbl_bytes +
                             sizeof(int32_t) + kv->Bytes();
     result.ok = true;
     return cudaSuccess;
