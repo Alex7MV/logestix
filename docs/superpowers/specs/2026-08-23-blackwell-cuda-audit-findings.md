@@ -925,3 +925,25 @@ Priorities ladder (post-measurement):
   P1 (this stack): CUDA Graph per-layer FFN (round-20c protocol).
   P2: fuse linear-attn epilogues (lin-attn is 20% of GPU budget, biggest
       single non-FFN slice; one fused decode kernel could halve it).
+
+
+### Round 20e — Phase B implemented: per-layer FFN CUDA graphs (latent)
+`LSX_GRAPH_FFN=1` + no-handshake readiness capture, once per layer:
+gather-table -> RunQwenMoeRoutedGemmVBatchCore (4 kernels) -> SharedCombine,
+then a single cudaGraphLaunch per engaged pass; failed captures / launches
+fall back to the plain chain permanently for that layer (capture executes
+no kernels, so fallback is numerically identical by construction).
+Bit-transparency of the captured section pinned by
+test_qwen_nvfp4_gemv "[graph] Batched GEMV core is CUDA-graph transparent"
+(chain vs capture+replay outputs memcmp-equal).
+
+MoeGemmVBatchCore renamed/exported as public
+`RunQwenMoeRoutedGemmVBatchCore` (device-table variant) for the driver,
+the tests and future reuse.
+
+Status on this Windows box: latent (partial residency => readiness never
+trips); e2e ran the fallback chain with batched ids unchanged and
+selfcheck x3 green. Actual graph win measurement deferred to the Linux
+full-residency session together with no-handshake (round-20c acceptance):
+expect collapse of per-layer submission stalls (~32 ms/step WDDM-bounded
+here), plus P2 candidate: fused linear-attn decode epilogue.

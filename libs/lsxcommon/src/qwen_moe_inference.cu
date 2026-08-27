@@ -262,7 +262,7 @@ inline int EltGrid(int n) { return (n + kEltBlock - 1) / kEltBlock; }
 
 // Defined below (batched-GEMV section); lets the handshake routed-FFN
 // branch target the device-table core directly.
-static cudaError_t MoeGemmVBatchCore(
+cudaError_t RunQwenMoeRoutedGemmVBatchCore(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
@@ -370,7 +370,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         if (!owned && tbl_d && ygu_b && hbuf_b && ypart_b) {
             cudaMemcpyAsync(tbl_d, tbl, sizeof(QwenMoeGvSlotDev) * K,
                             cudaMemcpyHostToDevice, stream);
-            const cudaError_t be = MoeGemmVBatchCore(
+            const cudaError_t be = RunQwenMoeRoutedGemmVBatchCore(
                 stream, cache.d_pack, cache.d_scale, cache.pack_stride,
                 cache.scale_stride, tbl_d, K, w13_b, s13_b, H, I, d_x,
                 ygu_b, hbuf_b, ypart_b, d_acc);
@@ -738,7 +738,7 @@ cudaError_t RunQwenMoeGemvGatherTable(
 // Device-table variant consumed by the no-handshake decode path. Requires
 // the table to already live in device memory (built by the host in the
 // handshake flow or by moe_gemv_gather_table_kernel otherwise).
-static cudaError_t MoeGemmVBatchCore(
+cudaError_t RunQwenMoeRoutedGemmVBatchCore(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
@@ -829,7 +829,7 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
                         sizeof(QwenMoeGvSlotDev) * k_slots,
                         cudaMemcpyHostToDevice, stream);
     if (e == cudaSuccess)
-        e = MoeGemmVBatchCore(stream, d_pack_base, d_scale_base, pack_stride,
+        e = RunQwenMoeRoutedGemmVBatchCore(stream, d_pack_base, d_scale_base, pack_stride,
                               scale_stride, d_tbl, k_slots, w13_bytes,
                               s13_bytes, H, I, d_x, ygu, hbuf, ypart, acc);
     cudaFree(d_tbl);
@@ -897,7 +897,7 @@ static cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
                                               store.d_gemv_meta + flat_base,
                                               d_tbl);
     if (e == cudaSuccess)
-        e = MoeGemmVBatchCore(stream, cache.d_pack, cache.d_scale,
+        e = RunQwenMoeRoutedGemmVBatchCore(stream, cache.d_pack, cache.d_scale,
                               cache.pack_stride, cache.scale_stride, d_tbl,
                               K, w13_b, s13_b, H, I, d_x, ygu_b, hbuf_b,
                               ypart_b, d_acc);
@@ -1345,8 +1345,27 @@ cudaError_t RunQwenMoeGeneration(
                     cudaSuccess;
 
     std::string moe_error;
+    // Round-20c/20e: per-layer FFN sub-graphs (no-handshake mode only).
+    // Capture covers gather -> batched GEMV core -> shared combine; all
+    // pointers are session-stable arena slices and the only dynamic data
+    // flows through device memory (d_slots), so replay is bit-transparent
+    // (pinned by test_qwen_nvfp4_gemv "[graph]"). Opt-in LSX_GRAPH_FFN=1;
+    // first engaged pass captures and replays once -- capture never runs
+    // kernels, so failed captures simply fall back to the plain chain.
+    const bool kGraphFfn = std::getenv("LSX_GRAPH_FFN") != nullptr;
+    std::vector<cudaGraph_t> ffn_graphs(pw.layers.size(), nullptr);
+    std::vector<cudaGraphExec_t> ffn_execs(pw.layers.size(), nullptr);
+    auto ffn_graph_teardown = [&] {
+        for (size_t gi = 0; gi < pw.layers.size(); ++gi) {
+            if (ffn_execs[gi]) cudaGraphExecDestroy(ffn_execs[gi]);
+            if (ffn_graphs[gi]) cudaGraphDestroy(ffn_graphs[gi]);
+            ffn_execs[gi] = nullptr;
+            ffn_graphs[gi] = nullptr;
+        }
+    };
     auto fail = [&](cudaError_t err, std::string msg) -> cudaError_t {
         result.error_msg = std::move(msg);
+        ffn_graph_teardown();
         if (t_start) cudaEventDestroy(t_start);
         if (t_ttft) cudaEventDestroy(t_ttft);
         if (t_stop) cudaEventDestroy(t_stop);
@@ -1476,11 +1495,79 @@ cudaError_t RunQwenMoeGeneration(
                     return fail(cudaGetLastError(), "actquant l" +
                                                         std::to_string(l));
             }
+            bool skip_shared = false;
             if (nohandshake) {
-                e = RunQwenMoeRoutedGemmVNoHandshake(
-                    stream, store, cache, l, d_slots, K, d_postin, H, I,
-                    d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
-                    d_gemv_tbl, moe_error);
+                // ── FFN section: per-layer graph replay when enabled ──
+                bool ffn_done = false;
+                if (kGraphFfn) {
+                    if (!ffn_execs[l]) {
+                        const size_t flat_base =
+                            static_cast<size_t>(l) *
+                            static_cast<size_t>(store.num_experts);
+                        const auto &rec0 =
+                            store.records[static_cast<size_t>(l)][0];
+                        cudaError_t cap = cudaStreamBeginCapture(
+                            stream, cudaStreamCaptureModeThreadLocal);
+                        if (cap == cudaSuccess) {
+                            cudaError_t s1 = RunQwenMoeGemvGatherTable(
+                                stream, d_slots, K,
+                                store.d_gemv_meta + flat_base,
+                                d_gemv_tbl);
+                            cudaError_t s2 =
+                                s1 == cudaSuccess
+                                    ? RunQwenMoeRoutedGemmVBatchCore(
+                                          stream, cache.d_pack, cache.d_scale,
+                                          cache.pack_stride,
+                                          cache.scale_stride, d_gemv_tbl, K,
+                                          static_cast<int64_t>(rec0.w1_bytes +
+                                                               rec0.w3_bytes),
+                                          static_cast<int64_t>(rec0.s1_bytes +
+                                                               rec0.s3_bytes),
+                                          H, I, d_postin, d_ygu_batch,
+                                          d_h_batch, d_yp_batch, d_moe_acc)
+                                    : s1;
+                            RunQwenMoeSharedCombine(stream, lw.shared_w1,
+                                                    lw.shared_w2, lw.shared_w3,
+                                                    lw.d_shared_gate,
+                                                    d_postin, seq, H, SI,
+                                                    d_moe_acc, d_si, d_sh,
+                                                    d_gate_val, d_act, xq,
+                                                    xqs);
+                            cudaGraph_t g = nullptr;
+                            if (cudaStreamEndCapture(stream, &g) ==
+                                    cudaSuccess &&
+                                s2 == cudaSuccess &&
+                                cudaGraphInstantiate(&ffn_execs[l], g,
+                                                     nullptr, nullptr, 0) ==
+                                    cudaSuccess) {
+                                ffn_graphs[l] = g;
+                            } else {
+                                // Capture/instantiate failed -> plain chain
+                                // (capture itself executed nothing).
+                                if (g) cudaGraphDestroy(g);
+                                ffn_execs[l] = nullptr;
+                            }
+                        }
+                    }
+                    if (ffn_execs[l] &&
+                        cudaGraphLaunch(ffn_execs[l], stream) ==
+                            cudaSuccess) {
+                        ffn_done = true;
+                        skip_shared = true;   // combine lives inside graph
+                    } else if (ffn_execs[l]) {
+                        cudaGraphExecDestroy(ffn_execs[l]);
+                        cudaGraphDestroy(ffn_graphs[l]);
+                        ffn_execs[l] = nullptr;
+                        ffn_graphs[l] = nullptr;
+                        e = cudaGetLastError();
+                    }
+                }
+                if (!ffn_done && e == cudaSuccess) {
+                    e = RunQwenMoeRoutedGemmVNoHandshake(
+                        stream, store, cache, l, d_slots, K, d_postin, H, I,
+                        d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
+                        d_gemv_tbl, moe_error);
+                }
             } else {
                 e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host,
                                         K, d_postin, H, I, d_moe_acc, d_yg,
@@ -1494,12 +1581,15 @@ cudaError_t RunQwenMoeGeneration(
             }
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
+            if (skip_shared) { /* shared combine executed inside graph */ }
+            else {
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
                                         lw.shared_w3, lw.d_shared_gate,
                                         d_postin, seq, H, SI, d_moe_acc,
                                         d_si, d_sh, d_gate_val, d_act, xq,
                                         xqs);
             if (e != cudaSuccess) return fail(e, "shared l" + std::to_string(l));
+            }
         }
 
         e = qwen::RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin,
@@ -1696,6 +1786,7 @@ cudaError_t RunQwenMoeGeneration(
     cudaEventDestroy(t_start);
     cudaEventDestroy(t_ttft);
     cudaEventDestroy(t_stop);
+    ffn_graph_teardown();
     if (tok_ready) cudaEventDestroy(tok_ready);
     if (copy_stream) cudaStreamDestroy(copy_stream);
     for (int k = 0; k < 16; ++k)

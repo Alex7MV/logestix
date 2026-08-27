@@ -498,3 +498,129 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
     }
     cudaFree(d_routes); cudaFree(d_meta); cudaFree(d_tbl);
 }
+
+// Round-20c protocol pin: the batched chain under stream capture + graph
+// replay must produce BIT-IDENTICAL outputs to the plain launches (graph
+// capture is required to be launch-transparent -- no forbidden ops inside
+// the section).
+TEST_CASE("Batched GEMV core is CUDA-graph transparent",
+          "[qwen][gemm][nvfp4][gemv][batch][graph]")
+{
+    using namespace lsxcommon::qwen_moe;
+    const int H = 128, I = 64, S = 2;   // I=64: slice=2 warps of chunks
+    const int64_t w13b = static_cast<int64_t>(2 * I) * H / 2;
+    const int64_t w2b = static_cast<int64_t>(H) * I / 2;
+    const int64_t s13b = static_cast<int64_t>(2 * I) * H / 16;
+    const int64_t s2b = static_cast<int64_t>(H) * I / 16;
+    const int64_t pack_stride = ((w13b + w2b + 63) / 64) * 64;
+    const int64_t scale_stride = ((s13b + s2b + 63) / 64) * 64;
+
+    std::vector<uint8_t> hp(static_cast<size_t>(pack_stride * S)),
+        hs(static_cast<size_t>(scale_stride * S));
+    for (int e = 0; e < S; ++e) {
+        uint8_t *p = hp.data() + static_cast<size_t>(e) * pack_stride;
+        uint8_t *sc = hs.data() + static_cast<size_t>(e) * scale_stride;
+        for (int64_t i = 0; i < pack_stride; ++i)
+            p[i] = static_cast<uint8_t>((i * 29 + e * 31) & 0xFF);
+        for (int64_t i = 0; i < scale_stride; ++i)
+            sc[i] = static_cast<uint8_t>(128 + ((i + 7 * e) % 48));
+    }
+    QwenMoeGvSlotDev tbl[S];
+    for (int k = 0; k < S; ++k) {
+        tbl[k].dev_slot = k;
+        tbl[k].gs1 = 0.25f;
+        tbl[k].gs3 = 0.125f;
+        tbl[k].gs2 = 0.0625f;
+        tbl[k].coeff = k == 0 ? 0.75f : -0.5f;
+    }
+    std::vector<__half> hx(H);
+    for (int i = 0; i < H; ++i)
+        hx[i] = __float2half(float((i % 9) - 4) * 0.25f);
+
+    uint8_t *d_pack, *d_scale;
+    QwenMoeGvSlotDev *d_tblA = nullptr, *d_tblB = nullptr;
+    __half *dx, *yguA, *hbufA, *ypartA, *yguB, *hbufB, *ypartB;
+    float *accA, *accB;
+    cudaMalloc(&d_pack, hp.size());
+    cudaMalloc(&d_scale, hs.size());
+    cudaMemcpy(d_pack, hp.data(), hp.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scale, hs.data(), hs.size(), cudaMemcpyHostToDevice);
+    auto alloc_set = [&](QwenMoeGvSlotDev **t, __half **g, __half **hb,
+                         __half **yp, float **ac) {
+        cudaMalloc(t, sizeof(QwenMoeGvSlotDev) * S);
+        cudaMalloc(reinterpret_cast<void **>(g),
+                   static_cast<size_t>(S) * 2 * I * 2);
+        cudaMalloc(reinterpret_cast<void **>(hb),
+                   static_cast<size_t>(S) * I * 2);
+        cudaMalloc(reinterpret_cast<void **>(yp),
+                   static_cast<size_t>(S) * H * 2);
+        cudaMalloc(reinterpret_cast<void **>(ac), static_cast<size_t>(H) * 4);
+    };
+    alloc_set(&d_tblA, &yguA, &hbufA, &ypartA, &accA);
+    alloc_set(&d_tblB, &yguB, &hbufB, &ypartB, &accB);
+    cudaMemcpy(d_tblA, tbl, sizeof(tbl), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tblB, tbl, sizeof(tbl), cudaMemcpyHostToDevice);
+    cudaMalloc(&dx, static_cast<size_t>(H) * 2);
+    cudaMemcpy(dx, hx.data(), static_cast<size_t>(H) * 2,
+               cudaMemcpyHostToDevice);
+    std::vector<float> acc_seed(H, 0.25f);
+    cudaMemcpy(accA, acc_seed.data(), H * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(accB, acc_seed.data(), H * 4, cudaMemcpyHostToDevice);
+
+    // (a) Plain chain launch.
+    REQUIRE(RunQwenMoeRoutedGemmVBatchCore(
+                nullptr, d_pack, d_scale, pack_stride, scale_stride, d_tblA,
+                S, w13b, s13b, H, I, dx, yguA, hbufA, ypartA, accA) ==
+            cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    // (b) Captured + replayed through a graph on a non-blocking stream.
+    cudaStream_t gs = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&gs, cudaStreamNonBlocking) ==
+            cudaSuccess);
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t gexec = nullptr;
+    REQUIRE(cudaStreamBeginCapture(gs,
+                                   cudaStreamCaptureModeThreadLocal) ==
+            cudaSuccess);
+    cudaError_t ce = RunQwenMoeRoutedGemmVBatchCore(
+        gs, d_pack, d_scale, pack_stride, scale_stride, d_tblB, S, w13b,
+        s13b, H, I, dx, yguB, hbufB, ypartB, accB);
+    if (ce != cudaSuccess || cudaStreamEndCapture(gs, &graph) !=
+                                 cudaSuccess) {
+        INFO("capture failed: " << cudaGetErrorString(cudaGetLastError()));
+        CHECK(false);
+    } else {
+        REQUIRE(cudaGraphInstantiate(&gexec, graph, nullptr, nullptr, 0) ==
+                cudaSuccess);
+        REQUIRE(cudaGraphLaunch(gexec, gs) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(gs) == cudaSuccess);
+
+        std::vector<char> a(static_cast<size_t>(S) * 2 * I * 2),
+            b(static_cast<size_t>(S) * 2 * I * 2);
+        cudaMemcpy(a.data(), yguA, a.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(b.data(), yguB, b.size(), cudaMemcpyDeviceToHost);
+        CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+        a.resize(static_cast<size_t>(S) * I * 2);
+        b.resize(a.size());
+        cudaMemcpy(a.data(), hbufA, a.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(b.data(), hbufB, b.size(), cudaMemcpyDeviceToHost);
+        CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+        a.resize(static_cast<size_t>(S) * H * 2);
+        b.resize(a.size());
+        cudaMemcpy(a.data(), ypartA, a.size(), cudaMemcpyDeviceToHost);
+        cudaMemcpy(b.data(), ypartB, b.size(), cudaMemcpyDeviceToHost);
+        CHECK(std::memcmp(a.data(), b.data(), a.size()) == 0);
+        std::vector<float> fa(H), fb(H);
+        cudaMemcpy(fa.data(), accA, H * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(fb.data(), accB, H * 4, cudaMemcpyDeviceToHost);
+        CHECK(std::memcmp(fa.data(), fb.data(), H * sizeof(float)) == 0);
+    }
+    if (gexec) cudaGraphExecDestroy(gexec);
+    if (graph) cudaGraphDestroy(graph);
+    cudaStreamDestroy(gs);
+    cudaFree(d_pack); cudaFree(d_scale); cudaFree(dx);
+    cudaFree(d_tblA); cudaFree(d_tblB);
+    cudaFree(yguA); cudaFree(hbufA); cudaFree(ypartA); cudaFree(accA);
+    cudaFree(yguB); cudaFree(hbufB); cudaFree(ypartB); cudaFree(accB);
+}

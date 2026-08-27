@@ -99,6 +99,20 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *slots_host_tbl, int k_slots,
+    int64_t w13_bytes, int64_t s13_bytes,
+    int H, int I, const __half *d_x,
+    __half *ygu, __half *hbuf, __half *ypart, float *acc);
+
+// Device-table variant of the batched chain (round-20c/20e): launches the
+// four GEMV-batch kernels directly against an already-resident device slot
+// table. External linkage so the graph-capture transparency test can pin
+// launch semantics; the decode driver uses it for both the chain and the
+// per-layer graph path.
+cudaError_t RunQwenMoeRoutedGemmVBatchCore(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
     const QwenMoeGvSlotDev *slots_dev, int k_slots,
     int64_t w13_bytes, int64_t s13_bytes,
     int H, int I, const __half *d_x,
