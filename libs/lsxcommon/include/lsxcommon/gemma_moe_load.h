@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "lsxcommon/expert_store.h"
+#include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gemma_moe_convert.h"
 
 namespace lsxcommon {
@@ -146,14 +147,10 @@ inline int ComputeGemmaResidentSlots(std::size_t free_bytes,
     if (total_experts <= 0) return 0;
     if (explicit_slots > 0) return explicit_slots < total_experts
                                    ? explicit_slots : total_experts;
-    constexpr std::size_t kReserveBytes = std::size_t{6} << 30;
-    const std::size_t usable =
-        free_bytes > kReserveBytes ? free_bytes - kReserveBytes : 0;
-    if (per_expert_bytes == 0) return total_experts;
-    const std::size_t affordable = usable / per_expert_bytes;
-    return affordable >= static_cast<std::size_t>(total_experts)
-               ? total_experts
-               : static_cast<int>(affordable);
+    // Unified launch-strategy policy (resource_governor.h) — single reserve
+    // constant for all models, maximizes expert-cache VRAM utilization.
+    return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
+                                       total_experts);
 }
 
 GemmaExpertDb load_gemma_expert_index(const std::string &model_path,

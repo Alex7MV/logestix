@@ -10,6 +10,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/resource_governor.h"
 
 namespace lsxcommon {
 
@@ -138,9 +139,6 @@ bool Qwen35MoeModel::Load()
     if (!explicit_slots) {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-            constexpr size_t kReserveBytes = size_t{6} << 30;
-            const size_t usable =
-                free_bytes > kReserveBytes ? free_bytes - kReserveBytes : 0;
             // Worst-case per-expert device footprint mirrors the allocator's
             // stride math (pack + scale, arena-aligned).
             size_t max_pack = 0, max_scale = 0;
@@ -163,16 +161,15 @@ bool Qwen35MoeModel::Load()
             };
             const size_t per_expert =
                 align_up(max_pack) + align_up(max_scale);
-            if (per_expert > 0) {
-                size_t affordable = usable / per_expert;
-                if (affordable < static_cast<size_t>(total_experts))
-                    log::info(absl::StrCat(
-                        "[qwen-moe-model] VRAM allows ", affordable, "/",
-                        total_experts,
-                        " resident experts; LRU covers the rest"));
-                slots = static_cast<int>(std::min<size_t>(
-                    affordable, static_cast<size_t>(total_experts)));
-            }
+            // Unified launch-strategy policy (resource_governor.h): maximize
+            // expert-cache VRAM utilization with a small central reserve.
+            slots = lifecycle::ExpertCacheSlots(free_bytes, per_expert,
+                                                total_experts);
+            if (slots > 0 && slots < total_experts)
+                log::info(absl::StrCat(
+                    "[qwen-moe-model] free=", free_bytes >> 20, "MiB, ",
+                    slots, "/", total_experts,
+                    " experts resident; LRU covers the rest"));
         }
     }
     if (slots <= 0) slots = 4;

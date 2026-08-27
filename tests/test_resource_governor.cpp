@@ -224,3 +224,46 @@ TEST_CASE("vram reconciliation detects over-accounting drift", "[governor][lease
     REQUIRE_FALSE(gov.ReconcileVram(3ull << 30));  // 3+6 > 8+slack(256MiB)
     gov.Shutdown();
 }
+
+// ── Expert-cache VRAM residency policy (launch strategy, all models) ──
+
+TEST_CASE("ExpertCacheSlots: reserve subtracted, clamped, degenerate-safe",
+          "[governor][residency]")
+{
+    using lsxcommon::lifecycle::ExpertCacheSlots;
+    using lsxcommon::lifecycle::kExpertCacheVramReserveBytes;
+
+    // Reserve is a real constant and stays bounded (never zero: decode
+    // needs KV/activation/TC-workspace headroom).
+    REQUIRE(kExpertCacheVramReserveBytes > 0);
+    REQUIRE(kExpertCacheVramReserveBytes <= (4ull << 30));
+
+    const std::size_t per_expert = 2ull << 20;  // 2 MiB
+
+    SECTION("free below reserve -> nothing fits")
+    {
+        REQUIRE(ExpertCacheSlots((2ull << 30) - 1, per_expert, 10240) == 0);
+        REQUIRE(ExpertCacheSlots(0, per_expert, 10240) == 0);
+    }
+    SECTION("affordable slots from usable bytes")
+    {
+        // usable = free - reserve
+        const std::size_t free_bytes = kExpertCacheVramReserveBytes +
+                                       (5 * per_expert);
+        REQUIRE(ExpertCacheSlots(free_bytes, per_expert, 10240) == 5);
+    }
+    SECTION("clamped to total experts")
+    {
+        const std::size_t free_bytes = kExpertCacheVramReserveBytes +
+                                       (9999 * per_expert);
+        REQUIRE(ExpertCacheSlots(free_bytes, per_expert, 256) == 256);
+    }
+    SECTION("zero per-expert degenerates to total")
+    {
+        REQUIRE(ExpertCacheSlots((1ull << 30), 0, 512) == 512);
+    }
+    SECTION("zero total experts -> 0")
+    {
+        REQUIRE(ExpertCacheSlots((1ull << 30), per_expert, 0) == 0);
+    }
+}

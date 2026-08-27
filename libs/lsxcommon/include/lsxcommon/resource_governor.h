@@ -157,4 +157,45 @@ private:
     std::uint64_t ram_committed_ = 0;
 };
 
+// ── Expert-cache VRAM residency policy (launch strategy, all models) ──
+//
+// Single source of truth for how aggressively a model's resident-expert
+// device cache may claim VRAM at load time. Every model with an expert
+// cache (qwen-moe, gemma, deepseek) derives its slot count from here so
+// free VRAM is maximally utilized instead of relying on per-model
+// conservative guesses. Explicit per-model env overrides take precedence
+// at the call sites and bypass this estimate.
+namespace lifecycle {
+
+// Headroom kept OUT of the expert cache for KV cache growth, decode
+// activations, tensor-core workspaces and desktop/DWM pressure. On WDDM
+// (Windows) an overcommitted device silently spills subsequent allocations
+// into shared system memory, which throttles the whole decode loop — so
+// the reserve must stay comfortably above the steady-state runtime usage.
+// The load-time allocators degrade by halves when an allocation fails, so
+// an optimistic estimate costs a retry, not a crash.
+inline constexpr std::size_t kExpertCacheVramReserveBytes = 4ull << 30;
+
+// Pure, host-only slot estimator: usable = free - reserve, clamped to the
+// model's total expert count. per_expert_bytes == 0 (unknown geometry)
+// degenerates to "everything resident"; free below reserve yields 0 and
+// the caller applies its graceful LRU floor.
+inline int ExpertCacheSlots(std::size_t free_bytes,
+                            std::size_t per_expert_bytes,
+                            int total_experts)
+{
+    if (total_experts <= 0) return 0;
+    if (per_expert_bytes == 0) return total_experts;
+    const std::size_t usable =
+        free_bytes > kExpertCacheVramReserveBytes
+            ? free_bytes - kExpertCacheVramReserveBytes
+            : 0;
+    const std::size_t affordable = usable / per_expert_bytes;
+    return static_cast<int>(affordable < static_cast<std::size_t>(total_experts)
+                                ? affordable
+                                : static_cast<std::size_t>(total_experts));
+}
+
+} // namespace lifecycle
+
 } // namespace lsxcommon

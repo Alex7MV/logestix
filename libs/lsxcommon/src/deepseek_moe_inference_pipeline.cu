@@ -3,6 +3,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/resource_governor.h"
 #include "lsxcommon/deepseek_moe_inference_csa.h"
 #include "lsxcommon/sampling.h"
 #include "deepseek_moe_load.cuh"
@@ -472,10 +473,26 @@ InferenceResult RunInferenceModel(
     // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS (0 disables). Each slot holds one
     // expert's packed w1/w2/w3 + scales (~13 MB at V4-Flash geometry).
     {
-        int slots = 256;
-        if (const char* env = std::getenv("LSX_DEEPSEEK_EXPERT_CACHE_SLOTS"))
-            slots = std::atoi(env);
         const int total_experts = topo.num_layers * topo.experts_per_layer;
+        bool explicit_slots = false;
+        int slots = 0;
+        if (const char* env = std::getenv("LSX_DEEPSEEK_EXPERT_CACHE_SLOTS")) {
+            slots = std::atoi(env);
+            explicit_slots = true;   // verbatim: 0 legitimately disables
+        }
+        // Unified launch-strategy policy (resource_governor.h): maximize
+        // expert-cache VRAM utilization with a small central reserve.
+        if (!explicit_slots && total_experts > 0 &&
+            !expert_db.entries.empty()) {
+            size_t free_bytes = 0, total_bytes = 0;
+            if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
+                slots = lifecycle::ExpertCacheSlots(
+                    free_bytes,
+                    static_cast<size_t>(routed_pack_total) +
+                        static_cast<size_t>(routed_scale_total),
+                    total_experts);
+            }
+        }
         if (slots > 0 && total_experts > 0 && !expert_db.entries.empty()) {
             expert_cache.slots = std::min(slots, total_experts);
             expert_cache.pack_stride = routed_pack_total;
