@@ -86,6 +86,13 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
 void SetQwenTcFastMath(bool on);
 bool QwenTcFastMath();
 
+// seq==1 decode-path GEMV toggle (round-18 lever). Opt-in process-wide
+// flag; when enabled together with fast-math, RunQwenNvfp4Gemm routes
+// eligible seq==1 shapes (K % 32 == 0, K >= 256, <= 12 MiB packed+scales,
+// no fused segments) to the weight-streaming GEMV kernel.
+void SetQwenSeq1Gemv(bool on);
+bool QwenSeq1Gemv();
+
 cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
@@ -94,6 +101,16 @@ cudaError_t RunQwenNvfp4Gemm(
     // split at N/2 when bounds is null, else four bounds-driven ranges.
     // Ignored by the scalar fallback path.
     const float *seg_wgs_dev = nullptr, const int *seg_bounds_dev = nullptr);
+
+// seq==1 decode-path weight-streaming NVFP4 GEMV (round-18 lever): y[n] =
+// sum_k x[k] * dequant(packed[n*K+k]) with FP32 accumulate. Streams packed
+// E2M1 weights straight from global memory (coalesced uint4 loads) -- no
+// shared-memory slab staging. Requires K % 32 == 0; k-order free (tolerance
+// class), run-to-run deterministic. External linkage for direct testing.
+cudaError_t RunQwenNvfp4GemmSeq1GemmV(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    __half *y, int K, int N, bool acc = false);
 
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate

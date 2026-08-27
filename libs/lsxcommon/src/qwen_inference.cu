@@ -38,6 +38,23 @@ bool QwenTcFastMath()
     return g_qwen_tc_fast_math.load(std::memory_order_relaxed);
 }
 
+// seq==1 decode-path GEMV toggle (round-18 lever). Process-wide; opt-in --
+// micro-benchmarks show 3.6-8.5x kernel wins vs TC on expert-class shapes,
+// but end-to-end tok/s on the real MoE workloads measured flat (the aux
+// GEMMs it intercepts are not the bottleneck), so production routing keeps
+// TC default until a launch-overhead/pipeline pass lands.
+static std::atomic<bool> g_qwen_seq1_gemv{false};
+
+void SetQwenSeq1Gemv(bool on)
+{
+    g_qwen_seq1_gemv.store(on, std::memory_order_relaxed);
+}
+
+bool QwenSeq1Gemv()
+{
+    return g_qwen_seq1_gemv.load(std::memory_order_relaxed);
+}
+
 namespace {
 
 __device__ __forceinline__ float silu_dev(float x)
@@ -1087,6 +1104,142 @@ __global__ void fused_linear_conv_zab_kernel(
     }
 }
 
+// ── seq==1 weight-streaming NVFP4 GEMV (round-18 decode lever) ──────────────
+// At seq==1 every NVFP4 GEMM degenerates into a batch of dot products over
+// rows of W. Both the 16x16x32 tile kernel and the TC-MMA decode kernel
+// stage weight slabs through shared memory; with a single activation row
+// that staging throttles effective bandwidth to ~30 GB/s against a
+// multi-TB/s DRAM ceiling. This kernel streams packed E2M1 nibbles straight
+// from global memory with coalesced uint4 loads (32 elements per lane load)
+// -- no shared-memory slab, no MMA, no cp.async pipeline.
+//
+// K parallelism: one warp owns a [1024/KP .. ]-element K-slice of one output
+// row; per-row partials meet in shared memory and are summed in slice order
+// by lane 0 (fixed partitioning + fixed order => run-to-run bit-stable).
+// Warp reduction uses __shfl_down_sync only.
+//
+// Host contract: seq==1 fast-math dispatch only; requires K % 32 == 0
+// (16 B alignment of every packed row) and K % 16 == 0 so scale blocks never
+// straddle rows. Numeric class: FP32 accumulate, k-order free -- tolerance
+// vs the scalar path exactly like the TC fast-math routes (see
+// docs/NVIDIA_DOCS_NVFP4_MEMORY.md §1 decode semantics).
+template <int KP>
+__global__ void qwen_nvfp4_gemv_kernel(
+    const __half *__restrict__ x,
+    const uint8_t *__restrict__ packed,
+    const uint8_t *__restrict__ scales,
+    float global_scale, __half *__restrict__ y,
+    int K, int N, bool acc_in)
+{
+    constexpr int WARPS = 8;
+    constexpr int ROWS = WARPS / KP;
+    static_assert(ROWS >= 1 && KP <= WARPS);
+    __shared__ float sp[WARPS];
+
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    // No early return below: the __syncthreads() in the partial-sum merge
+    // must be reached uniformly by all threads of the block.
+    float acc = 0.0f;
+    const int row = blockIdx.x * ROWS + (warp / KP);
+    if (row < N) {
+        const int k_half = K >> 1;
+        const uint8_t *wrow =
+            packed + static_cast<int64_t>(row) * k_half;
+        const uint8_t *srow =
+            scales + static_cast<int64_t>(row) * (K >> 4);
+        const int kb = (K / KP) * (warp % KP);       // slice base element
+        const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
+        const int chunks = (K / KP) >> 5;            // 32-element units
+        // Two independent accumulator chains (ILP x2), merged in fixed
+        // order -- run-to-run deterministic.
+        float acc0 = 0.0f, acc1 = 0.0f;
+        const bool x_vec =
+            (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
+        for (int c = lane; c < chunks; c += 32) {
+            const uint4 pw = wv[c];
+            const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+            // One 32-element chunk spans two per-16 scale blocks:
+            // elements 0..15 of the chunk -> srow[sb], 16..31 -> sb+1.
+            // Byte j of the packed word holds elements 2j (low nibble)
+            // and 2j+1 (high nibble).
+            const int sb = (kb >> 4) + 2 * c;
+            const float sc0 = E4M3ScaleToFloat(srow[sb]);
+            const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+            const int xb = kb + c * 32;
+            const __half2 *xh = x_vec
+                ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+#pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const bool first_block = b < 8;
+                const float scl = first_block ? sc0 : sc1;
+                float xv0, xv1;
+                if (x_vec) {
+                    const __half2 pair = xh[b];
+                    xv0 = __half2float(pair.x);
+                    xv1 = __half2float(pair.y);
+                } else {
+                    xv0 = __half2float(x[xb + 2 * b]);
+                    xv1 = __half2float(x[xb + 2 * b + 1]);
+                }
+                acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+                acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+            }
+        }
+        acc = acc0 + acc1;
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    // Lane 0 of slice 0 sums its row's slices in fixed order.
+    if (lane == 0 && (warp % KP) == 0) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        const int r = blockIdx.x * ROWS + (warp / KP);
+        if (r < N) {
+            const float v = t * global_scale;
+            y[r] = acc_in ? __float2half(__half2float(y[r]) + v)
+                          : __float2half(v);
+        }
+    }
+}
+
+cudaError_t LaunchQwenNvfp4GemmSeq1GemmV(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    __half *y, int K, int N, bool acc_in)
+{
+    if (!x || !packed || !scales || !y || K <= 0 || N <= 0) return cudaErrorInvalidValue;
+    if ((K & 31) != 0) return cudaErrorInvalidValue;
+    // Slice width floor 1024 elements keeps lanes busy (>=32 chunks/slice).
+    // Raise KP while enough warps remain resident to cover the SM array.
+    int kp = 1;
+    for (int cand : {8, 4, 2}) {
+        if ((K / cand) >= 1024 &&
+            (static_cast<int64_t>(N) * cand) >= 1024) { kp = cand; break; }
+    }
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const dim3 grid((N + ROWS - 1) / ROWS);
+        qwen_nvfp4_gemv_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
+            x, packed, scales, global_scale, y, K, N, acc_in);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
+
 } // namespace
 
 // MoE variant: matches kernels::SwigluKernel<Precise,false> bit-for-bit
@@ -1569,14 +1722,33 @@ cudaError_t RunQwenFusedOProj(
 // accumulate. Dispatches to the shared-memory tile kernel for N>=8 && K>=16,
 // else the per-element kernel (tiny shapes). External linkage so tests can
 // call it directly.
-cudaError_t RunQwenNvfp4Gemm(
-    cudaStream_t stream, const __half *x,
+cudaError_t RunQwenNvfp4Gemm(    cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int seq, int K, int N, bool acc /* = false */,
     const float *seg_wgs_dev, const int *seg_bounds_dev)
 {
     if (!x || !packed || !scales || !y || seq <= 0 || K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
+    // Round-18 decode lever: opt-in via SetQwenSeq1Gemv(true). At seq==1
+    // the weight-streaming GEMV (CUDA-core direct global reads) beats both
+    // the TC tile kernel and the TC-MMA decode kernel on small weight
+    // tensors -- MoE expert shapes (~0.6 MB) see a 3.6-5x kernel-time cut.
+    // On large dense tensors (>~12 MiB packed+scales) TC W4A4 keeps an
+    // edge, so eligibility is size-bounded (micro data in
+    // test_blackwell_micro_gemm; decode semantics per
+    // docs/NVIDIA_DOCS_NVFP4_MEMORY.md §1).
+    static constexpr int64_t kGemvMaxBytes = int64_t{12} << 20;
+    if (QwenSeq1Gemv() &&
+        g_qwen_tc_fast_math.load(std::memory_order_relaxed) && seq == 1 &&
+        K >= 256 && !seg_wgs_dev && !seg_bounds_dev &&
+        (int64_t)(K / 2) * N + (int64_t)((K + 15) / 16) * N <=
+            kGemvMaxBytes) {
+        const cudaError_t gv = LaunchQwenNvfp4GemmSeq1GemmV(
+            stream, x, packed, scales, global_scale, y, K, N, acc);
+        // InvalidValue = shape contract mismatch -> keep falling back.
+        if (gv != cudaErrorNotSupported && gv != cudaErrorInvalidValue)
+            return gv;
+    }
     // Blackwell tensor-core fast path (audit Phase 3 / F-01): W4A4 mxf4nvf4
     // MMA. Tolerance-class numerics -- only reachable when the runtime
     // fast-math toggle is set. Falls back to the bit-exact scalar path on
@@ -1614,6 +1786,18 @@ cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x, int seq,
     if (!w.d_packed || w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
     return RunQwenNvfp4Gemm(stream, x, w.d_packed, w.d_scales,
                             w.global_scale, y, seq, w.cols, w.rows, /*acc=*/false);
+}
+
+// seq==1 decode-path weight-streaming GEMV entry (external linkage so tests
+// can call it directly). Requires K % 32 == 0 (16 B row alignment); the
+// k-partition heuristic lives in the launch helper.
+cudaError_t RunQwenNvfp4GemmSeq1GemmV(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    __half *y, int K, int N, bool acc)
+{
+    return LaunchQwenNvfp4GemmSeq1GemmV(stream, x, packed, scales,
+                                        global_scale, y, K, N, acc);
 }
 
 // Fused decoder (seq=1) full-attention layer. Task-1 version composes the

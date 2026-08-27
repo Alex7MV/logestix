@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_tc_gemm.h"
 #include "lsxcommon/log.h"
 
 namespace {
@@ -46,6 +47,9 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
         {4096, 9728, "mlp_gate_up"},
         {9728, 4096, "mlp_down"},
         {1536, 4096, "head_proj"},
+        // Round-18 MoE expert decode shapes (qwen35moe geometry).
+        {2048, 512, "moe_w13_half"},
+        {512, 2048, "moe_w2"},
     };
 
     cudaStream_t st = nullptr;
@@ -53,6 +57,22 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
     cudaEvent_t t0, t1;
     REQUIRE(cudaEventCreate(&t0) == cudaSuccess);
     REQUIRE(cudaEventCreate(&t1) == cudaSuccess);
+
+    auto bench_call =
+        [&](auto &&call_fn) -> float {
+        for (int w = 0; w < 5; ++w)
+            REQUIRE(call_fn() == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+        constexpr int kIters = 50;
+        REQUIRE(cudaEventRecord(t0, st) == cudaSuccess);
+        for (int it = 0; it < kIters; ++it)
+            REQUIRE(call_fn() == cudaSuccess);
+        REQUIRE(cudaEventRecord(t1, st) == cudaSuccess);
+        REQUIRE(cudaEventSynchronize(t1) == cudaSuccess);
+        float ms = -1.0f;
+        REQUIRE(cudaEventElapsedTime(&ms, t0, t1) == cudaSuccess);
+        return ms * 1000.0f / kIters;
+    };
 
     for (const auto &sh : shapes) {
         const int K = sh.K, N = sh.N;
@@ -73,32 +93,35 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
         cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
         cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
 
-        // Warmup.
-        for (int w = 0; w < 5; ++w)
-            REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
-                        st, dx, dp, ds, 0.125f, dy, 1, K, N) == cudaSuccess);
-        REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
-
-        constexpr int kIters = 50;
-        REQUIRE(cudaEventRecord(t0, st) == cudaSuccess);
-        for (int it = 0; it < kIters; ++it)
-            REQUIRE(lsxcommon::qwen::RunQwenNvfp4Gemm(
-                        st, dx, dp, ds, 0.125f, dy, 1, K, N) == cudaSuccess);
-        REQUIRE(cudaEventRecord(t1, st) == cudaSuccess);
-        REQUIRE(cudaEventSynchronize(t1) == cudaSuccess);
-        float ms = -1.0f;
-        REQUIRE(cudaEventElapsedTime(&ms, t0, t1) == cudaSuccess);
-        const float us_per_call = ms * 1000.0f / kIters;
+        // Scalar/tile dispatch baseline (fast-math off).
+        lsxcommon::qwen::SetQwenTcFastMath(false);
+        const float us_scalar = bench_call([&] {
+            return lsxcommon::qwen::RunQwenNvfp4Gemm(
+                st, dx, dp, ds, 0.125f, dy, 1, K, N);
+        });
+        // Weight-streaming GEMV.
+        const float us_gemv = bench_call([&] {
+            return lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+                st, dx, dp, ds, 0.125f, dy, K, N);
+        });
+        // TC W4A4 mxf4nvf4 (current fast-math production baseline at seq==1).
+        const float us_tc = bench_call([&] {
+            return lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                st, dx, dp, ds, 0.125f, dy, 1, K, N, false, nullptr, nullptr);
+        });
 
         // Weight bytes touched per call: packed + scales.
         const double mbytes = double(hp.size() + hs.size()) / (1024.0 * 1024.0);
-        const double eff_gbs = mbytes / (us_per_call * 1e-3) / 1000.0;
+        const double gemv_bw = mbytes / (us_gemv * 1e-3);   // MiB/s
         {
             char msg[256];
             snprintf(msg, sizeof(msg),
-                     "[MICRO][%s] K=%d N=%d %.1f us/call, weight_mb=%.1f, "
-                     "effective_bw=%.0f GB/s",
-                     sh.label, K, N, us_per_call, mbytes, eff_gbs);
+                     "[MICRO][%s] K=%d N=%d tile=%.1f us/call, tc=%.1f, "
+                     "gemv=%.1f us/call (tile/x%.2f), weight_mb=%.1f, "
+                     "gemv_bw=%.0f MiB/s",
+                     sh.label, K, N, us_scalar, us_tc, us_gemv,
+                     us_gemv > 0.0f ? us_scalar / us_gemv : 0.0f,
+                     mbytes, gemv_bw);
             lsxcommon::log::info(msg);
         }
 

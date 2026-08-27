@@ -341,9 +341,14 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         // y_g|y_u = [w1; w3] . x   [2I,H]; then y_2 = w2 . silu(y_g)*y_u.
         // Fused single-GEMM form requires the TC epilogue for per-segment
         // scales; the scalar path ignores them, so it keeps the split pair.
+        // LSX_GEMV_EXPERTS=1 routes routed experts through the seq==1
+        // weight-streaming GEMV instead (FP16 activations -- W?A16 numeric
+        // class); experimental round-18 decode-lever probe.
+        static const bool k_gemv_experts =
+            std::getenv("LSX_GEMV_EXPERTS") != nullptr;
         const bool tc_fused =
             qwen::QwenTcFastMath() && store.d_seg_wgs != nullptr &&
-            (I & 15) == 0;
+            (I & 15) == 0 && !k_gemv_experts;
         const uint8_t *w1_split = pack;
         const uint8_t *w3_split = pack + rec.w1_bytes;
         const uint8_t *s1_split = scale;

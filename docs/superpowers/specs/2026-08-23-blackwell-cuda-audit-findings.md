@@ -722,3 +722,51 @@ M-dimension entirely). Bandwidth floor says ~420 us/token of weight
 traffic -> 700+ tok/s realistic ceiling vs current 65. Options: dedicated
 weight-streaming GEMV kernel for seq==1, or cuBLASLt NVFP4 path. Router
 dots/select (~7% traced) second; head GEMM third.
+
+
+## Round 19 — decode GEMV for seq==1 (2026-08-27)
+
+### Shipped (opt-in): weight-streaming NVFP4 GEMV
+`qwen_nvfp4_gemv_kernel` (`qwen_inference.cu`): one warp owns a K-slice of an
+output row; packed E2M1 nibbles stream straight from global memory via
+coalesced `uint4` loads (32 elements/lane load) -- no shared-memory slab, no
+MMA, no cp.async. Per-row partials merge through a shfl tree + ordered smem
+sum (fixed partitioning -> run-to-run bit-stable). Host entries:
+`RunQwenNvfp4GemmSeq1GemmV` (direct, tests) and opt-in
+`SetQwenSeq1Gemv(true)` dispatch inside `RunQwenNvfp4Gemm` under fast-math
+(K%32==0, K>=256, <=12 MiB packed+scales, no fused segments).
+
+### TDD net & the scale-mapping trap
+Suite `test_qwen_nvfp4_gemv`: host-ref parity, run-to-run bit-determinism,
+dispatch-reached (bitwise-equal vs direct entry), and an adversarial
+chunk-scale-block pin. LESSON: the first kernel passed parity while mapping
+nibbles onto the wrong half of the 32-element chunk's two scale blocks --
+the pseudo-random scale pattern was octet-quantized so ~87% of adjacent
+block pairs decoded identically and masked the bug. The adversarial test
+alternates scale bytes 2^-6 / 2^7 so any mixup explodes. Every dequant
+kernel test needs a block-alternating scale pattern.
+
+### Micro (release, RTX 5060 Ti 36 SM / 448 GB/s theory)
+GEMV vs TC mxf4nvf4 per-kernel: 4096x4096 63 vs 116 us; 4096x9728 128 vs
+160; 9728x4096 178 vs 155; head-class 1536x4096 29 vs 50; MoE expert class
+2048x512 / 512x2048 14/13 vs 50/59 us (3.6-4.7x). Effective DRAM ~120-167
+GB/s (~35% theory) in this seq==1 latency-bound shape region.
+
+### E2E (128 tok, FAST_MATH=1, qwen3.5-35B-A3B, this box)
+TC baseline 20.7 tok/s. Default opt-in OFF == baseline bits exactly.
+GEMV experts probe (`LSX_GEMV_EXPERTS=1`, routed w1/w3/w2 split path via the
+public entry) 21.9 tok/s (+6%) with coherent text. Flat default result
+root-caused: the routed-expert chain calls `tc::RunQwenTcGemmPreQuant`
+DIRECTLY and bypasses the public entry entirely -- the entry-level lever
+only reaches aux/shared-down shapes that are not the bottleneck on this
+box (workload is launch-latency heavy: >1100 small launches/step).
+First-step logits FP16-act (W?A16) vs TC W4A4: mean|d|~0.44 across vocab --
+a different but equally valid tolerance-class basin (both selfcheck-pass;
+text style differs: TC phrase-loop vs GEMV clean sentence-loop).
+
+### Decision / next levers
+Kernel ships tested but OFF by default (LSX_DEC_ENABLE precedent); the
+routed chain needs decode-driver integration (single-stream fused expert
+loop reading d_x directly, or prequant-GEMV form) rather than entry-level
+routing. Launch-overhead reduction (>1100 tiny launches/step) is the first
+order term before any bandwidth ceiling can matter at seq==1.
