@@ -2206,3 +2206,10 @@ file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD)
 target_compile_definitions(test_code_naming_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD}\"")
 add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
+
+# Kimi MoE expert cache bookkeeping (host-only, pure logic, no CUDA).
+add_executable(test_kimi_moe_expert_cache test_kimi_moe_expert_cache.cpp)
+target_link_libraries(test_kimi_moe_expert_cache PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_kimi_moe_expert_cache PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include")
+add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
