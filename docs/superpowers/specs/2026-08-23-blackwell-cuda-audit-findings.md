@@ -770,3 +770,29 @@ routed chain needs decode-driver integration (single-stream fused expert
 loop reading d_x directly, or prequant-GEMV form) rather than entry-level
 routing. Launch-overhead reduction (>1100 tiny launches/step) is the first
 order term before any bandwidth ceiling can matter at seq==1.
+
+
+### Round 19b — batched routed-expert GEMV chain (2026-08-27)
+`RunQwenMoeRoutedGemmVBatch` (qwen_moe_inference.cu): the per-slot {w1,w3,w2}
+loop (K x 5 kernels/layer) becomes 4 launches per layer -- w13 GEMV batch
+(rows = K*2I, gs1|gs3 split at I), elementwise swiglu, down GEMV batch to
+per-slot partials, ascending-order coeff reduce into d_acc (identical fp32
+add order to the legacy coeff_add chain -> deterministic). Device slot
+table {dev_slot,gs1,g3,g2,coeff} built host-side after residency resolve
+and uploaded per step; scratch via cudaMallocAsync (~57 KiB). Gate:
+`LSX_GEMV_EXPERTS=1`, zero cache misses this step (misses keep the legacy
+fencing contract), I%32==0 && H%32==0.
+
+TDD: test_qwen_nvfp4_gemv [batch] -- ground truth is the PINNED single-row
+GEMV entry invoked per stage (gate/up slab slices + down on host-silu'd
+h), all stage buffers bit-compared, acc within 1e-6 rel. Two earlier test
+drafts taught a lesson: hand-written host references drift (an unnoticed
+scale-index divergence in a "correct-looking" ref cost hours); when a
+pinned production kernel exists for the same math, USE IT as the oracle.
+
+E2E (release, 128 tok, FAST_MATH=1): baseline 19.8 tok/s / ttft 714 ms ->
+batched 21.0 tok/s (+6%) / ttft 581 ms (-19%). Text coherent. SelfCheck x3
+passes under the flag. Default (flag off) bit-unchanged vs TC baseline.
+Launch count cut: ~840 fewer launches/step, yet only +6% e2e on this box --
+confirms launch overhead shares time with per-layer host syncs and small
+attention kernels; deeper gains need the single-stream decode driver pass.

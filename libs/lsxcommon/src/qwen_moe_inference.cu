@@ -296,6 +296,67 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             copy_stream ? &missed[k] : nullptr);
         if (dev_slots[k] < 0) return cudaErrorInvalidValue;
     }
+    // ── Batched GEMV decode chain (round-19 lever, experimental) ────────────
+    // Steady state (full residency => zero misses) routes all K slots
+    // through 4 launches instead of K x 5. Any miss falls back to the
+    // legacy per-slot flow so copy-stream fencing keeps its exact contract.
+    static const bool k_gemv_batch =
+        std::getenv("LSX_GEMV_EXPERTS") != nullptr;
+    bool any_miss = false;
+    for (int k = 0; k < K; ++k) any_miss = any_miss || missed[k];
+    if (k_gemv_batch && !any_miss && (I & 31) == 0 && (H & 31) == 0 &&
+        store.records[layer][h_slots[0].eid].w1_bytes > 0) {
+        const auto &rec0 =
+            store.records[static_cast<size_t>(layer)]
+                         [static_cast<size_t>(h_slots[0].eid)];
+        const int64_t w13_b =
+            static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
+        const int64_t s13_b =
+            static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
+        QwenMoeGvSlotDev tbl[16];
+        for (int k = 0; k < K; ++k) {
+            const auto &rec =
+                store.records[static_cast<size_t>(layer)]
+                             [static_cast<size_t>(h_slots[k].eid)];
+            tbl[k].dev_slot = dev_slots[k];
+            tbl[k].gs1 = rec.gs1;
+            tbl[k].gs3 = rec.gs3;
+            tbl[k].gs2 = rec.gs2;
+            tbl[k].coeff = h_slots[k].coeff;
+        }
+        QwenMoeGvSlotDev *d_tbl = nullptr;
+        __half *ygu_b = nullptr, *hbuf_b = nullptr, *ypart_b = nullptr;
+        if (cudaMallocAsync(&d_tbl, sizeof(QwenMoeGvSlotDev) * K, stream) ==
+                cudaSuccess &&
+            cudaMallocAsync(&ygu_b,
+                            static_cast<size_t>(K) * 2 * I * sizeof(__half),
+                            stream) == cudaSuccess &&
+            cudaMallocAsync(&hbuf_b, static_cast<size_t>(K) * I *
+                                          sizeof(__half),
+                            stream) == cudaSuccess &&
+            cudaMallocAsync(&ypart_b, static_cast<size_t>(K) * H *
+                                           sizeof(__half),
+                            stream) == cudaSuccess) {
+            cudaMemcpyAsync(d_tbl, tbl, sizeof(QwenMoeGvSlotDev) * K,
+                            cudaMemcpyHostToDevice, stream);
+            const cudaError_t be = RunQwenMoeRoutedGemmVBatch(
+                stream, cache.d_pack, cache.d_scale, cache.pack_stride,
+                cache.scale_stride, d_tbl, K, w13_b, s13_b, H, I, d_x,
+                ygu_b, hbuf_b, ypart_b, d_acc);
+            cudaFreeAsync(d_tbl, stream);
+            cudaFreeAsync(ygu_b, stream);
+            cudaFreeAsync(hbuf_b, stream);
+            cudaFreeAsync(ypart_b, stream);
+            if (be == cudaSuccess)
+                return cudaGetLastError();
+            return be;
+        }
+        // Scratch allocation failed -> fall through to the legacy path.
+        if (d_tbl) cudaFreeAsync(d_tbl, stream);
+        if (ygu_b) cudaFreeAsync(ygu_b, stream);
+        if (hbuf_b) cudaFreeAsync(hbuf_b, stream);
+        if (ypart_b) cudaFreeAsync(ypart_b, stream);
+    }
     if (copy_stream) {
         for (int k = 0; k < K; ++k) {
             if (!missed[k]) continue;
@@ -425,6 +486,269 @@ cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
                                 __half *d_out, int n)
 {
     lsxcommon::kernels::F32toTKernel<__half><<<EltGrid(n), kEltBlock, 0, stream>>>(d_acc, d_out, n);
+    return cudaGetLastError();
+}
+
+// ── Batched routed-expert GEMV chain (round-19 decode lever) ────────────────
+// Replaces the per-slot {w1,w3,w2} loop (K x 5 kernels/layer) with 4 launches:
+// w13 GEMV batch -> elementwise swiglu -> down GEMV batch (per-slot partials)
+// -> ordered coeff reduce. Same weight-streaming contract as the
+// qwen_nvfp4_gemv_kernel core: one warp owns a K-slice of one flat output
+// row, packed E2M1 nibbles stream via coalesced uint4 loads, partials merge
+// through a shfl tree + ordered shared-memory sum. Determinism contract:
+// fixed KP partitioning; the down stage writes per-slot partials (single
+// writer per cell) and the reduce adds slots in ascending order -- the exact
+// add order of the legacy per-slot coeff_add chain. Requires I % 32 == 0 &&
+// H % 32 == 0 (16 B row-alignment of every packed weight row).
+namespace {
+
+constexpr int kGemvBatchWarps = 8;
+
+__device__ __forceinline__ float moe_gemv_dot(
+    const __half *__restrict__ x, const uint8_t *__restrict__ wrow,
+    const uint8_t *__restrict__ srow, int kb, int chunks, int lane)
+{
+    float acc = 0.0f;
+    const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
+    const bool x_vec = (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
+    for (int c = lane; c < chunks; c += 32) {
+        const uint4 pw = wv[c];
+        const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+        // Byte j of a chunk holds elements 2j (lo nibble) / 2j+1 (hi);
+        // elements 0..15 of the chunk use scale block sb, 16..31 use sb+1.
+        const int sb = (kb >> 4) + 2 * c;
+        const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb]);
+        const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb + 1]);
+        const int xb = kb + c * 32;
+        const __half2 *xh = x_vec
+            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+#pragma unroll
+        for (int b = 0; b < 16; ++b) {
+            const float scl = (b < 8) ? sc0 : sc1;
+            float xv0, xv1;
+            if (x_vec) {
+                const __half2 pair = xh[b];
+                xv0 = __half2float(pair.x);
+                xv1 = __half2float(pair.y);
+            } else {
+                xv0 = __half2float(x[xb + 2 * b]);
+                xv1 = __half2float(x[xb + 2 * b + 1]);
+            }
+            acc += xv0 * gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+            acc += xv1 * gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+        }
+    }
+    // Fixed-order in-warp merge: ascending offset shfl-down tree.
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    return acc;   // only lanes holding tree totals are meaningful here
+}
+
+// ygu[s*2I + r] = dot(w13 row r of slot s, x) * (r < I ? gs1 : gs3).
+// The fused w13 slab is [2I, H] row-major starting at the slot's packed base.
+template <int KP>
+__global__ void moe_gemv_w13_batch_kernel(
+    const __half *__restrict__ x_row,
+    const uint8_t *__restrict__ pack_base,
+    const uint8_t *__restrict__ scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *__restrict__ slots,
+    int k_slots, int I, int H, __half *__restrict__ ygu)
+{
+    constexpr int ROWS = kGemvBatchWarps / KP;
+    static_assert(ROWS >= 1 && KP <= kGemvBatchWarps);
+    __shared__ float sp[kGemvBatchWarps];
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int rflat = blockIdx.x * ROWS + (warp / KP);
+    const int total = k_slots * 2 * I;
+    float acc = 0.0f;
+    if (rflat < total) {
+        const int s = rflat / (2 * I);
+        const int r = rflat - s * 2 * I;
+        const QwenMoeGvSlotDev slot = slots[s];
+        const float gs = (r < I) ? slot.gs1 : slot.gs3;
+        acc = moe_gemv_dot(
+                  x_row,
+                  pack_base +
+                      static_cast<int64_t>(slot.dev_slot) * pack_stride +
+                      static_cast<int64_t>(r) * (H >> 1),
+                  scale_base +
+                      static_cast<int64_t>(slot.dev_slot) * scale_stride +
+                      static_cast<int64_t>(r) * (H >> 4),
+                  (KP > 1 ? (H / KP) * (warp % KP) : 0), H >> 5, lane) *
+              gs;
+    }
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    if (lane == 0 && (warp % KP) == 0 && rflat < total) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        ygu[rflat] = __float2half(t);
+    }
+}
+
+__global__ void moe_gemv_swiglu_batch_kernel(
+    const __half *__restrict__ ygu, int n_half /*== k_slots * I*/,
+    int I, __half *__restrict__ hbuf)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_half) return;
+    // Slot-major halves: gate rows [0,I), up rows [I,2I) per slot.
+    const int s = i / I;
+    const int j = i - s * I;
+    const float g = __half2float(ygu[static_cast<int64_t>(s) * 2 * I + j]);
+    const float u =
+        __half2float(ygu[static_cast<int64_t>(s) * 2 * I + I + j]);
+    hbuf[i] = __float2half((g / (1.0f + expf(-g))) * u);
+}
+
+// ypart[s*H + r] = dot(w2 row r of slot s, hbuf[s]) * gs2.
+// Down slab [H, I] lives at byte offset w13_bytes in the slot's packed base;
+// its scales at offset s13_bytes.
+template <int KP>
+__global__ void moe_gemv_down_batch_kernel(
+    const __half *__restrict__ hbuf,
+    const uint8_t *__restrict__ pack_base,
+    const uint8_t *__restrict__ scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    int64_t w13_bytes, int64_t s13_bytes,
+    const QwenMoeGvSlotDev *__restrict__ slots,
+    int k_slots, int I, int H, __half *__restrict__ ypart)
+{
+    constexpr int ROWS = kGemvBatchWarps / KP;
+    static_assert(ROWS >= 1 && KP <= kGemvBatchWarps);
+    __shared__ float sp[kGemvBatchWarps];
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int rflat = blockIdx.x * ROWS + (warp / KP);
+    const int total = k_slots * H;
+    float acc = 0.0f;
+    if (rflat < total) {
+        const int s = rflat / H;
+        const int r = rflat - s * H;
+        const QwenMoeGvSlotDev slot = slots[s];
+        acc = moe_gemv_dot(
+                  hbuf + static_cast<int64_t>(s) * I,
+                  pack_base +
+                      static_cast<int64_t>(slot.dev_slot) * pack_stride +
+                      w13_bytes + static_cast<int64_t>(r) * (I >> 1),
+                  scale_base +
+                      static_cast<int64_t>(slot.dev_slot) * scale_stride +
+                      s13_bytes + static_cast<int64_t>(r) * (I >> 4),
+                  (KP > 1 ? (I / KP) * (warp % KP) : 0), I >> 5, lane) *
+              slot.gs2;
+    }
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    if (lane == 0 && (warp % KP) == 0 && rflat < total) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        ypart[rflat] = __float2half(t);
+    }
+}
+
+// acc[r] += sum_s coeff_s * ypart[s][r], slots in ascending order -- the
+// identical fp32 add order as the legacy per-slot coeff_add chain.
+__global__ void moe_gemv_reduce_batch_kernel(
+    const __half *__restrict__ ypart,
+    const QwenMoeGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
+    float *__restrict__ acc)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_elems) return;
+    float t = acc[i];
+    for (int s = 0; s < k_slots; ++s)
+        t += slots[s].coeff * __half2float(ypart[static_cast<int64_t>(s) *
+                                                       n_elems + i]);
+    acc[i] = t;
+}
+
+int MoeGemvPickKp(int cols, int rows)
+{
+    for (int cand : {8, 4, 2}) {
+        if (cols / cand >= 1024 &&
+            static_cast<int64_t>(rows) * cand >= 1024)
+            return cand;
+    }
+    return 1;
+}
+
+} // namespace
+
+cudaError_t RunQwenMoeRoutedGemmVBatch(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *slots_dev, int k_slots,
+    int64_t w13_bytes, int64_t s13_bytes,
+    int H, int I, const __half *d_x,
+    __half *ygu, __half *hbuf, __half *ypart, float *acc)
+{
+    if (!d_pack_base || !d_scale_base || !slots_dev || !d_x || !ygu ||
+        !hbuf || !ypart || !acc || k_slots <= 0 || k_slots > 16 ||
+        H <= 0 || I <= 0 || w13_bytes <= 0 || s13_bytes <= 0 ||
+        (H & 31) != 0 || (I & 31) != 0)
+        return cudaErrorInvalidValue;
+
+    cudaError_t e;
+    {
+        const int rows = k_slots * 2 * I;
+        const int kp = MoeGemvPickKp(H, rows);
+        constexpr int WARPS = kGemvBatchWarps;
+        auto launch = [&](auto tag) -> cudaError_t {
+            constexpr int KPc = decltype(tag)::value;
+            const int ROWSp = WARPS / KPc;
+            moe_gemv_w13_batch_kernel<KPc><<<(rows + ROWSp - 1) / ROWSp,
+                                             WARPS * 32, 0, stream>>>(
+                d_x, d_pack_base, d_scale_base, pack_stride, scale_stride,
+                slots_dev, k_slots, I, H, ygu);
+            return cudaGetLastError();
+        };
+        switch (kp) {
+        case 8:  e = launch(std::integral_constant<int, 8>{}); break;
+        case 4:  e = launch(std::integral_constant<int, 4>{}); break;
+        case 2:  e = launch(std::integral_constant<int, 2>{}); break;
+        default: e = launch(std::integral_constant<int, 1>{}); break;
+        }
+    }
+    if (e != cudaSuccess) return e;
+
+    const int n_swiglu = k_slots * I;
+    moe_gemv_swiglu_batch_kernel<<<(n_swiglu + 255) / 256, 256, 0, stream>>>(
+        ygu, n_swiglu, I, hbuf);
+    e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+
+    {
+        const int rows = k_slots * H;
+        const int kp = MoeGemvPickKp(I, rows);
+        constexpr int WARPS = kGemvBatchWarps;
+        auto launch = [&](auto tag) -> cudaError_t {
+            constexpr int KPc = decltype(tag)::value;
+            const int ROWSp = WARPS / KPc;
+            moe_gemv_down_batch_kernel<KPc><<<(rows + ROWSp - 1) / ROWSp,
+                                              WARPS * 32, 0, stream>>>(
+                hbuf, d_pack_base, d_scale_base, pack_stride, scale_stride,
+                w13_bytes, s13_bytes, slots_dev, k_slots, I, H, ypart);
+            return cudaGetLastError();
+        };
+        switch (kp) {
+        case 8:  e = launch(std::integral_constant<int, 8>{}); break;
+        case 4:  e = launch(std::integral_constant<int, 4>{}); break;
+        case 2:  e = launch(std::integral_constant<int, 2>{}); break;
+        default: e = launch(std::integral_constant<int, 1>{}); break;
+        }
+    }
+    if (e != cudaSuccess) return e;
+
+    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        ypart, slots_dev, k_slots, H, acc);
     return cudaGetLastError();
 }
 

@@ -69,6 +69,35 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
                                 __half *d_out, int n);
 
+// Per-slot device table for RunQwenMoeRoutedGemmVBatch (built host-side each
+// decode step from the resolved residency slots; 8-byte-aligned 24B payload).
+struct alignas(8) QwenMoeGvSlotDev {
+    int32_t dev_slot;
+    float gs1, gs3, gs2;
+    float coeff;
+};
+
+// Batched routed-expert chain for seq==1 GEMV mode: replaces the per-slot
+// {w1,w3,w2} launch loop (K x 5 kernels/layer) with 4 launches total:
+// w13 GEMV batch ([2I,K]*x per slot), elementwise swiglu, down GEMV batch
+// ([H,I]*h per slot -> per-slot partials), ordered coeff reduce
+// acc[r] += sum_s coeff_s * ypart[s][r] (ascending s == legacy add order).
+//
+// Device addressing mirrors the STAGED FUSED cache slot layout: per-slot
+// packed base = d_pack + dev_slot*pack_stride with [w13][w2] packed and
+// [s13][s2] scales separated by w13_bytes / s13_bytes respectively.
+// Requires H % 32 == 0 && I % 32 == 0 (GEMV row-alignment contract).
+// Scratch ygu/hbuf/ypart are caller-owned [Ktop*...] buffers. Deterministic:
+// fixed partitioning + fixed-order reduce.
+cudaError_t RunQwenMoeRoutedGemmVBatch(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *slots_dev, int k_slots,
+    int64_t w13_bytes, int64_t s13_bytes,
+    int H, int I, const __half *d_x,
+    __half *ygu, __half *hbuf, __half *ypart, float *acc);
+
 // MoE FFN epilogue (HF parity): out = routed_acc + sigmoid(gate.x) * shared.
 // d_routed_acc: [seq,H] fp32; scratch_i [seq,SI], scratch_h [seq,H];
 // d_gate_val [seq] fp32 workspace. sw1=gate_proj [SI,H], sw3=up_proj,
