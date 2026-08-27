@@ -232,6 +232,7 @@ target_link_libraries(lsxcommon_qwen_tc_cu
 
 add_library(lsxcommon_kimi_cu OBJECT
     src/kimi_moe_inference.cu
+    src/kimi_moe_expert_cache.cu
 )
 set_target_properties(lsxcommon_kimi_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

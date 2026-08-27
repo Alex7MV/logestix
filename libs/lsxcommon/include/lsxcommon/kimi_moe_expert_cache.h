@@ -27,9 +27,14 @@
 struct KimiExpertEntry;
 
 namespace lsxcommon {
+namespace gpu {
+namespace expert_store {
 template <typename TEntry>
 struct ExpertStore;
-using KimiExpertDb = ExpertStore<KimiExpertEntry>;   // defined in kimi_moe_load.h
+} // namespace expert_store
+} // namespace gpu
+
+using KimiExpertDb = gpu::expert_store::ExpertStore<KimiExpertEntry>;
 
 template <typename TEntry>
 struct ExpertStore;
@@ -181,12 +186,12 @@ struct KimiExpertCacheState {
     KimiMoeExpertDeviceCache *device = nullptr;  // CUDA arena (nullable)
 };
 
-cudaError_t AllocateKimiMoeExpertCache(const ExpertStore<KimiExpertEntry> &db,
+cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db,
                                        int slots,
                                        KimiMoeExpertDeviceCache *&out,
                                        std::string &err);
 void FreeKimiMoeExpertDeviceCache(KimiMoeExpertDeviceCache *&cache);
-cudaError_t UploadKimiMoeExpertBatch(const ExpertStore<KimiExpertEntry> &db,
+cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
                                      const KimiExpertCacheState &state,
                                      const KimiMoeCacheBatch &batch, int layer,
                                      int experts_per_layer);
