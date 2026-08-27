@@ -148,3 +148,141 @@ TEST_CASE("router top-k deterministic with lower-index tie-break",
 }
 
 
+
+// Batched gather-dequant must be BIT-IDENTICAL to sequential per-expert
+// dequant (same decode LUTs, same scale indexing) — the batched decode
+// fast-path relies on it for bit-preserving parity with the per-expert path.
+using lsxcommon::gemma::GemmaDequantBatch;
+TEST_CASE("gemma batched dequant matches single-expert bits", "[gemma][moe][batch]")
+{
+    const int K = 5;
+    const int64_t elems = 256 * 2 + 32;  // even and block-aligned (/16)
+    const int64_t packed_bytes = elems / 2;
+    const int64_t scales_bytes = elems / 16;
+
+    std::mt19937_64 rng(12345);
+    std::vector<std::vector<uint8_t>> packs(K), scales(K);
+    GemmaDequantBatch batch{};
+    float host_gs[16];
+    for (int k = 0; k < K; ++k) {
+        packs[k].resize(packed_bytes);
+        scales[k].resize(scales_bytes);
+        for (auto &b : packs[k]) b = static_cast<uint8_t>(rng() & 0xFF);
+        // Include a zero-scale byte (e4==0 -> 0.0f decode contract).
+        for (auto &b : scales[k]) b = static_cast<uint8_t>(rng() % 0x7F);
+        scales[k][k % scales_bytes] = 0x00;
+        batch.packs[k] = nullptr;   // filled after cudaMalloc below
+        batch.scales[k] = nullptr;
+        batch.global_scales[k] = 1.0f + 0.25f * (k + 1);
+        host_gs[k] = batch.global_scales[k];
+    }
+
+    uint8_t *d_pack_all = nullptr, *d_scale_all = nullptr;
+    REQUIRE(cudaMalloc(&d_pack_all, K * packed_bytes) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_scale_all, K * scales_bytes) == cudaSuccess);
+    for (int k = 0; k < K; ++k) {
+        cudaMemcpy(d_pack_all + k * packed_bytes, packs[k].data(),
+                   packed_bytes, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_scale_all + k * scales_bytes, scales[k].data(),
+                   scales_bytes, cudaMemcpyHostToDevice);
+        batch.packs[k] = d_pack_all + k * packed_bytes;
+        batch.scales[k] = d_scale_all + k * scales_bytes;
+    }
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    __nv_bfloat16 *d_ref = nullptr, *d_got = nullptr;
+    REQUIRE(cudaMalloc(&d_ref, K * elems * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_got, K * elems * 2) == cudaSuccess);
+
+    // Reference: K sequential single-expert dequants.
+    for (int k = 0; k < K; ++k) {
+        REQUIRE(lsxcommon::gemma::RunGemmaSingleDequant(
+                    stream, batch.packs[k], packed_bytes, batch.scales[k],
+                    scales_bytes, host_gs[k],
+                    d_ref + static_cast<size_t>(k) * elems,
+                    elems) == cudaSuccess);
+    }
+    // Candidate: one gathered launch.
+    REQUIRE(lsxcommon::gemma::RunGemmaBatchedDequant(
+                stream, batch, elems, K, d_got) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<__nv_bfloat16> h_ref(K * elems), h_got(K * elems);
+    cudaMemcpy(h_ref.data(), d_ref, h_ref.size() * 2, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_got.data(), d_got, h_got.size() * 2, cudaMemcpyDeviceToHost);
+    CHECK(std::memcmp(h_ref.data(), h_got.data(),
+                      h_ref.size() * sizeof(__nv_bfloat16)) == 0);
+
+    cudaFree(d_pack_all); cudaFree(d_scale_all);
+    cudaFree(d_ref); cudaFree(d_got);
+    cudaStreamDestroy(stream);
+}
+
+// Two-phase lm-head argmax must match a sequential per-row fp32 reference
+// (same ascending-d accumulation order, deterministic tie-break).
+TEST_CASE("gemma logits argmax two-phase matches sequential reference",
+          "[gemma][moe][logits]")
+{
+    const int vocab = 1024 * 3 + 17;  // not a multiple of block/grid span
+    const int hidden = 64;
+    std::mt19937_64 rng(777);
+    std::vector<__nv_bfloat16> embed(static_cast<size_t>(vocab) * hidden);
+    for (auto &v : embed) v = __float2bfloat16((rng() % 2000 - 1000) / 512.0f);
+    // Plant one clear global max row (positive, aligned embedding).
+    const int best_v = vocab - 5;
+    for (int d = 0; d < hidden; ++d)
+        embed[static_cast<size_t>(best_v) * hidden + d] =
+            __float2bfloat16(4.0f);
+    std::vector<__nv_bfloat16> x(hidden);
+    for (auto &v : x) v = __float2bfloat16(0.25f);
+
+    __nv_bfloat16 *d_embed = nullptr, *d_x = nullptr;
+    float *d_ref_logits = nullptr, *d_blkbest = nullptr;
+    int32_t *d_idx = nullptr, *d_blkidx = nullptr;
+    REQUIRE(cudaMalloc(&d_embed, embed.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_x, x.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ref_logits, static_cast<size_t>(vocab) *
+                                           sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_blkbest,
+                       (static_cast<size_t>(vocab) + 4096) *
+                           sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_blkidx,
+                       (static_cast<size_t>(vocab) + 4096) *
+                           sizeof(int32_t)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_idx, sizeof(int32_t)) == cudaSuccess);
+    cudaMemcpy(d_embed, embed.data(), embed.size() * 2,
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, x.data(), x.size() * 2, cudaMemcpyHostToDevice);
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    REQUIRE(lsxcommon::gemma::RunGemmaLogitsArgmax(
+                stream, d_embed, d_x, vocab, hidden, /*cap=*/0.f, d_idx,
+                nullptr, d_ref_logits, d_blkbest, d_blkidx) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    int got = -1;
+    cudaMemcpy(&got, d_idx, sizeof(int), cudaMemcpyDeviceToHost);
+    // CPU reference: identical ascending-d fp32 accumulation.
+    float ref_best = -1e30f;
+    int ref_arg = -1;
+    std::vector<float> hl(static_cast<size_t>(vocab));
+    for (int v = 0; v < vocab; ++v) {
+        float acc = 0.f;
+        for (int d = 0; d < hidden; ++d)
+            acc += __bfloat162float(embed[static_cast<size_t>(v) * hidden +
+                                           static_cast<size_t>(d)]) *
+                   __bfloat162float(x[static_cast<size_t>(d)]);
+        hl[static_cast<size_t>(v)] = acc;
+        if (acc > ref_best) { ref_best = acc; ref_arg = v; }
+    }
+    WARN("got=" << got << " ref_arg=" << ref_arg
+                << " best_v=" << best_v);
+    CHECK(got == ref_arg);
+
+    cudaFree(d_embed); cudaFree(d_x); cudaFree(d_ref_logits);
+    cudaFree(d_blkbest); cudaFree(d_blkidx); cudaFree(d_idx);
+    cudaStreamDestroy(stream);
+}

@@ -134,3 +134,30 @@ TEST_CASE("gemma expert store parse counters", "[gemma][loader]") {
     std::filesystem::remove_all(out.parent_path());
 }
 
+
+// Residency budget (qwen 17348a1 analogy): all-experts target bounded by
+// free VRAM with a 6 GiB headroom reserve; explicit env override wins.
+TEST_CASE("gemma resident slot budget: VRAM-bounded, clamped, env-override",
+          "[gemma][loader][cache]")
+{
+    using lsxcommon::gemma::ComputeGemmaResidentSlots;
+    const size_t MiB = 1024ull * 1024ull;
+    const size_t per_expert = 5 * MiB;
+
+    // Ample VRAM: every expert resident.
+    CHECK(ComputeGemmaResidentSlots(32ull * 1024 * MiB, per_expert, 3840)
+          == 3840);
+    // Exactly the pool fits: boundary inclusive.
+    CHECK(ComputeGemmaResidentSlots(6144ull * MiB + 3840ull * per_expert,
+                                    per_expert, 3840) == 3840);
+    // Tight: (free - 6 GiB) / per_expert slots.
+    CHECK(ComputeGemmaResidentSlots(6144ull * MiB + 1000ull * per_expert,
+                                    per_expert, 3840) == 1000);
+    // Under-reserve floor: nothing fits -> caller applies its own fallback.
+    CHECK(ComputeGemmaResidentSlots(2ull * 1024 * MiB, per_expert, 3840) == 0);
+    // Env override wins and is clamped to the pool.
+    CHECK(ComputeGemmaResidentSlots(32ull * 1024 * MiB, per_expert, 3840,
+                                    512) == 512);
+    CHECK(ComputeGemmaResidentSlots(32ull * 1024 * MiB, per_expert, 3840,
+                                    9999) == 3840);
+}

@@ -133,6 +133,29 @@ struct GemmaExpertEntry {
 
 using GemmaExpertDb = lsxcommon::gpu::expert_store::ExpertStore<GemmaExpertEntry>;
 
+// Resident-slot budget for the routed-expert device cache (qwen 17348a1
+// analogy): keep every expert device-resident, bounded by free VRAM with a
+// fixed headroom reserve; explicit env override (LSX_GEMMA_EXPERT_CACHE_SLOTS,
+// passed pre-parsed as @p explicit_slots) takes precedence and is clamped to
+// the pool size. Returns the slot count (0 when not even one expert fits).
+inline int ComputeGemmaResidentSlots(std::size_t free_bytes,
+                                     std::size_t per_expert_bytes,
+                                     int total_experts,
+                                     int explicit_slots = -1)
+{
+    if (total_experts <= 0) return 0;
+    if (explicit_slots > 0) return explicit_slots < total_experts
+                                   ? explicit_slots : total_experts;
+    constexpr std::size_t kReserveBytes = std::size_t{6} << 30;
+    const std::size_t usable =
+        free_bytes > kReserveBytes ? free_bytes - kReserveBytes : 0;
+    if (per_expert_bytes == 0) return total_experts;
+    const std::size_t affordable = usable / per_expert_bytes;
+    return affordable >= static_cast<std::size_t>(total_experts)
+               ? total_experts
+               : static_cast<int>(affordable);
+}
+
 GemmaExpertDb load_gemma_expert_index(const std::string &model_path,
                                       int num_layers, int experts_per_layer);
 

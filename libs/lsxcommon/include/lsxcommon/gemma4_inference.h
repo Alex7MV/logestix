@@ -123,6 +123,19 @@ struct GenWorkspace {
     __nv_bfloat16 *d_gu = nullptr;       // [seq0][I_max] dense-branch up
     __nv_bfloat16 *d_eg = nullptr;       // [MI] expert gate/geglu
     __nv_bfloat16 *d_eu = nullptr;       // [MI] expert up
+    // Batched decode (seq==1) staging: dequant rows [K][...] for all top-K
+    // experts in one gather launch; batched GEMM outputs.
+    __nv_bfloat16 *d_bw1 = nullptr;      // [K][MI*H]
+    __nv_bfloat16 *d_bw3 = nullptr;      // [K][MI*H]
+    __nv_bfloat16 *d_bw2 = nullptr;      // [K][H*MI]
+    __nv_bfloat16 *d_beg = nullptr;      // [K][MI]  gate projections
+    __nv_bfloat16 *d_beu = nullptr;      // [K][MI]  up projections
+    __nv_bfloat16 *d_beo = nullptr;      // [K][H]   down outputs
+    float *d_bselw = nullptr;            // [K] selected weights
+    // Two-phase logits/argmax scratch: per-row then per-block winners.
+    // Sized [V + kLogitsMaxBlocks].
+    float *d_lg_best = nullptr;
+    int32_t *d_lg_idx = nullptr;
 
     size_t seq0 = 0, q_rows_max = 0, kv_rows_max = 0, rot_half_max = 0;
     int K = 0;
@@ -142,6 +155,10 @@ struct GenWorkspace {
         F((void **)&d_eout); F((void **)&d_acc);
         F((void **)&d_gg); F((void **)&d_gu);
         F((void **)&d_eg); F((void **)&d_eu);
+        F((void **)&d_bw1); F((void **)&d_bw3); F((void **)&d_bw2);
+        F((void **)&d_beg); F((void **)&d_beu); F((void **)&d_beo);
+        F((void **)&d_bselw);
+        F((void **)&d_lg_best); F((void **)&d_lg_idx);
         if (h_sel) { cudaFreeHost(h_sel); h_sel = nullptr; }
         if (h_selw) { cudaFreeHost(h_selw); h_selw = nullptr; }
         if (h_arg) { cudaFreeHost(h_arg); h_arg = nullptr; }
@@ -159,6 +176,7 @@ struct GemmaGenContext {
         delete[] ec.h_slot_owner;
         delete[] ec.h_lru;
         ec = {};
+        if (ev_router) cudaEventDestroy(ev_router);
     }
     cublasHandle_t cublas = nullptr;
     GenWorkspace ws;
@@ -170,10 +188,44 @@ struct GemmaGenContext {
     gpu::ExpertDeviceCache ec{};
     int64_t pack_stride = 0;
     int64_t scale_stride = 0;
+    // Router-handoff fence: host busy-polls this event per layer instead of
+    // a full cudaStreamSynchronize (created with the expert cache).
+    cudaEvent_t ev_router = nullptr;
 };
 
 GemmaGenContext *CreateGemmaGenContext();
 void DestroyGemmaGenContext(GemmaGenContext *ctx);
+
+// Single-expert NVFP4 elementwise dequant (unified Nvfp4DequantKernel).
+// Exposed for the batched-vs-single parity unit test.
+cudaError_t RunGemmaSingleDequant(cudaStream_t stream, const uint8_t *packed,
+                                  int64_t packed_bytes, const uint8_t *scales,
+                                  int64_t scales_bytes, float global_scale,
+                                  __nv_bfloat16 *out, int64_t num_elements);
+
+// Gather-dequant of @p K experts into [K][num_elements] rows. Bit-identical
+// element mapping to RunGemmaSingleDequant (same decode LUTs, same scale
+// indexing); one launch instead of K. Pointer arrays are passed by value.
+struct GemmaDequantBatch {
+    const uint8_t *packs[16];
+    const uint8_t *scales[16];
+    float global_scales[16];
+};
+cudaError_t RunGemmaBatchedDequant(cudaStream_t stream,
+                                   const GemmaDequantBatch &batch,
+                                   int64_t num_elements_per_expert, int k,
+                                   __nv_bfloat16 *out_rows);
+
+// Two-phase lm-head logits + deterministic argmax (test/production hook).
+// Phase-1 rows keep strict ascending-d fp32 accumulation; phase-2 reduces
+// block winners in ascending block order. Requires scratch buffers sized
+// [vocab + 4096].
+cudaError_t RunGemmaLogitsArgmax(cudaStream_t stream,
+                                 const __nv_bfloat16 *d_embed,
+                                 const __nv_bfloat16 *d_x, int vocab,
+                                 int hidden, float cap, int32_t *d_argmax,
+                                 float *d_maxlogit, float *d_logits,
+                                 float *d_blkbest, int32_t *d_blkidx);
 
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db, const std::vector<int32_t> &input_ids,

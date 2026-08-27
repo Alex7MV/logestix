@@ -12,6 +12,7 @@
 #include "lsxcommon/gemma4_inference.h"
 #include "lsxcommon/gemma4_inference_load.h"
 #include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/log.h"
 
 #include "nvfp4_codec.h"
 #include "lsx_kernels_quant.cuh"
@@ -44,6 +45,70 @@ static cudaError_t DequantNvfp4(cudaStream_t stream, const uint8_t *d_packed,
     lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
         <<<grid, kBlock, 0, stream>>>(d_packed, d_scales, global_scale,
                                       d_out, num_elements);
+    return cudaGetLastError();
+}
+
+cudaError_t RunGemmaSingleDequant(cudaStream_t stream, const uint8_t *packed,
+                                  int64_t packed_bytes, const uint8_t *scales,
+                                  int64_t scales_bytes, float global_scale,
+                                  __nv_bfloat16 *out, int64_t num_elements)
+{
+    return DequantNvfp4(stream, packed, packed_bytes, scales, scales_bytes,
+                        global_scale, out, num_elements);
+}
+
+namespace {
+struct DequantBatchParams {
+    const uint8_t *packs[16];
+    const uint8_t *scales[16];
+    float global_scales[16];
+};
+} // namespace
+
+// Gather-dequant: K experts in one launch. Element mapping replicates
+// Nvfp4DequantKernel exactly (same nibble order, scale block index and
+// decode LUTs), so rows are BIT-IDENTICAL to per-expert dequants.
+__global__ void gemma_dequant_gather_kernel(DequantBatchParams p,
+                                            int64_t elems_per_expert, int k,
+                                            __nv_bfloat16 *__restrict__ out)
+{
+    const int64_t total = static_cast<int64_t>(k) * elems_per_expert;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                     threadIdx.x;
+         i < total; i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        const int e = static_cast<int>(i / elems_per_expert);
+        const int64_t j = i - static_cast<int64_t>(e) * elems_per_expert;
+        const uint8_t byte = p.packs[e][j >> 1];
+        const int nib = (j & 1) ? (byte >> 4) : (byte & 0xF);
+        out[i] = __float2bfloat16(
+            gpu::nvfp4::E2M1Value(nib) *
+            gpu::nvfp4::E4M3ScaleToFloat(p.scales[e][j >> 4]) *
+            p.global_scales[e]);
+    }
+}
+
+cudaError_t RunGemmaBatchedDequant(cudaStream_t stream,
+                                   const GemmaDequantBatch &batch,
+                                   int64_t num_elements_per_expert, int k,
+                                   __nv_bfloat16 *out_rows)
+{
+    if (!out_rows || num_elements_per_expert <= 0 || k <= 0 || k > 16)
+        return cudaErrorInvalidValue;
+    for (int e = 0; e < k; ++e)
+        if (!batch.packs[e] || !batch.scales[e])
+            return cudaErrorInvalidValue;
+    DequantBatchParams params{};
+    for (int e = 0; e < k; ++e) {
+        params.packs[e] = batch.packs[e];
+        params.scales[e] = batch.scales[e];
+        params.global_scales[e] = batch.global_scales[e];
+    }
+    constexpr int kBlock = 256;
+    const int64_t total = static_cast<int64_t>(k) * num_elements_per_expert;
+    const unsigned grid = static_cast<unsigned>(
+        (total + kBlock - 1) / kBlock);
+    gemma_dequant_gather_kernel<<<grid, kBlock, 0, stream>>>(
+        params, num_elements_per_expert, k, out_rows);
     return cudaGetLastError();
 }
 
@@ -477,6 +542,56 @@ __global__ void gemma_geglu_kernel(const __nv_bfloat16 *__restrict__ g,
                             __bfloat162float(u[i]));
 }
 
+// Batched decode (seq==1): geGLU over all K experts' [K][MI] projections.
+__global__ void gemma_geglu_batched_kernel(const __nv_bfloat16 *__restrict__ g,
+                                           const __nv_bfloat16 *__restrict__ u,
+                                           __nv_bfloat16 *__restrict__ h,
+                                           int64_t numel)
+{
+    const int64_t i =
+        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < numel)
+        h[i] = __float2bfloat16(gelu_tanh_dev(__bfloat162float(g[i])) *
+                                __bfloat162float(u[i]));
+}
+
+// Batched combine: dst[h] = sum_k (w[k] * eout[k][h]) — per-k bf16 rounding
+// replicates the sequential axpy chain of the per-expert path.
+__global__ void gemma_combine_batched_kernel(__nv_bfloat16 *__restrict__ acc,
+                                             const __nv_bfloat16 *__restrict__ eout,
+                                             const float *__restrict__ w,
+                                             int k, int H)
+{
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= H) return;
+    float a = __bfloat162float(acc[d]);
+    for (int i = 0; i < k; ++i) {
+        a += w[i] * __bfloat162float(
+                        eout[static_cast<int64_t>(i) * H + d]);
+    }
+    acc[d] = __float2bfloat16(a);
+}
+
+// cuBLAS FP32-compute batched GEMM over @p batch rows (same op/modes as the
+// scalar Matmul wrapper): C_b[rows x seq] = W_bᵀ · X (X shared when x_stride==0).
+static cudaError_t MatmulBatched(cublasHandle_t cublas,
+                                 const __nv_bfloat16 *a,
+                                 long long stride_a, const __nv_bfloat16 *x,
+                                 long long stride_x, __nv_bfloat16 *out,
+                                 long long stride_out, int rows, int cols,
+                                 int batch, cudaStream_t stream)
+{
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+    cublasSetStream(cublas, stream);
+    cublasStatus_t st = cublasGemmStridedBatchedEx(
+        cublas, CUBLAS_OP_T, CUBLAS_OP_N, rows, 1, cols, &alpha, a,
+        CUDA_R_16BF, cols, stride_a, x, CUDA_R_16BF, cols, stride_x, &beta,
+        out, CUDA_R_16BF, rows, stride_out, batch, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+}
+
 // Per-head RMSNorm over packed [seq, heads*dim]; Gemma4 w-form when w
 // non-null, plain (with_scale=False) when w null (v_norm).
 __global__ void gemma_head_norm_kernel(const __nv_bfloat16 *__restrict__ x,
@@ -562,38 +677,139 @@ __global__ void gemma_hadamard_kernel(__nv_bfloat16 *__restrict__ dst,
 }
 
 // logits[v] = dot(embed[v], x); then softcap tanh(l/cap)*cap; block-0 argmax.
-__global__ void gemma_logits_argmax_kernel(const __nv_bfloat16 *__restrict__ embed,
-                                           const __nv_bfloat16 *__restrict__ x,
-                                           int vocab, int hidden, float cap,
-                                           int32_t *__restrict__ d_argmax,
-                                           float *__restrict__ d_maxlogit,
-                                           float *__restrict__ d_logits)
+// ── Two-phase tiled version ────────────────────────────────────────────────
+// The old single-block variant (<<<1,256>>>) serialized the whole lm-head
+// GEMV on ONE SM (~262k vocab rows × 2816 = ~740M MACs, ~290 ms/token).
+// Phase 1 spreads rows across the SM array with vectorized loads along the
+// hidden dim while keeping the STRICT ascending-d accumulation order per
+// row (bit-identical logits); phase 2 reduces block winners deterministically
+// in ascending block order.
+constexpr int kLogitsMaxBlocks = 4096;
+
+__global__ void gemma_logits_rows_kernel(
+    const __nv_bfloat16 *__restrict__ embed, const __nv_bfloat16 *__restrict__ x,
+    int vocab, int hidden, float cap,
+    float *__restrict__ d_logits,
+    float *__restrict__ blk_best, int *__restrict__ blk_idx)
 {
-    // One thread per vocab row (strided).
+    const bool vec_ok =
+        ((hidden & 7) == 0) &&
+        ((reinterpret_cast<uintptr_t>(embed) |
+          reinterpret_cast<uintptr_t>(x)) & 15) == 0;
+
     float local_best = -1e30f;
-    int local_arg = 0;
-    for (int v = threadIdx.x; v < vocab; v += blockDim.x) {
-        const __nv_bfloat16 *row = embed + static_cast<int64_t>(v) * hidden;
+    int local_arg = -1;
+    const int64_t span =
+        (static_cast<int64_t>(gridDim.x)) * blockDim.x;
+    // One-or-more full vocab rows per thread, ascending v order.
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                     threadIdx.x;
+         i < vocab; i += span) {
+        const __nv_bfloat16 *row = embed + i * hidden;
         float acc = 0.f;
-        for (int d = 0; d < hidden; ++d)
-            acc += __bfloat162float(row[d]) * __bfloat162float(x[d]);
+        if (vec_ok) {
+            // Four bf16 elements per load, added in ascending-d order
+            // (identical rounding sequence as the scalar walk).
+            const int h4 = hidden >> 3;
+            const uint4 *r4 = reinterpret_cast<const uint4 *>(row);
+            const uint4 *x4 = reinterpret_cast<const uint4 *>(x);
+            for (int q = 0; q < h4; ++q) {
+                const uint4 rb = r4[q];
+                const uint4 xb = x4[q];
+                const __nv_bfloat16 *rp =
+                    reinterpret_cast<const __nv_bfloat16 *>(&rb);
+                const __nv_bfloat16 *xp =
+                    reinterpret_cast<const __nv_bfloat16 *>(&xb);
+                #pragma unroll
+                for (int u = 0; u < 8; ++u)
+                    acc += __bfloat162float(rp[u]) *
+                           __bfloat162float(xp[u]);
+            }
+            for (int d = (h4 << 3); d < hidden; ++d)
+                acc += __bfloat162float(row[d]) *
+                       __bfloat162float(x[d]);
+        } else {
+            for (int d = 0; d < hidden; ++d)
+                acc += __bfloat162float(row[d]) *
+                       __bfloat162float(x[d]);
+        }
         if (cap > 0.f) acc = tanhf(acc / cap) * cap;
-        d_logits[v] = acc;
-        if (acc > local_best) { local_best = acc; local_arg = v; }
+        if (d_logits) d_logits[i] = acc;
+        blk_best[i] = acc;
+        blk_idx[i] = static_cast<int>(i);
+        if (acc > local_best) { local_best = acc; local_arg = static_cast<int>(i); }
     }
-    __shared__ float best[256];
-    __shared__ int barg[256];
-    best[threadIdx.x] = local_best;
-    barg[threadIdx.x] = local_arg;
+    // Per-block tree winner (RMW isolation: shared staging, one writer).
+    __shared__ float s_best[256];
+    __shared__ int s_idx[256];
+    s_best[threadIdx.x] = local_best;
+    s_idx[threadIdx.x] = local_arg;
     __syncthreads();
     if (threadIdx.x == 0) {
-        float b = best[0];
-        int a = barg[0];
-        for (int i = 1; i < blockDim.x && i < 256; ++i)
-            if (best[i] > b) { b = best[i]; a = barg[i]; }
-        *d_argmax = a;
-        if (d_maxlogit) *d_maxlogit = b;
+        float b = s_best[0];
+        int a = s_idx[0];
+        for (int j = 1; j < blockDim.x && j < 256; ++j)
+            if (s_best[j] > b ||
+                (s_best[j] == b && s_idx[j] < a))
+                { b = s_best[j]; a = s_idx[j]; }
+        blk_best[vocab + blockIdx.x] = b;
+        blk_idx[vocab + blockIdx.x] = a;
     }
+}
+
+__global__ void gemma_argmax_reduce_kernel(const float *__restrict__ blk_best,
+                                           const int *__restrict__ blk_idx,
+                                           int vocab, int grid,
+                                           int32_t *__restrict__ d_argmax,
+                                           float *__restrict__ d_maxlogit)
+{
+    __shared__ float s_best[256];
+    __shared__ int s_idx[256];
+    float b = -1e30f;
+    int a = -1;
+    for (int g = threadIdx.x; g < grid; g += blockDim.x) {
+        const float v = blk_best[vocab + g];
+        const int idx = blk_idx[vocab + g];
+        if (v > b || (v == b && idx < a)) { b = v; a = idx; }
+    }
+    s_best[threadIdx.x] = b;
+    s_idx[threadIdx.x] = a;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float bb = s_best[0];
+        int aa = s_idx[0];
+        for (int i = 1; i < blockDim.x && i < 256; ++i)
+            if (s_best[i] > bb ||
+                (s_best[i] == bb && s_idx[i] < aa))
+                { bb = s_best[i]; aa = s_idx[i]; }
+        *d_argmax = aa;
+        if (d_maxlogit) *d_maxlogit = bb;
+    }
+}
+
+cudaError_t RunGemmaLogitsArgmax(cudaStream_t stream,
+                                 const __nv_bfloat16 *d_embed,
+                                        const __nv_bfloat16 *d_x, int vocab,
+                                        int hidden, float cap,
+                                        int32_t *d_argmax, float *d_maxlogit,
+                                        float *d_logits,
+                                        float *d_blkbest, int *d_blkidx)
+{
+    if (!d_embed || !d_x || !d_argmax || !d_blkbest || !d_blkidx ||
+        !d_logits || vocab <= 0 || hidden <= 0)
+        return cudaErrorInvalidValue;
+    constexpr int kBlock = 256;
+    unsigned grid = static_cast<unsigned>(
+        (static_cast<int64_t>(vocab) + kBlock - 1) / kBlock);
+    if (grid > kLogitsMaxBlocks) grid = kLogitsMaxBlocks;
+    gemma_logits_rows_kernel<<<grid, kBlock, 0, stream>>>(
+        d_embed, d_x, vocab, hidden, cap, d_logits, d_blkbest, d_blkidx);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    gemma_argmax_reduce_kernel<<<1, 256, 0, stream>>>(
+        d_blkbest, d_blkidx, vocab, static_cast<int>(grid), d_argmax,
+        d_maxlogit);
+    return cudaGetLastError();
 }
 
 // ── Generation loop ─────────────────────────────────────────────────────────
@@ -687,6 +903,19 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_gu, S * I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_eg, MI * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_eu, MI * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_bw1, (size_t)K * MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_bw3, (size_t)K * MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_bw2, (size_t)K * MI * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_beg, (size_t)K * MI * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_beu, (size_t)K * MI * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_beo, (size_t)K * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_bselw, (size_t)K * sizeof(float))) !=
+            cudaSuccess ||
+        (e = A((void **)&ws.d_lg_best,
+               (static_cast<size_t>(V) + 4096) * sizeof(float))) != cudaSuccess ||
+        (e = A((void **)&ws.d_lg_idx,
+               (static_cast<size_t>(V) + 4096) * sizeof(int32_t))) !=
+            cudaSuccess ||
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
@@ -701,12 +930,61 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
 
 GemmaGenContext *g_gen_ctx = nullptr;
 
+// Copies one expert's pack (w1|w2|w3) and scales (s1|s2|s3) blocks into a
+// device cache slot. Shared by the hot-path miss staging and the load-time
+// prewarm. Stream-ordered; host mmaps never evict (max_open=7000 > pool), so
+// no munmap barrier is required. When @p copy_stream is null the caller's
+// @p compute_stream receives the uploads inline.
+cudaError_t UploadGemmaExpertIntoSlot(cudaStream_t compute_stream,
+                                      cudaStream_t copy_stream,
+                                      uint8_t *slot_pack, uint8_t *slot_scale,
+                                      const gemma::GemmaExpertEntry &ent)
+{
+    cudaStream_t s = copy_stream ? copy_stream : compute_stream;
+    uint8_t *pk = slot_pack;
+    uint8_t *sc = slot_scale;
+    cudaError_t e = cudaMemcpyAsync(pk, ent.host_w1,
+                                    static_cast<size_t>(ent.w1_bytes),
+                                    cudaMemcpyHostToDevice, s);
+    if (e != cudaSuccess) return e;
+    pk += ent.w1_bytes;
+    e = cudaMemcpyAsync(pk, ent.host_w2, static_cast<size_t>(ent.w2_bytes),
+                        cudaMemcpyHostToDevice, s);
+    if (e != cudaSuccess) return e;
+    pk += ent.w2_bytes;
+    e = cudaMemcpyAsync(pk, ent.host_w3, static_cast<size_t>(ent.w3_bytes),
+                        cudaMemcpyHostToDevice, s);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(sc, ent.host_w1_scales,
+                        static_cast<size_t>(ent.w1_scales_bytes),
+                        cudaMemcpyHostToDevice, s);
+    if (e != cudaSuccess) return e;
+    sc += ent.w1_scales_bytes;
+    e = cudaMemcpyAsync(sc, ent.host_w2_scales,
+                        static_cast<size_t>(ent.w2_scales_bytes),
+                        cudaMemcpyHostToDevice, s);
+    if (e != cudaSuccess) return e;
+    sc += ent.w2_scales_bytes;
+    e = cudaMemcpyAsync(sc, ent.host_w3_scales,
+                        static_cast<size_t>(ent.w3_scales_bytes),
+                        cudaMemcpyHostToDevice, s);
+    return e;
+}
+
 // LRU device slot cache for routed experts: [slots] × (pack|scales), one
 // slot per flat expert id. Strides derive from the uniform expert geometry
 // (+16B scale slack, matching the ws.d_s* scratch sizing).
+//
+// Residency policy (qwen 17348a1 analogy): target EVERY expert resident,
+// bounded by free VRAM with a 6 GiB headroom reserve (ComputeGemmaResident-
+// Slots); explicit LSX_GEMMA_EXPERT_CACHE_SLOTS overrides. The allocation
+// shrinks by halves on failure instead of failing the lifecycle. On success
+// the first min(slots, total) experts are PREWARMED onto the cache so steady
+// state starts fully warm instead of paying cold misses during early tokens.
 cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
                                    const GemmaPinnedWeights &pw,
-                                   const GemmaExpertDb &db)
+                                   const GemmaExpertDb &db,
+                                   cudaStream_t stream)
 {
     if (ctx.ec.slots > 0) return cudaSuccess;
     const int64_t MIH = static_cast<int64_t>(pw.top.moe_intermediate_size) *
@@ -716,38 +994,86 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
     // old single-block scale stride overflowed on every expert upload).
     const int64_t pack = MIH / 2 * 3;
     const int64_t scale = MIH / 16 * 3 + 16;
-    int slots = db.num_layers * db.experts_per_layer;
+    const int total = db.num_layers * db.experts_per_layer;
+
+    int explicit_slots = -1;
     if (const char *env = std::getenv("LSX_GEMMA_EXPERT_CACHE_SLOTS")) {
         const int v = std::atoi(env);
-        if (v > 0) slots = std::min(slots, v);
+        if (v > 0) explicit_slots = v;
     }
-    slots = std::min(slots, 1024);
-    if (slots <= 0) return cudaErrorInvalidValue;
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) {
+        free_bytes = 0;
+        total_bytes = 0;
+    }
+    int slots = gemma::ComputeGemmaResidentSlots(
+        free_bytes, static_cast<size_t>(pack + scale), total, explicit_slots);
+    // Graceful LRU floor when nothing fits (qwen parity).
+    if (slots <= 0) slots = 4;
+    log::info("[gemma-infer] expert cache: free=" +
+              std::to_string(free_bytes / (1024 * 1024)) + "MiB per_expert=" +
+              std::to_string(static_cast<size_t>(pack + scale) / (1024 * 1024)) +
+              "MiB total=" + std::to_string(total) + " slots=" +
+              std::to_string(slots));
 
     ctx.pack_stride = pack;
     ctx.scale_stride = scale;
-    // The cache struct mirrors the strides: DeviceBytes() reads them from
-    // here, so leaving them zero made cudaMalloc(0) hand out a nil base and
-    // every expert upload fail with "invalid argument".
     ctx.ec.pack_stride = pack;
     ctx.ec.scale_stride = scale;
-    ctx.ec.slots = slots;
-    ctx.ec.total_experts = db.num_layers * db.experts_per_layer;
+    ctx.ec.total_experts = total;
+
+    // Shrink-retry: an optimistic estimate degrades to a smaller LRU instead
+    // of failing the lifecycle.
     void *base = nullptr;
-    cudaError_t e = cudaMalloc(&base, ctx.ec.DeviceBytes());
-    if (e != cudaSuccess) return e;
-    if (!base || ctx.ec.DeviceBytes() == 0) return cudaErrorMemoryAllocation;
+    cudaError_t e = cudaSuccess;
+    while (slots >= 4) {
+        ctx.ec.slots = slots;
+        base = nullptr;
+        e = cudaMalloc(&base, ctx.ec.DeviceBytes());
+        if (e == cudaSuccess && base && ctx.ec.DeviceBytes() != 0) break;
+        if (base) cudaFree(base);
+        base = nullptr;
+        slots /= 2;
+    }
+    if (!base || slots < 4) return e != cudaSuccess ? e : cudaErrorMemoryAllocation;
     ctx.ec.d_base = static_cast<uint8_t *>(base);
     ctx.ec.d_pack = ctx.ec.d_base;
     ctx.ec.d_scale = ctx.ec.d_base +
-                     static_cast<int64_t>(slots) * ctx.pack_stride;
+                     static_cast<int64_t>(ctx.ec.slots) * ctx.pack_stride;
     ctx.ec.h_slot_of = new int32_t[static_cast<size_t>(ctx.ec.total_experts)];
-    ctx.ec.h_slot_owner = new int32_t[static_cast<size_t>(slots)];
-    ctx.ec.h_lru = new int32_t[static_cast<size_t>(slots)];
+    ctx.ec.h_slot_owner = new int32_t[static_cast<size_t>(ctx.ec.slots)];
+    ctx.ec.h_lru = new int32_t[static_cast<size_t>(ctx.ec.slots)];
     for (int i = 0; i < ctx.ec.total_experts; ++i) ctx.ec.h_slot_of[i] = -1;
-    for (int i = 0; i < slots; ++i) {
+    for (int i = 0; i < ctx.ec.slots; ++i) {
         ctx.ec.h_slot_owner[i] = -1;
         ctx.ec.h_lru[i] = i;
+    }
+
+    // Router-handoff fence: host busy-polls this event per layer instead of a
+    // full cudaStreamSynchronize (pure-GPU-idle wakeup latency, qwen parity).
+    if (!ctx.ev_router &&
+        cudaEventCreateWithFlags(&ctx.ev_router,
+                                 cudaEventDisableTiming) != cudaSuccess)
+        return cudaErrorInvalidValue;
+
+    // Prewarm: fill every affordable slot with its expert, MRU-first in flat
+    // id order (matches ExpertStore warm ordering). Enqueued on the caller's
+    // generation stream — all later Infer work is ordered behind it.
+    const int warmed = std::min(ctx.ec.slots, total);
+    for (int flat = 0; flat < warmed; ++flat) {
+        const int layer = flat / db.experts_per_layer;
+        const int expert = flat % db.experts_per_layer;
+        const auto &ent =
+            db.entries[static_cast<size_t>(flat)];
+        if (!ent.host_w1 || !ent.host_w2) continue;
+        const int slot = ctx.ec.Insert(flat);
+        (void)layer;
+        (void)expert;
+        e = UploadGemmaExpertIntoSlot(
+            stream, nullptr,
+            ctx.ec.d_pack + static_cast<int64_t>(slot) * pack,
+            ctx.ec.d_scale + static_cast<int64_t>(slot) * scale, ent);
+        if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
 }
@@ -962,8 +1288,15 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     e = cudaMemcpyAsync(ws.h_selw, ws.d_selw, sizeof(float) * seq * K,
                         cudaMemcpyDeviceToHost, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L960: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-    e = cudaStreamSynchronize(stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L962: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    // Router handoff: busy-poll a dedicated event instead of draining the
+    // whole stream — with 30 layers × steps handshakes per generation, host
+    // wake latency after full sync is pure GPU idle time (qwen parity).
+    cudaEventRecord(g_gen_ctx->ev_router, stream);
+    {
+        cudaError_t q;
+        while ((q = cudaEventQuery(g_gen_ctx->ev_router)) == cudaErrorNotReady) {}
+        if (q != cudaSuccess) { std::printf("[gemma-chk] L962: %s\n", cudaGetErrorString(q)); std::fflush(stdout); return q; }
+    }
 
     // MoE: h2 = rms(x, pre_ffn2); moe(h2, sel, w); d2 = rms(moe, post_ffn2).
     e = RunGemmaRMSNorm(ws.d_x, lw.d_pre_ffn2, ws.d_normed, seq,
@@ -972,6 +1305,152 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     e = cudaMemsetAsync(ws.d_acc, 0, sizeof(__nv_bfloat16) * seq * H, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L969: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
 
+    gpu::ExpertDeviceCache &ec = g_gen_ctx->ec;
+    static const bool inline_uploads =
+        std::getenv("LSX_GEMMA_INLINE_UPLOADS") != nullptr;
+    static const int moe_batch_mode = []() {
+        const char *e = std::getenv("LSX_GEMMA_MOE_BATCH");
+        return e ? std::atoi(e) : 0;
+    }();
+    const bool batched_path =
+        (seq == 1 && K <= 16 && K >= 1 && moe_batch_mode != 0);
+    const bool batch_gemms = moe_batch_mode != 2;
+
+    if (batched_path) {
+        // ── Batched decode fast-path: one gathered dequant + three batched
+        // GEMMs + one geGLU + one combine instead of the per-expert launch
+        // chain (~9*K -> ~7 device ops per layer per token). Gather rows are
+        // bit-identical to sequential dequants (unit test "[gemma][moe]
+        // [batch]"); combine replicates the sequential axpy rounding order.
+        GemmaDequantBatch g1{}, g2{}, g3{};
+        float w_compact[16];
+        int filled = 0;
+
+        for (int k = 0; k < K; ++k) {
+            const int expert = ws.h_sel[static_cast<size_t>(k)];
+            const auto &ent =
+                g_expert_db->entries[static_cast<size_t>(layer_idx) *
+                                         static_cast<size_t>(E) +
+                                     static_cast<size_t>(expert)];
+            if (!ent.host_w1 || !ent.host_w2) {
+                std::printf("[gemma-chk] missing routed expert k=%d\n", k);
+                std::fflush(stdout);
+                return cudaErrorInvalidValue;
+            }
+            const int flat = layer_idx * E + expert;
+            int slot = ec.Lookup(flat);
+            const bool miss = slot < 0;
+            if (miss) {
+                slot = ec.Insert(flat);
+            }
+            uint8_t *slot_pack = ec.d_pack +
+                static_cast<int64_t>(slot) * g_gen_ctx->pack_stride;
+            uint8_t *slot_scale = ec.d_scale +
+                static_cast<int64_t>(slot) * g_gen_ctx->scale_stride;
+            if (miss) {
+                // Miss staging runs INLINE on the generation stream. The
+                // earlier cross-stream copy-channel variant raced over long
+                // sessions (nondeterministic token corruption) and bought
+                // little after the lm-head fix made logits/argmax no longer
+                // dominant — keep the pipeline single-stream & deterministic.
+                e = UploadGemmaExpertIntoSlot(stream, nullptr, slot_pack,
+                                              slot_scale, ent);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] L1002: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            }
+
+            // Slot layout mirrors pack strides: w1|w2|w3 packed blocks,
+            // s1|s2|s3 scale blocks (uniform geometry across experts).
+            g1.packs[filled] = slot_pack;
+            g1.scales[filled] = slot_scale;
+            g1.global_scales[filled] = ent.w1_global_scale;
+            g2.packs[filled] = slot_pack + ent.w1_bytes;
+            g2.scales[filled] = slot_scale + ent.w1_scales_bytes;
+            g2.global_scales[filled] = ent.w2_global_scale;
+            g3.packs[filled] =
+                slot_pack + ent.w1_bytes + ent.w2_bytes;
+            g3.scales[filled] =
+                slot_scale + ent.w1_scales_bytes + ent.w2_scales_bytes;
+            g3.global_scales[filled] = ent.w3_global_scale;
+            w_compact[filled] = ws.h_selw[static_cast<size_t>(k)];
+            ++filled;
+        }
+
+        const int64_t MIH = MI * H;
+        e = RunGemmaBatchedDequant(stream, g1, MIH, filled,
+                                   ws.d_bw1);                      // [K][MI*H]
+        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        e = RunGemmaBatchedDequant(stream, g3, MIH, filled,
+                                   ws.d_bw3);                      // [K][MI*H]
+        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        e = RunGemmaBatchedDequant(stream, g2, H * MI, filled,
+                                   ws.d_bw2);                      // [K][H*MI]
+        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+
+        {
+            // (Re)publish selected weights every step: tiny pinned H2D.
+            e = cudaMemcpyAsync(ws.d_bselw, w_compact,
+                                sizeof(float) * static_cast<size_t>(filled),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] wcp: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        }
+
+        // gate/up projections over all experts sharing the same token x.
+        if (batch_gemms) {
+            e = MatmulBatched(cublas, ws.d_bw1, MIH, ws.d_normed, 0,
+                              ws.d_beg, MI, static_cast<int>(MI),
+                              static_cast<int>(H), filled, stream);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            e = MatmulBatched(cublas, ws.d_bw3, MIH, ws.d_normed, 0,
+                              ws.d_beu, MI, static_cast<int>(MI),
+                              static_cast<int>(H), filled, stream);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        } else {
+            for (int r = 0; r < filled; ++r) {
+                e = Matmul(cublas, ws.d_bw1 + static_cast<int64_t>(r) * MIH,
+                           ws.d_normed,
+                           ws.d_beg + static_cast<int64_t>(r) * MI,
+                           static_cast<int>(MI), static_cast<int>(H), 1,
+                           stream);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                e = Matmul(cublas, ws.d_bw3 + static_cast<int64_t>(r) * MIH,
+                           ws.d_normed,
+                           ws.d_beu + static_cast<int64_t>(r) * MI,
+                           static_cast<int>(MI), static_cast<int>(H), 1,
+                           stream);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            }
+        }
+        {
+            const int64_t numel = static_cast<int64_t>(filled) * MI;
+            gemma_geglu_batched_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256,
+                                         0, stream>>>(ws.d_beg, ws.d_beu,
+                                                      ws.d_beg, numel);
+            e = cudaGetLastError();
+            if (e != cudaSuccess) { std::printf("[gemma-chk] bgeglu: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        }
+        // Down projection: [K][H] outputs.
+        if (batch_gemms) {
+            e = MatmulBatched(cublas, ws.d_bw2, H * MI, ws.d_beg, MI,
+                              ws.d_beo, H, static_cast<int>(H),
+                              static_cast<int>(MI), filled, stream);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        } else {
+            for (int r = 0; r < filled; ++r) {
+                e = Matmul(cublas, ws.d_bw2 + static_cast<int64_t>(r) * MI * H,
+                           ws.d_beg + static_cast<int64_t>(r) * MI,
+                           ws.d_beo + static_cast<int64_t>(r) * H,
+                           static_cast<int>(H), static_cast<int>(MI), 1,
+                           stream);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            }
+        }
+        // Weighted accumulate in ascending-k order (axpy parity).
+        gemma_combine_batched_kernel<<<static_cast<unsigned>((H + 255) / 256),
+                                       256, 0, stream>>>(
+            ws.d_acc, ws.d_beo, ws.d_bselw, filled, H);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { std::printf("[gemma-chk] bcomb: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    } else {
     for (int t = 0; t < seq; ++t) {
         for (int k = 0; k < K; ++k) {
             const int expert =
@@ -984,7 +1463,6 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                                      static_cast<size_t>(expert)];
             if (!ent.host_w1 || !ent.host_w2) continue;
 
-            gpu::ExpertDeviceCache &ec = g_gen_ctx->ec;
             const int flat = layer_idx * E + expert;
             int slot = ec.Lookup(flat);
             const bool miss = slot < 0;
@@ -994,40 +1472,11 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             uint8_t *slot_scale = ec.d_scale +
                 static_cast<int64_t>(slot) * g_gen_ctx->scale_stride;
             if (miss) {
-                // Stream-ordered writes into the slot: safe against prior
-                // same-stream readers of an evicted victim slot. Host mmaps
-                // never evict (max_open=7000 > total experts), so no munmap
-                // barrier is needed here.
-                uint8_t *pk = slot_pack;
-                uint8_t *sc = slot_scale;
-                e = cudaMemcpyAsync(pk, ent.host_w1,
-                                    static_cast<size_t>(ent.w1_bytes),
-                                    cudaMemcpyHostToDevice, stream);
+                // Inline staging on the generation stream (deterministic;
+                // see the legacy-path note above re: copy-channel removal).
+                e = UploadGemmaExpertIntoSlot(stream, nullptr, slot_pack,
+                                              slot_scale, ent);
                 if (e != cudaSuccess) { std::printf("[gemma-chk] L1002: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                pk += ent.w1_bytes;
-                e = cudaMemcpyAsync(pk, ent.host_w2,
-                                    static_cast<size_t>(ent.w2_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1007: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                pk += ent.w2_bytes;
-                e = cudaMemcpyAsync(pk, ent.host_w3,
-                                    static_cast<size_t>(ent.w3_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1012: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                e = cudaMemcpyAsync(sc, ent.host_w1_scales,
-                                    static_cast<size_t>(ent.w1_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1016: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                sc += ent.w1_scales_bytes;
-                e = cudaMemcpyAsync(sc, ent.host_w2_scales,
-                                    static_cast<size_t>(ent.w2_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1021: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                sc += ent.w2_scales_bytes;
-                e = cudaMemcpyAsync(sc, ent.host_w3_scales,
-                                    static_cast<size_t>(ent.w3_scales_bytes),
-                                    cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1026: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
             }
 
             e = DequantNvfp4(stream, slot_pack, ent.w1_bytes, slot_scale,
@@ -1074,6 +1523,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (GemmaDebugSync(stream, "moe-expert", layer_idx, e)) return e;
         }
     }
+    } // batched_path else
 
     // d2 = post_ffn2(moe_out); combine ff = d1 + d2; ff = post_ffn(ff);
     // hidden += ff; hidden *= layer_scalar.
@@ -1170,7 +1620,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     ws.rot_half_max = rot_half_max;
     ws.K = K;
 
-    e = EnsureGemmaExpertCache(c, pw, db);
+    e = EnsureGemmaExpertCache(c, pw, db, stream);
     if (e != cudaSuccess) {
         out.error_msg = "expert cache alloc failed";
         return e;
@@ -1222,10 +1672,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             ws.d_x + static_cast<int64_t>(P - 1) * H, pw.d_final_norm,
             ws.d_normed, 1, static_cast<int>(H), top.rms_norm_eps, stream);
         if (le != cudaSuccess) return le;
-        gemma_logits_argmax_kernel<<<1, 256, 0, stream>>>(
-            pw.d_embed, ws.d_normed, static_cast<int>(V),
-            static_cast<int>(H), softcap, ws.d_argmax, nullptr, ws.d_logits);
-        return cudaGetLastError();
+        return RunGemmaLogitsArgmax(stream, pw.d_embed, ws.d_normed,
+                                    static_cast<int>(V), static_cast<int>(H),
+                                    softcap, ws.d_argmax, nullptr,
+                                    ws.d_logits, ws.d_lg_best, ws.d_lg_idx);
     };
 
     e = FinalNormArgmax();
@@ -1282,10 +1732,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         e = RunGemmaRMSNorm(ws.d_x, pw.d_final_norm, ws.d_normed, 1,
                             static_cast<int>(H), top.rms_norm_eps, stream);
         if (e != cudaSuccess) break;
-        gemma_logits_argmax_kernel<<<1, 256, 0, stream>>>(
-            pw.d_embed, ws.d_normed, static_cast<int>(V),
-            static_cast<int>(H), softcap, ws.d_argmax, nullptr, ws.d_logits);
-        e = cudaGetLastError();
+        e = RunGemmaLogitsArgmax(stream, pw.d_embed, ws.d_normed,
+                                 static_cast<int>(V), static_cast<int>(H),
+                                 softcap, ws.d_argmax, nullptr, ws.d_logits,
+                                 ws.d_lg_best, ws.d_lg_idx);
         if (e != cudaSuccess) break;
         e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4, cudaMemcpyDeviceToHost,
                             stream);
@@ -1317,6 +1767,9 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 
 } // namespace gemma
 } // namespace lsxcommon
+
+
+
 
 
 
