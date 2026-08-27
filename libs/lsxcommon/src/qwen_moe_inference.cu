@@ -18,6 +18,7 @@
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
 
+#include <algorithm>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -1522,10 +1523,133 @@ cudaError_t RunQwenMoeGeneration(
     }
     kv->last_tok = tok;
 
-    // Publish final-row logits for the regression harness. The D2H copy is
-    // fenced by t_stop BEFORE any host read of the staging buffer — reading
-    // hlast while the async copy is still in flight is a data race (stale or
-    // garbage final_logits; GLM/DeepSeek pipelines fence identically).
+    // ── Stage replay audit (LSX_AUDIT_STAGES=1, stderr diagnostics only) ────
+    // Replays the final decode step N times with sequential timestamp events
+    // along the compute stream: elapsed between consecutive stamps is the
+    // GPU-timeline duration of each stage INCLUDING submission queue gaps.
+    // All kernels target fixed kv rows / scratch, so rounds are idempotent
+    // and published results are untouched.
+    if (std::getenv("LSX_AUDIT_STAGES") && h_slots) {
+        constexpr int kAuditRounds = 24;
+        const size_t nlayers = pw.layers.size();
+        const int nseg = static_cast<int>(nlayers) * 2 + 2;
+        std::vector<cudaEvent_t> aev(static_cast<size_t>(nseg) + 1);
+        for (auto &ev : aev) cudaEventCreate(&ev);
+
+        // Routing snapshot for the audited step (previous sampler fence has
+        // already synchronized this stream).
+        cudaMemcpyAsync(h_slots, d_slots, sizeof(QwenMoeRoutedSlot) * K,
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+
+        for (int r = 0; r < kAuditRounds; ++r) {
+            int si = 0, fullA = 0, linA = 0;
+            auto stamp = [&]() { cudaEventRecord(aev[si++], stream); };
+            auto mark = [&]() {
+                if (si <= nseg) stamp();
+            };
+            mark();   // t0: start-of-round boundary
+            qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, 1, H);
+            mark();
+            for (size_t l = 0; l < nlayers; ++l) {
+                const QwenMoeLayerWeights &lw = pw.layers[l];
+                qwen::RunQwenRMSNorm(stream, d_act, lw.attn.d_input_norm,
+                                     d_normed, 1, H, eps);
+                if (lw.attn.is_linear) {
+                    qwen::RunQwenFusedLinearAttnKernel(
+                        stream, lw.attn, top, 1, d_normed, d_attn_out,
+                        kv->d_qkv +
+                            (int64_t)linA * kv->max_total * S,
+                        d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
+                        kv->kv_rows,
+                        kv->d_col + (int64_t)linA * nv * vd * kd);
+                    ++linA;
+                } else {
+                    qwen::RunQwenFullAttention(
+                        stream, lw.attn, top, 1, d_normed, d_attn_out, d_qc,
+                        d_q, d_qgate,
+                        kv->d_kv_k +
+                            (int64_t)fullA * kv->max_total * NKV * HD,
+                        kv->d_kv_v +
+                            (int64_t)fullA * kv->max_total * NKV * HD,
+                        d_attn, d_cos, d_sin, d_pos, kv->kv_rows);
+                    ++fullA;
+                }
+                lsxcommon::kernels::AddInPlaceKernel<__half>
+                    <<<1, threads, 0, stream>>>(d_attn_out, d_act, H);
+                stamp();   // attn segment: norm + attention + residual add
+                RunQwenMoeRoutedFFN(stream, store, cache,
+                                    static_cast<int>(l), h_slots, K,
+                                    d_postin, H, I, d_moe_acc, d_yg, d_yu,
+                                    d_y2, moe_error);
+                RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,
+                                        lw.shared_w3, lw.d_shared_gate,
+                                        d_postin, 1, H, SI, d_moe_acc, d_si,
+                                        d_sh, d_gate_val, d_act, nullptr,
+                                        nullptr);
+                stamp();   // ffn segment: router + routed chain + shared
+            }
+            qwen::RunQwenRMSNorm(stream, d_act, pw.d_final_norm, d_postin, 1,
+                                 H, eps);
+            qwen::RunQwenNvfp4Gemm(stream, d_postin, pw.head.d_packed,
+                                   pw.head.d_scales, pw.head.global_scale,
+                                   d_logits, 1, H, V, false);
+            stamp();       // tail segment: final norm + head GEMM
+        }
+        const cudaError_t aerr = cudaStreamSynchronize(stream);
+        std::vector<double> seg(nseg);
+        double total = 0.0;
+        if (aerr == cudaSuccess) {
+            for (int i = 0; i < nseg; ++i) {
+                float ms = -1.0f;
+                if (cudaEventElapsedTime(&ms, aev[i], aev[i + 1]) ==
+                    cudaSuccess)
+                    seg[i] = ms;
+            }
+            // Layout with leading t0 stamp: seg0=embed, seg(1+2l)=attn_l,
+            // seg(2+2l)=ffn_l, seg(nseg-1)=final norm + head GEMM.
+            double emb = seg[0], attnF = 0.0, attnL = 0.0, ffn = 0.0;
+            for (size_t l = 0; l < nlayers; ++l) {
+                if (pw.layers[l].attn.is_linear)
+                    attnL += seg[1 + 2 * static_cast<int>(l)];
+                else
+                    attnF += seg[1 + 2 * static_cast<int>(l)];
+                ffn += seg[2 + 2 * static_cast<int>(l)];
+            }
+            const double headm = seg[nseg - 1];
+            total = emb + attnF + attnL + ffn + headm;
+            if (total > 0.0)
+                fprintf(stderr,
+                        "[AUDIT] rounds=%d avg_step_ms=%.3f share%% "
+                        "embed=%.1f attn_full=%.1f attn_linear=%.1f "
+                        "ffn=%.1f head=%.1f\n",
+                        kAuditRounds, total / kAuditRounds,
+                        100.0 * emb / total, 100.0 * attnF / total,
+                        100.0 * attnL / total, 100.0 * ffn / total,
+                        100.0 * headm / total);
+            // Top-5 heaviest segments (layer attribution).
+            struct SegRef { double ms; int idx; };
+            std::vector<SegRef> top;
+            for (int i = 0; i < nseg; ++i) top.push_back({seg[i], i});
+            std::sort(top.begin(), top.end(),
+                      [](const SegRef &a, const SegRef &b) {
+                          return a.ms > b.ms;
+                      });
+            for (int t = 0; t < 5 && t < nseg; ++t) {
+                const int i = top[t].idx;
+                const char *kind =
+                    i == 0 ? "embed"
+                            : (i == nseg - 1 ? "head"
+                                             : ((i % 2) ? "attn" : "ffn"));
+                fprintf(stderr, "[AUDIT] top%d %s L=%d %.3f ms (%.1f%%)\n",
+                        t + 1, kind,
+                        (i - 1) / 2, top[t].ms,
+                        total > 0.0 ? 100.0 * top[t].ms / total : 0.0);
+            }
+        }
+        for (auto ev : aev) cudaEventDestroy(ev);
+    }
+
     {
         std::vector<float> hlast_f(V);
         std::vector<__half> hlast(V);

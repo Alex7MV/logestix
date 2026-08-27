@@ -50,6 +50,8 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
         // Round-18 MoE expert decode shapes (qwen35moe geometry).
         {2048, 512, "moe_w13_half"},
         {512, 2048, "moe_w2"},
+        // LM head decode shape (qwen35moe vocab): DRAM-bound candidate.
+        {2048, 248320, "lm_head"},
     };
 
     cudaStream_t st = nullptr;

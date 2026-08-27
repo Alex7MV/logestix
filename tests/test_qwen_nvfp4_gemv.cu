@@ -116,6 +116,24 @@ TEST_CASE("NVFP4 GEMV parity vs host reference", "[qwen][gemm][nvfp4][gemv]")
         RunParity(c, /*acc=*/false, /*gs=*/0.125f);
 }
 
+// Head-class geometry: very large N exercises the flat-row grid mapping and
+// the LSX_GEMV_HEAD oversized-tensor dispatch branch.
+TEST_CASE("NVFP4 GEMV large-N parity (head class)",
+          "[qwen][gemm][nvfp4][gemv][head]")
+{
+    // The oversized-tensor branch is opt-in via env (micro-validated);
+    // enable it here so the large case really exercises the streaming
+    // kernel instead of silently falling back to the tile path.
+    _putenv("LSX_GEMV_HEAD=1");
+    lsxcommon::qwen::SetQwenSeq1Gemv(true);
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+    const GemvCase cases[] = {{256, 65536}, {2048, 20000}};
+    for (const auto &c : cases)
+        RunParity(c, /*acc=*/false, /*gs=*/0.125f);
+    lsxcommon::qwen::SetQwenSeq1Gemv(false);
+    lsxcommon::qwen::SetQwenTcFastMath(false);
+}
+
 // Pins the within-chunk scale-block split: elements 0..15 of every
 // 32-element uint4 chunk use scale byte sb, elements 16..31 use sb+1.
 // Adversarial contrast (sb decodes to ~0, sb+1 to the max pow2) makes ANY

@@ -818,3 +818,35 @@ TEST lesson: catch2 fixture allocated cudaMalloc(&p, sizeof(vector)) --
 sizeof the std::vector OBJECT (24 B), not its payload; route/meta reads on
 device returned garbage while coeff checks coincidentally passed. Always
 size cudaMalloc from .size()*sizeof(T[0]) of the payload.
+
+
+## Round 20 — replay audit + head-GEMV (2026-08-27)
+
+### Replay stage audit (LSX_AUDIT_STAGES=1, stderr)
+Replays the final decode step 24x with sequential timestamp events
+(idempotent, fixed kv/scratch); elapsed between stamps = GPU-timeline time
+per stage including submission queue gaps. Permanent env-gated diagnostic.
+
+GPU-busy breakdown per decode step (release, RTX 5060 Ti, FAST_MATH):
+embed ~0% | full-attn 6.3% | linear-attn (GatedDeltaNet) 17.1% |
+MoE FFN (routed+shared+router) 72.9% | head 3.7%.
+
+### The audit's real headline: wall >> GPU-busy
+Real steps measure ~50-170 ms/token against ~2 ms of audited GPU work on
+this WDDM box -- >90% of wall time is submission/fence latency, not GPU.
+Consequences: (a) kernel micro-wins (incl. head-GEMV vs TC) barely move
+Windows e2e; (b) the priority ladder flips to CUDA Graphs / no-handshake
+everywhere / kernel-count reduction before ANY further bandwidth tuning;
+(c) Linux native stacks sit much closer to GPU-busy, which is where all
+earlier tok/s targets were defined.
+
+Head-GEMV verdict from [MICRO][lm_head] (K=2048,N=248320, 272.8 MB):
+tc=1693 us vs gemv=1625 us (168 GB/s effective, both DRAM-limited) --
+parity, no 4x win available here because the flat-row GEMV saturates at
+~37% of theory while TC MMA is already DRAM-bound at M=1. Shipped as
+opt-in `LSX_GEMV_HEAD=1` inside RunQwenNvfp4Gemm (K>=1024 && N>=16384)
+with a large-N parity pin ({256,65536} and {2048,20000}).
+
+### Test suite footprint
+test_qwen_nvfp4_gemv now 32 cases / 141856 assertions (Debug+Release green);
+qwen selfcheck x3 green; default dispatch bit-unchanged when flags off.
