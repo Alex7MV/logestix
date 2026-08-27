@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "lsxcommon/gemma4_inference.h"
+#include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/gemma4_inference_load.h"
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/log.h"
@@ -20,6 +21,15 @@
 
 namespace lsxcommon {
 namespace gemma {
+
+// Round-21 helpers: definitions sit in the batched-GEMV chain section at
+// the file tail; forward-declared here for the decode driver.
+__global__ void gemma_bf16_to_half_kernel(const __nv_bfloat16 *__restrict__ src,
+                                          __half *__restrict__ dst, int n);
+__global__ void gemma_f32_to_bf16_kernel(const float *__restrict__ src,
+                                         __nv_bfloat16 *__restrict__ dst,
+                                         int n);
+__global__ void gemma_gemv_zero_f32_kernel(float *__restrict__ dst, int n);
 
 __device__ __forceinline__ float gelu_tanh_dev(float v)
 {
@@ -1312,8 +1322,11 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         const char *e = std::getenv("LSX_GEMMA_MOE_BATCH");
         return e ? std::atoi(e) : 0;
     }();
+    static const bool kGemvRoute =
+        std::getenv("LSX_GEMMA_GEMV") != nullptr;
     const bool batched_path =
-        (seq == 1 && K <= 16 && K >= 1 && moe_batch_mode != 0);
+        (seq == 1 && K <= 16 && K >= 1 && moe_batch_mode != 0) ||
+        (seq == 1 && K <= 16 && K >= 1 && kGemvRoute);
     const bool batch_gemms = moe_batch_mode != 2;
 
     if (batched_path) {
@@ -1324,6 +1337,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         // [batch]"); combine replicates the sequential axpy rounding order.
         GemmaDequantBatch g1{}, g2{}, g3{};
         float w_compact[16];
+        int gemv_devslots[16];
         int filled = 0;
 
         for (int k = 0; k < K; ++k) {
@@ -1372,7 +1386,95 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                 slot_scale + ent.w1_scales_bytes + ent.w2_scales_bytes;
             g3.global_scales[filled] = ent.w3_global_scale;
             w_compact[filled] = ws.h_selw[static_cast<size_t>(k)];
+            gemv_devslots[filled] = slot;
             ++filled;
+        }
+
+        // ── Round-21 direct streaming chain (LSX_GEMMA_GEMV=1): skips the
+        // dequant-to-BF16 detour and streams packed NVFP4 straight through
+        // the GEMV cores; identical ascending-k reduce contract.
+        static const bool kGemvRoute =
+            std::getenv("LSX_GEMMA_GEMV") != nullptr;
+        const bool gemv_shapes_ok =
+            ((MI & 31) == 0) && ((H & 31) == 0);
+        bool gemv_used = false;
+        if (kGemvRoute && gemv_shapes_ok && filled == K &&
+            static_cast<int>(H) % 32 == 0) {
+            lsxcommon::qwen_moe::QwenMoeGvSlotDev tbl[16];
+            for (int k = 0; k < filled; ++k) {
+                const int expert = ws.h_sel[static_cast<size_t>(k)];
+                const auto &ent =
+                    g_expert_db->entries[static_cast<size_t>(layer_idx) *
+                                             static_cast<size_t>(E) +
+                                         static_cast<size_t>(expert)];
+                tbl[k].dev_slot = gemv_devslots[k];
+                tbl[k].gs1 = ent.w1_global_scale;
+                tbl[k].gs3 = ent.w3_global_scale;
+                tbl[k].gs2 = ent.w2_global_scale;
+                tbl[k].coeff = w_compact[k];
+            }
+            const auto &ent0 =
+                g_expert_db->entries[static_cast<size_t>(layer_idx) *
+                                     static_cast<size_t>(E)];
+            lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+            __half *xh = nullptr, *ygu = nullptr, *hbuf = nullptr;
+            float *accf = nullptr;
+            bool pool_ok =
+                cudaMallocAsync(&d_tbl,
+                                sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) *
+                                    filled,
+                                stream) == cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&xh),
+                                sizeof(__half) * H, stream) ==
+                    cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&ygu),
+                                sizeof(__half) * filled * 2 * MI,
+                                stream) == cudaSuccess &&
+                cudaMallocAsync(reinterpret_cast<void **>(&hbuf),
+                                sizeof(__half) * filled * MI, stream) ==
+                    cudaSuccess &&
+                cudaMallocAsync(&accf, sizeof(float) * H, stream) ==
+                    cudaSuccess;
+            if (pool_ok) {
+                cudaMemcpyAsync(d_tbl, tbl, sizeof(*tbl) * filled,
+                                cudaMemcpyHostToDevice, stream);
+                gemma_bf16_to_half_kernel<<<1, 256, 0, stream>>>(
+                    ws.d_normed, xh, H);
+                gemma_gemv_zero_f32_kernel<<<(H + 255) / 256, 256, 0,
+                                             stream>>>(accf, H);
+                e = RunRoutedGemvBatchSeg(
+                    stream, ec.d_pack, ec.d_scale, g_gen_ctx->pack_stride,
+                    g_gen_ctx->scale_stride, d_tbl, filled,
+                    /*gate*/ 0, 0,
+                    /*up*/
+                    static_cast<int64_t>(ent0.w1_bytes + ent0.w2_bytes),
+                    static_cast<int64_t>(ent0.w1_scales_bytes +
+                                         ent0.w2_scales_bytes),
+                    /*down*/ static_cast<int64_t>(ent0.w1_bytes),
+                    static_cast<int64_t>(ent0.w1_scales_bytes),
+                    /*N_gate_up=*/static_cast<int>(MI),
+                    /*K_gate_up=*/static_cast<int>(H),
+                    /*N_down=*/static_cast<int>(H),
+                    /*K_down=*/static_cast<int>(MI),
+                    /*geglu=*/true, xh, ygu, hbuf, accf);
+                if (e == cudaSuccess)
+                    gemma_f32_to_bf16_kernel<<<(H + 255) / 256, 256, 0,
+                                               stream>>>(accf, ws.d_acc, H);
+                cudaFreeAsync(d_tbl, stream);
+                cudaFreeAsync(xh, stream);
+                cudaFreeAsync(ygu, stream);
+            cudaFreeAsync(hbuf, stream);
+            cudaFreeAsync(accf, stream);
+            static int gv_hits = 0;
+                if (++gv_hits == 1 && std::getenv("LSX_GEMV_TRACE"))
+                    std::fprintf(stderr,
+                                 "[GEMMA-GEMV] chain engaged (layers x "
+                                 "steps)\n");
+                if (e == cudaSuccess)
+                    return cudaGetLastError();
+                return e;
+            }
+            // Pool scratch unavailable -> legacy batched/sequential flow.
         }
 
         const int64_t MIH = MI * H;
@@ -1766,19 +1868,286 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 }
 
 } // namespace gemma
+
 } // namespace lsxcommon
 
+#include "nvfp4_gemv_math.cuh"
 
+// ── Round 21: batched weight-streaming GEMV chain for gemma routed experts ──
+// Same warp-slice streaming contract as the qwen_moe batched chain
+// (nvfp4_gemv_math.cuh is the shared dot-math source of truth). The staged
+// expert slot keeps three SEPARATED slabs (w1 gate | w2 down | w3 up packed,
+// s1|s2|s3 scales) so the pair stage takes independent base offsets for
+// gate and up. Activation applies geGLU (gelu_tanh(g)*u, bit-matched to the
+// BF16 pipeline kernel above) in FP16 buffers; the weighted reduce adds into
+// an FP32 accumulator ascending-k. Down partials use a transient pool
+// allocation per call (k_slots*H*2 bytes, ~32 KB at gemma geometry).
 
+namespace lsxcommon {
 
+namespace nvfp4gemv {
 
+constexpr int kGemvWarps3 = 8;
 
+inline int PickKpSeg(int cols, int rows)
+{
+    for (int cand : {8, 4, 2}) {
+        if (cols / cand >= 1024 &&
+            static_cast<int64_t>(rows) * cand >= 1024)
+            return cand;
+    }
+    return 1;
+}
 
+template <int KP>
+__global__ void gemma_gemv_pair_batch_kernel(
+    const __half *__restrict__ x_row,
+    const uint8_t *__restrict__ pack_base,
+    const uint8_t *__restrict__ scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    int64_t off_gate_p, int64_t off_gate_s,
+    int64_t off_up_p, int64_t off_up_s,
+    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots,
+    int k_slots, int n_rows, int cols, __half *__restrict__ ygu)
+{
+    constexpr int ROWS = kGemvWarps3 / KP;
+    __shared__ float sp[kGemvWarps3];
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int rflat = blockIdx.x * ROWS + (warp / KP);
+    const int total = k_slots * 2 * n_rows;
+    float acc = 0.0f;
+    if (rflat < total) {
+        const int s = rflat / (2 * n_rows);
+        const int r = rflat - s * 2 * n_rows;
+        const bool gate = r < n_rows;
+        const qwen_moe::QwenMoeGvSlotDev slot = slots[s];
+        const int rr = gate ? r : r - n_rows;
+        acc = GemvDotRow(
+                  x_row,
+                  pack_base +
+                      static_cast<int64_t>(slot.dev_slot) * pack_stride +
+                      (gate ? off_gate_p : off_up_p) +
+                      static_cast<int64_t>(rr) * (cols >> 1),
+                  scale_base +
+                      static_cast<int64_t>(slot.dev_slot) * scale_stride +
+                      (gate ? off_gate_s : off_up_s) +
+                      static_cast<int64_t>(rr) * (cols >> 4),
+                  (KP > 1 ? (cols / KP) * (warp % KP) : 0), cols >> 5,
+                  lane) *
+              (gate ? slot.gs1 : slot.gs3);
+    }
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    if (lane == 0 && (warp % KP) == 0 && rflat < total) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        ygu[rflat] = __float2half(t);
+    }
+}
 
+template <int KP>
+__global__ void gemma_gemv_down_batch_kernel(
+    const __half *__restrict__ hbuf,
+    const uint8_t *__restrict__ pack_base,
+    const uint8_t *__restrict__ scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    int64_t off_down_p, int64_t off_down_s,
+    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots,
+    int k_slots, int n_rows, int cols, __half *__restrict__ ypart)
+{
+    constexpr int ROWS = kGemvWarps3 / KP;
+    __shared__ float sp[kGemvWarps3];
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int rflat = blockIdx.x * ROWS + (warp / KP);
+    const int total = k_slots * n_rows;
+    float acc = 0.0f;
+    if (rflat < total) {
+        const int s = rflat / n_rows;
+        const int r = rflat - s * n_rows;
+        const qwen_moe::QwenMoeGvSlotDev slot = slots[s];
+        acc = GemvDotRow(
+                  hbuf + static_cast<int64_t>(s) * cols,
+                  pack_base +
+                      static_cast<int64_t>(slot.dev_slot) * pack_stride +
+                      off_down_p + static_cast<int64_t>(r) * (cols >> 1),
+                  scale_base +
+                      static_cast<int64_t>(slot.dev_slot) * scale_stride +
+                      off_down_s + static_cast<int64_t>(r) * (cols >> 4),
+                  (KP > 1 ? (cols / KP) * (warp % KP) : 0), cols >> 5,
+                  lane) *
+              slot.gs2;
+    }
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    if (lane == 0 && (warp % KP) == 0 && rflat < total) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        ypart[rflat] = __float2half(t);
+    }
+}
 
+template <bool GEGLU>
+__global__ void gemma_gemv_act_batch_kernel(const __half *__restrict__ ygu,
+                                            int n_half, int N,
+                                            __half *__restrict__ hbuf)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_half) return;
+    const int s = i / N;
+    const int j = i - s * N;
+    const float g =
+        __half2float(ygu[static_cast<int64_t>(s) * 2 * N + j]);
+    const float u =
+        __half2float(ygu[static_cast<int64_t>(s) * 2 * N + N + j]);
+    hbuf[i] = __float2half(GEGLU ? lsxcommon::gemma::gelu_tanh_dev(g) * u
+                                 : (g / (1.0f + expf(-g))) * u);
+}
 
+__global__ void gemma_gemv_reduce_batch_kernel(
+    const __half *__restrict__ ypart,
+    const qwen_moe::QwenMoeGvSlotDev *__restrict__ slots, int k_slots,
+    int n_elems, float *__restrict__ acc_f32)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_elems) return;
+    float t = acc_f32[i];
+    for (int s = 0; s < k_slots; ++s)
+        t += slots[s].coeff *
+             __half2float(ypart[static_cast<int64_t>(s) * n_elems + i]);
+    acc_f32[i] = t;
+}
+} // namespace nvfp4gemv
 
+namespace gemma {
 
+__global__ void gemma_bf16_to_half_kernel(
+    const __nv_bfloat16 *__restrict__ src, __half *__restrict__ dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(__bfloat162float(src[i]));
+}
 
+__global__ void gemma_f32_to_bf16_kernel(const float *__restrict__ src,
+                                         __nv_bfloat16 *__restrict__ dst,
+                                         int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2bfloat16(src[i]);
+}
 
+__global__ void gemma_gemv_zero_f32_kernel(float *__restrict__ dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = 0.0f;
+}
 
+cudaError_t RunRoutedGemvBatchSeg(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *slots_dev, int k_slots,
+    int64_t off_gate_p, int64_t off_gate_s,
+    int64_t off_up_p, int64_t off_up_s,
+    int64_t off_down_p, int64_t off_down_s,
+    int n_gate_up, int k_gate_up,
+    int n_down, int k_down,
+    bool geglu,
+    const __half *d_x,
+    __half *ygu, __half *hbuf, float *acc_f32)
+{
+    using namespace lsxcommon::nvfp4gemv;
+    constexpr int WARPS = kGemvWarps3;
+    if (!d_pack_base || !d_scale_base || !slots_dev || !d_x || !ygu ||
+        !hbuf || !acc_f32 || k_slots <= 0 || k_slots > 16 ||
+        n_gate_up <= 0 || k_gate_up <= 0 || n_down <= 0 || k_down <= 0 ||
+        (k_gate_up & 31) != 0 || (k_down & 31) != 0)
+        return cudaErrorInvalidValue;
+
+    // Pair (gate | up).
+    cudaError_t e;
+    {
+        const int rows = k_slots * 2 * n_gate_up;
+        const int kp = PickKpSeg(k_gate_up, rows);
+        auto go = [&](auto tag) -> cudaError_t {
+            constexpr int KPc = decltype(tag)::value;
+            const int ROWSp = WARPS / KPc;
+            gemma_gemv_pair_batch_kernel<KPc>
+                <<<(rows + ROWSp - 1) / ROWSp, WARPS * 32, 0, stream>>>(
+                    d_x, d_pack_base, d_scale_base, pack_stride,
+                    scale_stride, off_gate_p, off_gate_s, off_up_p,
+                    off_up_s, slots_dev, k_slots, n_gate_up, k_gate_up,
+                    ygu);
+            return cudaGetLastError();
+        };
+        switch (kp) {
+        case 8:  e = go(std::integral_constant<int, 8>{}); break;
+        case 4:  e = go(std::integral_constant<int, 4>{}); break;
+        case 2:  e = go(std::integral_constant<int, 2>{}); break;
+        default: e = go(std::integral_constant<int, 1>{}); break;
+        }
+        if (e != cudaSuccess) return e;
+    }
+
+    // Activation.
+    {
+        const int n_act = k_slots * n_gate_up;
+        auto go = [&](auto tag) -> cudaError_t {
+            constexpr bool G = decltype(tag)::value;
+            gemma_gemv_act_batch_kernel<G>
+                <<<(n_act + 255) / 256, 256, 0, stream>>>(
+                    ygu, n_act, n_gate_up, hbuf);
+            return cudaGetLastError();
+        };
+        e = geglu ? go(std::bool_constant<true>{})
+                  : go(std::bool_constant<false>{});
+        if (e != cudaSuccess) return e;
+    }
+
+    // Down -> per-slot partials -> weighted reduce into fp32 acc.
+    __half *ypart = nullptr;
+    e = cudaMallocAsync(&ypart,
+                        static_cast<size_t>(k_slots) * n_down * sizeof(__half),
+                        stream);
+    if (e != cudaSuccess) return e;
+    {
+        const int rows = k_slots * n_down;
+        const int kp = PickKpSeg(k_down, rows);
+        auto go = [&](auto tag) -> cudaError_t {
+            constexpr int KPc = decltype(tag)::value;
+            const int ROWSp = WARPS / KPc;
+            gemma_gemv_down_batch_kernel<KPc>
+                <<<(rows + ROWSp - 1) / ROWSp, WARPS * 32, 0, stream>>>(
+                    hbuf, d_pack_base, d_scale_base, pack_stride,
+                    scale_stride, off_down_p, off_down_s, slots_dev,
+                    k_slots, n_down, k_down, ypart);
+            return cudaGetLastError();
+        };
+        switch (kp) {
+        case 8:  e = go(std::integral_constant<int, 8>{}); break;
+        case 4:  e = go(std::integral_constant<int, 4>{}); break;
+        case 2:  e = go(std::integral_constant<int, 2>{}); break;
+        default: e = go(std::integral_constant<int, 1>{}); break;
+        }
+        if (e == cudaSuccess) {
+            gemma_gemv_reduce_batch_kernel<<<(n_down + 255) / 256, 256, 0,
+                                             stream>>>(ypart, slots_dev,
+                                                       k_slots, n_down,
+                                                       acc_f32);
+            e = cudaGetLastError();
+        }
+    }
+    cudaFreeAsync(ypart, stream);
+    return e == cudaSuccess ? cudaGetLastError() : e;
+}
+
+} // namespace gemma
+} // namespace lsxcommon

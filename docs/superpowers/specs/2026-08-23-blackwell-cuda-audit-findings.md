@@ -947,3 +947,35 @@ selfcheck x3 green. Actual graph win measurement deferred to the Linux
 full-residency session together with no-handshake (round-20c acceptance):
 expect collapse of per-layer submission stalls (~32 ms/step WDDM-bounded
 here), plus P2 candidate: fused linear-attn decode epilogue.
+
+
+## Round 21 — gemma routed GEMV (experimental) + branch finalization
+
+Shipped: `RunRoutedGemvBatchSeg` (gemma_inference.cu tail) + shared
+`nvfp4_gemv_math.cuh` dot core (single source of truth, also consumed by
+the qwen batched chain). Gemma slot layout keeps three separated slabs
+(w1|w2|w3 / s1|s2|s3), so the pair stage takes independent gate/up base
+offsets; activation is geGLU (gelu_tanh), reduce lands in FP32 and the
+driver casts to the BF16 pipeline. Opt-in `LSX_GEMMA_GEMV=1`, independent
+of LSX_GEMMA_MOE_BATCH. Tests [gemma]: host-ref parity incl adversarial
+block-alternating scales + determinism (suite now 36 cases).
+
+STATUS: kernel chain engages ([GEMMA-GEMV] trace confirmed; geometry
+H=2816/MI=704 both %32==0, offsets/scales verified via trace dump) but
+e2e generation DIVERGES from step 2 (junk token then early stop). Step-1
+top-1 matches baseline; unit parity passes. Working hypothesis: the
+W?A16/F32-hybrid numeric class vs gemma's BF16 pipeline (norms +
+softcaps tightly coupled) shifts logits beyond this model's basin
+stability -- unlike qwen35moe where the same class change stayed benign.
+NEXT investigation (Linux session): BF16-output variant of pair/down
+stages (or tolerance study against the dequant+cuBLAS reference path)
+before any default consideration.
+
+### Branch finalization state (feat/decode-gemv)
+Landed: seq==1 GEMV core + qwen entry dispatch (opt-in), batched routed
+chains for qwen_moe (handshake + no-handshake) with persistent scratch,
+per-layer FFN CUDA graphs under no-handshake readiness, head-GEMV opt-in,
+replay stage auditor, gemma GEMV experiment. All suites green locally;
+default production routing bit-unchanged everywhere. Deferred to Linux/
+5090: no-handshake + graphs validation (round-20c acceptance >= 10% wall),
+gemma numeric-class resolution, linear-attn fusion (P2).

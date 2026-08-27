@@ -10,6 +10,7 @@
 
 #include "lsxcommon/gemma4_inference_load.h"
 #include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/qwen_moe_inference.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -66,10 +67,33 @@ cudaError_t RunGemmaDenseMLP(const __nv_bfloat16 *d_gate, const __nv_bfloat16 *d
 // d_sel_weights [seq, top_k].
 cudaError_t RunGemmaRouterTopK(const __nv_bfloat16 *d_router_proj,
                                const float *d_per_expert_scale,
-                               const __nv_bfloat16 *d_x, int num_experts,
-                               int hidden, int top_k, int32_t *d_sel_experts,
+                               const __nv_bfloat16 *d_normed, int E, int H,
+                               int top_k, int32_t *d_sel_experts,
                                float *d_sel_weights, int seq,
                                cudaStream_t stream);
+
+// Round 21: batched weight-streaming NVFP4 GEMV for the gemma routed-expert
+// chain at seq==1. Replaces the dequant-to-BF16 + cuBLAS detour with direct
+// streaming of the three SEPARATED slabs of the staged expert slot
+// (w1 gate | w2 down | w3 up packed; s1|s2|s3 scales). The geGLU stage
+// applies gelu_tanh(g)*u in FP16 and the weighted reduce accumulates in an
+// FP32 buffer the caller converts/casts (gemma runs a BF16 pipeline).
+// Requires K_gate_up % 32 == 0 && K_down % 32 == 0. Run-to-run deterministic.
+cudaError_t RunRoutedGemvBatchSeg(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const lsxcommon::qwen_moe::QwenMoeGvSlotDev *slots_dev, int k_slots,
+    int64_t off_gate_p, int64_t off_gate_s,
+    int64_t off_up_p, int64_t off_up_s,
+    int64_t off_down_p, int64_t off_down_s,
+    int n_gate_up, int k_gate_up,
+    int n_down, int k_down,
+    bool geglu,
+    const __half *d_x,
+    __half *ygu,       // [k_slots * 2 * n_gate_up] gate|up halves per slot
+    __half *hbuf,      // [k_slots * n_gate_up]
+    float *acc_f32);   // [n_down] fp32 accumulator
 
 // Weighted expert-output combine: out[h] = router_scale[h] *
 // sum_k w_k * expert_out_k[h]. Null d_router_scale skips the channel scale.

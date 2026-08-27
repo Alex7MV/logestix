@@ -624,3 +624,188 @@ TEST_CASE("Batched GEMV core is CUDA-graph transparent",
     cudaFree(yguA); cudaFree(hbufA); cudaFree(ypartA); cudaFree(accA);
     cudaFree(yguB); cudaFree(hbufB); cudaFree(ypartB); cudaFree(accB);
 }
+
+// ── Gemma routed GEMV chain (round 21) ──────────────────────────────────────
+// Three SEPARATED slabs inside the staged expert slot (w1|w2|w3 packed,
+// s1|s2|s3 scales), geGLU activation (gelu_tanh(g)*u), weighted reduce into
+// an fp32 accumulator the driver converts/casts for its BF16 pipeline.
+// Host reference mirrors the shared dot contract validated by the qwen
+// suites above, including an adversarial block-alternating scale pattern.
+#include "lsxcommon/gemma4_inference.h"
+
+namespace {
+
+float GeluTanhHost(float v)
+{
+    const float k0 = 0.7978845608028654f;
+    return 0.5f * v * (1.0f + std::tanh(k0 * (v + 0.044715f * v * v * v)));
+}
+
+void RunGemmaBatch(const int H, const int I, const int S, bool adversarial,
+                   std::vector<float> *acc_out)
+{
+    const int64_t b1 = static_cast<int64_t>(I) * H / 2;
+    const int64_t b2 = static_cast<int64_t>(H) * I / 2;
+    const int64_t s1b = static_cast<int64_t>(I) * H / 16;
+    const int64_t s2b = static_cast<int64_t>(H) * I / 16;
+    const int64_t pack_stride = ((2 * b1 + b2 + 63) / 64) * 64;
+    const int64_t scale_stride = ((2 * s1b + s2b + 63) / 64) * 64;
+
+    std::vector<uint8_t> hp(static_cast<size_t>(pack_stride * S)),
+        hs(static_cast<size_t>(scale_stride * S));
+    for (int e = 0; e < S; ++e) {
+        uint8_t *p = hp.data() + static_cast<size_t>(e) * pack_stride;
+        uint8_t *sc = hs.data() + static_cast<size_t>(e) * scale_stride;
+        for (int64_t i = 0; i < pack_stride; ++i)
+            p[i] = static_cast<uint8_t>((i * 23 + e * 41) & 0xFF);
+        for (int64_t i = 0; i < scale_stride; ++i)
+            sc[i] = adversarial ? static_cast<uint8_t>((i % 2) ? 0xf0 : 0x08)
+                                : static_cast<uint8_t>(
+                                      128 + ((i + 11 * e) % 48));
+    }
+    std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> slots(S);
+    for (int k = 0; k < S; ++k) {
+        slots[k].dev_slot = k;
+        slots[k].gs1 = static_cast<float>(1 << (k % 4)) / 256.0f;
+        slots[k].gs3 = static_cast<float>(1 << ((k + 1) % 4)) / 256.0f;
+        slots[k].gs2 = static_cast<float>(1 << ((k + 2) % 4)) / 256.0f;
+        slots[k].coeff = k % 2 ? -0.5f : 0.75f;
+    }
+    std::vector<__half> hx(H);
+    for (int i = 0; i < H; ++i)
+        hx[i] = __float2half(float((i % 7) - 3) * 0.25f);
+
+    uint8_t *d_pack, *d_scale;
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+    cudaMalloc(&d_pack, hp.size());
+    cudaMalloc(&d_scale, hs.size());
+    cudaMalloc(&d_tbl, sizeof(*slots.data()) * S);
+    cudaMemcpy(d_pack, hp.data(), hp.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scale, hs.data(), hs.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_tbl, slots.data(), sizeof(*slots.data()) * S,
+               cudaMemcpyHostToDevice);
+
+    __half *dx, *ygu, *hbuf;
+    float *acc_f32;
+    cudaMalloc(&dx, static_cast<size_t>(H) * 2);
+    cudaMalloc(&ygu, static_cast<size_t>(S) * 2 * I * 2);
+    cudaMalloc(&hbuf, static_cast<size_t>(S) * I * 2);
+    cudaMalloc(&acc_f32, static_cast<size_t>(H) * 4);
+    cudaMemcpy(dx, hx.data(), static_cast<size_t>(H) * 2,
+               cudaMemcpyHostToDevice);
+    std::vector<float> acc_seed(H);
+    for (int i = 0; i < H; ++i) acc_seed[i] = 0.125f * (i % 5);
+    cudaMemcpy(acc_f32, acc_seed.data(), static_cast<size_t>(H) * 4,
+               cudaMemcpyHostToDevice);
+
+    REQUIRE(lsxcommon::gemma::RunRoutedGemvBatchSeg(
+                nullptr, d_pack, d_scale, pack_stride, scale_stride, d_tbl,
+                S,
+                /*gate*/ 0, 0,
+                /*up*/ b1 + b2, s1b + s2b,
+                /*down*/ b1, s1b,
+                /*N_gate_up=*/I, /*K_gate_up=*/H,
+                /*N_down=*/H, /*K_down=*/I,
+                /*geglu=*/true, dx, ygu, hbuf, acc_f32) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    // ── host reference ────────────────────────────────────────────────────
+    auto ref_stage = [&](const uint8_t *pbase, const uint8_t *sbase,
+                         float gs, const __half *xin, float *out, int Kd,
+                         int Nr, int64_t poff, int64_t soff) {
+        for (int n = 0; n < Nr; ++n) out[n] = 0.0f;
+        for (int n = 0; n < Nr; ++n)
+            for (int k = 0; k < Kd; ++k) {
+                const uint8_t byte =
+                    pbase[poff + (static_cast<int64_t>(n) * Kd + k) / 2];
+                const uint8_t nib =
+                    (k & 1) ? static_cast<uint8_t>(byte >> 4)
+                            : static_cast<uint8_t>(byte & 0x0F);
+                const float scl =
+                    E4M3ScaleToFloatHost(
+                        sbase[soff +
+                              (static_cast<int64_t>(n) * Kd + k) / 16]) *
+                    gs;
+                out[n] += __half2float(xin[k]) * kE2M1TestTable[nib] * scl;
+            }
+    };
+
+    auto expect_slot = [&](int k, std::vector<float> *g_out,
+                           std::vector<float> *u_out,
+                           std::vector<float> *y_out) {
+        const uint8_t *pk = hp.data() +
+            static_cast<size_t>(slots[k].dev_slot) * pack_stride;
+        const uint8_t *ps = hs.data() +
+            static_cast<size_t>(slots[k].dev_slot) * scale_stride;
+        std::vector<__half> h_in(I);
+        ref_stage(pk, ps, slots[k].gs1, hx.data(), g_out->data(), H, I, 0, 0);
+        ref_stage(pk, ps, slots[k].gs3, hx.data(), u_out->data(), H, I,
+                  b1 + b2, s1b + s2b);
+        for (int j = 0; j < I; ++j)
+            h_in[j] = __float2half(GeluTanhHost(
+                __half2float(__float2half((*g_out)[j]))) *
+                __half2float(__float2half((*u_out)[j])));
+        ref_stage(pk, ps, slots[k].gs2, h_in.data(), y_out->data(), I, H,
+                  b1, s1b);
+    };
+
+    std::vector<__half> got_gu(static_cast<size_t>(S) * 2 * I);
+    cudaMemcpy(got_gu.data(), ygu, got_gu.size() * 2,
+               cudaMemcpyDeviceToHost);
+    for (int k = 0; k < S; ++k) {
+        std::vector<float> g(I), u(I), y(H);
+        expect_slot(k, &g, &u, &y);
+        for (int j = 0; j < I; ++j) {
+            CHECK(std::abs(__half2float(got_gu[
+                      static_cast<size_t>(k) * 2 * I + j]) -
+                  __half2float(__float2half(g[j]))) <
+                  2e-3f * std::abs(g[j]) + 2e-3f);
+            CHECK(std::abs(__half2float(got_gu[
+                      static_cast<size_t>(k) * 2 * I + I + j]) -
+                  __half2float(__float2half(u[j]))) <
+                  2e-3f * std::abs(u[j]) + 2e-3f);
+        }
+    }
+    std::vector<float> got_acc(H), exp_acc(acc_seed);
+    cudaMemcpy(got_acc.data(), acc_f32, static_cast<size_t>(H) * 4,
+               cudaMemcpyDeviceToHost);
+    for (int k = 0; k < S; ++k) {
+        std::vector<float> g(I), u(I), y(H);
+        expect_slot(k, &g, &u, &y);
+        for (int r = 0; r < H; ++r) exp_acc[r] += slots[k].coeff * y[r];
+    }
+    for (int r = 0; r < H; ++r) {
+        INFO("r=" << r << " ref=" << exp_acc[r] << " got=" << got_acc[r]);
+        CHECK(std::abs(got_acc[r] - exp_acc[r]) <
+              2e-3f * std::abs(exp_acc[r]) + 1e-3f);
+    }
+    if (acc_out) *acc_out = got_acc;
+
+    cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_tbl);
+    cudaFree(dx); cudaFree(ygu); cudaFree(hbuf); cudaFree(acc_f32);
+}
+
+} // namespace
+
+TEST_CASE("Gemma routed GEMV batch parity vs host reference",
+          "[qwen][gemm][nvfp4][gemv][gemma]")
+{
+    RunGemmaBatch(128, 64, 4, false, nullptr);
+}
+
+TEST_CASE("Gemma routed GEMV chunk-scale split (adversarial)",
+          "[qwen][gemm][nvfp4][gemv][gemma]")
+{
+    RunGemmaBatch(96, 96, 2, true, nullptr);
+}
+
+TEST_CASE("Gemma routed GEMV deterministic across launches",
+          "[qwen][gemm][nvfp4][gemv][gemma]")
+{
+    std::vector<float> a1, a2;
+    RunGemmaBatch(64, 32, 2, false, &a1);
+    RunGemmaBatch(64, 32, 2, false, &a2);
+    REQUIRE(a1.size() == a2.size());
+    CHECK(std::memcmp(a1.data(), a2.data(),
+                      a1.size() * sizeof(float)) == 0);
+}

@@ -15,6 +15,7 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/qwen_tc_gemm.h"
 #include "nvfp4_codec.h"
+#include "nvfp4_gemv_math.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
 
@@ -526,45 +527,14 @@ namespace {
 
 constexpr int kGemvBatchWarps = 8;
 
+// One warp owns a K-slice of one flat output row rflat (slot-major). The
+// shared dot math lives in nvfp4_gemv_math.cuh (single source of truth for
+// the byte/nibble/scale-block contract exercised by both suites).
 __device__ __forceinline__ float moe_gemv_dot(
     const __half *__restrict__ x, const uint8_t *__restrict__ wrow,
     const uint8_t *__restrict__ srow, int kb, int chunks, int lane)
 {
-    float acc = 0.0f;
-    const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
-    const bool x_vec = (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
-    for (int c = lane; c < chunks; c += 32) {
-        const uint4 pw = wv[c];
-        const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
-        // Byte j of a chunk holds elements 2j (lo nibble) / 2j+1 (hi);
-        // elements 0..15 of the chunk use scale block sb, 16..31 use sb+1.
-        const int sb = (kb >> 4) + 2 * c;
-        const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb]);
-        const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb + 1]);
-        const int xb = kb + c * 32;
-        const __half2 *xh = x_vec
-            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
-#pragma unroll
-        for (int b = 0; b < 16; ++b) {
-            const float scl = (b < 8) ? sc0 : sc1;
-            float xv0, xv1;
-            if (x_vec) {
-                const __half2 pair = xh[b];
-                xv0 = __half2float(pair.x);
-                xv1 = __half2float(pair.y);
-            } else {
-                xv0 = __half2float(x[xb + 2 * b]);
-                xv1 = __half2float(x[xb + 2 * b + 1]);
-            }
-            acc += xv0 * gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
-            acc += xv1 * gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
-        }
-    }
-    // Fixed-order in-warp merge: ascending offset shfl-down tree.
-#pragma unroll
-    for (int off = 16; off > 0; off >>= 1)
-        acc += __shfl_down_sync(0xffffffffu, acc, off);
-    return acc;   // only lanes holding tree totals are meaningful here
+    return lsxcommon::nvfp4gemv::GemvDotRow(x, wrow, srow, kb, chunks, lane);
 }
 
 // ygu[s*2I + r] = dot(w13 row r of slot s, x) * (r < I ? gs1 : gs3).
