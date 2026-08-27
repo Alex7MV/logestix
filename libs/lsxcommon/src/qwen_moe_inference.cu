@@ -679,9 +679,44 @@ int MoeGemvPickKp(int cols, int rows)
     return 1;
 }
 
+// tbl[k] = {meta[d_routes[k].eid].*, coeff} -- composed fully on device so
+// the no-handshake decode path never reads router output back to host.
+__global__ void moe_gemv_gather_table_kernel(
+    const QwenMoeRoutedSlot *__restrict__ routes,
+    const QwenMoeExpertMetaDev *__restrict__ meta,
+    int k_slots,
+    QwenMoeGvSlotDev *__restrict__ out)
+{
+    const int k = threadIdx.x;
+    if (k >= k_slots) return;   // launch width fixed at 32, K <= 16
+    const QwenMoeRoutedSlot r = routes[k];
+    const QwenMoeExpertMetaDev m = meta[r.eid];
+    out[k].dev_slot = m.dev_slot;
+    out[k].gs1 = m.gs1;
+    out[k].gs2 = m.gs2;
+    out[k].gs3 = m.gs3;
+    out[k].coeff = r.coeff;
+}
+
 } // namespace
 
-cudaError_t RunQwenMoeRoutedGemmVBatch(
+cudaError_t RunQwenMoeGemvGatherTable(
+    cudaStream_t stream,
+    const QwenMoeRoutedSlot *d_slots, int k_slots,
+    const QwenMoeExpertMetaDev *d_meta,
+    QwenMoeGvSlotDev *d_tbl_out)
+{
+    if (!d_slots || !d_meta || !d_tbl_out || k_slots <= 0 || k_slots > 16)
+        return cudaErrorInvalidValue;
+    moe_gemv_gather_table_kernel<<<1, 32, 0, stream>>>(d_slots, d_meta,
+                                                       k_slots, d_tbl_out);
+    return cudaGetLastError();
+}
+
+// Device-table variant consumed by the no-handshake decode path. Requires
+// the table to already live in device memory (built by the host in the
+// handshake flow or by moe_gemv_gather_table_kernel otherwise).
+static cudaError_t MoeGemmVBatchCore(
     cudaStream_t stream,
     const uint8_t *d_pack_base, const uint8_t *d_scale_base,
     int64_t pack_stride, int64_t scale_stride,
@@ -750,6 +785,116 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
     moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
         ypart, slots_dev, k_slots, H, acc);
     return cudaGetLastError();
+}
+
+cudaError_t RunQwenMoeRoutedGemmVBatch(
+    cudaStream_t stream,
+    const uint8_t *d_pack_base, const uint8_t *d_scale_base,
+    int64_t pack_stride, int64_t scale_stride,
+    const QwenMoeGvSlotDev *slots_host_tbl, int k_slots,
+    int64_t w13_bytes, int64_t s13_bytes,
+    int H, int I, const __half *d_x,
+    __half *ygu, __half *hbuf, __half *ypart, float *acc)
+{
+    // Handshake wrapper: builds the slot table on the host and uploads it
+    // (tests / callers that already hold a host-side table).
+    if (!slots_host_tbl) return cudaErrorInvalidValue;
+    QwenMoeGvSlotDev *d_tbl = nullptr;
+    cudaError_t e = cudaMalloc(&d_tbl,
+                               sizeof(QwenMoeGvSlotDev) * k_slots);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(d_tbl, slots_host_tbl,
+                        sizeof(QwenMoeGvSlotDev) * k_slots,
+                        cudaMemcpyHostToDevice, stream);
+    if (e == cudaSuccess)
+        e = MoeGemmVBatchCore(stream, d_pack_base, d_scale_base, pack_stride,
+                              scale_stride, d_tbl, k_slots, w13_bytes,
+                              s13_bytes, H, I, d_x, ygu, hbuf, ypart, acc);
+    cudaFree(d_tbl);
+    return e == cudaSuccess ? cudaGetLastError() : e;
+}
+
+// No-handshake readiness: every routed expert has been staged at least once
+// and its meta mirrored. With full expert residency (default since round 18)
+// this flips on after one warm pass and then never reverts -- evictions are
+// impossible when cache.slots >= total experts, so the device mirror stays
+// authoritative without host readback.
+bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store)
+{
+    const size_t flats =
+        static_cast<size_t>(store.num_layers) * store.num_experts;
+    if (flats == 0 || store.h_gemv_meta.size() != flats ||
+        store.gemv_ready)
+        return store.gemv_ready && !store.h_gemv_meta.empty();
+    for (const auto &m : store.h_gemv_meta)
+        if (m.dev_slot < 0) return false;   // warm-up incomplete
+    // First complete mirror: upload once.
+    auto &s = const_cast<QwenMoeExpertStore &>(store);
+    if (cudaMalloc(reinterpret_cast<void **>(&s.d_gemv_meta),
+                   flats * sizeof(QwenMoeExpertMetaDev)) != cudaSuccess) {
+        s.d_gemv_meta = nullptr;
+        return false;
+    }
+    if (cudaMemcpy(s.d_gemv_meta, s.h_gemv_meta.data(),
+                   flats * sizeof(QwenMoeExpertMetaDev),
+                   cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(s.d_gemv_meta);
+        s.d_gemv_meta = nullptr;
+        return false;
+    }
+    s.gemv_ready = true;
+    return true;
+}
+
+// Router-readback-free routed FFN for decode: composes the GEMV slot table
+// from d_slots + the device meta mirror, runs the batched chain, no host
+// synchronization at any point.
+static cudaError_t RunQwenMoeRoutedGemmVNoHandshake(
+    cudaStream_t stream, QwenMoeExpertStore &store,
+    QwenMoeExpertDeviceCache &cache, int layer,
+    const QwenMoeRoutedSlot *d_slots, int K,
+    const __half *d_x, int H, int I, float *d_acc,
+    std::string &error)
+{
+    const size_t flat_base =
+        static_cast<size_t>(layer) * static_cast<size_t>(store.num_experts);
+    const auto &rec0 = store.records[static_cast<size_t>(layer)][0];
+    const int64_t w13_b =
+        static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
+    const int64_t s13_b =
+        static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
+
+    QwenMoeGvSlotDev *d_tbl = nullptr;
+    __half *ygu_b = nullptr, *hbuf_b = nullptr, *ypart_b = nullptr;
+    if (cudaMallocAsync(&d_tbl, sizeof(QwenMoeGvSlotDev) * K, stream) !=
+            cudaSuccess ||
+        cudaMallocAsync(&ygu_b,
+                        static_cast<size_t>(K) * 2 * I * sizeof(__half),
+                        stream) != cudaSuccess ||
+        cudaMallocAsync(&hbuf_b, static_cast<size_t>(K) * I * sizeof(__half),
+                        stream) != cudaSuccess ||
+        cudaMallocAsync(&ypart_b, static_cast<size_t>(K) * H * sizeof(__half),
+                        stream) != cudaSuccess) {
+        error = "no-handshake scratch alloc failed";
+        if (d_tbl) cudaFreeAsync(d_tbl, stream);
+        if (ygu_b) cudaFreeAsync(ygu_b, stream);
+        if (hbuf_b) cudaFreeAsync(hbuf_b, stream);
+        if (ypart_b) cudaFreeAsync(ypart_b, stream);
+        return cudaErrorInvalidValue;
+    }
+    cudaError_t e = RunQwenMoeGemvGatherTable(stream, d_slots, K,
+                                              store.d_gemv_meta + flat_base,
+                                              d_tbl);
+    if (e == cudaSuccess)
+        e = MoeGemmVBatchCore(stream, cache.d_pack, cache.d_scale,
+                              cache.pack_stride, cache.scale_stride, d_tbl,
+                              K, w13_b, s13_b, H, I, d_x, ygu_b, hbuf_b,
+                              ypart_b, d_acc);
+    cudaFreeAsync(d_tbl, stream);
+    cudaFreeAsync(ygu_b, stream);
+    cudaFreeAsync(hbuf_b, stream);
+    cudaFreeAsync(ypart_b, stream);
+    return e == cudaSuccess ? cudaGetLastError() : e;
 }
 
 // ── Shared expert + gate combine ──────────────────────────────────────────
@@ -1262,17 +1407,28 @@ cudaError_t RunQwenMoeGeneration(
                 e = cudaGetLastError();
                 if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
             }
-            // Host needs the selected ids to stage experts: small D2H +
-            // event fence once per layer. Busy-poll the event instead of the
-            // blocking cudaEventSynchronize — with K layers × steps handshakes
-            // per generation, host wake latency is pure GPU idle time.
-            cudaMemcpyAsync(h_slots, d_slots, sizeof(QwenMoeRoutedSlot) * K,
-                            cudaMemcpyDeviceToHost, stream);
-            cudaEventRecord(tok_ready, stream);
-            {
-                cudaError_t q;
-                while ((q = cudaEventQuery(tok_ready)) == cudaErrorNotReady) {}
-                (void)q;
+            // No-handshake mode (full residency steady state): the routed
+            // chain composes its table on device from d_slots; the host
+            // never reads the router output back, so no fence/poll here.
+            const bool nohandshake =
+                std::getenv("LSX_GEMV_EXPERTS") != nullptr &&
+                lsxcommon::qwen_moe::QwenMoeGemvNohandshake(store);
+            if (!nohandshake) {
+                // Host needs the selected ids to stage experts: small D2H +
+                // event fence once per layer. Busy-poll the event instead of
+                // the blocking cudaEventSynchronize — with K layers × steps
+                // handshakes per generation, host wake latency is pure GPU
+                // idle time.
+                cudaMemcpyAsync(h_slots, d_slots,
+                                sizeof(QwenMoeRoutedSlot) * K,
+                                cudaMemcpyDeviceToHost, stream);
+                cudaEventRecord(tok_ready, stream);
+                {
+                    cudaError_t q;
+                    while ((q = cudaEventQuery(tok_ready)) ==
+                           cudaErrorNotReady) {}
+                    (void)q;
+                }
             }
             QwenMoeRoutedSlot *slots_host = h_slots;
             // Quantize the layer input ONCE for all experts + shared GEMMs
@@ -1307,13 +1463,20 @@ cudaError_t RunQwenMoeGeneration(
                     if (p2) cudaFreeAsync(p2, s);
                 }
             } xq_freer{stream, xq, xqs};
-            e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host, K,
-                                    d_postin, H, I, d_moe_acc, d_yg, d_yu,
-                                    d_y2, moe_error,
-                                    have_copy ? copy_stream : nullptr,
-                                    have_copy ? ev_uploads : nullptr,
-                                    ev_front, xq, xqs,
-                                    d_qpack_scratch, d_qscales_scratch);
+            if (nohandshake) {
+                e = RunQwenMoeRoutedGemmVNoHandshake(
+                    stream, store, cache, l, d_slots, K, d_postin, H, I,
+                    d_moe_acc, moe_error);
+            } else {
+                e = RunQwenMoeRoutedFFN(stream, store, cache, l, slots_host,
+                                        K, d_postin, H, I, d_moe_acc, d_yg,
+                                        d_yu, d_y2, moe_error,
+                                        have_copy ? copy_stream : nullptr,
+                                        have_copy ? ev_uploads : nullptr,
+                                        ev_front, xq, xqs,
+                                        d_qpack_scratch,
+                                        d_qscales_scratch);
+            }
             if (e != cudaSuccess)
                 return fail(e, "experts l" + std::to_string(l) + ": " + moe_error);
             e = RunQwenMoeSharedCombine(stream, lw.shared_w1, lw.shared_w2,

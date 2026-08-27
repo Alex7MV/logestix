@@ -471,6 +471,10 @@ void QwenMoeExpertStore::Free()
     if (d_seg_bounds) cudaFree(d_seg_bounds);
     d_seg_wgs = nullptr;
     d_seg_bounds = nullptr;
+    if (d_gemv_meta) cudaFree(d_gemv_meta);
+    d_gemv_meta = nullptr;
+    h_gemv_meta.clear();
+    gemv_ready = false;
     num_layers = 0;
     num_experts = 0;
 }
@@ -712,6 +716,22 @@ int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
     if (slot >= 0) return slot;
     slot = QwenMoeExpertCacheInsert(cache, flat);
     if (missed) *missed = true;
+
+    // No-handshake decode bookkeeping: mirror residency + scales so the
+    // batched GEMV path can compose its table entirely on device.
+    if (static_cast<int>(store.h_gemv_meta.size()) <
+        store.num_layers * store.num_experts)
+        store.h_gemv_meta.assign(
+            static_cast<size_t>(store.num_layers) * store.num_experts,
+            QwenMoeExpertMetaDev{-1, 0.f, 0.f, 0.f});
+    {
+        const auto &rec =
+            store.records[static_cast<size_t>(layer)]
+                         [static_cast<size_t>(eid)];
+        store.h_gemv_meta[static_cast<size_t>(flat)] =
+            QwenMoeExpertMetaDev{slot, rec.gs1, rec.gs2, rec.gs3};
+        store.gemv_ready = false;   // invalidate until re-uploaded
+    }
 
     const uint8_t *slab = store.h_slabs[static_cast<size_t>(layer)];
     if (!slab) {

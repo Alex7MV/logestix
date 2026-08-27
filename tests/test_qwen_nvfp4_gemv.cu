@@ -431,3 +431,52 @@ TEST_CASE("RoutedGemmVBatch deterministic across launches",
     CHECK(std::memcmp(a1.data(), a2.data(),
                       a1.size() * sizeof(float)) == 0);
 }
+
+// No-handshake gather: table composed from device routing results +
+// per-expert meta LUT must equal the host-composed expectation bit-for-bit.
+TEST_CASE("GemvGatherTable composes slot table from device inputs",
+          "[qwen][gemm][nvfp4][gemv][batch]")
+{
+    constexpr int E = 8, K = 5;
+    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> routes(K);
+    const int eids[K] = {7, 2, 7, 0, 5};
+    for (int k = 0; k < K; ++k) {
+        routes[k].eid = eids[k];
+        routes[k].coeff = 0.125f * (k + 1);
+    }
+    std::vector<lsxcommon::qwen_moe::QwenMoeExpertMetaDev> meta(E);
+    for (int e = 0; e < E; ++e) {
+        meta[e].dev_slot = 100 + e;
+        meta[e].gs1 = 1.0f / float(1 << (e % 6));
+        meta[e].gs2 = 1.0f / float(1 << ((e + 3) % 6));
+        meta[e].gs3 = 1.0f / float(1 << ((e + 5) % 6));
+    }
+
+    lsxcommon::qwen_moe::QwenMoeRoutedSlot *d_routes = nullptr;
+    lsxcommon::qwen_moe::QwenMoeExpertMetaDev *d_meta = nullptr;
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;
+    cudaMalloc(&d_routes, routes.size() * sizeof(routes[0]));
+    cudaMalloc(&d_meta, meta.size() * sizeof(meta[0]));
+    cudaMalloc(&d_tbl, K * sizeof(*d_tbl));
+    cudaMemcpy(d_routes, routes.data(), routes.size() * sizeof(routes[0]),
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_meta, meta.data(), meta.size() * sizeof(meta[0]),
+               cudaMemcpyHostToDevice);
+
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeGemvGatherTable(
+                nullptr, d_routes, K, d_meta, d_tbl) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> got(K);
+    cudaMemcpy(got.data(), d_tbl, K * sizeof(*d_tbl),
+               cudaMemcpyDeviceToHost);
+    for (int k = 0; k < K; ++k) {
+        INFO("k=" << k);
+        CHECK(got[k].dev_slot == meta[eids[k]].dev_slot);
+        CHECK(got[k].gs1 == meta[eids[k]].gs1);
+        CHECK(got[k].gs2 == meta[eids[k]].gs2);
+        CHECK(got[k].gs3 == meta[eids[k]].gs3);
+        CHECK(got[k].coeff == routes[k].coeff);
+    }
+    cudaFree(d_routes); cudaFree(d_meta); cudaFree(d_tbl);
+}

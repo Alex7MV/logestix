@@ -10,6 +10,7 @@
 
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/qwen_moe_inference_load.h"
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 
@@ -97,6 +98,24 @@ cudaError_t RunQwenMoeRoutedGemmVBatch(
     int64_t w13_bytes, int64_t s13_bytes,
     int H, int I, const __half *d_x,
     __half *ygu, __half *hbuf, __half *ypart, float *acc);
+
+// Per-expert static device meta for no-handshake decode: definition lives
+// in qwen_moe_inference_load.h (owned by QwenMoeExpertStore).
+
+// Composes the batch GEMV slot table from device-side routing results:
+// tbl[k] = {meta[d_slots[k].eid].*, coeff = d_slots[k].coeff}. Used by the
+// no-handshake decode path where the host never reads back router output.
+// Launch config: <<<1, 32>>>, K <= 16.
+cudaError_t RunQwenMoeGemvGatherTable(
+    cudaStream_t stream,
+    const QwenMoeRoutedSlot *d_slots, int k_slots,
+    const QwenMoeExpertMetaDev *d_meta,   // [num_experts] slice of the layer
+    QwenMoeGvSlotDev *d_tbl_out);         // [k_slots]
+
+// True once every routed expert is resident and mirrored to device meta
+// (full-residency steady state): unlocks the router-readback-free decode
+// path. One-time lazy upload of the mirror on first readiness.
+bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store);
 
 // MoE FFN epilogue (HF parity): out = routed_acc + sigmoid(gate.x) * shared.
 // d_routed_acc: [seq,H] fp32; scratch_i [seq,SI], scratch_h [seq,H];

@@ -62,6 +62,15 @@ struct QwenMoeExpertRecord {
     float gs1 = 1.f, gs2 = 1.f, gs3 = 1.f;
 };
 
+// Per-expert static device meta for no-handshake decode (16 B): residency
+// slot index + the three global scales. Maintained by
+// EnsureQwenMoeExpertResident; dev_slot == -1 marks a not-yet-resident
+// expert.
+struct alignas(16) QwenMoeExpertMetaDev {
+    int32_t dev_slot;
+    float gs1, gs2, gs3;
+};
+
 struct QwenMoeExpertStore {
     // [num_layers] pinned slabs; slab l holds num_experts records back to back.
     std::vector<uint8_t *> h_slabs;
@@ -75,6 +84,14 @@ struct QwenMoeExpertStore {
     // {I, I, I} selects segment by output column. Null when unused.
     float *d_seg_wgs = nullptr;
     int *d_seg_bounds = nullptr;
+
+    // No-handshake decode support: host mirror of per-flat
+    // {dev_slot(-1 while missing), gs1..gs3}; device mirror uploaded once
+    // every entry is resident. gemv_ready == true unlocks the
+    // router-readback-free decode path (full-residency guarantee).
+    std::vector<QwenMoeExpertMetaDev> h_gemv_meta;
+    QwenMoeExpertMetaDev *d_gemv_meta = nullptr;
+    bool gemv_ready = false;
 
     void Free();
 };

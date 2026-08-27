@@ -796,3 +796,25 @@ passes under the flag. Default (flag off) bit-unchanged vs TC baseline.
 Launch count cut: ~840 fewer launches/step, yet only +6% e2e on this box --
 confirms launch overhead shares time with per-layer host syncs and small
 attention kernels; deeper gains need the single-stream decode driver pass.
+
+
+### Round 19c — no-handshake routed chain (latent, flag-gated)
+`RunQwenMoeGemvGatherTable` + `QwenMoeExpertStore::{h,d}_gemv_meta`
+({dev_slot,gs1..gs3} per flat expert): EnsureQwenMoeExpertResident mirrors
+residency+scales at insert time; once EVERY expert is mirrored, the decode
+driver skips the per-layer router readback/busy-poll entirely and composes
+the batch GEMV slot table on device (`LSX_GEMV_EXPERTS=1`). Correct by
+construction: readiness requires a complete mirror; under full residency
+evictions are impossible so the mirror is authoritative forever.
+
+STATUS on this Windows box: LATENT ONLY. The 6 GiB VRAM headroom forces
+partial residency (resident_mb oscillates 1427-1548 across processes), so
+some experts stay unstaged and readiness never trips; e2e effect here is
+unmeasurable (short-run tok/s variance +-15% from WDDM/clock effects
+swamps the lever). Validate on the full-residency Linux/5090 config next
+session before any default-flip decision.
+
+TEST lesson: catch2 fixture allocated cudaMalloc(&p, sizeof(vector)) --
+sizeof the std::vector OBJECT (24 B), not its payload; route/meta reads on
+device returned garbage while coeff checks coincidentally passed. Always
+size cudaMalloc from .size()*sizeof(T[0]) of the payload.
