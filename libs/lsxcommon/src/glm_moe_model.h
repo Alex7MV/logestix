@@ -43,8 +43,6 @@ private:
 
     glm::GlmPinnedWeights pw_;
     glm::GlmExpertDb experts_{};
-    Lease permanent_lease_;
-    Lease cache_lease_;
     std::unique_ptr<lifecycle::RuntimeTuner> tuner_;
     std::int64_t tuner_last_hits_ = 0;
     std::int64_t tuner_last_misses_ = 0;

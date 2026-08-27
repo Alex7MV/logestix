@@ -56,6 +56,9 @@ bool QwenBaseModel::Load()
     // Load(), so ResidentWeightBytes() reports the full persistent set.
     resident_bytes_ = pw_.resident_bytes;
     vram_ = pw_.top.vram;
+    // Governor accounting (lifecycle-unification II): dense models lease
+    // their full permanent residency too.
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
     lsxcommon::log::info(absl::StrCat(
         "[qwen-model] pinned weights loaded: ", pw_.layers.size(),
         " layers (", pw_.resident_bytes, " bytes resident)"));

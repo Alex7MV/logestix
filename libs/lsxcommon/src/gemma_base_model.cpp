@@ -90,6 +90,11 @@ bool GemmaBaseModel::Load()
     }
     resident_bytes_ = pw_.resident_bytes;
     vram_ = pw_.top.vram;
+    // Governor accounting (lifecycle-unification II): the pinned weight set
+    // is permanent residency. The routed-expert device cache is allocated
+    // lazily during generation and stays budgeted by the unified slot
+    // policy (ComputeGemmaResidentSlots / lifecycle::ExpertCacheSlots).
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
     pinned_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - t_pinned)
                     .count();

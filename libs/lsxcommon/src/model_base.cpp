@@ -14,6 +14,8 @@ namespace lsxcommon {
 void ModelBase::Unload()
 {
     TeardownWeights();
+    permanent_lease_ = {};
+    expert_cache_lease_ = {};
     tok_db_.reset();
     loaded_ = false;
     resident_bytes_ = 0;
@@ -22,6 +24,8 @@ void ModelBase::Unload()
 bool ModelBase::AbortLoad()
 {
     TeardownWeights();
+    permanent_lease_ = {};
+    expert_cache_lease_ = {};
     tok_db_.reset();
     loaded_ = false;
     resident_bytes_ = 0;
@@ -34,6 +38,37 @@ bool ModelBase::RequireLoaded(gpu::BenchmarkResult &r) const
     r.ok = false;
     r.error_msg = "model not loaded";
     return false;
+}
+
+bool ModelBase::AcquirePermanentWeights(std::uint64_t bytes)
+{
+    auto &gov = ResourceGovernor::Instance();
+    if (!gov.IsInitialized()) {
+        log::warn("[model] governor not initialized; standalone init");
+        GovernorOptions gopts;
+        if (!gov.Initialize(gopts)) {
+            log::error("[model] governor init failed");
+            return false;
+        }
+    }
+    permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights, bytes,
+                                   LeasePolicy{});
+    if (!permanent_lease_.Valid() && !gov.options().relax_memory_refusal) {
+        log::error("[model] permanent-weight lease refused ("
+                   + std::to_string(bytes) + " bytes)");
+        return false;
+    }
+    return true;
+}
+
+bool ModelBase::AcquireExpertCacheLease(std::uint64_t bytes,
+                                        std::uint64_t min_bytes,
+                                        std::uint64_t max_bytes)
+{
+    LeasePolicy adaptive{LeasePolicy::Mode::kAdaptive, min_bytes, max_bytes};
+    expert_cache_lease_ = ResourceGovernor::Instance().Acquire(
+        LeaseKind::kExpertCache, bytes, adaptive);
+    return expert_cache_lease_.Valid();
 }
 
 bool ModelBase::LoadTokenizerDb(const std::string &model_path)

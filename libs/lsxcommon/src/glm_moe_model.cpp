@@ -58,8 +58,6 @@ std::uint64_t GlmV5Model::EstimateExpertMeanBytes() const
 void GlmV5Model::TeardownWeights()
 {
     tuner_.reset();          // releases the adaptive expert-cache lease
-    permanent_lease_ = {};   // RAII release
-    cache_lease_ = {};
     glm::free_glm_expert_index(experts_);
     pw_.Free();
     TeardownContext();
@@ -79,16 +77,6 @@ bool GlmV5Model::Load()
         return AbortLoad();
     }
     vram_ = topo.vram;
-
-    auto &gov = ResourceGovernor::Instance();
-    if (!gov.IsInitialized()) {
-        log::warn("[glm-model] governor not initialized; standalone init");
-        GovernorOptions gopts;
-        if (!gov.Initialize(gopts)) {
-            log::error("[glm-model] governor init failed");
-            return AbortLoad();
-        }
-    }
 
     if (!EnsureContext(/*with_cublas=*/true)) {
         log::error("[glm-model] cublas/stream init failed");
@@ -121,23 +109,16 @@ bool GlmV5Model::Load()
     in.expert_mean_bytes = EstimateExpertMeanBytes();
     const auto &plan = lifecycle::GetOrBuildPlan(in);
 
-    permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
-                                   pw_.resident_bytes, LeasePolicy{});
-    if (!permanent_lease_.Valid() && !gov.options().relax_memory_refusal) {
-        log::error("[glm-model] permanent-weight lease refused ("
-                   + std::to_string(pw_.resident_bytes) + " bytes)");
-        return AbortLoad();
-    }
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
 
-    LeasePolicy adaptive{LeasePolicy::Mode::kAdaptive,
-                         plan.tuner_bounds.expert_cache_slots_min *
-                             in.expert_mean_bytes,
-                         plan.expert_cache_max_bytes};
-    cache_lease_ = gov.Acquire(LeaseKind::kExpertCache,
-                               plan.expert_cache_slots * in.expert_mean_bytes,
-                               adaptive);
+    auto &gov = ResourceGovernor::Instance();
+    AcquireExpertCacheLease(plan.expert_cache_slots * in.expert_mean_bytes,
+                            plan.tuner_bounds.expert_cache_slots_min *
+                                in.expert_mean_bytes,
+                            plan.expert_cache_max_bytes);
     tuner_ = std::make_unique<lifecycle::RuntimeTuner>(
-        &gov, std::move(cache_lease_), in.expert_mean_bytes, plan.tuner_bounds);
+        &gov, std::move(expert_cache_lease_), in.expert_mean_bytes,
+        plan.tuner_bounds);
     glm::SetGlmExpertCacheSlotsOverride(static_cast<int>(tuner_->Slots()));
     tuner_last_hits_ = tuner_last_misses_ = 0;
 

@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "lsxcommon/model.h"
+#include "lsxcommon/resource_governor.h"
 #include "lsxcommon/tokenizer.h"
 
 namespace lsxcommon {
@@ -75,6 +76,21 @@ protected:
     // implementation MUST start with `if (!RequireLoaded(r)) return r;`.
     bool RequireLoaded(gpu::BenchmarkResult &r) const;
 
+    // Governor lease ownership (lifecycle-unification II). Every model
+    // accounts its VRAM through these instead of touching the governor
+    // directly:
+    //  - AcquirePermanentWeights: standalone governor init + kRequired
+    //    kPermanentWeights lease. Returns false ONLY on a hard refusal
+    //    (relax_memory_refusal keeps the old continue-anyway semantics);
+    //    callers do `if (!AcquirePermanentWeights(bytes)) return AbortLoad();`
+    //  - AcquireExpertCacheLease: soft kAdaptive kExpertCache lease clamped
+    //    into [min_bytes, max_bytes]; false is non-fatal (callers log + keep
+    //    their shrink-retry allocation path).
+    // Both leases are released by the canonical Unload/AbortLoad.
+    bool AcquirePermanentWeights(std::uint64_t bytes);
+    bool AcquireExpertCacheLease(std::uint64_t bytes, std::uint64_t min_bytes,
+                                 std::uint64_t max_bytes);
+
     // Subclass-owned GPU/pinned state teardown. Called by Unload(), by
     // AbortLoad() and therefore by every destructor via `~Model() { Unload(); }`.
     // Must be safe on a never-loaded (empty) instance and idempotent.
@@ -127,6 +143,12 @@ protected:
 
     // Residency lock (see IModel::ResidencyMutex). Held shared during Infer.
     std::shared_mutex residency_mutex_;
+
+    // Governor leases owned by the base; released by Unload/AbortLoad.
+    // GLM moves expert_cache_lease_ into its RuntimeTuner (adaptive cache);
+    // the moved-from member stays empty and releasing it again is a no-op.
+    Lease permanent_lease_;
+    Lease expert_cache_lease_;
 
     ~ModelBase() override = default;
 };

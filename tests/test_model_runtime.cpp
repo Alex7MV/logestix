@@ -513,6 +513,114 @@ TEST_CASE("runtime::CombineGenError is the single error format",
     CHECK(CombineGenError(cudaSuccess, "").empty());
 }
 
+// ── Governor lease ownership in ModelBase (lifecycle-unification II) ────────
+//
+// Every model acquires its permanent-weight lease (and, for MoE, the expert
+// cache lease) through ModelBase helpers; the canonical Unload/AbortLoad
+// releases them. Governor is a process singleton with first-init-wins
+// options, so the fixture pins a synthetic 64 GiB device once; every test
+// case below is self-cleaning (committed VRAM returns to 0).
+
+#include "lsxcommon/resource_governor.h"
+
+namespace {
+
+class LeaseProbe final : public lsxcommon::ModelBase {
+public:
+    using ModelBase::ModelBase;
+    using ModelBase::AcquirePermanentWeights;
+    using ModelBase::AcquireExpertCacheLease;
+    using ModelBase::permanent_lease_;
+    using ModelBase::expert_cache_lease_;
+
+    void TeardownWeights() override {}
+    bool Load() override { return false; }
+    lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &)
+        override
+    {
+        return {};
+    }
+    const std::string &Type() const override
+    {
+        static std::string t{"lease-probe"};
+        return t;
+    }
+};
+
+lsxcommon::ResourceGovernor &TestGovernor()
+{
+    auto &gov = lsxcommon::ResourceGovernor::Instance();
+    lsxcommon::GovernorOptions o;
+    o.override_hw = true;
+    o.hw_override.vram_total_bytes = 64ull << 30;
+    o.hw_override.vram_free_bytes = 64ull << 30;
+    o.hw_override.ram_total_bytes = 128ull << 30;
+    o.hw_override.ram_available_bytes = 128ull << 30;
+    REQUIRE(gov.Initialize(o));
+    return gov;
+}
+
+} // namespace
+
+TEST_CASE("ModelBase permanent lease: acquire and release on Unload",
+          "[model_base][lifecycle][governor]")
+{
+    auto &gov = TestGovernor();
+    const std::uint64_t GiB = 1ull << 30;
+
+    LeaseProbe p{lsxcommon::ModelInitConfig{}};
+    REQUIRE(p.AcquirePermanentWeights(8 * GiB));
+    CHECK(p.permanent_lease_.Valid());
+    CHECK(gov.CommittedVramBytes() == 8 * GiB);
+
+    p.Unload();  // canonical Unload releases the lease
+    CHECK_FALSE(p.permanent_lease_.Valid());
+    CHECK(gov.CommittedVramBytes() == 0);
+}
+
+TEST_CASE("ModelBase permanent lease: deterministic refusal when exhausted",
+          "[model_base][lifecycle][governor]")
+{
+    auto &gov = TestGovernor();
+    const std::uint64_t GiB = 1ull << 30;
+
+    LeaseProbe p1{lsxcommon::ModelInitConfig{}};
+    REQUIRE(p1.AcquirePermanentWeights(40 * GiB));
+    CHECK(p1.permanent_lease_.Valid());
+
+    // Grantable = 64 GiB - 512 MiB keep-out; 40 + 40 > grantable -> the
+    // second acquisition is refused (no relax_memory_refusal).
+    LeaseProbe p2{lsxcommon::ModelInitConfig{}};
+    CHECK_FALSE(p2.AcquirePermanentWeights(40 * GiB));
+    CHECK_FALSE(p2.permanent_lease_.Valid());
+    CHECK(gov.CommittedVramBytes() == 40 * GiB);
+
+    p1.Unload();
+    CHECK(gov.CommittedVramBytes() == 0);
+}
+
+TEST_CASE("ModelBase expert-cache lease is adaptive and released on Unload",
+          "[model_base][lifecycle][governor]")
+{
+    auto &gov = TestGovernor();
+    const std::uint64_t GiB = 1ull << 30;
+    const std::uint64_t MiB = 1ull << 20;
+
+    LeaseProbe p{lsxcommon::ModelInitConfig{}};
+    CHECK(p.AcquireExpertCacheLease(/*bytes=*/2 * GiB, /*min_bytes=*/MiB,
+                                    /*max_bytes=*/4 * GiB));
+    CHECK(p.expert_cache_lease_.Valid());
+    CHECK(gov.CommittedVramBytes() == 2 * GiB);
+
+    p.Unload();
+    CHECK(gov.CommittedVramBytes() == 0);
+}
+
 TEST_CASE("Concrete unloaded models report 'model not loaded' from Benchmark",
           "[lifecycle][models]")
 {

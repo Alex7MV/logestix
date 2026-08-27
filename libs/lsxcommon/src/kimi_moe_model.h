@@ -36,7 +36,6 @@ private:
     kimi::KimiPinnedWeights pw_;
     kimi::KimiExpertDb experts_{};
     kimi::KimiExpertCacheState expert_cache_{};
-    Lease permanent_lease_;
 };
 
 } // namespace lsxcommon

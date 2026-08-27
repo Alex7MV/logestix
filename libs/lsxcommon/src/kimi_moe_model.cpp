@@ -25,7 +25,6 @@ KimiK27CodeModel::~KimiK27CodeModel() { Unload(); }
 void KimiK27CodeModel::TeardownWeights()
 {
     kimi::FreeKimiMoeExpertDeviceCache(expert_cache_.device);
-    permanent_lease_ = {};
     kimi::free_kimi_expert_index(experts_);
     pw_.Free();
     TeardownContext();
@@ -66,27 +65,9 @@ bool KimiK27CodeModel::Load()
         return AbortLoad();
     }
 
-    // Governor parity with GLM (lifecycle-unification 2026-08): standalone
-    // init when the engine never initialized it, then the permanent-weight
-    // lease.
-    auto &gov = ResourceGovernor::Instance();
-    if (!gov.IsInitialized()) {
-        log::warn("[kimi-model] governor not initialized; standalone init");
-        GovernorOptions gopts;
-        if (!gov.Initialize(gopts)) {
-            log::error("[kimi-model] governor init failed");
-            return AbortLoad();
-        }
-    }
-    if (!permanent_lease_.Valid()) {
-        permanent_lease_ = gov.Acquire(LeaseKind::kPermanentWeights,
-                                       pw_.resident_bytes, LeasePolicy{});
-        if (!permanent_lease_.Valid() &&
-            !gov.options().relax_memory_refusal) {
-            log::error("[kimi-model] permanent-weight lease refused");
-            return AbortLoad();
-        }
-    }
+    // Governor parity (lifecycle-unification II): standalone init + the
+    // permanent-weight lease live in ModelBase.
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
 
     resident_bytes_ = pw_.resident_bytes;
     log::info("[kimi-model] loaded once: resident="

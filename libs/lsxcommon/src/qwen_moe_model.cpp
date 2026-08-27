@@ -109,6 +109,9 @@ bool Qwen35MoeModel::Load()
     }
     log::info(absl::StrCat("[qwen-moe-model] expert store ",
                            MsSince(t_experts), " ms"));
+    // Governor accounting (lifecycle-unification II): the dense/pinned
+    // weight set is permanent residency.
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
     // Cache residency: default to keeping EVERY routed expert device-
     // resident. Full residency removes all per-token H2D staging stalls
     // (measured 42 -> 66 tok/s on RTX 5090 / 35B-A3B); the LRU machinery
@@ -128,31 +131,31 @@ bool Qwen35MoeModel::Load()
             explicit_slots = true;
         }
     }
+    // Worst-case per-expert device footprint mirrors the allocator's
+    // stride math (pack + scale, arena-aligned).
+    size_t max_pack = 0, max_scale = 0;
+    for (int l = 0; l < experts_.num_layers; ++l) {
+        for (const auto &r :
+             experts_.records[static_cast<size_t>(l)]) {
+            max_pack = std::max(
+                max_pack,
+                static_cast<size_t>(r.w1_bytes + r.w2_bytes +
+                                    r.w3_bytes));
+            max_scale =
+                std::max(max_scale,
+                         static_cast<size_t>(r.s1_bytes + r.s2_bytes +
+                                             r.s3_bytes));
+        }
+    }
+    constexpr size_t kArenaAlign = 256;
+    const auto align_up = [](size_t v) {
+        return (v + kArenaAlign - 1) & ~(kArenaAlign - 1);
+    };
+    const size_t per_expert =
+        align_up(max_pack) + align_up(max_scale);
     if (!explicit_slots) {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-            // Worst-case per-expert device footprint mirrors the allocator's
-            // stride math (pack + scale, arena-aligned).
-            size_t max_pack = 0, max_scale = 0;
-            for (int l = 0; l < experts_.num_layers; ++l) {
-                for (const auto &r :
-                     experts_.records[static_cast<size_t>(l)]) {
-                    max_pack = std::max(
-                        max_pack,
-                        static_cast<size_t>(r.w1_bytes + r.w2_bytes +
-                                            r.w3_bytes));
-                    max_scale =
-                        std::max(max_scale,
-                                 static_cast<size_t>(r.s1_bytes + r.s2_bytes +
-                                                     r.s3_bytes));
-                }
-            }
-            constexpr size_t kArenaAlign = 256;
-            const auto align_up = [](size_t v) {
-                return (v + kArenaAlign - 1) & ~(kArenaAlign - 1);
-            };
-            const size_t per_expert =
-                align_up(max_pack) + align_up(max_scale);
             // Unified launch-strategy policy (resource_governor.h): maximize
             // expert-cache VRAM utilization with a small central reserve.
             slots = lifecycle::ExpertCacheSlots(free_bytes, per_expert,
@@ -165,6 +168,13 @@ bool Qwen35MoeModel::Load()
         }
     }
     if (slots <= 0) slots = 4;
+    // Adaptive expert-cache lease (soft): accounts the residency budget;
+    // a governor refusal is non-fatal — the shrink-retry allocation below
+    // is the graceful-degradation path.
+    AcquireExpertCacheLease(static_cast<std::uint64_t>(slots) * per_expert,
+                            per_expert,
+                            static_cast<std::uint64_t>(total_experts) *
+                                per_expert);
     // Shrink-retry so an optimistic estimate degrades instead of failing
     // the lifecycle.
     while (slots >= 4 &&
@@ -177,6 +187,9 @@ bool Qwen35MoeModel::Load()
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
         return AbortLoad();
     }
+    if (expert_cache_lease_.Valid())
+        expert_cache_lease_.Resize(static_cast<std::uint64_t>(slots) *
+                                   per_expert);
 
     resident_bytes_ = pw_.resident_bytes;
     FinishLoad();

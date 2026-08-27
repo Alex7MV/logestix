@@ -75,8 +75,10 @@ bool DeepSeekV4FlashModel::Load()
         return AbortLoad();
     }
     // Dense residency disclosure (GLM/Kimi/Qwen parity): publish the pinned
-    // weight set through ResidentWeightBytes().
+    // weight set through ResidentWeightBytes() and account it with the
+    // governor permanent-weight lease.
     resident_bytes_ = pw_.resident_bytes;
+    if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();
     FinishLoad();
     return true;
 }
