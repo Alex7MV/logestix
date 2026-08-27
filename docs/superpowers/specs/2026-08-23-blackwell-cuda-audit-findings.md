@@ -986,3 +986,72 @@ nvfp4_gemv(36 cases), nvfp4_tile_gemm. Default routing bit-unchanged
 (all experimental paths env/opt-in gated). Branch ready for merge;
 acceptance metrics for no-handshake/graphs/gemma numerics to be collected
 on the Linux full-residency stack per round 20c/21 protocols.
+
+
+## Round 22 — Blackwell utilization audit v2 (2026-08-27)
+
+Scope: fresh pass over every .cu TU against the Blackwell feature matrix
+(TMA / mxf4nvf4 MMA / cp.async pipelines / stream-ordered memory / pinned
+staging / L2 persistence / clusters / CUDA Graphs / sync discipline),
+cross-checked with nvidia-cuda-docs MCP. Regression gate re-run first:
+
+`ctest --preset windows-debug -R "qwen|gemma|blackwell"` -> **40/40 PASS**
+(6 SKIP by design: kv_cache + perf harnesses + selfchecks without weights).
+Docs reference updated in the same session per protocol (see B4 addendum
+below).
+
+### Coverage matrix (feature x model family)
+
+| Feature | qwen dense | qwen35moe | gemma | glm | deepseek | kimi |
+|---|---|---|---|---|---|---|
+| TC NVFP4 mxf4nvf4 W4A4 | yes (fast-math) | yes | rejected r21 (measured) | no (bit-exact contract) | **no (scalar)** | n/a (BF16 weights) |
+| Tensor cores via cuBLAS | fallback path | shared/routed fallback | yes (main GEMMs) | no | no | yes (cublasGemmEx BF16) |
+| TMA bulk-tensor staging | behind LSX_DEC_ENABLE only | same tile kernel | no | no | no | no |
+| cp.async slab ring | yes (TC GEMM) | yes | no | no | no | no |
+| Stream-ordered allocs | yes | yes (+arena r20b) | partial (prefill tail) | load-time only | load-time + cache | load-time |
+| Async handshakes (event/busy-poll) | yes | yes + no-handshake latent | host mirror for layer_scalar | event-scoped tok_ready | H-01 split route_token | **FULL drain per layer/token** |
+| CUDA Graphs | latent (FFN section) | latent (FFN section) | no | no | no | no |
+
+### New findings
+
+| ID | Sev | Evidence | Summary | Status |
+|---|---|---|---|---|
+| F-11 | P1 | kimi_inference.cu:947,1164 | Kimi MoE router ids readback does a FULL cudaStreamSynchronize per layer per token (pre-H-01 pattern) and stages experts after the sync; GPU drains completely K layers x steps. Fix = DeepSeek-style split-phase begin/finish + busy-poll event; expert prefetch enqueued between phases | open (needs kimi tests: Windows policy blocks running them here -> Linux session) |
+| F-12 | P1 | deepseek_inference_moe.cu / deepseek_inference_pipeline.cu (no qwen_tc_gemm.h include) | DeepSeek-V4-Flash runs ALL GEMMs through custom scalar NVFP4 kernels -- zero tensor-core usage in the heaviest model of the vault. TC wiring needs a numeric-class decision like qwen's fast_math toggle (W4A4 changes accumulation order vs scalar default) | open (Linux session; largest structural gap left by F-01 campaign) |
+| F-13 | P2 | docs/NVIDIA_DOCS_NVFP4_MEMORY.md B4 | tcgen05.mma tensor-memory forms are SM_100a/f+103a/f+110a/f ONLY per PTX ISA (re-verified via MCP): consumer sm_120a/121a cannot use them. Repo's warp-level mma.sync mxf4nvf4 route is confirmed correct; TMA (copies) IS available on sm_120 as probed | documented (B4 addendum) |
+| F-14 | P3 | grep: no cudaStreamSetAttribute/cudaAccessPolicyWindow anywhere | L2 persistence hints unexplored: candidate micro-lever (persisting window over router scores / KV rows) for the Linux stack where wall==GPU-busy roughly holds; meaningless under this box's WDDM submission stalls | parked |
+| F-15 | P3 | qwen_inference.cu:2633, qwen_moe_inference.cu:1374 | Hot-loop fallback still has blocking cudaMemcpy when pinned h_step staging is unavailable; both production paths allocate h_step so this is dead-in-practice defensive code | wontfix-until-simplified (note only) |
+
+### Audit conclusions
+
+1. The submission-bound verdict (Round 20d) stands and shapes everything:
+   kernel-level feature gaps above do NOT move this Windows box; they are
+   real on native-Linux/full-residency stacks where the earlier tok/s
+   targets apply.
+2. Biggest genuine architecture-utilization gaps ranked: F-12 (DeepSeek
+   scalar-only GEMMs), F-11 (Kimi full-drain handshake), then the standing
+   P0/P1 ladder from Round 20d/20e (no-handshake + FFN graphs validation,
+   linear-attn fusion P2).
+3. Consumer-Blackwell feature usage is otherwise near-complete where it is
+   wired: warp-level NVFP4 tensor-core MMA, cp.async double/quad rings, TMA
+   (opt-in), stream-ordered pools, pinned staging, zero-sync decode loops,
+   launch-overhead work (fused GEMMs, arenas).
+
+### Handoff queue — Linux / full-residency session (Round 22 -> next)
+
+Execution order (each item TDD-first per protocol; Windows box cannot run
+glm/deepseek/kimi model tests):
+
+1. F-12: DeepSeek TC fast-math wiring. Design first (numeric-class decision
+   mirroring qwen `fast_math` toggle), then tests before kernels; keep
+   scalar default bit-exact.
+2. Standing P0 from Round 20d/20e: validate no-handshake routed chain +
+   per-layer FFN CUDA graphs on full residency (LSX_GEMV_EXPERTS=1,
+   LSX_GRAPH_FFN=1); round-20c acceptance >= 10% interleaved wall.
+3. F-11: Kimi router split-phase handshake (H-01 pattern) + TDD
+   bitwise-equivalence test for the split API.
+4. P2 carry-over: linear-attn decode fusion (conv_norm + gated_delta tail)
+   with bit-exact cluster test; measure via LSX_AUDIT_STAGES on a stack
+   where wall ~ GPU-busy.
+5. F-14 exploration (optional): L2 persistence window over router/KV.
+F-13/F-15 require no code.

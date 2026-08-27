@@ -190,6 +190,16 @@ Consequences for this repo:
   any-FP4/6/8 with `float_ue8m0_t` vec 32.
 - Only `float_ue8m0_t` and `float_ue4m3_t` can serve as tcgen05 scale-factor
   operand types on Blackwell.
+- **tcgen05.mma availability vs consumer Blackwell** (PTX ISA §9.7.17.10,
+  re-verified via nvidia-cuda-docs MCP 2026-08-27): every `tcgen05.mma`
+  tensor-memory form targets SM_100a/SM_100f + SM_103a/SM_103f +
+  SM_110a/SM_110f ONLY — sm_120a/sm_121a are NOT in that set. Consumer
+  Blackwell therefore has no tensor-memory MMA; the repo's warp-level
+  `mma.sync.aligned.m16n8k64...kind::mxf4nvf4.block_scale` path
+  (`qwen_tc_gemm.cu`, empirically validated on RTX 5060 Ti / 5090) is the
+  correct NVFP4 MMA route for CC 12.x. TMA bulk-tensor copies ARE available on
+  sm_120 (probe `ProbeTmaBulkCopy` passes); only the tcgen05 tensor-memory
+  compute side is absent.
 
 ## B5. cuBLASLt NVFP4 matmul (official sample `LtNvfp4Matmul`)
 
