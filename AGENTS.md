@@ -146,19 +146,19 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `libs/lsxcommon/src/schema.cpp` — ExpertSchema (9 полей: weights, E4M3 per-block scales uint8[], float32 global_scale), PackedExpert
   - `libs/lsxcommon/src/converter.cpp` — GPU-only NVFP4 квантизация (per-block E4M3 + global_scale), парсинг safetensors, сериализация в Arrow IPC
   - `libs/lsxcommon/src/loader.cpp` — загрузка экспертов из .arrow, CUDA pinned регистрация, E4M3 scale decoding
-  - `libs/lsxcommon/src/glm_convert.cpp` + `include/lsxcommon/glm_convert.h` — GLM-5.2 классификатор, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` формат)
-  - `libs/lsxcommon/src/glm_inference_load.cpp` + `include/lsxcommon/glm_inference_load.h` + `src/glm_load_internal.h` — host-only GLM loader: `LoadGlmPinnedWeights` (быстрый путь: GPU in-place BF16→FP16 через `GlmBf16ToHalfInPlace`, pinned staging ring, per-layer device-арены, строгие ошибки на отсутствующие файлы слоёв/битые тензоры), `GlmLayerWeights`/`GlmPinnedWeights`
-  - `libs/lsxcommon/src/glm_v5_model.cpp` + `src/glm_v5_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer: полный 79-слойный цикл (dense 0-2, IndexShare attention + MoE router + NVFP4 expert stacks 3-77, MTP epilogue layer 78); SelfCheck: инкрементальный 1→2-токенный селфчек (форс `max(2, max_gen_tokens)`, декод 1/2-токенного префикса против "Paris"), публикует `gen_tokens` + `final_logits` в `InferenceResult`
-  - `libs/lsxcommon/src/glm_inference.cu` — GLM-5.2 CUDA-ядра (router, IndexShare attention, NVFP4 expert decode/SwiGLU)
-  - `libs/lsxcommon/src/glm_device_math.h` — device-математика, бит-точная репликация glibc-функций для GLM-5.2
+  - `libs/lsxcommon/src/glm_moe_convert.cpp` + `include/lsxcommon/glm_moe_convert.h` — GLM-5.2 классификатор, Topology, `ConvertGlmModel`, `SaveGlmPinnedTensors`, `WriteGlmModelIndex` (extended `logestix-glm` формат)
+  - `libs/lsxcommon/src/glm_moe_load.cpp` + `include/lsxcommon/glm_moe_load.h` + `src/glm_moe_load_internal.h` — host-only GLM loader: `LoadGlmPinnedWeights` (быстрый путь: GPU in-place BF16→FP16 через `GlmBf16ToHalfInPlace`, pinned staging ring, per-layer device-арены, строгие ошибки на отсутствующие файлы слоёв/битые тензоры), `GlmLayerWeights`/`GlmPinnedWeights`
+  - `libs/lsxcommon/src/glm_moe_model.cpp` + `src/glm_moe_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer: полный 79-слойный цикл (dense 0-2, IndexShare attention + MoE router + NVFP4 expert stacks 3-77, MTP epilogue layer 78); SelfCheck: инкрементальный 1→2-токенный селфчек (форс `max(2, max_gen_tokens)`, декод 1/2-токенного префикса против "Paris"), публикует `gen_tokens` + `final_logits` в `InferenceResult`
+  - `libs/lsxcommon/src/glm_moe_inference.cu` — GLM-5.2 CUDA-ядра (router, IndexShare attention, NVFP4 expert decode/SwiGLU)
+  - `libs/lsxcommon/src/glm_moe_device_math.h` — device-математика, бит-точная репликация glibc-функций для GLM-5.2
   - `libs/lsxcommon/src/tokenizer_convert.cpp` — tokenizer arrows; merges в форматах string `"a b"` И array `["a","b"]` (GLM-5.2), byte_to_token_id, bos/eos/pad
   - `libs/lsxcommon/src/tokenizer.cpp` + `pretokenizer.cpp` + `unicode.cpp` — BPE-токенизатор, word-level претокенизация, Unicode-классификация
-  - `libs/lsxcommon/src/deepseek_v4_flash_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
+  - `libs/lsxcommon/src/deepseek_moe_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
   - `libs/lsxcommon/src/model_factory.cpp` + `model_registry.cpp` + `include/lsxcommon/model_factory.h` — `LsxModelFactory` + IModel registry
   - `libs/lsxcommon/src/models/lsx_orchestrator.cpp` + `include/lsxcommon/lsx_orchestrator.h` — TaskMosaic оркестратор: lock-free SPSC dispatch GLM-5.2 / DeepSeek / unknown
-  - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_inference_load.cuh` + `deepseek_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
+  - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_moe_load.cuh` + `deepseek_moe_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
   - `libs/lsxcommon/src/qwen_moe_convert.cpp` + `include/lsxcommon/qwen_moe_convert.h` — Qwen3.5-35B-A3B MoE конвертер `ConvertQwen35MoeModel` (формат `logestix-qwen35moe`): fused-expert split gate_up [E,2I,H] → w1/w3 (HF parity: gate=rows[0,I)), per-expert `experts/layer_N/exp_E.arrow`, router BF16, shared expert NVFP4 + FP16 scalar gate, MTP stored-not-applied, vision отсекается с подсчётом; frozen-геометрия в `src/qwen_moe_constants.h`
-  - `libs/lsxcommon/src/qwen_moe_inference_load.cpp` + `include/lsxcommon/qwen_moe_inference_load.h` — MoE loader: dense pinned upload (reuse qwen ring machinery), router/shared device upload, pinned expert store (`LoadQwenMoeExpertStore`) + LRU device cache alloc/residency (`AllocateQwenMoeExpertCache`, `EnsureQwenMoeExpertResident`)
+  - `libs/lsxcommon/src/qwen_moe_load.cpp` + `include/lsxcommon/qwen_moe_load.h` — MoE loader: dense pinned upload (reuse qwen ring machinery), router/shared device upload, pinned expert store (`LoadQwenMoeExpertStore`) + LRU device cache alloc/residency (`AllocateQwenMoeExpertCache`, `EnsureQwenMoeExpertResident`)
   - `libs/lsxcommon/include/lsxcommon/qwen_moe_expert_cache.h` — LRU device-slot кэш экспертов (адаптация GlmExpertDeviceCache), host-bookkeeping unit-testable без CUDA
   - `libs/lsxcommon/src/qwen_3_5_moe_model.{h,cpp}` — `Qwen35MoeModel` (ModelBase, registry `qwen3.5-35b-a3b`); static_assert геометрия (hidden=2048, layers=40, E=256, top-k=8, moe_i=512); incremental session policy как QwenBaseModel; SelfCheck через runtime::RunParisSelfCheck
   - `libs/lsxcommon/src/qwen_moe_inference.cu` (OBJECT `lsxcommon_qwen_moe_cu`, `-fmad=false`) — router softmax→top-8→renorm ядро (HF parity, thread-0 selection), routed FFN slot chain на RunQwenNvfp4Gemm + swiglu/coeff-add, shared-gate combine, инкрементальный single-stream драйвер `RunQwenMoeGeneration`
@@ -189,8 +189,8 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - **GUI-инварианты**: `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` НЕ используется (меняет layout ImGuiIO/ImGuiStyle → десинхрон `sizeof` с app TU → assert "Mismatched struct layout!" в `IMGUI_CHECKVERSION`); ImPlot/ImNodes требуют своих `CreateContext()`/`DestroyContext()` (иначе assert `GImPlot == nullptr`)
 - `tests/` — Catch2 test suite; GLM и DeepSeek тесты автономны и запускаются по отдельности (`ctest -R glm` / `ctest -R deepseek`)
   - `tests/test_core.cpp` — интеграционные тесты зависимостей (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 11 test cases, 101 assertions
-  - `tests/test_deepseek_loader.cpp` — 3 test cases, 64 assertions (round-trip, empty fields, E4M3 encoding)
-  - `tests/test_deepseek_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests; 12 test cases, 4470 assertions (E2M1/E8M0, act_quant, RMSNorm, SwiGLU, CSA Compressor, routed-expert FFN, NVFP4 codec)
+  - `tests/test_deepseek_moe_loader.cpp` — 3 test cases, 64 assertions (round-trip, empty fields, E4M3 encoding)
+  - `tests/test_deepseek_moe_inference_kernels.cu` — DeepSeek CUDA inference kernel unit tests; 12 test cases, 4470 assertions (E2M1/E8M0, act_quant, RMSNorm, SwiGLU, CSA Compressor, routed-expert FFN, NVFP4 codec)
   - `tests/test_model_factory.cpp` — LsxModelFactory/registry; 5 test cases, 4 assertions (real-model tests SKIP без модели)
   - `tests/test_tokenizer.cpp` — токенизатор (unicode, schema, arrow-конвертация, pre-tokenizer, encode/decode); 14 test cases, 236 assertions
   - `tests/test_glm_*.cpp` — GLM-5.2 suite (12 executables): convert, loader, model, compute, dense_compute, moe_router, experts, moe_compute, attention, inference, full_compute, selfcheck (~541k assertions, real-model tests SKIP без GLM; test_glm_selfcheck — 3-цикловый stress SelfCheck с бит-точной детерминированностью `final_logits` (3 циклов достаточно для подачи нагрузки; переопределяется `LSX_TEST_GLM_SELFCHECK_CYCLES`), exit 0)
@@ -214,7 +214,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 
 - Расширить C++-конвейер `apps/lsxforge` (не Python-инструмент) парсингом
   оригинального конфигурационного файла (config.json) и safetensors
-  (аналогично `lsxcommon::qwen::ConvertQwenModel` в `libs/lsxcommon/src/qwen_convert.cpp`).
+  (аналогично `lsxcommon::qwen::ConvertQwenModel` в `libs/lsxcommon/src/qwen_dense_convert.cpp`).
 - Сгенерировать очищенный от мультимодального жира структурный манифест.
 - НАПРАВЛЕНИЕ ПУТЕЙ: Результат обязан детерминировано сохраняться в
   централизованный каталог метаданных `model-metadata/` через единый authority
@@ -236,7 +236,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 
 - Зарегистрировать строковый идентификатор модели в
   `libs/lsxcommon/src/model_registry.cpp` через `LsxModelFactory::Register(kType, ...)`
-  (пример: `QwenV5Model::kType = "qwen3.5-9b"`, `libs/lsxcommon/src/qwen_v5_model.h`).
+  (пример: `QwenV5Model::kType = "qwen3.5-9b"`, `libs/lsxcommon/src/qwen_dense_model.h`).
 - Реализовать класс `IModel` (final, наследуется от `lsxcommon::IModel`), реализовать
   `Load/Infer/Unload/Inspect/SelfCheck/Tokenizer`.
 - НОВОЕ ТРЕБОВАНИЕ для новых моделей: параметры геометрии (hidden_size,
@@ -291,7 +291,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 ### 8. ТДД и селфчек (SelfCheck Harness)
 
 - Реализовать инкрементальный селфчек генерации (1→2 токена) через метод
-  `SelfCheck()` (эталон: `QwenV5Model::SelfCheck`, `libs/lsxcommon/src/qwen_v5_model.cpp`).
+  `SelfCheck()` (эталон: `QwenV5Model::SelfCheck`, `libs/lsxcommon/src/qwen_dense_model.cpp`).
 - Контрольный промпт `"The capital of France is"` обязан выдавать детерминированный
   эталонный ответ `"Paris"` (top-1, декод первого токена/короткого префикса),
   `r.selfcheck_passed == true`.
@@ -301,6 +301,25 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
   `LSX_TEST_GLM_SELFCHECK_CYCLES`) с бит-точной детерминированностью логитов
   и `exit 0`.
 
+
+## Model Code File Naming Convention
+
+Схема файлов кода моделей в `libs/lsxcommon/{src,include}` и `tests/`:
+
+`<family>_<type>[_<variant>]_<role>[_<subsystem>].<ext>`
+
+- `family` ∈ {glm, qwen, gemma, kimi, deepseek}
+- `type` ∈ {moe, dense} — обязателен всегда
+- `variant` — только при коллизии двух моделей одного type (пример: `qwen_dense_27b_model`)
+- `role` — короткий словарь: convert | load | load_internal | model | inference | kernels |
+  expert_kernels | expert_cache | device_math | norm_kernels | constants
+- `subsystem` — разбиение крупного ядра: attn | csa | head | moe | pipeline
+- Версии моделей из имён файлов убраны; живут в именах классов и `kType`.
+- Кросс-типовые/базовые файлы семейства НЕ получают маркер типа
+  (`qwen_inference.*`, `qwen_base_model.*`, `qwen_device_math.h`, …) и внесены в allowlist.
+- Контроль: `tests/test_code_naming_guard.cpp` — сканирует `libs/lsxcommon/{src,include}`,
+  обязан быть зелёным в CI; реестры family/role/subsystem расширяются в том же коммите,
+  что и файлы новой модели (Model Ingestion Protocol, шаг 3).
 ## CMake Key Points
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
@@ -362,7 +381,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 - `std::string_view`, `std::optional`, `std::variant`, `std::function`, `std::unique_ptr` —
   для C++17+ abseil сам рекомендует `std::*-версии (absl-версии — полифилы).
 - Потоковый JSON/отчёт builder с цикловым мемпингом (`std::ostringstream` c setw/setfill
-  и т.п.) — легитимный потоковый use, НЕ конвертируется (эталон: `qwen_convert.cpp`
+  и т.п.) — легитимный потоковый use, НЕ конвертируется (эталон: `qwen_dense_convert.cpp`
   `ConvertQwenModel`, билдер model.index.json).
 - Кастомные хэшер-функторы (`ExpertKeyHash`, `GlmExpertKeyHash`) — передаются как
   Hasher параметр напрямую, менять не нужно.
