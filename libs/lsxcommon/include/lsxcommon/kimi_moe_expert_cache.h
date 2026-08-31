@@ -20,9 +20,11 @@
 #include <string>
 #include <vector>
 
-#include <cuda_runtime.h>
-
 #include "lsxcommon/resource_governor.h"
+
+#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)
+#include <cuda_runtime.h>
+#endif
 
 namespace lsxcommon {
 namespace kimi {
@@ -168,6 +170,8 @@ inline KimiMoeCacheBatch KimiMoeResolveBatch(KimiMoeExpertCachePlan &plan,
 
 // ── CUDA-side surface (implemented in src/kimi_moe_expert_cache.cu) ──
 
+#if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)
+
 // Device-side slot pointers. Layout mirrors RunKimiExpertFfn staging:
 // pack [w1|w3|w2], scale [s1|s3|s2], 256-aligned sections.
 struct KimiMoeSlotView {
@@ -210,6 +214,8 @@ cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
                                      int experts_per_layer);
 KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
                                     int slot, const KimiExpertEntry &entry);
+
+#endif  // LOGESTIX_HAS_CUDA || __CUDACC__
 
 } // namespace kimi
 } // namespace lsxcommon

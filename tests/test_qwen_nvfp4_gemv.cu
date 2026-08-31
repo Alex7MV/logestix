@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 #include "lsxcommon/qwen_inference.h"
@@ -124,7 +125,11 @@ TEST_CASE("NVFP4 GEMV large-N parity (head class)",
     // The oversized-tensor branch is opt-in via env (micro-validated);
     // enable it here so the large case really exercises the streaming
     // kernel instead of silently falling back to the tile path.
-    _putenv("LSX_GEMV_HEAD=1");
+#ifdef _WIN32
+    _putenv_s("LSX_GEMV_HEAD", "1");
+#else
+    setenv("LSX_GEMV_HEAD", "1", 1);
+#endif
     lsxcommon::qwen::SetQwenSeq1Gemv(true);
     lsxcommon::qwen::SetQwenTcFastMath(true);
     const GemvCase cases[] = {{256, 65536}, {2048, 20000}};

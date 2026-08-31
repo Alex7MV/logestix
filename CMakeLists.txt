@@ -238,6 +238,30 @@ if(EXISTS "${_absx86simd}")
 endif()
 unset(_absx86simd)
 
+# Patch abseil str_format compile-time checker for Clang/AOCC (idempotent,
+# same patch-after-fetch pattern as crc32 above). GCC has no
+# `__attribute__((enable_if))` (`__has_attribute(enable_if)` == 0), so
+# ABSL_INTERNAL_ENABLE_FORMAT_CHECKER stays undefined and the checker is inert;
+# Clang/AOCC DO enable it, but its ValidFormatImpl only parses printf-style
+# '%' conversions and rejects the fmt-style '{}' placeholders used throughout
+# this project (every `absl::StrFormat("{}", ...)` fails to compile). Pin the
+# guard to `#if 0` to mirror the GCC behaviour.
+set(_absfmtchk "${abseil-cpp_SOURCE_DIR}/absl/strings/internal/str_format/checker.h")
+if(EXISTS "${_absfmtchk}")
+    file(READ "${_absfmtchk}" _absfmtchk_content)
+    string(FIND "${_absfmtchk_content}" "#if 0 && ABSL_HAVE_ATTRIBUTE(enable_if)" _absfmtchk_marker)
+    if(_absfmtchk_marker EQUAL -1)
+        string(REPLACE
+            "#if ABSL_HAVE_ATTRIBUTE(enable_if) && !defined(__INTELLISENSE__)"
+            "#if 0 && ABSL_HAVE_ATTRIBUTE(enable_if) && !defined(__INTELLISENSE__)"
+            _absfmtchk_content "${_absfmtchk_content}")
+        file(WRITE "${_absfmtchk}" "${_absfmtchk_content}")
+    endif()
+    unset(_absfmtchk_marker)
+    unset(_absfmtchk_content)
+endif()
+unset(_absfmtchk)
+
 # ── ЗАВИСИМОСТИ: simdjson через submodule (быстрый JSON-парсер) ───────────
 
 set(SIMDJSON_DEVELOPER_MODE OFF CACHE INTERNAL "")
