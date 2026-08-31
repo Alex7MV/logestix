@@ -61,6 +61,41 @@ applies `-march=znver4` (-mtune=znver4, -O3, -fno-math-errno,
 Clang-AOCC) to C/C++ targets only. CUDA (`lsxcommon_cu`), dependencies and
 the Windows/MSVC build are never affected.
 
+### Linux release — AOCC (AMD Optimizing C/C++ 5.2.0)
+
+Альтернативный хост-компилятор (clang 17.0.6) для znver4-сборки; NVCC
+использует его как `-ccbin`. Проверено 2026-08 (Linux, RTX 5090, EPYC 9V74):
+конфигурация, полная сборка и 110/110 тестов зелёные.
+
+```bash
+AOCC=/home/alexmv2025/projects/amd/aocc-compiler-5.2.0/bin
+cmake -S . -B build/linux-release-znver4-aocc -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DLSX_ARCH_ZNVER4=ON -DLSX_LTO=ON \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_C_COMPILER=$AOCC/clang -DCMAKE_CXX_COMPILER=$AOCC/clang++ \
+  -DCMAKE_CUDA_HOST_COMPILER=$AOCC/clang++
+cmake --build build/linux-release-znver4-aocc -j 160
+ctest --test-dir build/linux-release-znver4-aocc
+```
+
+Особенности AOCC (проверено на 5.2.0):
+- `-flto=thin` НЕ поддерживается — clang падает на `-flto=full` (warning
+  "Unsupported lto mode -flto=thin, falling back to -flto=full"), сборка
+  при этом корректна.
+- `__has_attribute(enable_if)` у AOCC = 1, поэтому abseil compile-time
+  format checker активируется (у GCC = 0, checker инертен). Его
+  `ValidFormatImpl` понимает только printf-`%`-конверсии и отвергает
+  fmt-style `{}`, используемый проектом повсеместно. Лечится идемпотентным
+  патчем abseil в корневом `CMakeLists.txt` (guard `#if 0 &&`), приводящим
+  checker к GCC-поведению. Не убирать при сборке под AOCC/Clang.
+- Host-only тест `test_kimi_moe_expert_cache` требует, чтобы CUDA-поверхность
+  `kimi_moe_expert_cache.h` была под `#if defined(LOGESTIX_HAS_CUDA) ||
+  defined(__CUDACC__)` — иначе host-TU без CUDA include-путей не соберётся.
+- В `.cu`-тестах не использовать Windows-only `_putenv` без guard'а — только
+  `_putenv_s`/`setenv` под `#ifdef _WIN32` (эталон: `test_qwen_nvfp4_gemv.cu`).
+
 ### Windows (Visual Studio 2026)
 
 ```powershell
