@@ -1986,6 +1986,9 @@ add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
 target_compile_definitions(test_kimi_moe_inference PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
+target_include_directories(test_kimi_moe_inference PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+)
 target_link_libraries(test_kimi_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)

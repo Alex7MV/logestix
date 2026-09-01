@@ -60,6 +60,10 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     req.input_ids = ids;
     req.max_gen_tokens = 4;
 
+    {   // TEMP-VERIFY: warmup call (discarded) to isolate cross-call state
+        auto rw = m->Infer(req);
+        WARN("warmup sum=" << [&]{ float s=0; for (float v: rw.final_logits) s+=v; return s; }());
+    }
     auto r1 = m->Infer(req);
     REQUIRE(r1.ok);
     REQUIRE(r1.gen_tokens.size() == 4);

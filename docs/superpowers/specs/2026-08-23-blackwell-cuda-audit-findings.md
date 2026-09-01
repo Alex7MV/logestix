@@ -1263,3 +1263,35 @@ were not the bottleneck at 16 tokens.
 Decision per strategy-spec gate 1 (bit-exact contracts are binding):
 decode-loop async is PARKED (revert to drain) until root-caused; the
 router split API (bitwise-equivalent by test) stays.
+
+### Round 25b — resolution (same session)
+
+The failing gate forced an interim design: per-step EVENT-SCOPED readback
+(cudaEventRecord + cudaEventQuery busy-poll per step — event fires after
+argmax; identical wait semantics to the old full drain, since all prior
+work lives on the same stream) instead of the blocking
+cudaStreamSynchronize. Result: determinism gate GREEN and stable across
+runs (R1==R2 bit-identical final_logits in repeated processes); full kimi
+suite 12/12 green including the real-model selfcheck.
+
+Final Round 25 shipped state:
+- split-phase router handshake (kept; bitwise-equivalent, event busy-poll,
+  full drain per layer removed),
+- generation-level pinned router staging + one event (vs per-layer
+  alloc/free — the per-layer cudaHostAlloc/EventDestroy cycle was itself a
+  hidden device-wide sync per layer),
+- device-side token feed (kimi_feed_token_kernel) — no host->device id
+  write-back per step,
+- host-truncate EOS from tokenizer-sourced eos_id (harcoded 163586 gone),
+- interim per-step event readback for argmax output (parked device-side
+  drain; race un-root-caused — values chase prior-call state in any
+  fully-async config, R1 varies / R2 stabilizes, first_maxv always
+  bit-stable => prefill path is clean, corruption confined to async decode
+  steps).
+
+Perf (16 tok, real weights): 0.927 -> 0.93 tok/s (wall-neutral within
+noise; staging-bound workload, consistent with Round 24's DeepSeek
+verdict). F-11 core deliverable (per-layer-per-token full-drain sync
+removal) LANDED and verified; the per-step argmax drain is downgraded
+from full cudaStreamSynchronize to an event-scoped busy-poll with the
+same coverage.

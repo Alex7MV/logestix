@@ -1060,6 +1060,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 if (KimiRouteFinish(route_ev) != cudaSuccess) {
                     return cudaGetLastError();
                 }
+
                 if (getenv("KIMI_DIAG_IDS") && (l == atoi(getenv("KIMI_DIAG_IDS")) || l == 59)) {
                     fprintf(stderr, "[DIAG-IDS] l=%d ids=%d,%d,%d,%d\n",
                             l, h_ids[0], h_ids[1], h_ids[2], h_ids[3]);
@@ -1335,9 +1336,11 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     }
 
     int generated = 0;
-    cudaEvent_t ev_start = nullptr, ev_ttft = nullptr;
+    cudaEvent_t ev_start = nullptr, ev_ttft = nullptr, step_ev = nullptr;
     if (cudaEventCreate(&ev_start) != cudaSuccess ||
-        cudaEventCreate(&ev_ttft) != cudaSuccess) {
+        cudaEventCreate(&ev_ttft) != cudaSuccess ||
+        cudaEventCreateWithFlags(&step_ev,
+                                 cudaEventDisableTiming) != cudaSuccess) {
         gen.error_msg = "event create failed";
         return cudaGetLastError();
     }
@@ -1397,27 +1400,50 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             d_logits, kKimiVocab, d_best, d_bestv);
         if (step == 0) cudaEventRecord(ev_ttft, stream);
 
+        // Device-side decode PARKED (Round 25b determinism gate): interim
+        // per-step event-scoped readback. Full-drain cudaStreamSynchronize
+        // replaced by event fence + busy-poll (waits only for prior stream
+        // work, exactly what the old sync covered - all prior work is on
+        // this stream).
+        int next_id = -1;
+        float next_maxv = 0.0f;
+        cudaMemcpyAsync(&next_id, d_best, sizeof(int),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaEventRecord(step_ev, stream);
+        {
+            cudaError_t q;
+            while ((q = cudaEventQuery(step_ev)) == cudaErrorNotReady) {}
+            (void)q;
+        }
+        if (next_id < 0) {
+            gen.error_msg = "argmax failed";
+            cudaFreeHost(h_ids);
+            cudaFreeHost(h_w);
+            cudaEventDestroy(route_ev);
+            cudaEventDestroy(step_ev);
+            cudaEventDestroy(ev_start);
+            cudaEventDestroy(ev_ttft);
+            return cudaErrorUnknown;
+        }
+        gen.tokens.push_back(next_id);
         ++generated;
+        if (generated == 1) gen.first_maxv = next_maxv;
+        cudaMemcpyAsync(d_ids + prefill_seq + step, &next_id,
+                        sizeof(int), cudaMemcpyHostToDevice, stream);
         if (generated >= max_gen_tokens) break;
     }
 
-    // ── Final bulk drain (the ONLY decode-loop sync) ───────────────────────
     cudaEventSynchronize(ev_ttft);
     float ms_ttft = 0.f;
     cudaEventElapsedTime(&ms_ttft, ev_start, ev_ttft);
     gen.ttft_ms = static_cast<double>(ms_ttft);
     cudaEventDestroy(ev_start);
     cudaEventDestroy(ev_ttft);
+    cudaEventDestroy(step_ev);
 
-    const int gen_count = generated;
-    std::vector<int> dev_ids(static_cast<size_t>(gen_count));
-    cudaMemcpy(dev_ids.data(), d_ids + prefill_seq,
-               static_cast<size_t>(gen_count) * sizeof(int),
-               cudaMemcpyDeviceToHost);
-    float maxv = 0.f;
-    cudaMemcpy(&maxv, d_bestv, sizeof(float), cudaMemcpyDeviceToHost);
-    gen.first_maxv = maxv;
-    const KimiEosCut cut = TruncateAtEos(dev_ids, eos_id);
+    const KimiEosCut cut = TruncateAtEos(gen.tokens, eos_id);
     gen.tokens = std::move(cut.tokens);
     gen.eos_terminated = cut.eos_terminated;
 

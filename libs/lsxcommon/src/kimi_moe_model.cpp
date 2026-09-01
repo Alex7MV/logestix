@@ -91,7 +91,8 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     const cudaError_t err = RunUnderResidencyLock([&] {
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
-                                       gen, &expert_cache_);
+                                       gen, &expert_cache_,
+                                       Tokenizer().eos_id);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);
@@ -140,7 +141,7 @@ gpu::BenchmarkResult KimiK27CodeModel::Benchmark(int num_tokens)
     const cudaError_t berr = RunUnderResidencyLock([&] {
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        prompt, num_tokens, gr,
-                                       &expert_cache_);
+                                       &expert_cache_, Tokenizer().eos_id);
     });
     if (berr != cudaSuccess || !gr.ok) {
         r.error_msg = runtime::CombineGenError(berr, gr.error_msg);
