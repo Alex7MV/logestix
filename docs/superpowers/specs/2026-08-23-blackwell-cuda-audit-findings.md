@@ -1055,3 +1055,58 @@ glm/deepseek/kimi model tests):
    where wall ~ GPU-busy.
 5. F-14 exploration (optional): L2 persistence window over router/KV.
 F-13/F-15 require no code.
+
+## Round 23 — round-20c acceptance on Linux/5090 full residency (2026-09-01)
+
+Platform: Ubuntu 26.04, AOCC 5.2.0 release build (`linux-release-znver4-aocc`,
+`-march=znver4`, LTO), RTX 5090 32 GB (170 SM), EPYC 9V74. Qwen3.5-35B-A3B
+full residency (all 40x256 experts device-resident, resident_mb=1548).
+Harness: `test_blackwell_perf_moe "[qwen35moe]"`, prompt "The capital of
+France is", LSX_TEST_PERF_GEN_TOKENS=128, interleaved same-session, 3
+alternations per config (within-config spread < 1%).
+
+### WALL tok/s (128 tok, interleaved)
+
+| Config | tok/s | ttft_ms | vs A |
+|---|---|---|---|
+| A: TC default (FAST_MATH only) | 63.3-63.6 | 116-124 | — |
+| E: A + GEMV_HEAD | 62.4-62.6 | 116 | -1.6% |
+| C: GEMV_EXPERTS no-handshake | 52.7-52.8 | 164 | -17% |
+| D: C + GRAPH_FFN | 52.7 | 164 | =C (bit-identical output) |
+| B: D + GEMV_HEAD | 47.8-47.9 | 164 | -25% |
+
+### LSX_AUDIT_STAGES GPU-step breakdown (24 replay rounds)
+
+| Config | avg_step_ms | share% ffn | lin | full | head | top FFN layer |
+|---|---|---|---|---|---|---|
+| A (TC) | 10.94 | 64.8 | 21.4 | 10.1 | 3.6 | 0.180 ms |
+| C (GEMV) | 20.60 | 81.7 | 11.0 | 5.4 | 1.9 | 0.424 ms |
+| D (C+graphs) | 20.61 | 81.7 | 11.0 | 5.4 | 1.9 | 0.424 ms |
+
+### Verdicts
+
+1. **Round-20c acceptance: FAIL — park.** The no-handshake routed GEMV chain
+   regresses 17% wall on the full-residency Linux/5090 stack. Root cause
+   flips the Windows-box picture: Linux native submission is cheap, so the
+   WDDM-motivated launch-count reduction (K x 5 -> 4 launches) buys nothing,
+   while the GEMV chain's raw kernel efficiency loses to TC W4A4 MMA 2.35x
+   per FFN layer (0.424 vs 0.180 ms). Round-19's "e2e flat" conclusion
+   degrades to a regression on this stack.
+2. **FFN CUDA graphs: bit-transparent, GPU-time and wall neutral** (C vs D:
+   same ids, same 20.6 ms/step, same 52.7 tok/s). The round-20e premise
+   ("collapse of ~32 ms/step submission stalls") does not apply on Linux —
+   those stalls were WDDM-only. Graphs remain latent and harmless; keep the
+   code, do not enable by default.
+3. **Head-GEMV (LSX_GEMV_HEAD)**: near-neutral on the TC path (-1.6%),
+   harmful inside the GEMV-experts config (-9% on top of D). Stays opt-in;
+   not recommended.
+4. **Production routing for 5090/Linux confirmed: default TC
+   (fast_math only) = 63.5 tok/s.** "All levers on" (B) is the WORST config
+   (47.9) — flag-stacking by name, not by measurement, is an anti-pattern.
+5. Numerics: A vs C/D/E texts diverge after the shared " Paris." prefix
+   (W4A4 vs W?A16 activation class) — expected; opt-in levers only, default
+   routing bit-unchanged. First-gen "Paris" selfcheck contract intact in all
+   configs.
+6. Registry rows updated: F-11 remains open (next queue item); standing P0
+   from Round 20d/20e CLOSED (verdict above); P2 linear-attn fusion remains
+   the next kernel-level lever (linear-attn = 21.4% of TC GPU step).
