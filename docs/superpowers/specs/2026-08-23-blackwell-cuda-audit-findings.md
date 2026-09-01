@@ -1017,7 +1017,7 @@ below).
 | ID | Sev | Evidence | Summary | Status |
 |---|---|---|---|---|
 | F-11 | P1 | kimi_inference.cu:947,1164 | Kimi MoE router ids readback does a FULL cudaStreamSynchronize per layer per token (pre-H-01 pattern) and stages experts after the sync; GPU drains completely K layers x steps. Fix = DeepSeek-style split-phase begin/finish + busy-poll event; expert prefetch enqueued between phases | open (needs kimi tests: Windows policy blocks running them here -> Linux session) |
-| F-12 | P1 | deepseek_inference_moe.cu / deepseek_inference_pipeline.cu (no qwen_tc_gemm.h include) | DeepSeek-V4-Flash runs ALL GEMMs through custom scalar NVFP4 kernels -- zero tensor-core usage in the heaviest model of the vault. TC wiring needs a numeric-class decision like qwen's fast_math toggle (W4A4 changes accumulation order vs scalar default) | open (Linux session; largest structural gap left by F-01 campaign) |
+| F-12 | P1 | deepseek_inference_moe.cu / deepseek_inference_pipeline.cu (no qwen_tc_gemm.h include) | DeepSeek-V4-Flash runs ALL GEMMs through custom scalar NVFP4 kernels -- zero tensor-core usage in the heaviest model of the vault. TC wiring needs a numeric-class decision like qwen's fast_math toggle (W4A4 changes accumulation order vs scalar default) | phase-1 landed (Round 24): routed TC W4A4 under fast_math + streaming default (0.6->4.0 tok/s); e2e staging-bound; shared/attention caching pending |
 | F-13 | P2 | docs/NVIDIA_DOCS_NVFP4_MEMORY.md B4 | tcgen05.mma tensor-memory forms are SM_100a/f+103a/f+110a/f ONLY per PTX ISA (re-verified via MCP): consumer sm_120a/121a cannot use them. Repo's warp-level mma.sync mxf4nvf4 route is confirmed correct; TMA (copies) IS available on sm_120 as probed | documented (B4 addendum) |
 | F-14 | P3 | grep: no cudaStreamSetAttribute/cudaAccessPolicyWindow anywhere | L2 persistence hints unexplored: candidate micro-lever (persisting window over router scores / KV rows) for the Linux stack where wall==GPU-busy roughly holds; meaningless under this box's WDDM submission stalls | parked |
 | F-15 | P3 | qwen_inference.cu:2633, qwen_moe_inference.cu:1374 | Hot-loop fallback still has blocking cudaMemcpy when pinned h_step staging is unavailable; both production paths allocate h_step so this is dead-in-practice defensive code | wontfix-until-simplified (note only) |
@@ -1110,3 +1110,54 @@ alternations per config (within-config spread < 1%).
 6. Registry rows updated: F-11 remains open (next queue item); standing P0
    from Round 20d/20e CLOSED (verdict above); P2 linear-attn fusion remains
    the next kernel-level lever (linear-attn = 21.4% of TC GPU step).
+
+## Round 24 — F-12 DeepSeek TC W4A4 phase 1 (2026-09-01)
+
+Branch `feat/nohandshake-graphs-5090`. Design:
+`2026-09-01-deepseek-tc-fastmath-design.md`; plan:
+`2026-08... 2026-09-01-deepseek-tc-fastmath.md`. Baseline this session
+(AOCC release, RTX 5090): 0.6 tok/s / ttft 20.6 s with the default partial
+LRU expert cache.
+
+### Shipped
+
+1. **Streaming default (slots=0)** — `c79a297`. The routed working set
+   (kTopK x layers x ~13.4 MB ≈ 3.5 GB/token) exceeds any VRAM; a partial
+   LRU cache thrashed every token. Default now streams experts from pinned
+   host memory. **0.6 -> 4.0 tok/s (x6.7), ttft 20.6 -> 1.8 s.**
+2. **E8M0→UE4M3 scale repack** — `840cc12`. Repo pow2-E4M3 byte layout:
+   exponent in bits [6:3] (`E4M3ScaleToFloat` = `((b>>3)+120)<<23`); mapping
+   `E = e8 - 120`, byte = `E << 3`. Kernel + load-time range validator
+   (`ValidateE8m0Range`, e8 > 135 -> load error naming expert). NOTE for the
+   docs reference: the ue4m3 MMA operand reads the full byte
+   (sign<<7|exp<<3|mant) — the repo's pow2 codec shifts the exponent into
+   bits [6:3]; both agree on decode `2^(e-7)`.
+3. **fast_math toggle** — `1411181`. Process-wide
+   `SetDeepseekFastMath(bool)` from `ModelInitConfig::fast_math`; default
+   OFF bit-exact.
+4. **TC W4A4 routed-expert body** — `04aba62`. `run_routed_expert_ffn`
+   dispatches to `qwen::tc::RunQwenTcNvfp4Gemm` (W1/W3: K=4096→N=2048;
+   W2: K=2048→N=4096, routing weight folded into the TC epilogue scale;
+   FP16 silu_mul in-place on the gate slab). UE4M3 slabs repacked on device
+   into the paired TC stage region per expert (stage path). Load-time
+   validation `fb0ef88`.
+5. **Correctness evidence:** stage test (TC GEMM vs act-quant-aware host
+   reference at K=4096/N=2048): **max_err 1.15 @ ref 4563 (0.025%)**;
+   TC body deterministic (two runs bitwise identical); full deepseek suite
+   8/8 green; OFF-mode selfcheck bit-exact; ON-mode "Paris" deterministic.
+   Scale format trap found by TDD: byte 7 (E in low bits) decodes as 0 —
+   tests caught the swapped nibble shift before any real-weight run.
+
+### Phase-1 measurement: staging-bound, not compute-bound
+
+E2E (32 tok, real weights, sequential): default 4.0 tok/s vs fast_math
+3.9 tok/s — **no wall change**. Root cause: the routed working set moved
+the bottleneck to pinned H2D staging: 6 experts x 43 layers x 13.4 MB ≈
+3.5 GB/token at ~14 GB/s effective ≈ 250 ms/token floor. The TC path
+removed dequant-compute time but the staging wall dominates. Next lever
+(next session): async prestage overlap (GLM async-prestage pattern) —
+stage layer l+1 experts during layer l compute; potential ~1.5-2x until
+the pinned-bandwidth roof (~7 tok/s).
+
+F-12 phase 2 (Task 4: shared-expert + attention F8 dequant caching,
+bit-exact always-on) pending; `kind::mxf8f6f4` W8A8 for F8 sites parked.
