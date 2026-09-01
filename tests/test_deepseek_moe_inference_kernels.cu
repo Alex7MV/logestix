@@ -756,3 +756,72 @@ TEST_CASE("routed-expert W2 projection is a pure FP32 matmul (no act_scale fuse)
     cublasDestroy(cublas_h);
     cudaStreamDestroy(stream);
 }
+
+// ── E8M0 -> UE4M3 repack (TC W4A4 prep, F-12) ──────────────────────────────
+// Repo UE4M3 decode: e4==0 -> 0.0, else bit-trick (e4+120)<<23 == 2^(e4-7).
+// E8M0 value: 2^(e8-127). Identity holds for E = e8-120 in [1..15].
+
+namespace {
+
+float ue4m3_host_decode(uint8_t e4)
+{
+    if (e4 == 0) return 0.0f;
+    uint32_t bits = (static_cast<uint32_t>(e4) + 120u) << 23;
+    float f;
+    std::memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+} // namespace
+
+TEST_CASE("e8m0 repack: exact pow2 mapping and boundaries", "[deepseek][repack]") {
+    // 64 elements -> 2 E8M0 bytes -> 4 UE4M3 bytes.
+    // e8=127 -> E=7; e8=120 -> E=0 (decode 0); e8=200 clamped to E=15.
+    const uint8_t e8[2] = {127, 120};
+    uint8_t *d_in = nullptr, *d_out = nullptr;
+    REQUIRE(cudaMalloc(&d_in, 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out, 4) == cudaSuccess);
+    cudaMemcpy(d_in, e8, 2, cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_in, 64, d_out) == cudaSuccess);
+    uint8_t out[4] = {};
+    cudaMemcpy(out, d_out, 4, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    CHECK(out[0] == 7);
+    CHECK(out[1] == 7);
+    CHECK(out[2] == 0);
+    CHECK(out[3] == 0);
+    cudaFree(d_in); cudaFree(d_out);
+}
+
+TEST_CASE("e8m0 repack value identity vs e8m0 decode", "[deepseek][repack]") {
+    // scale factor identity: UE4M3 (E+120)<<23 == E8M0 2^(e8-127), E=e8-120.
+    for (uint8_t e8 = 121; e8 <= 135; ++e8) {
+        const float ue4m3 = ue4m3_host_decode(static_cast<uint8_t>(e8 - 120));
+        const float e8m0 = std::ldexp(1.0f, static_cast<int>(e8) - 127);
+        INFO("e8=" << static_cast<int>(e8));
+        REQUIRE(ue4m3 == e8m0);
+    }
+}
+
+TEST_CASE("e8m0 repack invalid geometry", "[deepseek][repack]") {
+    uint8_t *d_in = nullptr, *d_out = nullptr;
+    REQUIRE(cudaMalloc(&d_in, 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out, 4) == cudaSuccess);
+    // 32 elements is fine (2 out bytes); 33 elements is not a multiple of 32.
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_in, 32, d_out) == cudaSuccess);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_in, 33, d_out) ==
+            cudaErrorInvalidValue);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, nullptr, 32, d_out) ==
+            cudaErrorInvalidValue);
+    cudaFree(d_in); cudaFree(d_out);
+}
+
+TEST_CASE("e8m0 range validator", "[deepseek][repack]") {
+    const uint8_t ok[4] = {0, 120, 127, 135};
+    int64_t off = -1;
+    CHECK(lsxcommon::gpu::ValidateE8m0Range(ok, 4, &off));
+    const uint8_t bad[3] = {127, 136, 130};
+    CHECK_FALSE(lsxcommon::gpu::ValidateE8m0Range(bad, 3, &off));
+    CHECK(off == 1);
+    CHECK_FALSE(lsxcommon::gpu::ValidateE8m0Range(nullptr, 4, &off));
+}

@@ -137,5 +137,22 @@ cudaError_t dequant_shared_f8_half(
     const uint8_t* d_scales, int64_t scale_bytes,
     __half* d_output, int64_t num_elements, int64_t cols);
 
+// Repacks flat E8M0 scales (1 byte per 32 elements, routed-expert layout)
+// into repo-canonical UE4M3 pow2 scales (1 byte per 16 elements, the layout
+// consumed by qwen::tc::RunQwenTcNvfp4Gemm). Mapping: E = e8 - 120 for
+// e8 in [121..135]; e8 <= 120 -> 0 (decodes as zero scale, mirroring the
+// FP16 subnormal underflow of 2^(e8-127)); e8 > 135 clamps to 15 and must
+// be rejected earlier by ValidateE8m0Range. num_elements must be a multiple
+// of 32. Returns cudaErrorInvalidValue on null pointers / bad geometry.
+cudaError_t RepackE8m0ToUe4m3(cudaStream_t stream,
+                              const uint8_t *d_e8m0, int64_t num_elements,
+                              uint8_t *d_ue4m3);
+
+// Host-side range scan over PINNED source scales (load-time, before H2D).
+// Returns false and fills *bad_offset with the first offending index when
+// any scale byte exceeds 135 (value class outside the UE4M3 pow2 contract).
+bool ValidateE8m0Range(const uint8_t *h_scales, int64_t scale_bytes,
+                       int64_t *bad_offset);
+
 } // namespace gpu
 } // namespace lsxcommon

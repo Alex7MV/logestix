@@ -579,6 +579,51 @@ cudaError_t dequant_fp4_e8m0_half(
     return cudaGetLastError();
 }
 
+// ── E8M0 → UE4M3 repack (TC W4A4 prep, F-12) ──────────────────────────────
+// One output byte per 16 elements: output block j covers elements
+// [16j, 16j+16) and reads source scale (16j) >> 5 == j >> 1 — both halves of
+// the 32-element E8M0 block share one source byte (cols % 32 == 0 keeps row
+// boundaries out of the flat mapping).
+__global__ void repack_e8m0_ue4m3_kernel(const uint8_t* __restrict__ src,
+                                         int64_t n_out,
+                                         uint8_t* __restrict__ dst)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (i >= n_out) return;
+    const unsigned e8 = src[i >> 1];
+    const unsigned e = e8 > 135u ? 15u
+                     : (e8 > 120u ? e8 - 120u : 0u);
+    dst[i] = static_cast<uint8_t>(e);
+}
+
+cudaError_t RepackE8m0ToUe4m3(cudaStream_t stream,
+                              const uint8_t *d_e8m0, int64_t num_elements,
+                              uint8_t *d_ue4m3)
+{
+    if (!d_e8m0 || !d_ue4m3 || num_elements <= 0 || (num_elements & 31))
+        return cudaErrorInvalidValue;
+    const int64_t n_out = num_elements / 16;
+    const int block = 256;
+    const int blocks = static_cast<int>((n_out + block - 1) / block);
+    repack_e8m0_ue4m3_kernel<<<blocks, block, 0, stream>>>(d_e8m0, n_out,
+                                                           d_ue4m3);
+    return cudaGetLastError();
+}
+
+bool ValidateE8m0Range(const uint8_t *h_scales, int64_t scale_bytes,
+                       int64_t *bad_offset)
+{
+    if (!h_scales || scale_bytes <= 0) return false;
+    for (int64_t i = 0; i < scale_bytes; ++i) {
+        if (h_scales[i] > 135) {
+            if (bad_offset) *bad_offset = i;
+            return false;
+        }
+    }
+    return true;
+}
+
 // FP16 + fused per-128 activation scale (see shared_experts.h).
 // Kernel definition lives at the bottom of this file (after the F8 kernels).
 template<int BLOCK_DIM>
