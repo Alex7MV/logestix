@@ -179,6 +179,39 @@ cudaError_t KimiRouterTopK(const float *d_scores, const float *d_bias,
     return cudaGetLastError();
 }
 
+// ── Split-phase router handshake (F-11) ────────────────────────────────────
+cudaError_t KimiRouteBegin(const float *d_scores, const float *d_bias,
+                           int n_routed, int top_k,
+                           int *d_top_ids, float *d_top_w,
+                           int *h_ids, float *h_w,
+                           cudaEvent_t ev, cudaStream_t stream)
+{
+    if (!h_ids || !h_w || !ev || top_k <= 0)
+        return cudaErrorInvalidValue;
+    cudaError_t e = KimiRouterTopK(d_scores, d_bias, n_routed, top_k,
+                                   d_top_ids, d_top_w, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(h_ids, d_top_ids,
+                        static_cast<size_t>(top_k) * sizeof(int),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMemcpyAsync(h_w, d_top_w,
+                        static_cast<size_t>(top_k) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+    if (e != cudaSuccess) return e;
+    return cudaEventRecord(ev, stream);
+}
+
+cudaError_t KimiRouteFinish(cudaEvent_t ev)
+{
+    if (!ev) return cudaErrorInvalidValue;
+    // Event-scoped busy-poll (round-20 pattern): returns the moment the
+    // router D2H retires without draining the rest of the stream.
+    cudaError_t q;
+    while ((q = cudaEventQuery(ev)) == cudaErrorNotReady) {}
+    return q;
+}
+
 } // namespace kimi
 } // namespace lsxcommon
 

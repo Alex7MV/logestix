@@ -48,6 +48,8 @@ void RouterReference(const std::vector<float> &scores,
 
 } // namespace
 
+using lsxcommon::kimi::KimiRouteBegin;
+using lsxcommon::kimi::KimiRouteFinish;
 using lsxcommon::kimi::KimiRouterTopK;
 using lsxcommon::kimi::KimiRouterTopKHost;
 
@@ -134,4 +136,82 @@ TEST_CASE("Kimi router GPU matches host reference", "[kimi][router]")
     cudaStreamDestroy(stream);
     cudaFree(d_scores); cudaFree(d_bias);
     cudaFree(d_ids); cudaFree(d_weights);
+}
+
+// ── Split-phase router handshake (F-11): bitwise equivalence vs fused ──────
+TEST_CASE("Kimi split-phase route matches fused path bitwise",
+          "[kimi][router][split]")
+{
+    const int n = 384, top_k = 8;
+    std::vector<float> scores(n), bias(n);
+    // Adversarial: duplicate score values exercise the tie-break rule; bias
+    // perturbs ordering.
+    for (int i = 0; i < n; ++i) {
+        scores[i] = -3.0f + 0.05f * ((i * 7) % 40);   // many duplicates
+        bias[i] = 0.001f * ((i * 37) % 11);
+    }
+
+    // Fused reference: device top-k + blocking sync.
+    float *d_scores = nullptr, *d_bias = nullptr, *d_w_ref = nullptr;
+    int *d_ids_ref = nullptr;
+    cudaMalloc(&d_scores, n * sizeof(float));
+    cudaMalloc(&d_bias, n * sizeof(float));
+    cudaMalloc(&d_ids_ref, top_k * sizeof(int));
+    cudaMalloc(&d_w_ref, top_k * sizeof(float));
+    cudaMemcpy(d_scores, scores.data(), n * sizeof(float),
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_bias, bias.data(), n * sizeof(float),
+               cudaMemcpyHostToDevice);
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    REQUIRE(KimiRouterTopK(d_scores, d_bias, n, top_k, d_ids_ref, d_w_ref,
+                           st) == cudaSuccess);
+    std::vector<int> ref_ids(top_k);
+    std::vector<float> ref_w(top_k);
+    cudaMemcpy(ref_ids.data(), d_ids_ref, top_k * sizeof(int),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(ref_w.data(), d_w_ref, top_k * sizeof(float),
+               cudaMemcpyDeviceToHost);
+    cudaStreamSynchronize(st);
+
+    // Split path: pinned staging + event + busy-poll.
+    int *h_ids = nullptr;
+    float *h_w = nullptr;
+    REQUIRE(cudaHostAlloc(&h_ids, top_k * sizeof(int),
+                          cudaHostAllocDefault) == cudaSuccess);
+    REQUIRE(cudaHostAlloc(&h_w, top_k * sizeof(float),
+                          cudaHostAllocDefault) == cudaSuccess);
+    int *d_ids2 = nullptr;
+    float *d_w2 = nullptr;
+    cudaMalloc(&d_ids2, top_k * sizeof(int));
+    cudaMalloc(&d_w2, top_k * sizeof(float));
+    cudaEvent_t ev = nullptr;
+    REQUIRE(cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) ==
+            cudaSuccess);
+    // Prime the event so Begin->Finish re-records over a known state.
+    cudaEventRecord(ev, st);
+
+    REQUIRE(KimiRouteBegin(d_scores, d_bias, n, top_k, d_ids2, d_w2, h_ids,
+                           h_w, ev, st) == cudaSuccess);
+    // Production enqueues unrelated work here (batch resolve/upload); the
+    // event fence must not depend on anything else on the stream.
+    REQUIRE(KimiRouteFinish(ev) == cudaSuccess);
+
+    for (int k = 0; k < top_k; ++k) {
+        INFO("k=" << k << " ref=" << ref_ids[k] << "/" << ref_w[k]
+                  << " split=" << h_ids[k] << "/" << h_w[k]);
+        REQUIRE(h_ids[k] == ref_ids[k]);
+        REQUIRE(h_w[k] == ref_w[k]);   // bitwise float compare
+    }
+
+    cudaEventDestroy(ev);
+    cudaFreeHost(h_ids);
+    cudaFreeHost(h_w);
+    cudaFree(d_ids2);
+    cudaFree(d_w2);
+    cudaFree(d_scores);
+    cudaFree(d_bias);
+    cudaFree(d_ids_ref);
+    cudaFree(d_w_ref);
+    cudaStreamDestroy(st);
 }

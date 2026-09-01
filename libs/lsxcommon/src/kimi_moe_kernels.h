@@ -38,6 +38,18 @@ cudaError_t KimiRouterTopK(const float *d_scores, const float *d_bias,
                            int *d_out_ids, float *d_out_weights,
                            cudaStream_t stream);
 
+// ── Split-phase router handshake (F-11) ────────────────────────────────────
+// Begin: top-k kernel + async D2H into the caller's PINNED h_ids/h_w +
+// event record on the stream. Finish: busy-poll that event (event-scoped
+// fence; never drains unrelated stream work). Bitwise-identical results to
+// the fused KimiRouterTopK + cudaStreamSynchronize path.
+cudaError_t KimiRouteBegin(const float *d_scores, const float *d_bias,
+                           int n_routed, int top_k,
+                           int *d_top_ids, float *d_top_w,
+                           int *h_ids, float *h_w,
+                           cudaEvent_t ev, cudaStream_t stream);
+cudaError_t KimiRouteFinish(cudaEvent_t ev);
+
 // Routed-expert NVFP4 FFN for ONE token: dequantizes the expert's three
 // projections from the mmap'd entry, applies gate/up GEMMs + SwiGLU + down
 // GEMM and accumulates `expert_weight * y` into d_out (caller pre-zeroes or
