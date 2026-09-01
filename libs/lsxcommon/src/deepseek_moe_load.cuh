@@ -26,6 +26,11 @@ constexpr int kNumRouted = 256;
 constexpr int kTopK = 6;
 constexpr int kIntermediateDim = 2048;
 
+// Blackwell TC W4A4 toggle (F-12): set from ModelInitConfig::fast_math at
+// model construction; default OFF preserves bit-exact legacy routing.
+void SetDeepseekFastMath(bool on);
+bool DeepseekFastMath();
+
 // Frozen-geometry passport (MODEL INGEST INVARIANT step 3): compile-time
 // relations lock the architecture against accidental drift.
 static_assert(kTopK > 0 && kTopK <= kNumRouted,

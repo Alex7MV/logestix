@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
+#include <atomic>
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -14,6 +15,21 @@
 
 namespace lsxcommon {
 namespace gpu {
+
+// Blackwell TC W4A4 toggle (F-12). Process-wide; flipped from
+// ModelInitConfig::fast_math at model construction. Default OFF keeps the
+// dequant+cuBLAS routes bit-exact.
+static std::atomic<bool> g_deepseek_fast_math{false};
+
+void SetDeepseekFastMath(bool on)
+{
+    g_deepseek_fast_math.store(on, std::memory_order_relaxed);
+}
+
+bool DeepseekFastMath()
+{
+    return g_deepseek_fast_math.load(std::memory_order_relaxed);
+}
 
 // Dequant kernel from benchmark (extern declaration)
 

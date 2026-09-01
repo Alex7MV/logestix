@@ -28,7 +28,10 @@ InferenceResult RunInferenceModel(
 } // namespace gpu
 
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
-    : ModelBase{std::move(cfg)} {}
+    : ModelBase{std::move(cfg)}
+{
+    gpu::SetDeepseekFastMath(cfg_.fast_math);
+}
 
 DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
 
