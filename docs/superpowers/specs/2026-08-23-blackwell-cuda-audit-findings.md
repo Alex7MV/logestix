@@ -1161,3 +1161,35 @@ the pinned-bandwidth roof (~7 tok/s).
 
 F-12 phase 2 (Task 4: shared-expert + attention F8 dequant caching,
 bit-exact always-on) pending; `kind::mxf8f6f4` W8A8 for F8 sites parked.
+
+### Phase 2 + final state (same session)
+
+6. **Shared-expert dequant caching** — `553ae13`. Load-time FP16 (W1/W3) +
+   FP32 (W2) caches filled by the SAME dequant kernels the per-call path
+   uses → bit-exact by construction; per-call dequant launches skipped
+   (~140 MB/token of dequant traffic removed). Cache params are trailing
+   optionals; nullptr = legacy path. Bit-exact pinned by
+   `test_deepseek_moe_moe "[shared-cache]"` (memcmp). resident
+   11.7 -> 13.8 GB (+2.1 GB caches); text identical to pre-change.
+7. **Attention F8 dequant caching: PARKED** (plan deviation, measured
+   rationale) — the e2e is pinned at the pinned-H2D staging wall
+   (~14 GB/s effective, ~250 ms/token floor), so removing the small
+   per-call attention dequants cannot move wall tok/s; the work would
+   touch the attention TU signatures for zero wall gain. Revisit only
+   after async expert prestage lands and compute becomes visible again.
+
+### F-12 final table (RTX 5090, AOCC release, 32 tok, sequential)
+
+| Config | tok/s | ttft_ms | resident_mb |
+|---|---|---|---|
+| baseline (partial LRU cache, pre-session) | 0.6 | 20588 | 11695 |
+| streaming default (Task 0) | 4.0 | 1794 | 11695 |
+| + shared dequant caches (Task 4) | 4.0 | 1794 | 13759 |
+| + TC W4A4 fast_math (Task 3) | 4.0 | 1793 | 13759 |
+
+Acceptance gate: strategy-spec §5 items all met — OFF selfcheck bit-exact,
+ON selfcheck "Paris" deterministic, stage test 0.025% vs host ref, full
+suite 20/20 green (`deepseek|blackwell|expert|naming`), no perf regression.
+F-12 status: routed TC W4A4 + shared caching landed; remaining wall is the
+pinned-H2D staging roof — next lever is async expert prestage overlap
+(new work item, not F-12).
