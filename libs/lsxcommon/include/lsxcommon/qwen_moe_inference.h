@@ -136,6 +136,30 @@ cudaError_t RunQwenMoeGemvGatherTable(
 // path. One-time lazy upload of the mirror on first readiness.
 bool QwenMoeGemvNohandshake(const QwenMoeExpertStore &store);
 
+// Batched decode swiglu-quant: per slot s, gate = ygu[s*2I + j],
+// up = ygu[s*2I + I + j]; h[s] = silu(gate)*up (FP16) + NVFP4 encode of h.
+// Bit-identical to per-slot RunQwenSwigluQuant (same 16-group math).
+cudaError_t RunQwenMoeSwigluQuantBatch(cudaStream_t stream,
+                                       const __half *ygu, int k_slots, int I,
+                                       __half *h, uint8_t *packed,
+                                       uint8_t *scales);
+
+// Batched TC routed-expert chain (no host readback): gather (device table)
+// -> w13 batch TC GEMM -> batched swiglu-quant -> w2 batch TC GEMM ->
+// ascending coeff reduce. d_acc += sum_k coeff_k * FFN(routes[k]) -- the
+// identical fp32 add order as the legacy per-slot chain. Requires TC
+// fast_math, full residency mirror (QwenMoeGemvNohandshake), I % 16 == 0.
+// splitk13: caller buffer for the w13 split-K partials
+// (QwenTcBatchSplitK(H, 2*I) * K * 2I floats; nullptr OK when the helper
+// returns 1). d_tbl: [16] reused gather output (QwenMoeGvSlotDev).
+cudaError_t RunQwenMoeRoutedTcBatch(
+    cudaStream_t stream, QwenMoeExpertStore &store,
+    const QwenMoeExpertDeviceCache &cache, int layer,
+    const QwenMoeRoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
+    int K, int H, int I, float *d_acc, __half *ygu_batch, __half *h_batch,
+    __half *yp_batch, uint8_t *qpack_batch, uint8_t *qscales_batch,
+    float *splitk13, QwenMoeGvSlotDev *d_tbl);
+
 // MoE FFN epilogue (HF parity): out = routed_acc + sigmoid(gate.x) * shared.
 // d_routed_acc: [seq,H] fp32; scratch_i [seq,SI], scratch_h [seq,H];
 // d_gate_val [seq] fp32 workspace. sw1=gate_proj [SI,H], sw3=up_proj,

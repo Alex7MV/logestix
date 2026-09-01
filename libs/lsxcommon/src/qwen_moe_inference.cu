@@ -15,9 +15,11 @@
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/qwen_tc_gemm.h"
 #include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
 #include "nvfp4_gemv_math.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
+#include "lsx_kernels_quant.cuh"
 
 #include <algorithm>
 #include <cuda_bf16.h>
@@ -30,6 +32,11 @@ namespace {
 
 constexpr int kRouterBlock = 128;
 constexpr int kMaxTopK = 16;
+
+static_assert(sizeof(qwen::tc::QwenTcBatchSlot) == sizeof(QwenMoeGvSlotDev) &&
+                  alignof(qwen::tc::QwenTcBatchSlot) ==
+                      alignof(QwenMoeGvSlotDev),
+              "QwenTcBatchSlot must stay layout-identical to QwenMoeGvSlotDev");
 
 // ── Router ────────────────────────────────────────────────────────────────
 
@@ -661,6 +668,56 @@ __global__ void moe_gemv_reduce_batch_kernel(
     acc[i] = t;
 }
 
+// Slot-major batched swiglu-quant: gate ygu[s*2I + j], up ygu[s*2I + I + j]
+// -> h[s*I + j] + NVFP4 pack/scales at slot offsets. Per-16-group math is
+// the exact clone of qwen_swiglu_precise_quant_kernel (bit-identical).
+__global__ void moe_swiglu_quant_batch_kernel(const __half *__restrict__ ygu,
+                                              int k_slots, int I,
+                                              __half *__restrict__ h,
+                                              uint8_t *__restrict__ packed,
+                                              uint8_t *__restrict__ scales)
+{
+    const int64_t groups_per_slot = (I + 15) / 16;
+    const int64_t g = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (g >= static_cast<int64_t>(k_slots) * groups_per_slot) return;
+    const int s = static_cast<int>(g / groups_per_slot);
+    const int j0 = static_cast<int>((g - static_cast<int64_t>(s) *
+                                              groups_per_slot) * 16);
+    const int len = (j0 + 16 <= I) ? 16 : (I - j0);
+
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float gv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + j0 + i]);
+        const float uv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + I + j0 + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-gv)));
+        const __half hv =
+            __float2half(__fmul_rn(sig, __fmul_rn(gv, uv)));
+        h[static_cast<int64_t>(s) * I + j0 + i] = hv;
+        vals[i] = __half2float(hv);
+        absmax = fmaxf(absmax, fabsf(vals[i]));
+    }
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+    scales[g] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+    const int64_t slot_base = static_cast<int64_t>(s) * I;
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = (i + 1 < len)
+                               ? lsxcommon::kernels::QuantizeE2m1TieUp(
+                                     vals[i + 1] * inv)
+                               : 0;
+        packed[(slot_base + j0 + i) / 2] =
+            static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
 int MoeGemvPickKp(int cols, int rows)
 {
     for (int cand : {8, 4, 2}) {
@@ -702,6 +759,66 @@ cudaError_t RunQwenMoeGemvGatherTable(
         return cudaErrorInvalidValue;
     moe_gemv_gather_table_kernel<<<1, 32, 0, stream>>>(d_slots, d_meta,
                                                        k_slots, d_tbl_out);
+    return cudaGetLastError();
+}
+
+cudaError_t RunQwenMoeSwigluQuantBatch(cudaStream_t stream, const __half *ygu,
+                                       int k_slots, int I, __half *h,
+                                       uint8_t *packed, uint8_t *scales)
+{
+    if (!ygu || !h || !packed || !scales || k_slots <= 0 || k_slots > 16 ||
+        I <= 0)
+        return cudaErrorInvalidValue;
+    const int64_t groups =
+        static_cast<int64_t>(k_slots) * ((I + 15) / 16);
+    moe_swiglu_quant_batch_kernel<<<static_cast<int>((groups + 255) / 256),
+                                    256, 0, stream>>>(ygu, k_slots, I, h,
+                                                      packed, scales);
+    return cudaGetLastError();
+}
+
+cudaError_t RunQwenMoeRoutedTcBatch(
+    cudaStream_t stream, QwenMoeExpertStore &store,
+    const QwenMoeExpertDeviceCache &cache, int layer,
+    const QwenMoeRoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
+    int K, int H, int I, float *d_acc, __half *ygu_batch, __half *h_batch,
+    __half *yp_batch, uint8_t *qpack_batch, uint8_t *qscales_batch,
+    float *splitk13, QwenMoeGvSlotDev *d_tbl)
+{
+    if (!d_routes || !xq || !xqs || !d_acc || !ygu_batch || !h_batch ||
+        !yp_batch || !qpack_batch || !qscales_batch || !d_tbl ||
+        K <= 0 || K > kMaxTopK || H <= 0 || I <= 0 || (I & 15) != 0 ||
+        !store.d_gemv_meta || layer < 0 || layer >= store.num_layers)
+        return cudaErrorInvalidValue;
+    const int E = store.num_experts;
+    const int64_t w13_bytes =
+        store.records[static_cast<size_t>(layer)][0].w1_bytes +
+        store.records[static_cast<size_t>(layer)][0].w3_bytes;
+    const int64_t s13_bytes =
+        store.records[static_cast<size_t>(layer)][0].s1_bytes +
+        store.records[static_cast<size_t>(layer)][0].s3_bytes;
+
+    cudaError_t e = RunQwenMoeGemvGatherTable(
+        stream, d_routes, K,
+        store.d_gemv_meta + static_cast<int64_t>(layer) * E, d_tbl);
+    if (e != cudaSuccess) return e;
+    const auto *tbl =
+        reinterpret_cast<const qwen::tc::QwenTcBatchSlot *>(d_tbl);
+    e = qwen::tc::RunQwenTcGemmBatch13(
+        stream, xq, xqs, cache.d_pack, cache.d_scale, cache.pack_stride,
+        cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
+    if (e != cudaSuccess) return e;
+    e = RunQwenMoeSwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
+                                   qpack_batch, qscales_batch);
+    if (e != cudaSuccess) return e;
+    e = qwen::tc::RunQwenTcGemmBatchDown(
+        stream, qpack_batch, qscales_batch, cache.d_pack, cache.d_scale,
+        cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
+        I, H, yp_batch, nullptr);
+    if (e != cudaSuccess) return e;
+    // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1).
+    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        yp_batch, d_tbl, K, H, d_acc);
     return cudaGetLastError();
 }
 

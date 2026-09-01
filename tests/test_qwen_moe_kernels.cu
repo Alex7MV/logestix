@@ -719,3 +719,119 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
 }
 
 // ── Batched TC routed chain (80-tok/s decode round) ─────────────────────────
+
+// Composite batched TC routed chain vs the pinned legacy per-slot chain:
+// d_moe_acc must be BITWISE equal (same kernels, same accumulation order).
+// Adversarial: duplicate eids across slots, alternating scale bytes in the
+// input activations.
+TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
+          "[qwen-moe-tc-batch]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_tc_rffn_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_tc_rffn_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen_moe::QwenMoeExpertStore store;
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 8, cache, err));
+
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+
+    const int H = 64, I = 16, K = 2;
+    std::vector<__half> hx(static_cast<size_t>(H));
+    for (int i = 0; i < H; ++i)
+        hx[static_cast<size_t>(i)] = __float2half(
+            ((i / 16) % 2 ? 384.0f : 0.25f) * sinf(static_cast<float>(i) * 0.7f));
+
+    uint8_t *d_xq, *d_xqs;
+    cudaMalloc(&d_xq, static_cast<size_t>(H) / 2);
+    cudaMalloc(&d_xqs, static_cast<size_t>((H + 15) / 16));
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(stream, hx.data(), 1, H,
+                                                   d_xq, d_xqs) == cudaSuccess);
+
+    __half *d_postin, *d_yg, *d_yu, *d_y2, *d_ygu_batch, *d_h_batch,
+        *d_yp_batch;
+    float *d_acc_seq, *d_acc_batch;
+    cudaMalloc(&d_postin, H * 2);
+    cudaMemcpy(d_postin, hx.data(), H * 2, cudaMemcpyHostToDevice);
+    // Legacy TC fused chain writes the w13 output [gate|up] into d_yg (2I
+    // halves) and the swiglu reads up from d_yu == d_yg + I (the generation
+    // arena places the two slices adjacently). Mirror that contract with a
+    // contiguous buffer: d_yg owns 2I halves, d_yu points at its second I.
+    cudaMalloc(&d_yg, 2 * I * 2);
+    d_yu = d_yg + I;
+    cudaMalloc(&d_y2, H * 2);
+    cudaMalloc(&d_ygu_batch, static_cast<size_t>(K) * 2 * I * 2);
+    cudaMalloc(&d_h_batch, static_cast<size_t>(K) * I * 2);
+    cudaMalloc(&d_yp_batch, static_cast<size_t>(K) * H * 2);
+    cudaMalloc(&d_acc_seq, H * 4);
+    cudaMalloc(&d_acc_batch, H * 4);
+    uint8_t *d_qpack_b, *d_qscales_b;
+    cudaMalloc(&d_qpack_b, static_cast<size_t>(K) * I / 2);
+    cudaMalloc(&d_qscales_b, static_cast<size_t>(K) * ((I + 15) / 16));
+
+    // Legacy reference (handshake per-slot TC chain, xq/xqs provided).
+    std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> routes =
+        {{3, 0.6f}, {3, 0.4f}};   // duplicate expert eid 3
+    cudaMemset(d_acc_seq, 0, H * 4);
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedFFN(
+                stream, store, cache, 0, routes.data(), K, d_postin, H, I,
+                d_acc_seq, d_yg, d_yu, d_y2, err, nullptr, nullptr, nullptr,
+                d_xq, d_xqs) == cudaSuccess);
+
+    // Batched chain: warm the mirror, gather on device, run the batch.
+    for (int e = 0; e < store.num_experts; ++e)
+        REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeExpertResident(
+                    store, 0, e, cache, stream, err) >= 0);
+    // Stage the remaining layers so the full-residency mirror completes and
+    // QwenMoeGemvNohandshake uploads d_gemv_meta (the gather input).
+    for (int l = 1; l < store.num_layers; ++l)
+        for (int e = 0; e < store.num_experts; ++e)
+            REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeExpertResident(
+                        store, l, e, cache, stream, err) >= 0);
+    REQUIRE(lsxcommon::qwen_moe::QwenMoeGemvNohandshake(store));
+
+    lsxcommon::qwen_moe::QwenMoeRoutedSlot *d_routes;
+    cudaMalloc(&d_routes, sizeof(routes[0]) * K);
+    cudaMemcpy(d_routes, routes.data(), sizeof(routes[0]) * K,
+               cudaMemcpyHostToDevice);
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl;
+    cudaMalloc(&d_tbl, sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) * 16);
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeGemvGatherTable(
+                stream, d_routes, K, store.d_gemv_meta, d_tbl) == cudaSuccess);
+    cudaMemset(d_acc_batch, 0, H * 4);
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedTcBatch(
+                stream, store, cache, 0, d_routes, d_xq, d_xqs, K, H, I,
+                d_acc_batch, d_ygu_batch, d_h_batch, d_yp_batch, d_qpack_b,
+                d_qscales_b, nullptr, d_tbl) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<float> acc_seq(H), acc_batch(H);
+    cudaMemcpy(acc_seq.data(), d_acc_seq, H * sizeof(float),
+               cudaMemcpyDeviceToHost);
+    cudaMemcpy(acc_batch.data(), d_acc_batch, H * sizeof(float),
+               cudaMemcpyDeviceToHost);
+    CHECK(std::memcmp(acc_seq.data(), acc_batch.data(),
+                      H * sizeof(float)) == 0);
+
+    cudaFree(d_xq); cudaFree(d_xqs); cudaFree(d_postin); cudaFree(d_yg);
+    cudaFree(d_y2); cudaFree(d_ygu_batch);
+    cudaFree(d_h_batch); cudaFree(d_yp_batch); cudaFree(d_acc_seq);
+    cudaFree(d_acc_batch); cudaFree(d_qpack_b); cudaFree(d_qscales_b);
+    cudaFree(d_routes); cudaFree(d_tbl);
+    cudaStreamDestroy(stream);
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    store.Free();
+    lsxcommon::qwen::SetQwenTcFastMath(false);
+    qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
