@@ -480,19 +480,13 @@ InferenceResult RunInferenceModel(
             slots = std::atoi(env);
             explicit_slots = true;   // verbatim: 0 legitimately disables
         }
-        // Unified launch-strategy policy (resource_governor.h): maximize
-        // expert-cache VRAM utilization with a small central reserve.
-        if (!explicit_slots && total_experts > 0 &&
-            !expert_db.entries.empty()) {
-            size_t free_bytes = 0, total_bytes = 0;
-            if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-                slots = lifecycle::ExpertCacheSlots(
-                    free_bytes,
-                    static_cast<size_t>(routed_pack_total) +
-                        static_cast<size_t>(routed_scale_total),
-                    total_experts);
-            }
-        }
+        // Routed working set (kTopK experts x layers x ~13 MB per expert)
+        // exceeds any single-GPU VRAM by orders of magnitude, so a partial
+        // LRU cache thrashes every token (measured 0.6 vs 2.6 tok/s on
+        // RTX 5090). Stream experts from pinned host memory by default;
+        // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS still opts into a fixed cache for
+        // experiments.
+        if (!explicit_slots) slots = 0;
         if (slots > 0 && total_experts > 0 && !expert_db.entries.empty()) {
             expert_cache.slots = std::min(slots, total_experts);
             expert_cache.pack_stride = routed_pack_total;
