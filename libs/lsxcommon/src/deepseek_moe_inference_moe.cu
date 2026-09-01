@@ -1,5 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
+#include "lsxcommon/qwen_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "deepseek_moe_load.cuh"
 #include "lsx_kernels_act.cuh"
@@ -149,6 +150,17 @@ __global__ void clamp_half_kernel(__half* d_buf, int n, float limit)
     float v = __half2float(d_buf[i]);
     v = fmaxf(-limit, fminf(limit, v));
     d_buf[i] = __float2half(v);
+}
+
+// TC epilogue: fold a __half expert output into the FP32 routed accumulator.
+__global__ void acc_half_to_f32_kernel(float* __restrict__ dst,
+                                       const __half* __restrict__ src,
+                                       int n, bool accumulate)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float v = __half2float(src[i]);
+    dst[i] = accumulate ? dst[i] + v : v;
 }
 
 // SiLU with swiglu_limit: silu(clamp(gate, max=limit)) * clamp(up, ±limit)
@@ -331,8 +343,54 @@ cudaError_t run_routed_expert_ffn(
     float *d_act_quant,                  // FP32 activation (was __half*)
     float *d_swiglu_out,
     float *d_act_scales,
-    float weight, bool accumulate)
+    float weight, bool accumulate,
+    const uint8_t *d_w1_scales_tc = nullptr,
+    const uint8_t *d_w2_scales_tc = nullptr,
+    const uint8_t *d_w3_scales_tc = nullptr)
 {
+    // ── TC W4A4 path (fast_math, F-12): no weight dequant at all ────────────
+    // Repacked UE4M3 per-16 scale slabs feed qwen::tc::RunQwenTcNvfp4Gemm
+    // directly (weights stay nibble-packed in the on-disk [N,K] layout).
+    // Tolerance-class (W4A4 accumulation order + per-16 activation
+    // quantization) — gated strictly behind DeepseekFastMath().
+    const bool use_tc = DeepseekFastMath() && d_w1_scales_tc &&
+                        d_w2_scales_tc && d_w3_scales_tc && w1_el > 0 &&
+                        w2_el > 0 && w3_el > 0;
+    if (use_tc) {
+        __half* const gate_h = reinterpret_cast<__half*>(d_gate_f32);
+        __half* const up_h = reinterpret_cast<__half*>(d_up_f32);
+        // y_tc carved from d_dequant: the TC path performs NO weight dequant,
+        // so the (max w*_el)-float dequant arena slice is free; H halves fit.
+        __half* const y_tc = reinterpret_cast<__half*>(d_dequant);
+        // W1: y = W1 @ x  (N=I, K=H)
+        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, d_hidden, d_w1,
+                                         d_w1_scales_tc, 1.0f, gate_h, 1,
+                                         kHiddenDim,
+                                         kIntermediateDim) != cudaSuccess)
+            return cudaGetLastError();
+        // W3: same shape
+        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, d_hidden, d_w3,
+                                         d_w3_scales_tc, 1.0f, up_h, 1,
+                                         kHiddenDim,
+                                         kIntermediateDim) != cudaSuccess)
+            return cudaGetLastError();
+        // SwiGLU FP16 (same clamp semantics as the FP32 reference path):
+        // out = silu(clamp_max(gate, 10)) * clamp_pm(up, 10) — silu_mul
+        // applies silu to its FIRST arg and writes in-place, so the result
+        // lands in gate_h (W2 input), leaving up_h intact.
+        silu_mul_kernel<<<(kIntermediateDim + 255) / 256, 256, 0, stream>>>(
+            gate_h, up_h, kIntermediateDim, 10.0f);
+        // W2 with the routing weight folded into the TC epilogue scale
+        // (w_global_scale == weight — post-GEMM scaling, mathematically
+        // equal to the legacy pre-W2 FP32 scale_float_kernel).
+        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, gate_h, d_w2, d_w2_scales_tc,
+                                         weight, y_tc, 1, kIntermediateDim,
+                                         kHiddenDim) != cudaSuccess)
+            return cudaGetLastError();
+        acc_half_to_f32_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
+            d_output, y_tc, kHiddenDim, accumulate);
+        return cudaGetLastError();
+    }
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
     const int block = 256;
@@ -631,7 +689,8 @@ cudaError_t run_routed_experts_ex(
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
-    const ExpertDeviceCache *cache)
+    const ExpertDeviceCache *cache,
+    uint8_t *d_scale_stage_tc = nullptr)
 {
     const int64_t w1_el = static_cast<int64_t>(kHiddenDim) * kIntermediateDim;
     const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
@@ -746,13 +805,29 @@ cudaError_t run_routed_experts_ex(
             if (e != cudaSuccess) return e;
         }
 
+        // TC W4A4 (fast_math): repack the freshly staged E8M0 scales into
+        // UE4M3 per-16 slabs inside the paired TC stage region.
+        uint8_t *s1_tc = nullptr, *s2_tc = nullptr, *s3_tc = nullptr;
+        if (DeepseekFastMath() && d_scale_stage_tc && !use_cache &&
+            s1b + s2b + s3b <= scale_stage_bytes) {
+            s1_tc = d_scale_stage_tc;
+            s2_tc = s1_tc + (w1_el + 15) / 16;
+            s3_tc = s2_tc + (w2_el + 15) / 16;
+            cudaError_t e = RepackE8m0ToUe4m3(stream, s1, w1_el, s1_tc);
+            if (e != cudaSuccess) return e;
+            e = RepackE8m0ToUe4m3(stream, s2, w2_el, s2_tc);
+            if (e != cudaSuccess) return e;
+            e = RepackE8m0ToUe4m3(stream, s3, w3_el, s3_tc);
+            if (e != cudaSuccess) return e;
+        }
+
         cudaError_t e = run_routed_expert_ffn(cublas_h, stream, d_normed,
             p1, s1, w1_el,
             p2, s2, w2_el,
             p3, s3, w3_el,
             d_gate_f32, d_up_f32, d_dequant, d_output,
             d_act_quant, d_swiglu_out, d_act_scales,
-            h_top_weights[k], accumulate);
+            h_top_weights[k], accumulate, s1_tc, s2_tc, s3_tc);
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <lsxcommon/safetensors_gpu.h>
 #include <lsxcommon/shared_experts.h>
+#include <lsxcommon/qwen_tc_gemm.h>
 #include <lsxcommon/schema.h>
 
 using Catch::Approx;
@@ -32,7 +33,14 @@ cudaError_t run_routed_expert_ffn(
     float *d_act_quant,
     float *d_swiglu_out,
     float *d_act_scales,
-    float weight, bool accumulate);
+    float weight, bool accumulate,
+    const uint8_t *d_w1_scales_tc = nullptr,
+    const uint8_t *d_w2_scales_tc = nullptr,
+    const uint8_t *d_w3_scales_tc = nullptr);
+
+// fast_math toggle (defined in deepseek_moe_inference_moe.cu; declared in
+// the private deepseek_moe_load.cuh, which is not on the test include path).
+void SetDeepseekFastMath(bool on);
 }
 
 // ── Test helpers ────────────────────────────────────────────────────────────
@@ -763,8 +771,10 @@ TEST_CASE("routed-expert W2 projection is a pure FP32 matmul (no act_scale fuse)
 
 namespace {
 
-float ue4m3_host_decode(uint8_t e4)
+float ue4m3_host_decode(uint8_t byte)
 {
+    // Repo pow2-E4M3 layout: exponent in bits [6:3] (nvfp4_codec.h).
+    const uint8_t e4 = (byte >> 3) & 0x0F;
     if (e4 == 0) return 0.0f;
     uint32_t bits = (static_cast<uint32_t>(e4) + 120u) << 23;
     float f;
@@ -776,27 +786,31 @@ float ue4m3_host_decode(uint8_t e4)
 
 TEST_CASE("e8m0 repack: exact pow2 mapping and boundaries", "[deepseek][repack]") {
     // 64 elements -> 2 E8M0 bytes -> 4 UE4M3 bytes.
-    // e8=127 -> E=7; e8=120 -> E=0 (decode 0); e8=200 clamped to E=15.
-    const uint8_t e8[2] = {127, 120};
+    // e8=127 -> E=7 -> byte 0x38; e8=120 -> 0; e8=200 clamped E=15 -> 0x78.
+    const uint8_t e8[3] = {127, 120, 200};
     uint8_t *d_in = nullptr, *d_out = nullptr;
-    REQUIRE(cudaMalloc(&d_in, 2) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_out, 4) == cudaSuccess);
-    cudaMemcpy(d_in, e8, 2, cudaMemcpyHostToDevice);
-    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_in, 64, d_out) == cudaSuccess);
-    uint8_t out[4] = {};
-    cudaMemcpy(out, d_out, 4, cudaMemcpyDeviceToHost);
+    REQUIRE(cudaMalloc(&d_in, 3) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out, 6) == cudaSuccess);
+    cudaMemcpy(d_in, e8, 3, cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_in, 96, d_out) == cudaSuccess);
+    uint8_t out[6] = {};
+    cudaMemcpy(out, d_out, 6, cudaMemcpyDeviceToHost);
     cudaDeviceSynchronize();
-    CHECK(out[0] == 7);
-    CHECK(out[1] == 7);
-    CHECK(out[2] == 0);
-    CHECK(out[3] == 0);
+    CHECK(out[0] == 0x38);  // E=7 -> bits [6:3]
+    CHECK(out[1] == 0x38);
+    CHECK(out[2] == 0x00);  // e8=120 -> E=0 -> decodes 0
+    CHECK(out[3] == 0x00);
+    CHECK(out[4] == 0x78);  // e8=200 clamped to E=15
+    CHECK(out[5] == 0x78);
     cudaFree(d_in); cudaFree(d_out);
 }
 
 TEST_CASE("e8m0 repack value identity vs e8m0 decode", "[deepseek][repack]") {
-    // scale factor identity: UE4M3 (E+120)<<23 == E8M0 2^(e8-127), E=e8-120.
+    // scale factor identity: repo pow2-E4M3 decode of byte (e4<<3) ==
+    // E8M0 2^(e8-127), e4 = e8-120.
     for (uint8_t e8 = 121; e8 <= 135; ++e8) {
-        const float ue4m3 = ue4m3_host_decode(static_cast<uint8_t>(e8 - 120));
+        const float ue4m3 = ue4m3_host_decode(
+            static_cast<uint8_t>((e8 - 120) << 3));
         const float e8m0 = std::ldexp(1.0f, static_cast<int>(e8) - 127);
         INFO("e8=" << static_cast<int>(e8));
         REQUIRE(ue4m3 == e8m0);
@@ -824,4 +838,253 @@ TEST_CASE("e8m0 range validator", "[deepseek][repack]") {
     CHECK_FALSE(lsxcommon::gpu::ValidateE8m0Range(bad, 3, &off));
     CHECK(off == 1);
     CHECK_FALSE(lsxcommon::gpu::ValidateE8m0Range(nullptr, 4, &off));
+}
+
+// ── TC W4A4 routed-expert body: bit determinism (fast_math, F-12) ──────────
+// The TC body and the legacy body use different numeric classes BY DESIGN
+// (legacy: FP8-per-128 acts + FP32 intermediates; TC: NVFP4-per-16 acts +
+// half intermediates) — no fixed cross-class tolerance exists on adversarial
+// data. Kernel correctness is pinned by the stage test below (2e-2 vs the
+// act-quant host reference at full DeepSeek geometry); the binding e2e
+// acceptance is the real-model selfcheck. Here we pin: the TC body is
+// deterministic (two runs bitwise identical) and finite on realistic scales.
+TEST_CASE("routed expert TC body deterministic and finite", "[deepseek][tc]")
+{
+    constexpr int kHid = 4096;
+    constexpr int kInt = 2048;
+    const int64_t el = static_cast<int64_t>(kHid) * kInt;   // 8388608
+    const int64_t packed_bytes = el / 2;
+    const int64_t e8_bytes  = el / 32;
+    const int64_t ue4_bytes = el / 16;
+
+    // Deterministic LCG fill: random E2M1 nibbles; scales in [121..127]
+    // (2^-6..1.0) so dot outputs stay inside the __half range the TC path
+    // exposes.
+    auto lcg = [s = 12345u]() mutable {
+        s = s * 1664525u + 1013904223u;
+        return static_cast<uint32_t>(s >> 16);
+    };
+
+    std::vector<uint8_t> packed1(packed_bytes), packed2(packed_bytes),
+        packed3(packed_bytes);
+    std::vector<uint8_t> s8_1(e8_bytes), s8_2(e8_bytes), s8_3(e8_bytes);
+    for (int64_t i = 0; i < packed_bytes; ++i) {
+        packed1[i] = static_cast<uint8_t>(lcg());
+        packed2[i] = static_cast<uint8_t>(lcg());
+        packed3[i] = static_cast<uint8_t>(lcg());
+    }
+    for (int64_t i = 0; i < e8_bytes; ++i) {
+        s8_1[i] = static_cast<uint8_t>(121 + lcg() % 7);
+        s8_2[i] = static_cast<uint8_t>(121 + lcg() % 7);
+        s8_3[i] = static_cast<uint8_t>(121 + lcg() % 7);
+    }
+    std::vector<__half> h_hidden(kHid);
+    for (int i = 0; i < kHid; ++i)
+        h_hidden[i] = __float2half(
+            static_cast<float>(lcg() % 401) / 100.0f - 2.0f);
+
+    uint8_t *d_w1, *d_w2, *d_w3, *d_s1, *d_s2, *d_s3;
+    uint8_t *d_u1, *d_u2, *d_u3;
+    __half *d_hidden;
+    float *d_gate, *d_up, *d_dequant, *d_out_a, *d_out_b;
+    float *d_act_quant, *d_swiglu, *d_act_scales;
+    cudaMalloc(&d_w1, packed_bytes); cudaMalloc(&d_w2, packed_bytes);
+    cudaMalloc(&d_w3, packed_bytes);
+    cudaMalloc(&d_s1, e8_bytes); cudaMalloc(&d_s2, e8_bytes);
+    cudaMalloc(&d_s3, e8_bytes);
+    cudaMalloc(&d_u1, ue4_bytes); cudaMalloc(&d_u2, ue4_bytes);
+    cudaMalloc(&d_u3, ue4_bytes);
+    cudaMalloc(&d_hidden, static_cast<size_t>(kHid) * sizeof(__half));
+    cudaMalloc(&d_gate, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_up, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_dequant, static_cast<size_t>(el) * sizeof(float));
+    cudaMalloc(&d_out_a, static_cast<size_t>(kHid) * sizeof(float));
+    cudaMalloc(&d_out_b, static_cast<size_t>(kHid) * sizeof(float));
+    cudaMalloc(&d_act_quant, static_cast<size_t>(kHid) * sizeof(float));
+    cudaMalloc(&d_swiglu, static_cast<size_t>(kInt) * sizeof(float));
+    cudaMalloc(&d_act_scales, 32 * sizeof(float));
+    cudaMemcpy(d_w1, packed1.data(), packed_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w2, packed2.data(), packed_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w3, packed3.data(), packed_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_s1, s8_1.data(), e8_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_s2, s8_2.data(), e8_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_s3, s8_3.data(), e8_bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_hidden, h_hidden.data(),
+               static_cast<size_t>(kHid) * sizeof(__half),
+               cudaMemcpyHostToDevice);
+    // Repack E8M0 -> UE4M3 on device.
+    cudaStream_t st = nullptr;
+    cudaStreamCreate(&st);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(st, d_s1, el, d_u1) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(st, d_s2, el, d_u2) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(st, d_s3, el, d_u3) ==
+            cudaSuccess);
+
+    cublasHandle_t cublas_h = nullptr;
+    cublasCreate(&cublas_h);
+
+    lsxcommon::gpu::SetDeepseekFastMath(true);
+    const auto run_tc = [&](float *out) {
+        return lsxcommon::gpu::run_routed_expert_ffn(
+            cublas_h, st, d_hidden,
+            d_w1, d_s1, el, d_w2, d_s2, el, d_w3, d_s3, el,
+            d_gate, d_up, d_dequant, out,
+            d_act_quant, d_swiglu, d_act_scales,
+            1.0f, false, d_u1, d_u2, d_u3);
+    };
+    const cudaError_t e1 = run_tc(d_out_a);
+    const cudaError_t e2 = run_tc(d_out_b);
+    lsxcommon::gpu::SetDeepseekFastMath(false);
+    if (e1 == cudaErrorNotSupported || e2 == cudaErrorNotSupported) {
+        WARN("TC W4A4 not supported on this device; test skipped");
+        cudaStreamDestroy(st); cublasDestroy(cublas_h);
+        return;
+    }
+    REQUIRE(e1 == cudaSuccess);
+    REQUIRE(e2 == cudaSuccess);
+    cudaDeviceSynchronize();
+
+    std::vector<float> a(kHid), b(kHid);
+    cudaMemcpy(a.data(), d_out_a, kHid * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(b.data(), d_out_b, kHid * sizeof(float), cudaMemcpyDeviceToHost);
+    bool finite = true, identical = true;
+    for (int i = 0; i < kHid; ++i) {
+        finite = finite && std::isfinite(a[i]) && std::isfinite(b[i]);
+        identical = identical && a[i] == b[i];
+    }
+    CHECK(finite);
+    CHECK(identical);   // bit-exact across repeated invocations
+
+    cudaStreamDestroy(st); cublasDestroy(cublas_h);
+    cudaFree(d_w1); cudaFree(d_w2); cudaFree(d_w3);
+    cudaFree(d_s1); cudaFree(d_s2); cudaFree(d_s3);
+    cudaFree(d_u1); cudaFree(d_u2); cudaFree(d_u3);
+    cudaFree(d_hidden);
+    cudaFree(d_gate); cudaFree(d_up); cudaFree(d_dequant);
+    cudaFree(d_out_a); cudaFree(d_out_b);
+    cudaFree(d_act_quant); cudaFree(d_swiglu); cudaFree(d_act_scales);
+}
+
+// ── TC W4A4 GEMM vs act-quant-aware host reference (DeepSeek geometry) ─────
+namespace {
+
+float e2m1_decode(uint8_t nib)
+{
+    static const float t[16] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f,
+                                0.f, -.5f, -1.f, -1.5f, -2.f, -3.f, -4.f,
+                                -6.f};
+    return t[nib & 15];
+}
+
+// pow2-E4M3 scale byte for 2^ceil(log2(v)) (repo codec: exponent bits [6:3],
+// clamp e4 to [1..14]; 0 when v == 0).
+uint8_t pow2_scale_byte(float v)
+{
+    if (v <= 0.f) return 0;
+    int e;
+    std::frexp(v, &e);   // v in [2^(e-1), 2^e) -> ceil(log2(v)) = e
+    if (e > 7) e = 7;    // canonical clamp e4 in [1..14] (nvfp4_scale.h)
+    if (e < -6) e = -6;
+    return static_cast<uint8_t>((e + 7) << 3);
+}
+
+uint8_t quant_e2m1_tie_up(float v)
+{
+    // Nearest grid point; ties round up (QuantizeE2m1TieUp semantics).
+    static const float grid[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+    const float mag = std::fabs(v);
+    int idx = 0;
+    for (int g = 7; g >= 1; --g) {
+        const float mid = (grid[g - 1] + grid[g]) * 0.5f;
+        if (mag >= mid) { idx = g; break; }
+    }
+    return static_cast<uint8_t>(v < 0.f ? (idx | 8) : idx);
+}
+
+// Host per-16 pow2 activation quantize-dequantize (mirrors ActQuantKernel).
+std::vector<float> HostActQuant16(const std::vector<__half> &hx)
+{
+    std::vector<float> av(hx.size());
+    for (size_t b = 0; b + 16 <= hx.size(); b += 16) {
+        float absmax = 0.f;
+        for (int j = 0; j < 16; ++j)
+            absmax = std::fmax(absmax, std::fabs(__half2float(hx[b + j])));
+        const uint8_t sb = pow2_scale_byte(absmax * (1.0f / 6.0f));
+        float s = 0.f;
+        if (sb) {
+            const uint32_t bits = (static_cast<uint32_t>(sb >> 3) + 120u)
+                                  << 23;
+            std::memcpy(&s, &bits, sizeof(s));
+        }
+        const float inv = s > 0.f ? 1.0f / s : 0.0f;
+        for (int j = 0; j < 16; ++j)
+            av[b + j] = s > 0.f
+                ? e2m1_decode(quant_e2m1_tie_up(__half2float(hx[b + j]) * inv)) * s
+                : 0.f;
+    }
+    return av;
+}
+
+} // namespace
+
+TEST_CASE("TC W4A4 W1-stage matches act-quant host reference",
+          "[deepseek][tc][stage]")
+{
+    constexpr int K = 4096, N = 2048;
+    const int64_t el = static_cast<int64_t>(K) * N;
+    auto lcg = [s = 777u]() mutable {
+        s = s * 1664525u + 1013904223u;
+        return static_cast<uint32_t>(s >> 16);
+    };
+    std::vector<uint8_t> packed(el / 2), s8(el / 32), u4(el / 16);
+    for (auto &b : packed) b = static_cast<uint8_t>(lcg());
+    for (int64_t i = 0; i < el / 32; ++i) {
+        s8[i] = static_cast<uint8_t>(121 + lcg() % 11);
+    }
+    std::vector<__half> x(K);
+    for (auto &v : x)
+        v = __float2half(static_cast<float>(lcg() % 401) / 100.0f - 2.0f);
+
+    uint8_t *d_w, *d_s8, *d_u4; __half *d_x, *d_y;
+    cudaMalloc(&d_w, el / 2); cudaMalloc(&d_s8, el / 32);
+    cudaMalloc(&d_u4, el / 16);
+    cudaMalloc(&d_x, static_cast<size_t>(K) * sizeof(__half));
+    cudaMalloc(&d_y, static_cast<size_t>(N) * sizeof(__half));
+    cudaMemcpy(d_w, packed.data(), el / 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_s8, s8.data(), el / 32, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, x.data(), static_cast<size_t>(K) * sizeof(__half),
+               cudaMemcpyHostToDevice);
+    REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_s8, el, d_u4) ==
+            cudaSuccess);
+
+    const cudaError_t e = lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+        0, d_x, d_w, d_u4, 1.0f, d_y, 1, K, N);
+    if (e == cudaErrorNotSupported) { WARN("no TC"); return; }
+    REQUIRE(e == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    // Host reference: quantized activations x exact-dequant weights.
+    const std::vector<float> av = HostActQuant16(x);
+    double max_err = 0, max_ref = 0;
+    for (int n = 0; n < N; n += 37) {   // sparse sweep (host dot is heavy)
+        double acc = 0;
+        for (int k = 0; k < K; ++k) {
+            const int64_t i = static_cast<int64_t>(n) * K + k;
+            const uint8_t byte = packed[i / 2];
+            const uint8_t nib = (k & 1) ? (byte >> 4) : (byte & 0xF);
+            acc += static_cast<double>(av[k]) * e2m1_decode(nib) *
+                   std::ldexp(1.0, static_cast<int>(s8[i / 32]) - 127);
+        }
+        __half got;
+        cudaMemcpy(&got, d_y + n, sizeof(__half), cudaMemcpyDeviceToHost);
+        max_err = std::fmax(max_err, std::fabs(
+            static_cast<double>(__half2float(got)) - acc));
+        max_ref = std::fmax(max_ref, std::fabs(acc));
+    }
+    WARN("stage: max_err=" << max_err << " max_ref=" << max_ref);
+    CHECK(max_err <= 2e-2 * max_ref);
+    cudaFree(d_w); cudaFree(d_s8); cudaFree(d_u4); cudaFree(d_x);
+    cudaFree(d_y);
 }

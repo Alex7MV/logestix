@@ -398,6 +398,7 @@ struct DeepSeekInferArena {
     float*  d_next_maxv = nullptr;
     uint8_t* d_pack_stage = nullptr;
     uint8_t* d_scale_stage = nullptr;
+    uint8_t* d_scale_stage_tc = nullptr;  // UE4M3 repack target (TC W4A4)
     __half* d_routing_scratch = nullptr;  // [kNumRouted] route_token logits
     CSAState* csa_states = nullptr;       // [num_layers] host-side state records
 

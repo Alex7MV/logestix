@@ -95,7 +95,8 @@ cudaError_t run_routed_experts_ex(
     float *d_act_scales,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
-    const ExpertDeviceCache *cache);
+    const ExpertDeviceCache *cache,
+    uint8_t *d_scale_stage_tc = nullptr);
 
 // run_mla_attention is declared in deepseek_moe_load.cuh (included
 // above) — that header's signature now matches the real definition in
@@ -423,6 +424,7 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaMemsetAsync(d_attn_dequant, 0, attn_dequant_sz, stream));
     INFER_CHECK(cudaMemsetAsync(d_pack_stage, 0, static_cast<size_t>(routed_pack_total), stream));
     INFER_CHECK(cudaMemsetAsync(d_scale_stage, 0, static_cast<size_t>(routed_scale_total), stream));
+    INFER_CHECK(cudaMemsetAsync(arena.d_scale_stage_tc, 0, static_cast<size_t>(routed_scale_total), stream));
     INFER_CHECK(cudaMemsetAsync(d_q, 0, static_cast<size_t>(kAttnHeads * kHeadDim) * sizeof(__half), stream));
     INFER_CHECK(cudaMemsetAsync(d_qr, 0, static_cast<size_t>(kQloraRank) * sizeof(__half), stream));
     INFER_CHECK(cudaMemsetAsync(d_qr2, 0, static_cast<size_t>(kQloraRank) * sizeof(__half), stream));
@@ -687,7 +689,9 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     d_act_quant, d_swiglu_out, d_act_scales,
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total,
-                    expert_cache.slots > 0 ? &expert_cache : nullptr));
+                    expert_cache.slots > 0 ? &expert_cache : nullptr,
+                    gpu::DeepseekFastMath() ? arena.d_scale_stage_tc
+                                            : nullptr));
             }
 
             // Convert FP32 FFN accumulation → FP16 for hc_post

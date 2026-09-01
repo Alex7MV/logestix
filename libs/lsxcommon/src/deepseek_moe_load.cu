@@ -873,6 +873,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
     const int64_t o_next_maxv    = page(sizeof(float), 16);
     const int64_t o_pack_stage   = page(pack_total, 16);
     const int64_t o_scale_stage  = page(scale_total, 16);
+    const int64_t o_scale_stage_tc = page(scale_total, 16);
     const int64_t o_routing      = page(static_cast<int64_t>(kNumRouted) * sizeof(__half), 16);
 
     // Per-layer CSA region (exact alloc_csa_state sizes; ratio<=0 skipped).
@@ -962,6 +963,7 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
     d_next_maxv    = reinterpret_cast<float*>(d_base + o_next_maxv);
     d_pack_stage   = d_base + o_pack_stage;
     d_scale_stage  = d_base + o_scale_stage;
+    d_scale_stage_tc = d_base + o_scale_stage_tc;
     d_routing_scratch = reinterpret_cast<__half*>(d_base + o_routing);
 
     // Bind pinned slices.
@@ -1034,7 +1036,7 @@ void DeepSeekInferArena::Free()
     d_logits = d_norm_scratch = d_norm_gamma_scratch = nullptr;
     d_next_token = nullptr;
     d_next_maxv = nullptr;
-    d_pack_stage = d_scale_stage = nullptr;
+    d_pack_stage = d_scale_stage = d_scale_stage_tc = nullptr;
     d_routing_scratch = nullptr;
     h_topk = nullptr;
     h_top_weights = nullptr;
