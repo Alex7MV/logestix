@@ -1330,10 +1330,23 @@ cudaError_t RunQwenMoeGeneration(
                                         static_cast<size_t>(kMaxTopK)) +
                                    63) /
                                   64 * 64;
+    // Batched TC routed chain (80-tok/s decode round): per-slot quant
+    // outputs for the down GEMM + w13 split-K partials (arena slices).
+    const int tc_splitk = qwen::tc::QwenTcBatchSplitK(H, 2 * I);
+    const size_t qpack_b_bytes =
+        ((static_cast<size_t>(kMaxTopK) * I / 2) + 63) / 64 * 64;
+    const size_t qscales_b_bytes =
+        ((static_cast<size_t>(kMaxTopK) * ((I + 15) / 16)) + 63) / 64 * 64;
+    const size_t tc_splitk_bytes =
+        tc_splitk > 1
+            ? ((static_cast<size_t>(tc_splitk) * kMaxTopK * 2 * I * 4 + 63) /
+               64) * 64
+            : 64;
 
     cudaError_t e = ReserveQwenMoeArena(
         scratch, half_bytes + float_bytes + qpack_bytes + qscales_bytes +
-                     xact_q_bytes + xact_qs_bytes + gemv_tbl_bytes);
+                     xact_q_bytes + xact_qs_bytes + gemv_tbl_bytes +
+                     qpack_b_bytes + qscales_b_bytes + tc_splitk_bytes);
     if (e != cudaSuccess) { result.error_msg = "arena reserve failed"; return e; }
     void *base = scratch.arena;
 
@@ -1386,6 +1399,10 @@ cudaError_t RunQwenMoeGeneration(
     uint8_t *d_xact_qs = d_xact_q + xact_q_bytes;
     QwenMoeGvSlotDev *d_gemv_tbl =
         reinterpret_cast<QwenMoeGvSlotDev *>(d_xact_qs + xact_qs_bytes);
+    uint8_t *d_qpack_b = d_xact_qs + xact_qs_bytes + gemv_tbl_bytes;
+    uint8_t *d_qscales_b = d_qpack_b + qpack_b_bytes;
+    float *d_tc_splitk =
+        reinterpret_cast<float *>(d_qscales_b + qscales_b_bytes);
 
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
@@ -1440,6 +1457,15 @@ cudaError_t RunQwenMoeGeneration(
     // first engaged pass captures and replays once -- capture never runs
     // kernels, so failed captures simply fall back to the plain chain.
     const bool kGraphFfn = std::getenv("LSX_GRAPH_FFN") != nullptr;
+    // Batched TC routed chain (device-driven decode): engages once the
+    // full-residency mirror is complete + TC fast_math + fused slot layout.
+    // Geometry gates mirror the legacy tc_fused conditions (I % 16 == 0);
+    // the GEMV experimental route keeps priority when explicitly requested.
+    static const bool kGemvExpertsEnv =
+        std::getenv("LSX_GEMV_EXPERTS") != nullptr;
+    const bool kTcBatchGeom = qwen::QwenTcFastMath() &&
+                              store.d_seg_wgs != nullptr && (I & 15) == 0 &&
+                              !kGemvExpertsEnv;
     std::vector<cudaGraph_t> ffn_graphs(pw.layers.size(), nullptr);
     std::vector<cudaGraphExec_t> ffn_execs(pw.layers.size(), nullptr);
     auto ffn_graph_teardown = [&] {
@@ -1547,10 +1573,14 @@ cudaError_t RunQwenMoeGeneration(
             // No-handshake mode (full residency steady state): the routed
             // chain composes its table on device from d_slots; the host
             // never reads the router output back, so no fence/poll here.
-            const bool nohandshake =
-                std::getenv("LSX_GEMV_EXPERTS") != nullptr &&
+            // TC-batch steady state shares the same readiness mirror; the
+            // GEMV experimental route keeps priority when explicitly
+            // requested via LSX_GEMV_EXPERTS.
+            const bool moe_nohs_ready =
                 lsxcommon::qwen_moe::QwenMoeGemvNohandshake(store);
-            if (!nohandshake) {
+            const bool tc_batch = kTcBatchGeom && moe_nohs_ready;
+            const bool nohandshake = kGemvExpertsEnv && moe_nohs_ready;
+            if (!tc_batch && !nohandshake) {
                 // Host needs the selected ids to stage experts: small D2H +
                 // event fence once per layer. Busy-poll the event instead of
                 // the blocking cudaEventSynchronize — with K layers × steps
@@ -1583,7 +1613,20 @@ cudaError_t RunQwenMoeGeneration(
                                                         std::to_string(l));
             }
             bool skip_shared = false;
-            if (nohandshake) {
+            if (tc_batch) {
+                // ── Batched TC routed chain (device table, no host
+                // readback): gather -> w13 batch TC GEMM -> batched
+                // swiglu-quant -> w2 batch TC GEMM -> ascending reduce.
+                // Bit-identical to the legacy per-slot chain (pinned by
+                // test_qwen_moe_kernels "[qwen-moe-tc-batch]").
+                e = RunQwenMoeRoutedTcBatch(
+                    stream, store, cache, l, d_slots, xq, xqs, K, H, I,
+                    d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch, d_qpack_b,
+                    d_qscales_b, tc_splitk > 1 ? d_tc_splitk : nullptr,
+                    d_gemv_tbl);
+                if (e != cudaSuccess)
+                    return fail(e, "tc-batch experts l" + std::to_string(l));
+            } else if (nohandshake) {
                 // ── FFN section: per-layer graph replay when enabled ──
                 bool ffn_done = false;
                 if (kGraphFfn) {

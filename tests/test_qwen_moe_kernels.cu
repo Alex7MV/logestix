@@ -835,3 +835,67 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
 }
+
+// Fallback parity: partial residency (4 slots < 8 experts per layer) keeps
+// the mirror incomplete, so the batched TC chain must NEVER engage and the
+// legacy handshake chain remains the default. The generation must be
+// bit-stable across two runs (same fixture, same session machinery).
+TEST_CASE("generation driver fallback parity under partial residency",
+          "[qwen-moe-tc-batch]")
+{
+    namespace fs2 = std::filesystem;
+    fs2::path in = fs2::temp_directory_path() / "lsx_qwen_tc_fb_in";
+    fs2::path out = fs2::temp_directory_path() / "lsx_qwen_tc_fb_out";
+    fs2::remove_all(in); fs2::remove_all(out);
+    qwen_moe_test::BuildSyntheticMoeCheckpoint(in);
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    REQUIRE(lsxcommon::qwen_moe::ConvertQwen35MoeModel(in.string(), out.string()).ok());
+
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+    lsxcommon::qwen_moe::QwenMoePinnedWeights pw;
+    lsxcommon::qwen_moe::QwenMoeExpertStore store;
+    lsxcommon::qwen_moe::QwenMoeExpertDeviceCache cache;
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    std::string err;
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeDenseWeights(out.string(), pw, stream, err));
+    REQUIRE(lsxcommon::qwen_moe::LoadQwenMoeExpertStore(out.string(), store, err));
+    // Deliberately SMALL: 4 slots < 8 experts -> mirror never completes ->
+    // QwenMoeGemvNohandshake never trips -> legacy path is the default.
+    REQUIRE(lsxcommon::qwen_moe::AllocateQwenMoeExpertCache(store, 4, cache, err));
+    REQUIRE(!lsxcommon::qwen_moe::QwenMoeGemvNohandshake(store));
+
+    lsxcommon::qwen_moe::QwenMoeGenScratch gen_scratch;
+    REQUIRE(lsxcommon::qwen_moe::EnsureQwenMoeScratch(stream, pw, gen_scratch) ==
+            cudaSuccess);
+
+    auto run_once = [&](lsxcommon::qwen::QwenGenerationResult &r) {
+        lsxcommon::qwen::QwenKvCache kv;
+        lsxcommon::sample::GreedySampler sampler;
+        std::vector<int32_t> prompt = {1, 2, 3};
+        return lsxcommon::qwen_moe::RunQwenMoeGeneration(
+            stream, pw, store, cache, gen_scratch, prompt, /*max_new=*/4,
+            /*eos_id=*/pw.moe_top.eos_token_id, r, sampler, &kv);
+    };
+
+    lsxcommon::qwen::QwenGenerationResult r1, r2;
+    cudaError_t e1 = run_once(r1);
+    if (e1 != cudaSuccess) WARN(r1.error_msg);
+    REQUIRE(e1 == cudaSuccess);
+    cudaError_t e2 = run_once(r2);
+    REQUIRE(e2 == cudaSuccess);
+    CHECK(r1.tokens == r2.tokens);
+    REQUIRE(r1.final_logits.size() == r2.final_logits.size());
+    CHECK(std::memcmp(r1.final_logits.data(), r2.final_logits.data(),
+                      r1.final_logits.size() * sizeof(float)) == 0);
+    CHECK(r1.ok); CHECK(r2.ok);
+
+    lsxcommon::qwen_moe::FreeQwenMoeGenScratch(gen_scratch);
+    lsxcommon::qwen_moe::FreeQwenMoeExpertCache(cache);
+    store.Free();
+    lsxcommon::qwen_moe::FreeQwenMoePinnedWeights(pw);
+    cudaStreamDestroy(stream);
+    lsxcommon::qwen::SetQwenTcFastMath(false);
+    std::error_code ec;
+    fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
