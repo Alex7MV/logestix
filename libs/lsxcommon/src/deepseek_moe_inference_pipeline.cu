@@ -80,7 +80,10 @@ cudaError_t run_shared_experts_ffn(
     float w1_gs, float w2_gs, float w3_gs,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,
-    float *d_dequant, __half *d_output);
+    float *d_dequant, __half *d_output,
+    const __half *d_w1_h_cache = nullptr,
+    const __half *d_w3_h_cache = nullptr,
+    const float *d_w2_f32_cache = nullptr);
 
 cudaError_t run_routed_experts_ex(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -649,7 +652,9 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     lw.shared_w1_global_scale, lw.shared_w2_global_scale,
                     lw.shared_w3_global_scale,
                     lw.shared_w1_bytes, lw.shared_w2_bytes, lw.shared_w3_bytes,
-                    d_gate_f32, d_up_f32, d_dequant_scratch, d_ffn_out));
+                    d_gate_f32, d_up_f32, d_dequant_scratch, d_ffn_out,
+                    lw.d_shared_w1_h, lw.d_shared_w3_h,
+                    lw.d_shared_w2_f32));
                 // Convert shared FP16 output → FP32 accumulation buffer
                 {
                     int block = 256;

@@ -237,6 +237,9 @@ struct LayerWeights {
     uint8_t *d_shared_w1_scales = nullptr;
     uint8_t *d_shared_w2_scales = nullptr;
     uint8_t *d_shared_w3_scales = nullptr;
+    __half *d_shared_w1_h = nullptr;   // load-time FP16 dequant cache (W1)
+    __half *d_shared_w3_h = nullptr;   // load-time FP16 dequant cache (W3)
+    float  *d_shared_w2_f32 = nullptr; // load-time FP32 dequant cache (W2)
     float shared_w1_global_scale = 1.0f;
     float shared_w2_global_scale = 1.0f;
     float shared_w3_global_scale = 1.0f;

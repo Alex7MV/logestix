@@ -37,7 +37,10 @@ cudaError_t run_shared_experts_ffn(
     float /*w1_gs*/, float /*w2_gs*/, float /*w3_gs*/,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,
-    float *d_dequant, __half *d_output);
+    float *d_dequant, __half *d_output,
+    const __half *d_w1_h_cache = nullptr,
+    const __half *d_w3_h_cache = nullptr,
+    const float *d_w2_f32_cache = nullptr);
 
 cudaError_t run_routed_experts(
     cublasHandle_t cublas_h, cudaStream_t stream,
@@ -1067,6 +1070,112 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
     cudaFree(d_scale);
     cudaFree(d_logits_scratch);
     cudaFreeHost(h_logits_scratch);
+    cublasDestroy(ch);
+    cudaStreamDestroy(st);
+}
+// ── shared-expert dequant caching: bit-exact vs per-call dequant ────────────
+TEST_CASE("run_shared_experts_ffn dequant cache is bit-exact",
+          "[deepseek][moe][shared-cache]")
+{
+    cudaFree(0);
+    cublasHandle_t ch;
+    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+
+    constexpr int kHidden = 4096;
+    constexpr int kInter = 2048;
+    const int64_t w1el = static_cast<int64_t>(kHidden) * kInter;
+    const int64_t w2el = static_cast<int64_t>(kInter) * kHidden;
+
+    Lcg rng;
+    std::vector<uint8_t> w1(static_cast<size_t>(w1el), 0);
+    std::vector<uint8_t> w3(static_cast<size_t>(w1el), 0);
+    std::vector<uint8_t> w2(static_cast<size_t>(w2el), 0);
+    for (size_t i = 0; i < w1.size(); ++i) w1[i] = static_cast<uint8_t>(rng.next() & 0xFF);
+    for (size_t i = 0; i < w3.size(); ++i) w3[i] = static_cast<uint8_t>(rng.next() & 0xFF);
+    for (size_t i = 0; i < w2.size(); ++i) w2[i] = static_cast<uint8_t>(rng.next() & 0xFF);
+
+    constexpr int SC1 = kHidden / 128;
+    std::vector<uint8_t> s1(static_cast<size_t>(kInter / 128) * SC1, 127);
+    std::vector<uint8_t> s3(static_cast<size_t>(kInter / 128) * SC1, 127);
+    for (size_t i = 0; i < s1.size(); ++i) s1[i] = 121 + static_cast<uint8_t>(rng.next() % 12u);
+    for (size_t i = 0; i < s3.size(); ++i) s3[i] = 121 + static_cast<uint8_t>(rng.next() % 12u);
+    constexpr int SC2 = kInter / 128;
+    std::vector<uint8_t> s2(static_cast<size_t>(kHidden / 128) * SC2, 127);
+    for (size_t i = 0; i < s2.size(); ++i) s2[i] = 121 + static_cast<uint8_t>(rng.next() % 12u);
+
+    std::vector<__half> hidden(static_cast<size_t>(kHidden));
+    for (int k = 0; k < kHidden; ++k)
+        hidden[k] = __float2half_rn(static_cast<float>(rng.next() & 0xFFu) / 128.0f - 0.5f);
+
+    __half *d_hidden = nullptr, *d_out_a = nullptr, *d_out_b = nullptr;
+    uint8_t *d_w1 = nullptr, *d_w2 = nullptr, *d_w3 = nullptr;
+    uint8_t *d_s1 = nullptr, *d_s2 = nullptr, *d_s3 = nullptr;
+    float *d_inter = nullptr, *d_gate = nullptr, *d_dequant = nullptr;
+    __half *d_c1 = nullptr, *d_c3 = nullptr;   // FP16 W1/W3 caches
+    float *d_c2 = nullptr;                     // FP32 W2 cache
+    REQUIRE(cudaMalloc(&d_hidden, hidden.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out_a, static_cast<size_t>(kHidden) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out_b, static_cast<size_t>(kHidden) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_w1, w1.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_w2, w2.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_w3, w3.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_s1, s1.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_s2, s2.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_s3, s3.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_inter, static_cast<size_t>(kInter) * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_gate, static_cast<size_t>(kInter) * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_dequant, (static_cast<size_t>(w1el) + kHidden + static_cast<size_t>(w2el)) * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_c1, static_cast<size_t>(w1el) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_c3, static_cast<size_t>(w1el) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_c2, static_cast<size_t>(w2el) * sizeof(float)) == cudaSuccess);
+
+    REQUIRE(cudaMemcpy(d_hidden, hidden.data(), hidden.size() * sizeof(__half), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w1, w1.data(), w1.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w2, w2.data(), w2.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w3, w3.data(), w3.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_s1, s1.data(), s1.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_s2, s2.data(), s2.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_s3, s3.data(), s3.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+
+    // Legacy (per-call dequant).
+    REQUIRE(lsxcommon::gpu::run_shared_experts_ffn(
+                ch, st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
+                1.0f, 1.0f, 1.0f,
+                static_cast<int64_t>(w1.size()), static_cast<int64_t>(w2.size()),
+                static_cast<int64_t>(w3.size()),
+                d_inter, d_gate, d_dequant, d_out_a,
+                nullptr, nullptr, nullptr) == cudaSuccess);
+
+    // Load-time dequant into the caches, then the cached call.
+    REQUIRE(lsxcommon::gpu::dequant_shared_f8_half(
+                st, d_w1, static_cast<int64_t>(w1.size()), d_s1,
+                static_cast<int64_t>(s1.size()), d_c1, w1el, kHidden) == cudaSuccess);
+    REQUIRE(lsxcommon::gpu::dequant_shared_f8_half(
+                st, d_w3, static_cast<int64_t>(w3.size()), d_s3,
+                static_cast<int64_t>(s3.size()), d_c3, w1el, kHidden) == cudaSuccess);
+    REQUIRE(lsxcommon::gpu::dequant_shared_f8(
+                st, d_w2, static_cast<int64_t>(w2.size()), d_s2,
+                static_cast<int64_t>(s2.size()), d_c2, w2el, kInter) == cudaSuccess);
+    REQUIRE(lsxcommon::gpu::run_shared_experts_ffn(
+                ch, st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
+                1.0f, 1.0f, 1.0f,
+                static_cast<int64_t>(w1.size()), static_cast<int64_t>(w2.size()), static_cast<int64_t>(w3.size()),
+                d_inter, d_gate, d_dequant, d_out_b,
+                d_c1, d_c3, d_c2) == cudaSuccess);
+    REQUIRE(cuda_sync_check());
+
+    std::vector<__half> a(static_cast<size_t>(kHidden)), b(static_cast<size_t>(kHidden));
+    REQUIRE(cudaMemcpy(a.data(), d_out_a, a.size() * sizeof(__half), cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(b.data(), d_out_b, b.size() * sizeof(__half), cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(std::memcmp(a.data(), b.data(), a.size() * sizeof(__half)) == 0);
+
+    cudaFree(d_hidden); cudaFree(d_out_a); cudaFree(d_out_b);
+    cudaFree(d_w1); cudaFree(d_w2); cudaFree(d_w3);
+    cudaFree(d_s1); cudaFree(d_s2); cudaFree(d_s3);
+    cudaFree(d_inter); cudaFree(d_gate); cudaFree(d_dequant);
+    cudaFree(d_c1); cudaFree(d_c3); cudaFree(d_c2);
     cublasDestroy(ch);
     cudaStreamDestroy(st);
 }

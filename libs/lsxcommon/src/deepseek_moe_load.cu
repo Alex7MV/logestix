@@ -331,6 +331,9 @@ void LayerWeights::Free()
     if (d_shared_w1_scales) cudaFree(d_shared_w1_scales);
     if (d_shared_w2_scales) cudaFree(d_shared_w2_scales);
     if (d_shared_w3_scales) cudaFree(d_shared_w3_scales);
+    if (d_shared_w1_h)  cudaFree(d_shared_w1_h);
+    if (d_shared_w3_h)  cudaFree(d_shared_w3_h);
+    if (d_shared_w2_f32) cudaFree(d_shared_w2_f32);
     if (d_wq_a)         cudaFree(const_cast<uint8_t*>(d_wq_a));
     if (d_wq_a_scales)  cudaFree(const_cast<uint8_t*>(d_wq_a_scales));
     if (d_wq_b)         cudaFree(const_cast<uint8_t*>(d_wq_b));
@@ -783,6 +786,53 @@ cudaError_t load_pinned_weights(
                                + cudaGetErrorString(ue));
                     pw.Free();
                     return ue;
+                }
+                // Load-time FP16/FP32 dequant caches (F-12 Task 4): the
+                // same kernels the per-call path uses, executed ONCE at
+                // load; bit-exact by construction, works with fast_math
+                // either way. ~67 MB per layer across 43 layers.
+                if (lw.shared_w1_bytes > 0 && lw.shared_w3_bytes > 0 &&
+                    lw.shared_w2_bytes > 0) {
+                    const int64_t w1el = lw.shared_w1_bytes;
+                    const int64_t w2el = lw.shared_w2_bytes;
+                    ue = cudaMalloc(&lw.d_shared_w1_h,
+                                    static_cast<size_t>(w1el) * sizeof(__half));
+                    if (ue == cudaSuccess)
+                        ue = cudaMalloc(&lw.d_shared_w3_h,
+                                        static_cast<size_t>(w1el) * sizeof(__half));
+                    if (ue == cudaSuccess)
+                        ue = cudaMalloc(&lw.d_shared_w2_f32,
+                                        static_cast<size_t>(w2el) * sizeof(float));
+                    if (ue == cudaSuccess)
+                        ue = dequant_shared_f8_half(
+                            stream, lw.d_shared_w1, lw.shared_w1_bytes,
+                            lw.d_shared_w1_scales, 0, lw.d_shared_w1_h,
+                            w1el, kHiddenDim);
+                    if (ue == cudaSuccess)
+                        ue = dequant_shared_f8_half(
+                            stream, lw.d_shared_w3, lw.shared_w3_bytes,
+                            lw.d_shared_w3_scales, 0, lw.d_shared_w3_h,
+                            w1el, kHiddenDim);
+                    if (ue == cudaSuccess)
+                        ue = dequant_shared_f8(
+                            stream, lw.d_shared_w2, lw.shared_w2_bytes,
+                            lw.d_shared_w2_scales, 0, lw.d_shared_w2_f32,
+                            w2el, kIntermediateDim);
+                    if (ue == cudaSuccess) {
+                        rb += (static_cast<std::uint64_t>(w1el) * 2 +
+                               static_cast<std::uint64_t>(w2el) * 4);
+                    } else {
+                        log::error("[load_pinned] shared dequant cache "
+                                   "failed (layer " + std::to_string(l) +
+                                   "): " + cudaGetErrorString(ue));
+                        cudaFree(lw.d_shared_w1_h);
+                        cudaFree(lw.d_shared_w3_h);
+                        cudaFree(lw.d_shared_w2_f32);
+                        lw.d_shared_w1_h = nullptr;
+                        lw.d_shared_w3_h = nullptr;
+                        lw.d_shared_w2_f32 = nullptr;
+                        ue = cudaSuccess;   // fall back to per-call dequant
+                    }
                 }
             }
         }

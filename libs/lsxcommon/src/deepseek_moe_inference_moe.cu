@@ -221,7 +221,10 @@ cudaError_t run_shared_experts_ffn(
     float /*w1_gs*/, float /*w2_gs*/, float /*w3_gs*/,
     int64_t w1_bytes, int64_t w2_bytes, int64_t w3_bytes,
     float *d_intermediate_f32, float *d_gate_f32,   // FP32 W1/W3 outputs
-    float *d_dequant, __half *d_output)
+    float *d_dequant, __half *d_output,
+    const __half *d_w1_h_cache = nullptr,
+    const __half *d_w3_h_cache = nullptr,
+    const float *d_w2_f32_cache = nullptr)
 {
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
@@ -239,8 +242,13 @@ cudaError_t run_shared_experts_ffn(
     // fp16 weights), and its FP32 output scratch sits past the W2 weights.
     __half* const d_w_half = reinterpret_cast<__half*>(d_dequant);
     float*  const d_w2out_f32 = d_dequant + w2_el + intermediate_dim / 2;
+    // Load-time dequant caches (bit-exact: produced by the same kernels at
+    // load; when present the per-call dequant launches are skipped).
+    const __half* const w1_ptr = d_w1_h_cache ? d_w1_h_cache : d_w_half;
+    const __half* const w3_ptr = d_w3_h_cache ? d_w3_h_cache : d_w_half;
+    const float*  const w2_ptr = d_w2_f32_cache ? d_w2_f32_cache : d_dequant;
     // 1. Dequant W1 → d_w_half (F8_E4M3 × E8M0, per-128x128 tiles)
-    if (w1_bytes > 0) {
+    if (w1_bytes > 0 && !d_w1_h_cache) {
         // dequant_shared_f8_half does not validate/use its scale_bytes parameter
         // (kept for interface symmetry with the other dequant_* functions).
         cudaError_t e = dequant_shared_f8_half(stream, d_w1, w1_bytes,
@@ -252,7 +260,7 @@ cudaError_t run_shared_experts_ffn(
     {
         cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      intermediate_dim, 1, hidden_dim, &alpha,
-                     d_w_half, CUDA_R_16F, hidden_dim,
+                     w1_ptr, CUDA_R_16F, hidden_dim,
                       d_hidden, CUDA_R_16F, hidden_dim, &beta,
                       d_intermediate_f32, CUDA_R_32F, intermediate_dim,
                       CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
@@ -260,7 +268,7 @@ cudaError_t run_shared_experts_ffn(
     }
 
     // 3. Dequant W3 → d_w_half (reuse)
-    if (w3_bytes > 0) {
+    if (w3_bytes > 0 && !d_w3_h_cache) {
         cudaError_t e = dequant_shared_f8_half(stream, d_w3, w3_bytes,
             d_w3_scales, 0, d_w_half, w1_el, hidden_dim);
         if (e != cudaSuccess) return e;
@@ -270,7 +278,7 @@ cudaError_t run_shared_experts_ffn(
     {
         cublasStatus_t w3s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      intermediate_dim, 1, hidden_dim, &alpha,
-                     d_w_half, CUDA_R_16F, hidden_dim,
+                     w3_ptr, CUDA_R_16F, hidden_dim,
                       d_hidden, CUDA_R_16F, hidden_dim, &beta,
                       d_gate_f32, CUDA_R_32F, intermediate_dim,
                       CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
@@ -290,8 +298,9 @@ cudaError_t run_shared_experts_ffn(
     }
 
     // 6. Dequant W2 → d_dequant (reuse, FP32 — overwrites the W1/W3 fp16
-    //    region; stream-ordered after the W3 GEMM that read it)
-    if (w2_bytes > 0) {
+    //    region; stream-ordered after the W3 GEMM that read it). Skipped
+    //    when the load-time FP32 cache is wired in.
+    if (w2_bytes > 0 && !d_w2_f32_cache) {
         // W2: [hidden, intermediate] → cols = intermediate_dim
         cudaError_t e = dequant_shared_f8(stream, d_w2, w2_bytes,
             d_w2_scales, 0, d_dequant, w2_el, intermediate_dim);
@@ -302,7 +311,7 @@ cudaError_t run_shared_experts_ffn(
     {
         cublasStatus_t wbst = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
                      hidden_dim, 1, intermediate_dim, &alpha,
-                     d_dequant, CUDA_R_32F, intermediate_dim,
+                     w2_ptr, CUDA_R_32F, intermediate_dim,
                      d_intermediate_f32, CUDA_R_32F, intermediate_dim, &beta,
                      d_w2out_f32, CUDA_R_32F, hidden_dim,
                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
