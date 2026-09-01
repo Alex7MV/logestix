@@ -2,10 +2,13 @@
 // Real-model test: SKIPs when no converted Kimi checkpoint is present.
 #include <catch2/catch_test_macros.hpp>
 
+#include <cuda_runtime.h>
 #include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
+
+#include "kimi_moe_kernels.h"
 
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
@@ -63,8 +66,31 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     REQUIRE(!r1.final_logits.empty());
 
     auto r2 = m->Infer(req);
+    {
+        float sa = 0.f, sb = 0.f;
+        for (float v : r1.final_logits) sa += v;
+        for (float v : r2.final_logits) sb += v;
+        WARN("R1 sum=" << sa << " R2 sum=" << sb);
+    }
     REQUIRE(r2.ok);
     CHECK(r2.gen_tokens == r1.gen_tokens);
+    if (std::memcmp(r2.final_logits.data(), r1.final_logits.data(),
+                    r1.final_logits.size() * sizeof(float)) != 0) {
+        // First differing float + magnitudes (diagnostics).
+        const size_t nf = r1.final_logits.size();
+        for (size_t i = 0; i < nf; ++i) {
+            if (r1.final_logits[i] != r2.final_logits[i]) {
+                WARN("first diff at " << i << ": r1=" << r1.final_logits[i]
+                     << " r2=" << r2.final_logits[i]);
+                break;
+            }
+        }
+        float mx = 0.f;
+        for (size_t i = 0; i < nf; ++i)
+            mx = std::fmax(mx, std::fabs(r1.final_logits[i] -
+                                         r2.final_logits[i]));
+        WARN("max abs diff=" << mx);
+    }
     CHECK(std::memcmp(r2.final_logits.data(), r1.final_logits.data(),
                       r1.final_logits.size() * sizeof(float)) == 0);
 
@@ -72,4 +98,33 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     (void)m->Inspect();
 
     m->Unload();
+}
+
+// ── EOS host-truncate (device-side decode, F-11 Round 25) ──────────────────
+TEST_CASE("kimi EOS host-truncate cuts at first eos and flags termination",
+          "[kimi][decode][eos]")
+{
+    namespace k = lsxcommon::kimi;
+    std::vector<int> toks = {11, 22, 163586, 33, 44};
+    auto r = k::TruncateAtEos(toks, 163586);
+    REQUIRE(r.tokens.size() == 2);
+    REQUIRE(r.tokens[0] == 11);
+    REQUIRE(r.tokens[1] == 22);
+    REQUIRE(r.eos_terminated);
+
+    std::vector<int> no_eos = {11, 22, 33};
+    auto r2 = k::TruncateAtEos(no_eos, 163586);
+    REQUIRE(r2.tokens.size() == 3);
+    REQUIRE_FALSE(r2.eos_terminated);
+
+    // eos_id < 0: disabled.
+    auto r3 = k::TruncateAtEos(toks, -1);
+    REQUIRE(r3.tokens.size() == 5);
+    REQUIRE_FALSE(r3.eos_terminated);
+
+    // EOS as the very first token: empty output, still terminated.
+    std::vector<int> immediate = {163586, 11};
+    auto r4 = k::TruncateAtEos(immediate, 163586);
+    REQUIRE(r4.tokens.empty());
+    REQUIRE(r4.eos_terminated);
 }

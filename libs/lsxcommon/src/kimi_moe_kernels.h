@@ -76,6 +76,15 @@ struct KimiGenerationResult {
     std::vector<float> final_logits;
 };
 
+// Host-side EOS application (device-side decode, F-11): cuts tokens at the
+// first occurrence of eos_id and reports whether the cut happened. eos_id
+// < 0 disables the cut. Pure host function, unit-testable without CUDA.
+struct KimiEosCut {
+    std::vector<int> tokens;
+    bool eos_terminated = false;
+};
+KimiEosCut TruncateAtEos(const std::vector<int> &tokens, int eos_id);
+
 // Greedy full generation: embed -> 61-layer stack (MLA + MoE) per step ->
 // final norm + lm_head + argmax. Prefill covers the whole prompt in one pass;
 // every decoded step runs seq=1. Entire loop async on `stream`; the only
@@ -84,7 +93,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,
-                              KimiExpertCacheState *cache);
+                              KimiExpertCacheState *cache, int eos_id);
 
 } // namespace kimi
 } // namespace lsxcommon
