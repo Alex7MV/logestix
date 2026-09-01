@@ -383,6 +383,11 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
 // arranged 4x2; each warp covers 16 rows x 32 cols via four m16n8k64 mxf4nvf4
 // atoms per K64 chunk. Fragment packing matches the empirically verified
 // layout in test_blackwell_tc_mma.cu.
+//
+// kBatch mode (80-tok/s decode round): blockIdx.z encodes slot*split_k+z;
+// per-slot weights/scales/output are table-driven from batch_slots. The
+// kBatch == false instantiation is the exact legacy kernel.
+template <bool kBatch>
 __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ as,
                              const uint8_t *__restrict__ bp,
@@ -391,14 +396,42 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              int seq, int K, int N, bool acc_in,
                              int split_k, float *__restrict__ y_f32,
                              const float *__restrict__ seg_wgs,
-                             const int *__restrict__ seg_bounds)
+                             const int *__restrict__ seg_bounds,
+                             const QwenTcBatchSlot *__restrict__ batch_slots,
+                             const uint8_t *__restrict__ batch_pack,
+                             const uint8_t *__restrict__ batch_scale,
+                             int64_t pack_stride, int64_t scale_stride,
+                             int64_t w_off, int64_t s_off)
 {
+    // Batch mode: blockIdx.z encodes slot * split_k + k_slice; per-slot
+    // weights/scales/output are table-driven. Non-batch (kBatch == false)
+    // compiles to the exact legacy kernel.
+    int z_slice = blockIdx.z;
+    int slot = 0;
+    __half *y_out = y;
+    float wgs_s = wgs;
+    const uint8_t *bp_s = bp;
+    const uint8_t *bs_s = bs;
+    if (kBatch) {
+        slot = blockIdx.z / split_k;
+        z_slice = blockIdx.z % split_k;
+        const QwenTcBatchSlot b = batch_slots[slot];
+        bp_s = batch_pack + static_cast<int64_t>(b.dev_slot) * pack_stride +
+               w_off;
+        bs_s = batch_scale + static_cast<int64_t>(b.dev_slot) * scale_stride +
+               s_off;
+        y_out = y + static_cast<int64_t>(slot) * N;
+    }
+
     // Segment epilogue: when seg_wgs != nullptr, output columns are split
     // into 4 ranges (bounds from seg_bounds) each scaled by its own
     // global_scale -- used by the fused qkv|z|a|b input GEMM.
 
     auto seg_scale = [&](int col) {
-        if (!seg_wgs) return wgs;
+        if (kBatch)
+            return col < N / 2 ? batch_slots[slot].gs1
+                               : batch_slots[slot].gs3;
+        if (!seg_wgs) return wgs_s;
         if (!seg_bounds) {
             // Two-segment split at N/2 (fused gate|up projections).
             return col < N / 2 ? seg_wgs[0] : seg_wgs[1];
@@ -412,7 +445,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     // split_k > 1: blockIdx.z owns a K-slice; RAW fp32 partials land in
     // y_f32[z*N+n] (disjoint, deterministic); TcSplitKFinalize sums the
     // slices and applies wgs (+acc) afterwards.
-    const int k_lo = static_cast<int>(blockIdx.z) * (K / split_k);
+    const int k_lo = z_slice * (K / split_k);
     const int k_hi = k_lo + K / split_k;
     const int tid = threadIdx.x;
     const int warp = tid >> 5;
@@ -479,7 +512,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     auto stage_slabs = [&](const int kb, const int buf) {
         const bool vec_ok = ((K & 63) == 0) &&
                             (((reinterpret_cast<uintptr_t>(ap) |
-                               reinterpret_cast<uintptr_t>(bp)) & 15) == 0);
+                               reinterpret_cast<uintptr_t>(bp_s)) & 15) == 0);
         if (vec_ok) {
             // Slab traffic is issued via cp.async so the NEXT chunk streams
             // while the current one computes (no blocking store->sync chain).
@@ -493,7 +526,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                                (idx & 1) * 16,
                            row_base + r < seq);
             }
-            const char *b_g = reinterpret_cast<const char *>(bp) +
+            const char *b_g = reinterpret_cast<const char *>(bp_s) +
                               static_cast<int64_t>(col_base) * k_half + kb / 2;
             uint8_t *b_s = &sB[buf][0][0];
             for (int idx = tid; idx < kTileN * 2; idx += 256) {
@@ -519,8 +552,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                 const int c = idx / 32, b = idx % 32;
                 const bool ok = col_base + c < N && kb_b0 + b < k_half;
                 sB[buf][c][b] =
-                    ok ? bp[static_cast<int64_t>(col_base + c) * k_half +
-                            kb_b0 + b]
+                    ok ? bp_s[static_cast<int64_t>(col_base + c) * k_half +
+                              kb_b0 + b]
                        : uint8_t{0};
             }
         }
@@ -536,11 +569,11 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         for (int idx = tid; idx < kTileN * 4; idx += 256) {
             const int c = idx / 4, ch = idx % 4;
             const int ch_g = kb / 16 + ch;
-            sBs[buf][c][ch] =
-                (col_base + c < N && ch_g < k_chunks)
-                    ? bs[static_cast<int64_t>(col_base + c) * k_chunks +
-                         ch_g]
-                    : uint8_t{0};
+                sBs[buf][c][ch] =
+                    (col_base + c < N && ch_g < k_chunks)
+                        ? bs_s[static_cast<int64_t>(col_base + c) * k_chunks +
+                               ch_g]
+                        : uint8_t{0};
         }
         cp_async_commit();
     };
@@ -628,7 +661,9 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         const int r0 = row_base + g;
         if (split_k > 1) {
             // RAW partial: wgs applied once in TcSplitKFinalize. Partials
-            // are disjoint per z -> deterministic, no atomics.
+            // are disjoint per z -> deterministic, no atomics. In batch mode
+            // the global blockIdx.z already encodes slot*split_k+z, so the
+            // [z][seq*N] partial layout is slot-disjoint for free.
             const int64_t zbase =
                 static_cast<int64_t>(blockIdx.z) * seq * N;
             if (r0 < seq && n0 < N)
@@ -646,16 +681,16 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         }
         const float ws = seg_scale(n0);
         if (r0 < seq && n0 < N)
-            y[static_cast<int64_t>(r0) * N + n0] =
+            y_out[static_cast<int64_t>(r0) * N + n0] =
                 __float2half(d[j][0] * ws);
         if (r0 < seq && n0 + 1 < N)
-            y[static_cast<int64_t>(r0) * N + n0 + 1] =
+            y_out[static_cast<int64_t>(r0) * N + n0 + 1] =
                 __float2half(d[j][1] * ws);
         if (r0 + 8 < seq && n0 < N)
-            y[static_cast<int64_t>(r0 + 8) * N + n0] =
+            y_out[static_cast<int64_t>(r0 + 8) * N + n0] =
                 __float2half(d[j][2] * ws);
         if (r0 + 8 < seq && n0 + 1 < N)
-            y[static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
+            y_out[static_cast<int64_t>(r0 + 8) * N + n0 + 1] =
                 __float2half(d[j][3] * ws);
     }
 }
@@ -689,6 +724,31 @@ __global__ void TcSplitKFinalize(const float *__restrict__ partials,
     }
     const float prev = acc ? __half2float(y[i]) : 0.f;
     y[i] = __float2half(prev + sum * ws);
+}
+
+// Batch split-K finalize: y[slot][i] = sum_z partials[slot*split_k+z][i]
+// * scale(col). Deterministic ascending z order == legacy per-z sum.
+__global__ void TcSplitKFinalizeBatch(const float *__restrict__ partials,
+                                      __half *__restrict__ y, int seq, int N,
+                                      int split_k,
+                                      const QwenTcBatchSlot *__restrict__ slots,
+                                      int k_slots, bool seg13)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    const int64_t per_slot = static_cast<int64_t>(seq) * N;
+    if (i >= per_slot * k_slots) return;
+    const int slot = static_cast<int>(i / per_slot);
+    const int64_t local = i - static_cast<int64_t>(slot) * per_slot;
+    float sum = 0.f;
+    const int64_t zbase = static_cast<int64_t>(slot) * split_k * per_slot;
+    for (int z = 0; z < split_k; ++z)
+        sum += partials[zbase + static_cast<int64_t>(z) * per_slot + local];
+    const int col = static_cast<int>(local % N);
+    const float ws = seg13
+                         ? (col < N / 2 ? slots[slot].gs1 : slots[slot].gs3)
+                         : slots[slot].gs2;
+    y[i] = __float2half(sum * ws);
 }
 
 } // namespace
@@ -806,11 +866,12 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
                 return e;
             }
             dim3 grid3(grid.x, grid.y, split_k);
-            TcGemmKernel<<<grid3, 256, 0, stream>>>(
+            TcGemmKernel<false><<<grid3, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
                 static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
                 w_global_scale, y, seq, K, N, acc, split_k, partials,
-                seg_wgs_dev, seg_bounds_dev);
+                seg_wgs_dev, seg_bounds_dev, nullptr, nullptr, nullptr, 0, 0,
+                0, 0);
             e = cudaGetLastError();
             if (e == cudaSuccess) {
                 const int threads = 256;
@@ -827,11 +888,12 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
             }
             cudaFreeAsync(partials, stream);
         } else {
-            TcGemmKernel<<<grid, 256, 0, stream>>>(
+            TcGemmKernel<false><<<grid, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
                 static_cast<uint8_t *>(as_scratch), w_packed, w_scales,
                 w_global_scale, y, seq, K, N, acc, 1, nullptr,
-                seg_wgs_dev, seg_bounds_dev);
+                seg_wgs_dev, seg_bounds_dev, nullptr, nullptr, nullptr, 0, 0,
+                0, 0);
             e = cudaGetLastError();
         }
     }
@@ -867,6 +929,113 @@ cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
     return TcGemmDispatch(stream, nullptr, ap, as, w_packed, w_scales,
                           w_global_scale, y, seq, K, N, acc, seg_wgs_dev,
                           seg_bounds_dev);
+}
+
+// ── Batched seq==1 routed-expert TC GEMM (80-tok/s decode round) ───────────
+
+int QwenTcBatchSplitK(int K, int N)
+{
+    // Mirror of TcGemmDispatch's split-K rule (seq==1, !acc): same inputs ->
+    // same split_k on both the single-slot and batched paths.
+    if (K < 2048 || (K % 512) != 0) return 1;
+    const int grid_x = (N + kTileN - 1) / kTileN;
+    if (grid_x >= 192) return 1;
+    for (int cand : {8, 4, 2}) {
+        if ((K / 64) % cand == 0 && grid_x * cand >= 96) return cand;
+    }
+    return 1;
+}
+
+bool TcRuntimeSupported()
+{
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess) return false;
+    return prop.major == 12;
+}
+
+namespace {
+
+cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
+                            const uint8_t *as, const uint8_t *pack_base,
+                            const uint8_t *scale_base, int64_t pack_stride,
+                            int64_t scale_stride,
+                            const QwenTcBatchSlot *slots_dev, int k_slots,
+                            int K, int N, __half *y, float *splitk_partials,
+                            int64_t w_off, int64_t s_off, bool seg13)
+{
+    if (!ap || !as || !pack_base || !scale_base || !slots_dev || !y ||
+        k_slots <= 0 || k_slots > 16 || K <= 0 || N <= 0 || (K & 15) ||
+        pack_stride <= 0 || scale_stride <= 0)
+        return cudaErrorInvalidValue;
+    int dev = 0;
+    cudaError_t e = cudaGetDevice(&dev);
+    if (e != cudaSuccess) return e;
+    cudaDeviceProp prop{};
+    e = cudaGetDeviceProperties(&prop, dev);
+    if (e != cudaSuccess) return e;
+    if (prop.major != 12) return cudaErrorNotSupported;
+
+    const int split_k = QwenTcBatchSplitK(K, N);
+    const dim3 grid((N + kTileN - 1) / kTileN, 1, k_slots * split_k);
+    if (split_k > 1) {
+        if (!splitk_partials) return cudaErrorInvalidValue;
+        // Partials are slot-disjoint via the global z encoding
+        // (slot*split_k+z); no memset needed (disjoint RAW writes).
+        TcGemmKernel<true><<<grid, 256, 0, stream>>>(
+            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+            splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+            scale_base, pack_stride, scale_stride, w_off, s_off);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+        // Finalize covers k_slots * seq * N elements total (seq == 1);
+        // the kernel decodes slot = i / (seq*N) internally.
+        const int threads = 256;
+        TcSplitKFinalizeBatch<<<static_cast<int>(
+                                    (static_cast<int64_t>(k_slots) * N +
+                                     threads - 1) / threads),
+                                threads, 0, stream>>>(
+            splitk_partials, y, 1, N, split_k, slots_dev, k_slots, seg13);
+        return cudaGetLastError();
+    }
+    TcGemmKernel<true><<<grid, 256, 0, stream>>>(
+        ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, 1, nullptr,
+        nullptr, nullptr, slots_dev, pack_base, scale_base, pack_stride,
+        scale_stride, w_off, s_off);
+    return cudaGetLastError();
+}
+
+} // namespace
+
+cudaError_t RunQwenTcGemmBatch13(cudaStream_t stream, const uint8_t *ap,
+                                 const uint8_t *as, const uint8_t *pack_base,
+                                 const uint8_t *scale_base,
+                                 int64_t pack_stride, int64_t scale_stride,
+                                 const QwenTcBatchSlot *slots_dev,
+                                 int k_slots, int K, int N, __half *y,
+                                 float *splitk_partials)
+{
+    return TcBatchDispatch(stream, ap, as, pack_base, scale_base,
+                           pack_stride, scale_stride, slots_dev, k_slots, K,
+                           N, y, splitk_partials, /*w_off=*/0, /*s_off=*/0,
+                           /*seg13=*/true);
+}
+
+cudaError_t RunQwenTcGemmBatchDown(cudaStream_t stream, const uint8_t *ap,
+                                   const uint8_t *as,
+                                   const uint8_t *pack_base,
+                                   const uint8_t *scale_base,
+                                   int64_t pack_stride, int64_t scale_stride,
+                                   const QwenTcBatchSlot *slots_dev,
+                                   int k_slots, int64_t w13_bytes,
+                                   int64_t s13_bytes, int K, int N,
+                                   __half *y, float *splitk_partials)
+{
+    return TcBatchDispatch(stream, ap, as, pack_base, scale_base,
+                           pack_stride, scale_stride, slots_dev, k_slots, K,
+                           N, y, splitk_partials, w13_bytes, s13_bytes,
+                           /*seg13=*/false);
 }
 
 // ── B3 capability probe: single-warp cp.async.bulk.tensor.2d round trip ────

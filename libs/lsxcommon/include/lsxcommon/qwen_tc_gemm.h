@@ -69,6 +69,51 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
 // nothing persistent.
 cudaError_t ProbeTmaBulkCopy(cudaStream_t stream);
 
+// One slot of the batched routed-expert TC chain: cache slot + per-segment
+// global scales. Layout-identical to qwen_moe::QwenMoeGvSlotDev (pinned by
+// static_assert in qwen_moe_inference.cu) so the existing device gather
+// kernel output can be consumed directly.
+struct alignas(8) QwenTcBatchSlot {
+    int32_t dev_slot;
+    float gs1, gs3, gs2;
+    float coeff;
+};
+
+// Host mirror of TcGemmKernel's split-K selection rule (seq==1 decode):
+// same inputs -> same split_k -> same slice math. Pure arithmetic.
+int QwenTcBatchSplitK(int K, int N);
+
+// sm_12x runtime probe (cached): mxf4nvf4 TC path availability.
+bool TcRuntimeSupported();
+
+// Batched seq==1 TC GEMM over routed-expert cache slots (gate|up fused
+// slab, [N=2I, K=H] per slot): grid = (ceil(N/64), 1, split_k * k_slots).
+// Per-slot weight base = pack_base + dev_slot*pack_stride (+w_off);
+// scales analogously (+s_off). y = y + slot*N (per-slot rows).
+// Bit-exact contract: identical math per slot as RunQwenTcGemmPreQuant
+// against the same pointers (pinned by test_qwen_moe_kernels
+// "[qwen-moe-tc-batch]"). splitk_partials: caller buffer of
+// split_k * k_slots * N floats (nullptr OK when QwenTcBatchSplitK == 1).
+cudaError_t RunQwenTcGemmBatch13(cudaStream_t stream, const uint8_t *ap,
+                                 const uint8_t *as, const uint8_t *pack_base,
+                                 const uint8_t *scale_base,
+                                 int64_t pack_stride, int64_t scale_stride,
+                                 const QwenTcBatchSlot *slots_dev,
+                                 int k_slots, int K, int N, __half *y,
+                                 float *splitk_partials);
+
+// Batched down projection: per-slot w2 slab lives at pack + w13_bytes,
+// scales at scale + s13_bytes; scalar global scale gs2 from the table.
+cudaError_t RunQwenTcGemmBatchDown(cudaStream_t stream, const uint8_t *ap,
+                                   const uint8_t *as,
+                                   const uint8_t *pack_base,
+                                   const uint8_t *scale_base,
+                                   int64_t pack_stride, int64_t scale_stride,
+                                   const QwenTcBatchSlot *slots_dev,
+                                   int k_slots, int64_t w13_bytes,
+                                   int64_t s13_bytes, int K, int N,
+                                   __half *y, float *splitk_partials);
+
 } // namespace tc
 } // namespace qwen
 } // namespace lsxcommon
