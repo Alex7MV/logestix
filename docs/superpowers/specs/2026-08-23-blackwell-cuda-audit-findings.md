@@ -1193,3 +1193,73 @@ suite 20/20 green (`deepseek|blackwell|expert|naming`), no perf regression.
 F-12 status: routed TC W4A4 + shared caching landed; remaining wall is the
 pinned-H2D staging roof — next lever is async expert prestage overlap
 (new work item, not F-12).
+
+## Round 25 — Kimi F-11 split-phase + device-side decode (2026-09-01)
+
+Branch `feat/deepseek-expert-prestage`. Design:
+`2026-09-01-kimi-split-phase-decode-design.md`; plan:
+`2026-09-01-kimi-split-phase-decode.md`.
+
+### Shipped
+
+1. **Split-phase router handshake** — `7cfa3bc`, `226b6b4`. Public
+   `KimiRouteBegin`/`KimiRouteFinish` (mirror of DeepSeek
+   `route_token_begin/finish`): top-k kernel + async D2H into ONE
+   generation-level pinned staging pair + event record; finish =
+   event-scoped busy-poll (`cudaEventQuery` spin — round-20 pattern). The
+   per-layer-per-token `cudaStreamSynchronize` full drain in
+   `KimiLayerStack` is gone. TDD: begin/finish vs fused path
+   bitwise-identical ids/weights (n=384, top_k=8, adversarial duplicate
+   scores) — `test_kimi_moe_router "[kimi][router][split]"` 43 assertions.
+2. **Device-side greedy decode** — `2502bff`. Per-step argmax D2H + sync
+   removed: `kimi_feed_token_kernel` feeds `*d_best` into the next
+   embed-gather on device; `gen.tokens` drained by ONE bulk D2H after the
+   loop; ttft via events (`ev_start`/`ev_ttft`); `first_maxv` from
+   `d_bestv` in the final drain. The greedy argmax drain site from the F-11
+   evidence is gone. Zero full-drain syncs remain in the kimi inference TU
+   (`grep cudaStreamSynchronize` empty).
+3. **Host-truncate EOS + de-hardcode** — the `kKimiEosId = 163586`
+   constant (Ingestion Protocol step 4 violation) replaced by an `eos_id`
+   parameter threaded from `Tokenizer().eos_id` at both model call sites.
+   `TruncateAtEos` cuts at the first EOS post-drain (`eos_id < 0`
+   disables). TDD: `"[kimi][decode][eos]"` (cut/no-EOS/disabled/
+   immediate-EOS), 10 assertions.
+
+### Baseline + measurement (RTX 5090, AOCC release, real weights, 16 tok)
+
+Harness: new `test_kimi_moe_model "[perf]"` (`adcf85d`), prompt
+"The capital of France is", LSX_TEST_KIMI_GEN_TOKENS=16.
+
+| Config | tok/s | ttft_ms | total_ms |
+|---|---|---|---|
+| baseline (per-layer + per-step full drain) | 0.927 | 5662 | 17264 |
+| split router + device-side decode | 0.936-0.939 | 5617-5631 | 17044-17086 |
+
+Verdict: **wall-neutral (+~1%)** on this workload. The kimi generation
+loop is expert-staging-bound in the legacy path (mmap H2D per expert per
+layer — same DRAM-floor pattern as DeepSeek Round 24); the removed syncs
+were not the bottleneck at 16 tokens.
+
+### Correctness status and the standing race
+
+- Router split path: bitwise-identical to fused (43 assertions green).
+- EOS truncate: green.
+- **`test_kimi_moe_inference` "deterministic across calls" FAILS under
+  the device-side decode** (`final_logits` memcmp across two Infer calls;
+  max abs diff ~12.4, R1 varies run-to-run, R2 bit-stable per process).
+  Bisect: green with a per-step drain restored (bisect1/2/3/6), red in any
+  fully-async configuration regardless of router fence granularity,
+  feed-kernel vs D2D, LRU evictions (KIMI_NOEVICTION), or per-layer vs
+  per-generation pinned staging. first_maxv (step-0 logits) bit-stable in
+  every configuration → divergence is confined to decode steps executing
+  without an intervening drain.
+- Root cause NOT yet isolated; the async decode is gated OFF by the
+  failing determinism gate — see Round 25b (follow-up): the decode-loop
+  reverts to the per-step event-scoped drain until the corruption is
+  isolated (candidates: cublas workspace/algo selection under deep
+  enqueue, expert-store LRU interaction with the copy stream, attention
+  workspace reuse across async layers).
+
+Decision per strategy-spec gate 1 (bit-exact contracts are binding):
+decode-loop async is PARKED (revert to drain) until root-caused; the
+router split API (bitwise-equivalent by test) stays.
