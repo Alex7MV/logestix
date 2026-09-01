@@ -29,7 +29,7 @@ The handoff queue (Round 22) prescribes: "Kimi router split-phase handshake
 |---|---|
 | Router handshake | Split API mirroring DeepSeek `route_token_begin/finish`: `KimiRouteBegin` (top-k kernel + async D2H + event record) / `KimiRouteFinish` (busy-poll event, no blocking sync). |
 | Decode feed | Device-side: next embed-gather reads `*d_best` on device; one D2H per generation (tokens batched at the end); ttft via events; `first_maxv` from a device slot. |
-| EOS handling | None (generation loop has no EOS break today — YAGNI). |
+| EOS handling | Host-truncate after the final bulk D2H: the loop runs all `max_gen_tokens` steps on device; the host then cuts `gen.tokens` at the first EOS and sets `eos_terminated`. Removes the per-step fence entirely; wasted post-EOS compute is bounded by `max_gen_tokens`. The hardcoded `kKimiEosId = 163586` in the .cu is replaced by an `eos_id` parameter threaded from `tok_db_->eos_id` (Ingestion Protocol step 4). |
 
 ## 3. Architecture
 
@@ -85,9 +85,18 @@ cudaError_t KimiRouteFinish(cudaEvent_t ev);
   host wall-clock replaced by event timing (host no longer observes
   per-step boundaries).
 - `first_maxv`: read from `d_bestv` in the same final bulk D2H.
-- Loop control: the loop already runs a fixed `max_gen_tokens` steps (no
-  EOS break), so removing the per-step host readback does not change
-  control flow. Generated-count bookkeeping stays host-side.
+- Loop control: the current loop has a per-step host EOS check
+  (`kKimiEosId = 163586` hardcoded at `:1323` — an Ingestion Protocol step 4
+  violation). With device-side feed the host no longer sees per-step ids, so
+  EOS becomes **host-truncate**: the loop runs all `max_gen_tokens` steps;
+  after the final bulk D2H the host scans `gen.tokens`, cuts at the first
+  EOS token, sets `gen.eos_terminated` accordingly and resizes
+  `kv_slots_used`. Token stream before the cut is identical to the fused
+  path (same kernels, same argmax); behavior differs only in that
+  post-EOS steps compute but are discarded — bounded waste, zero syncs.
+  `RunKimiGeneration` gains an `int eos_id` parameter (from
+  `tok_db_->eos_id` at the two model call sites); the hardcoded constant
+  is removed.
 - Bit-exactness: identical kernels, identical argmax, identical id
   sequence — the token stream is unchanged by construction; the selfcheck
   contract (`"Paris"`, 3-cycle bit-identical) is the binding test.
@@ -119,17 +128,22 @@ units.
    `test_kimi_moe_router.cu` — `KimiRouteBegin/Finish` vs fused
    `KimiRouterTopK + sync` produce bitwise-identical ids and weights
    (n=384, top_k=8, adversarial duplicate scores included).
-2. **Bit-exact e2e:** `test_kimi_moe_selfcheck` — "Paris", 3 cycles
+2. **EOS TDD (fails first):** new test covering the host-truncate helper —
+   token list with an embedded EOS cuts at EOS, sets `eos_terminated`,
+   `kv_slots_used` shrinks; no-EOS list passes through; eos_id `-1`
+   disables truncation. Plus: `RunKimiGeneration` EOS path exercised
+   end-to-end in `test_kimi_moe_inference.cu` with a forced-EOS prompt.
+3. **Bit-exact e2e:** `test_kimi_moe_selfcheck` — "Paris", 3 cycles
    byte-identical (real weights present at the vault; runs on this box).
-3. **Suites:** `ctest -R kimi` green (12 executables).
-4. **Perf guard:** tok/s must not regress; expected large gain from
+4. **Suites:** `ctest -R kimi` green (12 executables).
+5. **Perf guard:** tok/s must not regress; expected large gain from
    removing 384 × steps full-drain syncs — measured before/after via the
    kimi perf/selfcheck harness and recorded in the findings registry
    (Round 25).
 
 ## 6. Non-goals
 
-- No EOS-break / sampling changes.
+- No sampling changes (top-k math untouched).
 - No change to the expert cache LRU policy.
 - No changes to DeepSeek/Qwen/GLM paths.
 - No `kind::mxf8f6f4` / kernel-level work (separate items).
