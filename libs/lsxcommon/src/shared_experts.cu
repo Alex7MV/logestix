@@ -592,9 +592,12 @@ __global__ void repack_e8m0_ue4m3_kernel(const uint8_t* __restrict__ src,
                       threadIdx.x;
     if (i >= n_out) return;
     const unsigned e8 = src[i >> 1];
-    const unsigned e = e8 > 135u ? 15u
-                     : (e8 > 120u ? e8 - 120u : 0u);
-    dst[i] = static_cast<uint8_t>(e);
+    // Repo pow2-E4M3 byte layout: exponent in bits [6:3], decode
+    // 2^(((b >> 3) & 15) - 7) (nvfp4_codec.h E4M3ScaleToFloat). Map the
+    // E8M0 exponent e8 onto it: e4 = e8 - 120, stored shifted << 3.
+    const unsigned e4 = e8 > 135u ? 15u
+                      : (e8 > 120u ? e8 - 120u : 0u);
+    dst[i] = static_cast<uint8_t>(e4 << 3);
 }
 
 cudaError_t RepackE8m0ToUe4m3(cudaStream_t stream,
