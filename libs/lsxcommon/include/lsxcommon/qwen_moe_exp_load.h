@@ -1,0 +1,179 @@
+#pragma once
+
+#include <cuda_fp16.h>
+
+#include <string>
+#include <vector>
+
+#include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/qwen_moe_expert_cache.h"
+#include "lsxcommon/qwen_moe_exp_convert.h"
+
+namespace lsxcommon::qwen_moe_exp {
+
+// Per-layer device weights: reused dense attention block + qwen4_exp extras
+// (hyper-connection norms kept BF16 on device; hc down/up/inject NVFP4;
+// router BF16 raw; shared expert NVFP4 trio + FP16 scalar gate; PLE
+// projections on the PLE layer).
+struct ExpLayerWeights {
+    qwen::QwenLayerWeights attn;  // norms + attention/GDN (no dense MLP)
+    qwen::QwenNvfp4Weight indexer_qk;  // QSA: hidden -> (idx_h+idx_kv)*idx_hd
+
+    // Hyper-connections (GatedResidual): group-RMSNorm weights BF16 raw,
+    // low-rank projections NVFP4, block-inject NVFP4.
+    uint8_t *d_attn_hc_norm = nullptr;  // [hc*H] BF16 bits
+    uint8_t *d_mlp_hc_norm = nullptr;   // [hc*H] BF16 bits
+    int64_t hc_norm_bytes = 0;
+    qwen::QwenNvfp4Weight attn_hc_down;    // [lowrank, hc*H]
+    qwen::QwenNvfp4Weight attn_hc_up;      // [hc*H, lowrank]
+    qwen::QwenNvfp4Weight attn_hc_inject;  // [hc, hc*H]
+    qwen::QwenNvfp4Weight mlp_hc_down;
+    qwen::QwenNvfp4Weight mlp_hc_up;
+    qwen::QwenNvfp4Weight mlp_hc_inject;
+
+    // MoE.
+    uint8_t *d_router = nullptr;  // raw BF16 bits [E, H]
+    int64_t router_bytes = 0;
+    qwen::QwenNvfp4Weight shared_w1;  // gate_proj [SI, H]
+    qwen::QwenNvfp4Weight shared_w2;  // down_proj [H, SI]
+    qwen::QwenNvfp4Weight shared_w3;  // up_proj    [SI, H]
+    __half *d_shared_gate = nullptr;  // [H] fp16
+    bool moe_loaded = false;
+
+    // PLE (only on the PLE layer, otherwise null).
+    qwen::QwenNvfp4Weight ple_key;    // [hc*H, ple_embed]
+    qwen::QwenNvfp4Weight ple_value;  // [H, ple_embed]
+    uint8_t *d_ple_norm_key = nullptr;    // [hc*H] BF16 bits
+    uint8_t *d_ple_norm_query = nullptr;  // [hc*H] BF16 bits
+    uint8_t *d_ple_norm_conv = nullptr;   // [hc*H] BF16 bits
+    qwen::QwenNvfp4Weight ple_conv;       // depthwise [hc*H, 1, k]
+    int ple_conv_state_len = 0;
+    bool is_ple_layer = false;
+};
+
+// PLE n-gram hash meta: multipliers (bit-exact splitmix64) + per-head prime
+// vocab sizes and offsets. Verified against checkpoint buffers at load.
+struct ExpPleMeta {
+    static constexpr int kMaxHeads = 32;
+    int64_t multipliers[3] = {0, 0, 0};
+    int64_t head_vocab_sizes[kMaxHeads] = {};
+    int64_t head_offsets[kMaxHeads] = {};
+    int num_heads = 0;
+    int head_dim = 0;       // 160 on the real model
+    int context_len = 0;    // ngram_size - 1
+    int64_t padded_vocab = 0;
+};
+
+// Non-owning mmap view of one PLE n-gram shard.
+struct ExpPleShardView {
+    const uint8_t *data = nullptr;
+    size_t bytes = 0;
+    int shard = -1;
+    std::shared_ptr<void> keepalive;  // keeps the mmap alive
+};
+
+struct ExpPinnedWeights {
+    qwen::QwenTopology top;    // dense view for kernel reuse
+    Qwen4ExpTopology exp_top;  // full topology incl. qwen4_exp fields
+    qwen::QwenNvfp4Weight embed;
+    qwen::QwenNvfp4Weight head;
+    // Global hyper-connection mixer (GatedResidual, use_combine=false):
+    // norm BF16 raw + down/up NVFP4; output [H] (mean over streams).
+    uint8_t *d_mixer_norm = nullptr;  // [hc*H] BF16 bits
+    int64_t mixer_norm_bytes = 0;
+    qwen::QwenNvfp4Weight mixer_down;  // [lowrank, hc*H]
+    qwen::QwenNvfp4Weight mixer_up;    // [hc*H, lowrank]
+    __half *d_final_norm = nullptr;
+    int final_norm_size = 0;
+    std::vector<ExpLayerWeights> layers;
+    ExpPleMeta ple_meta;
+    std::size_t resident_bytes = 0;
+
+    void Free();
+};
+
+// Loads dense parts (globals, hc mixer, attention/GDN, hc, norms, router,
+// shared expert, PLE projections) from <model_path>/logestix/. Routed experts
+// are NOT resident; they go through ExpExpertStore separately. Strict: returns
+// false and fills `error` on any missing/malformed input.
+bool LoadQwen4ExpDenseWeights(const std::string &model_path,
+                              ExpPinnedWeights &pw, cudaStream_t stream,
+                              std::string &error);
+
+void FreeQwen4ExpPinnedWeights(ExpPinnedWeights &pw);
+
+// Host-resident routed-expert payloads (pinned slabs), laid out per layer.
+// The generation context stages slices of these into the LRU device cache.
+struct ExpExpertRecord {
+    // Byte ranges inside the owning layer slab (packed w1|w2|w3 first, then
+    // E4M3 scales s1|s2|s3).
+    int64_t w1_off = 0, w1_bytes = 0;
+    int64_t w2_off = 0, w2_bytes = 0;
+    int64_t w3_off = 0, w3_bytes = 0;
+    int64_t s1_off = 0, s1_bytes = 0;
+    int64_t s2_off = 0, s2_bytes = 0;
+    int64_t s3_off = 0, s3_bytes = 0;
+    float gs1 = 1.f, gs2 = 1.f, gs3 = 1.f;
+};
+
+// Per-expert static device meta for no-handshake decode (16 B): residency
+// slot index + the three global scales. Maintained by
+// EnsureQwen4ExpExpertResident; dev_slot == -1 marks a not-yet-resident
+// expert.
+struct alignas(16) ExpExpertMetaDev {
+    int32_t dev_slot;
+    float gs1, gs2, gs3;
+};
+
+struct ExpExpertStore {
+    // [num_layers] pinned slabs; slab l holds num_experts records back to back.
+    std::vector<uint8_t *> h_slabs;
+    std::vector<size_t> slab_bytes;
+    std::vector<std::vector<ExpExpertRecord>> records;  // [layers][expert]
+    int num_layers = 0;
+    int num_experts = 0;
+
+    // Per-expert fused gate/up global scales for the single w13 GEMM:
+    // d_seg_wgs[flat*2] = gs1, [flat*2+1] = gs3. Null when unused.
+    float *d_seg_wgs = nullptr;
+
+    // No-handshake decode support: host mirror of per-flat
+    // {dev_slot(-1 while missing), gs1..gs3}; device mirror uploaded once
+    // every entry is resident. gemv_ready == true unlocks the
+    // router-readback-free decode path (full-residency guarantee).
+    std::vector<ExpExpertMetaDev> h_gemv_meta;
+    ExpExpertMetaDev *d_gemv_meta = nullptr;
+    bool gemv_ready = false;
+
+    void Free();
+};
+
+// Loads every experts/layer_<l>/exp_<e>.arrow under
+// <model_path>/logestix/ into pinned host memory. Strict errors.
+bool LoadQwen4ExpExpertStore(const std::string &model_path,
+                             ExpExpertStore &store, std::string &error);
+
+// Allocates the LRU device cache sized to the largest expert payload.
+bool AllocateQwen4ExpExpertCache(ExpExpertStore &store, int slots,
+                                 gpu::ExpertDeviceCache &cache,
+                                 std::string &error);
+void FreeQwen4ExpExpertCache(gpu::ExpertDeviceCache &cache);
+
+// Ensures expert `eid` of `layer` is resident in the device cache; stages its
+// payload H2D from the pinned slab on miss. Returns slot index, -1 on error
+// (error text goes to `error` when non-null). When `h2d_stream` is provided,
+// miss staging is enqueued on that (copy) stream instead of `stream`; set
+// *missed so the caller can fence the upload before consuming the slot.
+int EnsureQwen4ExpExpertResident(ExpExpertStore &store, int layer, int eid,
+                                 gpu::ExpertDeviceCache &cache,
+                                 cudaStream_t stream, std::string &error,
+                                 cudaStream_t h2d_stream = nullptr,
+                                 bool *missed = nullptr);
+
+// Memory-maps all ple/shard_<S>.arrow files (S in 0..split_parts-1) under
+// <model_path>/logestix/. `shards` must have room for split_ngram_parts
+// entries (read from pw.exp_top). Strict errors.
+bool LoadQwen4ExpPleShards(const std::string &model_path, ExpPinnedWeights &pw,
+                           ExpPleShardView *shards, std::string &error);
+
+} // namespace lsxcommon::qwen_moe_exp
