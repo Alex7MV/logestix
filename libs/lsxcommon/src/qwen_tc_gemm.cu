@@ -387,7 +387,7 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
 // kBatch mode (80-tok/s decode round): blockIdx.z encodes slot*split_k+z;
 // per-slot weights/scales/output are table-driven from batch_slots. The
 // kBatch == false instantiation is the exact legacy kernel.
-template <bool kBatch, int kTN = 64>
+template <bool kBatch, int kTN = 64, int kSeg13 = 0>
 __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ as,
                              const uint8_t *__restrict__ bp,
@@ -421,6 +421,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         bs_s = batch_scale + static_cast<int64_t>(b.dev_slot) * scale_stride +
                s_off;
         y_out = y + static_cast<int64_t>(slot) * N;
+        wgs_s = batch_slots[slot].gs2;   // scalar form (kSeg13=0: down proj)
     }
 
     // Segment epilogue: when seg_wgs != nullptr, output columns are split
@@ -428,9 +429,13 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     // global_scale -- used by the fused qkv|z|a|b input GEMM.
 
     auto seg_scale = [&](int col) {
-        if (kBatch)
-            return col < N / 2 ? batch_slots[slot].gs1
-                               : batch_slots[slot].gs3;
+        if (kBatch) {
+            // kSeg13: 1 = fused gate|up slab (two-segment gs1|gs3 split at
+            // N/2); 0 = scalar wgs_s (down projection, gs2 from the table).
+            if (kSeg13) return col < N / 2 ? batch_slots[slot].gs1
+                                           : batch_slots[slot].gs3;
+            return wgs_s;
+        }
         if (!seg_wgs) return wgs_s;
         if (!seg_bounds) {
             // Two-segment split at N/2 (fused gate|up projections).
@@ -1007,10 +1012,16 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
         if (!splitk_partials) return cudaErrorInvalidValue;
         // Partials are slot-disjoint via the global z encoding
         // (slot*split_k+z); no memset needed (disjoint RAW writes).
-        TcGemmKernel<true, 64><<<grid, 256, 0, stream>>>(
-            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
-            splitk_partials, nullptr, nullptr, slots_dev, pack_base,
-            scale_base, pack_stride, scale_stride, w_off, s_off);
+        if (seg13)
+            TcGemmKernel<true, 64, 1><<<grid, 256, 0, stream>>>(
+                ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+                splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+                scale_base, pack_stride, scale_stride, w_off, s_off);
+        else
+            TcGemmKernel<true, 64, 0><<<grid, 256, 0, stream>>>(
+                ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+                splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+                scale_base, pack_stride, scale_stride, w_off, s_off);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
         // Finalize covers k_slots * seq * N elements total (seq == 1);
@@ -1030,16 +1041,28 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
     // changes). Large-N shapes keep the 64-wide tile.
     if (N % 16 == 0 && k_slots * ((N + 63) / 64) < 128) {
         const dim3 g16((N + 15) / 16, 1, k_slots * split_k);
-        TcGemmKernel<true, 16><<<g16, 256, 0, stream>>>(
-            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
-            splitk_partials, nullptr, nullptr, slots_dev, pack_base,
-            scale_base, pack_stride, scale_stride, w_off, s_off);
+        if (seg13)
+            TcGemmKernel<true, 16, 1><<<g16, 256, 0, stream>>>(
+                ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+                splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+                scale_base, pack_stride, scale_stride, w_off, s_off);
+        else
+            TcGemmKernel<true, 16, 0><<<g16, 256, 0, stream>>>(
+                ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+                splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+                scale_base, pack_stride, scale_stride, w_off, s_off);
         return cudaGetLastError();
     }
-    TcGemmKernel<true, 64><<<grid, 256, 0, stream>>>(
-        ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, 1, nullptr,
-        nullptr, nullptr, slots_dev, pack_base, scale_base, pack_stride,
-        scale_stride, w_off, s_off);
+    if (seg13)
+        TcGemmKernel<true, 64, 1><<<grid, 256, 0, stream>>>(
+            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, 1, nullptr,
+            nullptr, nullptr, slots_dev, pack_base, scale_base, pack_stride,
+            scale_stride, w_off, s_off);
+    else
+        TcGemmKernel<true, 64, 0><<<grid, 256, 0, stream>>>(
+            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, 1, nullptr,
+            nullptr, nullptr, slots_dev, pack_base, scale_base, pack_stride,
+            scale_stride, w_off, s_off);
     return cudaGetLastError();
 }
 

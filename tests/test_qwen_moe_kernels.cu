@@ -1,4 +1,5 @@
 // Qwen3.5-35B-A3B MoE kernel tests: LRU cache bookkeeping (host-side),
+#include <cstdio>
 // router top-k, routed expert FFN, shared expert combine. CUDA-dependent
 // cases are added by later tasks.
 
@@ -906,4 +907,153 @@ TEST_CASE("generation driver fallback parity under partial residency",
     lsxcommon::qwen::SetQwenTcFastMath(false);
     std::error_code ec;
     fs2::remove_all(in, ec); fs2::remove_all(out, ec);
+}
+
+// Real-geometry batch parity: the synthetic fixture (H=64) never exercises
+// the split-K path (K >= 2048). This test drives batch13/down vs sequential
+// RunQwenTcGemmPreQuant at the REAL 35B-A3B shapes (K=2048,N=1024 and
+// K=512,N=2048, split_k=8/1) with random weights + adversarial scales, so
+// any slice-order or scale divergence shows up as a memcmp miss.
+TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
+{
+    if (!lsxcommon::qwen::tc::TcRuntimeSupported()) return;
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+
+    const int H = 2048, I = 512, K = 8, N13 = 2 * I;
+    REQUIRE(lsxcommon::qwen::tc::QwenTcBatchSplitK(H, N13) == 8);
+
+    // Random NVFP4 payloads (bytes are already valid nibbles/scales).
+    auto rnd8 = [](size_t n) {
+        std::vector<uint8_t> v(n);
+        uint32_t st = 12345;
+        for (auto &b : v) {
+            st = st * 1664525u + 1013904223u;
+            b = static_cast<uint8_t>(st >> 24);
+        }
+        return v;
+    };
+    const size_t pack_stride = (4u << 20);  // w13(1MB)+w2(0.5MB)+slack
+    const size_t scale_stride = (256u << 10);  // s13(128KB)+s2(32KB)+slack
+    const int64_t w13_bytes = I * H;        // 2I*H/2 = 1MB
+    const int64_t s13_bytes = 2 * I * (H / 16);
+    std::vector<uint8_t> pack(pack_stride * 8), scale(scale_stride * 8);
+    auto p1 = rnd8(pack.size());
+    // Scales: alternating valid pow2-E4M3 bytes (round-19 adversarial
+    // pattern) — random bytes overflow fp16 accumulators and make NaN
+    // patterns order-dependent (test artifact, not product behavior).
+    for (size_t i = 0; i < scale.size(); ++i)
+        scale[i] = (i % 2) ? uint8_t{0x40} : uint8_t{0x28};
+    std::copy(p1.begin(), p1.end(), pack.begin());
+
+    uint8_t *d_pack, *d_scale;
+    cudaMalloc(&d_pack, pack.size());
+    cudaMalloc(&d_scale, scale.size());
+    cudaMemcpy(d_pack, pack.data(), pack.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scale, scale.data(), scale.size(), cudaMemcpyHostToDevice);
+
+    // Adversarial activations: alternating scale-block magnitudes.
+    std::vector<__half> hx(H);
+    for (int i = 0; i < H; ++i)
+        hx[i] = __float2half(sinf(static_cast<float>(i) * 0.7f) * 0.5f);
+    uint8_t *d_xq, *d_xqs;
+    cudaMalloc(&d_xq, H / 2);
+    cudaMalloc(&d_xqs, (H + 15) / 16);
+    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(stream, hx.data(), 1, H,
+                                                   d_xq, d_xqs) == cudaSuccess);
+
+    // Distinct per-segment global scales (catch gs mixups bitwise).
+    std::vector<lsxcommon::qwen::tc::QwenTcBatchSlot> tbl(K);
+    std::vector<float> hseg(2 * 8);
+    for (int k = 0; k < K; ++k) {
+        tbl[k] = {k, 0.005f + 0.001f * k, 0.015f + 0.001f * k,
+                  0.02f + 0.001f * k, 0.f};
+        hseg[2 * k] = tbl[k].gs1;
+        hseg[2 * k + 1] = tbl[k].gs3;
+    }
+    float *d_seg;
+    cudaMalloc(&d_seg, sizeof(float) * hseg.size());
+    cudaMemcpy(d_seg, hseg.data(), sizeof(float) * hseg.size(),
+               cudaMemcpyHostToDevice);
+    lsxcommon::qwen::tc::QwenTcBatchSlot *d_tbl;
+    cudaMalloc(&d_tbl, sizeof(tbl[0]) * K);
+    cudaMemcpy(d_tbl, tbl.data(), sizeof(tbl[0]) * K, cudaMemcpyHostToDevice);
+
+    // Sequential reference: per-slot RunQwenTcGemmPreQuant (legacy split-K).
+    __half *d_ref13, *d_ref2, *d_bat13, *d_bat2;
+    cudaMalloc(&d_ref13, static_cast<size_t>(K) * N13 * 2);
+    cudaMalloc(&d_ref2, static_cast<size_t>(K) * H * 2);
+    cudaMalloc(&d_bat13, static_cast<size_t>(K) * N13 * 2);
+    cudaMalloc(&d_bat2, static_cast<size_t>(K) * H * 2);
+    for (int k = 0; k < K; ++k) {
+        uint8_t *pk = d_pack + static_cast<int64_t>(k) * pack_stride;
+        uint8_t *sc = d_scale + static_cast<int64_t>(k) * scale_stride;
+        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, d_xq, d_xqs, pk, sc, 1.0f,
+                    d_ref13 + static_cast<int64_t>(k) * N13, 1, H, N13,
+                    false, d_seg + 2 * k, nullptr) == cudaSuccess);
+        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+                    stream, d_xq, d_xqs, pk + w13_bytes, sc + s13_bytes,
+                    tbl[k].gs2, d_ref2 + static_cast<int64_t>(k) * H, 1, I,
+                    H, false) == cudaSuccess);
+    }
+    // Batched.
+    {
+        const int kk = K - 1;
+        std::fprintf(stderr,
+                     "[DBG] slot%d w2 pack bytes:", kk);
+        for (int q = 0; q < 6; ++q)
+            std::fprintf(stderr, " %02x",
+                         pack[kk * pack_stride + w13_bytes + q]);
+        std::fprintf(stderr, " | scales:");
+        for (int q = 0; q < 6; ++q)
+            std::fprintf(stderr, " %02x",
+                         scale[kk * scale_stride + s13_bytes + q]);
+        std::fprintf(stderr, "\n");
+        float *d_part;
+        cudaMalloc(&d_part, static_cast<size_t>(8) * K * N13 * 4);
+        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatch13(
+                    stream, d_xq, d_xqs, d_pack, d_scale,
+                    static_cast<int64_t>(pack_stride),
+                    static_cast<int64_t>(scale_stride), d_tbl, K, H, N13,
+                    d_bat13, d_part) == cudaSuccess);
+        cudaFree(d_part);
+    }
+    {
+        float *d_part = nullptr;
+        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatchDown(
+                    stream, d_xq, d_xqs, d_pack, d_scale,
+                    static_cast<int64_t>(pack_stride),
+                    static_cast<int64_t>(scale_stride), d_tbl, K, w13_bytes,
+                    s13_bytes, I, H, d_bat2, d_part) == cudaSuccess);
+    }
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    std::vector<uint8_t> r13(static_cast<size_t>(K) * N13 * 2);
+    std::vector<uint8_t> b13(static_cast<size_t>(K) * N13 * 2);
+    std::vector<uint8_t> r2(static_cast<size_t>(K) * H * 2);
+    std::vector<uint8_t> b2(static_cast<size_t>(K) * H * 2);
+    cudaMemcpy(r13.data(), d_ref13, r13.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(b13.data(), d_bat13, b13.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(r2.data(), d_ref2, r2.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(b2.data(), d_bat2, b2.size(), cudaMemcpyDeviceToHost);
+    // Slot 0 must be bitwise identical (same kernels, same order).
+    bool ok13 = true, ok2 = true;
+    for (int k = 0; k < K; ++k) {
+        ok13 &= std::memcmp(r13.data() + static_cast<size_t>(k) * r13.size(),
+                            b13.data() + static_cast<size_t>(k) * r13.size(),
+                            r13.size()) == 0;
+        ok2 &= std::memcmp(r2.data() + static_cast<size_t>(k) * r2.size(),
+                           b2.data() + static_cast<size_t>(k) * r2.size(),
+                           r2.size()) == 0;
+    }
+    CHECK(ok13);
+    CHECK(ok2);
+
+    cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_xq); cudaFree(d_xqs);
+    cudaFree(d_seg); cudaFree(d_tbl); cudaFree(d_ref13); cudaFree(d_ref2);
+    cudaFree(d_bat13); cudaFree(d_bat2);
+    cudaStreamDestroy(stream);
+    lsxcommon::qwen::SetQwenTcFastMath(false);
 }
