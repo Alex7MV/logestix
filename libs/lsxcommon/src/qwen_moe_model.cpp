@@ -187,6 +187,26 @@ bool Qwen35MoeModel::Load()
         log::error("[qwen-moe-model] expert cache alloc failed: " + err);
         return AbortLoad();
     }
+    // Full residency: prestage EVERY expert + complete the no-handshake
+    // mirror. Natural routing alone cannot touch all 40x256 experts within
+    // a generation (coupon-collector bound), so the device-driven TC-batch
+    // decode path would never engage without this one-time pass.
+    if (slots >= total_experts) {
+        const auto t_pre = std::chrono::steady_clock::now();
+        for (int l = 0; l < experts_.num_layers; ++l) {
+            for (int e = 0; e < experts_.num_experts; ++e) {
+                if (qwen_moe::EnsureQwenMoeExpertResident(
+                        experts_, l, e, cache_, stream(), err) < 0) {
+                    log::error("[qwen-moe-model] prestage failed: " + err);
+                    return AbortLoad();
+                }
+            }
+        }
+        if (stream()) cudaStreamSynchronize(stream());
+        qwen_moe::QwenMoeGemvNohandshake(experts_);
+        log::info(absl::StrCat("[qwen-moe-model] expert prestage ",
+                               MsSince(t_pre), " ms"));
+    }
     if (expert_cache_lease_.Valid())
         expert_cache_lease_.Resize(static_cast<std::uint64_t>(slots) *
                                    per_expert);
