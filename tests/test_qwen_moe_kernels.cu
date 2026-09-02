@@ -811,8 +811,11 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     cudaMalloc(&d_tbl, sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) * 16);
     REQUIRE(lsxcommon::qwen_moe::RunQwenMoeGemvGatherTable(
                 stream, d_routes, K, store.d_gemv_meta, d_tbl) == cudaSuccess);
-    // Batched path: acc seeded inside the fused reduce (d_resid = d_postin
-    // -- the same residual the init kernel would read).
+    // Batched path: acc seeded with the SAME init kernel, then the plain
+    // ascending reduce (the seeded-reduce fold was reverted — it corrupted
+    // real-model decode; see commit 2e97def).
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeAccInitForTest(
+                stream, d_postin, d_acc_batch, H) == cudaSuccess);
     REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedTcBatch(
                 stream, store, cache, 0, d_routes, d_xq, d_xqs, K, H, I,
                 d_postin, d_acc_batch, d_ygu_batch, d_h_batch, d_yp_batch,

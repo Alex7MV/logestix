@@ -387,7 +387,7 @@ __global__ void TcGemmDecodeKernel(const uint8_t *__restrict__ ap,
 // kBatch mode (80-tok/s decode round): blockIdx.z encodes slot*split_k+z;
 // per-slot weights/scales/output are table-driven from batch_slots. The
 // kBatch == false instantiation is the exact legacy kernel.
-template <bool kBatch>
+template <bool kBatch, int kTN = 64>
 __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              const uint8_t *__restrict__ as,
                              const uint8_t *__restrict__ bp,
@@ -456,7 +456,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     const int tig = lane & 3;
 
     const int row_base = blockIdx.y * kTileM;
-    const int col_base = blockIdx.x * kTileN;
+    const int col_base = blockIdx.x * kTN;
 
     // Double-buffered slabs: chunk i+1 streams via cp.async while chunk i
     // computes (removes the per-chunk staging stall; ~30% of GEMM time).
@@ -464,9 +464,9 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     // decode (few CTAs, long K-chunk chains). Numerically identical.
     constexpr int kPipe = 4;
     __shared__ __align__(16) uint8_t sA[kPipe][kTileM][32];
-    __shared__ __align__(16) uint8_t sB[kPipe][kTileN][32];
+    __shared__ __align__(16) uint8_t sB[kPipe][kTN][32];
     __shared__ uint8_t sAs[kPipe][kTileM][4];
-    __shared__ uint8_t sBs[kPipe][kTileN][4];
+    __shared__ uint8_t sBs[kPipe][kTN][4];
 
     const int k_half = K / 2;
     const int k_chunks = (K + 15) >> 4;
@@ -480,8 +480,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
         // ((D) * wgs) yields prev + sum*wgs -- NOT (prev+sum)*wgs.
         const float inv_wgs = 1.0f / wgs;
 #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
+        for (int j = 0; j < kTN / 16; ++j) {
+            const int n0 = col_base + wn * (kTN / 2) + j * 8 + tig * 2;
             const int r0 = row_base + g;
             if (r0 < seq && n0 < N)
                 d[j][0] = __half2float(y[static_cast<int64_t>(r0) * N + n0]) *
@@ -529,7 +529,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
             const char *b_g = reinterpret_cast<const char *>(bp_s) +
                               static_cast<int64_t>(col_base) * k_half + kb / 2;
             uint8_t *b_s = &sB[buf][0][0];
-            for (int idx = tid; idx < kTileN * 2; idx += 256) {
+            for (int idx = tid; idx < kTN * 2; idx += 256) {
                 const int c = idx >> 1;
                 cp_async16(b_s + idx * 16,
                            b_g + static_cast<int64_t>(c) * k_half +
@@ -548,7 +548,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                             kb_b0 + b]
                        : uint8_t{0};
             }
-            for (int idx = tid; idx < kTileN * 32; idx += 256) {
+            for (int idx = tid; idx < kTN * 32; idx += 256) {
                 const int c = idx / 32, b = idx % 32;
                 const bool ok = col_base + c < N && kb_b0 + b < k_half;
                 sB[buf][c][b] =
@@ -566,7 +566,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                          ch_g]
                     : uint8_t{0};
         }
-        for (int idx = tid; idx < kTileN * 4; idx += 256) {
+        for (int idx = tid; idx < kTN * 4; idx += 256) {
             const int c = idx / 4, ch = idx % 4;
             const int ch_g = kb / 16 + ch;
                 sBs[buf][c][ch] =
@@ -619,10 +619,11 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                   (uint32_t(sAs[buf][sr][3]) << 24);
         }
 
-        // ---- Four n-atoms.
+        // ---- n-atoms (kTN/16 per warp; column order preserved per output
+        // column -> bit-identical accumulation chain at any kTN).
 #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            const int n_local = wn * 32 + j * 8 + g;
+        for (int j = 0; j < kTN / 16; ++j) {
+            const int n_local = wn * (kTN / 2) + j * 8 + g;
             uint32_t br[2] = {0, 0};
 #pragma unroll
             for (int i = 0; i < 16; ++i) {
@@ -656,8 +657,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
 
     // ---- Epilogue.
 #pragma unroll
-    for (int j = 0; j < 4; ++j) {
-        const int n0 = col_base + wn * 32 + j * 8 + tig * 2;
+    for (int j = 0; j < kTN / 16; ++j) {
+        const int n0 = col_base + wn * (kTN / 2) + j * 8 + tig * 2;
         const int r0 = row_base + g;
         if (split_k > 1) {
             // RAW partial: wgs applied once in TcSplitKFinalize. Partials
@@ -1006,7 +1007,7 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
         if (!splitk_partials) return cudaErrorInvalidValue;
         // Partials are slot-disjoint via the global z encoding
         // (slot*split_k+z); no memset needed (disjoint RAW writes).
-        TcGemmKernel<true><<<grid, 256, 0, stream>>>(
+        TcGemmKernel<true, 64><<<grid, 256, 0, stream>>>(
             ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
             splitk_partials, nullptr, nullptr, slots_dev, pack_base,
             scale_base, pack_stride, scale_stride, w_off, s_off);
@@ -1022,7 +1023,20 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
             splitk_partials, y, 1, N, split_k, slots_dev, k_slots, seg13);
         return cudaGetLastError();
     }
-    TcGemmKernel<true><<<grid, 256, 0, stream>>>(
+    // Narrow-N decode shapes (expert w13 N=512 / w2 N=2048 with 8 slots)
+    // underfill the 170-SM array at kTN=64; the kTN=16 instantiation gives
+    // 4x the CTAs with a bit-identical per-column accumulation chain
+    // (same k64-chunk order inside one CTA — only the CTA->column map
+    // changes). Large-N shapes keep the 64-wide tile.
+    if (N % 16 == 0 && k_slots * ((N + 63) / 64) < 128) {
+        const dim3 g16((N + 15) / 16, 1, k_slots * split_k);
+        TcGemmKernel<true, 16><<<g16, 256, 0, stream>>>(
+            ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, split_k,
+            splitk_partials, nullptr, nullptr, slots_dev, pack_base,
+            scale_base, pack_stride, scale_stride, w_off, s_off);
+        return cudaGetLastError();
+    }
+    TcGemmKernel<true, 64><<<grid, 256, 0, stream>>>(
         ap, as, nullptr, nullptr, 1.0f, y, 1, K, N, false, 1, nullptr,
         nullptr, nullptr, slots_dev, pack_base, scale_base, pack_stride,
         scale_stride, w_off, s_off);

@@ -668,24 +668,6 @@ __global__ void moe_gemv_reduce_batch_kernel(
     acc[i] = t;
 }
 
-// Reduce-with-seed variant (TC-batch decode): acc[i] = f32(resid[i]) +
-// sum_s coeff_s * ypart[s][i], slots ascending. Bit-identical to the legacy
-// init-then-accumulate sequence (same fp32 ops in the same order).
-__global__ void moe_tc_reduce_seed_kernel(
-    const __half *__restrict__ resid,
-    const __half *__restrict__ ypart,
-    const QwenMoeGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
-    float *__restrict__ acc)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n_elems) return;
-    float t = __half2float(resid[i]);
-    for (int s = 0; s < k_slots; ++s)
-        t += slots[s].coeff * __half2float(ypart[static_cast<int64_t>(s) *
-                                                       n_elems + i]);
-    acc[i] = t;
-}
-
 // Slot-major batched swiglu-quant: gate ygu[s*2I + j], up ygu[s*2I + I + j]
 // -> h[s*I + j] + NVFP4 pack/scales at slot offsets. Per-16-group math is
 // the exact clone of qwen_swiglu_precise_quant_kernel (bit-identical).
@@ -817,29 +799,56 @@ cudaError_t RunQwenMoeRoutedTcBatch(
         store.records[static_cast<size_t>(layer)][0].s1_bytes +
         store.records[static_cast<size_t>(layer)][0].s3_bytes;
 
+    const bool kProbe = std::getenv("LSX_PROBE_FFN") != nullptr;
+    cudaEvent_t ev0 = nullptr, ev1 = nullptr, ev2 = nullptr, ev3 = nullptr,
+                ev4 = nullptr, ev5 = nullptr;
+    if (kProbe) {
+        for (auto *ev : {&ev0, &ev1, &ev2, &ev3, &ev4, &ev5})
+            cudaEventCreate(ev);
+        cudaEventRecord(ev0, stream);
+    }
     cudaError_t e = RunQwenMoeGemvGatherTable(
         stream, d_routes, K,
         store.d_gemv_meta + static_cast<int64_t>(layer) * E, d_tbl);
     if (e != cudaSuccess) return e;
+    if (kProbe) cudaEventRecord(ev1, stream);
     const auto *tbl =
         reinterpret_cast<const qwen::tc::QwenTcBatchSlot *>(d_tbl);
     e = qwen::tc::RunQwenTcGemmBatch13(
         stream, xq, xqs, cache.d_pack, cache.d_scale, cache.pack_stride,
         cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
     if (e != cudaSuccess) return e;
+    if (kProbe) cudaEventRecord(ev2, stream);
     e = RunQwenMoeSwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
                                    qpack_batch, qscales_batch);
     if (e != cudaSuccess) return e;
+    if (kProbe) cudaEventRecord(ev3, stream);
     e = qwen::tc::RunQwenTcGemmBatchDown(
         stream, qpack_batch, qscales_batch, cache.d_pack, cache.d_scale,
         cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
         I, H, yp_batch, nullptr);
     if (e != cudaSuccess) return e;
-    // Ascending-slot fp32 reduce with residual seed -- the legacy
-    // acc-init + coeff_add sequence folded into one launch (same fp32 op
-    // order per element -> bit-identical).
-    moe_tc_reduce_seed_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        d_resid, yp_batch, d_tbl, K, H, d_acc);
+    if (kProbe) cudaEventRecord(ev4, stream);
+    // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1);
+    // acc already seeded by qwen_moe_init_acc_kernel upstream.
+    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        yp_batch, d_tbl, K, H, d_acc);
+    if (kProbe) {
+        cudaEventRecord(ev5, stream);
+        cudaEventSynchronize(ev5);
+        float t[5];
+        cudaEventElapsedTime(&t[0], ev0, ev1);
+        cudaEventElapsedTime(&t[1], ev1, ev2);
+        cudaEventElapsedTime(&t[2], ev2, ev3);
+        cudaEventElapsedTime(&t[3], ev3, ev4);
+        cudaEventElapsedTime(&t[4], ev4, ev5);
+        std::fprintf(stderr,
+                     "[FFN-PROBE] L=%d gather=%.3f w13=%.3f swiglu=%.3f "
+                     "w2=%.3f reduce=%.3f ms\n",
+                     layer, t[0], t[1], t[2], t[3], t[4]);
+        for (auto *ev : {&ev0, &ev1, &ev2, &ev3, &ev4, &ev5})
+            cudaEventDestroy(*ev);
+    }
     return cudaGetLastError();
 }
 
