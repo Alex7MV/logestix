@@ -8,6 +8,7 @@
 #include "lsxcommon/lifecycle_strategy.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -129,4 +130,57 @@ TEST_CASE("lifecycle MoE plan bounds for qwen3.5-35b-a3b", "[qwen-moe-model]")
     CHECK(plan.tuner_bounds.expert_cache_slots_max >= 4);
     ResetPlanCache();
     gov.Shutdown();
+}
+
+// ── Device-side token feed (80-tok/s decode round) ──────────────────────────
+
+TEST_CASE("eos truncation helper", "[qwen-moe-decode]")
+{
+    std::vector<int32_t> t{5, 6, 7, 8};
+    CHECK(qwen_moe::TruncateTokensAtEos(t, 7) == true);
+    CHECK((t == std::vector<int32_t>{5, 6, 7}));
+    std::vector<int32_t> u{5, 6, 8};
+    CHECK(qwen_moe::TruncateTokensAtEos(u, 7) == false);
+    CHECK((u == std::vector<int32_t>{5, 6, 8}));
+    std::vector<int32_t> v{7};
+    CHECK(qwen_moe::TruncateTokensAtEos(v, 7) == true);
+    CHECK(v.empty() == false);   // legacy loop KEEPS the EOS token
+    CHECK((v == std::vector<int32_t>{7}));
+    std::vector<int32_t> w{1};
+    CHECK(qwen_moe::TruncateTokensAtEos(w, -1) == false);  // disabled
+}
+
+// Kimi-race gate: two Infer calls on the same session must produce
+// bit-identical final_logits with the device-fed decode loop.
+TEST_CASE("device-fed decode run-to-run determinism", "[qwen-moe-decode]")
+{
+    ConvertedModel fx;
+    // The model path needs tokenizer arrows: copy the shared synthetic BPE
+    // tokenizer into the fixture output and re-run the conversion stage.
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        fx.in / "tokenizer.json",
+        std::filesystem::copy_options::overwrite_existing);
+    REQUIRE(qwen_moe::ConvertQwen35MoeModel(fx.in.string(), fx.out.string()).ok());
+    ModelInitConfig cfg;
+    cfg.model_type = Qwen35MoeModel::kType;
+    cfg.model_path = fx.out.string();
+    cfg.max_gen_tokens = 12;
+    cfg.fast_math = true;
+    auto m = LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+    ModelRequest req;
+    req.input_ids = {1, 2, 3, 4, 5};
+    auto r1 = m->Infer(req);
+    REQUIRE(r1.ok);
+    auto r2 = m->Infer(req);
+    REQUIRE(r2.ok);
+    REQUIRE(r1.final_logits.size() == r2.final_logits.size());
+    CHECK(std::memcmp(r1.final_logits.data(), r2.final_logits.data(),
+                      r1.final_logits.size() * sizeof(float)) == 0);
+    CHECK(r1.gen_tokens == r2.gen_tokens);
+    m->Unload();
+    qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
 }

@@ -2160,6 +2160,8 @@ set_tests_properties(test_qwen_moe_loader PROPERTIES
 add_executable(test_qwen_moe_model test_qwen_moe_model.cpp)
 target_include_directories(test_qwen_moe_model PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_qwen_moe_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_qwen_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_model POST_BUILD

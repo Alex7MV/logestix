@@ -1045,6 +1045,18 @@ __global__ void qwen_moe_combine_kernel(const float *__restrict__ acc,
         }                                                                     \
     } while (0)
 
+bool TruncateTokensAtEos(std::vector<int32_t> &tokens, int eos_id)
+{
+    if (eos_id < 0) return false;
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i] == eos_id) {
+            tokens.resize(i + 1);   // legacy break keeps the EOS token
+            return true;
+        }
+    }
+    return false;
+}
+
 cudaError_t RunQwenMoeSharedCombine(
     cudaStream_t stream, const qwen::QwenNvfp4Weight &sw1,
     const qwen::QwenNvfp4Weight &sw2, const qwen::QwenNvfp4Weight &sw3,
@@ -1160,6 +1172,23 @@ __global__ void qwen_moe_init_acc_kernel(const __half *__restrict__ resid,
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     acc[i] = __half2float(resid[i]);
+}
+
+// Device token feed (kimi round-25 pattern): the greedy argmax computed on
+// device is written straight into the next step's id slot -- no D2H, no
+// per-step fence.
+__global__ void qwen_feed_token_kernel(int32_t *__restrict__ dst,
+                                       const int32_t *__restrict__ src)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0) dst[0] = src[0];
+}
+
+// Append the step's argmax to the generation history for the bulk drain.
+__global__ void qwen_record_token_kernel(int32_t *__restrict__ hist,
+                                         int idx,
+                                         const int32_t *__restrict__ src)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0) hist[idx] = src[0];
 }
 
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
@@ -1407,11 +1436,20 @@ cudaError_t RunQwenMoeGeneration(
     int32_t *d_argmax = nullptr;
     e = cudaMalloc(&d_argmax, sizeof(int32_t));
     if (e != cudaSuccess) { result.error_msg = "argmax alloc"; return e; }
+    // Device-side token history (bulk drain after the decode loop).
+    int32_t *d_tokens = nullptr;
+    e = cudaMalloc(&d_tokens, sizeof(int32_t) * static_cast<size_t>(max_new));
+    if (e != cudaSuccess) {
+        result.error_msg = "token history alloc";
+        cudaFree(d_argmax);
+        return e;
+    }
     QwenMoeRoutedSlot *d_slots = nullptr;
     e = cudaMalloc(&d_slots, sizeof(QwenMoeRoutedSlot) * static_cast<size_t>(K));
     if (e != cudaSuccess) {
         result.error_msg = "slots alloc";
         cudaFree(d_argmax);
+        cudaFree(d_tokens);
         return e;
     }
 
@@ -1490,6 +1528,7 @@ cudaError_t RunQwenMoeGeneration(
         if (h_step) cudaFreeHost(h_step);
         if (h_slots) cudaFreeHost(h_slots);
         cudaFree(d_argmax);
+        cudaFree(d_tokens);
         cudaFree(d_slots);
         return err;
     };
@@ -1507,15 +1546,21 @@ cudaError_t RunQwenMoeGeneration(
     for (int step = 0; step < total_steps; ++step) {
         const int seq = 1;
         const int kv_base = kv->kv_rows;
+        // Per-step H2D is position-only (async pinned write, no fence).
+        // The token id arrives either from host (step 0 + prefill) or from
+        // the previous step's device-side argmax (qwen_feed_token_kernel).
         if (h_step) {
-            int32_t *slot = h_step + 2 * step;
-            slot[0] = cur;
-            slot[1] = kv_base;
-            cudaMemcpyAsync(d_ids, slot, sizeof(int32_t), cudaMemcpyHostToDevice, stream);
-            cudaMemcpyAsync(d_pos, slot + 1, sizeof(int32_t), cudaMemcpyHostToDevice, stream);
+            h_step[2 * step] = cur;
+            h_step[2 * step + 1] = kv_base;
+            cudaMemcpyAsync(d_pos, h_step + 2 * step + 1, sizeof(int32_t),
+                            cudaMemcpyHostToDevice, stream);
+            if (step == 0)
+                cudaMemcpyAsync(d_ids, h_step + 2 * step, sizeof(int32_t),
+                                cudaMemcpyHostToDevice, stream);
         } else {
-            cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
             cudaMemcpy(d_pos, &kv_base, sizeof(int32_t), cudaMemcpyHostToDevice);
+            if (step == 0)
+                cudaMemcpy(d_ids, &cur, sizeof(int32_t), cudaMemcpyHostToDevice);
         }
 
         e = qwen::RunQwenEmbed(stream, d_embed_h, d_ids, d_act, seq, H);
@@ -1737,23 +1782,43 @@ cudaError_t RunQwenMoeGeneration(
                                lsxcommon::sample::LogitType::kF16,
                                d_argmax, d_maxv_scratch);
             if (e != cudaSuccess) return fail(e, "argmax");
-            int32_t gtok = 0;
-            cudaMemcpyAsync(&gtok, d_argmax, sizeof(int32_t),
+            // Device-side: append to the history + feed the NEXT step's id.
+            // No D2H, no fence (kimi round-25 pattern; determinism pinned by
+            // test_qwen_moe_model "[qwen-moe-decode]").
+            qwen_record_token_kernel<<<1, 1, 0, stream>>>(
+                d_tokens, generated, d_argmax);
+            if (step + 1 < total_steps)
+                qwen_feed_token_kernel<<<1, 1, 0, stream>>>(d_ids, d_argmax);
+            if (generated == 0) cudaEventRecord(t_ttft, stream);
+            ++generated;
+        } else {
+            // Prefill: feed the next prompt token from host staging.
+            cur = prompt[step + 1];
+            if (h_step) {
+                h_step[2 * (step + 1)] = cur;
+                cudaMemcpyAsync(d_ids, h_step + 2 * (step + 1),
+                                sizeof(int32_t), cudaMemcpyHostToDevice,
+                                stream);
+            } else {
+                cudaMemcpy(d_ids, &cur, sizeof(int32_t),
+                           cudaMemcpyHostToDevice);
+            }
+        }
+    }
+
+    // ── Bulk token drain: ONE D2H of the full generation history ──
+    {
+        std::vector<int32_t> hgen(static_cast<size_t>(generated));
+        if (generated > 0) {
+            cudaMemcpyAsync(hgen.data(), d_tokens,
+                            sizeof(int32_t) * static_cast<size_t>(generated),
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready, stream);
             cudaEventSynchronize(tok_ready);
-            tok = gtok;
-            if (generated == 0) cudaEventRecord(t_ttft, stream);
-            result.tokens.push_back(tok);
-            ++generated;
-            if (tok == eos_id) {
-                result.eos_terminated = true;
-                break;
-            }
-            cur = tok;
-        } else {
-            cur = prompt[step + 1];
         }
+        result.tokens.assign(hgen.begin(), hgen.end());
+        result.eos_terminated = TruncateTokensAtEos(result.tokens, eos_id);
+        if (!result.tokens.empty()) tok = result.tokens.back();
     }
     kv->last_tok = tok;
 
@@ -1925,6 +1990,7 @@ cudaError_t RunQwenMoeGeneration(
     if (h_step) cudaFreeHost(h_step);
     if (h_slots) cudaFreeHost(h_slots);
     cudaFree(d_argmax);
+    cudaFree(d_tokens);
     result.resident_bytes = pw.resident_bytes + half_bytes + float_bytes +
                             qpack_bytes + qscales_bytes + xact_q_bytes +
                             xact_qs_bytes + gemv_tbl_bytes +
