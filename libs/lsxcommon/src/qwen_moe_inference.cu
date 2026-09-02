@@ -1543,9 +1543,11 @@ cudaError_t RunQwenMoeGeneration(
     // the GEMV experimental route keeps priority when explicitly requested.
     static const bool kGemvExpertsEnv =
         std::getenv("LSX_GEMV_EXPERTS") != nullptr;
+    static const bool kTcBatchDisable =
+        std::getenv("LSX_TC_BATCH_OFF") != nullptr;
     const bool kTcBatchGeom = qwen::QwenTcFastMath() &&
                               store.d_seg_wgs != nullptr && (I & 15) == 0 &&
-                              !kGemvExpertsEnv;
+                              !kGemvExpertsEnv && !kTcBatchDisable;
     std::vector<cudaGraph_t> ffn_graphs(pw.layers.size(), nullptr);
     std::vector<cudaGraphExec_t> ffn_execs(pw.layers.size(), nullptr);
     auto ffn_graph_teardown = [&] {

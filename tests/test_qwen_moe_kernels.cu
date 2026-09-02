@@ -1000,17 +1000,6 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     }
     // Batched.
     {
-        const int kk = K - 1;
-        std::fprintf(stderr,
-                     "[DBG] slot%d w2 pack bytes:", kk);
-        for (int q = 0; q < 6; ++q)
-            std::fprintf(stderr, " %02x",
-                         pack[kk * pack_stride + w13_bytes + q]);
-        std::fprintf(stderr, " | scales:");
-        for (int q = 0; q < 6; ++q)
-            std::fprintf(stderr, " %02x",
-                         scale[kk * scale_stride + s13_bytes + q]);
-        std::fprintf(stderr, "\n");
         float *d_part;
         cudaMalloc(&d_part, static_cast<size_t>(8) * K * N13 * 4);
         REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatch13(
@@ -1034,19 +1023,18 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     std::vector<uint8_t> b13(static_cast<size_t>(K) * N13 * 2);
     std::vector<uint8_t> r2(static_cast<size_t>(K) * H * 2);
     std::vector<uint8_t> b2(static_cast<size_t>(K) * H * 2);
-    cudaMemcpy(r13.data(), d_ref13, r13.size(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(b13.data(), d_bat13, b13.size(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(r2.data(), d_ref2, r2.size(), cudaMemcpyDeviceToHost);
-    cudaMemcpy(b2.data(), d_bat2, b2.size(), cudaMemcpyDeviceToHost);
+
     // Slot 0 must be bitwise identical (same kernels, same order).
+    const size_t slot13 = r13.size() / static_cast<size_t>(K);
+    const size_t slot2 = r2.size() / static_cast<size_t>(K);
     bool ok13 = true, ok2 = true;
     for (int k = 0; k < K; ++k) {
-        ok13 &= std::memcmp(r13.data() + static_cast<size_t>(k) * r13.size(),
-                            b13.data() + static_cast<size_t>(k) * r13.size(),
-                            r13.size()) == 0;
-        ok2 &= std::memcmp(r2.data() + static_cast<size_t>(k) * r2.size(),
-                           b2.data() + static_cast<size_t>(k) * r2.size(),
-                           r2.size()) == 0;
+        ok13 &= std::memcmp(r13.data() + static_cast<size_t>(k) * slot13,
+                            b13.data() + static_cast<size_t>(k) * slot13,
+                            slot13) == 0;
+        ok2 &= std::memcmp(r2.data() + static_cast<size_t>(k) * slot2,
+                           b2.data() + static_cast<size_t>(k) * slot2,
+                           slot2) == 0;
     }
     CHECK(ok13);
     CHECK(ok2);
