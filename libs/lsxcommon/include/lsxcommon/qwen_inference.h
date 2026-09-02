@@ -156,7 +156,8 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
     __half *d_conv, __half *d_core, __half *d_gated,
-    int kv_base = 0, float *d_gd_state = nullptr);
+    int kv_base = 0, float *d_gd_state = nullptr,
+    bool use_sigmoid_gate = false);
 
 // Scaled dot-product causal attention (GQA), FP16 in/out, FP32 accumulate.
 // q: [seq, heads, head_dim]; k/v: [seq * kv_heads, head_dim] base rows where

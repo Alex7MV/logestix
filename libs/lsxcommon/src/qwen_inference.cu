@@ -76,11 +76,13 @@ __device__ __forceinline__ float softplus_dev(float x)
 // RMSNorm (offset 1+w): unified kernels::RmsNormTreeKernel
 // <__half, Offset1PlusW> (lsx_kernels_norm.cuh).
 
-// ── RMSNormGated: out = rmsnorm(x) * head * silu(z) ────────────────────────
-// grid-stride reduction (same pattern).
+// ── RMSNormGated: out = rmsnorm(x) * head * act(z) ────────────────────────
+// qwen3.5 uses silu(z); qwen4_exp sets output_gate_type="sigmoid". The kernel
+// is parameterized by `use_sigmoid_gate` so both families share one launch.
 __global__ void rmsnorm_gated_kernel(const __half *__restrict__ x, const __half *__restrict__ z,
                                      const __half *whead, __half *out,
-                                     int rows, int dim, double eps)
+                                     int rows, int dim, double eps,
+                                     bool use_sigmoid_gate = false)
 {
     const int row = blockIdx.x;
     if (row >= rows) return;
@@ -104,7 +106,8 @@ __global__ void rmsnorm_gated_kernel(const __half *__restrict__ x, const __half 
     for (int j = threadIdx.x; j < dim; j += blockDim.x) {
         float wf = __half2float(whead[j]);
         float g = __half2float(zr[j]);
-        out[(int64_t)row * dim + j] = __float2half(__half2float(xr[j]) * inv * wf * silu_dev(g));
+        const float act = use_sigmoid_gate ? sigmoid_dev(g) : silu_dev(g);
+        out[(int64_t)row * dim + j] = __float2half(__half2float(xr[j]) * inv * wf * act);
     }
 }
 
@@ -1470,7 +1473,8 @@ cudaError_t RunQwenFusedLinearAttnKernel(
     __half *d_qkv, __half *d_z, __half *d_ab,
     float *d_g, float *d_beta,
     __half *d_conv, __half *d_core, __half *d_gated,
-    int kv_base /* = 0 */, float *d_gd_state /* = nullptr */)
+    int kv_base /* = 0 */, float *d_gd_state /* = nullptr */,
+    bool use_sigmoid_gate /* = false */)
 {
     if (!lw.loaded || seq <= 0) return cudaErrorInvalidValue;
     const int nk = top.linear_num_key_heads;
@@ -1623,7 +1627,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
         const int threads = std::min(vd, 256);
         rmsnorm_gated_kernel<<<seq * nv, threads, vd * sizeof(float), stream>>>(
             d_core, d_z, lw.d_attn_norm, d_gated, seq * nv, vd,
-            top.rms_norm_eps);
+            top.rms_norm_eps, use_sigmoid_gate);
         e = cudaGetLastError(); if (e) return e;
     }
     return RunQwenNvfp4Gemm(stream, d_gated, lw.out.d_packed, lw.out.d_scales,

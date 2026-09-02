@@ -94,6 +94,9 @@ struct Qwen4ExpTopology {
     int indexer_budget = 2048, indexer_compress_ratio = 4;
     int ngram_size = 3, heads_per_ngram = 8, ple_embed_dim = 0;
     int ple_conv_kernel_size = 4, split_ngram_parts = 128;
+    // output_gate_type: "sigmoid" (qwen4_exp default) vs "silu" (qwen3.5).
+    // Drives the GDN RMSNormGated gate activation.
+    std::string output_gate_type = "sigmoid";
     int eos_token_id = -1;
     int64_t ngram_vocab_size_base = 20000000;
     std::vector<std::string> layer_types;

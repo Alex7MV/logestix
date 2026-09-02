@@ -644,36 +644,40 @@ __global__ void ple_inject_kernel(
         for (int i = 0; i < H; ++i) s_normed[g * H + i] *= inv;
     }
 
-    // 7. Shift the dilated-conv window: drop oldest, append normed row.
+    // 7. HF conv1d semantics (decode, seq=1): the rolling window holds the
+    //    previous state_len rows; y = sum_k w[c,k] * x_pad[k*dilation] over
+    //    x_pad = [prev(state_len), current] => taps w0..w{K-2} hit the window
+    //    rows at offsets -(state_len - k*dilation) and the CURRENT row uses
+    //    w[K-1]. Taps are computed BEFORE the current row is appended.
+    for (int c = 0; c < hc; ++c) {
+        for (int i = 0; i < H; ++i) {
+            const int idx = c * H + i;
+            float conv_acc = 0.f;
+            for (int k = 0; k < k_conv; ++k) {
+                const int off = k * dilation;  // index into x_pad
+                if (off == state_len) {
+                    // current row contributes with weight w[K-1]
+                    conv_acc = fmaf(d_conv_w[idx * k_conv + k], s_normed[idx],
+                                    conv_acc);
+                } else if (off < state_len) {
+                    conv_acc = fmaf(d_conv_w[idx * k_conv + k],
+                                    d_window[static_cast<int64_t>(off) * n +
+                                             idx],
+                                    conv_acc);
+                }
+            }
+            const float out_v = s_gated[idx] + conv_acc;
+            d_hidden[idx] = __float2half(__half2float(d_hidden[idx]) + out_v);
+        }
+    }
+
+    // 8. Shift the window: drop oldest, append the current normed row.
     for (int s = 0; s < state_len - 1; ++s)
         for (int i = 0; i < n; ++i)
             d_window[static_cast<int64_t>(s) * n + i] =
                 d_window[static_cast<int64_t>(s + 1) * n + i];
     for (int i = 0; i < n; ++i)
         d_window[static_cast<int64_t>(state_len - 1) * n + i] = s_normed[i];
-
-    // 8. Dilated depthwise conv over the window + add gated value; HF:
-    //    output = gated_value + short_conv(gated_value_normed).
-    //    conv o[t] = sum_{k=0..k-1} w[c,k] * window_row[t - (k-1)*dilation]
-    //    where window rows are the previous state (state_len = (k-1)*dil).
-    for (int c = 0; c < hc; ++c) {
-        for (int i = 0; i < H; ++i) {
-            const int idx = c * H + i;
-            float conv_acc = 0.f;
-            for (int k = 0; k < k_conv; ++k) {
-                // weight w[c, k]; taps hit window rows at spacing dilation.
-                const float wv = d_conv_w[idx * k_conv + k];
-                if (wv == 0.f) continue;
-                const int row = state_len - 1 - k * dilation;
-                if (row >= 0)
-                    conv_acc = fmaf(wv,
-                                    d_window[static_cast<int64_t>(row) * n + idx],
-                                    conv_acc);
-            }
-            const float out_v = s_gated[idx] + conv_acc;
-            d_hidden[idx] = __float2half(__half2float(d_hidden[idx]) + out_v);
-        }
-    }
 }
 
 } // namespace
@@ -1342,7 +1346,8 @@ cudaError_t RunExpGeneration(
                     kv->d_qkv + (int64_t)lin_idx * kv->max_total * S,
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
                     kv_base,
-                    kv->d_col + (int64_t)lin_idx * nv * vd * kd);
+                    kv->d_col + (int64_t)lin_idx * nv * vd * kd,
+                    pw.exp_top.output_gate_type == "sigmoid");
                 if (e != cudaSuccess)
                     result.error_msg = "gdn l" + std::to_string(l) + " lin" +
                                        std::to_string(lin_idx) + " kb" +

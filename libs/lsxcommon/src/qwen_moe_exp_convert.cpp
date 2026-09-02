@@ -245,6 +245,9 @@ Qwen4ExpTopology ParseQwen4ExpConfig(const std::string &input_dir)
     if (auto v = src["ngram_vocab_size_base"].get_int64();
         v.error() == simdjson::SUCCESS)
         top.ngram_vocab_size_base = v.value();
+    if (auto v = src["output_gate_type"].get_string();
+        v.error() == simdjson::SUCCESS)
+        top.output_gate_type = std::string(v.value());
 
     if (auto lt = src["layer_types"].get_array(); lt.error() == simdjson::SUCCESS) {
         for (auto e : lt.value()) {

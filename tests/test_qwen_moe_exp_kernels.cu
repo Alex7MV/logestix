@@ -305,9 +305,6 @@ TEST_CASE("PLE inject kernel end-to-end parity vs host replica",
 
     CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2), d_emb(emb.size() * 4),
         d_hidden(hidden.size() * 2);
-    cudaMemcpy(d_hidden.p, hidden.data(), n * 2, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_emb.p, emb.data(), emb.size() * 4, cudaMemcpyHostToDevice);
-
     lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
@@ -342,5 +339,105 @@ TEST_CASE("PLE inject kernel end-to-end parity vs host replica",
         // Output 2 = output 1 + contribution of second inject (window shifted,
         // same inputs) — non-decreasing delta determinism: |d2 - d1| == |d1 - h0|.
     }
+    lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
+}
+
+TEST_CASE("PLE dilated short-conv tap order matches HF conv1d",
+          "[qwen-exp-kernels]")
+{
+    // HF Qwen4ExpTextPLELayer._short_conv semantics for decode (seq=1):
+    //   x_padded = [rolling prev (state_len) rows, current row]
+    //   y[0]     = sum_{k=0..K-1} w[k] * x_padded[k * dilation]
+    // With state_len = (K-1)*dilation and dilation = ngram_size = 3, K = 4:
+    //   y = w0*prev[-9] + w1*prev[-6] + w2*prev[-3] + w3*current.
+    // The device kernel must tap the PRE-APPEND window (previous rows only)
+    // with direct weight order w[k], and the current row uses w[K-1].
+    constexpr int H = 8, hc = 1, E = 8, HEADS = 2, HDIM = 4;
+    const int n = H * hc;
+    const int state_len = 9;  // (4-1)*3
+    lsxcommon::qwen_moe_exp::ExpPleState st;
+    REQUIRE(lsxcommon::qwen_moe_exp::ExpPleStateAlloc(st, H, hc, state_len) ==
+            cudaSuccess);
+
+    // Prefill the rolling window with known rows: window[s] = s + 1
+    // (s = 0 oldest ... state_len-1 newest).
+    {
+        std::vector<float> win(state_len * n);
+        for (int s = 0; s < state_len; ++s)
+            for (int i = 0; i < n; ++i) win[s * n + i] = float(s + 1);
+        cudaMemcpy(st.d_window, win.data(), win.size() * 4,
+                   cudaMemcpyHostToDevice);
+    }
+    // emb = 0 -> key/value/gated all zero; conv output taps only the window.
+    std::vector<float> emb(HEADS * HDIM, 0.f);
+    std::vector<__half> hidden(n, __float2half(0.25f));
+
+    CudaBuf d_keyp((n * E) / 2), d_keys((n * E) / 16), d_valp((H * E) / 2),
+        d_vals((H * E) / 16), d_emb(emb.size() * 4),
+        d_hidden(hidden.size() * 2);
+    cudaMemcpy(d_emb.p, emb.data(), emb.size() * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_hidden.p, hidden.data(), n * 2, cudaMemcpyHostToDevice);
+
+    lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
+    kp.d_packed = d_keyp.as<uint8_t>();
+    kp.d_scales = d_keys.as<uint8_t>();
+    kp.global_scale = 1.f;
+    kp.cols = E;
+    kp.rows = n;
+    vp.d_packed = d_valp.as<uint8_t>();
+    vp.d_scales = d_vals.as<uint8_t>();
+    vp.global_scale = 1.f;
+    vp.cols = E;
+    vp.rows = H;
+    cv.d_packed = nullptr;
+    // Conv weights via the NVFP4 `ple_conv` view: w[k] = k+1 in {1,2,3,4};
+    // dequant = E2M1(code) * global_scale. E2M1 codes: 1:0.5, 2:1, 3:1.5,
+    // 4:2 -> with global_scale 2 the values are {1,2,3,4}.
+    const int conv_packed = (n * 4) / 2, conv_scales = (n * 4) / 16;
+    CudaBuf d_convp(conv_packed), d_convs(conv_scales);
+    {
+        std::vector<uint8_t> packed(conv_packed, 0);
+        std::vector<uint8_t> scales(conv_scales, 0x38);  // e4=7 => scale 1.0
+        // value (k+1)/2 -> E2M1 code (k+1): nibbles per byte: low = even col.
+        for (int i = 0; i < n; ++i) {
+            for (int k = 0; k < 4; ++k) {
+                const uint8_t code = uint8_t(k + 1);  // (k+1)/2 value
+                const int col = k;
+                const int bit = (i * 4 + col) * 4;
+                packed[bit / 8] |= uint8_t(code << (bit % 8));
+            }
+        }
+        cudaMemcpy(d_convp.p, packed.data(), conv_packed,
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(d_convs.p, scales.data(), conv_scales,
+                   cudaMemcpyHostToDevice);
+    }
+    cv.d_packed = d_convp.as<uint8_t>();
+    cv.d_scales = d_convs.as<uint8_t>();
+    cv.global_scale = 2.f;  // dequant: code_val * 2 -> {1,2,3,4}
+    cv.cols = 4;
+    cv.rows = n;
+    cv.packed_bytes = conv_packed;
+    cv.scale_bytes = conv_scales;
+
+    // conv taps come from the window (emb=0 -> gated=0).
+    // HF tap mapping for decode: y = w0*prev[-9] + w1*prev[-6]
+    //                            + w2*prev[-3] + w3*current.
+    // Prefill: slot s holds prev[-(9-s)] => slot0 = prev[-9] = 1,
+    // slot3 = prev[-6] = 4, slot6 = prev[-3] = 7, slot8 = prev[-1] = 9.
+    // Current gated row (normed) = 0 (emb=0 -> value=0 -> gated=0).
+    // Expected y = 1*w0 + 4*w1 + 7*w2 + 0*w3 = 1 + 8 + 21 + 0 = 30.
+    // hidden 0.25 + y -> 30.25 per element.
+    CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2);
+    auto err = lsxcommon::qwen_moe_exp::RunExpPleInject(
+        nullptr, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
+        d_nc.as<uint8_t>(), cv,
+        nullptr, d_emb.as<float>(), HEADS, HDIM, 1e-6f,
+        d_hidden.as<__half>());
+    REQUIRE(err == cudaSuccess);
+    std::vector<__half> got(n);
+    cudaMemcpy(got.data(), d_hidden.p, n * 2, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < n; ++i)
+        REQUIRE(__half2float(got[i]) == Catch::Approx(30.25f).margin(0.01f));
     lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
 }
