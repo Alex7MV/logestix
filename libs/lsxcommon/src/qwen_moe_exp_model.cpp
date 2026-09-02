@@ -224,11 +224,53 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
         r.error_msg = "execution context missing";
         return r;
     }
-    // Generation driver wiring lands in the next stage of the pipeline;
-    // until then Infer fails fast and loud instead of silently emitting
-    // garbage (protocol: no silent fallbacks).
-    r.ok = false;
-    r.error_msg = "qwen3.8-flash-next generation driver not wired yet";
+    if (!pw_.exp_top.layer_types.empty() && pw_.exp_top.hidden_size <= 0) {
+        r.error_msg = "topology not parsed";
+        return r;
+    }
+    // Incremental session policy (mirrors Qwen35MoeModel).
+    const qwen::SessionDecision session = qwen::DecideSession(
+        kv_ && kv_->allocated(), kv_ ? kv_->last_tok : -1, session_tail_,
+        req.input_ids);
+    if (!session.is_continuation) {
+        kv_.reset();
+        kv_ = std::make_unique<qwen::QwenKvCache>();
+        session_tail_.clear();
+    }
+    qwen::QwenGenerationResult gen;
+    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+    cudaError_t e = RunUnderResidencyLock([&] {
+        return qwen_moe_exp::RunExpGeneration(
+            stream(), pw_, experts_, cache_, ple_state_, qsa_,
+            session.gen_input, req.max_gen_tokens, eos_id, gen,
+            lsxcommon::sample::DefaultSampler(), kv_.get());
+    });
+    if (e != cudaSuccess || !gen.ok) {
+        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
+        r.ok = false;
+        kv_.reset();
+        session_tail_.clear();
+        return r;
+    }
+    const int kv_slots =
+        (kv_ && kv_->allocated())
+            ? kv_->kv_rows + 1
+            : static_cast<int>(gen.tokens.size()) +
+                  static_cast<int>(req.input_ids.size());
+    runtime::FillInferenceResult(
+        r, {.tokens = &gen.tokens,
+            .final_logits = &gen.final_logits,
+            .ttft_ms = gen.ttft_ms,
+            .total_ms = gen.total_ms,
+            .error_msg = &gen.error_msg,
+            .eos_terminated = gen.eos_terminated,
+            .kv_slots_used = kv_slots,
+            .first_maxv = 0.f,
+            .resident_bytes = gen.resident_bytes},
+        pw_.top.num_layers);
+    session_tail_ = r.gen_tokens;
+    if (tok_db_ && !r.gen_tokens.empty())
+        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
     return r;
 }
 

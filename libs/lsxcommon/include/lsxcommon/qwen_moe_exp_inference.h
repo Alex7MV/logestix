@@ -9,6 +9,8 @@
 
 #include "lsxcommon/qwen_inference.h"  // QwenNvfp4Weight
 #include "lsxcommon/qwen_moe_inference.h"  // QwenMoeRoutedSlot + router kernel
+#include "qwen_moe_exp_load.h"
+#include "lsxcommon/sampling.h"
 
 namespace lsxcommon::qwen_moe_exp {
 
@@ -122,5 +124,15 @@ cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
 cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,
                               const __half *d_x, int seq, int H, int E, int K,
                               qwen_moe::QwenMoeRoutedSlot *d_slots);
+
+
+// ── Generation driver (Task 8) ───────────────────────────────────────────
+cudaError_t RunExpGeneration(
+    cudaStream_t stream, const ExpPinnedWeights &pw,
+    ExpExpertStore &store, gpu::ExpertDeviceCache &cache, ExpPleState &ple,
+    std::vector<ExpQsaIndexerState> &qsa,
+    const std::vector<int32_t> &prompt, int max_new, int eos_id,
+    qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
+    qwen::QwenKvCache *kv);
 
 } // namespace lsxcommon::qwen_moe_exp
