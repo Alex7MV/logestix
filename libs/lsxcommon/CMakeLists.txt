@@ -276,7 +276,29 @@ target_link_libraries(lsxcommon_gemma_cu
 )
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_qwen_tc_cu
-    lsxcommon_kimi_cu lsxcommon_gemma_cu lsx_tune)
+    lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
+    lsx_tune)
+
+# qwen4_exp (Qwen3.8-Flash-Next) bit-exact kernels: hc GatedResidual, QSA
+# indexer, PLE inject. -fmad=false contract (protocol invariant).
+add_library(lsxcommon_qwen_moe_exp_cu OBJECT
+    src/qwen_moe_exp_inference.cu
+)
+set_target_properties(lsxcommon_qwen_moe_exp_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_qwen_moe_exp_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+)
 
 target_compile_definitions(lsxcommon PUBLIC
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
