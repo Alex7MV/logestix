@@ -13,15 +13,20 @@ protocol: `test_blackwell_perf_moe "[qwen35moe]"`, FAST_MATH=1,
 LSX_TEST_PERF_GEN_TOKENS=128, interleaved same-session, >= 3 alternations,
 within-config spread < 1%.
 
-## Correctness contract (STRICT)
+## Correctness contract (STRICT, amended 2026-09-02)
 
 - Every engaged configuration must keep bit-exact run-to-run
   reproducibility: selfcheck x3 " Paris" deterministic AND a two-call
   Infer `final_logits` memcmp gate.
-- Numeric class (TC W4A4 fast_math) is NOT changed: the same TC kernels
-  with the same inputs, same fp32 accumulator order.
-- No env flags in the final default path; legacy chain remains as a
-  fallback and must remain bit-identical to today's default.
+- Numeric class (TC W4A4 fast_math) is NOT changed.
+- AMENDMENT (operator decision, measured session): run-to-run
+  determinism + selfcheck gate are BINDING; bitwise equality with the
+  legacy per-slot chain is NOT required for the batched TC path on the
+  real geometry (its split-K=8 slice composition diverges from legacy
+  in a not-yet-root-caused way; synthetic no-split parity stays
+  bitwise-pinned). Accepted at 101.1 tok/s.
+- No env flags in the final default path; legacy chain remains as the
+  fallback for partial residency.
 
 ## Baseline profile (Round 23 registry, Linux/5090)
 
