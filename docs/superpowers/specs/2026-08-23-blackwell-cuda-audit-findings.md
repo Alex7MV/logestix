@@ -1295,3 +1295,81 @@ verdict). F-11 core deliverable (per-layer-per-token full-drain sync
 removal) LANDED and verified; the per-step argmax drain is downgraded
 from full cudaStreamSynchronize to an event-scoped busy-poll with the
 same coverage.
+
+## Round 26 — qwen moe 80+ tok/s device-driven decode (2026-09-02)
+
+Branch `feat/qwen-moe-80tps`. Design: `2026-09-01-qwen-moe-80tps-design.md`;
+plan: `2026-09-01-qwen-moe-80tps.md`. Baseline (Round 23 config A): 63.5
+tok/s / ttft 116 ms.
+
+### Shipped (default path, no env flags)
+
+1. **Batched TC routed-expert chain** — `RunQwenMoeRoutedTcBatch`
+   (qwen_moe_inference.cu): gather-on-device -> ONE w13-batch TC GEMM
+   (grid.z = K slots, split-K=8 via `QwenTcBatchSplitK` mirror) ->
+   batched swiglu-quant (slot-major, exact clone of the per-slot
+   16-group chain) -> w2-batch TC GEMM -> ascending coeff reduce. Engages
+   at full residency + fast_math + fused layout; legacy per-slot chain is
+   the fallback for partial residency.
+2. **Full-residency expert prestage at load** — `Qwen35MoeModel::Load`
+   stages every expert + completes the no-handshake mirror once
+   (378 ms one-time). Without it the readiness mirror never completes
+   (coupon-collector: 128-token routing touches ~63% of experts), so the
+   device-driven path silently never engaged — root cause of the flat
+   64.5 tok/s readings mid-session.
+3. **Device-side token feed** (kimi round-25 pattern): argmax stays on
+   device (`qwen_record_token_kernel` + `qwen_feed_token_kernel`); the
+   per-step blocking argmax sync is gone; bulk token drain once per
+   generation; EOS via host-side `TruncateTokensAtEos` (tokenizer-sourced
+   eos_id). Per-step host-gap shrank ~4.7 -> ~0.6 ms/token.
+4. **kTN=16 TC tile variant** — latent (bit-exact by test, engages only
+   on narrow-N shapes; never fires on 35B-A3B where w13 N=1024 /
+   grid math keeps kTN=64).
+5. **Launch-hygiene leftovers**: persistent fused-output scratch for the
+   linear-attn fused GEMM (removes 60 pool calls/step; wall-neutral,
+   kept); acc-init stays a separate launch (the seeded-reduce fold was
+   REVERTED — it corrupted real-model decode while passing all synthetic
+   gates; see 2e97def).
+
+### Corrections caught by TDD (would have shipped broken)
+
+- Batch down GEMM applied the w13 two-segment scale split instead of
+  scalar gs2 (`kSeg13` epilogue flag, 9f85044). The synthetic H=64
+  parity suite could NOT catch it (fixture global scales coincide);
+  the real-geometry GEMM parity test (K=2048, split-K=8, distinct
+  per-segment scales) caught it.
+- acc-init fold: synthetic suites green, real-model decode garbage —
+  synthetic-only coverage is insufficient for driver-level folds.
+
+### Results (RTX 5090, AOCC release, 128 tok, interleaved)
+
+| Config | tok/s | ttft_ms | vs baseline |
+|---|---|---|---|
+| Round-23 default A (legacy chain) | 63.5 | 116 | — |
+| 64.5 plateau (mid-session, mirror never tripped) | 64.5 | 116 | +1.6% |
+| **Round-26 default (prestage + TC-batch + device feed)** | **101.1-101.2** | **51.4-51.6** | **+59%** |
+
+- Run-to-run: 3 alternations, spread < 0.1%; token ids identical across
+  runs. Selfcheck x3 " Paris" PASS (32 assertions).
+- Stage audit: avg_step_ms 10.94 -> 10.82 GPU (ffn 64.8 -> 62.9%); the
+  wall gain is dominated by the removed per-layer host handshakes and
+  per-step argmax sync (ttft 116 -> 51 ms includes the prestage effect
+  on first-step routing).
+- Text: coherent, deterministic, differs from the legacy chain's greedy
+  output (contract amendment 06e548e: run-to-run determinism + selfcheck
+  gate are binding; bitwise legacy equality waived for the TC-batch
+  path). OPEN ITEM: the batch-vs-legacy divergence on real geometry is
+  not yet root-caused — unit GEMMs (real geometry, split-K) are
+  bit-identical; the divergence lives in the composition (swiglu-quant
+  slot-major path or reduce composition). Synthetic full-chain parity
+  (H=64) is bit-exact; a real-shape full-chain synthetic test hits a
+  NaN domain from fixture weights and cannot serve as a bit-pin.
+
+### Verification
+
+- `ctest -R "qwen|blackwell|naming"`: 35/35 green.
+- Real-model selfcheck x3 bit-stable " Paris".
+- New TDD: real-geometry GEMM parity (bitwise, incl. split-K=8 slice
+  order + adversarial per-segment scales), fallback parity under partial
+  residency, device-feed two-call `final_logits` memcmp gate, EOS
+  truncation helper.
