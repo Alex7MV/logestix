@@ -101,3 +101,86 @@ TEST_CASE("hc inject scatter kernel parity", "[qwen-exp-kernels]")
         REQUIRE(std::abs(__half2float(got[i]) - __half2float(ref[i])) <
                 2e-3f);
 }
+
+TEST_CASE("QSA indexer degenerate path selects all tokens when ctx<=budget",
+          "[qwen-exp-kernels]")
+{
+    // past_ctx=5, seq=1, budget 8 (block_topk 4 x compress 2): ctx=6 <= 8
+    // -> full mask fast path.
+    constexpr int HD = 8, CTX = 6;
+    lsxcommon::qwen_moe_exp::ExpQsaIndexerState st;
+    REQUIRE(lsxcommon::qwen_moe_exp::ExpQsaIndexerAlloc(st, 64, HD) ==
+            cudaSuccess);
+    CudaBuf d_q(4 * HD * 2), d_newk(HD * 2), d_mask(CTX * 4);
+    auto err = lsxcommon::qwen_moe_exp::RunExpQsaIndexer(
+        nullptr, st, d_q.as<__half>(), d_newk.as<__half>(),
+        /*past_ctx=*/5, /*seq=*/1, HD, /*compress=*/2, /*block_topk=*/4,
+        d_mask.as<int>());
+    REQUIRE(err == cudaSuccess);
+    std::vector<int> mask(CTX);
+    cudaMemcpy(mask.data(), d_mask.p, CTX * 4, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < CTX; ++i) REQUIRE(mask[i] == 1);
+    lsxcommon::qwen_moe_exp::ExpQsaIndexerFree(st);
+}
+
+TEST_CASE("QSA indexer block scoring parity vs host", "[qwen-exp-kernels]")
+{
+    // compress=2, past_ctx=4, seq=1 -> 2 complete blocks; block_topk=1 forces
+    // a real top-1 selection verified against host-recomputed relu-score.
+    constexpr int HD = 8, PAST = 4, COMPRESS = 2;
+    lsxcommon::qwen_moe_exp::ExpQsaIndexerState st;
+    REQUIRE(lsxcommon::qwen_moe_exp::ExpQsaIndexerAlloc(st, 64, HD) ==
+            cudaSuccess);
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<__half> keys(PAST * HD), q(4 * HD);
+    for (auto &v : keys) v = __float2half(dist(rng));
+    for (auto &v : q) v = __float2half(dist(rng));
+    // Seed the pooled-key cache directly (test seam): block b pools
+    // keys[2b..2b+1].
+    std::vector<float> pooled(PAST / COMPRESS * HD);
+    for (int b = 0; b < PAST / COMPRESS; ++b)
+        for (int i = 0; i < HD; ++i)
+            pooled[b * HD + i] =
+                0.5f * (__half2float(keys[(2 * b) * HD + i]) +
+                        __half2float(keys[(2 * b + 1) * HD + i]));
+    cudaMemcpy(st.d_pooled_keys, pooled.data(), pooled.size() * 4,
+               cudaMemcpyHostToDevice);
+    std::vector<int> block_starts{0, 2};
+    cudaMemcpy(st.d_block_starts, block_starts.data(), 2 * 4,
+               cudaMemcpyHostToDevice);
+    st.host_pooled_count = PAST / COMPRESS;  // test seam: pooled rows valid
+
+    CudaBuf d_q(q.size() * 2), d_newk(HD * 2), d_mask(PAST * 4);
+    cudaMemcpy(d_q.p, q.data(), q.size() * 2, cudaMemcpyHostToDevice);
+    auto err = lsxcommon::qwen_moe_exp::RunExpQsaIndexer(
+        nullptr, st, d_q.as<__half>(), d_newk.as<__half>(), PAST, 1, HD,
+        COMPRESS, /*block_topk=*/1, d_mask.as<int>());
+    REQUIRE(err == cudaSuccess);
+    std::vector<int> mask(PAST);
+    cudaMemcpy(mask.data(), d_mask.p, PAST * 4, cudaMemcpyDeviceToHost);
+
+    // Host oracle: score_b = sum_h relu(q_h · pooled_b) / sqrt(HD).
+    float best = -1.f;
+    int best_b = -1;
+    for (int b = 0; b < PAST / COMPRESS; ++b) {
+        float s = 0.f;
+        for (int h = 0; h < 4; ++h) {
+            float dot = 0.f;
+            for (int d = 0; d < HD; ++d)
+                dot += __half2float(q[h * HD + d]) * pooled[b * HD + d];
+            s += std::fmaxf(dot, 0.f);
+        }
+        s /= std::sqrt(static_cast<float>(HD));
+        if (s > best) {
+            best = s;
+            best_b = b;
+        }
+    }
+    // Only the winning block's tokens are selected.
+    int sel = 0;
+    for (int i = 0; i < PAST; ++i) sel += mask[i];
+    REQUIRE(sel == COMPRESS);
+    REQUIRE(mask[best_b * COMPRESS] == 1);
+    lsxcommon::qwen_moe_exp::ExpQsaIndexerFree(st);
+}
