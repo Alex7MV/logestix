@@ -2220,3 +2220,28 @@ target_link_libraries(test_kimi_moe_expert_cache PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_kimi_moe_expert_cache PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include")
 add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
+
+# ── Тесты Qwen3.8-Flash-Next (qwen4_exp MoE) ──────────────────────────────
+add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
+target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_qwen_moe_exp_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_convert>"
+    )
+    add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_convert>"
+    )
+endif()
+
+add_test(NAME test_qwen_moe_exp_convert COMMAND test_qwen_moe_exp_convert)
+# Synthetic tiny-geometry fixture: opt out of the frozen-geometry hard gate.
+set_tests_properties(test_qwen_moe_exp_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
