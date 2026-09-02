@@ -7,6 +7,7 @@
 #include "qwen_dense_model.h"
 #include "qwen_dense_27b_model.h"
 #include "qwen_moe_model.h"
+#include "qwen_moe_exp_model.h"
 
 namespace lsxcommon {
 
@@ -20,6 +21,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Qwen3_8_27BModel>();
         LsxModelFactory::Register<Gemma4_26BA4BModel>();
         LsxModelFactory::Register<Qwen35MoeModel>();
+        LsxModelFactory::Register<Qwen38FlashNextModel>();
         return true;
     }();
     (void)init;
