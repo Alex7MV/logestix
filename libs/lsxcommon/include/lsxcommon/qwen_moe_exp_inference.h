@@ -21,8 +21,9 @@ namespace lsxcommon::qwen_moe_exp {
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
     const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
-    const uint8_t *d_hc_norm, int seq, int H, int hc, int lowrank,
-    float *d_mixed, float *d_inject_w, __half *d_normed_scratch);
+    const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
+    int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
+    __half *d_mixed_h);
 
 // Test-only raw-float twin (identical op sequence, no NVFP4 decode, no BF16
 // norm cast) for bit-parity against the host replica in

@@ -2337,3 +2337,23 @@ endif()
 add_test(NAME test_qwen_moe_exp_model COMMAND test_qwen_moe_exp_model)
 set_tests_properties(test_qwen_moe_exp_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+add_executable(test_qwen_moe_exp_selfcheck test_qwen_moe_exp_selfcheck.cpp)
+target_link_libraries(test_qwen_moe_exp_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_qwen_moe_exp_selfcheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_exp_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_selfcheck>"
+    )
+    add_custom_command(TARGET test_qwen_moe_exp_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_selfcheck>"
+    )
+endif()
+add_test(NAME test_qwen_moe_exp_selfcheck COMMAND test_qwen_moe_exp_selfcheck)
+set_tests_properties(test_qwen_moe_exp_selfcheck PROPERTIES SKIP_RETURN_CODE 4)

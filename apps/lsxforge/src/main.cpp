@@ -11,6 +11,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
+#include "lsxcommon/qwen_moe_exp_convert.h"
 #include "lsxcommon/glm_moe_convert.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
@@ -39,6 +40,8 @@ ABSL_FLAG(bool, glm, false, "GLM-5.2 conversion pipeline");
 ABSL_FLAG(bool, kimi, false, "Kimi-K2.7-Code conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
 ABSL_FLAG(bool, qwen35moe, false, "Qwen3.5-35B-A3B MoE conversion pipeline");
+ABSL_FLAG(bool, qwen38flashnext, false,
+          "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
@@ -76,6 +79,7 @@ int main(int argc, char* argv[]) {
     bool kimi = absl::GetFlag(FLAGS_kimi);
     bool qwen = absl::GetFlag(FLAGS_qwen);
     bool qwen35moe = absl::GetFlag(FLAGS_qwen35moe);
+    bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
@@ -202,6 +206,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Gemma conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (qwen38flashnext) {
+        lsxcommon::log::info("Qwen3.8-Flash-Next pipeline (unified logestix layout)");
+        auto st = lsxcommon::qwen_moe_exp::ConvertQwen38FlashNextModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat("Qwen4-exp conversion failed: {}", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Qwen4-exp conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

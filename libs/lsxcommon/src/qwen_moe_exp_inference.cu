@@ -4,6 +4,11 @@
 
 #include <vector>
 
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
+#include <cmath>
+
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -32,12 +37,16 @@ __global__ void hc_gated_residual_f32_kernel(
     const float *__restrict__ inject, // [hc * n] or null
     int H, int hc, int lowrank, float eps,
     float *__restrict__ mixed_out,    // [H]
-    float *__restrict__ inj_out)      // [hc]
+    float *__restrict__ inj_out,      // [hc]
+    float *__restrict__ g_up,         // [n] global scratch for up values
+    const uint8_t *__restrict__ norm_w,  // BF16 (1+w), [n]
+    __half *__restrict__ mixed_h)     // [H] half copy of mixed_out
 {
     const int n = H * hc;
-    __shared__ float s_normed[2048];
-    __shared__ float s_dn[512];
-    __shared__ float s_up[2048];
+    extern __shared__ float hc_smem[];
+    float *s_normed = hc_smem;            // [n]
+    float *s_dn = s_normed + n;           // [lowrank] (smem tail)
+    float *s_up = g_up;                   // [n] global scratch (< 48KB smem)
     __shared__ float s_scale;
 
     // Phase 1: group-RMSNorm (group = H). Per-group mean of squares reduced
@@ -57,7 +66,22 @@ __global__ void hc_gated_residual_f32_kernel(
         }
         __syncthreads();
         for (int i = threadIdx.x; i < H; i += blockDim.x) {
-            s_normed[g * H + i] *= s_scale;
+            float v = s_normed[g * H + i] * s_scale;
+            if (norm_w) {
+                const int idx = g * H + i;
+                const uint16_t b16 = static_cast<uint16_t>(norm_w[idx * 2]) |
+                                     (static_cast<uint16_t>(norm_w[idx * 2 + 1])
+                                      << 8);
+                float wf = 1.f;
+                if (b16) {
+                    const uint32_t u = static_cast<uint32_t>(b16) << 16;
+                    float f;
+                    __builtin_memcpy(&f, &u, 4);
+                    wf = 1.f + f;
+                }
+                v *= wf;
+            }
+            s_normed[g * H + i] = v;
         }
         __syncthreads();
     }
@@ -91,6 +115,10 @@ __global__ void hc_gated_residual_f32_kernel(
         mixed_out[h] = static_cast<float>(acc / hc);
     }
 
+    if (mixed_h) {
+        for (int h = threadIdx.x; h < H; h += blockDim.x)
+            mixed_h[h] = __float2half(mixed_out[h]);
+    }
     // Phase 5: injection weights.
     if (inject) {
         for (int c = threadIdx.x; c < hc; c += blockDim.x) {
@@ -112,11 +140,13 @@ cudaError_t RunExpHcGatedResidualF32(
     if (seq != 1)
         return cudaErrorInvalidValue;  // twin supports the parity case only
     const int n = H * hc;
-    if (n > 2048 || lowrank > 512) return cudaErrorInvalidValue;
+    const size_t smem_bytes = (static_cast<size_t>(n) + lowrank) * sizeof(float);
+    if (smem_bytes > 48 * 1024) return cudaErrorInvalidValue;
     const int block = 128;
-    hc_gated_residual_f32_kernel<<<1, block, 0, stream>>>(
+    hc_gated_residual_f32_kernel<<<1, block, smem_bytes, stream>>>(
         d_hyper_input, d_down, d_up, d_inject_w, H, hc, lowrank, 1e-6f,
-        d_mixed, d_inject_w_out);
+        d_mixed, d_inject_w_out, const_cast<float *>(d_up), nullptr,
+        nullptr);
     return cudaGetLastError();
 }
 
@@ -737,6 +767,14 @@ cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
         }
         cudaFree(d_tmp);
     }
+    static bool ple_attr_set = false;
+    if (!ple_attr_set && smem_bytes > 48 * 1024) {
+        cudaError_t ae = cudaFuncSetAttribute(
+            ple_inject_kernel,
+            cudaFuncAttributeMaxDynamicSharedMemorySize, 230 * 1024);
+        if (ae != cudaSuccess) return ae;
+        ple_attr_set = true;
+    }
     ple_inject_kernel<<<1, 1, smem_bytes, stream>>>(
         Nvfp4RowView{key_proj.d_packed, key_proj.d_scales,
                      key_proj.global_scale, key_proj.cols},
@@ -767,17 +805,21 @@ namespace {
 
 // Scratch manager: per-process dequant workspace for the hc weights.
 struct HcScratch {
-    __half *h_down = nullptr, *h_up = nullptr;   // dequant fp16
-    float *d_down = nullptr, *d_up = nullptr;    // fp32 working copies
-    float *d_x32 = nullptr;                      // fp32 input upcast
-    size_t down_bytes = 0, up_bytes = 0, x_bytes = 0;
+    __half *h_down = nullptr, *h_up = nullptr, *h_inject = nullptr;
+    float *d_down = nullptr, *d_up = nullptr, *d_inject = nullptr;
+    float *d_x32 = nullptr;   // fp32 input upcast
+    float *d_upout = nullptr; // fp32 up-gate output [n]
+    size_t down_bytes = 0, up_bytes = 0, x_bytes = 0, upout_bytes = 0;
     ~HcScratch()
     {
         if (h_down) cudaFree(h_down);
         if (h_up) cudaFree(h_up);
+        if (h_inject) cudaFree(h_inject);
         if (d_down) cudaFree(d_down);
         if (d_up) cudaFree(d_up);
+        if (d_inject) cudaFree(d_inject);
         if (d_x32) cudaFree(d_x32);
+        if (d_upout) cudaFree(d_upout);
     }
 };
 
@@ -787,8 +829,9 @@ HcScratch &HcScratchInstance() {
 }
 
 cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
-                          const qwen::QwenNvfp4Weight &up)
+                          const qwen::QwenNvfp4Weight &up, int x32_floats)
 {
+
     HcScratch &s = HcScratchInstance();
     const size_t db = static_cast<size_t>(down.rows) * down.cols;
     const size_t ub = static_cast<size_t>(up.rows) * up.cols;
@@ -808,12 +851,18 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
             return cudaGetLastError();
         s.up_bytes = ub * sizeof(__half);
     }
-    if (s.x_bytes < static_cast<size_t>(up.rows) * up.cols * 0 +
-                        2048 * sizeof(float)) {
+    const size_t need_x = static_cast<size_t>(x32_floats) * sizeof(float);
+    if (s.x_bytes < need_x) {
         if (s.d_x32) cudaFree(s.d_x32);
-        if (cudaMalloc(&s.d_x32, 2048 * sizeof(float)) != cudaSuccess)
+        if (cudaMalloc(&s.d_x32, need_x) != cudaSuccess)
             return cudaGetLastError();
-        s.x_bytes = 2048 * sizeof(float);
+        s.x_bytes = need_x;
+    }
+    if (s.upout_bytes < need_x) {
+        if (s.d_upout) cudaFree(s.d_upout);
+        if (cudaMalloc(&s.d_upout, need_x) != cudaSuccess)
+            return cudaGetLastError();
+        s.upout_bytes = need_x;
     }
     return cudaSuccess;
 }
@@ -837,22 +886,26 @@ __global__ void float_to_half_kernel(const float *__restrict__ src,
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
     const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
-    const uint8_t *d_hc_norm, int seq, int H, int hc, int lowrank,
-    float *d_mixed, float *d_inject_w, __half *d_normed_scratch)
+    const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
+    int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
+    __half *d_mixed_h)
 {
-    (void)d_hc_norm;
-    (void)d_normed_scratch;
     if (seq != 1) return cudaErrorInvalidValue;
     const int n = H * hc;
+    // Shared footprint: 2n + lowrank floats; guard the Blackwell smem cap.
+    const size_t smem_floats = 2 * static_cast<size_t>(n) + lowrank;
+    if (smem_floats * sizeof(float) > 227 * 1024)
+        return cudaErrorInvalidValue;
     HcScratch &s = HcScratchInstance();
-    cudaError_t e = EnsureScratch(down, up);
+    cudaError_t e = EnsureScratch(down, up, n);
     if (e != cudaSuccess) return e;
     if (gpu::dequant_shared_nvfp4(stream, down.d_packed, down.packed_bytes,
                                   down.d_scales, down.scale_bytes,
                                   down.global_scale, s.h_down,
                                   static_cast<int64_t>(down.rows) * down.cols) !=
-        cudaSuccess)
+        cudaSuccess) {
         return cudaGetLastError();
+    }
     if (gpu::dequant_shared_nvfp4(stream, up.d_packed, up.packed_bytes,
                                   up.d_scales, up.scale_bytes,
                                   up.global_scale, s.h_up,
@@ -865,18 +918,16 @@ cudaError_t RunExpHcGatedResidual(
     half_to_float_rows_kernel<<<(up.rows * up.cols + 255) / 256, 256, 0,
                                 stream>>>(s.h_up, s.d_up, up.rows * up.cols);
     // Upcast the fp16 hyper input to the fp32 scratch buffer.
+    if (static_cast<size_t>(n) * sizeof(float) > s.x_bytes) {
+        return cudaErrorInvalidValue;
+    }
     half_to_float_rows_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
         d_hyper_input, s.d_x32, n);
     const int block = 128;
-    hc_gated_residual_f32_kernel<<<1, block, 0, stream>>>(
-        s.d_x32, s.d_down, s.d_up, nullptr, H, hc, lowrank, 1e-6f, d_mixed,
-        d_inject_w);
-    // Inject weights = 2*sigmoid(block_inject) are applied by the CALLER via
-    // a separate weight; this overload computes the mixed output only, so
-    // the scatter uses per-branch weights from d_inject_w filled here as 1.
-    float ones[8] = {1, 1, 1, 1, 1, 1, 1, 1};
-    cudaMemcpyAsync(d_inject_w, ones, sizeof(float) * hc,
-                    cudaMemcpyHostToDevice, stream);
+    const size_t smem_bytes = (static_cast<size_t>(n) + lowrank) * sizeof(float);
+    hc_gated_residual_f32_kernel<<<1, block, smem_bytes, stream>>>(
+        s.d_x32, s.d_down, s.d_up, s.d_inject, H, hc, lowrank, 1e-6f,
+        d_mixed, d_inject_out, s.d_upout, d_hc_norm, d_mixed_h);
     return cudaGetLastError();
 }
 
@@ -896,9 +947,10 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
         cudaFree(d_mixed);
         return cudaGetLastError();
     }
-    cudaError_t e = RunExpHcGatedResidual(stream, d_hidden, down, up, nullptr,
-                                          seq, H, hc, lowrank, d_mixed, d_inj,
-                                          nullptr);
+    cudaError_t e = RunExpHcGatedResidual(
+        stream, d_hidden, down, up,
+        qwen::QwenNvfp4Weight{}, nullptr, seq, H, hc, lowrank, d_mixed, d_inj,
+        nullptr);
     if (e == cudaSuccess) {
         // Float->half conversion for the mixed output.
         float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
@@ -1044,6 +1096,7 @@ cudaError_t RunExpGeneration(
     half_elems += (size_t)max_seq * H;             // d_mixed
     half_elems += (size_t)max_seq * NH * HD * 2;   // d_qc
     half_elems += (size_t)max_seq * NH * HD;       // d_q
+    half_elems += (size_t)max_seq * NH * HD;       // d_qgate
     half_elems += (size_t)max_seq * NKV * HD;      // d_k
     half_elems += (size_t)max_seq * NKV * HD;      // d_v
     half_elems += (size_t)max_seq * NH * HD;       // d_attn
@@ -1060,9 +1113,16 @@ cudaError_t RunExpGeneration(
     half_elems += (size_t)K * 2 * I;               // d_ygu_batch
     half_elems += (size_t)K * I;                   // d_h_batch
     half_elems += (size_t)K * H;                   // d_yp_batch
+    half_elems += (size_t)I;                       // d_yg (routed scratch)
+    half_elems += (size_t)I;                       // d_yu
+    half_elems += (size_t)H;                       // d_y2
+    half_elems += (size_t)SI;                      // d_si (shared scratch)
+    half_elems += (size_t)H;                       // d_sh
     size_t float_elems = (size_t)max_seq * nv * 2; // d_gf/betaf
     float_elems += (size_t)max_seq * H;            // d_moe_acc
-    float_elems += 16;                             // gate/scratch
+    float_elems += (size_t)max_seq * 16;           // hc inject weights
+    float_elems += (size_t)max_seq * 2560;         // PLE gathered emb rows
+    float_elems += 1024;                           // gate/argmax scratch
     const size_t half_bytes =
         ((half_elems * sizeof(__half)) + 255) & ~static_cast<size_t>(255);
     const size_t float_bytes =
@@ -1091,6 +1151,7 @@ cudaError_t RunExpGeneration(
     __half *d_mixed = adv(ph, (size_t)max_seq * H);
     __half *d_qc = adv(ph, (size_t)max_seq * NH * HD * 2);
     __half *d_q = adv(ph, (size_t)max_seq * NH * HD);
+    __half *d_qgate = adv(ph, (size_t)max_seq * NH * HD);
     __half *d_k = adv(ph, (size_t)max_seq * NKV * HD);
     __half *d_v = adv(ph, (size_t)max_seq * NKV * HD);
     __half *d_attn = adv(ph, (size_t)max_seq * NH * HD);
@@ -1107,12 +1168,19 @@ cudaError_t RunExpGeneration(
     __half *d_ygu_batch = adv(ph, (size_t)K * 2 * I);
     __half *d_h_batch = adv(ph, (size_t)K * I);
     __half *d_yp_batch = adv(ph, (size_t)K * H);
+    __half *d_yg = adv(ph, (size_t)I);
+    __half *d_yu = adv(ph, (size_t)I);
+    __half *d_y2 = adv(ph, (size_t)H);
+    __half *d_si = adv(ph, (size_t)SI);
+    __half *d_sh = adv(ph, (size_t)H);
     float *d_gf = reinterpret_cast<float *>(reinterpret_cast<uint8_t *>(base) + half_bytes);
     float *d_betaf = d_gf + (size_t)max_seq * nv;
     float *d_moe_acc = d_betaf + (size_t)max_seq * nv;
     float *d_mixed_f = d_moe_acc + (size_t)max_seq * H;
     float *d_inj_f = d_mixed_f + (size_t)max_seq * hc;
-    float *d_emb_rows = d_inj_f + (size_t)max_seq * 16;
+    float *d_gate_val = d_inj_f + (size_t)max_seq * 16;
+    float *d_maxv_scratch = d_gate_val + 16;
+    float *d_emb_rows = d_inj_f + (size_t)max_seq * 16;  // placeholder dims
 
     int32_t *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr,
             *d_tokens = nullptr;
@@ -1136,9 +1204,12 @@ cudaError_t RunExpGeneration(
     int32_t *h_ids = nullptr;
     bool have_pinned = cudaMallocHost(&h_ids, sizeof(int32_t) * 4) ==
                        cudaSuccess;
+    cudaEvent_t tok_ready_ev = nullptr;
+    cudaEventCreate(&tok_ready_ev);
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
     const int prompt_steps = static_cast<int>(prompt.size());
+
     const int total_steps = prompt_steps + max_new - 1;
     int32_t cur = prompt[0];
     int generated = 0;
@@ -1147,6 +1218,8 @@ cudaError_t RunExpGeneration(
 
     for (int step = 0; step < total_steps; ++step) {
         const int kv_base = kv->kv_rows;
+        full_idx = 0;
+        lin_idx = 0;
         if (h_ids) {
             h_ids[0] = cur;
             h_ids[1] = kv_base;
@@ -1177,12 +1250,11 @@ cudaError_t RunExpGeneration(
             }
             // ── attn hyper-connection: mixed + inject weights ──
             e = RunExpHcGatedResidual(stream, d_hyper, lw.attn_hc_down,
-                                      lw.attn_hc_up, lw.d_attn_hc_norm, 1, H,
-                                      hc, pw.exp_top.hc_lowrank, d_mixed_f,
-                                      d_inj_f, d_normed_scr);
+                                      lw.attn_hc_up, lw.attn_hc_inject,
+                                      lw.d_attn_hc_norm, 1, H, hc,
+                                      pw.exp_top.hc_lowrank, d_mixed_f,
+                                      d_inj_f, d_mixed);
             if (e != cudaSuccess) { result.error_msg = "hc-attn"; break; }
-            cudaMemcpyAsync(d_mixed, d_mixed_f, sizeof(float) * H,
-                            cudaMemcpyDeviceToDevice, stream);
             if (lw.attn.is_linear) {
                 e = qwen::RunQwenFusedLinearAttnKernel(
                     stream, lw.attn, top, 1, d_mixed, d_act,
@@ -1190,6 +1262,12 @@ cudaError_t RunExpGeneration(
                     d_z, d_ab, d_gf, d_betaf, d_conv, d_core, d_gated,
                     kv_base,
                     kv->d_col + (int64_t)lin_idx * nv * vd * kd);
+                if (e != cudaSuccess)
+                    result.error_msg = "gdn l" + std::to_string(l) + " lin" +
+                                       std::to_string(lin_idx) + " kb" +
+                                       std::to_string(kv_base) + " mt" +
+                                       std::to_string(kv->max_total) + ": " +
+                                       cudaGetErrorString(e);
                 ++lin_idx;
             } else {
                 // QSA layer: projection path via the reused qwen attention
@@ -1198,29 +1276,31 @@ cudaError_t RunExpGeneration(
                 // fast path in RunExpQsaIndexer).
                 e = qwen::RunQwenFullAttention(
                     stream, lw.attn, top, 1, d_mixed, d_act, d_qc, d_q,
-                    nullptr, kv->d_kv_k +
+                    d_qgate, kv->d_kv_k +
                                  (int64_t)full_idx * kv->max_total * NKV * HD,
                     kv->d_kv_v +
                         (int64_t)full_idx * kv->max_total * NKV * HD,
                     d_attn, d_cos, d_sin, d_pos, kv_base);
+                if (e != cudaSuccess)
+                    result.error_msg = "qsa l" + std::to_string(l) + ": " +
+                                       cudaGetErrorString(e);
                 ++full_idx;
                 ++qsa_idx;
             }
-            if (e != cudaSuccess) { result.error_msg = "attn"; break; }
+            if (e != cudaSuccess) break;
             // hyper + branch*w scatter (w from device d_inj_f).
             e = RunExpHcInjectScatter(stream, d_hyper, d_act, d_inj_f, 1, H,
                                       hc, d_hyper2);
             if (e != cudaSuccess) { result.error_msg = "hc-scatter1"; break; }
             // ── mlp hyper-connection ──
             e = RunExpHcGatedResidual(stream, d_hyper2, lw.mlp_hc_down,
-                                      lw.mlp_hc_up, lw.d_mlp_hc_norm, 1, H,
-                                      hc, pw.exp_top.hc_lowrank, d_mixed_f,
-                                      d_inj_f, d_normed_scr);
+                                      lw.mlp_hc_up, lw.mlp_hc_inject,
+                                      lw.d_mlp_hc_norm, 1, H, hc,
+                                      pw.exp_top.hc_lowrank, d_mixed_f,
+                                      d_inj_f, d_mixed);
             if (e != cudaSuccess) { result.error_msg = "hc-mlp"; break; }
-            cudaMemcpyAsync(d_mixed, d_mixed_f, sizeof(float) * H,
-                            cudaMemcpyDeviceToDevice, stream);
             // ── MoE: router -> routed experts -> shared combine ──
-            e = RunExpRouterTop10(stream, lw.d_router, d_mixed, 1, E, K, H,
+            e = RunExpRouterTop10(stream, lw.d_router, d_mixed, 1, H, E, K,
                                   d_slots);
             if (e != cudaSuccess) { result.error_msg = "router"; break; }
             // Host readback of the selected slots (LRU staging); the TC
@@ -1228,31 +1308,45 @@ cudaError_t RunExpGeneration(
             qwen_moe::QwenMoeRoutedSlot h_slots[16];
             cudaMemcpyAsync(h_slots, d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
-            cudaStreamSynchronize(stream);
+            cudaEventRecord(tok_ready_ev, stream);
+            cudaEventSynchronize(tok_ready_ev);
             for (int k = 0; k < K && k < 16; ++k) {
                 if (h_slots[k].eid < 0 || h_slots[k].eid >= E) {
                     result.error_msg = "router returned out-of-range expert";
                     e = cudaErrorInvalidValue;
                     break;
                 }
-                if (EnsureQwen4ExpExpertResident(store, l, h_slots[k].eid,
-                                                 cache, stream,
-                                                 const_cast<std::string &>(result.error_msg)) < 0) {
-                    e = cudaErrorUnknown;
+                std::string ensure_err;
+                const int slot = EnsureQwen4ExpExpertResident(
+                    store, l, h_slots[k].eid, cache, stream, ensure_err);
+                if (slot < 0) {
+                    result.error_msg = "ensure l" + std::to_string(l) +
+                                       " k" + std::to_string(k) + " slot" +
+                                       std::to_string(slot) + ": " +
+                                       ensure_err;
+                    e = cudaGetLastError();
+                    if (e == cudaSuccess) e = cudaErrorUnknown;
                     break;
                 }
             }
             if (e != cudaSuccess) break;
+            std::string ffn_err;
             e = qwen_moe::RunQwenMoeRoutedFFN(
                 stream, *reinterpret_cast<qwen_moe::QwenMoeExpertStore *>(&store),
                 *reinterpret_cast<qwen_moe::QwenMoeExpertDeviceCache *>(&cache),
-                l, h_slots, K, d_mixed, H, I, d_moe_acc, nullptr, nullptr,
-                nullptr, const_cast<std::string &>(result.error_msg));
-            if (e != cudaSuccess) { result.error_msg = "experts"; break; }
+                l, h_slots, K, d_mixed, H, I, d_moe_acc, d_yg, d_yu,
+                d_y2, ffn_err);
+            if (e != cudaSuccess) {
+                result.error_msg = "experts l" + std::to_string(l) +
+                                   " kb" + std::to_string(kv_base) + " mt" +
+                                   std::to_string(kv->max_total) + " lin" +
+                                   std::to_string(lin_idx) + ": " + ffn_err;
+                break;
+            }
             e = qwen_moe::RunQwenMoeSharedCombine(
                 stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
                 lw.d_shared_gate, d_mixed, 1, H, SI, d_moe_acc,
-                nullptr, nullptr, nullptr, d_act, nullptr, nullptr);
+                d_si, d_sh, d_gate_val, d_act, nullptr, nullptr);
             if (e != cudaSuccess) { result.error_msg = "shared"; break; }
             // scatter MoE output back into the streams.
             e = RunExpHcInjectScatter(stream, d_hyper2, d_act, d_inj_f, 1, H,
@@ -1275,7 +1369,7 @@ cudaError_t RunExpGeneration(
         if (step >= prompt_steps - 1) {
             e = sampler.Sample(stream, d_logits, V,
                                lsxcommon::sample::LogitType::kF16, d_argmax,
-                               nullptr);
+                               d_maxv_scratch);
             if (e != cudaSuccess) { result.error_msg = "argmax"; break; }
             exp_record_token_kernel<<<1, 1, 0, stream>>>(d_tokens, generated,
                                                          d_argmax);
@@ -1299,14 +1393,19 @@ cudaError_t RunExpGeneration(
         result.eos_terminated = qwen_moe::TruncateTokensAtEos(result.tokens, eos_id);
     }
     if (h_ids) cudaFreeHost(h_ids);
+    if (tok_ready_ev) cudaEventDestroy(tok_ready_ev);
     cudaFree(d_ids);
     cudaFree(d_pos);
     cudaFree(d_argmax);
     cudaFree(d_tokens);
     cudaFree(d_slots);
-    if (e != cudaSuccess && result.error_msg.empty())
-        result.error_msg = "generation failed";
-    return e;
+    if (e != cudaSuccess) {
+        if (result.error_msg.empty()) result.error_msg = "generation failed";
+        return e;
+    }
+    result.resident_bytes = pw.resident_bytes;
+    result.ok = true;
+    return cudaSuccess;
 }
 
 } // namespace lsxcommon::qwen_moe_exp
