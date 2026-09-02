@@ -83,6 +83,13 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream,
 cudaError_t RunQwenMoeAccToFp16(cudaStream_t stream, const float *d_acc,
                                 __half *d_out, int n);
 
+// Test/parity helper: seeds the MoE fp32 accumulator from the fp16 residual
+// (acc[i] = f32(resid[i])) -- the exact qwen_moe_init_acc_kernel math that
+// the driver runs before the legacy routed chain.
+cudaError_t RunQwenMoeAccInitForTest(cudaStream_t stream,
+                                     const __half *d_resid, float *d_acc,
+                                     int n);
+
 // Batched routed-expert chain for seq==1 GEMV mode: replaces the per-slot
 // {w1,w3,w2} launch loop (K x 5 kernels/layer) with 4 launches total:
 // w13 GEMV batch ([2I,K]*x per slot), elementwise swiglu, down GEMV batch
@@ -146,19 +153,21 @@ cudaError_t RunQwenMoeSwigluQuantBatch(cudaStream_t stream,
 
 // Batched TC routed-expert chain (no host readback): gather (device table)
 // -> w13 batch TC GEMM -> batched swiglu-quant -> w2 batch TC GEMM ->
-// ascending coeff reduce. d_acc += sum_k coeff_k * FFN(routes[k]) -- the
-// identical fp32 add order as the legacy per-slot chain. Requires TC
-// fast_math, full residency mirror (QwenMoeGemvNohandshake), I % 16 == 0.
-// splitk13: caller buffer for the w13 split-K partials
+// ascending coeff reduce. d_acc = f32(d_resid) + sum_k coeff_k * FFN_k(x)
+// -- the identical fp32 add order as the legacy chain (acc-init folded into
+// the reduce; legacy: acc = f32(resid) then += coeff_k * y_k, k ascending).
+// Requires TC fast_math, full residency mirror (QwenMoeGemvNohandshake),
+// I % 16 == 0. splitk13: caller buffer for the w13 split-K partials
 // (QwenTcBatchSplitK(H, 2*I) * K * 2I floats; nullptr OK when the helper
 // returns 1). d_tbl: [16] reused gather output (QwenMoeGvSlotDev).
 cudaError_t RunQwenMoeRoutedTcBatch(
     cudaStream_t stream, QwenMoeExpertStore &store,
     const QwenMoeExpertDeviceCache &cache, int layer,
     const QwenMoeRoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
-    int K, int H, int I, float *d_acc, __half *ygu_batch, __half *h_batch,
-    __half *yp_batch, uint8_t *qpack_batch, uint8_t *qscales_batch,
-    float *splitk13, QwenMoeGvSlotDev *d_tbl);
+    int K, int H, int I, const __half *d_resid, float *d_acc,
+    __half *ygu_batch, __half *h_batch, __half *yp_batch,
+    uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
+    QwenMoeGvSlotDev *d_tbl);
 
 // Host-side EOS truncation (decode loop runs to max_new without per-step
 // EOS readback). Keeps the EOS token (legacy break semantics), returns

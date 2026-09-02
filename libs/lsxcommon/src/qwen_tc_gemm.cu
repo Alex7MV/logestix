@@ -955,6 +955,29 @@ bool TcRuntimeSupported()
     return prop.major == 12;
 }
 
+// Persistent fused-GEMM output scratch keyed by the cached packed-weight
+// pointer (BuildFusedGemmWeights cache holds the pointers for the process
+// lifetime, so the key is stable). Removes per-layer-per-step
+// cudaMallocAsync/FreeAsync pairs in the linear-attn decode path.
+__half *TcFusedOutputScratch(const void *packed_key, int n_half)
+{
+    struct FusedOutScratch {
+        const void *key;
+        __half *buf;
+    };
+    static std::mutex mu;
+    static std::vector<FusedOutScratch> cache;
+    std::lock_guard<std::mutex> lk(mu);
+    for (auto &c : cache)
+        if (c.key == packed_key) return c.buf;
+    __half *buf = nullptr;
+    if (cudaMalloc(&buf, sizeof(__half) * static_cast<size_t>(n_half)) !=
+        cudaSuccess)
+        return nullptr;
+    cache.push_back({packed_key, buf});
+    return buf;
+}
+
 namespace {
 
 cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,

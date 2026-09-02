@@ -1513,9 +1513,13 @@ cudaError_t RunQwenFusedLinearAttnKernel(
                     lw.z.global_scale, lw.a.global_scale,
                     lw.b.global_scale, &fp, &fs, &fw, &fb, &fn);
                 if (e == cudaSuccess) {
-                    __half *fy = nullptr;
-                    e = cudaMallocAsync(&fy, sizeof(__half) * fn, stream);
-                    if (e != cudaSuccess) return e;
+                    // Persistent per-weight-set output scratch: the fused
+                    // GEMM shape (fn) is stable for the process lifetime,
+                    // so the per-layer cudaMallocAsync/FreeAsync pair is
+                    // pure driver overhead at decode (~60 calls/step).
+                    // Stream-ordered pool would reuse one block anyway.
+                    __half *fy = tc::TcFusedOutputScratch(fp, fn);
+                    if (!fy) return cudaErrorMemoryAllocation;
                     e = tc::RunQwenTcNvfp4Gemm(stream, d_normed, fp, fs,
                                                1.0f, fy, 1, H, fn, false,
                                                fw, fb);
@@ -1534,7 +1538,6 @@ cudaError_t RunQwenFusedLinearAttnKernel(
                                 d_ab, fy + S + VDl, sizeof(__half) * 2 * nv,
                                 cudaMemcpyDeviceToDevice, stream);
                     }
-                    cudaFreeAsync(fy, stream);
                     if (e != cudaSuccess) return e;
                 } else {
                     const int grid = (S + 7) / 8;

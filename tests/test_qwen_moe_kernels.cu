@@ -778,10 +778,14 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     cudaMalloc(&d_qpack_b, static_cast<size_t>(K) * I / 2);
     cudaMalloc(&d_qscales_b, static_cast<size_t>(K) * ((I + 15) / 16));
 
-    // Legacy reference (handshake per-slot TC chain, xq/xqs provided).
+    // Legacy reference (handshake per-slot TC chain, xq/xqs provided):
+    // acc seeded from the residual (init kernel) then coeff_add chain.
     std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> routes =
         {{3, 0.6f}, {3, 0.4f}};   // duplicate expert eid 3
-    cudaMemset(d_acc_seq, 0, H * 4);
+    cudaMemsetAsync(d_acc_seq, 0, H * 4, stream);
+    REQUIRE(lsxcommon::qwen_moe::RunQwenMoeAccInitForTest(
+                stream, d_postin, d_acc_seq, H) == cudaSuccess);
+    // Then the legacy coeff-add chain.
     REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedFFN(
                 stream, store, cache, 0, routes.data(), K, d_postin, H, I,
                 d_acc_seq, d_yg, d_yu, d_y2, err, nullptr, nullptr, nullptr,
@@ -807,11 +811,12 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     cudaMalloc(&d_tbl, sizeof(lsxcommon::qwen_moe::QwenMoeGvSlotDev) * 16);
     REQUIRE(lsxcommon::qwen_moe::RunQwenMoeGemvGatherTable(
                 stream, d_routes, K, store.d_gemv_meta, d_tbl) == cudaSuccess);
-    cudaMemset(d_acc_batch, 0, H * 4);
+    // Batched path: acc seeded inside the fused reduce (d_resid = d_postin
+    // -- the same residual the init kernel would read).
     REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRoutedTcBatch(
                 stream, store, cache, 0, d_routes, d_xq, d_xqs, K, H, I,
-                d_acc_batch, d_ygu_batch, d_h_batch, d_yp_batch, d_qpack_b,
-                d_qscales_b, nullptr, d_tbl) == cudaSuccess);
+                d_postin, d_acc_batch, d_ygu_batch, d_h_batch, d_yp_batch,
+                d_qpack_b, d_qscales_b, nullptr, d_tbl) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     std::vector<float> acc_seq(H), acc_batch(H);

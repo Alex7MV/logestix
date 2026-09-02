@@ -86,6 +86,11 @@ int QwenTcBatchSplitK(int K, int N);
 // sm_12x runtime probe (cached): mxf4nvf4 TC path availability.
 bool TcRuntimeSupported();
 
+// Persistent fused-GEMM output scratch keyed by the cached packed-weight
+// pointer (process-lifetime; the BuildFusedGemmWeights cache guarantees key
+// stability). Returns nullptr on allocation failure.
+__half *TcFusedOutputScratch(const void *packed_key, int n_half);
+
 // Batched seq==1 TC GEMM over routed-expert cache slots (gate|up fused
 // slab, [N=2I, K=H] per slot): grid = (ceil(N/64), 1, split_k * k_slots).
 // Per-slot weight base = pack_base + dev_slot*pack_stride (+w_off);

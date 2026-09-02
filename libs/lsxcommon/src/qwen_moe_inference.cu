@@ -668,6 +668,24 @@ __global__ void moe_gemv_reduce_batch_kernel(
     acc[i] = t;
 }
 
+// Reduce-with-seed variant (TC-batch decode): acc[i] = f32(resid[i]) +
+// sum_s coeff_s * ypart[s][i], slots ascending. Bit-identical to the legacy
+// init-then-accumulate sequence (same fp32 ops in the same order).
+__global__ void moe_tc_reduce_seed_kernel(
+    const __half *__restrict__ resid,
+    const __half *__restrict__ ypart,
+    const QwenMoeGvSlotDev *__restrict__ slots, int k_slots, int n_elems,
+    float *__restrict__ acc)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_elems) return;
+    float t = __half2float(resid[i]);
+    for (int s = 0; s < k_slots; ++s)
+        t += slots[s].coeff * __half2float(ypart[static_cast<int64_t>(s) *
+                                                       n_elems + i]);
+    acc[i] = t;
+}
+
 // Slot-major batched swiglu-quant: gate ygu[s*2I + j], up ygu[s*2I + I + j]
 // -> h[s*I + j] + NVFP4 pack/scales at slot offsets. Per-16-group math is
 // the exact clone of qwen_swiglu_precise_quant_kernel (bit-identical).
@@ -781,12 +799,13 @@ cudaError_t RunQwenMoeRoutedTcBatch(
     cudaStream_t stream, QwenMoeExpertStore &store,
     const QwenMoeExpertDeviceCache &cache, int layer,
     const QwenMoeRoutedSlot *d_routes, const uint8_t *xq, const uint8_t *xqs,
-    int K, int H, int I, float *d_acc, __half *ygu_batch, __half *h_batch,
-    __half *yp_batch, uint8_t *qpack_batch, uint8_t *qscales_batch,
-    float *splitk13, QwenMoeGvSlotDev *d_tbl)
+    int K, int H, int I, const __half *d_resid, float *d_acc,
+    __half *ygu_batch, __half *h_batch, __half *yp_batch,
+    uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
+    QwenMoeGvSlotDev *d_tbl)
 {
-    if (!d_routes || !xq || !xqs || !d_acc || !ygu_batch || !h_batch ||
-        !yp_batch || !qpack_batch || !qscales_batch || !d_tbl ||
+    if (!d_routes || !xq || !xqs || !d_resid || !d_acc || !ygu_batch ||
+        !h_batch || !yp_batch || !qpack_batch || !qscales_batch || !d_tbl ||
         K <= 0 || K > kMaxTopK || H <= 0 || I <= 0 || (I & 15) != 0 ||
         !store.d_gemv_meta || layer < 0 || layer >= store.num_layers)
         return cudaErrorInvalidValue;
@@ -816,9 +835,11 @@ cudaError_t RunQwenMoeRoutedTcBatch(
         cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
         I, H, yp_batch, nullptr);
     if (e != cudaSuccess) return e;
-    // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1).
-    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        yp_batch, d_tbl, K, H, d_acc);
+    // Ascending-slot fp32 reduce with residual seed -- the legacy
+    // acc-init + coeff_add sequence folded into one launch (same fp32 op
+    // order per element -> bit-identical).
+    moe_tc_reduce_seed_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        d_resid, yp_batch, d_tbl, K, H, d_acc);
     return cudaGetLastError();
 }
 
@@ -1183,6 +1204,8 @@ __global__ void qwen_feed_token_kernel(int32_t *__restrict__ dst,
     if (threadIdx.x == 0 && blockIdx.x == 0) dst[0] = src[0];
 }
 
+// Test/parity helper defined after the anonymous namespace (public entry).
+
 // Append the step's argmax to the generation history for the bulk drain.
 __global__ void qwen_record_token_kernel(int32_t *__restrict__ hist,
                                          int idx,
@@ -1193,6 +1216,16 @@ __global__ void qwen_record_token_kernel(int32_t *__restrict__ hist,
 
 // Residual add: unified kernels::AddInPlaceKernel (lsx_kernels_math.cuh).
 } // namespace
+
+cudaError_t RunQwenMoeAccInitForTest(cudaStream_t stream,
+                                     const __half *d_resid, float *d_acc,
+                                     int n)
+{
+    if (!d_resid || !d_acc || n <= 0) return cudaErrorInvalidValue;
+    qwen_moe_init_acc_kernel<<<(int)((n + 255) / 256), 256, 0, stream>>>(
+        d_resid, d_acc, n);
+    return cudaGetLastError();
+}
 
 cudaError_t EnsureQwenMoeScratch(cudaStream_t stream,
                                  const QwenMoePinnedWeights &pw,
@@ -1607,13 +1640,17 @@ cudaError_t RunQwenMoeGeneration(
             {
                 // Accumulator init is independent of the routing result; enqueue
                 // it behind the router so the GPU has work queued while the
-                // host waits for the slot readback below.
+                // host waits for the slot readback below. The TC-batch path
+                // folds the seed into its reduce kernel (same fp32 order) and
+                // skips this launch.
                 const int64_t n = seq * H;
-                qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
-                                           threads, 0, stream>>>(d_act, d_moe_acc,
-                                                                 n);
-                e = cudaGetLastError();
-                if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
+                if (!kTcBatchGeom) {
+                    qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
+                                               threads, 0, stream>>>(d_act, d_moe_acc,
+                                                                     n);
+                    e = cudaGetLastError();
+                    if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
+                }
             }
             // No-handshake mode (full residency steady state): the routed
             // chain composes its table on device from d_slots; the host
@@ -1666,9 +1703,9 @@ cudaError_t RunQwenMoeGeneration(
                 // test_qwen_moe_kernels "[qwen-moe-tc-batch]").
                 e = RunQwenMoeRoutedTcBatch(
                     stream, store, cache, l, d_slots, xq, xqs, K, H, I,
-                    d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch, d_qpack_b,
-                    d_qscales_b, tc_splitk > 1 ? d_tc_splitk : nullptr,
-                    d_gemv_tbl);
+                    d_act, d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
+                    d_qpack_b, d_qscales_b,
+                    tc_splitk > 1 ? d_tc_splitk : nullptr, d_gemv_tbl);
                 if (e != cudaSuccess)
                     return fail(e, "tc-batch experts l" + std::to_string(l));
             } else if (nohandshake) {
