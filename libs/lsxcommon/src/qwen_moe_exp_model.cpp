@@ -241,7 +241,7 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
     const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
     cudaError_t e = RunUnderResidencyLock([&] {
         return qwen_moe_exp::RunExpGeneration(
-            stream(), pw_, experts_, cache_, ple_state_, qsa_,
+            stream(), pw_, experts_, cache_, ple_state_, qsa_, ple_shards_,
             session.gen_input, req.max_gen_tokens, eos_id, gen,
             lsxcommon::sample::DefaultSampler(), kv_.get());
     });

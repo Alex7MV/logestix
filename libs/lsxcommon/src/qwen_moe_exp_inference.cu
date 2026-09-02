@@ -1,4 +1,5 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
+#include "qwen_moe_exp_constants.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"
 
@@ -1018,6 +1019,7 @@ cudaError_t RunExpGeneration(
     qwen_moe_exp::ExpExpertStore &store, gpu::ExpertDeviceCache &cache,
     qwen_moe_exp::ExpPleState &ple,
     std::vector<qwen_moe_exp::ExpQsaIndexerState> &qsa,
+    const std::vector<qwen_moe_exp::ExpPleShardView> &ple_shards,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
     qwen::QwenKvCache *kv)
@@ -1208,6 +1210,7 @@ cudaError_t RunExpGeneration(
     cudaEventCreate(&tok_ready_ev);
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
+    std::vector<int32_t> token_history;  // PLE n-gram context (grows)
     const int prompt_steps = static_cast<int>(prompt.size());
 
     const int total_steps = prompt_steps + max_new - 1;
@@ -1236,6 +1239,84 @@ cudaError_t RunExpGeneration(
         // hidden -> 4 streams.
         exp_repeat_hc_kernel<<<(H + threads - 1) / threads, threads, 0, stream>>>(
             d_act, H, hc, d_hyper);
+        // PLE n-gram context: previous tokens (eos-padded), host mirror.
+        token_history.push_back(cur);
+        if (token_history.size() > 64) token_history.erase(token_history.begin());
+        if (!ple_shards.empty() && pw.ple_meta.num_heads > 0) {
+            // HF Qwen4ExpTextNGramEmbedding.forward decode: shifted tokens
+            // [0..ngram_size-1] over the token history (eos-padded context),
+            // hashed with splitmix64 multipliers, per-head prime mod.
+            const auto &meta = pw.ple_meta;
+            const int ctx_len = meta.context_len;              // 2
+            const int64_t eos = lsxcommon::qwen_moe_exp::frozen::kEosSecondary;
+            auto tok_at = [&](int back) {
+                const int64_t total = static_cast<int64_t>(token_history.size());
+                const int64_t idx = total - 1 - back;
+                return idx >= 0 ? token_history[static_cast<size_t>(idx)] : eos;
+            };
+            const int32_t t0 = tok_at(0), t1 = tok_at(1), t2 = tok_at(2);
+            const int heads_per = meta.num_heads / ctx_len;    // 8
+            // head_dim 160; each head contributes head_dim floats; gather
+            // heads*head_dim floats total into d_emb_rows.
+            std::vector<float> emb_rows(meta.num_heads * meta.head_dim);
+            for (int h = 0; h < meta.num_heads; ++h) {
+                int64_t mixed;
+                if (h < heads_per) {
+                    // bigram heads: shifted[0]*m0 xor shifted[1]*m1
+                    mixed = (static_cast<int64_t>(t0) * meta.multipliers[0]) ^
+                            (static_cast<int64_t>(t1) * meta.multipliers[1]);
+                } else {
+                    // trigram heads
+                    mixed = (static_cast<int64_t>(t0) * meta.multipliers[0]) ^
+                            (static_cast<int64_t>(t1) * meta.multipliers[1]) ^
+                            (static_cast<int64_t>(t2) * meta.multipliers[2]);
+                }
+                const int64_t idx = (mixed % meta.head_vocab_sizes[h] +
+                                     meta.head_vocab_sizes[h]) %
+                                        meta.head_vocab_sizes[h];
+                const int64_t flat = meta.head_offsets[h] + idx;
+                // shard s holds contiguous rows of the padded vocab:
+                // rows_per_shard = padded_vocab / split_parts
+                const int rows_per = static_cast<int>(
+                    ple_shards.empty() ? 0 : 1);
+                (void)rows_per;
+                // Locate the shard containing this flat row (round-robin by
+                // the converter's shard partitioning: shard = flat % parts
+                // would be wrong; the converter stored shards sequentially —
+                // row r of shard s corresponds to flat = s*rows_per + r).
+                // HF splits the padded vocab column-wise across
+                // split_ngram_parts shards: shard s holds rows [s*rows_per,
+                // (s+1)*rows_per).
+                const int64_t padded = meta.padded_vocab;
+                const int64_t rows_per_shard = padded / 128;
+                const int shard = static_cast<int>(flat / rows_per_shard);
+                const int64_t row = flat % rows_per_shard;
+                if (shard < static_cast<int>(ple_shards.size())) {
+                    const uint8_t *base = ple_shards[static_cast<size_t>(shard)]
+                                              .data;
+                    // Each shard file embeds one BF16 [rows, head_dim] tensor
+                    // inside the Arrow container; the view data points at the
+                    // record payload.
+                    const int64_t row_bytes =
+                        static_cast<int64_t>(meta.head_dim) * 2;
+                    const uint8_t *src = base + row * row_bytes;
+                    // BF16 -> float into the tail of the gather buffer.
+                    float *dst = emb_rows.data() +
+                                 static_cast<int64_t>(h) * meta.head_dim;
+                    for (int d = 0; d < meta.head_dim; ++d) {
+                        const uint16_t b16 = static_cast<uint16_t>(src[d * 2]) |
+                                             (static_cast<uint16_t>(src[d * 2 + 1])
+                                              << 8);
+                        uint32_t u = static_cast<uint32_t>(b16) << 16;
+                        float f;
+                        memcpy(&f, &u, 4);
+                        dst[d] = f;
+                    }
+                }
+            }
+            cudaMemcpy(d_emb_rows, emb_rows.data(),
+                       emb_rows.size() * sizeof(float), cudaMemcpyHostToDevice);
+        }
 
         for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
             const qwen_moe_exp::ExpLayerWeights &lw = pw.layers[l];

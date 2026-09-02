@@ -132,6 +132,7 @@ cudaError_t RunExpGeneration(
     cudaStream_t stream, const ExpPinnedWeights &pw,
     ExpExpertStore &store, gpu::ExpertDeviceCache &cache, ExpPleState &ple,
     std::vector<ExpQsaIndexerState> &qsa,
+    const std::vector<ExpPleShardView> &ple_shards,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
     qwen::QwenKvCache *kv);
