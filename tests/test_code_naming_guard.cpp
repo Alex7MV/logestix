@@ -27,7 +27,7 @@ std::regex SchemeRegex()
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b)";
-    const std::string subsys = "(?:attn|csa|head|moe|pipeline)";
+    const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
         "|load"
@@ -40,7 +40,7 @@ std::regex SchemeRegex()
         "|device_math"
         "|norm_kernels"
         "|constants)";
-    return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?" + "_" + tail + "$");
+    return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?" + "(?:_exp)?" + "_" + tail + "$");
 }
 
 const std::vector<std::string>& FamilyStems()
@@ -125,4 +125,16 @@ TEST_CASE("naming guard: family files match family_type_[variant_]role[_subsyste
     }
     INFO("naming violations (" << violations.size() << "):\n" << joined);
     REQUIRE(violations.empty());
+}
+
+TEST_CASE("naming guard accepts qwen_moe_exp_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("qwen_moe_exp_convert"));
+    CHECK(m("qwen_moe_exp_inference"));
+    CHECK(m("qwen_moe_exp_model"));
+    CHECK(m("qwen_moe_exp_load"));
+    CHECK(m("qwen_moe_exp_constants"));
 }
