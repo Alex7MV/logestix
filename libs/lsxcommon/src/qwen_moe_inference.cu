@@ -1644,13 +1644,11 @@ cudaError_t RunQwenMoeGeneration(
                 // folds the seed into its reduce kernel (same fp32 order) and
                 // skips this launch.
                 const int64_t n = seq * H;
-                if (!kTcBatchGeom) {
-                    qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
-                                               threads, 0, stream>>>(d_act, d_moe_acc,
-                                                                     n);
-                    e = cudaGetLastError();
-                    if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
-                }
+                qwen_moe_init_acc_kernel<<<(int)((n + threads - 1) / threads),
+                                           threads, 0, stream>>>(d_act, d_moe_acc,
+                                                                 n);
+                e = cudaGetLastError();
+                if (e != cudaSuccess) return fail(e, "acc-init l" + std::to_string(l));
             }
             // No-handshake mode (full residency steady state): the routed
             // chain composes its table on device from d_slots; the host
