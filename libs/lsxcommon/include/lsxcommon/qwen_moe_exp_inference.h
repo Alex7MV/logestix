@@ -26,7 +26,7 @@ cudaError_t RunExpHcGatedResidual(
 
 // Test-only raw-float twin (identical op sequence, no NVFP4 decode, no BF16
 // norm cast) for bit-parity against the host replica in
-// qwen_moe_exp_hostref.h. down/up/inject passed as raw fp32 row-major.
+// qwen_moe_exp_device_math.h. down/up/inject passed as raw fp32 row-major.
 cudaError_t RunExpHcGatedResidualF32(
     cudaStream_t stream, const float *d_hyper_input, const float *d_down,
     const float *d_up, const float *d_inject_w, int seq, int H, int hc,

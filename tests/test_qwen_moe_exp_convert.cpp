@@ -260,7 +260,7 @@ TEST_CASE("real-model conversion hard-fails on synthetic geometry",
     fs::remove_all(out, ec);
 }
 
-#include "qwen_moe_exp_hostref.h"
+#include "qwen_moe_exp_device_math.h"
 
 #include <cmath>
 #include <random>

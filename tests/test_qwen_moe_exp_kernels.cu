@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
-#include "qwen_moe_exp_hostref.h"
+#include "qwen_moe_exp_device_math.h"
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
 #include <cmath>
