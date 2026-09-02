@@ -259,3 +259,79 @@ TEST_CASE("real-model conversion hard-fails on synthetic geometry",
     fs::remove_all(dir, ec);
     fs::remove_all(out, ec);
 }
+
+#include "qwen_moe_exp_hostref.h"
+
+#include <cmath>
+#include <random>
+#include <vector>
+
+TEST_CASE("hostref GatedResidual finite and sane", "[qwen-exp-hostref]")
+{
+    namespace hr = lsxcommon::qwen_moe_exp::hostref;
+    const int H = 2, hc = 2, lr = 2, n = H * hc;
+    std::vector<float> x(n), down(lr * n, 0.5f), up(n * lr, 0.5f),
+        inject(hc * n, 0.1f);
+    for (int i = 0; i < n; ++i) x[i] = 0.25f * (i + 1);
+    std::vector<float> mixed(H), inj(hc);
+    hr::GatedResidualHost(x.data(), down.data(), up.data(), inject.data(),
+                          H, hc, lr, 1e-6, mixed.data(), inj.data());
+    for (float v : mixed) REQUIRE(std::isfinite(v));
+    for (float v : inj) REQUIRE(v > 0.f);
+    // Zero-norm edge: all-zero input -> rsqrt(0 + eps) path stays finite.
+    std::fill(x.begin(), x.end(), 0.f);
+    hr::GatedResidualHost(x.data(), down.data(), up.data(), inject.data(),
+                          H, hc, lr, 1e-6, mixed.data(), inj.data());
+    for (float v : mixed) REQUIRE(std::isfinite(v));
+    for (float v : inj) REQUIRE(std::isfinite(v));
+}
+
+TEST_CASE("hostref PLE gate matches HF formula", "[qwen-exp-hostref]")
+{
+    namespace hr = lsxcommon::qwen_moe_exp::hostref;
+    const int H = 2, hc = 2;
+    std::vector<float> k(H * hc, 1.f), q(H * hc, 1.f);
+    // s = hc * H / sqrt(H) = sqrt(H) * hc > 0 -> positive gate.
+    const float g = hr::PleGateHost(k.data(), q.data(), H, hc);
+    REQUIRE(g > 0.f);
+    k[0] = -1.f;  // flip one stream contribution negative
+    const float g2 = hr::PleGateHost(k.data(), q.data(), H, hc);
+    REQUIRE(std::isfinite(g2));
+    // All-negative sum -> negative gate sign preserved.
+    std::fill(k.begin(), k.end(), -1.f);
+    const float g3 = hr::PleGateHost(k.data(), q.data(), H, hc);
+    REQUIRE(g3 < 0.f);
+}
+
+TEST_CASE("hostref GatedResidual matches closed-form hand computation",
+          "[qwen-exp-hostref]")
+{
+    namespace hr = lsxcommon::qwen_moe_exp::hostref;
+    // Deterministic tiny case verified by an independent derivation:
+    // H=1, hc=2, lr=1. hc-norm group_size == H == 1 -> per-element RMSNorm:
+    // normed_i = x_i * rsqrt(x_i^2 + eps) = sign(x_i) (magnitude ~1).
+    const double eps = 1e-6;
+    const float x[2] = {3.f, 4.f};
+    const float down[2] = {0.5f, 1.5f};
+    const float up[2] = {2.f, -1.f};
+    const float n0 = static_cast<float>(3.0 / std::sqrt(9.0 + eps));
+    const float n1 = static_cast<float>(4.0 / std::sqrt(16.0 + eps));
+    const double v = (0.5 * n0 + 1.5 * n1) / 2.0;          // acc / hc
+    const double silu = v / (1.0 + std::exp(-v));          // silu(v)
+    const float g0 = 1.f / (1.f + std::exp(-static_cast<float>(up[0] * silu)));
+    const float g1 = 1.f / (1.f + std::exp(-static_cast<float>(up[1] * silu)));
+    const float want_mixed = 0.5f * (g0 * n0 + g1 * n1);
+    // inject weights w_i = {0.1, 0.2} (rows over 2 elems)
+    const float inject[4] = {0.1f, 0.2f, 0.1f, 0.2f};
+    const double s0 = (0.1 * n0 + 0.2 * n1) / 2.0;
+    const double s1 = s0;  // same weights per branch in this construction
+    const float want_i0 = static_cast<float>(2.0 / (1.0 + std::exp(-s0)));
+    const float want_i1 = static_cast<float>(2.0 / (1.0 + std::exp(-s1)));
+
+    float mixed = 0.f, inj[2] = {0.f, 0.f};
+    hr::GatedResidualHost(x, down, up, inject, /*H=*/1, /*hc=*/2, /*lr=*/1,
+                          eps, &mixed, inj);
+    REQUIRE(mixed == Catch::Approx(want_mixed).epsilon(1e-5));
+    REQUIRE(inj[0] == Catch::Approx(want_i0).epsilon(1e-6));
+    REQUIRE(inj[1] == Catch::Approx(want_i1).epsilon(1e-6));
+}

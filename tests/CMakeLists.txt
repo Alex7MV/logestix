@@ -2227,6 +2227,8 @@ target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
 target_link_libraries(test_qwen_moe_exp_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_qwen_moe_exp_convert PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
@@ -2251,6 +2253,8 @@ target_compile_definitions(test_qwen_moe_exp_loader PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
 target_link_libraries(test_qwen_moe_exp_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_qwen_moe_exp_loader PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_loader POST_BUILD
