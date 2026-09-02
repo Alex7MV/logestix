@@ -5,7 +5,10 @@
 
 #include <cstdint>
 
+#include <cuda_bf16.h>
+
 #include "lsxcommon/qwen_inference.h"  // QwenNvfp4Weight
+#include "lsxcommon/qwen_moe_inference.h"  // QwenMoeRoutedSlot + router kernel
 
 namespace lsxcommon::qwen_moe_exp {
 
@@ -77,5 +80,47 @@ cudaError_t RunExpQsaAttention(cudaStream_t stream, const __half *d_q,
                                const int *d_selected_mask, int seq,
                                int past_ctx, int heads, int kv_heads,
                                int head_dim, float scale, __half *d_out);
+
+
+// ── PLE n-gram inject state + kernel (Task 6) ────────────────────────────
+
+// Incremental state for the dilated depthwise short-conv over the gated
+// PLE values: rolling window of the last (k-1)*dilation gated rows.
+struct ExpPleState {
+    float *d_window = nullptr;   // [state_len, hc*H] fp32 gated+normed rows
+    int32_t *d_ctx = nullptr;    // [state_len] rolling token ids (host mirror)
+    int state_len = 0;
+    int H = 0;
+    int hc = 0;
+};
+
+cudaError_t ExpPleStateAlloc(ExpPleState &st, int H, int hc, int state_len);
+void ExpPleStateFree(ExpPleState &st);
+
+// Single-token PLE inject (decode path):
+//   key   = ple_key_proj @ emb_row            [hc*H]
+//   query = group-RMS(hidden) with norm_query
+//   gate  = sign(q·k / sqrt(H)) * sqrt(|q·k| clamp 1e-6)
+//   value = ple_value_proj @ emb_row          [H]
+//   gated = sigmoid(gate) * value broadcast to hc streams; norm_conv (1+w);
+//   out   = gated + dilated_conv(window); hidden += out (in-place).
+// d_emb_row: [heads*head_dim] fp32 gathered n-gram embedding rows (host
+// pre-gathered from the mmap shards). d_token: current token id.
+// d_ple_conv_w: depthwise conv weights [hc*H, k] fp32.
+cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
+                            const qwen::QwenNvfp4Weight &key_proj,
+                            const qwen::QwenNvfp4Weight &value_proj,
+                            const uint8_t *d_norm_key,
+                            const uint8_t *d_norm_query,
+                            const uint8_t *d_norm_conv,
+                            const qwen::QwenNvfp4Weight &ple_conv,
+                            const int32_t *d_token, const float *d_emb_row,
+                            int heads, int head_dim, float eps,
+                            __half *d_hidden /*[hc*H] in/out*/);
+
+// Router top-10 (thin wrapper over the parameterized qwen router kernel).
+cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,
+                              const __half *d_x, int seq, int H, int E, int K,
+                              qwen_moe::QwenMoeRoutedSlot *d_slots);
 
 } // namespace lsxcommon::qwen_moe_exp
