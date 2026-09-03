@@ -1102,12 +1102,26 @@ bool AllocateQwen4ExpExpertCache(ExpExpertStore &store, int slots,
     cache.h_slot_of = new int32_t[static_cast<size_t>(cache.total_experts)];
     cache.h_slot_owner = new int32_t[static_cast<size_t>(slots)];
     cache.h_lru = new int32_t[static_cast<size_t>(slots)];
+    // O(1) recency chain + free-slot stack (the legacy h_lru array is kept
+    // for diagnostics; per-insert linear scans over 8k+ slots dominated the
+    // host loop at high miss rates).
+    cache.h_prev = new int32_t[static_cast<size_t>(slots)];
+    cache.h_next = new int32_t[static_cast<size_t>(slots)];
+    cache.h_free = new int32_t[static_cast<size_t>(slots)];
     for (int i = 0; i < cache.total_experts; ++i)
         cache.h_slot_of[i] = -1;
     for (int i = 0; i < slots; ++i) {
         cache.h_slot_owner[i] = -1;
         cache.h_lru[i] = i;
+        // All slots start free: stack in descending order pops 0 first
+        // (lowest-free-slot-first semantics preserved).
+        cache.h_free[i] = slots - 1 - i;
+        cache.h_prev[i] = -1;
+        cache.h_next[i] = -1;
     }
+    cache.h_free_top = slots;
+    cache.h_lru_front = -1;
+    cache.h_lru_back = -1;
     cache.hits = 0;
     cache.misses = 0;
     return true;
@@ -1122,9 +1136,18 @@ void FreeQwen4ExpExpertCache(gpu::ExpertDeviceCache &cache)
     delete[] cache.h_slot_of;
     delete[] cache.h_slot_owner;
     delete[] cache.h_lru;
+    delete[] cache.h_prev;
+    delete[] cache.h_next;
+    delete[] cache.h_free;
     cache.h_slot_of = nullptr;
     cache.h_slot_owner = nullptr;
     cache.h_lru = nullptr;
+    cache.h_prev = nullptr;
+    cache.h_next = nullptr;
+    cache.h_free = nullptr;
+    cache.h_free_top = 0;
+    cache.h_lru_front = -1;
+    cache.h_lru_back = -1;
     cache.d_pack = nullptr;
     cache.d_scale = nullptr;
     cache.slots = 0;

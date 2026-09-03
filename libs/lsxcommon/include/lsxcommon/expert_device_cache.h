@@ -34,6 +34,16 @@ struct ExpertDeviceCache {
     int32_t *h_slot_of = nullptr;     // [total_experts] flat idx -> slot, -1 = miss
     int32_t *h_slot_owner = nullptr;  // [slots] flat idx or -1
     int32_t *h_lru = nullptr;         // [slots]; h_lru[0] = MRU slot
+    // O(1) LRU bookkeeping (doubly-linked over slot indices): prev/next in
+    // recency order, h_lru_front = MRU slot, h_lru_back = LRU slot.
+    // Maintained alongside h_lru; free slots form the back segment.
+    int32_t *h_prev = nullptr;        // [slots] or null (legacy mode)
+    int32_t *h_next = nullptr;        // [slots] or null (legacy mode)
+    int32_t h_lru_front = -1;
+    int32_t h_lru_back = -1;
+    // O(1) free-slot stack: h_free[i] = slot index, h_free_top = count.
+    int32_t *h_free = nullptr;        // [slots] or null (legacy mode)
+    int h_free_top = 0;
     // Hit/miss counters (diagnostics): hits in Lookup, misses in Insert.
     int64_t hits = 0;
     int64_t misses = 0;
@@ -46,9 +56,35 @@ struct ExpertDeviceCache {
             : 0;
     }
 
+    // O(1) unlink from the doubly-linked recency chain.
+    void DlUnlink(int slot)
+    {
+        const int p = h_prev[slot], n = h_next[slot];
+        if (p >= 0) h_next[p] = n; else h_lru_front = n;
+        if (n >= 0) h_prev[n] = p; else h_lru_back = p;
+    }
+
+    // O(1) link at the MRU (front) end of the recency chain.
+    void DlPushFront(int slot)
+    {
+        h_prev[slot] = -1;
+        h_next[slot] = h_lru_front;
+        if (h_lru_front >= 0) h_prev[h_lru_front] = slot;
+        else h_lru_back = slot;
+        h_lru_front = slot;
+    }
+
     // Moves a slot to the MRU position of h_lru (remove + insert-at-front).
+    // The legacy array shift runs only when the O(1) structures are absent.
     void Touch(int slot)
     {
+        if (h_prev) {
+            if (h_lru_front != slot) {
+                DlUnlink(slot);
+                DlPushFront(slot);
+            }
+            return;
+        }
         int j = 0;
         while (j < slots && h_lru[j] != slot) ++j;
         if (j >= slots) return;
@@ -75,17 +111,24 @@ struct ExpertDeviceCache {
     int Insert(int flat)
     {
         int slot = -1;
-        for (int i = 0; i < slots; ++i) {
-            if (h_slot_owner[i] < 0) { slot = i; break; }
+        if (h_free) {
+            if (h_free_top > 0) slot = h_free[--h_free_top];
+        } else {
+            for (int i = 0; i < slots; ++i) {
+                if (h_slot_owner[i] < 0) { slot = i; break; }
+            }
         }
         if (slot < 0) {
-            slot = h_lru[slots - 1];
+            // Evict the LRU tail.
+            slot = h_prev ? h_lru_back : h_lru[slots - 1];
             const int victim = h_slot_owner[slot];
             if (victim >= 0 && victim < total_experts) h_slot_of[victim] = -1;
+            if (h_prev) DlUnlink(slot);
         }
         h_slot_of[flat] = slot;
         h_slot_owner[slot] = flat;
-        Touch(slot);
+        if (h_prev) DlPushFront(slot);
+        else Touch(slot);
         ++misses;
         return slot;
     }
