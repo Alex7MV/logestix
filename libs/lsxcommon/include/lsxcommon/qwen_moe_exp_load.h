@@ -9,9 +9,28 @@
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
 #include "lsxcommon/qwen_moe_load.h"  // QwenMoeExpertStore base + record types
-#include "lsxcommon/qwen_moe_exp_hc_cache.h"
 
 namespace lsxcommon::qwen_moe_exp {
+
+// Dequantized fp16 twin of a layer's hyper-connection weights (down/up +
+// optional inject), built once at load. Eliminates the per-token
+// dequantize-everything cost of the hc GatedResidual path.
+struct ExpHcDequantCache {
+    __half *down = nullptr;    // [lowrank, hc*H]
+    __half *up = nullptr;      // [hc*H, lowrank]
+    __half *inject = nullptr;  // [hc, hc*H]; null when absent (mixer)
+    int64_t down_elems = 0, up_elems = 0, inject_elems = 0;
+
+    void Free();
+};
+
+// Dequantizes the three hc weights once (on load). The mixer passes an
+// empty inject_w: inject cache stays null. Strict on allocation failure.
+cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
+                                   const qwen::QwenNvfp4Weight &down,
+                                   const qwen::QwenNvfp4Weight &up,
+                                   const qwen::QwenNvfp4Weight &inject_w,
+                                   ExpHcDequantCache &out);
 
 // Per-layer device weights: reused dense attention block + qwen4_exp extras
 // (hyper-connection norms kept BF16 on device; hc down/up/inject NVFP4;
