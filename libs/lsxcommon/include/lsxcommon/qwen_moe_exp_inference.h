@@ -14,10 +14,22 @@
 
 namespace lsxcommon::qwen_moe_exp {
 
+// Dequantized hc weight cache type lives in qwen_moe_exp_hc_cache.h
+// (shared with the loader header).
+
+// GatedResidual hyper-connection consuming the pre-dequantized cache
+// (fast path). Mixed output lands in d_mixed (fp32) + d_mixed_h (fp16).
+cudaError_t RunExpHcGatedResidualCached(
+    cudaStream_t stream, const __half *d_hyper_input,
+    const ExpHcDequantCache &w, const uint8_t *d_hc_norm, int seq, int H,
+    int hc, int lowrank, float *d_mixed, float *d_inject_out,
+    __half *d_mixed_h);
+
 // GatedResidual hyper-connection: mixed[H] + injection weights[hc] per token.
 // d_hyper_input: [seq, hc*H] __half. d_hc_norm: BF16 bit-cast weight [hc*H]
 // (1 + w centering applied on device). d_normed_scratch: [seq, hc*H] __half
 // workspace (caller-owned). Math: fp32 intermediates, -fmad=false contract.
+// Legacy per-call dequant path (fallback when no cache is attached).
 cudaError_t RunExpHcGatedResidual(
     cudaStream_t stream, const __half *d_hyper_input,
     const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
@@ -46,6 +58,12 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
                           const qwen::QwenNvfp4Weight &up,
                           const uint8_t *d_mixer_norm, int seq, int H, int hc,
                           int lowrank, __half *d_out, __half *d_normed_scratch);
+
+// Mixer over the pre-dequantized hc cache (fast path).
+cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
+                                const ExpHcDequantCache &w,
+                                const uint8_t *d_mixer_norm, int seq, int H,
+                                int hc, int lowrank, __half *d_out);
 
 // ── QSA indexer state + kernels (Task 5) ─────────────────────────────────
 

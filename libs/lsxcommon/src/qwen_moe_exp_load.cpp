@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <vector>
 
 #ifndef _WIN32
@@ -242,6 +243,8 @@ void ExpLayerWeightsFree(ExpLayerWeights &lw)
     if (lw.d_attn_hc_norm) { cudaFree(lw.d_attn_hc_norm); lw.d_attn_hc_norm = nullptr; }
     if (lw.d_mlp_hc_norm) { cudaFree(lw.d_mlp_hc_norm); lw.d_mlp_hc_norm = nullptr; }
     lw.hc_norm_bytes = 0;
+    if (lw.attn_hc_cache) { lw.attn_hc_cache->Free(); delete lw.attn_hc_cache; lw.attn_hc_cache = nullptr; }
+    if (lw.mlp_hc_cache) { lw.mlp_hc_cache->Free(); delete lw.mlp_hc_cache; lw.mlp_hc_cache = nullptr; }
     lw.attn_hc_down.Free();
     lw.attn_hc_up.Free();
     lw.attn_hc_inject.Free();
@@ -274,6 +277,7 @@ void ExpPinnedWeights::Free()
     head_elems = 0;
     if (d_mixer_norm) { cudaFree(d_mixer_norm); d_mixer_norm = nullptr; }
     mixer_norm_bytes = 0;
+    if (mixer_hc_cache) { mixer_hc_cache->Free(); delete mixer_hc_cache; mixer_hc_cache = nullptr; }
     mixer_down.Free();
     mixer_up.Free();
     if (d_final_norm) { cudaFree(d_final_norm); d_final_norm = nullptr; }
@@ -433,6 +437,18 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             if (e != cudaSuccess || !pw.mixer_down.d_packed ||
                 !pw.mixer_up.d_packed) {
                 error = "global hc mixer weights incomplete";
+                pw.Free();
+                return false;
+            }
+            pw.mixer_hc_cache = new (std::nothrow) ExpHcDequantCache();
+            cudaError_t mhe = pw.mixer_hc_cache
+                                  ? BuildExpHcDequantCache(
+                                        stream, pw.mixer_down, pw.mixer_up,
+                                        qwen::QwenNvfp4Weight{},
+                                        *pw.mixer_hc_cache)
+                                  : cudaErrorMemoryAllocation;
+            if (mhe != cudaSuccess) {
+                error = "global hc mixer dequant cache build failed";
                 pw.Free();
                 return false;
             }
@@ -643,6 +659,36 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
                 pw.Free();
                 return false;
             }
+
+            // One-time dequant of the six hc matrices into per-layer fp16
+            // caches: removes the per-token per-layer dequant (the largest
+            // single decode cost of this architecture). Bit-identical to the
+            // legacy path (same dequant kernel; fp16->fp32 upcast lossless).
+            auto build_hc = [&](ExpHcDequantCache **slot,
+                                const qwen::QwenNvfp4Weight &dn,
+                                const qwen::QwenNvfp4Weight &up,
+                                const qwen::QwenNvfp4Weight &inj) -> cudaError_t {
+                *slot = new (std::nothrow) ExpHcDequantCache();
+                if (!*slot) return cudaErrorMemoryAllocation;
+                cudaError_t bhe =
+                    BuildExpHcDequantCache(stream, dn, up, inj, **slot);
+                if (bhe != cudaSuccess) {
+                    (*slot)->Free();
+                    delete *slot;
+                    *slot = nullptr;
+                }
+                return bhe;
+            };
+            e = build_hc(&lw.attn_hc_cache, lw.attn_hc_down, lw.attn_hc_up,
+                         lw.attn_hc_inject);
+            if (e == cudaSuccess)
+                e = build_hc(&lw.mlp_hc_cache, lw.mlp_hc_down, lw.mlp_hc_up,
+                             lw.mlp_hc_inject);
+            if (e != cudaSuccess) {
+                error = absl::StrCat("layer_", l, ": hc dequant cache build failed");
+                pw.Free();
+                return false;
+            }
         }
 
         // MoE extras: router (BF16 raw), shared expert trio + scalar gate.
@@ -804,9 +850,14 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
 
 void ExpExpertStore::Free()
 {
+    // All layer slabs share one pinned arena; release it once.
+    if (arena_base) {
+        cudaFreeHost(arena_base);
+        arena_base = nullptr;
+    }
+    arena_bytes = 0;
     for (auto &p : h_slabs)
-        if (p) cudaFreeHost(p);
-    h_slabs.clear();
+        p = nullptr;
     slab_bytes.clear();
     records.clear();
     if (d_seg_wgs) cudaFree(d_seg_wgs);
@@ -852,6 +903,12 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
     store.h_slabs.assign(static_cast<size_t>(store.num_layers), nullptr);
     store.slab_bytes.assign(static_cast<size_t>(store.num_layers), 0);
 
+    // First pass: build all records with GLOBAL arena offsets and measure
+    // per-layer sizes so a single pinned arena can back every slab.
+    // Per-layer cudaMallocHost of ~1.4GB slabs costs ~660ms page-locking
+    // each (31.8s over 48 layers); one big allocation pays it exactly once.
+    size_t arena_bytes = 0;
+    std::vector<size_t> layer_totals(static_cast<size_t>(store.num_layers), 0);
     for (int l = 0; l < store.num_layers; ++l) {
         const fs::path layer_dir = experts_dir / absl::StrCat("layer_", l);
 
@@ -873,13 +930,12 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
             error = absl::StrCat("no expert files in layer_", l);
             return false;
         }
+        if (store.num_experts != E) {
+            error = absl::StrCat("layer_", l, ": expert count ", E,
+                                 " != ", store.num_experts);
+            return false;
+        }
 
-        // Build all records, staging payloads once (single disk pass), then
-        // one pinned slab per layer.
-        struct StagedExpert {
-            std::vector<uint8_t> w1, w2, w3, s1, s2, s3;
-        };
-        std::vector<StagedExpert> staged(static_cast<size_t>(E));
         auto &recs = store.records[static_cast<size_t>(l)];
         recs.assign(static_cast<size_t>(E), {});
         size_t total = 0;
@@ -897,53 +953,79 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
                 return false;
             }
             auto &pe = *pe_res;
-            auto &st = staged[static_cast<size_t>(e)];
-            st.w1 = std::move(pe.w1_packed);
-            st.w2 = std::move(pe.w2_packed);
-            st.w3 = std::move(pe.w3_packed);
-            st.s1 = std::move(pe.w1_scales);
-            st.s2 = std::move(pe.w2_scales);
-            st.s3 = std::move(pe.w3_scales);
             auto &r = recs[static_cast<size_t>(e)];
-            r.w1_off = total; r.w1_bytes = static_cast<int64_t>(st.w1.size());
+            r.w1_off = static_cast<int64_t>(arena_bytes + total);
+            r.w1_bytes = static_cast<int64_t>(pe.w1_packed.size());
             total += r.w1_bytes;
-            r.w2_off = total; r.w2_bytes = static_cast<int64_t>(st.w2.size());
+            r.w2_off = static_cast<int64_t>(arena_bytes + total);
+            r.w2_bytes = static_cast<int64_t>(pe.w2_packed.size());
             total += r.w2_bytes;
-            r.w3_off = total; r.w3_bytes = static_cast<int64_t>(st.w3.size());
+            r.w3_off = static_cast<int64_t>(arena_bytes + total);
+            r.w3_bytes = static_cast<int64_t>(pe.w3_packed.size());
             total += r.w3_bytes;
             r.gs1 = pe.w1_global_scale;
             r.gs2 = pe.w2_global_scale;
             r.gs3 = pe.w3_global_scale;
             // Scales stored after the packed region with 16B alignment.
             total = AlignUp(total, 16);
-            r.s1_off = total; r.s1_bytes = static_cast<int64_t>(st.s1.size()); total += r.s1_bytes;
-            r.s2_off = total; r.s2_bytes = static_cast<int64_t>(st.s2.size()); total += r.s2_bytes;
-            r.s3_off = total; r.s3_bytes = static_cast<int64_t>(st.s3.size()); total += r.s3_bytes;
+            r.s1_off = static_cast<int64_t>(arena_bytes + total);
+            r.s1_bytes = static_cast<int64_t>(pe.w1_scales.size());
+            total += r.s1_bytes;
+            r.s2_off = static_cast<int64_t>(arena_bytes + total);
+            r.s2_bytes = static_cast<int64_t>(pe.w2_scales.size());
+            total += r.s2_bytes;
+            r.s3_off = static_cast<int64_t>(arena_bytes + total);
+            r.s3_bytes = static_cast<int64_t>(pe.w3_scales.size());
+            total += r.s3_bytes;
         }
+        layer_totals[static_cast<size_t>(l)] = total;
         store.slab_bytes[static_cast<size_t>(l)] = total;
+        arena_bytes += total;
+    }
 
-        uint8_t *slab = nullptr;
-        if (cudaMallocHost(reinterpret_cast<void **>(&slab), total) !=
-            cudaSuccess) {
-            error = absl::StrCat("pinned slab alloc failed (layer ", l, ")");
-            return false;
-        }
-        store.h_slabs[static_cast<size_t>(l)] = slab;
+    // Single pinned arena backing all layer slabs; every slab points at the
+    // arena base and record offsets are already global.
+    uint8_t *arena = nullptr;
+    if (cudaMallocHost(reinterpret_cast<void **>(&arena), arena_bytes) !=
+        cudaSuccess) {
+        error = absl::StrCat("pinned expert arena alloc failed (",
+                             arena_bytes, " bytes)");
+        return false;
+    }
+    store.arena_base = arena;
+    store.arena_bytes = arena_bytes;
 
+    // Second pass: stream expert payloads straight into the arena.
+    for (int l = 0; l < store.num_layers; ++l) {
+        const fs::path layer_dir = experts_dir / absl::StrCat("layer_", l);
+        const int E = store.num_experts;
+        auto &recs = store.records[static_cast<size_t>(l)];
         for (int e = 0; e < E; ++e) {
-            const auto &st = staged[static_cast<size_t>(e)];
+            const std::string path =
+                (layer_dir / absl::StrCat("exp_", e, ".arrow")).string();
+            auto batch_res = ReadRecordBatchFromFile(path);
+            if (!batch_res.ok()) {
+                error = absl::StrCat("read failed: ", path);
+                return false;
+            }
+            auto pe_res = ExpertSchema::UnpackBatch(*batch_res);
+            if (!pe_res.ok()) {
+                error = absl::StrCat("unpack failed: ", path);
+                return false;
+            }
+            auto &pe = *pe_res;
             const auto &r = recs[static_cast<size_t>(e)];
-            std::memcpy(slab + r.w1_off, st.w1.data(), r.w1_bytes);
-            std::memcpy(slab + r.w2_off, st.w2.data(), r.w2_bytes);
-            std::memcpy(slab + r.w3_off, st.w3.data(), r.w3_bytes);
-            std::memcpy(slab + r.s1_off, st.s1.data(), r.s1_bytes);
-            std::memcpy(slab + r.s2_off, st.s2.data(), r.s2_bytes);
-            std::memcpy(slab + r.s3_off, st.s3.data(), r.s3_bytes);
+            std::memcpy(arena + r.w1_off, pe.w1_packed.data(), r.w1_bytes);
+            std::memcpy(arena + r.w2_off, pe.w2_packed.data(), r.w2_bytes);
+            std::memcpy(arena + r.w3_off, pe.w3_packed.data(), r.w3_bytes);
+            std::memcpy(arena + r.s1_off, pe.w1_scales.data(), r.s1_bytes);
+            std::memcpy(arena + r.s2_off, pe.w2_scales.data(), r.s2_bytes);
+            std::memcpy(arena + r.s3_off, pe.w3_scales.data(), r.s3_bytes);
         }
-        staged.clear();
-        staged.shrink_to_fit();
+        store.h_slabs[static_cast<size_t>(l)] = arena;
         log::info(absl::StrCat("[qwen_moe_exp_load] layer_", l, ": ", E,
-                               " experts, ", total >> 10, " KiB pinned"));
+                               " experts, ", layer_totals[static_cast<size_t>(l)] >> 10,
+                               " KiB pinned (shared arena)"));
     }
 
     // Device-side per-expert {gs1, gs3} pairs for the fused w13 GEMM

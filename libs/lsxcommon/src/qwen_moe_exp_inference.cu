@@ -29,15 +29,22 @@ namespace {
 //   mixed[h] = mean_c up[c*H+h] * normed[c*H+h]
 //   inj[c]   = 2 * sigmoid( (W_inj @ normed)[c] / hc )
 //
-// W matrices arrive fp32 row-major: down [lowrank, n], up [n, lowrank],
-// inject [hc, n], n = hc*H. Deterministic tree reduction, ascending index,
-// no atomics, shared-memory writes by thread 0 only (protocol step 6).
+// W matrices arrive as WeightT (float row-major for the raw twin, __half for
+// the dequant-cache path — fp16->double upcast is lossless, so both paths
+// produce bit-identical results). Deterministic tree reduction, ascending
+// index, no atomics, shared-memory writes by thread 0 only (protocol step 6).
 
+template <typename T>
+__device__ __forceinline__ float WToF(T v) { return v; }
+template <>
+__device__ __forceinline__ float WToF<__half>(__half v) { return __half2float(v); }
+
+template <typename WeightT>
 __global__ void hc_gated_residual_f32_kernel(
     const float *__restrict__ x,      // [n]  (seq = 1 for the twin)
-    const float *__restrict__ down,   // [lowrank * n]
-    const float *__restrict__ up,     // [n * lowrank]
-    const float *__restrict__ inject, // [hc * n] or null
+    const WeightT *__restrict__ down, // [lowrank * n]
+    const WeightT *__restrict__ up,   // [n * lowrank]
+    const WeightT *__restrict__ inject, // [hc * n] or null
     int H, int hc, int lowrank, float eps,
     float *__restrict__ mixed_out,    // [H]
     float *__restrict__ inj_out,      // [hc]
@@ -60,12 +67,12 @@ __global__ void hc_gated_residual_f32_kernel(
     for (int g = 0; g < hc; ++g) {
         // each group occupies [g*H, g*H+H)
         if (threadIdx.x == 0) {
-            double acc = 0.0;
+            float acc = 0.f;
             for (int i = 0; i < H; ++i) {
-                const double v = s_normed[g * H + i];
-                acc += v * v;
+                const float v = s_normed[g * H + i];
+                acc = fmaf(v, v, acc);
             }
-            s_scale = static_cast<float>(1.0 / sqrt(acc / H + eps));
+            s_scale = rsqrtf(acc / H + eps);
         }
         __syncthreads();
         for (int i = threadIdx.x; i < H; i += blockDim.x) {
@@ -89,46 +96,167 @@ __global__ void hc_gated_residual_f32_kernel(
         __syncthreads();
     }
 
-    // Phase 2: down-projection [lowrank] + silu(/hc). One thread per r with
-    // sequential fp32 dot over n (deterministic; n small in tests, fine).
-    for (int r = threadIdx.x; r < lowrank; r += blockDim.x) {
-        double acc = 0.0;
-        for (int i = 0; i < n; ++i)
-            acc += static_cast<double>(down[r * n + i]) * s_normed[i];
-        const double v = acc / hc;
-        s_dn[r] = static_cast<float>(v / (1.0 + exp(-v)));
+    // Phase 2: down-projection [lowrank] + silu(/hc). Warp-per-row: lane l
+    // accumulates elements i = l, l+32, ... (strided, deterministic); ordered
+    // shfl-down tree reduce (bit-deterministic for a fixed warp layout).
+    const int warps = blockDim.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    for (int r = warp; r < lowrank; r += warps) {
+        float part = 0.f;
+        for (int i = lane; i < n; i += 32)
+            part = fmaf(WToF(down[r * n + i]), s_normed[i], part);
+        for (int off = 16; off > 0; off >>= 1)
+            part += __shfl_down_sync(0xffffffffu, part, off);
+        if (lane == 0) {
+            const float v = part / hc;
+            s_dn[r] = v / (1.f + expf(-v));
+        }
     }
     __syncthreads();
 
-    // Phase 3: up-projection [n] + sigmoid.
+    // Phase 3: up-projection [n] + sigmoid. One thread per element; the
+    // lowrank-dim dot runs sequentially per thread (deterministic).
     for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        double acc = 0.0;
+        float acc = 0.f;
         for (int r = 0; r < lowrank; ++r)
-            acc += static_cast<double>(up[i * lowrank + r]) * s_dn[r];
-        s_up[i] = 1.0f / (1.0f + expf(-static_cast<float>(acc)));
+            acc = fmaf(WToF(up[i * lowrank + r]), s_dn[r], acc);
+        s_up[i] = 1.0f / (1.0f + expf(-acc));
     }
     __syncthreads();
 
     // Phase 4: mixed = mean over branches of (gate ⊙ normed).
     for (int h = threadIdx.x; h < H; h += blockDim.x) {
-        double acc = 0.0;
+        float acc = 0.f;
         for (int c = 0; c < hc; ++c)
-            acc += static_cast<double>(s_up[c * H + h]) *
-                   s_normed[c * H + h];
-        mixed_out[h] = static_cast<float>(acc / hc);
+            acc = fmaf(s_up[c * H + h], s_normed[c * H + h], acc);
+        mixed_out[h] = acc / hc;
     }
 
     if (mixed_h) {
         for (int h = threadIdx.x; h < H; h += blockDim.x)
             mixed_h[h] = __float2half(mixed_out[h]);
     }
-    // Phase 5: injection weights.
+    // Phase 5: injection weights. Warp-per-c (<= hc warps active).
     if (inject) {
-        for (int c = threadIdx.x; c < hc; c += blockDim.x) {
-            double acc = 0.0;
-            for (int i = 0; i < n; ++i)
-                acc += static_cast<double>(inject[c * n + i]) * s_normed[i];
-            inj_out[c] = static_cast<float>(2.0 / (1.0 + exp(-acc / hc)));
+        for (int c = warp; c < hc; c += warps) {
+            float part = 0.f;
+            for (int i = lane; i < n; i += 32)
+                part = fmaf(WToF(inject[c * n + i]), s_normed[i], part);
+            for (int off = 16; off > 0; off >>= 1)
+                part += __shfl_down_sync(0xffffffffu, part, off);
+            if (lane == 0)
+                inj_out[c] = 2.0f / (1.0f + expf(-part / hc));
+        }
+    }
+}
+
+// ── Multi-block fast path (decode): the single-block kernel is bandwidth-
+// bound to one SM (~9GB/s effective). Splitting the phases into separate
+// launches engages all SMs. Bit-determinism preserved: same sequential
+// accumulation orders, thread-0 norm reduction, fixed-shape shfl trees.
+
+// grid-stride group-RMSNorm with (1+w): reads x[n] (already upcast), writes
+// out[n]. One group of H normalized by block g (thread 0 sequential — the
+// bit-exact reduction order).
+__global__ void hc_norm_kernel(const float *__restrict__ x, int H, int hc,
+                               float eps, const uint8_t *__restrict__ norm_w,
+                               float *__restrict__ out)
+{
+    for (int g = blockIdx.x; g < hc; g += gridDim.x) {
+        if (threadIdx.x == 0) {
+            float acc = 0.f;
+            for (int i = 0; i < H; ++i) {
+                const float v = x[g * H + i];
+                acc = fmaf(v, v, acc);
+            }
+            const float scale = rsqrtf(acc / H + eps);
+            for (int i = 0; i < H; ++i) {
+                float v = x[g * H + i] * scale;
+                if (norm_w) {
+                    const int idx = g * H + i;
+                    const uint16_t b16 =
+                        static_cast<uint16_t>(norm_w[idx * 2]) |
+                        (static_cast<uint16_t>(norm_w[idx * 2 + 1]) << 8);
+                    float wf = 1.f;
+                    if (b16) {
+                        const uint32_t u = static_cast<uint32_t>(b16) << 16;
+                        float f;
+                        __builtin_memcpy(&f, &u, 4);
+                        wf = 1.f + f;
+                    }
+                    v *= wf;
+                }
+                out[g * H + i] = v;
+            }
+        }
+    }
+}
+
+// warp-per-row down GEMV: y[lowrank] = W_dn @ x (sequential lane-strided).
+__global__ void hc_down_gemv_kernel(const __half *__restrict__ down,
+                                    const float *__restrict__ x, int n,
+                                    int lowrank, int hc, float *dn)
+{
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int warps = blockDim.x >> 5;
+    for (int r = blockIdx.x * warps + warp; r < lowrank;
+         r += gridDim.x * warps) {
+        float part = 0.f;
+        for (int i = lane; i < n; i += 32)
+            part = fmaf(__half2float(down[r * n + i]), x[i], part);
+        for (int off = 16; off > 0; off >>= 1)
+            part += __shfl_down_sync(0xffffffffu, part, off);
+        if (lane == 0) {
+            const float v = part / hc;
+            dn[r] = v / (1.f + expf(-v));
+        }
+    }
+}
+
+// elementwise up GEMV + sigmoid: up_row[i], accumulate over lowrank.
+__global__ void hc_up_gemv_kernel(const __half *__restrict__ up,
+                                  const float *__restrict__ dn, int n,
+                                  int lowrank, float *upout)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    for (int i = tid; i < n; i += gridDim.x * blockDim.x) {
+        float acc = 0.f;
+        for (int r = 0; r < lowrank; ++r)
+            acc = fmaf(__half2float(up[i * lowrank + r]), dn[r], acc);
+        upout[i] = 1.0f / (1.0f + expf(-acc));
+    }
+}
+
+// epilogue: mixed[h] = mean_c upout[c*H+h]*normed[c*H+h] (+ mixed_h half copy)
+// and inj[c] = 2*sigmoid(W_inj[c,:] . normed / hc) when inject present.
+__global__ void hc_epilogue_kernel(const float *__restrict__ upout,
+                                   const float *__restrict__ normed,
+                                   const __half *__restrict__ inject, int H,
+                                   int hc, int n, float *mixed_out,
+                                   __half *mixed_h, float *inj_out)
+{
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int warps = blockDim.x >> 5;
+    for (int h = blockIdx.x * blockDim.x + threadIdx.x; h < H;
+         h += gridDim.x * blockDim.x) {
+        float acc = 0.f;
+        for (int c = 0; c < hc; ++c)
+            acc = fmaf(upout[c * H + h], normed[c * H + h], acc);
+        mixed_out[h] = acc / hc;
+        if (mixed_h) mixed_h[h] = __float2half(mixed_out[h]);
+    }
+    if (inject && inj_out) {
+        for (int c = warp; c < hc; c += warps) {
+            float part = 0.f;
+            for (int i = lane; i < n; i += 32)
+                part = fmaf(__half2float(inject[c * n + i]), normed[i], part);
+            for (int off = 16; off > 0; off >>= 1)
+                part += __shfl_down_sync(0xffffffffu, part, off);
+            if (lane == 0)
+                inj_out[c] = 2.0f / (1.0f + expf(-part / hc));
         }
     }
 }
@@ -551,8 +679,12 @@ __device__ __forceinline__ float bf16_one_plus(const uint8_t *bits, int idx)
     return 1.f + f;
 }
 
-// One block per token. Thread 0 owns the sequential op sequence (decode
-// path); shared scratch holds key/value/gated intermediates.
+// One block (1024 threads) per token. Parallel decomposition of the
+// bit-exact op sequence (decode path): GEMVs run one thread per output row
+// with the SAME sequential ascending-c accumulation as the parity twin
+// (bit-identical results), norm reductions stay on thread 0, elementwise
+// scales/scatters parallel across threads with __syncthreads() barriers
+// between phases (protocol step 6: no multi-writer RMW races).
 __global__ void ple_inject_kernel(
     Nvfp4RowView key_proj,     // [hc*H, E]
     Nvfp4RowView value_proj,   // [H, E]
@@ -572,124 +704,183 @@ __global__ void ple_inject_kernel(
     float *s_gated = s_query + n;      // [n]
     float *s_normed = s_gated + n;     // [n]
     float *s_value = s_normed + n;     // [H]
-    float *s_row = s_value + H;        // [E] dequant scratch for one proj row
+    float *s_row = s_value + H;        // [E] dequant scratch (legacy layout)
+    (void)s_row;
+    __shared__ float sh_scale[8];      // per-group norm scale
+    __shared__ float sh_sg[8];         // sigmoid(gate) per stream
 
-    if (threadIdx.x != 0) return;
-
-    // 1. key = key_proj @ emb  → group-RMS, then (1 + norm_key).
-    for (int r = 0; r < n; ++r) {
-        dequant_row(key_proj, r, s_row);
+    // 1. key = key_proj @ emb — one thread per row, sequential fp32-accum
+    //    (double acc, ascending c) exactly as the parity twin.
+    for (int r = threadIdx.x; r < n; r += blockDim.x) {
+        const uint8_t *packed = key_proj.d_packed +
+                                static_cast<int64_t>(r) * (key_proj.cols >> 1);
+        const uint8_t *scales = key_proj.d_scales +
+                                static_cast<int64_t>(r) * (key_proj.cols >> 4);
         double acc = 0.0;
-        for (int c = 0; c < key_proj.cols; ++c)
-            acc += static_cast<double>(s_row[c]) * d_emb_row[c];
+        for (int c = 0; c < key_proj.cols; ++c) {
+            const uint8_t byte = packed[c >> 1];
+            const uint8_t nib = (c & 1) ? static_cast<uint8_t>(byte >> 4)
+                                        : static_cast<uint8_t>(byte & 0xF);
+            const float v = e2m1_value(nib);
+            float dv = 0.f;
+            if (v != 0.f) {
+                const uint8_t sb = scales[c >> 4];
+                const uint32_t e4 = (sb >> 3) & 0x0Fu;
+                const float scale =
+                    e4 == 0 ? 0.0f
+                            : __int_as_float(static_cast<int>((e4 + 120u)
+                                                              << 23));
+                dv = v * scale * key_proj.global_scale;
+            }
+            acc += static_cast<double>(dv) * d_emb_row[c];
+        }
         s_key[r] = static_cast<float>(acc);
     }
+    __syncthreads();
+
+    // 1b. group-RMS(key), then (1 + norm_key) — thread-0 reduction (the
+    //     ascending-i sum order is part of the bit-exact contract), parallel
+    //     elementwise scale.
     for (int g = 0; g < hc; ++g) {
-        double acc = 0.0;
-        for (int i = 0; i < H; ++i) {
-            const float v = s_key[g * H + i];
-            acc += v * v;
+        if (threadIdx.x == 0) {
+            double acc = 0.0;
+            for (int i = 0; i < H; ++i) {
+                const float v = s_key[g * H + i];
+                acc += v * v;
+            }
+            sh_scale[g] = static_cast<float>(1.0 / sqrt(acc / H + eps));
         }
-        const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i)
-            s_key[g * H + i] =
-                s_key[g * H + i] * inv *
-                bf16_one_plus(d_norm_key, g * H + i);
+        __syncthreads();
+        for (int i = threadIdx.x; i < H; i += blockDim.x)
+            s_key[g * H + i] = s_key[g * H + i] * sh_scale[g] *
+                               bf16_one_plus(d_norm_key, g * H + i);
+        __syncthreads();
     }
 
     // 2. query = group-RMS(hidden), then (1 + norm_query_w).
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        s_query[i] = __half2float(d_hidden[i]);
+    __syncthreads();
     for (int g = 0; g < hc; ++g) {
-        double acc = 0.0;
-        for (int i = 0; i < H; ++i) {
-            const float v = __half2float(d_hidden[g * H + i]);
-            s_query[g * H + i] = v;
-            acc += v * v;
+        if (threadIdx.x == 0) {
+            double acc = 0.0;
+            for (int i = 0; i < H; ++i) {
+                const float v = s_query[g * H + i];
+                acc += v * v;
+            }
+            sh_scale[g] = static_cast<float>(1.0 / sqrt(acc / H + eps));
         }
-        const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i)
-            s_query[g * H + i] =
-                s_query[g * H + i] * inv *
-                bf16_one_plus(d_norm_query, g * H + i);
+        __syncthreads();
+        for (int i = threadIdx.x; i < H; i += blockDim.x)
+            s_query[g * H + i] = s_query[g * H + i] * sh_scale[g] *
+                                 bf16_one_plus(d_norm_query, g * H + i);
+        __syncthreads();
     }
 
-    // 3. gate per stream: s = sum_i key_i * query_i / sqrt(H).
+    // 3. gate per stream: s = sum_i key_i * query_i / sqrt(H) (thread 0 —
+    //    hc*H double MACs, tiny).
     const double sqrtH = sqrt(static_cast<double>(H));
-    double gate[8];  // hc_count <= 8 (frozen: 4)
-    for (int c = 0; c < hc && c < 8; ++c) {
-        double acc = 0.0;
-        for (int i = 0; i < H; ++i)
-            acc += static_cast<double>(s_key[c * H + i]) *
-                   s_query[c * H + i];
-        const double s = acc / sqrtH;
-        const double a = fmax(1e-6, fabs(s));
-        gate[c] = sqrt(a) * (s < 0 ? -1.0 : 1.0);
+    if (threadIdx.x == 0) {
+        for (int c = 0; c < hc && c < 8; ++c) {
+            double acc = 0.0;
+            for (int i = 0; i < H; ++i)
+                acc += static_cast<double>(s_key[c * H + i]) *
+                       s_query[c * H + i];
+            const double s = acc / sqrtH;
+            const double a = fmax(1e-6, fabs(s));
+            const double gate = sqrt(a) * (s < 0 ? -1.0 : 1.0);
+            sh_sg[c] = static_cast<float>(1.0 / (1.0 + exp(-gate)));
+        }
     }
+    __syncthreads();
 
-    // 4. value = value_proj @ emb.
-    for (int r = 0; r < H; ++r) {
-        dequant_row(value_proj, r, s_row);
+    // 4. value = value_proj @ emb — one thread per row (bit-exact order).
+    for (int r = threadIdx.x; r < H; r += blockDim.x) {
+        const uint8_t *packed = value_proj.d_packed +
+                                static_cast<int64_t>(r) * (value_proj.cols >> 1);
+        const uint8_t *scales = value_proj.d_scales +
+                                static_cast<int64_t>(r) * (value_proj.cols >> 4);
         double acc = 0.0;
-        for (int c = 0; c < value_proj.cols; ++c)
-            acc += static_cast<double>(s_row[c]) * d_emb_row[c];
+        for (int c = 0; c < value_proj.cols; ++c) {
+            const uint8_t byte = packed[c >> 1];
+            const uint8_t nib = (c & 1) ? static_cast<uint8_t>(byte >> 4)
+                                        : static_cast<uint8_t>(byte & 0xF);
+            const float v = e2m1_value(nib);
+            float dv = 0.f;
+            if (v != 0.f) {
+                const uint8_t sb = scales[c >> 4];
+                const uint32_t e4 = (sb >> 3) & 0x0Fu;
+                const float scale =
+                    e4 == 0 ? 0.0f
+                            : __int_as_float(static_cast<int>((e4 + 120u)
+                                                              << 23));
+                dv = v * scale * value_proj.global_scale;
+            }
+            acc += static_cast<double>(dv) * d_emb_row[c];
+        }
         s_value[r] = static_cast<float>(acc);
     }
+    __syncthreads();
 
     // 5. gated = sigmoid(gate) * value, broadcast to streams.
-    for (int c = 0; c < hc; ++c) {
-        const float sg = 1.0f / (1.0f + expf(-static_cast<float>(gate[c])));
-        for (int i = 0; i < H; ++i)
-            s_gated[c * H + i] = sg * s_value[i];
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const int c = i / H;
+        s_gated[i] = sh_sg[c] * s_value[i % H];
     }
+    __syncthreads();
 
     // 6. normed = group-RMS(gated), then (1 + norm_conv_w).
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
+        s_normed[i] = s_gated[i];
+    __syncthreads();
     for (int g = 0; g < hc; ++g) {
-        double acc = 0.0;
-        for (int i = 0; i < H; ++i) {
-            const float v = s_gated[g * H + i];
-            s_normed[g * H + i] = v;
-            acc += v * v;
+        if (threadIdx.x == 0) {
+            double acc = 0.0;
+            for (int i = 0; i < H; ++i) {
+                const float v = s_normed[g * H + i];
+                acc += v * v;
+            }
+            sh_scale[g] = static_cast<float>(1.0 / sqrt(acc / H + eps));
         }
-        const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i)
-            s_normed[g * H + i] =
-                s_normed[g * H + i] * inv *
-                bf16_one_plus(d_norm_conv, g * H + i);
+        __syncthreads();
+        for (int i = threadIdx.x; i < H; i += blockDim.x)
+            s_normed[g * H + i] = s_normed[g * H + i] * sh_scale[g] *
+                                  bf16_one_plus(d_norm_conv, g * H + i);
+        __syncthreads();
     }
 
     // 7. HF conv1d semantics (decode, seq=1): x_pad = [prev(state_len), current].
     //    Tap k of the K-tap kernel reads x_pad[state_len - (K-1-k)*dilation]:
     //    w0 -> the oldest reachable row (skipped when negative), w{K-1} -> the
     //    CURRENT row. Taps are computed BEFORE the current row is appended.
-    for (int c = 0; c < hc; ++c) {
-        for (int i = 0; i < H; ++i) {
-            const int idx = c * H + i;
-            float conv_acc = 0.f;
-            for (int k = 0; k < k_conv; ++k) {
-                const int off =
-                    state_len - (k_conv - 1 - k) * dilation;  // x_pad index
-                if (off == state_len) {
-                    // current row contributes with weight w[K-1]
-                    conv_acc = fmaf(d_conv_w[idx * k_conv + k], s_normed[idx],
-                                    conv_acc);
-                } else if (off >= 0 && off < state_len) {
-                    conv_acc = fmaf(d_conv_w[idx * k_conv + k],
-                                    d_window[static_cast<int64_t>(off) * n +
-                                             idx],
-                                    conv_acc);
-                }
+    //    One thread per (c,i); the k-loop stays sequential per element.
+    for (int idx = threadIdx.x; idx < n; idx += blockDim.x) {
+        const int c = idx / H;
+        const int i = idx % H;
+        float conv_acc = 0.f;
+        for (int k = 0; k < k_conv; ++k) {
+            const int off = state_len - (k_conv - 1 - k) * dilation;
+            if (off == state_len) {
+                conv_acc = fmaf(d_conv_w[idx * k_conv + k], s_normed[idx],
+                                conv_acc);
+            } else if (off >= 0 && off < state_len) {
+                conv_acc = fmaf(d_conv_w[idx * k_conv + k],
+                                d_window[static_cast<int64_t>(off) * n + idx],
+                                conv_acc);
             }
-            const float out_v =
-                s_gated[idx] + conv_acc / (1.0f + expf(-conv_acc));
-            d_hidden[idx] = __float2half(__half2float(d_hidden[idx]) + out_v);
         }
+        const float out_v = s_gated[idx] + conv_acc / (1.0f + expf(-conv_acc));
+        d_hidden[idx] = __float2half(__half2float(d_hidden[idx]) + out_v);
     }
 
     // 8. Shift the window: drop oldest, append the current normed row.
-    for (int s = 0; s < state_len - 1; ++s)
-        for (int i = 0; i < n; ++i)
+    for (int s = 0; s < state_len - 1; ++s) {
+        for (int i = threadIdx.x; i < n; i += blockDim.x)
             d_window[static_cast<int64_t>(s) * n + i] =
                 d_window[static_cast<int64_t>(s + 1) * n + i];
-    for (int i = 0; i < n; ++i)
+        __syncthreads();
+    }
+    for (int i = threadIdx.x; i < n; i += blockDim.x)
         d_window[static_cast<int64_t>(state_len - 1) * n + i] = s_normed[i];
 
 }
@@ -757,7 +948,7 @@ static void LaunchPleInjectKernel(const Nvfp4RowView &kv,
                     &hid_a, &win_a, &scratch_a, &state_len_a, &H_a, &hc_a,
                     &k_conv_a, &dilation_a, &eps_a};
     cudaLaunchKernel(reinterpret_cast<const void *>(&ple_inject_kernel),
-                     dim3(1), dim3(1), args, 0, stream);
+                     dim3(1), dim3(1024), args, 0, stream);
 }
 
 __global__ void bf16_bits_to_float_kernel(const uint8_t *__restrict__ bits,
@@ -841,8 +1032,10 @@ struct HcScratch {
     float *d_down = nullptr, *d_up = nullptr, *d_inject = nullptr;
     float *d_x32 = nullptr;   // fp32 input upcast
     float *d_upout = nullptr; // fp32 up-gate output [n]
+    float *d_normed = nullptr; // fp32 normed [n] (multi-block fast path)
+    float *d_dn = nullptr;     // fp32 down output [lowrank]
     size_t down_bytes = 0, up_bytes = 0, x_bytes = 0, upout_bytes = 0,
-           inject_bytes = 0;
+           inject_bytes = 0, normed_bytes = 0, dn_bytes = 0;
     ~HcScratch()
     {
         if (h_down) cudaFree(h_down);
@@ -853,6 +1046,8 @@ struct HcScratch {
         if (d_inject) cudaFree(d_inject);
         if (d_x32) cudaFree(d_x32);
         if (d_upout) cudaFree(d_upout);
+        if (d_normed) cudaFree(d_normed);
+        if (d_dn) cudaFree(d_dn);
     }
 };
 
@@ -900,6 +1095,38 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
     return cudaSuccess;
 }
 
+cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
+{
+    HcScratch &s = HcScratchInstance();
+    const size_t need_x = static_cast<size_t>(x32_floats) * sizeof(float);
+    if (s.x_bytes < need_x) {
+        if (s.d_x32) cudaFree(s.d_x32);
+        if (cudaMalloc(&s.d_x32, need_x) != cudaSuccess)
+            return cudaGetLastError();
+        s.x_bytes = need_x;
+    }
+    if (s.upout_bytes < need_x) {
+        if (s.d_upout) cudaFree(s.d_upout);
+        if (cudaMalloc(&s.d_upout, need_x) != cudaSuccess)
+            return cudaGetLastError();
+        s.upout_bytes = need_x;
+    }
+    if (s.normed_bytes < need_x) {
+        if (s.d_normed) cudaFree(s.d_normed);
+        if (cudaMalloc(&s.d_normed, need_x) != cudaSuccess)
+            return cudaGetLastError();
+        s.normed_bytes = need_x;
+    }
+    const size_t need_dn = static_cast<size_t>(lowrank) * sizeof(float);
+    if (s.dn_bytes < need_dn) {
+        if (s.d_dn) cudaFree(s.d_dn);
+        if (cudaMalloc(&s.d_dn, need_dn) != cudaSuccess)
+            return cudaGetLastError();
+        s.dn_bytes = need_dn;
+    }
+    return cudaSuccess;
+}
+
 cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w)
 {
     HcScratch &s = HcScratchInstance();
@@ -917,6 +1144,80 @@ cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w)
 }
 
 } // namespace
+
+void ExpHcDequantCache::Free()
+{
+    if (down) { cudaFree(down); down = nullptr; }
+    if (up) { cudaFree(up); up = nullptr; }
+    if (inject) { cudaFree(inject); inject = nullptr; }
+    down_elems = up_elems = inject_elems = 0;
+}
+
+cudaError_t BuildExpHcDequantCache(cudaStream_t stream,
+                                   const qwen::QwenNvfp4Weight &down,
+                                   const qwen::QwenNvfp4Weight &up,
+                                   const qwen::QwenNvfp4Weight &inject_w,
+                                   ExpHcDequantCache &out)
+{
+    out.Free();
+    const int64_t de = static_cast<int64_t>(down.rows) * down.cols;
+    const int64_t ue = static_cast<int64_t>(up.rows) * up.cols;
+    const bool have_inject = inject_w.d_packed && inject_w.rows > 0 &&
+                             inject_w.cols > 0;
+    const int64_t ie =
+        have_inject ? static_cast<int64_t>(inject_w.rows) * inject_w.cols : 0;
+    if (de <= 0 || ue <= 0) return cudaErrorInvalidValue;
+    if (cudaMalloc(&out.down, static_cast<size_t>(de) * sizeof(__half)) !=
+        cudaSuccess)
+        return cudaGetLastError();
+    if (cudaMalloc(&out.up, static_cast<size_t>(ue) * sizeof(__half)) !=
+        cudaSuccess) {
+        cudaError_t le = cudaGetLastError();
+        out.Free();
+        return le;
+    }
+    if (have_inject) {
+        if (cudaMalloc(&out.inject,
+                       static_cast<size_t>(ie) * sizeof(__half)) !=
+            cudaSuccess) {
+            cudaError_t le = cudaGetLastError();
+            out.Free();
+            return le;
+        }
+    }
+    // Same dequant kernel as the legacy per-call path -> bit-identical fp16
+    // values; the hc kernel consumes them losslessly (fp16->double).
+    if (gpu::dequant_shared_nvfp4(stream, down.d_packed, down.packed_bytes,
+                                  down.d_scales, down.scale_bytes,
+                                  down.global_scale, out.down, de) !=
+        cudaSuccess) {
+        cudaError_t le = cudaGetLastError();
+        out.Free();
+        return le;
+    }
+    if (gpu::dequant_shared_nvfp4(stream, up.d_packed, up.packed_bytes,
+                                  up.d_scales, up.scale_bytes,
+                                  up.global_scale, out.up, ue) !=
+        cudaSuccess) {
+        cudaError_t le = cudaGetLastError();
+        out.Free();
+        return le;
+    }
+    if (have_inject) {
+        if (gpu::dequant_shared_nvfp4(
+                stream, inject_w.d_packed, inject_w.packed_bytes,
+                inject_w.d_scales, inject_w.scale_bytes,
+                inject_w.global_scale, out.inject, ie) != cudaSuccess) {
+            cudaError_t le = cudaGetLastError();
+            out.Free();
+            return le;
+        }
+    }
+    out.down_elems = de;
+    out.up_elems = ue;
+    out.inject_elems = ie;
+    return cudaSuccess;
+}
 
 __global__ void half_to_float_rows_kernel(const __half *__restrict__ src,
                                           float *__restrict__ dst, int total)
@@ -989,11 +1290,42 @@ cudaError_t RunExpHcGatedResidual(
     }
     half_to_float_rows_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
         d_hyper_input, s.d_x32, n);
-    const int block = 128;
+    const int block = 1024;
     const size_t smem_bytes = (static_cast<size_t>(n) + lowrank) * sizeof(float);
     hc_gated_residual_f32_kernel<<<1, block, smem_bytes, stream>>>(
         s.d_x32, s.d_down, s.d_up, s.d_inject, H, hc, lowrank, 1e-6f,
         d_mixed, d_inject_out, s.d_upout, norm_w, d_mixed_h);
+    return cudaGetLastError();
+}
+
+cudaError_t RunExpHcGatedResidualCached(
+    cudaStream_t stream, const __half *d_hyper_input,
+    const ExpHcDequantCache &w, const uint8_t *d_hc_norm, int seq, int H,
+    int hc, int lowrank, float *d_mixed, float *d_inject_out,
+    __half *d_mixed_h)
+{
+    if (seq != 1) return cudaErrorInvalidValue;
+    const int n = H * hc;
+    if (!w.down || !w.up || w.down_elems < static_cast<int64_t>(lowrank) * n ||
+        w.up_elems < static_cast<int64_t>(n) * lowrank)
+        return cudaErrorInvalidValue;
+    // Multi-block fast path: separate launches per phase engage all SMs
+    // (the single-block kernel is bandwidth-bound to one SM). Bit-exact
+    // reduction orders are preserved in each kernel.
+    HcScratch &s = HcScratchInstance();
+    cudaError_t e = EnsureScratchScratchOnly(n, lowrank);
+    if (e != cudaSuccess) return e;
+    half_to_float_rows_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
+        d_hyper_input, s.d_x32, n);
+    hc_norm_kernel<<<hc, 128, 0, stream>>>(s.d_x32, H, hc, 1e-6f, d_hc_norm,
+                                           s.d_normed);
+    hc_down_gemv_kernel<<<(lowrank + 7) / 8, 256, 0, stream>>>(
+        w.down, s.d_normed, n, lowrank, hc, s.d_dn);
+    hc_up_gemv_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
+        w.up, s.d_dn, n, lowrank, s.d_upout);
+    hc_epilogue_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        s.d_upout, s.d_normed, w.inject, H, hc, n, d_mixed, d_mixed_h,
+        d_inject_out);
     return cudaGetLastError();
 }
 
@@ -1018,6 +1350,33 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
         nullptr, d_mixer_norm);
     if (e == cudaSuccess) {
         // Float->half conversion for the mixed output.
+        float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
+                                                                  d_out, H);
+        e = cudaGetLastError();
+    }
+    cudaFree(d_mixed);
+    cudaFree(d_inj);
+    return e;
+}
+
+cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
+                                const ExpHcDequantCache &w,
+                                const uint8_t *d_mixer_norm, int seq, int H,
+                                int hc, int lowrank, __half *d_out)
+{
+    if (seq != 1) return cudaErrorInvalidValue;
+    // Mixer output rides the driver arena (d_mixed_f region); no inject path.
+    float *d_mixed = nullptr, *d_inj = nullptr;
+    if (cudaMalloc(&d_mixed, sizeof(float) * H) != cudaSuccess)
+        return cudaGetLastError();
+    if (cudaMalloc(&d_inj, sizeof(float) * hc) != cudaSuccess) {
+        cudaFree(d_mixed);
+        return cudaGetLastError();
+    }
+    cudaError_t e = RunExpHcGatedResidualCached(
+        stream, d_hidden, w, d_mixer_norm, seq, H, hc, lowrank, d_mixed,
+        d_inj, nullptr);
+    if (e == cudaSuccess) {
         float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
                                                                   d_out, H);
         e = cudaGetLastError();
@@ -1439,11 +1798,18 @@ cudaError_t RunExpGeneration(
                 if (e != cudaSuccess) { result.error_msg = "ple"; break; }
             }
             // ── attn hyper-connection: mixed + inject weights ──
-            e = RunExpHcGatedResidual(stream, d_hyper, lw.attn_hc_down,
-                                      lw.attn_hc_up, lw.attn_hc_inject,
-                                      lw.d_attn_hc_norm, 1, H, hc,
-                                      pw.exp_top.hc_lowrank, d_mixed_f,
-                                      d_inj_f, d_mixed);
+            if (lw.attn_hc_cache) {
+                e = RunExpHcGatedResidualCached(
+                    stream, d_hyper, *lw.attn_hc_cache, lw.d_attn_hc_norm, 1,
+                    H, hc, pw.exp_top.hc_lowrank, d_mixed_f, d_inj_f,
+                    d_mixed);
+            } else {
+                e = RunExpHcGatedResidual(stream, d_hyper, lw.attn_hc_down,
+                                          lw.attn_hc_up, lw.attn_hc_inject,
+                                          lw.d_attn_hc_norm, 1, H, hc,
+                                          pw.exp_top.hc_lowrank, d_mixed_f,
+                                          d_inj_f, d_mixed);
+            }
             if (e != cudaSuccess) { result.error_msg = "hc-attn"; break; }
             if (lw.attn.is_linear) {
                 e = qwen::RunQwenFusedLinearAttnKernel(
@@ -1484,11 +1850,18 @@ cudaError_t RunExpGeneration(
                                       hc, d_hyper2);
             if (e != cudaSuccess) { result.error_msg = "hc-scatter1"; break; }
             // ── mlp hyper-connection ──
-            e = RunExpHcGatedResidual(stream, d_hyper2, lw.mlp_hc_down,
-                                      lw.mlp_hc_up, lw.mlp_hc_inject,
-                                      lw.d_mlp_hc_norm, 1, H, hc,
-                                      pw.exp_top.hc_lowrank, d_mixed_f,
-                                      d_inj_f, d_mixed);
+            if (lw.mlp_hc_cache) {
+                e = RunExpHcGatedResidualCached(
+                    stream, d_hyper2, *lw.mlp_hc_cache, lw.d_mlp_hc_norm, 1,
+                    H, hc, pw.exp_top.hc_lowrank, d_mixed_f, d_inj_f,
+                    d_mixed);
+            } else {
+                e = RunExpHcGatedResidual(stream, d_hyper2, lw.mlp_hc_down,
+                                          lw.mlp_hc_up, lw.mlp_hc_inject,
+                                          lw.d_mlp_hc_norm, 1, H, hc,
+                                          pw.exp_top.hc_lowrank, d_mixed_f,
+                                          d_inj_f, d_mixed);
+            }
             if (e != cudaSuccess) { result.error_msg = "hc-mlp"; break; }
             // ── MoE: router -> routed experts -> shared combine ──
             e = RunExpRouterTop10(stream, lw.d_router, d_mixed, 1, H, E, K,
@@ -1550,9 +1923,15 @@ cudaError_t RunExpGeneration(
         if (e != cudaSuccess) break;
 
         // ── global mixer (input-mix only) + final norm + head ──
-        e = RunExpHcMixer(stream, d_hyper, pw.mixer_down, pw.mixer_up,
-                          pw.d_mixer_norm, 1, H, hc, pw.exp_top.hc_lowrank,
-                          d_act, d_normed_scr);
+        if (pw.mixer_hc_cache) {
+            e = RunExpHcMixerCached(stream, d_hyper, *pw.mixer_hc_cache,
+                                    pw.d_mixer_norm, 1, H, hc,
+                                    pw.exp_top.hc_lowrank, d_act);
+        } else {
+            e = RunExpHcMixer(stream, d_hyper, pw.mixer_down, pw.mixer_up,
+                              pw.d_mixer_norm, 1, H, hc,
+                              pw.exp_top.hc_lowrank, d_act, d_normed_scr);
+        }
         if (e != cudaSuccess) { result.error_msg = "mixer"; break; }
         e = RunExpHeadGemm(stream, pw.d_head_f16, d_act, d_logits_f32, H, V);
         if (e != cudaSuccess) { result.error_msg = "head"; break; }

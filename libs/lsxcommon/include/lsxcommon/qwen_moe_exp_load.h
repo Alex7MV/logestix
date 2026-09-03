@@ -8,6 +8,7 @@
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
+#include "lsxcommon/qwen_moe_exp_hc_cache.h"
 
 namespace lsxcommon::qwen_moe_exp {
 
@@ -30,6 +31,10 @@ struct ExpLayerWeights {
     qwen::QwenNvfp4Weight mlp_hc_down;
     qwen::QwenNvfp4Weight mlp_hc_up;
     qwen::QwenNvfp4Weight mlp_hc_inject;
+    // Pre-dequantized fp16 hc weights (built once at load; per-token hc
+    // dequant eliminated). Null until BuildExpHcDequantCache runs.
+    ExpHcDequantCache *attn_hc_cache = nullptr;
+    ExpHcDequantCache *mlp_hc_cache = nullptr;
 
     // MoE.
     uint8_t *d_router = nullptr;  // raw BF16 bits [E, H]
@@ -89,6 +94,7 @@ struct ExpPinnedWeights {
     int64_t mixer_norm_bytes = 0;
     qwen::QwenNvfp4Weight mixer_down;  // [lowrank, hc*H]
     qwen::QwenNvfp4Weight mixer_up;    // [hc*H, lowrank]
+    ExpHcDequantCache *mixer_hc_cache = nullptr;  // pre-dequant mixer weights
     __half *d_final_norm = nullptr;
     int final_norm_size = 0;
     std::vector<ExpLayerWeights> layers;
@@ -132,7 +138,11 @@ struct alignas(16) ExpExpertMetaDev {
 };
 
 struct ExpExpertStore {
-    // [num_layers] pinned slabs; slab l holds num_experts records back to back.
+    // NOTE: the first members must keep the exact layout of
+    // qwen_moe::QwenMoeExpertStore — RunQwenMoeRoutedFFN consumes this
+    // store through a reinterpret_cast pairing of the two types.
+    // [num_layers] slab views; every entry == arena_base (record offsets are
+    // global arena offsets).
     std::vector<uint8_t *> h_slabs;
     std::vector<size_t> slab_bytes;
     std::vector<std::vector<ExpExpertRecord>> records;  // [layers][expert]
@@ -150,6 +160,12 @@ struct ExpExpertStore {
     std::vector<ExpExpertMetaDev> h_gemv_meta;
     ExpExpertMetaDev *d_gemv_meta = nullptr;
     bool gemv_ready = false;
+
+    // Single pinned arena backing every layer slab (one page-lock instead
+    // of num_layers; per-slab cudaMallocHost cost ~660ms each on load).
+    // Kept AFTER the QwenMoeExpertStore-compatible prefix (see note above).
+    uint8_t *arena_base = nullptr;
+    size_t arena_bytes = 0;
 
     void Free();
 };
