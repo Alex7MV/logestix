@@ -2008,8 +2008,6 @@ cudaError_t RunExpGeneration(
         e = RunExpHeadGemm(stream, pw.d_head_f16, d_act, d_logits_f32, H, V);
         if (e != cudaSuccess) { result.error_msg = "head"; break; }
 
-
-
         kv->kv_rows += 1;
         if (step >= prompt_steps - 1) {
             e = sampler.Sample(stream, d_logits_f32, V,
@@ -2020,6 +2018,55 @@ cudaError_t RunExpGeneration(
                                                          d_argmax);
             if (step + 1 < total_steps)
                 exp_feed_token_kernel<<<1, 1, 0, stream>>>(d_ids, d_argmax);
+            // The PLE n-gram context lives on the host (mmap gather): pull
+            // the sampled token back so the NEXT step's n-gram contains the
+            // real generated history. Without this, `cur` stays pinned to
+            // the last prompt token, the n-gram freezes, and the hidden
+            // state collapses into repetition loops (root-caused vs the
+            // HF greedy reference: gen0 parity cos=0.91, gen1 cos=-0.04).
+            {
+                int32_t h_tok = -1;
+                cudaMemcpyAsync(&h_tok, d_argmax, sizeof(int32_t),
+                                cudaMemcpyDeviceToHost, stream);
+                cudaEventRecord(tok_ready_ev, stream);
+                cudaEventSynchronize(tok_ready_ev);
+                token_history.push_back(h_tok);
+                if (token_history.size() > 64)
+                    token_history.erase(token_history.begin());
+                cur = h_tok;
+            }
+            if (std::getenv("LSX_TRACE_TOKENS") && h_ids) {
+                cudaEventRecord(tok_ready_ev, stream);
+                cudaEventSynchronize(tok_ready_ev);
+                // Full-vocab logits top-8: compares against the HF greedy
+                // reference (hf_greedy8.py) step by step.
+                static std::vector<float> hlog;
+                hlog.resize(static_cast<size_t>(V));
+                cudaMemcpy(hlog.data(), d_logits_f32, sizeof(float) * V,
+                           cudaMemcpyDeviceToHost);
+                int idx[8] = {0};
+                float val[8] = {-1e30f, -1e30f, -1e30f, -1e30f,
+                                -1e30f, -1e30f, -1e30f, -1e30f};
+                for (int i = 0; i < V; ++i) {
+                    for (int k = 0; k < 8; ++k) {
+                        if (hlog[static_cast<size_t>(i)] > val[k]) {
+                            for (int m = 7; m > k; --m) {
+                                val[m] = val[m - 1];
+                                idx[m] = idx[m - 1];
+                            }
+                            val[k] = hlog[static_cast<size_t>(i)];
+                            idx[k] = i;
+                            break;
+                        }
+                    }
+                }
+                std::fprintf(stderr,
+                             "[trace] gen=%d top: %d:%.3f %d:%.3f %d:%.3f"
+                             " %d:%.3f %d:%.3f\n",
+                             generated, idx[0], val[0], idx[1], val[1],
+                             idx[2], val[2], idx[3], val[3], idx[4],
+                             val[4]);
+            }
             ++generated;
         } else {
             cur = prompt[step + 1];

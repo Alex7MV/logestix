@@ -20,6 +20,7 @@ int main(int argc, char* argv[]) {
     bool testprompt = false;
     bool selfcheck = false;
     bool fast_math = false;
+    std::string prompt = "The capital of France is";
     auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
                        / "DeepSeek-V4-Flash").string();
     for (int i = 1; i < argc; ++i) {
@@ -35,6 +36,8 @@ int main(int argc, char* argv[]) {
             selfcheck = true;
         else if (std::strcmp(argv[i], "--fast-math") == 0)
             fast_math = true;
+        else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
+            prompt = argv[++i];
     }
 
     lsxcommon::Core::Initialize("logestix_runtime.log");
@@ -44,7 +47,7 @@ int main(int argc, char* argv[]) {
     if (testprompt) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = model_path;
-        args.prompt = "The capital of France is";
+        args.prompt = prompt;
         args.max_gen_tokens = 64;
         args.fast_math = fast_math;
         int rc = lsxcommon::runtime::RunCliGeneration(args);
@@ -54,7 +57,7 @@ int main(int argc, char* argv[]) {
     if (selfcheck) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = model_path;
-        args.prompt = "The capital of France is";
+        args.prompt = prompt;
         args.max_gen_tokens = 1;
         args.fast_math = fast_math;
         int rc = lsxcommon::runtime::RunCliSelfCheck(args);
