@@ -954,15 +954,20 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
             }
             auto &pe = *pe_res;
             auto &r = recs[static_cast<size_t>(e)];
+            // Arena layout mirrors the device slot layout EXACTLY
+            // ([w13 = w1|w3][w2] packed, [s13 = s1|s3][s2] scales): expert
+            // miss staging then needs just 2 memcpyAsync (pack + scales)
+            // instead of 6 segment copies — the single largest host-side
+            // decode cost at high miss rates.
             r.w1_off = static_cast<int64_t>(arena_bytes + total);
             r.w1_bytes = static_cast<int64_t>(pe.w1_packed.size());
             total += r.w1_bytes;
-            r.w2_off = static_cast<int64_t>(arena_bytes + total);
-            r.w2_bytes = static_cast<int64_t>(pe.w2_packed.size());
-            total += r.w2_bytes;
             r.w3_off = static_cast<int64_t>(arena_bytes + total);
             r.w3_bytes = static_cast<int64_t>(pe.w3_packed.size());
             total += r.w3_bytes;
+            r.w2_off = static_cast<int64_t>(arena_bytes + total);
+            r.w2_bytes = static_cast<int64_t>(pe.w2_packed.size());
+            total += r.w2_bytes;
             r.gs1 = pe.w1_global_scale;
             r.gs2 = pe.w2_global_scale;
             r.gs3 = pe.w3_global_scale;
@@ -971,12 +976,12 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
             r.s1_off = static_cast<int64_t>(arena_bytes + total);
             r.s1_bytes = static_cast<int64_t>(pe.w1_scales.size());
             total += r.s1_bytes;
-            r.s2_off = static_cast<int64_t>(arena_bytes + total);
-            r.s2_bytes = static_cast<int64_t>(pe.w2_scales.size());
-            total += r.s2_bytes;
             r.s3_off = static_cast<int64_t>(arena_bytes + total);
             r.s3_bytes = static_cast<int64_t>(pe.w3_scales.size());
             total += r.s3_bytes;
+            r.s2_off = static_cast<int64_t>(arena_bytes + total);
+            r.s2_bytes = static_cast<int64_t>(pe.w2_scales.size());
+            total += r.s2_bytes;
         }
         layer_totals[static_cast<size_t>(l)] = total;
         store.slab_bytes[static_cast<size_t>(l)] = total;
@@ -1016,11 +1021,11 @@ bool LoadQwen4ExpExpertStore(const std::string &model_path,
             auto &pe = *pe_res;
             const auto &r = recs[static_cast<size_t>(e)];
             std::memcpy(arena + r.w1_off, pe.w1_packed.data(), r.w1_bytes);
-            std::memcpy(arena + r.w2_off, pe.w2_packed.data(), r.w2_bytes);
             std::memcpy(arena + r.w3_off, pe.w3_packed.data(), r.w3_bytes);
+            std::memcpy(arena + r.w2_off, pe.w2_packed.data(), r.w2_bytes);
             std::memcpy(arena + r.s1_off, pe.w1_scales.data(), r.s1_bytes);
-            std::memcpy(arena + r.s2_off, pe.w2_scales.data(), r.s2_bytes);
             std::memcpy(arena + r.s3_off, pe.w3_scales.data(), r.s3_bytes);
+            std::memcpy(arena + r.s2_off, pe.w2_scales.data(), r.s2_bytes);
         }
         store.h_slabs[static_cast<size_t>(l)] = arena;
         log::info(absl::StrCat("[qwen_moe_exp_load] layer_", l, ": ", E,
@@ -1169,39 +1174,25 @@ int EnsureQwen4ExpExpertResident(ExpExpertStore &store, int layer, int eid,
         cache.d_pack + static_cast<int64_t>(slot) * cache.pack_stride;
     uint8_t *dst_scale =
         cache.d_scale + static_cast<int64_t>(slot) * cache.scale_stride;
-    // Slot layout is FUSED for inference: [w13 = w1|w3][w2] and
-    // [s13 = s1|s3][s2] so the gate/up projections run as ONE GEMM with
-    // per-segment global scales (RunQwenMoeRoutedTcBatch). The pinned slab
-    // keeps the on-disk order; only this staging reorder differs.
+    // Slot layout is FUSED for inference and MIRRORS the pinned arena layout
+    // exactly: [w13 = w1|w3][w2] packed and [s13 = s1|s3][s2] scales are each
+    // ONE contiguous blob on the host, so miss staging is 2 memcpyAsync total
+    // (pack + scales) instead of 6 segment copies. The gate/up projections
+    // then run as ONE GEMM with per-segment global scales (RunQwenMoeRoutedFFN).
     cudaStream_t copy_stream = h2d_stream ? h2d_stream : stream;
-    uint8_t *pk = dst_pack;
-    struct PackSeg { int64_t off, bytes; };
-    const PackSeg psegs[3] = {{r.w1_off, r.w1_bytes},
-                              {r.w3_off, r.w3_bytes},
-                              {r.w2_off, r.w2_bytes}};
-    for (const auto &seg : psegs) {
-        if (cudaMemcpyAsync(pk, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D pack staging failed";
-            return -1;
-        }
-        pk += seg.bytes;
+    const int64_t pack_blob = r.w1_bytes + r.w3_bytes + r.w2_bytes;
+    const int64_t scale_blob = r.s1_bytes + r.s3_bytes + r.s2_bytes;
+    if (cudaMemcpyAsync(dst_pack, slab + r.w1_off,
+                        static_cast<size_t>(pack_blob),
+                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
+        error = "expert H2D pack staging failed";
+        return -1;
     }
-    uint8_t *sc = dst_scale;
-    const PackSeg ssegs[3] = {{r.s1_off, r.s1_bytes},
-                              {r.s3_off, r.s3_bytes},
-                              {r.s2_off, r.s2_bytes}};
-    for (const auto &seg : ssegs) {
-        if (cudaMemcpyAsync(sc, slab + seg.off,
-                            static_cast<size_t>(seg.bytes),
-                            cudaMemcpyHostToDevice,
-                            copy_stream) != cudaSuccess) {
-            error = "expert H2D scale staging failed";
-            return -1;
-        }
-        sc += seg.bytes;
+    if (cudaMemcpyAsync(dst_scale, slab + r.s1_off,
+                        static_cast<size_t>(scale_blob),
+                        cudaMemcpyHostToDevice, copy_stream) != cudaSuccess) {
+        error = "expert H2D scale staging failed";
+        return -1;
     }
     return slot;
 }

@@ -951,6 +951,23 @@ static void LaunchPleInjectKernel(const Nvfp4RowView &kv,
                      dim3(1), dim3(1024), args, 0, stream);
 }
 
+// Persistent fp32 conversion scratch for the PLE conv weights (avoids a
+// cudaMalloc/cudaFree pair per decode step inside RunExpPleInject).
+struct PLEConvScratch {
+    float *d_w = nullptr;
+    size_t bytes = 0;
+    ~PLEConvScratch()
+    {
+        if (d_w) cudaFree(d_w);
+    }
+};
+
+PLEConvScratch &PLEConvScratchInstance()
+{
+    static PLEConvScratch s;
+    return s;
+}
+
 __global__ void bf16_bits_to_float_kernel(const uint8_t *__restrict__ bits,
                                           float *__restrict__ out, int n)
 {
@@ -981,22 +998,31 @@ __attribute__((noinline, noclone)) cudaError_t RunExpPleInject(cudaStream_t stre
     const int H = st.H;
     const int hc = st.hc;
     const int n = H * hc;
-    // The conv weights arrive as raw BF16 bits [n, k]; convert to fp32.
+    // The conv weights arrive as raw BF16 bits [n, k]; convert to fp32 once
+    // into a persistent scratch (per-step cudaMalloc/cudaFree of this buffer
+    // cost measurable host time in the decode loop).
     float *d_conv_w = nullptr;
-    if (cudaMalloc(reinterpret_cast<void **>(&d_conv_w),
-                   static_cast<size_t>(n) * 4 * sizeof(float)) != cudaSuccess)
-        return cudaGetLastError();
     {
+        PLEConvScratch &cs = PLEConvScratchInstance();
+        const size_t need = static_cast<size_t>(n) * 4 * sizeof(float);
+        if (cs.bytes < need) {
+            if (cs.d_w) cudaFree(cs.d_w);
+            if (cudaMalloc(reinterpret_cast<void **>(&cs.d_w), need) !=
+                cudaSuccess) {
+                cs.d_w = nullptr;
+                cs.bytes = 0;
+                return cudaGetLastError();
+            }
+            cs.bytes = need;
+        }
+        d_conv_w = cs.d_w;
         const int total = n * 4;
         const int block = 256;
         const int grid = (total + block - 1) / block;
         bf16_bits_to_float_kernel<<<grid, block, 0, stream>>>(
             d_ple_conv_bf16, d_conv_w, total);
         cudaError_t ce = cudaGetLastError();
-        if (ce != cudaSuccess) {
-            cudaFree(d_conv_w);
-            return ce;
-        }
+        if (ce != cudaSuccess) return ce;
     }
     LaunchPleInjectKernel(
         Nvfp4RowView{key_proj.d_packed, key_proj.d_scales,
@@ -1006,9 +1032,7 @@ __attribute__((noinline, noclone)) cudaError_t RunExpPleInject(cudaStream_t stre
         d_norm_key, d_norm_query, d_norm_conv,
         d_conv_w, d_emb_row, d_hidden, st.d_window, st.d_scratch,
         st.state_len, H, hc, 4, 3, eps, stream);
-    cudaError_t e = cudaGetLastError();
-    cudaFree(d_conv_w);
-    return e;
+    return cudaGetLastError();
 }
 
 cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,
@@ -1034,8 +1058,10 @@ struct HcScratch {
     float *d_upout = nullptr; // fp32 up-gate output [n]
     float *d_normed = nullptr; // fp32 normed [n] (multi-block fast path)
     float *d_dn = nullptr;     // fp32 down output [lowrank]
+    float *d_mixer_mixed = nullptr; // mixer epilogue scratch [H]
+    float *d_mixer_inj = nullptr;   // mixer inject scratch [hc] (unused out)
     size_t down_bytes = 0, up_bytes = 0, x_bytes = 0, upout_bytes = 0,
-           inject_bytes = 0, normed_bytes = 0, dn_bytes = 0;
+           inject_bytes = 0, normed_bytes = 0, dn_bytes = 0, mixer_bytes = 0;
     ~HcScratch()
     {
         if (h_down) cudaFree(h_down);
@@ -1048,6 +1074,8 @@ struct HcScratch {
         if (d_upout) cudaFree(d_upout);
         if (d_normed) cudaFree(d_normed);
         if (d_dn) cudaFree(d_dn);
+        if (d_mixer_mixed) cudaFree(d_mixer_mixed);
+        if (d_mixer_inj) cudaFree(d_mixer_inj);
     }
 };
 
@@ -1123,6 +1151,18 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
         if (cudaMalloc(&s.d_dn, need_dn) != cudaSuccess)
             return cudaGetLastError();
         s.dn_bytes = need_dn;
+    }
+    const size_t need_mixer =
+        (static_cast<size_t>(x32_floats) + 8) * sizeof(float);
+    if (s.mixer_bytes < need_mixer) {
+        if (s.d_mixer_mixed) cudaFree(s.d_mixer_mixed);
+        if (s.d_mixer_inj) cudaFree(s.d_mixer_inj);
+        // mixed[H] followed by inj[hc] in one allocation.
+        if (cudaMalloc(&s.d_mixer_mixed, need_mixer) != cudaSuccess)
+            return cudaGetLastError();
+        s.d_mixer_inj =
+            s.d_mixer_mixed + x32_floats + (x32_floats & 1 ? 1 : 0);
+        s.mixer_bytes = need_mixer;
     }
     return cudaSuccess;
 }
@@ -1365,24 +1405,20 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
                                 int hc, int lowrank, __half *d_out)
 {
     if (seq != 1) return cudaErrorInvalidValue;
-    // Mixer output rides the driver arena (d_mixed_f region); no inject path.
-    float *d_mixed = nullptr, *d_inj = nullptr;
-    if (cudaMalloc(&d_mixed, sizeof(float) * H) != cudaSuccess)
-        return cudaGetLastError();
-    if (cudaMalloc(&d_inj, sizeof(float) * hc) != cudaSuccess) {
-        cudaFree(d_mixed);
-        return cudaGetLastError();
-    }
-    cudaError_t e = RunExpHcGatedResidualCached(
-        stream, d_hidden, w, d_mixer_norm, seq, H, hc, lowrank, d_mixed,
-        d_inj, nullptr);
+    // Mixer output rides persistent scratch (per-call cudaMalloc/cudaFree
+    // showed up as measurable host stalls in the decode loop); no inject.
+    HcScratch &s = HcScratchInstance();
+    cudaError_t e = EnsureScratchScratchOnly(H * hc, lowrank);
+    if (e != cudaSuccess) return e;
+    float *d_mixed = s.d_mixer_mixed, *d_inj = s.d_mixer_inj;
+    if (!d_mixed || !d_inj) return cudaErrorInvalidValue;
+    e = RunExpHcGatedResidualCached(stream, d_hidden, w, d_mixer_norm, seq, H,
+                                    hc, lowrank, d_mixed, d_inj, nullptr);
     if (e == cudaSuccess) {
         float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
                                                                   d_out, H);
         e = cudaGetLastError();
     }
-    cudaFree(d_mixed);
-    cudaFree(d_inj);
     return e;
 }
 
@@ -1638,6 +1674,37 @@ cudaError_t RunExpGeneration(
                        cudaSuccess;
     cudaEvent_t tok_ready_ev = nullptr;
     cudaEventCreate(&tok_ready_ev);
+
+    // Copy channel for cache-miss expert uploads: H2D staging overlaps the
+    // routed-expert compute chain instead of serializing with it (etalon:
+    // RunQwenMoeGeneration). Events fence each upload; ev_front guards slot
+    // reuse against still-running prior compute.
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t ev_uploads[16] = {};
+    cudaEvent_t ev_front = nullptr;
+    bool have_copy =
+        cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) ==
+            cudaSuccess &&
+        cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==
+            cudaSuccess;
+    for (int k = 0; have_copy && k < 16; ++k)
+        if (cudaEventCreateWithFlags(&ev_uploads[k],
+                                     cudaEventDisableTiming) != cudaSuccess)
+        {
+            have_copy = false;
+            break;
+        }
+    if (!have_copy) {
+        // Graceful degradation: staging falls back to the compute stream.
+        if (copy_stream) cudaStreamDestroy(copy_stream);
+        copy_stream = nullptr;
+        if (ev_front) cudaEventDestroy(ev_front);
+        ev_front = nullptr;
+        for (int k = 0; k < 16; ++k) {
+            if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
+            ev_uploads[k] = nullptr;
+        }
+    }
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
     std::vector<int32_t> token_history;  // PLE n-gram context (grows)
@@ -1902,7 +1969,8 @@ cudaError_t RunExpGeneration(
                 stream, *reinterpret_cast<qwen_moe::QwenMoeExpertStore *>(&store),
                 *reinterpret_cast<qwen_moe::QwenMoeExpertDeviceCache *>(&cache),
                 l, h_slots, K, d_mixed, H, I, d_moe_acc, d_yg, d_yu,
-                d_y2, ffn_err);
+                d_y2, ffn_err, copy_stream,
+                copy_stream ? ev_uploads : nullptr, ev_front);
             if (e != cudaSuccess) {
                 result.error_msg = "experts l" + std::to_string(l) +
                                    " kb" + std::to_string(kv_base) + " mt" +
@@ -1973,6 +2041,10 @@ cudaError_t RunExpGeneration(
     }
     if (h_ids) cudaFreeHost(h_ids);
     if (tok_ready_ev) cudaEventDestroy(tok_ready_ev);
+    if (copy_stream) cudaStreamDestroy(copy_stream);
+    if (ev_front) cudaEventDestroy(ev_front);
+    for (int k = 0; k < 16; ++k)
+        if (ev_uploads[k]) cudaEventDestroy(ev_uploads[k]);
     cudaFree(d_ids);
     cudaFree(d_pos);
     cudaFree(d_argmax);
