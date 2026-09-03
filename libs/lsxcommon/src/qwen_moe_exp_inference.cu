@@ -576,7 +576,7 @@ __global__ void ple_inject_kernel(
 
     if (threadIdx.x != 0) return;
 
-    // 1. key = key_proj @ emb  → group-RMS with (1 + norm_key).
+    // 1. key = key_proj @ emb  → group-RMS, then (1 + norm_key).
     for (int r = 0; r < n; ++r) {
         dequant_row(key_proj, r, s_row);
         double acc = 0.0;
@@ -587,25 +587,29 @@ __global__ void ple_inject_kernel(
     for (int g = 0; g < hc; ++g) {
         double acc = 0.0;
         for (int i = 0; i < H; ++i) {
-            const float v = s_key[g * H + i] * bf16_one_plus(d_norm_key, g * H + i);
-            s_key[g * H + i] = v;  // apply weight first, then norm below
+            const float v = s_key[g * H + i];
             acc += v * v;
         }
         const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i) s_key[g * H + i] *= inv;
+        for (int i = 0; i < H; ++i)
+            s_key[g * H + i] =
+                s_key[g * H + i] * inv *
+                bf16_one_plus(d_norm_key, g * H + i);
     }
 
-    // 2. query = group-RMS(hidden) with (1 + norm_query_w).
+    // 2. query = group-RMS(hidden), then (1 + norm_query_w).
     for (int g = 0; g < hc; ++g) {
         double acc = 0.0;
         for (int i = 0; i < H; ++i) {
-            const float v = __half2float(d_hidden[g * H + i]) *
-                            bf16_one_plus(d_norm_query, g * H + i);
+            const float v = __half2float(d_hidden[g * H + i]);
             s_query[g * H + i] = v;
             acc += v * v;
         }
         const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i) s_query[g * H + i] *= inv;
+        for (int i = 0; i < H; ++i)
+            s_query[g * H + i] =
+                s_query[g * H + i] * inv *
+                bf16_one_plus(d_norm_query, g * H + i);
     }
 
     // 3. gate per stream: s = sum_i key_i * query_i / sqrt(H).
@@ -637,42 +641,45 @@ __global__ void ple_inject_kernel(
             s_gated[c * H + i] = sg * s_value[i];
     }
 
-    // 6. normed = group-RMS(gated) with (1 + norm_conv_w).
+    // 6. normed = group-RMS(gated), then (1 + norm_conv_w).
     for (int g = 0; g < hc; ++g) {
         double acc = 0.0;
         for (int i = 0; i < H; ++i) {
-            const float v = s_gated[g * H + i] *
-                            bf16_one_plus(d_norm_conv, g * H + i);
+            const float v = s_gated[g * H + i];
             s_normed[g * H + i] = v;
             acc += v * v;
         }
         const double inv = 1.0 / sqrt(acc / H + eps);
-        for (int i = 0; i < H; ++i) s_normed[g * H + i] *= inv;
+        for (int i = 0; i < H; ++i)
+            s_normed[g * H + i] =
+                s_normed[g * H + i] * inv *
+                bf16_one_plus(d_norm_conv, g * H + i);
     }
 
-    // 7. HF conv1d semantics (decode, seq=1): the rolling window holds the
-    //    previous state_len rows; y = sum_k w[c,k] * x_pad[k*dilation] over
-    //    x_pad = [prev(state_len), current] => taps w0..w{K-2} hit the window
-    //    rows at offsets -(state_len - k*dilation) and the CURRENT row uses
-    //    w[K-1]. Taps are computed BEFORE the current row is appended.
+    // 7. HF conv1d semantics (decode, seq=1): x_pad = [prev(state_len), current].
+    //    Tap k of the K-tap kernel reads x_pad[state_len - (K-1-k)*dilation]:
+    //    w0 -> the oldest reachable row (skipped when negative), w{K-1} -> the
+    //    CURRENT row. Taps are computed BEFORE the current row is appended.
     for (int c = 0; c < hc; ++c) {
         for (int i = 0; i < H; ++i) {
             const int idx = c * H + i;
             float conv_acc = 0.f;
             for (int k = 0; k < k_conv; ++k) {
-                const int off = k * dilation;  // index into x_pad
+                const int off =
+                    state_len - (k_conv - 1 - k) * dilation;  // x_pad index
                 if (off == state_len) {
                     // current row contributes with weight w[K-1]
                     conv_acc = fmaf(d_conv_w[idx * k_conv + k], s_normed[idx],
                                     conv_acc);
-                } else if (off < state_len) {
+                } else if (off >= 0 && off < state_len) {
                     conv_acc = fmaf(d_conv_w[idx * k_conv + k],
                                     d_window[static_cast<int64_t>(off) * n +
                                              idx],
                                     conv_acc);
                 }
             }
-            const float out_v = s_gated[idx] + conv_acc;
+            const float out_v =
+                s_gated[idx] + conv_acc / (1.0f + expf(-conv_acc));
             d_hidden[idx] = __float2half(__half2float(d_hidden[idx]) + out_v);
         }
     }
@@ -684,6 +691,7 @@ __global__ void ple_inject_kernel(
                 d_window[static_cast<int64_t>(s + 1) * n + i];
     for (int i = 0; i < n; ++i)
         d_window[static_cast<int64_t>(state_len - 1) * n + i] = s_normed[i];
+
 }
 
 } // namespace
@@ -703,7 +711,7 @@ cudaError_t ExpPleStateAlloc(ExpPleState &st, int H, int hc, int state_len)
     // + value[H] + row[E] live in global memory (shared-memory opt-in limit
     // on sm_120 is 99KB/block — far below the 5*hc*H-float footprint).
     const size_t scratch_floats =
-        4u * static_cast<size_t>(H) * hc + H + 2560 + 4;
+        4u * static_cast<size_t>(H) * hc + H + 2560 + 32;
     if (cudaMalloc(reinterpret_cast<void **>(&st.d_scratch),
                    scratch_floats * sizeof(float)) != cudaSuccess)
         return cudaGetLastError();
@@ -833,7 +841,8 @@ struct HcScratch {
     float *d_down = nullptr, *d_up = nullptr, *d_inject = nullptr;
     float *d_x32 = nullptr;   // fp32 input upcast
     float *d_upout = nullptr; // fp32 up-gate output [n]
-    size_t down_bytes = 0, up_bytes = 0, x_bytes = 0, upout_bytes = 0;
+    size_t down_bytes = 0, up_bytes = 0, x_bytes = 0, upout_bytes = 0,
+           inject_bytes = 0;
     ~HcScratch()
     {
         if (h_down) cudaFree(h_down);
@@ -891,6 +900,22 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
     return cudaSuccess;
 }
 
+cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w)
+{
+    HcScratch &s = HcScratchInstance();
+    const size_t ib =
+        static_cast<size_t>(inject_w.rows) * inject_w.cols * sizeof(__half);
+    if (s.inject_bytes < ib) {
+        if (s.h_inject) cudaFree(s.h_inject);
+        if (cudaMalloc(&s.h_inject, ib) != cudaSuccess)
+            return cudaGetLastError();
+        if (cudaMalloc(&s.d_inject, ib * 2) != cudaSuccess)
+            return cudaGetLastError();
+        s.inject_bytes = ib;
+    }
+    return cudaSuccess;
+}
+
 } // namespace
 
 __global__ void half_to_float_rows_kernel(const __half *__restrict__ src,
@@ -912,9 +937,11 @@ cudaError_t RunExpHcGatedResidual(
     const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
     const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
     int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
-    __half *d_mixed_h)
+    __half *d_mixed_h, const uint8_t *d_hc_norm_override)
 {
     if (seq != 1) return cudaErrorInvalidValue;
+    const uint8_t *norm_w =
+        d_hc_norm_override ? d_hc_norm_override : d_hc_norm;
     const int n = H * hc;
     // Shared footprint: 2n + lowrank floats; guard the Blackwell smem cap.
     const size_t smem_floats = 2 * static_cast<size_t>(n) + lowrank;
@@ -922,6 +949,8 @@ cudaError_t RunExpHcGatedResidual(
         return cudaErrorInvalidValue;
     HcScratch &s = HcScratchInstance();
     cudaError_t e = EnsureScratch(down, up, n);
+    if (e != cudaSuccess) return e;
+    e = EnsureInjectScratch(inject_w);
     if (e != cudaSuccess) return e;
     if (gpu::dequant_shared_nvfp4(stream, down.d_packed, down.packed_bytes,
                                   down.d_scales, down.scale_bytes,
@@ -936,6 +965,19 @@ cudaError_t RunExpHcGatedResidual(
                                   static_cast<int64_t>(up.rows) * up.cols) !=
         cudaSuccess)
         return cudaGetLastError();
+    if (inject_w.d_packed && inject_w.rows > 0) {
+        if (gpu::dequant_shared_nvfp4(
+                stream, inject_w.d_packed, inject_w.packed_bytes,
+                inject_w.d_scales, inject_w.scale_bytes,
+                inject_w.global_scale, s.h_inject,
+                static_cast<int64_t>(inject_w.rows) * inject_w.cols) !=
+            cudaSuccess)
+            return cudaGetLastError();
+        half_to_float_rows_kernel<<<(inject_w.rows * inject_w.cols + 255) /
+                                        256,
+                                    256, 0, stream>>>(
+            s.h_inject, s.d_inject, inject_w.rows * inject_w.cols);
+    }
     half_to_float_rows_kernel<<<(down.rows * down.cols + 255) / 256, 256, 0,
                                 stream>>>(s.h_down, s.d_down,
                                           down.rows * down.cols);
@@ -951,7 +993,7 @@ cudaError_t RunExpHcGatedResidual(
     const size_t smem_bytes = (static_cast<size_t>(n) + lowrank) * sizeof(float);
     hc_gated_residual_f32_kernel<<<1, block, smem_bytes, stream>>>(
         s.d_x32, s.d_down, s.d_up, s.d_inject, H, hc, lowrank, 1e-6f,
-        d_mixed, d_inject_out, s.d_upout, d_hc_norm, d_mixed_h);
+        d_mixed, d_inject_out, s.d_upout, norm_w, d_mixed_h);
     return cudaGetLastError();
 }
 
@@ -961,7 +1003,6 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
                           const uint8_t *d_mixer_norm, int seq, int H, int hc,
                           int lowrank, __half *d_out, __half *d_normed_scratch)
 {
-    (void)d_mixer_norm;
     (void)d_normed_scratch;
     if (seq != 1) return cudaErrorInvalidValue;
     float *d_mixed = nullptr, *d_inj = nullptr;
@@ -974,7 +1015,7 @@ cudaError_t RunExpHcMixer(cudaStream_t stream, const __half *d_hidden,
     cudaError_t e = RunExpHcGatedResidual(
         stream, d_hidden, down, up,
         qwen::QwenNvfp4Weight{}, nullptr, seq, H, hc, lowrank, d_mixed, d_inj,
-        nullptr);
+        nullptr, d_mixer_norm);
     if (e == cudaSuccess) {
         // Float->half conversion for the mixed output.
         float_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(d_mixed,
@@ -1144,6 +1185,7 @@ cudaError_t RunExpGeneration(
     half_elems += (size_t)H;                       // d_sh
     size_t float_elems = (size_t)max_seq * nv * 2; // d_gf/betaf
     float_elems += (size_t)max_seq * H;            // d_moe_acc
+    float_elems += (size_t)max_seq * H;            // d_mixed_f (hc mixed out)
     float_elems += (size_t)max_seq * 16;           // hc inject weights
     float_elems += (size_t)max_seq * 2560;         // PLE gathered emb rows
     float_elems += 1024;                           // gate/argmax scratch
@@ -1204,7 +1246,7 @@ cudaError_t RunExpGeneration(
     float *d_betaf = d_gf + (size_t)max_seq * nv;
     float *d_moe_acc = d_betaf + (size_t)max_seq * nv;
     float *d_mixed_f = d_moe_acc + (size_t)max_seq * H;
-    float *d_inj_f = d_mixed_f + (size_t)max_seq * hc;
+    float *d_inj_f = d_mixed_f + (size_t)max_seq * H;
     float *d_gate_val = d_inj_f + (size_t)max_seq * 16;
     float *d_maxv_scratch = d_gate_val + 16;
     // PLE gathered embedding rows: [heads*head_dim] = 2560 floats. Must NOT
@@ -1249,6 +1291,34 @@ cudaError_t RunExpGeneration(
     int generated = 0;
     const int threads = 256;
     const double eps = top.rms_norm_eps;
+
+    // Reset the persistent PLE conv window and QSA indexer state: the states
+    // live in model-owned buffers that survive across generation calls (the
+    // selfcheck runs several cycles on the same model object) — stale
+    // context would leak into the next run and break run-to-run parity.
+    cudaMemsetAsync(ple.d_window, 0,
+                    static_cast<size_t>(ple.state_len) * H * hc * sizeof(float),
+                    stream);
+    cudaMemsetAsync(ple.d_ctx, 0,
+                    static_cast<size_t>(ple.state_len) * sizeof(int32_t),
+                    stream);
+    for (auto &st : qsa) {
+        if (!st.d_raw_keys) continue;
+        const size_t hd = static_cast<size_t>(st.head_dim > 0 ? st.head_dim
+                                                              : 128);
+        cudaMemsetAsync(st.d_raw_keys, 0,
+                        static_cast<size_t>(st.capacity_ctx) * hd *
+                            sizeof(__half),
+                        stream);
+        cudaMemsetAsync(st.d_pooled_keys, 0,
+                        static_cast<size_t>(st.capacity_ctx) * hd *
+                            sizeof(float),
+                        stream);
+        cudaMemsetAsync(st.d_block_starts, 0,
+                        static_cast<size_t>(st.capacity_ctx) * sizeof(int),
+                        stream);
+        st.host_pooled_count = 0;
+    }
 
     for (int step = 0; step < total_steps; ++step) {
         const int kv_base = kv->kv_rows;
@@ -1452,6 +1522,9 @@ cudaError_t RunExpGeneration(
             }
             if (e != cudaSuccess) break;
             std::string ffn_err;
+            // Routed accumulation runs acc += coeff * y2 per expert; the fp32
+            // accumulator must be zeroed per layer (the arena is persistent).
+            cudaMemsetAsync(d_moe_acc, 0, sizeof(float) * H, stream);
             e = qwen_moe::RunQwenMoeRoutedFFN(
                 stream, *reinterpret_cast<qwen_moe::QwenMoeExpertStore *>(&store),
                 *reinterpret_cast<qwen_moe::QwenMoeExpertDeviceCache *>(&cache),
@@ -1512,6 +1585,12 @@ cudaError_t RunExpGeneration(
                    cudaMemcpyDeviceToHost);
         result.tokens.assign(hgen.begin(), hgen.end());
         result.eos_terminated = qwen_moe::TruncateTokensAtEos(result.tokens, eos_id);
+        // Publish the last step's fp32 logits row for parity harnesses.
+        std::vector<float> hlast(static_cast<size_t>(V));
+        cudaStreamSynchronize(stream);
+        if (cudaMemcpy(hlast.data(), d_logits_f32, sizeof(float) * V,
+                       cudaMemcpyDeviceToHost) == cudaSuccess)
+            result.final_logits = std::move(hlast);
     }
     if (h_ids) cudaFreeHost(h_ids);
     if (tok_ready_ev) cudaEventDestroy(tok_ready_ev);
@@ -1530,31 +1609,41 @@ cudaError_t RunExpGeneration(
 }
 
 
-// ── LM head GEMM (cuBLAS FP16 in / FP32 out) ──────────────────────────────
+// ── LM head GEMM (deterministic FP16-in / FP32-out GEMV) ──────────────────
 // The lm_head is kept in BF16-derived FP16: NVFP4 logit noise exceeds the
-// top-1/top-2 margin of this model. Process-wide handle (single session per
-// process, same simplification as the arena).
+// top-1/top-2 margin of this model. One warp per output row; fp32 accumulate
+// with an ordered shfl reduce — bit-deterministic across runs (the cuBLAS
+// default algo may use split-K atomics, breaking the selfcheck parity
+// memcmp contract).
+namespace {
+
+__global__ void exp_head_gemv_kernel(const __half *__restrict__ head,
+                                     const __half *__restrict__ hidden,
+                                     float *__restrict__ logits, int H, int V)
+{
+    const int v = blockIdx.x * (blockDim.x / 32) + (threadIdx.x >> 5);
+    if (v >= V) return;
+    const int lane = threadIdx.x & 31;
+    const __half *row = head + static_cast<int64_t>(v) * H;
+    float part = 0.f;
+    for (int h = lane; h < H; h += 32)
+        part += __half2float(row[h]) * __half2float(hidden[h]);
+    for (int off = 16; off > 0; off >>= 1)
+        part += __shfl_down_sync(0xffffffffu, part, off);
+    if (lane == 0) logits[v] = part;
+}
+
+} // namespace
+
 cudaError_t RunExpHeadGemm(cudaStream_t stream, const __half *d_head_f16,
                            const __half *d_hidden, float *d_logits, int H,
                            int V)
 {
-    static cublasHandle_t handle = nullptr;
-    if (!handle) {
-        if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS)
-            return cudaErrorUnknown;
-        cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);
-    }
-    cublasSetStream(handle, stream);
-    const float alpha = 1.0f, beta = 0.0f;
-    // logits[v] = head_w[v,:] . hidden[:] ; head_w [V, H] row-major ->
-    // cublas OP_T with lda=H: out[V,1].
-    cublasStatus_t st = cublasGemmEx(
-        handle, CUBLAS_OP_T, CUBLAS_OP_N, V, 1, H, &alpha,
-        d_head_f16, CUDA_R_16F, H,
-        d_hidden, CUDA_R_16F, H,
-        &beta, d_logits, CUDA_R_32F, V,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown;
+    const int warps_per_block = 8;
+    const int blocks = (V + warps_per_block - 1) / warps_per_block;
+    exp_head_gemv_kernel<<<blocks, warps_per_block * 32, 0, stream>>>(
+        d_head_f16, d_hidden, d_logits, H, V);
+    return cudaGetLastError();
 }
 
 } // namespace lsxcommon::qwen_moe_exp

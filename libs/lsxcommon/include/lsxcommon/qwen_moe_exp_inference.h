@@ -23,7 +23,7 @@ cudaError_t RunExpHcGatedResidual(
     const qwen::QwenNvfp4Weight &down, const qwen::QwenNvfp4Weight &up,
     const qwen::QwenNvfp4Weight &inject_w, const uint8_t *d_hc_norm,
     int seq, int H, int hc, int lowrank, float *d_mixed, float *d_inject_out,
-    __half *d_mixed_h);
+    __half *d_mixed_h, const uint8_t *d_hc_norm_override = nullptr);
 
 // Test-only raw-float twin (identical op sequence, no NVFP4 decode, no BF16
 // norm cast) for bit-parity against the host replica in
