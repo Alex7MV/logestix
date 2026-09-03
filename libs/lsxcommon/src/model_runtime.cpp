@@ -1,6 +1,7 @@
 #include "lsxcommon/model_runtime.h"
 
 #include <absl/strings/ascii.h>
+#include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 #include <algorithm>
 #include <cstdint>
@@ -199,11 +200,15 @@ CliModel CreateCliModel(const std::string &model_path, bool fast_math)
 void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r)
 {
     lsxcommon::log::info("=== --run Results ===");
-    lsxcommon::log::info(absl::StrFormat("prompt   : {}", prompt));
-    lsxcommon::log::info(absl::StrFormat("output   : {}", r.output_text));
-    lsxcommon::log::info(
-        absl::StrFormat("tokens   : {} at {:.1f} t/s", r.num_tokens,
-                        r.tokens_per_sec));
+    // StrCat (not StrFormat): the abseil compile-time format checker under
+    // AOCC rejects fmt-style {} placeholders, leaving literal "{}" in the
+    // output (see AGENTS.md AOCC notes).
+    lsxcommon::log::info(absl::StrCat("prompt   : ", prompt));
+    lsxcommon::log::info(absl::StrCat("output   : ", r.output_text));
+    lsxcommon::log::info(absl::StrCat(
+        "tokens   : ", r.num_tokens, " at ",
+        absl::StrFormat("%.1f", r.tokens_per_sec), " t/s (",
+        absl::StrFormat("%.1f", r.total_time_ms), " ms)"));
 }
 
 int RunCliGeneration(const GenerationCliArgs &args)
