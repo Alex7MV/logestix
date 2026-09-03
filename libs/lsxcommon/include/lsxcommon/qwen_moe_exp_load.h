@@ -46,7 +46,8 @@ struct ExpLayerWeights {
     uint8_t *d_ple_norm_key = nullptr;    // [hc*H] BF16 bits
     uint8_t *d_ple_norm_query = nullptr;  // [hc*H] BF16 bits
     uint8_t *d_ple_norm_conv = nullptr;   // [hc*H] BF16 bits
-    qwen::QwenNvfp4Weight ple_conv;       // depthwise [hc*H, 1, k]
+    uint8_t *d_ple_conv_bf16 = nullptr;   // [hc*H, k] BF16 bits (raw file)
+    int64_t ple_conv_bytes = 0;
     int ple_conv_state_len = 0;
     bool is_ple_layer = false;
 };
@@ -76,7 +77,12 @@ struct ExpPinnedWeights {
     qwen::QwenTopology top;    // dense view for kernel reuse
     Qwen4ExpTopology exp_top;  // full topology incl. qwen4_exp fields
     qwen::QwenNvfp4Weight embed;
-    qwen::QwenNvfp4Weight head;
+    qwen::QwenNvfp4Weight head;   // legacy NVFP4 view (unused for qwen38)
+    // LM head as a persistent FP16 table ([V, H], from BF16 raw global.arrow)
+    // for the cuBLAS head GEMM: NVFP4 logit noise exceeds the top-1/top-2
+    // margin of this model.
+    __half *d_head_f16 = nullptr;
+    int64_t head_elems = 0;
     // Global hyper-connection mixer (GatedResidual, use_combine=false):
     // norm BF16 raw + down/up NVFP4; output [H] (mean over streams).
     uint8_t *d_mixer_norm = nullptr;  // [hc*H] BF16 bits

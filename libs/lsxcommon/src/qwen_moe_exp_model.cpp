@@ -3,6 +3,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/resource_governor.h"
 
 #include <absl/strings/str_cat.h>
@@ -32,6 +33,7 @@ std::uint64_t MsSince(std::chrono::steady_clock::time_point t0)
 Qwen38FlashNextModel::Qwen38FlashNextModel(ModelInitConfig cfg)
     : ModelBase(std::move(cfg))
 {
+    qwen::SetQwenTcFastMath(cfg_.fast_math);
 }
 
 Qwen38FlashNextModel::~Qwen38FlashNextModel() = default;

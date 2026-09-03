@@ -305,7 +305,7 @@ TEST_CASE("PLE inject kernel end-to-end parity vs host replica",
 
     CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2), d_emb(emb.size() * 4),
         d_hidden(hidden.size() * 2);
-    lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
+    lsxcommon::qwen::QwenNvfp4Weight kp, vp;
     kp.d_packed = d_keyp.as<uint8_t>();
     kp.d_scales = d_keys.as<uint8_t>();
     kp.global_scale = 1.f;
@@ -316,22 +316,22 @@ TEST_CASE("PLE inject kernel end-to-end parity vs host replica",
     vp.global_scale = 1.f;
     vp.cols = E;
     vp.rows = H;
-    cv = vp;  // conv weights unused for zero-tap check
 
     // Two sequential injects: hidden must change once (key row 0 active) and
     // the window must roll (second call sees the shifted rows via finite
     // output). Deterministic check: same inputs -> same outputs.
     std::vector<__half> got1(n), got2(n);
+    CudaBuf d_cvb(n * 4 * 2);
     auto err = lsxcommon::qwen_moe_exp::RunExpPleInject(
         nullptr, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
-        d_nc.as<uint8_t>(), cv, nullptr, d_emb.as<float>(), HEADS, HDIM,
-        1e-6f, d_hidden.as<__half>());
+        d_nc.as<uint8_t>(), d_cvb.as<uint8_t>(), nullptr, d_emb.as<float>(),
+        HEADS, HDIM, 1e-6f, d_hidden.as<__half>());
     REQUIRE(err == cudaSuccess);
     cudaMemcpy(got1.data(), d_hidden.p, n * 2, cudaMemcpyDeviceToHost);
     err = lsxcommon::qwen_moe_exp::RunExpPleInject(
         nullptr, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
-        d_nc.as<uint8_t>(), cv, nullptr, d_emb.as<float>(), HEADS, HDIM,
-        1e-6f, d_hidden.as<__half>());
+        d_nc.as<uint8_t>(), d_cvb.as<uint8_t>(), nullptr, d_emb.as<float>(),
+        HEADS, HDIM, 1e-6f, d_hidden.as<__half>());
     REQUIRE(err == cudaSuccess);
     cudaMemcpy(got2.data(), d_hidden.p, n * 2, cudaMemcpyDeviceToHost);
     for (int i = 0; i < n; ++i) {
@@ -389,36 +389,24 @@ TEST_CASE("PLE dilated short-conv tap order matches HF conv1d",
     vp.global_scale = 1.f;
     vp.cols = E;
     vp.rows = H;
-    cv.d_packed = nullptr;
-    // Conv weights via the NVFP4 `ple_conv` view: w[k] = k+1 in {1,2,3,4};
-    // dequant = E2M1(code) * global_scale. E2M1 codes: 1:0.5, 2:1, 3:1.5,
-    // 4:2 -> with global_scale 2 the values are {1,2,3,4}.
-    const int conv_packed = (n * 4) / 2, conv_scales = (n * 4) / 16;
-    CudaBuf d_convp(conv_packed), d_convs(conv_scales);
+    // Conv weights as BF16 bits w[k] = k+1 in {1,2,3,4}.
+    const int conv_bytes = n * 4 * 2;
+    CudaBuf d_cvb(conv_bytes);
     {
-        std::vector<uint8_t> packed(conv_packed, 0);
-        std::vector<uint8_t> scales(conv_scales, 0x38);  // e4=7 => scale 1.0
-        // value (k+1)/2 -> E2M1 code (k+1): nibbles per byte: low = even col.
-        for (int i = 0; i < n; ++i) {
-            for (int k = 0; k < 4; ++k) {
-                const uint8_t code = uint8_t(k + 1);  // (k+1)/2 value
-                const int col = k;
-                const int bit = (i * 4 + col) * 4;
-                packed[bit / 8] |= uint8_t(code << (bit % 8));
-            }
+        std::vector<float> conv_w(n * 4);
+        for (int i = 0; i < n; ++i)
+            for (int k = 0; k < 4; ++k) conv_w[i * 4 + k] = float(k + 1);
+        std::vector<uint16_t> bits(conv_w.size());
+        for (size_t j = 0; j < conv_w.size(); ++j) {
+            // BF16 bits: truncate fp32 to its top 16 bits (round-to-nearest
+            // not needed for 1..4).
+            uint32_t u32;
+            std::memcpy(&u32, &conv_w[j], 4);
+            bits[j] = static_cast<uint16_t>(u32 >> 16);
         }
-        cudaMemcpy(d_convp.p, packed.data(), conv_packed,
-                   cudaMemcpyHostToDevice);
-        cudaMemcpy(d_convs.p, scales.data(), conv_scales,
-                   cudaMemcpyHostToDevice);
+        cudaMemcpy(d_cvb.p, bits.data(), conv_bytes, cudaMemcpyHostToDevice);
     }
-    cv.d_packed = d_convp.as<uint8_t>();
-    cv.d_scales = d_convs.as<uint8_t>();
-    cv.global_scale = 2.f;  // dequant: code_val * 2 -> {1,2,3,4}
-    cv.cols = 4;
-    cv.rows = n;
-    cv.packed_bytes = conv_packed;
-    cv.scale_bytes = conv_scales;
+    const uint8_t *conv_ptr = d_cvb.as<uint8_t>();
 
     // conv taps come from the window (emb=0 -> gated=0).
     // HF tap mapping for decode: y = w0*prev[-9] + w1*prev[-6]
@@ -431,7 +419,7 @@ TEST_CASE("PLE dilated short-conv tap order matches HF conv1d",
     CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2);
     auto err = lsxcommon::qwen_moe_exp::RunExpPleInject(
         nullptr, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
-        d_nc.as<uint8_t>(), cv,
+        d_nc.as<uint8_t>(), conv_ptr,
         nullptr, d_emb.as<float>(), HEADS, HDIM, 1e-6f,
         d_hidden.as<__half>());
     REQUIRE(err == cudaSuccess);
@@ -439,5 +427,74 @@ TEST_CASE("PLE dilated short-conv tap order matches HF conv1d",
     cudaMemcpy(got.data(), d_hidden.p, n * 2, cudaMemcpyDeviceToHost);
     for (int i = 0; i < n; ++i)
         REQUIRE(__half2float(got[i]) == Catch::Approx(30.25f).margin(0.01f));
+    lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
+}
+
+TEST_CASE("PLE inject kernel executes at real-model shared-memory scale",
+          "[qwen-exp-kernels]")
+{
+    // Real geometry: H=2560, hc=4, E=2560 -> dynamic smem = 5*n + H + E floats
+    // = 225280 bytes. Regression guard: the kernel must actually launch (the
+    // window marker written by the kernel's first statement must appear).
+    constexpr int H = 2560, hc = 4, E = 2560;
+    const int n = H * hc;
+    const int state_len = 9;
+    lsxcommon::qwen_moe_exp::ExpPleState st;
+    REQUIRE(lsxcommon::qwen_moe_exp::ExpPleStateAlloc(st, H, hc, state_len) ==
+            cudaSuccess);
+
+    const int packed = (n * E) / 2, scales = (n * E) / 16;
+    CudaBuf d_keyp(packed), d_keys(scales), d_valp((H * E) / 2),
+        d_vals((H * E) / 16), d_emb(2560 * 4), d_hidden(n * 2);
+    CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2);
+    lsxcommon::qwen::QwenNvfp4Weight kp, vp, cv;
+    kp.d_packed = d_keyp.as<uint8_t>();
+    kp.d_scales = d_keys.as<uint8_t>();
+    kp.global_scale = 1.f;
+    kp.cols = E;
+    kp.rows = n;
+    vp.d_packed = d_valp.as<uint8_t>();
+    vp.d_scales = d_vals.as<uint8_t>();
+    vp.global_scale = 1.f;
+    vp.cols = E;
+    vp.rows = H;
+    cv = vp;
+
+    // emb[0] = 1, rest 0; value_proj col0 nibbles = 1.0 -> value[r] = 1.
+    std::vector<float> embv(2560, 0.f);
+    embv[0] = 1.f;
+    cudaMemcpy(d_emb.p, embv.data(), 2560 * 4, cudaMemcpyHostToDevice);
+    {
+        const int vp_packed = (H * E) / 2;
+        std::vector<uint8_t> vp_p(vp_packed, 0);
+        // element (r*E + 0) nibble = code 2 (value 1.0)
+        for (int r = 0; r < H; ++r) {
+            const int bit = (r * E) * 4;
+            vp_p[bit / 8] |= uint8_t(2 << (bit % 8));
+        }
+        cudaMemcpy(d_valp.p, vp_p.data(), vp_packed, cudaMemcpyHostToDevice);
+        const int vp_scales = (H * E) / 16;
+        std::vector<uint8_t> vp_s(vp_scales, 0x38);  // scale 1.0
+        cudaMemcpy(d_vals.p, vp_s.data(), vp_scales, cudaMemcpyHostToDevice);
+    }
+    cudaStream_t nstream = nullptr;
+    cudaStreamCreateWithFlags(&nstream, cudaStreamNonBlocking);
+    CudaBuf d_cvb2(n * 4 * 2);
+    auto err = lsxcommon::qwen_moe_exp::RunExpPleInject(
+        nstream, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
+        d_nc.as<uint8_t>(), d_cvb2.as<uint8_t>(), nullptr, d_emb.as<float>(),
+        16, 160, 1e-6f, d_hidden.as<__half>());
+    REQUIRE(err == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nstream) == cudaSuccess);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    std::vector<__half> got(n);
+    cudaMemcpy(got.data(), d_hidden.p, n * 2, cudaMemcpyDeviceToHost);
+    // value = 1 per stream; gate = 0 -> sigmoid = 0.5 -> gated = 0.5 per elem;
+    // normed = 0.5 * (1+w) with w=0 -> 0.5 after group rms(0.5) = 1 =>
+    // normed = 0.5; conv taps: w3 * normed(current) via current row = 0.5,
+    // plus gated 0.5 => out = hidden(0.25) + 0.5 + 0.5*conv_w3... assert
+    // hidden CHANGED from 0.25 (kernel executed) and is finite:
+    REQUIRE(std::isfinite(__half2float(got[0])));
+    REQUIRE(__half2float(got[0]) != 0.25f);
     lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
 }

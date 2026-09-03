@@ -256,7 +256,8 @@ void ExpLayerWeightsFree(ExpLayerWeights &lw)
     if (lw.d_shared_gate) { cudaFree(lw.d_shared_gate); lw.d_shared_gate = nullptr; }
     lw.ple_key.Free();
     lw.ple_value.Free();
-    lw.ple_conv.Free();
+    if (lw.d_ple_conv_bf16) { cudaFree(lw.d_ple_conv_bf16); lw.d_ple_conv_bf16 = nullptr; }
+    lw.ple_conv_bytes = 0;
     if (lw.d_ple_norm_key) { cudaFree(lw.d_ple_norm_key); lw.d_ple_norm_key = nullptr; }
     if (lw.d_ple_norm_query) { cudaFree(lw.d_ple_norm_query); lw.d_ple_norm_query = nullptr; }
     if (lw.d_ple_norm_conv) { cudaFree(lw.d_ple_norm_conv); lw.d_ple_norm_conv = nullptr; }
@@ -269,6 +270,8 @@ void ExpPinnedWeights::Free()
 {
     embed.Free();
     head.Free();
+    if (d_head_f16) { cudaFree(d_head_f16); d_head_f16 = nullptr; }
+    head_elems = 0;
     if (d_mixer_norm) { cudaFree(d_mixer_norm); d_mixer_norm = nullptr; }
     mixer_norm_bytes = 0;
     mixer_down.Free();
@@ -317,7 +320,7 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
     }
     std::uint64_t bytes_acc = 0;
 
-    // Globals: final norm (BF16->FP16), embed + lm_head (NVFP4).
+    // Globals: final norm (BF16->FP16), embed (NVFP4) + lm_head (BF16 raw).
     {
         auto raw_res = LoadTensorBatchViews(pinned_dir / "global.arrow");
         if (!raw_res.ok()) {
@@ -346,6 +349,33 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
                 return false;
             }
         }
+        // LM head: BF16 bits, converted to a persistent FP16 table for the
+        // cuBLAS head GEMM (NVFP4 logit noise exceeds the top-1/top-2 margin
+        // of this model).
+        if (auto *hd = fastload::FindTensorSuffix(*raw_res, "lm_head.weight");
+            hd && hd->rank >= 2) {
+            pw.head_elems = static_cast<int64_t>(hd->shape[0]) *
+                            static_cast<int64_t>(hd->shape[1]);
+            cudaError_t e = cudaMalloc(
+                reinterpret_cast<void **>(&pw.d_head_f16),
+                static_cast<size_t>(pw.head_elems) * sizeof(__half));
+            if (e != cudaSuccess) {
+                error = "lm_head fp16 alloc failed";
+                pw.Free();
+                return false;
+            }
+            e = ring.UploadBf16AsFp16(hd->data, pw.head_elems, pw.d_head_f16,
+                                      stream, bytes_acc);
+            if (e != cudaSuccess) {
+                error = "lm_head upload failed";
+                pw.Free();
+                return false;
+            }
+        } else {
+            error = "lm_head missing from global.arrow (BF16 raw expected)";
+            pw.Free();
+            return false;
+        }
     }
     {
         auto nv_res = LoadDenseNvfp4BatchViews(pinned_dir / "global_nvfp4.arrow");
@@ -358,11 +388,8 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
         std::string dummy;
         cudaError_t e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv_res, "embed_tokens.weight"),
                                           pw.embed, stream, ring, bytes_acc, &dummy);
-        if (e == cudaSuccess)
-            e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*nv_res, "lm_head.weight"),
-                                  pw.head, stream, ring, bytes_acc, &dummy);
-        if (e != cudaSuccess || !pw.embed.d_packed || !pw.head.d_packed) {
-            error = "embed/lm_head missing or upload failed";
+        if (e != cudaSuccess || !pw.embed.d_packed) {
+            error = "embed missing or upload failed";
             pw.Free();
             return false;
         }
@@ -715,7 +742,6 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             }
             e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*pv, "ple.key_proj.weight"), lw.ple_key, stream, ring, bytes_acc, &job_error);
             if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*pv, "ple.value_proj.weight"), lw.ple_value, stream, ring, bytes_acc, &job_error);
-            if (e == cudaSuccess) e = UploadNvfp4Weight(fastload::FindNvfp4Suffix(*pv, "ple.conv1d.weight"), lw.ple_conv, stream, ring, bytes_acc, &job_error);
             if (e != cudaSuccess || !lw.ple_key.d_packed ||
                 !lw.ple_value.d_packed) {
                 error = absl::StrCat("ple/layer_", l, ": projections incomplete");
@@ -732,8 +758,10 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             auto *nk = fastload::FindTensorSuffix(*pr, "ple.norm_key.weight");
             auto *nq = fastload::FindTensorSuffix(*pr, "ple.norm_query.weight");
             auto *nc = fastload::FindTensorSuffix(*pr, "ple.norm_conv.weight");
-            if (!nk || !nq || !nc) {
-                error = absl::StrCat("ple/layer_", l, ": norms missing");
+            // conv1d is stored as raw BF16 (not NVFP4) in the same raw file.
+            auto *cv = fastload::FindTensorSuffix(*pr, "ple.conv1d.weight");
+            if (!nk || !nq || !nc || !cv) {
+                error = absl::StrCat("ple/layer_", l, ": norms/conv missing");
                 pw.Free();
                 return false;
             }
@@ -743,6 +771,8 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
                 reinterpret_cast<void **>(&lw.d_ple_norm_query), nq->bytes);
             if (pe == cudaSuccess) pe = cudaMalloc(
                 reinterpret_cast<void **>(&lw.d_ple_norm_conv), nc->bytes);
+            if (pe == cudaSuccess) pe = cudaMalloc(
+                reinterpret_cast<void **>(&lw.d_ple_conv_bf16), cv->bytes);
             if (pe != cudaSuccess) {
                 error = absl::StrCat("ple/layer_", l, ": norm alloc failed");
                 pw.Free();
@@ -751,11 +781,13 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             pe = ring.UploadRaw(nk->data, lw.d_ple_norm_key, nk->bytes, stream, bytes_acc);
             if (pe == cudaSuccess) pe = ring.UploadRaw(nq->data, lw.d_ple_norm_query, nq->bytes, stream, bytes_acc);
             if (pe == cudaSuccess) pe = ring.UploadRaw(nc->data, lw.d_ple_norm_conv, nc->bytes, stream, bytes_acc);
+            if (pe == cudaSuccess) pe = ring.UploadRaw(cv->data, lw.d_ple_conv_bf16, cv->bytes, stream, bytes_acc);
             if (pe != cudaSuccess) {
                 error = absl::StrCat("ple/layer_", l, ": norm upload failed");
                 pw.Free();
                 return false;
             }
+            lw.ple_conv_bytes = static_cast<int64_t>(cv->bytes);
             lw.ple_conv_state_len =
                 (pw.exp_top.ple_conv_kernel_size - 1) * pw.exp_top.ngram_size;
             lw.is_ple_layer = true;

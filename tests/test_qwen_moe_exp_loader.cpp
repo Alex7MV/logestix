@@ -88,12 +88,17 @@ TEST_CASE("dense weights upload + PLE meta computed", "[qwen-exp-loader]")
     ExpPinnedWeights pw;
     cudaStream_t stream = nullptr;
     std::string err;
-    REQUIRE(LoadQwen4ExpDenseWeights(env.out.string(), pw, stream, err));
+    {
+        const bool ok = LoadQwen4ExpDenseWeights(env.out.string(), pw, stream,
+                                                 err);
+        if (!ok) FAIL("LoadQwen4ExpDenseWeights failed: " + err);
+        REQUIRE(ok);
+    }
     if (!err.empty()) FAIL(err);
     const auto &c = qwen_moe_exp_test::ExpCfg();
     // Globals.
     REQUIRE(pw.embed.d_packed != nullptr);
-    REQUIRE(pw.head.d_packed != nullptr);
+    REQUIRE(pw.d_head_f16 != nullptr);  // lm_head: BF16 raw -> fp16 table
     REQUIRE(pw.d_final_norm != nullptr);
     REQUIRE(pw.d_mixer_norm != nullptr);
     REQUIRE(pw.mixer_down.d_packed != nullptr);
@@ -126,7 +131,12 @@ TEST_CASE("PLE shards mmap non-empty", "[qwen-exp-loader]")
     ExpPinnedWeights pw;
     cudaStream_t stream = nullptr;
     std::string err;
-    REQUIRE(LoadQwen4ExpDenseWeights(env.out.string(), pw, stream, err));
+    {
+        const bool ok = LoadQwen4ExpDenseWeights(env.out.string(), pw, stream,
+                                                 err);
+        if (!ok) FAIL("LoadQwen4ExpDenseWeights failed: " + err);
+        REQUIRE(ok);
+    }
     const int parts = qwen_moe_exp_test::ExpCfg().split_ngram_parts;
     std::vector<ExpPleShardView> shards(static_cast<size_t>(parts));
     REQUIRE(LoadQwen4ExpPleShards(env.out.string(), pw, shards.data(), err));

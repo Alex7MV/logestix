@@ -1,4 +1,5 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
+
 #include "qwen_moe_exp_constants.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"
@@ -11,6 +12,7 @@
 #include <cmath>
 
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <cmath>
 
@@ -526,8 +528,12 @@ __device__ __forceinline__ void dequant_row(Nvfp4RowView w, int row,
             continue;
         }
         const uint8_t sb = scales[c >> 4];
-        const float scale = exp2f(static_cast<float>((sb & 0x3F)) - 1.f) *
-                            ((sb & 0x80) ? -1.f : 1.f);
+        // E4M3 exponent-form scale byte (converter layout): e4 = sb >> 3,
+        // scale = 2^(e4 - 7), 0 when e4 == 0. Matches E4M3ScaleToFloat.
+        const uint32_t e4 = (sb >> 3) & 0x0Fu;
+        const float scale =
+            e4 == 0 ? 0.0f
+                    : __int_as_float(static_cast<int>((e4 + 120u) << 23));
         out[c] = v * scale * w.global_scale;
     }
 }
@@ -557,16 +563,16 @@ __global__ void ple_inject_kernel(
     const float *__restrict__ d_emb_row,      // [heads*head_dim] fp32
     __half *__restrict__ d_hidden,            // [hc*H] in/out
     float *__restrict__ d_window,             // [state_len, hc*H]
+    float *__restrict__ d_scratch,            // [4*n + H + E] global workspace
     int state_len, int H, int hc, int k_conv, int dilation, float eps)
 {
     const int n = H * hc;
-    extern __shared__ float smem[];
-    float *s_key = smem;          // [n]
-    float *s_query = s_key + n;   // [n]
-    float *s_value = s_query + n; // [H]
-    float *s_gated = s_value + H; // [n]
-    float *s_normed = s_gated + n;// [n]
-    float *s_row = s_normed + n;  // [E] dequant scratch for one proj row
+    float *s_key = d_scratch;          // [n]
+    float *s_query = s_key + n;        // [n]
+    float *s_gated = s_query + n;      // [n]
+    float *s_normed = s_gated + n;     // [n]
+    float *s_value = s_normed + n;     // [H]
+    float *s_row = s_value + H;        // [E] dequant scratch for one proj row
 
     if (threadIdx.x != 0) return;
 
@@ -693,11 +699,20 @@ cudaError_t ExpPleStateAlloc(ExpPleState &st, int H, int hc, int state_len)
     if (cudaMalloc(reinterpret_cast<void **>(&st.d_window), bytes) !=
         cudaSuccess)
         return cudaGetLastError();
+    // Kernel workspace: key[3*H] wait — key[n] + query[n] + gated[n] + normed[n]
+    // + value[H] + row[E] live in global memory (shared-memory opt-in limit
+    // on sm_120 is 99KB/block — far below the 5*hc*H-float footprint).
+    const size_t scratch_floats =
+        4u * static_cast<size_t>(H) * hc + H + 2560 + 4;
+    if (cudaMalloc(reinterpret_cast<void **>(&st.d_scratch),
+                   scratch_floats * sizeof(float)) != cudaSuccess)
+        return cudaGetLastError();
     if (cudaMalloc(reinterpret_cast<void **>(&st.d_ctx),
                    static_cast<size_t>(state_len) * sizeof(int32_t)) !=
         cudaSuccess)
         return cudaGetLastError();
     cudaMemset(st.d_window, 0, bytes);
+    cudaMemset(st.d_scratch, 0, scratch_floats * sizeof(float));
     cudaMemset(st.d_ctx, 0, static_cast<size_t>(state_len) * sizeof(int32_t));
     return cudaSuccess;
 }
@@ -705,17 +720,58 @@ cudaError_t ExpPleStateAlloc(ExpPleState &st, int H, int hc, int state_len)
 void ExpPleStateFree(ExpPleState &st)
 {
     if (st.d_window) cudaFree(st.d_window);
+    if (st.d_scratch) cudaFree(st.d_scratch);
     if (st.d_ctx) cudaFree(st.d_ctx);
     st = ExpPleState{};
 }
 
-cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
+static void LaunchPleInjectKernel(const Nvfp4RowView &kv,
+                                  const Nvfp4RowView &vv,
+                                  const uint8_t *nk, const uint8_t *nq,
+                                  const uint8_t *nc, const float *cw,
+                                  const float *emb, __half *hid,
+                                  float *win, float *scratch, int state_len,
+                                  int H, int hc, int k_conv, int dilation,
+                                  float eps, cudaStream_t stream)
+{
+    // cudaLaunchKernel (not <<<>>>): the triple-chevron path relies on
+    // __cudaPushCallConfiguration, which silently no-ops under some LTO
+    // cloning splits of this multi-exit wrapper.
+    Nvfp4RowView kv_a = kv, vv_a = vv;
+    const uint8_t *nk_a = nk, *nq_a = nq, *nc_a = nc;
+    const float *cw_a = cw, *emb_a = emb;
+    __half *hid_a = hid;
+    float *win_a = win, *scratch_a = scratch;
+    int state_len_a = state_len, H_a = H, hc_a = hc, k_conv_a = k_conv,
+        dilation_a = dilation;
+    float eps_a = eps;
+    void *args[] = {&kv_a, &vv_a, &nk_a, &nq_a, &nc_a, &cw_a, &emb_a,
+                    &hid_a, &win_a, &scratch_a, &state_len_a, &H_a, &hc_a,
+                    &k_conv_a, &dilation_a, &eps_a};
+    cudaLaunchKernel(reinterpret_cast<const void *>(&ple_inject_kernel),
+                     dim3(1), dim3(1), args, 0, stream);
+}
+
+__global__ void bf16_bits_to_float_kernel(const uint8_t *__restrict__ bits,
+                                          float *__restrict__ out, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const uint16_t b16 = static_cast<uint16_t>(bits[i * 2]) |
+                         (static_cast<uint16_t>(bits[i * 2 + 1]) << 8);
+    const uint32_t u = static_cast<uint32_t>(b16) << 16;
+    float f;
+    __builtin_memcpy(&f, &u, 4);
+    out[i] = f;
+}
+
+__attribute__((noinline, noclone)) cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
                             const qwen::QwenNvfp4Weight &key_proj,
                             const qwen::QwenNvfp4Weight &value_proj,
                             const uint8_t *d_norm_key,
                             const uint8_t *d_norm_query,
                             const uint8_t *d_norm_conv,
-                            const qwen::QwenNvfp4Weight &ple_conv,
+                            const uint8_t *d_ple_conv_bf16,
                             const int32_t *d_token, const float *d_emb_row,
                             int heads, int head_dim, float eps,
                             __half *d_hidden)
@@ -726,68 +782,31 @@ cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
     const int H = st.H;
     const int hc = st.hc;
     const int n = H * hc;
-    // Shared scratch: key[n] + value[H] + gated[n] + normed[n] + row[E].
-    const int E = key_proj.cols > value_proj.cols ? key_proj.cols
-                                                  : value_proj.cols;
-    const size_t smem_bytes = static_cast<size_t>(5 * n + H + E) * sizeof(float);
-    // The conv weights arrive as NVFP4; dequantize to a temp device buffer
-    // once per call (small: [n, k]).
+    // The conv weights arrive as raw BF16 bits [n, k]; convert to fp32.
     float *d_conv_w = nullptr;
     if (cudaMalloc(reinterpret_cast<void **>(&d_conv_w),
                    static_cast<size_t>(n) * 4 * sizeof(float)) != cudaSuccess)
         return cudaGetLastError();
-    // Reuse the shared dequant helper (fp16 out then upcast — parity-neutral
-    // for fixture data).
     {
-        // Dequantize ple_conv rows [n, k_conv] into d_conv_w fp32.
-        std::vector<__half> tmp_host;
-        (void)tmp_host;
-        // Use the shared dequant into a temp buffer then convert:
-        __half *d_tmp = nullptr;
-        if (cudaMalloc(reinterpret_cast<void **>(&d_tmp),
-                       static_cast<size_t>(ple_conv.rows) * ple_conv.cols *
-                           sizeof(__half)) != cudaSuccess) {
+        const int total = n * 4;
+        const int block = 256;
+        const int grid = (total + block - 1) / block;
+        bf16_bits_to_float_kernel<<<grid, block, 0, stream>>>(
+            d_ple_conv_bf16, d_conv_w, total);
+        cudaError_t ce = cudaGetLastError();
+        if (ce != cudaSuccess) {
             cudaFree(d_conv_w);
-            return cudaGetLastError();
+            return ce;
         }
-        if (gpu::dequant_shared_nvfp4(stream, ple_conv.d_packed,
-                                 ple_conv.packed_bytes, ple_conv.d_scales,
-                                 ple_conv.scale_bytes, ple_conv.global_scale,
-                                 d_tmp,
-                                 static_cast<int64_t>(ple_conv.rows) *
-                                     ple_conv.cols) != cudaSuccess) {
-            cudaFree(d_conv_w);
-            cudaFree(d_tmp);
-            return cudaGetLastError();
-        }
-        // fp16 -> fp32 conversion kernel for conv weights.
-        // (simple grid-stride)
-        // ... inline lambda launch
-        // NOTE: n rows x 4 taps fixed by the frozen geometry.
-        {
-            const int total = n * 4;
-            const int block = 256;
-            const int grid = (total + block - 1) / block;
-            launch_half_to_float(d_tmp, d_conv_w, total, stream);
-        }
-        cudaFree(d_tmp);
     }
-    static bool ple_attr_set = false;
-    if (!ple_attr_set && smem_bytes > 48 * 1024) {
-        cudaError_t ae = cudaFuncSetAttribute(
-            ple_inject_kernel,
-            cudaFuncAttributeMaxDynamicSharedMemorySize, 230 * 1024);
-        if (ae != cudaSuccess) return ae;
-        ple_attr_set = true;
-    }
-    ple_inject_kernel<<<1, 1, smem_bytes, stream>>>(
+    LaunchPleInjectKernel(
         Nvfp4RowView{key_proj.d_packed, key_proj.d_scales,
                      key_proj.global_scale, key_proj.cols},
         Nvfp4RowView{value_proj.d_packed, value_proj.d_scales,
                      value_proj.global_scale, value_proj.cols},
         d_norm_key, d_norm_query, d_norm_conv,
-        d_conv_w, d_emb_row, d_hidden, st.d_window, st.state_len, H, hc, 4,
-        3, eps);
+        d_conv_w, d_emb_row, d_hidden, st.d_window, st.d_scratch,
+        st.state_len, H, hc, 4, 3, eps, stream);
     cudaError_t e = cudaGetLastError();
     cudaFree(d_conv_w);
     return e;
@@ -1050,7 +1069,7 @@ cudaError_t RunExpGeneration(
 
     if (H <= 0 || V <= 0 || prompt.empty() || max_new <= 0 || eos_id < 0 ||
         E <= 0 || K <= 0 || I <= 0 || SI <= 0 || !pw.embed.d_packed ||
-        !pw.head.d_packed) {
+        !pw.d_head_f16) {
         result.error_msg = "invalid qwen4_exp generation inputs";
         return cudaErrorInvalidValue;
     }
@@ -1114,7 +1133,6 @@ cudaError_t RunExpGeneration(
     half_elems += (size_t)max_seq * S;             // d_conv
     half_elems += (size_t)max_seq * VD;            // d_core
     half_elems += (size_t)max_seq * VD;            // d_gated
-    half_elems += (size_t)max_seq * V;             // d_logits
     half_elems += (size_t)max_seq * HCH;           // d_normed_scratch
     half_elems += (size_t)K * 2 * I;               // d_ygu_batch
     half_elems += (size_t)K * I;                   // d_h_batch
@@ -1129,6 +1147,8 @@ cudaError_t RunExpGeneration(
     float_elems += (size_t)max_seq * 16;           // hc inject weights
     float_elems += (size_t)max_seq * 2560;         // PLE gathered emb rows
     float_elems += 1024;                           // gate/argmax scratch
+    float_elems += (size_t)max_seq * V;            // fp32 logits
+    float_elems += (size_t)max_seq * V;            // fp32 logits
     const size_t half_bytes =
         ((half_elems * sizeof(__half)) + 255) & ~static_cast<size_t>(255);
     const size_t float_bytes =
@@ -1169,7 +1189,8 @@ cudaError_t RunExpGeneration(
     __half *d_conv = adv(ph, (size_t)max_seq * S);
     __half *d_core = adv(ph, (size_t)max_seq * VD);
     __half *d_gated = adv(ph, (size_t)max_seq * VD);
-    __half *d_logits = adv(ph, (size_t)max_seq * V);
+    // d_logits now fp32 (head GEMM accumulates in fp32); carve from the float arena.
+
     __half *d_normed_scr = adv(ph, (size_t)max_seq * HCH);
     __half *d_ygu_batch = adv(ph, (size_t)K * 2 * I);
     __half *d_h_batch = adv(ph, (size_t)K * I);
@@ -1186,7 +1207,11 @@ cudaError_t RunExpGeneration(
     float *d_inj_f = d_mixed_f + (size_t)max_seq * hc;
     float *d_gate_val = d_inj_f + (size_t)max_seq * 16;
     float *d_maxv_scratch = d_gate_val + 16;
-    float *d_emb_rows = d_inj_f + (size_t)max_seq * 16;  // placeholder dims
+    // PLE gathered embedding rows: [heads*head_dim] = 2560 floats. Must NOT
+    // alias d_gate_val/d_maxv_scratch (they are written by MoE shared-combine
+    // and the sampler between the gather and the PLE kernel at layer 1).
+    float *d_emb_rows = d_maxv_scratch + 16;
+    float *d_logits_f32 = d_emb_rows + (size_t)V;
 
     int32_t *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr,
             *d_tokens = nullptr;
@@ -1218,6 +1243,8 @@ cudaError_t RunExpGeneration(
     const int prompt_steps = static_cast<int>(prompt.size());
 
     const int total_steps = prompt_steps + max_new - 1;
+
+
     int32_t cur = prompt[0];
     int generated = 0;
     const int threads = 256;
@@ -1243,6 +1270,7 @@ cudaError_t RunExpGeneration(
         // hidden -> 4 streams.
         exp_repeat_hc_kernel<<<(H + threads - 1) / threads, threads, 0, stream>>>(
             d_act, H, hc, d_hyper);
+
         // PLE n-gram context: previous tokens (eos-padded), host mirror.
         token_history.push_back(cur);
         if (token_history.size() > 64) token_history.erase(token_history.begin());
@@ -1318,8 +1346,15 @@ cudaError_t RunExpGeneration(
                     }
                 }
             }
-            cudaMemcpy(d_emb_rows, emb_rows.data(),
-                       emb_rows.size() * sizeof(float), cudaMemcpyHostToDevice);
+            // The model stream is created with cudaStreamNonBlocking: this
+            // H2D MUST be enqueued on the model stream (a legacy-stream copy
+            // does not order against it — the PLE kernel at layer 1 would
+            // otherwise read the un-gathered arena). The staging vector is
+            // kept alive until the copy completes via stream sync below.
+            cudaMemcpyAsync(d_emb_rows, emb_rows.data(),
+                            emb_rows.size() * sizeof(float),
+                            cudaMemcpyHostToDevice, stream);
+            cudaStreamSynchronize(stream);
         }
 
         for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
@@ -1328,7 +1363,7 @@ cudaError_t RunExpGeneration(
             if (lw.is_ple_layer) {
                 e = RunExpPleInject(stream, ple, lw.ple_key, lw.ple_value,
                                     lw.d_ple_norm_key, lw.d_ple_norm_query,
-                                    lw.d_ple_norm_conv, lw.ple_conv,
+                                    lw.d_ple_norm_conv, lw.d_ple_conv_bf16,
                                     d_ids, d_emb_rows, 16, 160, (float)eps,
                                     d_hyper);
                 if (e != cudaSuccess) { result.error_msg = "ple"; break; }
@@ -1446,15 +1481,15 @@ cudaError_t RunExpGeneration(
                           pw.d_mixer_norm, 1, H, hc, pw.exp_top.hc_lowrank,
                           d_act, d_normed_scr);
         if (e != cudaSuccess) { result.error_msg = "mixer"; break; }
-        e = qwen::RunQwenNvfp4Gemm(stream, d_act, pw.head.d_packed,
-                                   pw.head.d_scales, pw.head.global_scale,
-                                   d_logits, 1, H, V, false);
+        e = RunExpHeadGemm(stream, pw.d_head_f16, d_act, d_logits_f32, H, V);
         if (e != cudaSuccess) { result.error_msg = "head"; break; }
+
+
 
         kv->kv_rows += 1;
         if (step >= prompt_steps - 1) {
-            e = sampler.Sample(stream, d_logits, V,
-                               lsxcommon::sample::LogitType::kF16, d_argmax,
+            e = sampler.Sample(stream, d_logits_f32, V,
+                               lsxcommon::sample::LogitType::kF32, d_argmax,
                                d_maxv_scratch);
             if (e != cudaSuccess) { result.error_msg = "argmax"; break; }
             exp_record_token_kernel<<<1, 1, 0, stream>>>(d_tokens, generated,
@@ -1492,6 +1527,34 @@ cudaError_t RunExpGeneration(
     result.resident_bytes = pw.resident_bytes;
     result.ok = true;
     return cudaSuccess;
+}
+
+
+// ── LM head GEMM (cuBLAS FP16 in / FP32 out) ──────────────────────────────
+// The lm_head is kept in BF16-derived FP16: NVFP4 logit noise exceeds the
+// top-1/top-2 margin of this model. Process-wide handle (single session per
+// process, same simplification as the arena).
+cudaError_t RunExpHeadGemm(cudaStream_t stream, const __half *d_head_f16,
+                           const __half *d_hidden, float *d_logits, int H,
+                           int V)
+{
+    static cublasHandle_t handle = nullptr;
+    if (!handle) {
+        if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS)
+            return cudaErrorUnknown;
+        cublasSetMathMode(handle, CUBLAS_DEFAULT_MATH);
+    }
+    cublasSetStream(handle, stream);
+    const float alpha = 1.0f, beta = 0.0f;
+    // logits[v] = head_w[v,:] . hidden[:] ; head_w [V, H] row-major ->
+    // cublas OP_T with lda=H: out[V,1].
+    cublasStatus_t st = cublasGemmEx(
+        handle, CUBLAS_OP_T, CUBLAS_OP_N, V, 1, H, &alpha,
+        d_head_f16, CUDA_R_16F, H,
+        d_hidden, CUDA_R_16F, H,
+        &beta, d_logits, CUDA_R_32F, V,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown;
 }
 
 } // namespace lsxcommon::qwen_moe_exp

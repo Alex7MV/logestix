@@ -34,7 +34,7 @@ TEST_CASE("ParseQwen4ExpConfig reads qwen4_exp fields", "[qwen-exp-convert]")
     REQUIRE(top.ple_embed_dim == c.ple_embed_dim);
     REQUIRE(top.split_ngram_parts == c.split_ngram_parts);
     REQUIRE(top.ngram_vocab_size_base == c.ngram_vocab_size_base);
-    REQUIRE(top.ple_layer_ids == std::vector<int>{1});
+    REQUIRE(top.ple_layer_ids == std::vector<int>{2});
     REQUIRE(top.eos_token_id == c.eos_token_id);
     REQUIRE(top.rms_norm_eps == Catch::Approx(1e-6));
     REQUIRE(top.partial_rotary_factor == Catch::Approx(0.25));

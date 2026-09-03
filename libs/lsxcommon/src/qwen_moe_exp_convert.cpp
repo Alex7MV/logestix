@@ -611,8 +611,17 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
             }
 
             switch (p.kind) {
-            case ExpTensorKind::Embed:
             case ExpTensorKind::LmHead: {
+                // LM head stays in BF16: NVFP4 logit noise (~0.5) exceeds the
+                // typical top-1/top-2 logit margin of this model.
+                TensorRecord r;
+                r.name = t.name; r.dtype = t.dtype; r.shape = t.shape;
+                r.data = std::move(data);
+                global_raw.push_back(std::move(r));
+                ++total_pinned;
+                break;
+            }
+            case ExpTensorKind::Embed: {
                 DenseNvfp4Record r;
                 r.name = t.name; r.shape = t.shape; r.dtype = t.dtype;
                 if (!quantize_slice(data.data(), t.numel(), r))
@@ -1014,6 +1023,9 @@ arrow::Status ConvertQwen38FlashNextModel(const std::string &input_dir,
           << ",\n  \"ple_conv_kernel_size\": " << top.ple_conv_kernel_size
           << ",\n  \"split_ngram_parts\": " << top.split_ngram_parts
           << ",\n  \"ngram_vocab_size_base\": " << top.ngram_vocab_size_base
+          << ",\n  \"ple_layer_ids\": ["
+          << (top.ple_layer_ids.empty() ? -1 : top.ple_layer_ids[0]) << "]"
+          << ",\n  \"output_gate_type\": \"" << top.output_gate_type << "\""
           << ",\n  \"eos_token_id\": " << top.eos_token_id
           << ",\n  \"skipped_visual_tensors\": " << visual_skipped
           << ",\n  \"ple_shards\": " << ple_shard_count

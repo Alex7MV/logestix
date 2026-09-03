@@ -91,6 +91,10 @@ cudaError_t RunExpQsaAttention(cudaStream_t stream, const __half *d_q,
 // PLE values: rolling window of the last (k-1)*dilation gated rows.
 struct ExpPleState {
     float *d_window = nullptr;   // [state_len, hc*H] fp32 gated+normed rows
+    float *d_scratch = nullptr;  // [3*hc*H + H] fp32 kernel workspace (global
+                                 // memory: the 5*hc*H-float footprint exceeds
+                                 // the 99KB/block shared-memory opt-in limit
+                                 // on sm_120)
     int32_t *d_ctx = nullptr;    // [state_len] rolling token ids (host mirror)
     int state_len = 0;
     int H = 0;
@@ -116,10 +120,16 @@ cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
                             const uint8_t *d_norm_key,
                             const uint8_t *d_norm_query,
                             const uint8_t *d_norm_conv,
-                            const qwen::QwenNvfp4Weight &ple_conv,
+                            const uint8_t *d_ple_conv_bf16,
                             const int32_t *d_token, const float *d_emb_row,
                             int heads, int head_dim, float eps,
                             __half *d_hidden /*[hc*H] in/out*/);
+
+// LM head GEMM: logits[v] = head_w[v,:] . hidden[:] (FP16 weights in,
+// FP32 accumulate + output). Uses a process-wide cuBLAS handle.
+cudaError_t RunExpHeadGemm(cudaStream_t stream, const __half *d_head_f16,
+                           const __half *d_hidden, float *d_logits, int H,
+                           int V);
 
 // Router top-10 (thin wrapper over the parameterized qwen router kernel).
 cudaError_t RunExpRouterTop10(cudaStream_t stream, const uint8_t *d_router_bf16,

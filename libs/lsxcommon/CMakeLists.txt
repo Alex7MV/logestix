@@ -293,6 +293,10 @@ set_target_properties(lsxcommon_qwen_moe_exp_cu PROPERTIES
 target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    # GCC LTO value-propagation miscompiles the multi-exit PLE inject wrapper
+    # into an early-return clone that skips its kernel launch (observed
+    # 2026-09-03: cudaLaunchKernel silently skipped on the AOCC/znver4 build).
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<NOT:$<PLATFORM_ID:Windows>>>:-Xcompiler=-fno-inline>
 )
 target_include_directories(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_DEFS})

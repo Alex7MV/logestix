@@ -95,7 +95,10 @@ struct QwenExpTestConfig {
     int split_ngram_parts = 2;
     int64_t ngram_vocab_size_base = 1000000;
     int64_t seed = 1234;
-    std::vector<int> ple_layer_ids = {1};
+    // PLE ids follow the HF convention: id = tensor layer idx + 1.
+    // Fixture tensors live under layers.1.ple (matching the real model),
+    // so the id is 2.
+    std::vector<int> ple_layer_ids = {2};
 
     int eos_token_id = 7;
 };
