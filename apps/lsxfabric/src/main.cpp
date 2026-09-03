@@ -19,6 +19,7 @@ int main(int argc, char* argv[]) {
     bool benchmark = false;
     bool testprompt = false;
     bool selfcheck = false;
+    bool fast_math = false;
     auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
                        / "DeepSeek-V4-Flash").string();
     for (int i = 1; i < argc; ++i) {
@@ -32,6 +33,8 @@ int main(int argc, char* argv[]) {
             testprompt = true;
         else if (std::strcmp(argv[i], "--selfcheck") == 0)
             selfcheck = true;
+        else if (std::strcmp(argv[i], "--fast-math") == 0)
+            fast_math = true;
     }
 
     lsxcommon::Core::Initialize("logestix_runtime.log");
@@ -43,6 +46,7 @@ int main(int argc, char* argv[]) {
         args.model_path = model_path;
         args.prompt = "The capital of France is";
         args.max_gen_tokens = 64;
+        args.fast_math = fast_math;
         int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();
         return rc;
@@ -52,6 +56,7 @@ int main(int argc, char* argv[]) {
         args.model_path = model_path;
         args.prompt = "The capital of France is";
         args.max_gen_tokens = 1;
+        args.fast_math = fast_math;
         int rc = lsxcommon::runtime::RunCliSelfCheck(args);
         lsxcommon::Core::Shutdown();
         return rc;

@@ -80,6 +80,9 @@ struct GenerationCliArgs {
     std::string model_path;
     std::string prompt;
     int max_gen_tokens = 64;
+    // Routes NVFP4 GEMMs through the native tensor-core path (sm_120a).
+    // Tolerance-class numerics; off keeps the bit-exact scalar path.
+    bool fast_math = false;
 };
 
 // Item 6 — unified CLI lifecycle. Each helper wraps
