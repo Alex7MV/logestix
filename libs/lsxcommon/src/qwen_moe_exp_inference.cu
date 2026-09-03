@@ -1707,6 +1707,11 @@ cudaError_t RunExpGeneration(
     }
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
+    // GPU-timeline timing (etalon: qwen_moe driver t_start/t_stop events).
+    cudaEvent_t t_start_ev = nullptr, t_stop_ev = nullptr;
+    cudaEventCreate(&t_start_ev);
+    cudaEventCreate(&t_stop_ev);
+    if (t_start_ev) cudaEventRecord(t_start_ev, stream);
     std::vector<int32_t> token_history;  // PLE n-gram context (grows)
     const int prompt_steps = static_cast<int>(prompt.size());
 
@@ -1966,8 +1971,7 @@ cudaError_t RunExpGeneration(
             // accumulator must be zeroed per layer (the arena is persistent).
             cudaMemsetAsync(d_moe_acc, 0, sizeof(float) * H, stream);
             e = qwen_moe::RunQwenMoeRoutedFFN(
-                stream, *reinterpret_cast<qwen_moe::QwenMoeExpertStore *>(&store),
-                *reinterpret_cast<qwen_moe::QwenMoeExpertDeviceCache *>(&cache),
+                stream, store, cache,
                 l, h_slots, K, d_mixed, H, I, d_moe_acc, d_yg, d_yu,
                 d_y2, ffn_err, copy_stream,
                 copy_stream ? ev_uploads : nullptr, ev_front);
@@ -2039,6 +2043,17 @@ cudaError_t RunExpGeneration(
                        cudaMemcpyDeviceToHost) == cudaSuccess)
             result.final_logits = std::move(hlast);
     }
+    if (t_stop_ev) {
+        cudaEventRecord(t_stop_ev, stream);
+        cudaEventSynchronize(t_stop_ev);
+        float ms_total = 0.f;
+        if (cudaEventElapsedTime(&ms_total, t_start_ev, t_stop_ev) ==
+            cudaSuccess)
+            result.total_ms = ms_total;
+        result.ttft_ms = 0.0;
+    }
+    if (t_start_ev) cudaEventDestroy(t_start_ev);
+    if (t_stop_ev) cudaEventDestroy(t_stop_ev);
     if (h_ids) cudaFreeHost(h_ids);
     if (tok_ready_ev) cudaEventDestroy(tok_ready_ev);
     if (copy_stream) cudaStreamDestroy(copy_stream);

@@ -8,6 +8,7 @@
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/qwen_moe_expert_cache.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
+#include "lsxcommon/qwen_moe_load.h"  // QwenMoeExpertStore base + record types
 #include "lsxcommon/qwen_moe_exp_hc_cache.h"
 
 namespace lsxcommon::qwen_moe_exp {
@@ -116,54 +117,20 @@ void FreeQwen4ExpPinnedWeights(ExpPinnedWeights &pw);
 
 // Host-resident routed-expert payloads (pinned slabs), laid out per layer.
 // The generation context stages slices of these into the LRU device cache.
-struct ExpExpertRecord {
-    // Byte ranges inside the owning layer slab (packed w1|w2|w3 first, then
-    // E4M3 scales s1|s2|s3).
-    int64_t w1_off = 0, w1_bytes = 0;
-    int64_t w2_off = 0, w2_bytes = 0;
-    int64_t w3_off = 0, w3_bytes = 0;
-    int64_t s1_off = 0, s1_bytes = 0;
-    int64_t s2_off = 0, s2_bytes = 0;
-    int64_t s3_off = 0, s3_bytes = 0;
-    float gs1 = 1.f, gs2 = 1.f, gs3 = 1.f;
-};
+// Record layout is IDENTICAL to qwen_moe::QwenMoeExpertRecord (fused staging
+// consumes both stores through the same kernels); aliasing the type makes
+// the pairing structural instead of convention.
+using ExpExpertRecord = qwen_moe::QwenMoeExpertRecord;
+using ExpExpertMetaDev = qwen_moe::QwenMoeExpertMetaDev;
 
-// Per-expert static device meta for no-handshake decode (16 B): residency
-// slot index + the three global scales. Maintained by
-// EnsureQwen4ExpExpertResident; dev_slot == -1 marks a not-yet-resident
-// expert.
-struct alignas(16) ExpExpertMetaDev {
-    int32_t dev_slot;
-    float gs1, gs2, gs3;
-};
-
-struct ExpExpertStore {
-    // NOTE: the first members must keep the exact layout of
-    // qwen_moe::QwenMoeExpertStore — RunQwenMoeRoutedFFN consumes this
-    // store through a reinterpret_cast pairing of the two types.
-    // [num_layers] slab views; every entry == arena_base (record offsets are
-    // global arena offsets).
-    std::vector<uint8_t *> h_slabs;
-    std::vector<size_t> slab_bytes;
-    std::vector<std::vector<ExpExpertRecord>> records;  // [layers][expert]
-    int num_layers = 0;
-    int num_experts = 0;
-
-    // Per-expert fused gate/up global scales for the single w13 GEMM:
-    // d_seg_wgs[flat*2] = gs1, [flat*2+1] = gs3. Null when unused.
-    float *d_seg_wgs = nullptr;
-
-    // No-handshake decode support: host mirror of per-flat
-    // {dev_slot(-1 while missing), gs1..gs3}; device mirror uploaded once
-    // every entry is resident. gemv_ready == true unlocks the
-    // router-readback-free decode path (full-residency guarantee).
-    std::vector<ExpExpertMetaDev> h_gemv_meta;
-    ExpExpertMetaDev *d_gemv_meta = nullptr;
-    bool gemv_ready = false;
-
+// Qwen3.8-Flash-Next expert store: EXTENDS qwen_moe::QwenMoeExpertStore so
+// the shared routed-expert kernels (RunQwenMoeRoutedFFN, RunQwenMoeRouterTopK,
+// EnsureQwenMoeExpertResident family) consume it directly — no
+// reinterpret_cast pairing, no layout-drift bug class.
+struct ExpExpertStore : public qwen_moe::QwenMoeExpertStore {
     // Single pinned arena backing every layer slab (one page-lock instead
     // of num_layers; per-slab cudaMallocHost cost ~660ms each on load).
-    // Kept AFTER the QwenMoeExpertStore-compatible prefix (see note above).
+    // All h_slabs entries point at arena_base; record offsets are global.
     uint8_t *arena_base = nullptr;
     size_t arena_bytes = 0;
 
