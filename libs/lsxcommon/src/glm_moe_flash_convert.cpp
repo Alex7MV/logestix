@@ -413,13 +413,17 @@ arrow::Status quantize_fp8_nvfp4(const std::vector<uint8_t> &fp8,
 arrow::Status write_expert_file(const fs::path &base_dir, int layer,
                                 int expert, PackedExpert &&pe)
 {
-    fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
+    const std::string l3 = absl::StrCat("layer_",
+                                        absl::Dec(layer, absl::kZeroPad3));
+    fs::path dir = base_dir / "experts" / l3;
     std::error_code ec;
     fs::create_directories(dir, ec);
     auto batch = ExpertSchema::MakeBatch(pe);
     if (!batch.ok()) return batch.status();
     return WriteRecordBatchToFile(
-        *batch, dir / absl::StrCat("exp_", expert, ".arrow"));
+        *batch,
+        dir / absl::StrCat("exp_", absl::Dec(expert, absl::kZeroPad3),
+                           ".arrow"));
 }
 
 arrow::Status FillPackedExpert(int proj_id, DenseNvfp4Record r,
@@ -591,6 +595,8 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                 auto p = classify_flash_tensor(t.name);
                 if (p.layer != layer
                     || p.kind != FlashTensorKind::RoutedExpert) continue;
+                if (t.name.rfind(".weight_scale_inv") != std::string::npos)
+                    continue;  // scale payload, not the weight itself
                 auto &ep = experts[p.expert];
                 auto data = read_tensor_data(input_dir, shard, t);
                 if (data.size() != static_cast<size_t>(t.byte_size()))
@@ -667,6 +673,8 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                 if (p.layer != layer) continue;
                 if (p.kind == FlashTensorKind::Visual) continue;
                 if (p.kind == FlashTensorKind::RoutedExpert) continue;
+                if (t.name.rfind(".weight_scale_inv") != std::string::npos)
+                    continue;  // scale payload, not the weight itself
                 if (p.kind == FlashTensorKind::Embed
                     || p.kind == FlashTensorKind::LmHead
                     || p.kind == FlashTensorKind::FinalNorm)
@@ -716,6 +724,66 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
         "GLM-5.3-Flash conversion complete: ", frozen::kLayers, " layers, ",
         frozen::kNumExperts, " experts, ", visual_skipped,
         " visual tensors skipped"));
+
+    // Structural manifest (index). Deterministic byte content.
+    {
+        using namespace frozen;
+        std::ostringstream j;
+        auto list = [](const int *ids, int n) {
+            std::string s = "[";
+            for (int i = 0; i < n; ++i) {
+                if (i) s += ",";
+                s += std::to_string(ids[i]);
+            }
+            return s + "]";
+        };
+        std::string moe;
+        for (int l = kMoeFirstLayer; l <= kMtpLayer; ++l) {
+            if (!moe.empty()) moe += ",";
+            moe += std::to_string(l);
+        }
+        std::string dense;
+        for (int l = 0; l < kMoeFirstLayer; ++l) {
+            if (!dense.empty()) dense += ",";
+            dense += std::to_string(l);
+        }
+        std::string eos;
+        for (size_t i = 0; i < top.eos_ids.size(); ++i) {
+            if (i) eos += ",";
+            eos += std::to_string(top.eos_ids[i]);
+        }
+        j << "{\n"
+          << "  \"format\": \"logestix-glm5next\",\n"
+          << "  \"model\": \"GLM-5.3-Flash\",\n"
+          << "  \"hidden_size\": " << top.hidden
+          << ",\n  \"num_layers\": " << top.layers
+          << ",\n  \"mtp_layer\": " << kMtpLayer
+          << ",\n  \"vocab_size\": " << top.vocab
+          << ",\n  \"num_attention_heads\": " << top.heads
+          << ",\n  \"qk_head_dim\": " << top.qk_head_dim
+          << ",\n  \"q_lora_rank\": " << top.q_lora
+          << ",\n  \"kv_lora_rank\": " << top.kv_lora
+          << ",\n  \"linear_conv_kernel_dim\": " << top.conv_kernel
+          << ",\n  \"hc_count\": " << top.hc_count
+          << ",\n  \"indexer_n_heads\": " << top.indexer_heads
+          << ",\n  \"indexer_head_dim\": " << top.indexer_head_dim
+          << ",\n  \"indexer_topk\": " << top.indexer_topk
+          << ",\n  \"num_experts\": " << top.num_experts
+          << ",\n  \"num_experts_per_tok\": " << top.top_k
+          << ",\n  \"moe_intermediate_size\": " << top.moe_intermediate
+          << ",\n  \"dense_intermediate_size\": " << top.dense_intermediate
+          << ",\n  \"routed_scaling_factor\": " << top.routed_scaling
+          << ",\n  \"kda_layers\": " << list(kKdaLayerIds, kKdaLayerCount)
+          << ",\n  \"dsa_layers\": " << list(kDsaLayerIds, kDsaLayerCount)
+          << ",\n  \"moe_layers\": [" << moe << "]"
+          << ",\n  \"dense_layers\": [" << dense << "]"
+          << ",\n  \"eos_token_id\": [" << eos << "]"
+          << ",\n  \"pad_token_id\": " << top.pad_id
+          << ",\n  \"skipped_visual_tensors\": " << visual_skipped
+          << "\n}\n";
+        std::ofstream out(base / "model.index.json");
+        out << j.str();
+    }
 
     return arrow::Status::OK();
 }

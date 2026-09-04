@@ -127,6 +127,7 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
 }
 
 // ── Task 2: FP8→NVFP4 requant + config parser ────────────────────────────
+#include "lsxcommon/glm_moe_flash_convert.h"
 #include "glm_moe_flash_fp8.h"
 
 #include <cmath>
