@@ -11,7 +11,6 @@
 namespace fs = std::filesystem;
 
 using namespace lsxcommon::glm_moe_flash;
-
 TEST_CASE("frozen geometry passport matches GLM-5.3-Flash config")
 {
     using namespace frozen;
@@ -119,4 +118,108 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::LmHead));
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::DsaKvB));
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::Indexer));
+}
+
+// ── Task 2: FP8→NVFP4 requant + config parser ────────────────────────────
+#include "glm_moe_flash_fp8.h"
+
+#include <cmath>
+
+TEST_CASE("ParseFlashConfig: real checkpoint text_config")
+{
+    const std::string dir = "/mnt/llm_models/models/GLM-5.3-Flash";
+    if (!fs::exists(dir + "/config.json")) {
+        SKIP("GLM-5.3-Flash checkpoint not present");
+    }
+    auto top = ParseFlashConfig(dir);
+    REQUIRE(top.error_msg.empty());
+    REQUIRE(top.hidden == 4096);
+    REQUIRE(top.layers == 45);
+    REQUIRE(top.vocab == 154880);
+    REQUIRE(top.num_experts == 288);
+    REQUIRE(top.top_k == 8);
+    REQUIRE(top.hc_count == 4);
+    REQUIRE(top.q_lora == 1536);
+    REQUIRE(top.kv_lora == 512);
+    REQUIRE(top.moe_intermediate == 2048);
+    REQUIRE(top.dense_intermediate == 12288);
+    REQUIRE(top.routed_scaling == 2.5);
+    REQUIRE(top.eos_ids ==
+            (std::vector<int>{154820, 154827, 154829}));
+    REQUIRE(top.pad_id == 154820);
+}
+
+TEST_CASE("RequantFp8ToNvfp4Host: pow2-scale NVFP4 convention parity")
+{
+    using lsxcommon::nvfp4::E4m3P2ToFloat;
+    // 16x16 FP8 block: all 0x38 (E4M3 = 1.0: exp field 7, bias 7) with one
+    // 128-grid scale 2.0. Dequantized source = 2.0 for every element.
+    std::vector<uint8_t> fp8(256, 0x38);
+    std::vector<float> scale_inv(1, 2.0f);  // [1,1] 128x128 grid
+    auto blob = RequantFp8ToNvfp4Host(fp8.data(), scale_inv.data(), 16, 16);
+    REQUIRE(blob.rows == 16);
+    REQUIRE(blob.cols == 16);
+    REQUIRE(blob.packed.size() == 128);  // 256 nibbles / 2
+    REQUIRE(blob.scales.size() == 16);   // 256 / 16-element blocks
+    // Per-block scale byte: pow2 ceil of (block_max / global_max).
+    // block_max = global_max = 2.0 -> ratio 1.0 -> FloatToE4m3P2(1.0)
+    // = 2^0 -> e4 field 7 -> byte 0x38.
+    for (uint8_t s : blob.scales) REQUIRE(s == 0x38);
+    // global_scale = global_max_abs / 6 == 2/6 == 1/3.
+    REQUIRE(blob.global_scale == 1.0f / 3.0f);
+    // Roundtrip: dequant(E2M1(nib) * e4m3_p2(s) * gs) must reproduce 2.0
+    // (grid hit exact: 2.0 / (1.0 * 1/3) = 6.0 = E2M1 top level).
+    for (uint8_t byte : blob.packed) {
+        const uint8_t lo = byte & 0x0F, hi = (byte >> 4) & 0x0F;
+        REQUIRE(lo == 0x07);  // magnitude 7 = 6.0, positive
+        REQUIRE(hi == 0x07);
+    }
+    const float deq = 6.0f * E4m3P2ToFloat(0x38) * blob.global_scale;
+    REQUIRE(std::fabs(deq - 2.0f) < 1e-6f);
+}
+
+TEST_CASE("RequantFp8ToNvfp4Host: mixed magnitudes + zero block")
+{
+    using lsxcommon::glm_moe_flash::FlashFp8E4m3Decode;
+    // 2 rows x 16 cols; row 0: ramp values, row 1: all zeros.
+    std::vector<uint8_t> fp8(32, 0x00);
+    for (int c = 0; c < 16; ++c)
+        fp8[c] = static_cast<uint8_t>(0x30 + c);  // varying magnitudes
+    std::vector<float> scale_inv(1, 1.0f);
+    auto blob = RequantFp8ToNvfp4Host(fp8.data(), scale_inv.data(), 2, 16);
+    REQUIRE(blob.rows == 2);
+    REQUIRE(blob.cols == 16);
+    // Row 1 all-zero: quantized to zero nibbles (block scale encodes to
+    // the reserved zero convention used by the GPU path: max=0 -> s
+    // fallback, nibbles stay 0 either way).
+    for (int i = 16; i < 32; ++i) {
+        const uint8_t byte = blob.packed[i / 2];
+        const uint8_t nib = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
+        REQUIRE(nib == 0x00);
+    }
+    // Row 0: values are powers-of-two multiples of 0.5 in E4M3 (0x30..0x3F
+    // span 0.5..~57); requant must round-trip within one E2M1 step.
+    // Verify no NaNs and global_scale positive finite.
+    REQUIRE(std::isfinite(blob.global_scale));
+    REQUIRE(blob.global_scale > 0.0f);
+    // Roundtrip fidelity: |dequant - source| within one E2M1 step at the
+    // block scale (relative tolerance 2/6 of the value). Local E2M1 decode
+    // twin (magnitude LUT) — device twin lives in nvfp4_codec.h.
+    auto e2m1_value = [](uint8_t nib) {
+        static const float kMag[8] = {0.f, .5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f};
+        const float v = kMag[nib & 7];
+        return (nib & 8) ? -v : v;
+    };
+    for (int i = 0; i < 16; ++i) {
+        const float src = FlashFp8E4m3Decode(fp8[i]);
+        const uint8_t byte = blob.packed[i / 2];
+        const uint8_t nib = (i % 2 == 0) ? (byte & 0x0F) : (byte >> 4);
+        const int blk = i / 16;
+        const float s = lsxcommon::nvfp4::E4m3P2ToFloat(blob.scales[blk])
+                      * blob.global_scale;
+        const float deq = e2m1_value(nib) * s;
+        const float tol = std::max(std::fabs(src) * (2.0f / 6.0f), 1e-6f);
+        INFO("i=" << i << " src=" << src << " deq=" << deq);
+        REQUIRE(std::fabs(deq - src) <= tol);
+    }
 }

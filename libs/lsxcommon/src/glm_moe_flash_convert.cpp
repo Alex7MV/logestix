@@ -1,12 +1,19 @@
-// GLM-5.3-Flash converter: tensor classifier (Task 1). Conversion
-// pipeline lands in Task 3; FP8->NVFP4 requant in Task 2.
+// GLM-5.3-Flash converter: tensor classifier (Task 1), config parser +
+// FP8->NVFP4 requant host reference (Task 2). Conversion pipeline lands
+// in Task 3.
 #include "glm_moe_flash_constants.h"
+#include "glm_moe_flash_fp8.h"
 
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <utility>
+
+#include <simdjson.h>
 
 namespace lsxcommon::glm_moe_flash {
 
@@ -223,6 +230,116 @@ bool flash_tensor_is_nvfp4(FlashTensorKind kind)
     default:
         return false;
     }
+}
+
+FlashTopology ParseFlashConfig(const std::string &input_dir)
+{
+    namespace fs = std::filesystem;
+    FlashTopology top;
+    const fs::path cfg_path = fs::path(input_dir) / "config.json";
+    std::error_code ec;
+    if (!fs::exists(cfg_path, ec)) {
+        top.error_msg = "config.json not found: " + cfg_path.string();
+        return top;
+    }
+    std::ifstream f(cfg_path, std::ios::binary);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string json = ss.str();
+
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) {
+        top.error_msg = "config.json parse error";
+        return top;
+    }
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) {
+        top.error_msg = "config.json is not an object";
+        return top;
+    }
+
+    auto get_i = [](simdjson::ondemand::object &o, const char *k,
+                    int dflt) -> int {
+        int64_t v;
+        if (o[k].get_int64().get(v) != simdjson::SUCCESS) return dflt;
+        return static_cast<int>(v);
+    };
+    auto get_d = [](simdjson::ondemand::object &o, const char *k,
+                    double dflt) -> double {
+        simdjson::ondemand::value x;
+        if (o[k].get(x) != simdjson::SUCCESS) return dflt;
+        if (auto d = x.get_double(); d.error() == simdjson::SUCCESS)
+            return d.value();
+        if (auto i = x.get_int64(); i.error() == simdjson::SUCCESS)
+            return static_cast<double>(i.value());
+        return dflt;
+    };
+
+    // text_config preferred; fall back to flat root.
+    simdjson::ondemand::object src = root;
+    if (auto tc = root["text_config"].get_object();
+        tc.error() == simdjson::SUCCESS)
+        src = tc.value();
+
+    top.hidden = get_i(src, "hidden_size", 0);
+    top.layers = get_i(src, "num_hidden_layers", 0);
+    top.vocab = get_i(src, "vocab_size", 0);
+    top.heads = get_i(src, "num_attention_heads", 0);
+    top.qk_head_dim = get_i(src, "qk_head_dim", 0);
+    top.q_lora = get_i(src, "q_lora_rank", 0);
+    top.kv_lora = get_i(src, "kv_lora_rank", 0);
+    top.num_experts = get_i(src, "n_routed_experts", 0);
+    top.top_k = get_i(src, "num_experts_per_tok", 0);
+    top.moe_intermediate = get_i(src, "moe_intermediate_size", 0);
+    top.dense_intermediate = get_i(src, "intermediate_size", 0);
+    top.hc_count = get_i(src, "hc_mult", 4);
+    top.gate_lowrank = get_i(src, "gate_rank", frozen::kGateLowrank);
+    top.indexer_heads = get_i(src, "index_n_heads", 0);
+    top.indexer_head_dim = get_i(src, "index_head_dim", 0);
+    top.indexer_topk = get_i(src, "index_topk", 0);
+
+    // Short conv kernel size lives in linear_attn_config.
+    if (auto lc = src["linear_attn_config"].get_object();
+        lc.error() == simdjson::SUCCESS) {
+        simdjson::ondemand::object lco = lc.value();
+        top.conv_kernel =
+            get_i(lco, "short_conv_kernel_size", frozen::kConvKernel);
+        if (top.heads == 0)
+            top.heads = get_i(lco, "num_heads", 0);
+        if (top.qk_head_dim == 0)
+            top.qk_head_dim = get_i(lco, "head_dim", 0);
+    } else {
+        top.conv_kernel = frozen::kConvKernel;
+    }
+
+    top.routed_scaling = get_d(src, "routed_scaling_factor", 0.0);
+    top.pad_id = get_i(src, "pad_token_id", -1);
+
+    // eos_token_id may be an array or a scalar.
+    if (auto arr = src["eos_token_id"].get_array();
+        arr.error() == simdjson::SUCCESS) {
+        for (auto v : arr.value()) {
+            int64_t e;
+            if (v.get_int64().get(e) == simdjson::SUCCESS)
+                top.eos_ids.push_back(static_cast<int>(e));
+        }
+    } else {
+        const int single = get_i(src, "eos_token_id", -1);
+        if (single >= 0) top.eos_ids.push_back(single);
+    }
+
+    // Structural sanity.
+    if (top.hidden <= 0 || top.layers <= 0 || top.vocab <= 0) {
+        top.error_msg = "config.json missing core text_config fields";
+        return top;
+    }
+    if (top.num_experts <= 0 || top.top_k <= 0) {
+        top.error_msg = "config.json missing MoE fields";
+        return top;
+    }
+    return top;
 }
 
 } // namespace lsxcommon::glm_moe_flash

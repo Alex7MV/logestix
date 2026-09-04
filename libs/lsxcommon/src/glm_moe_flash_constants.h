@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace lsxcommon::glm_moe_flash {
 namespace frozen {
@@ -135,5 +136,24 @@ ParsedFlashTensor classify_flash_tensor(const std::string &name);
 // matrices). Norms, conv1d, A_log/dt_bias, hc weights, router gate,
 // kv_b_proj (fused BF16), indexer, embed, lm_head stay high precision.
 bool flash_tensor_is_nvfp4(FlashTensorKind kind);
+
+// Parsed text_config of a GLM-5.3-Flash checkpoint.
+struct FlashTopology {
+    int hidden = 0, layers = 0, vocab = 0, heads = 0;
+    int qk_head_dim = 0, q_lora = 0, kv_lora = 0;
+    int num_experts = 0, top_k = 0;
+    int moe_intermediate = 0, dense_intermediate = 0;
+    int hc_count = 0, gate_lowrank = 0, conv_kernel = 0;
+    int indexer_heads = 0, indexer_head_dim = 0, indexer_topk = 0;
+    double routed_scaling = 0.0;
+    std::vector<int> eos_ids;
+    int pad_id = -1;
+    std::string error_msg;  // non-empty when config is invalid
+};
+
+// Parses text_config from <input_dir>/config.json via simdjson. Falls back
+// to flat root keys when text_config is absent. On any structural problem
+// the returned struct carries a non-empty error_msg.
+FlashTopology ParseFlashConfig(const std::string &input_dir);
 
 } // namespace lsxcommon::glm_moe_flash
