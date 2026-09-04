@@ -271,6 +271,15 @@ __global__ void flash_conv_decode_kernel(const __half *__restrict__ hist,
     y[c] = __float2half(acc);
 }
 
+// SiLU in place: x * sigmoid(x) with the glibc exp replica.
+__global__ void flash_silu_kernel(__half *__restrict__ x, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float v = __half2float(x[i]);
+    x[i] = __float2half(v / (1.0f + flash_expf_glibc(-v)));
+}
+
 // L2-normalize one head row (dim elements) in place; q gets extra scale.
 __global__ void flash_l2norm_kernel(__half *row, int dim, float extra_scale)
 {
@@ -413,12 +422,17 @@ __global__ void flash_repeat_hc_kernel(const __half *__restrict__ in, int H,
     for (int c = 0; c < hc; ++c) out[c * H + i] = v;
 }
 
-// Gating sigmoid over [heads*dim] in place.
-__global__ void flash_gate_sigmoid_kernel(__half *__restrict__ g, int n)
+// Gating activation over [heads*dim] in place: sigmoid (default) or silu.
+__global__ void flash_gate_act_kernel(__half *__restrict__ g, int n,
+                                      bool silu)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
-        g[i] = __float2half(sigmoid_dev(__half2float(g[i])));
+    if (i < n) {
+        const float v = __half2float(g[i]);
+        g[i] = silu
+                   ? __float2half(v / (1.0f + flash_expf_glibc(-v)))
+                   : __float2half(sigmoid_dev(v));
+    }
 }
 
 // Conv history shift variant taking separate q/k/v raw rows.
@@ -535,11 +549,6 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    {
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_k, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_v, 0, 2, KD);
-    }
     // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
     {
         const int threads = 128;  // == dim
@@ -579,15 +588,19 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
+
+    // 3b. Post-conv activation (FLA short-conv applies silu after the
+    // depthwise conv on q/k/v). Toggle: default ON.
     {
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(st.d_state, 1, 2,
-                                                    heads * dim * dim);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_qc, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_kc, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_vc, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_beta, 1, 2, heads);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_gdecay, 1, 2,
-                                                    heads * dim);
+        static const bool conv_silu = [] {
+            const char *e = std::getenv("LSX_FLASH_CONV_SILU");
+            return e && std::string_view(e) == "1";
+        }();
+        if (conv_silu) {
+            flash_silu_kernel<<<(3 * KD + 255) / 256, 256, 0, stream>>>(
+                d_qc, 3 * KD);
+            if ((e = cudaGetLastError()) != cudaSuccess) return e;
+        }
     }
     // 6. Delta step (state seeded/written back in d_state).
     {
@@ -597,11 +610,15 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    // 7. RMSNormGated(core=attn, gate=sigmoid(g), o_norm).
+    // 7. RMSNormGated(core=attn, gate=act(g), o_norm).
+    static const bool gate_silu = [] {
+        const char *e = std::getenv("LSX_FLASH_GATE");
+        return e && std::string_view(e) == "silu";
+    }();
     {
         const int threads = 128;
-        flash_gate_sigmoid_kernel<<<(heads * dim + 255) / 256, 256, 0,
-                                    stream>>>(d_g, heads * dim);
+        flash_gate_act_kernel<<<(heads * dim + 255) / 256, 256, 0, stream>>>(
+            d_g, heads * dim, gate_silu);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
         flash_rmsnorm_gated_kernel<<<heads, threads, threads * sizeof(float),
                                      stream>>>(
@@ -609,11 +626,6 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    {
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_attn_f, 1, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_g, 0, 2, KD);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_gated, 0, 2, KD);
-    }
     // 8. o_proj: [H, KD] @ gated -> d_out.
     if ((e = FlashGemmV16(stream, lw.d_kda_o, d_gated, d_out, KD, hidden))
         != cudaSuccess) return e;
@@ -768,9 +780,6 @@ __global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
                 v_cache + (static_cast<int64_t>(t) * heads + h) * D;
             acc += (s_score[t] / psum) * __half2float(vr[d]);
         }
-        if (threadIdx.x == 0 && d == 0)
-            printf("[mla3] h=%d psum=%.4f s_score0=%.4f acc0=%.4f\n", h,
-                   psum, s_score[0], acc);
         out[h * D + d] = __float2half(acc);
     }
 }
@@ -885,12 +894,6 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
             d_q, d_kv_cache_k + slot * heads * D,
             d_kv_cache_v + slot * heads * D, d_attn, cap, 1, heads, scale);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
-    }
-    {
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_qr, 0, 2, q_lora);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 2, heads * D);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_kvb, 0, 2, heads * 2 * D);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_attn, 0, 2, heads * D);
     }
     // 5. o_proj (NVFP4).
     if (qwen::RunQwenNvfp4Gemm(stream, d_attn, lw.o_big.d_packed,
@@ -1458,10 +1461,6 @@ cudaError_t RunGlmFlashGeneration(
                 d_single, lw.d_input_norm, d_single, H, 1e-6f);
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "in norm"; break; }
-            {
-                flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_single, 0, 2,
-                                                            H);
-            }
             // ── attention branch ──
             if (is_kda) {
                 // Packed scratch contract (alloc below).
