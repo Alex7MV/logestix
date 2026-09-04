@@ -39,6 +39,7 @@ std::regex SchemeRegex()
         "|expert_cache"
         "|device_math"
         "|norm_kernels"
+        "|fp8"
         "|constants)";
     return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?" + "(?:_exp)?" + "_" + tail + "$");
 }
