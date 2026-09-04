@@ -75,6 +75,29 @@ bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
     return true;
 }
 
+// BF16 bits -> F32 upconvert on host, then single raw upload (hc fn
+// tensors feed the FP32 run_hc_pre/run_hc_post path).
+bool UploadBf16ToF32(PinnedStagingRing &ring, const uint8_t *host_bf16,
+                     int64_t numel, float **d_dst, cudaStream_t stream,
+                     std::uint64_t &bytes_acc)
+{
+    std::vector<float> h(static_cast<size_t>(numel));
+    const uint16_t *src = reinterpret_cast<const uint16_t *>(host_bf16);
+    for (int64_t i = 0; i < numel; ++i) {
+        const uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
+        std::memcpy(&h[static_cast<size_t>(i)], &bits, 4);
+    }
+    if (cudaMalloc(reinterpret_cast<void **>(d_dst),
+                   static_cast<size_t>(numel) * 4) != cudaSuccess)
+        return false;
+    if (ring.UploadRaw(h.data(), *d_dst, static_cast<size_t>(numel) * 4,
+                       stream, bytes_acc) != cudaSuccess) {
+        cudaFree(*d_dst);
+        return false;
+    }
+    return true;
+}
+
 cudaError_t UploadBf16Raw(PinnedStagingRing &ring, const uint8_t *host_bf16,
                           int64_t bytes, uint8_t **d_dst,
                           cudaStream_t stream, std::uint64_t &bytes_acc)
@@ -292,22 +315,22 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
         if (const TensorView *t = FindTensorSuffix(*raw, "hc_attn_fn")) {
             lw.hc_fn_rows = t->shape[0];
             lw.hc_fn_cols = t->rank >= 2 ? t->shape[1] : 0;
-            cudaError_t e =
-                UploadBf16Raw(ring, t->data, t->bytes,
-                              reinterpret_cast<uint8_t **>(&lw.d_hc_attn_fn),
-                              stream, bytes_acc);
-            if (e != cudaSuccess) {
+            int64_t numel = 1;
+            for (int64_t d = 0; d < t->rank; ++d) numel *= t->shape[d];
+            if (!UploadBf16ToF32(ring, t->data, numel,
+                                 reinterpret_cast<float **>(&lw.d_hc_attn_fn),
+                                 stream, bytes_acc)) {
                 error = l3 + " hc_attn_fn upload failed";
                 pw.Free();
                 return false;
             }
         }
         if (const TensorView *t = FindTensorSuffix(*raw, "hc_ffn_fn")) {
-            cudaError_t e =
-                UploadBf16Raw(ring, t->data, t->bytes,
-                              reinterpret_cast<uint8_t **>(&lw.d_hc_ffn_fn),
-                              stream, bytes_acc);
-            if (e != cudaSuccess) {
+            int64_t numel2 = 1;
+            for (int64_t d = 0; d < t->rank; ++d) numel2 *= t->shape[d];
+            if (!UploadBf16ToF32(ring, t->data, numel2,
+                                 reinterpret_cast<float **>(&lw.d_hc_ffn_fn),
+                                 stream, bytes_acc)) {
                 error = l3 + " hc_ffn_fn upload failed";
                 pw.Free();
                 return false;

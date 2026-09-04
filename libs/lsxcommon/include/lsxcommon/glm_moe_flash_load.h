@@ -34,11 +34,12 @@ struct FlashLayerWeights {
     __half *d_post_norm = nullptr;
     int norm_size = 0;
 
-    // Hyper-connection weights per layer (raw bits on device).
-    uint16_t *d_hc_attn_fn = nullptr;   // BF16 bits [24, hc*H]
+    // Hyper-connection weights per layer (fn upconverted to FP32 on load
+    // for the shared deepseek-style run_hc_pre/run_hc_post path).
+    float *d_hc_attn_fn = nullptr;      // F32 [24, hc*H]
     float *d_hc_attn_base = nullptr;    // F32 [24]
     float *d_hc_attn_scale = nullptr;   // F32 [3]
-    uint16_t *d_hc_ffn_fn = nullptr;    // BF16 bits [24, hc*H]
+    float *d_hc_ffn_fn = nullptr;       // F32 [24, hc*H]
     float *d_hc_ffn_base = nullptr;     // F32 [24]
     float *d_hc_ffn_scale = nullptr;    // F32 [3]
     int64_t hc_fn_rows = 0;

@@ -47,6 +47,51 @@ cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                int tok, int hidden, int experts,
                                qwen_moe::QwenMoeRoutedSlot *d_slots);
 
+// ── KDA decode-path state + kernels ──────────────────────────────────────
+// Per-layer recurrent state: S[heads, dim, dim] FP32 + short-conv history
+// window [K-1 rows, 3*8192] FP16 (q/k/v channels interleaved by projection).
+struct FlashKdaState {
+    float *d_state = nullptr;    // [heads*dim*dim] (heads=64, dim=128)
+    __half *d_conv_hist = nullptr;  // [(K-1), 3*8192] oldest..newest
+    int64_t capacity_ctx = 0;
+};
+
+cudaError_t FlashKdaStateAlloc(FlashKdaState &st, int64_t max_ctx);
+void FlashKdaStateFree(FlashKdaState &st);
+
+// Single-token KDA decode for one layer (seq == 1):
+//   d_x: [H] current token hidden (post hc mixing, FP16).
+//   d_out: [H] FP16 layer attention output (pre o_norm? no: post o_proj).
+// Pipeline: q/k/v GEMM (FP16 cuBLAS via RunExpHeadGemm) -> depthwise causal
+// conv1d (window = history + current) -> l2norm q/k per head -> gating prep
+// (beta = sigmoid(b_proj@x), decay = exp(-exp(A_log)*softplus(dt+dt_bias))
+// per (h,l), dt = f_b(f_a(x))) -> per-channel-decay delta step (state seed
+// from d_state, write-back) -> RMSNormGated(core, gate, o_norm) -> o GEMM.
+// All on `stream`, no host sync.
+cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
+                              const FlashLayerWeights &lw, int hidden,
+                              int heads, int dim, int conv_kernel,
+                              const __half *d_x, __half *d_out,
+                              void *d_scratch /* caller workspace */);
+
+// ── MoE: clamped-swiglu routed chain (flash-local; GLM semantics) ────────
+// Per-slot chain over LRU-resident experts (staging via
+// EnsureQwenMoeExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),
+// inter = clamp10(silu(y_g)) * clamp10(y_u), y2 = w2@inter, acc += c*y2.
+cudaError_t RunFlashRoutedFFN(
+    cudaStream_t stream, qwen_moe::QwenMoeExpertStore &store,
+    gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
+    const qwen_moe::QwenMoeRoutedSlot *h_slots, int k_top,
+    const __half *d_x, int hidden, int moe_inter, float *d_acc,
+    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error);
+
+// Shared expert: same clamped swiglu semantics; out += result.
+cudaError_t RunFlashSharedFFN(cudaStream_t stream,
+                              const FlashLayerWeights &lw,
+                              const __half *d_x, int hidden, int shared_inter,
+                              __half *d_yg, __half *d_yu, __half *d_y2,
+                              __half *d_out);
+
 // ── Generation driver ─────────────────────────────────────────────────────
 // Single-stream incremental decode over the GLM-5.3-Flash layer stack:
 // hc GatedResidual (cached) -> KDA/DSA attention branch -> hc inject scatter
