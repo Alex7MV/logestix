@@ -143,6 +143,7 @@ target_link_libraries(lsxcommon_cu
 add_library(lsxcommon_glm_cu OBJECT
     src/glm_moe_inference.cu
     src/glm_moe_load.cu
+    src/glm_moe_flash_inference.cu
 )
 set_target_properties(lsxcommon_glm_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
