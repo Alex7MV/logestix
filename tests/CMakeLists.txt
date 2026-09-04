@@ -467,6 +467,25 @@ endif()
 
 add_test(NAME test_glm_moe_convert COMMAND test_glm_moe_convert)
 
+# ── Тест GLM-5.3-Flash конвертера (геометрия, классификатор, requant) ─────
+add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
+target_compile_definitions(test_glm_moe_flash_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_glm_moe_flash_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_convert PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_convert>"
+    )
+endif()
+
+add_test(NAME test_glm_moe_flash_convert COMMAND test_glm_moe_flash_convert)
+
 # ── Тест Kimi-K2.7-Code конвертера (геометрия, классификатор, топология) ──
 add_executable(test_kimi_moe_convert test_kimi_moe_convert.cpp)
 target_compile_definitions(test_kimi_moe_convert PRIVATE

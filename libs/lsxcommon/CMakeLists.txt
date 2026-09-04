@@ -21,6 +21,7 @@ add_library(lsxcommon STATIC
     src/benchmark_gpu.cpp
     src/generation_cli.cpp
     src/glm_moe_convert.cpp
+    src/glm_moe_flash_convert.cpp
     src/kimi_moe_convert.cpp
     src/kimi_moe_load.cpp
     src/kimi_moe_model.cpp
