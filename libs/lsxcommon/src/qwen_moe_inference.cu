@@ -84,25 +84,28 @@ __device__ __forceinline__ float QwenRouterDotRow(
     return dot;
 }
 
-// Decode-split router: stage 1 computes logits with ONE BLOCK PER EXPERT
-// running the exact same row walk as the monolithic kernel (bit-identical
-// accumulation order via QwenRouterDotRow); the E blocks stream their rows
-// from different SMs instead of funneling 1 MB through a single block. The
-// 8 independent accumulator chains also cut the dependent-add latency chain
-// of the scalar loop (~265us -> tens of us per token at E=256/H=2048).
+// Decode-split router: stage 1 computes logits with ONE THREAD PER EXPERT
+// grouped 8-per-block: keeps the exact QwenRouterDotRow walk (bit-identical
+// logits) while spreading the 1MB row stream across E/8 SMs — the original
+// <<<E,32>>> shape ran one thread per block with 31/32 threads idle and was
+// latency-bound at ~50us/token.
 __global__ void qwen_moe_router_dots_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
-    int H, float *__restrict__ logits)
+    int H, float *__restrict__ logits, int E)
 {
-    const int e = blockIdx.x;
-    if (threadIdx.x != 0) return;
+    const int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= E) return;
     const __half *xr = x;   // decode: t == 0
     const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
     logits[e] = QwenRouterDotRow(pr, xr, H);
 }
 
 // Stage 2: softmax -> top-k -> renorm from precomputed logits (unchanged
-// HF-parity selection logic).
+// HF-parity selection logic). The exp pass is thread-parallel (elementwise,
+// values unchanged); the max is computed by tree reduction (exact — order
+// cannot change the result), the denominator sum and the top-K insertion
+// stay sequential on thread 0 in the same ascending-e order, so selection
+// and coefficients remain bit-identical to the single-thread version.
 __global__ void qwen_moe_router_select_kernel(
     const float *__restrict__ logits, int K, int E,
     QwenMoeRoutedSlot *__restrict__ slots)
@@ -110,14 +113,31 @@ __global__ void qwen_moe_router_select_kernel(
     const int t = blockIdx.x;
     extern __shared__ float sh[];
     float *probs = sh;   // [E]
+    __shared__ float s_max;
+
+    float local = -INFINITY;
+    for (int e = threadIdx.x; e < E; e += blockDim.x)
+        local = fmaxf(local, logits[e]);
+    for (int off = 16; off > 0; off >>= 1)
+        local = fmaxf(local, __shfl_down_sync(0xffffffffu, local, off));
+    __shared__ float warp_max[32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    if (lane == 0) warp_max[warp] = local;
+    __syncthreads();
     if (threadIdx.x == 0) {
-        float m = logits[0];
-        for (int e = 1; e < E; ++e) m = fmaxf(m, logits[e]);
+        float m2 = -INFINITY;
+        const int warps = (blockDim.x + 31) >> 5;
+        for (int w = 0; w < warps; ++w) m2 = fmaxf(m2, warp_max[w]);
+        s_max = m2;
+    }
+    __syncthreads();
+    const float m = s_max;
+    for (int e = threadIdx.x; e < E; e += blockDim.x)
+        probs[e] = expf(logits[e] - m);
+    __syncthreads();
+    if (threadIdx.x == 0) {
         float z = 0.f;
-        for (int e = 0; e < E; ++e) {
-            probs[e] = expf(logits[e] - m);
-            z += probs[e];
-        }
+        for (int e = 0; e < E; ++e) z += probs[e];
         for (int e = 0; e < E; ++e) probs[e] /= z;
 
         int idx[kMaxTopK];
@@ -226,8 +246,10 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
                                                           sizeof(float),
                                          stream);
         if (le != cudaSuccess) return le;
-        qwen_moe_router_dots_kernel<<<E, 32, 0, stream>>>(router_w, normed, H,
-                                                          d_logits);
+        // One thread per expert grouped 8-per-block: bit-exact dot walk,
+        // E/8 SMs engaged instead of E single-thread blocks.
+        qwen_moe_router_dots_kernel<<<(E + 7) / 8, 8, 0, stream>>>(
+            router_w, normed, H, d_logits, E);
         le = cudaGetLastError();
         if (le == cudaSuccess)
             qwen_moe_router_select_kernel<<<seq, kRouterBlock,

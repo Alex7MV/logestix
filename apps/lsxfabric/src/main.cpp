@@ -8,6 +8,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/log.h"
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -21,6 +22,7 @@ int main(int argc, char* argv[]) {
     bool selfcheck = false;
     bool fast_math = false;
     std::string prompt = "The capital of France is";
+    int prompt_gen = 64;
     auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
                        / "DeepSeek-V4-Flash").string();
     for (int i = 1; i < argc; ++i) {
@@ -36,6 +38,8 @@ int main(int argc, char* argv[]) {
             selfcheck = true;
         else if (std::strcmp(argv[i], "--fast-math") == 0)
             fast_math = true;
+        else if (std::strcmp(argv[i], "--max-gen") == 0 && i + 1 < argc)
+            prompt_gen = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
             prompt = argv[++i];
     }
@@ -48,7 +52,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = model_path;
         args.prompt = prompt;
-        args.max_gen_tokens = 64;
+        args.max_gen_tokens = prompt_gen;
         args.fast_math = fast_math;
         int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();

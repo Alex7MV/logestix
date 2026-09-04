@@ -774,6 +774,35 @@ cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
     return cudaGetLastError();
 }
 
+// Persistent split-K partials scratch: per-process grow-only buffer.
+// The hot decode path runs several split-K GEMMs per layer per step; a
+// cudaMallocAsync+cudaMemsetAsync+cudaFreeAsync triple per GEMM dominated
+// the dispatch cost (the partials are disjoint RAW writes per z-slice, so
+// no memset is needed for correctness). One mutex-guarded buffer shared
+// across streams: allocations race only on the grow path, and each GEMM's
+// partials region is disjoint while its kernel runs (same-stream ordering
+// guarantees reuse is safe within a stream; cross-stream users of this
+// dispatch must fence externally, as before).
+namespace {
+float *g_splitk_partials = nullptr;
+size_t g_splitk_bytes = 0;
+std::mutex g_splitk_mu;
+
+cudaError_t EnsureSplitkPartials(size_t bytes, float **out)
+{
+    std::lock_guard<std::mutex> lk(g_splitk_mu);
+    if (g_splitk_bytes < bytes) {
+        void *p = nullptr;
+        if (cudaMalloc(&p, bytes) != cudaSuccess) return cudaGetLastError();
+        if (g_splitk_partials) cudaFree(g_splitk_partials);
+        g_splitk_partials = static_cast<float *>(p);
+        g_splitk_bytes = bytes;
+    }
+    *out = g_splitk_partials;
+    return cudaSuccess;
+}
+} // namespace
+
 static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
                                   const uint8_t *ap_in, const uint8_t *as_in,
                                   const uint8_t *w_packed,
@@ -864,13 +893,8 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
         if (split_k > 1) {
             const size_t pbytes =
                 static_cast<size_t>(split_k) * N * sizeof(float);
-            e = cudaMallocAsync(&partials, pbytes, stream);
+            e = EnsureSplitkPartials(pbytes, &partials);
             if (e != cudaSuccess) return e;
-            e = cudaMemsetAsync(partials, 0, pbytes, stream);
-            if (e != cudaSuccess) {
-                cudaFreeAsync(partials, stream);
-                return e;
-            }
             dim3 grid3(grid.x, grid.y, split_k);
             TcGemmKernel<false><<<grid3, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
@@ -892,7 +916,6 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
                                                          seg_bounds_dev);
                 e = cudaGetLastError();
             }
-            cudaFreeAsync(partials, stream);
         } else {
             TcGemmKernel<false><<<grid, 256, 0, stream>>>(
                 static_cast<uint8_t *>(ap_scratch),
@@ -1039,7 +1062,7 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
     // 4x the CTAs with a bit-identical per-column accumulation chain
     // (same k64-chunk order inside one CTA — only the CTA->column map
     // changes). Large-N shapes keep the 64-wide tile.
-    if (N % 16 == 0 && k_slots * ((N + 63) / 64) < 128) {
+    if (N % 16 == 0 && k_slots * ((N + 63) / 64) <= 128) {
         const dim3 g16((N + 15) / 16, 1, k_slots * split_k);
         if (seg13)
             TcGemmKernel<true, 16, 1><<<g16, 256, 0, stream>>>(
