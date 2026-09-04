@@ -27,6 +27,11 @@
 
 #include <simdjson.h>
 
+#include "lsxcommon/converter.h"
+#include "lsxcommon/path_registry.h"
+#include "lsxcommon/tokenizer.h"
+#include "lsxnetwork/lsx_token_translator.h"
+
 namespace fs = std::filesystem;
 
 namespace lsxcommon::glm_moe_flash {
@@ -724,6 +729,59 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
         "GLM-5.3-Flash conversion complete: ", frozen::kLayers, " layers, ",
         frozen::kNumExperts, " experts, ", visual_skipped,
         " visual tensors skipped"));
+
+    // Tokenizer: mandatory for real checkpoints (byte-level BPE, specials
+    // from config: eos trio + pad).
+    const fs::path tok_path = fs::path(input_dir) / "tokenizer.json";
+    if (fs::exists(tok_path)) {
+        ARROW_RETURN_NOT_OK(
+            integrity::BuildAndVerifyTokenizer(tok_path.string(), pinned_dir,
+                                               integrity::TokenizerSpecialIds{
+                                                   .bos_required = false,
+                                                   .eos_required = true}));
+    } else if (!synthetic_geometry_allowed()) {
+        return arrow::Status::Invalid("tokenizer.json not found in ",
+                                      input_dir);
+    }
+
+    // Network passport (Model Ingestion Protocol step 7): token id ->
+    // byte string map from the freshly built vocab arrows.
+    {
+        auto db = std::make_shared<ArrowTokenizerDb>();
+        auto vocab_mmap = arrow::io::MemoryMappedFile::Open(
+            (pinned_dir / "tokenizer_vocab.arrow").string(),
+            arrow::io::FileMode::READ);
+        auto merges_mmap = arrow::io::MemoryMappedFile::Open(
+            (pinned_dir / "tokenizer_merges.arrow").string(),
+            arrow::io::FileMode::READ);
+        if (vocab_mmap.ok() && merges_mmap.ok()) {
+            db->vocab_mmap = *vocab_mmap;
+            db->merges_mmap = *merges_mmap;
+            if (lsxcommon::load_tokenizer_metadata(*vocab_mmap, *merges_mmap,
+                                                   *db)
+                .ok()) {
+                lsxnetwork::BuildPassportOptions opts;
+                opts.glm_tokens.reserve(
+                    static_cast<size_t>(db->vocab_size));
+                for (int32_t i = 0; i < db->vocab_size; ++i) {
+                    const int64_t b = db->token_offsets[i];
+                    const int64_t e = db->token_offsets[i + 1];
+                    opts.glm_tokens.emplace_back(
+                        reinterpret_cast<const char *>(db->token_bytes + b),
+                        static_cast<size_t>(e - b));
+                }
+                const std::string passport_path =
+                    lsxcommon::lsx_model_metadata("passport/passport.bin");
+                if (lsxnetwork::WritePassport(passport_path.c_str(), opts)
+                    != 0)
+                    lsxcommon::log::warn(
+                        "passport write failed: " + passport_path);
+                else
+                    lsxcommon::log::info(
+                        "passport written: " + passport_path);
+            }
+        }
+    }
 
     // Structural manifest (index). Deterministic byte content.
     {

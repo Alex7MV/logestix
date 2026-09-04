@@ -24,6 +24,7 @@ add_library(lsxcommon STATIC
     src/glm_moe_flash_convert.cpp
     src/glm_moe_flash_fp8.cpp
     src/glm_moe_flash_load.cpp
+    src/glm_moe_flash_model.cpp
     src/kimi_moe_convert.cpp
     src/kimi_moe_load.cpp
     src/kimi_moe_model.cpp
