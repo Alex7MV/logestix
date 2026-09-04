@@ -1,9 +1,20 @@
 // GLM-5.3-Flash converter: tensor classifier (Task 1), config parser +
-// FP8->NVFP4 requant host reference (Task 2). Conversion pipeline lands
-// in Task 3.
+// FP8->NVFP4 requant host reference (Task 2), conversion pipeline (Task 3).
 #include "glm_moe_flash_constants.h"
+#include "lsxcommon/glm_moe_flash_convert.h"
 #include "glm_moe_flash_fp8.h"
 
+#include "lsxcommon/log.h"
+#include "lsxcommon/model_integrity.h"
+#include "lsxcommon/safetensors.h"
+#include "lsxcommon/safetensors_gpu.h"
+#include "lsxcommon/schema.h"
+
+#include <absl/container/flat_hash_map.h>
+#include <absl/strings/str_cat.h>
+#include <arrow/api.h>
+
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -12,8 +23,11 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <simdjson.h>
+
+namespace fs = std::filesystem;
 
 namespace lsxcommon::glm_moe_flash {
 
@@ -189,7 +203,7 @@ ParsedFlashTensor classify_flash_tensor(const std::string &name)
         return out;  // Unknown inside a KDA layer
     }
 
-    if (frozen::IsDsaLayer(layer)) {
+    if (frozen::IsDsaLayer(layer) || layer == frozen::kMtpLayer) {
         static const std::array<std::pair<const char *, FlashTensorKind>, 5>
             kDsaKinds = {{
                 {"self_attn.q_a_proj.weight", FlashTensorKind::DsaQa},
@@ -210,6 +224,7 @@ ParsedFlashTensor classify_flash_tensor(const std::string &name)
             out.kind = FlashTensorKind::DsaNorms;
             return out;
         }
+        return out;
         return out;
     }
 
@@ -340,6 +355,369 @@ FlashTopology ParseFlashConfig(const std::string &input_dir)
         return top;
     }
     return top;
+}
+
+// ── Conversion pipeline (Task 3) ─────────────────────────────────────────
+
+namespace {
+
+std::vector<uint8_t> read_tensor_data(const std::string &input_dir,
+                                      const SafetensorsModel::Shard &shard,
+                                      const TensorInfo &info)
+{
+    uint64_t hdr_len = 0;
+    std::ifstream sf((fs::path(input_dir) / shard.filename).string(),
+                     std::ios::binary);
+    if (!sf) return {};
+    sf.read(reinterpret_cast<char *>(&hdr_len), 8);
+    const int64_t data_off = 8 + static_cast<int64_t>(hdr_len);
+    sf.seekg(data_off + info.data_begin, std::ios::beg);
+    std::vector<uint8_t> buf(static_cast<size_t>(info.byte_size()));
+    sf.read(reinterpret_cast<char *>(buf.data()),
+            static_cast<std::streamsize>(buf.size()));
+    return buf;
+}
+
+arrow::Status write_batch(
+    const arrow::Result<std::shared_ptr<arrow::RecordBatch>> &batch,
+    const fs::path &path)
+{
+    if (!batch.ok()) return batch.status();
+    return WriteRecordBatchToFile(*batch, path);
+}
+
+// NVFP4-quantizes a raw FP8 + F32-tile-scale tensor: GPU dequant to BF16
+// then quantize_tensor_gpu("BF16").
+arrow::Status quantize_fp8_nvfp4(const std::vector<uint8_t> &fp8,
+                                 const std::vector<int64_t> &shape,
+                                 const std::vector<uint8_t> &scale_f32,
+                                 const std::vector<int64_t> &scale_shape,
+                                 const std::string &name,
+                                 DenseNvfp4Record &r)
+{
+    std::vector<uint8_t> bf16;
+    ARROW_RETURN_NOT_OK(
+        DequantFp8TilesToBf16Gpu(fp8, shape, scale_f32, scale_shape, bf16));
+    r.name = name;
+    r.shape = shape;
+    r.dtype = "BF16";
+    if (!gpu::quantize_tensor_gpu(bf16.data(),
+                                  static_cast<int64_t>(shape[0]) * shape[1],
+                                  "BF16", nullptr, shape, {}, r.packed,
+                                  r.scales, r.global_scale))
+        return arrow::Status::IOError("GPU quantization failed for ", name);
+    return arrow::Status::OK();
+}
+
+// Writes one expert's NVFP4 payload triple to experts/layer_<l>/exp_<e>.arrow.
+arrow::Status write_expert_file(const fs::path &base_dir, int layer,
+                                int expert, PackedExpert &&pe)
+{
+    fs::path dir = base_dir / "experts" / absl::StrCat("layer_", layer);
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    auto batch = ExpertSchema::MakeBatch(pe);
+    if (!batch.ok()) return batch.status();
+    return WriteRecordBatchToFile(
+        *batch, dir / absl::StrCat("exp_", expert, ".arrow"));
+}
+
+arrow::Status FillPackedExpert(int proj_id, DenseNvfp4Record r,
+                               PackedExpert &pe)
+{
+    switch (proj_id) {
+    case 1:
+        pe.w1_packed = std::move(r.packed);
+        pe.w1_scales = std::move(r.scales);
+        pe.w1_shape = std::move(r.shape);
+        pe.w1_global_scale = r.global_scale;
+        return arrow::Status::OK();
+    case 2:
+        pe.w2_packed = std::move(r.packed);
+        pe.w2_scales = std::move(r.scales);
+        pe.w2_shape = std::move(r.shape);
+        pe.w2_global_scale = r.global_scale;
+        return arrow::Status::OK();
+    case 3:
+        pe.w3_packed = std::move(r.packed);
+        pe.w3_scales = std::move(r.scales);
+        pe.w3_shape = std::move(r.shape);
+        pe.w3_global_scale = r.global_scale;
+        return arrow::Status::OK();
+    default:
+        return arrow::Status::Invalid("bad expert projection id");
+    }
+}
+
+// Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
+// gates against the frozen constants. Same escape hatch as Qwen35MoeModel.
+bool synthetic_geometry_allowed()
+{
+    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    return env && env[0] == '1';
+}
+
+} // namespace
+
+arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
+                                   const std::string &output_root)
+{
+    // (1) Topology + frozen geometry gate.
+    FlashTopology top = ParseFlashConfig(input_dir);
+    if (!top.error_msg.empty())
+        return arrow::Status::Invalid("GLM-5.3-Flash config error: ",
+                                      top.error_msg);
+    if (top.num_experts > 0 && top.top_k > top.num_experts)
+        return arrow::Status::Invalid("num_experts_per_tok > num_experts");
+    {
+        std::string why;
+        auto bad = [&why](const char *f, long long got, long long want) {
+            why = absl::StrCat(f, ": got ", got, ", want ", want);
+            return false;
+        };
+        using namespace frozen;
+        if (!synthetic_geometry_allowed())
+        {
+            if (top.hidden != kHidden) { bad("hidden_size", top.hidden, kHidden); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.layers != kLayers) { bad("num_hidden_layers", top.layers, kLayers); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.vocab != kVocab) { bad("vocab_size", top.vocab, kVocab); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.num_experts != kNumExperts) { bad("n_routed_experts", top.num_experts, kNumExperts); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.top_k != kTopK) { bad("num_experts_per_tok", top.top_k, kTopK); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.hc_count != kHcCount) { bad("hc_mult", top.hc_count, kHcCount); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.q_lora != kQLora) { bad("q_lora_rank", top.q_lora, kQLora); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.kv_lora != kKvLora) { bad("kv_lora_rank", top.kv_lora, kKvLora); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+            if (top.moe_intermediate != kMoeIntermediate) { bad("moe_intermediate_size", top.moe_intermediate, kMoeIntermediate); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
+        }
+    }
+
+    auto model = lsxcommon::scan_directory(input_dir);
+    if (model.shards.empty())
+        return arrow::Status::Invalid("no safetensors shards found in ",
+                                      input_dir);
+
+    // Classify the inventory: unknown names are hard errors, visual counted.
+    // weight_scale_inv tensors are consumed as paired FP8 scale payloads,
+    // never classified independently.
+    int visual_skipped = 0;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors) {
+            if (t.name.rfind(".weight_scale_inv") != std::string::npos)
+                continue;
+            auto p = classify_flash_tensor(t.name);
+            if (p.kind == FlashTensorKind::Visual) {
+                ++visual_skipped;
+                continue;
+            }
+            if (p.kind == FlashTensorKind::Unknown)
+                return arrow::Status::Invalid(
+                    "unrecognized tensor in glm5_next checkpoint: ", t.name);
+        }
+
+    ARROW_RETURN_NOT_OK(integrity::VerifyAllTensorReads(input_dir, model));
+
+    // Unified vault convention: <output_root>/logestix.
+    const fs::path base = fs::path(output_root) / "logestix";
+    const fs::path pinned_dir = base / "pinned";
+    for (const fs::path &d : {base, pinned_dir}) {
+        std::error_code ec;
+        fs::create_directories(d, ec);
+    }
+
+    // Build a name->(shard, tensor) index; shards are streamed per pass.
+    struct SrcRef {
+        const SafetensorsModel::Shard *shard;
+        const TensorInfo *info;
+    };
+    absl::flat_hash_map<std::string, SrcRef> by_name;
+    for (const auto &shard : model.shards)
+        for (const auto &t : shard.tensors) by_name[t.name] = {&shard, &t};
+
+    auto scale_shape_of = [&](const std::string &scale_name)
+        -> std::vector<int64_t> {
+        auto it = by_name.find(scale_name);
+        return it == by_name.end() ? std::vector<int64_t>{}
+                                   : it->second.info->shape;
+    };
+
+    // Helper: fetch raw bytes of a tensor by name (empty when missing).
+    auto load_raw = [&](const std::string &name) -> std::vector<uint8_t> {
+        auto it = by_name.find(name);
+        if (it == by_name.end()) return {};
+        return read_tensor_data(input_dir, *it->second.shard,
+                                *it->second.info);
+    };
+
+    // ── Globals: embed / lm_head / final norm (raw BF16). ──
+    {
+        std::vector<TensorRecord> global_raw;
+        const char *globals[] = {
+            "model.language_model.embed_tokens.weight", "lm_head.weight",
+            "model.language_model.norm.weight"};
+        for (const char *g : globals) {
+            auto it = by_name.find(g);
+            if (it == by_name.end())
+                return arrow::Status::Invalid("missing global tensor: ", g);
+            TensorRecord r;
+            r.name = g;
+            r.dtype = it->second.info->dtype;
+            r.shape = it->second.info->shape;
+            r.data = read_tensor_data(input_dir, *it->second.shard,
+                                      *it->second.info);
+            if (r.data.size() !=
+                static_cast<size_t>(it->second.info->byte_size()))
+                return arrow::Status::IOError("short read: ", g);
+            global_raw.push_back(std::move(r));
+        }
+        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
+                                        pinned_dir / "global.arrow"));
+    }
+
+    // ── Experts pass (per MoE layer, bounded RAM): collect the three FP8
+    // projections + F32 scale tiles per expert, dequant->requant on GPU,
+    // write per-expert arrow files. ──
+    for (int layer = frozen::kMoeFirstLayer; layer <= frozen::kMtpLayer;
+         ++layer) {
+        struct ExpertParts {
+            std::vector<uint8_t> w1, w2, w3, s1, s2, s3;
+            std::vector<int64_t> sh1, sh2, sh3, ssh1, ssh2, ssh3;
+            bool has[6] = {};
+            bool done = false;
+            bool complete() const { return has[0] && has[1] && has[2]; }
+        };
+        absl::flat_hash_map<int, ExpertParts> experts;
+
+        for (const auto &shard : model.shards) {
+            for (const auto &t : shard.tensors) {
+                auto p = classify_flash_tensor(t.name);
+                if (p.layer != layer
+                    || p.kind != FlashTensorKind::RoutedExpert) continue;
+                auto &ep = experts[p.expert];
+                auto data = read_tensor_data(input_dir, shard, t);
+                if (data.size() != static_cast<size_t>(t.byte_size()))
+                    return arrow::Status::IOError("short read: ", t.name);
+                const std::string scale_name =
+                    t.name.substr(0, t.name.size() - strlen(".weight"))
+                    + ".weight_scale_inv";
+                auto scale = load_raw(scale_name);
+                if (scale.empty())
+                    return arrow::Status::Invalid("missing scale tile: ",
+                                                  scale_name);
+                auto ssh = scale_shape_of(scale_name);
+                switch (p.proj_id) {
+                case 1:
+                    ep.w1 = std::move(data); ep.sh1 = t.shape;
+                    ep.s1 = std::move(scale); ep.ssh1 = std::move(ssh);
+                    ep.has[0] = true; break;
+                case 2:
+                    ep.w2 = std::move(data); ep.sh2 = t.shape;
+                    ep.s2 = std::move(scale); ep.ssh2 = std::move(ssh);
+                    ep.has[1] = true; break;
+                case 3:
+                    ep.w3 = std::move(data); ep.sh3 = t.shape;
+                    ep.s3 = std::move(scale); ep.ssh3 = std::move(ssh);
+                    ep.has[2] = true; break;
+                default:
+                    return arrow::Status::Invalid("bad expert proj id: ",
+                                                  t.name);
+                }
+            }
+            // Quantize + flush completed experts as the shard stream
+            // provides their parts (bounded peak RAM).
+            for (auto &[eid, ep] : experts) {
+                if (!ep.complete() || ep.done) continue;
+                PackedExpert pe;
+                DenseNvfp4Record r1, r2, r3;
+                ARROW_RETURN_NOT_OK(
+                    quantize_fp8_nvfp4(ep.w1, ep.sh1, ep.s1, ep.ssh1,
+                                       absl::StrCat("layer_", layer, ".e",
+                                                    eid, ".w1"), r1));
+                ARROW_RETURN_NOT_OK(FillPackedExpert(1, std::move(r1), pe));
+                ARROW_RETURN_NOT_OK(
+                    quantize_fp8_nvfp4(ep.w2, ep.sh2, ep.s2, ep.ssh2,
+                                       absl::StrCat("layer_", layer, ".e",
+                                                    eid, ".w2"), r2));
+                ARROW_RETURN_NOT_OK(FillPackedExpert(2, std::move(r2), pe));
+                ARROW_RETURN_NOT_OK(
+                    quantize_fp8_nvfp4(ep.w3, ep.sh3, ep.s3, ep.ssh3,
+                                       absl::StrCat("layer_", layer, ".e",
+                                                    eid, ".w3"), r3));
+                ARROW_RETURN_NOT_OK(FillPackedExpert(3, std::move(r3), pe));
+                ARROW_RETURN_NOT_OK(write_expert_file(base, layer, eid,
+                                                      std::move(pe)));
+                ep.done = true;
+                ep.w1.clear(); ep.w2.clear(); ep.w3.clear();
+                ep.s1.clear(); ep.s2.clear(); ep.s3.clear();
+            }
+        }
+        // Completeness gate: every expert of this layer flushed exactly once.
+        for (const auto &[eid, ep] : experts)
+            if (!ep.done)
+                return arrow::Status::Invalid("incomplete expert: layer ",
+                                              layer, " e", eid);
+    }
+
+    // ── Dense/attention pass (per layer): raw + NVFP4 non-expert tensors. ──
+    for (int layer = 0; layer <= frozen::kMtpLayer; ++layer) {
+        std::vector<TensorRecord> raw_recs;
+        std::vector<DenseNvfp4Record> nvfp4_recs;
+
+        for (const auto &shard : model.shards) {
+            for (const auto &t : shard.tensors) {
+                auto p = classify_flash_tensor(t.name);
+                if (p.layer != layer) continue;
+                if (p.kind == FlashTensorKind::Visual) continue;
+                if (p.kind == FlashTensorKind::RoutedExpert) continue;
+                if (p.kind == FlashTensorKind::Embed
+                    || p.kind == FlashTensorKind::LmHead
+                    || p.kind == FlashTensorKind::FinalNorm)
+                    continue;  // globals pass
+
+                auto data = read_tensor_data(input_dir, shard, t);
+                if (data.size() != static_cast<size_t>(t.byte_size()))
+                    return arrow::Status::IOError("short read: ", t.name);
+
+                if (flash_tensor_is_nvfp4(p.kind)) {
+                    const std::string scale_name =
+                        t.name.substr(0, t.name.size() - strlen(".weight"))
+                        + ".weight_scale_inv";
+                    auto scale = load_raw(scale_name);
+                    if (scale.empty())
+                        return arrow::Status::Invalid("missing scale tile: ",
+                                                      scale_name);
+                    DenseNvfp4Record r;
+                    ARROW_RETURN_NOT_OK(quantize_fp8_nvfp4(
+                        data, t.shape, scale, scale_shape_of(scale_name),
+                        t.name, r));
+                    nvfp4_recs.push_back(std::move(r));
+                    continue;
+                }
+
+                TensorRecord r;
+                r.name = t.name;
+                r.dtype = t.dtype;
+                r.shape = t.shape;
+                r.data = std::move(data);
+                raw_recs.push_back(std::move(r));
+            }
+        }
+
+        const std::string l3 =
+            absl::StrCat("layer_", absl::Dec(layer, absl::kZeroPad3));
+        ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(raw_recs),
+                                        pinned_dir / (l3 + ".arrow")));
+        if (!nvfp4_recs.empty()) {
+            ARROW_RETURN_NOT_OK(
+                write_batch(DenseNvfp4Schema::MakeBatch(nvfp4_recs),
+                            pinned_dir / (l3 + "_nvfp4.arrow")));
+        }
+    }
+
+    lsxcommon::log::info(absl::StrCat(
+        "GLM-5.3-Flash conversion complete: ", frozen::kLayers, " layers, ",
+        frozen::kNumExperts, " experts, ", visual_skipped,
+        " visual tensors skipped"));
+
+    return arrow::Status::OK();
 }
 
 } // namespace lsxcommon::glm_moe_flash

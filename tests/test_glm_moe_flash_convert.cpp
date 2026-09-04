@@ -1,8 +1,13 @@
-// GLM-5.3-Flash converter suite. Part 1: frozen geometry + tensor
-// classifier. Real-checkpoint tests SKIP without the model dir.
+// GLM-5.3-Flash converter suite: frozen geometry, tensor classifier,
+// FP8->NVFP4 requant, config parser, conversion pipeline.
+// Real-checkpoint tests SKIP without the model dir.
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -11,6 +16,7 @@
 namespace fs = std::filesystem;
 
 using namespace lsxcommon::glm_moe_flash;
+
 TEST_CASE("frozen geometry passport matches GLM-5.3-Flash config")
 {
     using namespace frozen;
@@ -222,4 +228,79 @@ TEST_CASE("RequantFp8ToNvfp4Host: mixed magnitudes + zero block")
         INFO("i=" << i << " src=" << src << " deq=" << deq);
         REQUIRE(std::fabs(deq - src) <= tol);
     }
+}
+
+// ── Task 3: converter pipeline ───────────────────────────────────────────
+#include "lsxcommon/glm_moe_flash_convert.h"
+
+TEST_CASE("DequantFp8TilesToBf16Gpu: parity vs host dequant")
+{
+    // 128 rows x 128 cols FP8 + 1x1 F32 tile scale (one 128x128 tile).
+    // The kernel requires exact 128-multiple geometry (matches the
+    // checkpoint: e.g. [2048, 4096] weights with [16, 32] scale tiles).
+    constexpr int R = 128, C = 128;
+    std::vector<uint8_t> fp8(static_cast<size_t>(R) * C);
+    for (size_t i = 0; i < fp8.size(); ++i)
+        fp8[i] = static_cast<uint8_t>(0x08 + (i % 0x70));  // varied values
+    const float scale = 1.5f;
+    std::vector<uint8_t> scale_bytes(reinterpret_cast<const uint8_t *>(&scale),
+                                     reinterpret_cast<const uint8_t *>(&scale)
+                                         + 4);
+    std::vector<uint8_t> bf16;
+    auto st = lsxcommon::glm_moe_flash::DequantFp8TilesToBf16Gpu(
+        fp8, {R, C}, scale_bytes, {1, 1}, bf16);
+    INFO("dequant status: " << st.ToString());
+    REQUIRE(st.ok());
+    REQUIRE(bf16.size() == static_cast<size_t>(R) * C * 2);
+    // Host reference on a sample of elements.
+    // BF16 bit pattern -> F32: a BF16 value is the top 16 bits of the
+    // F32 bit pattern, so widening is a 16-bit left shift.
+    auto bf16_to_float = [](const uint8_t *p) {
+        const uint32_t bits = (static_cast<uint32_t>(p[0])
+                               | (static_cast<uint32_t>(p[1]) << 8))
+                              << 16;
+        float v;
+        std::memcpy(&v, &bits, 4);
+        return v;
+    };
+    for (int i = 0; i < R * C; i += 997) {
+        const float src =
+            lsxcommon::glm_moe_flash::FlashFp8E4m3Decode(fp8[i]) * scale;
+        const float got =
+            bf16_to_float(bf16.data() + static_cast<size_t>(i) * 2);
+        // BF16 has 8 mantissa bits; fp8 value has at most 3 -> exact.
+        INFO("i=" << i << " src=" << src << " got=" << got);
+        REQUIRE(std::fabs(got - src) <= 1e-6f * std::max(1.0f, src));
+    }
+}
+
+TEST_CASE("ConvertGlm5NextModel: layout + index on real checkpoint")
+{
+    const std::string src = "/mnt/llm_models/models/GLM-5.3-Flash";
+    if (!fs::exists(src + "/model.safetensors.index.json")) {
+        SKIP("GLM-5.3-Flash checkpoint not present");
+    }
+    const std::string out =
+        (fs::temp_directory_path() / "glm53flash_conv_test").string();
+    fs::remove_all(out);
+    auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(src, out);
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+    const fs::path base = fs::path(out) / "logestix";
+    REQUIRE(fs::exists(base / "model.index.json"));
+    REQUIRE(fs::exists(base / "pinned" / "global.arrow"));
+    REQUIRE(fs::exists(base / "pinned" / "layer_000.arrow"));
+    REQUIRE(fs::exists(base / "pinned" / "layer_003.arrow"));
+    REQUIRE(fs::exists(base / "experts" / "layer_003" / "exp_000.arrow"));
+    REQUIRE(fs::exists(base / "experts" / "layer_044" / "exp_287.arrow"));
+    // model.index.json: format tag + topology lists.
+    std::ifstream f(base / "model.index.json");
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string idx = ss.str();
+    REQUIRE(idx.find("logestix-glm5next") != std::string::npos);
+    REQUIRE(idx.find("\"kda_layers\"") != std::string::npos);
+    REQUIRE(idx.find("\"dsa_layers\"") != std::string::npos);
+    REQUIRE(idx.find("\"moe_layers\"") != std::string::npos);
+    fs::remove_all(out);
 }

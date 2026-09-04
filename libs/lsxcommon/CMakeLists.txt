@@ -118,6 +118,7 @@ add_library(lsxcommon_cu OBJECT
     src/deepseek_moe_norm_kernels.cu
     src/shared_experts.cu
     src/sampling.cu
+    src/glm_moe_flash_convert_gpu.cu
 )
 set_target_properties(lsxcommon_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
