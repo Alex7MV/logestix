@@ -2404,6 +2404,21 @@ if(WIN32)
 endif()
 add_test(NAME test_glm_moe_flash_model COMMAND test_glm_moe_flash_model)
 
+add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
+target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_selfcheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_selfcheck>"
+    )
+endif()
+add_test(NAME test_glm_moe_flash_selfcheck COMMAND test_glm_moe_flash_selfcheck)
+set_tests_properties(test_glm_moe_flash_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_qwen_moe_exp_model test_qwen_moe_exp_model.cpp)
 target_compile_definitions(test_qwen_moe_exp_model PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)

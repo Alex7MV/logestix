@@ -13,10 +13,41 @@
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 
 namespace lsxcommon {
 namespace glm_moe_flash {
 namespace {
+__device__ int flash_dbg_on = 0;
+
+// Device-side buffer probe (bit of first N elems + NaN count) — temporary
+// debugging aid, env-gated via a device flag set by the driver.
+__global__ void flash_dbg_probe_kernel(const void *buf, int kind,
+                                       int n_first, int64_t total)
+{
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    // kind: 0=half, 1=float
+    int nan = 0;
+    float v0 = 0.f, v1 = 0.f;
+    if (kind == 0) {
+        const __half *p = static_cast<const __half *>(buf);
+        v0 = __half2float(p[0]);
+        v1 = __half2float(p[1]);
+        for (int64_t i = 0; i < total; ++i)
+            if (isnan(__half2float(p[i]))) ++nan;
+    } else {
+        const float *p = static_cast<const float *>(buf);
+        v0 = p[0];
+        v1 = p[1];
+        for (int64_t i = 0; i < total; ++i)
+            if (isnan(p[i])) ++nan;
+    }
+    if (true)
+        printf("[probe] kind=%d v0=%.6f v1=%.6f nan=%lld/%lld\n", kind, v0,
+               v1, static_cast<long long>(nan), static_cast<long long>(total));
+}
+
 
 FLASH_HD float sigmoid_dev(float x)
 {
@@ -169,7 +200,7 @@ cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                int tok, int hidden, int experts,
                                qwen_moe::QwenMoeRoutedSlot *d_slots)
 {
-    const int threads = 256;
+    const int threads = experts <= 1024 ? experts : 1024;
     const size_t scratch = static_cast<size_t>(experts) * sizeof(float);
     flash_router_top8_kernel<<<tok, threads, scratch, stream>>>(
         d_gate, d_bias, d_x, d_slots, hidden, experts);
@@ -202,6 +233,10 @@ __global__ void flash_gemv_f16_kernel(const __half *__restrict__ w,
 cudaError_t FlashGemmV16(cudaStream_t stream, const __half *w,
                          const __half *x, __half *y, int k_dim, int n_dim)
 {
+    static const bool dbg = std::getenv("LSX_FLASH_GEMV_DEBUG") != nullptr;
+    if (dbg)
+        std::fprintf(stderr, "[gemv] w=%p x=%p y=%p k=%d n=%d\n", (const void *)w,
+                     (const void *)x, (void *)y, k_dim, n_dim);
     const int warps = 8;
     const int blocks = (n_dim + warps - 1) / warps;
     flash_gemv_f16_kernel<<<blocks, warps * 32, 0, stream>>>(w, x, y, k_dim,
@@ -490,6 +525,9 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
+    if (flash_dbg_on)
+        printf("[kda] q0=%.6f k0=%.6f v0=%.6f\n", __half2float(d_q[0]),
+               __half2float(d_k[0]), __half2float(d_v[0]));
     // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
     {
         const int threads = 128;  // == dim
@@ -526,6 +564,10 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
+    if (flash_dbg_on)
+        printf("[kda] qc0=%.6f kc0=%.6f vc0=%.6f b0=%.6f gd0=%.6f\n",
+               __half2float(d_qc[0]), __half2float(d_kc[0]),
+               __half2float(d_vc[0]), d_beta[0], d_gdecay[0]);
     // 6. Delta step (state seeded/written back in d_state).
     {
         flash_kda_step_kernel<<<heads, dim, 0, stream>>>(
@@ -546,6 +588,9 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
+    if (flash_dbg_on)
+        printf("[kda] attn0=%.6f gated0=%.6f\n", __half2float(d_attn[0]),
+               __half2float(d_gated[0]));
     // 8. o_proj: [H, KD] @ gated -> d_out.
     if ((e = FlashGemmV16(stream, lw.d_kda_o, d_gated, d_out, KD, hidden))
         != cudaSuccess) return e;
@@ -558,7 +603,9 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 // ── DSA (deepseek_sparse_attention) decode path ──────────────────────────
 namespace {
 
-// Weighted RMSNorm over one n-length row: out = x * rsqrt(mean(x^2)+eps) * w.
+// Weighted RMSNorm over one n-length row (any n via stride): out =
+// x * rsqrt(mean(x^2)+eps) * w. One block; shared reduction over blockDim,
+// grid-stride accumulation for n > blockDim.
 __global__ void flash_rmsnorm_weighted_kernel(const __half *__restrict__ x,
                                               const __half *__restrict__ w,
                                               __half *__restrict__ out, int n,
@@ -566,9 +613,10 @@ __global__ void flash_rmsnorm_weighted_kernel(const __half *__restrict__ x,
 {
     extern __shared__ float red[];
     const int l = threadIdx.x;
-    float v = 0.0f;
-    if (l < n) v = __half2float(x[l]);
-    red[l] = v * v;
+    float ssq = 0.0f;
+    for (int i = l; i < n; i += blockDim.x)
+        ssq += __half2float(x[i]) * __half2float(x[i]);
+    red[l] = ssq;
     __syncthreads();
     for (int s2 = blockDim.x / 2; s2 > 0; s2 >>= 1) {
         if (l < s2) red[l] += red[l + s2];
@@ -577,8 +625,12 @@ __global__ void flash_rmsnorm_weighted_kernel(const __half *__restrict__ x,
     if (l == 0)
         red[0] = rsqrtf(red[0] / static_cast<float>(n) + eps);
     __syncthreads();
-    if (l < n)
-        out[l] = __float2half(v * red[0] * __half2float(w[l]));
+    const float inv = red[0];
+    for (int i = l; i < n; i += blockDim.x)
+        out[i] = __float2half(__half2float(x[i]) * inv * __half2float(w[i]));
+    if (threadIdx.x == 0 && n == 4096)
+        printf("[norm] inv=%.6f out0=%.6f x0=%.6f\n", inv,
+               __half2float(out[0]), __half2float(x[0]));
 }
 
 // BF16-row GEMV: y[n] = W[n,k] @ x[k], W row-major BF16 bits, FP32 accum.
@@ -618,71 +670,6 @@ cudaError_t FlashGemmVBf16(cudaStream_t stream, const uint16_t *w,
 // qk/v head_dim 256). One block per head. Mirrors the GlmMlaAttnKernel
 // numerics (FP32 softmax, single FP16 rounding at the end) with the
 // glibc exp replica.
-__global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
-                                      const __half *__restrict__ k_cache,
-                                      const __half *__restrict__ v_cache,
-                                      __half *__restrict__ out, int cap,
-                                      int total, int heads, float scale)
-{
-    const int h = blockIdx.x;
-    const int D = 256;
-    extern __shared__ float smem[];  // [D] q row + reduction scratch
-    float *s_q = smem;
-    __shared__ float s_red[8];
-    __shared__ float s_lmax;
-    __shared__ float s_psum;
-    if (threadIdx.x < D) s_q[threadIdx.x] = __half2float(q[h * D + threadIdx.x]);
-    __syncthreads();
-
-    // Per-thread partial scores via warp reduction, two passes.
-    float lmax = -1e30f;
-    for (int t = 0; t < total; ++t) {
-        const __half *kr =
-            k_cache + (static_cast<int64_t>(t) * heads + h) * D;
-        float v = 0.0f;
-        for (int d = threadIdx.x; d < D; d += blockDim.x)
-            v += s_q[d] * __half2float(kr[d]);
-        for (int off = 16; off > 0; off >>= 1)
-            v += __shfl_down_sync(0xffffffffu, v, off);
-        const int lane = threadIdx.x & 31;
-        const int warp = threadIdx.x >> 5;
-        if (lane == 0) s_red[warp] = v;
-        __syncthreads();
-        if (warp == 0) {
-            float w = (threadIdx.x < 8) ? s_red[threadIdx.x] : 0.0f;
-            for (int off = 16; off > 0; off >>= 1)
-                w += __shfl_down_sync(0xffffffffu, w, off);
-            if (lane == 0) s_q[256 + t] = w * scale;  // score stash
-        }
-        __syncthreads();
-        if (threadIdx.x == 0)
-            lmax = fmaxf(lmax, s_q[256 + t]);
-    }
-    // NOTE: sequential lmax accumulation above is per-thread-0 only;
-    // recompute properly below (scores already stashed).
-    if (threadIdx.x == 0) {
-        float mx = -1e30f;
-        for (int t = 0; t < total; ++t) mx = fmaxf(mx, s_q[256 + t]);
-        s_lmax = mx;
-        float psum = 0.0f;
-        for (int t = 0; t < total; ++t) {
-            const float p = flash_expf_glibc(s_q[256 + t] - mx);
-            s_q[256 + t] = p;
-            psum += p;
-        }
-        s_psum = psum;
-    }
-    __syncthreads();
-    for (int d = threadIdx.x; d < D; d += blockDim.x) {
-        float acc = 0.0f;
-        for (int t = 0; t < total; ++t) {
-            const __half *vr =
-                v_cache + (static_cast<int64_t>(t) * heads + h) * D;
-            acc += (s_q[256 + t] / s_psum) * __half2float(vr[d]);
-        }
-        out[h * D + d] = __float2half(acc);
-    }
-}
 
 // KV append for one token: k_cache[t*heads + h)*D] = k[h*D + d] from the
 // kv_b projection rows: kv_b output [heads*(2D)] = [k part | v part].
@@ -700,7 +687,131 @@ __global__ void flash_mla_store_kv_kernel(
     v_cache[(slot * heads + h) * dim + d] = kvb[h * D2 + dim + d];
 }
 
+__global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
+                                      const __half *__restrict__ k_cache,
+                                      const __half *__restrict__ v_cache,
+                                      __half *__restrict__ out, int cap,
+                                      int total, int heads, float scale)
+{
+    const int h = blockIdx.x;
+    const int D = 256;
+    extern __shared__ float smem[];  // [D] q + [4096] scores + red[256]
+    float *s_q = smem;               // [D]
+    float *s_score = smem + D;       // [total] (cap <= 4096)
+    float *s_red = smem + D + 4096;  // [blockDim]
+    if (threadIdx.x < D)
+        s_q[threadIdx.x] = __half2float(q[h * D + threadIdx.x]);
+    __syncthreads();
+
+    // Score pass: strided partial dots + block reduction (no warp
+    // intrinsics — shared-memory tree, thread-0 finalize).
+    for (int t = 0; t < total; ++t) {
+        const __half *kr =
+            k_cache + (static_cast<int64_t>(t) * heads + h) * D;
+        float part = 0.0f;
+        for (int d = threadIdx.x; d < D; d += blockDim.x)
+            part += s_q[d] * __half2float(kr[d]);
+        s_red[threadIdx.x] = part;
+        __syncthreads();
+        for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+            if (threadIdx.x < off)
+                s_red[threadIdx.x] += s_red[threadIdx.x + off];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) s_score[t] = s_red[0] * scale;
+        __syncthreads();
+    }
+    // Softmax finalize (thread 0) + shared p.
+    if (threadIdx.x == 0) {
+        float mx = -1e30f;
+        for (int t = 0; t < total; ++t) mx = fmaxf(mx, s_score[t]);
+        float psum = 0.0f;
+        for (int t = 0; t < total; ++t) {
+            const float p = flash_expf_glibc(s_score[t] - mx);
+            s_score[t] = p;
+            psum += p;
+        }
+        s_red[0] = psum;
+        printf("[mla2] h=%d mx=%.4f psum=%.4f score0=%.4f q0=%.4f k0=%.4f\n",
+               h, mx, psum, s_score[0], s_q[0],
+               __half2float(k_cache[(0 * heads + h) * D]));
+    }
+    __syncthreads();
+    const float psum = s_red[0];
+    for (int d = threadIdx.x; d < D; d += blockDim.x) {
+        float acc = 0.0f;
+        for (int t = 0; t < total; ++t) {
+            const __half *vr =
+                v_cache + (static_cast<int64_t>(t) * heads + h) * D;
+            acc += (s_score[t] / psum) * __half2float(vr[d]);
+        }
+        if (threadIdx.x == 0 && d == 0)
+            printf("[mla3] h=%d psum=%.4f s_score0=%.4f acc0=%.4f\n", h,
+                   psum, s_score[0], acc);
+        out[h * D + d] = __float2half(acc);
+    }
+}
+
 } // namespace
+
+
+__global__ void flash_exp0_probe_kernel(float *out)
+{
+    out[0] = flash_expf_glibc(0.0f);
+    out[1] = flash_expf_glibc(1.0f);
+    out[2] = flash_expf_glibc(-1.0f);
+    out[3] = expf(0.0f);
+}
+
+__global__ void flash_exp_dbg_kernel(float *out)
+{
+    // Exact copy of flash_expf_glibc's body for x=0 with step prints.
+    const float x = 0.0f;
+    const uint32_t ux = flash_as_uint(x);
+    const uint32_t abstop = (ux >> 20) & 0x7ffu;
+    out[7] = static_cast<float>(abstop);
+    if (abstop >= 0x42bu) {
+        out[6] = 666.0f;  // fast path taken!
+        return;
+    }
+    const double xd = static_cast<double>(x);
+    const double z = 0x1.71547652b82fep+5 * xd;
+    out[5] = static_cast<float>(z);
+    constexpr double kShiftD = 0x1.8p+52;
+    const double kd =
+        static_cast<double>(static_cast<uint64_t>(z + kShiftD)) - kShiftD;
+    out[4] = static_cast<float>(kd);
+    const uint64_t ki = static_cast<uint64_t>(static_cast<int64_t>(kd));
+    const double r = z - kd;
+    uint64_t t = kFlashExpfTab[ki % kFlashExpfN];
+    t += ki << (52 - kFlashExpfTableBits);
+    const double sv = flash_as_double(t);
+    out[3] = static_cast<float>(sv);
+    const double zz = 0x1.c6af84b912394p-20 * r + 0x1.ebfce50fac4f3p-13;
+    const double r2 = r * r;
+    double y = 0x1.62e42ff0c52d6p-6 * r + 1.0;
+    y = zz * r2 + y;
+    y = y * sv;
+    out[0] = static_cast<float>(y);
+}
+
+cudaError_t RunFlashExp0Probe(cudaStream_t stream, float *d_out)
+{
+    flash_exp0_probe_kernel<<<1, 1, 0, stream>>>(d_out);
+    flash_exp_dbg_kernel<<<1, 1, 0, stream>>>(d_out + 8);
+    return cudaGetLastError();
+}
+
+
+cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
+                                const __half *d_k, const __half *d_v,
+                                __half *d_out, int heads, int dim,
+                                float scale, size_t smem)
+{
+    flash_mla_attn_kernel<<<heads, 256, smem, stream>>>(d_q, d_k, d_v, d_out,
+                                                        dim, 1, heads, scale);
+    return cudaGetLastError();
+}
 
 // DSA decode scratch contract (caller arena, FP16 unless noted):
 //   d_qr [q_lora], d_q [heads*qk], d_kvc [kv_lora], d_kvp [kv_lora],
@@ -751,6 +862,17 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
             d_q, d_kv_cache_k + slot * heads * D,
             d_kv_cache_v + slot * heads * D, d_attn, cap, 1, heads, scale);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
+    }
+    if (flash_dbg_on)
+        printf("[dsa] qr0=%.6f q0=%.6f kvc0=%.6f kvb0=%.6f attn0=%.6f\n",
+               __half2float(d_qr[0]), __half2float(d_q[0]),
+               __half2float(d_kvc[0]), __half2float(d_kvb[0]),
+               __half2float(d_attn[0]));
+    {
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_qr, 0, 2, q_lora);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 2, heads * D);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_kvb, 0, 2, heads * 2 * D);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_attn, 0, 2, heads * D);
     }
     // 5. o_proj (NVFP4).
     if (qwen::RunQwenNvfp4Gemm(stream, d_attn, lw.o_big.d_packed,
@@ -807,12 +929,18 @@ __global__ void f32_to_f16_kernel(const float *__restrict__ src,
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
+__device__ int flash_dbg_id = 0;
+
+
 __global__ void flash_embed_row_kernel(const __half *__restrict__ table,
                                        const int32_t *__restrict__ id,
                                        __half *__restrict__ out, int H)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < H) out[i] = table[static_cast<int64_t>(*id) * H + i];
+    if (threadIdx.x == 0 && blockIdx.x == 0) flash_dbg_id = *id;
+    if (i == 0 && flash_dbg_id < 0)
+        printf("[emb] id=%d\n", flash_dbg_id);
+    if (i < H) out[i] = table[static_cast<int64_t>(max(*id, 0)) * H + i];
 }
 
 // Mean over hc streams: out[i] = mean_c state[c*H + i].
@@ -852,6 +980,9 @@ __global__ void flash_gemv_bf16_logits_kernel(const uint8_t *__restrict__ head,
 }
 
 
+
+static bool flash_router_debug = std::getenv("LSX_TRACE_FLASH") != nullptr;
+
 // Router top-8, FP16 activation variant: gate BF16 bits [E, H], x FP16.
 __global__ void flash_router_top8_f16_kernel(
     const uint8_t *__restrict__ gate_bf16, const float *__restrict__ bias,
@@ -875,6 +1006,36 @@ __global__ void flash_router_top8_f16_kernel(
         s_scores[e] = sigmoid_dev(dot) + bias[e];
     }
     __syncthreads();
+    if (threadIdx.x == 0) {
+        float m = 0;
+        int nan = 0;
+        for (int e = 0; e < experts; ++e) {
+            if (isnan(s_scores[e])) ++nan;
+            m += s_scores[e];
+        }
+        printf("[rk] t=%d experts=%d mean=%.6f nan=%d s0=%.6f bias0=%.6f "
+               "x0=%.6f x1=%.6f g0=%.6f g1=%.6f\n",
+               t, experts, m / experts, nan, s_scores[0], bias[0],
+               __half2float(x[0]), __half2float(x[1]),
+               [&] {
+                   const uint32_t bits =
+                       (static_cast<uint32_t>(gate_bf16[0])
+                        | (static_cast<uint32_t>(gate_bf16[1]) << 8))
+                       << 16;
+                   float g;
+                   memcpy(&g, &bits, 4);
+                   return g;
+               }(),
+               [&] {
+                   const uint32_t bits =
+                       (static_cast<uint32_t>(gate_bf16[2])
+                        | (static_cast<uint32_t>(gate_bf16[3]) << 8))
+                       << 16;
+                   float g;
+                   memcpy(&g, &bits, 4);
+                   return g;
+               }());
+    }
     if (threadIdx.x != 0) return;
     constexpr int kTopK = 8;
     for (int kk = 0; kk < kTopK; ++kk) {
@@ -900,18 +1061,30 @@ __global__ void flash_router_top8_f16_kernel(
             slots[t * kTopK + kk].coeff / sum * 2.5f;
 }
 
+} // namespace
+
+
 cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                                   const float *d_bias, const __half *d_x,
                                   int tok, int hidden, int experts,
                                   qwen_moe::QwenMoeRoutedSlot *d_slots)
 {
+    {
+        __half hx[4];
+        cudaMemcpy(hx, d_x, sizeof(hx), cudaMemcpyDeviceToHost);
+        std::fprintf(stderr, "[pre-rk] x0=%.6f x1=%.6f\n",
+                     __half2float(hx[0]), __half2float(hx[1]));
+    }
     const size_t scratch = static_cast<size_t>(experts) * sizeof(float);
-    flash_router_top8_f16_kernel<<<tok, 256, scratch, stream>>>(
+    // One thread per expert during scoring: blockDim must cover experts
+    // (288 > 256); clamp to the 1024 launch bound.
+    const int threads = experts <= 1024 ? experts : 1024;
+    flash_router_top8_f16_kernel<<<tok, threads, scratch, stream>>>(
         d_gate, d_bias, d_x, d_slots, hidden, experts);
     return cudaGetLastError();
 }
 
-} // namespace
+
 
 cudaError_t RunFlashRoutedFFN(
     cudaStream_t stream, qwen_moe::QwenMoeExpertStore &store,
@@ -1158,7 +1331,7 @@ cudaError_t RunGlmFlashGeneration(
                                           + half_bytes);
     float *d_state = pf; pf += HCH;
     float *d_module_f = pf; pf += H;
-    float *d_hc_scr = pf; pf += (2 + hc) * hc + 64;
+    float *d_hc_scr = pf; pf += 1024;  // >= (kHcMix+1)*kHcTiles = 800
     float *d_logits = pf; pf += V;
     float *d_moe_acc = pf; pf += H;
     float *d_hc_post = pf; pf += hc;
@@ -1166,7 +1339,22 @@ cudaError_t RunGlmFlashGeneration(
     float *d_hc_pre = pf; pf += hc;
     float *d_maxv = pf; pf += 64;
 
+    // KDA packed scratch: (8*KD + heads) halves then (heads + heads*dim)
+    // floats (contract of RunFlashKdaDecode).
+    static __half *d_kda_scratch = nullptr;
+    if (!d_kda_scratch) {
+        const size_t half_cnt = static_cast<size_t>(10) * KD_TOTAL + kHeads;
+        const size_t flt_cnt = static_cast<size_t>(kHeads)
+                             + kHeads * kHeadDim;
+        const size_t kda_bytes =
+            half_cnt * 2 + ((flt_cnt * 4 + 255) & ~size_t(255));
+        if (cudaMalloc(&d_kda_scratch, kda_bytes) != cudaSuccess)
+            return cudaGetLastError();
+    }
+
     int32_t *d_argmax = nullptr, *d_tokens = nullptr, *d_ids = nullptr;
+    int32_t *h_ids_pinned = nullptr;
+    cudaMallocHost(&h_ids_pinned, 4);
     if (cudaMalloc(&d_argmax, 4) != cudaSuccess
         || cudaMalloc(&d_tokens, sizeof(int32_t) * max_new) != cudaSuccess
         || cudaMalloc(&d_ids, 4) != cudaSuccess)
@@ -1174,6 +1362,11 @@ cudaError_t RunGlmFlashGeneration(
     qwen_moe::QwenMoeRoutedSlot *d_slots = nullptr;
     if (cudaMalloc(&d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K)
         != cudaSuccess) return cudaGetLastError();
+
+    {
+        const int dbg = std::getenv("LSX_TRACE_FLASH") ? 1 : 0;
+        cudaMemcpyToSymbol(flash_dbg_on, &dbg, 4);
+    }
 
     // KDA state zeroing (fresh session).
     for (auto &st : kda_states)
@@ -1184,6 +1377,7 @@ cudaError_t RunGlmFlashGeneration(
     const int total_steps = prompt_steps + max_new - 1;
     int32_t cur = prompt[0];
     int generated = 0;
+    cudaError_t step_err = cudaSuccess;
     cudaEvent_t t_start = nullptr, t_stop = nullptr;
     cudaEventCreate(&t_start);
     cudaEventCreate(&t_stop);
@@ -1191,7 +1385,20 @@ cudaError_t RunGlmFlashGeneration(
 
     for (int step = 0; step < total_steps; ++step) {
         const int kv_pos = step;  // 1 token/step for both KDA and DSA
-        cudaMemcpyAsync(d_ids, &cur, 4, cudaMemcpyHostToDevice, stream);
+        h_ids_pinned[0] = cur;
+        if (std::getenv("LSX_TRACE_FLASH"))
+            std::fprintf(stderr, "[step] step=%d cur=%d\n", step, cur);
+        cudaMemcpyAsync(d_ids, h_ids_pinned, 4, cudaMemcpyHostToDevice,
+                        stream);
+        // Decode-loop contract: the token id feeds the very first kernel of
+        // the step; a synchronous staging copy keeps the pinned cell stable
+        // across steps (async H2D from a reused pinned slot races with the
+        // host's next-step overwrite).
+        if (cudaStreamSynchronize(stream) != cudaSuccess) {
+            result.error_msg = "id upload sync";
+            step_err = cudaGetLastError();
+            break;
+        }
         cudaError_t e;
         // Embed + expand to hc state.
         flash_embed_row_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
@@ -1203,6 +1410,23 @@ cudaError_t RunGlmFlashGeneration(
         for (int l = 0; l < kLayers; ++l) {
             const FlashLayerWeights &lw = pw.layers[l];
             const bool is_kda = IsKdaLayer(l);
+            if (std::getenv("LSX_TRACE_FLASH")) {
+                static std::vector<float> hs;
+                hs.resize(HCH);
+                cudaMemcpy(hs.data(), d_state, sizeof(float) * HCH,
+                           cudaMemcpyDeviceToHost);
+                float s0 = hs[0], sm = 0;
+                int nan = 0;
+                for (float v : hs) {
+                    if (std::isnan(v)) ++nan;
+                    sm += v;
+                }
+                std::fprintf(stderr,
+                             "[stage] pre-l=%d moe=%d kda=%d s0=%.6f "
+                             "mean=%.6f nan=%d\n",
+                             l, (int) lw.is_moe, (int) lw.is_kda, s0,
+                             sm / HCH, nan);
+            }
             const int dsa_idx = DsaIndex(l);
             const int kda_idx = KdaIndex(l);
             // ── attn hc_pre ──
@@ -1219,11 +1443,10 @@ cudaError_t RunGlmFlashGeneration(
                 { result.error_msg = "in norm"; break; }
             // ── attention branch ──
             if (is_kda) {
+                // Packed scratch contract (alloc below).
                 e = RunFlashKdaDecode(stream, kda_states[kda_idx], lw, H,
                                       kHeads, kHeadDim, kConvKernel,
-                                      d_single, d_act2,
-                                      d_kda_q /* scratch base */);
-                // scratch layout check: d_kda_q.. covers the contract.
+                                      d_single, d_act2, d_kda_scratch);
                 if (e != cudaSuccess) { result.error_msg = "kda"; break; }
             } else {
                 __half *kk = dsa_kv_k[dsa_idx];
@@ -1234,6 +1457,22 @@ cudaError_t RunGlmFlashGeneration(
                                       kk, vv, kv_pos, dsa_cap, kIndexerTopk);
                 if (e != cudaSuccess) { result.error_msg = "dsa"; break; }
             }
+            if (std::getenv("LSX_TRACE_FLASH")) {
+                std::fprintf(stderr, "[attn] post-l=%d\n", l);
+            }
+            if (std::getenv("LSX_TRACE_FLASH")) {
+                std::vector<float> ha(H);
+                cudaMemcpy(ha.data(), d_act2, sizeof(float) * H,
+                           cudaMemcpyDeviceToHost);
+                float hmean = 0;
+                int nan = 0;
+                for (float v : ha) {
+                    if (std::isnan(v)) ++nan;
+                    hmean += v;
+                }
+                std::fprintf(stderr, "[attn-out] l=%d mean=%.6f nan=%d\n",
+                             l, hmean / H, nan);
+            }
             // ── attn hc_post (module out FP32) ──
             f16_to_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                 d_act2, d_module_f, H);
@@ -1241,6 +1480,26 @@ cudaError_t RunGlmFlashGeneration(
                         d_state);
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post"; break; }
+            {
+                flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_state, 1, 2,
+                                                            HCH);
+                flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_act2, 0, 2, H);
+            }
+            std::fprintf(stderr, "[hcpost] l=%d\n", l);
+            if (std::getenv("LSX_TRACE_FLASH")) {
+                std::vector<float> hst(HCH);
+                cudaMemcpy(hst.data(), d_state, sizeof(float) * HCH,
+                           cudaMemcpyDeviceToHost);
+                int nan = 0;
+                float hmean = 0;
+                for (float v : hst) {
+                    if (std::isnan(v)) ++nan;
+                    hmean += v;
+                }
+                std::fprintf(stderr,
+                             "[state2] l=%d mean=%.6f nan=%d\n", l,
+                             hmean / HCH, nan);
+            }
             // ── ffn hc_pre ──
             gpu::run_hc_pre(stream, d_state, lw.d_hc_ffn_fn, lw.d_hc_ffn_scale,
                        lw.d_hc_ffn_base, d_single, d_hc_post, d_hc_comb,
@@ -1254,6 +1513,20 @@ cudaError_t RunGlmFlashGeneration(
                 { result.error_msg = "post norm"; break; }
             // ── MLP branch ──
             if (lw.is_moe) {
+                {
+                    std::vector<float> hx(static_cast<size_t>(H));
+                    cudaMemcpy(hx.data(), d_single, sizeof(float) * H,
+                               cudaMemcpyDeviceToHost);
+                    float hmean = 0;
+                    int nan = 0;
+                    for (float v : hx) {
+                        if (std::isnan(v)) ++nan;
+                        hmean += v;
+                    }
+                    std::fprintf(stderr,
+                                 "[router-in] l=%d mean=%.6f nan=%d\n", l,
+                                 hmean / H, nan);
+                }
                 // Router (FP16 activations, BF16 gate bits).
                 qwen_moe::QwenMoeRoutedSlot h_slots[16];
                 {
@@ -1314,6 +1587,21 @@ cudaError_t RunGlmFlashGeneration(
                 e = cudaErrorInvalidValue;
                 break;
             }
+            if (std::getenv("LSX_TRACE_FLASH") && l >= 3) {
+                static std::vector<float> hm;
+                hm.resize(H);
+                cudaMemcpy(hm.data(), d_module_f, sizeof(float) * H,
+                           cudaMemcpyDeviceToHost);
+                float hmean = 0;
+                int nan = 0;
+                for (float v : hm) {
+                    if (std::isnan(v)) ++nan;
+                    hmean += v;
+                }
+                std::fprintf(stderr,
+                             "[ffn] post-l=%d mean=%.6f nan=%d\n", l,
+                             hmean / H, nan);
+            }
             // ── ffn hc_post ──
             f16_to_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                 d_act2, d_module_f, H);
@@ -1322,7 +1610,12 @@ cudaError_t RunGlmFlashGeneration(
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post2"; break; }
         }
-        if (e != cudaSuccess) break;
+        std::fprintf(stderr, "[loopend] e=%d err='%s'\n", (int) e,
+                     result.error_msg.c_str());
+        if (e != cudaSuccess) {
+            step_err = e;
+            break;
+        }
 
         // ── head: hc_head -> mean streams -> final norm -> lm_head ──
         // GLM-5.3-Flash has no separate head hc (shared_head.norm is MTP);
@@ -1333,21 +1626,51 @@ cudaError_t RunGlmFlashGeneration(
                                         stream>>>(
             d_act, pw.d_final_norm, d_act, H, 1e-6f);
         if ((e = cudaGetLastError()) != cudaSuccess)
-            { result.error_msg = "final norm"; break; }
+            { result.error_msg = std::string("final norm: ")
+                               + cudaGetErrorString(e); break; }
         // lm_head: BF16 bits [V, H] @ act -> FP32 logits (bf16 gemv).
         flash_gemv_bf16_logits_kernel<<<(V + 7) / 8, 256, 0, stream>>>(
             pw.d_head_bf16, d_act, d_logits, H, V);
         if ((e = cudaGetLastError()) != cudaSuccess)
             { result.error_msg = "head"; break; }
 
+        if (std::getenv("LSX_TRACE_FLASH")) {
+            static std::vector<float> hlog;
+            hlog.resize(static_cast<size_t>(V));
+            cudaMemcpy(hlog.data(), d_logits, sizeof(float) * V,
+                       cudaMemcpyDeviceToHost);
+            int idx[4] = {0, 0, 0, 0};
+            float val[4] = {-1e30f, -1e30f, -1e30f, -1e30f};
+            float hmean = 0, hmin = 1e30f, hmax = -1e30f;
+            for (int i = 0; i < V; ++i) {
+                hmean += hlog[i];
+                hmin = std::fmin(hmin, hlog[i]);
+                hmax = std::fmax(hmax, hlog[i]);
+                for (int k = 0; k < 4; ++k)
+                    if (hlog[i] > val[k]) {
+                        for (int m = 3; m > k; --m) {
+                            val[m] = val[m - 1];
+                            idx[m] = idx[m - 1];
+                        }
+                        val[k] = hlog[i];
+                        idx[k] = i;
+                        break;
+                    }
+            }
+            std::fprintf(stderr,
+                         "[trace] step=%d mean=%.4f min=%.3f max=%.3f "
+                         "top: %d:%.3f %d:%.3f %d:%.3f %d:%.3f\n",
+                         step, hmean / V, hmin, hmax, idx[0], val[0],
+                         idx[1], val[1], idx[2], val[2], idx[3], val[3]);
+        }
         if (step >= prompt_steps - 1) {
             if (sampler.Sample(stream, d_logits, V,
                                lsxcommon::sample::LogitType::kF32, d_argmax,
                                d_maxv) != cudaSuccess)
                 { result.error_msg = "sample"; break; }
             int32_t h_tok = -1;
-            cudaMemcpyAsync(&h_tok, d_argmax, 4, cudaMemcpyDeviceToHost,
-                            stream);
+            cudaMemcpyAsync(&h_tok, d_argmax,
+                            4, cudaMemcpyDeviceToHost, stream);
             if (cudaStreamSynchronize(stream) != cudaSuccess)
                 { result.error_msg = "sample sync"; break; }
             result.tokens.push_back(h_tok);
@@ -1362,6 +1685,7 @@ cudaError_t RunGlmFlashGeneration(
         }
     }
 
+    if (step_err != cudaSuccess) return step_err;
     if (generated > 0) {
         result.ok = true;
         std::vector<float> hlast(static_cast<size_t>(V));
@@ -1376,6 +1700,7 @@ cudaError_t RunGlmFlashGeneration(
                 result.total_ms = ms;
         }
     }
+    cudaFreeHost(h_ids_pinned);
     cudaFree(d_argmax);
     cudaFree(d_tokens);
     cudaFree(d_ids);

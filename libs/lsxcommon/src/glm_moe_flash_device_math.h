@@ -54,11 +54,10 @@ FLASH_HD uint64_t flash_as_uint64(double d)
     return u;
 }
 
-FLASH_HD float flash_expf_glibc(float x)
-{
-    constexpr int kExp2fTableBits = 5;
-    constexpr int kN = 1 << kExp2fTableBits;
-    constexpr uint64_t kTab[kN] = {
+constexpr int kFlashExpfTableBits = 5;
+constexpr int kFlashExpfN = 1 << kFlashExpfTableBits;
+#ifdef __CUDACC__
+static __device__ constexpr uint64_t kFlashExpfTab[kFlashExpfN] = {
         0x3ff0000000000000ull, 0x3fefd9b0d3158574ull, 0x3fefb5586cf9890full,
         0x3fef9301d0125b51ull, 0x3fef72b83c7d517bull, 0x3fef54873168b9aaull,
         0x3fef387a6e756238ull, 0x3fef1e9df51fdee1ull, 0x3fef06fe0a31b715ull,
@@ -71,6 +70,26 @@ FLASH_HD float flash_expf_glibc(float x)
         0x3fef3720dcef9069ull, 0x3fef5818dcfba487ull, 0x3fef7c97337b9b5full,
         0x3fefa4afa2a490daull, 0x3fefd0765b6e4540ull,
     };
+#else
+constexpr uint64_t kFlashExpfTab[kFlashExpfN] = {
+        0x3ff0000000000000ull, 0x3fefd9b0d3158574ull, 0x3fefb5586cf9890full,
+        0x3fef9301d0125b51ull, 0x3fef72b83c7d517bull, 0x3fef54873168b9aaull,
+        0x3fef387a6e756238ull, 0x3fef1e9df51fdee1ull, 0x3fef06fe0a31b715ull,
+        0x3feef1a7373aa9cbull, 0x3feedea64c123422ull, 0x3feece086061892dull,
+        0x3feebfdad5362a27ull, 0x3feeb42b569d4f82ull, 0x3feeab07dd485429ull,
+        0x3feea47eb03a5585ull, 0x3feea09e667f3bcdull, 0x3fee9f75e8ec5f74ull,
+        0x3feea11473eb0187ull, 0x3feea589994cce13ull, 0x3feeace5422aa0dbull,
+        0x3feeb737b0cdc5e5ull, 0x3feec49182a3f090ull, 0x3feed503b23e255dull,
+        0x3feee89f995ad3adull, 0x3feeff76f2fb5e47ull, 0x3fef199bdd85529cull,
+        0x3fef3720dcef9069ull, 0x3fef5818dcfba487ull, 0x3fef7c97337b9b5full,
+        0x3fefa4afa2a490daull, 0x3fefd0765b6e4540ull,
+    };
+#endif
+
+FLASH_HD float flash_expf_glibc(float x)
+{
+    constexpr int kExp2fTableBits = 5;
+    constexpr int kN = 1 << kExp2fTableBits;
     constexpr double kShift = 0x1.8p+52;
     constexpr double kInvLn2N = 0x1.71547652b82fep+5;
     constexpr double kC0 = 0x1.c6af84b912394p-20;
@@ -88,11 +107,13 @@ FLASH_HD float flash_expf_glibc(float x)
 
     const double xd = static_cast<double>(x);
     const double z = kInvLn2N * xd;
-    const double kd = flash_as_double(
-        static_cast<uint64_t>(static_cast<int64_t>(z + kShift))) - kShift;
+    // Value-based round-to-nearest-even via the 1.5*2^52 trick (do NOT
+    // reinterpret the sum's bits — that yields garbage on device).
+    const double kd =
+        static_cast<double>(static_cast<uint64_t>(z + kShift)) - kShift;
     const uint64_t ki = static_cast<uint64_t>(static_cast<int64_t>(kd));
     const double r = z - kd;
-    uint64_t t = kTab[ki % kN];
+    uint64_t t = kFlashExpfTab[ki % kFlashExpfN];
     t += ki << (52 - kExp2fTableBits);
     const double s = flash_as_double(t);
     const double zz = kC0 * r + kC1;

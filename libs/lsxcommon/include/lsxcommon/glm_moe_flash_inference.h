@@ -74,6 +74,21 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
                               const __half *d_x, __half *d_out,
                               void *d_scratch /* caller workspace */);
 
+// Router top-8 with FP16 activations (gate stays BF16 bits on device).
+cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
+                                  const float *d_bias, const __half *d_x,
+                                  int tok, int hidden, int experts,
+                                  qwen_moe::QwenMoeRoutedSlot *d_slots);
+
+// Test probe: flash_expf_glibc(0/1).
+cudaError_t RunFlashExp0Probe(cudaStream_t stream, float *d_out);
+
+// Test wrapper: MLA attention kernel over a single-token cache.
+cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
+                                const __half *d_k, const __half *d_v,
+                                __half *d_out, int heads, int dim,
+                                float scale, size_t smem);
+
 // ── MoE: clamped-swiglu routed chain (flash-local; GLM semantics) ────────
 // Per-slot chain over LRU-resident experts (staging via
 // EnsureQwenMoeExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),

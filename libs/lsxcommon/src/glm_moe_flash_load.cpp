@@ -10,6 +10,8 @@
 #include <arrow/api.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cuda_runtime.h>
 #include <filesystem>
 #include <fstream>
@@ -383,7 +385,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                 const char *suffix;
                 __half **dst;
             };
-            static const KdaFp16 kFp16[] = {
+            const KdaFp16 kFp16[] = {
                 {"self_attn.q_proj.weight", &lw.d_kda_q},
                 {"self_attn.k_proj.weight", &lw.d_kda_k},
                 {"self_attn.v_proj.weight", &lw.d_kda_v},
@@ -536,6 +538,11 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                 lw.indexer_raw.push_back(std::move(r));
             }
         }
+
+        if (std::getenv("LSX_FLASH_LOAD_DEBUG"))
+            std::fprintf(stderr, "[load] l=%d kda=%d q=%p o=%p A=%p\n", l,
+                         (int) lw.is_kda, (void *) lw.d_kda_q,
+                         (void *) lw.d_kda_o, (void *) lw.d_A_log);
 
         // MoE: router + shared expert; Dense MLP on layers 0..2.
         auto nv = LoadDenseNvfp4BatchViews(pinned_dir

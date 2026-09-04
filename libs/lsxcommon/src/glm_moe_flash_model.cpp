@@ -5,6 +5,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/prompt_framing.h"
 
 namespace lsxcommon {
 
@@ -60,6 +61,13 @@ bool Glm5NextFlashModel::Load()
               std::to_string(pw_.layers.size()));
     FinishLoad();
     return true;
+}
+
+bool Glm5NextFlashModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                             std::string_view raw_prompt,
+                                             std::vector<int32_t> &out_ids) const
+{
+    return glm::BuildPromptInputIds(tok, raw_prompt, out_ids);
 }
 
 gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)

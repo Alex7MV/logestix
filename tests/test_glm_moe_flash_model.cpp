@@ -24,7 +24,7 @@ TEST_CASE("registry: glm-5.3-flash type resolves factory")
 
 TEST_CASE("Glm5NextFlashModel: Load on real checkpoint")
 {
-    const std::string root = "/tmp/glm53flash_conv_test";
+    const std::string root = "/mnt/llm_models/models/GLM-5.3-Flash";
     if (!fs::exists(root + "/logestix/model.index.json")) {
         SKIP("converted GLM-5.3-Flash not present");
     }

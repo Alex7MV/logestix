@@ -27,6 +27,12 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // GLM-5.3-Flash uses the same GLM chat framing as GLM-5.2
+    // ([gMASK]<sop>...): reuse the family framing helper by reference.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+
 private:
     void TeardownWeights() override;
 
