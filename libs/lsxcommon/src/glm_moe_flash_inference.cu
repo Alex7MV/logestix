@@ -28,24 +28,30 @@ __global__ void flash_dbg_probe_kernel(const void *buf, int kind,
 {
     if (threadIdx.x != 0 || blockIdx.x != 0) return;
     // kind: 0=half, 1=float
-    int nan = 0;
+    int nan = 0, inf = 0;
     float v0 = 0.f, v1 = 0.f;
     if (kind == 0) {
         const __half *p = static_cast<const __half *>(buf);
         v0 = __half2float(p[0]);
         v1 = __half2float(p[1]);
-        for (int64_t i = 0; i < total; ++i)
-            if (isnan(__half2float(p[i]))) ++nan;
+        for (int64_t i = 0; i < total; ++i) {
+            const float f = __half2float(p[i]);
+            if (isnan(f)) ++nan;
+            if (isinf(f)) ++inf;
+        }
     } else {
         const float *p = static_cast<const float *>(buf);
         v0 = p[0];
         v1 = p[1];
-        for (int64_t i = 0; i < total; ++i)
+        for (int64_t i = 0; i < total; ++i) {
             if (isnan(p[i])) ++nan;
+            if (isinf(p[i])) ++inf;
+        }
     }
     if (true)
-        printf("[probe] kind=%d v0=%.6f v1=%.6f nan=%lld/%lld\n", kind, v0,
-               v1, static_cast<long long>(nan), static_cast<long long>(total));
+        printf("[probe] kind=%d v0=%.6f v1=%.6f nan=%lld/%lld inf=%lld\n",
+               kind, v0, v1, static_cast<long long>(nan),
+               static_cast<long long>(total), static_cast<long long>(inf));
 }
 
 
@@ -319,7 +325,7 @@ __global__ void flash_kda_step_kernel(
     const __half *__restrict__ q, const __half *__restrict__ k,
     const __half *__restrict__ v, const float *__restrict__ beta,
     const float *__restrict__ gdecay, float *__restrict__ state,
-    __half *__restrict__ out, int heads, int dim)
+    float *__restrict__ out, int heads, int dim)
 {
     const int h = blockIdx.x;
     const int d = threadIdx.x;
@@ -342,7 +348,7 @@ __global__ void flash_kda_step_kernel(
     float acc = 0.0f;
     for (int l = 0; l < dim; ++l)
         acc += col[l] * __half2float(q[h * dim + l]);
-    out[h * dim + d] = __float2half(acc);
+    out[h * dim + d] = acc;
 }
 
 // RMSNormGated per head: core[h,dim], gate[h,dim], norm weight [dim].
@@ -350,7 +356,7 @@ __global__ void flash_kda_step_kernel(
 // follows the qwen RMSNormGated: normed = core * rsqrt(mean(core^2)+eps);
 // out = normed * sigmoid? — the qwen kernel uses the gate directly. We use
 // out = normed[l] * gate[l] (gate post-sigmoid from the g projections).
-__global__ void flash_rmsnorm_gated_kernel(const __half *__restrict__ core,
+__global__ void flash_rmsnorm_gated_kernel(const float *__restrict__ core,
                                            const __half *__restrict__ gate,
                                            const __half *__restrict__ norm_w,
                                            __half *__restrict__ out, int heads,
@@ -360,7 +366,7 @@ __global__ void flash_rmsnorm_gated_kernel(const __half *__restrict__ core,
     const int h = blockIdx.x;
     const int l = threadIdx.x;
     float v = 0.0f;
-    if (l < dim) v = __half2float(core[h * dim + l]);
+    if (l < dim) v = core[h * dim + l];
     red2[l] = v * v;
     __syncthreads();
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
@@ -481,10 +487,11 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
     __half *d_b = d_vc + KD;            // [heads]
     __half *d_f = d_b + heads;          // [heads*dim]
     __half *d_g = d_f + heads * dim;    // [heads*dim]
-    __half *d_attn = d_g + heads * dim; // [KD] delta output
-    __half *d_gated = d_attn + KD;      // [KD]
-    float *d_beta = reinterpret_cast<float *>(d_gated + KD);
+    float *d_beta = reinterpret_cast<float *>(d_g + heads * dim);
     float *d_gdecay = d_beta + heads;
+    float *d_attn_f = d_gdecay + heads * dim;  // [KD] FP32 delta out
+    __half *d_gated =
+        reinterpret_cast<__half *>(d_attn_f + KD);  // [KD]
 
     cudaError_t e;
     // 1. q/k/v GEMVs (raw projections).
@@ -495,19 +502,9 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
     if ((e = FlashGemmV16(stream, lw.d_kda_v, d_x, d_v, hidden, KD))
         != cudaSuccess) return e;
 
-    // 2. Shift the conv history: slide up, append the current raw rows.
-    //    hist layout: [(K-1) rows, 3*KD channels] rows oldest..newest,
-    //    each row = [q_raw, k_raw, v_raw].
-    {
-        const int threads = 256;
-        const int C = 3 * KD;
-        flash_conv_shift_kernel2<<<(C + threads - 1) / threads, threads, 0,
-                                   stream>>>(
-            st.d_conv_hist, d_q, d_k, d_v, C, conv_kernel);
-        if ((e = cudaGetLastError()) != cudaSuccess) return e;
-    }
-
-    // 3. Depthwise causal conv over [hist(K-1) rows, current raw row].
+    // 2. Depthwise causal conv over [hist(K-1) prev rows oldest..newest,
+    //    current raw row] — the window EXCLUDES cur from hist; the shift
+    //    appending cur happens AFTER the conv (below).
     {
         const int threads = 256;
         flash_conv_decode_kernel<<<(KD + threads - 1) / threads, threads, 0,
@@ -525,13 +522,30 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    if (flash_dbg_on)
-        printf("[kda] q0=%.6f k0=%.6f v0=%.6f\n", __half2float(d_q[0]),
-               __half2float(d_k[0]), __half2float(d_v[0]));
+    // 3. Shift the conv history: slide up, append the current raw rows.
+    //    hist layout: [(K-1) rows, 3*KD channels] rows oldest..newest,
+    //    each row = [q_raw, k_raw, v_raw].
+    {
+        const int threads = 256;
+        const int C = 3 * KD;
+        flash_conv_shift_kernel2<<<(C + threads - 1) / threads, threads, 0,
+                                   stream>>>(
+            st.d_conv_hist, d_q, d_k, d_v, C, conv_kernel);
+        if ((e = cudaGetLastError()) != cudaSuccess) return e;
+    }
+
+    {
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_k, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_v, 0, 2, KD);
+    }
     // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
     {
         const int threads = 128;  // == dim
-        const float q_scale = 1.0f / sqrtf(static_cast<float>(dim));
+        static const float q_scale = [] {
+            const char *e = std::getenv("LSX_FLASH_QSCALE");
+            return e ? std::strtof(e, nullptr) : (1.0f / sqrtf(128.0f));
+        }();
         flash_l2norm_kernel<<<heads, threads, threads * sizeof(float), stream>>>(
             d_qc, dim, q_scale);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
@@ -564,14 +578,20 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    if (flash_dbg_on)
-        printf("[kda] qc0=%.6f kc0=%.6f vc0=%.6f b0=%.6f gd0=%.6f\n",
-               __half2float(d_qc[0]), __half2float(d_kc[0]),
-               __half2float(d_vc[0]), d_beta[0], d_gdecay[0]);
+    {
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(st.d_state, 1, 2,
+                                                    heads * dim * dim);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_qc, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_kc, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_vc, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_beta, 1, 2, heads);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_gdecay, 1, 2,
+                                                    heads * dim);
+    }
     // 6. Delta step (state seeded/written back in d_state).
     {
         flash_kda_step_kernel<<<heads, dim, 0, stream>>>(
-            d_qc, d_kc, d_vc, d_beta, d_gdecay, st.d_state, d_attn, heads,
+            d_qc, d_kc, d_vc, d_beta, d_gdecay, st.d_state, d_attn_f, heads,
             dim);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
@@ -584,13 +604,15 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
         flash_rmsnorm_gated_kernel<<<heads, threads, threads * sizeof(float),
                                      stream>>>(
-            d_attn, d_g, lw.d_o_norm, d_gated, heads, dim, 1e-6f);
+            d_attn_f, d_g, lw.d_o_norm, d_gated, heads, dim, 1e-6f);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    if (flash_dbg_on)
-        printf("[kda] attn0=%.6f gated0=%.6f\n", __half2float(d_attn[0]),
-               __half2float(d_gated[0]));
+    {
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_attn_f, 1, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_g, 0, 2, KD);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_gated, 0, 2, KD);
+    }
     // 8. o_proj: [H, KD] @ gated -> d_out.
     if ((e = FlashGemmV16(stream, lw.d_kda_o, d_gated, d_out, KD, hidden))
         != cudaSuccess) return e;
@@ -863,11 +885,6 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
             d_kv_cache_v + slot * heads * D, d_attn, cap, 1, heads, scale);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
-    if (flash_dbg_on)
-        printf("[dsa] qr0=%.6f q0=%.6f kvc0=%.6f kvb0=%.6f attn0=%.6f\n",
-               __half2float(d_qr[0]), __half2float(d_q[0]),
-               __half2float(d_kvc[0]), __half2float(d_kvb[0]),
-               __half2float(d_attn[0]));
     {
         flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_qr, 0, 2, q_lora);
         flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 2, heads * D);
@@ -1343,9 +1360,8 @@ cudaError_t RunGlmFlashGeneration(
     // floats (contract of RunFlashKdaDecode).
     static __half *d_kda_scratch = nullptr;
     if (!d_kda_scratch) {
-        const size_t half_cnt = static_cast<size_t>(10) * KD_TOTAL + kHeads;
-        const size_t flt_cnt = static_cast<size_t>(kHeads)
-                             + kHeads * kHeadDim;
+        const size_t half_cnt = static_cast<size_t>(9) * KD_TOTAL + kHeads;
+        const size_t flt_cnt = static_cast<size_t>(2) * KD_TOTAL + kHeads;
         const size_t kda_bytes =
             half_cnt * 2 + ((flt_cnt * 4 + 255) & ~size_t(255));
         if (cudaMalloc(&d_kda_scratch, kda_bytes) != cudaSuccess)
@@ -1441,6 +1457,10 @@ cudaError_t RunGlmFlashGeneration(
                 d_single, lw.d_input_norm, d_single, H, 1e-6f);
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "in norm"; break; }
+            {
+                flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_single, 0, 2,
+                                                            H);
+            }
             // ── attention branch ──
             if (is_kda) {
                 // Packed scratch contract (alloc below).
@@ -1617,11 +1637,22 @@ cudaError_t RunGlmFlashGeneration(
             break;
         }
 
-        // ── head: hc_head -> mean streams -> final norm -> lm_head ──
-        // GLM-5.3-Flash has no separate head hc (shared_head.norm is MTP);
-        // collapse streams with the plain mean and final norm.
-        flash_mean_streams_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-            d_state, H, hc, d_act);
+        // ── head: stream collapse -> final norm -> lm_head ──
+        // GLM-5.3-Flash has no separate head hc (shared_head.norm is MTP).
+        // Collapse variant A: plain mean. LSX_FLASH_HEAD=stream0 selects
+        // the first stream; LSX_FLASH_HEAD=mean (default) the average.
+        {
+            static const int head_mode = [] {
+                const char *e = std::getenv("LSX_FLASH_HEAD");
+                return e && std::string_view(e) == "stream0" ? 1 : 0;
+            }();
+            if (head_mode == 1)
+                cudaMemcpyAsync(d_act, d_state, H * sizeof(__half),
+                                cudaMemcpyDeviceToDevice, stream);
+            else
+                flash_mean_streams_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+                    d_state, H, hc, d_act);
+        }
         flash_rmsnorm_weighted_kernel<<<1, 1024, 1024 * sizeof(float),
                                         stream>>>(
             d_act, pw.d_final_norm, d_act, H, 1e-6f);
