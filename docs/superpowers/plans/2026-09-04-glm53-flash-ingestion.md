@@ -1706,3 +1706,28 @@ git add -A && git commit -m "perf: glm5next flash decode baseline + TC/GEMV leve
 - Baseline: ~1.4 t/s decode (unoptimized; Task 11-12 pending).
 - Key fixes landed: flash_expf_glibc value-based rounding; per-channel-decay
   KDA with FP32 attn out; DSA KV zeroing per session; pinned-ring id staging.
+
+## Execution status (2026-09-05, session 3) — PARIS GREEN
+
+Task 9 DONE: selfcheck passes — "The capital of France is" -> "Paris",
+3 cycles bit-exact (test ungated). Triple-validated against two
+independent references: an exact modeling_glm5_next.py fp32
+reimplementation on SOURCE weights (top-1 ' Paris' 16.69) and a
+decode-path CPU harness on the CONVERTED weights (16.72); device
+16.76. Six root-cause fixes (commit e23e126):
+
+1. router gate row stride (bytes vs elements) — experts 1..287 garbage
+2. flash_l2norm_kernel missing blockIdx offset — only head 0 normalized
+3. dense-MLP arena slots sized for MoE intermediate — stomped hc state
+4. conv-history layout mismatch (shift [row,3KD] vs decode [row,KD]) —
+   history garbage from step 2; the multi-token blocker
+5. RMSNorm eps 1e-6 -> config.rms_norm_eps 1e-5 (weighted norms + hc
+   input norm); run_hc_pre gained defaulted rms_eps (DeepSeek intact)
+6. KDA d_conv_hist never zeroed between sessions (cycle-2 poisoning)
+
+Method note: two harness-side broadcasting bugs (delta-rule q/k
+transposes) initially made BOTH references agree with the wrong
+device math; the bug hunt converged only after fixing the references
+independently and requiring three-way agreement.
+
+Remaining: Tasks 11-12 (perf; baseline ~1.5 t/s).
