@@ -362,6 +362,9 @@ __global__ void flash_kda_step_kernel(
     float acc = 0.0f;
     for (int l = 0; l < dim; ++l)
         acc += col[l] * __half2float(q[h * dim + l]);
+    if (h == 0 && d == 0 && blockIdx.x == 0)
+        printf("[step-kernel] acc=%.6f col0=%.6f state0=%.6f gd0=%.6f q0=%.6f\n",
+               acc, col[0], state[0], gdecay[0], __half2float(q[0]));
     out[h * dim + d] = acc;
 }
 
@@ -393,6 +396,10 @@ __global__ void flash_rmsnorm_gated_kernel(const float *__restrict__ core,
         out[h * dim + l] = __float2half(
             v * red2[0] * __half2float(gate[h * dim + l])
             * __half2float(norm_w[l]));
+    if (h == 0 && l == 0)
+        printf("[gated] v0=%.8f inv=%.4f gate0=%.6f w0=%.6f out0=%.8f\n",
+               v, red2[0], __half2float(gate[0]), __half2float(norm_w[0]),
+               __half2float(out[0]));
 }
 
 // conv history shift: hist[0..K-2] rows; slide up, write current row at
@@ -553,10 +560,6 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    {
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_x, 0, 4, hidden);
-        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 4, KD);
-    }
     // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
     {
         const int threads = 128;  // == dim
