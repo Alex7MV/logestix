@@ -1730,4 +1730,47 @@ transposes) initially made BOTH references agree with the wrong
 device math; the bug hunt converged only after fixing the references
 independently and requiring three-way agreement.
 
-Remaining: Tasks 11-12 (perf; baseline ~1.5 t/s).
+Remaining: Task 12 continuation (perf; current 12.6 t/s, see session 4).
+
+## Session 4 (2026-09-06): Tasks 11-12 — perf round 1, 3.9 → 12.6 t/s
+
+Baseline (release-aocc, RTX 5090, `--testprompt --max-gen 64`):
+1.5 t/s (plan estimate) / 3.2 t/s (measured, LRU 64 slots).
+
+Levers applied (profiled with nsys each step):
+1. **LRU slots 64 → free-VRAM budget** (1091 slots, ~14.7 GiB): hit-rate
+   0%→53.6%. `LSX_FLASH_SLOTS` env override; pre-cache free/total logged.
+2. **TC fast-math + seq-1 weight-streaming GEMV** (`--fast-math` →
+   `SetQwenTcFastMath`/`SetQwenSeq1Gemv` in flash model ctor): NVFP4 GEMV
+   121 µs → 11.6 µs (tile kernel was 70% of GPU time).
+3. **Router kernel rewrite** (was 1.1 ms/call = 23% of GPU time: per-thread
+   serial byte-wise bf16 walk): warp-per-expert uint4 + fixed xor-butterfly
+   dot (bit-identical scores), phase-2 block-wide argmax rounds. Split into
+   score + top8 launches across SMs: 1.1 ms → ~15 µs. F16 path only; F32
+   variant + host reference untouched (exact-parity test preserved).
+4. **Dual-stream expert staging**: miss uploads on a dedicated H2D stream,
+   per-expert copy events fence GEMM chains, per-slot free events fence
+   evictions (`ExpertDeviceCache::Insert` grew an optional `evicted_slot`
+   out-param; `EnsureQwenMoeExpertResident` passes it through). Measured
+   ~0 net: the router→host-sync→ensure dependency serializes CE behind
+   compute every layer; kept for the event plumbing (needed for any future
+   cross-layer prefetch).
+
+Numbers: 3.2 → 3.9 (slots) → 12.1 (fast-math+GEMV) → **12.6 t/s**
+(router split). Selfcheck re-validated: 3 bit-exact cycles 'Paris'.
+output_text now decoded in flash Infer (CLI shows generated text).
+
+Profiled next-step ceilings (not applied yet):
+- **KDA projections are FP16 on device** (~9-10 GiB across ~36 KDA layers:
+  q/k/v/o [4096,8192] fp16 ≈ 256 MiB/layer) — the reason dense device is
+  ~14 GiB and slots cap at 1091. NVFP4 KDA would free ~8 GiB (+~600 slots),
+  halve KDA GEMV time; requires converter change + full Paris revalidation
+  (numerics change). Estimated total: ~17+ t/s.
+- H2D miss traffic ≈ 44 ms/step (CE-bound, ~47 GB/s pinned) = the hard
+  floor at the current hit rate; per-step compute ≈ 34 ms.
+- hc_pre_finalize (thread-0 serial sinkhorn, 38 µs × 85/step ≈ 3.3 ms):
+  parallelizable per-row with bit-identical element arithmetic, but it is
+  a DeepSeek-shared kernel (RMW invariant) — defer to a dedicated round.
+- Generation-start resources are created per Infer (1091 slot events ≈
+  1-2 ms) — acceptable; error paths leak the event array (pre-existing
+  leak pattern in the driver, not regresssed).

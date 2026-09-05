@@ -703,9 +703,11 @@ void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache)
 int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
                                 QwenMoeExpertDeviceCache &cache,
                                 cudaStream_t stream, std::string &error,
-                                cudaStream_t h2d_stream, bool *missed)
+                                cudaStream_t h2d_stream, bool *missed,
+                                int *evicted_slot)
 {
     if (missed) *missed = false;
+    if (evicted_slot) *evicted_slot = -1;
     if (layer < 0 || layer >= store.num_layers || eid < 0 ||
         eid >= store.num_experts) {
         error = absl::StrCat("expert out of range: layer ", layer, " eid ", eid);
@@ -714,7 +716,7 @@ int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
     const int flat = layer * store.num_experts + eid;
     int slot = QwenMoeExpertCacheLookup(cache, flat);
     if (slot >= 0) return slot;
-    slot = QwenMoeExpertCacheInsert(cache, flat);
+    slot = QwenMoeExpertCacheInsert(cache, flat, evicted_slot);
     if (missed) *missed = true;
 
     // No-handshake decode bookkeeping: mirror residency + scales so the

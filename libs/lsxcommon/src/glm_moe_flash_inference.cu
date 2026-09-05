@@ -62,6 +62,15 @@ FLASH_HD float sigmoid_dev(float x)
     return 1.0f / (1.0f + flash_expf_glibc(-x));
 }
 
+// BF16 (low 16 bits) -> f32: exact widening, no rounding.
+FLASH_HD float bf16_bits_to_f32(uint32_t low16)
+{
+    const uint32_t bits = low16 << 16;
+    float out;
+    memcpy(&out, &bits, 4);
+    return out;
+}
+
 } // namespace
 
 // ── Conv1d test twin ─────────────────────────────────────────────────────
@@ -1034,83 +1043,138 @@ __global__ void flash_gemv_bf16_logits_kernel(const uint8_t *__restrict__ head,
 static bool flash_router_debug = std::getenv("LSX_TRACE_FLASH") != nullptr;
 
 // Router top-8, FP16 activation variant: gate BF16 bits [E, H], x FP16.
-__global__ void flash_router_top8_f16_kernel(
+//
+// Perf form (profiled 2026-09: 1.1 ms -> ~15 us per call), split into two
+// launches so expert scoring scales across SMs:
+//   Phase 1 — one warp per expert; lanes consume uint4 chunks (8 bf16) with
+//   32*8 element stride, fp32 partials folded by a fixed xor-butterfly.
+//   Writes raw-sigmoid score + choice (score+bias) to global scratch.
+//   Phase 2 — per token, 8 rounds of block-wide (val, idx) argmax on the
+//   choice score; selected experts masked to -inf. Tie-break: lower expert
+//   index wins (matches FlashRouterTop8Host linear scan).
+__global__ void flash_router_score_f16_kernel(
     const uint8_t *__restrict__ gate_bf16, const float *__restrict__ bias,
-    const __half *__restrict__ x,
-    qwen_moe::QwenMoeRoutedSlot *__restrict__ slots, int hidden, int experts)
+    const __half *__restrict__ x, float *__restrict__ scratch,
+    int hidden, int experts)
 {
-    const int t = blockIdx.x;
-    extern __shared__ float s_scores[];  // [experts]
-    for (int e = threadIdx.x; e < experts; e += blockDim.x) {
-        float dot = 0.0f;
-        for (int h = 0; h < hidden; ++h) {
+    // scratch layout: [tok][2 * experts]: raw scores then choice scores.
+    // grid = (chunks, tok): chunk = 16-warp group of experts, token = y.
+    float *s_out = scratch + static_cast<size_t>(blockIdx.y) * experts * 2;
+    constexpr int kWarps = 16;
+    const int warp = threadIdx.x >> 5;
+    const int e = blockIdx.x * kWarps + warp;
+    if (e >= experts) return;
+    const int lane = threadIdx.x & 31;
+    const uint8_t *row = gate_bf16 + static_cast<size_t>(e) * hidden * 2;
+    float part = 0.0f;
+    int h = lane * 8;
+    for (; h + 8 <= hidden; h += 32 * 8) {
+        const uint4 pkt = *reinterpret_cast<const uint4 *>(row +
+                                                           h * 2);
+        const float2 x01 = __half22float2(
+            *reinterpret_cast<const __half2 *>(x + h));
+        const float2 x23 = __half22float2(
+            *reinterpret_cast<const __half2 *>(x + h + 2));
+        const float2 x45 = __half22float2(
+            *reinterpret_cast<const __half2 *>(x + h + 4));
+        const float2 x67 = __half22float2(
+            *reinterpret_cast<const __half2 *>(x + h + 6));
+        const float g[8] = {
+            bf16_bits_to_f32(pkt.x & 0xffff),
+            bf16_bits_to_f32(pkt.x >> 16),
+            bf16_bits_to_f32(pkt.y & 0xffff),
+            bf16_bits_to_f32(pkt.y >> 16),
+            bf16_bits_to_f32(pkt.z & 0xffff),
+            bf16_bits_to_f32(pkt.z >> 16),
+            bf16_bits_to_f32(pkt.w & 0xffff),
+            bf16_bits_to_f32(pkt.w >> 16),
+        };
+        part += g[0] * x01.x + g[1] * x01.y;
+        part += g[2] * x23.x + g[3] * x23.y;
+        part += g[4] * x45.x + g[5] * x45.y;
+        part += g[6] * x67.x + g[7] * x67.y;
+    }
+    for (; h < hidden; h += 32 * 8) {  // tail (hidden % 256 != 0)
+        const int lim = h + 8 < hidden ? h + 8 : hidden;
+        for (int i = h; i < lim; ++i) {
             const uint32_t bits =
-                (static_cast<uint32_t>(gate_bf16[e * hidden * 2 + h * 2])
-                 | (static_cast<uint32_t>(gate_bf16[e * hidden * 2 + h * 2 + 1])
-                    << 8))
-                << 16;
-            float g;
-            memcpy(&g, &bits, 4);
-            dot += g * __half2float(x[h]);
+                (static_cast<uint32_t>(row[i * 2]) |
+                 (static_cast<uint32_t>(row[i * 2 + 1]) << 8)) << 16;
+            part += bf16_bits_to_f32(bits) * __half2float(x[i]);
         }
-        s_scores[e] = sigmoid_dev(dot);
-        s_scores[experts + e] = s_scores[e] + bias[e];
     }
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        float m = 0;
-        int nan = 0;
-        for (int e = 0; e < experts; ++e) {
-            if (isnan(s_scores[e])) ++nan;
-            m += s_scores[e];
-        }
-        if (flash_dbg_on)
-        printf("[rk] t=%d experts=%d mean=%.6f nan=%d s0=%.6f bias0=%.6f "
-               "x0=%.6f x1=%.6f g0=%.6f g1=%.6f\n",
-               t, experts, m / experts, nan, s_scores[0], bias[0],
-               __half2float(x[0]), __half2float(x[1]),
-               [&] {
-                   const uint32_t bits =
-                       (static_cast<uint32_t>(gate_bf16[0])
-                        | (static_cast<uint32_t>(gate_bf16[1]) << 8))
-                       << 16;
-                   float g;
-                   memcpy(&g, &bits, 4);
-                   return g;
-               }(),
-               [&] {
-                   const uint32_t bits =
-                       (static_cast<uint32_t>(gate_bf16[2])
-                        | (static_cast<uint32_t>(gate_bf16[3]) << 8))
-                       << 16;
-                   float g;
-                   memcpy(&g, &bits, 4);
-                   return g;
-               }());
+    // Warp fully converged here: e is warp-uniform.
+    #pragma unroll
+    for (int off = 16; off; off >>= 1)
+        part += __shfl_xor_sync(0xffffffffu, part, off);
+    if (lane == 0) {
+        const float s = sigmoid_dev(part);
+        s_out[e] = s;
+        s_out[experts + e] = s + bias[e];
     }
-    if (threadIdx.x != 0) return;
+}
+
+// Phase 2: top-8 by choice score; each round a block-wide argmax.
+// grid = tok, one block per token, 512 threads (16 warps).
+__global__ void flash_router_top8_f16_kernel(
+    const float *__restrict__ scratch, int experts,
+    qwen_moe::QwenMoeRoutedSlot *__restrict__ slots)
+{
     constexpr int kTopK = 8;
+    constexpr int kWarps = 16;
+    __shared__ float s_choice[1024];
+    __shared__ float s_val[kWarps];
+    __shared__ int s_idx[kWarps];
+    const float *s_in = scratch + static_cast<size_t>(blockIdx.x) * experts * 2
+                      + experts;
+    const int t0 = threadIdx.x;
+    if (t0 < experts) s_choice[t0] = s_in[t0];
+    __syncthreads();
     for (int kk = 0; kk < kTopK; ++kk) {
-        int best = -1;
-        float best_s = -1e30f;
-        for (int e = 0; e < experts; ++e) {
-            bool taken = false;
-            for (int j = 0; j < kk; ++j)
-                if (slots[t * kTopK + j].eid == e) taken = true;
-            if (taken) continue;
-            if (s_scores[experts + e] > best_s) {
-                best_s = s_scores[experts + e];
-                best = e;
+        float my = -3.4e38f;
+        int myi = -1;
+        if (t0 < experts) {
+            my = s_choice[t0];
+            myi = t0;
+        }
+        #pragma unroll
+        for (int off = 16; off; off >>= 1) {
+            const float ov = __shfl_xor_sync(0xffffffffu, my, off);
+            const int oi = __shfl_xor_sync(0xffffffffu, myi, off);
+            if (ov > my || (ov == my && oi < myi)) {
+                my = ov;
+                myi = oi;
             }
         }
-        slots[t * kTopK + kk].eid = best;
-        slots[t * kTopK + kk].coeff = s_scores[best];
+        const int w = threadIdx.x >> 5;
+        if ((threadIdx.x & 31) == 0) {
+            s_val[w] = my;
+            s_idx[w] = myi;
+        }
+        __syncthreads();
+        if (t0 == 0) {
+            float bv = -3.4e38f;
+            int bi = -1;
+            for (int i = 0; i < kWarps; ++i) {
+                if (s_val[i] > bv || (s_val[i] == bv && s_idx[i] < bi)) {
+                    bv = s_val[i];
+                    bi = s_idx[i];
+                }
+            }
+            slots[blockIdx.x * kTopK + kk].eid = bi;
+            slots[blockIdx.x * kTopK + kk].coeff = s_in[bi];
+            s_choice[bi] = -3.4e38f;  // mask for the next round
+        }
+        __syncthreads();
     }
-    float sum = 0.0f;
-    for (int kk = 0; kk < kTopK; ++kk) sum += slots[t * kTopK + kk].coeff;
-    for (int kk = 0; kk < kTopK; ++kk)
-        slots[t * kTopK + kk].coeff =
-            slots[t * kTopK + kk].coeff / sum * 2.5f;
+    if (t0 == 0) {
+        float sum = 0.0f;
+        for (int kk = 0; kk < kTopK; ++kk)
+            sum += slots[blockIdx.x * kTopK + kk].coeff;
+        for (int kk = 0; kk < kTopK; ++kk)
+            slots[blockIdx.x * kTopK + kk].coeff =
+                slots[blockIdx.x * kTopK + kk].coeff / sum * 2.5f;
+    }
 }
 
 } // namespace
@@ -1128,11 +1192,25 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                      __half2float(hx[0]), __half2float(hx[1]));
     }
     const size_t scratch = static_cast<size_t>(experts) * 2 * sizeof(float);
-    // One thread per expert during scoring: blockDim must cover experts
-    // (288 > 256); clamp to the 1024 launch bound.
-    const int threads = experts <= 1024 ? experts : 1024;
-    flash_router_top8_f16_kernel<<<tok, threads, scratch, stream>>>(
-        d_gate, d_bias, d_x, d_slots, hidden, experts);
+    (void) scratch;
+    // Grow-on-demand score scratch: [tok][2 * experts] floats (process-wide
+    // singleton, same lifetime pattern as the fp16 embed cache).
+    static float *d_rscratch = nullptr;
+    static size_t rscratch_floats = 0;
+    const size_t need = static_cast<size_t>(tok) * experts * 2;
+    if (rscratch_floats < need) {
+        if (d_rscratch) cudaFree(d_rscratch);
+        if (cudaMalloc(&d_rscratch, need * sizeof(float)) != cudaSuccess)
+            return cudaGetLastError();
+        rscratch_floats = need;
+    }
+    const int chunks = (experts + 15) / 16;
+    flash_router_score_f16_kernel<<<dim3(chunks, tok), 512, 0, stream>>>(
+        d_gate, d_bias, d_x, d_rscratch, hidden, experts);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return err;
+    flash_router_top8_f16_kernel<<<tok, 512, 0, stream>>>(
+        d_rscratch, experts, d_slots);
     return cudaGetLastError();
 }
 
@@ -1143,7 +1221,9 @@ cudaError_t RunFlashRoutedFFN(
     gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
     const qwen_moe::QwenMoeRoutedSlot *h_slots, int k_top,
     const __half *d_x, int hidden, int moe_inter, float *d_acc,
-    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error)
+    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error,
+    cudaStream_t h2d_stream = nullptr, cudaEvent_t *copy_ev = nullptr,
+    cudaEvent_t *slot_free_ev = nullptr)
 {
     error.clear();
     if (k_top > 16) {
@@ -1152,13 +1232,27 @@ cudaError_t RunFlashRoutedFFN(
     }
     const int store_layer = moe_layer - frozen::kMoeFirstLayer;
     int dev_slots[16];
+    // Dual-stream staging: miss uploads queue on h2d_stream while the
+    // compute stream keeps running; each expert's GEMM chain fences its own
+    // upload via copy_ev. An eviction recycles a slot whose last reader is
+    // the GEMM chain fenced by slot_free_ev[slot] — wait it on h2d_stream
+    // before overwriting.
     for (int k = 0; k < k_top; ++k) {
         std::string ensure_err;
+        bool missed = false;
+        int evicted = -1;
         const int slot = qwen_moe::EnsureQwenMoeExpertResident(
-            store, store_layer, h_slots[k].eid, cache, stream, ensure_err);
+            store, store_layer, h_slots[k].eid, cache, stream, ensure_err,
+            h2d_stream, &missed, &evicted);
         if (slot < 0) {
             error = "ensure resident failed: " + ensure_err;
             return cudaErrorInvalidValue;
+        }
+        if (evicted >= 0 && slot_free_ev && slot_free_ev[evicted])
+            cudaStreamWaitEvent(h2d_stream, slot_free_ev[evicted], 0);
+        if (missed && h2d_stream && copy_ev && copy_ev[k]) {
+            cudaEventRecord(copy_ev[k], h2d_stream);
+            cudaStreamWaitEvent(stream, copy_ev[k], 0);
         }
         dev_slots[k] = slot;
     }
@@ -1203,6 +1297,9 @@ cudaError_t RunFlashRoutedFFN(
         // acc += coeff * y2
         flash_coeff_add_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
             d_y2, h_slots[k].coeff, d_acc, hidden);
+        // Slot reads are done: fence for future evictions of this slot.
+        if (slot_free_ev && slot_free_ev[dev_slots[k]])
+            cudaEventRecord(slot_free_ev[dev_slots[k]], stream);
     }
     return cudaGetLastError();
 }
@@ -1421,6 +1518,25 @@ cudaError_t RunGlmFlashGeneration(
     if (cudaMalloc(&d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K)
         != cudaSuccess) return cudaGetLastError();
 
+    // Dual-stream expert staging: a dedicated H2D stream overlaps miss
+    // uploads with the compute stream; per-expert copy events fence each
+    // GEMM chain, per-slot events fence evictions (see RunFlashRoutedFFN).
+    cudaStream_t h2d_stream = nullptr;
+    cudaEvent_t copy_ev[16] = {};
+    std::vector<cudaEvent_t> slot_free_ev;
+    if (cudaStreamCreateWithFlags(&h2d_stream, cudaStreamNonBlocking)
+        != cudaSuccess) return cudaGetLastError();
+    for (int k = 0; k < 16; ++k) {
+        if (cudaEventCreateWithFlags(&copy_ev[k], cudaEventDisableTiming)
+            != cudaSuccess) return cudaGetLastError();
+    }
+    slot_free_ev.resize(static_cast<size_t>(cache.slots), nullptr);
+    for (int s = 0; s < cache.slots; ++s) {
+        if (cudaEventCreateWithFlags(&slot_free_ev[static_cast<size_t>(s)],
+                                     cudaEventDisableTiming)
+            != cudaSuccess) return cudaGetLastError();
+    }
+
     {
         const int dbg = std::getenv("LSX_TRACE_FLASH") ? 1 : 0;
         cudaMemcpyToSymbolAsync(flash_dbg_on, &dbg, 4, 0,
@@ -1622,7 +1738,8 @@ cudaError_t RunGlmFlashGeneration(
                 std::string ffn_err;
                 if (RunFlashRoutedFFN(stream, store, cache, 0, l, h_slots, K,
                                       d_single, H, I, d_moe_acc, d_yg, d_yu,
-                                      d_y2, ffn_err) != cudaSuccess)
+                                      d_y2, ffn_err, h2d_stream, copy_ev,
+                                      slot_free_ev.data()) != cudaSuccess)
                     { result.error_msg = "routed ffn: " + ffn_err; break; }
                 // acc -> f16 into d_act2, add shared expert.
                 f32_to_f16_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
@@ -1789,6 +1906,12 @@ cudaError_t RunGlmFlashGeneration(
                 result.total_ms = ms;
         }
     }
+    cudaStreamSynchronize(stream);
+    cudaStreamSynchronize(h2d_stream);
+    for (int k = 0; k < 16; ++k) cudaEventDestroy(copy_ev[k]);
+    for (cudaEvent_t ev : slot_free_ev)
+        if (ev) cudaEventDestroy(ev);
+    cudaStreamDestroy(h2d_stream);
     cudaFreeHost(h_ids_pinned);
     cudaFree(d_argmax);
     cudaFree(d_tokens);
