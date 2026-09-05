@@ -293,10 +293,10 @@ __global__ void flash_l2norm_kernel(__half *row, int dim, float extra_scale)
         if (l < s) red[l] += red[l + s];
         __syncthreads();
     }
-    if (l == 0) red[0] = rsqrtf(red[0] + 1e-6f);
+    if (l == 0) red[0] = sqrtf(red[0] + 1e-6f);
     __syncthreads();
     if (l < dim)
-        row[l] = __float2half(__half2float(row[l]) * red[0] * extra_scale);
+        row[l] = __float2half(__half2float(row[l]) / red[0] * extra_scale);
 }
 
 // Gating prep: one thread per (h, l) over S_out = 3*8192? KDA uses
@@ -319,8 +319,12 @@ __global__ void flash_kda_gating_kernel(const __half *__restrict__ b_proj_out,
     if (l == 0) beta[h] = sigmoid_dev(__half2float(b_proj_out[h]));
     const float dt =
         __half2float(f_out[idx]) + dt_bias[idx];
+    // HF Glm5NextTextForgetGate: safe lower bound path (linear_lower_bound
+    // = -5.0): g_log = bound * sigmoid(exp(A_log) * g); decay = exp(g_log).
+    constexpr float kGateLowerBound = -5.0f;
     gdecay[idx] = flash_expf_glibc(
-        -flash_expf_glibc(A_log[h]) * log1pf(flash_expf_glibc(dt)));
+        kGateLowerBound
+        * sigmoid_dev(flash_expf_glibc(A_log[h]) * dt));
 }
 
 // Per-channel-decay delta step for ONE token (decode): block per head,
@@ -549,6 +553,10 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
+    {
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_x, 0, 4, hidden);
+        flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_q, 0, 4, KD);
+    }
     // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
     {
         const int threads = 128;  // == dim
@@ -594,7 +602,7 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
     {
         static const bool conv_silu = [] {
             const char *e = std::getenv("LSX_FLASH_CONV_SILU");
-            return e && std::string_view(e) == "1";
+            return !e || std::string_view(e) != "0";
         }();
         if (conv_silu) {
             flash_silu_kernel<<<(3 * KD + 255) / 256, 256, 0, stream>>>(
