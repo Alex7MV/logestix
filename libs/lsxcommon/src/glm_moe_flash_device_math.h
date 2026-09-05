@@ -207,8 +207,8 @@ inline std::vector<qwen_moe::QwenMoeRoutedSlot> FlashRouterTop8Host(
         for (int e = 0; e < experts; ++e) {
             float dot = 0.0f;
             for (int h = 0; h < hidden; ++h)
-                dot += bf16_to_float_host(gate_bf16 + e * hidden + h * 2)
-                     * bf16_to_float_host(x_bf16 + t * hidden + h * 2);
+                dot += bf16_to_float_host(gate_bf16 + e * hidden * 2 + h * 2)
+                     * bf16_to_float_host(x_bf16 + t * hidden * 2 + h * 2);
             score[e] = sigmoid_host(dot);
             choice[e] = score[e] + bias[e];
         }

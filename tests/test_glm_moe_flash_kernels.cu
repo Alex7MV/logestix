@@ -208,16 +208,16 @@ TEST_CASE("flash router: sigmoid noaux_tc top-8 + renorm + scaling")
     {
         // Recompute raw sigmoid scores on host for token 0 and verify that
         // every device coeff matches raw-sigmoid renorm, NOT bias-added.
-        // Addressing matches the kernel byte layout: row stride = H bytes,
-        // element index (e*H + h*2)/2 in the uint16 test vector.
+        // Addressing matches the kernel byte layout: row stride = 2*H bytes,
+        // element (e, h) at uint16 index e*H + h.
         constexpr int H = 64, E = 8;
         std::vector<float> raw(E);
         for (int e = 0; e < E; ++e) {
             float dot = 0;
             for (int h = 0; h < H; ++h) {
                 // BF16 bits -> f32 (shift left 16), matching the device dot.
-                uint32_t gb = static_cast<uint32_t>(gate[e * (H / 2) + h]) << 16;
-                uint32_t xb = static_cast<uint32_t>(x[0 * (H / 2) + h]) << 16;
+                uint32_t gb = static_cast<uint32_t>(gate[e * H + h]) << 16;
+                uint32_t xb = static_cast<uint32_t>(x[0 * H + h]) << 16;
                 float g, xv;
                 std::memcpy(&g, &gb, 4);
                 std::memcpy(&xv, &xb, 4);

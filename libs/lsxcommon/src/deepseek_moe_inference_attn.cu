@@ -181,7 +181,8 @@ hc_pre_finalize_kernel(
     int M, int H, int N, int tiles_per_row,
     float* __restrict__ post,
     float* __restrict__ comb,
-    float* __restrict__ pre)
+    float* __restrict__ pre,
+    float rms_eps)
 {
     constexpr int D = kHiddenDim;
     __shared__ float s_red[32];
@@ -193,7 +194,7 @@ hc_pre_finalize_kernel(
     for (int b = tid; b < tiles_per_row; b += blockDim.x)
         ssq += partials[M * tiles_per_row + b];
     const float ssq_tot = lsx_block_reduce_sum(ssq, s_red);
-    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + kRmsEps);
+    const float rsqrt_v = rsqrtf(ssq_tot / static_cast<float>(N) + rms_eps);
 
     // mixes[m] = (Σ_b partials[m][b]) * rsqrt — ascending-b order per row
     if (tid < M) {
@@ -616,7 +617,8 @@ cudaError_t run_hc_pre(cudaStream_t stream,
                        __half* d_single,               // [dim] FP16
                        float* d_post, float* d_comb,   // [hc_mult], [hc_mult·hc_mult]
                        float* d_pre,                   // [hc_mult]
-                       float* d_scratch)               // ≥ (kHcMix+1)*kHcTiles floats
+                       float* d_scratch,               // ≥ (kHcMix+1)*kHcTiles floats
+                       float rms_eps)                  // input RMSNorm eps
 {
     constexpr int M = kHcMix;
     constexpr int H = kHcMult;
@@ -627,7 +629,7 @@ cudaError_t run_hc_pre(cudaStream_t stream,
     if (e != cudaSuccess) return e;
     hc_pre_finalize_kernel<<<1, 256, 0, stream>>>(
         d_scratch, d_scale, d_base, M, H, kHcDim, kHcTiles,
-        d_post, d_comb, d_pre);
+        d_post, d_comb, d_pre, rms_eps);
     e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     hc_combine_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(

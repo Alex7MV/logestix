@@ -1,6 +1,6 @@
 // GLM-5.3-Flash real-model selfcheck: "The capital of France is" -> "Paris",
 // incremental 1->2 tokens, 3 stress cycles with bit-exact final_logits.
-// SKIP_RETURN_CODE 4 without the converted model.
+// Skips (RETURN_CODE 4) without the converted model.
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
@@ -28,10 +28,6 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
     const std::string root = ModelRoot();
     if (!fs::exists(root + "/logestix/model.index.json")) {
         SKIP("converted GLM-5.3-Flash not present");
-    }
-    if (!std::getenv("LSX_FLASH_SELFCHECK_ENABLE")) {
-        SKIP("selfcheck semantics pending (set LSX_FLASH_SELFCHECK_ENABLE=1 "
-             "to run); pipeline runs end-to-end, Paris not yet matched");
     }
     ModelInitConfig cfg;
     cfg.model_path = root;
