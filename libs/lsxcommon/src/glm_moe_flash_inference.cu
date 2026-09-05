@@ -49,7 +49,7 @@ __global__ void flash_dbg_probe_kernel(const void *buf, int kind,
             if (isinf(p[i])) ++inf;
         }
     }
-    if (true)
+    if (flash_dbg_on)
         printf("[probe] kind=%d v0=%.6f v1=%.6f nan=%lld/%lld inf=%lld\n",
                kind, v0, v1, static_cast<long long>(nan),
                static_cast<long long>(total), static_cast<long long>(inf));
@@ -364,7 +364,7 @@ __global__ void flash_kda_step_kernel(
     float acc = 0.0f;
     for (int l = 0; l < dim; ++l)
         acc += col[l] * __half2float(q[h * dim + l]);
-    if (h == 0 && d == 0 && blockIdx.x == 0)
+    if (flash_dbg_on && h == 0 && d == 0 && blockIdx.x == 0)
         printf("[step-kernel] acc=%.6f col0=%.6f state0=%.6f gd0=%.6f q0=%.6f\n",
                acc, col[0], state[0], gdecay[0], __half2float(q[0]));
     out[h * dim + d] = acc;
@@ -398,7 +398,7 @@ __global__ void flash_rmsnorm_gated_kernel(const float *__restrict__ core,
         out[h * dim + l] = __float2half(
             v * red2[0] * __half2float(gate[h * dim + l])
             * __half2float(norm_w[l]));
-    if (h == 0 && l == 0)
+    if (flash_dbg_on && h == 0 && l == 0)
         printf("[gated] v0=%.8f inv=%.4f gate0=%.6f w0=%.6f out0=%.8f\n",
                v, red2[0], __half2float(gate[0]), __half2float(norm_w[0]),
                __half2float(out[0]));
@@ -676,7 +676,7 @@ __global__ void flash_rmsnorm_weighted_kernel(const __half *__restrict__ x,
     const float inv = red[0];
     for (int i = l; i < n; i += blockDim.x)
         out[i] = __float2half(__half2float(x[i]) * inv * __half2float(w[i]));
-    if (threadIdx.x == 0 && n == 4096)
+    if (flash_dbg_on && threadIdx.x == 0 && n == 4096)
         printf("[norm] inv=%.6f out0=%.6f x0=%.6f\n", inv,
                __half2float(out[0]), __half2float(x[0]));
 }
@@ -780,9 +780,10 @@ __global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
             psum += p;
         }
         s_red[0] = psum;
-        printf("[mla2] h=%d mx=%.4f psum=%.4f score0=%.4f q0=%.4f k0=%.4f\n",
-               h, mx, psum, s_score[0], s_q[0],
-               __half2float(k_cache[(0 * heads + h) * D]));
+        if (flash_dbg_on)
+            printf("[mla2] h=%d mx=%.4f psum=%.4f score0=%.4f q0=%.4f k0=%.4f\n",
+                   h, mx, psum, s_score[0], s_q[0],
+                   __half2float(k_cache[(0 * heads + h) * D]));
     }
     __syncthreads();
     const float psum = s_red[0];
@@ -972,7 +973,7 @@ __global__ void flash_embed_row_kernel(const __half *__restrict__ table,
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (threadIdx.x == 0 && blockIdx.x == 0) flash_dbg_id = *id;
-    if (i == 0 && flash_dbg_id < 0)
+    if (i == 0 && flash_dbg_on && flash_dbg_id < 0)
         printf("[emb] id=%d\n", flash_dbg_id);
     if (i < H) out[i] = table[static_cast<int64_t>(max(*id, 0)) * H + i];
 }
@@ -1048,6 +1049,7 @@ __global__ void flash_router_top8_f16_kernel(
             if (isnan(s_scores[e])) ++nan;
             m += s_scores[e];
         }
+        if (flash_dbg_on)
         printf("[rk] t=%d experts=%d mean=%.6f nan=%d s0=%.6f bias0=%.6f "
                "x0=%.6f x1=%.6f g0=%.6f g1=%.6f\n",
                t, experts, m / experts, nan, s_scores[0], bias[0],
@@ -1526,12 +1528,11 @@ cudaError_t RunGlmFlashGeneration(
                         d_state);
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post"; break; }
-            {
+            if (flash_dbg_on) {
                 flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_state, 1, 2,
                                                             HCH);
                 flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_act2, 0, 2, H);
             }
-            std::fprintf(stderr, "[hcpost] l=%d\n", l);
             if (std::getenv("LSX_TRACE_FLASH")) {
                 std::vector<float> hst(HCH);
                 cudaMemcpy(hst.data(), d_state, sizeof(float) * HCH,
