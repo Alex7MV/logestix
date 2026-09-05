@@ -1101,7 +1101,7 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
                                   int tok, int hidden, int experts,
                                   qwen_moe::QwenMoeRoutedSlot *d_slots)
 {
-    {
+    if (std::getenv("LSX_TRACE_FLASH")) {
         __half hx[4];
         cudaMemcpy(hx, d_x, sizeof(hx), cudaMemcpyDeviceToHost);
         std::fprintf(stderr, "[pre-rk] x0=%.6f x1=%.6f\n",
@@ -1556,7 +1556,7 @@ cudaError_t RunGlmFlashGeneration(
                 { result.error_msg = "post norm"; break; }
             // ── MLP branch ──
             if (lw.is_moe) {
-                {
+                if (std::getenv("LSX_TRACE_FLASH")) {
                     std::vector<float> hx(static_cast<size_t>(H));
                     cudaMemcpy(hx.data(), d_single, sizeof(float) * H,
                                cudaMemcpyDeviceToHost);
@@ -1653,8 +1653,9 @@ cudaError_t RunGlmFlashGeneration(
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post2"; break; }
         }
-        std::fprintf(stderr, "[loopend] e=%d err='%s'\n", (int) e,
-                     result.error_msg.c_str());
+        if (std::getenv("LSX_TRACE_FLASH"))
+            std::fprintf(stderr, "[loopend] e=%d err='%s'\n", (int) e,
+                         result.error_msg.c_str());
         if (e != cudaSuccess) {
             step_err = e;
             break;
