@@ -1690,3 +1690,19 @@ git add -A && git commit -m "perf: glm5next flash decode baseline + TC/GEMV leve
 **Placeholder scan:** Task 4 Step 1 synthetic slab builder — «Setup mirrors tests/test_qwen_moe_loader.cpp» — эталон существует и копируется при исполнении, допустимая ссылка на конкретный файл (не «similar to Task N»). Task 6 Step 1 MakeSyntheticFlashWeights — описан контрактом (seeded, identity-подобные hc). Task 8 idx-read comment — конкретный файл. Остальное — полный код. ✅
 
 **Type consistency:** `FlashPinnedWeights`/`FlashLayerWeights`/`FlashKdaState`/`FlashNvfp4Blob`/`RunGlmFlashGeneration` сигнатуры согласованы между Tasks 4→5→6→7; `QwenMoeExpertStore`/`ExpertDeviceCache` — реальные типы из `qwen_moe_load.h`/`expert_device_cache.h`; `RunQwenNvfp4Gemm`/`RunExpHcGatedResidualCached`/`RunExpHeadGemm`/`EnsureQwenMoeExpertResident` — реальные сигнатуры (проверены в заголовках 2026-09-04). ✅
+
+---
+
+## Execution status (2026-09-05, session 1)
+
+- Tasks 1-8, 10 DONE: constants/classifier, FP8→NVFP4 requant, converter (177GB,
+  persistent at /mnt/llm_models/models/GLM-5.3-Flash/logestix), loader+LRU,
+  KDA/DSA/router kernels (2216 assertions), generation driver, model+registry,
+  tokenizer+passport. GLM-5.2 regression 18/18 green (invariant №1 held).
+- Task 9 PARTIAL: selfcheck runs end-to-end, deterministic (same top1 across
+  runs), but top-1 ≠ "Paris" ('shly'/'ch数量' variants across semantic toggles).
+  Semantic tuning pending the HF modeling_glm5_next reference (head stream
+  collapse, KDA conv/gate details). Test gated behind LSX_FLASH_SELFCHECK_ENABLE.
+- Baseline: ~1.4 t/s decode (unoptimized; Task 11-12 pending).
+- Key fixes landed: flash_expf_glibc value-based rounding; per-channel-decay
+  KDA with FP32 attn out; DSA KV zeroing per session; pinned-ring id staging.
