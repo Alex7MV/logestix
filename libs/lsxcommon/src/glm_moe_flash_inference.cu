@@ -142,9 +142,10 @@ cudaError_t RunFlashGatedDeltaF32(cudaStream_t stream, const float *q,
 }
 
 // ── Router top-8 ─────────────────────────────────────────────────────────
-// One block per token. Score = sigmoid(dot(gate_e, x)) + bias_e computed in
-// FP32 over BF16-decoded values; top-8 via linear-scan selection (tie-break
-// lower expert index); renorm + scale 2.5. RMW-free per-slot writes: each
+// One block per token. HF Glm5NextTextTopkRouter semantics: choice score =
+// sigmoid(dot(gate_e, x)) + bias_e (FP32 over BF16-decoded values); top-8 by
+// choice score (tie-break lower expert index); coeff from the RAW sigmoid;
+// renorm + scale 2.5. RMW-free per-slot writes: each
 // selection round writes its slot once.
 __global__ void flash_router_top8_kernel(
     const uint8_t *__restrict__ gate_bf16, const float *__restrict__ bias,
@@ -172,12 +173,13 @@ __global__ void flash_router_top8_kernel(
             memcpy(&xv, &xb, 4);
             dot += g * xv;
         }
-        const float s = sigmoid_dev(dot) + bias[e];
-        s_scores[e] = s;
+        s_scores[e] = sigmoid_dev(dot);
+        s_scores[experts + e] = s_scores[e] + bias[e];
     }
     __syncthreads();
     if (threadIdx.x != 0) return;
-    // Thread-0 selection over the staged scores.
+    // Thread-0 selection over the staged choice scores; HF semantics:
+    // selection on sigmoid+bias, coeff from the RAW sigmoid score.
     constexpr int kTopK = 8;
     for (int kk = 0; kk < kTopK; ++kk) {
         int best = -1;
@@ -187,13 +189,13 @@ __global__ void flash_router_top8_kernel(
             for (int j = 0; j < kk; ++j)
                 if (slots[t * kTopK + j].eid == e) taken = true;
             if (taken) continue;
-            if (s_scores[e] > best_s) {
-                best_s = s_scores[e];
+            if (s_scores[experts + e] > best_s) {
+                best_s = s_scores[experts + e];
                 best = e;
             }
         }
         slots[t * kTopK + kk].eid = best;
-        slots[t * kTopK + kk].coeff = best_s;
+        slots[t * kTopK + kk].coeff = s_scores[best];
     }
     float sum = 0.0f;
     for (int kk = 0; kk < kTopK; ++kk) sum += slots[t * kTopK + kk].coeff;
@@ -208,7 +210,7 @@ cudaError_t RunFlashRouterTop8(cudaStream_t stream, const uint8_t *d_gate,
                                qwen_moe::QwenMoeRoutedSlot *d_slots)
 {
     const int threads = experts <= 1024 ? experts : 1024;
-    const size_t scratch = static_cast<size_t>(experts) * sizeof(float);
+    const size_t scratch = static_cast<size_t>(experts) * 2 * sizeof(float);
     flash_router_top8_kernel<<<tok, threads, scratch, stream>>>(
         d_gate, d_bias, d_x, d_slots, hidden, experts);
     return cudaGetLastError();
@@ -1035,7 +1037,8 @@ __global__ void flash_router_top8_f16_kernel(
             memcpy(&g, &bits, 4);
             dot += g * __half2float(x[h]);
         }
-        s_scores[e] = sigmoid_dev(dot) + bias[e];
+        s_scores[e] = sigmoid_dev(dot);
+        s_scores[experts + e] = s_scores[e] + bias[e];
     }
     __syncthreads();
     if (threadIdx.x == 0) {
@@ -1078,13 +1081,13 @@ __global__ void flash_router_top8_f16_kernel(
             for (int j = 0; j < kk; ++j)
                 if (slots[t * kTopK + j].eid == e) taken = true;
             if (taken) continue;
-            if (s_scores[e] > best_s) {
-                best_s = s_scores[e];
+            if (s_scores[experts + e] > best_s) {
+                best_s = s_scores[experts + e];
                 best = e;
             }
         }
         slots[t * kTopK + kk].eid = best;
-        slots[t * kTopK + kk].coeff = best_s;
+        slots[t * kTopK + kk].coeff = s_scores[best];
     }
     float sum = 0.0f;
     for (int kk = 0; kk < kTopK; ++kk) sum += slots[t * kTopK + kk].coeff;
@@ -1107,7 +1110,7 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
         std::fprintf(stderr, "[pre-rk] x0=%.6f x1=%.6f\n",
                      __half2float(hx[0]), __half2float(hx[1]));
     }
-    const size_t scratch = static_cast<size_t>(experts) * sizeof(float);
+    const size_t scratch = static_cast<size_t>(experts) * 2 * sizeof(float);
     // One thread per expert during scoring: blockDim must cover experts
     // (288 > 256); clamp to the 1024 launch bound.
     const int threads = experts <= 1024 ? experts : 1024;

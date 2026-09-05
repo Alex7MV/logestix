@@ -191,9 +191,9 @@ inline void FlashGatedDeltaHost(const float *q, const float *k,
 // ── Router: sigmoid + bias (noaux_tc, n_group=1), top-8, renorm, scale ────
 // gate: BF16 bits [E, H] (row-major per expert); bias: F32 [E];
 // x: BF16 bits [tok, H].
-// score_e = sigmoid(<bf16 gate_e, bf16 x>) + bias_e  (dot in FP32 over
-// BF16-decoded values, no normalization when n_group == 1);
-// top-8 by score; coeff = score / sum(top8) * routed_scaling (2.5).
+// HF Glm5NextTextTopkRouter semantics: choice score_e = sigmoid(dot) + bias_e;
+// top-8 by choice score (n_group == 1 -> no group mask); coeff from the RAW
+// sigmoid score; renorm coeff / sum(top8) * routed_scaling (2.5).
 inline std::vector<qwen_moe::QwenMoeRoutedSlot> FlashRouterTop8Host(
     const uint8_t *gate_bf16, const float *bias, const uint8_t *x_bf16,
     int tok, int hidden, int experts)
@@ -203,15 +203,17 @@ inline std::vector<qwen_moe::QwenMoeRoutedSlot> FlashRouterTop8Host(
     std::vector<qwen_moe::QwenMoeRoutedSlot> out(tok * kTopK);
     for (int t = 0; t < tok; ++t) {
         std::vector<float> score(experts);
+        std::vector<float> choice(experts);
         for (int e = 0; e < experts; ++e) {
             float dot = 0.0f;
             for (int h = 0; h < hidden; ++h)
                 dot += bf16_to_float_host(gate_bf16 + e * hidden + h * 2)
                      * bf16_to_float_host(x_bf16 + t * hidden + h * 2);
-            score[e] = sigmoid_host(dot) + bias[e];
+            score[e] = sigmoid_host(dot);
+            choice[e] = score[e] + bias[e];
         }
-        // Top-8 selection, tie-break: lower expert index wins on equal
-        // score (matches the device linear-scan selection).
+        // Top-8 selection on choice score, tie-break: lower expert index
+        // wins on equal score (matches the device linear-scan selection).
         for (int kk = 0; kk < kTopK; ++kk) {
             int best = -1;
             float best_s = -1e30f;
@@ -220,13 +222,13 @@ inline std::vector<qwen_moe::QwenMoeRoutedSlot> FlashRouterTop8Host(
                 for (int j = 0; j < kk; ++j)
                     if (out[t * kTopK + j].eid == e) taken = true;
                 if (taken) continue;
-                if (score[e] > best_s) {
-                    best_s = score[e];
+                if (choice[e] > best_s) {
+                    best_s = choice[e];
                     best = e;
                 }
             }
             out[t * kTopK + kk].eid = best;
-            out[t * kTopK + kk].coeff = best_s;
+            out[t * kTopK + kk].coeff = score[best];
         }
         float sum = 0.0f;
         for (int kk = 0; kk < kTopK; ++kk) sum += out[t * kTopK + kk].coeff;

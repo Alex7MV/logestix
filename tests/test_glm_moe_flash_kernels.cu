@@ -200,6 +200,47 @@ TEST_CASE("flash router: sigmoid noaux_tc top-8 + renorm + scaling")
         // Renorm + routed_scaling: sum of coeff == 2.5.
         REQUIRE(std::fabs(sum - 2.5f) < 1e-3f);
     }
+    // HF semantics pin: with bias == 0, coeff == choice score; with nonzero
+    // bias the selected experts must still match the host reference (which
+    // selects on choice but coeffs raw sigmoid). The host/device agreement
+    // above plus the raw-sigmoid renorm invariant (sum == 2.5 regardless of
+    // bias magnitudes) pins the semantics.
+    {
+        // Recompute raw sigmoid scores on host for token 0 and verify that
+        // every device coeff matches raw-sigmoid renorm, NOT bias-added.
+        // Addressing matches the kernel byte layout: row stride = H bytes,
+        // element index (e*H + h*2)/2 in the uint16 test vector.
+        constexpr int H = 64, E = 8;
+        std::vector<float> raw(E);
+        for (int e = 0; e < E; ++e) {
+            float dot = 0;
+            for (int h = 0; h < H; ++h) {
+                // BF16 bits -> f32 (shift left 16), matching the device dot.
+                uint32_t gb = static_cast<uint32_t>(gate[e * (H / 2) + h]) << 16;
+                uint32_t xb = static_cast<uint32_t>(x[0 * (H / 2) + h]) << 16;
+                float g, xv;
+                std::memcpy(&g, &gb, 4);
+                std::memcpy(&xv, &xb, 4);
+                dot += g * xv;
+            }
+            raw[e] = 1.0f / (1.0f + std::exp(-dot));
+        }
+        // Sum over the top-8 selected (by choice) of raw scores.
+        float raw_sel_sum = 0;
+        for (int kk = 0; kk < 8; ++kk) raw_sel_sum += raw[slots_ref[kk].eid];
+        // Device coeffs must be raw-sigmoid renormed * 2.5 (NOT choice-score
+        // renormed): compare directly per slot; skip near-zero raw values
+        // where the division-free comparison is stable anyway.
+        for (int kk = 0; kk < 8; ++kk) {
+            const int eid = slots_ref[kk].eid;
+            const float expect =
+                raw[eid] / raw_sel_sum * 2.5f;
+            INFO("kk=" << kk << " eid=" << eid << " raw=" << raw[eid]
+                       << " expect=" << expect
+                       << " got=" << got[kk].coeff);
+            REQUIRE(std::fabs(got[kk].coeff - expect) < 1e-3f);
+        }
+    }
     cudaFree(d_gate);
     cudaFree(d_bias);
     cudaFree(d_x);
