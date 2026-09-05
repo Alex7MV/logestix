@@ -1392,6 +1392,18 @@ cudaError_t RunGlmFlashGeneration(
     for (auto &st : kda_states)
         cudaMemsetAsync(st.d_state, 0,
                         static_cast<size_t>(64 * 128 * 128) * 4, stream);
+    // DSA KV caches: stale rows from a previous call would leak into the
+    // next session (slot 0 reused). Zero once per call.
+    for (int i = 0; i < kDsaLayerCount; ++i) {
+        cudaMemsetAsync(dsa_kv_k[i], 0,
+                        static_cast<size_t>(dsa_cap) * kHeads * kQkHeadDim
+                            * sizeof(__half),
+                        stream);
+        cudaMemsetAsync(dsa_kv_v[i], 0,
+                        static_cast<size_t>(dsa_cap) * kHeads * kQkHeadDim
+                            * sizeof(__half),
+                        stream);
+    }
 
     const int prompt_steps = static_cast<int>(prompt.size());
     const int total_steps = prompt_steps + max_new - 1;
