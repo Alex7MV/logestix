@@ -704,6 +704,9 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                     DenseNvfp4Record r;
                     r.name = t.name;
                     r.shape = t.shape;
+                    if (t.shape.size() != 2)
+                        return arrow::Status::Invalid(
+                            "NVFP4 tensor must be 2-D: ", t.name);
                     if (t.dtype == "F8_E4M3") {
                         // fp8 source with per-128x128 F32 scale tiles
                         // (experts/shared/DSA/dense-MLP projections).

@@ -116,8 +116,13 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
     REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::DsaQa));
     REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::DsaOBig));
     REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::DenseMlp));
+    // KDA attention projections joined the NVFP4 set (perf: the four
+    // [4096,8192] fp16 pairs dominated device-dense; commit 24deae1).
+    REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::KdaQ));
+    REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::KdaK));
+    REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::KdaV));
+    REQUIRE(flash_tensor_is_nvfp4(FlashTensorKind::KdaO));
     // Norms/biases/conv/hc/gates/embed stay high precision.
-    REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::KdaQ));
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::KdaConv));
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::HcAttnFn));
     REQUIRE_FALSE(flash_tensor_is_nvfp4(FlashTensorKind::RouterGate));

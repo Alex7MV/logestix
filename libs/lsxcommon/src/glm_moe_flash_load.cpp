@@ -407,8 +407,8 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
                         FindNvfp4Suffix(*nv, kv.suffix), *kv.dst, stream,
                         ring, bytes_acc, &dummy);
                     if (e != cudaSuccess || !kv.dst->d_packed) {
-                        error = std::string(l3) + " kda nvfp4 upload failed: "
-                              + kv.suffix;
+                        error = std::string(l3) + " kda nvfp4 upload failed ("
+                              + cudaGetErrorString(e) + "): " + kv.suffix;
                         pw.Free();
                         return false;
                     }
