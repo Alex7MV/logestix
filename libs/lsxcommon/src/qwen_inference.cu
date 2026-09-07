@@ -287,6 +287,172 @@ cudaError_t RunQwenFullAttnKernel(
     return cudaGetLastError();
 }
 
+// ── Split-KV decode attention (seq==1, long context) ────────────────────────
+// Two deterministic kernels (flash-decode shape):
+//   1. partials: grid (heads, nchunks) x head_dim threads; each block owns a
+//      fixed 512-row KV chunk, computes its scores into shared memory
+//      (per-row dot identical to the legacy kernel), block-reduces the local
+//      max m_c and denominator l_c, and emits the LOCAL-max-weighted value
+//      partial pacc_c[d] (FP32). The extra block axis restores memory-level
+//      parallelism the legacy one-block-per-head layout loses at long
+//      contexts (measured: 0.546 ms/layer at pos 2048 vs ~0 at pos 64).
+//   2. combine: grid heads x head_dim threads; global max is fmaxf-order-free,
+//      the denominator and the chunk partial sum walk chunks in ASCENDING
+//      order (fixed sequence -> run-to-run bit-identical).
+// Numerics differ from the legacy kernel only by the chunk-rescale grouping
+// (same contract class as the TC-batch amendment: tolerance-envelope parity
+// vs legacy, binding run-to-run determinism).
+__global__ void split_kv_attn_partials_kernel(
+    const __half *__restrict__ q, const __half *__restrict__ k,
+    const __half *__restrict__ v, float *__restrict__ d_part,
+    float *__restrict__ d_st, int heads, int head_dim, int kv_heads,
+    float scale, int kv_base, int nchunks, int chunk)
+{
+    const int h = blockIdx.x;
+    const int c = blockIdx.y;
+    const int kvh = h / (heads / kv_heads);
+    const int nscores = kv_base + 1;
+    const int begin = c * chunk;
+    const int end = min(begin + chunk, nscores);
+    const int rows = end - begin;
+    const int threads = blockDim.x;
+
+    const __half *qrow = q + (int64_t)h * head_dim;
+    const __half *kbase_p = k + (int64_t)kvh * head_dim;
+    const __half *vbase_p = v + (int64_t)kvh * head_dim;
+
+    extern __shared__ float slogits[];      // dynamic: [rows]
+    __shared__ float sreduce[512];          // separate block-reduction scratch
+
+    // 1. Scores, chunk-per-thread (same per-row dot as the legacy kernel).
+    for (int j = threadIdx.x; j < rows; j += threads) {
+        const __half *krow =
+            kbase_p + (int64_t)(begin + j) * kv_heads * head_dim;
+        float dot = 0.0f;
+        for (int d = 0; d < head_dim; ++d)
+            dot += __half2float(qrow[d]) * __half2float(krow[d]);
+        slogits[j] = dot * scale;
+    }
+    __syncthreads();
+
+    // 2. Chunk max via warp-shuffle block reduction (order-free).
+    float m = -1e30f;
+    for (int j = threadIdx.x; j < rows; j += threads)
+        m = fmaxf(m, slogits[j]);
+    m = qwen_block_max_shfl(m);
+    __syncthreads();
+
+    // 3. Chunk denominator (one exp per score).
+    float sum = 0.0f;
+    for (int j = threadIdx.x; j < rows; j += threads)
+        sum += __expf(slogits[j] - m);
+    sreduce[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = threads / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            sreduce[threadIdx.x] += sreduce[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float l_c = sreduce[0];
+    __syncthreads();
+
+    // 4. Local-max-weighted value partial: one thread per output dim,
+    //    ascending j inside the chunk.
+    {
+        const int d = threadIdx.x;          // blockDim == head_dim (entry)
+        float acc = 0.0f;
+        for (int j = 0; j < rows; ++j) {
+            const __half *vrow =
+                vbase_p + (int64_t)(begin + j) * kv_heads * head_dim;
+            acc += __expf(slogits[j] - m) * __half2float(vrow[d]);
+        }
+        d_part[((int64_t)h * nchunks + c) * head_dim + d] = acc;
+    }
+    if (threadIdx.x == 0) {
+        d_st[(int64_t)(h * nchunks + c) * 2 + 0] = m;
+        d_st[(int64_t)(h * nchunks + c) * 2 + 1] = l_c;
+    }
+}
+
+__global__ void split_kv_attn_combine_kernel(
+    const float *__restrict__ d_part, const float *__restrict__ d_st,
+    __half *__restrict__ out, int heads, int head_dim, int nchunks)
+{
+    const int h = blockIdx.x;
+    const int d = threadIdx.x;              // blockDim == head_dim (entry)
+    const int64_t base = (int64_t)h * nchunks;
+    __shared__ float sreduce[512];
+
+    // Global max: fmaxf is order-free (deterministic).
+    float m = -1e30f;
+    for (int c = d; c < nchunks; c += blockDim.x)
+        m = fmaxf(m, d_st[(base + c) * 2 + 0]);
+    m = qwen_block_max_shfl(m);
+    __syncthreads();
+
+    // Denominator over rescaled chunk sums (fixed chunk-strided order).
+    float den = 0.0f;
+    for (int c = d; c < nchunks; c += blockDim.x)
+        den += d_st[(base + c) * 2 + 1] * __expf(d_st[(base + c) * 2 + 0] - m);
+    sreduce[d] = den;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (d < stride) sreduce[d] += sreduce[d + stride];
+        __syncthreads();
+    }
+    const float inv = 1.0f / (sreduce[0] + 1e-10f);
+    __syncthreads();
+
+    // Weighted value: ascending chunk order (deterministic).
+    float acc = 0.0f;
+    for (int c = 0; c < nchunks; ++c)
+        acc += __expf(d_st[(base + c) * 2 + 0] - m) *
+               d_part[(base + c) * head_dim + d];
+    out[(int64_t)h * head_dim + d] = __float2half(acc * inv);
+}
+
+cudaError_t RunQwenFullAttnKernelSplitKV(
+    cudaStream_t stream,
+    const __half *q, const __half *k, const __half *v, __half *out,
+    int seq, int heads, int head_dim, int kv_heads, float scale, int kv_base)
+{
+    if (!q || !k || !v || !out || seq != 1 || heads <= 0 || head_dim <= 0 ||
+        head_dim > 512 || kv_heads <= 0 || kv_base < 0)
+        return cudaErrorInvalidValue;
+    const int nscores = kv_base + 1;
+    constexpr int kChunk = 512;
+    const int nchunks = (nscores + kChunk - 1) / kChunk;
+
+    float *d_part = nullptr, *d_st = nullptr;
+    cudaError_t e = cudaMallocAsync(
+        &d_part, (size_t)heads * nchunks * head_dim * sizeof(float), stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMallocAsync(&d_st, (size_t)heads * nchunks * 2 * sizeof(float),
+                        stream);
+    if (e != cudaSuccess) {
+        cudaFreeAsync(d_part, stream);
+        return e;
+    }
+
+    {
+        const dim3 grid(heads, nchunks);
+        const size_t smem =
+            (size_t)std::min(kChunk, nscores) * sizeof(float);
+        split_kv_attn_partials_kernel<<<grid, head_dim, smem, stream>>>(
+            q, k, v, d_part, d_st, heads, head_dim, kv_heads, scale, kv_base,
+            nchunks, kChunk);
+        e = cudaGetLastError();
+    }
+    if (e == cudaSuccess) {
+        split_kv_attn_combine_kernel<<<heads, head_dim, 0, stream>>>(
+            d_part, d_st, out, heads, head_dim, nchunks);
+        e = cudaGetLastError();
+    }
+    cudaFreeAsync(d_part, stream);
+    cudaFreeAsync(d_st, stream);
+    return e;
+}
+
 cudaError_t RunQwenRMSNorm(cudaStream_t stream, const __half *x, const __half *w,
                            __half *out, int rows, int hidden, double eps)
 {
@@ -1643,14 +1809,26 @@ cudaError_t RunQwenFullAttention(cudaStream_t stream,
         const float scale = 1.0f / sqrtf((float)HD);
         const dim3 grid(seq, NH);
         const int threads = std::min(HD, 512);
-        // shared holds up to (kv_base+seq+1) logits; cap at threads to bound
-        // memory.
-        const size_t smem =
-            (static_cast<size_t>(kv_base) + static_cast<size_t>(seq) + 1) *
-            sizeof(float);
-        full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
-            d_q, d_k, d_v, d_attn, seq, NH, HD, NKV, scale, kv_base);
-        e = cudaGetLastError(); if (e) return e;
+        // Decode with a grown context: the legacy single-block kernel is
+        // memory-latency bound (one block per head) and its cost grows
+        // linearly with kv_base; the split-KV path keeps it flat. Short
+        // contexts keep the legacy kernel (bit-identical established
+        // behavior, incl. every parity/selfcheck fixture).
+        if (seq == 1 && kv_base + 1 > 512) {
+            e = RunQwenFullAttnKernelSplitKV(stream, d_q, d_k, d_v, d_attn,
+                                             seq, NH, HD, NKV, scale,
+                                             kv_base);
+            if (e) return e;
+        } else {
+            // shared holds up to (kv_base+seq+1) logits; cap at threads to
+            // bound memory.
+            const size_t smem =
+                (static_cast<size_t>(kv_base) + static_cast<size_t>(seq) + 1) *
+                sizeof(float);
+            full_attn_softmax_kernel<<<grid, threads, smem, stream>>>(
+                d_q, d_k, d_v, d_attn, seq, NH, HD, NKV, scale, kv_base);
+            e = cudaGetLastError(); if (e) return e;
+        }
     }
 
     // 7. Output gate: attn * sigmoid(gate).
