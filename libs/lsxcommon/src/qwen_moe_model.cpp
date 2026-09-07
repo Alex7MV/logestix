@@ -313,6 +313,11 @@ gpu::BenchmarkResult QwenMoeModelBase::Benchmark(int num_tokens)
         return r;
     }
 
+    // Model independence: same per-call kernel-routing policy as Infer —
+    // the benchmark must measure the configuration the model is asked to
+    // serve with, never the last Infer caller's ambient toggles.
+    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+
     // Fresh session (benchmark semantics; GLM/Kimi/QwenBase parity: the
     // harness must not touch the caller's incremental session tail). The
     // generation driver allocates/ensures KV capacity internally, mirroring

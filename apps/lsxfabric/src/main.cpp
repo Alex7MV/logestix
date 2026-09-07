@@ -76,7 +76,7 @@ int main(int argc, char* argv[]) {
     }
     if (benchmark) {
         lsxcommon::log::info("Running model benchmark...");
-        auto result = lsxcommon::gpu::RunBenchmark(model_path);
+        auto result = lsxcommon::gpu::RunBenchmark(model_path, 2048, fast_math);
         if (!result.ok) {
             lsxcommon::log::error(absl::StrFormat("Benchmark failed: %s", result.error_msg));
         } else {
