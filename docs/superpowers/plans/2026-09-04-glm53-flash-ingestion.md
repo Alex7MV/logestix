@@ -1774,3 +1774,56 @@ Profiled next-step ceilings (not applied yet):
 - Generation-start resources are created per Infer (1091 slot events ≈
   1-2 ms) — acceptable; error paths leak the event array (pre-existing
   leak pattern in the driver, not regresssed).
+
+## Session 5 (2026-09-07): FINAL — independence refactor + perf 12.6 → 17.8 t/s
+
+All 12 plan tasks + Model Ingestion Protocol steps 1-8 complete. Branch
+`feat/glm53-flash` frozen at `bd0ecb7` (retained for later analysis).
+
+Perf round 3 — KDA→NVFP4 (24deae1): the four [4096,8192] fp16 KDA
+projections dominated device-dense (~9 GiB). Converter quantizes them
+from BF16 (no scale tiles; fp8+tile path kept for experts/DSA/MLP),
+loader uploads NVFP4, KDA path consumes RunLsxNvfp4Gemm. Device dense
+14.0 → 7.4 GiB, LRU slots 1091 → 1555, hit-rate 53.6 → 70.4%,
+12.6 → 15.6 t/s. Paris 3× bit-exact; converter dtype-dispatch + 2-D
+rank guard; review findings fixed (policy test, CUDA status text).
+
+Step 7 completion (aff9619): the flash converter wrote a degenerate
+passport (ds_vocab=0). `BuildFlashPassportTokens` builds the real GLM↔DS
+bridge (glm_vocab=154856, ds_vocab=129280, byte-0 NUL unk anchors
+glm=188/ds=191; 'ĠParis' and 5/6 common words exact, 0 unk in a 200-token
+sample). WritePassport creates the vault parent chain (0e17718).
+
+Model independence (4303c82 + ac7098e, operator directive): the NVFP4
+GEMM/codec layer moved out of qwen_inference into the model-neutral
+`lsx_inference_nvfp4.{h,cu}` (`lsxcommon::lsx_nvfp4`, `lsxcommon_cu`):
+`LsxNvfp4Weight`, `RunLsxNvfp4Gemm`, `RunLsxNvfp4GemmSeq1GemmV`,
+`LsxFastMathScope`. qwen names are inline shims. Kernel-routing toggles
+are asserted per Infer call by every consumer model (qwen dense/moe/exp,
+glm-flash) — the last-constructed-model hazard is gone;
+`test_model_independence_guard` pins the single definition site and the
+per-model scope contract.
+
+Perf round 4 (0472a52): seq1-GEMV size bound 12 → 32 MiB (env
+`LSX_GEMV_MAX_MIB`; A/B: 12→15.6, 32→17.1, 64→16.4 t/s). Flash KDA
+(18.9 MB) and dense-MLP gate/up (28.1 MB) had fallen through to TC
+M=64 tiles wasting 63/64 rows at seq==1 (TcGemmKernel was 18% GPU).
+
+Perf round 5 (bd0ecb7): hc_pre_finalize sinkhorn parallelized
+(thread-0 serial 4×4 normalize chain → per-row/per-col threads with
+barriers, bit-identical arithmetic). 38.9 µs → ~5 µs per call; shared
+with DeepSeek — real-model suites green on both (flash selfcheck 3×
+bit-exact, deepseek 8/8 incl. 4470 kernel assertions). 17.1 → 17.8 t/s.
+
+FINAL NUMBERS (RTX 5090, `--testprompt --max-gen 64 --fast-math`):
+- decode 3.2 → **17.8 t/s** (×5.6); full regression 121/121
+- device: dense 7.4 GiB + LRU 21 GiB (1555 slots) + 3 GiB reserve = 32 used
+- floor analysis: H2D ~31 ms/step at CE line rate (~47 GB/s pinned,
+  70% hit) dominates; next structural steps (documented, not taken):
+  UVM managed expert pool or batched decode — both large rewrites.
+
+Deferred (documented for follow-up tasks): cross-layer expert prefetch
+(event plumbing ready in RunFlashRoutedFFN), UVM residency, LSX_FLASH
+driver error-path event leak (pre-existing pattern), 21 lsxforge
+StrFormat sites under the abseil patch guard, dead ~64 KB scratch in
+the generation driver.
