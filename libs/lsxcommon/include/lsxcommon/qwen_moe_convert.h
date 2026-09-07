@@ -97,4 +97,21 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir);
 arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
                                     const std::string &output_root);
 
+// Per-model conversion passport for the shared Qwen3.5/3.6-MoE body: the
+// pipelines are identical except for index metadata and the model's own
+// frozen-geometry gate.
+struct QwenMoeConvertSpec {
+    const char *format_tag;   // model.index.json "format"
+    const char *model_name;   // model.index.json "model"
+    // Model-specific frozen-geometry gate; fills `why` on mismatch.
+    bool (*check_frozen)(const QwenMoeTopology &top, std::string &why);
+    // Writes "bos_token_id" into the index when the config carries one (>= 0).
+    bool record_bos;
+};
+
+// Shared conversion body (ConvertQwen35MoeModel / ConvertQwen36MoeModel).
+arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
+                                        const std::string &output_root,
+                                        const QwenMoeConvertSpec &spec);
+
 } // namespace lsxcommon::qwen_moe
