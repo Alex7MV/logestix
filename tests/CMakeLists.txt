@@ -2234,6 +2234,23 @@ add_test(NAME test_qwen_moe_36_model COMMAND test_qwen_moe_36_model)
 set_tests_properties(test_qwen_moe_36_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+add_executable(test_qwen_moe_36_selfcheck test_qwen_moe_36_selfcheck.cpp)
+target_include_directories(test_qwen_moe_36_selfcheck PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_qwen_moe_36_selfcheck PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_qwen_moe_36_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_36_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_36_selfcheck>"
+    )
+endif()
+add_test(NAME test_qwen_moe_36_selfcheck COMMAND test_qwen_moe_36_selfcheck)
+set_tests_properties(test_qwen_moe_36_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
 target_include_directories(test_qwen_moe_selfcheck PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
