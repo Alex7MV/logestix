@@ -183,16 +183,46 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
 
 TEST_CASE("fast-math toggles stay family-scoped", "[independence]")
 {
-    // qwen fast-math lives in qwen_inference.cu (dense/moe/flash-next
-    // families share the qwen kernel base); deepseek owns its own toggle.
-    // Guard the coupling that exists: a qwen-family model must never read
-    // the deepseek toggle and vice versa.
+    // The kernel-routing state lives once, in the model-neutral NVFP4 layer
+    // (lsx_nvfp4). qwen and deepseek each keep family-scoped access; no
+    // family's translation unit may define or read the other family's
+    // toggle state.
+    const std::string nvfp4_inf =
+        ReadFile(kSrcDir / "lsx_inference_nvfp4.cu");
     const std::string qwen_inf =
         ReadFile(kSrcDir / "qwen_inference.cu");
     const std::string ds_inf =
         ReadFile(kSrcDir / "deepseek_moe_inference_moe.cu");
-    REQUIRE(qwen_inf.find("g_qwen_tc_fast_math") != std::string::npos);
+    // Single definition site of the routing state.
+    REQUIRE(nvfp4_inf.find("g_lsx_tc_fast_math") != std::string::npos);
+    REQUIRE(nvfp4_inf.find("g_lsx_seq1_gemv") != std::string::npos);
+    // qwen uses the neutral layer (no duplicate state).
+    REQUIRE(qwen_inf.find("g_qwen_tc_fast_math") == std::string::npos);
     REQUIRE(qwen_inf.find("g_deepseek_fast_math") == std::string::npos);
+    // deepseek owns its toggle and never reads the neutral one.
     REQUIRE(ds_inf.find("g_deepseek_fast_math") != std::string::npos);
-    REQUIRE(ds_inf.find("g_qwen_tc_fast_math") == std::string::npos);
+    REQUIRE(ds_inf.find("g_lsx_tc_fast_math") == std::string::npos);
+}
+
+TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
+          "[independence]")
+{
+    // The routing toggles are process-global; each model that routes
+    // through the neutral NVFP4 layer must open LsxFastMathScope with its
+    // OWN config inside Infer — the last-constructed model's policy must
+    // never leak into another model's kernel selection. Extend this list
+    // in the same commit as the new model's Infer (Model Ingestion
+    // Protocol step 3).
+    const std::vector<const char *> consumers = {
+        "qwen_base_model.cpp",      // qwen dense (3.5-9B / 3.8-27B)
+        "qwen_moe_model.cpp",       // qwen3.5-35b-a3b
+        "qwen_moe_exp_model.cpp",   // qwen3.8-flash-next
+        "glm_moe_flash_model.cpp",  // glm-5.3-flash
+    };
+    for (const char *f : consumers) {
+        const std::string text = ReadFile(kSrcDir / f);
+        INFO(f << " must open LsxFastMathScope(cfg_.fast_math, ...) in Infer");
+        REQUIRE(text.find("FastMathScope") != std::string::npos);
+        REQUIRE(text.find("cfg_.fast_math") != std::string::npos);
+    }
 }

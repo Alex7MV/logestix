@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b)";
+    const std::string var    = "(?:27b|flash)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -39,6 +39,7 @@ std::regex SchemeRegex()
         "|expert_cache"
         "|device_math"
         "|norm_kernels"
+        "|fp8"
         "|constants)";
     return std::regex("^" + fam + "_" + type + "(?:_" + var + ")?" + "(?:_exp)?" + "_" + tail + "$");
 }

@@ -1,4 +1,5 @@
 #include "lsxcommon/converter.h"
+#include "lsxcommon/glm_moe_flash_convert.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/common.h"
 #include "lsxcommon/generation_cli.h"
@@ -43,6 +44,8 @@ ABSL_FLAG(bool, qwen35moe, false, "Qwen3.5-35B-A3B MoE conversion pipeline");
 ABSL_FLAG(bool, qwen38flashnext, false,
           "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
+ABSL_FLAG(bool, glmflash, false,
+          "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -81,6 +84,7 @@ int main(int argc, char* argv[]) {
     bool qwen35moe = absl::GetFlag(FLAGS_qwen35moe);
     bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
+    bool glmflash = absl::GetFlag(FLAGS_glmflash);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
@@ -197,6 +201,21 @@ int main(int argc, char* argv[]) {
     }
 
     lsxcommon::log::info(absl::StrFormat("Converting model: {} -> {}", input_path, output_path));
+    if (glmflash) {
+        lsxcommon::log::info("GLM-5.3-Flash pipeline (unified logestix layout)");
+        auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(input_path,
+                                                                 output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                "GLM-5.3-Flash conversion failed: " + st.ToString());
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("GLM-5.3-Flash conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
     if (gemma4) {
         lsxcommon::log::info("Gemma-4 pipeline (logestix-gemma layout)");
         auto st = lsxcommon::gemma::ConvertGemmaModel(input_path, output_path);

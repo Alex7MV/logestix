@@ -107,9 +107,12 @@ struct ExpertDeviceCache {
 
     // Claims a slot for a flat expert id: lowest free slot first, LRU tail
     // victim when full. Commits the mapping both ways, refreshes recency and
-    // counts one miss. Returns the slot index.
-    int Insert(int flat)
+    // counts one miss. Returns the slot index. When non-null, *evicted_slot
+    // receives the recycled slot index on an eviction (else -1); the caller
+    // must fence any in-flight reader of that slot before overwriting it.
+    int Insert(int flat, int *evicted_slot = nullptr)
     {
+        if (evicted_slot) *evicted_slot = -1;
         int slot = -1;
         if (h_free) {
             if (h_free_top > 0) slot = h_free[--h_free_top];
@@ -124,6 +127,7 @@ struct ExpertDeviceCache {
             const int victim = h_slot_owner[slot];
             if (victim >= 0 && victim < total_experts) h_slot_of[victim] = -1;
             if (h_prev) DlUnlink(slot);
+            if (evicted_slot) *evicted_slot = slot;
         }
         h_slot_of[flat] = slot;
         h_slot_owner[slot] = flat;

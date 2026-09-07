@@ -21,9 +21,10 @@ inline int QwenMoeExpertCacheLookup(QwenMoeExpertDeviceCache &c, int flat)
 {
     return c.Lookup(flat);
 }
-inline int QwenMoeExpertCacheInsert(QwenMoeExpertDeviceCache &c, int flat)
+inline int QwenMoeExpertCacheInsert(QwenMoeExpertDeviceCache &c, int flat,
+                                    int *evicted_slot = nullptr)
 {
-    return c.Insert(flat);
+    return c.Insert(flat, evicted_slot);
 }
 
 } // namespace qwen_moe

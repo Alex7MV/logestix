@@ -112,10 +112,14 @@ void FreeQwenMoeExpertCache(QwenMoeExpertDeviceCache &cache);
 // (error text goes to `error` when non-null). When `h2d_stream` is provided,
 // miss staging is enqueued on that (copy) stream instead of `stream`; set
 // *missed so the caller can fence the upload before consuming the slot.
+// *evicted_slot receives the recycled slot index on eviction (-1 otherwise):
+// the caller must fence in-flight readers of that slot (event wait) before
+// the staged upload overwrites it.
 int EnsureQwenMoeExpertResident(QwenMoeExpertStore &store, int layer, int eid,
                                 QwenMoeExpertDeviceCache &cache,
                                 cudaStream_t stream, std::string &error,
                                 cudaStream_t h2d_stream = nullptr,
-                                bool *missed = nullptr);
+                                bool *missed = nullptr,
+                                int *evicted_slot = nullptr);
 
 } // namespace lsxcommon::qwen_moe

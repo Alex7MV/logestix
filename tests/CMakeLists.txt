@@ -467,6 +467,25 @@ endif()
 
 add_test(NAME test_glm_moe_convert COMMAND test_glm_moe_convert)
 
+# ── Тест GLM-5.3-Flash конвертера (геометрия, классификатор, requant) ─────
+add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
+target_compile_definitions(test_glm_moe_flash_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_glm_moe_flash_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_convert PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_convert>"
+    )
+endif()
+
+add_test(NAME test_glm_moe_flash_convert COMMAND test_glm_moe_flash_convert)
+
 # ── Тест Kimi-K2.7-Code конвертера (геометрия, классификатор, топология) ──
 add_executable(test_kimi_moe_convert test_kimi_moe_convert.cpp)
 target_compile_definitions(test_kimi_moe_convert PRIVATE
@@ -2314,6 +2333,91 @@ if(WIN32)
     )
 endif()
 add_test(NAME test_qwen_moe_exp_kernels COMMAND test_qwen_moe_exp_kernels)
+
+# test_glm_moe_flash_kernels — GLM-5.3-Flash kernel tests (conv1d, KDA
+# per-channel-decay gated delta, router) against host references.
+add_library(test_glm_moe_flash_kernels_cu OBJECT test_glm_moe_flash_kernels.cu)
+set_target_properties(test_glm_moe_flash_kernels_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(test_glm_moe_flash_kernels_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE
+    Catch2::Catch2WithMain)
+
+add_executable(test_glm_moe_flash_kernels)
+set_target_properties(test_glm_moe_flash_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_glm_moe_flash_kernels PRIVATE
+    test_glm_moe_flash_kernels_cu lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_kernels PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_kernels>"
+    )
+endif()
+add_test(NAME test_glm_moe_flash_kernels COMMAND test_glm_moe_flash_kernels)
+
+add_executable(test_glm_moe_flash_loader test_glm_moe_flash_loader.cpp)
+target_link_libraries(test_glm_moe_flash_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_loader PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_loader>"
+    )
+endif()
+add_test(NAME test_glm_moe_flash_loader COMMAND test_glm_moe_flash_loader)
+
+add_executable(test_glm_moe_flash_model test_glm_moe_flash_model.cpp)
+target_link_libraries(test_glm_moe_flash_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_model PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_model>"
+    )
+endif()
+add_test(NAME test_glm_moe_flash_model COMMAND test_glm_moe_flash_model)
+
+add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
+target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_glm_moe_flash_selfcheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_selfcheck>"
+    )
+endif()
+add_test(NAME test_glm_moe_flash_selfcheck COMMAND test_glm_moe_flash_selfcheck)
+set_tests_properties(test_glm_moe_flash_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_qwen_moe_exp_model test_qwen_moe_exp_model.cpp)
 target_compile_definitions(test_qwen_moe_exp_model PRIVATE

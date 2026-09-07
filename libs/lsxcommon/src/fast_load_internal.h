@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string_view>
+#include <fstream>
 
 #include "lsxcommon/fast_load.h"
 #include "lsxcommon/schema.h"

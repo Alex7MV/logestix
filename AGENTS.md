@@ -185,6 +185,12 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `libs/lsxcommon/src/glm_moe_load.cpp` + `include/lsxcommon/glm_moe_load.h` + `src/glm_moe_load_internal.h` — host-only GLM loader: `LoadGlmPinnedWeights` (быстрый путь: GPU in-place BF16→FP16 через `GlmBf16ToHalfInPlace`, pinned staging ring, per-layer device-арены, строгие ошибки на отсутствующие файлы слоёв/битые тензоры), `GlmLayerWeights`/`GlmPinnedWeights`
   - `libs/lsxcommon/src/glm_moe_model.cpp` + `src/glm_moe_model.h` — `GlmV5Model` (IModel, registry `glm-5.2`); Infer: полный 79-слойный цикл (dense 0-2, IndexShare attention + MoE router + NVFP4 expert stacks 3-77, MTP epilogue layer 78); SelfCheck: инкрементальный 1→2-токенный селфчек (форс `max(2, max_gen_tokens)`, декод 1/2-токенного префикса против "Paris"), публикует `gen_tokens` + `final_logits` в `InferenceResult`
   - `libs/lsxcommon/src/glm_moe_inference.cu` — GLM-5.2 CUDA-ядра (router, IndexShare attention, NVFP4 expert decode/SwiGLU)
+  - `libs/lsxcommon/src/lsx_inference_nvfp4.cu` + `include/lsxcommon/lsx_inference_nvfp4.h` — МОДЕЛЬНО-НЕЙТРАЛЬНЫЙ NVFP4-слой (namespace `lsx_nvfp4`, объект `lsxcommon_cu`): `LsxNvfp4Weight`, `RunLsxNvfp4Gemm` (диспетчер: seq==1 weight-streaming GEMV / TC mxf4nvf4 / scalar tile), `RunLsxNvfp4GemmSeq1GemmV`, routing-тумблеры `SetLsxTcFastMath`/`SetLsxSeq1Gemv` + RAII `LsxFastMathScope`. Qwen-имена (`RunQwenNvfp4Gemm`, `QwenNvfp4Weight`, …) — inline-шимы над этим слоем. ИНВАРИАНТ НЕЗАВИСИМОСТИ МОДЕЛЕЙ: каждая модель открывает `LsxFastMathScope(cfg_.fast_math, ...)` внутри своего `Infer` (политика per-call, не «последний созданный конструктор»); контроль — `tests/test_model_independence_guard.cpp` (список consumers расширять в коммите новой модели)
+  - `libs/lsxcommon/src/glm_moe_flash_convert.cpp` + `include/lsxcommon/glm_moe_flash_convert.h` — GLM-5.3-Flash конвертер `ConvertGlm5NextModel` (формат `logestix-glm5next`): KDA q/k/v/o → NVFP4 из BF16-источника, эксперты/DSA/MLP из fp8+scale-tiles, `BuildFlashPassportTokens` (шаг 7: мост GLM vocab + DeepSeek-V4-Flash vault vocab, byte-0 unk-якоря); frozen-геометрия в `src/glm_moe_flash_constants.h`
+  - `libs/lsxcommon/src/glm_moe_flash_load.cpp` + `include/lsxcommon/glm_moe_flash_load.h` — GLM-5.3-Flash loader: dense NVFP4/FP16 upload, expert store 45×288 pinned slabs, LRU-кэш из свободной VRAM (`LSX_FLASH_SLOTS` override, резерв 3 GiB), KDA q/k/v/o NVFP4
+  - `libs/lsxcommon/src/glm_moe_flash_model.cpp` + `.h` — `Glm5NextFlashModel` (ModelBase, registry `glm-5.3-flash`); Infer: 45-слойный токен-за-токеном цикл (hc FP32-пайплайн, KDA/DSA attention, MoE router top-8, dual-stream H2D expert staging с event-пломбингом), SelfCheck через RunParisSelfCheck; decode 17.8 t/s на RTX 5090
+  - `libs/lsxcommon/src/glm_moe_flash_inference.cu` + `glm_moe_flash_device_math.h` — GLM-5.3-Flash CUDA-ядра (router top-8 warp-per-expert uint4, KDA decode NVFP4 GEMV, DSA MLA, hc_pre/post reuse из deepseek_moe_load.cuh с defaulted rms_eps)
+  - `libs/lsxcommon/src/glm_moe_flash_constants.h` — frozen-геометрия GLM-5.3-Flash (hidden=4096, 45 слоёв, 36 KDA + 9 DSA, E=288, top-8, moe_i=2048, V=154880)
   - `libs/lsxcommon/src/glm_moe_device_math.h` — device-математика, бит-точная репликация glibc-функций для GLM-5.2
   - `libs/lsxcommon/src/tokenizer_convert.cpp` — tokenizer arrows; merges в форматах string `"a b"` И array `["a","b"]` (GLM-5.2), byte_to_token_id, bos/eos/pad
   - `libs/lsxcommon/src/tokenizer.cpp` + `pretokenizer.cpp` + `unicode.cpp` — BPE-токенизатор, word-level претокенизация, Unicode-классификация
@@ -237,6 +243,8 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `tests/test_qwen_moe_{convert,loader,model}.cpp`, `tests/test_qwen_moe_kernels.cu`, `tests/test_qwen_moe_selfcheck.cpp` + `qwen_moe_test_fixture.h` — Qwen3.5-35B-A3B suite: конвертер/классификатор/расщепление fused gate_up (119 assertions), loader roundtrip+strictness (49), LRU-кэш/роутер/routed-FFN/shared-combine/generation-driver детерминизм (~500 assertions в kernels), реальный селфчек "Paris" 3 бит-точных цикла (`LSX_TEST_QWEN_MOE_SELFCHECK_CYCLES`, SKIP_RETURN_CODE 4)
   - `tests/test_mosaic_network.cpp` — lsxnetwork (FrameQueue SPSC, zero-copy); 8 test cases, ~2M assertions
   - `tests/test_integrated_pipeline.cpp` — TaskMosaic оркестратор (GLM + DeepSeek burst); 4 test cases, 8026 assertions
+  - `tests/test_glm_moe_flash_{convert,loader,model,selfcheck}.cpp` + `test_glm_moe_flash_kernels.cu` — GLM-5.3-Flash suite (5 executables, ~2300 assertions): геометрия/классификатор NVFP4-политики, loader strictness + LRU-кэш, router top-8 (raw-sigmoid coeff) / KDA / DSA / dual-stream staging ядра, реальный селфчек Paris 3 бит-точных цикла (env `LSX_TEST_GLM_FLASH_ROOT`, SKIP без модели)
+  - `tests/test_model_independence_guard.cpp` — независимость моделей: уникальные паспорта констант, без cross-includes, routing-тумблеры в lsx_nvfp4 (одно определение), каждый consumer-модель открывает `LsxFastMathScope(cfg_.fast_math, ...)` в Infer (список consumers расширять в коммите новой модели)
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
@@ -299,7 +307,10 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 - Написать/расширить кастомные CUDA-ядра инференса под специфику внимания модели
   (пример гибридного макета: GatedDeltaNet + Full Attention —
   `libs/lsxcommon/src/qwen_inference.cu`: `qwen_gated_delta_kernel`,
-  `full_attn_softmax_kernel`).
+  `full_attn_softmax_kernel`; GLM-5.3-Flash — `glm_moe_flash_inference.cu`).
+- NVFP4 GEMM-пути — только через модельно-нейтральный слой
+  `lsxcommon/lsx_inference_nvfp4.h` (`RunLsxNvfp4Gemm` + `LsxFastMathScope`);
+  не создавать параллельных qwen/glm-именованных копий диспетчера.
 - ИНВАРИАНТ СТРИМА: Весь цикл генерации от Prefill до Decode выполняется внутри
   ОДНОГО сквозного `cudaStream_t` без возврата управления хосту на каждом токене
   (без `cudaDeviceSynchronize` в цикле; только финальная синхронизация).
@@ -357,6 +368,9 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 - Версии моделей из имён файлов убраны; живут в именах классов и `kType`.
 - Кросс-типовые/базовые файлы семейства НЕ получают маркер типа
   (`qwen_inference.*`, `qwen_base_model.*`, `qwen_device_math.h`, …) и внесены в allowlist.
+- Файлы без family-префикса — модельно-нейтральная инфраструктура
+  (`lsx_inference_nvfp4.*`, `shared_experts.cu`, `safetensors_gpu.cu`, …);
+  naming guard их не проверяет (нет family-стема).
 - Контроль: `tests/test_code_naming_guard.cpp` — сканирует `libs/lsxcommon/{src,include}`,
   обязан быть зелёным в CI; реестры family/role/subsystem расширяются в том же коммите,
   что и файлы новой модели (Model Ingestion Protocol, шаг 3).

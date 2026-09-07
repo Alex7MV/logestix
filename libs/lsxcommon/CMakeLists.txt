@@ -21,6 +21,10 @@ add_library(lsxcommon STATIC
     src/benchmark_gpu.cpp
     src/generation_cli.cpp
     src/glm_moe_convert.cpp
+    src/glm_moe_flash_convert.cpp
+    src/glm_moe_flash_fp8.cpp
+    src/glm_moe_flash_load.cpp
+    src/glm_moe_flash_model.cpp
     src/kimi_moe_convert.cpp
     src/kimi_moe_load.cpp
     src/kimi_moe_model.cpp
@@ -104,6 +108,7 @@ set(LSXCOMMON_CU_DEFS
 )
 
 add_library(lsxcommon_cu OBJECT
+    src/lsx_inference_nvfp4.cu
     src/safetensors_gpu.cu
     src/benchmark_gpu.cu
     src/deepseek_moe_load.cu
@@ -140,6 +145,7 @@ target_link_libraries(lsxcommon_cu
 add_library(lsxcommon_glm_cu OBJECT
     src/glm_moe_inference.cu
     src/glm_moe_load.cu
+    src/glm_moe_flash_inference.cu
 )
 set_target_properties(lsxcommon_glm_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <absl/container/flat_hash_map.h>
 
@@ -127,6 +128,13 @@ std::vector<std::byte> BuildPassport(const BuildPassportOptions& opts) {
 
 int WritePassport(const char* path, const BuildPassportOptions& opts) {
     const std::vector<std::byte> bytes = BuildPassport(opts);
+    // The destination may live inside a metadata vault that does not exist
+    // yet (first conversion on a machine) — create the parent chain.
+    if (auto parent = std::filesystem::path(path).parent_path();
+        !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
         SPDLOG_ERROR("lsx_token_packer: cannot open '{}' for writing", path);

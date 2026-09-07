@@ -2,6 +2,7 @@
 
 #include "deepseek_moe_model.h"
 #include "gemma_moe_model.h"
+#include "glm_moe_flash_model.h"
 #include "glm_moe_model.h"
 #include "kimi_moe_model.h"
 #include "qwen_dense_model.h"
@@ -22,6 +23,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Gemma4_26BA4BModel>();
         LsxModelFactory::Register<Qwen35MoeModel>();
         LsxModelFactory::Register<Qwen38FlashNextModel>();
+        LsxModelFactory::Register<Glm5NextFlashModel>();
         return true;
     }();
     (void)init;
