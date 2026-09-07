@@ -1740,13 +1740,24 @@ cudaError_t RunQwenNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // the weight-streaming GEMV (CUDA-core direct global reads) beats both
     // the TC tile kernel and the TC-MMA decode kernel on small weight
     // tensors -- MoE expert shapes (~0.6 MB) see a 3.6-5x kernel-time cut.
-    // On large dense tensors (>~12 MiB packed+scales) TC W4A4 keeps an
-    // edge, so eligibility is size-bounded. LSX_GEMV_HEAD=1 additionally
-    // opts the LM-head class (K >= 1024 && N >= 16384) into the streaming
-    // GEMV regardless of tensor size: micro data puts it at parity-to-slight
-    // win vs TC on DRAM-bound shapes, and the flat-row grid saturates the
-    // SM array where the MMA path underfills at M == 1.
-    static constexpr int64_t kGemvMaxBytes = int64_t{12} << 20;
+    // Eligibility is size-bounded; the bound is env-tunable
+    // (LSX_GEMV_MAX_MIB, default 32): flash KDA q/k/v/o (18.9 MB) and
+    // dense-MLP gate/up (28.1 MB) measure 2.5-3x faster on the streaming
+    // GEMV than on TC M=64 tiles at seq==1 (profiled 2026-09, RTX 5090;
+    // 32 MiB default picked by A/B: 15.6 -> 17.1 t/s, 64 MiB regresses to
+    // 16.4 t/s on the LM head).
+    // LSX_GEMV_HEAD=1 additionally opts the LM-head class
+    // (K >= 1024 && N >= 16384) into the streaming GEMV regardless of
+    // tensor size: micro data puts it at parity-to-slight win vs TC on
+    // DRAM-bound shapes, and the flat-row grid saturates the SM array
+    // where the MMA path underfills at M == 1.
+    static const int64_t kGemvMaxBytes = []() -> int64_t {
+        if (const char *env = std::getenv("LSX_GEMV_MAX_MIB")) {
+            const long long v = std::atoll(env);
+            if (v > 0) return v << 20;
+        }
+        return int64_t{32} << 20;
+    }();
     static const bool kGemvHead =
         std::getenv("LSX_GEMV_HEAD") != nullptr;
     const bool gemv_small =
