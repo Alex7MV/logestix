@@ -205,52 +205,75 @@ hc_pre_finalize_kernel(
     }
     __syncthreads();
 
-    // sinkhorn (hc_split_sinkhorn_kernel) — thread-0 serial, unchanged
-    if (tid == 0) {
-        float s_pre[8], s_post[8], s_comb[16];
-        for (int j = 0; j < H; ++j)
-            s_pre[j] = 1.0f / (1.0f + expf(-(s_mixes[j] * hc_scale[0] + hc_base[j]))) + kRmsEps;
-        for (int j = 0; j < H; ++j)
-            s_post[j] = 2.0f / (1.0f + expf(-(s_mixes[j + H] * hc_scale[1] + hc_base[j + H])));
-        for (int j = 0; j < H; ++j)
-            for (int k = 0; k < H; ++k)
-                s_comb[j * H + k] = s_mixes[j * H + k + 2 * H] * hc_scale[2] +
-                                    hc_base[j * H + k + 2 * H];
-
-        // row softmax
-        for (int j = 0; j < H; ++j) {
-            float mx = -1e30f;
-            for (int k = 0; k < H; ++k) mx = fmaxf(mx, s_comb[j * H + k]);
-            for (int k = 0; k < H; ++k) s_comb[j * H + k] = expf(s_comb[j * H + k] - mx);
-        }
-        for (int j = 0; j < H; ++j) {
-            float rs = 0.0f;
-            for (int k = 0; k < H; ++k) rs += s_comb[j * H + k];
-            for (int k = 0; k < H; ++k) s_comb[j * H + k] = s_comb[j * H + k] / rs + kRmsEps;
-        }
-        // column normalize
-        for (int k = 0; k < H; ++k) {
-            float cs = 0.0f;
-            for (int j = 0; j < H; ++j) cs += s_comb[j * H + k];
-            for (int j = 0; j < H; ++j) s_comb[j * H + k] = s_comb[j * H + k] / (cs + kRmsEps);
-        }
-        // sinkhorn iterations (kSinkhornIters - 1)
-        for (int it = 1; it < kSinkhornIters; ++it) {
-            for (int j = 0; j < H; ++j) {
-                float rs = 0.0f;
-                for (int k = 0; k < H; ++k) rs += s_comb[j * H + k];
-                for (int k = 0; k < H; ++k) s_comb[j * H + k] = s_comb[j * H + k] / (rs + kRmsEps);
-            }
-            for (int k = 0; k < H; ++k) {
-                float cs = 0.0f;
-                for (int j = 0; j < H; ++j) cs += s_comb[j * H + k];
-                for (int j = 0; j < H; ++j) s_comb[j * H + k] = s_comb[j * H + k] / (cs + kRmsEps);
-            }
-        }
-        for (int j = 0; j < H; ++j) post[j] = s_post[j];
-        for (int j = 0; j < H; ++j) pre[j] = s_pre[j];
-        for (int j = 0; j < H * H; ++j) comb[j] = s_comb[j];
+    // Sinkhorn (hc_split_sinkhorn_kernel semantics). Bit-exact parallel
+    // form: the serial thread-0 loop was latency-bound (~39 us at 1 block);
+    // each row/col phase is element-independent given fixed ascending
+    // accumulation order, so per-row (tid = row j < H) and per-col
+    // (tid = col k < H) threads replicate the exact serial arithmetic —
+    // same loads, same order, same per-element ops — with barriers between
+    // phases replacing the program order.
+    __shared__ float s_pre[8];
+    __shared__ float s_post[8];
+    __shared__ float s_comb[16];  // [H*H], H = kHcMult = 4
+    if (tid < H)
+        s_pre[tid] =
+            1.0f / (1.0f + expf(-(s_mixes[tid] * hc_scale[0] + hc_base[tid]))) +
+            kRmsEps;
+    if (tid < H)
+        s_post[tid] =
+            2.0f /
+            (1.0f + expf(-(s_mixes[tid + H] * hc_scale[1] + hc_base[tid + H])));
+    if (tid < H) {
+        for (int k = 0; k < H; ++k)
+            s_comb[tid * H + k] =
+                s_mixes[tid * H + k + 2 * H] * hc_scale[2] +
+                hc_base[tid * H + k + 2 * H];
     }
+    __syncthreads();
+    // row softmax
+    if (tid < H) {
+        float mx = -1e30f;
+        for (int k = 0; k < H; ++k) mx = fmaxf(mx, s_comb[tid * H + k]);
+        for (int k = 0; k < H; ++k)
+            s_comb[tid * H + k] = expf(s_comb[tid * H + k] - mx);
+    }
+    __syncthreads();
+    if (tid < H) {
+        float rs = 0.0f;
+        for (int k = 0; k < H; ++k) rs += s_comb[tid * H + k];
+        for (int k = 0; k < H; ++k)
+            s_comb[tid * H + k] = s_comb[tid * H + k] / rs + kRmsEps;
+    }
+    __syncthreads();
+    // column normalize
+    if (tid < H) {
+        float cs = 0.0f;
+        for (int j = 0; j < H; ++j) cs += s_comb[j * H + tid];
+        for (int j = 0; j < H; ++j)
+            s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + kRmsEps);
+    }
+    __syncthreads();
+    // sinkhorn iterations (kSinkhornIters - 1)
+    for (int it = 1; it < kSinkhornIters; ++it) {
+        if (tid < H) {
+            float rs = 0.0f;
+            for (int k = 0; k < H; ++k) rs += s_comb[tid * H + k];
+            for (int k = 0; k < H; ++k)
+                s_comb[tid * H + k] = s_comb[tid * H + k] / (rs + kRmsEps);
+        }
+        __syncthreads();
+        if (tid < H) {
+            float cs = 0.0f;
+            for (int j = 0; j < H; ++j) cs += s_comb[j * H + tid];
+            for (int j = 0; j < H; ++j)
+                s_comb[j * H + tid] = s_comb[j * H + tid] / (cs + kRmsEps);
+        }
+        __syncthreads();
+    }
+    if (tid < H) post[tid] = s_post[tid];
+    if (tid < H) pre[tid] = s_pre[tid];
+    for (int idx = tid; idx < H * H; idx += blockDim.x)
+        comb[idx] = s_comb[idx];
 }
 
 // y[d] = Σ_j pre[j] * x[j·D + d]
