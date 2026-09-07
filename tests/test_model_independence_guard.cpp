@@ -167,6 +167,7 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
         "qwen_moe_constants.h", "qwen_moe_exp_constants.h",
         "qwen_moe_36_constants.h",
         "qwen_moe_model.h", "qwen_moe_exp_model.h",
+        "qwen_moe_36_model.h",
         "../include/lsxcommon/qwen_moe_load.h",
         "../include/lsxcommon/qwen_moe_exp_load.h",
     };
@@ -221,6 +222,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
     const std::vector<const char *> consumers = {
         "qwen_base_model.cpp",      // qwen dense (3.5-9B / 3.8-27B)
         "qwen_moe_model.cpp",       // qwen3.5-35b-a3b
+        "qwen_moe_36_model.cpp",    // qwen3.6-35b-a3b
         "qwen_moe_exp_model.cpp",   // qwen3.8-flash-next
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
     };

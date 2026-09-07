@@ -48,6 +48,7 @@ add_library(lsxcommon STATIC
     src/pretokenizer.cpp
     src/qwen_dense_27b_model.cpp
     src/qwen_moe_model.cpp
+    src/qwen_moe_36_model.cpp
     src/qwen_dense_convert.cpp
     src/qwen_moe_convert.cpp
     src/qwen_moe_36_convert.cpp
