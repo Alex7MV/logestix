@@ -13,7 +13,7 @@ CUDA Toolkit 13.3 Update 1 (nvcc V13.3.73; минимум 13.2+), full native C+
 
 | Dependency | Version | Source | Type |
 |---|---|---|---|
-| Apache Arrow | 25.0.0 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
+| Apache Arrow | 25.0.1 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
 | spdlog | 1.15.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |

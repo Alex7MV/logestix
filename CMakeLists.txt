@@ -101,8 +101,8 @@ set(ARROW_GANDIVA OFF CACHE INTERNAL "Disable Gandiva LLVM compiler")
 set(ARROW_HDFS OFF CACHE INTERNAL "Disable HDFS support")
 set(ARROW_PARQUET OFF CACHE INTERNAL "Disable Parquet support")
 # Новые компиляторы (GCC 15+) строже; CHECKIN добавляет -Werror в debug и
-# Arrow 25.0.0 не собирается (-Werror=unused-parameter). Используем PRODUCTION,
-# где -Werror не добавляется вовсе.
+# Arrow не собирается на CHECKIN (-Werror=unused-parameter). Используем
+# PRODUCTION, где -Werror не добавляется вовсе.
 set(BUILD_WARNING_LEVEL "PRODUCTION" CACHE STRING "Arrow: disable -Werror" FORCE)
 
 # Включаем только то, что критично для инференса и работы с данными
@@ -119,7 +119,7 @@ set(ARROW_ENABLE_THREADING ON CACHE INTERNAL "Enable threading in Arrow core")
 FetchContent_Declare(
   Arrow
   GIT_REPOSITORY "https://github.com/apache/arrow.git"
-  GIT_TAG        "apache-arrow-25.0.0"
+  GIT_TAG        "apache-arrow-25.0.1"
   SOURCE_SUBDIR  "cpp"
   GIT_SHALLOW    TRUE
 )

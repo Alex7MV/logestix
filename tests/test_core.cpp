@@ -4,6 +4,7 @@
 // Apache Arrow Core Data Layers
 #include <arrow/api.h>
 #include <arrow/array/builder_primitive.h>
+#include <arrow/config.h>
 #include <arrow/table.h>
 #include <arrow/buffer.h>
 #include <arrow/io/memory.h>
@@ -38,6 +39,19 @@
 #include <vector>
 #include <memory>
 #include <cstring>
+
+TEST_CASE("Apache Arrow pinned version 25.0.1 matches loaded shared library", "[dependencies][arrow]") {
+    // Compile-time headers and the loaded shared library must stay in lockstep
+    STATIC_REQUIRE(ARROW_VERSION == 25000001);
+    REQUIRE(std::string(ARROW_VERSION_STRING) == "25.0.1");
+
+    const auto& build_info = arrow::GetBuildInfo();
+    REQUIRE(build_info.version == ARROW_VERSION);
+    REQUIRE(build_info.version_major == 25);
+    REQUIRE(build_info.version_minor == 0);
+    REQUIRE(build_info.version_patch == 1);
+    REQUIRE(build_info.version_string == "25.0.1");
+}
 
 TEST_CASE("Apache Arrow deep memory and serialization validation", "[dependencies][arrow]") {
     // 1. Verify Memory Alignment and Buffer Integrity via Primitive Builders
