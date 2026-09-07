@@ -81,6 +81,7 @@ struct QwenMoeTopology {
     int moe_intermediate_size = 0;
     int shared_expert_intermediate_size = 0;
     int eos_token_id = -1;
+    int bos_token_id = -1;
 
     int total_pinned_tensors = 0;
     VramProfile vram;        // conversion-time VRAM requirements (mandatory)

@@ -50,6 +50,7 @@ add_library(lsxcommon STATIC
     src/qwen_moe_model.cpp
     src/qwen_dense_convert.cpp
     src/qwen_moe_convert.cpp
+    src/qwen_moe_36_convert.cpp
     src/qwen_moe_exp_convert.cpp
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp

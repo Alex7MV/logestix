@@ -191,6 +191,7 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir)
     top.shared_expert_intermediate_size =
         get_i(src, "shared_expert_intermediate_size", 0);
     top.eos_token_id = get_i(src, "eos_token_id", -1);
+    top.bos_token_id = get_i(src, "bos_token_id", -1);
 
     if (auto lt = src["layer_types"].get_array(); lt.error() == simdjson::SUCCESS) {
         for (auto e : lt.value()) {
@@ -700,8 +701,10 @@ arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
           << ",\n  \"moe_intermediate_size\": " << top.moe_intermediate_size
           << ",\n  \"shared_expert_intermediate_size\": "
           << top.shared_expert_intermediate_size
-          << ",\n  \"eos_token_id\": " << top.eos_token_id
-          << ",\n  \"skipped_visual_tensors\": " << visual_skipped
+          << ",\n  \"eos_token_id\": " << top.eos_token_id;
+        if (spec.record_bos && top.bos_token_id >= 0)
+            j << ",\n  \"bos_token_id\": " << top.bos_token_id;
+        j << ",\n  \"skipped_visual_tensors\": " << visual_skipped
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
