@@ -134,6 +134,7 @@ TEST_CASE("flash_tensor_is_nvfp4 policy")
 // ── Task 2: FP8→NVFP4 requant + config parser ────────────────────────────
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "glm_moe_flash_fp8.h"
+#include "lsxnetwork/lsx_token_translator.h"
 
 #include <cmath>
 
@@ -309,4 +310,45 @@ TEST_CASE("ConvertGlm5NextModel: layout + index on real checkpoint")
     REQUIRE(idx.find("\"dsa_layers\"") != std::string::npos);
     REQUIRE(idx.find("\"moe_layers\"") != std::string::npos);
     fs::remove_all(out);
+}
+
+TEST_CASE("BuildFlashPassportTokens: byte-0 unk anchors + DS bridge side")
+{
+    namespace fs = std::filesystem;
+    // Real converted flash tokenizer when present; the DS side depends on
+    // the DeepSeek-V4-Flash vault vocabulary, so this test exercises both
+    // the complete-bridge and glm-only outcomes deterministically.
+    const char *env = std::getenv("LSX_TEST_GLM_FLASH_ROOT");
+    if (!env) SKIP("GLM-5.3-Flash converted model not present");
+    const fs::path pinned = fs::path(env) / "logestix" / "pinned";
+    if (!fs::exists(pinned / "tokenizer_vocab.arrow"))
+        SKIP("flash tokenizer arrows not present");
+
+    const auto pt = lsxcommon::glm_moe_flash::BuildFlashPassportTokens(pinned);
+    REQUIRE(pt.glm_tokens.size() >= 154000);
+    // Byte-0 anchor exists in a byte-level BPE vocabulary and must be found
+    // as the unk id (exactly one '\0' single-byte token).
+    REQUIRE(pt.glm_tokens[pt.glm_unk_id] == std::string("\0", 1));
+    if (pt.deepseek_tokens.empty()) {
+        SKIP("DeepSeek-V4-Flash vault vocabulary not present");
+    }
+    REQUIRE(pt.deepseek_tokens.size() >= 128000);
+    REQUIRE(pt.deepseek_tokens[pt.deepseek_unk_id] == std::string("\0", 1));
+
+    // Bridge smoke through the real passport codec: a handful of shared
+    // byte tokens must translate exactly both ways.
+    lsxnetwork::BuildPassportOptions opts;
+    opts.glm_tokens = pt.glm_tokens;
+    opts.deepseek_tokens = pt.deepseek_tokens;
+    opts.glm_unk_id = pt.glm_unk_id;
+    opts.deepseek_unk_id = pt.deepseek_unk_id;
+    const auto bytes = lsxnetwork::BuildPassport(opts);
+    REQUIRE(bytes.size() > 64);
+    lsxnetwork::token_passport::PassportHeader hdr;
+    std::memcpy(&hdr, bytes.data(), sizeof(hdr));
+    REQUIRE(hdr.magic == lsxnetwork::token_passport::kMagic);
+    REQUIRE(hdr.glm_vocab_size == pt.glm_tokens.size());
+    REQUIRE(hdr.deepseek_vocab_size == pt.deepseek_tokens.size());
+    REQUIRE(hdr.glm_unk_id == pt.glm_unk_id);
+    REQUIRE(hdr.deepseek_unk_id == pt.deepseek_unk_id);
 }
