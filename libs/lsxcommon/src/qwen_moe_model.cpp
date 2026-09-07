@@ -25,18 +25,23 @@ double MsSince(std::chrono::steady_clock::time_point t0)
 
 const std::string Qwen35MoeModel::kType = "qwen3.5-35b-a3b";
 
-Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
-    : ModelBase{cfg}
+QwenMoeModelBase::QwenMoeModelBase(ModelInitConfig cfg)
+    : ModelBase{std::move(cfg)}
 {
     // The TC W4A4 toggle is process-wide; the dense Qwen models flip it in
-    // QwenBaseModel, but this MoE model derives from ModelBase directly and
-    // silently ran every GEMM on the scalar path without this.
+    // QwenBaseModel, but this MoE family derives from ModelBase directly and
+    // would silently run every GEMM on the scalar path without this.
     qwen::SetQwenTcFastMath(cfg_.fast_math);
+}
+
+Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
+    : QwenMoeModelBase{std::move(cfg)}
+{
 }
 
 Qwen35MoeModel::~Qwen35MoeModel() { Unload(); }
 
-void Qwen35MoeModel::TeardownWeights()
+void QwenMoeModelBase::TeardownWeights()
 {
     qwen_moe::FreeQwenMoeGenScratch(scratch_);
     qwen_moe::FreeQwenMoeExpertCache(cache_);
@@ -81,7 +86,7 @@ bool Qwen35MoeModel::ValidateGeometry(
     return true;
 }
 
-bool Qwen35MoeModel::Load()
+bool QwenMoeModelBase::Load()
 {
     Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
@@ -218,7 +223,7 @@ bool Qwen35MoeModel::Load()
     return true;
 }
 
-gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
+gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
@@ -230,10 +235,6 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
         r.error_msg = "execution context missing";
         return r;
     }
-
-    // Model independence: this model's own kernel-routing policy for the
-    // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
 
     // Incremental session policy (mirrors QwenBaseModel).
     const qwen::SessionDecision session = qwen::DecideSession(
@@ -290,12 +291,20 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
 // (TeardownWeights override above); no per-model override. This also releases
 // the tokenizer db like every other family (divergence fixed 2026-08).
 
-gpu::InferenceResult Qwen35MoeModel::SelfCheck(const ModelRequest &req)
+gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
+{
+    // Model independence: this model's own kernel-routing policy for the
+    // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
+    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    return RunInferShared(req);
+}
+
+gpu::InferenceResult QwenMoeModelBase::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult Qwen35MoeModel::Benchmark(int num_tokens)
+gpu::BenchmarkResult QwenMoeModelBase::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
     if (!RequireLoaded(r)) return r;
