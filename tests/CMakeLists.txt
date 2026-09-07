@@ -2465,7 +2465,8 @@ set_tests_properties(test_qwen_moe_exp_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 # Guard: model independence — unique frozen passports, no cross-model
 # geometry borrowing (host-only, no lsxcommon deps).
 add_executable(test_model_independence_guard test_model_independence_guard.cpp)
-target_link_libraries(test_model_independence_guard PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_model_independence_guard PRIVATE Catch2::Catch2WithMain
+    absl::btree)
 file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD2)
 target_compile_definitions(test_model_independence_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD2}\"")

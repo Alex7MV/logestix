@@ -164,6 +164,7 @@ target_link_libraries(lsxcommon_glm_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 # FMA policy: object-lib -fmad flags are historical (qwen_moe/glm/kimi off,
 # qwen dense on). Shared kernels in lsx_kernels_*.cuh use explicit *_rn
@@ -189,6 +190,7 @@ target_link_libraries(lsxcommon_qwen_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 add_library(lsxcommon_qwen_moe_cu OBJECT
     src/qwen_moe_inference.cu
@@ -210,6 +212,7 @@ target_link_libraries(lsxcommon_qwen_moe_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 
 # Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
@@ -237,6 +240,7 @@ target_compile_definitions(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_tc_cu
     "${CUDA_CUDART_LIBRARY}"
     "${CUDA_DRIVER_LIBRARY}"
+    absl::strings
 )
 
 add_library(lsxcommon_kimi_cu OBJECT
@@ -259,6 +263,7 @@ target_link_libraries(lsxcommon_kimi_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 
 add_library(lsxcommon_gemma_cu OBJECT
@@ -280,6 +285,7 @@ target_link_libraries(lsxcommon_gemma_cu
     "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
+    absl::strings
 )
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_qwen_tc_cu
@@ -309,6 +315,7 @@ target_compile_definitions(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_DEFS
 target_link_libraries(lsxcommon_qwen_moe_exp_cu
     "${CUDA_CUDART_LIBRARY}"
     arrow_shared
+    absl::strings
 )
 
 target_compile_definitions(lsxcommon PUBLIC

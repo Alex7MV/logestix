@@ -19,11 +19,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <absl/container/btree_map.h>
+#include <absl/container/btree_set.h>
+
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <regex>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -89,7 +90,7 @@ TEST_CASE("every ingested model has its own constants header", "[independence]")
 
 TEST_CASE("model constants namespaces are unique per model", "[independence]")
 {
-    std::set<std::string> namespaces;
+    absl::btree_set<std::string> namespaces;
     for (const auto &row : kPassports) {
         INFO("namespace " << row.ns);
         REQUIRE(namespaces.insert(row.ns).second);
@@ -138,7 +139,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
     // written in the header); class-scoped passports (dense qwen) use
     // static constexpr members. The passport must NOT define constants in
     // a namespace owned by a different model.
-    const std::map<std::string, std::string> owner = {
+    const absl::btree_map<std::string, std::string> owner = {
         {"../include/lsxcommon/glm_moe_load.h", "namespace glm {"},
         {"deepseek_moe_load.cuh", "namespace gpu {"},
         {"../include/lsxcommon/gemma_moe_load.h", "namespace gemma {"},
