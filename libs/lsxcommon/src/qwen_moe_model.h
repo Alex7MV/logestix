@@ -1,12 +1,17 @@
 #pragma once
 
-// Qwen3.5-35B-A3B MoE model (kType "qwen3.5-35b-a3b"). Standalone ModelBase
-// subclass (GlmV5Model / KimiK27CodeModel pattern) — NOT the dense
-// QwenBaseModel: the FFN call site is a routed-expert stack, not an MLP.
+// Qwen3.5-35B-A3B MoE model (kType "qwen3.5-35b-a3b") and the shared qwen_moe
+// runtime graph (QwenMoeModelBase) reused by the geometry-identical
+// Qwen3.6-35B-A3B sibling (qwen_moe_36_model.h). Both are standalone
+// ModelBase subclasses (GlmV5Model / KimiK27CodeModel pattern) — NOT the
+// dense QwenBaseModel: the FFN call site is a routed-expert stack, not an
+// MLP.
 //
-// Frozen geometry passport is compile-time locked below; ValidateGeometry()
-// cross-checks the converted index at load. LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY
-// relaxes both gates for tiny synthetic fixtures.
+// Frozen geometry passports are compile-time locked per model
+// (src/qwen_moe_constants.h, src/qwen_moe_36_constants.h);
+// ValidateGeometry() cross-checks the converted index at load.
+// LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY relaxes both gates for tiny synthetic
+// fixtures.
 
 #include <memory>
 
@@ -19,7 +24,46 @@
 
 namespace lsxcommon {
 
-class Qwen35MoeModel final : public ModelBase {
+// Shared MoE-model lifecycle + generation plumbing (3.5 / 3.6). Owns the
+// weight graphs and delegates the FFN call site to the qwen_moe family
+// drivers. Leaf models provide kType, their own frozen-geometry gate and an
+// Infer that opens LsxFastMathScope with the instance's own config before
+// RunInferShared (model independence invariant).
+class QwenMoeModelBase : public ModelBase {
+public:
+    // Test/diagnostics access to persistent generation scratch.
+    const qwen_moe::QwenMoeGenScratch &GenScratchForTest() const
+    {
+        return scratch_;
+    }
+
+    bool Load() override;
+    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
+
+protected:
+    explicit QwenMoeModelBase(ModelInitConfig cfg);
+
+    void TeardownWeights() override;
+
+    // Runtime geometry gate: parsed index vs the leaf model's frozen
+    // passport.
+    virtual bool ValidateGeometry(
+        const qwen_moe::QwenMoeTopology &top) const = 0;
+
+    // Shared Infer body. The caller MUST have opened its own
+    // LsxFastMathScope(cfg_.fast_math, ...) first (per-model policy).
+    gpu::InferenceResult RunInferShared(const ModelRequest &req);
+
+    qwen_moe::QwenMoePinnedWeights pw_;
+    qwen_moe::QwenMoeExpertStore experts_;
+    qwen_moe::QwenMoeExpertDeviceCache cache_{};
+    qwen_moe::QwenMoeGenScratch scratch_{};
+    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::vector<int32_t> session_tail_;
+};
+
+class Qwen35MoeModel final : public QwenMoeModelBase {
 public:
     static const std::string kType;  // "qwen3.5-35b-a3b"
 
@@ -29,31 +73,12 @@ public:
     explicit Qwen35MoeModel(ModelInitConfig cfg);
     ~Qwen35MoeModel() override;
 
-    bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
-    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
-    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return kType; }
 
-    // Test/diagnostics access to persistent generation scratch.
-    const qwen_moe::QwenMoeGenScratch &GenScratchForTest() const
-    {
-        return scratch_;
-    }
-
 private:
-    void TeardownWeights() override;
-
-    // Runtime geometry gate: parsed index vs frozen constants.
-    bool ValidateGeometry(const qwen_moe::QwenMoeTopology &top) const;
-
-    qwen_moe::QwenMoePinnedWeights pw_;
-    qwen_moe::QwenMoeExpertStore experts_;
-    qwen_moe::QwenMoeExpertDeviceCache cache_{};
-    qwen_moe::QwenMoeGenScratch scratch_{};
-    std::unique_ptr<qwen::QwenKvCache> kv_;
-    std::vector<int32_t> session_tail_;
+    bool ValidateGeometry(const qwen_moe::QwenMoeTopology &top) const override;
 };
 
 } // namespace lsxcommon

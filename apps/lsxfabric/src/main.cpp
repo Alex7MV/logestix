@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    lsxcommon::log::info(absl::StrFormat("Model path: {}", model_path));
+    lsxcommon::log::info(absl::StrFormat("Model path: %s", model_path));
     if (testprompt) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = model_path;
@@ -76,21 +76,21 @@ int main(int argc, char* argv[]) {
     }
     if (benchmark) {
         lsxcommon::log::info("Running model benchmark...");
-        auto result = lsxcommon::gpu::RunBenchmark(model_path);
+        auto result = lsxcommon::gpu::RunBenchmark(model_path, 2048, fast_math);
         if (!result.ok) {
-            lsxcommon::log::error(absl::StrFormat("Benchmark failed: {}", result.error_msg));
+            lsxcommon::log::error(absl::StrFormat("Benchmark failed: %s", result.error_msg));
         } else {
             lsxcommon::log::info("=== --benchmark Results ===");
-            lsxcommon::log::info(absl::StrFormat("Tokens generated : {}", result.num_tokens));
-            lsxcommon::log::info(absl::StrFormat("Layers processed : {}",
+            lsxcommon::log::info(absl::StrFormat("Tokens generated : %d", result.num_tokens));
+            lsxcommon::log::info(absl::StrFormat("Layers processed : %d",
                          result.num_layers * result.num_tokens));
-            lsxcommon::log::info(absl::StrFormat("Total time       : {:0.1f} ms", result.total_time_ms));
-            lsxcommon::log::info(absl::StrFormat("Avg per layer    : {:0.3f} ms",
+            lsxcommon::log::info(absl::StrFormat("Total time       : %.1f ms", result.total_time_ms));
+            lsxcommon::log::info(absl::StrFormat("Avg per layer    : %.3f ms",
                          result.avg_bus_latency_ms));
-            lsxcommon::log::info(absl::StrFormat("Tokens/sec       : {:0.1f} t/s",
+            lsxcommon::log::info(absl::StrFormat("Tokens/sec       : %.1f t/s",
                          result.tokens_per_sec));
-            lsxcommon::log::info(absl::StrFormat("DMA volume       : {} MiB",
-                         result.total_bytes_transferred / (1024 * 1024)));
+            lsxcommon::log::info(absl::StrFormat("DMA volume       : %d MiB",
+                         static_cast<int>(result.total_bytes_transferred / (1024 * 1024))));
         }
         lsxcommon::Core::Shutdown();
         return result.ok ? 0 : 1;

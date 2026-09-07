@@ -2,7 +2,10 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cmath>
+#include <cstring>
 #include <vector>
+
+#include "lsxcommon/qwen_inference.h"
 
 __global__ void test_causal_softmax_attn_kernel(
     const __half *q, const __half *k, const __half *v,
@@ -94,4 +97,117 @@ TEST_CASE("Causal softmax attention matches CPU FP64")
     }
 
     cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_out);
+}
+// ── Split-KV decode attention (long-context decode path) ───────────────────
+// Real 35B-A3B geometry: NH=16, NKV=2 (GQA 8:1), HD=256. The split-KV path is
+// numerically independent from the legacy single-block kernel (chunk-rescaled
+// online softmax) — parity holds within an FP16 tolerance envelope; run-to-run
+// bits must be identical (determinism contract).
+
+namespace {
+
+void FillAttnHalf(std::vector<__half> &dst, int n, int seed)
+{
+    dst.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const float v =
+            ((static_cast<float>((i * 37 + seed * 91) % 251)) / 251.0f) - 0.5f;
+        dst[static_cast<size_t>(i)] = __float2half(v);
+    }
+}
+
+} // namespace
+
+TEST_CASE("Split-KV decode attention matches legacy within tolerance",
+          "[qwen-full-attn]")
+{
+    constexpr int heads = 16, kv_heads = 2, head_dim = 256;
+    constexpr int kv_base = 2048;          // nscores = 2049 (multi-chunk)
+    constexpr int nscores = kv_base + 1;
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+    const int qn = heads * head_dim;
+    const int kvn = nscores * kv_heads * head_dim;
+
+    std::vector<__half> hq, hk, hv;
+    FillAttnHalf(hq, qn, 1);
+    FillAttnHalf(hk, kvn, 2);
+    FillAttnHalf(hv, kvn, 3);
+
+    __half *d_q, *d_k, *d_v, *d_legacy, *d_split;
+    cudaMalloc(&d_q, qn * sizeof(__half));
+    cudaMalloc(&d_k, kvn * sizeof(__half));
+    cudaMalloc(&d_v, kvn * sizeof(__half));
+    cudaMalloc(&d_legacy, qn * sizeof(__half));
+    cudaMalloc(&d_split, qn * sizeof(__half));
+    cudaMemcpy(d_q, hq.data(), qn * sizeof(__half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_k, hk.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_v, hv.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
+
+    // Legacy reference (single-block kernel, public numeric entry).
+    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernel(
+                0, d_q, d_k, d_v, d_legacy, 1, heads, head_dim, kv_heads,
+                scale, kv_base) == cudaSuccess);
+    // Split-KV path.
+    REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+                0, d_q, d_k, d_v, d_split, 1, heads, head_dim, kv_heads,
+                scale, kv_base) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> hl(static_cast<size_t>(qn)),
+        hs(static_cast<size_t>(qn));
+    cudaMemcpy(hl.data(), d_legacy, qn * sizeof(__half), cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs.data(), d_split, qn * sizeof(__half), cudaMemcpyDeviceToHost);
+
+    double max_abs = 0.0;
+    for (int i = 0; i < qn; ++i) {
+        const float a = __half2float(hl[static_cast<size_t>(i)]);
+        const float b = __half2float(hs[static_cast<size_t>(i)]);
+        max_abs = std::max(max_abs, static_cast<double>(std::abs(a - b)));
+    }
+    // Envelope: FP16 output granularity + chunk-rescale rounding.
+    CHECK(max_abs < 2e-2);
+
+    cudaFree(d_q); cudaFree(d_k); cudaFree(d_v);
+    cudaFree(d_legacy); cudaFree(d_split);
+}
+
+TEST_CASE("Split-KV decode attention is run-to-run deterministic",
+          "[qwen-full-attn]")
+{
+    constexpr int heads = 16, kv_heads = 2, head_dim = 256;
+    constexpr int kv_base = 1024;          // nscores = 1025 (chunk boundary +1)
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+    const int qn = heads * head_dim;
+    const int kvn = (kv_base + 1) * kv_heads * head_dim;
+
+    std::vector<__half> hq, hk, hv;
+    FillAttnHalf(hq, qn, 5);
+    FillAttnHalf(hk, kvn, 6);
+    FillAttnHalf(hv, kvn, 7);
+
+    __half *d_q, *d_k, *d_v, *d_a, *d_b;
+    cudaMalloc(&d_q, qn * sizeof(__half));
+    cudaMalloc(&d_k, kvn * sizeof(__half));
+    cudaMalloc(&d_v, kvn * sizeof(__half));
+    cudaMalloc(&d_a, qn * sizeof(__half));
+    cudaMalloc(&d_b, qn * sizeof(__half));
+    cudaMemcpy(d_q, hq.data(), qn * sizeof(__half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_k, hk.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_v, hv.data(), kvn * sizeof(__half), cudaMemcpyHostToDevice);
+
+    auto run = [&]( __half *dst ) {
+        REQUIRE(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+                    0, d_q, d_k, d_v, dst, 1, heads, head_dim, kv_heads,
+                    scale, kv_base) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    };
+    run(d_a);
+    run(d_b);
+
+    std::vector<__half> ha(static_cast<size_t>(qn)), hb(static_cast<size_t>(qn));
+    cudaMemcpy(ha.data(), d_a, qn * sizeof(__half), cudaMemcpyDeviceToHost);
+    cudaMemcpy(hb.data(), d_b, qn * sizeof(__half), cudaMemcpyDeviceToHost);
+    CHECK(std::memcmp(ha.data(), hb.data(), qn * sizeof(__half)) == 0);
+
+    cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_a); cudaFree(d_b);
 }

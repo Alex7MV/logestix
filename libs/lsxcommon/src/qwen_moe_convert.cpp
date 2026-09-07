@@ -191,6 +191,7 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir)
     top.shared_expert_intermediate_size =
         get_i(src, "shared_expert_intermediate_size", 0);
     top.eos_token_id = get_i(src, "eos_token_id", -1);
+    top.bos_token_id = get_i(src, "bos_token_id", -1);
 
     if (auto lt = src["layer_types"].get_array(); lt.error() == simdjson::SUCCESS) {
         for (auto e : lt.value()) {
@@ -316,8 +317,9 @@ bool qwen_moe_tensor_is_nvfp4(MoeTensorKind kind)
     }
 }
 
-arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
-                                    const std::string &output_root)
+arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
+                                        const std::string &output_root,
+                                        const QwenMoeConvertSpec &spec)
 {
     namespace fs = std::filesystem;
 
@@ -331,9 +333,9 @@ arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
 
     if (!synthetic_geometry_allowed()) {
         std::string why;
-        if (!check_frozen_geometry(top, why))
-            return arrow::Status::Invalid(
-                "Qwen3.5-35B-A3B frozen geometry mismatch: ", why);
+        if (!spec.check_frozen || !spec.check_frozen(top, why))
+            return arrow::Status::Invalid("Qwen-MoE frozen geometry mismatch: ",
+                                          why);
     }
 
     auto model = lsxcommon::scan_directory(input_dir);
@@ -672,8 +674,8 @@ arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
     {
         std::ostringstream j;
         j << "{\n"
-          << "  \"format\": \"logestix-qwen35moe\",\n"
-          << "  \"model\": \"Qwen3.5-35B-A3B\",\n"
+          << "  \"format\": \"" << spec.format_tag << "\",\n"
+          << "  \"model\": \"" << spec.model_name << "\",\n"
           << "  \"num_layers\": " << top.num_layers
           << ",\n  \"layer_types\": [";
         for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -699,8 +701,10 @@ arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
           << ",\n  \"moe_intermediate_size\": " << top.moe_intermediate_size
           << ",\n  \"shared_expert_intermediate_size\": "
           << top.shared_expert_intermediate_size
-          << ",\n  \"eos_token_id\": " << top.eos_token_id
-          << ",\n  \"skipped_visual_tensors\": " << visual_skipped
+          << ",\n  \"eos_token_id\": " << top.eos_token_id;
+        if (spec.record_bos && top.bos_token_id >= 0)
+            j << ",\n  \"bos_token_id\": " << top.bos_token_id;
+        j << ",\n  \"skipped_visual_tensors\": " << visual_skipped
           << ",\n  \"tokenizer\": \"" << (tokenizer_ok ? "binary" : "fixture")
           << "\""
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
@@ -731,6 +735,16 @@ arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
         top.num_layers, top.num_experts, visual_skipped,
         top.total_pinned_tensors));
     return arrow::Status::OK();
+}
+
+arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
+                                    const std::string &output_root)
+{
+    constexpr QwenMoeConvertSpec kSpec = {"logestix-qwen35moe",
+                                          "Qwen3.5-35B-A3B",
+                                          &check_frozen_geometry,
+                                          /*record_bos=*/false};
+    return ConvertQwenMoeModelCommon(input_dir, output_root, kSpec);
 }
 
 } // namespace lsxcommon::qwen_moe

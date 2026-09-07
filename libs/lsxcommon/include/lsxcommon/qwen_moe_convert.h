@@ -81,6 +81,7 @@ struct QwenMoeTopology {
     int moe_intermediate_size = 0;
     int shared_expert_intermediate_size = 0;
     int eos_token_id = -1;
+    int bos_token_id = -1;
 
     int total_pinned_tensors = 0;
     VramProfile vram;        // conversion-time VRAM requirements (mandatory)
@@ -96,5 +97,22 @@ QwenMoeTopology ParseQwenMoeConfig(const std::string &input_dir);
 // config.json) into the unified <output_root>/logestix arrow layout (vault convention).
 arrow::Status ConvertQwen35MoeModel(const std::string &input_dir,
                                     const std::string &output_root);
+
+// Per-model conversion passport for the shared Qwen3.5/3.6-MoE body: the
+// pipelines are identical except for index metadata and the model's own
+// frozen-geometry gate.
+struct QwenMoeConvertSpec {
+    const char *format_tag;   // model.index.json "format"
+    const char *model_name;   // model.index.json "model"
+    // Model-specific frozen-geometry gate; fills `why` on mismatch.
+    bool (*check_frozen)(const QwenMoeTopology &top, std::string &why);
+    // Writes "bos_token_id" into the index when the config carries one (>= 0).
+    bool record_bos;
+};
+
+// Shared conversion body (ConvertQwen35MoeModel / ConvertQwen36MoeModel).
+arrow::Status ConvertQwenMoeModelCommon(const std::string &input_dir,
+                                        const std::string &output_root,
+                                        const QwenMoeConvertSpec &spec);
 
 } // namespace lsxcommon::qwen_moe

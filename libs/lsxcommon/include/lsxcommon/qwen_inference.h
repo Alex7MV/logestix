@@ -184,6 +184,20 @@ cudaError_t RunQwenFullAttnKernel(
     int seq, int heads, int head_dim, int kv_heads, float scale,
     int kv_base);
 
+// Split-KV decode attention (seq == 1, long context): flash-decode two-kernel
+// path. The legacy single-block kernel is memory-latency bound at one block
+// per head — its per-step cost grows linearly with the KV length (~2.3 us per
+// position per step on 35B-A3B). The split path fixes the chunk geometry
+// (512-row chunks, ascending chunk combine) so the per-step cost stays flat
+// as the context grows. Numerically independent from the legacy kernel
+// (chunk-rescaled online softmax; FP16 tolerance-envelope parity, same
+// contract class as the TC-batch amendment); run-to-run bits are identical.
+cudaError_t RunQwenFullAttnKernelSplitKV(
+    cudaStream_t stream,
+    const __half *q, const __half *k, const __half *v, __half *out,
+    int seq, int heads, int head_dim, int kv_heads, float scale,
+    int kv_base);
+
 // Fused decoder (seq=1) full-attention layer: 3 fused kernels (qkv -> online
 // softmax -> o_proj) replace the ~9 split launches for a SINGLE token. x is the
 // embedded token [H]; kv_base appends its k/v and bounds attended rows

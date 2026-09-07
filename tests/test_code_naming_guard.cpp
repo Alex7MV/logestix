@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash)";
+    const std::string var    = "(?:27b|flash|36)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
