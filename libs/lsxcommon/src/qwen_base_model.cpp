@@ -80,8 +80,8 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     if (!ValidateInferRequest(req, r)) return r;
 
     // Model independence: this model's own kernel-routing policy for the
-    // duration of the call (see QwenFastMathScope in qwen_inference.h).
-    const qwen::QwenFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
+    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
 
     // Persistent execution context: created once in Load(), reused for
     // every request (no temp-per-call stream/cuBLAS churn).
