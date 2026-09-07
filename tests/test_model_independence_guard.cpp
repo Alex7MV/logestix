@@ -68,6 +68,8 @@ const std::vector<PassportRow> kPassports = {
     {"qwen3.5-35b-a3b", "qwen_moe_constants.h", "lsxcommon::qwen_moe::frozen"},
     {"qwen3.8-flash-next", "qwen_moe_exp_constants.h",
      "lsxcommon::qwen_moe_exp::frozen"},
+    {"qwen3.6-35b-a3b", "qwen_moe_36_constants.h",
+     "lsxcommon::qwen_moe_36::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -146,6 +148,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"../include/lsxcommon/kimi_moe_load.h", "namespace kimi {"},
         {"qwen_moe_constants.h", "namespace frozen {"},
         {"qwen_moe_exp_constants.h", "namespace frozen {"},
+        {"qwen_moe_36_constants.h", "namespace frozen {"},
         {"qwen_dense_model.h", "static constexpr int kHiddenSize"},
         {"qwen_dense_27b_model.h", "static constexpr int kHiddenSize"},
     };
@@ -162,6 +165,7 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
     // any geometry a model needs is frozen in its own passport.
     const std::vector<std::string> qwen_files = {
         "qwen_moe_constants.h", "qwen_moe_exp_constants.h",
+        "qwen_moe_36_constants.h",
         "qwen_moe_model.h", "qwen_moe_exp_model.h",
         "../include/lsxcommon/qwen_moe_load.h",
         "../include/lsxcommon/qwen_moe_exp_load.h",
