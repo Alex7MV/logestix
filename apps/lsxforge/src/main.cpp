@@ -206,8 +206,8 @@ int main(int argc, char* argv[]) {
         auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(input_path,
                                                                  output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat(
-                "GLM-5.3-Flash conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(
+                "GLM-5.3-Flash conversion failed: " + st.ToString());
             lsxcommon::Core::Shutdown();
             return 1;
         }

@@ -43,9 +43,12 @@ TEST_CASE("LoadGlmFlashDenseWeights: strict roundtrip")
     REQUIRE(pw.top.hidden == 4096);
     REQUIRE(pw.top.layers == 45);
     REQUIRE(pw.layers.size() == 45);
-    // KDA layer 0: raw FP16 q + conv + A_log + dt_bias.
+    // KDA layer 0: NVFP4 q (fp8 source requantized at conversion), conv
+    // FP16, A_log + dt_bias F32.
     REQUIRE(pw.layers[0].is_kda);
-    REQUIRE(pw.layers[0].d_kda_q != nullptr);
+    REQUIRE(pw.layers[0].kda_q.d_packed != nullptr);
+    REQUIRE(pw.layers[0].kda_q.rows == 8192);
+    REQUIRE(pw.layers[0].kda_q.cols == 4096);
     REQUIRE(pw.layers[0].d_kda_q_conv != nullptr);
     REQUIRE(pw.layers[0].d_A_log != nullptr);
     REQUIRE(pw.layers[0].d_dt_bias != nullptr);

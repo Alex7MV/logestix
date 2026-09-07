@@ -143,10 +143,10 @@ void FlashLayerWeights::Free()
     cudaFree(d_hc_ffn_fn);
     cudaFree(d_hc_ffn_base);
     cudaFree(d_hc_ffn_scale);
-    cudaFree(d_kda_q);
-    cudaFree(d_kda_k);
-    cudaFree(d_kda_v);
-    cudaFree(d_kda_o);
+    kda_q.Free();
+    kda_k.Free();
+    kda_v.Free();
+    kda_o.Free();
     cudaFree(d_kda_q_conv);
     cudaFree(d_kda_k_conv);
     cudaFree(d_kda_v_conv);
@@ -380,16 +380,46 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
         }
 
         if (lw.is_kda) {
+            // KDA: q/k/v/o NVFP4 (quantized at conversion time), conv
+            // weights FP16, gating/scalars F32.
+            {
+                auto nv = LoadDenseNvfp4BatchViews(pinned_dir
+                                                   / (l3 + "_nvfp4.arrow"));
+                if (!nv.ok()) {
+                    error = l3 + "_nvfp4.arrow read failed: "
+                          + nv.status().ToString();
+                    pw.Free();
+                    return false;
+                }
+                struct KdaNv {
+                    const char *suffix;
+                    qwen::QwenNvfp4Weight *dst;
+                };
+                const KdaNv kNv[] = {
+                    {"self_attn.q_proj.weight", &lw.kda_q},
+                    {"self_attn.k_proj.weight", &lw.kda_k},
+                    {"self_attn.v_proj.weight", &lw.kda_v},
+                    {"self_attn.o_proj.weight", &lw.kda_o},
+                };
+                for (const auto &kv : kNv) {
+                    std::string dummy;
+                    const cudaError_t e = UploadNvfp4Weight(
+                        FindNvfp4Suffix(*nv, kv.suffix), *kv.dst, stream,
+                        ring, bytes_acc, &dummy);
+                    if (e != cudaSuccess || !kv.dst->d_packed) {
+                        error = std::string(l3) + " kda nvfp4 upload failed: "
+                              + kv.suffix;
+                        pw.Free();
+                        return false;
+                    }
+                }
+            }
             // KDA: FP16 weights + F32 scalars.
             struct KdaFp16 {
                 const char *suffix;
                 __half **dst;
             };
             const KdaFp16 kFp16[] = {
-                {"self_attn.q_proj.weight", &lw.d_kda_q},
-                {"self_attn.k_proj.weight", &lw.d_kda_k},
-                {"self_attn.v_proj.weight", &lw.d_kda_v},
-                {"self_attn.o_proj.weight", &lw.d_kda_o},
                 {"self_attn.q_conv1d.weight", &lw.d_kda_q_conv},
                 {"self_attn.k_conv1d.weight", &lw.d_kda_k_conv},
                 {"self_attn.v_conv1d.weight", &lw.d_kda_v_conv},
@@ -541,8 +571,8 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
 
         if (std::getenv("LSX_FLASH_LOAD_DEBUG"))
             std::fprintf(stderr, "[load] l=%d kda=%d q=%p o=%p A=%p\n", l,
-                         (int) lw.is_kda, (void *) lw.d_kda_q,
-                         (void *) lw.d_kda_o, (void *) lw.d_A_log);
+                         (int) lw.is_kda, (void *) lw.kda_q.d_packed,
+                         (void *) lw.kda_o.d_packed, (void *) lw.d_A_log);
 
         // MoE: router + shared expert; Dense MLP on layers 0..2.
         auto nv = LoadDenseNvfp4BatchViews(pinned_dir

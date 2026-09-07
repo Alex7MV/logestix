@@ -542,11 +542,17 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 
     cudaError_t e;
     // 1. q/k/v GEMVs (raw projections).
-    if ((e = FlashGemmV16(stream, lw.d_kda_q, d_x, d_q, hidden, KD))
+    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_q.d_packed,
+                                    lw.kda_q.d_scales, lw.kda_q.global_scale,
+                                    d_q, 1, hidden, KD, false))
         != cudaSuccess) return e;
-    if ((e = FlashGemmV16(stream, lw.d_kda_k, d_x, d_k, hidden, KD))
+    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_k.d_packed,
+                                    lw.kda_k.d_scales, lw.kda_k.global_scale,
+                                    d_k, 1, hidden, KD, false))
         != cudaSuccess) return e;
-    if ((e = FlashGemmV16(stream, lw.d_kda_v, d_x, d_v, hidden, KD))
+    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_v.d_packed,
+                                    lw.kda_v.d_scales, lw.kda_v.global_scale,
+                                    d_v, 1, hidden, KD, false))
         != cudaSuccess) return e;
 
     // 2. Depthwise causal conv over [hist(K-1) prev rows oldest..newest,
@@ -664,7 +670,9 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
     }
 
     // 8. o_proj: [H, KD] @ gated -> d_out.
-    if ((e = FlashGemmV16(stream, lw.d_kda_o, d_gated, d_out, KD, hidden))
+    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_gated, lw.kda_o.d_packed,
+                                    lw.kda_o.d_scales, lw.kda_o.global_scale,
+                                    d_out, 1, KD, hidden, false))
         != cudaSuccess) return e;
     return cudaSuccess;
 }

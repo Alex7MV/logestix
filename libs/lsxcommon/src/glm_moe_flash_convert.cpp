@@ -246,6 +246,14 @@ bool flash_tensor_is_nvfp4(FlashTensorKind kind)
     case FlashTensorKind::DsaKvA:
     case FlashTensorKind::DsaOBig:
     case FlashTensorKind::DenseMlp:
+    // KDA attention projections: [4096,8192]/[8192,4096] fp16 pairs
+    // dominated the device-dense footprint (~9 GiB). Quantize at
+    // conversion time (fp8 source -> bf16 -> NVFP4, same pipeline as the
+    // DSA projections) so the loader can upload NVFP4 directly.
+    case FlashTensorKind::KdaQ:
+    case FlashTensorKind::KdaK:
+    case FlashTensorKind::KdaV:
+    case FlashTensorKind::KdaO:
         return true;
     default:
         return false;
@@ -693,14 +701,32 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                     const std::string scale_name =
                         t.name.substr(0, t.name.size() - strlen(".weight"))
                         + ".weight_scale_inv";
-                    auto scale = load_raw(scale_name);
-                    if (scale.empty())
-                        return arrow::Status::Invalid("missing scale tile: ",
-                                                      scale_name);
                     DenseNvfp4Record r;
-                    ARROW_RETURN_NOT_OK(quantize_fp8_nvfp4(
-                        data, t.shape, scale, scale_shape_of(scale_name),
-                        t.name, r));
+                    r.name = t.name;
+                    r.shape = t.shape;
+                    if (t.dtype == "F8_E4M3") {
+                        // fp8 source with per-128x128 F32 scale tiles
+                        // (experts/shared/DSA/dense-MLP projections).
+                        auto scale = load_raw(scale_name);
+                        if (scale.empty())
+                            return arrow::Status::Invalid(
+                                "missing scale tile: ", scale_name);
+                        ARROW_RETURN_NOT_OK(quantize_fp8_nvfp4(
+                            data, t.shape, scale, scale_shape_of(scale_name),
+                            t.name, r));
+                    } else {
+                        // BF16 source without scale tiles (KDA q/k/v/o):
+                        // quantize straight from BF16, same codec as the
+                        // qwen4_exp GDN projections.
+                        r.dtype = "BF16";
+                        if (!gpu::quantize_tensor_gpu(
+                                data.data(),
+                                static_cast<int64_t>(t.shape[0]) * t.shape[1],
+                                "BF16", nullptr, r.shape, {}, r.packed,
+                                r.scales, r.global_scale))
+                            return arrow::Status::IOError(
+                                "GPU quantization failed for ", t.name);
+                    }
                     nvfp4_recs.push_back(std::move(r));
                     continue;
                 }

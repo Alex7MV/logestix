@@ -45,11 +45,13 @@ struct FlashLayerWeights {
     int64_t hc_fn_rows = 0;
     int64_t hc_fn_cols = 0;
 
-    // KDA (linear_attention) — FP16 weights, F32 scalars.
-    __half *d_kda_q = nullptr;      // [Hq=8192, H]
-    __half *d_kda_k = nullptr;      // [8192, H]
-    __half *d_kda_v = nullptr;      // [8192, H]
-    __half *d_kda_o = nullptr;      // [H, 8192]
+    // KDA (linear_attention) — q/k/v/o are NVFP4 (the four [4096,8192]
+    // projections dominated the device-dense footprint; conv/scalar/gating
+    // tensors stay FP16/F32 — numerics of the recurrence path unchanged).
+    qwen::QwenNvfp4Weight kda_q;    // [8192, H]
+    qwen::QwenNvfp4Weight kda_k;    // [8192, H]
+    qwen::QwenNvfp4Weight kda_v;    // [8192, H]
+    qwen::QwenNvfp4Weight kda_o;    // [H, 8192]
     __half *d_kda_q_conv = nullptr; // [8192, 1, 4] -> flat [8192*4]
     __half *d_kda_k_conv = nullptr;
     __half *d_kda_v_conv = nullptr;
