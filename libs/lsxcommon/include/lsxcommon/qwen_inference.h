@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/sampling.h"
 
@@ -83,34 +84,45 @@ cudaError_t RunQwenEmbed(cudaStream_t stream, const __half *d_embed,
 // Blackwell tensor-core fast-path toggle (audit Phase 3): when enabled,
 // RunQwenNvfp4Gemm dispatches to the sm_120a mxf4nvf4 kernel for supported
 // shapes and falls back to the scalar path otherwise. Default off.
-void SetQwenTcFastMath(bool on);
-bool QwenTcFastMath();
+// Qwen-named shims over the model-neutral NVFP4 routing state
+// (lsxcommon/lsx_inference_nvfp4.h). New code should use lsx_nvfp4:: names
+// directly; these keep the qwen-family call sites stable.
+inline void SetQwenTcFastMath(bool on) { lsx_nvfp4::SetLsxTcFastMath(on); }
+inline bool QwenTcFastMath() { return lsx_nvfp4::LsxTcFastMath(); }
+inline void SetQwenSeq1Gemv(bool on) { lsx_nvfp4::SetLsxSeq1Gemv(on); }
+inline bool QwenSeq1Gemv() { return lsx_nvfp4::LsxSeq1Gemv(); }
 
-// seq==1 decode-path GEMV toggle (round-18 lever). Opt-in process-wide
-// flag; when enabled together with fast-math, RunQwenNvfp4Gemm routes
-// eligible seq==1 shapes (K % 32 == 0, K >= 256, <= 12 MiB packed+scales,
-// no fused segments) to the weight-streaming GEMV kernel.
-void SetQwenSeq1Gemv(bool on);
-bool QwenSeq1Gemv();
+// Model-independence guard (AGENTS.md: модели независимы): every model
+// asserts its OWN fast_math policy for the duration of Infer/SelfCheck via
+// lsx_nvfp4::LsxFastMathScope — the last-constructed model's config must not
+// leak into another model's kernel selection.
+using QwenFastMathScope = lsx_nvfp4::LsxFastMathScope;
 
-cudaError_t RunQwenNvfp4Gemm(
+// NVFP4 GEMM moved to the model-neutral layer; qwen-named aliases keep the
+// dense/moe call sites unchanged.
+inline cudaError_t RunQwenNvfp4Gemm(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int seq, int K, int N, bool acc = false,
-    // Optional per-segment global scales for the TC epilogue: two ranges
-    // split at N/2 when bounds is null, else four bounds-driven ranges.
-    // Ignored by the scalar fallback path.
-    const float *seg_wgs_dev = nullptr, const int *seg_bounds_dev = nullptr);
-
-// seq==1 decode-path weight-streaming NVFP4 GEMV (round-18 lever): y[n] =
-// sum_k x[k] * dequant(packed[n*K+k]) with FP32 accumulate. Streams packed
-// E2M1 weights straight from global memory (coalesced uint4 loads) -- no
-// shared-memory slab staging. Requires K % 32 == 0; k-order free (tolerance
-// class), run-to-run deterministic. External linkage for direct testing.
-cudaError_t RunQwenNvfp4GemmSeq1GemmV(
+    const float *seg_wgs_dev = nullptr, const int *seg_bounds_dev = nullptr) {
+    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, x, packed, scales, global_scale,
+                                      y, seq, K, N, acc, seg_wgs_dev,
+                                      seg_bounds_dev);
+}
+inline cudaError_t RunQwenNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int K, int N, bool acc = false);
+    __half *y, int K, int N, bool acc = false) {
+    return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(stream, x, packed, scales,
+                                               global_scale, y, K, N, acc);
+}
+
+inline cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x,
+                                   int seq, __half *y, cudaStream_t stream) {
+    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, x, w.d_packed, w.d_scales,
+                                      w.global_scale, y, seq, w.cols, w.rows,
+                                      /*acc=*/false);
+}
 
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate

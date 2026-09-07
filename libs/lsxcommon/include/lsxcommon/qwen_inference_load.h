@@ -6,6 +6,8 @@
 #include <vector>
 
 #include <cuda_runtime.h>
+
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include <cuda_fp16.h>
 
 #include "lsxcommon/qwen_dense_convert.h"
@@ -14,30 +16,10 @@ namespace lsxcommon::qwen {
 
 // One NVFP4-quantized dense weight on device: E2M1 nibbles + E4M3 per-16 block
 // scales + global float scale + the ORIGINAL weight shape (rows x cols).
-struct QwenNvfp4Weight {
-    const uint8_t *d_packed = nullptr;
-    const uint8_t *d_scales = nullptr;
-    float global_scale = 1.0f;
-    int rows = 0;   // output dim (N for GEMM: W is [N, K] row-major)
-    int cols = 0;   // input dim (K)
-    int64_t packed_bytes = 0;
-    int64_t scale_bytes = 0;
-    // True when d_packed/d_scales alias another weight's allocation
-    // (gate/up views into a fused gate_up buffer) and Free() must not
-    // release them.
-    bool view_only = false;
-
-    void Free() {
-        if (view_only) {
-            d_packed = nullptr; d_scales = nullptr;
-            view_only = false;
-            return;
-        }
-        cudaFree(const_cast<uint8_t*>(d_packed));
-        cudaFree(const_cast<uint8_t*>(d_scales));
-        d_packed = nullptr; d_scales = nullptr;
-    }
-};
+// Device NVFP4 weight container moved to the model-neutral NVFP4 layer
+// (lsxcommon/lsx_inference_nvfp4.h); the qwen-named alias keeps the
+// qwen-family call sites unchanged.
+using QwenNvfp4Weight = lsx_nvfp4::LsxNvfp4Weight;
 
 // Per decoder layer weights. `is_linear` selects linear_attn vs self_attn.
 struct QwenLayerWeights {

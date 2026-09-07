@@ -108,6 +108,7 @@ set(LSXCOMMON_CU_DEFS
 )
 
 add_library(lsxcommon_cu OBJECT
+    src/lsx_inference_nvfp4.cu
     src/safetensors_gpu.cu
     src/benchmark_gpu.cu
     src/deepseek_moe_load.cu

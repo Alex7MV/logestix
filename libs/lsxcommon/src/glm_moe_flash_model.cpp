@@ -144,6 +144,11 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
         return r;
     }
 
+    // Model independence: assert THIS model's kernel-routing policy for the
+    // duration of the call (process-global flags would otherwise leak the
+    // last-constructed model's fast_math across the registry).
+    const qwen::QwenFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+
     qwen::QwenGenerationResult gen;
     sample::GreedySampler greedy;
     const cudaError_t err = RunUnderResidencyLock([&] {

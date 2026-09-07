@@ -231,6 +231,10 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
         return r;
     }
 
+    // Model independence: this model's own kernel-routing policy for the
+    // duration of the call (see QwenFastMathScope in qwen_inference.h).
+    const qwen::QwenFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+
     // Incremental session policy (mirrors QwenBaseModel).
     const qwen::SessionDecision session = qwen::DecideSession(
         kv_ && kv_->allocated(),
