@@ -1,6 +1,6 @@
 // nvfp4_scale.h — canonical power-of-two E4M3 block-scale codecs (NVFP4).
 // Single textual source shared by the offline converter (schema.cpp), the
-// runtime act-quant kernel (qwen_tc_gemm.cu) and the TC test host reference.
+// runtime act-quant kernel (lsx_tc_gemm.cu) and the TC test host reference.
 // Semantics: exponent rounds UP (ceil) so the block maximum never saturates;
 // exact powers of two map onto themselves. Header-only, CUDA-free, safe to
 // include from non-CUDA TUs. Decode must stay in sync with

@@ -121,7 +121,7 @@ __host__ __device__ uint8_t quantize_e2m1_nearest(float val) {
     return static_cast<uint8_t>((sign << 3) | best);
 }
 
-// qwen_tc_gemm.cu QuantizeE2m1 verbatim (threshold chain, ties up).
+// lsx_tc_gemm.cu QuantizeE2m1 verbatim (threshold chain, ties up).
 __host__ __device__ uint8_t quantize_e2m1_tie_up(float v) {
     const bool neg = v < 0.0f;
     const float a = fabsf(v);

@@ -1,5 +1,5 @@
-// qwen_tc_gemm.cu - Blackwell tensor-core NVFP4 W4A4 fast path (audit Phase 3,
-// F-01). See qwen_tc_gemm.h for the compilation-target constraint.
+// lsx_tc_gemm.cu - Blackwell tensor-core NVFP4 W4A4 fast path (audit Phase 3,
+// F-01). See lsx_tc_gemm.h for the compilation-target constraint.
 //
 // Contents:
 //  * ActQuantKernel + helpers: FP16 -> NVFP4 activation quantization
@@ -8,7 +8,7 @@
 //    Raw packed K64-slabs are staged in shared memory; fragments are built
 //    from smem; the hardware MMA performs all decoding. Weights are consumed
 //    in the EXISTING repo layout ([N,K] nibbles + [N,K/16] pow2-E4M3 scales).
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 #include <cuda.h>
 
@@ -25,8 +25,7 @@
 #include "lsx_kernels_quant.cuh"
 
 namespace lsxcommon {
-namespace qwen {
-namespace tc {
+namespace lsx_tc {
 
 namespace {
 
@@ -397,7 +396,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                              int split_k, float *__restrict__ y_f32,
                              const float *__restrict__ seg_wgs,
                              const int *__restrict__ seg_bounds,
-                             const QwenTcBatchSlot *__restrict__ batch_slots,
+                             const LsxTcBatchSlot *__restrict__ batch_slots,
                              const uint8_t *__restrict__ batch_pack,
                              const uint8_t *__restrict__ batch_scale,
                              int64_t pack_stride, int64_t scale_stride,
@@ -415,7 +414,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     if (kBatch) {
         slot = blockIdx.z / split_k;
         z_slice = blockIdx.z % split_k;
-        const QwenTcBatchSlot b = batch_slots[slot];
+        const LsxTcBatchSlot b = batch_slots[slot];
         bp_s = batch_pack + static_cast<int64_t>(b.dev_slot) * pack_stride +
                w_off;
         bs_s = batch_scale + static_cast<int64_t>(b.dev_slot) * scale_stride +
@@ -737,7 +736,7 @@ __global__ void TcSplitKFinalize(const float *__restrict__ partials,
 __global__ void TcSplitKFinalizeBatch(const float *__restrict__ partials,
                                       __half *__restrict__ y, int seq, int N,
                                       int split_k,
-                                      const QwenTcBatchSlot *__restrict__ slots,
+                                      const LsxTcBatchSlot *__restrict__ slots,
                                       int k_slots, bool seg13)
 {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
@@ -759,7 +758,7 @@ __global__ void TcSplitKFinalizeBatch(const float *__restrict__ partials,
 
 } // namespace
 
-cudaError_t QuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
+cudaError_t LsxTcQuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
                               int K, uint8_t *d_packed, uint8_t *d_scales)
 {
     if (!x || !d_packed || !d_scales || seq <= 0 || K <= 0 || (K & 15))
@@ -838,7 +837,7 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
             cudaFreeAsync(ap_scratch, stream);
             return e;
         }
-        e = QuantizeActsNvfp4(stream, x_fp16, seq, K,
+        e = LsxTcQuantizeActsNvfp4(stream, x_fp16, seq, K,
                               static_cast<uint8_t *>(ap_scratch),
                               static_cast<uint8_t *>(as_scratch));
     } else {
@@ -933,7 +932,7 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
     return e;
 }
 
-cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
+cudaError_t RunLsxTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
                                const uint8_t *w_packed,
                                const uint8_t *w_scales, float w_global_scale,
                                __half *y, int seq, int K, int N, bool acc,
@@ -948,7 +947,7 @@ cudaError_t RunQwenTcNvfp4Gemm(cudaStream_t stream, const __half *x_fp16,
 // TC GEMM over caller-owned quantized activations (producer-fused quant):
 // skips the scratch alloc + ActQuant pass. Returns NotSupported on
 // non-Blackwell devices (caller falls back to the fp16-input path).
-cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
+cudaError_t RunLsxTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
                                   const uint8_t *as, const uint8_t *w_packed,
                                   const uint8_t *w_scales, float w_global_scale,
                                   __half *y, int seq, int K, int N, bool acc,
@@ -962,7 +961,7 @@ cudaError_t RunQwenTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
 
 // ── Batched seq==1 routed-expert TC GEMM (80-tok/s decode round) ───────────
 
-int QwenTcBatchSplitK(int K, int N)
+int LsxTcBatchSplitK(int K, int N)
 {
     // Mirror of TcGemmDispatch's split-K rule (seq==1, !acc): same inputs ->
     // same split_k on both the single-slot and batched paths.
@@ -975,7 +974,7 @@ int QwenTcBatchSplitK(int K, int N)
     return 1;
 }
 
-bool TcRuntimeSupported()
+bool LsxTcRuntimeSupported()
 {
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) return false;
@@ -985,10 +984,10 @@ bool TcRuntimeSupported()
 }
 
 // Persistent fused-GEMM output scratch keyed by the cached packed-weight
-// pointer (BuildFusedGemmWeights cache holds the pointers for the process
+// pointer (LsxTcBuildFusedGemmWeights cache holds the pointers for the process
 // lifetime, so the key is stable). Removes per-layer-per-step
 // cudaMallocAsync/FreeAsync pairs in the linear-attn decode path.
-__half *TcFusedOutputScratch(const void *packed_key, int n_half)
+__half *LsxTcFusedOutputScratch(const void *packed_key, int n_half)
 {
     struct FusedOutScratch {
         const void *key;
@@ -1013,7 +1012,7 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
                             const uint8_t *as, const uint8_t *pack_base,
                             const uint8_t *scale_base, int64_t pack_stride,
                             int64_t scale_stride,
-                            const QwenTcBatchSlot *slots_dev, int k_slots,
+                            const LsxTcBatchSlot *slots_dev, int k_slots,
                             int K, int N, __half *y, float *splitk_partials,
                             int64_t w_off, int64_t s_off, bool seg13)
 {
@@ -1029,7 +1028,7 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
     if (e != cudaSuccess) return e;
     if (prop.major != 12) return cudaErrorNotSupported;
 
-    const int split_k = QwenTcBatchSplitK(K, N);
+    const int split_k = LsxTcBatchSplitK(K, N);
     const dim3 grid((N + kTileN - 1) / kTileN, 1, k_slots * split_k);
     if (split_k > 1) {
         if (!splitk_partials) return cudaErrorInvalidValue;
@@ -1091,11 +1090,11 @@ cudaError_t TcBatchDispatch(cudaStream_t stream, const uint8_t *ap,
 
 } // namespace
 
-cudaError_t RunQwenTcGemmBatch13(cudaStream_t stream, const uint8_t *ap,
+cudaError_t RunLsxTcGemmBatch13(cudaStream_t stream, const uint8_t *ap,
                                  const uint8_t *as, const uint8_t *pack_base,
                                  const uint8_t *scale_base,
                                  int64_t pack_stride, int64_t scale_stride,
-                                 const QwenTcBatchSlot *slots_dev,
+                                 const LsxTcBatchSlot *slots_dev,
                                  int k_slots, int K, int N, __half *y,
                                  float *splitk_partials)
 {
@@ -1105,12 +1104,12 @@ cudaError_t RunQwenTcGemmBatch13(cudaStream_t stream, const uint8_t *ap,
                            /*seg13=*/true);
 }
 
-cudaError_t RunQwenTcGemmBatchDown(cudaStream_t stream, const uint8_t *ap,
+cudaError_t RunLsxTcGemmBatchDown(cudaStream_t stream, const uint8_t *ap,
                                    const uint8_t *as,
                                    const uint8_t *pack_base,
                                    const uint8_t *scale_base,
                                    int64_t pack_stride, int64_t scale_stride,
-                                   const QwenTcBatchSlot *slots_dev,
+                                   const LsxTcBatchSlot *slots_dev,
                                    int k_slots, int64_t w13_bytes,
                                    int64_t s13_bytes, int K, int N,
                                    __half *y, float *splitk_partials)
@@ -1165,7 +1164,7 @@ __global__ void TmaProbeKernel(const __grid_constant__ CUtensorMap tmap,
 
 } // namespace
 
-cudaError_t ProbeTmaBulkCopy(cudaStream_t stream)
+cudaError_t LsxProbeTmaBulkCopy(cudaStream_t stream)
 {
     CUtensorMap tmap{};
     std::vector<uint8_t> host(kTmaRows * kTmaRowBytes);
@@ -1241,7 +1240,7 @@ std::vector<std::pair<FusedSegKey, FusedW>> g_fw_cache;
 
 } // namespace
 
-cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
+cudaError_t LsxTcBuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
                                   const uint8_t *s1, int n1, const uint8_t *p2,
                                   const uint8_t *s2, int n2, const uint8_t *p3,
                                   const uint8_t *s3, int n3, const uint8_t *p4,
@@ -1344,6 +1343,5 @@ cudaError_t BuildFusedGemmWeights(cudaStream_t stream, const uint8_t *p1,
     return cudaSuccess;
 }
 
-} // namespace tc
-} // namespace qwen
+} // namespace lsx_tc
 } // namespace lsxcommon

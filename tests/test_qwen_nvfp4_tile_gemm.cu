@@ -303,7 +303,7 @@ TEST_CASE("RunQwenSwigluQuant matches swiglu+ActQuant byte-for-byte",
                     nullptr, da, db, dy1, dp1, ds1, n) == cudaSuccess);
         // Reference: plain swiglu then the standalone act-quant kernel —
         // reached through the public GEMM entry's QuantizeActsNvfp4 is not
-        // exported, so quantize dy2 via RunQwenTcGemmPreQuant-free path:
+        // exported, so quantize dy2 via RunLsxTcGemmPreQuant-free path:
         // run ActQuant by calling the fused launcher's sibling: use
         // QuantizeActsNvfp4 through RunQwenNvfp4Gemm? Not exposed either.
         // Instead compare against the scalar host model below.

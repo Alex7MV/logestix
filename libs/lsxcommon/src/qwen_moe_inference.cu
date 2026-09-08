@@ -13,7 +13,7 @@
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "nvfp4_codec.h"
 #include "nvfp4_scale.h"
 #include "nvfp4_gemv_math.cuh"
@@ -33,10 +33,10 @@ namespace {
 constexpr int kRouterBlock = 128;
 constexpr int kMaxTopK = 16;
 
-static_assert(sizeof(qwen::tc::QwenTcBatchSlot) == sizeof(QwenMoeGvSlotDev) &&
-                  alignof(qwen::tc::QwenTcBatchSlot) ==
+static_assert(sizeof(lsx_tc::LsxTcBatchSlot) == sizeof(QwenMoeGvSlotDev) &&
+                  alignof(lsx_tc::LsxTcBatchSlot) ==
                       alignof(QwenMoeGvSlotDev),
-              "QwenTcBatchSlot must stay layout-identical to QwenMoeGvSlotDev");
+              "LsxTcBatchSlot must stay layout-identical to QwenMoeGvSlotDev");
 
 // ── Router ────────────────────────────────────────────────────────────────
 
@@ -478,7 +478,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
         } else {
             cudaError_t ge;
             if (xq && xqs) {
-                ge = qwen::tc::RunQwenTcGemmPreQuant(
+                ge = lsx_tc::RunLsxTcGemmPreQuant(
                     stream, xq, xqs, w13, s13, 1.0f, d_yg, 1, H, 2 * I,
                     false, seg_wgs, nullptr);
             } else {
@@ -513,7 +513,7 @@ cudaError_t RunQwenMoeRoutedFFN(cudaStream_t stream, QwenMoeExpertStore &store,
             cudaError_t qe = qwen::RunQwenSwigluPreciseQuantInternal(
                 stream, d_yg, d_yu, d_yg, ap, as, I);
             if (qe == cudaSuccess)
-                qe = qwen::tc::RunQwenTcGemmPreQuant(
+                qe = lsx_tc::RunLsxTcGemmPreQuant(
                     stream, ap, as, w2, s2, rec.gs2, d_y2, 1, I, H, false);
             if (own_scratch) {
                 cudaFreeAsync(ap, stream);
@@ -835,8 +835,8 @@ cudaError_t RunQwenMoeRoutedTcBatch(
     if (e != cudaSuccess) return e;
     if (kProbe) cudaEventRecord(ev1, stream);
     const auto *tbl =
-        reinterpret_cast<const qwen::tc::QwenTcBatchSlot *>(d_tbl);
-    e = qwen::tc::RunQwenTcGemmBatch13(
+        reinterpret_cast<const lsx_tc::LsxTcBatchSlot *>(d_tbl);
+    e = lsx_tc::RunLsxTcGemmBatch13(
         stream, xq, xqs, cache.d_pack, cache.d_scale, cache.pack_stride,
         cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
     if (e != cudaSuccess) return e;
@@ -845,7 +845,7 @@ cudaError_t RunQwenMoeRoutedTcBatch(
                                    qpack_batch, qscales_batch);
     if (e != cudaSuccess) return e;
     if (kProbe) cudaEventRecord(ev3, stream);
-    e = qwen::tc::RunQwenTcGemmBatchDown(
+    e = lsx_tc::RunLsxTcGemmBatchDown(
         stream, qpack_batch, qscales_batch, cache.d_pack, cache.d_scale,
         cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
         I, H, yp_batch, nullptr);
@@ -1142,7 +1142,7 @@ cudaError_t RunQwenMoeSharedCombine(
             std::lock_guard<std::mutex> lk(sh_mu);
             auto it = sh_cache.find(sw1.d_packed);
             if (it == sh_cache.end()) {
-                cudaError_t be = qwen::tc::BuildFusedGemmWeights(
+                cudaError_t be = lsx_tc::LsxTcBuildFusedGemmWeights(
                     stream, sw1.d_packed, sw1.d_scales, SI, sw3.d_packed,
                     sw3.d_scales, SI, nullptr, nullptr, 0, nullptr, nullptr,
                     0, H / 2, (H + 15) / 16, sw1.global_scale,
@@ -1159,7 +1159,7 @@ cudaError_t RunQwenMoeSharedCombine(
         }
         if (xq && xqs) {
             LSX_MOE_STAGE("shared_fused_gemm_pq",
-                          qwen::tc::RunQwenTcGemmPreQuant(
+                          lsx_tc::RunLsxTcGemmPreQuant(
                               stream, xq, xqs, fp, fs, 1.0f, d_scratch_i,
                               seq, H, fn, false, fw, nullptr));
         } else {
@@ -1425,7 +1425,7 @@ cudaError_t RunQwenMoeGeneration(
                                   64 * 64;
     // Batched TC routed chain (80-tok/s decode round): per-slot quant
     // outputs for the down GEMM + w13 split-K partials (arena slices).
-    const int tc_splitk = qwen::tc::QwenTcBatchSplitK(H, 2 * I);
+    const int tc_splitk = lsx_tc::LsxTcBatchSplitK(H, 2 * I);
     const size_t qpack_b_bytes =
         ((static_cast<size_t>(kMaxTopK) * I / 2) + 63) / 64 * 64;
     const size_t qscales_b_bytes =
@@ -1720,7 +1720,7 @@ cudaError_t RunQwenMoeGeneration(
             if (qwen::QwenTcFastMath()) {
                 xq = d_xact_q;
                 xqs = d_xact_qs;
-                if (lsxcommon::qwen::tc::QuantizeActsNvfp4(
+                if (lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
                         stream, d_postin, seq, H, xq, xqs) != cudaSuccess)
                     return fail(cudaGetLastError(), "actquant l" +
                                                         std::to_string(l));

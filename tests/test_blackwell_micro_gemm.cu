@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "lsxcommon/qwen_inference.h"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 
 namespace {
@@ -108,7 +108,7 @@ TEST_CASE("NVFP4 GEMM micro-benchmark (seq=1 decode shapes)",
         });
         // TC W4A4 mxf4nvf4 (current fast-math production baseline at seq==1).
         const float us_tc = bench_call([&] {
-            return lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+            return lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                 st, dx, dp, ds, 0.125f, dy, 1, K, N, false, nullptr, nullptr);
         });
 

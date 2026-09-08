@@ -221,15 +221,15 @@ target_link_libraries(lsxcommon_qwen_moe_cu
 # assembles ONLY on the arch-'a' targets, so this object lib carries its own
 # --generate-code set (sm_120a / sm_121a). Plain sm_120/121 SASS for the
 # scalar path is unaffected.
-add_library(lsxcommon_qwen_tc_cu OBJECT
-    src/qwen_tc_gemm.cu
+add_library(lsxcommon_tc_cu OBJECT
+    src/lsx_tc_gemm.cu
 )
-set_target_properties(lsxcommon_qwen_tc_cu PROPERTIES
+set_target_properties(lsxcommon_tc_cu PROPERTIES
     CUDA_ARCHITECTURES OFF
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
 )
-target_compile_options(lsxcommon_qwen_tc_cu PRIVATE
+target_compile_options(lsxcommon_tc_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
     -lineinfo;
     --generate-code=arch=compute_120a,code=sm_120a;
@@ -237,9 +237,9 @@ target_compile_options(lsxcommon_qwen_tc_cu PRIVATE
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
 )
-target_include_directories(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
-target_compile_definitions(lsxcommon_qwen_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
-target_link_libraries(lsxcommon_qwen_tc_cu
+target_include_directories(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_tc_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_tc_cu
     "${CUDA_CUDART_LIBRARY}"
     "${CUDA_DRIVER_LIBRARY}"
     absl::strings
@@ -290,7 +290,7 @@ target_link_libraries(lsxcommon_gemma_cu
     absl::strings
 )
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
-    lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_qwen_tc_cu
+    lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsx_tune)
 

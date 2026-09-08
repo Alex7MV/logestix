@@ -1,6 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "deepseek_moe_load.cuh"
 #include "lsx_kernels_act.cuh"
@@ -358,7 +358,7 @@ cudaError_t run_routed_expert_ffn(
     const uint8_t *d_w3_scales_tc = nullptr)
 {
     // ── TC W4A4 path (fast_math, F-12): no weight dequant at all ────────────
-    // Repacked UE4M3 per-16 scale slabs feed qwen::tc::RunQwenTcNvfp4Gemm
+    // Repacked UE4M3 per-16 scale slabs feed lsx_tc::RunLsxTcNvfp4Gemm
     // directly (weights stay nibble-packed in the on-disk [N,K] layout).
     // Tolerance-class (W4A4 accumulation order + per-16 activation
     // quantization) — gated strictly behind DeepseekFastMath().
@@ -372,13 +372,13 @@ cudaError_t run_routed_expert_ffn(
         // so the (max w*_el)-float dequant arena slice is free; H halves fit.
         __half* const y_tc = reinterpret_cast<__half*>(d_dequant);
         // W1: y = W1 @ x  (N=I, K=H)
-        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, d_hidden, d_w1,
+        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, d_hidden, d_w1,
                                          d_w1_scales_tc, 1.0f, gate_h, 1,
                                          kHiddenDim,
                                          kIntermediateDim) != cudaSuccess)
             return cudaGetLastError();
         // W3: same shape
-        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, d_hidden, d_w3,
+        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, d_hidden, d_w3,
                                          d_w3_scales_tc, 1.0f, up_h, 1,
                                          kHiddenDim,
                                          kIntermediateDim) != cudaSuccess)
@@ -392,7 +392,7 @@ cudaError_t run_routed_expert_ffn(
         // W2 with the routing weight folded into the TC epilogue scale
         // (w_global_scale == weight — post-GEMM scaling, mathematically
         // equal to the legacy pre-W2 FP32 scale_float_kernel).
-        if (qwen::tc::RunQwenTcNvfp4Gemm(stream, gate_h, d_w2, d_w2_scales_tc,
+        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, gate_h, d_w2, d_w2_scales_tc,
                                          weight, y_tc, 1, kIntermediateDim,
                                          kHiddenDim) != cudaSuccess)
             return cudaGetLastError();

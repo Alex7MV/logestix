@@ -11,7 +11,7 @@
 #include <array>
 #include <vector>
 
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/schema.h"
 #include "nvfp4_codec.h"
@@ -414,7 +414,7 @@ TEST_CASE("nvfp4 activation quantization round-trip", "[tc][actquant]")
     REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2,
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
                 nullptr, dx.get<__half>(), seq, K, dp.get<uint8_t>(),
                 ds.get<uint8_t>()) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -488,7 +488,7 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
     REQUIRE(cudaGetDeviceProperties(&prop, dev) == cudaSuccess);
     if (prop.major != 12) SKIP("requires Blackwell sm_120");
 
-    // Contract (qwen_tc_gemm.h / ActQuantKernel comments): the per-16 block
+    // Contract (lsx_tc_gemm.h / ActQuantKernel comments): the per-16 block
     // scale must byte-match the canonical lsxcommon::float_to_e4m3_p2
     // (ceil exponent rounding). A frexp-based encode without the
     // exact-power-of-two check doubles the scale whenever absmax/6 IS a
@@ -502,7 +502,7 @@ TEST_CASE("actquant scale parity with canonical float_to_e4m3_p2",
         DeviceBuffer dx(hx.size() * 2), dp(hx.size() / 2), ds(1);
         REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
-        REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+        REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
                     nullptr, dx.get<__half>(), 1, 16, dp.get<uint8_t>(),
                     ds.get<uint8_t>()) == cudaSuccess);
         REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
@@ -627,7 +627,7 @@ TEST_CASE("tensor-core nvfp4 gemm vs host reference", "[tc][gemm]")
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
     const float wgs = 0.125f;
-    REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+    REQUIRE(lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                 nullptr, dx.get<__half>(), wp.get<uint8_t>(),
                 ws.get<uint8_t>(), wgs, dy.get<__half>(), seq, K, N)
             == cudaSuccess);
@@ -725,7 +725,7 @@ TEST_CASE("tc gemm delta-pulse k-alignment probe", "[tc][gemm][delta]")
         hx[pulse_k] = __float2half(1.0f);
         REQUIRE(cudaMemcpy(dx.get<__half>(), hx.data(), K * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                     nullptr, dx.get<__half>(), wp.get<uint8_t>(),
                     ws.get<uint8_t>(), 1.0f, dy.get<__half>(), 1, K, N)
                 == cudaSuccess);
@@ -808,7 +808,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
             using lsxcommon::qwen::RunQwenNvfp4Gemm;
             for (int w = 0; w < 5; ++w) {
                 cudaError_t e = tc
-                    ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                    ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                           st, dx, wp, ws, 0.125f, dy, 1, K, N)
                     : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
                 REQUIRE(e == cudaSuccess);
@@ -818,7 +818,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
             REQUIRE(cudaEventRecord(t0, st) == cudaSuccess);
             for (int it = 0; it < iters; ++it) {
                 cudaError_t e = tc
-                    ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                    ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                           st, dx, wp, ws, 0.125f, dy, 1, K, N)
                     : RunQwenNvfp4Gemm(st, dx, dp, ds, 0.125f, dy, 1, K, N);
                 REQUIRE(e == cudaSuccess);
@@ -846,7 +846,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                         REQUIRE(cudaMemsetAsync(flush_buf, 0, flush_bytes,
                                                 st) == cudaSuccess);
                     cudaError_t e =
-                        tc ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                        tc ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                                  st, dx, wp, ws, 0.125f, dy, 1, K, N)
                            : lsxcommon::qwen::RunQwenNvfp4Gemm(
                                  st, dx, dp, ds, 0.125f, dy, 1, K, N);
@@ -860,7 +860,7 @@ TEST_CASE("tensor-core vs scalar nvfp4 gemm throughput", "[tc][gemm][perf]")
                         REQUIRE(cudaMemsetAsync(flush_buf, 0, flush_bytes,
                                                 st) == cudaSuccess);
                     cudaError_t e =
-                        tc ? lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+                        tc ? lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
                                  st, dx, wp, ws, 0.125f, dy, 1, K, N)
                            : lsxcommon::qwen::RunQwenNvfp4Gemm(
                                  st, dx, dp, ds, 0.125f, dy, 1, K, N);
@@ -897,7 +897,7 @@ TEST_CASE("tma bulk tensor 2d probe", "[tc][tma]")
 {
     cudaStream_t s;
     REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
-    const cudaError_t e = lsxcommon::qwen::tc::ProbeTmaBulkCopy(s);
+    const cudaError_t e = lsxcommon::lsx_tc::LsxProbeTmaBulkCopy(s);
     if (e == cudaErrorNotSupported) {
         WARN("TMA bulk-tensor not supported on this device");
         return;
@@ -1134,8 +1134,8 @@ TEST_CASE("decode kernel column-response map", "[tc][gemm][calib2]")
     cudaMemcpy(wp, hp.data(), wp_n, cudaMemcpyHostToDevice);
     cudaMemcpy(ws, hs.data(), ws_n, cudaMemcpyHostToDevice);
 
-    using lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm;
-    REQUIRE(RunQwenTcNvfp4Gemm(nullptr, dx, dp, ds, 1.0f, dy, 1, K, N,
+    using lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm;
+    REQUIRE(RunLsxTcNvfp4Gemm(nullptr, dx, dp, ds, 1.0f, dy, 1, K, N,
                                false) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
     std::vector<__half> hy(N);
@@ -1167,7 +1167,7 @@ TEST_CASE("act quant byte-exact vs host model at seq1/K256", "[tc][actquant][k25
 
     DeviceBuffer dx(hx.size() * 2), dp(hx.size() / 2), ds(hx.size() / 16);
     cudaMemcpy(dx.get<__half>(), hx.data(), hx.size() * 2, cudaMemcpyHostToDevice);
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
                 nullptr, dx.get<__half>(), seq, K, dp.get<uint8_t>(),
                 ds.get<uint8_t>()) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);

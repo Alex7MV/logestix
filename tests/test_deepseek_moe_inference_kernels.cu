@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <lsxcommon/safetensors_gpu.h>
 #include <lsxcommon/shared_experts.h>
-#include <lsxcommon/qwen_tc_gemm.h>
+#include <lsxcommon/lsx_tc_gemm.h>
 #include <lsxcommon/schema.h>
 
 using Catch::Approx;
@@ -1059,7 +1059,7 @@ TEST_CASE("TC W4A4 W1-stage matches act-quant host reference",
     REQUIRE(lsxcommon::gpu::RepackE8m0ToUe4m3(0, d_s8, el, d_u4) ==
             cudaSuccess);
 
-    const cudaError_t e = lsxcommon::qwen::tc::RunQwenTcNvfp4Gemm(
+    const cudaError_t e = lsxcommon::lsx_tc::RunLsxTcNvfp4Gemm(
         0, d_x, d_w, d_u4, 1.0f, d_y, 1, K, N);
     if (e == cudaErrorNotSupported) { WARN("no TC"); return; }
     REQUIRE(e == cudaSuccess);

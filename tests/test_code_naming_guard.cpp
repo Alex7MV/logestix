@@ -61,7 +61,6 @@ bool AllowedCommon(const std::string& stem)
         "qwen_inference_load",
         "qwen_device_math",
         "qwen_reduce",
-        "qwen_tc_gemm",
         "gemma_base_model",
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();

@@ -69,7 +69,7 @@ TEST_CASE("expert cache LRU bookkeeping", "[qwen-moe-cache]")
 #include <cstring>
 #include <vector>
 #include "lsxcommon/qwen_moe_inference.h"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 namespace {
 
@@ -589,7 +589,7 @@ TEST_CASE("generation driver deterministic on synthetic model", "[qwen-moe-gen]"
 // scale-block bytes (round-19 scale-mapping lesson).
 TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
 {
-    if (!lsxcommon::qwen::tc::TcRuntimeSupported()) return;
+    if (!lsxcommon::lsx_tc::LsxTcRuntimeSupported()) return;
     namespace fs2 = std::filesystem;
     fs2::path in = fs2::temp_directory_path() / "lsx_qwen_tc_batch_in";
     fs2::path out = fs2::temp_directory_path() / "lsx_qwen_tc_batch_out";
@@ -619,7 +619,7 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     uint8_t *d_xq; uint8_t *d_xqs;
     cudaMalloc(&d_xq, static_cast<size_t>(H) / 2);
     cudaMalloc(&d_xqs, static_cast<size_t>((H + 15) / 16));
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(stream, hx.data(), 1, H,
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     __half *d_y13_seq, *d_y13_batch, *d_y2_seq, *d_y2_batch;
@@ -628,7 +628,7 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     cudaMalloc(&d_y2_seq, H * 2);
     cudaMalloc(&d_y2_batch, static_cast<size_t>(K) * H * 2);
 
-    // Legacy reference: K sequential RunQwenTcGemmPreQuant calls against the
+    // Legacy reference: K sequential RunLsxTcGemmPreQuant calls against the
     // SAME slot addresses the table resolves to (slot k == dev_slot k under
     // full residency; mirrored via EnsureQwenMoeExpertResident).
     std::vector<lsxcommon::qwen_moe::QwenMoeRoutedSlot> routes =
@@ -644,13 +644,13 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
         float *d_seg;
         cudaMalloc(&d_seg, sizeof(seg));
         cudaMemcpy(d_seg, seg, sizeof(seg), cudaMemcpyHostToDevice);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmPreQuant(
                     stream, d_xq, d_xqs, pack, scale, 1.0f, d_y13_seq, 1, H,
                     2 * I, false, d_seg, nullptr) == cudaSuccess);
         cudaFree(d_seg);
         // down: feed the same quantized activations for the down GEMM
         // comparison (parity of the GEMM itself, not the swiglu producer).
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmPreQuant(
                     stream, d_xq, d_xqs, pack + rec.w1_bytes + rec.w3_bytes,
                     scale + rec.s1_bytes + rec.s3_bytes, rec.gs2, d_y2_seq,
                     1, I, H, false) == cudaSuccess);
@@ -658,14 +658,14 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     // Batched: device table with the same dev_slot/scale mapping.
-    std::vector<lsxcommon::qwen::tc::QwenTcBatchSlot> tbl(K);
+    std::vector<lsxcommon::lsx_tc::LsxTcBatchSlot> tbl(K);
     for (int k = 0; k < K; ++k) {
         const int slot = lsxcommon::qwen_moe::EnsureQwenMoeExpertResident(
             store, 0, routes[static_cast<size_t>(k)].eid, cache, stream, err);
         const auto &rec = store.records[0][routes[static_cast<size_t>(k)].eid];
         tbl[static_cast<size_t>(k)] = {slot, rec.gs1, rec.gs3, rec.gs2, 0.f};
     }
-    lsxcommon::qwen::tc::QwenTcBatchSlot *d_tbl;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl;
     cudaMalloc(&d_tbl, sizeof(tbl[0]) * K);
     cudaMemcpy(d_tbl, tbl.data(), sizeof(tbl[0]) * K, cudaMemcpyHostToDevice);
 
@@ -677,9 +677,9 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     std::vector<uint8_t> h2_seq(H * 2), h2_batch(static_cast<size_t>(K) * H * 2);
     {
         float *d_part;
-        const int sk = lsxcommon::qwen::tc::QwenTcBatchSplitK(H, N13);
+        const int sk = lsxcommon::lsx_tc::LsxTcBatchSplitK(H, N13);
         cudaMalloc(&d_part, sk > 1 ? static_cast<size_t>(sk) * K * N13 * 4 : 1);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatch13(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmBatch13(
                     stream, d_xq, d_xqs, cache.d_pack, cache.d_scale,
                     cache.pack_stride, cache.scale_stride, d_tbl, K, H, N13,
                     d_y13_batch, d_part) == cudaSuccess);
@@ -687,9 +687,9 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     }
     {
         float *d_part;
-        const int sk = lsxcommon::qwen::tc::QwenTcBatchSplitK(I, H);
+        const int sk = lsxcommon::lsx_tc::LsxTcBatchSplitK(I, H);
         cudaMalloc(&d_part, sk > 1 ? static_cast<size_t>(sk) * K * H * 4 : 1);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatchDown(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmBatchDown(
                     stream, d_xq, d_xqs, cache.d_pack, cache.d_scale,
                     cache.pack_stride, cache.scale_stride, d_tbl, K,
                     w13_bytes, s13_bytes, I, H, d_y2_batch, d_part) ==
@@ -755,7 +755,7 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     uint8_t *d_xq, *d_xqs;
     cudaMalloc(&d_xq, static_cast<size_t>(H) / 2);
     cudaMalloc(&d_xqs, static_cast<size_t>((H + 15) / 16));
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(stream, hx.data(), 1, H,
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     __half *d_postin, *d_yg, *d_yu, *d_y2, *d_ygu_batch, *d_h_batch,
@@ -911,18 +911,18 @@ TEST_CASE("generation driver fallback parity under partial residency",
 
 // Real-geometry batch parity: the synthetic fixture (H=64) never exercises
 // the split-K path (K >= 2048). This test drives batch13/down vs sequential
-// RunQwenTcGemmPreQuant at the REAL 35B-A3B shapes (K=2048,N=1024 and
+// RunLsxTcGemmPreQuant at the REAL 35B-A3B shapes (K=2048,N=1024 and
 // K=512,N=2048, split_k=8/1) with random weights + adversarial scales, so
 // any slice-order or scale divergence shows up as a memcmp miss.
 TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
 {
-    if (!lsxcommon::qwen::tc::TcRuntimeSupported()) return;
+    if (!lsxcommon::lsx_tc::LsxTcRuntimeSupported()) return;
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     lsxcommon::qwen::SetQwenTcFastMath(true);
 
     const int H = 2048, I = 512, K = 8, N13 = 2 * I;
-    REQUIRE(lsxcommon::qwen::tc::QwenTcBatchSplitK(H, N13) == 8);
+    REQUIRE(lsxcommon::lsx_tc::LsxTcBatchSplitK(H, N13) == 8);
 
     // Random NVFP4 payloads (bytes are already valid nibbles/scales).
     auto rnd8 = [](size_t n) {
@@ -960,11 +960,11 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     uint8_t *d_xq, *d_xqs;
     cudaMalloc(&d_xq, H / 2);
     cudaMalloc(&d_xqs, (H + 15) / 16);
-    REQUIRE(lsxcommon::qwen::tc::QuantizeActsNvfp4(stream, hx.data(), 1, H,
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     // Distinct per-segment global scales (catch gs mixups bitwise).
-    std::vector<lsxcommon::qwen::tc::QwenTcBatchSlot> tbl(K);
+    std::vector<lsxcommon::lsx_tc::LsxTcBatchSlot> tbl(K);
     std::vector<float> hseg(2 * 8);
     for (int k = 0; k < K; ++k) {
         tbl[k] = {k, 0.005f + 0.001f * k, 0.015f + 0.001f * k,
@@ -976,11 +976,11 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     cudaMalloc(&d_seg, sizeof(float) * hseg.size());
     cudaMemcpy(d_seg, hseg.data(), sizeof(float) * hseg.size(),
                cudaMemcpyHostToDevice);
-    lsxcommon::qwen::tc::QwenTcBatchSlot *d_tbl;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl;
     cudaMalloc(&d_tbl, sizeof(tbl[0]) * K);
     cudaMemcpy(d_tbl, tbl.data(), sizeof(tbl[0]) * K, cudaMemcpyHostToDevice);
 
-    // Sequential reference: per-slot RunQwenTcGemmPreQuant (legacy split-K).
+    // Sequential reference: per-slot RunLsxTcGemmPreQuant (legacy split-K).
     __half *d_ref13, *d_ref2, *d_bat13, *d_bat2;
     cudaMalloc(&d_ref13, static_cast<size_t>(K) * N13 * 2);
     cudaMalloc(&d_ref2, static_cast<size_t>(K) * H * 2);
@@ -989,11 +989,11 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     for (int k = 0; k < K; ++k) {
         uint8_t *pk = d_pack + static_cast<int64_t>(k) * pack_stride;
         uint8_t *sc = d_scale + static_cast<int64_t>(k) * scale_stride;
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmPreQuant(
                     stream, d_xq, d_xqs, pk, sc, 1.0f,
                     d_ref13 + static_cast<int64_t>(k) * N13, 1, H, N13,
                     false, d_seg + 2 * k, nullptr) == cudaSuccess);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmPreQuant(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmPreQuant(
                     stream, d_xq, d_xqs, pk + w13_bytes, sc + s13_bytes,
                     tbl[k].gs2, d_ref2 + static_cast<int64_t>(k) * H, 1, I,
                     H, false) == cudaSuccess);
@@ -1002,7 +1002,7 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     {
         float *d_part;
         cudaMalloc(&d_part, static_cast<size_t>(8) * K * N13 * 4);
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatch13(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmBatch13(
                     stream, d_xq, d_xqs, d_pack, d_scale,
                     static_cast<int64_t>(pack_stride),
                     static_cast<int64_t>(scale_stride), d_tbl, K, H, N13,
@@ -1011,7 +1011,7 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     }
     {
         float *d_part = nullptr;
-        REQUIRE(lsxcommon::qwen::tc::RunQwenTcGemmBatchDown(
+        REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmBatchDown(
                     stream, d_xq, d_xqs, d_pack, d_scale,
                     static_cast<int64_t>(pack_stride),
                     static_cast<int64_t>(scale_stride), d_tbl, K, w13_bytes,

@@ -10,7 +10,7 @@
 
 #include "nvfp4_codec.h"
 #include "nvfp4_gemv_math.cuh"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 namespace lsxcommon {
 namespace lsx_nvfp4 {
@@ -391,7 +391,7 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // unsupported devices/shapes (NotSupported / InvalidValue).
     if (g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
         (K & 15) == 0 && N >= 8 && K >= 64) {
-        const cudaError_t tc = qwen::tc::RunQwenTcNvfp4Gemm(
+        const cudaError_t tc = lsx_tc::RunLsxTcNvfp4Gemm(
             stream, x, packed, scales, global_scale, y, seq, K, N, acc,
             seg_wgs_dev, seg_bounds_dev);
         if (tc != cudaErrorNotSupported && tc != cudaErrorInvalidValue)

@@ -1,5 +1,5 @@
 #include "lsxcommon/qwen_inference.h"
-#include "lsxcommon/qwen_tc_gemm.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/sampling.h"
@@ -1359,7 +1359,7 @@ cudaError_t RunQwenFusedLinearAttnKernel(
                 const int *fb = nullptr;
                 int fn = 0;
                 const int VDl = nv * vd;
-                e = tc::BuildFusedGemmWeights(
+                e = lsx_tc::LsxTcBuildFusedGemmWeights(
                     stream, lw.qkv.d_packed, lw.qkv.d_scales, S,
                     lw.z.d_packed, lw.z.d_scales, VDl,
                     lw.a.d_packed, lw.a.d_scales, nv,
@@ -1373,9 +1373,9 @@ cudaError_t RunQwenFusedLinearAttnKernel(
                     // so the per-layer cudaMallocAsync/FreeAsync pair is
                     // pure driver overhead at decode (~60 calls/step).
                     // Stream-ordered pool would reuse one block anyway.
-                    __half *fy = tc::TcFusedOutputScratch(fp, fn);
+                    __half *fy = lsx_tc::LsxTcFusedOutputScratch(fp, fn);
                     if (!fy) return cudaErrorMemoryAllocation;
-                    e = tc::RunQwenTcNvfp4Gemm(stream, d_normed, fp, fs,
+                    e = lsx_tc::RunLsxTcNvfp4Gemm(stream, d_normed, fp, fs,
                                                1.0f, fy, 1, H, fn, false,
                                                fw, fb);
                     if (e == cudaSuccess) {
@@ -1713,7 +1713,7 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
                 d_gate, d_up, d_gate, ap, as, n_act);
             e2 = cudaGetLastError();
             if (e2 == cudaSuccess)
-                e2 = qwen::tc::RunQwenTcGemmPreQuant(
+                e2 = lsx_tc::RunLsxTcGemmPreQuant(
                     stream, ap, as, lw.mlp_down.d_packed,
                     lw.mlp_down.d_scales, lw.mlp_down.global_scale, d_resid,
                     seq, I, H, /*acc=*/true);
