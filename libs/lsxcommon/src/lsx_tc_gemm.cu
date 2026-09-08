@@ -773,6 +773,57 @@ cudaError_t LsxTcQuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq
     return cudaGetLastError();
 }
 
+// BF16 twin: same codec, same output layout; reads __nv_bfloat16 directly.
+__global__ void ActQuantBf16Kernel(const __nv_bfloat16 *__restrict__ x,
+                                   int64_t n, uint8_t *__restrict__ packed,
+                                   uint8_t *__restrict__ scales)
+{
+    const int64_t blk = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                        threadIdx.x;
+    const int64_t base = blk * 16;
+    if (base >= n) return;
+    const int len =
+        static_cast<int>(min(static_cast<long long>(16),
+                             static_cast<long long>(n - base)));
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float v = fabsf(__bfloat162float(x[base + i]));
+        absmax = fmaxf(absmax, v);
+    }
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+    scales[blk] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            kernels::QuantizeE2m1TieUp(__bfloat162float(x[base + i]) * inv);
+        const uint8_t hi =
+            (i + 1 < len)
+                ? kernels::QuantizeE2m1TieUp(
+                      __bfloat162float(x[base + i + 1]) * inv)
+                : 0;
+        packed[(base + i) / 2] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
+cudaError_t LsxTcQuantizeActsNvfp4Bf16(cudaStream_t stream,
+                                       const __nv_bfloat16 *x, int seq,
+                                       int K, uint8_t *d_packed,
+                                       uint8_t *d_scales)
+{
+    if (!x || !d_packed || !d_scales || seq <= 0 || K <= 0 || (K & 15))
+        return cudaErrorInvalidValue;
+    const int64_t n = static_cast<int64_t>(seq) * K;
+    const int64_t blocks16 = (n + 15) / 16;
+    const int threads = 256;
+    const int64_t grid = (blocks16 + threads - 1) / threads;
+    if (grid > 0x7FFFFFFFLL) return cudaErrorInvalidValue;
+    ActQuantBf16Kernel<<<static_cast<int>(grid), threads, 0, stream>>>(
+        x, n, d_packed, d_scales);
+    return cudaGetLastError();
+}
+
 // Persistent split-K partials scratch: per-process grow-only buffer.
 // The hot decode path runs several split-K GEMMs per layer per step; a
 // cudaMallocAsync+cudaMemsetAsync+cudaFreeAsync triple per GEMM dominated

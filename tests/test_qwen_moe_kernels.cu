@@ -71,6 +71,45 @@ TEST_CASE("expert cache LRU bookkeeping", "[qwen-moe-cache]")
 #include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 
+TEST_CASE("bf16 act-quant matches fp16 variant for bf16-representable values",
+          "[lsx-tc-actquant]")
+{
+    if (!lsxcommon::lsx_tc::LsxTcRuntimeSupported()) return;
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+    constexpr int K = 256;
+    // Values exactly representable in bf16: coarse mantissa avoids
+    // fp16-vs-bf16 rounding asymmetry.
+    std::vector<__nv_bfloat16> hx(K);
+    for (int i = 0; i < K; ++i) {
+        const float m = static_cast<float>((i % 7) - 3);   // -3..3
+        hx[static_cast<size_t>(i)] =
+            __float2bfloat16(m * std::ldexp(1.0f, (i % 5) - 2));
+    }
+    uint8_t *d_xq, *d_xqs, *d_xqb, *d_xqsb;
+    cudaMalloc(&d_xq, K / 2);  cudaMalloc(&d_xqs, K / 16);
+    cudaMalloc(&d_xqb, K / 2); cudaMalloc(&d_xqsb, K / 16);
+    // fp16 reference: bf16 values are exact in fp16.
+    std::vector<__half> hxf(K);
+    for (int i = 0; i < K; ++i)
+        hxf[static_cast<size_t>(i)] = __float2half(
+            __bfloat162float(hx[static_cast<size_t>(i)]));
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
+                st, hxf.data(), 1, K, d_xq, d_xqs) == cudaSuccess);
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4Bf16(
+                st, hx.data(), 1, K, d_xqb, d_xqsb) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+    std::vector<uint8_t> pq(K / 2), ps(K / 16), qb(K / 2), qs(K / 16);
+    cudaMemcpy(pq.data(), d_xq, pq.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(ps.data(), d_xqs, ps.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(qb.data(), d_xqb, qb.size(), cudaMemcpyDeviceToHost);
+    cudaMemcpy(qs.data(), d_xqsb, qs.size(), cudaMemcpyDeviceToHost);
+    CHECK(std::memcmp(pq.data(), qb.data(), pq.size()) == 0);
+    CHECK(std::memcmp(ps.data(), qs.data(), ps.size()) == 0);
+    cudaFree(d_xq); cudaFree(d_xqs); cudaFree(d_xqb); cudaFree(d_xqsb);
+    cudaStreamDestroy(st);
+}
+
 namespace {
 
 // Host replica of the HF router semantics (fp32 softmax -> top-k -> renorm).

@@ -17,9 +17,17 @@ namespace lsx_tc {
 // d_packed [seq, K/2] row-major nibble pairs (low nibble = even k),
 // d_scales [seq, K/16] row-major, one byte per 16-element block.
 // Buffers must be preallocated by the caller (device memory).
-cudaError_t LsxTcQuantizeActsNvfp4(cudaStream_t stream, const __half *x, int seq,
-                              int K, uint8_t *d_packed, uint8_t *d_scales);
+cudaError_t LsxTcQuantizeActsNvfp4(cudaStream_t stream, const __half *x,
+                                   int seq, int K, uint8_t *d_packed,
+                                   uint8_t *d_scales);
 
+// BF16 twin of LsxTcQuantizeActsNvfp4: identical codec + output layout.
+// Kimi hidden states are bf16; quantizing bf16->fp16->nvfp4 would add a
+// pointless host-visible pass.
+cudaError_t LsxTcQuantizeActsNvfp4Bf16(cudaStream_t stream,
+                                       const __nv_bfloat16 *x, int seq,
+                                       int K, uint8_t *d_packed,
+                                       uint8_t *d_scales);
 // Tensor-core NVFP4 GEMM: y = (quant(x) @ dequant(w)) * w_global_scale.
 // W4A4: activations are quantized on the fly into stream-ordered scratch
 // buffers; weights are consumed in the EXISTING repo layout ([N,K] nibbles +
