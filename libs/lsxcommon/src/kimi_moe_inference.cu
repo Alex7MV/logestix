@@ -1598,7 +1598,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     KIMI_ALLOC(d_mlp_h, (size_t)max_total * kKimiDenseIntermediate);
     KIMI_ALLOC(d_scores, (size_t)max_total * kKimiNumRouted);
     KIMI_ALLOC(d_logits, kKimiVocab);
-    KIMI_ALLOC(d_bestv, 2);
+    KIMI_ALLOC(d_bestv, 1);
     KIMI_ALLOC(d_top_ids, kKimiTopK);
     KIMI_ALLOC(d_top_w, kKimiTopK);
     KIMI_ALLOC(d_best, 1);
@@ -1669,13 +1669,15 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         return cudaGetLastError();
     }
     cudaEventRecord(ev_start, stream);
-    for (int step = 0; step < max_gen_tokens; ++step) {
+    for (int step = 0; step <= max_gen_tokens; ++step) {
         if (step == 0) {
             ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
                 <<<(int)((prefill_seq * kKimiHidden + 255) / 256), 256, 0,
                    stream>>>(pw.d_embed, d_ids, d_hidden, prefill_seq,
                              kKimiHidden);
         } else {
+            cudaMemcpyAsync(d_ids + prefill_seq + step - 1, d_best,
+                            sizeof(int), cudaMemcpyDeviceToDevice, stream);
             ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
                 <<<(int)((kKimiHidden + 255) / 256), 256, 0, stream>>>(
                     pw.d_embed, d_ids + prefill_seq + step - 1,
@@ -1720,40 +1722,39 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
             d_logits, kKimiVocab, d_best, d_bestv);
         if (step == 0) cudaEventRecord(ev_ttft, stream);
-        // Park the first step's maxv (device-side decode: the host sees
-        // tokens only in the final bulk drain).
-        if (step == 0)
-            cudaMemcpyAsync(d_bestv + 1, d_bestv, sizeof(float),
-                            cudaMemcpyDeviceToDevice, stream);
-        // Device-side token feed: the id this step just produced is the
-        // input of the NEXT step's embed gather — land it in its d_ids
-        // slot now (D2D, stream-ordered). Drain at the end reads exactly
-        // these slots.
-        cudaMemcpyAsync(d_ids + prefill_seq + step, d_best, sizeof(int),
-                        cudaMemcpyDeviceToDevice, stream);
-    }
 
-    // Final bulk drain: all generated ids + the first step's maxv.
-    gen.tokens.resize(static_cast<size_t>(max_gen_tokens));
-    cudaMemcpy(gen.tokens.data(), d_ids + prefill_seq,
-               static_cast<size_t>(max_gen_tokens) * sizeof(int),
-               cudaMemcpyDeviceToHost);
-    float first_maxv = 0.0f;
-    cudaMemcpy(&first_maxv, d_bestv + 1, sizeof(float),
-               cudaMemcpyDeviceToHost);
-    gen.first_maxv = first_maxv;
-    int argmax_bad = 0;
-    for (int t : gen.tokens)
-        if (t < 0) ++argmax_bad;
-    if (argmax_bad) {
-        gen.error_msg = "argmax failed";
-        cudaFreeHost(h_ids);
-        cudaFreeHost(h_w);
-        cudaEventDestroy(route_ev);
-        cudaEventDestroy(step_ev);
-        cudaEventDestroy(ev_start);
-        cudaEventDestroy(ev_ttft);
-        return cudaErrorUnknown;
+        // Device-side decode PARKED (Round 25b determinism gate, re-confirmed
+        // by the kimi-100tps round: fully-async decode reproduces the
+        // un-root-caused cross-cycle final_logits divergence): interim
+        // per-step event-scoped readback stays the default.
+        int next_id = -1;
+        float next_maxv = 0.0f;
+        cudaMemcpyAsync(&next_id, d_best, sizeof(int),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaEventRecord(step_ev, stream);
+        {
+            cudaError_t q;
+            while ((q = cudaEventQuery(step_ev)) == cudaErrorNotReady) {}
+            (void)q;
+        }
+        if (next_id < 0) {
+            gen.error_msg = "argmax failed";
+            cudaFreeHost(h_ids);
+            cudaFreeHost(h_w);
+            cudaEventDestroy(route_ev);
+            cudaEventDestroy(step_ev);
+            cudaEventDestroy(ev_start);
+            cudaEventDestroy(ev_ttft);
+            return cudaErrorUnknown;
+        }
+        gen.tokens.push_back(next_id);
+        ++generated;
+        if (generated == 1) gen.first_maxv = next_maxv;
+        cudaMemcpyAsync(d_ids + prefill_seq + step, &next_id,
+                        sizeof(int), cudaMemcpyHostToDevice, stream);
+        if (generated >= max_gen_tokens) break;
     }
 
     cudaEventSynchronize(ev_ttft);
