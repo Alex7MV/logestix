@@ -419,6 +419,14 @@ cudaError_t RunQwenFullAttnKernelSplitKV(
     if (!q || !k || !v || !out || seq != 1 || heads <= 0 || head_dim <= 0 ||
         head_dim > 512 || kv_heads <= 0 || kv_base < 0)
         return cudaErrorInvalidValue;
+    // Block reductions (sreduce tree in both kernels) and the one-thread-per-
+    // dim value pass assume a power-of-two blockDim (== head_dim); a non-pow2
+    // block silently corrupts the softmax denominator. GQA mapping
+    // kvh = h / (heads / kv_heads) requires kv_heads to divide heads exactly
+    // (kv_heads > heads would divide by zero in-kernel).
+    if ((head_dim & (head_dim - 1)) != 0 || kv_heads > heads ||
+        heads % kv_heads != 0)
+        return cudaErrorInvalidValue;
     const int nscores = kv_base + 1;
     constexpr int kChunk = 512;
     const int nchunks = (nscores + kChunk - 1) / kChunk;

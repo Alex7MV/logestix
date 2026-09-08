@@ -211,3 +211,34 @@ TEST_CASE("Split-KV decode attention is run-to-run deterministic",
 
     cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_a); cudaFree(d_b);
 }
+
+TEST_CASE("Split-KV decode attention rejects unsupported geometry",
+          "[qwen-full-attn]")
+{
+    // The entry must reject before any launch; buffers are sized for the
+    // WORST-CASE index layout of each config so a pre-fix launch (if the
+    // guard regresses) stays memory-safe and fails the contract cleanly
+    // instead of corrupting the CUDA context.
+    __half *d_q, *d_k, *d_v, *d_out;
+    constexpr int kQKvElems =
+        (1024 + 1) * 6 * 128;   // nscores x max(kv reads) x max(head_dim)
+    constexpr int kQoElems = 6 * 128;
+    cudaMalloc(&d_q, kQoElems * sizeof(__half));
+    cudaMalloc(&d_k, kQKvElems * sizeof(__half));
+    cudaMalloc(&d_v, kQKvElems * sizeof(__half));
+    cudaMalloc(&d_out, kQoElems * sizeof(__half));
+
+    // Non-pow2 head_dim: the sreduce tree reduction (partial + combine) and
+    // the one-thread-per-dim value pass assume a power-of-two blockDim; a
+    // non-pow2 block silently corrupts the softmax denominator.
+    CHECK(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+              0, d_q, d_k, d_v, d_out, 1, 4, 96, 1, 0.1f, 1024) ==
+          cudaErrorInvalidValue);
+    // GQA mapping kvh = h / (heads / kv_heads) requires exact division:
+    // heads % kv_heads != 0 reads past the kv-head table.
+    CHECK(lsxcommon::qwen::RunQwenFullAttnKernelSplitKV(
+              0, d_q, d_k, d_v, d_out, 1, 6, 128, 4, 0.1f, 1024) ==
+          cudaErrorInvalidValue);
+
+    cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_out);
+}
