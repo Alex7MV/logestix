@@ -37,7 +37,7 @@ void LsxModelFactory::Register(const std::string &type, CreateModelFn fn)
     auto &reg = Registry();
     if (reg.find(type) != reg.end())
         log::warn(absl::StrFormat(
-            "[factory] model type '{}' re-registered, overwriting "
+            "[factory] model type '%s' re-registered, overwriting "
             "the previous factory function",
             type));
     reg[type] = std::move(fn);
@@ -63,7 +63,7 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
         type = DetectType(cfg.model_path);
         if (type.empty()) {
             log::error(absl::StrFormat(
-                "[factory] cannot autodetect model type from {}",
+                "[factory] cannot autodetect model type from %s",
                 cfg.model_path));
             return nullptr;
         }
@@ -76,7 +76,7 @@ std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
         auto it = reg.find(type);
         if (it == reg.end()) {
             log::error(
-                absl::StrFormat("[factory] no registered model for type '{}'",
+                absl::StrFormat("[factory] no registered model for type '%s'",
                                 type));
             return nullptr;
         }

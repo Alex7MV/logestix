@@ -2291,6 +2291,16 @@ target_compile_definitions(test_code_naming_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD}\"")
 add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
 
+# Guard: absl::StrFormat & friends are printf-style; fmt-style "{}" in their
+# format strings prints literally (checker inert on GCC). Host-only static scan.
+add_executable(test_absl_format_guard test_absl_format_guard.cpp)
+target_link_libraries(test_absl_format_guard PRIVATE Catch2::Catch2WithMain
+    absl::str_format)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_FMT)
+target_compile_definitions(test_absl_format_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_FMT}\"")
+add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
+
 # Kimi MoE expert cache bookkeeping (host-only, pure logic, no CUDA).
 add_executable(test_kimi_moe_expert_cache test_kimi_moe_expert_cache.cpp)
 target_link_libraries(test_kimi_moe_expert_cache PRIVATE Catch2::Catch2WithMain)

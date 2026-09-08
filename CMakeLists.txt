@@ -243,9 +243,10 @@ unset(_absx86simd)
 # `__attribute__((enable_if))` (`__has_attribute(enable_if)` == 0), so
 # ABSL_INTERNAL_ENABLE_FORMAT_CHECKER stays undefined and the checker is inert;
 # Clang/AOCC DO enable it, but its ValidFormatImpl only parses printf-style
-# '%' conversions and rejects the fmt-style '{}' placeholders used throughout
-# this project (every `absl::StrFormat("{}", ...)` fails to compile). Pin the
-# guard to `#if 0` to mirror the GCC behaviour.
+# '%' conversions. The repo is printf-style everywhere (enforced by
+# `tests/test_absl_format_guard.cpp` — fmt-style "{}" placeholders print
+# literally and are forbidden); the `#if 0` guard keeps a future stray
+# "{}" typo from breaking the whole AOCC build and mirrors GCC behaviour.
 set(_absfmtchk "${abseil-cpp_SOURCE_DIR}/absl/strings/internal/str_format/checker.h")
 if(EXISTS "${_absfmtchk}")
     file(READ "${_absfmtchk}" _absfmtchk_content)

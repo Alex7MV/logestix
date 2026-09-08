@@ -98,7 +98,7 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
     std::ifstream f(config_json_path);
     if (!f) {
         lsxcommon::log::warn(absl::StrFormat(
-            "[vram] cannot open {}: defaulting context to {}",
+            "[vram] cannot open %s: defaulting context to %d",
             config_json_path, kDefaultContextTokens));
         return kDefaultContextTokens;
     }
@@ -110,7 +110,7 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
     sj::ondemand::document doc;
     if (parser.iterate(pad).get(doc) != sj::SUCCESS) {
         lsxcommon::log::warn(absl::StrFormat(
-            "[vram] {} parse failed: defaulting context to {}",
+            "[vram] %s parse failed: defaulting context to %d",
             config_json_path, kDefaultContextTokens));
         return kDefaultContextTokens;
     }
@@ -134,7 +134,7 @@ std::int64_t ReadContextLength(const std::string &config_json_path)
         sj::ondemand::object src = tc.value();
         if (int64_t v = find_ctx(src); v > 0) return v;
     }
-    lsxcommon::log::warn(absl::StrFormat("[vram] no context field in {}: defaulting to {}",
+    lsxcommon::log::warn(absl::StrFormat("[vram] no context field in %s: defaulting to %d",
                                          config_json_path, kDefaultContextTokens));
     return kDefaultContextTokens;
 }

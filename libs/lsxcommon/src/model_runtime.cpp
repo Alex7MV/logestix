@@ -56,7 +56,7 @@ std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
         break;
     }
     lsxcommon::log::warn(
-        absl::StrFormat("[model_runtime] tokenizer decode failed ({} ids)",
+        absl::StrFormat("[model_runtime] tokenizer decode failed (%u ids)",
                         ids.size()));
     return {};
 }
@@ -188,7 +188,7 @@ CliModel CreateCliModel(const std::string &model_path, bool fast_math)
     out.model = lsxcommon::LsxModelFactory::Create(cfg);
     if (!out.model || !out.model->Load()) {
         lsxcommon::log::error(
-            absl::StrFormat("Failed to create/load model: {}", model_path));
+            absl::StrFormat("Failed to create/load model: %s", model_path));
         return out;
     }
     out.ok = true;
@@ -214,7 +214,7 @@ void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult
 int RunCliGeneration(const GenerationCliArgs &args)
 {
     lsxcommon::log::info(
-        absl::StrFormat("Running generation path on prompt: {}", args.prompt));
+        absl::StrFormat("Running generation path on prompt: %s", args.prompt));
     CliModel m = CreateCliModel(args.model_path, args.fast_math);
     if (!m.ok) return 1;
 
@@ -222,7 +222,7 @@ int RunCliGeneration(const GenerationCliArgs &args)
     if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
                                       input_ids)) {
         lsxcommon::log::error(
-            absl::StrFormat("Tokenizer encode failed for prompt: {}",
+            absl::StrFormat("Tokenizer encode failed for prompt: %s",
                             args.prompt));
         m.model->Unload();
         return 1;
@@ -232,7 +232,7 @@ int RunCliGeneration(const GenerationCliArgs &args)
     m.model->Unload();
     if (!result.ok) {
         lsxcommon::log::error(
-            absl::StrFormat("Inference failed: {}", result.error_msg));
+            absl::StrFormat("Inference failed: %s", result.error_msg));
         return 1;
     }
     PrintGenerationResult(args.prompt, result);
@@ -257,17 +257,17 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     m.model->Unload();
     if (!result.ok) {
             lsxcommon::log::error(
-            absl::StrFormat("SelfCheck failed: {}", result.error_msg));
+            absl::StrFormat("SelfCheck failed: %s", result.error_msg));
         return 1;
     }
     lsxcommon::log::info("=== --selfcheck Results ===");
-    lsxcommon::log::info(absl::StrFormat("first token : {} '{}'",
+    lsxcommon::log::info(absl::StrFormat("first token : %d '%s'",
                                          result.first_gen_tok_id,
                                          result.first_gen_text));
     lsxcommon::log::info(
-        absl::StrFormat("maxv        : {:.4f}", result.first_gen_maxv));
+        absl::StrFormat("maxv        : %.4f", result.first_gen_maxv));
     lsxcommon::log::info(absl::StrFormat(
-        "passed      : {}", result.selfcheck_passed ? "yes" : "no"));
+        "passed      : %s", result.selfcheck_passed ? "yes" : "no"));
     return result.selfcheck_passed ? 0 : 1;
 }
 
@@ -283,16 +283,16 @@ int RunCliInspect(const std::string &model_path, bool full)
     const auto &vp = m.model->VramRequirements();
     if (vp.min_bytes > 0) {
         lsxcommon::log::info(absl::StrFormat(
-            "=== VRAM Profile (conversion-time, ctx={}) ===",
+            "=== VRAM Profile (conversion-time, ctx=%d) ===",
             vp.context_tokens));
         lsxcommon::log::info(absl::StrFormat(
-            "min     (weights only)         : {}",
+            "min     (weights only)         : %s",
             FormatBytesHuman(vp.min_bytes)));
         lsxcommon::log::info(absl::StrFormat(
-            "optimal (+KV cache+workspace)  : {}",
+            "optimal (+KV cache+workspace)  : %s",
             FormatBytesHuman(vp.optimal_bytes)));
         lsxcommon::log::info(absl::StrFormat(
-            "max     (full expert placement): {}",
+            "max     (full expert placement): %s",
             FormatBytesHuman(vp.max_bytes)));
     }
     m.model->Unload();

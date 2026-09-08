@@ -30,7 +30,7 @@ void log_gpu_info()
         if (cudaGetDeviceProperties(&props, i) == cudaSuccess)
         {
             log::info(absl::StrFormat(
-                "GPU {}: {} (compute {}.{} | {} MiB)", i, props.name,
+                "GPU %d: %s (compute %d.%d | %u MiB)", i, props.name,
                 props.major, props.minor,
                 props.totalGlobalMem / (1024 * 1024)));
         }

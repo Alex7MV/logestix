@@ -116,14 +116,14 @@ int main(int argc, char* argv[]) {
     }
 
     if (verify_only) {
-        lsxcommon::log::info(absl::StrFormat("Verifying converted model: {}", input_path));
+        lsxcommon::log::info(absl::StrFormat("Verifying converted model: %s", input_path));
         auto vres = lsxcommon::integrity::VerifyConvertedModel(input_path);
         if (!vres.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Verify failed: {}", vres.status().ToString()));
+            lsxcommon::log::error(absl::StrFormat("Verify failed: %s", vres.status().ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        lsxcommon::log::info(absl::StrFormat("Verify OK — {} model tensors across {} arrow files",
+        lsxcommon::log::info(absl::StrFormat("Verify OK — %d model tensors across %u arrow files",
                      vres->pinned_tensor_count, vres->arrow_files_checked));
         lsxcommon::Core::Shutdown();
         return 0;
@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
         auto idx = fs::path(output_path) / "logestix" / "model.index.json";
         std::ifstream f(idx);
         if (!f) {
-            lsxcommon::log::error(absl::StrFormat("model.index.json not found under {}", output_path));
+            lsxcommon::log::error(absl::StrFormat("model.index.json not found under %s", output_path));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -150,20 +150,20 @@ int main(int argc, char* argv[]) {
         else
             st = lsxcommon::RecomputeVramBlock(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("VRAM recompute failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("VRAM recompute failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        lsxcommon::log::info(absl::StrFormat("VRAM recompute complete -> {}", idx.string()));
+        lsxcommon::log::info(absl::StrFormat("VRAM recompute complete -> %s", idx.string()));
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
     if (repack_shared) {
-        lsxcommon::log::info(absl::StrFormat("Re-packing shared experts from {} ...", input_path));
+        lsxcommon::log::info(absl::StrFormat("Re-packing shared experts from %s ...", input_path));
         auto st = lsxcommon::RepackSharedExperts(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Shared experts re-pack failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Shared experts re-pack failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -173,11 +173,11 @@ int main(int argc, char* argv[]) {
     }
 
     if (repack_experts) {
-        lsxcommon::log::info(absl::StrFormat("Re-packing routed experts (fp4 passthrough) from {} ...",
+        lsxcommon::log::info(absl::StrFormat("Re-packing routed experts (fp4 passthrough) from %s ...",
                      input_path));
         auto st = lsxcommon::RepackRoutedExperts(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Routed experts re-pack failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Routed experts re-pack failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -191,19 +191,19 @@ int main(int argc, char* argv[]) {
         auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
         auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
         fs::create_directories(pinned_dir);
-        lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from {}", tokenizer_json.string()));
+        lsxcommon::log::info(absl::StrFormat("Building tokenizer Arrow files from %s", tokenizer_json.string()));
         auto st = lsxcommon::BuildTokenizerArrowFiles(tokenizer_json.string(), pinned_dir);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Tokenizer build failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
-        lsxcommon::log::info(absl::StrFormat("Tokenizer Arrow files complete -> {}", pinned_dir.string()));
+        lsxcommon::log::info(absl::StrFormat("Tokenizer Arrow files complete -> %s", pinned_dir.string()));
         lsxcommon::Core::Shutdown();
         return 0;
     }
 
-    lsxcommon::log::info(absl::StrFormat("Converting model: {} -> {}", input_path, output_path));
+    lsxcommon::log::info(absl::StrFormat("Converting model: %s -> %s", input_path, output_path));
     if (glmflash) {
         lsxcommon::log::info("GLM-5.3-Flash pipeline (unified logestix layout)");
         auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(input_path,
@@ -223,7 +223,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Gemma-4 pipeline (logestix-gemma layout)");
         auto st = lsxcommon::gemma::ConvertGemmaModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Gemma conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Gemma conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -236,7 +236,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Qwen3.8-Flash-Next pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe_exp::ConvertQwen38FlashNextModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Qwen4-exp conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Qwen4-exp conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -249,7 +249,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Qwen3.6-MoE pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe_36::ConvertQwen36MoeModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Qwen3.6-MoE conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Qwen3.6-MoE conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -262,7 +262,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Qwen3.5-MoE pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe::ConvertQwen35MoeModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Qwen-MoE conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Qwen-MoE conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -275,7 +275,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Qwen3.5 pipeline (logestix-qwen layout)");
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Qwen conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Qwen conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -288,7 +288,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("GLM-5.2 pipeline (logestix-glm layout)");
         auto st = lsxcommon::glm::ConvertGlmModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("GLM conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("GLM conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -301,7 +301,7 @@ int main(int argc, char* argv[]) {
         lsxcommon::log::info("Kimi-K2.7-Code pipeline (logestix-kimi layout)");
         auto st = lsxcommon::kimi::ConvertKimiModel(input_path, output_path);
         if (!st.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Kimi conversion failed: {}", st.ToString()));
+            lsxcommon::log::error(absl::StrFormat("Kimi conversion failed: %s", st.ToString()));
             lsxcommon::Core::Shutdown();
             return 1;
         }
@@ -316,7 +316,7 @@ int main(int argc, char* argv[]) {
              .SetVerbose(true);
     auto status = converter.Run();
     if (!status.ok()) {
-        lsxcommon::log::error(absl::StrFormat("Conversion failed: {}", status.ToString()));
+        lsxcommon::log::error(absl::StrFormat("Conversion failed: %s", status.ToString()));
         lsxcommon::Core::Shutdown();
         return 1;
     }

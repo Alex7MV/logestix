@@ -97,7 +97,7 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
             return true;
         }
         log::error(
-            absl::StrFormat("[model] cannot open tokenizer arrows in {}",
+            absl::StrFormat("[model] cannot open tokenizer arrows in %s",
                             pinned.string()));
         tok_db_.reset();
         return false;
@@ -105,12 +105,12 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
     auto st = load_tokenizer_metadata(*v, *m, *tok_db_);
     if (!st.ok()) {
         if (tokenizer_optional_) {
-            log::warn(absl::StrFormat("[model] tokenizer load failed: {}",
+            log::warn(absl::StrFormat("[model] tokenizer load failed: %s",
                                       st.ToString()));
             return true;
         }
         log::error(
-            absl::StrFormat("[model] load_tokenizer_metadata: {}",
+            absl::StrFormat("[model] load_tokenizer_metadata: %s",
                             st.ToString()));
         tok_db_.reset();
         return false;

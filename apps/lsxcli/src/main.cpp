@@ -29,7 +29,7 @@ int main(int argc, char* argv[]) {
     lsxcommon::Core::Initialize("lsxcli_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    lsxcommon::log::info(absl::StrFormat("Model path: {}", model_path));
+    lsxcommon::log::info(absl::StrFormat("Model path: %s", model_path));
 
     if (info || infofull) {
         int rc = lsxcommon::runtime::RunCliInspect(model_path, infofull);
