@@ -36,6 +36,26 @@ __global__ void AddOutKernel(const T* __restrict__ a, const T* __restrict__ b,
         __fadd_rn(detail::CastIn(a[i]), detail::CastIn(b[i])));
 }
 
+// Elementwise dtype bridges for the NVFP4 projection boundary (round-2
+// kimi MLA): BF16 activations -> FP16 GEMV input and back. Rounding:
+// float round-trip, nearest-even (matches __float2half / __float2bfloat16_rn).
+static __global__ void Bf16ToHalfKernel(const __nv_bfloat16* __restrict__ src,
+                                        __half* __restrict__ dst, int64_t n)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(__bfloat162float(src[i]));
+}
+
+static __global__ void HalfToBf16Kernel(const __half* __restrict__ src,
+                                        __nv_bfloat16* __restrict__ dst,
+                                        int64_t n)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2bfloat16_rn(__half2float(src[i]));
+}
+
 // out[t, h] = table[ids[t], h]   (former qwen embed_kernel / GlmEmbedKernel /
 //                                 kimi_embed_kernel)
 template <typename T>

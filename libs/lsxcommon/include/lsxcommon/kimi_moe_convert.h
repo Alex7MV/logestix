@@ -42,6 +42,9 @@ struct KimiTopology {
     long long experts_per_layer = 0;
     std::vector<long long> moe_layers;
     std::vector<long long> dense_layers;
+    // Converted-index format tag ("logestix-kimi-r2"); empty for HF source
+    // indexes (the converter, not the loader, consumes those).
+    std::string format;
     std::string error_msg;
 
     bool is_moe_layer(long long l) const {

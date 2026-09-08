@@ -1,6 +1,7 @@
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
@@ -513,7 +514,7 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 cublasHandle_t cublas_h, int base_slot,
                                 int pos_offset)
 {
-    if (!lw.d_q_a_proj || !lw.d_kv_a_proj || !lw.d_o_proj || !d_state ||
+    if (!lw.d_q_a_packed || !lw.d_kv_a_packed || !lw.d_o_packed || !d_state ||
         seq <= 0 || turn < 0)
         return cudaErrorInvalidValue;
 
@@ -558,54 +559,85 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
     __nv_bfloat16 *d_oproj =
         d_attn + (size_t)seq * (kKimiNumHeads * kKimiHeadV); // [seq x 7168]
 
+    // Round-2: the four attention projections run through the model-neutral
+    // NVFP4 GEMM layer. The neutral path consumes FP16 activations and
+    // produces FP16 outputs — two tiny elementwise scratch rows bridge the
+    // BF16 attention math (rope/softmax stay BF16/FP32 as before).
+    const size_t conv_elems = static_cast<size_t>(seq) *
+        std::max({kKimiHidden, kKimiQLoraRank, kKimiQbRows,
+                  kKimiNumHeads * kKimiHeadV});
+    static __nv_bfloat16 *bf16_scratch = nullptr;   // BF16 stage input
+    static __half *fp16_in = nullptr, *fp16_out = nullptr;
+    static size_t conv_elems_alloc = 0;
+    if (conv_elems_alloc < conv_elems) {
+        if (bf16_scratch) cudaFree(bf16_scratch);
+        if (fp16_in) cudaFree(fp16_in);
+        if (fp16_out) cudaFree(fp16_out);
+        if (cudaMalloc(&bf16_scratch, conv_elems * 2) != cudaSuccess ||
+            cudaMalloc(&fp16_in, conv_elems * 2) != cudaSuccess ||
+            cudaMalloc(&fp16_out, conv_elems * 2) != cudaSuccess) {
+            if (bf16_scratch) { cudaFree(bf16_scratch); bf16_scratch = nullptr; }
+            if (fp16_in) { cudaFree(fp16_in); fp16_in = nullptr; }
+            if (fp16_out) { cudaFree(fp16_out); fp16_out = nullptr; }
+            conv_elems_alloc = 0;
+            return cudaErrorMemoryAllocation;
+        }
+        conv_elems_alloc = conv_elems;
+    }
+
+    // bf16->fp16 for GEMV input, fp16->bf16 for the BF16 downstream math
+    // (elementwise launch helpers; stream captured by reference in nvfp4_proj).
+    auto bf16_to_fp16 = [&](const __nv_bfloat16 *src, __half *dst, int n) {
+        int block = 256;
+        int grid = (n + block - 1) / block;
+        ::lsxcommon::kernels::Bf16ToHalfKernel<<<grid, block, 0, stream>>>(
+            src, dst, n);
+    };
+    auto fp16_to_bf16 = [&](const __half *src, __nv_bfloat16 *dst, int n) {
+        int block = 256;
+        int grid = (n + block - 1) / block;
+        ::lsxcommon::kernels::HalfToBf16Kernel<<<grid, block, 0, stream>>>(
+            src, dst, n);
+    };
+    auto nvfp4_proj = [&](const uint8_t *packed, const uint8_t *scales,
+                          float gs, const __nv_bfloat16 *x_bf16,
+                          __nv_bfloat16 *y_bf16, int K, int N,
+                          int x_stride, int y_stride) -> cudaError_t {
+        for (int t = 0; t < seq; ++t) {
+            bf16_to_fp16(x_bf16 + (size_t)t * x_stride,
+                         fp16_in + (size_t)t * K, K);
+        }
+        cudaError_t e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
+            stream, fp16_in, packed, scales, gs, fp16_out, seq, K, N, false);
+        if (e != cudaSuccess) return e;
+        for (int t = 0; t < seq; ++t) {
+            fp16_to_bf16(fp16_out + (size_t)t * N,
+                         y_bf16 + (size_t)t * y_stride, N);
+        }
+        return cudaSuccess;
+    };
+
     // 1. q_a projection.
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 kKimiQLoraRank, seq, kKimiHidden, &alpha,
-                 lw.d_q_a_proj, CUDA_R_16BF, kKimiHidden,
-                 d_hidden, CUDA_R_16BF, kKimiHidden, &beta0,
-                 d_qa, CUDA_R_16BF, kKimiQLoraRank,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    cudaError_t ae = nvfp4_proj(lw.d_q_a_packed, lw.d_q_a_scale, lw.q_a_gs,
+                                d_hidden, d_qa, kKimiHidden, kKimiQLoraRank,
+                                kKimiHidden, kKimiQLoraRank);
+    if (ae != cudaSuccess) return ae;
 
     // 2. RMSNorm(q_a).
     kimi_rmsnorm_rows_kernel<<<dim3(seq), 256, 0, stream>>>(
         d_qa, lw.d_q_a_norm, kKimiQLoraRank);
 
     // 3. q_b projection.
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 kKimiQbRows, seq, kKimiQLoraRank, &alpha,
-                 lw.d_q_b_proj, CUDA_R_16BF, kKimiQLoraRank,
-                 d_qa, CUDA_R_16BF, kKimiQLoraRank, &beta0,
-                 d_qall, CUDA_R_16BF, kKimiQbRows,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    ae = nvfp4_proj(lw.d_q_b_packed, lw.d_q_b_scale, lw.q_b_gs,
+                    d_qa, d_qall, kKimiQLoraRank, kKimiQbRows,
+                    kKimiQLoraRank, kKimiQbRows);
+    if (ae != cudaSuccess) return ae;
 
     // 4. kv_a projection.
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 kKimiKvaRows, seq, kKimiHidden, &alpha,
-                 lw.d_kv_a_proj, CUDA_R_16BF, kKimiHidden,
-                 d_hidden, CUDA_R_16BF, kKimiHidden, &beta0,
-                 d_kvfull, CUDA_R_16BF, kKimiKvaRows,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    ae = nvfp4_proj(lw.d_kv_a_packed, lw.d_kv_a_scale, lw.kv_a_gs,
+                    d_hidden, d_kvfull, kKimiHidden, kKimiKvaRows,
+                    kKimiHidden, kKimiKvaRows);
+    if (ae != cudaSuccess) return ae;
 
     // 5. Postprocess: latent norm + key/query yarn rope.
     kimi_kv_postprocess_kernel<<<dim3(seq), 256, 0, stream>>>(
@@ -616,26 +648,39 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                              stream>>>(d_state, d_kvfull, seq, base_slot);
 
 
-    // 7. Fused absorbed attention.
+    // 7. Fused absorbed attention. kv_b projection is consumed inside the
+    // kernel as BF16: dequantize the NVFP4 kv_b once per layer pointer
+    // (memoized; the weights are read-only for the process lifetime).
+    static __nv_bfloat16 *d_kv_b_bf16 = nullptr;
+    static const uint8_t *kv_b_packed_seen = nullptr;
+    if (kv_b_packed_seen != lw.d_kv_b_packed) {
+        if (d_kv_b_bf16) cudaFree(d_kv_b_bf16);
+        const int64_t kv_b_numel = kKimiQbRows * kKimiKvLoraRank;  // 12288? no
+        (void)kv_b_numel;
+        // kv_b logical shape: [kKimiNumHeads*(kKimiQkNope+kKimiHeadV),
+        // kKimiKvLoraRank]
+        const int64_t rows =
+            kKimiNumHeads * (kKimiQkNope + kKimiHeadV);
+        const int64_t numel = rows * kKimiKvLoraRank;
+        if (cudaMalloc(&d_kv_b_bf16, numel * 2) != cudaSuccess)
+            return cudaErrorMemoryAllocation;
+        const int64_t blocks = (numel + 255) / 256;
+        ::lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
+            <<<static_cast<unsigned>(blocks), 256, 0, stream>>>(
+                lw.d_kv_b_packed, lw.d_kv_b_scale, lw.kv_b_gs,
+                d_kv_b_bf16, numel);
+        kv_b_packed_seen = lw.d_kv_b_packed;
+    }
     dim3 attn_grid(seq, kKimiNumHeads);
     kimi_mla_attn_kernel<<<attn_grid, 512,
-                           0, stream>>>(d_qall, lw.d_kv_b_proj, d_state,
+                           0, stream>>>(d_qall, d_kv_b_bf16, d_state,
                                         d_attn, seq, base_slot);
 
     // 8. o_proj.
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 kKimiORows, seq, kKimiNumHeads * kKimiHeadV, &alpha,
-                 lw.d_o_proj, CUDA_R_16BF, kKimiNumHeads * kKimiHeadV,
-                 d_attn, CUDA_R_16BF, kKimiNumHeads * kKimiHeadV, &beta0,
-                 d_oproj, CUDA_R_16BF, kKimiORows,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    ae = nvfp4_proj(lw.d_o_packed, lw.d_o_scale, lw.o_gs,
+                    d_attn, d_oproj, kKimiNumHeads * kKimiHeadV, kKimiORows,
+                    kKimiNumHeads * kKimiHeadV, kKimiORows);
+    if (ae != cudaSuccess) return ae;
 
 
     // 9. Residual add.

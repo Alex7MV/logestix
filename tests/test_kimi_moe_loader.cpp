@@ -115,3 +115,69 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     free_kimi_expert_index(db);
     cudaStreamDestroy(stream);
 }
+
+// Round-2 Task 4: the r2 loader uploads MLA projections as NVFP4 pairs
+// (packed/scale device buffers + global scale) and hard-rejects pre-r2
+// indexes.
+TEST_CASE("kimi loader r2: MLA NVFP4 roundtrip + old rev rejected",
+          "[kimi][loader][r2]")
+{
+    auto model = BuildConvertedFixture();   // converter now emits r2
+
+    // (a) Happy path: projections arrive as device NVFP4 pairs.
+    {
+        lsxcommon::kimi::KimiPinnedWeights pw;
+        cudaStream_t stream;
+        REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+        cudaError_t err = LoadKimiPinnedWeights(model, pw, stream);
+        REQUIRE(err == cudaSuccess);
+        REQUIRE(pw.layers.size() == 3);
+        for (int l = 0; l < 3; ++l) {
+            INFO("layer " << l);
+            const auto &lw = pw.layers[l];
+            REQUIRE(lw.d_q_a_packed != nullptr);
+            REQUIRE(lw.d_q_a_scale != nullptr);
+            REQUIRE(lw.q_a_gs > 0.f);
+            // fixture q_a [16,16] BF16 -> 128 packed bytes / 16 scale bytes
+            REQUIRE(lw.q_a_packed_bytes == 128);
+            REQUIRE(lw.q_a_scale_bytes == 16);
+            REQUIRE(lw.d_q_b_packed != nullptr);
+            REQUIRE(lw.d_kv_a_packed != nullptr);
+            REQUIRE(lw.d_kv_b_packed != nullptr);
+            REQUIRE(lw.d_o_packed != nullptr);
+            // norms untouched (BF16 pointers)
+            REQUIRE(lw.d_q_a_norm != nullptr);
+            REQUIRE(lw.d_kv_a_norm != nullptr);
+        }
+        pw.Free();
+        cudaStreamSynchronize(stream);
+        cudaStreamDestroy(stream);
+    }
+
+    // (b) Pre-r2 index is rejected with a strict "reconvert" error.
+    {
+        namespace fs = std::filesystem;
+        auto idx = fs::path(model) / "logestix" / "model.index.json";
+        std::string json;
+        {
+            std::ifstream f(idx);
+            json.assign((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+        }
+        const std::string old_tag = "\"logestix-kimi-r2\"";
+        const auto pos = json.find(old_tag);
+        REQUIRE(pos != std::string::npos);
+        json.replace(pos, old_tag.size(), "\"logestix-kimi\"   ");
+        {
+            std::ofstream f(idx);
+            f << json;
+        }
+        lsxcommon::kimi::KimiPinnedWeights pw;
+        cudaStream_t stream;
+        REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+        cudaError_t err = LoadKimiPinnedWeights(model, pw, stream);
+        REQUIRE(err == cudaErrorInvalidValue);
+        REQUIRE(pw.layers.empty());
+        cudaStreamDestroy(stream);
+    }
+}

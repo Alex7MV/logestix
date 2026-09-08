@@ -50,6 +50,123 @@ __nv_bfloat16 *DevHalf(const std::vector<float> &host)
     return d;
 }
 
+// Host-side NVFP4 quantization of one projection (round-2 r2 contract):
+// per-16 pow2 block scales + global scale. Keeps the CPU reference on the
+// ORIGINAL float weights, so the kernel path (packed bytes) is checked
+// against the pre-quantization values within tolerance.
+struct PackedProj {
+    std::vector<uint8_t> packed, scales;
+    float global_scale;
+    int64_t rows, cols;
+};
+
+PackedProj QuantizeProj(const std::vector<float> &w, int64_t rows,
+                        int64_t cols)
+{
+    PackedProj p;
+    p.rows = rows;
+    p.cols = cols;
+    const int64_t numel = rows * cols;
+    p.packed.assign(numel / 2, 0);
+    p.scales.assign(numel / 16, 0);
+    // global scale: 2^ceil(log2(maxabs/448)) pow2 (E4M3-range aligned).
+    float maxabs = 0.f;
+    for (float v : w) maxabs = std::max(maxabs, std::abs(v));
+    int gexp = 0;
+    if (maxabs > 0.f) {
+        std::frexp(maxabs / 448.f, &gexp);
+        if (gexp > 0) gexp -= 1;
+    }
+    p.global_scale = std::ldexp(1.0f, gexp);
+    const float inv_gs = 1.0f / p.global_scale;
+    auto enc_pow2 = [](int e) {
+        return static_cast<uint8_t>(((e + 7) & 0xF) << 3);
+    };
+    for (int64_t blk = 0; blk < numel / 16; ++blk) {
+        float bmax = 0.f;
+        for (int j = 0; j < 16; ++j) {
+            const float v = std::abs(w[blk * 16 + j]) * inv_gs;
+            if (v > bmax) bmax = v;
+        }
+        int e6 = 0;
+        if (bmax > 0.f) std::frexp(bmax, &e6);   // bmax in [2^(e6-1), 2^e6)
+        const int se = e6 < -6 ? -6 : (e6 > 8 ? 8 : e6);   // scale = 2^se
+        p.scales[blk] = enc_pow2(se);
+        const float sc = std::ldexp(1.0f, se);
+        for (int j = 0; j < 16; ++j) {
+            const float v = w[blk * 16 + j] * inv_gs / sc;
+            const bool neg = v < 0.f;
+            const float a = std::abs(v);
+            int mag;
+            if (a < 0.25f) mag = 0;
+            else if (a < 0.75f) mag = 1;
+            else if (a < 1.25f) mag = 2;
+            else if (a < 1.75f) mag = 3;
+            else if (a < 2.5f) mag = 4;
+            else if (a < 3.5f) mag = 5;
+            else if (a < 5.0f) mag = 6;
+            else mag = 7;
+            const int nib = neg ? (mag | 8) : mag;
+            const int64_t idx = blk * 16 + j;
+            p.packed[idx >> 1] |=
+                static_cast<uint8_t>(nib << ((idx & 1) ? 4 : 0));
+        }
+    }
+    return p;
+}
+
+uint8_t *DevU8(const std::vector<uint8_t> &host)
+{
+    uint8_t *d = nullptr;
+    if (cudaMalloc(&d, host.size()) != cudaSuccess) return nullptr;
+    cudaMemcpy(d, host.data(), host.size(), cudaMemcpyHostToDevice);
+    return d;
+}
+
+// Fills lw MLA projections from the packed fixtures.
+void AttachPacked(KimiLayerWeights &lw, const PackedProj &qa,
+                  const PackedProj &qb, const PackedProj &kva,
+                  const PackedProj &kvb, const PackedProj &op,
+                  float norm_qa_s, float norm_kva_s)
+{
+    lw.d_q_a_packed = DevU8(qa.packed);
+    lw.d_q_a_scale = DevU8(qa.scales);
+    lw.q_a_gs = qa.global_scale;
+    lw.q_a_packed_bytes = static_cast<int64_t>(qa.packed.size());
+    lw.q_a_scale_bytes = static_cast<int64_t>(qa.scales.size());
+    lw.d_q_b_packed = DevU8(qb.packed);
+    lw.d_q_b_scale = DevU8(qb.scales);
+    lw.q_b_gs = qb.global_scale;
+    lw.q_b_packed_bytes = static_cast<int64_t>(qb.packed.size());
+    lw.q_b_scale_bytes = static_cast<int64_t>(qb.scales.size());
+    lw.d_kv_a_packed = DevU8(kva.packed);
+    lw.d_kv_a_scale = DevU8(kva.scales);
+    lw.kv_a_gs = kva.global_scale;
+    lw.kv_a_packed_bytes = static_cast<int64_t>(kva.packed.size());
+    lw.kv_a_scale_bytes = static_cast<int64_t>(kva.scales.size());
+    lw.d_kv_b_packed = DevU8(kvb.packed);
+    lw.d_kv_b_scale = DevU8(kvb.scales);
+    lw.kv_b_gs = kvb.global_scale;
+    lw.kv_b_packed_bytes = static_cast<int64_t>(kvb.packed.size());
+    lw.kv_b_scale_bytes = static_cast<int64_t>(kvb.scales.size());
+    lw.d_o_packed = DevU8(op.packed);
+    lw.d_o_scale = DevU8(op.scales);
+    lw.o_gs = op.global_scale;
+    lw.o_packed_bytes = static_cast<int64_t>(op.packed.size());
+    lw.o_scale_bytes = static_cast<int64_t>(op.scales.size());
+    (void)norm_qa_s;
+    (void)norm_kva_s;
+}
+
+void FreePacked(KimiLayerWeights &lw)
+{
+    cudaFree(lw.d_q_a_packed); cudaFree(lw.d_q_a_scale);
+    cudaFree(lw.d_q_b_packed); cudaFree(lw.d_q_b_scale);
+    cudaFree(lw.d_kv_a_packed); cudaFree(lw.d_kv_a_scale);
+    cudaFree(lw.d_kv_b_packed); cudaFree(lw.d_kv_b_scale);
+    cudaFree(lw.d_o_packed); cudaFree(lw.d_o_scale);
+}
+
 } // namespace
 
 namespace {
@@ -196,7 +313,7 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
 {
     const int seq = 3;
 
-    std::vector<float> qa(H * QA), qb(QA * QB), kva(H * KVA), kvb(KVB * 512),
+    std::vector<float> qa(H * QA), qb(QA * QB), kva(H * KVA), kvb(KVB * kKimiKvLoraRank),
         op(HV * NH * H);
     for (size_t i = 0; i < qa.size(); ++i)
         qa[i] = 0.02f * Frand(1, static_cast<int>(i));
@@ -211,14 +328,17 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     std::vector<float> norm_qa(QA, 0.9f), norm_kva(512, 0.9f);
 
     KimiLayerWeights lw{};
-    lw.d_q_a_proj = DevHalf(qa);
+    // Round-2: projections are NVFP4-packed; the CPU reference stays on
+    // the original float weights (quantization tolerance below).
+    const PackedProj pqa = QuantizeProj(qa, QA, H);
+    const PackedProj pqb = QuantizeProj(qb, QB, QA);
+    const PackedProj pkva = QuantizeProj(kva, KVA, H);
+    const PackedProj pkvb = QuantizeProj(kvb, KVB, kKimiKvLoraRank);
+    const PackedProj pop = QuantizeProj(op, H, HV * NH);
+    AttachPacked(lw, pqa, pqb, pkva, pkvb, pop, 0.9f, 0.9f);
     lw.d_q_a_norm = DevHalf(norm_qa);
-    lw.d_q_b_proj = DevHalf(qb);
-    lw.d_kv_a_proj = DevHalf(kva);
     lw.d_kv_a_norm = DevHalf(norm_kva);
-    lw.d_kv_b_proj = DevHalf(kvb);
-    lw.d_o_proj = DevHalf(op);
-    REQUIRE(lw.d_q_a_proj);
+    REQUIRE(lw.d_q_a_packed);
 
     std::vector<float> xf(H * seq);
     for (size_t i = 0; i < xf.size(); ++i)
@@ -323,8 +443,7 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     cublasDestroy(cublas);
     cudaStreamDestroy(stream);
     cudaFree(d_x); cudaFree(d_out); cudaFree(d_state);
-    cudaFree(lw.d_q_a_proj); cudaFree(lw.d_q_a_norm);
-    cudaFree(lw.d_q_b_proj); cudaFree(lw.d_kv_a_proj);
-    cudaFree(lw.d_kv_a_norm); cudaFree(lw.d_kv_b_proj);
-    cudaFree(lw.d_o_proj);
+    cudaFree(lw.d_q_a_norm);
+    cudaFree(lw.d_kv_a_norm);
+    FreePacked(lw);
 }

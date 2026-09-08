@@ -129,36 +129,83 @@ cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
                        int64_t *rows = nullptr, int64_t *cols = nullptr) {
         return fastload::UploadJob{t, dst, CvKind::kBf16Raw, rows, cols};
     };
+    // Round-2: MLA projections arrive as NVFP4 packed/scale U8 pairs (the
+    // converter quantized them); upload raw through the ring. Strict: both
+    // records are required for every projection.
+    auto nvfp4pair = [&](const char *proj, uint8_t **d_pk, uint8_t **d_sc,
+                         float *gs_member_unused, int64_t *pk_bytes,
+                         int64_t *sc_bytes, int64_t *rows, int64_t *cols)
+        -> cudaError_t {
+        (void)gs_member_unused;
+        const auto *pk = fastload::FindTensorSuffix(
+            tensors, absl::StrCat(proj, ".weight_packed"));
+        const auto *sc = fastload::FindTensorSuffix(
+            tensors, absl::StrCat(proj, ".weight_scale"));
+        if (!pk || pk->bytes == 0 || !sc || sc->bytes == 0) {
+            log::error(absl::StrCat("[kimi_load] MLA NVFP4 records missing: ",
+                                    proj));
+            return cudaErrorInvalidValue;
+        }
+        // Logical weight shape [rows, cols] derives from the packed payload:
+        // packed bytes = rows*cols/2; the record shape is 1-D {packed}.
+        if (rows && cols) {
+            // rank-2 packed records (r2 stores 1-D {bytes}); derive cols
+            // from the scale record when possible: scale bytes = rows*cols/16
+            // -> cols = scale_bytes*16/rows with rows = packed*2/scale/16...
+            // Keep it simple: r2 stores shape {packed_bytes}; the geometry
+            // is compile-time frozen, so rows/cols come from the callers'
+            // constants — capture the packed-byte counts only.
+            (void)rows;
+            (void)cols;
+        }
+        *pk_bytes = static_cast<int64_t>(pk->bytes);
+        *sc_bytes = static_cast<int64_t>(sc->bytes);
+        // Device allocations are individual (not arena views): the arena
+        // uploader only handles the fixed-size UploadJob table.
+        if (cudaMalloc(d_pk, pk->bytes) != cudaSuccess)
+            return cudaErrorMemoryAllocation;
+        if (cudaMalloc(d_sc, sc->bytes) != cudaSuccess)
+            return cudaErrorMemoryAllocation;
+        cudaError_t e = ring.UploadRaw(pk->data, *d_pk, pk->bytes, stream,
+                                       bytes_acc);
+        if (e != cudaSuccess) return e;
+        return ring.UploadRaw(sc->data, *d_sc, sc->bytes, stream, bytes_acc);
+    };
     std::vector<fastload::UploadJob> jobs = {
         bf16job(in_norm,   reinterpret_cast<void **>(&lw.d_input_norm)),
         bf16job(post_norm, reinterpret_cast<void **>(&lw.d_post_attn_norm)),
-        bf16job(fastload::FindTensorSuffix(tensors,
-                                           "self_attn.q_a_proj.weight"),
-                reinterpret_cast<void **>(&lw.d_q_a_proj),
-                &lw.q_a_rows, &lw.q_a_cols),
+    };
+    {
+        cudaError_t e = nvfp4pair(
+            "self_attn.q_a_proj", &lw.d_q_a_packed, &lw.d_q_a_scale, &lw.q_a_gs,
+            &lw.q_a_packed_bytes, &lw.q_a_scale_bytes, &lw.q_a_rows,
+            &lw.q_a_cols);
+        if (e != cudaSuccess) return e;
+        e = nvfp4pair("self_attn.q_b_proj", &lw.d_q_b_packed, &lw.d_q_b_scale,
+                      &lw.q_b_gs, &lw.q_b_packed_bytes, &lw.q_b_scale_bytes,
+                      &lw.q_b_rows, &lw.q_b_cols);
+        if (e != cudaSuccess) return e;
+        e = nvfp4pair("self_attn.kv_a_proj_with_mqa", &lw.d_kv_a_packed,
+                      &lw.d_kv_a_scale, &lw.kv_a_gs, &lw.kv_a_packed_bytes,
+                      &lw.kv_a_scale_bytes, &lw.kv_a_rows, &lw.kv_a_cols);
+        if (e != cudaSuccess) return e;
+        e = nvfp4pair("self_attn.kv_b_proj", &lw.d_kv_b_packed,
+                      &lw.d_kv_b_scale, &lw.kv_b_gs, &lw.kv_b_packed_bytes,
+                      &lw.kv_b_scale_bytes, &lw.kv_b_rows, &lw.kv_b_cols);
+        if (e != cudaSuccess) return e;
+        e = nvfp4pair("self_attn.o_proj", &lw.d_o_packed, &lw.d_o_scale,
+                      &lw.o_gs, &lw.o_packed_bytes, &lw.o_scale_bytes,
+                      &lw.o_rows, &lw.o_cols);
+        if (e != cudaSuccess) return e;
+    }
+    jobs.push_back(
         bf16job(fastload::FindTensorSuffix(tensors,
                                            "self_attn.q_a_layernorm.weight"),
-                reinterpret_cast<void **>(&lw.d_q_a_norm)),
-        bf16job(fastload::FindTensorSuffix(tensors,
-                                           "self_attn.q_b_proj.weight"),
-                reinterpret_cast<void **>(&lw.d_q_b_proj),
-                &lw.q_b_rows, &lw.q_b_cols),
-        bf16job(fastload::FindTensorSuffix(
-                    tensors, "self_attn.kv_a_proj_with_mqa.weight"),
-                reinterpret_cast<void **>(&lw.d_kv_a_proj),
-                &lw.kv_a_rows, &lw.kv_a_cols),
+                reinterpret_cast<void **>(&lw.d_q_a_norm)));
+    jobs.push_back(
         bf16job(fastload::FindTensorSuffix(tensors,
                                            "self_attn.kv_a_layernorm.weight"),
-                reinterpret_cast<void **>(&lw.d_kv_a_norm)),
-        bf16job(fastload::FindTensorSuffix(tensors,
-                                           "self_attn.kv_b_proj.weight"),
-                reinterpret_cast<void **>(&lw.d_kv_b_proj),
-                &lw.kv_b_rows, &lw.kv_b_cols),
-        bf16job(fastload::FindTensorSuffix(tensors,
-                                           "self_attn.o_proj.weight"),
-                reinterpret_cast<void **>(&lw.d_o_proj),
-                &lw.o_rows, &lw.o_cols),
-    };
+                reinterpret_cast<void **>(&lw.d_kv_a_norm)));
 
     if (moe) {
         jobs.push_back(bf16job(
@@ -215,8 +262,12 @@ void KimiLayerWeights::Free()
         d_arena = nullptr;
         arena_bytes = 0;
         d_input_norm = d_post_attn_norm = nullptr;
-        d_q_a_proj = d_q_a_norm = d_q_b_proj = nullptr;
-        d_kv_a_proj = d_kv_a_norm = d_kv_b_proj = d_o_proj = nullptr;
+        d_q_a_norm = d_kv_a_norm = nullptr;
+        d_q_a_packed = d_q_a_scale = nullptr;
+        d_q_b_packed = d_q_b_scale = nullptr;
+        d_kv_a_packed = d_kv_a_scale = nullptr;
+        d_kv_b_packed = d_kv_b_scale = nullptr;
+        d_o_packed = d_o_scale = nullptr;
         d_router_gate = nullptr;
         d_mlp_gate = d_mlp_down = d_mlp_up = nullptr;
         q_a_rows = q_a_cols = q_b_rows = q_b_cols = 0;
@@ -226,20 +277,29 @@ void KimiLayerWeights::Free()
     }
     if (d_input_norm)     cudaFree(d_input_norm);
     if (d_post_attn_norm) cudaFree(d_post_attn_norm);
-    if (d_q_a_proj)       cudaFree(d_q_a_proj);
     if (d_q_a_norm)       cudaFree(d_q_a_norm);
-    if (d_q_b_proj)       cudaFree(d_q_b_proj);
-    if (d_kv_a_proj)      cudaFree(d_kv_a_proj);
     if (d_kv_a_norm)      cudaFree(d_kv_a_norm);
-    if (d_kv_b_proj)      cudaFree(d_kv_b_proj);
-    if (d_o_proj)         cudaFree(d_o_proj);
+    if (d_q_a_packed)     cudaFree(d_q_a_packed);
+    if (d_q_a_scale)      cudaFree(d_q_a_scale);
+    if (d_q_b_packed)     cudaFree(d_q_b_packed);
+    if (d_q_b_scale)      cudaFree(d_q_b_scale);
+    if (d_kv_a_packed)    cudaFree(d_kv_a_packed);
+    if (d_kv_a_scale)     cudaFree(d_kv_a_scale);
+    if (d_kv_b_packed)    cudaFree(d_kv_b_packed);
+    if (d_kv_b_scale)     cudaFree(d_kv_b_scale);
+    if (d_o_packed)       cudaFree(d_o_packed);
+    if (d_o_scale)        cudaFree(d_o_scale);
     if (d_router_gate)    cudaFree(d_router_gate);
     if (d_mlp_gate)       cudaFree(d_mlp_gate);
     if (d_mlp_down)       cudaFree(d_mlp_down);
     if (d_mlp_up)         cudaFree(d_mlp_up);
     d_input_norm = d_post_attn_norm = nullptr;
-    d_q_a_proj = d_q_a_norm = d_q_b_proj = nullptr;
-    d_kv_a_proj = d_kv_a_norm = d_kv_b_proj = d_o_proj = nullptr;
+    d_q_a_norm = d_kv_a_norm = nullptr;
+    d_q_a_packed = d_q_a_scale = nullptr;
+    d_q_b_packed = d_q_b_scale = nullptr;
+    d_kv_a_packed = d_kv_a_scale = nullptr;
+    d_kv_b_packed = d_kv_b_scale = nullptr;
+    d_o_packed = d_o_scale = nullptr;
     d_router_gate = nullptr;
     d_mlp_gate = d_mlp_down = d_mlp_up = nullptr;
 }
@@ -279,6 +339,12 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
     auto topo = kimi_load_topology(index_path.string());
     if (!topo.error_msg.empty()) {
         log::error("[kimi_load] topology error: " + topo.error_msg);
+        return cudaErrorInvalidValue;
+    }
+    if (!topo.format.empty() && topo.format != "logestix-kimi-r2") {
+        log::error("[kimi_load] format '" + topo.format +
+                   "' is pre-r2: MLA weights require NVFP4 — "
+                   "reconvert required");
         return cudaErrorInvalidValue;
     }
     if (topo.num_layers <= 0) {

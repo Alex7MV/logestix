@@ -60,19 +60,40 @@ struct KimiLayerWeights {
     __nv_bfloat16 *d_input_norm = nullptr;
     __nv_bfloat16 *d_post_attn_norm = nullptr;
 
-    // MLA attention (raw BF16 → FP16)
-    __nv_bfloat16 *d_q_a_proj = nullptr;
-    __nv_bfloat16 *d_q_a_norm = nullptr;
-    __nv_bfloat16 *d_q_b_proj = nullptr;
-    __nv_bfloat16 *d_kv_a_proj = nullptr;
-    __nv_bfloat16 *d_kv_a_norm = nullptr;
-    __nv_bfloat16 *d_kv_b_proj = nullptr;
-    __nv_bfloat16 *d_o_proj = nullptr;
+    // MLA attention projections: NVFP4 packed E2M1 + per-16 E4M3 scales +
+    // global scale (round-2 r2 format). Norms stay BF16 below.
+    uint8_t *d_q_a_packed = nullptr;
+    uint8_t *d_q_a_scale = nullptr;
+    float q_a_gs = 1.0f;
+    int64_t q_a_packed_bytes = 0, q_a_scale_bytes = 0;
     int64_t q_a_rows = 0, q_a_cols = 0;
+
+    uint8_t *d_q_b_packed = nullptr;
+    uint8_t *d_q_b_scale = nullptr;
+    float q_b_gs = 1.0f;
+    int64_t q_b_packed_bytes = 0, q_b_scale_bytes = 0;
     int64_t q_b_rows = 0, q_b_cols = 0;
+
+    uint8_t *d_kv_a_packed = nullptr;
+    uint8_t *d_kv_a_scale = nullptr;
+    float kv_a_gs = 1.0f;
+    int64_t kv_a_packed_bytes = 0, kv_a_scale_bytes = 0;
     int64_t kv_a_rows = 0, kv_a_cols = 0;
+
+    uint8_t *d_kv_b_packed = nullptr;
+    uint8_t *d_kv_b_scale = nullptr;
+    float kv_b_gs = 1.0f;
+    int64_t kv_b_packed_bytes = 0, kv_b_scale_bytes = 0;
     int64_t kv_b_rows = 0, kv_b_cols = 0;
+
+    uint8_t *d_o_packed = nullptr;
+    uint8_t *d_o_scale = nullptr;
+    float o_gs = 1.0f;
+    int64_t o_packed_bytes = 0, o_scale_bytes = 0;
     int64_t o_rows = 0, o_cols = 0;
+
+    __nv_bfloat16 *d_q_a_norm = nullptr;
+    __nv_bfloat16 *d_kv_a_norm = nullptr;
 
     // Router (MoE layers 1..60): mlp.gate.weight + e_score_correction_bias
     __nv_bfloat16 *d_router_gate = nullptr;
