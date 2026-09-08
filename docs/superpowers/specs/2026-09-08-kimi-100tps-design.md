@@ -322,3 +322,31 @@ missing checkpoints for other families.
    the slot budget.
 4. Optional: two-token streaming reuse analysis to size the slot budget
    for a target hit rate.
+
+### Interim checkpoint (2026-09-08, end of session — deps bumps + fixture OOB fix)
+
+Commit `3ed7979` (deps) + `34daa37` (CCCL), all pushed to `feat/kimi-100tps`:
+
+- **Dependencies bumped (TDD, version-pinned in `test_core.cpp`
+  "pinned dependency versions"):** spdlog 1.15.0 → **1.17.0**, Catch2
+  3.7.0 → **3.16.0** (FetchContent GIT_TAGs), simdjson v4.4.2 →
+  **v4.6.11** (submodule), NVIDIA CCCL → **tag v3.4.2** (submodule; prior
+  HEAD was a master commit self-reporting 3.5.0-dev, not a release).
+  AGENTS.md/README.md dependency tables updated.
+- **Flaky-test root cause fixed (NOT a kernel race):** the
+  ~40% `RoutedGemmVBatch` memcmp flakes across the 12 `test_qwen_dense_*`
+  executables were an OOB in the `RunBatch` fixture itself
+  (`tests/test_qwen_nvfp4_gemv.cu`): hardcoded `eids = {3,0,3,1}`
+  (duplicate-expert coverage) with `S=2` cases read `dev_slot=3` past the
+  2-slot `d_pack`/`d_scale` allocations → garbage heap bytes →
+  nondeterministic bits. compute-sanitizer: 98 invalid reads; after the
+  `eids[k] % S` wrap (slot table AND ground-truth loop — the second OOB
+  was in the reference path) 0 errors. `RunQwenMoeRoutedGemmVBatch` was
+  correct all along; the determinism invariant holds.
+  Lesson: the 12 executables share one OBJECT lib — any test-source fix
+  requires a full rebuild, partial target rebuilds keep stale code.
+- **Verification:** compute-sanitizer 0 errors on the suite; stress 40+
+  serial runs green; full ctest **127/127** (serial, fresh, on `34daa37`).
+- Unchanged parked items for the next iteration: kimi device-cache slot
+  corruption (needs compute-sanitizer session) → un-park cache → re-engage
+  TC batch (wired, selfcheck-gated); optional MLA NVFP4 requant.
