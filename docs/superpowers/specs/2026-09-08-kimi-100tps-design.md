@@ -285,8 +285,14 @@ faster interconnect.
    neutral-layer batch-down per-slot activation offset fix (latent bug
    found in the Qwen batch-down: single shared activation row for all
    slots; pinned by new tests).
-6. `feat:` device-side token feed (per-step argmax fence removed) +
-   `LsxFastMathScope` consumer registration for kimi + guard extension.
+6. `feat:` `LsxFastMathScope` consumer registration for kimi + guard
+   extension.
+7. Device-side token feed was implemented then RE-PARKED: the fully-async
+   decode reproduced the round-25b cross-cycle `final_logits` divergence
+   (two-call memcmp gate red at cycles 2-3, nondeterministic across
+   processes). Per-step event-scoped readback restored; determinism gate
+   green x3 again (round-25 precedent: red determinism test reverts the
+   lever).
 
 **Parked (honest engineering call):** the device expert cache is gated
 behind an explicit `LSX_KIMI_EXPERT_CACHE_SLOTS` override: with the cache
@@ -303,6 +309,10 @@ staging path.
 **Final default-path perf:** 1.4 tok/s staging (unchanged — H2D-bound;
 the TC path cannot help until the cache is un-parked and upload traffic
 is eliminated).
+
+**Regression status:** full suite 127/127 green (serial run; the parallel
+run's six failures were VRAM contention between 17+ GB models). Skips are
+missing checkpoints for other families.
 
 ### Next steps (follow-up iteration)
 1. compute-sanitizer (racecheck/memcheck) session on the kimi cache
