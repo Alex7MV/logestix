@@ -249,3 +249,66 @@ Done BEFORE Phase 1 so Kimi never references a qwen-named symbol:
 - No MLA attention changes; no numeric-class experiments beyond W4A4 TC.
 - Windows: not exercised by this iteration (model tests are Linux-only
   per AGENTS.md OS restriction).
+
+---
+
+## Findings (execution round, 2026-09-08, feat/kimi-100tps)
+
+### Result: goal re-scoped — 100 tok/s is physically unreachable for this
+### model on this GPU; iteration delivered bug fixes + latent fast paths.
+
+**Baseline (Phase 0):** 1.4 tok/s (128 tokens, staging path) — the expert
+device cache was silently DISABLED in production by a uniformity-check bug
+(comparing strides against the zero-entry of dense layer 0), forcing the
+legacy per-call staging path. A second pre-existing bug (pass-3 slot
+resolution ignoring first-touch `missing_slot`) broke the cached path the
+moment it engaged. Both fixed on this branch.
+
+**H2D wall (measured):** 515 GiB of routed experts through 32 GiB VRAM.
+One decode token touches top-8 × 61 = 488 experts ≈ 11.2 GiB. With the
+LRU cache warm (414–520 slots, governor-capped), measured upload traffic
+stays ~480 experts/token (top-8 token-to-token reuse ~10–50%) → ~625
+ms/token of PCIe time dominates → **cached decode ceiling ≈ 4–15 tok/s**
+regardless of kernels. Qwen3.6's 105 tok/s was enabled by FULL expert
+residency (all experts fit in VRAM) — not achievable for Kimi's 515 GiB.
+Reaching 100 tok/s would need ~100+ GiB VRAM or an order-of-magnitude
+faster interconnect.
+
+**Delivered on this branch:**
+1. `fix:` cache uniformity check tolerates dense-layer zero entries
+   (root cause of the 1.4 t/s staging fallback).
+2. `fix:` cached path resolves first-touch slots via `missing_slot`.
+3. `refactor:` `qwen_tc_gemm` → `lsx_tc_gemm` (model-neutral rename;
+   qwen/deepseek/neutral-layer consumers; naming-guard allowlist cleaned).
+4. `feat:` `LsxTcQuantizeActsNvfp4Bf16` (neutral-layer BF16 act-quant).
+5. `feat:` `RunKimiRoutedTcBatch` — batched TC routed-expert chain +
+   neutral-layer batch-down per-slot activation offset fix (latent bug
+   found in the Qwen batch-down: single shared activation row for all
+   slots; pinned by new tests).
+6. `feat:` device-side token feed (per-step argmax fence removed) +
+   `LsxFastMathScope` consumer registration for kimi + guard extension.
+
+**Parked (honest engineering call):** the device expert cache is gated
+behind an explicit `LSX_KIMI_EXPERT_CACHE_SLOTS` override: with the cache
+engaged, generation produces wrong logits (selfcheck "Domino!" vs
+"Paris"; bypass staging is bit-correct). Slot bytes verified byte-correct
+right after upload yet read back different later — an unresolved writer
+between upload-retire and read; needs a dedicated compute-sanitizer
+session. Because the cache NEVER ran in production before (bug #1), this
+is a pre-existing latent defect exposed by fix #2, not a regression.
+The TC batch path (correctness-proven on synthetic geometry) stays latent
+behind the same gate and selfcheck passes x3 bit-exact on the default
+staging path.
+
+**Final default-path perf:** 1.4 tok/s staging (unchanged — H2D-bound;
+the TC path cannot help until the cache is un-parked and upload traffic
+is eliminated).
+
+### Next steps (follow-up iteration)
+1. compute-sanitizer (racecheck/memcheck) session on the kimi cache
+   writer; un-park the cache.
+2. Re-engage TC batch (already wired, selfcheck-gated).
+3. Optional: NVFP4-quantize pinned MLA weights (17.3 → ~6 GiB) to widen
+   the slot budget.
+4. Optional: two-token streaming reuse analysis to size the slot budget
+   for a target hit rate.
