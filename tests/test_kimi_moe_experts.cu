@@ -10,6 +10,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <random>
 #include <cstring>
 #include <vector>
 
@@ -247,4 +248,103 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     cudaFree(d_out);
     cudaFree(d_staging);
     cudaStreamDestroy(stream);
+}
+
+TEST_CASE("Kimi cache slot upload/readback byte-compare with eviction",
+          "[kimi][cache][slot-bytes]")
+{
+    using lsxcommon::gpu::expert_store::ExpertStore;
+    constexpr int N = 6;
+    constexpr int64_t kProj = 7340032;    // I*H/2 packed
+    constexpr int64_t kScl = 917504;      // I*H/16
+    ExpertStore<KimiExpertEntry> db;
+    db.entries.resize(N);
+    db.num_layers = 1;
+    db.experts_per_layer = 1;
+    std::vector<std::vector<uint8_t>> pack(N), scale(N);
+    std::mt19937 rng(7);
+    for (int i = 0; i < N; ++i) {
+        pack[i].resize(3 * kProj);
+        scale[i].resize(3 * kScl);
+        for (auto &b : pack[i]) b = static_cast<uint8_t>(rng());
+        for (auto &b : scale[i]) b = static_cast<uint8_t>(rng() % 128);
+        auto &e = db.entries[static_cast<size_t>(i)];
+        e.host_w1 = pack[i].data();
+        e.host_w3 = pack[i].data() + kProj;
+        e.host_w2 = pack[i].data() + 2 * kProj;
+        e.host_w1_scales = scale[i].data();
+        e.host_w3_scales = scale[i].data() + kScl;
+        e.host_w2_scales = scale[i].data() + 2 * kScl;
+        e.w1_bytes = e.w2_bytes = e.w3_bytes = kProj;
+        e.w1_scales_bytes = e.w2_scales_bytes = e.w3_scales_bytes = kScl;
+        e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 0.5f;
+    }
+    lsxcommon::kimi::KimiMoeExpertDeviceCache *cache = nullptr;
+    std::string err;
+    REQUIRE(lsxcommon::kimi::AllocateKimiMoeExpertCache(db, 2, cache, err) ==
+            cudaSuccess);
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+    lsxcommon::kimi::KimiExpertCacheState state;
+    state.device = cache;
+    auto upload = [&](int expert, int slot) {
+        KimiExpertEntry &e = db.entries[static_cast<size_t>(expert)];
+        KimiMoeCacheBatch b{};
+        b.missing_count = 1;
+        b.missing_idx[0] = 0;   // bid within the (single-expert) layer
+        b.missing_slot[0] = slot;
+        // UploadKimiMoeExpertBatch indexes db.entries[layer*epl + bid]:
+        // with experts_per_layer=1 the flat id IS the expert index; pass
+        // layer=expert, bid=0.
+        const cudaError_t ue = lsxcommon::kimi::UploadKimiMoeExpertBatch(
+            db, state, b, expert, 1);
+        if (ue != cudaSuccess)
+            FAIL("upload e=" << expert << " slot=" << slot << " err="
+                             << cudaGetErrorString(ue));
+        {
+            KimiExpertEntry &ee = db.entries[static_cast<size_t>(expert)];
+            KimiMoeSlotView vv =
+                lsxcommon::kimi::KimiMoeSlotPointers(*cache, slot, ee);
+            WARN("upload e=" << expert << " slot=" << slot
+                             << " p_w1_off="
+                             << (vv.p_w1 - cache->d_pack));
+        }
+        (void)slot; (void)st;
+        (void)slot; (void)st;
+    };
+    auto check = [&](int expert, int slot) -> bool {
+        cudaDeviceSynchronize();
+        KimiExpertEntry &e = db.entries[static_cast<size_t>(expert)];
+        KimiMoeSlotView v =
+            lsxcommon::kimi::KimiMoeSlotPointers(*cache, slot, e);
+        std::vector<uint8_t> got(static_cast<size_t>(kProj));
+        cudaMemcpy(got.data(), v.p_w1, static_cast<size_t>(kProj),
+                   cudaMemcpyDeviceToHost);
+        if (std::memcmp(got.data(), e.host_w1,
+                        static_cast<size_t>(kProj)) != 0) {
+            int who = -1;
+            for (int i = 0; i < N; ++i)
+                if (std::memcmp(got.data(), pack[static_cast<size_t>(i)].data(),
+                                64) == 0)
+                    who = i;
+            WARN("slot=" << slot << " expected e=" << expert
+                         << " first16=" << (int)got[0] << "," << (int)got[1]
+                         << " matches-e=" << who);
+        }
+        return std::memcmp(got.data(), e.host_w1,
+                           static_cast<size_t>(kProj)) == 0;
+    };
+    upload(0, 0);
+    upload(1, 1);
+    CHECK(check(0, 0));
+    CHECK(check(1, 1));
+    upload(2, 0);   // evicts expert 0 bytes in slot 0
+    upload(3, 1);   // evicts expert 1 bytes in slot 1
+    CHECK(check(2, 0));
+    CHECK(check(3, 1));
+    upload(0, 0);   // re-upload expert 0
+    CHECK(check(0, 0));
+    CHECK(check(3, 1));   // slot 1 still expert 3's bytes
+    lsxcommon::kimi::FreeKimiMoeExpertDeviceCache(cache);
+    cudaStreamDestroy(st);
 }

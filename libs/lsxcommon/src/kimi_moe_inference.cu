@@ -1163,7 +1163,8 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                            int *h_ids, float *h_w, cudaEvent_t route_ev,
                            bool fast_math, void *d_tc_scratch,
                            lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl,
-                           lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl)
+                           lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl,
+                           cudaEvent_t upload_fence)
 {
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
@@ -1269,12 +1270,25 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                     fprintf(stderr, "[DIAG-IDS] l=%d ids=%d,%d,%d,%d\n",
                             l, h_ids[0], h_ids[1], h_ids[2], h_ids[3]);
                 }
-                if (cache && cache->device && cache->plan.Active()) {
+                static const bool kBypass =
+                    std::getenv("LSX_KIMI_CACHE_BYPASS") != nullptr;
+                if (cache && cache->device && cache->plan.Active() &&
+                    !kBypass) {
                     // Pass 1: batch residency decision (LRU bookkeeping).
                     KimiMoeCacheBatch b = KimiMoeResolveBatch(
                         cache->plan, l, kKimiNumRouted, h_ids, kKimiTopK);
                     // Pass 2: batch upload of misses on the copy stream.
+                    // FENCE: the copy stream must not overwrite a victim
+                    // slot still being read by already-enqueued compute —
+                    // make it wait for the compute stream's progress first
+                    // (Qwen ev_front pattern).
                     if (b.missing_count > 0) {
+                        cudaError_t fe_ = cudaEventRecord(upload_fence,
+                                                          stream);
+                        if (fe_ != cudaSuccess) return fe_;
+                        fe_ = cudaStreamWaitEvent(cache->device->copy_stream,
+                                                  upload_fence, 0);
+                        if (fe_ != cudaSuccess) return fe_;
                         cudaError_t ue = UploadKimiMoeExpertBatch(
                             db, *cache, b, l, kKimiNumRouted);
                         if (ue != cudaSuccess) {
@@ -1521,9 +1535,20 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             const size_t per_expert =
                 3ull * (7168ull * 2048ull / 2) +      // packed w1|w3|w2
                 3ull * (7168ull * 2048ull / 16);      // scales s1|s3|s2
-            const int slots = KimiMoeExpertCacheSlots(
-                free_b, per_expert, total_experts,
-                std::getenv("LSX_KIMI_EXPERT_CACHE_SLOTS"));
+            // PARKED (kimi-100tps round): the device-cache path produces
+            // wrong logits in production (selfcheck "Domino!" vs "Paris";
+            // bypass staging is bit-correct). Slot bytes verified correct
+            // right after upload yet read back wrong later — unresolved
+            // writer, needs a dedicated compute-sanitizer session. Until
+            // root-caused, the cache engages ONLY on an explicit
+            // LSX_KIMI_EXPERT_CACHE_SLOTS override; the default stays the
+            // bit-exact per-call staging path.
+            const int slots = std::getenv("LSX_KIMI_EXPERT_CACHE_SLOTS")
+                                  ? KimiMoeExpertCacheSlots(
+                                        free_b, per_expert, total_experts,
+                                        std::getenv(
+                                            "LSX_KIMI_EXPERT_CACHE_SLOTS"))
+                                  : 0;
             cache->plan.Init(slots, total_experts);
             std::string cerr_;
             int try_slots = slots;
@@ -1573,7 +1598,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     KIMI_ALLOC(d_mlp_h, (size_t)max_total * kKimiDenseIntermediate);
     KIMI_ALLOC(d_scores, (size_t)max_total * kKimiNumRouted);
     KIMI_ALLOC(d_logits, kKimiVocab);
-    KIMI_ALLOC(d_bestv, 1);
+    KIMI_ALLOC(d_bestv, 2);
     KIMI_ALLOC(d_top_ids, kKimiTopK);
     KIMI_ALLOC(d_top_w, kKimiTopK);
     KIMI_ALLOC(d_best, 1);
@@ -1617,16 +1642,20 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     int *h_ids = nullptr;
     float *h_w = nullptr;
     cudaEvent_t route_ev = nullptr;
+    cudaEvent_t upload_fence = nullptr;
     if (cudaHostAlloc(&h_ids, kKimiTopK * sizeof(int),
                       cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc(&h_w, kKimiTopK * sizeof(float),
                       cudaHostAllocDefault) != cudaSuccess ||
         cudaEventCreateWithFlags(&route_ev, cudaEventDisableTiming) !=
-            cudaSuccess) {
+            cudaSuccess ||
+        cudaEventCreateWithFlags(&upload_fence,
+                                 cudaEventDisableTiming) != cudaSuccess) {
         gen.error_msg = "router fence alloc failed";
         cudaFreeHost(h_ids);
         cudaFreeHost(h_w);
         if (route_ev) cudaEventDestroy(route_ev);
+        if (upload_fence) cudaEventDestroy(upload_fence);
         return cudaErrorMemoryAllocation;
     }
 
@@ -1640,17 +1669,13 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         return cudaGetLastError();
     }
     cudaEventRecord(ev_start, stream);
-    for (int step = 0; step <= max_gen_tokens; ++step) {
+    for (int step = 0; step < max_gen_tokens; ++step) {
         if (step == 0) {
             ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
                 <<<(int)((prefill_seq * kKimiHidden + 255) / 256), 256, 0,
                    stream>>>(pw.d_embed, d_ids, d_hidden, prefill_seq,
                              kKimiHidden);
         } else {
-            // TEMP-BISECT-K: async D2D instead of feed kernel
-            cudaMemcpyAsync(d_ids + prefill_seq + step - 1, d_best,
-                            sizeof(int), cudaMemcpyDeviceToDevice, stream);
-
             ::lsxcommon::kernels::EmbedGatherKernel<__nv_bfloat16>
                 <<<(int)((kKimiHidden + 255) / 256), 256, 0, stream>>>(
                     pw.d_embed, d_ids + prefill_seq + step - 1,
@@ -1666,7 +1691,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                            d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
                            d_top_w, step, base, seq, base_slot, base, cache,
                            h_ids, h_w, route_ev, fast_math, d_tc_scratch,
-                           d_tc_tbl, h_tc_tbl);
+                           d_tc_tbl, h_tc_tbl, upload_fence);
         if (e != cudaSuccess) {
             gen.error_msg = std::string("layer stack failed: ") +
                             cudaGetErrorString(e);
@@ -1695,40 +1720,40 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
             d_logits, kKimiVocab, d_best, d_bestv);
         if (step == 0) cudaEventRecord(ev_ttft, stream);
+        // Park the first step's maxv (device-side decode: the host sees
+        // tokens only in the final bulk drain).
+        if (step == 0)
+            cudaMemcpyAsync(d_bestv + 1, d_bestv, sizeof(float),
+                            cudaMemcpyDeviceToDevice, stream);
+        // Device-side token feed: the id this step just produced is the
+        // input of the NEXT step's embed gather — land it in its d_ids
+        // slot now (D2D, stream-ordered). Drain at the end reads exactly
+        // these slots.
+        cudaMemcpyAsync(d_ids + prefill_seq + step, d_best, sizeof(int),
+                        cudaMemcpyDeviceToDevice, stream);
+    }
 
-        // Device-side decode PARKED (Round 25b determinism gate): interim
-        // per-step event-scoped readback. Full-drain cudaStreamSynchronize
-        // replaced by event fence + busy-poll (waits only for prior stream
-        // work, exactly what the old sync covered - all prior work is on
-        // this stream).
-        int next_id = -1;
-        float next_maxv = 0.0f;
-        cudaMemcpyAsync(&next_id, d_best, sizeof(int),
-                        cudaMemcpyDeviceToHost, stream);
-        cudaMemcpyAsync(&next_maxv, d_bestv, sizeof(float),
-                        cudaMemcpyDeviceToHost, stream);
-        cudaEventRecord(step_ev, stream);
-        {
-            cudaError_t q;
-            while ((q = cudaEventQuery(step_ev)) == cudaErrorNotReady) {}
-            (void)q;
-        }
-        if (next_id < 0) {
-            gen.error_msg = "argmax failed";
-            cudaFreeHost(h_ids);
-            cudaFreeHost(h_w);
-            cudaEventDestroy(route_ev);
-            cudaEventDestroy(step_ev);
-            cudaEventDestroy(ev_start);
-            cudaEventDestroy(ev_ttft);
-            return cudaErrorUnknown;
-        }
-        gen.tokens.push_back(next_id);
-        ++generated;
-        if (generated == 1) gen.first_maxv = next_maxv;
-        cudaMemcpyAsync(d_ids + prefill_seq + step, &next_id,
-                        sizeof(int), cudaMemcpyHostToDevice, stream);
-        if (generated >= max_gen_tokens) break;
+    // Final bulk drain: all generated ids + the first step's maxv.
+    gen.tokens.resize(static_cast<size_t>(max_gen_tokens));
+    cudaMemcpy(gen.tokens.data(), d_ids + prefill_seq,
+               static_cast<size_t>(max_gen_tokens) * sizeof(int),
+               cudaMemcpyDeviceToHost);
+    float first_maxv = 0.0f;
+    cudaMemcpy(&first_maxv, d_bestv + 1, sizeof(float),
+               cudaMemcpyDeviceToHost);
+    gen.first_maxv = first_maxv;
+    int argmax_bad = 0;
+    for (int t : gen.tokens)
+        if (t < 0) ++argmax_bad;
+    if (argmax_bad) {
+        gen.error_msg = "argmax failed";
+        cudaFreeHost(h_ids);
+        cudaFreeHost(h_w);
+        cudaEventDestroy(route_ev);
+        cudaEventDestroy(step_ev);
+        cudaEventDestroy(ev_start);
+        cudaEventDestroy(ev_ttft);
+        return cudaErrorUnknown;
     }
 
     cudaEventSynchronize(ev_ttft);
@@ -1754,6 +1779,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaFreeHost(h_ids);
     cudaFreeHost(h_w);
     cudaEventDestroy(route_ev);
+    cudaEventDestroy(upload_fence);
     if (d_tc_scratch) cudaFree(d_tc_scratch);
     if (d_tc_tbl) cudaFree(d_tc_tbl);
     if (h_tc_tbl) cudaFreeHost(h_tc_tbl);
