@@ -2000,6 +2000,24 @@ endif()
 add_test(NAME test_kimi_moe_selfcheck COMMAND test_kimi_moe_selfcheck)
 set_tests_properties(test_kimi_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── Тест Kimi perf baseline (реальные веса; SKIP без модели) ──────────────
+add_executable(test_kimi_moe_perf test_kimi_moe_perf.cpp)
+target_compile_definitions(test_kimi_moe_perf PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_moe_perf PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_perf POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_perf>"
+    )
+endif()
+
+add_test(NAME test_kimi_moe_perf COMMAND test_kimi_moe_perf)
+set_tests_properties(test_kimi_moe_perf PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Тест Kimi full inference (реальные веса; SKIP без модели) ─────────────
 add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
 target_compile_definitions(test_kimi_moe_inference PRIVATE

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kimi_moe_kernels.h"
+#include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
 
 #include <cublas_v2.h>
@@ -76,6 +77,73 @@ ProjData MakeProj(int seed, int64_t rows, int64_t cols)
 }
 
 } // namespace
+
+TEST_CASE("Kimi cache allocation tolerates dense-layer zero entries",
+          "[kimi][experts][cache]")
+{
+    // Kimi layer 0 is dense: no expert file exists, so db.entries[0] is a
+    // zero-valued KimiExpertEntry. The uniformity check must compare only
+    // the NON-zero (real MoE) entries; comparing against entry 0's zero
+    // strides used to disable the whole cache ("non-uniform expert
+    // geometry") and silently downgrade decode to the legacy staging path.
+    std::vector<KimiExpertEntry> model(3);
+    // entry 0: dense hole (all zero)
+    // entries 1..2: real MoE experts with uniform full-geometry slabs.
+    for (int i = 1; i < 3; ++i) {
+        model[static_cast<size_t>(i)].w1_bytes = 7340032;
+        model[static_cast<size_t>(i)].w3_bytes = 7340032;
+        model[static_cast<size_t>(i)].w2_bytes = 7340032;
+        model[static_cast<size_t>(i)].w1_scales_bytes = 917504;
+        model[static_cast<size_t>(i)].w3_scales_bytes = 917504;
+        model[static_cast<size_t>(i)].w2_scales_bytes = 917504;
+    }
+    lsxcommon::gpu::expert_store::ExpertStore<KimiExpertEntry> db;
+    db.entries = model;
+    db.num_layers = 3;
+    db.experts_per_layer = 1;
+
+    lsxcommon::kimi::KimiMoeExpertDeviceCache *cache = nullptr;
+    std::string err;
+    const cudaError_t e = lsxcommon::kimi::AllocateKimiMoeExpertCache(
+        db, 2, cache, err);
+    REQUIRE(e == cudaSuccess);
+    REQUIRE(cache != nullptr);
+    REQUIRE(cache->slots == 2);
+    const int64_t kExpectedPack =
+        3 * static_cast<int64_t>(7340032);   // 3 aligned-up 7340032 chunks
+    REQUIRE(cache->pack_stride == kExpectedPack);
+    REQUIRE(cache->scale_stride == 3 * static_cast<int64_t>(917504));
+    lsxcommon::kimi::FreeKimiMoeExpertDeviceCache(cache);
+}
+
+TEST_CASE("Kimi cache allocation still rejects genuinely non-uniform slabs",
+          "[kimi][experts][cache]")
+{
+    std::vector<KimiExpertEntry> model(3);
+    for (int i = 1; i < 3; ++i) {
+        model[static_cast<size_t>(i)].w1_bytes = 7340032;
+        model[static_cast<size_t>(i)].w3_bytes = 7340032;
+        model[static_cast<size_t>(i)].w2_bytes = 7340032;
+        model[static_cast<size_t>(i)].w1_scales_bytes = 917504;
+        model[static_cast<size_t>(i)].w3_scales_bytes = 917504;
+        model[static_cast<size_t>(i)].w2_scales_bytes = 917504;
+    }
+    // entry 2: a real (non-zero) expert with DIFFERENT geometry — must
+    // still be rejected.
+    model[2].w3_bytes = 123456;
+
+    lsxcommon::gpu::expert_store::ExpertStore<KimiExpertEntry> db;
+    db.entries = model;
+    db.num_layers = 3;
+    db.experts_per_layer = 1;
+
+    lsxcommon::kimi::KimiMoeExpertDeviceCache *cache = nullptr;
+    std::string err;
+    REQUIRE(lsxcommon::kimi::AllocateKimiMoeExpertCache(db, 2, cache, err) ==
+            cudaErrorInvalidValue);
+    REQUIRE(err == "non-uniform expert geometry; cache disabled");
+    REQUIRE(cache == nullptr);
+}
 
 TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
 {

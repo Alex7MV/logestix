@@ -56,24 +56,44 @@ cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db, int slots,
         err = "cache disabled";
         return cudaErrorInvalidValue;
     }
-    // Uniform geometry check: every expert must match entry 0's strides
-    // (fixed INT4/NVFP4 layout). A mismatch disables the cache — the
-    // generation loop then keeps the legacy per-call staging path.
-    const size_t pack = KimiPackStride(db.entries[0]);
-    const size_t scale = KimiScaleStride(db.entries[0]);
+    // Uniform geometry check across the NON-zero entries (fixed INT4/NVFP4
+    // layout). Kimi layer 0 is dense: its expert entry has no backing file
+    // and stays all-zero — a zero entry is a dense hole, not a geometry
+    // sample. Comparing against entry 0's zero strides used to disable the
+    // whole cache ("non-uniform expert geometry"), silently downgrading
+    // decode to the legacy per-call staging path. A mismatch between real
+    // experts still disables the cache — the generation loop then keeps
+    // the legacy path.
+    size_t ref_pack = 0, ref_scale = 0;
     for (const auto &e : db.entries) {
-        if (KimiPackStride(e) != pack || KimiScaleStride(e) != scale) {
+        const size_t p = KimiPackStride(e);
+        const size_t s = KimiScaleStride(e);
+        if (p != 0 && s != 0) {
+            ref_pack = p;
+            ref_scale = s;
+            break;
+        }
+    }
+    if (ref_pack == 0 || ref_scale == 0) {
+        err = "no populated expert entries; cache disabled";
+        return cudaErrorInvalidValue;
+    }
+    for (const auto &e : db.entries) {
+        const size_t p = KimiPackStride(e);
+        const size_t s = KimiScaleStride(e);
+        if (p == 0 && s == 0) continue;   // dense hole
+        if (p != ref_pack || s != ref_scale) {
             err = "non-uniform expert geometry; cache disabled";
             return cudaErrorInvalidValue;
         }
     }
     auto *c = new KimiMoeExpertDeviceCache();
-    c->pack_stride = pack;
-    c->scale_stride = scale;
+    c->pack_stride = ref_pack;
+    c->scale_stride = ref_scale;
     c->slots = slots;
-    cudaError_t e = cudaMalloc(&c->d_pack, static_cast<size_t>(slots) * pack);
+    cudaError_t e = cudaMalloc(&c->d_pack, static_cast<size_t>(slots) * ref_pack);
     if (e == cudaSuccess)
-        e = cudaMalloc(&c->d_scale, static_cast<size_t>(slots) * scale);
+        e = cudaMalloc(&c->d_scale, static_cast<size_t>(slots) * ref_scale);
     if (e == cudaSuccess)
         e = cudaStreamCreate(&c->copy_stream);
     if (e == cudaSuccess)
