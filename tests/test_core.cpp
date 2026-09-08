@@ -426,6 +426,12 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     STATIC_REQUIRE(CATCH_VERSION_MAJOR == 3);
     STATIC_REQUIRE(CATCH_VERSION_MINOR == 16);
     STATIC_REQUIRE(CATCH_VERSION_PATCH == 0);
+
+    // NVIDIA CCCL (submodule)
+    STATIC_REQUIRE(CCCL_VERSION == 3 * 1000000 + 4 * 1000 + 2);
+    STATIC_REQUIRE(CCCL_MAJOR_VERSION == 3);
+    STATIC_REQUIRE(CCCL_MINOR_VERSION == 4);
+    STATIC_REQUIRE(CCCL_PATCH_VERSION == 2);
 }
 
 TEST_CASE("lsxcommon common module version and GPU info", "[dependencies][lsxcommon]") {
