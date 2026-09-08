@@ -162,3 +162,24 @@ logits — diagnostics must run on stable bits). B completes before C
 - No two-token streaming reuse redesign (separate lever, next round).
 - No backward compatibility for the old format rev.
 - No parallel/VRAM-risky test runs (AGENTS.md inference exception).
+
+### Task 1 evidence (sanitizer + experiments, 2026-09-09)
+
+- racecheck: 0 hazards (unit test; selfcheck aborted under tool = sanitizer
+  OOM with 12.3 GiB cache + 17.3 GiB pinned, not the bug).
+- synccheck: 0 errors (with --num-cuda-barriers 32; the bare run's
+  "barrier overflow" warning + 719 errors were tool config, not code).
+- memcheck: 0 errors on unit test AND on the failing selfcheck (exit 42,
+  "Dominosen" reproduced under the tool — no invalid accesses).
+- KIMI_NOEVICTION=1 (max_open=1e6, zero evictions): still wrong logits
+  -> munmap/eviction path ruled out.
+- ROOT CAUSE (static, confirmed by all of the above): semantic id mismatch.
+  `KimiMoeResolveBatch` fills `missing_idx[i] = i` = BATCH INDEX
+  (documented: "batch indices that need upload", kimi_moe_expert_cache.h:51).
+  `UploadKimiMoeExpertBatch` uses it as the EXPERT id
+  (`db.EnsureResident(layer, bid)` + `db.entries[layer*epl + bid]`) ->
+  uploads experts 0..7 instead of the routed `h_ids[k]`. Slot bytes are
+  valid expert bytes, but of the WRONG expert: no sanitizer can flag it;
+  the round-1 unit test passed because it uploaded expert 0 with bid=0.
+  Fix direction: pass the routed ids to the upload (or store expert ids
+  in missing_idx) so entries are keyed by h_ids[missing_idx[i]].
