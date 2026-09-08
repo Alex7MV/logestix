@@ -1160,7 +1160,10 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                            float *d_scores, int *d_top_ids, float *d_top_w,
                            int turn, int base, int seq, int base_slot,
                            int pos_offset, KimiExpertCacheState *cache,
-                           int *h_ids, float *h_w, cudaEvent_t route_ev)
+                           int *h_ids, float *h_w, cudaEvent_t route_ev,
+                           bool fast_math, void *d_tc_scratch,
+                           lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl,
+                           lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl)
 {
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
@@ -1279,6 +1282,54 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                         }
                     }
                     cudaStreamWaitEvent(stream, cache->device->ready, 0);
+                    if (fast_math && d_tc_scratch && d_tc_tbl && h_tc_tbl) {
+                        // ── Batched TC chain: host-built 8-entry slot
+                        // table (dev_slot + per-segment global scales +
+                        // coeff), ONE async H2D, then the fused
+                        // quant->w13-batch->swiglu-quant->w2-batch->
+                        // ascending-reduce chain. Tolerance-class vs the
+                        // legacy chain below (act-quant + split-K).
+                        int miss_pos = 0;
+                        for (int k = 0; k < kKimiTopK; ++k) {
+                            int slot = b.resident_slot[k];
+                            if (slot < 0) {
+                                while (miss_pos < b.missing_count &&
+                                       b.missing_idx[miss_pos] != k)
+                                    ++miss_pos;
+                                slot = (miss_pos < b.missing_count)
+                                           ? b.missing_slot[miss_pos]
+                                           : -1;
+                                ++miss_pos;
+                            }
+                            if (slot < 0) return cudaErrorInvalidValue;
+                            const KimiExpertEntry &ent =
+                                db.entries[(size_t)l * kKimiNumRouted +
+                                           h_ids[k]];
+                            h_tc_tbl[k].dev_slot = slot;
+                            h_tc_tbl[k].gs1 = ent.w1_global_scale;
+                            h_tc_tbl[k].gs3 = ent.w3_global_scale;
+                            h_tc_tbl[k].gs2 = ent.w2_global_scale;
+                            h_tc_tbl[k].coeff = h_w[k];
+                        }
+                        cudaMemcpyAsync(
+                            d_tc_tbl, h_tc_tbl,
+                            kKimiTopK * sizeof(*d_tc_tbl),
+                            cudaMemcpyHostToDevice, stream);
+                        for (int t = 0; t < seq; ++t) {
+                            cudaError_t fe = RunKimiRoutedTcBatch(
+                                cublas_h, stream, cache->device->d_pack,
+                                cache->device->d_scale,
+                                cache->device->pack_stride,
+                                cache->device->scale_stride, d_tc_tbl,
+                                kKimiTopK,
+                                d_scratch_b +
+                                    (size_t)(base + t) * kKimiHidden,
+                                d_scratch_a +
+                                    (size_t)(base + t) * kKimiHidden,
+                                d_tc_scratch, KimiTcBatchScratchBytes());
+                            if (fe != cudaSuccess) return fe;
+                        }
+                    } else {
                     // Pass 3: GEMV from cache slots; accumulation order is
                     // the fixed k index order (bit-exact contract).
                     // Slot resolution per k: resident experts map through
@@ -1311,6 +1362,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                                     l, h_ids[k], cudaGetErrorString(fe));
                             return fe;
                         }
+                    }
                     }
                 } else {
                     // Legacy per-call staging path (cache disabled / 0 slots).
@@ -1415,7 +1467,8 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,
-                              KimiExpertCacheState *cache, int eos_id)
+                              KimiExpertCacheState *cache, int eos_id,
+                              bool fast_math)
 {
     gen = {};
     if (!pw.d_embed || !pw.d_head ||
@@ -1530,6 +1583,34 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         return e;
     }
 
+    // Batched TC chain state (fast-math path): scratch + pinned/device
+    // slot-table staging. Allocated once per generation; freed at the end.
+    const bool kTcOff = std::getenv("LSX_KIMI_TC_OFF") != nullptr;
+    const bool kTcBatch = fast_math && !kTcOff &&
+                          lsxcommon::lsx_tc::LsxTcRuntimeSupported();
+    void *d_tc_scratch = nullptr;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl = nullptr;
+    lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl = nullptr;
+    if (kTcBatch) {
+        if (cudaMalloc(&d_tc_scratch, KimiTcBatchScratchBytes()) !=
+            cudaSuccess) {
+            d_tc_scratch = nullptr;
+        }
+        if (d_tc_scratch &&
+            cudaMalloc(&d_tc_tbl, kKimiTopK * sizeof(*d_tc_tbl)) ==
+                cudaSuccess &&
+            cudaHostAlloc(&h_tc_tbl, kKimiTopK * sizeof(*h_tc_tbl),
+                          cudaHostAllocDefault) == cudaSuccess) {
+            log::info("[kimi-infer] batched TC expert chain engaged");
+        } else {
+            if (d_tc_scratch) cudaFree(d_tc_scratch);
+            if (d_tc_tbl) cudaFree(d_tc_tbl);
+            d_tc_scratch = nullptr;
+            d_tc_tbl = nullptr;
+            h_tc_tbl = nullptr;
+        }
+    }
+
     // Router split fence state (F-11): ONE pinned staging pair + event for
     // the whole generation. Allocated here (never while copies pending) and
     // released after the final drain.
@@ -1584,7 +1665,8 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                            d_staging, staging_bytes, d_hidden, d_scratch_b,
                            d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
                            d_top_w, step, base, seq, base_slot, base, cache,
-                           h_ids, h_w, route_ev);
+                           h_ids, h_w, route_ev, fast_math, d_tc_scratch,
+                           d_tc_tbl, h_tc_tbl);
         if (e != cudaSuccess) {
             gen.error_msg = std::string("layer stack failed: ") +
                             cudaGetErrorString(e);
@@ -1672,6 +1754,9 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaFreeHost(h_ids);
     cudaFreeHost(h_w);
     cudaEventDestroy(route_ev);
+    if (d_tc_scratch) cudaFree(d_tc_scratch);
+    if (d_tc_tbl) cudaFree(d_tc_tbl);
+    if (h_tc_tbl) cudaFreeHost(h_tc_tbl);
     return cudaSuccess;
 }
 

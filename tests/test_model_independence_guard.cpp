@@ -225,6 +225,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "qwen_moe_36_model.cpp",    // qwen3.6-35b-a3b
         "qwen_moe_exp_model.cpp",   // qwen3.8-flash-next
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
+        "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);

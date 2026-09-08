@@ -126,7 +126,8 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,
-                              KimiExpertCacheState *cache, int eos_id);
+                              KimiExpertCacheState *cache, int eos_id,
+                              bool fast_math = false);
 
 } // namespace kimi
 } // namespace lsxcommon
