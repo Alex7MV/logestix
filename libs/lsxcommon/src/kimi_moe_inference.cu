@@ -1080,8 +1080,21 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                     cudaStreamWaitEvent(stream, cache->device->ready, 0);
                     // Pass 3: GEMV from cache slots; accumulation order is
                     // the fixed k index order (bit-exact contract).
+                    // Slot resolution per k: resident experts map through
+                    // resident_slot[k]; first-touch (missing) experts map
+                    // through their missing_slot assignment in pass 2.
+                    int miss_pos = 0;
                     for (int k = 0; k < kKimiTopK; ++k) {
-                        const int slot = b.resident_slot[k];
+                        int slot = b.resident_slot[k];
+                        if (slot < 0) {
+                            while (miss_pos < b.missing_count &&
+                                   b.missing_idx[miss_pos] != k)
+                                ++miss_pos;
+                            slot = (miss_pos < b.missing_count)
+                                       ? b.missing_slot[miss_pos]
+                                       : -1;
+                            ++miss_pos;
+                        }
                         if (slot < 0) {
                             return cudaErrorInvalidValue;
                         }
