@@ -2,6 +2,7 @@
 
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 #include <cuda_runtime.h>
 
@@ -61,8 +62,40 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
                              __nv_bfloat16 *d_out, void *d_staging,
                              size_t staging_bytes);
 
+// Resident-cache variant: identical math, weights read from the expert's
+// device cache slot (KimiMoeSlotView) instead of per-call staging.
+// d_scratch must hold >= KimiExpertFfnStagingBytes bytes (dequant + acts).
+cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
+                                   cudaStream_t stream,
+                                   const KimiExpertEntry &expert,
+                                   float expert_weight,
+                                   const __nv_bfloat16 *d_x,
+                                   __nv_bfloat16 *d_out, void *d_scratch,
+                                   size_t scratch_bytes,
+                                   const KimiMoeSlotView &view);
+
 // Upper bound of the staging requirement of RunKimiExpertFfn.
 size_t KimiExpertFfnStagingBytes();
+
+// ── Batched TC routed chain (fast-math decode path) ─────────────────────────
+// One bf16 hidden row -> top-K expert FFN through the neutral lsx_tc
+// batched mxf4nvf4 kernels. d_tbl: [K] slot table (dev_slot + gs1/gs3/gs2
+// + coeff), built host-side by the generation loop. Writes the pure
+// expert sum coeff_k * FFN_k(x) into d_out (ascending-k order; the call
+// site adds the residual). Tolerance-class vs the legacy dequant->BF16
+// GEMV chain (act-quant + split-K); run-to-run deterministic.
+// d_scratch: caller-allocated KimiTcBatchScratchBytes() buffer.
+cudaError_t RunKimiRoutedTcBatch(cublasHandle_t cublas_h, cudaStream_t stream,
+                                 const uint8_t *pack_base,
+                                 const uint8_t *scale_base,
+                                 int64_t pack_stride, int64_t scale_stride,
+                                 const lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl,
+                                 int K, const __nv_bfloat16 *d_x,
+                                 __nv_bfloat16 *d_out, void *d_scratch,
+                                 size_t scratch_bytes);
+
+// Upper bound of the RunKimiRoutedTcBatch scratch requirement (K=8).
+size_t KimiTcBatchScratchBytes();
 
 struct KimiGenerationResult {
     std::vector<int> tokens;      // generated tokens only (never the prompt)

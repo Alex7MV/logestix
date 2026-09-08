@@ -1,10 +1,12 @@
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_expert_cache.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
 #include "lsx_kernels_quant.cuh"
 #include "nvfp4_codec.h"
+#include "nvfp4_scale.h"
 
 #include <cuda_bf16.h>
 
@@ -873,6 +875,205 @@ cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
     return RunKimiExpertFfnTail(cublas_h, stream, expert_weight, d_x, d_out,
                                 dq_gate, dq_up, dq_down, act_g, act_u, act_h,
                                 y);
+}
+
+// ── Batched TC routed chain (fast-math decode path) ────────────────────────
+
+namespace {
+
+struct KimiTcScratchLayout {
+    uint8_t *xq;         // [H/2] packed E2M1 activations
+    uint8_t *xqs;        // [H/16] block scales
+    __half *ygu;         // [K][2I] w13 batch output (gate|up)
+    __half *hbf;         // [K][I] swiglu output (fp16)
+    uint8_t *hq;         // [K*I/2] packed swiglu
+    uint8_t *hqs;        // [K*I/16] swiglu scales
+    __half *yp;          // [K][H] w2 batch output per slot
+    float *splitk13;     // sk*K*2I partials (null when sk==1)
+    float *splitk2;      // sk*K*H partials (null when sk==1)
+};
+
+KimiTcScratchLayout LayoutKimiTcScratch(void *base, int sk)
+{
+    auto align = [](size_t v) { return (v + 255) / 256 * 256; };
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int H = kKimiHidden;
+    constexpr int K = kKimiTopK;
+    KimiTcScratchLayout L{};
+    uint8_t *p = static_cast<uint8_t *>(base);
+    auto take = [&](size_t n) {
+        uint8_t *r = p;
+        p += align(n);
+        return r;
+    };
+    L.xq = take(static_cast<size_t>(H) / 2);
+    L.xqs = take(static_cast<size_t>(H) / 16);
+    L.ygu = reinterpret_cast<__half *>(
+        take(static_cast<size_t>(K) * 2 * I * sizeof(__half)));
+    L.hbf = reinterpret_cast<__half *>(
+        take(static_cast<size_t>(K) * I * sizeof(__half)));
+    L.hq = take(static_cast<size_t>(K) * I / 2);
+    L.hqs = take(static_cast<size_t>(K) * I / 16);
+    L.yp = reinterpret_cast<__half *>(
+        take(static_cast<size_t>(K) * H * sizeof(__half)));
+    L.splitk13 = sk > 1
+                     ? reinterpret_cast<float *>(take(
+                           static_cast<size_t>(sk) * K * 2 * I * sizeof(float)))
+                     : nullptr;
+    L.splitk2 = sk > 1
+                    ? reinterpret_cast<float *>(take(
+                          static_cast<size_t>(sk) * K * H * sizeof(float)))
+                    : nullptr;
+    return L;
+}
+
+// Slot-major swiglu + NVFP4 quant over the fp16 w13 batch output. Same
+// per-16 codec as the weight side: FloatToE4m3P2 + QuantizeE2m1TieUp;
+// sigmoid uses precise fdiv/fadd/exp (no __expf) for deterministic ties.
+__global__ void kimi_tc_swiglu_quant_kernel(
+    const __half *__restrict__ ygu, int k_slots, int I,
+    __half *__restrict__ h, uint8_t *__restrict__ packed,
+    uint8_t *__restrict__ scales)
+{
+    const int64_t groups_per_slot = (I + 15) / 16;
+    const int64_t g = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                      threadIdx.x;
+    if (g >= static_cast<int64_t>(k_slots) * groups_per_slot) return;
+    const int s = static_cast<int>(g / groups_per_slot);
+    const int j0 = static_cast<int>((g - static_cast<int64_t>(s) *
+                                              groups_per_slot) * 16);
+    const int len = (j0 + 16 <= I) ? 16 : (I - j0);
+    float vals[16];
+    float absmax = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float gv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + j0 + i]);
+        const float uv = __half2float(
+            ygu[static_cast<int64_t>(s) * 2 * I + I + j0 + i]);
+        const float sig = __fdiv_rn(1.0f, __fadd_rn(1.0f, expf(-gv)));
+        const __half hv = __float2half(__fmul_rn(sig, __fmul_rn(gv, uv)));
+        h[static_cast<int64_t>(s) * I + j0 + i] = hv;
+        vals[i] = __half2float(hv);
+        absmax = fmaxf(absmax, fabsf(vals[i]));
+    }
+    const uint8_t sb =
+        lsxcommon::nvfp4::FloatToE4m3P2(absmax * (1.0f / 6.0f));
+    scales[g] = sb;
+    const float inv_s = gpu::nvfp4::E4M3ScaleToFloat(sb);
+    const float inv = inv_s > 0.0f ? 1.0f / inv_s : 0.0f;
+    const int64_t slot_base = static_cast<int64_t>(s) * I;
+    for (int i = 0; i < len; i += 2) {
+        const uint8_t lo =
+            lsxcommon::kernels::QuantizeE2m1TieUp(vals[i] * inv);
+        const uint8_t hi = (i + 1 < len)
+                               ? lsxcommon::kernels::QuantizeE2m1TieUp(
+                                     vals[i + 1] * inv)
+                               : 0;
+        packed[(slot_base + j0 + i) / 2] =
+            static_cast<uint8_t>((hi << 4) | lo);
+    }
+}
+
+// Ascending-k deterministic reduce: pure expert sum (fp32 fmaf chain,
+// k=0..K-1), one bf16 store. The call site adds the residual.
+__global__ void kimi_tc_reduce_kernel(
+    const __half *__restrict__ yp,
+    const lsxcommon::lsx_tc::LsxTcBatchSlot *__restrict__ tbl, int k_slots,
+    int n, __nv_bfloat16 *__restrict__ out)
+{
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n) return;
+    float t = 0.0f;
+    for (int k = 0; k < k_slots; ++k) {
+        const lsxcommon::lsx_tc::LsxTcBatchSlot b = tbl[k];
+        t = fmaf(b.coeff,
+                 __half2float(yp[static_cast<int64_t>(k) * n + j]), t);
+    }
+    out[j] = __float2bfloat16_rn(t);
+}
+
+} // namespace
+
+size_t KimiTcBatchScratchBytes()
+{
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int H = kKimiHidden;
+    constexpr int K = kKimiTopK;
+    const int sk13 = lsxcommon::lsx_tc::LsxTcBatchSplitK(H, 2 * I);
+    const int sk2 = lsxcommon::lsx_tc::LsxTcBatchSplitK(I, H);
+    auto align = [](size_t v) { return (v + 255) / 256 * 256; };
+    size_t b = 0;
+    b += align(static_cast<size_t>(H) / 2);
+    b += align(static_cast<size_t>(H) / 16);
+    b += align(static_cast<size_t>(K) * 2 * I * sizeof(__half));
+    b += align(static_cast<size_t>(K) * I * sizeof(__half));
+    b += align(static_cast<size_t>(K) * I / 2);
+    b += align(static_cast<size_t>(K) * I / 16);
+    b += align(static_cast<size_t>(K) * H * sizeof(__half));
+    if (sk13 > 1)
+        b += align(static_cast<size_t>(sk13) * K * 2 * I * sizeof(float));
+    if (sk2 > 1)
+        b += align(static_cast<size_t>(sk2) * K * H * sizeof(float));
+    return b;
+}
+
+cudaError_t RunKimiRoutedTcBatch(cublasHandle_t, cudaStream_t stream,
+                                 const uint8_t *pack_base,
+                                 const uint8_t *scale_base,
+                                 int64_t pack_stride, int64_t scale_stride,
+                                 const lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl,
+                                 int K, const __nv_bfloat16 *d_x,
+                                 __nv_bfloat16 *d_out, void *d_scratch,
+                                 size_t scratch_bytes)
+{
+    namespace tc = lsxcommon::lsx_tc;
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int H = kKimiHidden;
+    if (!pack_base || !scale_base || !d_tbl || !d_x || !d_out || !d_scratch ||
+        K <= 0 || K > kKimiTopK || (I & 15) != 0 ||
+        scratch_bytes < KimiTcBatchScratchBytes())
+        return cudaErrorInvalidValue;
+
+    const int sk13 = tc::LsxTcBatchSplitK(H, 2 * I);
+    const int sk2 = tc::LsxTcBatchSplitK(I, H);
+    const KimiTcScratchLayout s =
+        LayoutKimiTcScratch(d_scratch, (sk13 > sk2 ? sk13 : sk2));
+
+    cudaError_t e = tc::LsxTcQuantizeActsNvfp4Bf16(stream, d_x, 1, H,
+                                                   s.xq, s.xqs);
+    if (e != cudaSuccess) return e;
+
+    // w13 batch: gate|up for K slots in ONE launch; {gs1|gs3} segment
+    // split at N/2 via the slot table's gs1/gs3.
+    e = tc::RunLsxTcGemmBatch13(stream, s.xq, s.xqs, pack_base, scale_base,
+                                pack_stride, scale_stride, d_tbl, K, H,
+                                2 * I, s.ygu, s.splitk13);
+    if (e != cudaSuccess) return e;
+
+    // SwiGLU + NVFP4 quant of the intermediate activation.
+    {
+        const int64_t groups =
+            static_cast<int64_t>(K) * ((I + 15) / 16);
+        kimi_tc_swiglu_quant_kernel<<<static_cast<int>((groups + 255) / 256),
+                                      256, 0, stream>>>(s.ygu, K, I, s.hbf,
+                                                        s.hq, s.hqs);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+
+    // w2 batch: per-slot down projection (w2 slab at pack + w13_bytes).
+    const int64_t w13_bytes = static_cast<int64_t>(I) * H;   // w1 + w3 packed
+    const int64_t s13_bytes = static_cast<int64_t>(I) * H / 8;  // s1 + s3
+    e = tc::RunLsxTcGemmBatchDown(stream, s.hq, s.hqs, pack_base, scale_base,
+                                  pack_stride, scale_stride, d_tbl, K,
+                                  w13_bytes, s13_bytes, I, H, s.yp,
+                                  s.splitk2);
+    if (e != cudaSuccess) return e;
+
+    // Ascending-k deterministic reduce into d_out (pure expert sum).
+    kimi_tc_reduce_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        s.yp, d_tbl, K, H, d_out);
+    return cudaGetLastError();
 }
 
 // ── Full generation loop (greedy decode, single stream) ────────────────────

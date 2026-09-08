@@ -411,6 +411,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
     float wgs_s = wgs;
     const uint8_t *bp_s = bp;
     const uint8_t *bs_s = bs;
+    int64_t a_slot_off = 0;
+    int64_t as_slot_off = 0;
     if (kBatch) {
         slot = blockIdx.z / split_k;
         z_slice = blockIdx.z % split_k;
@@ -421,6 +423,11 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                s_off;
         y_out = y + static_cast<int64_t>(slot) * N;
         wgs_s = batch_slots[slot].gs2;   // scalar form (kSeg13=0: down proj)
+        // Down projection consumes PER-SLOT activations (each expert has
+        // its own gate|up output): offset the activation row by the slot.
+        // Batch13 (kSeg13=1) shares the one quantized hidden row.
+        a_slot_off = kSeg13 ? 0 : static_cast<int64_t>(slot) * seq * (K / 2);
+        as_slot_off = kSeg13 ? 0 : static_cast<int64_t>(slot) * seq * ((K + 15) / 16);
     }
 
     // Segment epilogue: when seg_wgs != nullptr, output columns are split
@@ -521,6 +528,7 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
             // Slab traffic is issued via cp.async so the NEXT chunk streams
             // while the current one computes (no blocking store->sync chain).
             const char *a_g = reinterpret_cast<const char *>(ap) +
+                              a_slot_off +
                               static_cast<int64_t>(row_base) * k_half + kb / 2;
             uint8_t *a_s = &sA[buf][0][0];
             for (int idx = tid; idx < kTileM * 2; idx += 256) {
@@ -548,7 +556,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
                 const int r = idx / 32, b = idx % 32;
                 const bool ok = row_base + r < seq && kb_b0 + b < k_half;
                 sA[buf][r][b] =
-                    ok ? ap[static_cast<int64_t>(row_base + r) * k_half +
+                    ok ? ap[a_slot_off +
+                            static_cast<int64_t>(row_base + r) * k_half +
                             kb_b0 + b]
                        : uint8_t{0};
             }
@@ -566,7 +575,8 @@ __global__ void TcGemmKernel(const uint8_t *__restrict__ ap,
             const int ch_g = kb / 16 + ch;
             sAs[buf][r][ch] =
                 (row_base + r < seq && ch_g < k_chunks)
-                    ? as[static_cast<int64_t>(row_base + r) * k_chunks +
+                    ? as[as_slot_off +
+                         static_cast<int64_t>(row_base + r) * k_chunks +
                          ch_g]
                     : uint8_t{0};
         }
