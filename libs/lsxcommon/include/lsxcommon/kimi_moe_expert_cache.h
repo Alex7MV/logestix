@@ -208,10 +208,16 @@ cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db,
                                        KimiMoeExpertDeviceCache *&out,
                                        std::string &err);
 void FreeKimiMoeExpertDeviceCache(KimiMoeExpertDeviceCache *&cache);
+
+// Uploads every missing expert of @p batch. missing_idx entries are BATCH
+// indices (0..k-1) per KimiMoeResolveBatch; @p routed_ids supplies the
+// expert id per batch index so entries are keyed by the routed id — NOT by
+// the batch index (round-2 root cause of the slot-corruption symptom).
 cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
                                      const KimiExpertCacheState &state,
                                      const KimiMoeCacheBatch &batch, int layer,
-                                     int experts_per_layer);
+                                     int experts_per_layer,
+                                     const int *routed_ids);
 KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
                                     int slot, const KimiExpertEntry &entry);
 

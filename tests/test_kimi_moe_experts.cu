@@ -291,13 +291,13 @@ TEST_CASE("Kimi cache slot upload/readback byte-compare with eviction",
         KimiExpertEntry &e = db.entries[static_cast<size_t>(expert)];
         KimiMoeCacheBatch b{};
         b.missing_count = 1;
-        b.missing_idx[0] = 0;   // bid within the (single-expert) layer
+        b.missing_idx[0] = 0;   // batch index 0
         b.missing_slot[0] = slot;
-        // UploadKimiMoeExpertBatch indexes db.entries[layer*epl + bid]:
-        // with experts_per_layer=1 the flat id IS the expert index; pass
-        // layer=expert, bid=0.
+        // routed_ids[0] = expert id; single layer -> layer=0, and the flat
+        // entry is entries[0*epl + expert] = entries[expert].
+        const int routed_ids[1] = {expert};
         const cudaError_t ue = lsxcommon::kimi::UploadKimiMoeExpertBatch(
-            db, state, b, expert, 1);
+            db, state, b, /*layer=*/0, 1, routed_ids);
         if (ue != cudaSuccess)
             FAIL("upload e=" << expert << " slot=" << slot << " err="
                              << cudaGetErrorString(ue));
@@ -347,4 +347,201 @@ TEST_CASE("Kimi cache slot upload/readback byte-compare with eviction",
     CHECK(check(3, 1));   // slot 1 still expert 3's bytes
     lsxcommon::kimi::FreeKimiMoeExpertDeviceCache(cache);
     cudaStreamDestroy(st);
+}
+
+// Round-2 Task 2 red test: ResolveBatch fills missing_idx with BATCH
+// indices; the upload must fetch db.entries[layer*epl + h_ids[missing_idx]]
+// (routed expert), not entries[layer*epl + missing_idx] (slots 0..7).
+// The old upload uploaded experts 0..7 regardless of routing.
+TEST_CASE("Kimi cache upload maps batch indices to routed expert ids",
+          "[kimi][cache][fence]")
+{
+    using lsxcommon::gpu::expert_store::ExpertStore;
+    constexpr int EPL = 16;   // experts per layer; routed ids 10, 13 differ
+    constexpr int N = EPL;
+    constexpr int64_t kProj = 7340032;    // I*H/2 packed
+    constexpr int64_t kScl = 917504;      // I*H/16
+    ExpertStore<KimiExpertEntry> db;
+    db.entries.resize(N);
+    db.num_layers = 1;
+    db.experts_per_layer = EPL;
+    std::vector<std::vector<uint8_t>> pack(N), scale(N);
+    std::mt19937 rng(11);
+    for (int i = 0; i < N; ++i) {
+        pack[i].resize(3 * kProj);
+        scale[i].resize(3 * kScl);
+        for (auto &b : pack[i]) b = static_cast<uint8_t>(rng());
+        for (auto &b : scale[i]) b = static_cast<uint8_t>(rng() % 128);
+        auto &e = db.entries[static_cast<size_t>(i)];
+        e.host_w1 = pack[i].data();
+        e.host_w3 = pack[i].data() + kProj;
+        e.host_w2 = pack[i].data() + 2 * kProj;
+        e.host_w1_scales = scale[i].data();
+        e.host_w3_scales = scale[i].data() + kScl;
+        e.host_w2_scales = scale[i].data() + 2 * kScl;
+        e.w1_bytes = e.w2_bytes = e.w3_bytes = kProj;
+        e.w1_scales_bytes = e.w2_scales_bytes = e.w3_scales_bytes = kScl;
+        e.w1_global_scale = e.w2_global_scale = e.w3_global_scale = 0.5f;
+    }
+    lsxcommon::kimi::KimiMoeExpertDeviceCache *cache = nullptr;
+    std::string err;
+    // 8 slots: 6 unique routed experts must all fit (missing experts
+    // beyond the slot count get missing_slot=-1 by design).
+    REQUIRE(lsxcommon::kimi::AllocateKimiMoeExpertCache(db, 8, cache, err) ==
+            cudaSuccess);
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+    lsxcommon::kimi::KimiExpertCacheState state;
+    state.device = cache;
+
+    // Routed batch: batch slots 0..7 -> expert ids {10, 13, 2, 15, 10, 5, 9, 13}.
+    // Dup coverage: 10 twice, 13 twice. Deduped missing set: {10,13,2,15,5,9}.
+    const int top_ids[8] = {10, 13, 2, 15, 10, 5, 9, 13};
+    lsxcommon::kimi::KimiMoeExpertCachePlan plan;
+    plan.Init(8, EPL);
+    lsxcommon::kimi::KimiMoeCacheBatch b = lsxcommon::kimi::KimiMoeResolveBatch(
+        plan, 0, EPL, top_ids, 8);
+    REQUIRE_FALSE(b.invalid);
+    REQUIRE(b.missing_count == 6);
+
+    const cudaError_t ue = lsxcommon::kimi::UploadKimiMoeExpertBatch(
+        db, state, b, /*layer=*/0, /*experts_per_layer=*/EPL, top_ids);
+    REQUIRE(ue == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    // Every assigned slot must now hold the ROUTED expert's w1 bytes.
+    auto check_slot = [&](int batch_i) {
+        const int slot = b.resident_slot[batch_i] >= 0
+                             ? b.resident_slot[batch_i]
+                             : [&] {
+                                 for (int m = 0; m < b.missing_count; ++m)
+                                     if (b.missing_idx[m] == batch_i)
+                                         return b.missing_slot[m];
+                                 return -1;
+                             }();
+        REQUIRE(slot >= 0);
+        const KimiExpertEntry &e =
+            db.entries[static_cast<size_t>(top_ids[batch_i])];
+        KimiMoeSlotView v = KimiMoeSlotPointers(*cache, slot, e);
+        std::vector<uint8_t> got(static_cast<size_t>(kProj));
+        REQUIRE(cudaMemcpy(got.data(), v.p_w1,
+                           static_cast<size_t>(kProj),
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        INFO("batch_i=" << batch_i << " expert=" << top_ids[batch_i]
+                        << " slot=" << slot);
+        CHECK(std::memcmp(got.data(), e.host_w1,
+                          static_cast<size_t>(kProj)) == 0);
+    };
+    for (int i = 0; i < 8; ++i) check_slot(i);
+
+    lsxcommon::kimi::FreeKimiMoeExpertDeviceCache(cache);
+    cudaStreamDestroy(st);
+}
+
+// Round-2 differential: the SAME real expert through the staging FFN and
+// the cached FFN must produce bit-identical outputs (same bytes, same
+// dequant, same tail). Divergence pinpoints the cached-path defect.
+TEST_CASE("Kimi cached FFN bit-identical to staging FFN (real expert file)",
+          "[kimi][cache][diff][real-file]")
+{
+    const char *env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
+    if (!env) SKIP("LSX_TEST_KIMI_MODEL_PATH not set");
+    const std::string root = env;
+
+    lsxcommon::kimi::KimiExpertDb db;
+    db.num_layers = kKimiNumLayers;
+    db.experts_per_layer = kKimiNumRouted;
+    REQUIRE(db.Load(root, /*fallback=*/true));
+
+    const int layer = 5, expert = 42;
+    db.EnsureResident(layer, expert, 0);
+    const KimiExpertEntry &e =
+        db.entries[static_cast<size_t>(layer) * kKimiNumRouted + expert];
+    REQUIRE(e.host_w1 != nullptr);
+
+    constexpr int I = kKimiMoeIntermediate;
+    constexpr int Hd = kKimiHidden;
+    const int64_t kProj = static_cast<int64_t>(I) * Hd / 2;
+    const int64_t kScl = static_cast<int64_t>(I) * Hd / 16;
+
+    // Host input.
+    std::vector<float> xf(Hd);
+    for (int j = 0; j < Hd; ++j) xf[j] = Frand(3, j) * 0.5f;
+
+    cublasHandle_t cublas;
+    REQUIRE(cublasCreate(&cublas) == cudaSuccess);
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    cublasSetStream(cublas, stream);
+
+    __nv_bfloat16 *d_x = nullptr, *d_out_s = nullptr, *d_out_c = nullptr;
+    REQUIRE(cudaMalloc(&d_x, Hd * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out_s, Hd * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out_c, Hd * 2) == cudaSuccess);
+    std::vector<__nv_bfloat16> hx(Hd);
+    for (int j = 0; j < Hd; ++j) hx[j] = __float2bfloat16_rn(xf[j]);
+    REQUIRE(cudaMemcpy(d_x, hx.data(), Hd * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(d_out_s, 0, Hd * 2) == cudaSuccess);
+    REQUIRE(cudaMemset(d_out_c, 0, Hd * 2) == cudaSuccess);
+
+    // Staging scratch: full layout from RunKimiExpertFfn (w1|w3|w2 packed +
+    // scales + 3 dequanted [I*Hd] bf16 + 3 [I] + [Hd]).
+    const auto align_up_l = [](size_t v) { return (v + 255) / 256 * 256; };
+    const size_t staging_bytes =
+        align_up_l(3 * kProj + 3 * kScl) +
+        3 * static_cast<size_t>(I) * Hd * 2 + 3 * I * 2 + Hd * 2;
+    void *d_staging = nullptr;
+    REQUIRE(cudaMalloc(&d_staging, staging_bytes) == cudaSuccess);
+
+    // Cache slot with the same expert uploaded through the batch API.
+    lsxcommon::kimi::KimiMoeExpertDeviceCache *cache = nullptr;
+    std::string err;
+    REQUIRE(lsxcommon::kimi::AllocateKimiMoeExpertCache(db, 1, cache, err) ==
+            cudaSuccess);
+    lsxcommon::kimi::KimiExpertCacheState state;
+    state.device = cache;
+    lsxcommon::kimi::KimiMoeCacheBatch b{};
+    b.missing_count = 1;
+    b.missing_idx[0] = 0;
+    b.missing_slot[0] = 0;
+    const int routed_ids[1] = {expert};
+    REQUIRE(lsxcommon::kimi::UploadKimiMoeExpertBatch(
+                db, state, b, layer, kKimiNumRouted, routed_ids) ==
+            cudaSuccess);
+    const KimiMoeSlotView v = KimiMoeSlotPointers(*cache, 0, e);
+
+    const float coeff = 0.25f;
+    REQUIRE(RunKimiExpertFfn(cublas, stream, e, coeff, d_x, d_out_s,
+                             d_staging, staging_bytes) == cudaSuccess);
+    REQUIRE(RunKimiExpertFfnCached(cublas, stream, e, coeff, d_x, d_out_c,
+                                   d_staging, staging_bytes, v) ==
+            cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__nv_bfloat16> hs(Hd), hc(Hd);
+    REQUIRE(cudaMemcpy(hs.data(), d_out_s, Hd * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(hc.data(), d_out_c, Hd * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    size_t mismatches = 0;
+    int first_bad = -1;
+    for (int j = 0; j < Hd; ++j) {
+        if (hs[j] != hc[j]) {
+            if (first_bad < 0) first_bad = j;
+            ++mismatches;
+        }
+    }
+    INFO("mismatches=" << mismatches << " first_bad=" << first_bad
+                       << " staged=" << __bfloat162float(hs[first_bad < 0 ? 0 : first_bad])
+                       << " cached=" << __bfloat162float(hc[first_bad < 0 ? 0 : first_bad]));
+    CHECK(mismatches == 0);
+
+    FreeKimiMoeExpertDeviceCache(cache);
+    cudaFree(d_staging);
+    cudaFree(d_x); cudaFree(d_out_s); cudaFree(d_out_c);
+    cudaStreamDestroy(stream);
+    cublasDestroy(cublas);
 }

@@ -124,14 +124,17 @@ void FreeKimiMoeExpertDeviceCache(KimiMoeExpertDeviceCache *&c)
 cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
                                      const KimiExpertCacheState &state,
                                      const KimiMoeCacheBatch &batch, int layer,
-                                     int experts_per_layer)
+                                     int experts_per_layer,
+                                     const int *routed_ids)
 {
     KimiMoeExpertDeviceCache *cache = state.device;
     if (!cache || cache->slots <= 0 || batch.missing_count <= 0)
         return cudaSuccess;
+    if (!routed_ids) return cudaErrorInvalidValue;
     cudaError_t e = cudaSuccess;
     for (int i = 0; i < batch.missing_count; ++i) {
-        const int bid = batch.missing_idx[i];
+        const int batch_i = batch.missing_idx[i];
+        const int bid = routed_ids[batch_i];   // routed expert, NOT batch idx
         const int slot = batch.missing_slot[i];
         if (bid < 0 || slot < 0) continue;
         // Host-mmap residency for the DMA source (ExpertStore fd LRU);

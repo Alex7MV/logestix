@@ -1272,8 +1272,11 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 }
                 static const bool kBypass =
                     std::getenv("LSX_KIMI_CACHE_BYPASS") != nullptr;
+                static const int kCacheMaxLayer =
+                    getenv("KIMI_CACHE_MAX_LAYER")
+                        ? atoi(getenv("KIMI_CACHE_MAX_LAYER")) : 999;
                 if (cache && cache->device && cache->plan.Active() &&
-                    !kBypass) {
+                    !kBypass && l < kCacheMaxLayer) {
                     // Pass 1: batch residency decision (LRU bookkeeping).
                     KimiMoeCacheBatch b = KimiMoeResolveBatch(
                         cache->plan, l, kKimiNumRouted, h_ids, kKimiTopK);
@@ -1290,7 +1293,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                                                   upload_fence, 0);
                         if (fe_ != cudaSuccess) return fe_;
                         cudaError_t ue = UploadKimiMoeExpertBatch(
-                            db, *cache, b, l, kKimiNumRouted);
+                            db, *cache, b, l, kKimiNumRouted, h_ids);
                         if (ue != cudaSuccess) {
                             return ue;
                         }
