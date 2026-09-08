@@ -14,14 +14,14 @@ CUDA Toolkit 13.3 Update 1 (nvcc V13.3.73; минимум 13.2+), full native C+
 | Dependency | Version | Source | Type |
 |---|---|---|---|
 | Apache Arrow | 25.0.1 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
-| spdlog | 1.15.0 | FetchContent | Header-only |
+| spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
+| simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.3 (latest) | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260526.0 | FetchContent (`20260526.0`, LTS May 2026) | Header-only + static libs |
 | CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
-| Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
+| Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 
 ## Build
 
@@ -254,7 +254,7 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)
-- `third_party/simdjson/` — simdjson v4.4.2 (сабмодуль)
+- `third_party/simdjson/` — simdjson v4.6.11 (сабмодуль)
 
 ## Model Ingestion Protocol
 
@@ -389,7 +389,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
   а не через жёсткие пути `C:/Program Files/...
 - `lsxnetwork` — STATIC library (`libs/lsxnetwork/CMakeLists.txt`); simdjson, libzmq-static и Threads — PUBLIC (STATIC-библиотека ре-экспортирует link-зависимости потребителям); spdlog — PRIVATE
 - Each app in `apps/*/` links `lsxcommon` PRIVATE
-- Catch2 v3.7.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
+- Catch2 v3.16.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
 - `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
 - `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all test targets (кроме `test_mosaic_network`)
 - **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.

@@ -28,12 +28,12 @@ Each of us took a step in the right direction, and together we reached a goal th
 | Dependency | Version | Source | Type |
 |---|---|---|---|
 | Apache Arrow | 25.0.1 | FetchContent (BUNDLED) | Shared (`arrow.dll`) |
-| spdlog | 1.15.0 | FetchContent | Header-only |
+| spdlog | 1.17.0 | FetchContent | Header-only |
 | FlatBuffers | v25.12.19 | submodule (`third_party/flatbuffers`) | Static |
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
-| simdjson | v4.4.2 | submodule (`third_party/simdjson`) | Static (`.lib`) |
+| simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | latest | submodule (`third_party/cccl`) | Header-only |
-| Catch2 | v3.7.0 | FetchContent (test only) | Header-only |
+| Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | Dear ImGui | 1.92.9-docking | FetchContent (lsxhome only) | Static |
 | ImPlot | 1.0 | FetchContent (lsxhome only) | Static |
 | ImNodes | 0.5 | FetchContent (lsxhome only) | Static |
@@ -153,7 +153,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `third_party/cccl/` — NVIDIA CCCL
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
-- `third_party/simdjson/` — simdjson v4.4.2
+- `third_party/simdjson/` — simdjson v4.6.11
 
 ## Licensing
 

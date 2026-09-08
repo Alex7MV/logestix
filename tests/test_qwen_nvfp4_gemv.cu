@@ -303,7 +303,9 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
     const int eids[4] = {3, 0, 3, 1};
     std::vector<lsxcommon::qwen_moe::QwenMoeGvSlotDev> slots(S);
     for (int k = 0; k < S; ++k) {
-        slots[k].dev_slot = eids[k];
+        // eids are designed for S=4 (duplicate-expert coverage); wrap modulo
+        // S so smaller cases stay in bounds while keeping the duplicate pair.
+        slots[k].dev_slot = eids[k] % S;
         slots[k].gs1 = static_cast<float>(1 << (k % 4)) / 256.0f;
         slots[k].gs3 = static_cast<float>(1 << ((k + 1) % 4)) / 256.0f;
         slots[k].gs2 = static_cast<float>(1 << ((k + 2) % 4)) / 256.0f;
@@ -356,7 +358,7 @@ void RunBatch(const BatchCase &c, std::vector<float> *acc_out)
     std::vector<__half> exp_h(static_cast<size_t>(S) * I);
     std::vector<__half> exp_yp(static_cast<size_t>(S) * H);
     for (int k = 0; k < S; ++k) {
-        const int eid = eids[k];
+        const int eid = eids[k] % S;   // match slots[k].dev_slot wrap above
         const uint8_t *pbase =
             d_pack + static_cast<int64_t>(eid) * pack_stride;   // host? NO --
         (void)pbase;

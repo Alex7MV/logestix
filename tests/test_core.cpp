@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_version_macros.hpp>
+#include <spdlog/version.h>
 #include <lsxcommon/common.h>
 
 // Apache Arrow Core Data Layers
@@ -409,6 +411,21 @@ TEST_CASE("simdjson parse nested array and error handling", "[dependencies][simd
     simdjson::ondemand::document miss_doc;
     REQUIRE(parser.iterate(missing_json).get(miss_doc) == simdjson::SUCCESS);
     REQUIRE(miss_doc["nonexistent"].error() == simdjson::NO_SUCH_FIELD);
+}
+
+TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
+    // spdlog
+    STATIC_REQUIRE(SPDLOG_VERSION == 1 * 10000 + 17 * 100 + 0);
+
+    // simdjson
+    STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_MAJOR == 4);
+    STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_MINOR == 6);
+    STATIC_REQUIRE(simdjson::SIMDJSON_VERSION_REVISION == 11);
+
+    // Catch2
+    STATIC_REQUIRE(CATCH_VERSION_MAJOR == 3);
+    STATIC_REQUIRE(CATCH_VERSION_MINOR == 16);
+    STATIC_REQUIRE(CATCH_VERSION_PATCH == 0);
 }
 
 TEST_CASE("lsxcommon common module version and GPU info", "[dependencies][lsxcommon]") {
