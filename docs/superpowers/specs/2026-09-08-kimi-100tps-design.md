@@ -47,6 +47,10 @@ round is unknown and must be recorded before any lever is engaged.
   path (Phase 1 TC batch, Phase 4 device feed).
 - **BINDING** — EOS truncation and `kv_slots_used` remain correct under
   device-side decode.
+- **BINDING** — model independence: `qwen_tc_gemm` renamed to
+  `lsx_tc_gemm` + namespace `lsx_tc` BEFORE Kimi consumes the TC path
+  (no kimi→qwen symbol references); Kimi opens its own FastMathScope;
+  kimi-scoped VRAM reserve (shared governor constant untouched).
 - **NOT required** — bitwise equality of the TC batch with the legacy
   dequant→BF16 GEMV chain (split-K slice composition diverges; Qwen
   precedent). On the real geometry the gate is determinism, not parity.
@@ -73,12 +77,15 @@ re-ordered if the measured profile contradicts the Qwen analogy.
 
 ### Phase 1 — Batched TC routed-expert chain (model-neutral)
 
-- **Neutral-layer migration**: `QuantizeActsNvfp4`, `RunQwenTcGemmPreQuant`,
-  `RunQwenTcGemmBatch13`, `RunQwenTcGemmBatchDown`, `QwenTcBatchSlot` gain
-  neutral `lsx_nvfp4` wrappers (single definition site in
-  `lsx_inference_nvfp4.h/.cu`); `qwen::tc` remains the internal
-  implementation. Qwen and Kimi both call the neutral API. No kimi-named
-  dispatcher copies (AGENTS.md NVFP4 GEMM rule).
+- **Neutral layer consumption**: the batched TC entry points live in
+  `lsx_tc_gemm.h` (renamed, Phase 6) and are called directly by Kimi —
+  the neutral `lsx_nvfp4` dispatcher gains no kimi-specific wrapper;
+  `lsx_tc_gemm` carries no family stem (AGENTS.md NVFP4 GEMM rule:
+  single neutral surface, no family-owned copies).
+- **BF16 act-quant**: Kimi hidden states are `__nv_bfloat16`; the
+  neutral layer gains `LsxTcQuantizeActsNvfp4Bf16` (same per-16
+  pow2-E4M3 + E2M1 codec as the FP16 variant; parity test pins
+  bit-equal output for values representable in both).
 - New Kimi launcher `RunKimiRoutedTcBatch` in `kimi_moe_inference.cu`:
   - act-quant: FP16/BF16 hidden row → NVFP4 (per-16 pow2-E4M3 + E2M1),
     reusing `QuantizeActsNvfp4` semantics;
@@ -92,24 +99,30 @@ re-ordered if the measured profile contradicts the Qwen analogy.
     order).
 - Kernel class: warp-level `mma.sync.aligned...kind::mxf4nvf4.block_scale`
   (the proven CC 12.x route; tcgen05 tensor-memory MMA is NOT available on
-  sm_120a — docs §B4). Runtime probe `TcRuntimeSupported()` gates
+  sm_120a — docs §B4). Runtime probe `LsxTcRuntimeSupported()` gates
   engagement; `cudaErrorNotSupported` → legacy path.
 - The expert slab layout in cache slots is the EXISTING checkpoint NVFP4
   packing (no repack at upload for Phase 1 — the TC kernel consumes the
   repo layout, like Qwen).
 
-### Phase 2 — Device slot table (router fence elimination)
+### Phase 2 — Host-built slot table (router fence stays, 128-byte H2D)
 
-- `d_routes` (top-8 ids on device) + per-flat-expert TC-meta
-  `{dev_slot, gs1, gs3, gs2, coeff}` staged at slot insert into
-  `KimiMoeExpertDeviceCache` (mirrors Qwen `d_gemv_meta` / round-19c).
-- The per-slot table is composed ON DEVICE from `d_routes`; in
-  steady-state the host never reads the router back →
-  `KimiRouteBegin/Finish` busy-poll leaves the hot path.
-- Engagement gate: cache active AND TC fast-math AND fused slot layout
-  AND `I % 16 == 0`. Any miss breaks steady-state → the driver falls
-  back for that generation to the legacy per-call staging path
-  (bit-identical fallback, already the code path today).
+AMENDED (planning round): Qwen's device-composed no-handshake table
+requires FULL residency (dev_slot == flat index forever, no LRU). Kimi
+streams 515 GiB through an LRU cache — slot assignment is a host-side
+LRU decision, so:
+
+- The per-layer event-scoped router fence (`KimiRouteBegin/Finish`,
+  Round F-11) REMAINS — it is event-scoped and does not drain the stream.
+- Per-flat-expert TC-meta `{gs1, gs3, gs2}` is staged at slot insert
+  into the cache slot table (mirrors Qwen round-19c, host-side).
+- The 8-entry per-layer slot table `{dev_slot, gs1, gs3, gs2, coeff}`
+  is composed host-side right after `KimiRouteFinish` and moved with ONE
+  128-byte async H2D (pinned staging, reused per generation).
+- Engagement gate: cache active AND TC fast-math AND `I % 16 == 0` AND
+  `LsxTcRuntimeSupported()`. Any anomaly → the driver falls back for
+  that generation to the legacy per-call staging path (bit-identical
+  fallback, already the code path today).
 
 ### Phase 3 — Dual-stream expert prefetch (GLM-Flash pattern)
 
@@ -132,26 +145,62 @@ re-ordered if the measured profile contradicts the Qwen analogy.
 - Race gate (round-25 lesson): if the two-call memcmp gate fails, token
   feed reverts to event-scoped readback and the lever stays latent.
 
-### Phase 5 — Hybrid residency + VRAM reserve revision
+### Phase 5 — Hybrid residency + Kimi-scoped VRAM reserve
 
-- Governor reserve for Kimi is re-measured and tightened (the
-  `LSX_KIMI_EXPERT_CACHE_SLOTS` override stays; the default comes from
-  `lifecycle::ExpertCacheSlots`) → more device slots.
+- Kimi-scoped reserve: the shared `lifecycle::kExpertCacheVramReserveBytes`
+  (4 GiB) is NOT touched (model-independence rule). `KimiMoeExpertCacheSlots`
+  gains a kimi-namespace reserve constant (re-measured, tighter) used only
+  by Kimi's cache sizing; the `LSX_KIMI_EXPERT_CACHE_SLOTS` override stays.
 - TC-meta (`{gs1,gs3,gs2}` + slot binding) staged at insert — a tiny
   per-slot on-upload transform, bit-exact conversion test pinned.
 - Hot-expert hinting (runtime tuner already exists) may bias LRU
   bookkeeping — optional, only if the measured hit-rate is the residual
   bottleneck.
 
+### Phase 6 — Neutral rename prerequisite: qwen_tc_gemm → lsx_tc_gemm
+
+Audit finding (verified 2026-09-08): `qwen_tc_gemm.{h,cu}` is de-facto
+cross-family infrastructure — consumed by qwen (dense+moe), deepseek
+(`deepseek_moe_inference_moe.cu`), the neutral layer dispatcher
+(`lsx_inference_nvfp4.cu`) — with ZERO qwen-specific content (no qwen
+constants, headers, or geometry; only measurement comments in prose).
+Done BEFORE Phase 1 so Kimi never references a qwen-named symbol:
+
+- Files renamed: `qwen_tc_gemm.h` → `lsx_tc_gemm.h`,
+  `qwen_tc_gemm.cu` → `lsx_tc_gemm.cu`.
+- Namespace `qwen::tc` → `lsxcommon::lsx_tc`.
+- Symbols: `RunQwenTcNvfp4Gemm` → `RunLsxTcNvfp4Gemm`,
+  `RunQwenTcGemmPreQuant` → `RunLsxTcGemmPreQuant`,
+  `RunQwenTcGemmBatch13` → `RunLsxTcGemmBatch13`,
+  `RunQwenTcGemmBatchDown` → `RunLsxTcGemmBatchDown`,
+  `QwenTcBatchSlot` → `LsxTcBatchSlot`,
+  `QwenTcBatchSplitK` → `LsxTcBatchSplitK`,
+  `QuantizeActsNvfp4` → `LsxTcQuantizeActsNvfp4`,
+  `TcRuntimeSupported` → `LsxTcRuntimeSupported`,
+  `ProbeTmaBulkCopy` → `LsxProbeTmaBulkCopy`,
+  `BuildFusedGemmWeights` → `LsxTcBuildFusedGemmWeights`,
+  `TcFusedOutputScratch` → `LsxTcFusedOutputScratch`.
+- CMake OBJECT lib `lsxcommon_qwen_tc_cu` → `lsxcommon_tc_cu` (its
+  `sm_120a/sm_121a` generate-code set is carried over unchanged).
+- Consumers updated mechanically: `qwen_inference.cu`,
+  `qwen_moe_inference.cu` (incl. the layout static_assert),
+  `deepseek_moe_inference_moe.cu`, `lsx_inference_nvfp4.cu`, tests
+  (`test_blackwell_tc_mma.cu`, `test_blackwell_micro_gemm.cu`,
+  `test_qwen_moe_kernels.cu`, `test_deepseek_moe_inference_kernels.cu`).
+- Naming guard: allowlist entry `qwen_tc_gemm` removed
+  (`test_code_naming_guard.cpp`); no qwen-specific code needs
+  extraction into a separate file — none exists.
+
 ### Model-independence amendments (guard tests, same commit)
 
 - `tests/test_model_independence_guard.cpp`:
-  - `consumers` += `kimi_moe_model.cpp` (must open `LsxFastMathScope(cfg_.fast_math, ...)` in Infer);
+  - `consumers` += `kimi_moe_model.cpp` (must open
+    `LsxFastMathScope(cfg_.fast_math, ...)` in Infer);
   - fast-math toggle check: kimi TUs define no `g_kimi_fast_math`-style
     state; the single definition stays in `lsx_inference_nvfp4.cu`.
-- `tests/test_code_naming_guard.cpp` registries unchanged (no new files
-  outside the kimi family; neutral wrappers live in
-  `lsx_inference_nvfp4.*`).
+- `tests/test_code_naming_guard.cpp`: allowlist entry `qwen_tc_gemm`
+  removed; no new family-prefixed files outside the kimi family (the
+  renamed neutral files carry no family stem and pass the scheme scan).
 
 ## Error handling
 
@@ -166,6 +215,11 @@ re-ordered if the measured profile contradicts the Qwen analogy.
 
 ## Tests (TDD, plan order)
 
+0. `[rename]` Phase 6 rename is regression-pinned: full `ctest -R
+   "kimi|qwen|deepseek|blackwell"` suite green after the mechanical
+   rename; naming guard green with `qwen_tc_gemm` removed from the
+   allowlist; `rg "QwenTc\|qwen::tc\|qwen_tc_gemm"` returns zero hits
+   in libs/ and tests/.
 1. `[tc-batch]` synthetic: batched TC chain vs pinned legacy GEMV chain —
    tolerance parity (NOT bit) + adversarial inputs: duplicate experts,
    zero coeffs, alternating scale bytes (round-19 lesson).
