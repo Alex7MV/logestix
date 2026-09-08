@@ -100,7 +100,7 @@ TEST_CASE("ConvertKimiModel produces logestix-kimi layout", "[kimi][convert]") {
     std::ifstream f(log_root / "model.index.json");
     std::string json((std::istreambuf_iterator<char>(f)),
                      std::istreambuf_iterator<char>());
-    REQUIRE(json.find("\"logestix-kimi\"") != std::string::npos);
+    REQUIRE(json.find("\"logestix-kimi-r2\"") != std::string::npos);
     REQUIRE(json.find("\"moe_layers\": [1,2]") != std::string::npos);
     REQUIRE(json.find("\"dense_layers\": [0]") != std::string::npos);
 
@@ -126,4 +126,68 @@ TEST_CASE("Kimi vault conversion passes integrity verification",
     auto vres = lsxcommon::integrity::VerifyConvertedModel(dir);
     if (!vres.ok()) FAIL(vres.status().ToString());
     REQUIRE(vres.ok());
+}
+
+// Round-2 Task 3: MLA projections are quantized to NVFP4 (packed + scale
+// records + global_scale in the index); layernorms stay BF16; format rev
+// bumps to logestix-kimi-r2.
+TEST_CASE("Kimi converter r2: MLA projections quantized, norms untouched",
+          "[kimi][convert][r2]")
+{
+    namespace fs = std::filesystem;
+    auto in = fs::temp_directory_path() / "kimi_conv_r2_fixture";
+    auto out = fs::temp_directory_path() / "kimi_conv_r2_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+
+    kimitest::WriteKimiConfig(in);
+    kimitest::WriteSafetensors(in, "model-00001-of-00001.safetensors",
+                               kimitest::BuildSyntheticKimiModel(3));
+    kimitest::WriteKimiTokenizerFiles(in);
+
+    REQUIRE(lsxcommon::kimi::ConvertKimiModel(in.string(), out).ok());
+
+    const auto log_root = out / "logestix";
+    std::ifstream f(log_root / "model.index.json");
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    REQUIRE(json.find("\"logestix-kimi-r2\"") != std::string::npos);
+    // mla_nvfp4 block carries per-layer global scales.
+    REQUIRE(json.find("\"mla_nvfp4\"") != std::string::npos);
+    REQUIRE(json.find("\"q_a_proj\"") != std::string::npos);
+    REQUIRE(json.find("\"o_proj\"") != std::string::npos);
+
+    // Load the produced layer file and verify record shapes/names.
+    auto tensors = lsxcommon::LoadTensorBatchViews(
+        log_root / "pinned" / "layer_1.arrow");
+    REQUIRE(tensors.ok());
+    const auto &views = *tensors;
+    auto find = [&](std::string_view suffix) -> const lsxcommon::TensorView * {
+        for (const auto &t : views.tensors) {
+            if (t.name.size() >= suffix.size() &&
+                t.name.compare(t.name.size() - suffix.size(), suffix.size(),
+                               suffix) == 0)
+                return &t;
+        }
+        return nullptr;
+    };
+    // q_a packed/scale pair exists.
+    const auto *qa_pk = find("self_attn.q_a_proj.weight_packed");
+    const auto *qa_sc = find("self_attn.q_a_proj.weight_scale");
+    REQUIRE(qa_pk != nullptr);
+    REQUIRE(qa_sc != nullptr);
+    // BF16 [16,16] = 256 elems -> 128 packed bytes + 16 scale bytes.
+    REQUIRE(qa_pk->bytes == 128);
+    REQUIRE(qa_sc->bytes == 16);
+    // No raw BF16 q_a projection remains.
+    REQUIRE(find("self_attn.q_a_proj.weight") == nullptr);
+    // o_proj pair exists.
+    REQUIRE(find("self_attn.o_proj.weight_packed") != nullptr);
+    REQUIRE(find("self_attn.o_proj.weight_scale") != nullptr);
+    // Layernorms remain BF16 single records.
+    const auto *qa_ln = find("self_attn.q_a_layernorm.weight");
+    REQUIRE(qa_ln != nullptr);
+    REQUIRE(qa_ln->bytes == 32);   // 16 BF16 elems
+    REQUIRE(qa_ln->dtype == "BF16");
 }

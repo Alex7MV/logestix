@@ -5,6 +5,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/safetensors.h"
+#include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
 #include "lsxcommon/schema.h"
 
@@ -129,8 +130,11 @@ std::optional<KimiParsedTensor> parse_dense_mlp(const std::string &name)
 //                           kv_a_layernorm,kv_b_proj,o_proj}.{weight,bias}
 std::optional<KimiParsedTensor> parse_attention(const std::string &name)
 {
+    // weight_packed/weight_scale: round-2 r2 MLA NVFP4 record names
+    // (produced by the converter itself when re-classifying for the
+    // pinned-layer grouping).
     static const std::regex re(
-        R"(layers\.(\d+)\.self_attn\.(q_a_proj|q_a_layernorm|q_b_proj|kv_a_proj_with_mqa|kv_a_layernorm|kv_b_proj|o_proj)\.(weight|bias))");
+        R"(layers\.(\d+)\.self_attn\.(q_a_proj|q_a_layernorm|q_b_proj|kv_a_proj_with_mqa|kv_a_layernorm|kv_b_proj|o_proj)\.(weight|weight_packed|weight_scale|bias))");
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     KimiParsedTensor p;
@@ -439,12 +443,14 @@ arrow::Status SaveKimiPinnedTensors(
     return arrow::Status::OK();
 }
 
-// Kimi index writer (format "logestix-kimi").
+// Kimi index writer (format "logestix-kimi-r2": MLA projections NVFP4).
 void WriteKimiModelIndex(
     const std::string &model_name,
     const KimiTopology &topo,
     int64_t total_pinned,
     int64_t total_experts,
+    const absl::btree_map<int, absl::btree_map<std::string, float>>
+        &mla_global_scales,
     const fs::path &output_root)
 {
     namespace fs = std::filesystem;
@@ -452,10 +458,25 @@ void WriteKimiModelIndex(
     if (!f) return;
 
     f << "{\n";
-    f << "  \"format\": \"logestix-kimi\",\n";
+    f << "  \"format\": \"logestix-kimi-r2\",\n";
     f << "  \"model\": \"" << model_name << "\",\n";
     f << "  \"num_layers\": " << topo.num_layers << ",\n";
     f << "  \"experts_per_layer\": " << topo.experts_per_layer << ",\n";
+    f << "  \"mla_nvfp4\": {\n";
+    bool first_layer = true;
+    for (const auto &[layer, bases] : mla_global_scales) {
+        if (!first_layer) f << ",\n";
+        first_layer = false;
+        f << "    \"" << layer << "\": {";
+        bool first_base = true;
+        for (const auto &[base, gs] : bases) {
+            if (!first_base) f << ", ";
+            first_base = false;
+            f << "\"" << base << "\": " << absl::StrFormat("%.9g", gs);
+        }
+        f << "}";
+    }
+    f << "\n  },\n";
     f << "  \"moe_layers\": [";
     for (size_t i = 0; i < topo.moe_layers.size(); ++i) {
         if (i) f << ",";
@@ -567,6 +588,8 @@ arrow::Status ConvertKimiModel(
     absl::flat_hash_map<int, int> experts_per_layer;
     absl::btree_set<int> moe_layers;
     absl::btree_set<int> dense_layers;
+    // Round-2: per-layer MLA global scales for the index (layer -> base -> gs).
+    absl::btree_map<int, absl::btree_map<std::string, float>> mla_global_scales;
 
     for (const auto &shard : model.shards) {
         ++shard_idx;
@@ -656,6 +679,48 @@ arrow::Status ConvertKimiModel(
                 t.shape = tensor.shape; t.data = std::move(raw);
                 pinned_tensors.push_back(std::move(t));
                 ++pinned_processed;
+            } else if (parsed.kind == KimiTensorKind::Attention) {
+                // Round-2: MLA projections quantize to NVFP4 (packed +
+                // per-16 E4M3 scales + global_scale in the index);
+                // attention layernorms stay BF16.
+                const bool is_norm =
+                    parsed.base.find("layernorm") != std::string::npos;
+                const bool is_2d = tensor.shape.size() == 2;
+                if (!is_norm && is_2d && tensor.dtype == "BF16") {
+                    const int64_t rows = tensor.shape[0];
+                    const int64_t cols = tensor.shape[1];
+                    const int64_t numel = rows * cols;
+                    std::vector<uint8_t> packed, scales;
+                    float global_scale = 1.0f;
+                    if (!gpu::quantize_tensor_gpu(
+                            raw.data(), numel, "BF16", nullptr,
+                            tensor.shape, {}, packed, scales, global_scale))
+                        return arrow::Status::Invalid(
+                            "MLA NVFP4 quantize failed: ", tensor.name);
+                    TensorRecord tp;
+                    tp.name = tensor.name + "_packed";
+                    tp.dtype = "U8";
+                    tp.shape = {numel / 2};
+                    tp.data = std::move(packed);
+                    pinned_tensors.push_back(std::move(tp));
+                    TensorRecord ts;
+                    ts.name = tensor.name + "_scale";
+                    ts.dtype = "U8";
+                    ts.shape = {numel / 16};
+                    ts.data = std::move(scales);
+                    pinned_tensors.push_back(std::move(ts));
+                    mla_global_scales[parsed.layer][parsed.base] =
+                        global_scale;
+                    ++pinned_processed;
+                    max_layer = std::max(max_layer, parsed.layer);
+                    continue;
+                }
+                max_layer = std::max(max_layer, parsed.layer);
+                TensorRecord t;
+                t.name = tensor.name; t.dtype = tensor.dtype;
+                t.shape = tensor.shape; t.data = std::move(raw);
+                pinned_tensors.push_back(std::move(t));
+                ++pinned_processed;
             } else if (parsed.kind != KimiTensorKind::Unknown) {
                 // Attention, Router, LayerNorm, Global -> pinned.
                 max_layer = std::max(max_layer, parsed.layer);
@@ -697,6 +762,7 @@ arrow::Status ConvertKimiModel(
         topo,
         static_cast<int64_t>(pinned_tensors.size()),
         static_cast<int64_t>(experts_processed),
+        mla_global_scales,
         log_root);
 
     // (8) Build and verify the binary tokenizer (mandatory). Kimi ships a
