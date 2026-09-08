@@ -7,6 +7,7 @@
 #include "lsxcommon/log.h"
 
 #include <cuda_runtime.h>
+#include <cstdlib>
 
 namespace lsxcommon {
 namespace kimi {
