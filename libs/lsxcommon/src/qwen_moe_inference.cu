@@ -598,7 +598,8 @@ __global__ void moe_gemv_w13_batch_kernel(
                   scale_base +
                       static_cast<int64_t>(slot.dev_slot) * scale_stride +
                       static_cast<int64_t>(r) * (H >> 4),
-                  (KP > 1 ? (H / KP) * (warp % KP) : 0), H >> 5, lane) *
+                  (KP > 1 ? (H / KP) * (warp % KP) : 0),
+                  (H / KP) >> 5, lane) *
               gs;
     }
     if (lane == 0) sp[warp] = acc;
@@ -660,7 +661,8 @@ __global__ void moe_gemv_down_batch_kernel(
                   scale_base +
                       static_cast<int64_t>(slot.dev_slot) * scale_stride +
                       s13_bytes + static_cast<int64_t>(r) * (I >> 4),
-                  (KP > 1 ? (I / KP) * (warp % KP) : 0), I >> 5, lane) *
+                  (KP > 1 ? (I / KP) * (warp % KP) : 0),
+                  (I / KP) >> 5, lane) *
               slot.gs2;
     }
     if (lane == 0) sp[warp] = acc;

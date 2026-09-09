@@ -1522,12 +1522,20 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     gpu::ExpertDeviceCache &ec = g_gen_ctx->ec;
     static const bool inline_uploads =
         std::getenv("LSX_GEMMA_INLINE_UPLOADS") != nullptr;
+    // Batched decode fast-path is the DEFAULT: gathered dequant + batched
+    // GEMMs (or the direct NVFP4 GEMV chain) instead of the legacy
+    // per-expert dequant->GEMV->axpy chain (~9*K device ops per layer per
+    // token). LSX_GEMMA_MOE_BATCH=0 restores the legacy sequential path;
+    // LSX_GEMMA_GEMV=0 disables the direct weight-streaming GEMV route
+    // while keeping the batched dequant path.
     static const int moe_batch_mode = []() {
         const char *e = std::getenv("LSX_GEMMA_MOE_BATCH");
-        return e ? std::atoi(e) : 0;
+        return e ? std::atoi(e) : 1;
     }();
-    static const bool kGemvRoute =
-        std::getenv("LSX_GEMMA_GEMV") != nullptr;
+    static const bool kGemvRoute = []() {
+        const char *e = std::getenv("LSX_GEMMA_GEMV");
+        return e ? std::atoi(e) != 0 : true;
+    }();
     const bool batched_path =
         (seq == 1 && K <= 16 && K >= 1 && moe_batch_mode != 0) ||
         (seq == 1 && K <= 16 && K >= 1 && kGemvRoute);
@@ -1594,11 +1602,9 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             ++filled;
         }
 
-        // ── Round-21 direct streaming chain (LSX_GEMMA_GEMV=1): skips the
-        // dequant-to-BF16 detour and streams packed NVFP4 straight through
-        // the GEMV cores; identical ascending-k reduce contract.
-        static const bool kGemvRoute =
-            std::getenv("LSX_GEMMA_GEMV") != nullptr;
+        // ── Round-21 direct streaming chain: skips the dequant-to-BF16
+        // detour and streams packed NVFP4 straight through the GEMV cores;
+        // identical ascending-k reduce contract.
         const bool gemv_shapes_ok =
             ((MI & 31) == 0) && ((H & 31) == 0);
         bool gemv_used = false;
@@ -1642,7 +1648,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (pool_ok) {
                 cudaMemcpyAsync(d_tbl, tbl, sizeof(*tbl) * filled,
                                 cudaMemcpyHostToDevice, stream);
-                gemma_bf16_to_half_kernel<<<1, 256, 0, stream>>>(
+                gemma_bf16_to_half_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
                     ws.d_normed, xh, H);
                 gemma_gemv_zero_f32_kernel<<<(H + 255) / 256, 256, 0,
                                              stream>>>(accf, H);
@@ -1674,13 +1680,20 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                     std::fprintf(stderr,
                                  "[GEMMA-GEMV] chain engaged (layers x "
                                  "steps)\n");
-                if (e == cudaSuccess)
-                    return cudaGetLastError();
-                return e;
+                if (e != cudaSuccess) return e;
+                // MoE result is in ws.d_acc: fall through to the shared
+                // sandwich epilogue (post_ffn2 -> d1+d2 -> post_ffn ->
+                // residual -> layer_scalar). The former early return skipped
+                // the whole FFN epilogue on every layer -- root cause of the
+                // GEMV route producing wrong tokens.
+                gemv_used = true;
+                e = cudaGetLastError();
+                if (e != cudaSuccess) return e;
             }
             // Pool scratch unavailable -> legacy batched/sequential flow.
         }
 
+        if (!gemv_used) {
         const int64_t MIH = MI * H;
         e = RunGemmaBatchedDequant(stream, g1, MIH, filled,
                                    ws.d_bw1);                      // [K][MI*H]
@@ -1756,6 +1769,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             ws.d_acc, ws.d_beo, ws.d_bselw, filled, H);
         e = cudaGetLastError();
         if (e != cudaSuccess) { std::printf("[gemma-chk] bcomb: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        }
     } else {
     for (int t = 0; t < seq; ++t) {
         for (int k = 0; k < K; ++k) {
@@ -1829,7 +1843,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (GemmaDebugSync(stream, "moe-expert", layer_idx, e)) return e;
         }
     }
-    } // batched_path else
+    } // batched_path
 
     // d2 = post_ffn2(moe_out); combine ff = d1 + d2; ff = post_ffn(ff);
     // hidden += ff; hidden *= layer_scalar.
@@ -2137,7 +2151,8 @@ __global__ void gemma_gemv_pair_batch_kernel(
                       static_cast<int64_t>(slot.dev_slot) * scale_stride +
                       (gate ? off_gate_s : off_up_s) +
                       static_cast<int64_t>(rr) * (cols >> 4),
-                  (KP > 1 ? (cols / KP) * (warp % KP) : 0), cols >> 5,
+                  (KP > 1 ? (cols / KP) * (warp % KP) : 0),
+                  (cols / KP) >> 5,
                   lane) *
               (gate ? slot.gs1 : slot.gs3);
     }
@@ -2181,7 +2196,8 @@ __global__ void gemma_gemv_down_batch_kernel(
                   scale_base +
                       static_cast<int64_t>(slot.dev_slot) * scale_stride +
                       off_down_s + static_cast<int64_t>(r) * (cols >> 4),
-                  (KP > 1 ? (cols / KP) * (warp % KP) : 0), cols >> 5,
+                  (KP > 1 ? (cols / KP) * (warp % KP) : 0),
+                  (cols / KP) >> 5,
                   lane) *
               slot.gs2;
     }
