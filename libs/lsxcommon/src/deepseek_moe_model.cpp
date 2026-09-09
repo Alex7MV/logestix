@@ -30,7 +30,6 @@ InferenceResult RunInferenceModel(
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
     : ModelBase{std::move(cfg)}
 {
-    gpu::SetDeepseekFastMath(cfg_.fast_math);
 }
 
 DeepSeekV4FlashModel::~DeepSeekV4FlashModel() { Unload(); }
@@ -88,6 +87,10 @@ bool DeepSeekV4FlashModel::Load()
 
 gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
 {
+    // Model independence: assert THIS model's fast-math policy for the
+    // duration of the call (constructor-time flags would leak the
+    // last-constructed model's config across the registry).
+    const gpu::DeepseekFastMathScope fm_scope(cfg_.fast_math);
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
@@ -111,6 +114,9 @@ gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
 {
     gpu::BenchmarkResult r;
     if (!RequireLoaded(r)) return r;
+    // Same per-call policy as Infer: the benchmark must measure the
+    // configuration the model is asked to serve with.
+    const gpu::DeepseekFastMathScope fm_scope(cfg_.fast_math);
     const std::vector<int32_t> prompt = {0};
     // Uniform lock discipline: benchmarks serialize against unload/parallel
     // dispatch exactly like Infer (GLM parity).

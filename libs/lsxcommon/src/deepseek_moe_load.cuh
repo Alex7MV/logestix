@@ -26,10 +26,25 @@ constexpr int kNumRouted = 256;
 constexpr int kTopK = 6;
 constexpr int kIntermediateDim = 2048;
 
-// Blackwell TC W4A4 toggle (F-12): set from ModelInitConfig::fast_math at
-// model construction; default OFF preserves bit-exact legacy routing.
+// Blackwell TC W4A4 toggle (F-12). Process-wide; every Infer/SelfCheck call
+// asserts its OWN policy via DeepseekFastMathScope — the last-constructed
+// model's config must never leak into another model's kernel routing
+// (LsxFastMathScope parity, lsx_inference_nvfp4.h). Default OFF preserves
+// bit-exact legacy routing.
 void SetDeepseekFastMath(bool on);
 bool DeepseekFastMath();
+
+class DeepseekFastMathScope {
+public:
+    explicit DeepseekFastMathScope(bool on)
+        : prev_(DeepseekFastMath()) { SetDeepseekFastMath(on); }
+    ~DeepseekFastMathScope() { SetDeepseekFastMath(prev_); }
+    DeepseekFastMathScope(const DeepseekFastMathScope &) = delete;
+    DeepseekFastMathScope &operator=(const DeepseekFastMathScope &) = delete;
+
+private:
+    bool prev_;
+};
 
 // Frozen-geometry passport (MODEL INGEST INVARIANT step 3): compile-time
 // relations lock the architecture against accidental drift.
