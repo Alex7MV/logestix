@@ -239,6 +239,9 @@ KimiTopology kimi_load_topology(const std::string &index_json_path)
         (void)read_arr("dense_layers", topo.dense_layers);
         topo.num_layers = static_cast<long long>(nl);
         topo.experts_per_layer = static_cast<long long>(epl);
+        std::string_view fmt_sv;
+        if (root["format"].get_string().get(fmt_sv) == simdjson::SUCCESS)
+            topo.format.assign(fmt_sv);
         return topo;
     }
 
