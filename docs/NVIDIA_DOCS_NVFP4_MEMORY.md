@@ -141,6 +141,18 @@ Occupancy math for this repo MUST use 48 warps/SM and the 100 KB smem budget
 (e.g. a kernel with >99 KB dynamic smem per block cannot launch; >48 warps
 never co-reside). AGENTS.md's "48 warps/SM" is confirmed here.
 
+### B1.1 Tensor Core input data types, CC 12.x (Programming Guide Table 33)
+
+(Verified via nvidia-cuda-docs MCP 2026-09-09.)
+
+| Type | CC 12.x | Notes |
+|---|---|---|
+| FP64 | — | consumer Blackwell has no FP64 tensor cores |
+| TF32 / BF16 / FP16 / FP8 | Yes | |
+| FP6 / FP4 | **Yes** | FP4 first reaches hardware here (CC 10.x datacenter + 12.x consumer); the repo's NVFP4 path depends on this |
+| INT8 | Yes | |
+| INT4 | — | dropped after Ampere (CC 8.x was the last with INT4 TC) |
+
 ## B2. Alternate FP data formats (PTX ISA §5.2.3 "Alternate Floating-Point Data Formats")
 
 | Format | Bits (E/M/S) | Inf | NaN encodings | Storage |
