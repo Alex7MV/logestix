@@ -183,3 +183,70 @@ logits — diagnostics must run on stable bits). B completes before C
   the round-1 unit test passed because it uploaded expert 0 with bid=0.
   Fix direction: pass the routed ids to the upload (or store expert ids
   in missing_idx) so entries are keyed by h_ids[missing_idx[i]].
+
+## Final findings (round-2 execution, 2026-09-09, commits 3fb6cc2..c6d69d9)
+
+### Root cause of the slot corruption (Task 1/2)
+
+`KimiMoeResolveBatch` fills `missing_idx` with BATCH indices
+(0..k-1); `UploadKimiMoeExpertBatch` used them as EXPERT ids — the cache
+received experts 0..7 instead of the routed top-8. Valid bytes of the
+wrong experts: invisible to memcheck/racecheck/synccheck (all 0 errors),
+masked in the round-1 unit test (single-expert layer: bid 0 == expert 0).
+Fixed with a `routed_ids` parameter keyed by `h_ids[missing_idx[i]]`.
+**Lesson:** stale binaries — after fixing the OBJECT lib, the selfcheck
+binary had not been relinked for several runs, sending the investigation
+chasing a second (nonexistent) bug; NOEVICTION/DIAG experiments ran
+against old code until a full rebuild exposed the single-cause fix.
+
+### MLA NVFP4 requant (Tasks 3-5)
+
+- Converter r2 (`logestix-kimi-r2`): q_a/q_b/kv_a/kv_b/o quantized via
+  `quantize_tensor_gpu` -> packed U8 + scale U8 records; norms/router/
+  dense-MLP stay BF16; `mla_nvfp4` global scales in model.index.json.
+  parse_attention accepts the `_packed`/`_scale` suffixes so the records
+  group into their layer files.
+- Loader: strict rev reject (pre-r2 -> "reconvert required"); packed/
+  scale uploads through the pinned ring; per-layer global scales parsed
+  from the index (strict: empty mla_nvfp4 block -> reconvert required).
+- Attention: q_a/q_b/kv_a/o through the neutral `RunLsxNvfp4Gemm`
+  (explicit seq==1 -> streaming GEMV entry); kv_b dequantized once per
+  layer pointer for the absorbed-attention kernel (BF16 in-kernel math
+  unchanged); FP16 boundary bridges are new elementwise kernels.
+- Pinned weights: 17.3 GiB -> **8.9 GiB resident** (mla records 11 GiB
+  file-size incl. routed experts unchanged); VRAM freed ~8.5 GiB ->
+  cache budget 769 slots (was ~520).
+
+### Cache default flip + measured throughput (Task 6)
+
+- Cache enabled by default from free VRAM; `LSX_KIMI_EXPERT_CACHE_SLOTS=0`
+  disables. Selfcheck "Paris" x3 bit-exact on the r2 model with the
+  cache engaged (new bit-exact reference recorded at commit 456a674).
+- Measured (RTX 5090, 128 gen tokens, canonical prompt):
+  **1.3 t/s** cached decode. The round-1 ceiling band "4-15 t/s"
+  overestimated the link: the effective H2D throughput on this box is
+  ~15-18 GiB/s (not the 32 GB/s theoretical), so the zero-reuse upload
+  wall is ~11.2 GiB/token / ~17 GiB/s ≈ 0.66 s/token ≈ **1.5-2.3 t/s**.
+  Measured 1.3 t/s = ~85% of the physical wall with TC-batch compute.
+  The wall is interconnect, not kernels — same conclusion as round 1,
+  now with a *functional* cache: expert reuse (multi-turn sessions,
+  repetitive generation) converts into throughput; zero-reuse workloads
+  stay pinned to PCIe.
+- VRAM: resident 8.9 GiB vs 17.3 GiB in round 1 (-49%).
+- perf floor 1.0 t/s guards the plumbing (test_kimi_moe_perf).
+
+### Verification
+
+- compute-sanitizer memcheck/racecheck: 0 errors (unit + engaged cache).
+- Full suite: **127/127** green (serial; includes the new r2 converter/
+  loader/fence tests and the real-model selfcheck on the converted
+  canonical directory `Kimi-K2.7-Code` — r2 logestix + hardlinked HF
+  source shards for `test_kimi_moe_int4_real`).
+
+### Remaining levers (next round candidates)
+
+1. Upload batching across tokens (prefill): per-token pass-2 uploads
+   serialize; batching prefill's per-layer misses would cut ttft.
+2. Hit-rate shaping: slot eviction policy tuned for multi-turn reuse.
+3. PCIe is the wall: any further decode gain needs NVLink/CXL-class
+   bandwidth or quantizing the expert payloads below NVFP4 (not planned).
