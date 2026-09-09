@@ -52,6 +52,23 @@ cudaError_t RunGemmaAttention(const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k
                               int kv_heads, int head_dim, int window,
                               float scale, cudaStream_t stream);
 
+// Split-KV decode attention (seq == 1, long context): flash-decode two-kernel
+// path — a port of the qwen split-KV design (chunk 512, chunk-rescaled online
+// softmax) to the gemma BF16 geometry. The legacy one-block-per-head kernel is
+// memory-latency bound and its per-step cost grows linearly with the attended
+// span; the split path restores memory-level parallelism through the extra
+// chunk axis so the per-step cost stays flat as the context grows. Sliding
+// layers pass their window so chunks outside the band contribute nothing
+// (out-of-band rows never enter any reduction, matching the legacy kernel's
+// band predicate). Numerics: chunk-rescale grouping differs from the legacy
+// two-pass kernel only by FP reduction grouping (same tolerance-envelope
+// contract class); run-to-run bits identical (ascending chunk order).
+cudaError_t RunGemmaAttentionSplitKV(
+    const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k,
+    const __nv_bfloat16 *d_v, __nv_bfloat16 *d_out, int seq,
+    int total_slots, int pos_base, int q_heads, int kv_heads, int head_dim,
+    int window, float scale, cudaStream_t stream);
+
 // ── Dense MLP + MoE ─────────────────────────────────────────────────────────
 // out = down @ (gelu_tanh(gate @ x) * (up @ x)); weights [rows, hidden]
 // row-major; x [seq, hidden]; out [seq, hidden].

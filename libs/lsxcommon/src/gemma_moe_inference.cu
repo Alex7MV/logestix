@@ -11,6 +11,7 @@
 
 #include "lsxcommon/gemma_moe_inference.h"
 #include "lsxcommon/qwen_moe_inference.h"
+#include "qwen_reduce.cuh"
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/log.h"
@@ -351,6 +352,195 @@ cudaError_t RunGemmaAttention(const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k
         d_q, d_k, d_v, d_out, seq, total_slots, pos_base, q_heads, kv_heads,
         head_dim, window, scale);
     return cudaGetLastError();
+}
+
+// ── Split-KV decode attention (flash-decode) ───────────────────────────────
+// Port of the qwen split-KV design to the gemma BF16 geometry with the
+// sliding-window band predicate. Stage 1: grid (heads, nchunks); each block
+// owns a fixed 512-slot KV chunk INSIDE the band, computes chunk scores into
+// shared memory, block-reduces the local max m_c and denominator l_c, and
+// emits the local-max-weighted value partial (FP32). Stage 2: grid (heads);
+// global max via fmaxf (order-free), denominator and weighted value walk
+// chunks in ASCENDING order (fixed sequence -> run-to-run bit-identical).
+namespace {
+
+constexpr int kGemmaSplitChunk = 512;
+
+__global__ void gemma_split_kv_partials_kernel(
+    const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
+    const __nv_bfloat16 *__restrict__ v, float *__restrict__ d_part,
+    float *__restrict__ d_st, int q_heads, int kv_heads, int head_dim,
+    float scale, int pos_base, int window, int nchunks, int chunk)
+{
+    const int h = blockIdx.x;
+    const int c = blockIdx.y;
+    const int kvh = h / (q_heads / kv_heads);
+    const int last = pos_base;
+    const int first =
+        (window > 0) ? (last - window + 1 > 0 ? last - window + 1 : 0) : 0;
+    const int nscores = last - first + 1;
+    const int begin = first + c * chunk;
+    const int end = min(begin + chunk, first + nscores);
+    const int rows = end - begin;
+    const int threads = blockDim.x;
+    if (rows <= 0) return;
+
+    const __nv_bfloat16 *qrow = q + static_cast<int64_t>(h) * head_dim;
+    const __nv_bfloat16 *kbase_p =
+        k + static_cast<int64_t>(kvh) * head_dim;
+    const __nv_bfloat16 *vbase_p =
+        v + static_cast<int64_t>(kvh) * head_dim;
+
+    extern __shared__ float slogits[];      // dynamic: [rows]
+    __shared__ float sreduce[512];
+
+    // 1. Chunk scores.
+    for (int j = threadIdx.x; j < rows; j += threads) {
+        const __nv_bfloat16 *krow =
+            kbase_p + static_cast<int64_t>(begin + j) * kv_heads * head_dim;
+        float dot = 0.f;
+        for (int d = 0; d < head_dim; ++d)
+            dot += __bfloat162float(qrow[d]) * __bfloat162float(krow[d]);
+        slogits[j] = dot * scale;
+    }
+    __syncthreads();
+
+    // 2. Chunk max (warp-shuffle block reduction, order-free).
+    float m = -1e30f;
+    for (int j = threadIdx.x; j < rows; j += threads)
+        m = fmaxf(m, slogits[j]);
+    m = qwen_block_max_shfl(m);
+    __syncthreads();
+
+    // 3. Chunk denominator (one exp per score).
+    float sum = 0.f;
+    for (int j = threadIdx.x; j < rows; j += threads)
+        sum += __expf(slogits[j] - m);
+    sreduce[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = threads / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            sreduce[threadIdx.x] += sreduce[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float l_c = sreduce[0];
+    __syncthreads();
+
+    // 4. Local-max-weighted value partial: one thread per output dim,
+    //    ascending j inside the chunk.
+    {
+        const int d = threadIdx.x;          // blockDim == head_dim (entry)
+        float acc = 0.f;
+        for (int j = 0; j < rows; ++j) {
+            const __nv_bfloat16 *vrow =
+                vbase_p +
+                static_cast<int64_t>(begin + j) * kv_heads * head_dim;
+            acc += __expf(slogits[j] - m) * __bfloat162float(vrow[d]);
+        }
+        d_part[(static_cast<int64_t>(h) * nchunks + c) * head_dim + d] = acc;
+    }
+    if (threadIdx.x == 0) {
+        d_st[static_cast<int64_t>(h * nchunks + c) * 2 + 0] = m;
+        d_st[static_cast<int64_t>(h * nchunks + c) * 2 + 1] = l_c;
+    }
+}
+
+__global__ void gemma_split_kv_combine_kernel(
+    const float *__restrict__ d_part, const float *__restrict__ d_st,
+    __nv_bfloat16 *__restrict__ out, int q_heads, int head_dim, int nchunks)
+{
+    const int h = blockIdx.x;
+    const int d = threadIdx.x;              // blockDim == head_dim (entry)
+    const int64_t base = static_cast<int64_t>(h) * nchunks;
+    __shared__ float sreduce[512];
+
+    // Global max: fmaxf is order-free (deterministic).
+    float m = -1e30f;
+    for (int c = d; c < nchunks; c += blockDim.x)
+        m = fmaxf(m, d_st[(base + c) * 2 + 0]);
+    m = qwen_block_max_shfl(m);
+    __syncthreads();
+
+    // Denominator over rescaled chunk sums (fixed chunk-strided order).
+    float den = 0.f;
+    for (int c = d; c < nchunks; c += blockDim.x)
+        den += d_st[(base + c) * 2 + 1] * __expf(d_st[(base + c) * 2 + 0] - m);
+    sreduce[d] = den;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (d < stride) sreduce[d] += sreduce[d + stride];
+        __syncthreads();
+    }
+    const float inv = 1.0f / (sreduce[0] + 1e-10f);
+    __syncthreads();
+
+    // Weighted value: ascending chunk order (deterministic).
+    float acc = 0.f;
+    for (int c = 0; c < nchunks; ++c)
+        acc += __expf(d_st[(base + c) * 2 + 0] - m) *
+               d_part[(base + c) * head_dim + d];
+    out[static_cast<int64_t>(h) * head_dim + d] = __float2bfloat16(acc * inv);
+}
+
+} // namespace
+
+cudaError_t RunGemmaAttentionSplitKV(
+    const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k,
+    const __nv_bfloat16 *d_v, __nv_bfloat16 *d_out, int seq,
+    int total_slots, int pos_base, int q_heads, int kv_heads, int head_dim,
+    int window, float scale, cudaStream_t stream)
+{
+    if (!d_q || !d_k || !d_v || !d_out || seq != 1 || q_heads <= 0 ||
+        head_dim <= 0 || head_dim > 512 || kv_heads <= 0 || pos_base < 0 ||
+        pos_base >= total_slots)
+        return cudaErrorInvalidValue;
+    if (q_heads % kv_heads != 0) return cudaErrorInvalidValue;
+    // Block reductions and the one-thread-per-dim value pass assume a
+    // power-of-two blockDim (== head_dim); GQA mapping requires kv_heads to
+    // divide q_heads exactly.
+    if ((head_dim & (head_dim - 1)) != 0 || kv_heads > q_heads)
+        return cudaErrorInvalidValue;
+
+    const int last = pos_base;
+    const int first =
+        (window > 0) ? (last - window + 1 > 0 ? last - window + 1 : 0) : 0;
+    const int nscores = last - first + 1;
+    if (nscores <= 0) return cudaErrorInvalidValue;
+
+    const int nchunks = (nscores + kGemmaSplitChunk - 1) / kGemmaSplitChunk;
+    float *d_part = nullptr, *d_st = nullptr;
+    cudaError_t e = cudaMallocAsync(
+        &d_part,
+        static_cast<size_t>(q_heads) * nchunks * head_dim * sizeof(float),
+        stream);
+    if (e != cudaSuccess) return e;
+    e = cudaMallocAsync(&d_st,
+                        static_cast<size_t>(q_heads) * nchunks * 2 *
+                            sizeof(float),
+                        stream);
+    if (e != cudaSuccess) {
+        cudaFreeAsync(d_part, stream);
+        return e;
+    }
+
+    {
+        const dim3 grid(q_heads, nchunks);
+        const size_t smem =
+            static_cast<size_t>(std::min(kGemmaSplitChunk, nscores)) *
+            sizeof(float);
+        gemma_split_kv_partials_kernel<<<grid, head_dim, smem, stream>>>(
+            d_q, d_k, d_v, d_part, d_st, q_heads, kv_heads, head_dim, scale,
+            pos_base, window, nchunks, kGemmaSplitChunk);
+        e = cudaGetLastError();
+    }
+    if (e == cudaSuccess) {
+        gemma_split_kv_combine_kernel<<<q_heads, head_dim, 0, stream>>>(
+            d_part, d_st, d_out, q_heads, head_dim, nchunks);
+        e = cudaGetLastError();
+    }
+    cudaFreeAsync(d_part, stream);
+    cudaFreeAsync(d_st, stream);
+    return e;
 }
 
 // ── Dense MLP + MoE ─────────────────────────────────────────────────────────
