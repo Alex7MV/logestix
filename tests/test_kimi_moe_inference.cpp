@@ -65,6 +65,7 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
         WARN("warmup sum=" << [&]{ float s=0; for (float v: rw.final_logits) s+=v; return s; }());
     }
     auto r1 = m->Infer(req);
+    if (!r1.ok) FAIL("r1 failed: " + r1.error_msg);
     REQUIRE(r1.ok);
     REQUIRE(r1.gen_tokens.size() == 4);
     REQUIRE(!r1.final_logits.empty());
