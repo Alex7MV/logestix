@@ -6,6 +6,7 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
@@ -76,8 +77,8 @@ Glm5NextFlashModel::Glm5NextFlashModel(ModelInitConfig cfg)
 {
     // Both toggles are process-wide (see Qwen35MoeModel): without them every
     // NVFP4 GEMM runs the shared-memory tile kernel even at seq==1 decode.
-    qwen::SetQwenTcFastMath(cfg_.fast_math);
-    qwen::SetQwenSeq1Gemv(cfg_.fast_math);
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(cfg_.fast_math);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(cfg_.fast_math);
 }
 
 Glm5NextFlashModel::~Glm5NextFlashModel() { Unload(); }

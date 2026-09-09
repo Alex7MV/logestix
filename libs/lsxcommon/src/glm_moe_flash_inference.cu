@@ -7,6 +7,7 @@
 #include "glm_moe_flash_device_math.h"
 #include "lsx_kernels_quant.cuh"
 #include "glm_moe_flash_constants.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "deepseek_moe_load.cuh"  // run_hc_pre/post/head, run_expand_hc (lsxcommon_cu)
 #include "lsx_kernels_act.cuh"
 #include "lsxcommon/qwen_moe_exp_inference.h"  // RunExpQsaAttention reuse
@@ -542,15 +543,15 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 
     cudaError_t e;
     // 1. q/k/v GEMVs (raw projections).
-    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_q.d_packed,
+    if ((e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.kda_q.d_packed,
                                     lw.kda_q.d_scales, lw.kda_q.global_scale,
                                     d_q, 1, hidden, KD, false))
         != cudaSuccess) return e;
-    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_k.d_packed,
+    if ((e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.kda_k.d_packed,
                                     lw.kda_k.d_scales, lw.kda_k.global_scale,
                                     d_k, 1, hidden, KD, false))
         != cudaSuccess) return e;
-    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kda_v.d_packed,
+    if ((e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.kda_v.d_packed,
                                     lw.kda_v.d_scales, lw.kda_v.global_scale,
                                     d_v, 1, hidden, KD, false))
         != cudaSuccess) return e;
@@ -670,7 +671,7 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
     }
 
     // 8. o_proj: [H, KD] @ gated -> d_out.
-    if ((e = qwen::RunQwenNvfp4Gemm(stream, d_gated, lw.kda_o.d_packed,
+    if ((e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_gated, lw.kda_o.d_packed,
                                     lw.kda_o.d_scales, lw.kda_o.global_scale,
                                     d_out, 1, KD, hidden, false))
         != cudaSuccess) return e;
@@ -907,19 +908,19 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
     const int D = qk_dim;
     cudaError_t e;
     // 1. q_a (NVFP4) -> RMSNorm(q_a_norm) -> q_b (NVFP4).
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, lw.q_a.d_packed, lw.q_a.d_scales,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.q_a.d_packed, lw.q_a.d_scales,
                                lw.q_a.global_scale, d_qr, 1, hidden, q_lora,
                                false) != cudaSuccess)
         return cudaErrorUnknown;
     flash_rmsnorm_weighted_kernel<<<1, 1024, 1024 * sizeof(float), stream>>>(
         d_qr, lw.d_q_a_norm, d_qr, q_lora, 1e-5f);
     if ((e = cudaGetLastError()) != cudaSuccess) return e;
-    if (qwen::RunQwenNvfp4Gemm(stream, d_qr, lw.q_b.d_packed, lw.q_b.d_scales,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_qr, lw.q_b.d_packed, lw.q_b.d_scales,
                                lw.q_b.global_scale, d_q, 1, q_lora, heads * D,
                                false) != cudaSuccess)
         return cudaErrorUnknown;
     // 2. kv_a (NVFP4) -> RMSNorm(kv_a_norm).
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, lw.kv_a.d_packed, lw.kv_a.d_scales,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.kv_a.d_packed, lw.kv_a.d_scales,
                                lw.kv_a.global_scale, d_kvc, 1, hidden,
                                kv_lora, false) != cudaSuccess)
         return cudaErrorUnknown;
@@ -942,7 +943,7 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
     // 5. o_proj (NVFP4).
-    if (qwen::RunQwenNvfp4Gemm(stream, d_attn, lw.o_big.d_packed,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_attn, lw.o_big.d_packed,
                                lw.o_big.d_scales, lw.o_big.global_scale,
                                d_out, 1, heads * D, hidden, false)
         != cudaSuccess) return cudaErrorUnknown;
@@ -1286,10 +1287,10 @@ cudaError_t RunFlashRoutedFFN(
         const uint8_t *s1 = scale;
         const uint8_t *s3 = scale + rec.s1_bytes;
         const uint8_t *s2 = scale + rec.s1_bytes + rec.s3_bytes;
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1,
+        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1,
                                    hidden, moe_inter, false) != cudaSuccess)
             { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
-        if (qwen::RunQwenNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1,
+        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1,
                                    hidden, moe_inter, false) != cudaSuccess)
             { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
         {
@@ -1299,7 +1300,7 @@ cudaError_t RunFlashRoutedFFN(
                 <<<blocks, 256, 0, stream>>>(d_yg, d_yu, d_yg, moe_inter,
                                              10.0f);
         }
-        if (qwen::RunQwenNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
+        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
                                    moe_inter, hidden, false) != cudaSuccess)
             { error = "w2 gemm failed"; return cudaErrorInvalidValue; }
         // acc += coeff * y2
@@ -1317,11 +1318,11 @@ cudaError_t RunFlashSharedFFN(cudaStream_t stream, const FlashLayerWeights &lw,
                               __half *d_yg, __half *d_yu, __half *d_y2,
                               __half *d_out)
 {
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, lw.shared_w1.d_packed,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.shared_w1.d_packed,
                                lw.shared_w1.d_scales, lw.shared_w1.global_scale,
                                d_yg, 1, hidden, shared_inter, false)
         != cudaSuccess) return cudaErrorUnknown;
-    if (qwen::RunQwenNvfp4Gemm(stream, d_x, lw.shared_w3.d_packed,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, lw.shared_w3.d_packed,
                                lw.shared_w3.d_scales, lw.shared_w3.global_scale,
                                d_yu, 1, hidden, shared_inter, false)
         != cudaSuccess) return cudaErrorUnknown;
@@ -1332,7 +1333,7 @@ cudaError_t RunFlashSharedFFN(cudaStream_t stream, const FlashLayerWeights &lw,
             <<<blocks, 256, 0, stream>>>(d_yg, d_yu, d_yg, shared_inter,
                                          10.0f);
     }
-    if (qwen::RunQwenNvfp4Gemm(stream, d_yg, lw.shared_w2.d_packed,
+    if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, lw.shared_w2.d_packed,
                                lw.shared_w2.d_scales, lw.shared_w2.global_scale,
                                d_y2, 1, shared_inter, hidden, false)
         != cudaSuccess) return cudaErrorUnknown;
@@ -1757,14 +1758,14 @@ cudaError_t RunGlmFlashGeneration(
                     { result.error_msg = "shared ffn"; break; }
             } else if (l < kMoeFirstLayer) {
                 // Dense MLP: gate/up (NVFP4) -> clamped swiglu -> down.
-                if (qwen::RunQwenNvfp4Gemm(stream, d_single,
+                if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_single,
                                            lw.mlp_gate.d_packed,
                                            lw.mlp_gate.d_scales,
                                            lw.mlp_gate.global_scale, d_yg, 1,
                                            H, kDenseIntermediate, false)
                     != cudaSuccess)
                     { result.error_msg = "dense gate"; break; }
-                if (qwen::RunQwenNvfp4Gemm(stream, d_single,
+                if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_single,
                                            lw.mlp_up.d_packed,
                                            lw.mlp_up.d_scales,
                                            lw.mlp_up.global_scale, d_yu, 1,
@@ -1778,7 +1779,7 @@ cudaError_t RunGlmFlashGeneration(
                         <<<blocks, 256, 0, stream>>>(
                             d_yg, d_yu, d_yg, kDenseIntermediate, 10.0f);
                 }
-                if (qwen::RunQwenNvfp4Gemm(stream, d_yg, lw.mlp_down.d_packed,
+                if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, lw.mlp_down.d_packed,
                                            lw.mlp_down.d_scales,
                                            lw.mlp_down.global_scale, d_act2,
                                            1, kDenseIntermediate, H, false)
