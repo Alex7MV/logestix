@@ -270,3 +270,17 @@ TEST_CASE("family-own models document their fast-math policy",
                 std::string::npos);
     }
 }
+
+TEST_CASE("broken fused-decode attention path is removed", "[independence]")
+{
+    // KNOWN-BROKEN (diverged on the real Qwen3.5-9B checkpoint; unwired from
+    // generation in 19e8d4f) and test-only since — deleted by the 2026-09
+    // model-independence audit. Reintroduction requires a full-layer parity
+    // re-validation on the real checkpoint (see AGENTS.md selfcheck rules).
+    const std::string header = ReadFile(kIncDir / "qwen_inference.h");
+    REQUIRE(header.find("RunQwenFusedDecodeAttnKernel") == std::string::npos);
+    const std::string tu = ReadFile(kSrcDir / "qwen_inference.cu");
+    REQUIRE(tu.find("RunQwenFusedDecodeAttnKernel") == std::string::npos);
+    REQUIRE(tu.find("RunQwenFusedQkv") == std::string::npos);
+    REQUIRE(tu.find("RunQwenFusedOProj") == std::string::npos);
+}
