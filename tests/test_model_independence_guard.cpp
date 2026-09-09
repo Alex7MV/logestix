@@ -219,6 +219,10 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
     // never leak into another model's kernel selection. Extend this list
     // in the same commit as the new model's Infer (Model Ingestion
     // Protocol step 3).
+    // Neutral-layer consumers: each routes kernel selection through
+    // lsx_nvfp4 (or a family-scoped equivalent) and must assert its OWN
+    // policy per call. glm-5.2 and gemma are family-own models — they carry
+    // the marker comment checked by the TEST_CASE below instead.
     const std::vector<const char *> consumers = {
         "qwen_base_model.cpp",      // qwen dense (3.5-9B / 3.8-27B)
         "qwen_moe_model.cpp",       // qwen3.5-35b-a3b
@@ -227,8 +231,6 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
         "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
         "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
-        "glm_moe_model.cpp",        // glm-5.2 (family-own numeric path)
-        "gemma_base_model.cpp",     // gemma-4-26b-a4b-it (family-own path)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);

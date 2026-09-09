@@ -45,9 +45,12 @@
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
         "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
         "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
-        "glm_moe_model.cpp",        // glm-5.2 (family-own numeric path)
-        "gemma_base_model.cpp",     // gemma-4-26b-a4b-it (family-own path)
     };
+```
+
+NOTE (spec section Step 4, two-tier check): glm-5.2 and gemma are family-own
+models — they are NOT in this list (no LsxFastMathScope exists for them);
+they are tracked by the family-own marker TEST_CASE added in Step 2.
 ```
 
 - [ ] **Step 2: Add two new TEST_CASEs at the end of the file** (after the consumers TEST_CASE, before final newline):

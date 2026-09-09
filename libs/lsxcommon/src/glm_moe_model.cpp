@@ -15,6 +15,8 @@
 
 namespace lsxcommon {
 
+// fast-math policy: family-own (no process-global toggles). GLM-5.2 kernels
+// run the bit-exact cuBLAS path unconditionally; no TC/GEMV routing state.
 const std::string GlmV5Model::kType = "glm-5.2";
 
 // GLM-5.2 chat framing — model-owned (prompt_framing.h declares the symbol).

@@ -40,6 +40,9 @@ bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
 }
 } // namespace gemma
 
+// fast-math policy: family-own (no process-global toggles). gemma runs its
+// own nvfp4gemv path (gemma_moe_inference.cu) unconditionally.
+
 // Base default: no frozen geometry. Concrete models override with the
 // compile-time constants gate.
 bool GemmaBaseModel::ValidateGeometry(const gemma::GemmaTopology &) const
