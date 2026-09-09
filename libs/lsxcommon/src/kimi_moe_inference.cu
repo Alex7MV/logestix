@@ -607,8 +607,17 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
             bf16_to_fp16(x_bf16 + (size_t)t * x_stride,
                          fp16_in + (size_t)t * K, K);
         }
-        cudaError_t e = lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
-            stream, fp16_in, packed, scales, gs, fp16_out, seq, K, N, false);
+        // seq==1 decode: direct streaming GEMV entry (the dispatcher
+        // would need the ambient fast-math toggle for this route; the
+        // r2 attention path owns its routing explicitly). Prefill keeps
+        // the dispatcher (TC/scalar tile for multi-row GEMM).
+        cudaError_t e = (seq == 1)
+            ? lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                  stream, fp16_in, packed, scales, gs, fp16_out, K, N,
+                  false)
+            : lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(
+                  stream, fp16_in, packed, scales, gs, fp16_out, seq, K,
+                  N, false);
         if (e != cudaSuccess) return e;
         for (int t = 0; t < seq; ++t) {
             fp16_to_bf16(fp16_out + (size_t)t * N,
@@ -1583,20 +1592,13 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             const size_t per_expert =
                 3ull * (7168ull * 2048ull / 2) +      // packed w1|w3|w2
                 3ull * (7168ull * 2048ull / 16);      // scales s1|s3|s2
-            // PARKED (kimi-100tps round): the device-cache path produces
-            // wrong logits in production (selfcheck "Domino!" vs "Paris";
-            // bypass staging is bit-correct). Slot bytes verified correct
-            // right after upload yet read back wrong later — unresolved
-            // writer, needs a dedicated compute-sanitizer session. Until
-            // root-caused, the cache engages ONLY on an explicit
-            // LSX_KIMI_EXPERT_CACHE_SLOTS override; the default stays the
-            // bit-exact per-call staging path.
-            const int slots = std::getenv("LSX_KIMI_EXPERT_CACHE_SLOTS")
-                                  ? KimiMoeExpertCacheSlots(
-                                        free_b, per_expert, total_experts,
-                                        std::getenv(
-                                            "LSX_KIMI_EXPERT_CACHE_SLOTS"))
-                                  : 0;
+            // Round-2: the cache is enabled by default from free VRAM
+            // (upload correctly keyed by routed expert ids since the
+            // root-cause fix; selfcheck Paris x3 with the cache engaged).
+            // LSX_KIMI_EXPERT_CACHE_SLOTS=0 disables (legacy staging).
+            const int slots = KimiMoeExpertCacheSlots(
+                free_b, per_expert, total_experts,
+                std::getenv("LSX_KIMI_EXPERT_CACHE_SLOTS"));
             cache->plan.Init(slots, total_experts);
             std::string cerr_;
             int try_slots = slots;

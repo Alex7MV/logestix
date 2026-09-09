@@ -12,9 +12,13 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
+#include <absl/container/flat_hash_map.h>
 #include <absl/strings/str_cat.h>
+#include <simdjson.h>
 
 #include "fast_load_internal.h"
 
@@ -106,10 +110,10 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, KimiPinnedWeights &pw,
 
 } // anonymous namespace
 
-cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
-                                KimiLayerWeights &lw, cudaStream_t stream,
-                                std::uint64_t &bytes_acc,
-                                PinnedStagingRing &ring)
+cudaError_t LoadSingleKimiLayer(
+    const TensorBatchViews &tensors, KimiLayerWeights &lw,
+    cudaStream_t stream, std::uint64_t &bytes_acc, PinnedStagingRing &ring,
+    const absl::flat_hash_map<std::string, float> &mla_gs)
 {
     // Required-for-type validation (uniform grid: layer N type by content).
     auto *in_norm = fastload::FindTensorSuffix(tensors, "input_layernorm.weight");
@@ -133,10 +137,11 @@ cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
     // converter quantized them); upload raw through the ring. Strict: both
     // records are required for every projection.
     auto nvfp4pair = [&](const char *proj, uint8_t **d_pk, uint8_t **d_sc,
-                         float *gs_member_unused, int64_t *pk_bytes,
+                         float *gs_out, int64_t *pk_bytes,
                          int64_t *sc_bytes, int64_t *rows, int64_t *cols)
         -> cudaError_t {
-        (void)gs_member_unused;
+        (void)rows;
+        (void)cols;
         const auto *pk = fastload::FindTensorSuffix(
             tensors, absl::StrCat(proj, ".weight_packed"));
         const auto *sc = fastload::FindTensorSuffix(
@@ -160,6 +165,17 @@ cudaError_t LoadSingleKimiLayer(const TensorBatchViews &tensors,
         }
         *pk_bytes = static_cast<int64_t>(pk->bytes);
         *sc_bytes = static_cast<int64_t>(sc->bytes);
+        // Global scale from the index (mla_nvfp4[layer][base]); the
+        // index keys are the classifier bases, e.g. "q_a_proj".
+        const char *slash = std::strchr(proj, '.');
+        std::string base_key(slash ? slash + 1 : proj);
+        auto it = mla_gs.find(base_key);
+        if (it == mla_gs.end()) {
+            log::error(absl::StrCat("[kimi_load] no global scale for ",
+                                    base_key));
+            return cudaErrorInvalidValue;
+        }
+        *gs_out = it->second;
         // Device allocations are individual (not arena views): the arena
         // uploader only handles the fixed-size UploadJob table.
         if (cudaMalloc(d_pk, pk->bytes) != cudaSuccess)
@@ -354,6 +370,55 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
     }
     pw.layers.resize(static_cast<size_t>(topo.num_layers));
 
+    // Round-2: per-layer MLA global scales live in the index
+    // (mla_nvfp4[layer][base]); the packed/scale records do not carry them.
+    using MlaGsMap = absl::flat_hash_map<int, absl::flat_hash_map<std::string, float>>;
+    MlaGsMap mla_gs;
+    {
+        std::ifstream f(index_path);
+        if (!f) {
+            log::error("[kimi_load] cannot reopen index for mla_nvfp4: " +
+                       index_path.string());
+            return cudaErrorInvalidValue;
+        }
+        std::string json((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+        simdjson::ondemand::parser parser;
+        simdjson::padded_string pad(json.data(), json.size());
+        simdjson::ondemand::document doc;
+        if (parser.iterate(pad).get(doc) == simdjson::SUCCESS) {
+            simdjson::ondemand::object mla;
+            if (doc["mla_nvfp4"].get_object().get(mla) == simdjson::SUCCESS) {
+                for (simdjson::ondemand::field lf : mla) {
+                    std::string_view lsv;
+                    if (lf.unescaped_key().get(lsv) != simdjson::SUCCESS)
+                        continue;
+                    int layer = std::atoi(std::string(lsv).c_str());
+                    simdjson::ondemand::object bases;
+                    if (lf.value().get_object().get(bases) !=
+                        simdjson::SUCCESS)
+                        continue;
+                    for (simdjson::ondemand::field bf : bases) {
+                        std::string_view bsv;
+                        double gs = 1.0;
+                        if (bf.unescaped_key().get(bsv) != simdjson::SUCCESS)
+                            continue;
+                        if (bf.value().get_double().get(gs) !=
+                            simdjson::SUCCESS)
+                            continue;
+                        mla_gs[layer][std::string(bsv)] =
+                            static_cast<float>(gs);
+                    }
+                }
+            }
+        }
+        if (mla_gs.empty()) {
+            log::error("[kimi_load] index has no mla_nvfp4 global scales "
+                       "(pre-r2 conversion?) — reconvert required");
+            return cudaErrorInvalidValue;
+        }
+    }
+
     // Drains the stream on every error exit below so pinned staging never
     // dies while a DMA transfer is still in flight.
     fastload::StreamDrain drain{stream};
@@ -381,7 +446,8 @@ cudaError_t LoadKimiPinnedWeights(const std::string &model_path,
         }
         cudaError_t lerr =
             LoadSingleKimiLayer(*tensors_res, pw.layers[static_cast<size_t>(l)],
-                                stream, pw.resident_bytes, ring);
+                                stream, pw.resident_bytes, ring,
+                                mla_gs[static_cast<size_t>(l)]);
         if (lerr != cudaSuccess) {
             pw.Free();
             return lerr;

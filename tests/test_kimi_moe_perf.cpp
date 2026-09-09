@@ -64,6 +64,11 @@ TEST_CASE("Kimi-K2.7-Code perf baseline: decode throughput",
     if (!r.ok) FAIL("Infer failed: " << r.error_msg);
     REQUIRE(r.ok);
     REQUIRE(!r.gen_tokens.empty());
+    // Round-2 floor: cached decode with the NVFP4 attention path stays
+    // above the old staging baseline (1.4 t/s at 128 tokens measured
+    // 2026-09-08) minus the PCIe-upload wall variance. 1.0 t/s guards
+    // against silent regressions of the cache/TC-batch plumbing.
+    REQUIRE(r.tokens_per_sec > 1.0);
     SPDLOG_INFO("[PERF][kimi-k2.7-code] tok/s={:.1f} ttft_ms={:.2f} "
                 "total_ms={:.2f} gen_tokens={} resident_mb={:.0f}",
                 r.tokens_per_sec, r.ttft_ms, r.total_time_ms,
