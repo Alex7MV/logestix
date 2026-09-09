@@ -1406,14 +1406,28 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
 
     // 6) Attention over the cache (band mask for sliding layers).
     if (!GemmaSkipBranch("attn")) {
-        e = RunGemmaAttention(ws.d_qr, dk, dv, ws.d_tmp, seq,
-                              static_cast<int>(pos_base + seq), pos_base,
-                              heads, kv_heads, head_dim, window,
-                              // HF Gemma4TextAttention uses scaling = 1.0:
-                              // q/k are per-head RMS-normalized, so there is
-                              // no additional 1/sqrt(head_dim) factor.
-                              1.0f,
-                              stream);
+        // Decode fast-path (seq==1): split-KV flash-decode. The legacy
+        // one-block-per-head kernel is memory-latency bound — its per-step
+        // cost grows linearly with the attended span (measured: 21.5 t/s at
+        // ctx 64 vs 4.5 t/s at ctx 1024). The chunked path keeps the
+        // per-step cost flat (qwen RunQwenFullAttnKernelSplitKV parity,
+        // tolerance-envelope contract class; run-to-run bit-identical).
+        // Prefill (seq > 1) keeps the legacy kernel: its 2D grid over
+        // (t, h) already provides the parallelism decode lacks.
+        if (seq == 1) {
+            e = RunGemmaAttentionSplitKV(
+                ws.d_qr, dk, dv, ws.d_tmp, seq,
+                static_cast<int>(pos_base + seq), pos_base, heads, kv_heads,
+                head_dim, window,
+                // HF Gemma4TextAttention scaling = 1.0 (q/k per-head
+                // RMS-normalized; see legacy call below).
+                1.0f, stream);
+        } else {
+            e = RunGemmaAttention(ws.d_qr, dk, dv, ws.d_tmp, seq,
+                                  static_cast<int>(pos_base + seq), pos_base,
+                                  heads, kv_heads, head_dim, window,
+                                  1.0f, stream);
+        }
         if (e != cudaSuccess) { std::printf("[gemma-chk] L887: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     } else {
         e = cudaMemcpyAsync(ws.d_tmp, ws.d_qr, sizeof(__nv_bfloat16) * seq * q_rows,
