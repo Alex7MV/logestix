@@ -226,11 +226,45 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "qwen_moe_exp_model.cpp",   // qwen3.8-flash-next
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
         "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
+        "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
+        "glm_moe_model.cpp",        // glm-5.2 (family-own numeric path)
+        "gemma_base_model.cpp",     // gemma-4-26b-a4b-it (family-own path)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
         INFO(f << " must open LsxFastMathScope(cfg_.fast_math, ...) in Infer");
         REQUIRE(text.find("FastMathScope") != std::string::npos);
         REQUIRE(text.find("cfg_.fast_math") != std::string::npos);
+    }
+}
+
+TEST_CASE("glm-5.3-flash calls the neutral NVFP4 layer directly",
+          "[independence]")
+{
+    // The qwen-named GEMM shims (RunQwenNvfp4Gemm*) are qwen-family call-site
+    // aliases over lsx_nvfp4. A glm model must not depend on them: flash
+    // kernels call lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm directly. The
+    // shared slot/result TYPES (QwenMoeRoutedSlot, QwenGenerationResult)
+    // remain legitimate cross-model data carriers.
+    for (const char *f : {"glm_moe_flash_inference.cu",
+                          "glm_moe_flash_model.cpp"}) {
+        const std::string text = ReadFile(kSrcDir / f);
+        INFO(f << " must not use qwen::RunQwenNvfp4Gemm shims");
+        REQUIRE(text.find("qwen::RunQwenNvfp4Gemm") == std::string::npos);
+    }
+}
+
+TEST_CASE("family-own models document their fast-math policy",
+          "[independence]")
+{
+    // glm-5.2 and gemma do not route through the neutral NVFP4 layer (no
+    // process-global toggle exists for them); each model file must carry the
+    // greppable policy marker so the audit trail stays structural.
+    for (const char *f : {"glm_moe_model.cpp", "gemma_base_model.cpp"}) {
+        const std::string text = ReadFile(kSrcDir / f);
+        INFO(f << " must declare: fast-math policy: family-own");
+        REQUIRE(text.find(
+                    "fast-math policy: family-own (no process-global toggles)") !=
+                std::string::npos);
     }
 }
