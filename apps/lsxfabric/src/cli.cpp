@@ -18,14 +18,8 @@ FabricCliArgs ParseFabricCliArgs(int argc, char *argv[]) {
             a.model_path = argv[++i];
         else if (std::strcmp(argv[i], "--validate") == 0)
             a.validate = true;
-        else if (std::strcmp(argv[i], "--benchmark") == 0)
-            a.benchmark = true;
         else if (std::strcmp(argv[i], "--testprompt") == 0)
             a.testprompt = true;
-        else if (std::strcmp(argv[i], "--selfcheck") == 0)
-            a.selfcheck = true;
-        else if (std::strcmp(argv[i], "--bit-exact") == 0)
-            a.bit_exact = true;
         else if (std::strcmp(argv[i], "--max-gen") == 0 && i + 1 < argc)
             a.max_gen = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)

@@ -22,47 +22,34 @@ lsxfabric::FabricCliArgs Parse(const std::vector<std::string> &args) {
 
 } // namespace
 
-TEST_CASE("fabric cli: defaults are auto-policy with no modes", "[lsxfabric][cli]") {
+TEST_CASE("fabric cli: defaults are maximum-speed generation", "[lsxfabric][cli]") {
     const lsxfabric::FabricCliArgs a = Parse({"lsxfabric"});
     REQUIRE_FALSE(a.validate);
-    REQUIRE_FALSE(a.benchmark);
     REQUIRE_FALSE(a.testprompt);
-    REQUIRE_FALSE(a.selfcheck);
-    REQUIRE_FALSE(a.bit_exact);
     REQUIRE(a.max_gen == 64);
     REQUIRE(a.prompt == "The capital of France is");
     REQUIRE(a.model_path.find("DeepSeek-V4-Flash") != std::string::npos);
 }
 
-TEST_CASE("fabric cli: --bit-exact is the single numeric-mode flag", "[lsxfabric][cli]") {
-    const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--bit-exact"});
-    REQUIRE(a.bit_exact);
-    REQUIRE_FALSE(a.validate);
-    REQUIRE_FALSE(a.benchmark);
-    REQUIRE_FALSE(a.testprompt);
-    REQUIRE_FALSE(a.selfcheck);
-}
-
-TEST_CASE("fabric cli: removed speed/perf flags are not recognized", "[lsxfabric][cli]") {
+TEST_CASE("fabric cli: measurement flags moved to lsxbenchmark are not recognized",
+          "[lsxfabric][cli]") {
+    // Silently ignored, same policy as the removed --fast-math/--calibrate.
     const lsxfabric::FabricCliArgs a = Parse(
-        {"lsxfabric", "--fast-math", "--no-fast-math", "--calibrate"});
-    REQUIRE_FALSE(a.bit_exact);
-    REQUIRE_FALSE(a.benchmark);
+        {"lsxfabric", "--benchmark", "--selfcheck", "--bit-exact",
+         "--fast-math", "--no-fast-math", "--calibrate"});
     REQUIRE_FALSE(a.validate);
     REQUIRE_FALSE(a.testprompt);
-    REQUIRE_FALSE(a.selfcheck);
+    REQUIRE(a.max_gen == 64);
+    REQUIRE(a.prompt == "The capital of France is");
 }
 
 TEST_CASE("fabric cli: kept flags parse", "[lsxfabric][cli]") {
     const lsxfabric::FabricCliArgs a = Parse(
         {"lsxfabric", "--localmodel", "/tmp/model_x", "--prompt", "hi",
-         "--max-gen", "7", "--validate", "--benchmark", "--testprompt",
-         "--selfcheck"});
+         "--max-gen", "7", "--validate", "--testprompt"});
     REQUIRE(a.model_path == "/tmp/model_x");
     REQUIRE(a.prompt == "hi");
     REQUIRE(a.max_gen == 7);
     REQUIRE(a.validate);
-    REQUIRE(a.benchmark);
     REQUIRE(a.testprompt);
-    REQUIRE(a.selfcheck);
 }
