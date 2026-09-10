@@ -14,6 +14,7 @@
 #include "lsxcommon/qwen_moe_load.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "nvfp4_codec.h"
 #include "nvfp4_scale.h"
 #include "nvfp4_gemv_math.cuh"
@@ -1539,10 +1540,13 @@ cudaError_t RunQwenMoeGeneration(
     // Copy channel for cache-miss expert uploads (task-2 audit item): H2D
     // staging overlaps the routed-expert compute chain instead of serializing
     // with it. Events fence each upload; ev_front guards slot reuse.
+    // Perf knob: dual-stream staging can be disabled for narrow-bus GPUs
+    // (gpu_perf policy) — copy_stream stays null -> single-stream path.
     cudaStream_t copy_stream = nullptr;
     cudaEvent_t ev_uploads[16] = {};
     cudaEvent_t ev_front = nullptr;
     bool have_copy =
+        lsxcommon::lsx_nvfp4::LsxDualStreamStaging() &&
         cudaStreamCreateWithFlags(&copy_stream, cudaStreamNonBlocking) ==
             cudaSuccess &&
         cudaEventCreateWithFlags(&ev_front, cudaEventDisableTiming) ==

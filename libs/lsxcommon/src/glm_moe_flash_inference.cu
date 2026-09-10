@@ -1530,11 +1530,16 @@ cudaError_t RunGlmFlashGeneration(
     // Dual-stream expert staging: a dedicated H2D stream overlaps miss
     // uploads with the compute stream; per-expert copy events fence each
     // GEMM chain, per-slot events fence evictions (see RunFlashRoutedFFN).
+    // Perf knob: narrow-bus GPUs keep single-stream staging (the overlap
+    // cannot pay for the extra sync on low-bandwidth links).
     cudaStream_t h2d_stream = nullptr;
     cudaEvent_t copy_ev[16] = {};
     std::vector<cudaEvent_t> slot_free_ev;
-    if (cudaStreamCreateWithFlags(&h2d_stream, cudaStreamNonBlocking)
-        != cudaSuccess) return cudaGetLastError();
+    const bool dual_stream =
+        lsx_nvfp4::LsxDualStreamStaging() &&
+        cudaStreamCreateWithFlags(&h2d_stream, cudaStreamNonBlocking) ==
+            cudaSuccess;
+    if (!dual_stream) h2d_stream = nullptr;
     for (int k = 0; k < 16; ++k) {
         if (cudaEventCreateWithFlags(&copy_ev[k], cudaEventDisableTiming)
             != cudaSuccess) return cudaGetLastError();
