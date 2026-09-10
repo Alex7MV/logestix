@@ -64,9 +64,12 @@ TEST_CASE("fast_math toggle propagates from MoE model construction",
     REQUIRE(m_on != nullptr);
     CHECK(lsxcommon::qwen::QwenTcFastMath());
 
+    // Tri-state (gpu_perf): explicit kOff still forces the bit-exact class
+    // at construction; kAuto would leave the engine-init policy untouched.
     ModelInitConfig off;
     off.model_type = Qwen35MoeModel::kType;
     off.fast_math = false;
+    off.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto m_off = LsxModelFactory::Create(off);
     REQUIRE(m_off != nullptr);
     CHECK_FALSE(lsxcommon::qwen::QwenTcFastMath());

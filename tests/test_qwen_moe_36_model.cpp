@@ -69,6 +69,7 @@ TEST_CASE("fast_math toggle propagates from Qwen3.6 MoE model construction",
     ModelInitConfig off;
     off.model_type = Qwen36MoeModel::kType;
     off.fast_math = false;
+    off.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto m_off = LsxModelFactory::Create(off);
     REQUIRE(m_off != nullptr);
     CHECK_FALSE(lsxcommon::qwen::QwenTcFastMath());

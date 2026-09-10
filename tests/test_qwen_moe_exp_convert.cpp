@@ -252,7 +252,10 @@ TEST_CASE("real-model conversion hard-fails on synthetic geometry",
     fs::remove_all(dir, ec);
     fs::remove_all(out, ec);
     qwen_moe_exp_test::BuildSyntheticExpCheckpoint(dir);
-    // Env NOT set: frozen gate must reject the tiny fixture.
+    // Frozen gate must reject the tiny fixture: clear the escape hatch
+    // explicitly (ctest presets it for the synthetic cases; Catch2 shuffles
+    // case order, so this case cannot rely on another case's cleanup).
+    qwen_moe_exp_test::ExpUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
     auto st = ConvertQwen38FlashNextModel(dir.string(), out.string());
     REQUIRE_FALSE(st.ok());
     REQUIRE(st.message().find("frozen geometry") != std::string::npos);

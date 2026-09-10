@@ -358,8 +358,8 @@ int RunCliCalibrate(const std::string &model_path)
         lsxcommon::log::warn("[calibrate] perf cache save failed (vault "
                              "read-only?); snippet below still valid");
     lsxcommon::log::info(absl::StrFormat(
-        "[calibrate] paste into BaseKnobs(): "
-        "m.emplace(\"%s\", LsxPerfKnobs{%d, %d, %d, %d, %d, %d});",
+        "[calibrate] paste into BaseKnobs(): m.emplace(\"%s\", "
+        "LsxPerfKnobs<%d, %d, %d, %d, %d, %d>);",
         perf::GpuProfileKey(gpu).c_str(),
         static_cast<int>(knobs.tc_fast_math_default),
         static_cast<int>(knobs.seq1_gemv_default), knobs.gemv_max_mib,

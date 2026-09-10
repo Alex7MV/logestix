@@ -295,3 +295,17 @@ TEST_CASE("broken fused-decode attention path is removed", "[independence]")
     REQUIRE(tu.find("RunQwenFusedQkv") == std::string::npos);
     REQUIRE(tu.find("RunQwenFusedOProj") == std::string::npos);
 }
+
+TEST_CASE("perf layer is model-neutral (no family stem)", "[independence][perf]")
+{
+    // gpu_perf / perf_calibration are model-neutral infrastructure
+    // (lsx_inference_nvfp4 parity): no family prefix in the file names and
+    // no family-specific identifiers in the policy code.
+    for (const char *f : {"gpu_perf.h", "perf_calibration.h"}) {
+        const std::string text = ReadFile(kIncDir / f);
+        for (const char *stem : {"glm", "qwen", "gemma", "kimi", "deepseek"}) {
+            INFO(f << " must not mention family stem " << stem);
+            REQUIRE(text.find(stem) == std::string::npos);
+        }
+    }
+}

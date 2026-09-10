@@ -483,10 +483,33 @@ CMake-якоря:
      справочник является единым источником истины в офлайне.
   2. При получении НОВЫХ фактов из nvidia-cuda-docs MCP — дополнять
      справочник в том же коммите, что и использующий их код.
-  3. Не расходиться со справочником молча: изменение семантики кодека
-     (например, zero-check по полю e4, ceil-округление pow2-E4M3) обязано
-     сопровождаться обновлением соответствующего раздела и регрессионного
-     теста.
+   3. Не расходиться со справочником молча: изменение семантики кодека
+      (например, zero-check по полю e4, ceil-округление pow2-E4M3) обязано
+      сопровождаться обновлением соответствующего раздела и регрессионного
+      теста.
+
+## GPU Perf Auto-Tuning
+
+- `gpu_perf` (модельно-нейтральный слой, `include/lsxcommon/gpu_perf.h`) на
+  инициализации движка (`InitializeEngine`) резолвит нобы под конкретный GPU:
+  TC fast-math по умолчанию, лимит размера GEMV (MiB), порог split-K,
+  процент VRAM под expert-кэш, dual-stream staging.
+- Приоритет разрешения: env > CLI(kOn/kOff) > vault-кэш калибровки
+  (`perf-cache/<gpu-key>.json`) > эвристика по паспорту > коммитимая база
+  (`BaseKnobs` в `gpu_perf.cpp`). `LSX_PERF_AUTO=0` возвращает legacy-поведение
+  (bit-exact дефолты). `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты).
+- Неизвестный GPU: первый `Load` запускает одноразовую GEMV-калибровку
+  (синтетические NVFP4-буферы представительских форм), результат сохраняется
+  в vault. Записи коммитимой базы авторятся через `lsxfabric --calibrate
+  <model>` (реальные веса, A/B t/s, печатает сниппет для `BaseKnobs`).
+- Tri-state `FastMathMode { kAuto, kOn, kOff }` (`fast_math_mode.h`):
+  модели открывают `LsxFastMathScope(EffectiveFastMathMode(cfg_))` в Infer
+  (kAuto не трогает глобальное состояние — политика применена при Init).
+  Тесты, пинящие численный класс, обязаны ставить `kOff` явно.
+- Потребители ноб: диспетчер NVFP4 (`SetLsxGemmMaxMib`), split-K
+  (`SetLsxSplitKGridMin`, `lsx_tc_gemm`), expert-cache
+  (`lifecycle::ExpertCacheSlots(..., slots_pct)` + `perf::CurrentKnobs()`),
+  dual-stream staging (`LsxDualStreamStaging()` в GLM-Flash/Qwen драйверах).
 
 ## Git
 
