@@ -86,6 +86,11 @@ struct GemmaPinnedWeights {
     __nv_bfloat16 *d_final_norm = nullptr;
     int vocab_size = 0;
     int hidden = 0;
+    // NVFP4 tied embed/lm_head (global_nvfp4.arrow). When present the BF16
+    // d_embed stays null; head_nvfp4 aliases embed_nvfp4's buffers (tied
+    // embeddings — Free() releases them once via embed_nvfp4 only).
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight embed_nvfp4;
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight head_nvfp4;
     std::vector<GemmaLayerWeights> layers;
 
     // Host mirror of per-layer layer_scalar (constant weight; read once at

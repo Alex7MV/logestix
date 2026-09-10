@@ -39,7 +39,7 @@ TEST_CASE("LoadGemmaPinnedWeights arena layout", "[gemma][loader]") {
     REQUIRE(lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw, nullptr) ==
             cudaSuccess);
     CHECK(pw.layers.size() == 4);
-    CHECK(pw.d_embed != nullptr);
+    CHECK((pw.d_embed != nullptr || pw.embed_nvfp4.d_packed != nullptr));
     CHECK(pw.d_final_norm != nullptr);
     CHECK(pw.vocab_size == 64);
     CHECK(pw.hidden == 64);
@@ -244,6 +244,39 @@ TEST_CASE("gemma loader uploads NVFP4 attention projections",
               gemmatest::TestCfg().global_head_dim);
     // full layers tie V to K (attention_k_eq_v): no v record
     CHECK(fw.attn_v.d_packed == nullptr);
+    pw.Free();
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("gemma loader uploads NVFP4 tied embed/lm_head",
+          "[gemma][loader][nvfp4]") {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "gemma4_loader_head_nvfp4";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                               tmp / "tokenizer.json");
+    auto out = tmp / "out";
+    REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())
+                .ok());
+    CHECK(fs::exists(out / "logestix" / "pinned" / "global_nvfp4.arrow"));
+
+    lsxcommon::gemma::GemmaPinnedWeights pw;
+    auto rc = lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,
+                                                       nullptr);
+    if (rc != cudaSuccess) {
+        INFO("LoadGemmaPinnedWeights rc=" << cudaGetErrorString(rc));
+        REQUIRE(rc == cudaSuccess);
+    }
+    REQUIRE(pw.embed_nvfp4.d_packed != nullptr);
+    CHECK(pw.embed_nvfp4.rows == gemmatest::TestCfg().vocab_size);
+    CHECK(pw.embed_nvfp4.cols == gemmatest::TestCfg().hidden_size);
+    CHECK(pw.d_embed == nullptr);  // BF16 table not uploaded
+    // head aliases the same packed buffer (tied embeddings)
+    CHECK(pw.head_nvfp4.d_packed == pw.embed_nvfp4.d_packed);
     pw.Free();
     fs::remove_all(tmp);
 }

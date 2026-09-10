@@ -1,6 +1,7 @@
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/schema.h"
+#include "fast_load_internal.h"
 
 #include <arrow/api.h>
 #include <arrow/io/file.h>
@@ -98,8 +99,33 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaPinnedWeights &pw,
     PinnedStagingRing ring;
     if (!ring.ok()) return cudaErrorMemoryAllocation;
 
+    // NVFP4 tied embed/lm_head: global_nvfp4.arrow (6-column DenseNvfp4
+    // schema). When present the BF16 embed table is not uploaded.
+    auto nv_res = LoadDenseNvfp4BatchViews(pinned_dir / "global_nvfp4.arrow");
+    bool head_nv = false;
+    if (nv_res.ok()) {
+        for (const auto &r : nv_res->records) {
+            if (r.name.find("embed_tokens.weight") == std::string::npos)
+                continue;
+            cudaError_t e = fastload::UploadNvfp4Weight(
+                &r, pw.embed_nvfp4, stream, ring, bytes_acc, nullptr);
+            if (e != cudaSuccess) {
+                log::error(std::string("[gemma_load] nvfp4 embed upload "
+                                       "failed: ") +
+                           cudaGetErrorString(e));
+                return e;
+            }
+            pw.vocab_size = pw.embed_nvfp4.rows;
+            pw.hidden = pw.embed_nvfp4.cols;
+            pw.head_nvfp4 = pw.embed_nvfp4;
+            pw.head_nvfp4.view_only = true;   // aliases embed's buffers
+            head_nv = true;
+            break;
+        }
+    }
+
     auto *embed = FindTensor(tensors, "embed_tokens.weight");
-    if (embed && embed->shape.size() == 2 &&
+    if (!head_nv && embed && embed->shape.size() == 2 &&
         embed->data.size() >=
             static_cast<size_t>(embed->shape[0]) *
                 static_cast<size_t>(embed->shape[1]) * 2) {
@@ -117,7 +143,7 @@ cudaError_t LoadGlobal(const fs::path &pinned_dir, GemmaPinnedWeights &pw,
                        cudaGetErrorString(e));
             return e;
         }
-    } else {
+    } else if (!head_nv) {
         log::error("[gemma_load] embed_tokens.weight missing/malformed in "
                    "global.arrow");
         return cudaErrorInvalidValue;
@@ -406,6 +432,8 @@ void GemmaPinnedWeights::Free()
     if (d_embed) cudaFree(d_embed);
     if (d_final_norm) cudaFree(d_final_norm);
     d_embed = d_final_norm = nullptr;
+    embed_nvfp4.Free();
+    head_nvfp4 = lsxcommon::lsx_nvfp4::LsxNvfp4Weight{};  // aliases embed
     vocab_size = 0;
     hidden = 0;
     resident_bytes = 0;

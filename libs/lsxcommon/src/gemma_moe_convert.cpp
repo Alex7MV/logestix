@@ -320,7 +320,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"format\": \"logestix-gemma\",\n"
       << "  \"model\": \"gemma-4-26B-A4B-it\",\n"
-      << "  \"mlp_nvfp4\": true,\n      \"attn_nvfp4\": true,\n"
+      << "  \"mlp_nvfp4\": true,\n      \"attn_nvfp4\": true,\n      \"head_nvfp4\": true,\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -520,6 +520,7 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
     auto logestix_dir = fs::path(output_root) / "logestix";
 
     std::vector<TensorRecord> global_raw;
+    std::vector<lsxcommon::DenseNvfp4Record> global_nvfp4;
     absl::btree_map<int, std::vector<TensorRecord>> raw_by_layer;
     int64_t total_pinned = 0;
 
@@ -547,6 +548,24 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
 
             // Dense MLP + attention projections go out as NVFP4 (packed +
             // scales + global_scale records; loader detects the triple).
+            // Tied embed/lm_head table: NVFP4 in global_nvfp4.arrow
+            // (6-column DenseNvfp4Schema, qwen layout).
+            if (p.kind == TensorKind::Embed) {
+                lsxcommon::DenseNvfp4Record rec;
+                rec.name = t.name;
+                rec.shape = t.shape;
+                rec.dtype = t.dtype;
+                if (!gpu::quantize_tensor_gpu(
+                        r.data.data(), static_cast<int64_t>(r.data.size()) / 2,
+                        "BF16", nullptr, r.shape, {}, rec.packed, rec.scales,
+                        rec.global_scale))
+                    return arrow::Status::IOError(
+                        "GPU NVFP4 quantization failed for ", t.name);
+                global_nvfp4.push_back(std::move(rec));
+                ++total_pinned;
+                continue;
+            }
+
             const bool attn_proj =
                 p.kind == TensorKind::AttnQ || p.kind == TensorKind::AttnK ||
                 p.kind == TensorKind::AttnV || p.kind == TensorKind::AttnO;
@@ -578,6 +597,12 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
         if (!batch.ok()) return batch.status();
         ARROW_RETURN_NOT_OK(
             WriteRecordBatchToFile(*batch, pinned_dir / "global.arrow"));
+    }
+    if (!global_nvfp4.empty()) {
+        auto batch = lsxcommon::DenseNvfp4Schema::MakeBatch(global_nvfp4);
+        if (!batch.ok()) return batch.status();
+        ARROW_RETURN_NOT_OK(
+            WriteRecordBatchToFile(*batch, pinned_dir / "global_nvfp4.arrow"));
     }
     for (auto &[layer, recs] : raw_by_layer) {
         auto batch = PinnedSchema::MakeBatch(recs);
