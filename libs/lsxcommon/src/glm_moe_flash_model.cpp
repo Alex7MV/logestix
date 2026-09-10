@@ -82,8 +82,11 @@ Glm5NextFlashModel::Glm5NextFlashModel(ModelInitConfig cfg)
 {
     // Both toggles are process-wide (see Qwen35MoeModel): without them every
     // NVFP4 GEMM runs the shared-memory tile kernel even at seq==1 decode.
-    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(cfg_.fast_math);
-    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(cfg_.fast_math);
+    const FastMathMode fm = EffectiveFastMathMode(cfg_);
+    if (fm != FastMathMode::kAuto) {
+        lsxcommon::lsx_nvfp4::SetLsxTcFastMath(fm == FastMathMode::kOn);
+        lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(fm == FastMathMode::kOn);
+    }
 }
 
 Glm5NextFlashModel::~Glm5NextFlashModel() { Unload(); }
@@ -153,7 +156,7 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
     // Model independence: assert THIS model's kernel-routing policy for the
     // duration of the call (process-global flags would otherwise leak the
     // last-constructed model's fast_math across the registry).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
     qwen::QwenGenerationResult gen;
     sample::GreedySampler greedy;

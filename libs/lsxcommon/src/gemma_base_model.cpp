@@ -144,9 +144,13 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
 
     // Model-independence invariant: per-call fast-math policy. seq1_gemv is
     // always on for gemma (the weight-streaming GEMV is its default decode
-    // path); tc_fast_math follows the instance config and routes the
-    // dispatcher's dense GEMMs to the tensor-core mxf4nvf4 path when set.
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, true);
+    // path, bit-exact class); tc_fast_math follows the tri-state config and
+    // routes the dispatcher's dense GEMMs to the tensor-core mxf4nvf4 path
+    // when forced on.
+    const FastMathMode fm = EffectiveFastMathMode(cfg_);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(
+        fm == FastMathMode::kAuto ? true : fm == FastMathMode::kOn,
+        /*seq1_gemv=*/true);
 
     if (!EnsureContext(/*with_cublas=*/false)) {
         r.error_msg = "cuda stream create failed";

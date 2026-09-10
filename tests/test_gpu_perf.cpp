@@ -2,6 +2,7 @@
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/fast_math_mode.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_replace.h>
@@ -189,4 +190,34 @@ TEST_CASE("ExpertCacheSlots honors the percentage knob", "[gpu_perf]")
     // Degenerate inputs unchanged.
     REQUIRE(ExpertCacheSlots(0, per, 288) == 0);
     REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, 0, 288) == 288);
+}
+
+using lsxcommon::lsx_nvfp4::LsxFastMathScope;
+using lsxcommon::lsx_nvfp4::LsxSeq1Gemv;
+using lsxcommon::lsx_nvfp4::LsxTcFastMath;
+using lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv;
+using lsxcommon::lsx_nvfp4::SetLsxTcFastMath;
+
+TEST_CASE("LsxFastMathScope tri-state semantics", "[gpu_perf]")
+{
+    SetLsxTcFastMath(true);
+    SetLsxSeq1Gemv(true);
+    {
+        const LsxFastMathScope s(FastMathMode::kAuto);
+        REQUIRE(LsxTcFastMath() == true);   // untouched
+        REQUIRE(LsxSeq1Gemv() == true);
+    }
+    {
+        const LsxFastMathScope s(FastMathMode::kOff);
+        REQUIRE(LsxTcFastMath() == false);
+        REQUIRE(LsxSeq1Gemv() == false);
+    }
+    REQUIRE(LsxTcFastMath() == true);       // restored
+    {
+        const LsxFastMathScope s(FastMathMode::kOn);
+        REQUIRE(LsxTcFastMath() == true);
+        REQUIRE(LsxSeq1Gemv() == true);
+    }
+    SetLsxTcFastMath(false);
+    SetLsxSeq1Gemv(false);
 }

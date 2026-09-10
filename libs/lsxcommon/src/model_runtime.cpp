@@ -179,12 +179,17 @@ struct CliModel {
     bool ok = false;
 };
 
-CliModel CreateCliModel(const std::string &model_path, bool fast_math)
+CliModel CreateCliModel(const std::string &model_path, FastMathMode mode)
 {
     CliModel out;
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_path;
-    cfg.fast_math = fast_math;
+    if (mode == FastMathMode::kOn) {
+        cfg.fast_math = true;   // legacy explicit fast-math opt-in
+    } else {
+        cfg.fast_math = false;
+        cfg.fast_math_mode = mode;
+    }
     out.model = lsxcommon::LsxModelFactory::Create(cfg);
     if (!out.model || !out.model->Load()) {
         lsxcommon::log::error(
@@ -215,7 +220,9 @@ int RunCliGeneration(const GenerationCliArgs &args)
 {
     lsxcommon::log::info(
         absl::StrFormat("Running generation path on prompt: %s", args.prompt));
-    CliModel m = CreateCliModel(args.model_path, args.fast_math);
+    CliModel m = CreateCliModel(args.model_path, args.fast_math
+                                           ? FastMathMode::kOn
+                                           : args.fast_math_mode);
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
@@ -242,7 +249,9 @@ int RunCliGeneration(const GenerationCliArgs &args)
 int RunCliSelfCheck(const GenerationCliArgs &args)
 {
     lsxcommon::log::info("Running single-token self-check...");
-    CliModel m = CreateCliModel(args.model_path, args.fast_math);
+    CliModel m = CreateCliModel(args.model_path, args.fast_math
+                                           ? FastMathMode::kOn
+                                           : args.fast_math_mode);
     if (!m.ok) return 1;
 
     std::vector<int32_t> input_ids;
@@ -273,7 +282,7 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
 
 int RunCliInspect(const std::string &model_path, bool full)
 {
-    CliModel m = CreateCliModel(model_path, /*fast_math=*/false);
+    CliModel m = CreateCliModel(model_path, FastMathMode::kAuto);
     if (!m.ok) return 1;
     SafetensorsModel mi = m.model->Inspect();
     if (full) {

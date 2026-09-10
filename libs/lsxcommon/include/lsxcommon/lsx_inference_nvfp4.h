@@ -22,6 +22,8 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
+#include "lsxcommon/fast_math_mode.h"
+
 namespace lsxcommon {
 namespace lsx_nvfp4 {
 
@@ -88,14 +90,31 @@ bool LsxDualStreamStaging();
 // straddle two models' inferences.
 class LsxFastMathScope {
 public:
+    // Legacy bool pair (unchanged semantics).
     LsxFastMathScope(bool tc_fast_math, bool seq1_gemv)
-        : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv())
+        : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()), active_(true)
     {
         SetLsxTcFastMath(tc_fast_math);
         SetLsxSeq1Gemv(seq1_gemv);
     }
+    // Tri-state: kAuto leaves the process globals untouched (the engine-init
+    // perf policy stands); kOn/kOff force the pair for the scope and restore
+    // afterwards. Numeric-class tests pin kOff; production uses kAuto.
+    explicit LsxFastMathScope(FastMathMode mode)
+        : prev_tc_(LsxTcFastMath()), prev_gemv_(LsxSeq1Gemv()),
+          active_(mode != FastMathMode::kAuto)
+    {
+        if (mode == FastMathMode::kOn) {
+            SetLsxTcFastMath(true);
+            SetLsxSeq1Gemv(true);
+        } else if (mode == FastMathMode::kOff) {
+            SetLsxTcFastMath(false);
+            SetLsxSeq1Gemv(false);
+        }
+    }
     ~LsxFastMathScope()
     {
+        if (!active_) return;
         SetLsxTcFastMath(prev_tc_);
         SetLsxSeq1Gemv(prev_gemv_);
     }
@@ -105,6 +124,7 @@ public:
 private:
     bool prev_tc_;
     bool prev_gemv_;
+    bool active_;
 };
 
 // ── NVFP4 dense GEMM ────────────────────────────────────────────────────────

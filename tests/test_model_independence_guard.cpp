@@ -234,9 +234,11 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
-        INFO(f << " must open LsxFastMathScope(cfg_.fast_math, ...) in Infer");
+        INFO(f << " must open a per-call FastMathScope in Infer (tri-state "
+                  "FastMathMode or the legacy bool pair)");
         REQUIRE(text.find("FastMathScope") != std::string::npos);
-        REQUIRE(text.find("cfg_.fast_math") != std::string::npos);
+        REQUIRE(text.find("EffectiveFastMathMode(cfg_)") !=
+                std::string::npos);
     }
 }
 

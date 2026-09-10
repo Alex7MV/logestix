@@ -37,7 +37,11 @@ bool QwenBaseModel::Load()
     tokenizer_optional_ = true;
     // Blackwell tensor-core fast path (audit Phase 3): opt-in via
     // ModelInitConfig::fast_math. Default off = bit-exact scalar path.
-    qwen::SetQwenTcFastMath(cfg_.fast_math);
+    const FastMathMode fm = EffectiveFastMathMode(cfg_);
+    if (fm != FastMathMode::kAuto) {
+        qwen::SetQwenTcFastMath(fm == FastMathMode::kOn);
+        qwen::SetQwenSeq1Gemv(fm == FastMathMode::kOn);
+    }
     if (!BeginLoad(cfg_.model_path)) return false;
     if (!EnsureContext(/*with_cublas=*/false)) {
         lsxcommon::log::error("[qwen-model] stream create failed");
@@ -81,7 +85,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
 
     // Model independence: this model's own kernel-routing policy for the
     // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
     // Persistent execution context: created once in Load(), reused for
     // every request (no temp-per-call stream/cuBLAS churn).

@@ -32,7 +32,11 @@ QwenMoeModelBase::QwenMoeModelBase(ModelInitConfig cfg)
     // The TC W4A4 toggle is process-wide; the dense Qwen models flip it in
     // QwenBaseModel, but this MoE family derives from ModelBase directly and
     // would silently run every GEMM on the scalar path without this.
-    qwen::SetQwenTcFastMath(cfg_.fast_math);
+    const FastMathMode fm = EffectiveFastMathMode(cfg_);
+    if (fm != FastMathMode::kAuto) {
+        qwen::SetQwenTcFastMath(fm == FastMathMode::kOn);
+        qwen::SetQwenSeq1Gemv(fm == FastMathMode::kOn);
+    }
 }
 
 Qwen35MoeModel::Qwen35MoeModel(ModelInitConfig cfg)
@@ -297,7 +301,7 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
 {
     // Model independence: this model's own kernel-routing policy for the
     // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
     return RunInferShared(req);
 }
 
@@ -318,7 +322,7 @@ gpu::BenchmarkResult QwenMoeModelBase::Benchmark(int num_tokens)
     // Model independence: same per-call kernel-routing policy as Infer —
     // the benchmark must measure the configuration the model is asked to
     // serve with, never the last Infer caller's ambient toggles.
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
     // Fresh session (benchmark semantics; GLM/Kimi/QwenBase parity: the
     // harness must not touch the caller's incremental session tail). The

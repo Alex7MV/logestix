@@ -82,7 +82,10 @@ struct GenerationCliArgs {
     int max_gen_tokens = 64;
     // Routes NVFP4 GEMMs through the native tensor-core path (sm_120a).
     // Tolerance-class numerics; off keeps the bit-exact scalar path.
+    // Legacy opt-in: true forces kOn. Otherwise fast_math_mode decides
+    // (kAuto = per-GPU perf policy from InitializeEngine).
     bool fast_math = false;
+    FastMathMode fast_math_mode = FastMathMode::kAuto;
 };
 
 // Item 6 — unified CLI lifecycle. Each helper wraps

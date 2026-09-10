@@ -21,7 +21,7 @@ gpu::InferenceResult Qwen36MoeModel::Infer(const ModelRequest &req)
 {
     // Model independence: this model's own kernel-routing policy for the
     // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
     return RunInferShared(req);
 }
 

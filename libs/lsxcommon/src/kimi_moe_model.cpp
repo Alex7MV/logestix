@@ -92,8 +92,8 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
     const cudaError_t err = RunUnderResidencyLock([&] {
         // Model-independence contract: this model asserts its OWN fast-math
         // policy for the duration of the generation (LsxFastMathScope).
-        const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math,
-                                                   cfg_.fast_math);
+        const lsx_nvfp4::LsxFastMathScope fm_scope(
+            EffectiveFastMathMode(cfg_));
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
@@ -144,8 +144,8 @@ gpu::BenchmarkResult KimiK27CodeModel::Benchmark(int num_tokens)
 
     kimi::KimiGenerationResult gr;
     const cudaError_t berr = RunUnderResidencyLock([&] {
-        const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math,
-                                                   cfg_.fast_math);
+        const lsx_nvfp4::LsxFastMathScope fm_scope(
+            EffectiveFastMathMode(cfg_));
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        prompt, num_tokens, gr,
                                        &expert_cache_, Tokenizer().eos_id,

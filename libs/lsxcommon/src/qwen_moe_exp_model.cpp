@@ -34,7 +34,11 @@ std::uint64_t MsSince(std::chrono::steady_clock::time_point t0)
 Qwen38FlashNextModel::Qwen38FlashNextModel(ModelInitConfig cfg)
     : ModelBase(std::move(cfg))
 {
-    qwen::SetQwenTcFastMath(cfg_.fast_math);
+    const FastMathMode fm = EffectiveFastMathMode(cfg_);
+    if (fm != FastMathMode::kAuto) {
+        qwen::SetQwenTcFastMath(fm == FastMathMode::kOn);
+        qwen::SetQwenSeq1Gemv(fm == FastMathMode::kOn);
+    }
 }
 
 Qwen38FlashNextModel::~Qwen38FlashNextModel() = default;
@@ -231,7 +235,7 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
 
     // Model independence: this model's own kernel-routing policy for the
     // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
-    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, cfg_.fast_math);
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
     if (!pw_.exp_top.layer_types.empty() && pw_.exp_top.hidden_size <= 0) {
         r.error_msg = "topology not parsed";

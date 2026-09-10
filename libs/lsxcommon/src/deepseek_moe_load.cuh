@@ -14,6 +14,7 @@
 #include <arrow/ipc/reader.h>
 #include "lsxcommon/deepseek_moe_inference_csa.h"
 #include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/fast_math_mode.h"
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/vram_estimate.h"
 
@@ -37,13 +38,26 @@ bool DeepseekFastMath();
 class DeepseekFastMathScope {
 public:
     explicit DeepseekFastMathScope(bool on)
-        : prev_(DeepseekFastMath()) { SetDeepseekFastMath(on); }
-    ~DeepseekFastMathScope() { SetDeepseekFastMath(prev_); }
+        : prev_(DeepseekFastMath()), active_(true) { SetDeepseekFastMath(on); }
+    // Tri-state: kAuto leaves the process global untouched (engine-init perf
+    // policy stands); kOn/kOff force it for the scope and restore afterwards
+    // (FastMathMode parity, lsx_inference_nvfp4.h).
+    explicit DeepseekFastMathScope(FastMathMode mode)
+        : prev_(DeepseekFastMath()), active_(mode != FastMathMode::kAuto)
+    {
+        if (mode != FastMathMode::kAuto)
+            SetDeepseekFastMath(mode == FastMathMode::kOn);
+    }
+    ~DeepseekFastMathScope()
+    {
+        if (active_) SetDeepseekFastMath(prev_);
+    }
     DeepseekFastMathScope(const DeepseekFastMathScope &) = delete;
     DeepseekFastMathScope &operator=(const DeepseekFastMathScope &) = delete;
 
 private:
     bool prev_;
+    bool active_;
 };
 
 // Frozen-geometry passport (MODEL INGEST INVARIANT step 3): compile-time
@@ -143,6 +157,7 @@ void free_expert_index(ExpertDb &db);
 // slot is only overwritten by copies enqueued after every prior kernel
 // reading it). Host bookkeeping only — no device-side structures, no absl.
 #include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/fast_math_mode.h"
 
 inline int moe_route(int token_idx, int layer_idx, int experts_per_layer)
 {
