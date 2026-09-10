@@ -170,6 +170,38 @@ std::vector<std::string> CheckPerfSkip(const std::vector<LabelCall>& calls,
     return v;
 }
 
+std::vector<std::string> CheckPresets(const std::string& json_text)
+{
+    static const std::vector<std::string> kBase = {
+        "windows-debug", "windows-release", "linux-debug",
+        "linux-release", "linux-release-znver4"};
+    static const std::vector<std::string> kSuffix = {
+        "fast", "inference", "perf"};
+    std::vector<std::string> v;
+    static const std::regex label_re(R"rx("label"\s*:\s*"([^"]+)")rx");
+    std::smatch m;
+    auto begin = json_text.cbegin();
+    while (std::regex_search(begin, json_text.cend(), m, label_re))
+    {
+        std::string inner = m[1].str();
+        if (!inner.empty() && inner.front() == '^')
+            inner.erase(0, 1);
+        if (!inner.empty() && inner.back() == '$')
+            inner.pop_back();
+        if (!Categories().count(inner))
+            v.push_back("CMakePresets.json: invalid label filter: " +
+                        m[1].str());
+        begin = m.suffix().first;
+    }
+    for (const auto& b : kBase)
+        for (const auto& s : kSuffix)
+            if (json_text.find("\"" + b + "-" + s + "\"") ==
+                std::string::npos)
+                v.push_back("CMakePresets.json: missing testPreset " + b +
+                            "-" + s);
+    return v;
+}
+
 } // namespace
 
 TEST_CASE("ctest labels guard parser: synthetic fixtures",
@@ -264,5 +296,19 @@ TEST_CASE("ctest labels guard: perf tests declare SKIP_RETURN_CODE 4",
     for (const auto& s : v)
         joined += s + "\n";
     INFO("perf skip violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: presets reference valid labels",
+          "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::string json_text =
+        ReadFileOrThrow(root / "CMakePresets.json");
+    auto v = CheckPresets(json_text);
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("preset violations:\n" << joined);
     REQUIRE(v.empty());
 }
