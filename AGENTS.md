@@ -185,6 +185,34 @@ cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-r
 `test_ctest_labels_guard`). Правила классификации путей — таблица
 `lsx_router_rule(...)` в `tools/test_router.cmake`.
 
+### Converter test rules (фиксированные правила тестов конвертеров)
+
+Эталон: `tests/test_glm_moe_flash_convert.cpp` (synthetic e2e) +
+`tests/test_qwen_dense_fixture.h` (`FakeTensor`/`WriteSafetensors`).
+
+1. **Label `convert` в том же коммите**; TIMEOUT обязателен и ограничен
+   (≤600 s; канонично 120 s) — guard `CheckConvertTimeout`. TIMEOUT —
+   механическая защита от регрессии «тест конвертирует модель».
+2. **Запрещены конвертации реальных моделей в тестах.** E2E-пайплайн
+   конвертера гоняется на синтетическом чекпоинте: `config.json` +
+   `*.safetensors` через `qwentest::WriteSafetensors` во временном каталоге.
+3. **Синтетическая геометрия**: frozen-гейты конвертера снимаются
+   `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` — это runtime env, задаётся через
+   `set_tests_properties(... PROPERTIES ENVIRONMENT ...)`, а НЕ
+   compile-define (compile-define env не выставляет).
+4. **Фикстура обязана покрывать все пути пайплайна**: globals
+   (embed/lm_head/final norm — без них конвертер ошибается), BF16→NVFP4,
+   FP8→NVFP4 с scale-тайлами, raw-тензоры, routed-эксперты (все 3
+   проекции), пустые слои frozen-диапазона, layout `model.index.json`
+   (формат-тег + kda/dsa/moe списки).
+5. **FP8-тензоры фикстуры**: стороны кратны 128 (GPU-kernel), scale-тайл
+   `[ceil(R/128), ceil(C/128)]` F32; dtype-строки safetensors: `BF16`,
+   `F8_E4M3`, `F32`.
+6. **Реальный чекпоинт допустим только для чтения одного лёгкого файла**
+   (например `config.json` в `ParseFlashConfig`) с `SKIP()` без модели;
+   полное чтение/конвертация весов — никогда. Синтетикой не заменяют тесты,
+   валидирующие реальные имена полей формата.
+
 **WINDOWS-ОГРАНИЧЕНИЕ**: под Windows запускать тесты ТОЛЬКО для моделей
 Qwen3.5-9B и gemma-4-26B-A4B-it (фильтр `ctest -R "qwen|gemma"`); остальные
 model-тесты (GLM, DeepSeek и т.д.) на этой OS не запускать.

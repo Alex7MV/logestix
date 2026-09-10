@@ -2763,3 +2763,21 @@ set_tests_properties(
     test_blackwell_perf_deepseek
     test_kimi_moe_perf
     PROPERTIES LABELS perf)
+
+# Converter-test discipline: synthetic fixtures only, bounded runtime.
+# A convert test must never convert a real model (guard:
+# test_ctest_labels_guard / CheckConvertTimeout). 120 s is generous
+# headroom over the ~4 s full convert sweep, tight enough to kill any
+# accidental full-checkpoint conversion.
+set_tests_properties(
+    test_qwen_dense_convert
+    test_qwen_dense_converter_integrity
+    test_glm_moe_convert
+    test_glm_moe_flash_convert
+    test_kimi_moe_convert
+    test_gemma_moe_convert
+    test_qwen_moe_convert
+    test_qwen_moe_36_convert
+    test_qwen_moe_exp_convert
+    test_nvfp4_pack
+    PROPERTIES TIMEOUT 120)

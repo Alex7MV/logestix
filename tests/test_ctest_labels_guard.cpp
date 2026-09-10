@@ -263,6 +263,51 @@ std::vector<std::string> CheckTestsNaming(const fs::path& tests_dir)
     return v;
 }
 
+// Converter tests are unified on synthetic fixtures and must stay fast:
+// every convert-labeled test declares a bounded ctest TIMEOUT (seconds).
+// A converter test without a TIMEOUT is exactly how a full-model
+// conversion sneaks back into the suite unnoticed.
+std::vector<std::string> CheckConvertTimeout(
+    const std::vector<LabelCall>& calls, const std::string& text)
+{
+    std::vector<std::string> v;
+    static const std::regex re(
+        R"(set_tests_properties\s*\(([^)]*?)TIMEOUT\s+(\d+))");
+    for (const auto& c : calls)
+    {
+        if (c.label != "convert")
+            continue;
+        for (const auto& n : c.names)
+        {
+            bool found = false;
+            std::smatch m;
+            auto begin = text.cbegin();
+            while (std::regex_search(begin, text.cend(), m, re))
+            {
+                std::istringstream is(m[1].str());
+                std::string tok;
+                while (is >> tok)
+                {
+                    if (tok != n)
+                        continue;
+                    found = true;
+                    const int seconds = std::stoi(m[2].str());
+                    if (seconds <= 0 || seconds > 600)
+                        v.push_back("convert test TIMEOUT out of range "
+                                    "(1..600 s): " + n);
+                    break;
+                }
+                if (found)
+                    break;
+                begin = m.suffix().first;
+            }
+            if (!found)
+                v.push_back("convert test without TIMEOUT: " + n);
+        }
+    }
+    return v;
+}
+
 } // namespace
 
 TEST_CASE("ctest labels guard parser: synthetic fixtures",
@@ -357,6 +402,21 @@ TEST_CASE("ctest labels guard: perf tests declare SKIP_RETURN_CODE 4",
     for (const auto& s : v)
         joined += s + "\n";
     INFO("perf skip violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: convert tests declare bounded TIMEOUT",
+          "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::string cmake_text =
+        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    const auto calls = ParseLabelCalls(cmake_text);
+    auto v = CheckConvertTimeout(calls, cmake_text);
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("convert timeout violations:\n" << joined);
     REQUIRE(v.empty());
 }
 
