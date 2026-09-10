@@ -1,12 +1,17 @@
 // Тест Gemma-4 конвертера: классификатор имён тензоров + NVFP4-политика.
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <fstream>
+#include <vector>
+
 #include "gemma_moe_test_fixture.h"
 
 #include <filesystem>
 
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/model_integrity.h"
+#include "lsxcommon/schema.h"
 
 using lsxcommon::gemma::classify_gemma_tensor;
 using K = lsxcommon::gemma::TensorKind;
@@ -181,5 +186,61 @@ TEST_CASE("convert fails on layer_types contradicting tensor shapes",
     auto out = tmp / "out";
     auto st = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
     REQUIRE_FALSE(st.ok());
+    remove_all(tmp);
+}
+
+TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
+          "[gemma][convert][nvfp4]") {
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "gemma4_conv_mlp_nvfp4";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        tmp / "tokenizer.json");
+
+    auto out = tmp / "out";
+    auto cst = lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string());
+    if (!cst.ok()) FAIL("ConvertGemmaModel: " << cst.ToString());
+    REQUIRE(cst.ok());
+
+    auto batch_res = lsxcommon::LoadTensorBatchViews(
+        out / "logestix" / "pinned" / "layer_0.arrow");
+    REQUIRE(batch_res.ok());
+
+    auto find = [&](std::string_view name) -> const lsxcommon::TensorView * {
+        for (const auto &t : batch_res->tensors)
+            if (t.name == name) return &t;
+        return nullptr;
+    };
+    const auto &cfg = gemmatest::TestCfg();
+    const size_t numel =
+        static_cast<size_t>(cfg.intermediate_size) * cfg.hidden_size;
+
+    const auto *pk = find("model.language_model.layers.0.mlp.gate_proj.weight.packed");
+    const auto *sc = find("model.language_model.layers.0.mlp.gate_proj.weight.scales");
+    const auto *gs = find("model.language_model.layers.0.mlp.gate_proj.weight.global_scale");
+    REQUIRE(pk != nullptr);
+    REQUIRE(sc != nullptr);
+    REQUIRE(gs != nullptr);
+    CHECK(pk->bytes == numel / 2);         // E2M1 nibble-packed, 2 elems/byte
+    CHECK(sc->bytes == numel / 16);        // one E8M0-style scale byte per 16 elems
+    CHECK(gs->bytes == 4);                 // F32 global scale
+    // up/down triples exist too
+    CHECK(find("model.language_model.layers.0.mlp.up_proj.weight.packed") != nullptr);
+    CHECK(find("model.language_model.layers.0.mlp.down_proj.weight.packed") != nullptr);
+    // the raw BF16 MLP tensors are gone
+    CHECK(find("model.language_model.layers.0.mlp.gate_proj.weight") == nullptr);
+
+    // Index advertises the mlp_nvfp4 flag.
+    std::ifstream idx(out / "logestix" / "model.index.json");
+    std::string json((std::istreambuf_iterator<char>(idx)),
+                     std::istreambuf_iterator<char>());
+    CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
+
     remove_all(tmp);
 }

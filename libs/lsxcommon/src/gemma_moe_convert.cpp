@@ -320,6 +320,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"format\": \"logestix-gemma\",\n"
       << "  \"model\": \"gemma-4-26B-A4B-it\",\n"
+      << "  \"mlp_nvfp4\": true,\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -478,6 +479,42 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
         {"num_experts", {top.num_experts, static_cast<int>(gate_up_e)}},
     }));
 
+    // NVFP4 record helpers: dense weights are emitted as a triple of pinned
+    // records (<name>.packed E2M1 nibbles | <name>.scales uint8 per 16 elems |
+    // <name>.global_scale F32). The loader detects the triple and uploads
+    // LsxNvfp4Weight instead of the raw BF16 tensor.
+    auto quantize_bf16_to_nvfp4 =
+        [](const std::vector<uint8_t> &raw, const std::vector<int64_t> &shape,
+           std::vector<uint8_t> &packed, std::vector<uint8_t> &scales,
+           float &global_scale) {
+            return gpu::quantize_tensor_gpu(
+                raw.data(), static_cast<int64_t>(raw.size()) / 2, "BF16",
+                nullptr, shape, {}, packed, scales, global_scale);
+        };
+    auto append_nvfp4_records =
+        [](const std::string &base, const std::vector<uint8_t> &packed,
+           const std::vector<uint8_t> &scales, float global_scale,
+           const std::vector<int64_t> &shape,
+           std::vector<TensorRecord> &dst) {
+            TensorRecord pk, sc, gs;
+            pk.name = base + ".packed";
+            pk.dtype = "U8";
+            pk.shape = shape;
+            pk.data = packed;
+            sc.name = base + ".scales";
+            sc.dtype = "U8";
+            sc.shape = shape;
+            sc.data = scales;
+            gs.name = base + ".global_scale";
+            gs.dtype = "F32";
+            gs.shape = {1};
+            const auto *p = reinterpret_cast<const uint8_t *>(&global_scale);
+            gs.data.assign(p, p + 4);
+            dst.push_back(std::move(pk));
+            dst.push_back(std::move(sc));
+            dst.push_back(std::move(gs));
+        };
+
     auto pinned_dir = fs::path(output_root) / "logestix" / "pinned";
     fs::create_directories(pinned_dir);
     auto logestix_dir = fs::path(output_root) / "logestix";
@@ -507,6 +544,22 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
             r.dtype = t.dtype;
             r.shape = t.shape;
             r.data = std::move(data);
+
+            // Dense MLP goes out as NVFP4 (packed + scales + global_scale
+            // records in the pinned schema; loader detects the triple).
+            if (p.kind == TensorKind::MlpGate || p.kind == TensorKind::MlpUp ||
+                p.kind == TensorKind::MlpDown) {
+                std::vector<uint8_t> packed, scales;
+                float gs = 1.0f;
+                if (!quantize_bf16_to_nvfp4(r.data, r.shape, packed, scales,
+                                            gs))
+                    return arrow::Status::IOError(
+                        "GPU NVFP4 quantization failed for ", t.name);
+                append_nvfp4_records(t.name, packed, scales, gs, r.shape,
+                                     raw_by_layer[p.layer]);
+                total_pinned += 3;  // packed + scales + global_scale records
+                continue;
+            }
 
             if (p.layer < 0) {
                 global_raw.push_back(std::move(r));
