@@ -85,13 +85,15 @@ cmake -P tools/test_router.cmake -- --preset linux-debug [--base origin/main] [-
 2. Классификация каждого изменённого файла по упорядоченной таблице правил
    (первое совпадение выигрывает), метки накапливаются в множество:
    - `\.cuh?$` в любом месте → `inference`;
-   - `libs/lsxcommon/(src|include)/...` → `inference`, КРОМЕ файлов,
-     подпадающих под fast-лексикон
+   - `libs/lsxcommon/...` (включая его `CMakeLists.txt`) → `inference`, КРОМЕ
+     файлов, подпадающих под fast-лексикон
      `(tokenizer|unicode|pretokenizer|path_registry|schema|converter|_convert|orchestrator)`
      (консервативный дефолт: неизвестный новый файл lsxcommon → inference);
    - `libs/lsxnetwork/**`, `apps/**` → `fast`;
-   - `tests/**` → `fast` + `inference` (инфра тестов менялась — прогоняем оба);
-   - `docs/**`, `*.md`, `CMakeLists.txt`, `CMakePresets.json`, `tools/**` → `fast`;
+   - `tests/**` → `inference` (инфра тестов менялась; правило стоит ДО
+     tooling-правила, чтобы `tests/CMakeLists.txt` не съедался `\.txt$`);
+   - корневые `CMakeLists.txt`/`CMakePresets.json`, `docs/**`, `*.md`
+     (верхнего уровня), `tools/**`, `cmake/**` → `fast`;
    - прочее → `fast`.
 3. Итог: `ctest --preset <preset> -L "^(fast|inference)$"`.
    На WIN32 к inference-прогону добавляется `-R "^(test_qwen|test_gemma)"`.
