@@ -2616,8 +2616,10 @@ target_compile_definitions(test_ctest_labels_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
 add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
 
-# ── Test category labels (fast | inference | perf) ────────────────────────
+# ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
+# convert  — model-converter tests: run when a converter changes
+#            (tools/test_router.cmake) or explicitly (ctest -L convert).
 # inference — CUDA/model contour: runs when the inference contour changes
 #             (tools/test_router.cmake).
 # perf     — real-weight perf baselines: manual command only (ctest -L perf).
@@ -2630,18 +2632,12 @@ set_tests_properties(
     test_schema_views
     test_deepseek_moe_loader
     test_expert_store
-    test_qwen_dense_convert
     test_glm_moe_expert_cache
     test_model_integrity
-    test_qwen_dense_converter_integrity
-    test_glm_moe_convert
-    test_glm_moe_flash_convert
-    test_kimi_moe_convert
     test_model_factory
     test_generation_cli
     test_glm_moe_prompt_framing
     test_gemma_prompt_framing
-    test_gemma_moe_convert
     test_model_runtime
     test_model_engine
     test_tokenizer
@@ -2660,12 +2656,22 @@ set_tests_properties(
     test_code_naming_guard
     test_absl_format_guard
     test_kimi_moe_expert_cache
-    test_qwen_moe_convert
-    test_qwen_moe_36_convert
-    test_qwen_moe_exp_convert
     test_model_independence_guard
     test_ctest_labels_guard
     PROPERTIES LABELS fast)
+
+set_tests_properties(
+    test_qwen_dense_convert
+    test_qwen_dense_converter_integrity
+    test_glm_moe_convert
+    test_glm_moe_flash_convert
+    test_kimi_moe_convert
+    test_gemma_moe_convert
+    test_qwen_moe_convert
+    test_qwen_moe_36_convert
+    test_qwen_moe_exp_convert
+    test_nvfp4_pack
+    PROPERTIES LABELS convert)
 
 set_tests_properties(
     test_sampling
@@ -2674,7 +2680,6 @@ set_tests_properties(
     test_blackwell_tc_mma
     test_lsx_kernels
     test_blackwell_micro_gemm
-    test_nvfp4_pack
     test_deepseek_moe_inference_kernels
     test_deepseek_moe_moe
     test_deepseek_moe_arena

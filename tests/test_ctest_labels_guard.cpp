@@ -24,7 +24,8 @@ namespace {
 
 const std::set<std::string>& Categories()
 {
-    static const std::set<std::string> v = {"fast", "inference", "perf"};
+    static const std::set<std::string> v = {"fast", "convert", "inference",
+                                            "perf"};
     return v;
 }
 
@@ -176,7 +177,7 @@ std::vector<std::string> CheckPresets(const std::string& json_text)
         "windows-debug", "windows-release", "linux-debug",
         "linux-release", "linux-release-znver4"};
     static const std::vector<std::string> kSuffix = {
-        "fast", "inference", "perf"};
+        "fast", "convert", "inference", "perf"};
     std::vector<std::string> v;
     static const std::regex label_re(R"rx("label"\s*:\s*"([^"]+)")rx");
     std::smatch m;
@@ -202,13 +203,14 @@ std::vector<std::string> CheckPresets(const std::string& json_text)
     return v;
 }
 
-// tools/test_router.cmake declares: lsx_router_rule(<id> <label> <regex>)
-// — one rule per line, label is fast|inference (perf is never auto-run).
+// tools/test_router.cmake declares: lsx_router_rule(<id> "<labels>" "<regex>")
+// — one rule per line, labels are a quoted space-separated list of
+// fast|convert|inference (perf is never auto-run).
 std::vector<std::string> CheckRouter(const std::string& router_text)
 {
     std::vector<std::string> v;
     static const std::regex rule_re(
-        R"(lsx_router_rule\s*\(\s*(\w+)\s+(fast|inference)\s+(.*)\))");
+        R"rx(lsx_router_rule\s*\(\s*(\w+)\s+"([^"]*)"\s+")rx");
     bool any = false;
     std::istringstream in(router_text);
     std::string line;
@@ -219,11 +221,22 @@ std::vector<std::string> CheckRouter(const std::string& router_text)
             continue;
         if (line.find("lsx_router_rule") == std::string::npos)
             continue;
+        if (line.rfind("macro(", 0) == 0)
+            continue; // the macro definition itself
         std::smatch m;
-        if (std::regex_search(line, m, rule_re))
-            any = true;
-        else
+        if (!std::regex_search(line, m, rule_re))
+        {
             v.push_back("tools/test_router.cmake: malformed rule: " + line);
+            continue;
+        }
+        any = true;
+        const std::string id = m[1];
+        std::istringstream labels(m[2].str());
+        std::string lb;
+        while (labels >> lb)
+            if (!Categories().count(lb) || lb == "perf")
+                v.push_back("tools/test_router.cmake: rule '" + id +
+                            "' invalid label: " + lb);
     }
     if (!any)
         v.push_back("tools/test_router.cmake: no lsx_router_rule entries");
