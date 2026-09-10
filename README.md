@@ -136,7 +136,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
   - `glm_moe_flash_{convert,load,model,inference}` — GLM-5.3-Flash (`glm-5.3-flash`): 45-layer KDA/DSA hybrid, NVFP4 experts (45×288 store, LRU device cache sized to free VRAM), step-7 token passport bridge to DeepSeek-V4-Flash; Paris selfcheck bit-exact
   - `benchmark_gpu` — `--benchmark` pipeline: NVFP4 ping-pong benchmark
 - `libs/lsxnetwork/` — zero-alloc async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`)
   - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
 - `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)

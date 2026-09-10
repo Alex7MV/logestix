@@ -65,7 +65,8 @@ struct LsxPerfKnobSet {
 // the heuristic's GEMV limit scaling.
 inline constexpr double kRtx5090PeakGbs = 1792.0;
 
-// Resolution precedence: env > CLI(kOn/kOff) > calibrated > heuristic > base.
+// Resolution precedence: env > CLI(kOn/kOff, tests only) > calibrated >
+// heuristic > base.
 // Reads env at call time. Pure besides getenv.
 LsxPerfKnobSet ResolvePerfKnobs(const GpuPerfProfile &gpu,
                                 FastMathMode cli_mode = FastMathMode::kAuto);

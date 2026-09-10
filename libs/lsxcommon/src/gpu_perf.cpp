@@ -80,8 +80,9 @@ namespace {
 
 std::optional<LsxPerfKnobSet> BaseKnobs(const std::string &key)
 {
-    // Committed optimization base (repo). Author entries via
-    // `lsxfabric --calibrate <model>` (values measured on real weights).
+    // Committed optimization base (repo). Reference values measured on real
+    // weights; author new entries from the vault auto-calibration snippets
+    // (perf-cache/<gpu-key>.json).
     static const absl::flat_hash_map<std::string, LsxPerfKnobs> kBase = [] {
         absl::flat_hash_map<std::string, LsxPerfKnobs> m;
         LsxPerfKnobs rtx5090;

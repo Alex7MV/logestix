@@ -261,7 +261,7 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
   - `libs/lsxcommon/src/benchmark_gpu.cu` + `include/lsxcommon/benchmark_gpu.h` — `--benchmark` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunBenchmark()`, BenchmarkResult
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse в `src/cli.{h,cpp}`)
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`), `--tokenizer`, repack-флаги
@@ -539,14 +539,19 @@ CMake-якоря:
   инициализации движка (`InitializeEngine`) резолвит нобы под конкретный GPU:
   TC fast-math по умолчанию, лимит размера GEMV (MiB), порог split-K,
   процент VRAM под expert-кэш, dual-stream staging.
-- Приоритет разрешения: env > CLI(kOn/kOff) > vault-кэш калибровки
-  (`perf-cache/<gpu-key>.json`) > эвристика по паспорту > коммитимая база
-  (`BaseKnobs` в `gpu_perf.cpp`). `LSX_PERF_AUTO=0` возвращает legacy-поведение
-  (bit-exact дефолты). `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты).
+- Приоритет разрешения: env > тестовый cli_mode(kOn/kOff в `ResolvePerfKnobs`,
+  только тесты) > vault-кэш калибровки (`perf-cache/<gpu-key>.json`) >
+  эвристика по паспорту > коммитимая база (`BaseKnobs` в `gpu_perf.cpp`).
+  `LSX_PERF_AUTO=0` возвращает legacy-поведение (bit-exact дефолты).
+  `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты). CLI speed/perf-флагов
+  нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
+  запуска — `--bit-exact` (lsxfabric), он маппится в `FastMathMode::kOff`
+  модели.
 - Неизвестный GPU: первый `Load` запускает одноразовую GEMV-калибровку
   (синтетические NVFP4-буферы представительских форм), результат сохраняется
-  в vault. Записи коммитимой базы авторятся через `lsxfabric --calibrate
-  <model>` (реальные веса, A/B t/s, печатает сниппет для `BaseKnobs`).
+  в vault. `RunCliCalibrate`/`lsxfabric --calibrate` удалены (2026-09,
+  бит-точная политика CLI): записи коммитимой базы авторятся вручную из
+  сниппетов авто-калибровки (vault `perf-cache/<gpu-key>.json`).
 - Tri-state `FastMathMode { kAuto, kOn, kOff }` (`fast_math_mode.h`):
   модели открывают `LsxFastMathScope(EffectiveFastMathMode(cfg_))` в Infer
   (kAuto не трогает глобальное состояние — политика применена при Init).
