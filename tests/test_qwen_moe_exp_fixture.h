@@ -2,14 +2,15 @@
 
 // Shared fixture builder for Qwen3.8-Flash-Next (qwen4_exp) converter /
 // loader / kernel tests. Builds a synthetic qwen4_exp safetensors model
-// directory on disk. Dense attention geometry mirrors qwentest
-// (test_qwen_dense_fixture.h) so the dense-part arrow records stay
-// schema-compatible; adds the qwen4_exp block inventory: GatedResidual
-// hyper-connections (attn+mlp per layer + global mixer), QSA indexer on
-// full-attention layers, PLE n-gram projections on the PLE layer, MoE
-// 512-expert analog, MTP and visual decoys.
+// directory on disk. Dense attention geometry mirrors the qwen hybrid
+// layout so the dense-part arrow records stay schema-compatible; adds the
+// qwen4_exp block inventory: GatedResidual hyper-connections (attn+mlp per
+// layer + global mixer), QSA indexer on full-attention layers, PLE n-gram
+// projections on the PLE layer, MoE 512-expert analog, MTP and visual decoys.
+// Tensor-writing primitives come from the family-neutral
+// test_synth_checkpoint.h (suite-autonomy invariant).
 
-#include "test_qwen_dense_fixture.h"
+#include "test_synth_checkpoint.h"
 
 #include <algorithm>
 #include <cstring>
@@ -22,11 +23,11 @@
 
 namespace qwen_moe_exp_test {
 
-using qwentest::FakeTensor;
-using qwentest::MakeBf16;
-using qwentest::MakeBf16Values;
-using qwentest::MakeF32Values;
-using qwentest::WriteSafetensors;
+using synthtest::FakeTensor;
+using synthtest::MakeBf16;
+using synthtest::MakeBf16Values;
+using synthtest::MakeF32Values;
+using synthtest::WriteSafetensors;
 
 // Cross-platform env gate set/clear (etalon: test_qwen_moe_fixture.h).
 inline void ExpSetEnv(const char *name, const char *value)
@@ -47,7 +48,8 @@ inline void ExpUnsetEnv(const char *name)
 #endif
 }
 
-// Tiny qwen4_exp geometry. Attention side matches qwentest::TestCfg() defaults
+// Tiny qwen4_exp geometry. Dense attention side mirrors the shared qwen
+// hybrid layout defaults
 // (hidden=64, layers=4, full attention at index 3, heads=4/kv=1/head_dim=32,
 // GDN nk=2/kd=8, nv=4/vd=8, conv=4, vocab=64).
 // qwen4_exp side: experts=8, top_k=2, I=16, SI=16, hc_count=2 (shrunken from
@@ -55,7 +57,7 @@ inline void ExpUnsetEnv(const char *name)
 // PLE ngram_size=3, heads_per_ngram=2 (4 heads, head_dim=16), split_parts=2
 // shards, seed=1234.
 struct QwenExpTestConfig {
-    // Dense (lockstep with qwentest::QwenTestConfig defaults).
+    // Dense (lockstep with the shared qwen hybrid layout defaults).
     int hidden_size = 64;
     int vocab_size = 64;
     int num_layers = 4;

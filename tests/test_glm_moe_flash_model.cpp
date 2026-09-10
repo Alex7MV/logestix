@@ -1,4 +1,10 @@
-// Glm5NextFlashModel factory/registry + load lifecycle (real model SKIP).
+// Glm5NextFlashModel factory/registry + load lifecycle on the SYNTHETIC
+// converted fixture (unified model-stage discipline: the model loads its own
+// tiny checkpoint, never the model vault — real-weight integration lives in
+// the selfcheck/perf suites).
+//
+// The load-side synthetic-geometry gate is enabled via the ctest ENVIRONMENT
+// (LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1); production loads stay strict.
 #include <catch2/catch_test_macros.hpp>
 
 #include <filesystem>
@@ -7,6 +13,8 @@
 #include "lsxcommon/model_factory.h"
 
 #include "glm_moe_flash_model.h"
+
+#include "test_glm_moe_flash_fixture.h"
 
 using namespace lsxcommon;
 
@@ -22,18 +30,30 @@ TEST_CASE("registry: glm-5.3-flash type resolves factory")
     REQUIRE(model->Type() == "glm-5.3-flash");
 }
 
-TEST_CASE("Glm5NextFlashModel: Load on real checkpoint")
+TEST_CASE("Glm5NextFlashModel: Load lifecycle on synthetic converted fixture")
 {
-    const std::string root = "/mnt/llm_models/models/GLM-5.3-Flash";
-    if (!fs::exists(root + "/logestix/model.index.json")) {
-        SKIP("converted GLM-5.3-Flash not present");
-    }
+    glmflash::ConvertedFlashFixture fix;
+    fix.in = fs::temp_directory_path() / "lsx_glmflash_model_in";
+    fix.out = fs::temp_directory_path() / "lsx_glmflash_model_out";
+    fs::remove_all(fix.in);
+    fs::remove_all(fix.out);
+    INFO("convert status: " << fix.Convert().ToString());
+    REQUIRE(fix.Convert().ok());
+
     ModelInitConfig cfg;
-    cfg.model_path = root;
+    cfg.model_path = fix.out.string();
     cfg.model_type = "glm-5.3-flash";
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     REQUIRE(model->Load());
     REQUIRE(model->ResidentWeightBytes() > 0);
     model->Unload();
+    // Idempotent re-load support: Load() tears down and rebuilds.
+    REQUIRE(model->Load());
+    REQUIRE(model->ResidentWeightBytes() > 0);
+    model->Unload();
+
+    std::error_code ec;
+    fs::remove_all(fix.in, ec);
+    fs::remove_all(fix.out, ec);
 }

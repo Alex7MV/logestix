@@ -30,6 +30,15 @@ using fastload::UploadNvfp4Weight;
 
 namespace {
 
+// Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
+// gates against the frozen constants. Same escape hatch as the converter
+// (glm_moe_flash_convert.cpp) — never set in production runs.
+bool SyntheticGeometryAllowed()
+{
+    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    return env && env[0] == '1';
+}
+
 bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
                    std::string &error)
 {
@@ -69,8 +78,9 @@ bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
         error = "unexpected format tag in " + idx_path.string();
         return false;
     }
-    if (top.hidden != frozen::kHidden || top.layers != frozen::kLayers
-        || top.num_experts != frozen::kNumExperts) {
+    if (!SyntheticGeometryAllowed()
+        && (top.hidden != frozen::kHidden || top.layers != frozen::kLayers
+            || top.num_experts != frozen::kNumExperts)) {
         error = "index topology disagrees with frozen geometry";
         return false;
     }
@@ -202,7 +212,7 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
     }
 
     if (!ReadIndexJson(base / "model.index.json", pw.top, error)) return false;
-    {
+    if (!SyntheticGeometryAllowed()) {
         std::string why;
         if (!ValidateGeometry(pw.top, why)) {
             error = "frozen geometry mismatch: " + why;
@@ -286,6 +296,10 @@ bool LoadGlmFlashDenseWeights(const std::string &model_path,
 
         lw.is_kda = frozen::IsKdaLayer(l);
         lw.is_moe = frozen::IsMoeLayer(l);
+        // Frozen-range layers without tensors flush empty raw batches at
+        // conversion; under the synthetic gate they are skipped (loaded
+        // stays false). Real conversions never produce them — strict path.
+        if (SyntheticGeometryAllowed() && raw->tensors.empty()) continue;
         lw.loaded = true;
 
         // Norms (FP16).

@@ -1,15 +1,16 @@
 #pragma once
 
 // Shared fixture builder for Kimi-K2.7-Code converter/loader tests.
-// Reuses the GLM fixture primitives (FakeTensor, WriteSafetensors, MakeBf16,
-// MakeF32) and adds Kimi-specific pieces:
+// Uses the family-neutral synthetic-checkpoint primitives
+// (test_synth_checkpoint.h — suite-autonomy invariant: no borrowing from
+// other model families' fixtures) and adds Kimi-specific pieces:
 //   - "language_model.model." checkpoint prefix on every tensor name
 //   - routed experts as compressed-tensors INT4 group-32 pairs
 //     (weight_packed I32 [rows, cols/8] + weight_scale BF16 [rows, cols/32])
 //   - dense MLP only on layer 0 (first_k_dense_replace=1)
 //   - multimodal config.json wrapper with text_config
 
-#include "test_glm_moe_fixture.h"
+#include "test_synth_checkpoint.h"
 
 #include <absl/strings/str_cat.h>
 
@@ -22,10 +23,10 @@
 
 namespace kimitest {
 
-using glmtest::FakeTensor;
-using glmtest::MakeBf16;
-using glmtest::MakeF32;
-using glmtest::WriteSafetensors;
+using synthtest::FakeTensor;
+using synthtest::MakeBf16;
+using synthtest::MakeF32;
+using synthtest::WriteSafetensors;
 
 // Deterministic INT4 nibble pattern: signed value in [-7, 7].
 inline int NibbleAt(int r, int c) { return ((r * 131 + c * 17) % 15); }

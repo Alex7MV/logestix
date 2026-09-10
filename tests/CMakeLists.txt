@@ -78,6 +78,30 @@ endif()
 
 add_test(NAME test_deepseek_moe_loader COMMAND test_deepseek_moe_loader)
 
+# ── Тест DeepSeek-V4-Flash model-стадии жизненного цикла (host-only):
+#    классификация конвертированного layout (detect_model_type / фабрика) +
+#    topology-контракт (load_topology) на синтетической logestix-фикстуре.
+#    У DeepSeek нет конвертера в репо — convert-стадии by design нет.
+add_executable(test_deepseek_moe_model test_deepseek_moe_model.cpp)
+target_link_libraries(test_deepseek_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_model PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_model>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_model>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_model COMMAND test_deepseek_moe_model)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -477,7 +501,8 @@ add_test(NAME test_glm_moe_convert COMMAND test_glm_moe_convert)
 # ── Тест GLM-5.3-Flash конвертера (геометрия, классификатор, requant) ─────
 add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
 target_compile_definitions(test_glm_moe_flash_convert PRIVATE
-    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_glm_moe_flash_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_convert PRIVATE
@@ -2514,6 +2539,8 @@ endif()
 add_test(NAME test_glm_moe_flash_kernels COMMAND test_glm_moe_flash_kernels)
 
 add_executable(test_glm_moe_flash_loader test_glm_moe_flash_loader.cpp)
+target_compile_definitions(test_glm_moe_flash_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_glm_moe_flash_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_loader PRIVATE
@@ -2526,8 +2553,14 @@ if(WIN32)
     )
 endif()
 add_test(NAME test_glm_moe_flash_loader COMMAND test_glm_moe_flash_loader)
+# Synthetic-converted fixture: the load-side frozen-geometry gate is open
+# only under this env (loader-test discipline: no vault loads).
+set_tests_properties(test_glm_moe_flash_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_glm_moe_flash_model test_glm_moe_flash_model.cpp)
+target_compile_definitions(test_glm_moe_flash_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_glm_moe_flash_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_model PRIVATE
@@ -2540,6 +2573,9 @@ if(WIN32)
     )
 endif()
 add_test(NAME test_glm_moe_flash_model COMMAND test_glm_moe_flash_model)
+# Synthetic-converted fixture: load-side gates open only under this env.
+set_tests_properties(test_glm_moe_flash_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
 target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
@@ -2618,6 +2654,17 @@ target_compile_definitions(test_ctest_labels_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
 add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
 
+# Guard: model test-suite autonomy + full-lifecycle coverage. Host-only static
+# scan: per-model lifecycle registry (convert -> load -> model -> kernels ->
+# selfcheck), SKIP_RETURN_CODE 4 on selfcheck targets, and a cross-family
+# fixture-borrowing ban (test-side mirror of model independence).
+add_executable(test_model_suite_guard test_model_suite_guard.cpp)
+target_link_libraries(test_model_suite_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_SUITE)
+target_compile_definitions(test_model_suite_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_SUITE}\"")
+add_test(NAME test_model_suite_guard COMMAND test_model_suite_guard)
+
 # ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
 # convert  — model-converter tests: run when a converter changes
@@ -2633,6 +2680,7 @@ set_tests_properties(
     test_gpu_perf
     test_schema_views
     test_deepseek_moe_loader
+    test_deepseek_moe_model
     test_expert_store
     test_glm_moe_expert_cache
     test_model_integrity
@@ -2660,6 +2708,7 @@ set_tests_properties(
     test_kimi_moe_expert_cache
     test_model_independence_guard
     test_ctest_labels_guard
+    test_model_suite_guard
     PROPERTIES LABELS fast)
 
 set_tests_properties(
