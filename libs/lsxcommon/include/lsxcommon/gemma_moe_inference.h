@@ -226,6 +226,10 @@ struct GemmaGenContext {
         delete[] ec.h_slot_owner;
         delete[] ec.h_lru;
         ec = {};
+        if (d_flat_meta) cudaFree(d_flat_meta);
+        if (d_tbl) cudaFree(d_tbl);
+        d_flat_meta = nullptr;
+        d_tbl = nullptr;
         if (ev_router) cudaEventDestroy(ev_router);
     }
     cublasHandle_t cublas = nullptr;
@@ -241,6 +245,14 @@ struct GemmaGenContext {
     // Router-handoff fence: host busy-polls this event per layer instead of
     // a full cudaStreamSynchronize (created with the expert cache).
     cudaEvent_t ev_router = nullptr;
+    // Device mirror of per-flat-expert slot table (no-handshake routing):
+    // {dev_slot, gs1, gs3, gs2} per flat expert; coeff composed on device.
+    // Null until EnsureGemmaExpertCache allocates it; fully-resident caches
+    // never change dev_slot after prewarm.
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_flat_meta = nullptr;
+    int d_flat_meta_count = 0;
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev *d_tbl = nullptr;  // [K] composed per layer
+    bool no_handshake = false;   // slots == total experts (no evictions)
 };
 
 GemmaGenContext *CreateGemmaGenContext();
@@ -268,6 +280,10 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
 
 // FP16 -> BF16 elementwise cast (elementwise scratch plumbing).
 cudaError_t RunGemmaF16ToBf16(cudaStream_t stream, const __half *src,
+                              __nv_bfloat16 *dst, int64_t n);
+
+// FP32 -> BF16 elementwise cast (GEMV accumulator plumbing).
+cudaError_t RunGemmaF32ToBf16(cudaStream_t stream, const float *src,
                               __nv_bfloat16 *dst, int64_t n);
 
 // Gather-dequant of @p K experts into [K][num_elements] rows. Bit-identical
