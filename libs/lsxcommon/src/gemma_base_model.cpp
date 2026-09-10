@@ -10,6 +10,7 @@
 #include <absl/strings/str_format.h>
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
 #include "fast_load_internal.h"
@@ -40,8 +41,10 @@ bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
 }
 } // namespace gemma
 
-// fast-math policy: family-own (no process-global toggles). gemma runs its
-// own nvfp4gemv path (gemma_moe_inference.cu) unconditionally.
+// fast-math policy: per-call fast-math policy (LsxFastMathScope, model-independence invariant).
+// seq1_gemv is always on (the weight-streaming GEMV is gemma's
+// default decode core); tc_fast_math follows the instance config and routes
+// dispatcher dense GEMMs to the tensor-core mxf4nvf4 path when set.
 
 // Base default: no frozen geometry. Concrete models override with the
 // compile-time constants gate.
@@ -138,6 +141,12 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
+
+    // Model-independence invariant: per-call fast-math policy. seq1_gemv is
+    // always on for gemma (the weight-streaming GEMV is its default decode
+    // path); tc_fast_math follows the instance config and routes the
+    // dispatcher's dense GEMMs to the tensor-core mxf4nvf4 path when set.
+    const lsx_nvfp4::LsxFastMathScope fm_scope(cfg_.fast_math, true);
 
     if (!EnsureContext(/*with_cublas=*/false)) {
         r.error_msg = "cuda stream create failed";

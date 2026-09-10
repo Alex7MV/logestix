@@ -259,15 +259,24 @@ TEST_CASE("glm-5.3-flash calls the neutral NVFP4 layer directly",
 TEST_CASE("family-own models document their fast-math policy",
           "[independence]")
 {
-    // glm-5.2 and gemma do not route through the neutral NVFP4 layer (no
-    // process-global toggle exists for them); each model file must carry the
-    // greppable policy marker so the audit trail stays structural.
-    for (const char *f : {"glm_moe_model.cpp", "gemma_base_model.cpp"}) {
-        const std::string text = ReadFile(kSrcDir / f);
-        INFO(f << " must declare: fast-math policy: family-own");
+    // glm-5.2 does not route through the neutral NVFP4 layer (no
+    // process-global toggle exists for it) and carries the family-own
+    // marker. gemma routes its dense NVFP4 GEMMs through the neutral
+    // dispatcher and therefore must carry the per-call LsxFastMathScope
+    // marker (model-independence invariant, AGENTS.md).
+    {
+        const std::string text = ReadFile(kSrcDir / "glm_moe_model.cpp");
+        INFO("glm_moe_model.cpp must declare: fast-math policy: family-own");
         REQUIRE(text.find(
                     "fast-math policy: family-own (no process-global toggles)") !=
                 std::string::npos);
+    }
+    {
+        const std::string text = ReadFile(kSrcDir / "gemma_base_model.cpp");
+        INFO("gemma_base_model.cpp must declare: per-call LsxFastMathScope");
+        REQUIRE(text.find(
+                    "per-call fast-math policy (LsxFastMathScope, model-independence "
+                    "invariant)") != std::string::npos);
     }
 }
 

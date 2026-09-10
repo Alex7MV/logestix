@@ -61,6 +61,28 @@ cudaError_t RunRoutedGemvBatchSeg(
 cudaError_t RunGemmaF32ToBf16(cudaStream_t stream, const float *src,
                               __nv_bfloat16 *dst, int64_t n);
 
+// Gemma dense GEMM dispatch: the weight-streaming GEMV is the default
+// decode core; when the model's fast-math policy is active the dispatcher
+// may route to the tensor-core mxf4nvf4 path (dense shapes above the GEMV
+// size gate, e.g. the LM-head class) while small dense shapes keep the
+// GEMV. Without fast-math the GEMV always runs (the dispatcher would fall
+// to the scalar tile kernel, a pure regression for gemma decode).
+static cudaError_t RunGemmaNvfp4Gemm(cudaStream_t stream, const __half *x,
+                                     const uint8_t *packed,
+                                     const uint8_t *scales,
+                                     float global_scale, __half *y, int K,
+                                     int N, bool acc = false)
+{
+    using lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm;
+    using lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV;
+    using lsxcommon::lsx_nvfp4::LsxTcFastMath;
+    if (LsxTcFastMath())
+        return RunLsxNvfp4Gemm(stream, x, packed, scales, global_scale, y, 1,
+                               K, N, acc);
+    return RunLsxNvfp4GemmSeq1GemmV(stream, x, packed, scales, global_scale,
+                                    y, K, N, acc);
+}
+
 __device__ __forceinline__ float gelu_tanh_dev(float v)
 {
     const float k0 = 0.7978845608028654f; // sqrt(2/pi)
@@ -1527,7 +1549,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         if (e != cudaSuccess) { std::printf("[gemma-chk] L802nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         for (int t = 0; t < seq; ++t) {
             const __half *xt = ws.d_xh + static_cast<int64_t>(t) * H;
-            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+            e = RunGemmaNvfp4Gemm(
                 stream, xt, lw.attn_q.d_packed, lw.attn_q.d_scales,
                 lw.attn_q.global_scale, ws.d_gemv_q, static_cast<int>(H),
                 q_rows, false);
@@ -1536,7 +1558,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                                   ws.d_qr + static_cast<int64_t>(t) * q_rows,
                                   q_rows);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L805nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+            e = RunGemmaNvfp4Gemm(
                 stream, xt, lw.attn_k.d_packed, lw.attn_k.d_scales,
                 lw.attn_k.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                 kv_heads * head_dim, false);
@@ -1546,12 +1568,12 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                                   kv_heads * head_dim);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L808nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
             if (!v_tied_to_k) {
-                e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                e = RunGemmaNvfp4Gemm(
                     stream, xt, lw.attn_v.d_packed, lw.attn_v.d_scales,
-                    lw.attn_v.global_scale, ws.d_mlp_h, static_cast<int>(H),
+                    lw.attn_v.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                     kv_heads * head_dim, false);
                 if (e != cudaSuccess) { std::printf("[gemma-chk] L811nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                e = RunGemmaF16ToBf16(stream, ws.d_mlp_h,
+                e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                       ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                       kv_heads * head_dim);
                 if (e != cudaSuccess) { std::printf("[gemma-chk] L812nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
@@ -1681,13 +1703,13 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         e = cudaGetLastError();
         if (e != cudaSuccess) { std::printf("[gemma-chk] L897nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         for (int t = 0; t < seq; ++t) {
-            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+            e = RunGemmaNvfp4Gemm(
                 stream, ws.d_tmpf + static_cast<int64_t>(t) * q_rows,
                 lw.attn_o.d_packed, lw.attn_o.d_scales,
-                lw.attn_o.global_scale, ws.d_mlp_g, q_rows,
+                lw.attn_o.global_scale, ws.d_gemv_o, q_rows,
                 static_cast<int>(H), false);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L898nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = RunGemmaF16ToBf16(stream, ws.d_mlp_g,
+            e = RunGemmaF16ToBf16(stream, ws.d_gemv_o,
                                   ws.d_qr + static_cast<int64_t>(t) * H, H);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L899nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         }
@@ -2819,10 +2841,10 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
         !y || H <= 0 || I <= 0 || (H & 31) != 0 || (I & 31) != 0)
         return cudaErrorInvalidValue;
 
-    cudaError_t e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+    cudaError_t e = RunGemmaNvfp4Gemm(
         stream, x, gate_packed, gate_scales, gate_gs, g_out, H, I, false);
     if (e != cudaSuccess) return e;
-    e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+    e = RunGemmaNvfp4Gemm(
         stream, x, up_packed, up_scales, up_gs, u_out, H, I, false);
     if (e != cudaSuccess) return e;
     {
@@ -2832,7 +2854,7 @@ cudaError_t RunGemmaDenseMlpNvfp4Chain(
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
     }
-    e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+    e = RunGemmaNvfp4Gemm(
         stream, h_out, down_packed, down_scales, down_gs, y, I, H, false);
     return e == cudaSuccess ? cudaGetLastError() : e;
 }
