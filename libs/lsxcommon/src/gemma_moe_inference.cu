@@ -34,7 +34,7 @@ __global__ void gemma_gemv_zero_f32_kernel(float *__restrict__ dst, int n);
 __global__ void gemma_gemv_gather_table_kernel(
     const int32_t *__restrict__ d_sel, const float *__restrict__ d_selw,
     const lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ flat_meta,
-    int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl);
+    int flat_base, int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl);
 __global__ void gemma_embed_nvfp4_kernel(
     const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
     float gs, const int32_t *__restrict__ ids,
@@ -1833,8 +1833,8 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         // point at prewarmed slots. GeGLU (gelu_tanh) matches the routed
         // chain; accumulation is FP32 ascending-k, result cast to d_acc.
         gemma_gemv_gather_table_kernel<<<1, 32, 0, stream>>>(
-            ws.d_sel, ws.d_selw, g_gen_ctx->d_flat_meta, K,
-            g_gen_ctx->d_tbl);
+            ws.d_sel, ws.d_selw, g_gen_ctx->d_flat_meta,
+            layer_idx * E, K, g_gen_ctx->d_tbl);
         e = cudaGetLastError();
         if (e != cudaSuccess) { std::printf("[gemma-chk] nohs1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         const auto &ent0 =
@@ -2737,12 +2737,12 @@ cudaError_t RunRoutedGemvBatchSeg(
 __global__ void gemma_gemv_gather_table_kernel(
     const int32_t *__restrict__ d_sel, const float *__restrict__ d_selw,
     const lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ flat_meta,
-    int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl)
+    int flat_base, int K, lsxcommon::qwen_moe::QwenMoeGvSlotDev *__restrict__ tbl)
 {
     const int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= K) return;
-    const int expert = d_sel[k];
-    lsxcommon::qwen_moe::QwenMoeGvSlotDev v = flat_meta[expert];
+    const int flat = flat_base + d_sel[k];
+    lsxcommon::qwen_moe::QwenMoeGvSlotDev v = flat_meta[flat];
     v.coeff = d_selw[k];
     tbl[k] = v;
 }
