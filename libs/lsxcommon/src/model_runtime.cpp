@@ -1,5 +1,10 @@
 #include "lsxcommon/model_runtime.h"
 
+#include "lsxcommon/benchmark_gpu.h"
+#include "lsxcommon/gpu_perf.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/perf_calibration.h"
+
 #include <absl/strings/ascii.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
@@ -305,6 +310,61 @@ int RunCliInspect(const std::string &model_path, bool full)
             FormatBytesHuman(vp.max_bytes)));
     }
     m.model->Unload();
+    return 0;
+}
+
+
+// ── Developer calibration run (perf base-authoring) ─────────────────────────
+
+int RunCliCalibrate(const std::string &model_path)
+{
+    using lsxcommon::perf::GpuPerfProfile;
+    using lsxcommon::perf::LsxPerfKnobs;
+    using lsxcommon::perf::ProbeGpuPerfProfile;
+    using lsxcommon::perf::ResolvePerfKnobs;
+    using lsxcommon::perf::SavePerfCache;
+    GpuPerfProfile gpu = ProbeGpuPerfProfile();
+    if (gpu.name.empty()) {
+        lsxcommon::log::error("[calibrate] no CUDA device");
+        return 1;
+    }
+    // A/B the GEMM paths on the real model: t/s with (a) TC+streaming GEMV,
+    // (b) TC only, (c) bit-exact scalar. Each pass restores the toggles.
+    auto run = [&](bool tc, bool gemv) -> double {
+        lsxcommon::lsx_nvfp4::SetLsxTcFastMath(tc);
+        lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(gemv);
+        const gpu::BenchmarkResult r =
+            lsxcommon::gpu::RunBenchmark(model_path, 512, tc);
+        lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+        lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(false);
+        if (!r.ok) return 0.0;
+        return r.tokens_per_sec;
+    };
+    const double t_gemv = run(true, true);
+    const double t_tc = run(true, false);
+    const double t_scalar = run(false, false);
+
+    LsxPerfKnobs knobs;
+    if (!perf::LoadPerfCache(gpu, knobs))
+        knobs = ResolvePerfKnobs(gpu).knobs;
+    knobs.tc_fast_math_default = t_tc >= t_scalar && t_scalar > 0.0;
+    knobs.seq1_gemv_default = t_gemv >= t_tc && t_gemv > 0.0;
+    lsxcommon::log::info(absl::StrFormat(
+        "[calibrate] t/s: gemv=%.2f tc=%.2f scalar=%.2f -> tc=%d gemv=%d",
+        t_gemv, t_tc, t_scalar,
+        static_cast<int>(knobs.tc_fast_math_default),
+        static_cast<int>(knobs.seq1_gemv_default)));
+    if (!perf::SavePerfCache(gpu, knobs))
+        lsxcommon::log::warn("[calibrate] perf cache save failed (vault "
+                             "read-only?); snippet below still valid");
+    lsxcommon::log::info(absl::StrFormat(
+        "[calibrate] paste into BaseKnobs(): "
+        "m.emplace(\"%s\", LsxPerfKnobs{%d, %d, %d, %d, %d, %d});",
+        perf::GpuProfileKey(gpu).c_str(),
+        static_cast<int>(knobs.tc_fast_math_default),
+        static_cast<int>(knobs.seq1_gemv_default), knobs.gemv_max_mib,
+        knobs.splitk_grid_min, knobs.expert_slots_pct,
+        static_cast<int>(knobs.dual_stream_staging)));
     return 0;
 }
 

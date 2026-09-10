@@ -94,6 +94,12 @@ struct GenerationCliArgs {
 int RunCliGeneration(const GenerationCliArgs &args);
 int RunCliSelfCheck(const GenerationCliArgs &args);
 int RunCliInspect(const std::string &model_path, bool full);
+
+// Developer base-authoring run (GPU perf auto-tuning): A/B benchmarks the
+// GEMM paths on the real model, prints the winning knobs and the C++ snippet
+// to paste into the committed base table (gpu_perf.cpp BaseKnobs). Also
+// persists the result to the vault perf cache. NOT an inference path.
+int RunCliCalibrate(const std::string &model_path);
 void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r);
 
 } // namespace runtime

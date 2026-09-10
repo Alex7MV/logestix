@@ -20,7 +20,9 @@ int main(int argc, char* argv[]) {
     bool benchmark = false;
     bool testprompt = false;
     bool selfcheck = false;
+    bool calibrate = false;
     bool fast_math = false;
+    bool no_fast_math = false;
     std::string prompt = "The capital of France is";
     int prompt_gen = 64;
     auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
@@ -38,6 +40,10 @@ int main(int argc, char* argv[]) {
             selfcheck = true;
         else if (std::strcmp(argv[i], "--fast-math") == 0)
             fast_math = true;
+        else if (std::strcmp(argv[i], "--no-fast-math") == 0)
+            no_fast_math = true;
+        else if (std::strcmp(argv[i], "--calibrate") == 0)
+            calibrate = true;
         else if (std::strcmp(argv[i], "--max-gen") == 0 && i + 1 < argc)
             prompt_gen = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
@@ -48,12 +54,21 @@ int main(int argc, char* argv[]) {
     lsxcommon::version();
     lsxcommon::log_gpu_info();
     lsxcommon::log::info(absl::StrFormat("Model path: %s", model_path));
+    const auto fast_math_mode = fast_math ? lsxcommon::FastMathMode::kOn
+                                : no_fast_math ? lsxcommon::FastMathMode::kOff
+                                               : lsxcommon::FastMathMode::kAuto;
+    if (calibrate) {
+        int rc = lsxcommon::runtime::RunCliCalibrate(model_path);
+        lsxcommon::Core::Shutdown();
+        return rc;
+    }
     if (testprompt) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = model_path;
         args.prompt = prompt;
         args.max_gen_tokens = prompt_gen;
         args.fast_math = fast_math;
+        args.fast_math_mode = fast_math_mode;
         int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();
         return rc;
@@ -64,6 +79,7 @@ int main(int argc, char* argv[]) {
         args.prompt = prompt;
         args.max_gen_tokens = 1;
         args.fast_math = fast_math;
+        args.fast_math_mode = fast_math_mode;
         int rc = lsxcommon::runtime::RunCliSelfCheck(args);
         lsxcommon::Core::Shutdown();
         return rc;
