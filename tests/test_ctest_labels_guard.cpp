@@ -243,6 +243,26 @@ std::vector<std::string> CheckRouter(const std::string& router_text)
     return v;
 }
 
+// Every file in tests/ (top level) follows the test_* prefix: test_*.cpp,
+// test_*.cu, test_*_fixture.h.
+std::vector<std::string> CheckTestsNaming(const fs::path& tests_dir)
+{
+    std::vector<std::string> v;
+    static const std::regex ok(R"(test_.+\.(cpp|cu|h)$)");
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(tests_dir, ec))
+    {
+        if (!e.is_regular_file())
+            continue;
+        const std::string name = e.path().filename().string();
+        if (name == "CMakeLists.txt")
+            continue;
+        if (!std::regex_match(name, ok))
+            v.push_back("tests/ naming violation (expected test_*): " + name);
+    }
+    return v;
+}
+
 } // namespace
 
 TEST_CASE("ctest labels guard parser: synthetic fixtures",
@@ -364,5 +384,17 @@ TEST_CASE("ctest labels guard: router rules valid", "[labels][guard]")
     for (const auto& s : v)
         joined += s + "\n";
     INFO("router violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: tests/ file naming uniformity",
+          "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    auto v = CheckTestsNaming(root / "tests");
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("naming violations:\n" << joined);
     REQUIRE(v.empty());
 }
