@@ -136,10 +136,14 @@ TEST_CASE("Perf cache: JSON round-trip", "[gpu_perf]")
 {
     PerfCacheEntry e;
     e.gpu = Rtx5090();
+    e.knobs.tc_fast_math_default = true;
+    e.knobs.seq1_gemv_default = true;
     e.knobs.gemv_max_mib = 24;
     e.knobs.splitk_grid_min = 64;
     e.knobs.dual_stream_staging = false;
-    const auto parsed = ParsePerfCache(SerializePerfCache(e));
+    const std::string j = SerializePerfCache(e);
+    const auto parsed = ParsePerfCache(j);
+    if (!parsed.has_value()) FAIL("NOPARSE json=" + j);
     REQUIRE(parsed.has_value());
     REQUIRE(parsed->gpu.name == e.gpu.name);
     REQUIRE(parsed->gpu.sm_count == 170);

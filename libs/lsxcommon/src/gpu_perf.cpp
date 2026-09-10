@@ -205,8 +205,11 @@ std::string SerializePerfCache(const PerfCacheEntry &e)
     return s;
 }
 
-std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json)
+std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json_view)
 {
+    // simdjson's DOM parser borrows the input buffer: copy into stable storage
+    // so temporaries (e.g. ParsePerfCache(SerializePerfCache(e))) stay valid.
+    const std::string json(json_view);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     if (parser.parse(json).get(root) != simdjson::SUCCESS)
@@ -235,9 +238,9 @@ std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json)
     if (gpu["cc_minor"].get(v) == simdjson::SUCCESS)
         e.gpu.cc_minor = static_cast<int>(v);
     bool b = false;
-    if (knobs["tc_fast_math_default"].get(b) == simdjson::SUCCESS)
+    if (knobs["tc_fast_math_default"].get_bool().get(b) == simdjson::SUCCESS)
         e.knobs.tc_fast_math_default = b;
-    if (knobs["seq1_gemv_default"].get(b) == simdjson::SUCCESS)
+    if (knobs["seq1_gemv_default"].get_bool().get(b) == simdjson::SUCCESS)
         e.knobs.seq1_gemv_default = b;
     if (knobs["gemv_max_mib"].get(v) == simdjson::SUCCESS)
         e.knobs.gemv_max_mib = static_cast<int>(v);
@@ -245,7 +248,7 @@ std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json)
         e.knobs.splitk_grid_min = static_cast<int>(v);
     if (knobs["expert_slots_pct"].get(v) == simdjson::SUCCESS)
         e.knobs.expert_slots_pct = static_cast<int>(v);
-    if (knobs["dual_stream_staging"].get(b) == simdjson::SUCCESS)
+    if (knobs["dual_stream_staging"].get_bool().get(b) == simdjson::SUCCESS)
         e.knobs.dual_stream_staging = b;
     return e;
 }
