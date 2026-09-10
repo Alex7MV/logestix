@@ -10,6 +10,7 @@
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gemma_moe_convert.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -56,6 +57,13 @@ struct alignas(16) GemmaLayerWeights {
     __nv_bfloat16 *d_mlp_gate = nullptr;
     __nv_bfloat16 *d_mlp_up = nullptr;
     __nv_bfloat16 *d_mlp_down = nullptr;
+
+    // NVFP4 dense MLP (converted pinned schema carries the packed/scales/
+    // global_scale triple). Non-null d_packed when present; the BF16
+    // d_mlp_* fields above stay null then. `mlp_nvfp4` selects the GEMV
+    // chain in ForwardLayer.
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
+    bool mlp_nvfp4 = false;
 
     // Router logits projection (FP16) [num_experts, hidden].
     __nv_bfloat16 *d_router_proj = nullptr;

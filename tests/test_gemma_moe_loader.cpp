@@ -164,3 +164,40 @@ TEST_CASE("gemma resident slot budget: VRAM-bounded, clamped, env-override",
     CHECK(ComputeGemmaResidentSlots(32ull * 1024 * MiB, per_expert, 3840,
                                     9999) == 3840);
 }
+
+TEST_CASE("gemma loader uploads NVFP4 dense MLP when present",
+          "[gemma][loader][nvfp4]") {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "gemma4_loader_mlp_nvfp4";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                               tmp / "tokenizer.json");
+    auto out = tmp / "out";
+    REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())
+                .ok());
+
+    lsxcommon::gemma::GemmaPinnedWeights pw;
+    auto rc = lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,
+                                                       nullptr);
+    if (rc != cudaSuccess) {
+        INFO("LoadGemmaPinnedWeights rc=" << cudaGetErrorString(rc));
+        REQUIRE(rc == cudaSuccess);
+    }
+    REQUIRE(!pw.layers.empty());
+    const auto &lw = pw.layers[0];
+    REQUIRE(lw.mlp_nvfp4);
+    REQUIRE(lw.mlp_gate.d_packed != nullptr);
+    CHECK(lw.mlp_gate.rows == gemmatest::TestCfg().intermediate_size);
+    CHECK(lw.mlp_gate.cols == gemmatest::TestCfg().hidden_size);
+    CHECK(lw.mlp_down.rows == gemmatest::TestCfg().hidden_size);
+    CHECK(lw.mlp_down.cols == gemmatest::TestCfg().intermediate_size);
+    CHECK(lw.d_mlp_gate == nullptr);  // BF16 path not populated
+    CHECK(lw.d_mlp_up == nullptr);
+    CHECK(lw.d_mlp_down == nullptr);
+    pw.Free();
+    fs::remove_all(tmp);
+}

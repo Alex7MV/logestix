@@ -153,6 +153,73 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
     PinnedStagingRing ring;
     if (!ring.ok()) return cudaErrorMemoryAllocation;
 
+    // NVFP4 dense-MLP triple detection: "<name>.packed" + ".scales" +
+    // ".global_scale" records (converted schema). When all three projections
+    // are present the BF16 MLP upload jobs are dropped.
+    struct Nvfp4Recs {
+        const TensorRecord *packed = nullptr;
+        const TensorRecord *scales = nullptr;
+        const TensorRecord *gs = nullptr;
+    };
+    auto find_rec = [&](std::string_view suffix) -> const TensorRecord * {
+        for (const auto &t : tensors)
+            if (t.name.size() > suffix.size() &&
+                t.name.compare(t.name.size() - suffix.size(), suffix.size(),
+                               suffix) == 0)
+                return &t;
+        return nullptr;
+    };
+    auto gather = [&](std::string_view base) {
+        Nvfp4Recs r;
+        r.packed = find_rec(std::string(base) + ".packed");
+        r.scales = find_rec(std::string(base) + ".scales");
+        r.gs = find_rec(std::string(base) + ".global_scale");
+        return r;
+    };
+    const Nvfp4Recs gate_rec =
+        gather("mlp.gate_proj.weight");
+    const Nvfp4Recs up_rec = gather("mlp.up_proj.weight");
+    const Nvfp4Recs down_rec = gather("mlp.down_proj.weight");
+    const bool mlp_nv = gate_rec.packed && gate_rec.scales && gate_rec.gs &&
+                        up_rec.packed && up_rec.scales && up_rec.gs &&
+                        down_rec.packed && down_rec.scales && down_rec.gs;
+    auto upload_nv = [&](const Nvfp4Recs &r,
+                         lsxcommon::lsx_nvfp4::LsxNvfp4Weight &w)
+        -> cudaError_t {
+        if (!r.packed || !r.scales || !r.gs) return cudaErrorInvalidValue;
+        w.rows = r.packed->shape.size() >= 2
+                     ? static_cast<int>(r.packed->shape[0])
+                     : 0;
+        w.cols = r.packed->shape.size() >= 2
+                     ? static_cast<int>(r.packed->shape[1])
+                     : 0;
+        if (w.rows <= 0 || w.cols <= 0) return cudaErrorInvalidValue;
+        std::memcpy(&w.global_scale, r.gs->data.data(), sizeof(float));
+        w.packed_bytes = static_cast<int64_t>(r.packed->data.size());
+        w.scale_bytes = static_cast<int64_t>(r.scales->data.size());
+        void *d1 = nullptr, *d2 = nullptr;
+        cudaError_t e = cudaMalloc(&d1, r.packed->data.size());
+        if (e != cudaSuccess) { w.Free(); return e; }
+        e = cudaMalloc(&d2, r.scales->data.size());
+        if (e != cudaSuccess) { cudaFree(d1); w.Free(); return e; }
+        e = ring.UploadRaw(r.packed->data.data(), d1, r.packed->data.size(),
+                           stream, bytes_acc);
+        if (e == cudaSuccess)
+            e = ring.UploadRaw(r.scales->data.data(), d2,
+                               r.scales->data.size(), stream, bytes_acc);
+        if (e != cudaSuccess) { cudaFree(d1); cudaFree(d2); w.Free(); return e; }
+        w.d_packed = static_cast<const uint8_t *>(d1);
+        w.d_scales = static_cast<const uint8_t *>(d2);
+        return cudaSuccess;
+    };
+    if (mlp_nv) {
+        cudaError_t e = upload_nv(gate_rec, lw.mlp_gate);
+        if (e == cudaSuccess) e = upload_nv(up_rec, lw.mlp_up);
+        if (e == cudaSuccess) e = upload_nv(down_rec, lw.mlp_down);
+        if (e != cudaSuccess) return e;
+        lw.mlp_nvfp4 = true;
+    }
+
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
     auto *post_norm = FindTensor(tensors, "post_attention_layernorm.weight");
     if (!in_norm || !post_norm) {
@@ -208,11 +275,15 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
                  reinterpret_cast<void **>(&lw.d_q_norm), nullptr, nullptr),
         make_job(FindTensor(tensors, "self_attn.k_norm.weight"),
                  reinterpret_cast<void **>(&lw.d_k_norm), nullptr, nullptr),
-        make_job(FindTensor(tensors, "mlp.gate_proj.weight"),
+        // NVFP4 MLP: the BF16 d_mlp_* jobs are skipped (raw records absent).
+        make_job(mlp_nv ? nullptr
+                        : FindTensor(tensors, "mlp.gate_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_mlp_gate), nullptr, nullptr),
-        make_job(FindTensor(tensors, "mlp.up_proj.weight"),
+        make_job(mlp_nv ? nullptr
+                        : FindTensor(tensors, "mlp.up_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_mlp_up), nullptr, nullptr),
-        make_job(FindTensor(tensors, "mlp.down_proj.weight"),
+        make_job(mlp_nv ? nullptr
+                        : FindTensor(tensors, "mlp.down_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_mlp_down), nullptr, nullptr),
         make_job(FindTensor(tensors, "router.proj.weight"),
                  reinterpret_cast<void **>(&lw.d_router_proj), nullptr,
@@ -290,6 +361,9 @@ void GemmaLayerWeights::Free()
     if (d_layer_scalar) cudaFree(d_layer_scalar);
     if (d_router_scale) cudaFree(d_router_scale);
     if (d_per_expert_scale) cudaFree(d_per_expert_scale);
+    mlp_gate.Free();
+    mlp_up.Free();
+    mlp_down.Free();
     *this = GemmaLayerWeights{};
 }
 
