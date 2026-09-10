@@ -14,6 +14,7 @@
 #include "lsxcommon/benchmark_gpu.h"   // gpu::BenchmarkResult
 #include "lsxcommon/vram_estimate.h"   // VramProfile
 #include "lsxcommon/prompt_framing.h"  // prompt framing utilities
+#include "lsxcommon/fast_math_mode.h"  // FastMathMode
 
 namespace lsxcommon {
 
@@ -36,9 +37,21 @@ struct ModelInitConfig {
     int max_gen_tokens = 64;
     // Blackwell fast path (audit Phase 3, F-01): route NVFP4 GEMMs through
     // native tensor-core mxf4nvf4 on sm_120a/sm_121a. Tolerance-class
-    // numerics; default OFF keeps the bit-exact scalar path.
+    // numerics. Legacy opt-in: fast_math=true forces the TC path (kOn);
+    // fast_math=false defers to fast_math_mode below.
     bool fast_math = false;
+    // Tri-state routing (gpu_perf auto-tuning): kAuto (default) follows the
+    // per-GPU perf policy resolved at engine init; kOn/kOff force the
+    // numeric class (only consulted when fast_math == false).
+    FastMathMode fast_math_mode = FastMathMode::kAuto;
 };
+
+// Effective routing mode: the legacy bool wins (true -> kOn); otherwise the
+// tri-state field decides.
+inline FastMathMode EffectiveFastMathMode(const ModelInitConfig &cfg)
+{
+    return cfg.fast_math ? FastMathMode::kOn : cfg.fast_math_mode;
+}
 
 struct ModelRequest {
     std::vector<int32_t> input_ids;   // pre-tokenized prompt

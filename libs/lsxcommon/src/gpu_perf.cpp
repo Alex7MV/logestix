@@ -2,9 +2,16 @@
 
 #include <cuda_runtime.h>
 
+#include <absl/container/flat_hash_map.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <optional>
+
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_tc_gemm.h"
 
 namespace lsxcommon {
 namespace perf {
@@ -54,6 +61,114 @@ std::string GpuProfileKey(const GpuPerfProfile &g)
         }
     }
     return key;
+}
+
+// ── Knob resolution ─────────────────────────────────────────────────────────
+
+namespace {
+
+std::optional<LsxPerfKnobSet> BaseKnobs(const std::string &key)
+{
+    // Committed optimization base (repo). Author entries via
+    // `lsxfabric --calibrate <model>` (values measured on real weights).
+    static const absl::flat_hash_map<std::string, LsxPerfKnobs> kBase = [] {
+        absl::flat_hash_map<std::string, LsxPerfKnobs> m;
+        LsxPerfKnobs rtx5090;
+        rtx5090.tc_fast_math_default = true;
+        rtx5090.seq1_gemv_default = true;
+        // gemv_max_mib 32 / splitk_grid_min 96 / slots 100 / dual true are
+        // the profiled RTX 5090 defaults (see lsx_inference_nvfp4.cu).
+        m.emplace("rtx 5090", rtx5090);
+        return m;
+    }();
+    const auto it = kBase.find(key);
+    if (it == kBase.end()) return std::nullopt;
+    return LsxPerfKnobSet{it->second, PerfSource::kBase};
+}
+
+LsxPerfKnobSet HeuristicKnobs(const GpuPerfProfile &g)
+{
+    LsxPerfKnobs k;
+    k.tc_fast_math_default = (g.cc_major == 12);
+    k.seq1_gemv_default = true;
+    const double bw = PeakBandwidthGbs(g);
+    if (bw > 0) {
+        const double scaled = 32.0 * bw / kRtx5090PeakGbs;
+        k.gemv_max_mib = static_cast<int>(std::clamp(scaled, 8.0, 64.0));
+    }
+    k.splitk_grid_min = (g.sm_count > 0 && g.sm_count < 160) ? 64 : 96;
+    k.expert_slots_pct = 100;
+    k.dual_stream_staging = bw >= 768.0;
+    return {k, PerfSource::kHeuristic};
+}
+
+bool LegacyAutoDisabled()
+{
+    const char *auto_env = std::getenv("LSX_PERF_AUTO");
+    return auto_env != nullptr && std::strcmp(auto_env, "0") == 0;
+}
+
+} // namespace
+
+LsxPerfKnobSet ResolvePerfKnobs(const GpuPerfProfile &gpu,
+                                FastMathMode cli_mode)
+{
+    auto base = BaseKnobs(GpuProfileKey(gpu));
+    LsxPerfKnobSet r = base ? *base : HeuristicKnobs(gpu);
+
+    if (LegacyAutoDisabled())
+        r = {LsxPerfKnobs{}, PerfSource::kLegacy};
+
+    if (std::getenv("LSX_TEST_FAST_MATH")) {
+        r.knobs.tc_fast_math_default = true;
+        r.knobs.seq1_gemv_default = true;
+        r.source = PerfSource::kEnvOverride;
+    }
+    if (const char *env = std::getenv("LSX_GEMV_MAX_MIB")) {
+        const int v = std::atoi(env);
+        if (v > 0) {
+            r.knobs.gemv_max_mib = v;
+            r.source = PerfSource::kEnvOverride;
+        }
+    }
+
+    switch (cli_mode) {
+        case FastMathMode::kOn:
+            r.knobs.tc_fast_math_default = true;
+            r.knobs.seq1_gemv_default = true;
+            break;
+        case FastMathMode::kOff:
+            r.knobs.tc_fast_math_default = false;
+            r.knobs.seq1_gemv_default = false;
+            break;
+        case FastMathMode::kAuto:
+            break;
+    }
+    return r;
+}
+
+LsxPerfKnobs CurrentKnobs()
+{
+    static const LsxPerfKnobs kDefaults;  // legacy behavior snapshot
+    return kDefaults;
+}
+
+PerfSource CurrentKnobsSource() { return PerfSource::kLegacy; }
+
+void SetCurrentKnobs(const LsxPerfKnobs &, PerfSource)
+{
+    // Replaced by the atomic snapshot in Task 8 (engine wiring); kept as a
+    // no-op so Task 2 compiles standalone.
+}
+
+void ApplyKnobs(const LsxPerfKnobs &knobs)
+{
+    SetCurrentKnobs(knobs, PerfSource::kBase);
+    lsx_nvfp4::SetLsxTcFastMath(knobs.tc_fast_math_default);
+    lsx_nvfp4::SetLsxSeq1Gemv(knobs.seq1_gemv_default);
+    lsx_nvfp4::SetLsxGemmMaxMib(knobs.gemv_max_mib);
+    lsx_nvfp4::SetLsxDualStreamStaging(knobs.dual_stream_staging);
+    lsx_tc::SetLsxSplitKGridMin(knobs.splitk_grid_min);
 }
 
 } // namespace perf

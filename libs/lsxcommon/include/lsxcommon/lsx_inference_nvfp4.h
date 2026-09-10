@@ -71,6 +71,17 @@ bool LsxTcFastMath();
 void SetLsxSeq1Gemv(bool on);
 bool LsxSeq1Gemv();
 
+// Weight-size bound (MiB) for the seq==1 streaming GEMV eligibility.
+// Default 32; applied from the resolved perf policy (gpu_perf.h) at engine
+// init. The LSX_GEMV_MAX_MIB env read lives in perf::ResolvePerfKnobs.
+void SetLsxGemmMaxMib(int mib);
+int LsxGemmMaxMib();
+
+// Dual-stream expert-staging toggle (H2D/compute overlap). Default true;
+// narrow-bus GPUs resolve this to false and keep single-stream staging.
+void SetLsxDualStreamStaging(bool on);
+bool LsxDualStreamStaging();
+
 // RAII: apply one model's fast-math policy for the scope of an Infer/SelfCheck
 // call and restore the previous process state afterwards. The orchestrator
 // dispatches sequentially (a single Infer at a time), so the scope cannot

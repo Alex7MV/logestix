@@ -12,6 +12,7 @@
 
 #include <cuda.h>
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -26,6 +27,11 @@
 
 namespace lsxcommon {
 namespace lsx_tc {
+
+// split-K grid_x threshold (perf auto-tuning knob, gpu_perf.h). Atomic so
+// both dispatch sites (TcGemmDispatch and LsxTcBatchSplitK) read one
+// consistent value.
+std::atomic<int> g_lsx_splitk_grid_min{96};
 
 namespace {
 
@@ -942,9 +948,12 @@ static cudaError_t TcGemmDispatch(cudaStream_t stream, const __half *x_fp16,
         // TcSplitKFinalize (deterministic slice order).
         int split_k = 1;
         float *partials = nullptr;
-        if (seq == 1 && !acc && K >= 2048 && grid.x < 192 && (K % 512) == 0) {
+        const int grid_min =
+            g_lsx_splitk_grid_min.load(std::memory_order_relaxed);
+        if (seq == 1 && !acc && K >= 2048 && grid.x < 2 * grid_min &&
+            (K % 512) == 0) {
             for (int cand : {8, 4, 2}) {
-                if ((K / 64) % cand == 0 && grid.x * cand >= 96) {
+                if ((K / 64) % cand == 0 && grid.x * cand >= grid_min) {
                     split_k = cand;
                     break;
                 }
@@ -1025,14 +1034,27 @@ cudaError_t RunLsxTcGemmPreQuant(cudaStream_t stream, const uint8_t *ap,
 int LsxTcBatchSplitK(int K, int N)
 {
     // Mirror of TcGemmDispatch's split-K rule (seq==1, !acc): same inputs ->
-    // same split_k on both the single-slot and batched paths.
+    // same split_k on both the single-slot and batched paths. The grid_x
+    // threshold is the perf-policy knob (SetLsxSplitKGridMin, default 96).
+    const int grid_min = g_lsx_splitk_grid_min.load(std::memory_order_relaxed);
     if (K < 2048 || (K % 512) != 0) return 1;
     const int grid_x = (N + kTileN - 1) / kTileN;
-    if (grid_x >= 192) return 1;
+    if (grid_x >= 2 * grid_min) return 1;
     for (int cand : {8, 4, 2}) {
-        if ((K / 64) % cand == 0 && grid_x * cand >= 96) return cand;
+        if ((K / 64) % cand == 0 && grid_x * cand >= grid_min) return cand;
     }
     return 1;
+}
+
+// split-K grid_x threshold knob setters (perf auto-tuning, gpu_perf.h).
+void SetLsxSplitKGridMin(int v)
+{
+    if (v > 0) g_lsx_splitk_grid_min.store(v, std::memory_order_relaxed);
+}
+
+int LsxSplitKGridMin()
+{
+    return g_lsx_splitk_grid_min.load(std::memory_order_relaxed);
 }
 
 bool LsxTcRuntimeSupported()

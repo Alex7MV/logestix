@@ -38,6 +38,32 @@ bool LsxSeq1Gemv()
     return g_lsx_seq1_gemv.load(std::memory_order_relaxed);
 }
 
+static std::atomic<int64_t> g_lsx_gemv_max_bytes{int64_t{32} << 20};
+static std::atomic<bool> g_lsx_dual_stream{true};
+
+void SetLsxGemmMaxMib(int mib)
+{
+    if (mib > 0)
+        g_lsx_gemv_max_bytes.store(int64_t{mib} << 20,
+                                   std::memory_order_relaxed);
+}
+
+int LsxGemmMaxMib()
+{
+    return static_cast<int>(g_lsx_gemv_max_bytes.load(
+               std::memory_order_relaxed) >> 20);
+}
+
+void SetLsxDualStreamStaging(bool on)
+{
+    g_lsx_dual_stream.store(on, std::memory_order_relaxed);
+}
+
+bool LsxDualStreamStaging()
+{
+    return g_lsx_dual_stream.load(std::memory_order_relaxed);
+}
+
 namespace {
 
 // Shared NVFP4 decode primitives (nvfp4_codec.h).

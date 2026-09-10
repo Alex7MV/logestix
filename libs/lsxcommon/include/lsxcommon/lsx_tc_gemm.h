@@ -90,6 +90,12 @@ struct alignas(8) LsxTcBatchSlot {
 // same inputs -> same split_k -> same slice math. Pure arithmetic.
 int LsxTcBatchSplitK(int K, int N);
 
+// split-K grid_x threshold knob (perf auto-tuning, gpu_perf.h). Default 96.
+// Both the single-slot dispatch and LsxTcBatchSplitK read the same value so
+// split decisions stay consistent (run-to-run deterministic).
+void SetLsxSplitKGridMin(int v);
+int LsxSplitKGridMin();
+
 // sm_12x runtime probe (cached): mxf4nvf4 TC path availability.
 bool LsxTcRuntimeSupported();
 
