@@ -90,6 +90,11 @@ struct GenerationCliArgs {
 // process exit code. The caller owns Core::Initialize/Shutdown.
 int RunCliGeneration(const GenerationCliArgs &args);
 int RunCliSelfCheck(const GenerationCliArgs &args);
+// Speed-measurement lifecycle (lsxbenchmark --bench): Create -> Load ->
+// frame/encode -> Infer -> print -> Unload. Runs at args.fast_math_mode
+// (kAuto = maximum-speed auto policy; kOff = bit-exact measurement).
+// Returns a process exit code (0 success, 1 failure).
+int RunCliBenchmark(const GenerationCliArgs &args);
 int RunCliInspect(const std::string &model_path, bool full);
 
 void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r);

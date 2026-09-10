@@ -274,6 +274,48 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     return result.selfcheck_passed ? 0 : 1;
 }
 
+int RunCliBenchmark(const GenerationCliArgs &args)
+{
+    lsxcommon::log::info(absl::StrFormat(
+        "Running generation benchmark on prompt: %s", args.prompt));
+    CliModel m = CreateCliModel(args.model_path, args.fast_math_mode);
+    if (!m.ok) return 1;
+
+    std::vector<int32_t> input_ids;
+    if (!m.model->BuildPromptInputIds(m.model->Tokenizer(), args.prompt,
+                                      input_ids)) {
+        lsxcommon::log::error(
+            absl::StrFormat("Tokenizer encode failed for prompt: %s",
+                            args.prompt));
+        m.model->Unload();
+        return 1;
+    }
+    lsxcommon::ModelRequest req{std::move(input_ids), args.max_gen_tokens};
+    gpu::InferenceResult result = m.model->Infer(req);
+    m.model->Unload();
+    if (!result.ok) {
+        lsxcommon::log::error(
+            absl::StrFormat("Benchmark inference failed: %s",
+                            result.error_msg));
+        return 1;
+    }
+    lsxcommon::log::info("=== lsxbenchmark: bench ===");
+    // StrCat for concatenations (abseil format guard: printf-style specs
+    // only inside StrFormat).
+    lsxcommon::log::info(absl::StrCat("prompt   : ", args.prompt));
+    lsxcommon::log::info(absl::StrCat(
+        "tokens   : ", result.num_tokens, " at ",
+        absl::StrFormat("%.1f", result.tokens_per_sec), " t/s (",
+        absl::StrFormat("%.1f", result.total_time_ms), " ms)"));
+    lsxcommon::log::info(
+        absl::StrFormat("ttft     : %.2f ms", result.ttft_ms));
+    lsxcommon::log::info(absl::StrFormat(
+        "resident : %.0f MiB",
+        static_cast<double>(result.weight_resident_bytes) /
+            (1024.0 * 1024.0)));
+    return 0;
+}
+
 int RunCliInspect(const std::string &model_path, bool full)
 {
     CliModel m = CreateCliModel(model_path, FastMathMode::kAuto);

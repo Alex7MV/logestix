@@ -183,6 +183,14 @@ TEST_CASE("model_runtime: RunBenchmark shim delegates to IModel::Benchmark", "[m
     REQUIRE(r.resident_bytes == 0);
 }
 
+TEST_CASE("model_runtime: RunCliBenchmark returns 1 on a missing model",
+          "[model_runtime]")
+{
+    lsxcommon::runtime::GenerationCliArgs args;
+    args.model_path = (fs::temp_directory_path() / "no_such_model_xyz").string();
+    REQUIRE(lsxcommon::runtime::RunCliBenchmark(args) == 1);
+}
+
 TEST_CASE("model_runtime: RunParisSelfCheck matches a 1/2-token Paris prefix", "[model_runtime]")
 {
     // synthetic_paris_tok.json adds a "P a"->...->"Paris" BPE merge chain so
