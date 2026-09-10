@@ -1175,6 +1175,8 @@ bool GemmaDebugSync(cudaStream_t stream, const char *stage, int layer,
 }
 
 // Debug switches (NaN bisection on real checkpoints).
+
+// Debug switches (NaN bisection on real checkpoints).
 bool GemmaSkipBranch(const char *name){
     static const bool no_attn =
         std::getenv("LSX_TEST_GEMMA_NO_ATTN") != nullptr;
@@ -1255,6 +1257,13 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_mlp_h, I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_y, H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_tmpf, S * q_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gemv_q, q_rows_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_gemv_kv,
+               (kv_rows_max > (size_t)H ? kv_rows_max : (size_t)H) * 2)) !=
+            cudaSuccess ||
+        (e = A((void **)&ws.d_gemv_o,
+               (q_rows_max > (size_t)H ? q_rows_max : (size_t)H) * 2)) !=
+            cudaSuccess ||
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
@@ -1520,19 +1529,19 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             const __half *xt = ws.d_xh + static_cast<int64_t>(t) * H;
             e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 stream, xt, lw.attn_q.d_packed, lw.attn_q.d_scales,
-                lw.attn_q.global_scale, ws.d_mlp_g, static_cast<int>(H),
+                lw.attn_q.global_scale, ws.d_gemv_q, static_cast<int>(H),
                 q_rows, false);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L804nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = RunGemmaF16ToBf16(stream, ws.d_mlp_g,
+            e = RunGemmaF16ToBf16(stream, ws.d_gemv_q,
                                   ws.d_qr + static_cast<int64_t>(t) * q_rows,
                                   q_rows);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L805nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
             e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
                 stream, xt, lw.attn_k.d_packed, lw.attn_k.d_scales,
-                lw.attn_k.global_scale, ws.d_mlp_u, static_cast<int>(H),
+                lw.attn_k.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                 kv_heads * head_dim, false);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L807nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = RunGemmaF16ToBf16(stream, ws.d_mlp_u,
+            e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                   ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                   kv_heads * head_dim);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L808nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
@@ -2396,6 +2405,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             if (e != cudaSuccess) break;
         }
         bool failed = false;
+            std::getenv("LSX_TEST_GEMMA_HASH") != nullptr;
         for (size_t l = 0; l < pw.layers.size(); ++l) {
             e = ForwardLayer(stream, cublas, pw, pw.layers[l],
                              static_cast<int>(l), ws, /*seq=*/1, pos,
