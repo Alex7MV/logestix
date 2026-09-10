@@ -65,6 +65,11 @@ struct alignas(16) GemmaLayerWeights {
     lsxcommon::lsx_nvfp4::LsxNvfp4Weight mlp_gate, mlp_up, mlp_down;
     bool mlp_nvfp4 = false;
 
+    // NVFP4 attention projections (same record triple). Full-attention
+    // layers tie V to K: attn_v.d_packed is null there (v := raw k).
+    lsxcommon::lsx_nvfp4::LsxNvfp4Weight attn_q, attn_k, attn_v, attn_o;
+    bool attn_nvfp4 = false;
+
     // Router logits projection (FP16) [num_experts, hidden].
     __nv_bfloat16 *d_router_proj = nullptr;
 

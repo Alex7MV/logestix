@@ -53,7 +53,9 @@ TEST_CASE("LoadGemmaPinnedWeights arena layout", "[gemma][loader]") {
         // Arena contract: every half pointer lives inside the allocation.
         const void *base = lw.d_arena;
         const void *end = static_cast<const uint8_t *>(base) + lw.arena_bytes;
-        for (auto *p : {lw.d_input_norm, lw.d_post_norm, lw.d_q, lw.d_o,
+        // Attention projections are NVFP4 now (not arena-backed); norms and
+        // the router projection remain arena halves.
+        for (auto *p : {lw.d_input_norm, lw.d_post_norm,
                         lw.d_router_proj}) {
             REQUIRE(p != nullptr);
             CHECK(static_cast<const void *>(p) >= base);
@@ -198,6 +200,50 @@ TEST_CASE("gemma loader uploads NVFP4 dense MLP when present",
     CHECK(lw.d_mlp_gate == nullptr);  // BF16 path not populated
     CHECK(lw.d_mlp_up == nullptr);
     CHECK(lw.d_mlp_down == nullptr);
+    pw.Free();
+    fs::remove_all(tmp);
+}
+
+TEST_CASE("gemma loader uploads NVFP4 attention projections",
+          "[gemma][loader][nvfp4]") {
+    namespace fs = std::filesystem;
+    auto tmp = fs::temp_directory_path() / "gemma4_loader_attn_nvfp4";
+    fs::remove_all(tmp);
+    fs::create_directories(tmp);
+    auto tensors = gemmatest::BuildSyntheticGemmaModel();
+    gemmatest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    gemmatest::WriteConfig(tmp);
+    std::filesystem::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+                               tmp / "tokenizer.json");
+    auto out = tmp / "out";
+    REQUIRE(lsxcommon::gemma::ConvertGemmaModel(tmp.string(), out.string())
+                .ok());
+
+    lsxcommon::gemma::GemmaPinnedWeights pw;
+    auto rc = lsxcommon::gemma::LoadGemmaPinnedWeights(out.string(), pw,
+                                                       nullptr);
+    if (rc != cudaSuccess) {
+        INFO("LoadGemmaPinnedWeights rc=" << cudaGetErrorString(rc));
+        REQUIRE(rc == cudaSuccess);
+    }
+    REQUIRE(!pw.layers.empty());
+    const auto &lw = pw.layers[0];   // sliding layer
+    REQUIRE(lw.attn_nvfp4);
+    REQUIRE(lw.attn_q.d_packed != nullptr);
+    // sliding: q 4 heads x 16 dim (fixture) x H=64
+    CHECK(lw.attn_q.rows ==
+          gemmatest::TestCfg().num_attention_heads *
+              gemmatest::TestCfg().head_dim);
+    CHECK(lw.attn_q.cols == gemmatest::TestCfg().hidden_size);
+    CHECK(lw.attn_o.cols == lw.attn_q.rows);
+    CHECK(lw.d_q == nullptr);  // BF16 projections not uploaded
+    // full-attention layer: global geometry
+    const auto &fw = pw.layers[3];
+    CHECK(fw.attn_q.rows ==
+          gemmatest::TestCfg().num_attention_heads *
+              gemmatest::TestCfg().global_head_dim);
+    // full layers tie V to K (attention_k_eq_v): no v record
+    CHECK(fw.attn_v.d_packed == nullptr);
     pw.Free();
     fs::remove_all(tmp);
 }

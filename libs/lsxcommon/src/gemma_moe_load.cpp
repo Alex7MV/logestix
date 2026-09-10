@@ -183,6 +183,19 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
     const bool mlp_nv = gate_rec.packed && gate_rec.scales && gate_rec.gs &&
                         up_rec.packed && up_rec.scales && up_rec.gs &&
                         down_rec.packed && down_rec.scales && down_rec.gs;
+    const Nvfp4Recs q_rec = gather("self_attn.q_proj.weight");
+    const Nvfp4Recs k_rec = gather("self_attn.k_proj.weight");
+    const Nvfp4Recs v_rec = gather("self_attn.v_proj.weight");
+    const Nvfp4Recs o_rec = gather("self_attn.o_proj.weight");
+    const bool attn_nv = q_rec.packed && q_rec.scales && q_rec.gs &&
+                         k_rec.packed && k_rec.scales && k_rec.gs &&
+                         o_rec.packed && o_rec.scales && o_rec.gs;
+    // Full-attention layers may omit v entirely (attention_k_eq_v): only
+    // require v records when the raw BF16 v tensor would have existed.
+    const bool v_expected =
+        FindTensor(tensors, "self_attn.v_proj.weight") != nullptr;
+    const bool attn_v_ok =
+        !v_expected || (v_rec.packed && v_rec.scales && v_rec.gs);
     auto upload_nv = [&](const Nvfp4Recs &r,
                          lsxcommon::lsx_nvfp4::LsxNvfp4Weight &w)
         -> cudaError_t {
@@ -218,6 +231,19 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
         if (e == cudaSuccess) e = upload_nv(down_rec, lw.mlp_down);
         if (e != cudaSuccess) return e;
         lw.mlp_nvfp4 = true;
+    }
+    if (attn_nv && attn_v_ok) {
+        cudaError_t e = upload_nv(q_rec, lw.attn_q);
+        if (e == cudaSuccess) e = upload_nv(k_rec, lw.attn_k);
+        if (e == cudaSuccess && v_rec.packed) e = upload_nv(v_rec, lw.attn_v);
+        if (e == cudaSuccess) e = upload_nv(o_rec, lw.attn_o);
+        if (e != cudaSuccess) return e;
+        lw.attn_nvfp4 = true;
+        // Preserve the geometry fields the attention code reads from the
+        // BF16 upload jobs (q_rows/kv_rows/o_cols): derive from records.
+        if (lw.q_rows == 0) lw.q_rows = lw.attn_q.rows;
+        if (lw.kv_rows == 0) lw.kv_rows = lw.attn_k.rows;
+        if (lw.o_cols == 0) lw.o_cols = lw.attn_o.cols;
     }
 
     auto *in_norm = FindTensor(tensors, "input_layernorm.weight");
@@ -263,13 +289,17 @@ cudaError_t LoadLayer(const std::vector<TensorRecord> &tensors,
                  reinterpret_cast<void **>(&lw.d_post_ffn), nullptr, nullptr),
         make_job(FindTensor(tensors, "post_feedforward_layernorm_1.weight"),
                  reinterpret_cast<void **>(&lw.d_post_ffn1), nullptr, nullptr),
-        make_job(FindTensor(tensors, "self_attn.q_proj.weight"),
+        make_job(attn_nv ? nullptr
+                         : FindTensor(tensors, "self_attn.q_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_q), &lw.q_rows, nullptr),
-        make_job(FindTensor(tensors, "self_attn.k_proj.weight"),
+        make_job(attn_nv ? nullptr
+                         : FindTensor(tensors, "self_attn.k_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_k), &lw.kv_rows, nullptr),
-        make_job(FindTensor(tensors, "self_attn.v_proj.weight"),
+        make_job(attn_nv ? nullptr
+                         : FindTensor(tensors, "self_attn.v_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_v), nullptr, nullptr),
-        make_job(FindTensor(tensors, "self_attn.o_proj.weight"),
+        make_job(attn_nv ? nullptr
+                         : FindTensor(tensors, "self_attn.o_proj.weight"),
                  reinterpret_cast<void **>(&lw.d_o), nullptr, &lw.o_cols),
         make_job(FindTensor(tensors, "self_attn.q_norm.weight"),
                  reinterpret_cast<void **>(&lw.d_q_norm), nullptr, nullptr),
@@ -364,6 +394,10 @@ void GemmaLayerWeights::Free()
     mlp_gate.Free();
     mlp_up.Free();
     mlp_down.Free();
+    attn_q.Free();
+    attn_k.Free();
+    attn_v.Free();
+    attn_o.Free();
     *this = GemmaLayerWeights{};
 }
 

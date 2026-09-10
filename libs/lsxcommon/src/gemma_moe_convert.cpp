@@ -320,7 +320,7 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
     j << "{\n"
       << "  \"format\": \"logestix-gemma\",\n"
       << "  \"model\": \"gemma-4-26B-A4B-it\",\n"
-      << "  \"mlp_nvfp4\": true,\n"
+      << "  \"mlp_nvfp4\": true,\n      \"attn_nvfp4\": true,\n"
       << "  \"num_layers\": " << top.num_layers
       << ",\n  \"layer_types\": [";
     for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -545,10 +545,13 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
             r.shape = t.shape;
             r.data = std::move(data);
 
-            // Dense MLP goes out as NVFP4 (packed + scales + global_scale
-            // records in the pinned schema; loader detects the triple).
+            // Dense MLP + attention projections go out as NVFP4 (packed +
+            // scales + global_scale records; loader detects the triple).
+            const bool attn_proj =
+                p.kind == TensorKind::AttnQ || p.kind == TensorKind::AttnK ||
+                p.kind == TensorKind::AttnV || p.kind == TensorKind::AttnO;
             if (p.kind == TensorKind::MlpGate || p.kind == TensorKind::MlpUp ||
-                p.kind == TensorKind::MlpDown) {
+                p.kind == TensorKind::MlpDown || attn_proj) {
                 std::vector<uint8_t> packed, scales;
                 float gs = 1.0f;
                 if (!quantize_bf16_to_nvfp4(r.data, r.shape, packed, scales,
