@@ -2606,3 +2606,12 @@ file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD2)
 target_compile_definitions(test_model_independence_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD2}\"")
 add_test(NAME test_model_independence_guard COMMAND test_model_independence_guard)
+
+# Guard: ctest category-label discipline (fast | inference | perf).
+# Host-only static scan of tests/CMakeLists.txt (see spec 2026-09-10).
+add_executable(test_ctest_labels_guard test_ctest_labels_guard.cpp)
+target_link_libraries(test_ctest_labels_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_LABELS)
+target_compile_definitions(test_ctest_labels_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
+add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
