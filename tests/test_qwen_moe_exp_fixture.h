@@ -3,13 +3,13 @@
 // Shared fixture builder for Qwen3.8-Flash-Next (qwen4_exp) converter /
 // loader / kernel tests. Builds a synthetic qwen4_exp safetensors model
 // directory on disk. Dense attention geometry mirrors qwentest
-// (qwen_dense_test_fixture.h) so the dense-part arrow records stay
+// (test_qwen_dense_fixture.h) so the dense-part arrow records stay
 // schema-compatible; adds the qwen4_exp block inventory: GatedResidual
 // hyper-connections (attn+mlp per layer + global mixer), QSA indexer on
 // full-attention layers, PLE n-gram projections on the PLE layer, MoE
 // 512-expert analog, MTP and visual decoys.
 
-#include "qwen_dense_test_fixture.h"
+#include "test_qwen_dense_fixture.h"
 
 #include <algorithm>
 #include <cstring>
@@ -28,7 +28,7 @@ using qwentest::MakeBf16Values;
 using qwentest::MakeF32Values;
 using qwentest::WriteSafetensors;
 
-// Cross-platform env gate set/clear (etalon: qwen_moe_test_fixture.h).
+// Cross-platform env gate set/clear (etalon: test_qwen_moe_fixture.h).
 inline void ExpSetEnv(const char *name, const char *value)
 {
 #ifdef _WIN32

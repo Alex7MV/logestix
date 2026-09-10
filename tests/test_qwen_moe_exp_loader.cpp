@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-#include "qwen_moe_exp_test_fixture.h"
+#include "test_qwen_moe_exp_fixture.h"
 #include "lsxcommon/qwen_moe_exp_load.h"
 
 #include <filesystem>

@@ -213,7 +213,7 @@ TEST_CASE("Staging ring raw upload matches source", "[glm][loadfast]")
 
 #include <catch2/catch_approx.hpp>
 #include <lsxcommon/glm_moe_convert.h>
-#include "glm_moe_test_fixture.h"
+#include "test_glm_moe_fixture.h"
 
 #include <filesystem>
 

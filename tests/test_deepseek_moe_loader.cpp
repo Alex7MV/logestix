@@ -140,7 +140,7 @@ TEST_CASE("float_to_e4m3_p2 handles subnormals safely", "[deepseek][schema][e4m3
 #include <cuda_fp16.h>
 
 #include "deepseek_moe_load.cuh"
-#include "deepseek_moe_test_fixture.h"
+#include "test_deepseek_moe_fixture.h"
 
 namespace {
 

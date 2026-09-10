@@ -2,7 +2,7 @@
 
 // Shared fixture builder for Qwen3.5-9B converter / loader / kernel tests.
 // Builds a synthetic Qwen3-Next hybrid safetensors model directory on disk
-// (mixed linear-attention + full-attention layers). Mirrors glm_moe_test_fixture.h.
+// (mixed linear-attention + full-attention layers). Mirrors test_glm_moe_fixture.h.
 
 #include <lsxcommon/schema.h>
 #include <arrow/api.h>

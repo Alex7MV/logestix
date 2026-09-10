@@ -9,7 +9,7 @@
 //   - dense MLP only on layer 0 (first_k_dense_replace=1)
 //   - multimodal config.json wrapper with text_config
 
-#include "glm_moe_test_fixture.h"
+#include "test_glm_moe_fixture.h"
 
 #include <absl/strings/str_cat.h>
 

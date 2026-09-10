@@ -15,7 +15,7 @@
 #include <lsxcommon/glm_moe_convert.h>
 #include <lsxcommon/model_factory.h>
 
-#include "glm_moe_test_fixture.h"
+#include "test_glm_moe_fixture.h"
 #include "glm_moe_model.h"  // lsxcommon src dir (mirrored include dirs below)
 
 namespace fs = std::filesystem;

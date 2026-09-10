@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <vector>
 
-#include "gemma_moe_test_fixture.h"
+#include "test_gemma_moe_fixture.h"
 
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gemma_moe_load.h"

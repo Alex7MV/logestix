@@ -11,7 +11,7 @@
 
 #include <spdlog/spdlog.h>
 
-#include "qwen_dense_test_fixture.h"
+#include "test_qwen_dense_fixture.h"
 
 using namespace std::filesystem;
 

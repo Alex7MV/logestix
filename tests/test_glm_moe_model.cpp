@@ -7,7 +7,7 @@
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
 
-#include "glm_moe_test_fixture.h"
+#include "test_glm_moe_fixture.h"
 
 namespace fs = std::filesystem;
 

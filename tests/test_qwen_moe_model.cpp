@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "qwen_moe_test_fixture.h"
+#include "test_qwen_moe_fixture.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_convert.h"

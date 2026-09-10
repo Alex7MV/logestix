@@ -65,7 +65,7 @@ TEST_CASE("Kimi classifier covers every tensor family", "[kimi][convert]") {
     REQUIRE(kimi_classify("language_model.model.layers.5.post_attention_layernorm.weight").kind == K::LayerNorm);
 }
 
-#include "kimi_moe_test_fixture.h"
+#include "test_kimi_moe_fixture.h"
 
 #include <absl/strings/str_cat.h>
 

@@ -3,7 +3,7 @@
 #include <lsxcommon/qwen_dense_convert.h>
 #include <lsxcommon/schema.h>
 
-#include "qwen_dense_test_fixture.h"
+#include "test_qwen_dense_fixture.h"
 
 #include <arrow/io/file.h>
 #include <filesystem>

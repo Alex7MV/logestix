@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kimi_moe_test_fixture.h"
+#include "test_kimi_moe_fixture.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/kimi_moe_load.h"
 

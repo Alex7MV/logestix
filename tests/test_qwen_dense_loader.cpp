@@ -3,7 +3,7 @@
 #include <lsxcommon/qwen_dense_convert.h>
 #include <lsxcommon/qwen_inference_load.h>
 
-#include "qwen_dense_test_fixture.h"
+#include "test_qwen_dense_fixture.h"
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
