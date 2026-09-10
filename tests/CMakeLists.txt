@@ -31,6 +31,12 @@ target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMa
 add_test(NAME test_geometry_guard COMMAND test_geometry_guard)
 
 
+# ── GPU perf auto-tuning policy (host-only) ─────────────────────────────
+add_executable(test_gpu_perf test_gpu_perf.cpp)
+target_link_libraries(test_gpu_perf PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_gpu_perf COMMAND test_gpu_perf)
+
+
 # ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
 add_executable(test_schema_views test_schema_views.cpp)
 target_link_libraries(test_schema_views PRIVATE lsxcommon Catch2::Catch2WithMain)
