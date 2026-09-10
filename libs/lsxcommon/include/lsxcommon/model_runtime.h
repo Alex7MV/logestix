@@ -80,11 +80,8 @@ struct GenerationCliArgs {
     std::string model_path;
     std::string prompt;
     int max_gen_tokens = 64;
-    // Routes NVFP4 GEMMs through the native tensor-core path (sm_120a).
-    // Tolerance-class numerics; off keeps the bit-exact scalar path.
-    // Legacy opt-in: true forces kOn. Otherwise fast_math_mode decides
-    // (kAuto = per-GPU perf policy from InitializeEngine).
-    bool fast_math = false;
+    // Numeric policy: kAuto = per-GPU maximum-speed perf policy;
+    // kOff = bit-exact scalar path (--bit-exact, 100% verification).
     FastMathMode fast_math_mode = FastMathMode::kAuto;
 };
 
@@ -95,11 +92,6 @@ int RunCliGeneration(const GenerationCliArgs &args);
 int RunCliSelfCheck(const GenerationCliArgs &args);
 int RunCliInspect(const std::string &model_path, bool full);
 
-// Developer base-authoring run (GPU perf auto-tuning): A/B benchmarks the
-// GEMM paths on the real model, prints the winning knobs and the C++ snippet
-// to paste into the committed base table (gpu_perf.cpp BaseKnobs). Also
-// persists the result to the vault perf cache. NOT an inference path.
-int RunCliCalibrate(const std::string &model_path);
 void PrintGenerationResult(const std::string &prompt, const gpu::InferenceResult &r);
 
 } // namespace runtime

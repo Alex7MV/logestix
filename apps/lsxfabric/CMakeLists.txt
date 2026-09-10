@@ -1,4 +1,4 @@
-add_executable(lsxfabric src/main.cpp src/validator.cpp)
+add_executable(lsxfabric src/main.cpp src/cli.cpp src/validator.cpp)
 target_link_libraries(lsxfabric PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson ${CMAKE_DL_LIBS})
 
 if(WIN32)

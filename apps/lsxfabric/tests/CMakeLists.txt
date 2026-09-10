@@ -37,4 +37,5 @@ if(WIN32)
 endif()
 
 add_test(NAME test_fabric_cli COMMAND test_fabric_cli)
-set_tests_properties(test_fabric_cli PROPERTIES LABELS fast TIMEOUT 120)
+set_tests_properties(test_fabric_cli PROPERTIES LABELS fast)
+set_tests_properties(test_fabric_cli PROPERTIES TIMEOUT 120)

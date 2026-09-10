@@ -2,97 +2,51 @@
 #include <absl/strings/str_format.h>
 #include "lsxcommon/common.h"
 #include "lsxcommon/benchmark_gpu.h"
-#include "lsxcommon/model.h"
-#include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
-#include "lsxcommon/tokenizer.h"
-#include "lsxcommon/path_registry.h"
 #include "lsxcommon/log.h"
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <string>
-#include <vector>
+#include "cli.h"
 #include "validator.h"
 
-int main(int argc, char* argv[]) {
-    bool validate = false;
-    bool benchmark = false;
-    bool testprompt = false;
-    bool selfcheck = false;
-    bool calibrate = false;
-    bool fast_math = false;
-    bool no_fast_math = false;
-    std::string prompt = "The capital of France is";
-    int prompt_gen = 64;
-    auto model_path = (std::filesystem::path(lsxcommon::lsx_model_models_dir())
-                       / "DeepSeek-V4-Flash").string();
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--localmodel") == 0 && i + 1 < argc)
-            model_path = argv[++i];
-        else if (std::strcmp(argv[i], "--validate") == 0)
-            validate = true;
-        else if (std::strcmp(argv[i], "--benchmark") == 0)
-            benchmark = true;
-        else if (std::strcmp(argv[i], "--testprompt") == 0)
-            testprompt = true;
-        else if (std::strcmp(argv[i], "--selfcheck") == 0)
-            selfcheck = true;
-        else if (std::strcmp(argv[i], "--fast-math") == 0)
-            fast_math = true;
-        else if (std::strcmp(argv[i], "--no-fast-math") == 0)
-            no_fast_math = true;
-        else if (std::strcmp(argv[i], "--calibrate") == 0)
-            calibrate = true;
-        else if (std::strcmp(argv[i], "--max-gen") == 0 && i + 1 < argc)
-            prompt_gen = std::atoi(argv[++i]);
-        else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
-            prompt = argv[++i];
-    }
+int main(int argc, char *argv[]) {
+    const lsxfabric::FabricCliArgs cli =
+        lsxfabric::ParseFabricCliArgs(argc, argv);
 
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    lsxcommon::log::info(absl::StrFormat("Model path: %s", model_path));
-    const auto fast_math_mode = fast_math ? lsxcommon::FastMathMode::kOn
-                                : no_fast_math ? lsxcommon::FastMathMode::kOff
-                                               : lsxcommon::FastMathMode::kAuto;
-    if (calibrate) {
-        int rc = lsxcommon::runtime::RunCliCalibrate(model_path);
-        lsxcommon::Core::Shutdown();
-        return rc;
-    }
-    if (testprompt) {
+    lsxcommon::log::info(absl::StrFormat("Model path: %s", cli.model_path));
+    const lsxcommon::FastMathMode fm = cli.bit_exact
+                                           ? lsxcommon::FastMathMode::kOff
+                                           : lsxcommon::FastMathMode::kAuto;
+    if (cli.testprompt) {
         lsxcommon::runtime::GenerationCliArgs args;
-        args.model_path = model_path;
-        args.prompt = prompt;
-        args.max_gen_tokens = prompt_gen;
-        args.fast_math = fast_math;
-        args.fast_math_mode = fast_math_mode;
+        args.model_path = cli.model_path;
+        args.prompt = cli.prompt;
+        args.max_gen_tokens = cli.max_gen;
+        args.fast_math_mode = fm;
         int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();
         return rc;
     }
-    if (selfcheck) {
+    if (cli.selfcheck) {
         lsxcommon::runtime::GenerationCliArgs args;
-        args.model_path = model_path;
-        args.prompt = prompt;
+        args.model_path = cli.model_path;
+        args.prompt = cli.prompt;
         args.max_gen_tokens = 1;
-        args.fast_math = fast_math;
-        args.fast_math_mode = fast_math_mode;
+        args.fast_math_mode = fm;
         int rc = lsxcommon::runtime::RunCliSelfCheck(args);
         lsxcommon::Core::Shutdown();
         return rc;
     }
-    if (validate) {
+    if (cli.validate) {
         lsxcommon::log::info("Running validation...");
-        auto result = lsxfabric::RunValidator(model_path);
+        auto result = lsxfabric::RunValidator(cli.model_path);
         lsxcommon::Core::Shutdown();
         return result.ok ? 0 : 1;
     }
-    if (benchmark) {
+    if (cli.benchmark) {
         lsxcommon::log::info("Running model benchmark...");
-        auto result = lsxcommon::gpu::RunBenchmark(model_path, 2048, fast_math);
+        auto result = lsxcommon::gpu::RunBenchmark(cli.model_path, 2048);
         if (!result.ok) {
             lsxcommon::log::error(absl::StrFormat("Benchmark failed: %s", result.error_msg));
         } else {

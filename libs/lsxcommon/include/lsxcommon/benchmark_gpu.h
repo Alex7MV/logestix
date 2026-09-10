@@ -18,8 +18,9 @@ struct BenchmarkResult {
     std::string error_msg;
 };
 
-BenchmarkResult RunBenchmark(const std::string &model_path, int num_tokens = 2048,
-                             bool fast_math = false);
+// Always follows the per-GPU maximum-speed auto perf policy.
+BenchmarkResult RunBenchmark(const std::string &model_path,
+                             int num_tokens = 2048);
 
 } // namespace gpu
 } // namespace lsxcommon
