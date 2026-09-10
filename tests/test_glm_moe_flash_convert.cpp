@@ -1,8 +1,10 @@
 // GLM-5.3-Flash converter suite: frozen geometry, tensor classifier,
 // FP8->NVFP4 requant, config parser, conversion pipeline.
-// Real-checkpoint tests SKIP without the model dir.
+// The end-to-end converter test runs on a synthetic tiny checkpoint
+// (unified converter-suite discipline: no real-model conversions).
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -12,6 +14,7 @@
 #include <vector>
 
 #include "glm_moe_flash_constants.h"
+#include "test_qwen_dense_fixture.h"
 
 namespace fs = std::filesystem;
 
@@ -281,35 +284,140 @@ TEST_CASE("DequantFp8TilesToBf16Gpu: parity vs host dequant")
     }
 }
 
-TEST_CASE("ConvertGlm5NextModel: layout + index on real checkpoint")
+TEST_CASE("ConvertGlm5NextModel: synthetic tiny checkpoint — layout + index")
 {
-    const std::string src = "/mnt/llm_models/models/GLM-5.3-Flash";
-    if (!fs::exists(src + "/model.safetensors.index.json")) {
-        SKIP("GLM-5.3-Flash checkpoint not present");
+    // Converter tests are unified on synthetic fixtures: no real-checkpoint
+    // conversions in the suite (the e2e path used to convert the whole
+    // GLM-5.3-Flash vault here — minutes of GPU work "as a test").
+    // The binary is compiled with LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1, so
+    // the frozen-geometry gate is open for the tiny passport below while
+    // the full conversion pipeline (globals, BF16->NVFP4, FP8->NVFP4
+    // requant, experts, index) runs unchanged.
+    namespace qwentest = ::qwentest;
+    const auto tmp = fs::temp_directory_path() /
+                     ("glm53flash_conv_synth_" +
+                      std::to_string(std::chrono::steady_clock::now()
+                                         .time_since_epoch()
+                                         .count()));
+    fs::create_directories(tmp);
+
+    constexpr int H = 64;    // hidden
+    constexpr int V = 256;   // vocab
+    constexpr int E = 2;     // routed experts
+    constexpr int D = 128;   // fp8 tile side (GPU kernel needs 128-multiples)
+
+    // Minimal text_config: ParseFlashConfig requires hidden/layers/vocab +
+    // MoE fields; everything else is defaulted and flows into the index.
+    {
+        std::ofstream cfg(tmp / "config.json");
+        cfg << R"({"text_config":{
+              "hidden_size":64,"num_hidden_layers":2,"vocab_size":256,
+              "n_routed_experts":2,"num_experts_per_tok":1,
+              "moe_intermediate_size":128,"intermediate_size":256,
+              "hc_mult":4,"index_n_heads":8,"index_head_dim":16,
+              "index_topk":8,"qk_head_dim":32,"q_lora_rank":32,
+              "kv_lora_rank":32,"routed_scaling_factor":2.5,
+              "eos_token_id":[100],"pad_token_id":100,
+              "linear_attn_config":{"short_conv_kernel_size":4,
+                                    "num_heads":8,"head_dim":32}}})";
     }
-    const std::string out =
-        (fs::temp_directory_path() / "glm53flash_conv_test").string();
-    fs::remove_all(out);
-    auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(src, out);
+
+    // Scale tile: 1x1 F32 grid covers a [128,128] fp8 tensor (ceil/128).
+    auto fp8_vals = [](int64_t n) {
+        std::vector<uint8_t> v(static_cast<size_t>(n));
+        for (int64_t i = 0; i < n; ++i)
+            v[static_cast<size_t>(i)] =
+                static_cast<uint8_t>(0x08 + (i % 0x70));
+        return v;
+    };
+    auto f32_scale = [](float s) {
+        std::vector<uint8_t> b(4);
+        std::memcpy(b.data(), &s, 4);
+        return b;
+    };
+    const float tile_scale = 1.5f;
+
+    std::vector<qwentest::FakeTensor> t;
+    // Globals: raw BF16 pass.
+    t.push_back({"model.language_model.embed_tokens.weight", "BF16", {V, H},
+                 qwentest::MakeBf16(V * H)});
+    t.push_back({"lm_head.weight", "BF16", {V, H}, qwentest::MakeBf16(V * H)});
+    t.push_back({"model.language_model.norm.weight", "BF16", {H},
+                 qwentest::MakeBf16(H)});
+    // Layer 0 (KDA): BF16->NVFP4 straight path + raw conv/dt/bias.
+    t.push_back({"model.language_model.layers.0.self_attn.q_proj.weight",
+                 "BF16", {D, H}, qwentest::MakeBf16(D * H)});
+    t.push_back({"model.language_model.layers.0.self_attn.k_conv1d.weight",
+                 "BF16", {H, 4}, qwentest::MakeBf16(H * 4)});
+    t.push_back({"model.language_model.layers.0.self_attn.dt_bias", "BF16",
+                 {H}, qwentest::MakeBf16(H)});
+    t.push_back({"model.language_model.layers.0.self_attn.b_proj.weight",
+                 "BF16", {32, H}, qwentest::MakeBf16(32 * H)});
+    // Layer 3 (DSA + first MoE layer): FP8->NVFP4 requant + raw + experts.
+    t.push_back({"model.language_model.layers.3.self_attn.q_a_proj.weight",
+                 "F8_E4M3", {D, D}, fp8_vals(D * D)});
+    t.push_back(
+        {"model.language_model.layers.3.self_attn.q_a_proj.weight_scale_inv",
+         "F32", {1, 1}, f32_scale(tile_scale)});
+    t.push_back(
+        {"model.language_model.layers.3.self_attn.indexer.wq_b.weight",
+         "BF16", {16, H}, qwentest::MakeBf16(16 * H)});
+    t.push_back(
+        {"model.language_model.layers.3.mlp.gate.e_score_correction_bias",
+         "F32", {E}, f32_scale(0.25f)});
+    t.push_back({"model.language_model.layers.3.hc_attn_fn", "BF16", {16},
+                 qwentest::MakeBf16(16)});
+    for (int e = 0; e < E; ++e) {
+        const std::string pfx =
+            "model.language_model.layers.3.mlp.experts." + std::to_string(e) +
+            ".";
+        t.push_back({pfx + "gate_proj.weight", "F8_E4M3", {D, D},
+                     fp8_vals(D * D)});
+        t.push_back({pfx + "gate_proj.weight_scale_inv", "F32", {1, 1},
+                     f32_scale(tile_scale)});
+        t.push_back({pfx + "up_proj.weight", "F8_E4M3", {D, D},
+                     fp8_vals(D * D)});
+        t.push_back({pfx + "up_proj.weight_scale_inv", "F32", {1, 1},
+                     f32_scale(tile_scale)});
+        t.push_back({pfx + "down_proj.weight", "F8_E4M3", {D, D},
+                     fp8_vals(D * D)});
+        t.push_back({pfx + "down_proj.weight_scale_inv", "F32", {1, 1},
+                     f32_scale(tile_scale)});
+    }
+    qwentest::WriteSafetensors(tmp, "model.safetensors", t);
+
+    const std::string out = (tmp / "out").string();
+    auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(tmp.string(),
+                                                             out);
     INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
+
+    // Vault layout: globals + per-layer raw/nvfp4 + per-expert arrows.
     const fs::path base = fs::path(out) / "logestix";
     REQUIRE(fs::exists(base / "model.index.json"));
     REQUIRE(fs::exists(base / "pinned" / "global.arrow"));
     REQUIRE(fs::exists(base / "pinned" / "layer_000.arrow"));
+    REQUIRE(fs::exists(base / "pinned" / "layer_000_nvfp4.arrow"));
     REQUIRE(fs::exists(base / "pinned" / "layer_003.arrow"));
+    REQUIRE(fs::exists(base / "pinned" / "layer_003_nvfp4.arrow"));
+    // Frozen-range layers without tensors still flush empty raw batches.
+    REQUIRE(fs::exists(base / "pinned" / "layer_045.arrow"));
     REQUIRE(fs::exists(base / "experts" / "layer_003" / "exp_000.arrow"));
-    REQUIRE(fs::exists(base / "experts" / "layer_044" / "exp_287.arrow"));
-    // model.index.json: format tag + topology lists.
+    REQUIRE(fs::exists(base / "experts" / "layer_003" / "exp_001.arrow"));
+
+    // model.index.json: format tag + topology lists (frozen-driven).
     std::ifstream f(base / "model.index.json");
     std::stringstream ss;
     ss << f.rdbuf();
     const std::string idx = ss.str();
     REQUIRE(idx.find("logestix-glm5next") != std::string::npos);
+    REQUIRE(idx.find("\"hidden_size\": 64") != std::string::npos);
+    REQUIRE(idx.find("\"num_experts\": 2") != std::string::npos);
     REQUIRE(idx.find("\"kda_layers\"") != std::string::npos);
     REQUIRE(idx.find("\"dsa_layers\"") != std::string::npos);
-    REQUIRE(idx.find("\"moe_layers\"") != std::string::npos);
-    fs::remove_all(out);
+    REQUIRE(idx.find("\"moe_layers\": [3,") != std::string::npos);
+
+    fs::remove_all(tmp);
 }
 
 TEST_CASE("BuildFlashPassportTokens: byte-0 unk anchors + DS bridge side")

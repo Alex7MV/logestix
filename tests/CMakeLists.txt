@@ -492,6 +492,8 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_moe_flash_convert COMMAND test_glm_moe_flash_convert)
+set_tests_properties(test_glm_moe_flash_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # ── Тест Kimi-K2.7-Code конвертера (геометрия, классификатор, топология) ──
 add_executable(test_kimi_moe_convert test_kimi_moe_convert.cpp)
