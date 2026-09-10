@@ -69,10 +69,29 @@
   ],
 
   "testPresets": [
-    { "name": "windows-debug",   "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true } },
-    { "name": "windows-release", "configurePreset": "windows-release", "configuration": "Release", "output": { "outputOnFailure": true } },
-    { "name": "linux-debug",     "configurePreset": "linux-debug",     "output": { "outputOnFailure": true } },
-    { "name": "linux-release",   "configurePreset": "linux-release",   "output": { "outputOnFailure": true } },
-    { "name": "linux-release-znver4", "configurePreset": "linux-release-znver4", "output": { "outputOnFailure": true } }
+    { "name": "windows-debug",   "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "windows-debug-fast",      "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "windows-debug-inference", "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^inference$" } } },
+    { "name": "windows-debug-perf",      "configurePreset": "windows-debug",   "configuration": "Debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^perf$" } } },
+
+    { "name": "windows-release",   "configurePreset": "windows-release",   "configuration": "Release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "windows-release-fast",      "configurePreset": "windows-release",   "configuration": "Release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "windows-release-inference", "configurePreset": "windows-release",   "configuration": "Release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^inference$" } } },
+    { "name": "windows-release-perf",      "configurePreset": "windows-release",   "configuration": "Release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^perf$" } } },
+
+    { "name": "linux-debug",   "configurePreset": "linux-debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-debug-fast",      "configurePreset": "linux-debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-debug-inference", "configurePreset": "linux-debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^inference$" } } },
+    { "name": "linux-debug-perf",      "configurePreset": "linux-debug",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^perf$" } } },
+
+    { "name": "linux-release",   "configurePreset": "linux-release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-release-fast",      "configurePreset": "linux-release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-release-inference", "configurePreset": "linux-release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^inference$" } } },
+    { "name": "linux-release-perf",      "configurePreset": "linux-release",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^perf$" } } },
+
+    { "name": "linux-release-znver4",   "configurePreset": "linux-release-znver4",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-release-znver4-fast",      "configurePreset": "linux-release-znver4",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^fast$" } } },
+    { "name": "linux-release-znver4-inference", "configurePreset": "linux-release-znver4",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^inference$" } } },
+    { "name": "linux-release-znver4-perf",      "configurePreset": "linux-release-znver4",   "output": { "outputOnFailure": true }, "filter": { "include": { "label": "^perf$" } } }
   ]
 }
