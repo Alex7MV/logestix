@@ -2,6 +2,10 @@
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/fast_math_mode.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/perf_calibration.h"
+#include "lsxcommon/path_registry.h"
+#include <filesystem>
+#include <system_error>
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 #include <absl/strings/str_cat.h>
@@ -220,4 +224,41 @@ TEST_CASE("LsxFastMathScope tri-state semantics", "[gpu_perf]")
     }
     SetLsxTcFastMath(false);
     SetLsxSeq1Gemv(false);
+}
+
+using lsxcommon::perf::EnsureCalibrated;
+
+TEST_CASE("EnsureCalibrated: base GPUs skip, unknown GPUs run once", "[gpu_perf]")
+{
+    // RTX 5090 is in the committed base: no calibration, bench not invoked.
+    int calls = 0;
+    REQUIRE_FALSE(EnsureCalibrated(Rtx5090(), [&calls](int &) {
+        ++calls;
+        return true;
+    }));
+    REQUIRE(calls == 0);
+
+    // Unknown GPU with no cache: bench runs once; result persists.
+    GpuPerfProfile mystery = Rtx5090();
+    mystery.name = "Test Mystery Card Unit";
+    if (!std::filesystem::is_directory(
+            lsxcommon::lsx_model_metadata_root()))
+        SKIP();  // read-only CI vault: calibration persistence unavailable
+    // Drop a stale cache entry to prove the bench path actually runs.
+    std::error_code ec;
+    std::filesystem::remove(lsxcommon::perf::PerfCachePath(mystery), ec);
+    REQUIRE(EnsureCalibrated(mystery, [&calls](int &m) {
+        ++calls;
+        m = 24;
+        return true;
+    }));
+    REQUIRE(calls == 1);
+    // Second call: cache hit, bench not re-invoked.
+    REQUIRE_FALSE(EnsureCalibrated(mystery, [&calls](int &) {
+        ++calls;
+        return true;
+    }));
+    REQUIRE(calls == 1);
+    REQUIRE(std::filesystem::remove(lsxcommon::perf::PerfCachePath(mystery),
+                                    ec));
 }

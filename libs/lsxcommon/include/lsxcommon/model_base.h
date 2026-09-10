@@ -63,7 +63,10 @@ protected:
     // empty model_path guard, LoadTokenizerDb. Callers keep any model-specific
     // weight-pin between BeginLoad and FinishLoad.
     bool BeginLoad(const std::string &model_path);
-    void FinishLoad() { loaded_ = true; }
+    // Marks the model loaded and runs the one-time perf calibration on
+    // unknown GPUs (no committed base entry, no vault cache). Hundreds of
+    // ms once per GPU; subsequent Loads hit the cache.
+    void FinishLoad();
 
     // Canonical Load-failure tail: full teardown (subclass weights, tokenizer
     // db, residency flags) and `return false` semantics. Every Load() failure

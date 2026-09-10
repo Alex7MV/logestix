@@ -22,6 +22,7 @@
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/log.h"
 
 namespace lsxcommon {
 namespace perf {
@@ -297,6 +298,33 @@ bool SavePerfCache(const GpuPerfProfile &gpu, const LsxPerfKnobs &knobs)
     if (!f.is_open()) return false;
     f << SerializePerfCache({gpu, knobs});
     return f.good();
+}
+
+bool EnsureCalibrated(const GpuPerfProfile &gpu,
+                      const std::function<bool(int &out_mib)> &run_bench)
+{
+    if (gpu.name.empty()) return false;
+    if (LegacyAutoDisabled()) return false;
+    if (BaseKnobs(GpuProfileKey(gpu)).has_value())
+        return false;                        // known GPU: committed base wins
+    LsxPerfKnobs cached{};
+    if (LoadPerfCache(gpu, cached)) return false;  // already calibrated
+
+    // No base entry, no cache: calibration pending (first Load on this GPU).
+    if (!run_bench) return true;             // query-only mode (tests)
+    int mib = 0;
+    if (!run_bench(mib)) {
+        log::warn("[perf] calibration benchmark failed; keeping heuristic");
+        return false;
+    }
+    LsxPerfKnobs knobs = HeuristicKnobs(gpu).knobs;
+    knobs.gemv_max_mib = mib;
+    if (!SavePerfCache(gpu, knobs)) return false;
+    SetCurrentKnobs(knobs, PerfSource::kCalibrated);
+    ApplyKnobs(knobs);
+    log::info("[perf] calibrated gemv_max_mib=" + std::to_string(mib) +
+              " (gpu '" + gpu.name + "')");
+    return true;
 }
 
 } // namespace perf

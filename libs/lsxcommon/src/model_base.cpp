@@ -1,5 +1,8 @@
 #include "lsxcommon/model_base.h"
 
+#include "lsxcommon/gpu_perf.h"
+#include "lsxcommon/perf_calibration.h"
+
 #include <absl/strings/str_format.h>
 #include <arrow/io/file.h>
 #include <cstdlib>
@@ -205,6 +208,17 @@ bool ModelBase::CheckGeometryFields(const char *tag,
         }
     }
     return true;
+}
+
+
+void ModelBase::FinishLoad()
+{
+    // Perf policy: one-time local calibration on unknown GPUs (no committed
+    // base entry, no vault cache). Runs after weights are resident so the
+    // device is warm; result lands in perf-cache/<gpu-key>.json.
+    perf::EnsureCalibrated(perf::ProbeGpuPerfProfile(),
+                           perf::CalibrateGemvLimitMib);
+    loaded_ = true;
 }
 
 } // namespace lsxcommon
