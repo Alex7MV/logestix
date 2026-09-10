@@ -1121,6 +1121,7 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_mlp_u, I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_h, I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_y, H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_tmpf, S * q_rows_max * 2)) != cudaSuccess ||
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
@@ -1333,7 +1334,63 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
 
     // 2) q/k/v projections. Full-attention layers tie V to K
     //    (attention_k_eq_v): no v_proj weights exist, so v := raw k proj.
-    const bool v_tied_to_k = (lw.d_v == nullptr);
+    static const bool attn_bf16 =
+        std::getenv("LSX_GEMMA_ATTN_BF16") != nullptr;
+    const bool attn_nv =
+        lw.attn_nvfp4 && !attn_bf16 &&
+        (q_rows & 31) == 0 && (kv_heads * head_dim & 31) == 0 && (H & 31) == 0;
+    const bool v_tied_to_k =
+        attn_nv ? (lw.attn_v.d_packed == nullptr) : (lw.d_v == nullptr);
+    if (attn_nv) {
+        // NVFP4 weight-streaming GEMVs; outputs cast to BF16 so every
+        // downstream kernel (QK-norms, RoPE, cache writes) stays unchanged.
+        // Row loop: the GEMV core is single-row; decode (seq==1) is the hot
+        // path, prefill reuses it per token.
+        gemma_bf16_to_half_kernel<<<static_cast<unsigned>(
+                                        (seq * H + 255) / 256),
+                                    256, 0, stream>>>(
+            ws.d_normed, ws.d_xh, static_cast<int>(seq * H));
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { std::printf("[gemma-chk] L802nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        for (int t = 0; t < seq; ++t) {
+            const __half *xt = ws.d_xh + static_cast<int64_t>(t) * H;
+            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                stream, xt, lw.attn_q.d_packed, lw.attn_q.d_scales,
+                lw.attn_q.global_scale, ws.d_mlp_g, static_cast<int>(H),
+                q_rows, false);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L804nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            e = RunGemmaF16ToBf16(stream, ws.d_mlp_g,
+                                  ws.d_qr + static_cast<int64_t>(t) * q_rows,
+                                  q_rows);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L805nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                stream, xt, lw.attn_k.d_packed, lw.attn_k.d_scales,
+                lw.attn_k.global_scale, ws.d_mlp_u, static_cast<int>(H),
+                kv_heads * head_dim, false);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L807nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            e = RunGemmaF16ToBf16(stream, ws.d_mlp_u,
+                                  ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
+                                  kv_heads * head_dim);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L808nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (!v_tied_to_k) {
+                e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                    stream, xt, lw.attn_v.d_packed, lw.attn_v.d_scales,
+                    lw.attn_v.global_scale, ws.d_mlp_h, static_cast<int>(H),
+                    kv_heads * head_dim, false);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] L811nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                e = RunGemmaF16ToBf16(stream, ws.d_mlp_h,
+                                      ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
+                                      kv_heads * head_dim);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] L812nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            } else {
+                e = cudaMemcpyAsync(ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
+                                    ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
+                                    static_cast<size_t>(kv_heads * head_dim) * 2,
+                                    cudaMemcpyDeviceToDevice, stream);
+                if (e != cudaSuccess) { std::printf("[gemma-chk] L817: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            }
+        }
+    } else {
     e = Matmul(cublas, lw.d_q, ws.d_normed, ws.d_qr, q_rows,
                static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L804: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
@@ -1351,6 +1408,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
                             cudaMemcpyDeviceToDevice, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L817: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     }
+    } // attn_nv else (legacy BF16 projections)
     if (GemmaDebugSync(stream, "qkv", layer_idx, e)) return e;
 
     // 3) QK-norms (w-form) + v_norm (plain, with_scale=False).
@@ -1442,9 +1500,29 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     if (GemmaDebugSync(stream, "attn", layer_idx, e)) return e;
 
     // 7) o_proj + sandwich post-norm + residual.
+    if (attn_nv) {
+        gemma_bf16_to_half_kernel<<<static_cast<unsigned>(
+                                        ((seq * q_rows) + 255) / 256),
+                                    256, 0, stream>>>(
+            ws.d_tmp, ws.d_tmpf, static_cast<int>(seq * q_rows));
+        e = cudaGetLastError();
+        if (e != cudaSuccess) { std::printf("[gemma-chk] L897nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        for (int t = 0; t < seq; ++t) {
+            e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                stream, ws.d_tmpf + static_cast<int64_t>(t) * q_rows,
+                lw.attn_o.d_packed, lw.attn_o.d_scales,
+                lw.attn_o.global_scale, ws.d_mlp_g, q_rows,
+                static_cast<int>(H), false);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L898nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            e = RunGemmaF16ToBf16(stream, ws.d_mlp_g,
+                                  ws.d_qr + static_cast<int64_t>(t) * H, H);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L899nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        }
+    } else {
     e = Matmul(cublas, lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows,
                seq, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L898: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    }
     e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_norm, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L901: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }

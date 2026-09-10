@@ -183,6 +183,7 @@ struct GenWorkspace {
     __half *d_mlp_u = nullptr;   // [I_max]
     __half *d_mlp_h = nullptr;   // [I_max]
     __half *d_mlp_y = nullptr;   // [H]
+    __half *d_tmpf = nullptr;    // [q_rows_max] FP16 attention output (o_proj in)
 
     size_t seq0 = 0, q_rows_max = 0, kv_rows_max = 0, rot_half_max = 0;
     int K = 0;
@@ -207,7 +208,7 @@ struct GenWorkspace {
         F((void **)&d_bselw);
         F((void **)&d_lg_best); F((void **)&d_lg_idx);
         F((void **)&d_xh); F((void **)&d_mlp_g); F((void **)&d_mlp_u);
-        F((void **)&d_mlp_h); F((void **)&d_mlp_y);
+        F((void **)&d_mlp_h); F((void **)&d_mlp_y); F((void **)&d_tmpf);
         if (h_sel) { cudaFreeHost(h_sel); h_sel = nullptr; }
         if (h_selw) { cudaFreeHost(h_selw); h_selw = nullptr; }
         if (h_arg) { cudaFreeHost(h_arg); h_arg = nullptr; }
