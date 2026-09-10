@@ -158,15 +158,32 @@ CUDA-ядра на реальных весах), потребление памя
 
 ## Test
 
-`BUILD_TESTING=ON` is included in every preset.
+`BUILD_TESTING=ON` is included in every preset. Тесты разбиты на 4 категории
+(CTest labels; дисциплину проверяет guard `test_ctest_labels_guard`):
+
+| Label | Что это | Когда запускается |
+|---|---|---|
+| `fast` (37+4 app) | host-only тесты | каждый `ctest --preset` (дефолт всех пресетов) |
+| `convert` (10) | конвертеры моделей | при правке конвертера (роутер) или отладке модели |
+| `inference` (77) | CUDA/модельный контур | когда изменился контур (роутер) или вручную |
+| `perf` (6) | perf-бенчмарки на реальных весах | только отдельной командой |
 
 ```bash
-ctest --preset linux-debug      # Ubuntu 26.04
+ctest --preset linux-debug                  # fast only (Ubuntu 26.04)
+ctest --preset linux-debug-convert          # convert sweep
+ctest --preset linux-debug-inference        # inference sweep
+ctest --preset linux-debug-perf             # perf, отдельная команда
+ctest -L "^(fast|convert|inference|perf)$"  # полный прогон
+
+# Автодетект по git diff (fast всегда; convert/inference — при изменении
+# соответствующего контура):
+cmake -DLSX_PRESET=linux-debug -P tools/test_router.cmake
+cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-run
 ```
 
-```powershell
-ctest --preset windows-debug    # Windows 11
-```
+Дисциплина: новый тест обязан получить label в том же коммите (иначе красный
+`test_ctest_labels_guard`). Правила классификации путей — таблица
+`lsx_router_rule(...)` в `tools/test_router.cmake`.
 
 **WINDOWS-ОГРАНИЧЕНИЕ**: под Windows запускать тесты ТОЛЬКО для моделей
 Qwen3.5-9B и gemma-4-26B-A4B-it (фильтр `ctest -R "qwen|gemma"`); остальные

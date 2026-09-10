@@ -3,6 +3,17 @@
 Дата: 2026-09-10
 Статус: approved (design), реализация по TDD-плану
 
+> **Аддендум (2026-09-10, в ходе реализации):** добавлена четвёртая категория
+> `convert` — конвертеры моделей, запускаются при правке конвертера (роутер),
+> отладке модели или явно (`ctest -L convert`). В `convert` перенесены 9
+> тестов `*_convert` из `fast` и `test_nvfp4_pack` из `inference` (GPU
+> quantize-контракт конвертеров). Роутер: файлы
+> `libs/lsxcommon/*(converter|_convert|tokenizer_convert)` → convert,
+> `safetensors_gpu.cu` (движок квантования) → convert+inference; правило
+> `tests/` поднимает convert+inference. Пресеты: +5 `<preset>-convert`.
+> Windows-свипы convert/inference идут с фильтром `^(test_qwen|test_gemma)`.
+> Итоговые числа: fast 33 (+4 app), convert 10, inference 77, perf 6.
+
 ## Проблема
 
 109 позиций `add_test` в `tests/CMakeLists.txt` (125 зарегистрированных тестов
