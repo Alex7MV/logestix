@@ -2077,22 +2077,22 @@ add_test(NAME test_kimi_moe_selfcheck COMMAND test_kimi_moe_selfcheck)
 set_tests_properties(test_kimi_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi perf baseline (реальные веса; SKIP без модели) ──────────────
-add_executable(test_kimi_moe_perf test_kimi_moe_perf.cpp)
-target_compile_definitions(test_kimi_moe_perf PRIVATE
+add_executable(test_blackwell_perf_kimi test_blackwell_perf_kimi.cpp)
+target_compile_definitions(test_blackwell_perf_kimi PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
-target_link_libraries(test_kimi_moe_perf PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_link_libraries(test_blackwell_perf_kimi PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
-    add_custom_command(TARGET test_kimi_moe_perf POST_BUILD
+    add_custom_command(TARGET test_blackwell_perf_kimi POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:arrow_shared>"
-            "$<TARGET_FILE_DIR:test_kimi_moe_perf>"
+            "$<TARGET_FILE_DIR:test_blackwell_perf_kimi>"
     )
 endif()
 
-add_test(NAME test_kimi_moe_perf COMMAND test_kimi_moe_perf)
-set_tests_properties(test_kimi_moe_perf PROPERTIES SKIP_RETURN_CODE 4)
+add_test(NAME test_blackwell_perf_kimi COMMAND test_blackwell_perf_kimi)
+set_tests_properties(test_blackwell_perf_kimi PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi full inference (реальные веса; SKIP без модели) ─────────────
 add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
@@ -2810,7 +2810,7 @@ set_tests_properties(
     test_blackwell_perf_moe_qwen
     test_blackwell_perf_moe_gemma
     test_blackwell_perf_deepseek
-    test_kimi_moe_perf
+    test_blackwell_perf_kimi
     PROPERTIES LABELS perf)
 
 # Converter-test discipline: synthetic fixtures only, bounded runtime.
