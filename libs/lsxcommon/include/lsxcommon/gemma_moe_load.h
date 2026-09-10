@@ -9,6 +9,7 @@
 
 #include "lsxcommon/expert_store.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
@@ -168,7 +169,9 @@ inline int ComputeGemmaResidentSlots(std::size_t free_bytes,
     // Unified launch-strategy policy (resource_governor.h) — single reserve
     // constant for all models, maximizes expert-cache VRAM utilization.
     return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
-                                       total_experts);
+                                       total_experts,
+                                       lsxcommon::perf::CurrentKnobs()
+                                           .expert_slots_pct);
 }
 
 GemmaExpertDb load_gemma_expert_index(const std::string &model_path,

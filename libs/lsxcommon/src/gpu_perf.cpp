@@ -6,6 +6,7 @@
 #include <absl/strings/str_cat.h>
 
 #include <algorithm>
+#include <mutex>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -156,18 +157,34 @@ LsxPerfKnobSet ResolvePerfKnobs(const GpuPerfProfile &gpu,
     return r;
 }
 
+namespace {
+
+// Process-wide resolved knob snapshot guarded by a mutex (the POD exceeds
+// lock-free atomic width on some toolchains). Readers copy under the lock;
+// writers (engine init, tests) publish once. Default = legacy behavior.
+LsxPerfKnobs g_current_knobs{};
+PerfSource g_current_knobs_source{PerfSource::kLegacy};
+std::mutex g_current_knobs_mu;
+
+} // namespace
+
 LsxPerfKnobs CurrentKnobs()
 {
-    static const LsxPerfKnobs kDefaults;  // legacy behavior snapshot
-    return kDefaults;
+    std::lock_guard<std::mutex> lk(g_current_knobs_mu);
+    return g_current_knobs;
 }
 
-PerfSource CurrentKnobsSource() { return PerfSource::kLegacy; }
-
-void SetCurrentKnobs(const LsxPerfKnobs &, PerfSource)
+PerfSource CurrentKnobsSource()
 {
-    // Replaced by the atomic snapshot in Task 8 (engine wiring); kept as a
-    // no-op so Task 2 compiles standalone.
+    std::lock_guard<std::mutex> lk(g_current_knobs_mu);
+    return g_current_knobs_source;
+}
+
+void SetCurrentKnobs(const LsxPerfKnobs &knobs, PerfSource source)
+{
+    std::lock_guard<std::mutex> lk(g_current_knobs_mu);
+    g_current_knobs = knobs;
+    g_current_knobs_source = source;
 }
 
 void ApplyKnobs(const LsxPerfKnobs &knobs)

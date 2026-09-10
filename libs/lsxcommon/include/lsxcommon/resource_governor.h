@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -176,20 +177,25 @@ namespace lifecycle {
 // an optimistic estimate costs a retry, not a crash.
 inline constexpr std::size_t kExpertCacheVramReserveBytes = 4ull << 30;
 
-// Pure, host-only slot estimator: usable = free - reserve, clamped to the
-// model's total expert count. per_expert_bytes == 0 (unknown geometry)
-// degenerates to "everything resident"; free below reserve yields 0 and
-// the caller applies its graceful LRU floor.
+// Pure, host-only slot estimator: usable = (free - reserve) * slots_pct / 100,
+// clamped to the model's total expert count. per_expert_bytes == 0 (unknown
+// geometry) degenerates to "everything resident"; free below reserve yields 0
+// and the caller applies its graceful LRU floor. slots_pct comes from the
+// resolved perf policy (gpu_perf.h; default 100 = full budget).
 inline int ExpertCacheSlots(std::size_t free_bytes,
                             std::size_t per_expert_bytes,
-                            int total_experts)
+                            int total_experts,
+                            int slots_pct = 100)
 {
     if (total_experts <= 0) return 0;
     if (per_expert_bytes == 0) return total_experts;
-    const std::size_t usable =
+    const std::size_t usable_raw =
         free_bytes > kExpertCacheVramReserveBytes
             ? free_bytes - kExpertCacheVramReserveBytes
             : 0;
+    const unsigned pct = static_cast<unsigned>(std::clamp(slots_pct, 0, 100));
+    const std::size_t usable =
+        pct >= 100 ? usable_raw : usable_raw / 100u * pct;
     const std::size_t affordable = usable / per_expert_bytes;
     return static_cast<int>(affordable < static_cast<std::size_t>(total_experts)
                                 ? affordable

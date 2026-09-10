@@ -1,4 +1,5 @@
 #include "lsxcommon/glm_moe_inference.h"
+#include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/log.h"
 
 #include <cuda_runtime.h>
@@ -551,6 +552,10 @@ static cudaError_t RunGlmGenerationImpl(
             const char *env = std::getenv("LSX_GLM_EXPERT_CACHE_SLOTS");
             want = env ? std::atoi(env) : 64;
             if (want < 0) want = 0;
+            // Perf policy: scale the default slot count by the resolved
+            // percentage (default 100 = unchanged).
+            const int pct = perf::CurrentKnobs().expert_slots_pct;
+            if (want > 0 && pct < 100) want = want * pct / 100;
         }
         const int total_experts =
             static_cast<int>(expert_db->num_layers) *

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/gpu_perf.h"
 
 #if defined(LOGESTIX_HAS_CUDA) || defined(__CUDACC__)
 #include <cuda_runtime.h>
@@ -88,7 +89,9 @@ inline int KimiMoeExpertCacheSlots(std::size_t free_bytes,
         return v < total_experts ? v : total_experts;
     }
     return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
-                                       total_experts);
+                                       total_experts,
+                                       lsxcommon::perf::CurrentKnobs()
+                                           .expert_slots_pct);
 }
 
 // One layer's top-k residency decision. Advances the LRU clock; assigns

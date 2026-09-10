@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/fast_math_mode.h"
+#include "lsxcommon/resource_governor.h"
 
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_replace.h>
@@ -169,4 +170,23 @@ TEST_CASE("Perf cache path lands in vault perf-cache/", "[gpu_perf]")
     const std::string p = PerfCachePath(Rtx5090());
     REQUIRE(p.find("perf-cache") != std::string::npos);
     REQUIRE(p.find("rtx 5090.json") != std::string::npos);
+}
+
+#include <cstddef>
+
+using lsxcommon::lifecycle::ExpertCacheSlots;
+
+TEST_CASE("ExpertCacheSlots honors the percentage knob", "[gpu_perf]")
+{
+    const size_t per = 100u << 20;  // 100 MiB per expert
+    // 10 GiB free - 4 GiB reserve = 6 GiB usable -> 61 experts full.
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288) == 61);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 50) == 30);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 0) == 0);
+    // pct > 100 clamps to full budget; total-expert cap still applies.
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 200) == 61);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 4, 100) == 4);
+    // Degenerate inputs unchanged.
+    REQUIRE(ExpertCacheSlots(0, per, 288) == 0);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, 0, 288) == 288);
 }

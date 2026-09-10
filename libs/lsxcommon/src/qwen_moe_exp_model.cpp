@@ -5,6 +5,7 @@
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/gpu_perf.h"
 
 #include <absl/strings/str_cat.h>
 
@@ -159,8 +160,9 @@ bool Qwen38FlashNextModel::Load()
     if (!explicit_slots) {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-            slots = lifecycle::ExpertCacheSlots(free_bytes, per_expert,
-                                                total_experts);
+            slots = lifecycle::ExpertCacheSlots(
+                free_bytes, per_expert, total_experts,
+                perf::CurrentKnobs().expert_slots_pct);
             if (slots > 0 && slots < total_experts)
                 log::info(absl::StrCat(
                     "[qwen38-model] free=", free_bytes >> 20, "MiB, ", slots,

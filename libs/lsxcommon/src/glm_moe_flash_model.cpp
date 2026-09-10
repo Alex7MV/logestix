@@ -1,4 +1,5 @@
 // Glm5NextFlashModel implementation (Kimi/Qwen38 ModelBase pattern).
+#include "lsxcommon/gpu_perf.h"
 #include "glm_moe_flash_model.h"
 
 #include "glm_moe_flash_constants.h"
@@ -55,10 +56,14 @@ int ResolveExpertSlots(const qwen_moe::QwenMoeExpertStore &store)
     } else {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-            const size_t budget =
+            size_t budget =
                 free_bytes > kFlashGenReserveBytes
                     ? free_bytes - kFlashGenReserveBytes
                     : 0;
+            // Perf policy: scale the VRAM budget by the resolved slot
+            // percentage (default 100 = unchanged behavior).
+            const int pct = perf::CurrentKnobs().expert_slots_pct;
+            if (pct < 100) budget = budget / 100u * static_cast<unsigned>(pct);
             const int slot_bytes = FlashExpertSlotBytes(store);
             if (slot_bytes > 0) {
                 const int by_vram =
