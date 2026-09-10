@@ -177,6 +177,12 @@ struct GenWorkspace {
     // Sized [V + kLogitsMaxBlocks].
     float *d_lg_best = nullptr;
     int32_t *d_lg_idx = nullptr;
+    // NVFP4 dense-MLP chain scratch (FP16): activation mirror + projections.
+    __half *d_xh = nullptr;      // [seq0][H]
+    __half *d_mlp_g = nullptr;   // [I_max]
+    __half *d_mlp_u = nullptr;   // [I_max]
+    __half *d_mlp_h = nullptr;   // [I_max]
+    __half *d_mlp_y = nullptr;   // [H]
 
     size_t seq0 = 0, q_rows_max = 0, kv_rows_max = 0, rot_half_max = 0;
     int K = 0;
@@ -200,6 +206,8 @@ struct GenWorkspace {
         F((void **)&d_beg); F((void **)&d_beu); F((void **)&d_beo);
         F((void **)&d_bselw);
         F((void **)&d_lg_best); F((void **)&d_lg_idx);
+        F((void **)&d_xh); F((void **)&d_mlp_g); F((void **)&d_mlp_u);
+        F((void **)&d_mlp_h); F((void **)&d_mlp_y);
         if (h_sel) { cudaFreeHost(h_sel); h_sel = nullptr; }
         if (h_selw) { cudaFreeHost(h_selw); h_selw = nullptr; }
         if (h_arg) { cudaFreeHost(h_arg); h_arg = nullptr; }
@@ -243,6 +251,23 @@ cudaError_t RunGemmaSingleDequant(cudaStream_t stream, const uint8_t *packed,
                                   int64_t packed_bytes, const uint8_t *scales,
                                   int64_t scales_bytes, float global_scale,
                                   __nv_bfloat16 *out, int64_t num_elements);
+
+// Dense-MLP NVFP4 weight-streaming chain: y = down @ (gelu_tanh(gate @ x) *
+// (up @ x)). x is FP16 [H]; gate/up weights are [I, H], down is [H, I] —
+// all NVFP4-packed with per-16 E8M0-style scales and a float global scale.
+// Intermediate buffers g_out/u_out/h_out are FP16 [I] (caller-owned scratch);
+// the result y is FP16 [H]. seq==1 contract class (tolerance-envelope);
+// run-to-run deterministic (fixed ascending-d accumulation).
+cudaError_t RunGemmaDenseMlpNvfp4Chain(
+    cudaStream_t stream, const uint8_t *gate_packed, const uint8_t *gate_scales,
+    float gate_gs, const uint8_t *up_packed, const uint8_t *up_scales,
+    float up_gs, const uint8_t *down_packed, const uint8_t *down_scales,
+    float down_gs, const __half *x, __half *g_out, __half *u_out,
+    __half *h_out, __half *y, int H, int I);
+
+// FP16 -> BF16 elementwise cast (elementwise scratch plumbing).
+cudaError_t RunGemmaF16ToBf16(cudaStream_t stream, const __half *src,
+                              __nv_bfloat16 *dst, int64_t n);
 
 // Gather-dequant of @p K experts into [K][num_elements] rows. Bit-identical
 // element mapping to RunGemmaSingleDequant (same decode LUTs, same scale

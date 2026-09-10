@@ -4,10 +4,13 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cmath>
+#include <cstring>
 #include <random>
 #include <vector>
 
 #include "lsxcommon/gemma_moe_inference.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/safetensors_gpu.h"
 
 namespace {
 
@@ -285,4 +288,133 @@ TEST_CASE("gemma logits argmax two-phase matches sequential reference",
     cudaFree(d_embed); cudaFree(d_x); cudaFree(d_ref_logits);
     cudaFree(d_blkbest); cudaFree(d_blkidx); cudaFree(d_idx);
     cudaStreamDestroy(stream);
+}
+
+// ── Dense MLP NVFP4 GEMV chain parity (Task 3 production path) ──────────────
+// gate/up GEMV -> geGLU -> down GEMV, against a host reference that mirrors
+// the repo's NVFP4 decode contract (E2M1 low/high nibbles, E8M0-style scale
+// per 16 elems, e4==0 -> 0, global_scale multiply).
+TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
+          "[gemma][moe][nvfp4]") {
+    using lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV;
+    using lsxcommon::gpu::quantize_tensor_gpu;
+    constexpr int H = 256, I = 128;   // 32-multiple shapes
+    std::mt19937 rng(11);
+    std::normal_distribution<float> nd(0.f, 1.f);
+
+    std::vector<uint8_t> gate_raw(I * H * 2), up_raw(I * H * 2),
+        down_raw(H * I * 2);
+    auto fill_bf16 = [&](std::vector<uint8_t> &v, float scale) {
+        for (size_t i = 0; i < v.size() / 2; ++i) {
+            __nv_bfloat16 b = __float2bfloat16(scale * nd(rng));
+            uint16_t bits;
+            std::memcpy(&bits, &b, 2);
+            v[i * 2] = static_cast<uint8_t>(bits & 0xff);
+            v[i * 2 + 1] = static_cast<uint8_t>(bits >> 8);
+        }
+    };
+    fill_bf16(gate_raw, 0.2f);
+    fill_bf16(up_raw, 0.2f);
+    fill_bf16(down_raw, 0.2f);
+
+    std::vector<int64_t> gate_shape{I, H}, down_shape{H, I};
+    std::vector<uint8_t> gp, gsc, up, usc, dp, dsc;
+    float ggs, ugs, dgs;
+    REQUIRE(quantize_tensor_gpu(gate_raw.data(), (int64_t)I * H, "BF16",
+                                nullptr, gate_shape, {}, gp, gsc, ggs));
+    REQUIRE(quantize_tensor_gpu(up_raw.data(), (int64_t)I * H, "BF16",
+                                nullptr, gate_shape, {}, up, usc, ugs));
+    REQUIRE(quantize_tensor_gpu(down_raw.data(), (int64_t)H * I, "BF16",
+                                nullptr, down_shape, {}, dp, dsc, dgs));
+
+    // x activations (BF16 -> FP16 on device, mirroring ForwardLayer)
+    std::vector<float> xf(H);
+    for (auto &v : xf) v = nd(rng);
+    std::vector<__half> xh(H);
+    for (int i = 0; i < H; ++i)
+        xh[i] = __float2half(__bfloat162float(__float2bfloat16(xf[i])));
+
+    uint8_t *dgp, *dgsc, *dup, *dusc, *ddp, *ddsc;
+    __half *dxh, *dgu, *du, *dh, *dy;
+    REQUIRE(cudaMalloc(&dgp, gp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgsc, gsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dup, up.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dusc, usc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddp, dp.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ddsc, dsc.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dxh, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dgu, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&du, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dh, (size_t)I * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy, (size_t)H * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dgp, gp.data(), gp.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dgsc, gsc.data(), gsc.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dup, up.data(), up.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dusc, usc.data(), usc.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ddp, dp.data(), dp.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ddsc, dsc.data(), dsc.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dxh, xh.data(), H * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+
+    // Production entry (Task 3): full gate->geGLU->down chain on device.
+    REQUIRE(lsxcommon::gemma::RunGemmaDenseMlpNvfp4Chain(
+                nullptr, dgp, dgsc, ggs, dup, dusc, ugs, ddp, ddsc, dgs,
+                dxh, dgu, du, dh, dy, H, I) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> hy(H);
+    REQUIRE(cudaMemcpy(hy.data(), dy, H * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    // Host reference (nvfp4_gemv_math contract).
+    auto e2m1 = [](int nib) {
+        static const float t[16] = {0.f, 0.5f, 1.f, 1.5f, 2.f, 3.f, 4.f, 6.f,
+                                    -0.f, -0.5f, -1.f, -1.5f, -2.f, -3.f,
+                                    -4.f, -6.f};
+        return t[nib & 0xF];
+    };
+    auto e4m3 = [](uint8_t b) {
+        int exp = (b >> 3) & 0xF;
+        if (exp == 0) return 0.0f;
+        uint32_t bits = static_cast<uint32_t>(exp + 120) << 23;
+        float v;
+        std::memcpy(&v, &bits, 4);
+        return v;
+    };
+    auto row_dot = [&](const std::vector<uint8_t> &packed,
+                       const std::vector<uint8_t> &scales, float gs,
+                       int64_t row, int cols,
+                       const std::vector<__half> &xin) {
+        float a = 0.f;
+        const int64_t poff = row * (cols / 2);
+        const int64_t soff = row * (cols / 16);
+        for (int k = 0; k < cols; ++k) {
+            uint8_t byte = packed[poff + k / 2];
+            int nib = (k & 1) ? (byte >> 4) : (byte & 0xF);
+            a += __half2float(xin[k]) * e2m1(nib) * e4m3(scales[soff + k / 16]) *
+                 gs;
+        }
+        return a;
+    };
+    float maxerr = 0.f;
+    for (int c = 0; c < H; ++c) {
+        std::vector<__half> hh(I);
+        for (int j = 0; j < I; ++j) {
+            // Mirror the device chain exactly: gate/up dots round to FP16
+            // (half buffers) BEFORE the geGLU product, and the product
+            // rounds to FP16 again.
+            float g = __half2float(__float2half(
+                row_dot(gp, gsc, ggs, j, H, xh)));
+            float u = __half2float(__float2half(
+                row_dot(up, usc, ugs, j, H, xh)));
+            hh[j] = __float2half(GeluTanh(g) * u);
+        }
+        float ref = row_dot(dp, dsc, dgs, c, I, hh);
+        float got = __half2float(hy[c]);
+        maxerr = std::max(maxerr, std::abs(got - ref));
+    }
+    CHECK(maxerr < 0.05f);
+
+    cudaFree(dgp); cudaFree(dgsc); cudaFree(dup); cudaFree(dusc);
+    cudaFree(ddp); cudaFree(ddsc); cudaFree(dxh); cudaFree(dgu);
+    cudaFree(du); cudaFree(dh); cudaFree(dy);
 }

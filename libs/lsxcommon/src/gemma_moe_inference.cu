@@ -1116,6 +1116,11 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_lg_idx,
                (static_cast<size_t>(V) + 4096) * sizeof(int32_t))) !=
             cudaSuccess ||
+        (e = A((void **)&ws.d_xh, S * H * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_mlp_g, I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_mlp_u, I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_mlp_h, I_max * 2)) != cudaSuccess ||
+        (e = A((void **)&ws.d_mlp_y, H * 2)) != cudaSuccess ||
         cudaMallocHost(&ws.h_sel, S * K * 4) != cudaSuccess ||
         cudaMallocHost(&ws.h_selw, S * K * sizeof(float)) != cudaSuccess ||
         cudaMallocHost(&ws.h_arg, 4) != cudaSuccess) {
@@ -1457,6 +1462,36 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
     if (e != cudaSuccess) { std::printf("[gemma-chk] L913: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     {
         const int64_t I = top.intermediate_size;
+        static const bool mlp_bf16 =
+            std::getenv("LSX_GEMMA_MLP_BF16") != nullptr;
+        if (lw.mlp_nvfp4 && !mlp_bf16 && ((I & 31) == 0) && ((H & 31) == 0)) {
+            // NVFP4 weight-streaming chain (decode fast path): FP16
+            // activations, one GEMV per projection + geGLU, all through the
+            // shared GemvDotRow contract.
+            gemma_bf16_to_half_kernel<<<static_cast<unsigned>(
+                                            (seq * H + 255) / 256),
+                                        256, 0, stream>>>(
+                ws.d_normed, ws.d_xh, static_cast<int>(seq * H));
+            e = cudaGetLastError();
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L916nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            // Row-by-row weight-streaming chain (seq==1 decode is the hot
+            // path; prefill reuses the same cores per row for correctness).
+            for (int t = 0; t < seq; ++t) {
+                e = RunGemmaDenseMlpNvfp4Chain(
+                    stream, lw.mlp_gate.d_packed, lw.mlp_gate.d_scales,
+                    lw.mlp_gate.global_scale, lw.mlp_up.d_packed,
+                    lw.mlp_up.d_scales, lw.mlp_up.global_scale,
+                    lw.mlp_down.d_packed, lw.mlp_down.d_scales,
+                    lw.mlp_down.global_scale, ws.d_xh + static_cast<int64_t>(t) * H,
+                    ws.d_mlp_g, ws.d_mlp_u, ws.d_mlp_h,
+                    ws.d_mlp_y + static_cast<int64_t>(t) * H,
+                    static_cast<int>(H), static_cast<int>(I));
+                if (e != cudaSuccess) { std::printf("[gemma-chk] L918nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            }
+            e = RunGemmaF16ToBf16(stream, ws.d_mlp_y, ws.d_qr,
+                                  static_cast<int64_t>(seq) * H);
+            if (e != cudaSuccess) { std::printf("[gemma-chk] L920nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        } else {
         const int64_t numel = static_cast<int64_t>(seq) * I;
         e = Matmul(cublas, lw.d_mlp_gate, ws.d_normed, ws.d_gg,
                    static_cast<int>(I), static_cast<int>(H), seq, stream);
@@ -1471,6 +1506,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         e = Matmul(cublas, lw.d_mlp_down, ws.d_gg, ws.d_qr, static_cast<int>(H),
                    static_cast<int>(I), seq, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L929: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        }
     }
     // d1 = post_ffn_1(mlp_out)  -> keeps ws.d_qr
     e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_ffn1, ws.d_qr, seq,
@@ -2366,6 +2402,77 @@ cudaError_t RunRoutedGemvBatchSeg(
         }
     }
     cudaFreeAsync(ypart, stream);
+    return e == cudaSuccess ? cudaGetLastError() : e;
+}
+
+// ── Dense-MLP NVFP4 weight-streaming chain (Task 3) ────────────────────────
+// y = down @ (gelu_tanh(gate @ x) * (up @ x)). Reuses the shared GemvDotRow
+// decode contract and the geGLU act kernel from the routed chain; single-
+// row GEMVs via RunLsxNvfp4GemmSeq1GemmV (K % 32 == 0 enforced upstream by
+// the converter shape check).
+__global__ void gemma_f16_to_bf16_kernel(const __half *__restrict__ src,
+                                         __nv_bfloat16 *__restrict__ dst,
+                                         int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2bfloat16(__half2float(src[i]));
+}
+
+// Dense-MLP geGLU over separate gate/up buffers (unlike the routed chain's
+// interleaved [2I] ygu layout): h[i] = gelu_tanh(g[i]) * u[i].
+__global__ void gemma_dense_mlp_act_kernel(const __half *__restrict__ g,
+                                           const __half *__restrict__ u,
+                                           __half *__restrict__ h, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float gv = __half2float(g[i]);
+    h[i] = __float2half(gelu_tanh_dev(gv) * __half2float(u[i]));
+}
+
+cudaError_t RunGemmaF16ToBf16(cudaStream_t stream, const __half *src,
+                              __nv_bfloat16 *dst, int64_t n)
+{
+    if (!src || !dst || n <= 0) return cudaErrorInvalidValue;
+    gemma_f16_to_bf16_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0,
+                               stream>>>(src, dst, n);
+    return cudaGetLastError();
+}
+
+} // namespace gemma
+} // namespace lsxcommon
+
+namespace lsxcommon {
+namespace gemma {
+
+cudaError_t RunGemmaDenseMlpNvfp4Chain(
+    cudaStream_t stream, const uint8_t *gate_packed, const uint8_t *gate_scales,
+    float gate_gs, const uint8_t *up_packed, const uint8_t *up_scales,
+    float up_gs, const uint8_t *down_packed, const uint8_t *down_scales,
+    float down_gs, const __half *x, __half *g_out, __half *u_out,
+    __half *h_out, __half *y, int H, int I)
+{
+    if (!gate_packed || !gate_scales || !up_packed || !up_scales ||
+        !down_packed || !down_scales || !x || !g_out || !u_out || !h_out ||
+        !y || H <= 0 || I <= 0 || (H & 31) != 0 || (I & 31) != 0)
+        return cudaErrorInvalidValue;
+
+    cudaError_t e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+        stream, x, gate_packed, gate_scales, gate_gs, g_out, H, I, false);
+    if (e != cudaSuccess) return e;
+    e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+        stream, x, up_packed, up_scales, up_gs, u_out, H, I, false);
+    if (e != cudaSuccess) return e;
+    {
+        const int n_act = I;
+        gemma_dense_mlp_act_kernel<<<(n_act + 255) / 256, 256, 0, stream>>>(
+            g_out, u_out, h_out, n_act);
+        e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+    e = lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+        stream, h_out, down_packed, down_scales, down_gs, y, I, H, false);
     return e == cudaSuccess ? cudaGetLastError() : e;
 }
 

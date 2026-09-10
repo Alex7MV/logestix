@@ -21,7 +21,7 @@ namespace gemmatest {
 
 struct GemmaTestConfig {
     int hidden_size = 64;
-    int intermediate_size = 24;       // dense MLP
+    int intermediate_size = 32;       // dense MLP (32-multiple: NVFP4 GEMV)
     int vocab_size = 64;
     int num_layers = 4;
     std::vector<std::string> layer_types = {
