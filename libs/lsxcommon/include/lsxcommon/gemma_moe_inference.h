@@ -293,6 +293,12 @@ cudaError_t RunGemmaLogitsArgmax(cudaStream_t stream,
                                  int hidden, float cap, int32_t *d_argmax,
                                  float *d_maxlogit, float *d_logits,
                                  float *d_blkbest, int32_t *d_blkidx);
+// NVFP4 tied-table variant: logits over the packed embed/lm_head table.
+cudaError_t RunGemmaLogitsArgmaxNvfp4(
+    cudaStream_t stream, const uint8_t *packed, const uint8_t *scales,
+    float gs, const __nv_bfloat16 *d_x, int vocab, int hidden, float cap,
+    int32_t *d_argmax, float *d_maxlogit, float *d_logits, float *d_blkbest,
+    int *d_blkidx);
 
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db, const std::vector<int32_t> &input_ids,

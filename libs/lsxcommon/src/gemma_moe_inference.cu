@@ -710,6 +710,26 @@ __global__ void gemma_embed_kernel(const __nv_bfloat16 *__restrict__ embed,
             embed[static_cast<int64_t>(ids[t]) * hidden + d];
 }
 
+// NVFP4 tied-table embedding gather: row `ids[t]` dequantized on the fly.
+__global__ void gemma_embed_nvfp4_kernel(
+    const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
+    float gs, const int32_t *__restrict__ ids,
+    __nv_bfloat16 *__restrict__ out, int hidden)
+{
+    const int t = blockIdx.x;
+    const int token = ids[t];
+    const int64_t row_packed = static_cast<int64_t>(token) * (hidden >> 1);
+    const int64_t row_scales = static_cast<int64_t>(token) * (hidden >> 4);
+    for (int d = threadIdx.x; d < hidden; d += blockDim.x) {
+        const uint8_t byte = packed[row_packed + (d >> 1)];
+        const int nib = (d & 1) ? (byte >> 4) : (byte & 0xF);
+        const float w = gpu::nvfp4::E2M1Value(nib) *
+                        gpu::nvfp4::E4M3ScaleToFloat(scales[row_scales + (d >> 4)]) *
+                        gs;
+        out[static_cast<int64_t>(t) * hidden + d] = __float2bfloat16(w);
+    }
+}
+
 // out[t,r] = sum_d W[r,d] * x[t,d]   (W [rows, cols] row-major)
 // cuBLAS FP16 GEMM (FP32 compute): row-major trick via column-major views —
 //   C_cm[rows x seq] = W_cmᵀ[rows x cols] · X_cm[cols x seq]
@@ -957,6 +977,66 @@ __global__ void gemma_logits_rows_kernel(
     }
 }
 
+// NVFP4 tied-table rows variant: each vocab row dot decodes E2M1/E4M3
+// chunk-wise (same contract as GemvDotRow: 32-element chunks, scale blocks
+// sb = 2c / 2c+1, ascending-d accumulation); softcap + winner plumbing
+// identical to the BF16 kernel.
+__global__ void gemma_logits_rows_nvfp4_kernel(
+    const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
+    float gs, const __nv_bfloat16 *__restrict__ x,
+    int vocab, int hidden, float cap,
+    float *__restrict__ d_logits,
+    float *__restrict__ blk_best, int *__restrict__ blk_idx)
+{
+    float local_best = -1e30f;
+    int local_arg = -1;
+    const int64_t span =
+        (static_cast<int64_t>(gridDim.x)) * blockDim.x;
+    const int chunks = hidden >> 5;
+    const __nv_bfloat16 *xf = x;
+    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
+                     threadIdx.x;
+         i < vocab; i += span) {
+        const uint8_t *row_p = packed + i * (hidden >> 1);
+        const uint8_t *row_s = scales + i * (hidden >> 4);
+        float acc = 0.f;
+        for (int c = 0; c < chunks; ++c) {
+            const uint8_t *pb = row_p + c * 16;
+            const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
+            const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
+            const int xb = c * 32;
+            #pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const float scl = (b < 8) ? sc0 : sc1;
+                acc += __bfloat162float(xf[xb + 2 * b]) *
+                       gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+                acc += __bfloat162float(xf[xb + 2 * b + 1]) *
+                       gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+            }
+        }
+        if (cap > 0.f) acc = tanhf(acc / cap) * cap;
+        if (d_logits) d_logits[i] = acc;
+        blk_best[i] = acc;
+        blk_idx[i] = static_cast<int>(i);
+        if (acc > local_best) { local_best = acc; local_arg = static_cast<int>(i); }
+    }
+    __shared__ float s_best[256];
+    __shared__ int s_idx[256];
+    s_best[threadIdx.x] = local_best;
+    s_idx[threadIdx.x] = local_arg;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float b = s_best[0];
+        int a = s_idx[0];
+        for (int j = 1; j < blockDim.x && j < 256; ++j)
+            if (s_best[j] > b ||
+                (s_best[j] == b && s_idx[j] < a))
+                { b = s_best[j]; a = s_idx[j]; }
+        blk_best[vocab + blockIdx.x] = b;
+        blk_idx[vocab + blockIdx.x] = a;
+    }
+}
+
 __global__ void gemma_argmax_reduce_kernel(const float *__restrict__ blk_best,
                                            const int *__restrict__ blk_idx,
                                            int vocab, int grid,
@@ -1004,6 +1084,30 @@ cudaError_t RunGemmaLogitsArgmax(cudaStream_t stream,
     if (grid > kLogitsMaxBlocks) grid = kLogitsMaxBlocks;
     gemma_logits_rows_kernel<<<grid, kBlock, 0, stream>>>(
         d_embed, d_x, vocab, hidden, cap, d_logits, d_blkbest, d_blkidx);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    gemma_argmax_reduce_kernel<<<1, 256, 0, stream>>>(
+        d_blkbest, d_blkidx, vocab, static_cast<int>(grid), d_argmax,
+        d_maxlogit);
+    return cudaGetLastError();
+}
+
+cudaError_t RunGemmaLogitsArgmaxNvfp4(
+    cudaStream_t stream, const uint8_t *packed, const uint8_t *scales,
+    float gs, const __nv_bfloat16 *d_x, int vocab, int hidden, float cap,
+    int32_t *d_argmax, float *d_maxlogit, float *d_logits, float *d_blkbest,
+    int *d_blkidx)
+{
+    if (!packed || !scales || !d_x || !d_argmax || !d_blkbest || !d_blkidx ||
+        !d_logits || vocab <= 0 || hidden <= 0)
+        return cudaErrorInvalidValue;
+    constexpr int kBlock = 256;
+    unsigned grid = static_cast<unsigned>(
+        (static_cast<int64_t>(vocab) + kBlock - 1) / kBlock);
+    if (grid > kLogitsMaxBlocks) grid = kLogitsMaxBlocks;
+    gemma_logits_rows_nvfp4_kernel<<<grid, kBlock, 0, stream>>>(
+        packed, scales, gs, d_x, vocab, hidden, cap, d_logits, d_blkbest,
+        d_blkidx);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     gemma_argmax_reduce_kernel<<<1, 256, 0, stream>>>(
@@ -2069,8 +2173,15 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
     {
         dim3 grid(static_cast<unsigned>(P));
-        gemma_embed_kernel<<<grid, 256, 0, stream>>>(
-            pw.d_embed, ws.d_pos, ws.d_x, static_cast<int>(H));
+        const bool head_nv = pw.embed_nvfp4.d_packed != nullptr;
+        if (head_nv)
+            gemma_embed_nvfp4_kernel<<<grid, 256, 0, stream>>>(
+                pw.embed_nvfp4.d_packed, pw.embed_nvfp4.d_scales,
+                pw.embed_nvfp4.global_scale, ws.d_pos, ws.d_x,
+                static_cast<int>(H));
+        else
+            gemma_embed_kernel<<<grid, 256, 0, stream>>>(
+                pw.d_embed, ws.d_pos, ws.d_x, static_cast<int>(H));
         e = cudaGetLastError();
         if (e != cudaSuccess) { g_expert_db = nullptr; g_gen_ctx = nullptr; return e; }
         // Gemma scales embeddings by sqrt(hidden_size).
@@ -2106,6 +2217,12 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             ws.d_x + static_cast<int64_t>(P - 1) * H, pw.d_final_norm,
             ws.d_normed, 1, static_cast<int>(H), top.rms_norm_eps, stream);
         if (le != cudaSuccess) return le;
+        if (pw.embed_nvfp4.d_packed != nullptr)
+            return RunGemmaLogitsArgmaxNvfp4(
+                stream, pw.head_nvfp4.d_packed, pw.head_nvfp4.d_scales,
+                pw.head_nvfp4.global_scale, ws.d_normed, static_cast<int>(V),
+                static_cast<int>(H), softcap, ws.d_argmax, nullptr,
+                ws.d_logits, ws.d_lg_best, ws.d_lg_idx);
         return RunGemmaLogitsArgmax(stream, pw.d_embed, ws.d_normed,
                                     static_cast<int>(V), static_cast<int>(H),
                                     softcap, ws.d_argmax, nullptr,
@@ -2142,9 +2259,15 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         fflush(stdout);
         e = cudaMemcpyAsync(ws.d_pos, &tok, 4, cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) break;
-        gemma_embed_kernel<<<1, 256, 0, stream>>>(pw.d_embed, ws.d_pos,
-                                                  ws.d_x,
-                                                  static_cast<int>(H));
+        if (pw.embed_nvfp4.d_packed != nullptr)
+            gemma_embed_nvfp4_kernel<<<1, 256, 0, stream>>>(
+                pw.embed_nvfp4.d_packed, pw.embed_nvfp4.d_scales,
+                pw.embed_nvfp4.global_scale, ws.d_pos, ws.d_x,
+                static_cast<int>(H));
+        else
+            gemma_embed_kernel<<<1, 256, 0, stream>>>(pw.d_embed, ws.d_pos,
+                                                      ws.d_x,
+                                                      static_cast<int>(H));
         e = cudaGetLastError();
         if (e != cudaSuccess) break;
         {
@@ -2166,10 +2289,18 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         e = RunGemmaRMSNorm(ws.d_x, pw.d_final_norm, ws.d_normed, 1,
                             static_cast<int>(H), top.rms_norm_eps, stream);
         if (e != cudaSuccess) break;
-        e = RunGemmaLogitsArgmax(stream, pw.d_embed, ws.d_normed,
-                                 static_cast<int>(V), static_cast<int>(H),
-                                 softcap, ws.d_argmax, nullptr, ws.d_logits,
-                                 ws.d_lg_best, ws.d_lg_idx);
+        if (pw.embed_nvfp4.d_packed != nullptr)
+            e = RunGemmaLogitsArgmaxNvfp4(
+                stream, pw.head_nvfp4.d_packed, pw.head_nvfp4.d_scales,
+                pw.head_nvfp4.global_scale, ws.d_normed, static_cast<int>(V),
+                static_cast<int>(H), softcap, ws.d_argmax, nullptr,
+                ws.d_logits, ws.d_lg_best, ws.d_lg_idx);
+        else
+            e = RunGemmaLogitsArgmax(stream, pw.d_embed, ws.d_normed,
+                                     static_cast<int>(V), static_cast<int>(H),
+                                     softcap, ws.d_argmax, nullptr,
+                                     ws.d_logits, ws.d_lg_best,
+                                     ws.d_lg_idx);
         if (e != cudaSuccess) break;
         e = cudaMemcpyAsync(ws.h_arg, ws.d_argmax, 4, cudaMemcpyDeviceToHost,
                             stream);
