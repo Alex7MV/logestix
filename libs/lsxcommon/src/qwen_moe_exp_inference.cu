@@ -19,6 +19,12 @@
 namespace lsxcommon::qwen_moe_exp {
 namespace {
 
+#if defined(_MSC_VER)
+#define LSX_EXP_NOINLINE __declspec(noinline)
+#else
+#define LSX_EXP_NOINLINE __attribute__((noinline, noclone))
+#endif
+
 // ── GatedResidual F32 core (parity twin) ──────────────────────────────────
 //
 // One block per token. Sequence matches HF Qwen4ExpTextGatedResidual.forward
@@ -85,8 +91,7 @@ __global__ void hc_gated_residual_f32_kernel(
                 float wf = 1.f;
                 if (b16) {
                     const uint32_t u = static_cast<uint32_t>(b16) << 16;
-                    float f;
-                    __builtin_memcpy(&f, &u, 4);
+                    const float f = __uint_as_float(u);
                     wf = 1.f + f;
                 }
                 v *= wf;
@@ -181,8 +186,7 @@ __global__ void hc_norm_kernel(const float *__restrict__ x, int H, int hc,
                     float wf = 1.f;
                     if (b16) {
                         const uint32_t u = static_cast<uint32_t>(b16) << 16;
-                        float f;
-                        __builtin_memcpy(&f, &u, 4);
+                        const float f = __uint_as_float(u);
                         wf = 1.f + f;
                     }
                     v *= wf;
@@ -674,9 +678,7 @@ __device__ __forceinline__ float bf16_one_plus(const uint8_t *bits, int idx)
                          (static_cast<uint16_t>(hi) << 8);
     if (!b16) return 1.f;
     const uint32_t u = static_cast<uint32_t>(b16) << 16;
-    float f;
-    __builtin_memcpy(&f, &u, 4);
-    return 1.f + f;
+    return 1.f + __uint_as_float(u);
 }
 
 // One block (1024 threads) per token. Parallel decomposition of the
@@ -976,12 +978,10 @@ __global__ void bf16_bits_to_float_kernel(const uint8_t *__restrict__ bits,
     const uint16_t b16 = static_cast<uint16_t>(bits[i * 2]) |
                          (static_cast<uint16_t>(bits[i * 2 + 1]) << 8);
     const uint32_t u = static_cast<uint32_t>(b16) << 16;
-    float f;
-    __builtin_memcpy(&f, &u, 4);
-    out[i] = f;
+    out[i] = __uint_as_float(u);
 }
 
-__attribute__((noinline, noclone)) cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
+LSX_EXP_NOINLINE cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
                             const qwen::QwenNvfp4Weight &key_proj,
                             const qwen::QwenNvfp4Weight &value_proj,
                             const uint8_t *d_norm_key,
