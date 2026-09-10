@@ -36,6 +36,13 @@ QwenMoeModelBase::QwenMoeModelBase(ModelInitConfig cfg)
     if (fm != FastMathMode::kAuto) {
         qwen::SetQwenTcFastMath(fm == FastMathMode::kOn);
         qwen::SetQwenSeq1Gemv(fm == FastMathMode::kOn);
+    } else {
+        // Engine auto policy: mirror the per-GPU knob set resolved at
+        // InitializeEngine (legacy zeros when no engine init — preserves
+        // the bit-exact default for direct-factory users).
+        const perf::LsxPerfKnobs knobs = perf::CurrentKnobs();
+        qwen::SetQwenTcFastMath(knobs.tc_fast_math_default);
+        qwen::SetQwenSeq1Gemv(knobs.seq1_gemv_default);
     }
 }
 
@@ -221,6 +228,28 @@ bool QwenMoeModelBase::Load()
     if (expert_cache_lease_.Valid())
         expert_cache_lease_.Resize(static_cast<std::uint64_t>(slots) *
                                    per_expert);
+
+    // First-request warmup: run a 1-token dummy generation so the lazily
+    // built TC fused shared-expert weights, the embed dequant and every
+    // kernel's first-launch overhead land on Load instead of the measured
+    // TTFT (one-time ~40-80 ms otherwise paid inside the first Infer).
+    {
+        auto kv = std::make_unique<qwen::QwenKvCache>();
+        qwen::QwenGenerationResult warm;
+        lsxcommon::sample::ISampler &warm_sampler =
+            lsxcommon::sample::DefaultSampler();
+        const std::vector<int32_t> warm_prompt = {0};
+        const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+        const cudaError_t we = RunUnderResidencyLock([&] {
+            return qwen_moe::RunQwenMoeGeneration(
+                stream(), pw_, experts_, cache_, scratch_, warm_prompt, 1,
+                eos_id, warm, warm_sampler, kv.get());
+        });
+        if (we != cudaSuccess || !warm.ok)
+            log::warn("[qwen-moe-model] warmup skipped: " +
+                      (we != cudaSuccess ? cudaGetErrorString(we)
+                                         : warm.error_msg));
+    }
 
     resident_bytes_ = pw_.resident_bytes;
     FinishLoad();

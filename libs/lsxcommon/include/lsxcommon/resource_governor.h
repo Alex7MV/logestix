@@ -173,9 +173,12 @@ namespace lifecycle {
 // (Windows) an overcommitted device silently spills subsequent allocations
 // into shared system memory, which throttles the whole decode loop — so
 // the reserve must stay comfortably above the steady-state runtime usage.
-// The load-time allocators degrade by halves when an allocation fails, so
-// an optimistic estimate costs a retry, not a crash.
-inline constexpr std::size_t kExpertCacheVramReserveBytes = 4ull << 30;
+// 8 GiB: calibrated on RTX 5090 across the vault suite — the qwen3.8-
+// flash-next generation arena (GDN states + hc buffers + vocab logits)
+// OOMs with the previous 4 GiB margin once the 24k-slot LRU cache takes
+// its full budget. The load-time allocators degrade by halves when an
+// allocation fails, so an optimistic estimate costs a retry, not a crash.
+inline constexpr std::size_t kExpertCacheVramReserveBytes = 8ull << 30;
 
 // Pure, host-only slot estimator: usable = (free - reserve) * slots_pct / 100,
 // clamped to the model's total expert count. per_expert_bytes == 0 (unknown

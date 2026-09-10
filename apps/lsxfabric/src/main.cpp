@@ -2,6 +2,7 @@
 #include <absl/strings/str_format.h>
 #include "lsxcommon/common.h"
 #include "lsxcommon/benchmark_gpu.h"
+#include "lsxcommon/model_engine.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/log.h"
 #include "cli.h"
@@ -14,6 +15,9 @@ int main(int argc, char *argv[]) {
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
+    // Engine auto policy: resolve the per-GPU perf knobs (TC fast-math,
+    // expert-cache sizing, dual-stream staging) for every launch mode.
+    lsxcommon::InferenceEngine::Session engine_session;
     lsxcommon::log::info(absl::StrFormat("Model path: %s", cli.model_path));
     const lsxcommon::FastMathMode fm = cli.bit_exact
                                            ? lsxcommon::FastMathMode::kOff

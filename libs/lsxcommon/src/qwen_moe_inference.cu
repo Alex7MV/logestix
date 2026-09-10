@@ -85,20 +85,88 @@ __device__ __forceinline__ float QwenRouterDotRow(
     return dot;
 }
 
-// Decode-split router: stage 1 computes logits with ONE THREAD PER EXPERT
-// grouped 8-per-block: keeps the exact QwenRouterDotRow walk (bit-identical
-// logits) while spreading the 1MB row stream across E/8 SMs — the original
-// <<<E,32>>> shape ran one thread per block with 31/32 threads idle and was
-// latency-bound at ~50us/token.
+// Decode-split router: stage 1 computes logits with 8 THREADS PER EXPERT.
+// Thread L owns chain L of the QwenRouterDotRow vectorized 8-chain fold:
+// every thread walks the same ascending uint4 steps (so the per-chain
+// accumulation order — and therefore the logits bits — is identical to the
+// single-thread etalon), only the fold of the 8 partials is shared via
+// shuffle in the fixed etalon order ((a0+a1)+(a2+a3))+((a4+a5)+(a6+a7)).
+// Replaces the one-thread-per-expert shape (latency-bound at ~50us/token:
+// a single serial 4KB read chain per expert with 256 threads in flight).
 __global__ void qwen_moe_router_dots_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, float *__restrict__ logits, int E)
 {
-    const int e = blockIdx.x * blockDim.x + threadIdx.x;
-    if (e >= E) return;
-    const __half *xr = x;   // decode: t == 0
-    const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
-    logits[e] = QwenRouterDotRow(pr, xr, H);
+    const int g = blockIdx.x * blockDim.x + threadIdx.x;
+    const int chain = g & 7;
+    const int e = g >> 3;
+    const bool ok = e < E;
+    const bool vec = ok && (H & 7) == 0 &&
+                     ((reinterpret_cast<uintptr_t>(
+                           proj + static_cast<int64_t>(e) * H) |
+                       reinterpret_cast<uintptr_t>(x)) &
+                      15) == 0;
+    float a = 0.f;
+    bool direct = false;   // scalar path: chain 0 wrote the dot itself
+    if (ok) {
+        const __half *xr = x;   // decode: t == 0
+        const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
+        if (vec) {
+            const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
+            const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
+            const int steps = H / 8;
+            int i = 0;
+            // Deep-unrolled main loop: 8 uint4 pairs in flight per thread
+            // hides DRAM latency at the 64-warp occupancy this kernel has
+            // (E*8 threads); the FADD chain stays per-chain ascending.
+            for (; i + 8 <= steps; i += 8) {
+                uint4 pv[8], xv[8];
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    pv[j] = p4[i + j];
+                    xv[j] = x4[i + j];
+                }
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    const __nv_bfloat16 *pb =
+                        reinterpret_cast<const __nv_bfloat16 *>(&pv[j]);
+                    const __half *xb =
+                        reinterpret_cast<const __half *>(&xv[j]);
+                    a += __bfloat162float(pb[chain]) *
+                         __half2float(xb[chain]);
+                }
+            }
+            for (; i < steps; ++i) {
+                const uint4 pv = p4[i];
+                const uint4 xv = x4[i];
+                const __nv_bfloat16 *pb =
+                    reinterpret_cast<const __nv_bfloat16 *>(&pv);
+                const __half *xb = reinterpret_cast<const __half *>(&xv);
+                a += __bfloat162float(pb[chain]) * __half2float(xb[chain]);
+            }
+        } else if (chain == 0) {
+            float dot = 0.f;
+            for (int d = 0; d < H; ++d)
+                dot += __bfloat162float(pr[d]) * __half2float(xr[d]);
+            logits[e] = dot;
+            direct = true;
+        }
+    }
+    // Fold the 8 chain partials in the etalon order; group = 8 consecutive
+    // threads (all lanes of the warp participate in the shuffles — the fold
+    // is reached uniformly, out-of-range tails contribute zeros).
+    const int lane = threadIdx.x & 31;
+    const int base = lane & ~7;
+    const float a0 = __shfl_sync(0xffffffffu, a, base + 0);
+    const float a1 = __shfl_sync(0xffffffffu, a, base + 1);
+    const float a2 = __shfl_sync(0xffffffffu, a, base + 2);
+    const float a3 = __shfl_sync(0xffffffffu, a, base + 3);
+    const float a4 = __shfl_sync(0xffffffffu, a, base + 4);
+    const float a5 = __shfl_sync(0xffffffffu, a, base + 5);
+    const float a6 = __shfl_sync(0xffffffffu, a, base + 6);
+    const float a7 = __shfl_sync(0xffffffffu, a, base + 7);
+    if (chain == 0 && ok && !direct)
+        logits[e] = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
 }
 
 // Stage 2: softmax -> top-k -> renorm from precomputed logits (unchanged
@@ -139,31 +207,43 @@ __global__ void qwen_moe_router_select_kernel(
     if (threadIdx.x == 0) {
         float z = 0.f;
         for (int e = 0; e < E; ++e) z += probs[e];
-        for (int e = 0; e < E; ++e) probs[e] /= z;
-
-        int idx[kMaxTopK];
-        float val[kMaxTopK];
-        int n = 0;
-        for (int e = 0; e < E; ++e) {
-            float v = probs[e];
-            int pos = n;
-            while (pos > 0 &&
-                   (val[pos - 1] < v || (val[pos - 1] == v && idx[pos - 1] > e))) {
-                if (pos < K) { val[pos] = val[pos - 1]; idx[pos] = idx[pos - 1]; }
-                --pos;
-            }
-            if (pos < K) {
-                val[pos] = v;
-                idx[pos] = e;
-                if (n < K) ++n;
-            }
+        s_max = z;   // reuse: broadcast the denominator
+    }
+    __syncthreads();
+    // Elementwise renorm in parallel — division of a fixed input by the
+    // same z is deterministic per element, so the probs bits are identical
+    // to the sequential thread-0 walk.
+    {
+        const float z = s_max;
+        for (int e = threadIdx.x; e < E; e += blockDim.x) probs[e] /= z;
+    }
+    __syncthreads();
+    // Exact-rank selection (bit-identical to the sequential insertion walk:
+    // element e lands at position r(e) = |{e'<e : val[e']>val[e]}| +
+    // |{e'<e : val[e']==val[e]}| — the stable (val desc, idx asc) order).
+    // Parallel O(E^2) vote replaces the serial thread-0 sort.
+    __shared__ float s_val[kMaxTopK];
+    __shared__ int s_idx[kMaxTopK];
+    for (int e = threadIdx.x; e < E; e += blockDim.x) {
+        const float v = probs[e];
+        int r = 0;
+        for (int j = 0; j < E; ++j) {
+            const float u = probs[j];
+            r += (u > v) || (u == v && j < e);
         }
+        if (r < K) {
+            s_val[r] = v;
+            s_idx[r] = e;
+        }
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
         float sm = 0.f;
-        for (int i = 0; i < K && i <= n; ++i) sm += val[i];
+        for (int i = 0; i < K; ++i) sm += s_val[i];
         QwenMoeRoutedSlot *out = slots + static_cast<int64_t>(t) * K;
         for (int i = 0; i < K; ++i) {
-            out[i].eid = idx[i];
-            out[i].coeff = val[i] / sm;
+            out[i].eid = s_idx[i];
+            out[i].coeff = s_val[i] / sm;
         }
     }
 }
@@ -247,9 +327,9 @@ cudaError_t RunQwenMoeRouterTopK(cudaStream_t stream,                           
                                                           sizeof(float),
                                          stream);
         if (le != cudaSuccess) return le;
-        // One thread per expert grouped 8-per-block: bit-exact dot walk,
-        // E/8 SMs engaged instead of E single-thread blocks.
-        qwen_moe_router_dots_kernel<<<(E + 7) / 8, 8, 0, stream>>>(
+        // 8 threads per expert (chain-parallel etalon walk): E*8 threads
+        // across 128-thread blocks engage all SMs on the 1MB row stream.
+        qwen_moe_router_dots_kernel<<<(E * 8 + 127) / 128, 128, 0, stream>>>(
             router_w, normed, H, d_logits, E);
         le = cudaGetLastError();
         if (le == cudaSuccess)
