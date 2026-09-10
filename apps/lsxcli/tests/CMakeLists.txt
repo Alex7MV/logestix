@@ -15,3 +15,4 @@ if(WIN32)
 endif()
 
 add_test(NAME test_lsxcli COMMAND test_lsxcli)
+set_tests_properties(test_lsxcli PROPERTIES LABELS fast)

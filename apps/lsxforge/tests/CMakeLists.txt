@@ -15,3 +15,4 @@ if(WIN32)
 endif()
 
 add_test(NAME test_lsxforge COMMAND test_lsxforge)
+set_tests_properties(test_lsxforge PROPERTIES LABELS fast)

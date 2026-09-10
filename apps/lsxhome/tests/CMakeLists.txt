@@ -25,5 +25,8 @@ foreach(test_target IN LISTS LSXHOME_TEST_TARGETS)
                 "$<TARGET_FILE_DIR:${test_target}>"
         )
     endif()
-    add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
+# Literal add_test calls: test_ctest_labels_guard statically resolves names.
+add_test(NAME test_lsxhome_gui COMMAND test_lsxhome_gui)
+add_test(NAME test_lsxhome_font COMMAND test_lsxhome_font)
+set_tests_properties(test_lsxhome_gui test_lsxhome_font PROPERTIES LABELS fast)

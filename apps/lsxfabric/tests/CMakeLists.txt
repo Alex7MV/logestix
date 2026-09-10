@@ -17,3 +17,4 @@ if(WIN32)
 endif()
 
 add_test(NAME test_lsxfabric COMMAND test_lsxfabric)
+set_tests_properties(test_lsxfabric PROPERTIES LABELS fast)

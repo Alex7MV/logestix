@@ -15,3 +15,4 @@ if(WIN32)
 endif()
 
 add_test(NAME test_taskmosaic COMMAND test_taskmosaic)
+set_tests_properties(test_taskmosaic PROPERTIES LABELS fast)

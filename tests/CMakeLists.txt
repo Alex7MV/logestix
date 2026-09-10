@@ -2615,3 +2615,144 @@ file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_LABELS)
 target_compile_definitions(test_ctest_labels_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
 add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
+
+# ── Test category labels (fast | inference | perf) ────────────────────────
+# fast     — host-only: runs on every default ctest invocation.
+# inference — CUDA/model contour: runs when the inference contour changes
+#             (tools/test_router.cmake).
+# perf     — real-weight perf baselines: manual command only (ctest -L perf).
+# Discipline guard: tests/test_ctest_labels_guard.cpp
+set_tests_properties(
+    test_core
+    test_fast_load
+    test_geometry_guard
+    test_gpu_perf
+    test_schema_views
+    test_deepseek_moe_loader
+    test_expert_store
+    test_qwen_dense_convert
+    test_glm_moe_expert_cache
+    test_model_integrity
+    test_qwen_dense_converter_integrity
+    test_glm_moe_convert
+    test_glm_moe_flash_convert
+    test_kimi_moe_convert
+    test_model_factory
+    test_generation_cli
+    test_glm_moe_prompt_framing
+    test_gemma_prompt_framing
+    test_gemma_moe_convert
+    test_model_runtime
+    test_model_engine
+    test_tokenizer
+    test_mosaic_network
+    test_mosaic_frontend_route
+    test_token_translator
+    test_network_translator_weld
+    test_integrated_pipeline
+    test_path_registry
+    test_vram_estimate
+    test_resource_governor
+    test_hardware_profile
+    test_lifecycle_plan
+    test_runtime_tuner
+    test_kimi_moe_tokenizer
+    test_code_naming_guard
+    test_absl_format_guard
+    test_kimi_moe_expert_cache
+    test_qwen_moe_convert
+    test_qwen_moe_36_convert
+    test_qwen_moe_exp_convert
+    test_model_independence_guard
+    test_ctest_labels_guard
+    PROPERTIES LABELS fast)
+
+set_tests_properties(
+    test_sampling
+    test_lsx_nvfp4_dispatch
+    test_perf_knobs_apply
+    test_blackwell_tc_mma
+    test_lsx_kernels
+    test_blackwell_micro_gemm
+    test_nvfp4_pack
+    test_deepseek_moe_inference_kernels
+    test_deepseek_moe_moe
+    test_deepseek_moe_arena
+    test_qwen_moe_kernels
+    test_qwen_moe_exp_kernels
+    test_glm_moe_flash_kernels
+    test_kimi_moe_int4_dequant
+    test_kimi_moe_int4_real
+    test_kimi_moe_router
+    test_kimi_moe_attention
+    test_kimi_moe_experts
+    test_kimi_moe_tc_batch
+    test_glm_moe_load_fast
+    test_deepseek_moe_load_fast
+    test_glm_moe_model_lifecycle
+    test_qwen_dense_loader
+    test_qwen_dense_model
+    test_qwen_dense_27b_model
+    test_qwen_dense_kv_cache
+    test_qwen_dense_kv_parity
+    test_qwen_dense_selfcheck
+    test_qwen_dense_27b_selfcheck
+    test_qwen_dense_norm
+    test_qwen_dense_rotary
+    test_qwen_dense_shuffle_reduce
+    test_qwen_dense_mlp
+    test_qwen_dense_nvfp4
+    test_qwen_nvfp4_tile_gemm
+    test_qwen_nvfp4_gemv
+    test_qwen_dense_full_attn
+    test_qwen_dense_full_attn_parallel
+    test_qwen_dense_linear_attn
+    test_qwen_dense_fused_mlp
+    test_qwen_dense_fused_linear_attn
+    test_qwen_moe_loader
+    test_qwen_moe_model
+    test_qwen_moe_selfcheck
+    test_qwen_moe_36_model
+    test_qwen_moe_36_selfcheck
+    test_qwen_moe_exp_loader
+    test_qwen_moe_exp_model
+    test_qwen_moe_exp_selfcheck
+    test_glm_moe_loader
+    test_glm_moe_model
+    test_glm_moe_selfcheck
+    test_glm_moe_inference
+    test_glm_moe_full_compute
+    test_glm_moe_prefill_seqp
+    test_glm_moe_prompt_output
+    test_glm_moe_attention
+    test_glm_moe_dense_compute
+    test_glm_moe_layer_compute
+    test_glm_moe_experts
+    test_glm_moe_moe_router
+    test_glm_moe_moe_compute
+    test_glm_moe_flash_loader
+    test_glm_moe_flash_model
+    test_glm_moe_flash_selfcheck
+    test_deepseek_moe_prompt_output
+    test_deepseek_moe_selfcheck
+    test_gemma_moe_loader
+    test_gemma_moe_model
+    test_gemma_moe_selfcheck
+    test_gemma_moe_norm
+    test_gemma_moe_rotary
+    test_gemma_moe_attn
+    test_gemma_moe_moe
+    test_kimi_moe_loader
+    test_kimi_moe_model
+    test_kimi_moe_selfcheck
+    test_kimi_moe_inference
+    PROPERTIES LABELS inference)
+
+set_tests_properties(
+    test_blackwell_perf_glm
+    test_blackwell_perf_dense
+    test_blackwell_perf_moe_qwen
+    test_blackwell_perf_moe_gemma
+    test_blackwell_perf_deepseek
+    test_kimi_moe_perf
+    PROPERTIES LABELS perf)

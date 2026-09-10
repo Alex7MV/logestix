@@ -44,8 +44,10 @@ std::vector<std::string> RegisteredTestNames(const std::string& text)
     static const std::regex add_re(
         R"(add_test\s*\(\s*NAME\s+([A-Za-z0-9_]+))");
     // foreach(<var> <items...>): every item is a registered test name.
+    // Skip foreach(... IN LISTS <var>) / RANGE forms — variable-driven,
+    // not statically resolvable.
     static const std::regex fe_re(
-        R"(foreach\s*\(\s*\w+((?:\s+[A-Za-z0-9_]+)+)\s*\))");
+        R"(foreach\s*\(\s*\w+((?:\s+(?!IN\b|LISTS\b|RANGE\b)[A-Za-z0-9_]+)+)\s*\))");
     std::smatch m;
     auto begin = text.cbegin();
     while (std::regex_search(begin, text.cend(), m, add_re))
@@ -220,12 +222,28 @@ TEST_CASE("ctest labels guard: every test labeled exactly once",
           "[labels][guard]")
 {
     const fs::path root(LSX_SOURCE_DIR);
-    const std::string cmake_text =
-        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
-    const auto tests = RegisteredTestNames(cmake_text);
+    std::vector<std::string> texts{
+        ReadFileOrThrow(root / "tests" / "CMakeLists.txt")};
+    // App-side test registrations are under the same label discipline.
+    const fs::path apps = root / "apps";
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(apps, ec))
+    {
+        const fs::path tcm = e.path() / "tests" / "CMakeLists.txt";
+        if (fs::exists(tcm, ec))
+            texts.push_back(ReadFileOrThrow(tcm));
+    }
+    std::vector<std::string> tests;
+    std::vector<LabelCall> calls;
+    for (const auto& t : texts)
+    {
+        auto n = RegisteredTestNames(t);
+        tests.insert(tests.end(), n.begin(), n.end());
+        auto c = ParseLabelCalls(t);
+        calls.insert(calls.end(), c.begin(), c.end());
+    }
     INFO("registered tests: " << tests.size());
     REQUIRE(tests.size() >= 126);
-    const auto calls = ParseLabelCalls(cmake_text);
     auto v = CheckLabelCoverage(tests, calls);
     std::string joined;
     for (const auto& s : v)
