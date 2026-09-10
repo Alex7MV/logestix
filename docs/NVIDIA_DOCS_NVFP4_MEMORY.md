@@ -112,6 +112,32 @@ Revisit only if tests start allocating per-iteration inside long loops.
   (`QuantizeE2m1TieUp` — runtime act-quant; `QuantizeE2m1Nearest` — offline
   converter). PTX hardware `cvt.rn` uses RNE (ties-to-even), which matches
   NEITHER flavor exactly — never mix hardware-cvt results into these paths.
+- E8M0 decode flavors (both pinned by `tests/test_lsx_kernels.cu`):
+  - `E8m0ToFloat` decodes `0x00` as `0.0f` — a deliberate deviation from PTX
+    ue8m0 (which would read `2^-127`); numerically indistinguishable in FP16
+    outputs and byte-verbatim DeepSeek sources never rely on `2^-127` scales.
+  - `E8m0ClampedToFloat` (routed-expert FFN paths) clamps the saturation slot
+    `0xFF` to `FLT_MAX` instead of +Inf; agrees with `E8m0ToFloat` on every
+    other byte value.
+
+## 4. CCCL 3.4.2 update (submodule bump, verified 2026-09-10)
+
+- `third_party/cccl` moved 3.3 → **3.4.2**. Notable backport on the 3.4.x
+  branch: "Remove most `_CCCL_GRID_CONSTANT` annotations, including merge
+  sort" (upstream #9864). Repo impact: none — `libs/` includes no CCCL
+  headers directly (thrust/cub/libcudacxx paths are wired for tests only),
+  and the repo's own TMA kernels annotate `__grid_constant__` directly
+  (`lsx_tc_gemm.cu`, `tests/test_blackwell_tc_mma.cu`), unaffected by the
+  `_CCCL_GRID_CONSTANT` macro removal.
+- CCCL 3.4.2's `cuda/std/__floating_point/cast.h` ships the extended
+  floating-point casts: `__nv_fp4_e2m1` conversions delegate to
+  `__nv_cvt_float_to_fp4(..., __NV_E2M1, cudaRoundNearest)` — consistent
+  with §B3 (hardware-default RNE, SATFINITE saturation). The repo's
+  hand-rolled codecs do not use these headers; no drift to absorb.
+- MCP CUTLASS corpus note (future optimization lead): SM120 blockscaled MMA
+  collective builders gained 128x32xK / 128x64xK tile sizes (up to 30% perf
+  on SM121 kernels) and NVFP4/MX grouped GEMM is exposed in the CUTLASS
+  profiler — relevant if the TC W4A4 path is retuned later.
 
 ---
 

@@ -122,5 +122,11 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int K, int N, bool acc = false);
 
+// Convenience launcher over an LsxNvfp4Weight container: y[t][n] =
+// sum_k x[t*K+k] * dequant(w). Same dispatch and numeric contract as
+// RunLsxNvfp4Gemm (acc=false).
+cudaError_t LaunchNvfp4Gemm(const LsxNvfp4Weight &w, const __half *x, int seq,
+                            __half *y, cudaStream_t stream);
+
 } // namespace lsx_nvfp4
 } // namespace lsxcommon

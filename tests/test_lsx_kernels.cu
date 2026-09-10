@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "lsx_kernels_quant.cuh"
+#include "nvfp4_scale.h"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
 #include "lsx_kernels_norm.cuh"
@@ -213,6 +214,137 @@ TEST_CASE("e2m1 encode ties: tie-up and nearest both replicated", "[lsxk][quant]
         REQUIRE(lsxcommon::kernels::QuantizeE2m1Nearest(-v) ==
                 ref::quantize_e2m1_nearest(-v));
     }
+}
+
+// ── Coverage: pow2-E4M3 scale ENCODER edge classes (docs §1 deviation) ──────
+// Reference: docs/NVIDIA_DOCS_NVFP4_MEMORY.md — ceil-rounding pow2-only
+// payload, e4 clamped to [1,14], exact powers of two map onto themselves,
+// subnormals clamp to the minimum normal scale 2^-6 (byte 0x08).
+TEST_CASE("FloatToE4m3P2 edge classes, identity and ceil property",
+          "[lsxk][quant][scale]")
+{
+    using lsxcommon::nvfp4::FloatToE4m3P2;
+    using lsxcommon::nvfp4::E4m3P2ToFloat;
+
+    // Zero (incl. -0) -> reserved zero byte 0x00.
+    REQUIRE(FloatToE4m3P2(0.0f) == 0x00);
+    REQUIRE(FloatToE4m3P2(-0.0f) == 0x00);
+
+    // Float subnormals clamp to the minimum normal scale 2^-6 (byte 0x08).
+    REQUIRE(FloatToE4m3P2(1e-45f) == 0x08);
+    REQUIRE(FloatToE4m3P2(1e-40f) == 0x08);
+    // Normal values below 2^-6 also clamp to 2^-6 (e4 floor 1).
+    REQUIRE(FloatToE4m3P2(0.0078125f) == 0x08);   // 2^-7
+
+    // Exact powers of two map onto themselves (2^-6 .. 2^7).
+    const struct { float v; uint8_t b; } pow2[] = {
+        {0.015625f, 0x08}, {0.125f, 0x20}, {1.0f, 0x38},
+        {2.0f, 0x40}, {64.0f, 0x68}, {128.0f, 0x70},
+    };
+    for (const auto& c : pow2) {
+        INFO("v=" << c.v);
+        REQUIRE(FloatToE4m3P2(c.v) == c.b);
+        REQUIRE(E4m3P2ToFloat(c.b) == c.v);   // identity
+    }
+
+    // Ceil rounding: smallest power of two >= s.
+    REQUIRE(FloatToE4m3P2(0.1f) == 0x20);    // -> 2^-3
+    REQUIRE(FloatToE4m3P2(1.5f) == 0x40);    // -> 2^1
+    REQUIRE(FloatToE4m3P2(6.5f) == 0x50);    // -> 2^3
+    REQUIRE(FloatToE4m3P2(300.0f) == 0x70);  // > 2^7 band -> ceiling clamp
+
+    // e4 clamps to 14 (max scale 2^7); never enters the E4M3 NaN slot.
+    REQUIRE(FloatToE4m3P2(256.0f) == 0x70);
+    REQUIRE(FloatToE4m3P2(1e30f) == 0x70);
+
+    // Property sweep: every finite positive input yields a pow2 scale that
+    // never saturates (decoded >= s inside the representable band; decoded/2
+    // < s), and the clamp band edges behave exactly as documented.
+    uint32_t st = 20260910u;
+    // Normals only via the exponent field (e in [-126, 127]); float
+    // subnormals are covered by the explicit clamp cases above.
+    for (int e = -126; e <= 127; ++e) {
+        for (int mi = 0; mi < 4; ++mi) {
+            const uint32_t mant = (mi == 0) ? 0u
+                                : (mi == 1) ? 0x400000u
+                                : (LcgNext(st) & 0x7FFFFFu);
+            const uint32_t bits = (static_cast<uint32_t>(e + 127) << 23) | mant;
+            float s;
+            std::memcpy(&s, &bits, sizeof(s));
+            const uint8_t b = FloatToE4m3P2(s);
+            const float d = E4m3P2ToFloat(b);
+            // Decoded scale is a power of two (mantissa field empty) or the
+            // reserved zero (only for s == 0, impossible in this sweep).
+            INFO("s=" << s << " byte=0x" << std::hex << int(b) << std::dec);
+            REQUIRE(b != 0x00);
+            REQUIRE(((b >> 3) & 0x0F) >= 1);
+            REQUIRE(((b >> 3) & 0x0F) <= 14);
+            REQUIRE((b & 0x07) == 0);
+            const uint32_t dbits = [&] { uint32_t x; std::memcpy(&x, &d, sizeof(x)); return x; }();
+            REQUIRE((dbits & 0x7FFFFFu) == 0);   // pow2 payload
+            if (s <= 128.0f && s >= 0.015625f) {
+                REQUIRE(d >= s);
+                REQUIRE(d < 2.0f * s);   // ceil, not round-up-two
+            } else if (s < 0.015625f) {
+                REQUIRE(d == 0.015625f);   // 2^-6 floor
+            } else {
+                REQUIRE(d == 128.0f);      // 2^7 ceiling
+            }
+        }
+    }
+}
+
+// Coverage: the clamped E8M0 decode flavor used by the routed-expert FFN
+// paths (shared_experts.cu). Saturation slot 0xFF yields FLT_MAX (not +Inf)
+// and 0x00 yields 0; everywhere else it agrees with the canonical shift
+// decode E8m0ToFloat. (Deliberate deviation note: E8m0ToFloat decodes 0x00
+// as 0.0f, whereas PTX ue8m0 would read 2^-127 — numerically indistinguishable
+// in FP16 outputs; see docs/NVIDIA_DOCS_NVFP4_MEMORY.md Part A §3.)
+TEST_CASE("E8m0ClampedToFloat clamps the saturation slot", "[lsxk][quant][scale]")
+{
+    using lsxcommon::kernels::E8m0ClampedToFloat;
+    using lsxcommon::kernels::E8m0ToFloat;
+
+    REQUIRE(E8m0ClampedToFloat(0x00) == 0.0f);
+    REQUIRE(E8m0ClampedToFloat(0xFF) == FLT_MAX);
+    REQUIRE(E8m0ClampedToFloat(0x7F) == 1.0f);
+    for (uint32_t b = 0; b <= 0xFE; ++b)
+        REQUIRE(E8m0ClampedToFloat(static_cast<uint8_t>(b)) ==
+                E8m0ToFloat(static_cast<uint8_t>(b)));
+}
+
+// Coverage: exhaustive E2M1 decode table against the PTX-spec value levels
+// (sign(1) | exp(2, bias=1) | mant(1); levels {0, .5, 1, 1.5, 2, 3, 4, 6}),
+// plus the device-side lo-nibble-first packing order via Nvfp4DequantKernel.
+TEST_CASE("E2M1Value exhaustive table and lo-nibble packing order",
+          "[lsxk][quant][e2m1]")
+{
+    using lsxcommon::gpu::nvfp4::E2M1Value;
+    const float levels[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    for (int nib = 0; nib < 16; ++nib) {
+        const float v = E2M1Value(nib);
+        INFO("nib=" << nib);
+        REQUIRE(v == ((nib & 8) ? -levels[nib & 7] : levels[nib & 7]));
+        if (nib == 8) REQUIRE(std::signbit(v));   // -0.0f keeps the sign bit
+    }
+
+    // Device packing order: byte 0x21 = low nibble 1 (element 0 -> 0.5),
+    // high nibble 2 (element 1 -> 1.0); scale byte 0x38 = 2^0, gs = 1.
+    const uint8_t hp[1] = {0x21}, hs[1] = {0x38};
+    uint8_t *dp, *ds; __half *dout;
+    REQUIRE(cudaMalloc(&dp, 1) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, 1) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, 2 * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dp, hp, 1, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, hs, 1, cudaMemcpyHostToDevice) == cudaSuccess);
+    lsxcommon::kernels::Nvfp4DequantKernel<__half><<<1, 32>>>(
+        dp, ds, 1.0f, dout, 2);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto out = ToHost(dout, 2);
+    REQUIRE(out[0] == __float2half(0.5f));
+    REQUIRE(out[1] == __float2half(1.0f));
+    cudaFree(dp); cudaFree(ds); cudaFree(dout);
 }
 
 // ── Task 3: math cluster references (verbatim ports) ───────────────────────

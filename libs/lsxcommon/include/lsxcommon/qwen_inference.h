@@ -117,12 +117,10 @@ inline cudaError_t RunQwenNvfp4GemmSeq1GemmV(
                                                global_scale, y, K, N, acc);
 }
 
-inline cudaError_t LaunchNvfp4Gemm(const QwenNvfp4Weight &w, const __half *x,
-                                   int seq, __half *y, cudaStream_t stream) {
-    return lsx_nvfp4::RunLsxNvfp4Gemm(stream, x, w.d_packed, w.d_scales,
-                                      w.global_scale, y, seq, w.cols, w.rows,
-                                      /*acc=*/false);
-}
+// QwenNvfp4Weight is an alias of lsx_nvfp4::LsxNvfp4Weight; the launcher is
+// the single model-neutral definition (a same-signature inline shim here
+// would make unqualified calls ambiguous).
+using lsx_nvfp4::LaunchNvfp4Gemm;
 
 // Full attention layer: input RMSNorm -> qkv projections (NVFP4 dequant GEMM)
 // -> q/k per-head norm -> partial rope -> GQA causal attention -> output gate
