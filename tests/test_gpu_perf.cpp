@@ -2,6 +2,9 @@
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/fast_math_mode.h"
 
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_replace.h>
+
 #include <cstdlib>
 
 using lsxcommon::perf::GpuPerfProfile;
@@ -118,4 +121,48 @@ TEST_CASE("ResolvePerfKnobs: LSX_PERF_AUTO=0 legacy escape hatch", "[gpu_perf]")
     REQUIRE(r.knobs.splitk_grid_min == 96);
     REQUIRE(r.knobs.dual_stream_staging == true);
     ::unsetenv("LSX_PERF_AUTO");
+}
+
+// ── Task 3: calibration cache (JSON round-trip, invalidation, vault path) ──
+
+using lsxcommon::perf::kPerfCacheFormatVersion;
+using lsxcommon::perf::LsxPerfKnobs;
+using lsxcommon::perf::ParsePerfCache;
+using lsxcommon::perf::PerfCacheEntry;
+using lsxcommon::perf::PerfCachePath;
+using lsxcommon::perf::SerializePerfCache;
+
+TEST_CASE("Perf cache: JSON round-trip", "[gpu_perf]")
+{
+    PerfCacheEntry e;
+    e.gpu = Rtx5090();
+    e.knobs.gemv_max_mib = 24;
+    e.knobs.splitk_grid_min = 64;
+    e.knobs.dual_stream_staging = false;
+    const auto parsed = ParsePerfCache(SerializePerfCache(e));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->gpu.name == e.gpu.name);
+    REQUIRE(parsed->gpu.sm_count == 170);
+    REQUIRE(parsed->knobs.gemv_max_mib == 24);
+    REQUIRE(parsed->knobs.splitk_grid_min == 64);
+    REQUIRE(parsed->knobs.dual_stream_staging == false);
+    REQUIRE(parsed->knobs.tc_fast_math_default == true);
+}
+
+TEST_CASE("Perf cache: format-version invalidation", "[gpu_perf]")
+{
+    auto poisoned = absl::StrReplaceAll(
+        SerializePerfCache({Rtx5090(), LsxPerfKnobs{}}),
+        {{absl::StrCat("\"format_version\": ", kPerfCacheFormatVersion),
+          "\"format_version\": 999"}});
+    REQUIRE_FALSE(ParsePerfCache(poisoned).has_value());
+    REQUIRE_FALSE(ParsePerfCache("not json at all").has_value());
+    REQUIRE_FALSE(ParsePerfCache("").has_value());
+}
+
+TEST_CASE("Perf cache path lands in vault perf-cache/", "[gpu_perf]")
+{
+    const std::string p = PerfCachePath(Rtx5090());
+    REQUIRE(p.find("perf-cache") != std::string::npos);
+    REQUIRE(p.find("rtx 5090.json") != std::string::npos);
 }

@@ -6,7 +6,9 @@
 // (host .cpp links fine — mirrors resource_governor.cpp).
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "lsxcommon/fast_math_mode.h"
 
@@ -76,6 +78,27 @@ void SetCurrentKnobs(const LsxPerfKnobs &knobs, PerfSource source);
 
 // Applies knobs to the process-global routing atomics + the snapshot above.
 void ApplyKnobs(const LsxPerfKnobs &knobs);
+
+// ── Calibration cache (vault JSON, perf-cache/<gpu-key>.json) ───────────────
+
+inline constexpr int kPerfCacheFormatVersion = 1;
+
+struct PerfCacheEntry {
+    GpuPerfProfile gpu;
+    LsxPerfKnobs knobs;
+};
+
+// Hand-rolled JSON writer (stable field order); parser accepts the same
+// schema and rejects foreign format versions (invalidation) and garbage.
+std::string SerializePerfCache(const PerfCacheEntry &e);
+std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json);
+
+// Vault path: lsx_model_metadata("perf-cache/<gpu-key>.json").
+std::string PerfCachePath(const GpuPerfProfile &gpu);
+
+// File-backed convenience wrappers. Never throw; failures return false.
+bool LoadPerfCache(const GpuPerfProfile &gpu, LsxPerfKnobs &out);
+bool SavePerfCache(const GpuPerfProfile &gpu, const LsxPerfKnobs &knobs);
 
 } // namespace perf
 } // namespace lsxcommon

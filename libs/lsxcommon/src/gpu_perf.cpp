@@ -3,15 +3,24 @@
 #include <cuda_runtime.h>
 
 #include <absl/container/flat_hash_map.h>
+#include <absl/strings/str_cat.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
+
+#include <simdjson.h>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/path_registry.h"
 
 namespace lsxcommon {
 namespace perf {
@@ -169,6 +178,105 @@ void ApplyKnobs(const LsxPerfKnobs &knobs)
     lsx_nvfp4::SetLsxGemmMaxMib(knobs.gemv_max_mib);
     lsx_nvfp4::SetLsxDualStreamStaging(knobs.dual_stream_staging);
     lsx_tc::SetLsxSplitKGridMin(knobs.splitk_grid_min);
+}
+
+// ── Calibration cache ───────────────────────────────────────────────────────
+
+std::string SerializePerfCache(const PerfCacheEntry &e)
+{
+    std::string s;
+    absl::StrAppend(&s, "{\n  \"format_version\": ", kPerfCacheFormatVersion,
+                    ",\n  \"gpu\": {\"name\": \"", e.gpu.name,
+                    "\", \"sm_count\": ", e.gpu.sm_count,
+                    ", \"bus_width_bits\": ", e.gpu.bus_width_bits,
+                    ", \"memory_clock_khz\": ", e.gpu.memory_clock_khz,
+                    ", \"cc_major\": ", e.gpu.cc_major,
+                    ", \"cc_minor\": ", e.gpu.cc_minor, "},\n  \"knobs\": {");
+    absl::StrAppend(&s, "\"tc_fast_math_default\": ",
+                    e.knobs.tc_fast_math_default ? "true" : "false",
+                    ", \"seq1_gemv_default\": ",
+                    e.knobs.seq1_gemv_default ? "true" : "false");
+    absl::StrAppend(&s, ", \"gemv_max_mib\": ", e.knobs.gemv_max_mib,
+                    ", \"splitk_grid_min\": ", e.knobs.splitk_grid_min,
+                    ", \"expert_slots_pct\": ", e.knobs.expert_slots_pct,
+                    ", \"dual_stream_staging\": ",
+                    e.knobs.dual_stream_staging ? "true" : "false");
+    absl::StrAppend(&s, "},\n  \"ts_unix\": ", std::time(nullptr), "\n}\n");
+    return s;
+}
+
+std::optional<PerfCacheEntry> ParsePerfCache(std::string_view json)
+{
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    if (parser.parse(json).get(root) != simdjson::SUCCESS)
+        return std::nullopt;
+    int64_t ver = 0;
+    if (root["format_version"].get(ver) != simdjson::SUCCESS ||
+        ver != kPerfCacheFormatVersion)
+        return std::nullopt;
+    simdjson::dom::element gpu, knobs;
+    if (root["gpu"].get(gpu) != simdjson::SUCCESS ||
+        root["knobs"].get(knobs) != simdjson::SUCCESS)
+        return std::nullopt;
+    PerfCacheEntry e;
+    std::string_view name;
+    if (gpu["name"].get(name) != simdjson::SUCCESS) return std::nullopt;
+    e.gpu.name = name;
+    int64_t v = 0;
+    if (gpu["sm_count"].get(v) == simdjson::SUCCESS)
+        e.gpu.sm_count = static_cast<int>(v);
+    if (gpu["bus_width_bits"].get(v) == simdjson::SUCCESS)
+        e.gpu.bus_width_bits = static_cast<int>(v);
+    if (gpu["memory_clock_khz"].get(v) == simdjson::SUCCESS)
+        e.gpu.memory_clock_khz = static_cast<int>(v);
+    if (gpu["cc_major"].get(v) == simdjson::SUCCESS)
+        e.gpu.cc_major = static_cast<int>(v);
+    if (gpu["cc_minor"].get(v) == simdjson::SUCCESS)
+        e.gpu.cc_minor = static_cast<int>(v);
+    bool b = false;
+    if (knobs["tc_fast_math_default"].get(b) == simdjson::SUCCESS)
+        e.knobs.tc_fast_math_default = b;
+    if (knobs["seq1_gemv_default"].get(b) == simdjson::SUCCESS)
+        e.knobs.seq1_gemv_default = b;
+    if (knobs["gemv_max_mib"].get(v) == simdjson::SUCCESS)
+        e.knobs.gemv_max_mib = static_cast<int>(v);
+    if (knobs["splitk_grid_min"].get(v) == simdjson::SUCCESS)
+        e.knobs.splitk_grid_min = static_cast<int>(v);
+    if (knobs["expert_slots_pct"].get(v) == simdjson::SUCCESS)
+        e.knobs.expert_slots_pct = static_cast<int>(v);
+    if (knobs["dual_stream_staging"].get(b) == simdjson::SUCCESS)
+        e.knobs.dual_stream_staging = b;
+    return e;
+}
+
+std::string PerfCachePath(const GpuPerfProfile &gpu)
+{
+    return lsx_model_metadata("perf-cache/" + GpuProfileKey(gpu) + ".json");
+}
+
+bool LoadPerfCache(const GpuPerfProfile &gpu, LsxPerfKnobs &out)
+{
+    std::ifstream f(PerfCachePath(gpu), std::ios::binary);
+    if (!f.is_open()) return false;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    auto entry = ParsePerfCache(json);
+    if (!entry.has_value()) return false;
+    out = entry->knobs;
+    return true;
+}
+
+bool SavePerfCache(const GpuPerfProfile &gpu, const LsxPerfKnobs &knobs)
+{
+    const std::string path = PerfCachePath(gpu);
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(path).parent_path(), ec);
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f.is_open()) return false;
+    f << SerializePerfCache({gpu, knobs});
+    return f.good();
 }
 
 } // namespace perf
