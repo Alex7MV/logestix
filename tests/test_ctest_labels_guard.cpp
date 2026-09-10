@@ -202,6 +202,34 @@ std::vector<std::string> CheckPresets(const std::string& json_text)
     return v;
 }
 
+// tools/test_router.cmake declares: lsx_router_rule(<id> <label> <regex>)
+// — one rule per line, label is fast|inference (perf is never auto-run).
+std::vector<std::string> CheckRouter(const std::string& router_text)
+{
+    std::vector<std::string> v;
+    static const std::regex rule_re(
+        R"(lsx_router_rule\s*\(\s*(\w+)\s+(fast|inference)\s+(.*)\))");
+    bool any = false;
+    std::istringstream in(router_text);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        const auto first = line.find_first_not_of(" \t");
+        if (first == std::string::npos || line[first] == '#')
+            continue;
+        if (line.find("lsx_router_rule") == std::string::npos)
+            continue;
+        std::smatch m;
+        if (std::regex_search(line, m, rule_re))
+            any = true;
+        else
+            v.push_back("tools/test_router.cmake: malformed rule: " + line);
+    }
+    if (!any)
+        v.push_back("tools/test_router.cmake: no lsx_router_rule entries");
+    return v;
+}
+
 } // namespace
 
 TEST_CASE("ctest labels guard parser: synthetic fixtures",
@@ -310,5 +338,18 @@ TEST_CASE("ctest labels guard: presets reference valid labels",
     for (const auto& s : v)
         joined += s + "\n";
     INFO("preset violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: router rules valid", "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::string router_text =
+        ReadFileOrThrow(root / "tools" / "test_router.cmake");
+    auto v = CheckRouter(router_text);
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("router violations:\n" << joined);
     REQUIRE(v.empty());
 }
