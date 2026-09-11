@@ -44,6 +44,13 @@ struct ExpertDeviceCache {
     // O(1) free-slot stack: h_free[i] = slot index, h_free_top = count.
     int32_t *h_free = nullptr;        // [slots] or null (legacy mode)
     int h_free_top = 0;
+    // Per-layer partitioning (optional): when layer_slots > 0, slot selection
+    // is confined to [layer*layer_slots, layer*layer_slots+layer_slots) with a
+    // per-layer round-robin rotor (h_rotor[layer]) — a global LRU lets late
+    // layers evict early layers' hot slots within a decode step.
+    int layer_slots = 0;
+    int32_t *h_rotor = nullptr;       // [num_layers] rotor per layer
+    int num_layers = 0;
     // Hit/miss counters (diagnostics): hits in Lookup, misses in Insert.
     int64_t hits = 0;
     int64_t misses = 0;

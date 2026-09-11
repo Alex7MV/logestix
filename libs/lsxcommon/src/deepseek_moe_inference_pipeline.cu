@@ -88,6 +88,7 @@ cudaError_t run_shared_experts_ffn(
 
 cudaError_t run_routed_experts_ex(
     cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
+    cudaEvent_t pre_ev,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
@@ -96,6 +97,13 @@ cudaError_t run_routed_experts_ex(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
     const ExpertDeviceCache *cache);
+
+// Early-issue phase: stages top-k cache misses onto copy_stream right after
+// the router readback so the transfers overlap the shared-expert FFN.
+cudaError_t issue_routed_staging(
+    cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, int topk);
 
 // run_mla_attention is declared in deepseek_moe_load.cuh (included
 // above) — that header's signature now matches the real definition in
@@ -255,6 +263,7 @@ InferenceResult RunInferenceModel(
     std::vector<int32_t> cache_slot_of;
     std::vector<int32_t> cache_slot_owner;
     std::vector<int32_t> cache_lru;
+    std::vector<int32_t> cache_rotor;
     float rms_eps = 1e-6f;
     int total_steps = 0;
     std::uint64_t d_alloc_bytes = 0;  // arena device bytes (resident accounting)
@@ -525,6 +534,12 @@ InferenceResult RunInferenceModel(
             cache_slot_of.assign(static_cast<size_t>(total_experts), -1);
             cache_slot_owner.assign(static_cast<size_t>(expert_cache.slots), -1);
             cache_lru.resize(static_cast<size_t>(expert_cache.slots));
+            // Per-layer partition A/B (2026-09): measured WORSE than the
+            // global LRU (10.7 vs 11.7 tok/s) — round-robin evicts hot slots
+            // the LRU would keep. layer_slots stays 0 (legacy global LRU);
+            // the partition path is retained for future experiments.
+            expert_cache.layer_slots = 0;
+            expert_cache.num_layers = topo.num_layers;
             for (int i = 0; i < expert_cache.slots; ++i)
                 cache_lru[static_cast<size_t>(i)] = expert_cache.slots - 1 - i; // back = LRU
             expert_cache.h_slot_of = cache_slot_of.data();
@@ -665,6 +680,13 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                             static_cast<size_t>(kLocalTopK) * sizeof(float));
             }
 
+            // NOTE: early-issue prefetch (copies before the shared FFN) is
+            // UNSAFE here: the copy_stream DMA reads mmap-backed entries that
+            // ensure_expert_resident of later layers munmaps under an
+            // in-flight transfer (observed numeric corruption). Copies stay
+            // in run_routed_experts_ex, fenced per expert; enabling early
+            // issue requires a pending-copy barrier before mmap eviction.
+
             // Shared experts FFN: outputs to d_ffn_accum (FP32).
             // Independent of the routing result; enqueued behind the router GEMM
             // so it overlaps the host's router-logit wait.
@@ -711,7 +733,9 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     ensure_expert_resident(expert_db, lay, h_topk[i], stream,
                                            evict_done);
                 INFER_CHECK(run_routed_experts_ex(
-                    stream, copy_stream, stage_ev, d_normed,
+                    stream, copy_stream, stage_ev,
+                    nullptr,
+                    d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_accum,

@@ -577,6 +577,7 @@ cudaError_t route_token(
 // directly (single-stream ordering makes slot reuse safe).
 cudaError_t run_routed_experts_ex(
     cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
+    cudaEvent_t pre_ev,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
@@ -594,6 +595,12 @@ cudaError_t run_routed_experts_ex(
     // zeroed by the caller when there are no shared experts), so every
     // routed expert's weighted output must accumulate (coeff add), never
     // overwrite.
+    // Prefetch fence: when the pipeline issued the miss copies early (before
+    // the shared-expert FFN), one event fences ALL of them.
+    if (pre_ev) {
+        cudaError_t pe = cudaStreamWaitEvent(stream, pre_ev, 0);
+        if (pe != cudaSuccess) return pe;
+    }
     for (int k = 0; k < topk; ++k) {
         int idx = h_top_indices[k];
         if (idx < 0 || idx >= experts_per_layer) continue;
@@ -617,9 +624,17 @@ cudaError_t run_routed_experts_ex(
             if (flat >= 0 && flat < cache->total_experts)
                 cache_slot = cache->h_slot_of[flat];
             if (cache_slot < 0) {
-                // Miss: evict the LRU tail slot and stage the expert into
-                // it in the pair layout (w1, w3, w2 / s1, s3, s2).
-                cache_slot = cache->h_lru[cache->slots - 1];
+                // Miss: pick a victim slot — per-layer round-robin partition
+                // when configured, else the global LRU tail — and stage the
+                // expert into it in the pair layout (w1, w3, w2 / s1, s3, s2).
+                if (cache->layer_slots > 0) {
+                    const int base = layer * cache->layer_slots;
+                    cache_slot = base
+                        + (cache->h_rotor[layer] % cache->layer_slots);
+                    ++cache->h_rotor[layer];
+                } else {
+                    cache_slot = cache->h_lru[cache->slots - 1];
+                }
                 const int victim = cache->h_slot_owner[cache_slot];
                 if (victim >= 0 && victim < cache->total_experts)
                     cache->h_slot_of[victim] = -1;
@@ -648,13 +663,16 @@ cudaError_t run_routed_experts_ex(
                 cache->h_slot_of[flat] = cache_slot;
                 cache->h_slot_owner[cache_slot] = flat;
             }
-            // Move the slot to the MRU front.
-            for (int i = 0; i < cache->slots; ++i) {
-                if (cache->h_lru[i] == cache_slot) {
-                    for (int j = i; j > 0; --j)
-                        cache->h_lru[j] = cache->h_lru[j - 1];
-                    cache->h_lru[0] = cache_slot;
-                    break;
+            // Move the slot to the MRU front (global-LRU mode only; the
+            // partitioned mode uses the per-layer rotor instead).
+            if (cache->layer_slots <= 0) {
+                for (int i = 0; i < cache->slots; ++i) {
+                    if (cache->h_lru[i] == cache_slot) {
+                        for (int j = i; j > 0; --j)
+                            cache->h_lru[j] = cache->h_lru[j - 1];
+                        cache->h_lru[0] = cache_slot;
+                        break;
+                    }
                 }
             }
             p13 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
@@ -722,12 +740,85 @@ cudaError_t run_routed_experts(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
-    return run_routed_experts_ex(stream, nullptr, nullptr, d_normed,
+    return run_routed_experts_ex(stream, nullptr, nullptr, nullptr, d_normed,
         db_entries, layer, experts_per_layer,
         h_top_indices, h_top_weights, topk,
         d_output, d_yg, d_y2,
         d_pack_stage, d_scale_stage, pack_stage_bytes, scale_stage_bytes,
         nullptr);
+}
+
+// Prefetch the top-k experts' H2D staging onto @p copy_stream as early as
+// possible (immediately after the router readback), so the transfers overlap
+// the shared-expert FFN the compute stream is about to run. Fills resident
+// cache slots in the pair layout; misses only — hits are free. Records
+// @p ev on @p copy_stream when any copy was issued (the consumer waits on it).
+cudaError_t issue_routed_staging(
+    cudaStream_t copy_stream, cudaEvent_t ev, ExpertDeviceCache *cache,
+    const ExpertEntry *db_entries, int layer, int experts_per_layer,
+    const int *h_top_indices, int topk)
+{
+    if (!copy_stream || !cache || cache->slots <= 0) return cudaSuccess;
+    bool issued = false;
+    for (int k = 0; k < topk; ++k) {
+        int idx = h_top_indices[k];
+        if (idx < 0 || idx >= experts_per_layer) continue;
+        const ExpertEntry &en = db_entries[
+            static_cast<size_t>(layer) * experts_per_layer + idx];
+        if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
+        const int64_t w1b = en.w1_bytes, w2b = en.w2_bytes, w3b = en.w3_bytes;
+        const int64_t s1b = en.w1_scales_bytes, s2b = en.w2_scales_bytes, s3b = en.w3_scales_bytes;
+        if (w1b <= 0 || w2b <= 0 || w3b <= 0 || s1b <= 0 || s2b <= 0 || s3b <= 0)
+            continue;
+        if (w1b + w2b + w3b > cache->pack_stride
+            || s1b + s2b + s3b > cache->scale_stride)
+            continue;
+        const int flat = static_cast<int>(layer) * experts_per_layer + idx;
+        if (flat < 0 || flat >= cache->total_experts) continue;
+        if (cache->h_slot_of[flat] >= 0) continue;   // resident hit
+        int slot = cache->h_lru[cache->slots - 1];
+        const int victim = cache->h_slot_owner[slot];
+        if (victim >= 0 && victim < cache->total_experts)
+            cache->h_slot_of[victim] = -1;
+        uint8_t *pk = cache->d_pack + static_cast<int64_t>(slot) * cache->pack_stride;
+        uint8_t *sc = cache->d_scale + static_cast<int64_t>(slot) * cache->scale_stride;
+        cudaError_t e = cudaSuccess;
+        e = cudaMemcpyAsync(pk, en.host_w1, static_cast<size_t>(w1b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(pk + w1b, en.host_w3, static_cast<size_t>(w3b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(pk + w1b + w3b, en.host_w2, static_cast<size_t>(w2b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(sc, en.host_w1_scales, static_cast<size_t>(s1b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(sc + s1b, en.host_w3_scales, static_cast<size_t>(s3b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        e = cudaMemcpyAsync(sc + s1b + s3b, en.host_w2_scales, static_cast<size_t>(s2b),
+                            cudaMemcpyHostToDevice, copy_stream);
+        if (e != cudaSuccess) return e;
+        cache->h_slot_of[flat] = slot;
+        cache->h_slot_owner[slot] = flat;
+        // MRU front.
+        for (int i = 0; i < cache->slots; ++i) {
+            if (cache->h_lru[i] == slot) {
+                for (int j = i; j > 0; --j)
+                    cache->h_lru[j] = cache->h_lru[j - 1];
+                cache->h_lru[0] = slot;
+                break;
+            }
+        }
+        issued = true;
+    }
+    if (issued) {
+        cudaError_t e = cudaEventRecord(ev, copy_stream);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaSuccess;
 }
 
 } // namespace gpu
