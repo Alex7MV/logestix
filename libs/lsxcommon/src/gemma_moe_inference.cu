@@ -415,7 +415,12 @@ cudaError_t RunGemmaAttention(const __nv_bfloat16 *d_q, const __nv_bfloat16 *d_k
 // chunks in ASCENDING order (fixed sequence -> run-to-run bit-identical).
 namespace {
 
-constexpr int kGemmaSplitChunk = 512;
+// 128-slot chunks: window 1024 -> 8 chunks x 16 heads = 128 blocks (vs 2 x 16
+// at 512) — the 170-SM array was latency-starved on decode attention (64us
+// avg per launch). Combine walks chunks ascending, so the reduction order
+// stays launch-shape-stable; re-partitioning shifts the float grouping, not
+// the determinism contract.
+constexpr int kGemmaSplitChunk = 128;
 
 __global__ void gemma_split_kv_partials_kernel(
     const __nv_bfloat16 *__restrict__ q, const __nv_bfloat16 *__restrict__ k,
@@ -639,108 +644,189 @@ cudaError_t RunGemmaDenseMLP(const __nv_bfloat16 *d_gate, const __nv_bfloat16 *d
 
 // Gemma4 router (authentic): softmax over ALL expert logits, top-k on the
 // probabilities, renormalize to sum 1, then scale by per_expert_scale[e].
-// One block per token; deterministic lower-index top-k tie-break.
+// Deterministic lower-index top-k tie-break.
 //
-// Decode-split for latency: stage 1 (gemma_router_products_kernel) writes
-// the per-element float products to a [seq][E][H] scratch; stage 2
-// (gemma_router_topk_kernel) reduces each expert row with ONE thread per
-// expert walking the SAME ascending-d sequential order (bit-identical to
-// the former in-block dot loops, which kept 128 threads of one block
-// latency-bound at ~180us/token), then runs the unchanged thread-0
-// softmax/top-k selection.
-__global__ void gemma_router_products_kernel(
+// Two-phase split (decode-latency design):
+//   Phase 1 (gemma_router_logits_kernel): one warp per expert computes
+//     logits[t][e] = dot(proj[e,:], x[t,:]) straight from the bf16 sources
+//     (uint4 bf16x8 loads, lanes striping H, 4-deep ILP, shfl_down tree
+//     merge). Grid covers E/8 blocks x seq tokens — decode lights up 16
+//     SMs instead of one (the single-block form was latency-bound at
+//     37-72us/launch).
+//   Phase 2 (gemma_router_softmax_topk_kernel): one block per token runs
+//     the unchanged softmax/top-k/renorm/scale tail over the [seq][E]
+//     logits scratch.
+// Accumulation order is fixed per launch configuration -> run-to-run
+// deterministic.
+__global__ void gemma_router_logits_kernel(
     const __nv_bfloat16 *__restrict__ proj,
-    const __nv_bfloat16 *__restrict__ x, int E, int H, float *__restrict__ prod)
+    const __nv_bfloat16 *__restrict__ x,
+    float *__restrict__ logits,     // [seq][E]
+    int E, int H)
 {
-    const int e = blockIdx.y;
-    const int t = blockIdx.z;
-    const int d = blockIdx.x * blockDim.x + threadIdx.x;
-    if (d >= H) return;
-    prod[(static_cast<int64_t>(t) * E + e) * H + d] =
-        __bfloat162float(proj[static_cast<int64_t>(e) * H + d]) *
-        __bfloat162float(x[static_cast<int64_t>(t) * H + d]);
+    const int t = blockIdx.y;
+    const int e = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (e >= E) return;
+    const int lane = threadIdx.x & 31;
+
+    const __nv_bfloat16 *prow = proj + static_cast<int64_t>(e) * H;
+    const __nv_bfloat16 *xrow = x + static_cast<int64_t>(t) * H;
+    const bool vec = ((H & 7) == 0) &&
+        ((reinterpret_cast<uintptr_t>(prow) & 15u) == 0u) &&
+        ((reinterpret_cast<uintptr_t>(xrow) & 15u) == 0u);
+    const int h8 = H >> 3;          // uint4 units per row (vec path)
+    float part = 0.f;
+    if (vec) {
+        const uint4 *pv = reinterpret_cast<const uint4 *>(prow);
+        const uint4 *xv = reinterpret_cast<const uint4 *>(xrow);
+        // 4-deep unroll with independent accumulator chains: 4 uint4
+        // pairs in flight per lane hide the DRAM round trip.
+        float p0 = 0.f, p1 = 0.f, p2 = 0.f, p3 = 0.f;
+        int u = lane;
+        for (; u + 3 * 32 < h8; u += 4 * 32) {
+            const uint4 a0 = pv[u];
+            const uint4 b0 = xv[u];
+            const uint4 a1 = pv[u + 32];
+            const uint4 b1 = xv[u + 32];
+            const uint4 a2 = pv[u + 64];
+            const uint4 b2 = xv[u + 64];
+            const uint4 a3 = pv[u + 96];
+            const uint4 b3 = xv[u + 96];
+            const __nv_bfloat162 *pa0 =
+                reinterpret_cast<const __nv_bfloat162 *>(&a0);
+            const __nv_bfloat162 *pb0 =
+                reinterpret_cast<const __nv_bfloat162 *>(&b0);
+            const __nv_bfloat162 *pa1 =
+                reinterpret_cast<const __nv_bfloat162 *>(&a1);
+            const __nv_bfloat162 *pb1 =
+                reinterpret_cast<const __nv_bfloat162 *>(&b1);
+            const __nv_bfloat162 *pa2 =
+                reinterpret_cast<const __nv_bfloat162 *>(&a2);
+            const __nv_bfloat162 *pb2 =
+                reinterpret_cast<const __nv_bfloat162 *>(&b2);
+            const __nv_bfloat162 *pa3 =
+                reinterpret_cast<const __nv_bfloat162 *>(&a3);
+            const __nv_bfloat162 *pb3 =
+                reinterpret_cast<const __nv_bfloat162 *>(&b3);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                p0 += __bfloat162float(pa0[j].x) *
+                      __bfloat162float(pb0[j].x);
+                p0 += __bfloat162float(pa0[j].y) *
+                      __bfloat162float(pb0[j].y);
+                p1 += __bfloat162float(pa1[j].x) *
+                      __bfloat162float(pb1[j].x);
+                p1 += __bfloat162float(pa1[j].y) *
+                      __bfloat162float(pb1[j].y);
+                p2 += __bfloat162float(pa2[j].x) *
+                      __bfloat162float(pb2[j].x);
+                p2 += __bfloat162float(pa2[j].y) *
+                      __bfloat162float(pb2[j].y);
+                p3 += __bfloat162float(pa3[j].x) *
+                      __bfloat162float(pb3[j].x);
+                p3 += __bfloat162float(pa3[j].y) *
+                      __bfloat162float(pb3[j].y);
+            }
+        }
+        for (; u < h8; u += 32) {
+            const uint4 a = pv[u];
+            const uint4 b = xv[u];
+            const __nv_bfloat162 *pa =
+                reinterpret_cast<const __nv_bfloat162 *>(&a);
+            const __nv_bfloat162 *pb =
+                reinterpret_cast<const __nv_bfloat162 *>(&b);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                part += __bfloat162float(pa[j].x) *
+                        __bfloat162float(pb[j].x);
+                part += __bfloat162float(pa[j].y) *
+                        __bfloat162float(pb[j].y);
+            }
+        }
+        part += ((p0 + p1) + p2) + p3;  // fixed merge order
+    } else {
+        for (int d = lane; d < H; d += 32)
+            part += __bfloat162float(prow[d]) *
+                    __bfloat162float(xrow[d]);
+    }
+    // Fixed-order lane merge (shfl_down tree, launch-shape-stable).
+    for (int off = 16; off > 0; off >>= 1)
+        part += __shfl_down_sync(0xffffffffu, part, off);
+    if (lane == 0)
+        logits[static_cast<int64_t>(t) * E + e] = part;
 }
 
-__global__ void gemma_router_topk_kernel(
-    const float *__restrict__ prod,
+__global__ void gemma_router_softmax_topk_kernel(
+    const float *__restrict__ logits,   // [seq][E]
     const float *__restrict__ per_expert_scale,
-    int E, int H, int K, int32_t *__restrict__ sel, float *__restrict__ weights)
+    int E, int K, int32_t *__restrict__ sel, float *__restrict__ weights)
 {
     const int t = blockIdx.x;
+    const int e = threadIdx.x;
+    const bool active = e < E;
 
-    extern __shared__ float sh[];
-    float *logits = sh;             // [E]
-
-    for (int e = threadIdx.x; e < E; e += blockDim.x) {
-        const float *row = prod + (static_cast<int64_t>(t) * E + e) * H;
-        float dot = 0.f;
-        int d = 0;
-        // float4 loads, strictly ascending-d fp32 add order: identical
-        // inputs and identical accumulation sequence as the scalar loop,
-        // so results stay bit-identical (decode is latency-bound on the
-        // per-thread sequential chain; wider loads + deep ILP cut the
-        // exposed DRAM latency ~8x on one-block decode launches).
-        if ((reinterpret_cast<uintptr_t>(row) & 15u) == 0u) {
-            for (; d + 32 <= H; d += 32) {
-                float p[32];
-#pragma unroll
-                for (int v = 0; v < 8; ++v) {
-                    const float4 q =
-                        *reinterpret_cast<const float4 *>(row + d + v * 4);
-                    p[v * 4 + 0] = q.x;
-                    p[v * 4 + 1] = q.y;
-                    p[v * 4 + 2] = q.z;
-                    p[v * 4 + 3] = q.w;
-                }
-#pragma unroll
-                for (int j = 0; j < 32; ++j) dot += p[j];
-            }
-            for (; d + 4 <= H; d += 4) {
-                const float4 q =
-                    *reinterpret_cast<const float4 *>(row + d);
-                dot += q.x;
-                dot += q.y;
-                dot += q.z;
-                dot += q.w;
-            }
-        }
-        for (; d < H; ++d) dot += row[d];
-        logits[e] = dot;
-    }
+    // Block-parallel softmax (the legacy thread-0 form spilled probs[E]
+    // to local memory: 24.8us for 128 floats). Max is order-free (fmaxf);
+    // the denominator tree sum is launch-shape-stable (deterministic).
+    __shared__ float s_lg[256];
+    __shared__ float s_red[256];
+    const float *lg = logits + static_cast<int64_t>(t) * E;
+    const float v = active ? lg[e] : -1e30f;
+    s_lg[e] = v;
+    s_red[e] = v;
     __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (e < off) s_red[e] = fmaxf(s_red[e], s_red[e + off]);
+        __syncthreads();
+    }
+    const float m = s_red[0];
+    float pexp = active ? expf(v - m) : 0.f;
+    s_red[e] = pexp;
+    __syncthreads();
+    for (int off = blockDim.x / 2; off > 0; off >>= 1) {
+        if (e < off) s_red[e] += s_red[e + off];
+        __syncthreads();
+    }
+    const float z = s_red[0];
+    // NaN-hardened: garbage upstream (e.g. the synthetic fixture's
+    // uninitialized router proj) must not poison selection or indices.
+    // Uniform fallback keeps probs finite and the scan always succeeds.
+    float prob = -1.f;
+    if (active) {
+        if (!(pexp == pexp)) pexp = 0.f;
+        prob = (z > 0.f && z == z) ? pexp / z : 1.f / static_cast<float>(E);
+    }
 
-    // Thread 0: full softmax -> top-k on probabilities -> renorm -> scale.
-    if (threadIdx.x == 0) {
-        float m = logits[0];
-        for (int e = 1; e < E; ++e) m = fmaxf(m, logits[e]);
-        float z = 0.f;
-        for (int e = 0; e < E; ++e) z += expf(logits[e] - m);
-        float probs[128];
-        for (int e = 0; e < E; ++e) probs[e] = expf(logits[e] - m) / z;
-
-        int idx[16];
-        float val[16];
-        int n = 0;
-        for (int e = 0; e < E; ++e) {
-            float v = probs[e];
-            int pos = n;
-            while (pos > 0 &&
-                    (val[pos - 1] < v || (val[pos - 1] == v && idx[pos - 1] > e))) {
-                if (pos < K) { val[pos] = val[pos - 1]; idx[pos] = idx[pos - 1]; }
-                --pos;
+    // K selection rounds over the remaining-prob scratch in s_lg
+    // (invalidated with -1 as experts are picked). Thread-0 scan keeps the
+    // legacy lower-index tie-break (strictly-greater compare keeps the
+    // first/lowest index on exact ties).
+    __shared__ float s_val[16];
+    __shared__ int s_idx[16];
+    s_lg[e] = prob;
+    __syncthreads();
+    for (int k = 0; k < K && k < E; ++k) {
+        if (e == 0) {
+            float bv = -1.f;
+            int bi = -1;
+            for (int j = 0; j < E; ++j) {
+                const float pj = s_lg[j];
+                if (pj > bv) { bv = pj; bi = j; }
             }
-            if (pos < K) {
-                val[pos] = v;
-                idx[pos] = e;
-                if (n < K) ++n;
-            }
+            s_val[k] = bv;
+            s_idx[k] = bi;
+            if (bi >= 0) s_lg[bi] = -1.f;
         }
+        __syncthreads();
+    }
+    if (e == 0) {
         float s = 0.f;
-        for (int i = 0; i < K; ++i) s += val[i];
+        for (int i = 0; i < K; ++i) s += s_val[i];
         for (int i = 0; i < K; ++i) {
-            sel[static_cast<int64_t>(t) * K + i] = idx[i];
-            float w = val[i] / s;
-            if (per_expert_scale) w *= per_expert_scale[idx[i]];
+            sel[static_cast<int64_t>(t) * K + i] = s_idx[i];
+            float w = s_val[i] / s;
+            if (per_expert_scale && s_idx[i] >= 0)
+                w *= per_expert_scale[s_idx[i]];
             weights[static_cast<int64_t>(t) * K + i] = w;
         }
     }
@@ -757,33 +843,29 @@ cudaError_t RunGemmaRouterTopK(const __nv_bfloat16 *d_router_proj,
         num_experts <= 0 || hidden <= 0 || top_k <= 0 || top_k > 16 ||
         seq <= 0)
         return cudaErrorInvalidValue;
-    // Stage-1 product scratch ([seq][E][H] floats) from the stream-ordered
-    // device pool: no synchronizing alloc, freed on the same stream.
-    float *d_prod = nullptr;
-    const size_t prod_bytes = static_cast<size_t>(seq) * num_experts *
-                              hidden * sizeof(float);
-    if (cudaMallocAsync(reinterpret_cast<void **>(&d_prod), prod_bytes,
+    // Phase 1: warp-per-expert logits (E/8 blocks x seq), phase 2: one
+    // block per token softmax/top-k. Tiny [seq][E] fp32 scratch from the
+    // stream-ordered pool (vs the old [seq][E][H] product round trip).
+    float *d_logits = nullptr;
+    const size_t logits_bytes = static_cast<size_t>(seq) * num_experts *
+                                sizeof(float);
+    if (cudaMallocAsync(reinterpret_cast<void **>(&d_logits), logits_bytes,
                         stream) != cudaSuccess)
         return cudaGetLastError();
-    dim3 grid((static_cast<unsigned>(hidden) + 255) / 256,
-              static_cast<unsigned>(num_experts),
-              static_cast<unsigned>(seq));
-    gemma_router_products_kernel<<<grid, 256, 0, stream>>>(
-        d_router_proj, d_x, num_experts, hidden, d_prod);
+    const dim3 lgrid((static_cast<unsigned>(num_experts) + 7) / 8,
+                     static_cast<unsigned>(seq));
+    gemma_router_logits_kernel<<<lgrid, 256, 0, stream>>>(
+        d_router_proj, d_x, d_logits, num_experts, hidden);
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
-        gemma_router_topk_kernel<<<seq, 128,
-                                   static_cast<size_t>(num_experts) *
-                                       sizeof(float),
-                                   stream>>>(d_prod, d_per_expert_scale,
-                                             num_experts, hidden, top_k,
-                                             d_sel_experts, d_sel_weights);
-    if (e != cudaSuccess) {
-        cudaFreeAsync(d_prod, stream);
-        return e;
-    }
-    cudaFreeAsync(d_prod, stream);
-    return cudaGetLastError();
+        gemma_router_softmax_topk_kernel<<<static_cast<unsigned>(seq), 128,
+                                           0, stream>>>(
+            d_logits, d_per_expert_scale, num_experts, top_k, d_sel_experts,
+            d_sel_weights);
+    if (e == cudaSuccess)
+        e = cudaGetLastError();
+    cudaFreeAsync(d_logits, stream);
+    return e == cudaSuccess ? cudaGetLastError() : e;
 }
 
 // out[t,h] = router_scale[h] * sum_k w_tk * expert_outs[k][t,h]
@@ -1115,23 +1197,30 @@ __global__ void gemma_logits_rows_nvfp4_kernel(
     const int64_t row_i =
         static_cast<int64_t>(blockIdx.x) * warps_per_block + warp;
     const int chunks = hidden >> 5;
-    const int rounds = (chunks + 31) / 32;
-    float rp[16];  // per-round lane partial (chunks r*32+lane), ascending
+    float lane_acc = 0.f;
     float acc = 0.f;
     const bool have = row_i < static_cast<int64_t>(vocab);
     if (have) {
         const uint8_t *row_p = packed + row_i * (hidden >> 1);
         const uint8_t *row_s = scales + row_i * (hidden >> 4);
-        for (int r = 0; r < rounds; ++r) {
-            const int c = r * 32 + lane;
-            float part = 0.f;
-            if (c < chunks) {
+        // Lane-major accumulation: each lane owns chunks lane, lane+32, ...
+        // two interleaved accumulator streams (2 uint4 loads in flight per
+        // lane), then one 5-step shfl_down tree merge. The legacy 32-step
+        // sequential per-round merge cost 352 dependent shfl ops per row
+        // and capped the kernel at ~21% of peak bandwidth. Order is
+        // launch-shape-stable (deterministic); the argmax contract only
+        // pins the winner, not the logit bits.
+        float acc_a = 0.f, acc_b = 0.f;
+        int c = lane;
+        for (; c + 32 < chunks; c += 64) {
+            {
                 const uint8_t *pb = row_p + c * 16;
                 const float sc0 =
                     gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
                 const float sc1 =
                     gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
                 const int xb = c * 32;
+                float part = 0.f;
 #pragma unroll
                 for (int b = 0; b < 16; ++b) {
                     const float scl = (b < 8) ? sc0 : sc1;
@@ -1140,14 +1229,48 @@ __global__ void gemma_logits_rows_nvfp4_kernel(
                     part += __bfloat162float(x[xb + 2 * b + 1]) *
                             gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
                 }
+                acc_a += part;
             }
-            rp[r] = part;
+            {
+                const int c2 = c + 32;
+                const uint8_t *pb = row_p + c2 * 16;
+                const float sc0 =
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c2]);
+                const float sc1 =
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c2 + 1]);
+                const int xb = c2 * 32;
+                float part = 0.f;
+#pragma unroll
+                for (int b = 0; b < 16; ++b) {
+                    const float scl = (b < 8) ? sc0 : sc1;
+                    part += __bfloat162float(x[xb + 2 * b]) *
+                            gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+                    part += __bfloat162float(x[xb + 2 * b + 1]) *
+                            gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+                }
+                acc_b += part;
+            }
         }
-        // Exact chunk-ascending merge: round-major, lane-ascending.
-        for (int r = 0; r < rounds; ++r) {
-            for (int l = 0; l < 32; ++l)
-                acc += __shfl_sync(0xffffffffu, rp[r], l);
+        for (; c < chunks; c += 32) {
+            const uint8_t *pb = row_p + c * 16;
+            const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
+            const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
+            const int xb = c * 32;
+            float part = 0.f;
+#pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const float scl = (b < 8) ? sc0 : sc1;
+                part += __bfloat162float(x[xb + 2 * b]) *
+                        gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+                part += __bfloat162float(x[xb + 2 * b + 1]) *
+                        gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+            }
+            acc_a += part;
         }
+        lane_acc = acc_a + acc_b;
+        for (int off = 16; off > 0; off >>= 1)
+            lane_acc += __shfl_down_sync(0xffffffffu, lane_acc, off);
+        acc = __shfl_sync(0xffffffffu, lane_acc, 0);
         if (cap > 0.f) acc = tanhf(acc / cap) * cap;
         if (d_logits && lane == 0) d_logits[row_i] = acc;
     }
