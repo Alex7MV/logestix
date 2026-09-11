@@ -81,6 +81,40 @@ TEST_CASE("load_topology rejects broken index JSON", "[deepseek-model]")
     std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("load_topology reports the index format", "[deepseek-model]")
+{
+    const auto dir = TempDir("lsx_ds_model_topo_format");
+    REQUIRE(dsfixtest::BuildSyntheticModel(dir).ok());
+    const auto topo = lsxcommon::gpu::load_topology(dir.string());
+    CHECK(topo.error_msg.empty());
+    CHECK(topo.format == "logestix-v1-nvfp4");
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("model load rejects the outdated logestix-v1 format",
+          "[deepseek-model]")
+{
+    namespace fs = std::filesystem;
+    const auto dir = TempDir("lsx_ds_model_v1_reject");
+    REQUIRE(dsfixtest::BuildSyntheticModel(dir).ok());
+    // Rewind the fixture index to the pre-NVFP4 tag.
+    {
+        std::ofstream f(dir / "logestix" / "model.index.json");
+        f << "{\"format\": \"logestix-v1\", \"model\": \"DeepSeek-V4-Flash\","
+             " \"num_layers\": 3, \"experts_per_layer\": 2,"
+             " \"total_experts\": 6, \"vram\": {\"min_bytes\": 1,"
+             " \"optimal_bytes\": 2, \"max_bytes\": 4,"
+             " \"context_tokens\": 8}}\n";
+    }
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = dir.string();
+    lsxcommon::EnsureModelRegistry();
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model);
+    CHECK_FALSE(model->Load());
+    std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("load_topology rejects missing vram block", "[deepseek-model]")
 {
     const auto dir = TempDir("lsx_ds_model_topo_novram");

@@ -27,6 +27,11 @@ constexpr int kNumRouted = 256;
 constexpr int kTopK = 6;
 constexpr int kIntermediateDim = 2048;
 
+// Sole supported vault index format since the NVFP4 repack (Task 3-4,
+// docs/superpowers/plans/2026-09-11-deepseek-nvfp4-migration.md): routed
+// experts carry pow2-E4M3 per-16 scales + per-tensor global_scale.
+inline constexpr char kIndexFormatNvfp4[] = "logestix-v1-nvfp4";
+
 // Blackwell TC W4A4 toggle (F-12). Process-wide; every Infer/SelfCheck call
 // asserts its OWN policy via DeepseekFastMathScope — the last-constructed
 // model's config must never leak into another model's kernel routing
@@ -106,6 +111,8 @@ struct ModelTopology {
     int experts_per_layer = 0;
     int64_t total_experts = 0;
     lsxcommon::VramProfile vram;   // conversion-time VRAM requirements
+    // Index format tag ("logestix-v1-nvfp4" since the NVFP4 repack).
+    std::string format;
     std::string error_msg;
 };
 

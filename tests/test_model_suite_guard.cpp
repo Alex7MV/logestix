@@ -98,7 +98,8 @@ const std::vector<SuiteSpec> &Suites()
         // pre-converted logestix layout (no converter exists in the repo);
         // classification/topology of that layout is the model stage.
         {"deepseek-v4-flash",
-         {{"load", {"test_deepseek_moe_loader", "test_deepseek_moe_load_fast"}},
+         {{"convert", {"test_deepseek_moe_convert"}},
+          {"load", {"test_deepseek_moe_loader", "test_deepseek_moe_load_fast"}},
           {"model", {"test_deepseek_moe_model"}},
           {"kernels", {"test_deepseek_moe_inference_kernels"}},
           {"selfcheck", {"test_deepseek_moe_selfcheck"}}}},

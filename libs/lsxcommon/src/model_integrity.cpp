@@ -260,7 +260,8 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
         return arrow::Status::Invalid("index missing 'format' tag");
     static const std::string_view kKnownFmts[] = {
         "logestix-qwen", "logestix-glm", "logestix-kimi",
-        "logestix-kimi-r2", "logestix-v1", "logestix-gemma"};
+        "logestix-kimi-r2", "logestix-v1", "logestix-v1-nvfp4",
+        "logestix-gemma"};
     bool known = false;
     for (auto kf : kKnownFmts)
         if (fmt == kf) { known = true; break; }

@@ -50,6 +50,17 @@ bool DeepSeekV4FlashModel::Load()
             "[deepseek-model] topology error: ", topo.error_msg));
         return AbortLoad();
     }
+    // Format contract: only the NVFP4 repacked index loads. The pre-repack
+    // logestix-v1 layout (E8M0 per-32 expert scales, global_scale ignored)
+    // is retired — no backward compatibility (AGENTS.md).
+    if (topo.format != gpu::kIndexFormatNvfp4) {
+        lsxcommon::log::error(absl::StrCat(
+            "[deepseek-model] unsupported index format '",
+            topo.format.empty() ? "<missing>" : topo.format,
+            "' — repack via: lsxforge --deepseek_nvfp4 --input <model_dir>"
+            " --output <model_dir>"));
+        return AbortLoad();
+    }
     // Frozen-geometry passport cross-check (MODEL INGEST INVARIANT step 3):
     // the converted index must match the compile-time locked architecture.
     // Synthetic test fixtures bypass via LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY

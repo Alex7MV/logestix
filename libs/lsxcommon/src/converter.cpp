@@ -4,12 +4,14 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/diagnostics.h"
+#include "nvfp4_scale.h"
 #include <arrow/ipc/writer.h>
 #include <arrow/io/file.h>
 #include <simdjson.h>
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <regex>
@@ -438,10 +440,42 @@ arrow::Result<PackedExpert> PackExpertNVFP4(const ExpertData &raw)
         int64_t numel = product(shape);
         if (numel == 0 || src.empty()) return false;
 
-        // Routed/shared experts on disk are already quantized (F8_E4M3 or
-        // E2M1 packed 2-elements per byte) with paired F8_E8M0 scales. Pass
-        // the bytes through unchanged — re-quantizing would corrupt the values.
-        if ((dtype == "I8" || dtype == "U8" || dtype == "F8_E4M3") && !src_scale.empty()) {
+        // Routed experts on disk are already E2M1-packed 4-bit (I8/U8
+        // storage) with paired F8_E8M0 per-32 exponent scales. The NVFP4
+        // contour (lsx_nvfp4) decodes pow2-E4M3 per-16 scales multiplied by
+        // a per-tensor global_scale, so the repack splits every 32-block
+        // into two identical per-16 halves and folds an exact power-of-two
+        // shift into the stored global_scale (nvfp4_scale.h; pinned by
+        // tests/test_deepseek_moe_convert.cpp). F8_E4M3 payloads (shared
+        // experts) keep the verbatim passthrough.
+        if ((dtype == "I8" || dtype == "U8") && !src_scale.empty()) {
+            packed = src;
+            uint8_t b_min = 0xFF, b_max = 0x00;
+            bool any_nonzero = false;
+            for (const uint8_t b : src_scale) {
+                if (b == 0) continue;
+                any_nonzero = true;
+                b_min = std::min(b_min, b);
+                b_max = std::max(b_max, b);
+            }
+            int shift = 0;
+            if (any_nonzero) {
+                if (!nvfp4::ChooseE8m0ScaleShift(b_min, b_max, shift))
+                    return false;   // spread too wide for exact repack
+            }
+            scales.resize(src_scale.size() * 2);
+            for (size_t i = 0; i < src_scale.size(); ++i) {
+                uint8_t pair[2];
+                nvfp4::E8m0ToE4m3Pow2Pair(src_scale[i], shift, pair);
+                scales[2 * i] = pair[0];
+                scales[2 * i + 1] = pair[1];
+            }
+            global_scale = std::ldexp(1.0f, shift);
+            return true;
+        }
+
+        // Shared experts (F8_E4M3 + per-128 tile scales): verbatim.
+        if (dtype == "F8_E4M3" && !src_scale.empty()) {
             packed       = src;
             scales       = src_scale;
             global_scale = 1.0f;
@@ -959,7 +993,7 @@ static arrow::Status WriteModelIndex(
         return arrow::Status::IOError("Cannot create model.index.json");
 
     f << "{\n";
-    f << "  \"format\": \"logestix-v1\",\n";
+    f << "  \"format\": \"logestix-v1-nvfp4\",\n";
     f << "  \"model\": \"" << model_name << "\",\n";
     f << "  \"num_layers\": " << num_layers << ",\n";
     f << "  \"experts_per_layer\": " << experts_per_layer << ",\n";
@@ -1189,7 +1223,13 @@ arrow::Status Converter::Run()
                     }
                 }
 
-                if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty()) {
+                // Flush only when weights AND their paired E8M0 scales
+                // are all present — shard tensor order is arbitrary, and a
+                // weights-only trigger strands scales that follow the last
+                // weight as a forever-incomplete partial key.
+                if (!exp.w1_raw.empty() && !exp.w2_raw.empty() && !exp.w3_raw.empty() &&
+                    !exp.w1_scale_raw.empty() && !exp.w2_scale_raw.empty() &&
+                    !exp.w3_scale_raw.empty()) {
                     ++experts_in_shard;
                     static bool first_expert = true;
                     if (first_expert) {

@@ -80,6 +80,7 @@ inline void WriteIndexJson(const std::filesystem::path &model_dir)
     std::filesystem::create_directories(model_dir / "logestix");
     std::ofstream f(model_dir / "logestix" / "model.index.json");
     f << "{\n"
+      << "  \"format\": \"logestix-v1-nvfp4\",\n"
       << "  \"model\": \"DeepSeek-V4-Flash\",\n"
       << "  \"num_layers\": " << kNumLayers << ",\n"
       << "  \"experts_per_layer\": 2,\n"

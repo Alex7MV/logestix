@@ -65,7 +65,7 @@ TEST_CASE("PackExpertNVFP4 passes through already-quantized F8_E4M3 weights",
     CHECK(pe.w3_shape == raw.w3_shape);
 }
 
-TEST_CASE("PackExpertNVFP4 passes through U8 weights paired with E8M0 scales",
+TEST_CASE("PackExpertNVFP4 repacks U8+e8m0 into nvfp4 per-16 with folded gs",
           "[nvfp4][converter]")
 {
     auto raw = MakeQuantizedExpert("U8");
@@ -73,9 +73,21 @@ TEST_CASE("PackExpertNVFP4 passes through U8 weights paired with E8M0 scales",
     REQUIRE(res.ok());
     const auto &pe = *res;
 
+    // Packed nibbles verbatim; scales doubled per-16 with the per-tensor
+    // shift folded into global_scale. ChooseE8m0ScaleShift maps the window
+    // minimum onto e4=1: 0x7E(126) -> m=+5, 0x7F -> m=+6, 0x80 -> m=+7;
+    // every mapped per-16 byte is 0x08 (e4=1, 2^-6) and the decode identity
+    // E4M3(0x08)*2^m == 2^(b-127) holds bit-exactly.
     CHECK(pe.w1_packed == raw.w1_raw);
-    CHECK(pe.w1_scales == raw.w1_scale_raw);
-    CHECK(pe.w1_global_scale == 1.0f);
+    CHECK(pe.w1_scales == std::vector<uint8_t>(4, (1 << 3)));
+    CHECK(pe.w1_global_scale == std::ldexp(1.0f, 5));
+    CHECK(pe.w2_scales == std::vector<uint8_t>(4, (1 << 3)));
+    CHECK(pe.w2_global_scale == std::ldexp(1.0f, 6));
+    CHECK(pe.w3_scales == std::vector<uint8_t>(4, (1 << 3)));
+    CHECK(pe.w3_global_scale == std::ldexp(1.0f, 7));
+    CHECK(pe.w1_shape == raw.w1_shape);
+    CHECK(pe.w2_shape == raw.w2_shape);
+    CHECK(pe.w3_shape == raw.w3_shape);
 }
 
 TEST_CASE("PackExpertNVFP4 rejects empty expert data", "[nvfp4][converter]")

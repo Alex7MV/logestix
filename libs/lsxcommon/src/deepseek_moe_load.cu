@@ -215,6 +215,9 @@ ModelTopology load_topology(const std::string &model_path)
         failed.error_msg = verr + " in " + ipath.string();
         return failed;
     }
+    std::string_view fmt;
+    if (root["format"].get_string().get(fmt) == simdjson::SUCCESS)
+        topo.format.assign(fmt);
     int64_t nl = 0, epl = 0, te = 0;
     root["num_layers"].get_int64().get(nl);
     root["experts_per_layer"].get_int64().get(epl);

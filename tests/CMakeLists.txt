@@ -1157,6 +1157,19 @@ set_tests_properties(test_deepseek_nvfp4_repack_tool PROPERTIES
 set_tests_properties(test_deepseek_nvfp4_repack_tool
     PROPERTIES LABELS convert)
 
+# ── DeepSeek конвертер: синтетический e2e (logestix-v1-nvfp4) ─────────────
+add_executable(test_deepseek_moe_convert test_deepseek_moe_convert.cpp)
+target_compile_definitions(test_deepseek_moe_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_deepseek_moe_convert PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_convert COMMAND test_deepseek_moe_convert)
+set_tests_properties(test_deepseek_moe_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_deepseek_moe_convert
+    PROPERTIES LABELS convert)
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
