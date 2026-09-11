@@ -1287,18 +1287,20 @@ cudaError_t RunFlashRoutedFFN(
         const uint8_t *s1 = scale;
         const uint8_t *s3 = scale + rec.s1_bytes;
         const uint8_t *s2 = scale + rec.s1_bytes + rec.s3_bytes;
-        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w1, s1, rec.gs1, d_yg, 1,
-                                   hidden, moe_inter, false) != cudaSuccess)
-            { error = "w1 gemm failed"; return cudaErrorInvalidValue; }
-        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_x, w3, s3, rec.gs3, d_yu, 1,
-                                   hidden, moe_inter, false) != cudaSuccess)
-            { error = "w3 gemm failed"; return cudaErrorInvalidValue; }
+        // Gate/up live adjacently in the LRU pack ([w1|w3|w2], scales
+        // [s1|s3|s2]): one pair GEMV emits [gate | up] into d_yg[0..2I)
+        // (the arena slot is kYMax >= 2I) — halves the w13 launch count
+        // and doubles the per-launch weight stream. Bit-identical halves.
+        if (lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+                stream, d_x, w1, s1, rec.gs1, rec.gs3, d_yg, hidden,
+                moe_inter, false) != cudaSuccess)
+            { error = "w13 gemm failed"; return cudaErrorInvalidValue; }
         {
             const int blocks = (moe_inter + 255) / 256;
             ::lsxcommon::kernels::SwigluKernel<__half,
                 ::lsxcommon::kernels::ExpFlavor::Glibc, true>
-                <<<blocks, 256, 0, stream>>>(d_yg, d_yu, d_yg, moe_inter,
-                                             10.0f);
+                <<<blocks, 256, 0, stream>>>(d_yg, d_yg + moe_inter, d_yg,
+                                             moe_inter, 10.0f);
         }
         if (lsxcommon::lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, w2, s2, rec.gs2, d_y2, 1,
                                    moe_inter, hidden, false) != cudaSuccess)

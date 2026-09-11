@@ -252,7 +252,8 @@ __global__ void lsx_nvfp4_gemv_kernel(
     const __half *__restrict__ x,
     const uint8_t *__restrict__ packed,
     const uint8_t *__restrict__ scales,
-    float global_scale, __half *__restrict__ y,
+    float global_scale, float global_scale_up, int n_half,
+    __half *__restrict__ y,
     int K, int N, bool acc_in)
 {
     constexpr int WARPS = 8;
@@ -267,6 +268,11 @@ __global__ void lsx_nvfp4_gemv_kernel(
     // must be reached uniformly by all threads of the block.
     float acc = 0.0f;
     const int row = blockIdx.x * ROWS + (warp / KP);
+    // Per-row global scale: gate/up pair packs scale rows [0, n_half) with
+    // global_scale and rows [n_half, N) with global_scale_up; plain launches
+    // pass n_half == N so every row uses global_scale (unchanged behavior).
+    const float row_scale =
+        (row < n_half) ? global_scale : global_scale_up;
     if (row < N) {
         const int k_half = K >> 1;
         const uint8_t *wrow =
@@ -326,7 +332,7 @@ __global__ void lsx_nvfp4_gemv_kernel(
         for (int j = 0; j < KP; ++j) t += sp[wbase + j];
         const int r = blockIdx.x * ROWS + (warp / KP);
         if (r < N) {
-            const float v = t * global_scale;
+            const float v = t * row_scale;
             y[r] = acc_in ? __float2half(__half2float(y[r]) + v)
                           : __float2half(v);
         }
@@ -353,7 +359,43 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
         constexpr int ROWS = WARPS / KPc;
         const dim3 grid((N + ROWS - 1) / ROWS);
         lsx_nvfp4_gemv_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
-            x, packed, scales, global_scale, y, K, N, acc_in);
+            x, packed, scales, global_scale, global_scale, N, y, K, N, acc_in);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
+
+// Fused gate/up streaming GEMV: W is the contiguous [2*n_half, K] NVFP4
+// pack ([n_half, K] gate rows followed by [n_half, K] up rows; the E4M3
+// scale rows follow the same split). Rows < n_half scale by gs_gate,
+// rows >= n_half by gs_up. KP is picked from n_half (not 2*n_half) so the
+// per-row k-slicing matches the plain single GEMV bit-for-bit.
+cudaError_t LaunchLsxNvfp4GemmSeq1GateUpPair(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales,
+    float gs_gate, float gs_up, __half *y, int K, int n_half, bool acc_in)
+{
+    if (!x || !packed || !scales || !y || K <= 0 || n_half <= 0)
+        return cudaErrorInvalidValue;
+    if ((K & 31) != 0) return cudaErrorInvalidValue;
+    int kp = 1;
+    for (int cand : {8, 4, 2}) {
+        if ((K / cand) >= 1024 &&
+            (static_cast<int64_t>(n_half) * cand) >= 1024) { kp = cand; break; }
+    }
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const int n_total = 2 * n_half;
+        const dim3 grid((n_total + ROWS - 1) / ROWS);
+        lsx_nvfp4_gemv_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
+            x, packed, scales, gs_gate, gs_up, n_half, y, K, n_total, acc_in);
         return cudaGetLastError();
     };
     switch (kp) {
@@ -454,6 +496,37 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
 {
     return LaunchLsxNvfp4GemmSeq1GemmV(stream, x, packed, scales,
                                         global_scale, y, K, N, acc);
+}
+
+cudaError_t RunLsxNvfp4GemmGateUpPair(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float gs_gate,
+    float gs_up, __half *y, int K, int n_half, bool acc)
+{
+    if (!x || !packed || !scales || !y || K <= 0 || n_half <= 0)
+        return cudaErrorInvalidValue;
+    // Same size-bounded eligibility as the plain streaming GEMV, doubled
+    // for the two halves this launch covers.
+    const int64_t pair_bytes =
+        2 * ((int64_t)(K / 2) * n_half + (int64_t)((K + 15) / 16) * n_half);
+    const bool gemv =
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed) && LsxSeq1Gemv() &&
+        pair_bytes <= g_lsx_gemv_max_bytes.load(std::memory_order_relaxed);
+    if (gemv && K >= 256) {
+        const cudaError_t gv = LaunchLsxNvfp4GemmSeq1GateUpPair(
+            stream, x, packed, scales, gs_gate, gs_up, y, K, n_half, acc);
+        // InvalidValue = shape contract mismatch -> keep falling back.
+        if (gv != cudaErrorNotSupported && gv != cudaErrorInvalidValue)
+            return gv;
+    }
+    // Bit-exact fallback: two independent plain GEMVs over the sub-ranges.
+    const int64_t pack_half = (int64_t)K * n_half / 2;
+    const int64_t scale_half = (int64_t)K * n_half / 16;
+    cudaError_t e = RunLsxNvfp4Gemm(stream, x, packed, scales, gs_gate, y, 1,
+                                    K, n_half, acc);
+    if (e != cudaSuccess) return e;
+    return RunLsxNvfp4Gemm(stream, x, packed + pack_half, scales + scale_half,
+                           gs_up, y + n_half, 1, K, n_half, acc);
 }
 
 } // namespace lsx_nvfp4

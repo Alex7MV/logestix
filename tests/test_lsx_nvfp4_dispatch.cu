@@ -333,3 +333,72 @@ TEST_CASE("seq==1 direct GEMV entry minimal shape parity",
     }
     b.Free();
 }
+
+TEST_CASE("Gate/up pair GEMV is bit-exact vs two single GEMVs",
+          "[lsxnvfp4][gemv][pair]")
+{
+    // Routed-expert shape (GLM-5.3-Flash): K=4096, gate/up halves of 2048
+    // rows each, packed as [gate rows | up rows] with scales [s1 | s3] and
+    // DIFFERENT global scales per half (the converter computes gs per
+    // tensor). The pair entry must produce bit-identical halves.
+    constexpr int K = 4096, NH = 2048;
+    Bufs b;
+    b.Init(1, K, 2 * NH);
+    const float gs_gate = 0.125f, gs_up = 0.03125f;
+
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+                nullptr, b.dx, b.dp, b.ds, gs_gate, gs_up, b.dy, K, NH) ==
+            cudaSuccess);
+
+    // Reference: two independent plain streaming GEMVs over the sub-ranges.
+    const int64_t pack_half = (int64_t)K * NH / 2;
+    const int64_t scale_half = (int64_t)K * NH / 16;
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, b.dx, b.dp, b.ds,
+                                                gs_gate, b.dy2, K, NH) ==
+            cudaSuccess);
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                nullptr, b.dx, b.dp + pack_half, b.ds + scale_half, gs_up,
+                b.dy2 + NH, K, NH) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto hy = b.Read(b.dy);
+    const auto href = b.Read(b.dy2);
+    CHECK(std::memcmp(hy.data(), href.data(), hy.size() * sizeof(__half)) ==
+          0);
+
+    // Invalid arguments are rejected. K % 32 != 0 is NOT an error: the
+    // pair entry falls back to the two plain GEMMs (bit-exact tail).
+    CHECK(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+              nullptr, nullptr, b.dp, b.ds, gs_gate, gs_up, b.dy, K, NH) ==
+          cudaErrorInvalidValue);
+    CHECK(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+              nullptr, b.dx, b.dp, b.ds, gs_gate, gs_up, b.dy, 0, NH) ==
+          cudaErrorInvalidValue);
+    CHECK(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+              nullptr, b.dx, b.dp, b.ds, gs_gate, gs_up, b.dy, K, 0) ==
+          cudaErrorInvalidValue);
+    // Odd-K fallback still matches the two-single reference numerically
+    // (host replica over the same sub-ranges).
+    {
+        Bufs s;
+        s.Init(1, 48, 64);   // dy holds the full [gate | up] pair output
+        std::vector<float> ref((size_t)2 * 32);
+        HostRefPlain(s.hx.data(), s.hp.data(), s.hs.data(), gs_gate,
+                     ref.data(), 1, 48, 32, false);
+        HostRefPlain(s.hx.data(), s.hp.data() + (int64_t)48 * 32 / 2,
+                     s.hs.data() + (int64_t)48 * 32 / 16, gs_up,
+                     ref.data() + 32, 1, 48, 32, false);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+                    nullptr, s.dx, s.dp, s.ds, gs_gate, gs_up, s.dy, 48, 32) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        const auto hy = s.Read(s.dy);
+        for (int n = 0; n < 2 * 32; ++n) {
+            INFO("n=" << n << " ref=" << ref[n]
+                      << " got=" << __half2float(hy[n]));
+            CHECK(std::abs(__half2float(hy[n]) - ref[n]) <
+                  2e-3f * std::abs(ref[n]) + 2e-4f);
+        }
+        s.Free();
+    }
+    b.Free();
+}

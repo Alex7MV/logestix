@@ -153,6 +153,17 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int K, int N, bool acc = false);
 
+// Fused gate/up streaming GEMV for seq==1: W is the contiguous
+// [2*n_half, K] NVFP4 pack ([n_half, K] gate rows followed by [n_half, K]
+// up rows; E4M3 scale rows follow the same split). Rows < n_half scale by
+// gs_gate, rows >= n_half by gs_up — bit-identical to two independent
+// RunLsxNvfp4GemmSeq1GemmV calls over the sub-ranges. Non-eligible shapes
+// fall back to exactly those two calls (bit-exact tail).
+cudaError_t RunLsxNvfp4GemmGateUpPair(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float gs_gate,
+    float gs_up, __half *y, int K, int n_half, bool acc = false);
+
 // Convenience launcher over an LsxNvfp4Weight container: y[t][n] =
 // sum_k x[t*K+k] * dequant(w). Same dispatch and numeric contract as
 // RunLsxNvfp4Gemm (acc=false).
