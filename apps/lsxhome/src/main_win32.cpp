@@ -16,6 +16,7 @@
 
 #include "lsxcommon/generation_cli.h"
 #include "lsxcommon/model.h"
+#include "lsxcommon/model_engine.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/prompt_framing.h"
 
@@ -82,6 +83,10 @@ void ComputeProducer(lsxhome::GuiBridge& bridge, std::atomic<bool>& running,
     // each decoded token into the SPSC bridge. Falls back to the previous demo
     // behavior (single "Paris" token pump) when no model is loadable.
     if (!model_path.empty()) {
+        // Fixed-speed policy: the engine session applies the per-GPU knob
+        // policy (same as lsxfabric/lsxbenchmark) on entry and tears the
+        // engine down on scope exit.
+        lsxcommon::InferenceEngine::Session engine_session;
         lsxcommon::ModelInitConfig cfg;
         cfg.model_path = model_path;
         auto model = lsxcommon::LsxModelFactory::Create(cfg);

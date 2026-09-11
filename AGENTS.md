@@ -551,6 +551,12 @@ CMake-якоря:
   нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
   запуска — `--bit-exact` (lsxbenchmark), он маппится в `FastMathMode::kOff`
   модели.
+- Политика применяется по умолчанию в каждом потребителе моделей: call-once
+  гарант `perf::EnsurePerfPolicyApplied()` (resolve + apply, честный
+  `PerfSource` — `ApplyKnobs` его не затирает) вызывается из
+  `LsxModelFactory::Create` и `InferenceEngine::InitializeEngine`; lsxhome
+  открывает `InferenceEngine::Session` в compute-треде. Явные тестовые
+  `SetCurrentKnobs` работают поверх гаранта (once-флаг не пере-resolve).
 - Неизвестный GPU: первый `Load` запускает одноразовую GEMV-калибровку
   (синтетические NVFP4-буферы представительских форм), результат сохраняется
   в vault. `RunCliCalibrate`/`lsxfabric --calibrate` удалены (2026-09,
