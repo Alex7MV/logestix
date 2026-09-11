@@ -261,7 +261,10 @@ InferenceResult RunInferenceModel(
         int64_t pk = static_cast<int64_t>(kIntermediateDim) * kHiddenDim / 2;   // w1/w3 packed bytes
         int64_t w2p = static_cast<int64_t>(kHiddenDim) * kIntermediateDim / 2;  // w2 packed bytes
         routed_pack_total = pk + w2p + pk;
-        int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 32; // per-32 E8M0
+        // logestix-v1-nvfp4: pow2-E4M3 scales are PER-16 elements (2x the
+        // legacy per-32 MXFP4 arrays). A stale per-32 bound makes every
+        // routed expert silently fail the staging-size check and skip.
+        int64_t scl = (static_cast<int64_t>(kIntermediateDim) * kHiddenDim) / 16;
         routed_scale_total = scl * 3;
     }
     // KV cache: 43 layers × (128 window + max_compressed) × 512 head_dim.

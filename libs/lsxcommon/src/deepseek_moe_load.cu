@@ -880,8 +880,9 @@ cudaError_t DeepSeekInferArena::Allocate(cudaStream_t stream, int num_layers,
                               * sizeof(__half);
     const int64_t pack_total = 3 * (static_cast<int64_t>(kIntermediateDim)
                                     * kHiddenDim / 2);
+    // v1-nvfp4: per-16 scale arrays (2x the legacy per-32 size).
     const int64_t scale_total = 3 * (static_cast<int64_t>(kIntermediateDim)
-                                     * kHiddenDim / 32);
+                                     * kHiddenDim / 16);
 
     int64_t off = 0;
     auto page = [&](int64_t bytes_, int64_t align) -> int64_t {

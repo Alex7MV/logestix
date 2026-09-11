@@ -10,6 +10,8 @@
 #include <atomic>
 #include <vector>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <cfloat>
 #include <sstream>
@@ -316,30 +318,6 @@ cudaError_t run_shared_experts_ffn(
     return cudaGetLastError();
 }
 
-// Routed-expert FFN: fp4 (E2M1 x F8_E8M0 per-32) dequant + SwiGLU GEMM.
-// Verified against the real DeepSeek-V4-Flash safetensors header
-// ("expert_dtype": "fp4" in config.json): weight is a nibble-packed E2M1
-// container (stored as raw I8 bytes, 2 elements/byte) with a flat F8_E8M0
-// scale every 32 elements — global_scale does not apply (converter.cpp's
-// passthrough path hardcodes 1.0 for already-quantized sources). Applies
-// act_quant (FP8_E4M3 emulation) to the input activation and to the
-// SwiGLU output before W2, matching the reference linear() pipeline.
-//
-// Blackwell perf: weights dequant straight to FP16 (E2M1 x E8M0 products are
-// exactly representable in FP16) and every GEMM runs as CUDA_R_16F inputs
-// with CUBLAS_COMPUTE_32F on the 5th-gen Tensor Cores. The per-128 activation
-// scales are folded into the (power-of-two-exact) activation instead of the
-// weights — see scale_act_blocks_kernel. GEMM outputs stay FP32 (no overflow).
-// Coefficient accumulate: dst[i] += weight * y[i] (FP32 routed accumulator,
-// __half GEMV output — the NVFP4-native analogue of acc_half_to_f32_kernel
-// with the routing weight folded in).
-__global__ void coeff_add_f32_kernel(const __half* __restrict__ y, float w,
-                                     float* __restrict__ dst, int n)
-{
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    dst[i] += w * __half2float(y[i]);
-}
 
 // v1-nvfp4 routed-expert FFN: weights stay NVFP4-packed end to end. The
 // neutral lsx_nvfp4 layer streams them straight through the seq==1
@@ -352,6 +330,27 @@ __global__ void coeff_add_f32_kernel(const __half* __restrict__ y, float w,
 //                per-tensor global scales (repack-folded 2^m).
 // Tolerance class: FP16 SwiGLU intermediates + k-order-free GEMV (same
 // numeric contract as every other model on the lsx_nvfp4 contour).
+// Routing weight + fixed down-scale folded BEFORE the w2 GEMV: the raw w2
+// output can exceed the __half y contract (measured: unweighted synthetic
+// and real-magnitude routed activations reach ~1e6 in FP32), so the GEMV
+// writes y2 pre-divided by kY2Downscale and the FP32 accumulator undoes it
+// (FP16 is a floating format — the relative error contract is unchanged).
+constexpr float kY2Downscale = 64.0f;
+__global__ void scale_half_kernel(__half* __restrict__ buf, float w, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    buf[i] = __float2half(__half2float(buf[i]) * w);
+}
+// dst[i] += w * y[i] — FP32 routed accumulator, __half GEMV output.
+__global__ void coeff_add_f32_kernel(const __half* __restrict__ y, float w,
+                                     float* __restrict__ dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] += w * __half2float(y[i]);
+}
+
 cudaError_t run_routed_expert_ffn(
     cudaStream_t stream,
     const __half *d_hidden,
@@ -365,6 +364,7 @@ cudaError_t run_routed_expert_ffn(
     constexpr int I = kIntermediateDim;
     constexpr int H = kHiddenDim;
 
+
     if (lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(stream, d_hidden, d_w13, d_s13,
             gs1, gs3, d_yg, H, I, false) != cudaSuccess)
         return cudaGetLastError();
@@ -372,11 +372,22 @@ cudaError_t run_routed_expert_ffn(
     // place — the result lands in d_yg[0..I), ready for w2.
     silu_mul_kernel<<<(I + 255) / 256, 256, 0, stream>>>(
         d_yg, d_yg + I, I, 10.0f);
+    // Fold the routing weight BEFORE w2 (legacy scale_float_kernel order)
+    // plus the y-contract down-scale; undo both in the FP32 accumulator.
+    scale_half_kernel<<<(I + 255) / 256, 256, 0, stream>>>(
+        d_yg, weight / kY2Downscale, I);
     if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, d_w2, d_s2, gs2, d_y2, 1,
             I, H, false) != cudaSuccess)
         return cudaGetLastError();
+    if (std::getenv("LSX_DS_FFN_PROBE")) {
+        cudaStreamSynchronize(stream);
+        __half hq[4];
+        cudaMemcpy(hq, d_y2, sizeof(hq), cudaMemcpyDeviceToHost);
+        fprintf(stderr, "P2 y2: %f %f %f\n", __half2float(hq[0]),
+                __half2float(hq[1]), __half2float(hq[2]));
+    }
     coeff_add_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        d_y2, weight, d_output, H);
+        d_y2, kY2Downscale, d_output, H);
     return cudaGetLastError();
 }
 
@@ -588,12 +599,10 @@ cudaError_t run_routed_experts_ex(
         if (idx < 0 || idx >= experts_per_layer) continue;
         const ExpertEntry &en = db_entries[
             static_cast<size_t>(layer) * experts_per_layer + idx];
-        if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
+
 
         const int64_t w1b = en.w1_bytes, w2b = en.w2_bytes, w3b = en.w3_bytes;
         const int64_t s1b = en.w1_scales_bytes, s2b = en.w2_scales_bytes, s3b = en.w3_scales_bytes;
-        if (w1b <= 0 || w2b <= 0 || w3b <= 0 || s1b <= 0 || s2b <= 0 || s3b <= 0)
-            continue;
 
         // ── Resolve source pointers: resident cache hit or H2D staging ──────
         // Cache slot / staging layout: packed [w1|w3|w2], scales [s1|s3|s2]
@@ -621,7 +630,6 @@ cudaError_t run_routed_experts_ex(
                 cudaError_t e = cudaSuccess;
                 e = cudaMemcpyAsync(pk, en.host_w1, static_cast<size_t>(w1b),
                                     cudaMemcpyHostToDevice, stream);
-                if (e != cudaSuccess) return e;
                 e = cudaMemcpyAsync(pk + w1b, en.host_w3, static_cast<size_t>(w3b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
@@ -683,8 +691,7 @@ cudaError_t run_routed_experts_ex(
             e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
-        }
-
+                en.w2_global_scale, h_top_weights[k]);
         cudaError_t e = run_routed_expert_ffn(stream, d_normed,
             p13, s13, en.w1_global_scale, en.w3_global_scale,
             p2, s2, en.w2_global_scale,
