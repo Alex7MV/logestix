@@ -55,5 +55,28 @@ LSX_NVFP4_SCALE_HD inline float E4m3P2ToFloat(uint8_t e4m3)
     return f;
 }
 
+// Map one MXFP4 E8M0 exponent byte (value 2^(b-127); 0 -> 0, 0xFF -> FLT_MAX
+// per the clamped decode flavor in lsx_kernels_quant.cuh) onto the TWO
+// per-16 pow2-E4M3 scale bytes of the same 32-element block (DeepSeek vault
+// NVFP4 repack). Exact for the representable range b in [121..134]
+// (2^-6 .. 2^7); outside it saturates to the nearest representable scale —
+// the finite-clamp flavor the routed-expert FFN already relies on. Byte
+// 0x00 (zero scale) maps to 0x00 (decode: 0.0f).
+LSX_NVFP4_SCALE_HD inline void E8m0ToE4m3Pow2Pair(uint8_t e8m0, uint8_t out[2])
+{
+    if (e8m0 == 0) {
+        out[0] = 0;
+        out[1] = 0;
+        return;
+    }
+    int e4 = static_cast<int>(e8m0) - 120;  // 2^(b-127) == 2^(e4-7)
+    if (e8m0 == 0xFF) e4 = 14;              // FLT_MAX flavor: clamp finite
+    if (e4 < 1) e4 = 1;
+    if (e4 > 14) e4 = 14;                   // avoid the E4M3 NaN slot (15)
+    const uint8_t mapped = static_cast<uint8_t>(static_cast<uint8_t>(e4) << 3);
+    out[0] = mapped;
+    out[1] = mapped;
+}
+
 } // namespace nvfp4
 } // namespace lsxcommon

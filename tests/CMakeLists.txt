@@ -1139,6 +1139,16 @@ set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b PROPERTIES
 set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b
     PROPERTIES LABELS perf)
 
+# ── Тест E8M0 -> pow2-E4M3 scale-пары (DeepSeek NVFP4 repack, Task 1) ─────
+add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
+target_include_directories(test_deepseek_nvfp4_repack PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_deepseek_nvfp4_repack PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_nvfp4_repack COMMAND test_deepseek_nvfp4_repack)
+set_tests_properties(test_deepseek_nvfp4_repack
+    PROPERTIES LABELS fast)
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
