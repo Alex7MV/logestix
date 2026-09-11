@@ -292,13 +292,4 @@ gpu::InferenceResult Qwen38FlashNextModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult Qwen38FlashNextModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    r.ok = false;
-    r.error_msg = "qwen3.8-flash-next benchmark not wired yet";
-    return r;
-}
-
 } // namespace lsxcommon

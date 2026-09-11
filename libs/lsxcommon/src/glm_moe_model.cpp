@@ -196,26 +196,4 @@ gpu::InferenceResult GlmV5Model::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult GlmV5Model::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!loaded_ || !pw_.d_embed) { r.error_msg = "model not loaded"; return r; }
-    // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times.
-    const std::vector<int32_t> prompt = {0, 0, 0, 0};
-
-    glm::GlmGenerationResult gr;
-    const cudaError_t berr = RunUnderResidencyLock([&] {
-        return glm::RunGlmRealGeneration(cublas(), stream(), pw_, experts_,
-                                         prompt, num_tokens, gr);
-    });
-    if (berr != cudaSuccess || !gr.ok) {
-        r.error_msg = runtime::CombineGenError(berr, gr.error_msg);
-        return r;
-    }
-    runtime::FillBenchmarkResult(r, gr.total_ms,
-                                 static_cast<int>(gr.tokens.size()),
-                                 glm::kGlmNumLayers, gr.resident_bytes);
-    return r;
-}
-
 } // namespace lsxcommon

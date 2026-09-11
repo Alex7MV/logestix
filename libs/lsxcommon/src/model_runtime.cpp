@@ -1,7 +1,5 @@
 #include "lsxcommon/model_runtime.h"
 
-#include "lsxcommon/benchmark_gpu.h"
-
 #include <absl/strings/ascii.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
@@ -158,20 +156,6 @@ void FillInferenceResult(gpu::InferenceResult &r, const GenResultView &g,
     r.eos_terminated = g.eos_terminated;
     r.kv_slots_used = g.kv_slots_used;  // -1 => caller computes its own fallback
     r.weight_resident_bytes = g.resident_bytes;
-}
-
-void FillBenchmarkResult(gpu::BenchmarkResult &r, double total_ms,
-                         int num_tokens, int num_layers,
-                         std::uint64_t resident_bytes)
-{
-    r.ok = true;
-    r.num_tokens = num_tokens;
-    r.num_layers = num_layers;
-    r.total_time_ms = total_ms;
-    r.tokens_per_sec =
-        total_ms > 0.0 ? (static_cast<double>(num_tokens) / total_ms) * 1000.0
-                       : 0.0;
-    r.resident_bytes = resident_bytes;
 }
 
 namespace {

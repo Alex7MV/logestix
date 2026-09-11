@@ -339,41 +339,4 @@ gpu::InferenceResult QwenMoeModelBase::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult QwenMoeModelBase::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    if (!ContextReady()) {
-        r.error_msg = "execution context missing";
-        return r;
-    }
-
-    // Model independence: same per-call kernel-routing policy as Infer —
-    // the benchmark must measure the configuration the model is asked to
-    // serve with, never the last Infer caller's ambient toggles.
-    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
-
-    // Fresh session (benchmark semantics; GLM/Kimi/QwenBase parity: the
-    // harness must not touch the caller's incremental session tail). The
-    // generation driver allocates/ensures KV capacity internally, mirroring
-    // the fresh-session path of Infer().
-    auto kv = std::make_unique<qwen::QwenKvCache>();
-
-    qwen::QwenGenerationResult gen;
-    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-    cudaError_t e = RunUnderResidencyLock([&] {
-        return qwen_moe::RunQwenMoeGeneration(
-            stream(), pw_, experts_, cache_, scratch_, {0}, num_tokens,
-            eos_id, gen, lsxcommon::sample::DefaultSampler(), kv.get());
-    });
-    if (e != cudaSuccess || !gen.ok) {
-        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
-        return r;
-    }
-    runtime::FillBenchmarkResult(r, gen.total_ms,
-                                 static_cast<int>(gen.tokens.size()),
-                                 pw_.top.num_layers, gen.resident_bytes);
-    return r;
-}
-
 } // namespace lsxcommon

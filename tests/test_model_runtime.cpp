@@ -15,10 +15,6 @@ using Catch::Approx;
 #include <lsxcommon/model_runtime.h>
 #include <lsxcommon/qwen_inference.h>
 #include <lsxcommon/tokenizer.h>
-#include <lsxcommon/benchmark_gpu.h>
-
-#include "kimi_moe_model.h"
-#include "qwen_moe_model.h"
 
 namespace fs = std::filesystem;
 
@@ -164,25 +160,6 @@ TEST_CASE("model_runtime: DecodeGeneratedText round-trips a token stream", "[mod
     fs::remove_all(root);
 }
 
-TEST_CASE("model_runtime: IModel::Benchmark default returns ok=false", "[model_runtime]")
-{
-    // The shared test FakeModel does NOT override Benchmark -> default applies.
-    FakeModel m("glm-5.2");
-    auto r = m.Benchmark();
-    REQUIRE_FALSE(r.ok);
-}
-
-TEST_CASE("model_runtime: RunBenchmark shim delegates to IModel::Benchmark", "[model_runtime]")
-{
-    // No checkpoint at this path -> factory returns nullptr -> shim reports
-    // ok=false but still fills num_tokens from its argument (fill-before-dispatch).
-    auto r = lsxcommon::gpu::RunBenchmark(
-        (fs::temp_directory_path() / "no_such_model_xyz").string(), 64);
-    REQUIRE_FALSE(r.ok);
-    REQUIRE(r.num_tokens == 64);
-    REQUIRE(r.resident_bytes == 0);
-}
-
 TEST_CASE("model_runtime: RunCliBenchmark returns 1 on a missing model",
           "[model_runtime]")
 {
@@ -239,7 +216,7 @@ TEST_CASE("kv_slots_used contract defaults and monotonicity", "[model_runtime]")
     REQUIRE(r.kv_slots_used == 7 + r.num_tokens);
 }
 
-// ── FillInferenceResult / FillBenchmarkResult (unified result mapping) ──────
+// ── FillInferenceResult (unified result mapping) ────────────────────────────
 
 TEST_CASE("FillInferenceResult maps tokens, timings and eos", "[model_runtime]")
 {
@@ -281,21 +258,6 @@ TEST_CASE("FillInferenceResult handles empty stream and null optionals",
     CHECK(r.first_gen_tok_id == -1);
     CHECK(r.kv_slots_used == -1);  // caller fallback preserved
     CHECK(r.final_logits.empty());
-}
-
-TEST_CASE("FillBenchmarkResult computes tokens-per-second", "[model_runtime]")
-{
-    lsxcommon::gpu::BenchmarkResult r;
-    lsxcommon::runtime::FillBenchmarkResult(r, /*total_ms=*/200.0,
-                                            /*num_tokens=*/100,
-                                            /*num_layers=*/43,
-                                            /*resident_bytes=*/9999);
-    CHECK(r.ok);
-    CHECK(r.num_tokens == 100);
-    CHECK(r.num_layers == 43);
-    CHECK(r.total_time_ms == 200.0);
-    CHECK(r.tokens_per_sec == Approx(500.0));
-    CHECK(r.resident_bytes == 9999);
 }
 
 // ── Shared incremental-session decision (qwen families) ─────────────────────
@@ -411,9 +373,8 @@ TEST_CASE("RunUnderResidencyLock executes and releases", "[model_base]")
 //
 // ModelBase owns the Unload template method (final): TeardownWeights() ->
 // tokenizer db -> loaded_ flag. Subclasses only override TeardownWeights().
-// AbortLoad() is the canonical Load-failure tail. RequireLoaded() is the
-// canonical Benchmark guard. runtime::CombineGenError is the single error
-// format for cudaError_t + family-error tails.
+// AbortLoad() is the canonical Load-failure tail. runtime::CombineGenError is
+// the single error format for cudaError_t + family-error tails.
 
 #include <cuda_runtime.h>
 
@@ -423,7 +384,6 @@ class LifecycleProbe final : public lsxcommon::ModelBase {
 public:
     using ModelBase::ModelBase;
     using ModelBase::AbortLoad;
-    using ModelBase::RequireLoaded;
     using ModelBase::resident_bytes_;
 
     int teardowns = 0;
@@ -489,20 +449,6 @@ TEST_CASE("ModelBase AbortLoad: failed Load leaves a clean state",
     CHECK_FALSE(p.loaded_);
     CHECK(p.ResidentWeightBytes() == 0);
     fs::remove_all(root);
-}
-
-TEST_CASE("RequireLoaded: canonical Benchmark guard", "[model_base][lifecycle]")
-{
-    LifecycleProbe p{lsxcommon::ModelInitConfig{}};
-    lsxcommon::gpu::BenchmarkResult r;
-    CHECK_FALSE(p.RequireLoaded(r));
-    CHECK_FALSE(r.ok);
-    CHECK(r.error_msg == "model not loaded");
-
-    p.loaded_ = true;
-    lsxcommon::gpu::BenchmarkResult r2;
-    CHECK(p.RequireLoaded(r2));
-    CHECK(r2.error_msg.empty());
 }
 
 TEST_CASE("runtime::CombineGenError is the single error format",
@@ -627,23 +573,6 @@ TEST_CASE("ModelBase expert-cache lease is adaptive and released on Unload",
 
     p.Unload();
     CHECK(gov.CommittedVramBytes() == 0);
-}
-
-TEST_CASE("Concrete unloaded models report 'model not loaded' from Benchmark",
-          "[lifecycle][models]")
-{
-    lsxcommon::ModelInitConfig cfg;
-    cfg.model_path = "unused";
-
-    lsxcommon::Qwen35MoeModel q{cfg};
-    auto rq = q.Benchmark();
-    CHECK_FALSE(rq.ok);
-    CHECK(rq.error_msg == "model not loaded");
-
-    lsxcommon::KimiK27CodeModel k{cfg};
-    auto rk = k.Benchmark();
-    CHECK_FALSE(rk.ok);
-    CHECK(rk.error_msg == "model not loaded");
 }
 
 // ── Option-driven Paris SelfCheck (unified harness) ─────────────────────────

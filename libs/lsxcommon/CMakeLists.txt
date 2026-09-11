@@ -18,7 +18,6 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/deepseek_moe_model.cpp
-    src/benchmark_gpu.cpp
     src/generation_cli.cpp
     src/glm_moe_convert.cpp
     src/glm_moe_flash_convert.cpp
@@ -114,7 +113,6 @@ add_library(lsxcommon_cu OBJECT
     src/lsx_inference_nvfp4.cu
     src/perf_calibration.cu
     src/safetensors_gpu.cu
-    src/benchmark_gpu.cu
     src/deepseek_moe_load.cu
     src/deepseek_moe_inference_moe.cu
     src/deepseek_moe_inference_head.cu

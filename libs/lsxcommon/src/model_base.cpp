@@ -35,14 +35,6 @@ bool ModelBase::AbortLoad()
     return false;
 }
 
-bool ModelBase::RequireLoaded(gpu::BenchmarkResult &r) const
-{
-    if (loaded_) return true;
-    r.ok = false;
-    r.error_msg = "model not loaded";
-    return false;
-}
-
 bool ModelBase::AcquirePermanentWeights(std::uint64_t bytes)
 {
     auto &gov = ResourceGovernor::Instance();

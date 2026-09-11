@@ -163,33 +163,6 @@ gpu::InferenceResult QwenBaseModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult QwenBaseModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    const std::vector<int32_t> prompt = {0};
-    // Mirror Infer: persistent context, single residency-locked generation.
-    qwen::QwenGenerationResult gr;
-    if (!EnsureContext(/*with_cublas=*/true)) {
-        r.error_msg = "cuda/cublas init failed";
-        return r;
-    }
-    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
-    cudaError_t e = RunUnderResidencyLock([&] {
-        return qwen::RunQwenGeneration(stream(), pw_, prompt, num_tokens,
-                                       eos_id, gr);
-    });
-    if (e != cudaSuccess) {
-        r.error_msg = runtime::CombineGenError(e, gr.error_msg);
-        return r;
-    }
-    runtime::FillBenchmarkResult(r, gr.total_ms,
-                                 static_cast<int>(gr.tokens.size()),
-                                 /*num_layers=*/pw_.top.num_layers,
-                                 gr.resident_bytes);
-    return r;
-}
-
 bool QwenBaseModel::ValidateGeometry(const qwen::QwenTopology &) const { return true; }
 
 } // namespace lsxcommon

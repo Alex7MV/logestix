@@ -24,7 +24,6 @@ public:
     bool Load() override;
     gpu::InferenceResult Infer(const ModelRequest &req) override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
-    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
     const std::string &Type() const override { return kType; }
 

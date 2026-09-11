@@ -13,7 +13,7 @@
 namespace lsxcommon {
 namespace runtime {
 
-// Single error format for the Infer/Benchmark tails that receive both a
+// Single error format for the Infer tails that receive both a
 // cudaError_t status and a family generation-error string: family error wins
 // on a clean CUDA status, the CUDA string alone otherwise, and both present
 // join as "<cuda-string> / <family-error>" (lifecycle-unification 2026-08).
@@ -70,11 +70,6 @@ struct GenResultView {
 // callers own both. `num_layers` stamps r.num_layers.
 void FillInferenceResult(gpu::InferenceResult &r, const GenResultView &g,
                          int num_layers);
-
-// Shared Benchmark result tail: ok + tokens/timing/occupancy mapping.
-void FillBenchmarkResult(gpu::BenchmarkResult &r, double total_ms,
-                         int num_tokens, int num_layers,
-                         std::uint64_t resident_bytes);
 
 struct GenerationCliArgs {
     std::string model_path;

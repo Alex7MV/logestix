@@ -202,15 +202,6 @@ gpu::InferenceResult Glm5NextFlashModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult Glm5NextFlashModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    r.error_msg = "benchmark not implemented for glm-5.3-flash";
-    r.ok = false;
-    return r;
-}
-
 void Glm5NextFlashModel::TeardownWeights()
 {
     pw_.Free();

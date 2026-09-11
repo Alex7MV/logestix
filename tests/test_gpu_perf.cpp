@@ -184,12 +184,12 @@ using lsxcommon::lifecycle::ExpertCacheSlots;
 TEST_CASE("ExpertCacheSlots honors the percentage knob", "[gpu_perf]")
 {
     const size_t per = 100u << 20;  // 100 MiB per expert
-    // 10 GiB free - 4 GiB reserve = 6 GiB usable -> 61 experts full.
-    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288) == 61);
-    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 50) == 30);
+    // 10 GiB free - 8 GiB reserve = 2 GiB usable -> 20 experts full.
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288) == 20);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 50) == 10);
     REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 0) == 0);
     // pct > 100 clamps to full budget; total-expert cap still applies.
-    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 200) == 61);
+    REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 288, 200) == 20);
     REQUIRE(ExpertCacheSlots(std::size_t{10} << 30, per, 4, 100) == 4);
     // Degenerate inputs unchanged.
     REQUIRE(ExpertCacheSlots(0, per, 288) == 0);

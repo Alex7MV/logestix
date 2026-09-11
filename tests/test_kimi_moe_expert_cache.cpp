@@ -20,8 +20,8 @@ TEST_CASE("Kimi cache slots: policy wiring and env override", "[kimi][cache]")
 {
     const std::size_t per_expert = 26ull << 20;   // ~26 MiB pack+scale
 
-    // Policy path (env absent): usable = free - 4 GiB reserve.
-    const std::size_t free_bytes = (4ull << 30) + 100 * per_expert;
+    // Policy path (env absent): usable = free - 8 GiB reserve.
+    const std::size_t free_bytes = (8ull << 30) + 100 * per_expert;
     REQUIRE(KimiMoeExpertCacheSlots(free_bytes, per_expert, 23424, nullptr) == 100);
     // Clamped to total experts (60 GiB usable / 26 MiB > 256).
     REQUIRE(KimiMoeExpertCacheSlots(64ull << 30, per_expert, 256, nullptr) == 256);

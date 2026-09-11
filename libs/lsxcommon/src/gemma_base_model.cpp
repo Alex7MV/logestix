@@ -237,22 +237,4 @@ gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
-gpu::BenchmarkResult GemmaBaseModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    ModelRequest req;
-    req.input_ids = {2}; // <bos>
-    req.max_gen_tokens = num_tokens;
-    auto res = Infer(req);
-    lsxcommon::runtime::FillBenchmarkResult(r, res.total_time_ms,
-                                            res.num_tokens, res.num_layers,
-                                            res.weight_resident_bytes);
-    if (!res.ok) {
-        r.ok = false;
-        r.error_msg = res.error_msg;
-    }
-    return r;
-}
-
 } // namespace lsxcommon

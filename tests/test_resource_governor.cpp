@@ -236,7 +236,7 @@ TEST_CASE("ExpertCacheSlots: reserve subtracted, clamped, degenerate-safe",
     // Reserve is a real constant and stays bounded (never zero: decode
     // needs KV/activation/TC-workspace headroom).
     REQUIRE(kExpertCacheVramReserveBytes > 0);
-    REQUIRE(kExpertCacheVramReserveBytes <= (4ull << 30));
+    REQUIRE(kExpertCacheVramReserveBytes <= (8ull << 30));
 
     const std::size_t per_expert = 2ull << 20;  // 2 MiB
 

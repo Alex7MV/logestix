@@ -74,11 +74,6 @@ protected:
     // instance exactly as Unload() would (loaded_==false invariant).
     bool AbortLoad();
 
-    // Canonical Benchmark guard: false (with "model not loaded" + ok=false)
-    // when the model is not loaded; true otherwise. Every Benchmark()
-    // implementation MUST start with `if (!RequireLoaded(r)) return r;`.
-    bool RequireLoaded(gpu::BenchmarkResult &r) const;
-
     // Governor lease ownership (lifecycle-unification II). Every model
     // accounts its VRAM through these instead of touching the governor
     // directly:
@@ -131,7 +126,7 @@ protected:
 
     // Runs `fn` under the shared residency lock: unload-during-inference and
     // parallel dispatch serialize behind a unique_lock, while generation
-    // itself stays shared-safe. Every Infer/Benchmark implementation MUST
+    // itself stays shared-safe. Every Infer implementation MUST
     // route its generation call through this helper (uniform preamble).
     template <typename F>
     auto RunUnderResidencyLock(F &&fn) -> decltype(fn())

@@ -130,35 +130,4 @@ gpu::InferenceResult KimiK27CodeModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult KimiK27CodeModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    if (!pw_.d_embed) {
-        r.error_msg = "model not loaded";
-        return r;
-    }
-    // Synthetic prompt: repeat token 0 (a stable vocab entry) 4 times
-    // (GLM parity).
-    const std::vector<int32_t> prompt = {0, 0, 0, 0};
-
-    kimi::KimiGenerationResult gr;
-    const cudaError_t berr = RunUnderResidencyLock([&] {
-        const lsx_nvfp4::LsxFastMathScope fm_scope(
-            EffectiveFastMathMode(cfg_));
-        return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
-                                       prompt, num_tokens, gr,
-                                       &expert_cache_, Tokenizer().eos_id,
-                                       cfg_.fast_math);
-    });
-    if (berr != cudaSuccess || !gr.ok) {
-        r.error_msg = runtime::CombineGenError(berr, gr.error_msg);
-        return r;
-    }
-    runtime::FillBenchmarkResult(r, gr.total_ms,
-                                 static_cast<int>(gr.tokens.size()),
-                                 kimi::kKimiNumLayers, resident_bytes_);
-    return r;
-}
-
 } // namespace lsxcommon

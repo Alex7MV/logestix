@@ -110,27 +110,4 @@ gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-gpu::BenchmarkResult DeepSeekV4FlashModel::Benchmark(int num_tokens)
-{
-    gpu::BenchmarkResult r;
-    if (!RequireLoaded(r)) return r;
-    // Same per-call policy as Infer: the benchmark must measure the
-    // configuration the model is asked to serve with.
-    const gpu::DeepseekFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
-    const std::vector<int32_t> prompt = {0};
-    // Uniform lock discipline: benchmarks serialize against unload/parallel
-    // dispatch exactly like Infer (GLM parity).
-    auto res = RunUnderResidencyLock([&] {
-        return gpu::RunInferenceModel(cfg_.model_path, prompt, num_tokens,
-                                      *tok_db_, pw_,
-                                      lsxcommon::sample::DefaultSampler(),
-                                      stream(), cublas());
-    });
-    if (!res.ok) { r.error_msg = res.error_msg; return r; }
-    runtime::FillBenchmarkResult(r, res.total_time_ms, res.num_tokens,
-                                 res.num_layers,
-                                 res.weight_resident_bytes);
-    return r;
-}
-
 } // namespace lsxcommon

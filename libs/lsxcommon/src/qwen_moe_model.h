@@ -39,7 +39,6 @@ public:
 
     bool Load() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
-    gpu::BenchmarkResult Benchmark(int num_tokens = 2048) override;
 
 protected:
     explicit QwenMoeModelBase(ModelInitConfig cfg);
