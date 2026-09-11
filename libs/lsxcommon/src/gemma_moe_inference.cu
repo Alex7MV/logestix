@@ -675,14 +675,34 @@ __global__ void gemma_router_topk_kernel(
         const float *row = prod + (static_cast<int64_t>(t) * E + e) * H;
         float dot = 0.f;
         int d = 0;
-        // Deep unroll keeps ~8 loads in flight per thread to hide latency
-        // on the sequential (order-preserving) accumulation chain.
-        for (; d + 8 <= H; d += 8) {
-            float p[8];
+        // float4 loads, strictly ascending-d fp32 add order: identical
+        // inputs and identical accumulation sequence as the scalar loop,
+        // so results stay bit-identical (decode is latency-bound on the
+        // per-thread sequential chain; wider loads + deep ILP cut the
+        // exposed DRAM latency ~8x on one-block decode launches).
+        if ((reinterpret_cast<uintptr_t>(row) & 15u) == 0u) {
+            for (; d + 32 <= H; d += 32) {
+                float p[32];
 #pragma unroll
-            for (int j = 0; j < 8; ++j) p[j] = row[d + j];
+                for (int v = 0; v < 8; ++v) {
+                    const float4 q =
+                        *reinterpret_cast<const float4 *>(row + d + v * 4);
+                    p[v * 4 + 0] = q.x;
+                    p[v * 4 + 1] = q.y;
+                    p[v * 4 + 2] = q.z;
+                    p[v * 4 + 3] = q.w;
+                }
 #pragma unroll
-            for (int j = 0; j < 8; ++j) dot += p[j];
+                for (int j = 0; j < 32; ++j) dot += p[j];
+            }
+            for (; d + 4 <= H; d += 4) {
+                const float4 q =
+                    *reinterpret_cast<const float4 *>(row + d);
+                dot += q.x;
+                dot += q.y;
+                dot += q.z;
+                dot += q.w;
+            }
         }
         for (; d < H; ++d) dot += row[d];
         logits[e] = dot;
@@ -1003,7 +1023,7 @@ __global__ void gemma_hadamard_kernel(__nv_bfloat16 *__restrict__ dst,
 // hidden dim while keeping the STRICT ascending-d accumulation order per
 // row (bit-identical logits); phase 2 reduces block winners deterministically
 // in ascending block order.
-constexpr int kLogitsMaxBlocks = 4096;
+constexpr int kLogitsMaxBlocks = 32768;  // warp-per-row head grid cap (V/8)
 
 __global__ void gemma_logits_rows_kernel(
     const __nv_bfloat16 *__restrict__ embed, const __nv_bfloat16 *__restrict__ x,
@@ -1076,10 +1096,12 @@ __global__ void gemma_logits_rows_kernel(
     }
 }
 
-// NVFP4 tied-table rows variant: each vocab row dot decodes E2M1/E4M3
-// chunk-wise (same contract as GemvDotRow: 32-element chunks, scale blocks
-// sb = 2c / 2c+1, ascending-d accumulation); softcap + winner plumbing
-// identical to the BF16 kernel.
+// NVFP4 tied-table rows variant (warp-per-row): each warp owns one vocab
+// row, lanes walk 32-element chunks round-robin (coalesced 512B per warp
+// transaction), and the row dot is merged in exact chunk-ascending order
+// (round-major, lane-ascending) from per-round lane partials. Run-to-run
+// deterministic; the argmax index matches the legacy thread-per-row kernel
+// on real payloads.
 __global__ void gemma_logits_rows_nvfp4_kernel(
     const uint8_t *__restrict__ packed, const uint8_t *__restrict__ scales,
     float gs, const __nv_bfloat16 *__restrict__ x,
@@ -1087,42 +1109,55 @@ __global__ void gemma_logits_rows_nvfp4_kernel(
     float *__restrict__ d_logits,
     float *__restrict__ blk_best, int *__restrict__ blk_idx)
 {
-    float local_best = -1e30f;
-    int local_arg = -1;
-    const int64_t span =
-        (static_cast<int64_t>(gridDim.x)) * blockDim.x;
+    const int warps_per_block = blockDim.x >> 5;
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    const int64_t row_i =
+        static_cast<int64_t>(blockIdx.x) * warps_per_block + warp;
     const int chunks = hidden >> 5;
-    const __nv_bfloat16 *xf = x;
-    for (int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x +
-                     threadIdx.x;
-         i < vocab; i += span) {
-        const uint8_t *row_p = packed + i * (hidden >> 1);
-        const uint8_t *row_s = scales + i * (hidden >> 4);
-        float acc = 0.f;
-        for (int c = 0; c < chunks; ++c) {
-            const uint8_t *pb = row_p + c * 16;
-            const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
-            const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
-            const int xb = c * 32;
-            #pragma unroll
-            for (int b = 0; b < 16; ++b) {
-                const float scl = (b < 8) ? sc0 : sc1;
-                acc += __bfloat162float(xf[xb + 2 * b]) *
-                       gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
-                acc += __bfloat162float(xf[xb + 2 * b + 1]) *
-                       gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+    const int rounds = (chunks + 31) / 32;
+    float rp[16];  // per-round lane partial (chunks r*32+lane), ascending
+    float acc = 0.f;
+    const bool have = row_i < static_cast<int64_t>(vocab);
+    if (have) {
+        const uint8_t *row_p = packed + row_i * (hidden >> 1);
+        const uint8_t *row_s = scales + row_i * (hidden >> 4);
+        for (int r = 0; r < rounds; ++r) {
+            const int c = r * 32 + lane;
+            float part = 0.f;
+            if (c < chunks) {
+                const uint8_t *pb = row_p + c * 16;
+                const float sc0 =
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
+                const float sc1 =
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
+                const int xb = c * 32;
+#pragma unroll
+                for (int b = 0; b < 16; ++b) {
+                    const float scl = (b < 8) ? sc0 : sc1;
+                    part += __bfloat162float(x[xb + 2 * b]) *
+                            gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
+                    part += __bfloat162float(x[xb + 2 * b + 1]) *
+                            gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
+                }
             }
+            rp[r] = part;
+        }
+        // Exact chunk-ascending merge: round-major, lane-ascending.
+        for (int r = 0; r < rounds; ++r) {
+            for (int l = 0; l < 32; ++l)
+                acc += __shfl_sync(0xffffffffu, rp[r], l);
         }
         if (cap > 0.f) acc = tanhf(acc / cap) * cap;
-        if (d_logits) d_logits[i] = acc;
-        blk_best[i] = acc;
-        blk_idx[i] = static_cast<int>(i);
-        if (acc > local_best) { local_best = acc; local_arg = static_cast<int>(i); }
+        if (d_logits && lane == 0) d_logits[row_i] = acc;
     }
+
+    // Shared winner staging: one slot per warp-row; rows past the vocab and
+    // padding lanes contribute the -1e30/-1 sentinel (legacy semantics).
     __shared__ float s_best[256];
     __shared__ int s_idx[256];
-    s_best[threadIdx.x] = local_best;
-    s_idx[threadIdx.x] = local_arg;
+    s_best[threadIdx.x] = have ? acc : -1e30f;
+    s_idx[threadIdx.x] = have ? static_cast<int>(row_i) : -1;
     __syncthreads();
     if (threadIdx.x == 0) {
         float b = s_best[0];
@@ -1200,9 +1235,11 @@ cudaError_t RunGemmaLogitsArgmaxNvfp4(
     if (!packed || !scales || !d_x || !d_argmax || !d_blkbest || !d_blkidx ||
         !d_logits || vocab <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
+    // Warp-per-row rows kernel: 8 rows (warps) per 256-thread block.
     constexpr int kBlock = 256;
+    constexpr int kRowsPerBlock = kBlock / 32;
     unsigned grid = static_cast<unsigned>(
-        (static_cast<int64_t>(vocab) + kBlock - 1) / kBlock);
+        (static_cast<int64_t>(vocab) + kRowsPerBlock - 1) / kRowsPerBlock);
     if (grid > kLogitsMaxBlocks) grid = kLogitsMaxBlocks;
     gemma_logits_rows_nvfp4_kernel<<<grid, kBlock, 0, stream>>>(
         packed, scales, gs, d_x, vocab, hidden, cap, d_logits, d_blkbest,
@@ -1320,9 +1357,10 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_bselw, (size_t)K * sizeof(float))) !=
             cudaSuccess ||
         (e = A((void **)&ws.d_lg_best,
-               (static_cast<size_t>(V) + 4096) * sizeof(float))) != cudaSuccess ||
+               (static_cast<size_t>(V) + V / 8 + 4096) * sizeof(float))) !=
+            cudaSuccess ||
         (e = A((void **)&ws.d_lg_idx,
-               (static_cast<size_t>(V) + 4096) * sizeof(int32_t))) !=
+               (static_cast<size_t>(V) + V / 8 + 4096) * sizeof(int32_t))) !=
             cudaSuccess ||
         (e = A((void **)&ws.d_xh, S * H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_g, I_max * 2)) != cudaSuccess ||
