@@ -1145,9 +1145,17 @@ target_include_directories(test_deepseek_nvfp4_repack PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_deepseek_nvfp4_repack PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
+# Scale-primitive contract (fast) and the repack-tool e2e (convert, [tool]
+# tag filter — one binary, two ctest entries per the label discipline).
 add_test(NAME test_deepseek_nvfp4_repack COMMAND test_deepseek_nvfp4_repack)
 set_tests_properties(test_deepseek_nvfp4_repack
     PROPERTIES LABELS fast)
+add_test(NAME test_deepseek_nvfp4_repack_tool
+         COMMAND test_deepseek_nvfp4_repack "[tool]*")
+set_tests_properties(test_deepseek_nvfp4_repack_tool PROPERTIES
+    TIMEOUT 120)
+set_tests_properties(test_deepseek_nvfp4_repack_tool
+    PROPERTIES LABELS convert)
 
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)

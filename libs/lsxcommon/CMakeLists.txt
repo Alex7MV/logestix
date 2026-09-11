@@ -115,6 +115,7 @@ add_library(lsxcommon_cu OBJECT
     src/perf_calibration.cu
     src/safetensors_gpu.cu
     src/deepseek_moe_load.cu
+    src/deepseek_moe_repack.cpp
     src/deepseek_moe_inference_moe.cu
     src/deepseek_moe_inference_head.cu
     src/deepseek_moe_inference_attn.cu

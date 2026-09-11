@@ -17,6 +17,7 @@
 #include "lsxcommon/glm_moe_convert.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
+#include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <fstream>
@@ -51,6 +52,11 @@ ABSL_FLAG(bool, glmflash, false,
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
+// DeepSeek routed-expert NVFP4 repack: logestix-v1 (E8M0 per-32 expert
+// scales) -> logestix-v1-nvfp4 (pow2-E4M3 per-16 + folded global_scale).
+// --input = source vault, --output = destination vault (same layout).
+ABSL_FLAG(bool, deepseek_nvfp4, false,
+          "repack DeepSeek routed experts to NVFP4 (logestix-v1 -> v1-nvfp4)");
 // Generation path execution option: routes the resolved prompt straight into
 // the tokenizer encode channel and the single end-to-end cudaStream_t
 // Prefill->Decode autogeneration sequence loop (IModel::Infer), bypassing the
@@ -155,6 +161,24 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info(absl::StrFormat("VRAM recompute complete -> %s", idx.string()));
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (absl::GetFlag(FLAGS_deepseek_nvfp4)) {
+        lsxcommon::log::info(absl::StrFormat(
+            "DeepSeek NVFP4 repack (logestix-v1 -> v1-nvfp4): %s -> %s",
+            input_path, output_path));
+        auto st = lsxcommon::deepseek::RepackDeepseekExpertsNvfp4(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("DeepSeek NVFP4 repack failed: %s",
+                                st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("DeepSeek NVFP4 repack complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

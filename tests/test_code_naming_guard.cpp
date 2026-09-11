@@ -31,6 +31,7 @@ std::regex SchemeRegex()
     const std::string tail   =
         "(?:convert"
         "|load"
+        "|repack"
         "|load_internal"
         "|model"
         "|inference(?:_" + subsys + ")?"
