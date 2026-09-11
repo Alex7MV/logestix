@@ -262,3 +262,55 @@ TEST_CASE("EnsureCalibrated: base GPUs skip, unknown GPUs run once", "[gpu_perf]
     REQUIRE(std::filesystem::remove(lsxcommon::perf::PerfCachePath(mystery),
                                     ec));
 }
+
+// ── Fixed-speed policy guarantee: call-once apply, honest source ────────────
+
+#include "lsxcommon/model_factory.h"
+
+using lsxcommon::perf::CurrentKnobs;
+using lsxcommon::perf::CurrentKnobsSource;
+using lsxcommon::perf::EnsurePerfPolicyApplied;
+using lsxcommon::perf::PerfSource;
+using lsxcommon::perf::SetCurrentKnobs;
+
+// Single case on purpose: Catch2 shuffles case order, and the process-global
+// once-flag + knob snapshot must only be touched here (no other case in this
+// binary calls EnsurePerfPolicyApplied), keeping the case order-independent.
+TEST_CASE("EnsurePerfPolicyApplied: applies policy, call-once, "
+          "overrides preserved",
+          "[gpu_perf]")
+{
+    ::unsetenv("LSX_PERF_AUTO");
+    ::unsetenv("LSX_GEMV_MAX_MIB");
+    const GpuPerfProfile gpu = lsxcommon::perf::ProbeGpuPerfProfile();
+    if (gpu.name.empty()) SKIP();
+    EnsurePerfPolicyApplied();
+
+    // Snapshot matches the documented precedence: vault cache > base/heuristic.
+    LsxPerfKnobs expected{};
+    PerfSource expected_source = PerfSource::kHeuristic;
+    if (lsxcommon::perf::LoadPerfCache(gpu, expected)) {
+        expected_source = PerfSource::kCalibrated;
+    } else {
+        const lsxcommon::perf::LsxPerfKnobSet resolved =
+            lsxcommon::perf::ResolvePerfKnobs(gpu);
+        expected = resolved.knobs;
+        expected_source = resolved.source;
+    }
+    const LsxPerfKnobs got = CurrentKnobs();
+    REQUIRE(got.tc_fast_math_default == expected.tc_fast_math_default);
+    REQUIRE(got.seq1_gemv_default == expected.seq1_gemv_default);
+    REQUIRE(got.gemv_max_mib == expected.gemv_max_mib);
+    // Routing atomics are wired from the same snapshot.
+    REQUIRE(lsxcommon::lsx_nvfp4::LsxTcFastMath() == got.tc_fast_math_default);
+    REQUIRE(CurrentKnobsSource() == expected_source);
+
+    // Call-once: a second call must not re-resolve over explicit overrides.
+    LsxPerfKnobs sentinel{};
+    sentinel.gemv_max_mib = 7;
+    SetCurrentKnobs(sentinel, PerfSource::kEnvOverride);
+    lsxcommon::lsx_nvfp4::SetLsxGemmMaxMib(7);
+    EnsurePerfPolicyApplied();
+    REQUIRE(CurrentKnobs().gemv_max_mib == 7);
+    REQUIRE(CurrentKnobsSource() == PerfSource::kEnvOverride);
+}

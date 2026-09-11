@@ -35,7 +35,7 @@ bool InferenceEngine::InitializeEngine()
             source = resolved.source;
         }
         perf::SetCurrentKnobs(knobs, source);
-        perf::ApplyKnobs(knobs);
+        perf::ApplyKnobs(knobs, source);
         log::info(absl::StrFormat(
             "[model_engine] perf policy: gpu='%s' sm=%d bus=%dbit "
             "tc=%d gemv_mib=%d splitk_min=%d slots_pct=%d dual=%d",

@@ -4,6 +4,7 @@
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 #include <algorithm>
 #include <mutex>
@@ -189,14 +190,44 @@ void SetCurrentKnobs(const LsxPerfKnobs &knobs, PerfSource source)
     g_current_knobs_source = source;
 }
 
-void ApplyKnobs(const LsxPerfKnobs &knobs)
+void ApplyKnobs(const LsxPerfKnobs &knobs, PerfSource source)
 {
-    SetCurrentKnobs(knobs, PerfSource::kBase);
+    SetCurrentKnobs(knobs, source);
     lsx_nvfp4::SetLsxTcFastMath(knobs.tc_fast_math_default);
     lsx_nvfp4::SetLsxSeq1Gemv(knobs.seq1_gemv_default);
     lsx_nvfp4::SetLsxGemmMaxMib(knobs.gemv_max_mib);
     lsx_nvfp4::SetLsxDualStreamStaging(knobs.dual_stream_staging);
     lsx_tc::SetLsxSplitKGridMin(knobs.splitk_grid_min);
+}
+
+void EnsurePerfPolicyApplied()
+{
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        const GpuPerfProfile gpu = ProbeGpuPerfProfile();
+        if (gpu.name.empty()) {
+            log::debug("[perf] no CUDA device: policy left at legacy defaults");
+            return;
+        }
+        LsxPerfKnobs knobs;
+        PerfSource source = PerfSource::kHeuristic;
+        if (LoadPerfCache(gpu, knobs)) {
+            source = PerfSource::kCalibrated;
+        } else {
+            const LsxPerfKnobSet resolved = ResolvePerfKnobs(gpu);
+            knobs = resolved.knobs;
+            source = resolved.source;
+        }
+        SetCurrentKnobs(knobs, source);
+        ApplyKnobs(knobs, source);
+        log::info(absl::StrFormat(
+            "[perf] policy applied: gpu='%s' sm=%d bus=%dbit "
+            "tc=%d gemv_mib=%d splitk_min=%d slots_pct=%d dual=%d",
+            gpu.name.c_str(), gpu.sm_count, gpu.bus_width_bits,
+            static_cast<int>(knobs.tc_fast_math_default), knobs.gemv_max_mib,
+            knobs.splitk_grid_min, knobs.expert_slots_pct,
+            static_cast<int>(knobs.dual_stream_staging)));
+    });
 }
 
 // ── Calibration cache ───────────────────────────────────────────────────────
@@ -322,7 +353,7 @@ bool EnsureCalibrated(const GpuPerfProfile &gpu,
     knobs.gemv_max_mib = mib;
     if (!SavePerfCache(gpu, knobs)) return false;
     SetCurrentKnobs(knobs, PerfSource::kCalibrated);
-    ApplyKnobs(knobs);
+    ApplyKnobs(knobs, PerfSource::kCalibrated);
     log::info("[perf] calibrated gemv_max_mib=" + std::to_string(mib) +
               " (gpu '" + gpu.name + "')");
     return true;

@@ -77,8 +77,17 @@ LsxPerfKnobs CurrentKnobs();
 PerfSource CurrentKnobsSource();
 void SetCurrentKnobs(const LsxPerfKnobs &knobs, PerfSource source);
 
-// Applies knobs to the process-global routing atomics + the snapshot above.
-void ApplyKnobs(const LsxPerfKnobs &knobs);
+// Applies knobs to the process-global routing atomics + the snapshot above
+// (published under the given source; never clobbers it).
+void ApplyKnobs(const LsxPerfKnobs &knobs, PerfSource source);
+
+// Call-once, idempotent policy application: resolves the per-GPU knob set
+// (vault cache > base/heuristic via ResolvePerfKnobs, env honored) and
+// publishes + applies it. Invoked from InferenceEngine::InitializeEngine and
+// LsxModelFactory::Create so every consumer runs on the pinned policy by
+// default; explicit SetCurrentKnobs overrides stay on top. No CUDA device ->
+// marks applied and keeps legacy defaults.
+void EnsurePerfPolicyApplied();
 
 // ── Calibration cache (vault JSON, perf-cache/<gpu-key>.json) ───────────────
 
