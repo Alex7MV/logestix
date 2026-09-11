@@ -17,6 +17,36 @@
 #include <sstream>
 
 namespace lsxcommon {
+
+// ── Pending prefetch-copy registry (munmap safety) ──────────────────────────
+// issue_routed_staging enqueues H2D copies whose SOURCE is an mmap-backed
+// expert entry. The driver may execute them after the API call returns,
+// while the host keeps running — and ensure_expert_resident may munmap that
+// very mapping for a later layer. Each issued expert registers (source
+// base, completion event); expert_store drains (host-syncs) before unmapping.
+namespace {
+struct PendingCopy { const void* base; cudaEvent_t ev; };
+std::vector<PendingCopy> g_pending_copies;
+} // namespace
+
+void lsx_pending_copy_drain(const void* host_ptr)
+{
+    for (size_t i = 0; i < g_pending_copies.size();) {
+        const PendingCopy &pc = g_pending_copies[i];
+        // The whole expert entry lives inside one arrow mmap: a 64 MB window
+        // from the w1 base covers packed weights + all scale arrays.
+        const uintptr_t lo = reinterpret_cast<uintptr_t>(pc.base);
+        const uintptr_t hi = lo + (size_t{64} << 20);
+        const uintptr_t q = reinterpret_cast<uintptr_t>(host_ptr);
+        if (q >= lo && q < hi) {
+            cudaEventSynchronize(pc.ev);
+            g_pending_copies.erase(g_pending_copies.begin() + i);
+        } else {
+            ++i;
+        }
+    }
+}
+
 namespace gpu {
 
 // Routed experts are NVFP4-native (logestix-v1-nvfp4): the neutral
@@ -680,6 +710,23 @@ cudaError_t run_routed_experts_ex(
             s13 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
             s2 = s13 + s1b + s3b;
             use_cache = true;
+            if (std::getenv("LSX_DS_VERIFY_READ")) {
+                cudaStreamSynchronize(stream);
+                static std::vector<uint8_t> hr;
+                hr.resize(static_cast<size_t>(w1b + w3b + w2b));
+                cudaMemcpy(hr.data(), p13, hr.size(), cudaMemcpyDeviceToHost);
+                int bad = memcmp(hr.data(), en.host_w1, w1b) != 0
+                    || memcmp(hr.data() + w1b, en.host_w3, w3b) != 0
+                    || memcmp(hr.data() + w1b + w3b, en.host_w2, w2b) != 0;
+                static std::vector<uint8_t> hs;
+                hs.resize(static_cast<size_t>(s1b + s3b + s2b));
+                cudaMemcpy(hs.data(), s13, hs.size(), cudaMemcpyDeviceToHost);
+                int bads = memcmp(hs.data(), en.host_w1_scales, s1b) != 0
+                    || memcmp(hs.data() + s1b, en.host_w3_scales, s3b) != 0
+                    || memcmp(hs.data() + s1b + s3b, en.host_w2_scales, s2b) != 0;
+                fprintf(stderr, "VREAD flat=%d slot=%d pk=%d sc=%d\n",
+                        flat, cache_slot, bad ? 0 : 1, bads ? 0 : 1);
+            }
         }
         if (!use_cache) {
             if (w1b + w2b + w3b > pack_stage_bytes
@@ -803,6 +850,17 @@ cudaError_t issue_routed_staging(
         if (e != cudaSuccess) return e;
         cache->h_slot_of[flat] = slot;
         cache->h_slot_owner[slot] = flat;
+        if (std::getenv("LSX_DS_VERIFY_COPY")) {
+            cudaStreamSynchronize(copy_stream);
+            static std::vector<uint8_t> hb;
+            hb.resize(static_cast<size_t>(w1b + w3b + w2b));
+            cudaMemcpy(hb.data(), pk, hb.size(), cudaMemcpyDeviceToHost);
+            int bad = memcmp(hb.data(), en.host_w1, w1b) != 0
+                || memcmp(hb.data() + w1b, en.host_w3, w3b) != 0
+                || memcmp(hb.data() + w1b + w3b, en.host_w2, w2b) != 0;
+            fprintf(stderr, "VCOPY flat=%d slot=%d match=%d\n",
+                    flat, slot, bad ? 0 : 1);
+        }
         // MRU front.
         for (int i = 0; i < cache->slots; ++i) {
             if (cache->h_lru[i] == slot) {
@@ -817,6 +875,15 @@ cudaError_t issue_routed_staging(
     if (issued) {
         cudaError_t e = cudaEventRecord(ev, copy_stream);
         if (e != cudaSuccess) return e;
+        // Track this batch's sources against the completion event.
+        for (int k = 0; k < topk; ++k) {
+            int idx = h_top_indices[k];
+            if (idx < 0 || idx >= experts_per_layer) continue;
+            const ExpertEntry &en = db_entries[
+                static_cast<size_t>(layer) * experts_per_layer + idx];
+            if (!en.host_w1) continue;
+            g_pending_copies.push_back({en.host_w1, ev});
+        }
     }
     return cudaSuccess;
 }

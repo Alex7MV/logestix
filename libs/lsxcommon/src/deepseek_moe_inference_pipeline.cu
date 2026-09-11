@@ -665,6 +665,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             // after the shared-expert FFN has been enqueued — the GPU keeps
             // executing that FFN while the host waits for the router logits.
             const bool have_router = (lw.d_gate_weight != nullptr);
+            const bool do_prefetch =
+                std::getenv("LSX_DS_PREFETCH") != nullptr;
             int num_routed = std::min(kNumRouted, topo.experts_per_layer);
             const int64_t *tid = lw.h_tid2eid;
             if (tid && (cur_tok < 0 || cur_tok >= lw.tid2eid_vocab)) tid = nullptr;
@@ -678,6 +680,18 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 std::memset(h_topk, 0, static_cast<size_t>(kLocalTopK) * sizeof(int));
                 std::memset(h_top_weights, 0,
                             static_cast<size_t>(kLocalTopK) * sizeof(float));
+            }
+
+            // EXPERIMENTAL prefetch (LSX_DS_PREFETCH=1): issue the top-k
+            // miss copies early so they overlap the shared-expert FFN.
+            if (do_prefetch && have_router && expert_cache.slots > 0) {
+                for (int i = 0; i < kLocalTopK; ++i)
+                    ensure_expert_resident(expert_db, lay, h_topk[i], stream,
+                                           evict_done);
+                INFER_CHECK(issue_routed_staging(
+                    copy_stream, stage_ev[0], &expert_cache,
+                    expert_db.entries.data(), lay, topo.experts_per_layer,
+                    h_topk, kLocalTopK));
             }
 
             // Shared experts FFN: outputs to d_ffn_accum (FP32).
@@ -722,15 +736,15 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
-            // Resident host pointers (mmap LRU) before the GEMV phase.
-            if (lw.d_gate_weight && !expert_db.entries.empty()) {
-                for (int i = 0; i < kLocalTopK; ++i)
-                    ensure_expert_resident(expert_db, lay, h_topk[i], stream,
-                                           evict_done);
-            }
+                if (!do_prefetch) {
+                    for (int i = 0; i < kLocalTopK; ++i)
+                        ensure_expert_resident(expert_db, lay, h_topk[i],
+                                               stream, evict_done);
+                }
                 INFER_CHECK(run_routed_experts_ex(
                     stream, copy_stream, stage_ev,
-                    nullptr,
+                    (do_prefetch && have_router && expert_cache.slots > 0)
+                        ? stage_ev[0] : nullptr,
                     d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,

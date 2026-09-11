@@ -26,6 +26,13 @@
 #include "lsxcommon/schema.h"
 
 namespace lsxcommon {
+
+// Pending-copy drain hook (implemented by the MoE inference TU that issues
+// prefetch copies from these mmaps). Called immediately before an mmap is
+// unmapped so any in-flight copy_stream DMA staged from this mapping can be
+// awaited (prefetch-async copies intentionally outlive their API call).
+void lsx_pending_copy_drain(const void* host_ptr);
+
 namespace gpu {
 namespace expert_store {
 
@@ -232,6 +239,9 @@ struct ExpertStore {
         while (lru.size() >= max_open) {
             size_t evict = lru.back();
             lru.pop_back();
+            // Retire any in-flight prefetch DMA reading this mapping before
+            // it disappears (munmap under an async copy = silent garbage).
+            lsx_pending_copy_drain(entries[evict].host_w1);
             mmaps[evict].reset();
             batches[evict].reset();
             entries[evict] = TEntry();

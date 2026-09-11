@@ -296,3 +296,30 @@ Conclusion: without cutting miss BYTES (hit rate/coverage bounded by
 VRAM) or solving the prefetch race, ~12 tok/s is the practical ceiling
 of this architecture generation on 32 GB. The 11.7 state is committed
 and selfcheck-green.
+
+## Round 5 findings (2026-09-11): prefetch race LOCALIZED
+
+Root-cause instrumentation (LSX_DS_VERIFY_COPY / LSX_DS_VERIFY_READ
+byte-exact probes at issue time vs GEMV-read time):
+
+1. Prefetch H2D copies are BYTE-EXACT at issue time (2363/2363 verified).
+2. 7/5676 slot reads at GEMV time MISMATCH the host source — ALL in
+   layers >= 27 (= 7000-mmap-cap boundary: 7000/256 = 27.3 layers).
+3. Two races identified:
+   a. munmap-under-DMA: issue(L) enqueues copies from mmap-backed entries;
+      ensure(L+1) evicts the 7000-cap mmaps (munmap) while the DMA is
+      still queued on copy_stream. evict_done fences main only.
+      FIXED: lsx_pending_copy_drain() registry — issue registers
+      (source base, completion event), expert_store drains before munmap.
+   b. slot write-after-read: victims selected by issue(L+1..L+k) (host
+      runs several layers ahead of the main-stream GEMVs) can overwrite a
+      slot a still-executing GEMV of layer L is reading. NOT yet fixed —
+      this is the remaining corruption (verified copies + drain, output
+      still garbage when LSX_DS_PREFETCH=1).
+4. Candidate fix for (b): per-layer slot bands for prefetch fills
+   (layer L writes only [L*band, (L+1)*band) — builders and readers of a
+   layer never share bands with in-flight GEMVs of other layers), or a
+   "slot pinned until its GEMV retires" guard counted from the ex loop.
+
+State: prefetch env-gated OFF (LSX_DS_PREFETCH), production stable at
+11.7 tok/s, SelfCheck Paris green, fast 43/43.
