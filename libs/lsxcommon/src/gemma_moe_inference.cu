@@ -1285,7 +1285,10 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_qr, S * q_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_kr, S * kv_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_vr, S * kv_rows_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_tmp2, S * kv_rows_max * 2)) != cudaSuccess ||
+        // H rows, not kv rows: d_tmp2 only carries the router plain-norm and
+        // post_ffn2 norm outputs (seq * H halves); a kv_rows-sized buffer
+        // overflows whenever kv_rows_max < hidden_size.
+        (e = A((void **)&ws.d_tmp2, S * H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_cos, S * rot_half_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_sin, S * rot_half_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_pos, S * 4)) != cudaSuccess ||
@@ -1325,7 +1328,11 @@ cudaError_t EnsureWorkspace(GemmaGenContext &ctx, int64_t H, int64_t V,
         (e = A((void **)&ws.d_mlp_g, I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_u, I_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_mlp_h, I_max * 2)) != cudaSuccess ||
-        (e = A((void **)&ws.d_mlp_y, H * 2)) != cudaSuccess ||
+        // Seq rows, not one row: the NVFP4 dense-MLP chain writes y per
+        // prefill row (ws.d_mlp_y + t*H) and RunGemmaF16ToBf16 reads
+        // seq*H halves; a single-row buffer overflows on every prefill
+        // with seq > 1 (mlp_nvfp4 checkpoints, latent IMA in decode).
+        (e = A((void **)&ws.d_mlp_y, S * H * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_tmpf, S * q_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_gemv_q, q_rows_max * 2)) != cudaSuccess ||
         (e = A((void **)&ws.d_gemv_kv,

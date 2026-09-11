@@ -940,6 +940,8 @@ if(WIN32)
 endif()
 
 add_test(NAME test_gemma_moe_convert COMMAND test_gemma_moe_convert)
+set_tests_properties(test_gemma_moe_convert PROPERTIES
+    TIMEOUT 120)
 
 # ── Тест Gemma-4 загрузчика (BF16→FP16 in-place, арена, expert LRU) ─────────
 add_executable(test_gemma_moe_loader test_gemma_moe_loader.cpp)
