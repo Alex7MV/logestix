@@ -161,6 +161,13 @@ struct KimiExpertEntry {
     int64_t w1_scales_bytes = 0;
     int64_t w2_scales_bytes = 0;
     int64_t w3_scales_bytes = 0;
+    // Pinned-store view (DeepSeek round-8 parity): when the whole store is
+    // pinned into locked host memory, blobs live contiguously per expert as
+    // packed [w1|w3|w2] then scales [s1|s3|s2]; host_* pointers are re-pointed
+    // into the pool and pinned_blob marks the expert block start.
+    const uint8_t *pinned_blob = nullptr;
+    int64_t blob_pack_bytes = 0;
+    int64_t blob_scale_bytes = 0;
 };
 
 using KimiExpertDb = lsxcommon::gpu::expert_store::ExpertStore<KimiExpertEntry>;

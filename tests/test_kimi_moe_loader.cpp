@@ -112,8 +112,50 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     REQUIRE(e.host_w1_scales != nullptr);
     // Fixture gate proj is [4,32]: packed nibbles 4*16=64 bytes.
     CHECK(e.w1_bytes == 64);
+    // Pinned store (r3): blobs live in one locked host pool; pointers stay
+    // valid for async H2D without the file-backed VMA penalty.
+    REQUIRE(db.pinned_pool != nullptr);
+    REQUIRE(db.pinned_bytes >= static_cast<std::size_t>(e.blob_pack_bytes
+                                                     + e.blob_scale_bytes));
+    REQUIRE(e.pinned_blob != nullptr);
+    REQUIRE(e.pinned_blob >= static_cast<const uint8_t *>(db.pinned_pool));
+    REQUIRE(e.pinned_blob < static_cast<const uint8_t *>(db.pinned_pool)
+                              + db.pinned_bytes);
+    // pair layout [w1|w3|w2][s1|s3|s2] — DeepSeek round-8 convention
+    REQUIRE(e.blob_pack_bytes == e.w1_bytes + e.w3_bytes + e.w2_bytes);
+    REQUIRE(e.blob_scale_bytes == e.w1_scales_bytes + e.w3_scales_bytes
+                                + e.w2_scales_bytes);
+    // upload source pointers were re-pointed INTO the pool
+    REQUIRE(e.host_w1 >= static_cast<const uint8_t *>(db.pinned_pool));
+    REQUIRE(e.host_w1 < static_cast<const uint8_t *>(db.pinned_pool)
+                           + db.pinned_bytes);
     free_kimi_expert_index(db);
     cudaStreamDestroy(stream);
+}
+
+TEST_CASE("kimi expert pinning: LSX_EXPERT_PIN=0 falls back to mmap",
+          "[kimi][loader][pin]")
+{
+    auto model = BuildConvertedFixture();
+#ifdef _WIN32
+    _putenv_s("LSX_EXPERT_PIN", "0");
+#else
+    setenv("LSX_EXPERT_PIN", "0", 1);
+#endif
+    auto db = load_kimi_expert_index(model, /*num_layers=*/3,
+                                     /*experts_per_layer=*/2);
+    REQUIRE(db.pinned_pool == nullptr);
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    ensure_kimi_expert_resident(db, /*layer=*/1, /*expert=*/0, stream);
+    REQUIRE(db.entries[1 * 2 + 0].host_w1 != nullptr);   // mmap view works
+    free_kimi_expert_index(db);
+    cudaStreamDestroy(stream);
+#ifdef _WIN32
+    _putenv_s("LSX_EXPERT_PIN", "");
+#else
+    unsetenv("LSX_EXPERT_PIN");
+#endif
 }
 
 // Round-2 Task 4: the r2 loader uploads MLA projections as NVFP4 pairs

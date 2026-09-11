@@ -500,6 +500,79 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
     db.emit_diag = false;
     db.log_batch_fails = true;
     db.Load(model_path, /*fallback=*/true);
+    // ── Pin the routed-expert store into locked host memory ──────────────
+    // File-backed mmap sources carry a driver VMA-lookup penalty on every
+    // H2D copy and vanish under munmap while an async copy is in flight.
+    // One cudaHostAlloc pool, per expert packed [w1|w3|w2] then scales
+    // [s1|s3|s2] — the order the slot upload streams. Entries without
+    // weights (dense layer 0 of the 61-layer passport) are skipped.
+    // Disable with LSX_EXPERT_PIN=0 (falls back to mmap views).
+    if (std::getenv("LSX_EXPERT_PIN") == nullptr
+        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+        int64_t pool_bytes = 0;
+        for (const auto &en : db.entries) {
+            if (!en.host_w1 || !en.host_w2 || !en.host_w3
+                || !en.host_w1_scales || !en.host_w2_scales
+                || !en.host_w3_scales)
+                continue;   // dense layer or partial expert
+            pool_bytes += ((en.w1_bytes + en.w3_bytes + en.w2_bytes + 255)
+                           / 256) * 256;
+            pool_bytes += ((en.w1_scales_bytes + en.w3_scales_bytes
+                            + en.w2_scales_bytes + 255) / 256) * 256;
+        }
+        void *pool = nullptr;
+        if (pool_bytes > 0
+            && cudaHostAlloc(&pool, static_cast<size_t>(pool_bytes),
+                             cudaHostAllocDefault) == cudaSuccess) {
+            db.pinned_pool = pool;
+            db.pinned_bytes = static_cast<std::size_t>(pool_bytes);
+            uintptr_t cur = reinterpret_cast<uintptr_t>(pool);
+            auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
+            int pinned_cnt = 0;
+            for (auto &en : db.entries) {
+                if (!en.host_w1 || !en.host_w2 || !en.host_w3
+                    || !en.host_w1_scales || !en.host_w2_scales
+                    || !en.host_w3_scales)
+                    continue;
+                en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
+                en.blob_pack_bytes = en.w1_bytes + en.w3_bytes + en.w2_bytes;
+                en.blob_scale_bytes = en.w1_scales_bytes + en.w3_scales_bytes
+                                    + en.w2_scales_bytes;
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
+                            static_cast<std::size_t>(en.w1_bytes));
+                en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w1_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
+                            static_cast<std::size_t>(en.w3_bytes));
+                en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w3_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
+                            static_cast<std::size_t>(en.w2_bytes));
+                en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w2_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
+                            static_cast<std::size_t>(en.w1_scales_bytes));
+                en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w1_scales_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
+                            static_cast<std::size_t>(en.w3_scales_bytes));
+                en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w3_scales_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
+                            static_cast<std::size_t>(en.w2_scales_bytes));
+                en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w2_scales_bytes);
+                ++pinned_cnt;
+            }
+            log::info("[kimi_load] pinned routed-expert store: "
+                      + std::to_string(pinned_cnt) + " experts, "
+                      + std::to_string(pool_bytes / (1024 * 1024))
+                      + " MiB locked host memory");
+        } else {
+            log::warn("[kimi_load] expert pinning unavailable — "
+                      "keeping file-backed mmap sources");
+        }
+    }
     return db;
 }
 
