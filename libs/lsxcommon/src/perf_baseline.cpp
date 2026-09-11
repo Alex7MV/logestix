@@ -1,0 +1,112 @@
+#include "lsxcommon/perf_baseline.h"
+
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
+
+#include <simdjson.h>
+
+namespace lsxcommon {
+namespace perf_baseline {
+
+std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
+{
+    // simdjson's DOM parser borrows the input buffer: copy into stable
+    // storage so temporaries stay valid (perf-cache pattern).
+    const std::string json(json_view);
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    if (parser.parse(json).get(root) != simdjson::SUCCESS)
+        return std::nullopt;
+    int64_t ver = 0;
+    if (root["format_version"].get(ver) != simdjson::SUCCESS ||
+        ver != kPerfBaselineFormatVersion)
+        return std::nullopt;
+    simdjson::dom::array entries;
+    if (root["entries"].get_array().get(entries) != simdjson::SUCCESS)
+        return std::nullopt;
+    PerfBaselineTable t;
+    t.format_version = static_cast<int>(ver);
+    for (simdjson::dom::element el : entries) {
+        simdjson::dom::object o;
+        if (el.get_object().get(o) != simdjson::SUCCESS) return std::nullopt;
+        PerfBaselineEntry e;
+        std::string_view sv;
+        double d = 0.0;
+        int64_t v = 0;
+        if (o["model_type"].get_string().get(sv) != simdjson::SUCCESS)
+            return std::nullopt;
+        e.model_type = sv;
+        if (o["gpu_key"].get_string().get(sv) != simdjson::SUCCESS)
+            return std::nullopt;
+        e.gpu_key = sv;
+        if (o["os"].get_string().get(sv) != simdjson::SUCCESS)
+            return std::nullopt;
+        e.os = sv;
+        if (o["tokens_per_sec"].get_double().get(d) != simdjson::SUCCESS)
+            return std::nullopt;
+        e.tokens_per_sec = d;
+        if (o["max_gen"].get_int64().get(v) != simdjson::SUCCESS)
+            return std::nullopt;
+        e.max_gen = static_cast<int>(v);
+        // Provenance fields are optional (older entries keep parsing).
+        if (o["prompt"].get_string().get(sv) == simdjson::SUCCESS)
+            e.prompt = sv;
+        if (o["date"].get_string().get(sv) == simdjson::SUCCESS)
+            e.date = sv;
+        if (o["commit"].get_string().get(sv) == simdjson::SUCCESS)
+            e.commit = sv;
+        t.entries.push_back(std::move(e));
+    }
+    return t;
+}
+
+std::string SerializePerfBaselines(const PerfBaselineTable &t)
+{
+    std::string s;
+    absl::StrAppend(&s, "{\n  \"format_version\": ", t.format_version,
+                    ",\n  \"entries\": [");
+    for (size_t i = 0; i < t.entries.size(); ++i) {
+        const PerfBaselineEntry &e = t.entries[i];
+        absl::StrAppend(&s, i == 0 ? "\n" : ",\n", "    {\n");
+        absl::StrAppend(&s, "      \"model_type\": \"", e.model_type,
+                        "\",\n");
+        absl::StrAppend(&s, "      \"gpu_key\": \"", e.gpu_key, "\",\n");
+        absl::StrAppend(&s, "      \"os\": \"", e.os, "\",\n");
+        absl::StrAppendFormat(&s, "      \"tokens_per_sec\": %.2f,\n",
+                              e.tokens_per_sec);
+        absl::StrAppend(&s, "      \"max_gen\": ", e.max_gen, ",\n");
+        absl::StrAppend(&s, "      \"prompt\": \"", e.prompt, "\",\n");
+        absl::StrAppend(&s, "      \"date\": \"", e.date, "\",\n");
+        absl::StrAppend(&s, "      \"commit\": \"", e.commit, "\"\n");
+        absl::StrAppend(&s, "    }");
+    }
+    absl::StrAppend(&s, t.entries.empty() ? "]\n" : "\n  ]\n");
+    absl::StrAppend(&s, "}\n");
+    return s;
+}
+
+const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
+                                   const std::string &model_type,
+                                   const std::string &gpu_key,
+                                   const std::string &os)
+{
+    for (const auto &e : t.entries) {
+        if (e.model_type == model_type && e.gpu_key == gpu_key &&
+            e.os == os)
+            return &e;
+    }
+    return nullptr;
+}
+
+PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
+                      double tolerance_pct)
+{
+    if (!baseline.has_value()) return PerfVerdict::kUpdate;
+    if (actual > *baseline) return PerfVerdict::kUpdate;
+    if (actual >= *baseline * (1.0 - tolerance_pct / 100.0))
+        return PerfVerdict::kPass;
+    return PerfVerdict::kDegrade;
+}
+
+} // namespace perf_baseline
+} // namespace lsxcommon

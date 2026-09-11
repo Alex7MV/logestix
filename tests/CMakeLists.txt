@@ -36,6 +36,12 @@ add_executable(test_gpu_perf test_gpu_perf.cpp)
 target_link_libraries(test_gpu_perf PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_gpu_perf COMMAND test_gpu_perf)
 
+# ── Perf baseline reference logic (host-only) ───────────────────────────
+add_executable(test_perf_baseline_logic test_perf_baseline_logic.cpp)
+target_link_libraries(test_perf_baseline_logic PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+add_test(NAME test_perf_baseline_logic COMMAND test_perf_baseline_logic)
+
 
 # ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
 add_executable(test_schema_views test_schema_views.cpp)
@@ -2680,6 +2686,7 @@ set_tests_properties(
     test_fast_load
     test_geometry_guard
     test_gpu_perf
+    test_perf_baseline_logic
     test_schema_views
     test_deepseek_moe_loader
     test_deepseek_moe_model

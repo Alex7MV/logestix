@@ -1,0 +1,60 @@
+#pragma once
+
+// ── Perf baseline reference (model-neutral, host-only) ──────────────────────
+// Committed speed reference: (model_type, gpu_key, os) -> tokens_per_sec,
+// measured by the perf-labeled test (tests/test_perf_baseline.cpp). Pure
+// decision logic + JSON codec live here; file I/O stays in the test so the
+// library is fully unit-testable. NEVER include from .cu TUs.
+
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace lsxcommon {
+namespace perf_baseline {
+
+inline constexpr int kPerfBaselineFormatVersion = 1;
+
+struct PerfBaselineEntry {
+    std::string model_type;
+    std::string gpu_key;
+    std::string os;             // "windows" | "linux" (compile-time)
+    double tokens_per_sec = 0.0;
+    int max_gen = 0;            // measurement protocol (honest comparisons)
+    std::string prompt;
+    std::string date;           // ISO date of the measurement
+    std::string commit;         // repo commit the measurement was taken at
+};
+
+struct PerfBaselineTable {
+    int format_version = kPerfBaselineFormatVersion;
+    std::vector<PerfBaselineEntry> entries;
+};
+
+// simdjson-backed parser; rejects foreign format versions and garbage.
+std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json);
+
+// Hand-rolled stable-order writer (mirrors perf-cache serializer).
+std::string SerializePerfBaselines(const PerfBaselineTable &t);
+
+// Entry lookup by the full (model_type, gpu_key, os) key; nullptr if absent.
+const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
+                                   const std::string &model_type,
+                                   const std::string &gpu_key,
+                                   const std::string &os);
+
+enum class PerfVerdict {
+    kUpdate,   // absent entry or actual > baseline: record it
+    kPass,     // within run-noise tolerance below the baseline
+    kDegrade   // below tolerance: FAIL, root-cause the regression
+};
+
+// Pure verdict: absent -> update; actual > baseline -> update (strictly
+// greater: an equal value is a pass, not an update); within tolerance_pct
+// below baseline -> pass; else degrade.
+PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
+                      double tolerance_pct = 3.0);
+
+} // namespace perf_baseline
+} // namespace lsxcommon

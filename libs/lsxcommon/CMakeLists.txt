@@ -59,6 +59,7 @@ add_library(lsxcommon STATIC
     src/qwen_dense_model.cpp
     src/qwen_base_model.cpp
     src/gpu_perf.cpp
+    src/perf_baseline.cpp
     src/resource_governor.cpp
     src/runtime_tuner.cpp
     src/schema.cpp
