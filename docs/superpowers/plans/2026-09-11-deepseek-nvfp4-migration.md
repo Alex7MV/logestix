@@ -393,3 +393,25 @@ gains left are +2-4 tok/s for 2-3 risky rounds. RECOMMENDATION: stop
 DeepSeek decode tuning here (21.4 tok/s, +383% over session baseline);
 redirect effort to other backlog items (qwen3.8 arena OOM, Kimi
 completion, lsxhome) unless a >25 tok/s requirement appears.
+
+## SESSION FINAL (2026-09-11)
+
+| Этап | t/s | Коммит |
+|---|---|---|
+| Baseline (MXFP4/FP8, без кэша) | 4.43 | — |
+| + LRU-кэш на свободную VRAM (дефолт) | 8.7 | f7af44c |
+| + NVFP4 routed FFN (pair-GEMV) | 11.7 | 46ebc3b |
+| + full-resident mmap (65536 cap) | 12.1 | cc0d274 |
+| + pinned expert store (148.6 GiB) | **21.4** | fade1c1 |
+| + 2-copy merge (pinned blobs) | 21.5 | a59b5af |
+
+Корневые причины исходной медленности (все устранены):
+1. Expert LRU-кэш отключён по умолчанию → 3.7 ГБ/токен PCIe-стриминга.
+2. routed_scale_total считался под per-32 MXFP4 (v1-nvfp4 per-16 вдвое
+   больше) → все routed-эксперты молча скипались стейджинг-чеком.
+3. max_open=7000 mmap-cap → munmap-churn past layer 27 под летящим DMA.
+
+Не закрыто (env-gated, задокументировано выше): early-issue prefetch
+(логическая гонка слотов, LSX_DS_PREFETCH), attention NVFP4 (Task 6,
+~+2 t/s), host-gap тримы (+1-2 t/s). Физический потолок 32 ГБ для этой
+модели ~28-30 t/s — тюнинг остановлен за нецелесообразностью.

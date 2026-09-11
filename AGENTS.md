@@ -248,7 +248,9 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `libs/lsxcommon/src/glm_moe_device_math.h` — device-математика, бит-точная репликация glibc-функций для GLM-5.2
   - `libs/lsxcommon/src/tokenizer_convert.cpp` — tokenizer arrows; merges в форматах string `"a b"` И array `["a","b"]` (GLM-5.2), byte_to_token_id, bos/eos/pad
   - `libs/lsxcommon/src/tokenizer.cpp` + `pretokenizer.cpp` + `unicode.cpp` — BPE-токенизатор, word-level претокенизация, Unicode-классификация
-  - `libs/lsxcommon/src/deepseek_moe_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`)
+  - `libs/lsxcommon/src/deepseek_moe_model.cpp` — `DeepSeekV4FlashModel` (IModel, registry `deepseek-v4-flash`); NVFP4-контур: формат `logestix-v1-nvfp4` (pow2-E4M3 per-16 шкалы экспертов + per-tensor global_scale, строгий гейт формата в Load), routed FFN на `lsx_nvfp4` pair-GEMV (кэш-слот [w1|w3|w2]/[s1|s3|s2]), expert LRU-кэш на всю свободную VRAM, dual-stream staging, pinned expert store (11008 экспертов / 148.6 GiB locked host, pair-layout), decode **21.4 tok/s** на RTX 5090 (baseline сессии 4.43); SelfCheck Paris
+  - `libs/lsxcommon/src/deepseek_moe_repack.cpp` + `include/lsxcommon/deepseek_moe_repack.h` — оффлайн-репак экспертов E8M0/32 → NVFP4 E4M3/16 (`lsxforge --deepseek_nvfp4`); конвертация из safetensors — дефолтный `Converter::Run` (PackExpertNVFP4 I8/U8-ветка репачит шкалы, fold global_scale = 2^m, `nvfp4_scale.h`)
+  - `libs/lsxcommon/src/gpu_perf.cpp` — perf-политика: TC-глобалы lsx_nvfp4/lsx_tc + expert-slots_pct; DeepSeek expert-кэш дефолт = вся свободная VRAM минус резерв
   - `libs/lsxcommon/src/model_factory.cpp` + `model_registry.cpp` + `include/lsxcommon/model_factory.h` — `LsxModelFactory` + IModel registry
   - `libs/lsxcommon/src/models/lsx_orchestrator.cpp` + `include/lsxcommon/lsx_orchestrator.h` — TaskMosaic оркестратор: lock-free SPSC dispatch GLM-5.2 / DeepSeek / unknown
   - `libs/lsxcommon/src/deepseek_inference_*.cu` + `deepseek_moe_load.cuh` + `deepseek_moe_norm_kernels.cu` — DeepSeek-V4-Flash inference kernels: load, norm, moe, head, attn, csa, pipeline
