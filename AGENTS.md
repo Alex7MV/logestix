@@ -151,7 +151,7 @@ dev box (машина со свежим тулчейном даёт ещё ме�
   не вводить — обычные правила (подробности выше) не трактовать жёстче.
 
 ИСКЛЮЧЕНИЕ (оба OS-профиля): когда запускается **инференс** или **тесты
-инференса** (`--selfcheck`, `--benchmark`, `--testprompt`, infer-тесты,
+инференса** (`--bench`/`--selfcheck` lsxbenchmark, `--testprompt`, infer-тесты,
 CUDA-ядра на реальных весах), потребление памяти и GPU-ресурсов считается
 критичным: не запускать параллельные тяжёлые нагрузки, следить за VRAM/RAM
 и освобождать модели по завершении. Работающие инференсы не дублировать.
@@ -259,9 +259,9 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `libs/lsxcommon/src/qwen_moe_inference.cu` (OBJECT `lsxcommon_qwen_moe_cu`, `-fmad=false`) — router softmax→top-8→renorm ядро (HF parity, thread-0 selection), routed FFN slot chain на RunQwenNvfp4Gemm + swiglu/coeff-add, shared-gate combine, инкрементальный single-stream драйвер `RunQwenMoeGeneration`
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode-таблицы (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-ускоренная квантизация (3 CUDA-ядра: convert, block_maxabs, quantize_pack_perblock; CCCL thrust для global max)
-  - `libs/lsxcommon/src/benchmark_gpu.cu` + `include/lsxcommon/benchmark_gpu.h` — `--benchmark` pipeline: NVFP4 ping-pong benchmark (init_hidden_states kernel, cuBLAS GEMM, dual-stream overlap, pinned staging), `lsxcommon::gpu::RunBenchmark()`, BenchmarkResult
+  - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): реальная генерация через IModel::Infer на args.fast_math_mode, отчёт tokens/t/s/ttft/resident
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker, OpenAI endpoint, affinity)
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse в `src/cli.{h,cpp}`)
+- `apps/lsxfabric/` — B2B inference engine, всегда максимальная скорость (`--localmodel`, `--validate`, `--testprompt`; CLI parse в `src/cli.{h,cpp}`); замер скорости и бит-точность переехали в lsxbenchmark
   - `apps/lsxfabric/src/validator.cpp` — валидатор NVFP4/E4M3/global-scale в собранной модели
   - `apps/lsxfabric/tests/` — 12 test cases (1 lifecycle + 11 validator)
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline (`lsxcommon::glm::ConvertGlmModel`), `--tokenizer`, repack-флаги
@@ -270,6 +270,8 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `apps/taskmosaic/tests/` — 1 test case, 1 assertion
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
+- `apps/lsxbenchmark/` — замер скорости генерации + бит-точность (`--bench` — дефолтный режим, реальная генерация `IModel::Infer`; `--selfcheck` — Paris-проверка; `--bit-exact` — `FastMathMode::kOff` для активного режима; `--model`, `--prompt`, `--max-gen`; CLI parse в `src/cli.{h,cpp}`); единственное приложение с численным режимом — остальные всегда на максимальной скорости
+  - `apps/lsxbenchmark/tests/` — 5 test cases (CLI parser, label fast)
 - `apps/lsxhome/` — Windows-native x64 desktop shell (`lsxhome`, WIN32 subsystem, D3D12 + Dear ImGui docking branch). Только Windows — блок в CMakeLists обёрнут в `if(NOT WIN32) return()`. Compute thread публикует токены в lock-free SPSC `GuiBridge` → UI thread дренирует их каждый кадр.
   - `src/main_win32.cpp` — WinMain, окно, render loop, SPSC compute→UI bridge, sidebar + ImPlot график
   - `src/d3d12_renderer.cpp` — `D3D12Renderer` (device/queue/swapchain, SRV-дескрипторный пул, ImGui Win32+DX12 backend, fence), `CreateContext()` для ImGui+ImPlot+ImNodes
@@ -430,7 +432,7 @@ Qwen3.5-9B (перечисленные пути — актуальные яко�
 ## CMake Key Points
 
 - `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors + benchmark), `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) и `lsxcommon_qwen_moe_cu` (Qwen3.5-35B-A3B MoE kernels, `-fmad=false`) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
+- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors), `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) и `lsxcommon_qwen_moe_cu` (Qwen3.5-35B-A3B MoE kernels, `-fmad=false`) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
 - `lsxcommon_cu`/`lsxcommon_glm_cu` линкуются с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
   Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
   а не через жёсткие пути `C:/Program Files/...
@@ -547,7 +549,7 @@ CMake-якоря:
   `LSX_PERF_AUTO=0` возвращает legacy-поведение (bit-exact дефолты).
   `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты). CLI speed/perf-флагов
   нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
-  запуска — `--bit-exact` (lsxfabric), он маппится в `FastMathMode::kOff`
+  запуска — `--bit-exact` (lsxbenchmark), он маппится в `FastMathMode::kOff`
   модели.
 - Неизвестный GPU: первый `Load` запускает одноразовую GEMV-калибровку
   (синтетические NVFP4-буферы представительских форм), результат сохраняется
