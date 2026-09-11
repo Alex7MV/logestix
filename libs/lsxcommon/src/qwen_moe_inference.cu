@@ -1689,6 +1689,9 @@ cudaError_t RunQwenMoeGeneration(
     const int threads = 256;
 
     // ── incremental path: one token per step (SelfCheck pattern) ──
+    // EOS fence cadence: drain-and-check the sampled window every N generated
+    // tokens; worst-case post-EOS waste is N-1 forward passes.
+    constexpr int kEosFenceBatch = 8;
     const int prompt_steps = static_cast<int>(prompt.size());
     const int total_steps = prompt_steps + max_new - 1;
     int32_t cur = prompt[0];
@@ -1945,6 +1948,26 @@ cudaError_t RunQwenMoeGeneration(
                 qwen_feed_token_kernel<<<1, 1, 0, stream>>>(d_ids, d_argmax);
             if (generated == 0) cudaEventRecord(t_ttft, stream);
             ++generated;
+            // Batched EOS fence (kimi round-25 pattern keeps the per-step
+            // argmax D2H off the hot path; this fence bounds only the
+            // post-EOS waste): every kEosFenceBatch generated tokens, drain
+            // the freshly recorded window once and stop enqueueing forward
+            // passes once EOS is seen. Post-hoc check — the GPU math and
+            // the recorded token stream stay bit-identical; TruncateAtEos
+            // still normalizes the tail.
+            if (eos_id >= 0 && generated % kEosFenceBatch == 0) {
+                std::vector<int32_t> eos_win(static_cast<size_t>(kEosFenceBatch));
+                cudaMemcpyAsync(eos_win.data(),
+                                d_tokens + (generated - kEosFenceBatch),
+                                sizeof(int32_t) * kEosFenceBatch,
+                                cudaMemcpyDeviceToHost, stream);
+                cudaEventRecord(tok_ready, stream);
+                cudaEventSynchronize(tok_ready);
+                bool hit = false;
+                for (int32_t t : eos_win)
+                    if (t == eos_id) { hit = true; break; }
+                if (hit) break;
+            }
         } else {
             // Prefill: feed the next prompt token from host staging.
             cur = prompt[step + 1];
