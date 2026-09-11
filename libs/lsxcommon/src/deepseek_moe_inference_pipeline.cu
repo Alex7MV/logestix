@@ -539,16 +539,11 @@ InferenceResult RunInferenceModel(
             // GEMVs read — removes the write-after-read slot race by
             // construction). Without prefetch the global LRU measured
             // faster (11.7 vs 10.7) and stays the default.
-            const bool pf = std::getenv("LSX_DS_PREFETCH") != nullptr;
-            expert_cache.layer_slots =
-                pf ? std::max(1, expert_cache.slots
-                                    / std::max(1, topo.num_layers)) : 0;
+            // With the full-resident mmap table (max_open=65536) there are
+            // no munmaps at all, so the early-issue prefetch needs no slot
+            // bands — global LRU measured the best hit rate.
+            expert_cache.layer_slots = 0;
             expert_cache.num_layers = topo.num_layers;
-            if (pf) {
-                cache_rotor.assign(
-                    static_cast<size_t>(topo.num_layers), 0);
-                expert_cache.h_rotor = cache_rotor.data();
-            }
             for (int i = 0; i < expert_cache.slots; ++i)
                 cache_lru[static_cast<size_t>(i)] = expert_cache.slots - 1 - i; // back = LRU
             expert_cache.h_slot_of = cache_slot_of.data();
@@ -756,8 +751,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 }
                 INFER_CHECK(run_routed_experts_ex(
                     stream, copy_stream, stage_ev,
-                    (do_prefetch && have_router && expert_cache.slots > 0)
-                        ? stage_ev[0] : nullptr,
+                    (do_prefetch && have_router && expert_cache.slots > 0
+                     && !std::getenv("LSX_DS_PF_NOPRE")) ? stage_ev[0] : nullptr,
                     d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,

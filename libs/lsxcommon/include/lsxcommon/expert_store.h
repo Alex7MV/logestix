@@ -43,7 +43,11 @@ struct ExpertStore {
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     std::vector<std::string> paths;      // per flat index (for lazy open)
     std::vector<size_t> lru;             // flat indices, back = least recently used
-    size_t max_open = 7000;              // bounded by Windows CRT fd cap (8192)
+    // 11008 DeepSeek experts = 11008 fds. The historical 7000 cap (Windows
+    // CRT 8192 limit) forced constant mmap churn past layer 27 — and every
+    // eviction munmap'ed entries whose async prefetch DMA could still be
+    // in flight. Linux fd limits are effectively unbounded here.
+    size_t max_open = 65536;
     int num_layers = 0;
     int experts_per_layer = 0;
     std::string error_msg;

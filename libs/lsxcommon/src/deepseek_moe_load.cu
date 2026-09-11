@@ -273,7 +273,9 @@ ExpertDb load_expert_index(const std::string &model_path,
     ExpertDb db;
     db.num_layers = num_layers;
     db.experts_per_layer = experts_per_layer;
-    db.max_open = 7000;
+    // Full-resident mmap table: the 7000 cap (Windows CRT limit) forced
+    // constant churn past layer 27 and munmaps under in-flight prefetch DMA.
+    db.max_open = 65536;
     db.log_prefix = "[load_expert_index] ";
     db.mmap_fail_verb = "mmap fail ";
     db.emit_diag = true;             // DeepSeek diag block

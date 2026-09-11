@@ -806,6 +806,8 @@ cudaError_t issue_routed_staging(
     const int *h_top_indices, int topk)
 {
     if (!copy_stream || !cache || cache->slots <= 0) return cudaSuccess;
+    // Bisect switch: pure-plumbing run (no fills, no copies).
+    if (std::getenv("LSX_DS_PF_NOOP")) return cudaSuccess;
     bool issued = false;
     for (int k = 0; k < topk; ++k) {
         int idx = h_top_indices[k];
@@ -823,14 +825,7 @@ cudaError_t issue_routed_staging(
         const int flat = static_cast<int>(layer) * experts_per_layer + idx;
         if (flat < 0 || flat >= cache->total_experts) continue;
         if (cache->h_slot_of[flat] >= 0) continue;   // resident hit
-        // Banded victim: this layer's own slot band (round-robin rotor).
-        // Bands of other layers are never written here, so in-flight GEMVs
-        // of neighbouring layers cannot observe a write-after-read hazard
-        // (round-5 race (b), eliminated by construction).
-        const int band_base = layer * cache->layer_slots;
-        int slot = band_base
-            + (cache->h_rotor[layer] % cache->layer_slots);
-        ++cache->h_rotor[layer];
+        int slot = cache->h_lru[cache->slots - 1];
         const int victim = cache->h_slot_owner[slot];
         if (victim >= 0 && victim < cache->total_experts)
             cache->h_slot_of[victim] = -1;
@@ -867,6 +862,17 @@ cudaError_t issue_routed_staging(
                 || memcmp(hb.data() + w1b + w3b, en.host_w2, w2b) != 0;
             fprintf(stderr, "VCOPY flat=%d slot=%d match=%d\n",
                     flat, slot, bad ? 0 : 1);
+        }
+        cache->h_slot_of[flat] = slot;
+        cache->h_slot_owner[slot] = flat;
+        // MRU front.
+        for (int i = 0; i < cache->slots; ++i) {
+            if (cache->h_lru[i] == slot) {
+                for (int j = i; j > 0; --j)
+                    cache->h_lru[j] = cache->h_lru[j - 1];
+                cache->h_lru[0] = slot;
+                break;
+            }
         }
         // MRU front.
         for (int i = 0; i < cache->slots; ++i) {
