@@ -27,6 +27,7 @@ parser — same pattern as `gpu_perf` perf-cache):
     {
       "model_type": "gemma-4-26b-a4b-it",
       "gpu_key": "rtx 5090",
+      "os": "linux",
       "tokens_per_sec": 98.1,
       "max_gen": 2048,
       "prompt": "Write a detailed long essay ...",
@@ -39,6 +40,11 @@ parser — same pattern as `gpu_perf` perf-cache):
 
 `gpu_key` = `perf::GpuProfileKey(ProbeGpuPerfProfile())` (lowercased, vendor
 prefix stripped) — the same normalization the knob policy uses.
+`os` = "windows" / "linux", fixed at compile time (`_WIN32`): driver latency
+differs materially between the OS profiles (WDDM vs Linux), so baselines and
+degradation checks are per-OS. Build config (debug/release) is deliberately
+NOT part of the key: measured delta on this project is ~1.7% (gemma 96.4
+debug vs 98.1 release), inside the 3% run-noise tolerance.
 
 ## Components
 
@@ -91,7 +97,8 @@ prefix stripped) — the same normalization the knob policy uses.
   copy is committed by the agent, so every speed change is reviewable in
   git history.
 - Degradation never updates the reference — only fails the test.
-- Baselines are per-GPU-key: a different GPU re-seeds its own entries.
+- Baselines are per (gpu_key, os): a different GPU or OS re-seeds its
+  own entries.
 
 ## Testing (TDD)
 
