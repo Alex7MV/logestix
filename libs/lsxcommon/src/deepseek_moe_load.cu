@@ -281,6 +281,77 @@ ExpertDb load_expert_index(const std::string &model_path,
     db.emit_diag = true;             // DeepSeek diag block
     db.log_batch_fails = false;      // DeepSeek logs no batch-failure lines
     db.Load(model_path, /*fallback=*/false);
+    // ── Pin the routed-expert store into locked host memory ──────────────
+    // File-backed mmap sources carry a driver VMA-lookup penalty on every
+    // H2D copy (measured 5.7 tok/s with a 11008-VMA table) and vanish under
+    // munmap while an async copy can be in flight. One big cudaHostAlloc
+    // pool, laid out per expert as packed [w1|w3|w2] then scales [s1|s3|s2]
+    // — the exact order the GEMV phase streams. Disable with
+    // LSX_EXPERT_PIN=0 (falls back to mmap views).
+    if (std::getenv("LSX_EXPERT_PIN") == nullptr
+        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+        int64_t pool_bytes = 0;
+        bool sizes_ok = true;
+        for (const auto &en : db.entries) {
+            if (!en.host_w1 || !en.host_w2 || !en.host_w3
+                || !en.host_w1_scales || !en.host_w2_scales
+                || !en.host_w3_scales
+                || en.w1_bytes <= 0 || en.w2_bytes <= 0 || en.w3_bytes <= 0
+                || en.w1_scales_bytes <= 0 || en.w2_scales_bytes <= 0
+                || en.w3_scales_bytes <= 0) {
+                sizes_ok = false;
+                break;
+            }
+            pool_bytes += ((en.w1_bytes + en.w3_bytes + en.w2_bytes + 255)
+                           / 256) * 256;
+            pool_bytes += ((en.w1_scales_bytes + en.w3_scales_bytes
+                            + en.w2_scales_bytes + 255) / 256) * 256;
+        }
+        void *pool = nullptr;
+        if (sizes_ok && pool_bytes > 0
+            && cudaHostAlloc(&pool, static_cast<size_t>(pool_bytes),
+                             cudaHostAllocDefault) == cudaSuccess) {
+            db.pinned_pool = pool;
+            db.pinned_bytes = static_cast<std::size_t>(pool_bytes);
+            uintptr_t cur = reinterpret_cast<uintptr_t>(pool);
+            auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
+            int pinned_cnt = 0;
+            for (auto &en : db.entries) {
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
+                            static_cast<std::size_t>(en.w1_bytes));
+                en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w1_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
+                            static_cast<std::size_t>(en.w3_bytes));
+                en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w3_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
+                            static_cast<std::size_t>(en.w2_bytes));
+                en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w2_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
+                            static_cast<std::size_t>(en.w1_scales_bytes));
+                en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w1_scales_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
+                            static_cast<std::size_t>(en.w3_scales_bytes));
+                en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w3_scales_bytes);
+                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
+                            static_cast<std::size_t>(en.w2_scales_bytes));
+                en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
+                cur = aln(cur + en.w2_scales_bytes);
+                ++pinned_cnt;
+            }
+            log::info("[load_expert_index] pinned routed-expert store: "
+                      + std::to_string(pinned_cnt) + " experts, "
+                      + std::to_string(pool_bytes / (1024 * 1024))
+                      + " MiB locked host memory");
+        } else {
+            log::warn("[load_expert_index] expert pinning unavailable — "
+                      "keeping file-backed mmap sources");
+        }
+    }
     return db;
 }
 

@@ -55,6 +55,11 @@ struct ExpertStore {
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
     int64_t parse_calls = 0;
     int64_t parse_ok = 0;
+    // Optional locked-host pool backing the entries (DeepSeek NVFP4 pin).
+    // When set, entry host pointers point INTO this allocation and Free()
+    // releases it with cudaFreeHost.
+    void *pinned_pool = nullptr;
+    std::size_t pinned_bytes = 0;
 
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
@@ -256,6 +261,9 @@ struct ExpertStore {
 
     void Free()
     {
+        if (pinned_pool) cudaFreeHost(pinned_pool);
+        pinned_pool = nullptr;
+        pinned_bytes = 0;
         for (auto &m : mmaps) m.reset();
         for (auto &b : batches) b.reset();
         mmaps.clear(); batches.clear(); lru.clear(); entries.clear(); paths.clear();
