@@ -680,13 +680,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                             static_cast<size_t>(kLocalTopK) * sizeof(float));
             }
 
-            // NOTE: early-issue prefetch (copies before the shared FFN) is
-            // UNSAFE here: the copy_stream DMA reads mmap-backed entries that
-            // ensure_expert_resident of later layers munmaps under an
-            // in-flight transfer (observed numeric corruption). Copies stay
-            // in run_routed_experts_ex, fenced per expert; enabling early
-            // issue requires a pending-copy barrier before mmap eviction.
-
             // Shared experts FFN: outputs to d_ffn_accum (FP32).
             // Independent of the routing result; enqueued behind the router GEMM
             // so it overlaps the host's router-logit wait.
@@ -729,9 +722,12 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 
             // Routed experts: accumulate top-k weighted FFN outputs into d_ffn_accum (FP32)
             if (lw.d_gate_weight && !expert_db.entries.empty()) {
+            // Resident host pointers (mmap LRU) before the GEMV phase.
+            if (lw.d_gate_weight && !expert_db.entries.empty()) {
                 for (int i = 0; i < kLocalTopK; ++i)
                     ensure_expert_resident(expert_db, lay, h_topk[i], stream,
                                            evict_done);
+            }
                 INFER_CHECK(run_routed_experts_ex(
                     stream, copy_stream, stage_ev,
                     nullptr,
