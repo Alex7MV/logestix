@@ -14,26 +14,27 @@ int main(int argc, char *argv[]) {
     lsxcommon::Core::Initialize("logestix_runtime.log");
     lsxcommon::version();
     lsxcommon::log_gpu_info();
-    // Engine auto policy: resolve the per-GPU perf knobs (TC fast-math,
-    // expert-cache sizing, dual-stream staging) for every launch mode.
-    lsxcommon::InferenceEngine::Session engine_session;
-    lsxcommon::log::info(absl::StrFormat("Model path: %s", cli.model_path));
-    if (cli.testprompt) {
-        lsxcommon::runtime::GenerationCliArgs args;
-        args.model_path = cli.model_path;
-        args.prompt = cli.prompt;
-        args.max_gen_tokens = cli.max_gen;
-        args.fast_math_mode = lsxcommon::FastMathMode::kAuto;
-        int rc = lsxcommon::runtime::RunCliGeneration(args);
-        lsxcommon::Core::Shutdown();
-        return rc;
-    }
-    if (cli.validate) {
-        lsxcommon::log::info("Running validation...");
-        auto result = lsxfabric::RunValidator(cli.model_path);
-        lsxcommon::Core::Shutdown();
-        return result.ok ? 0 : 1;
+
+    int rc = 0;
+    // Scoped engine session: the per-GPU auto perf policy is resolved for
+    // every launch mode, and ShutdownEngine (which logs) runs while the
+    // spdlog default logger installed by Core::Initialize is still alive.
+    {
+        lsxcommon::InferenceEngine::Session engine_session;
+        lsxcommon::log::info(absl::StrFormat("Model path: %s", cli.model_path));
+        if (cli.testprompt) {
+            lsxcommon::runtime::GenerationCliArgs args;
+            args.model_path = cli.model_path;
+            args.prompt = cli.prompt;
+            args.max_gen_tokens = cli.max_gen;
+            args.fast_math_mode = lsxcommon::FastMathMode::kAuto;
+            rc = lsxcommon::runtime::RunCliGeneration(args);
+        } else if (cli.validate) {
+            lsxcommon::log::info("Running validation...");
+            auto result = lsxfabric::RunValidator(cli.model_path);
+            rc = result.ok ? 0 : 1;
+        }
     }
     lsxcommon::Core::Shutdown();
-    return 0;
+    return rc;
 }
