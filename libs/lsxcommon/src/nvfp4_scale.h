@@ -55,27 +55,46 @@ LSX_NVFP4_SCALE_HD inline float E4m3P2ToFloat(uint8_t e4m3)
     return f;
 }
 
-// Map one MXFP4 E8M0 exponent byte (value 2^(b-127); 0 -> 0, 0xFF -> FLT_MAX
-// per the clamped decode flavor in lsx_kernels_quant.cuh) onto the TWO
-// per-16 pow2-E4M3 scale bytes of the same 32-element block (DeepSeek vault
-// NVFP4 repack). Exact for the representable range b in [121..134]
-// (2^-6 .. 2^7); outside it saturates to the nearest representable scale —
-// the finite-clamp flavor the routed-expert FFN already relies on. Byte
-// 0x00 (zero scale) maps to 0x00 (decode: 0.0f).
-LSX_NVFP4_SCALE_HD inline void E8m0ToE4m3Pow2Pair(uint8_t e8m0, uint8_t out[2])
+// Map one MXFP4 E8M0 exponent byte (value 2^(b-127); 0 -> 0 per the clamped
+// decode flavor in lsx_kernels_quant.cuh) onto the TWO per-16 pow2-E4M3
+// scale bytes of the same 32-element block (DeepSeek vault NVFP4 repack).
+//
+// @p gs_shift_m is the per-tensor global-scale exponent: the repacked tensor
+// carries global_scale = 2^m, and the NVFP4 decode multiplies by it, so the
+// exactness contract is
+//     E4m3P2ToFloat(out[0]) * 2^m == 2^(b-127)      (i.e. e4 = b-120-m)
+// whenever e4 lands in [1, 14]; outside it saturates to the nearest bound
+// (lossy — a correct per-tensor shift choice from ChooseE8m0ScaleShift
+// keeps every real byte exact). Byte 0x00 (zero scale) maps to 0x00.
+LSX_NVFP4_SCALE_HD inline void E8m0ToE4m3Pow2Pair(uint8_t e8m0, int gs_shift_m,
+                                                  uint8_t out[2])
 {
     if (e8m0 == 0) {
         out[0] = 0;
         out[1] = 0;
         return;
     }
-    int e4 = static_cast<int>(e8m0) - 120;  // 2^(b-127) == 2^(e4-7)
-    if (e8m0 == 0xFF) e4 = 14;              // FLT_MAX flavor: clamp finite
+    int e4 = static_cast<int>(e8m0) - 120 - gs_shift_m;
     if (e4 < 1) e4 = 1;
     if (e4 > 14) e4 = 14;                   // avoid the E4M3 NaN slot (15)
     const uint8_t mapped = static_cast<uint8_t>(static_cast<uint8_t>(e4) << 3);
     out[0] = mapped;
     out[1] = mapped;
+}
+
+// Choose the per-tensor global-scale exponent @p m for a tensor whose E8M0
+// scale bytes span [@p b_min, @p b_max]: the shift maps the smallest byte
+// onto e4 = 1 (min representable scale 2^-6) and stays exact as long as the
+// byte spread is <= 13 (e4 range width). Returns false when the spread
+// exceeds the representable window (caller decides: error out or clamp).
+// Bytes above 0x7F carry no sign meaning in E8M0; the window math is pure
+// exponent arithmetic, valid for the full E8M0 domain.
+inline bool ChooseE8m0ScaleShift(uint8_t b_min, uint8_t b_max, int &m)
+{
+    if (b_min == 0 || b_max == 0) return false;  // zero scale: not a range
+    if (b_max - b_min > 13) return false;
+    m = static_cast<int>(b_min) - 121;
+    return true;
 }
 
 } // namespace nvfp4
