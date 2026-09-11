@@ -1085,6 +1085,36 @@ endif()
 
 add_test(NAME test_model_runtime COMMAND test_model_runtime)
 
+# ── Perf baseline guard (real weights, label perf — manual command) ──────
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_PERF)
+add_executable(test_perf_baseline test_perf_baseline.cpp)
+target_compile_definitions(test_perf_baseline PRIVATE
+    LSX_SOURCE_DIR="${LSX_SRC_DIR_FWD_PERF}")
+target_link_libraries(test_perf_baseline PRIVATE lsxcommon
+                      Catch2::Catch2WithMain)
+# One ctest entry per model: each model must measure in its own process —
+# models sharing one process contend for VRAM (expert caches of the previous
+# model starve the next one: ~2x measured spread). Process exit frees VRAM,
+# giving every model the lsxbenchmark-isolated measurement it baselines.
+foreach(perf_m IN ITEMS
+        "gemma-4-26b-a4b-it|gemma-4-26B-A4B-it"
+        "glm-5.3-flash|GLM-5.3-Flash"
+        "deepseek-v4-flash|DeepSeek-V4-Flash"
+        "qwen3.5-35b-a3b|Qwen3.5-35B-A3B"
+        "qwen3.6-35b-a3b|Qwen3.6-35B-A3B")
+    string(REPLACE "|" ";" perf_pair "${perf_m}")
+    list(GET perf_pair 0 perf_type)
+    list(GET perf_pair 1 perf_dir)
+    string(REGEX REPLACE "[^a-zA-Z0-9]" "_" perf_target "${perf_type}")
+    add_test(NAME test_perf_baseline_${perf_target}
+             COMMAND test_perf_baseline
+             "perf baseline: ${perf_type}")
+    set_tests_properties(test_perf_baseline_${perf_target} PROPERTIES
+        LABELS "perf"
+        TIMEOUT 1200
+        ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=${perf_dir}")
+endforeach()
+
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
