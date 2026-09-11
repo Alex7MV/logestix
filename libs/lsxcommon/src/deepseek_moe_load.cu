@@ -279,32 +279,6 @@ ExpertDb load_expert_index(const std::string &model_path,
     db.emit_diag = true;             // DeepSeek diag block
     db.log_batch_fails = false;      // DeepSeek logs no batch-failure lines
     db.Load(model_path, /*fallback=*/false);
-    // TC W4A4 (fast_math): every E8M0 scale byte must sit inside the exact
-    // UE4M3 pow2 range (e8 <= 135); the repack kernel clamps silently, so
-    // out-of-range weights would corrupt outputs without this gate.
-    if (DeepseekFastMath()) {
-        for (size_t e = 0; e < db.entries.size(); ++e) {
-            const ExpertEntry &en = db.entries[e];
-            const int64_t sc[3] = {en.w1_scales_bytes, en.w2_scales_bytes,
-                                   en.w3_scales_bytes};
-            const uint8_t *sp[3] = {en.host_w1_scales, en.host_w2_scales,
-                                    en.host_w3_scales};
-            for (int t = 0; t < 3; ++t) {
-                if (!sp[t] || sc[t] <= 0) continue;
-                int64_t off = -1;
-                if (!ValidateE8m0Range(sp[t], sc[t], &off)) {
-                    lsxcommon::log::error(
-                        "[load_expert_index] scale byte " +
-                        std::to_string(off) + " of expert " +
-                        std::to_string(e) +
-                        " exceeds UE4M3 range (fast_math TC W4A4 requires "
-                        "e8 <= 135)");
-                    db.Free();
-                    return ExpertDb{};
-                }
-            }
-        }
-    }
     return db;
 }
 

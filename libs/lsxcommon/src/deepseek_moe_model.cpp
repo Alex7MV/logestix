@@ -1,6 +1,7 @@
 #include "deepseek_moe_model.h"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/sampling.h"
@@ -101,7 +102,10 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     // Model independence: assert THIS model's fast-math policy for the
     // duration of the call (constructor-time flags would leak the
     // last-constructed model's config across the registry).
-    const gpu::DeepseekFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
+    // Neutral-layer policy: the routed FFN runs lsx_nvfp4 GEMVs, whose
+    // dispatch reads the process-global toggles — assert THIS model's
+    // policy for the duration of the call (model-independence contract).
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }

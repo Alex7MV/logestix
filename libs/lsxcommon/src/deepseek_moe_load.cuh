@@ -32,39 +32,10 @@ constexpr int kIntermediateDim = 2048;
 // experts carry pow2-E4M3 per-16 scales + per-tensor global_scale.
 inline constexpr char kIndexFormatNvfp4[] = "logestix-v1-nvfp4";
 
-// Blackwell TC W4A4 toggle (F-12). Process-wide; every Infer/SelfCheck call
-// asserts its OWN policy via DeepseekFastMathScope — the last-constructed
-// model's config must never leak into another model's kernel routing
-// (LsxFastMathScope parity, lsx_inference_nvfp4.h). Default OFF preserves
-// bit-exact legacy routing.
-void SetDeepseekFastMath(bool on);
-bool DeepseekFastMath();
-
-class DeepseekFastMathScope {
-public:
-    explicit DeepseekFastMathScope(bool on)
-        : prev_(DeepseekFastMath()), active_(true) { SetDeepseekFastMath(on); }
-    // Tri-state: kAuto leaves the process global untouched (engine-init perf
-    // policy stands); kOn/kOff force it for the scope and restore afterwards
-    // (FastMathMode parity, lsx_inference_nvfp4.h).
-    explicit DeepseekFastMathScope(FastMathMode mode)
-        : prev_(DeepseekFastMath()), active_(mode != FastMathMode::kAuto)
-    {
-        if (mode != FastMathMode::kAuto)
-            SetDeepseekFastMath(mode == FastMathMode::kOn);
-    }
-    ~DeepseekFastMathScope()
-    {
-        if (active_) SetDeepseekFastMath(prev_);
-    }
-    DeepseekFastMathScope(const DeepseekFastMathScope &) = delete;
-    DeepseekFastMathScope &operator=(const DeepseekFastMathScope &) = delete;
-
-private:
-    bool prev_;
-    bool active_;
-};
-
+// Routed experts are NVFP4-native (logestix-v1-nvfp4): kernel selection
+// lives in the neutral lsx_nvfp4 layer; DeepSeekV4FlashModel::Infer asserts
+// its per-call policy with lsx_nvfp4::LsxFastMathScope (model-independence
+// contract). The legacy family-scoped toggle is retired.
 // Frozen-geometry passport (MODEL INGEST INVARIANT step 3): compile-time
 // relations lock the architecture against accidental drift.
 static_assert(kTopK > 0 && kTopK <= kNumRouted,

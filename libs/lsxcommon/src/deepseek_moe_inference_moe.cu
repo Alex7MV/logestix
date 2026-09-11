@@ -1,6 +1,6 @@
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/shared_experts.h"
-#include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/log.h"
 #include "deepseek_moe_load.cuh"
 #include "lsx_kernels_act.cuh"
@@ -17,20 +17,10 @@
 namespace lsxcommon {
 namespace gpu {
 
-// Blackwell TC W4A4 toggle (F-12). Process-wide; flipped from
-// ModelInitConfig::fast_math at model construction. Default OFF keeps the
-// dequant+cuBLAS routes bit-exact.
-static std::atomic<bool> g_deepseek_fast_math{false};
-
-void SetDeepseekFastMath(bool on)
-{
-    g_deepseek_fast_math.store(on, std::memory_order_relaxed);
-}
-
-bool DeepseekFastMath()
-{
-    return g_deepseek_fast_math.load(std::memory_order_relaxed);
-}
+// Routed experts are NVFP4-native (logestix-v1-nvfp4): the neutral
+// lsx_nvfp4 layer drives kernel selection via its process-global policy,
+// asserted per-call by DeepSeekV4FlashModel::Infer's LsxFastMathScope.
+// The legacy family-scoped TC toggle (g_deepseek_fast_math) is retired.
 
 // Dequant kernel from benchmark (extern declaration)
 
@@ -340,164 +330,53 @@ cudaError_t run_shared_experts_ffn(
 // with CUBLAS_COMPUTE_32F on the 5th-gen Tensor Cores. The per-128 activation
 // scales are folded into the (power-of-two-exact) activation instead of the
 // weights — see scale_act_blocks_kernel. GEMM outputs stay FP32 (no overflow).
-cudaError_t run_routed_expert_ffn(
-    cublasHandle_t cublas_h, cudaStream_t stream,
-    const __half *d_hidden,
-    const uint8_t *d_w1, const uint8_t *d_w1_scales, int64_t w1_el,
-    const uint8_t *d_w2, const uint8_t *d_w2_scales, int64_t w2_el,
-    const uint8_t *d_w3, const uint8_t *d_w3_scales, int64_t w3_el,
-    float *d_gate_f32, float *d_up_f32,    // FP32 W1/W3 outputs (no overflow)
-    float *d_dequant,                    // FP32 dequant scratch (no overflow)
-    float *d_output,
-    float *d_act_quant,                  // FP32 activation (was __half*)
-    float *d_swiglu_out,
-    float *d_act_scales,
-    float weight, bool accumulate,
-    const uint8_t *d_w1_scales_tc = nullptr,
-    const uint8_t *d_w2_scales_tc = nullptr,
-    const uint8_t *d_w3_scales_tc = nullptr)
+// Coefficient accumulate: dst[i] += weight * y[i] (FP32 routed accumulator,
+// __half GEMV output — the NVFP4-native analogue of acc_half_to_f32_kernel
+// with the routing weight folded in).
+__global__ void coeff_add_f32_kernel(const __half* __restrict__ y, float w,
+                                     float* __restrict__ dst, int n)
 {
-    // ── TC W4A4 path (fast_math, F-12): no weight dequant at all ────────────
-    // Repacked UE4M3 per-16 scale slabs feed lsx_tc::RunLsxTcNvfp4Gemm
-    // directly (weights stay nibble-packed in the on-disk [N,K] layout).
-    // Tolerance-class (W4A4 accumulation order + per-16 activation
-    // quantization) — gated strictly behind DeepseekFastMath().
-    const bool use_tc = DeepseekFastMath() && d_w1_scales_tc &&
-                        d_w2_scales_tc && d_w3_scales_tc && w1_el > 0 &&
-                        w2_el > 0 && w3_el > 0;
-    if (use_tc) {
-        __half* const gate_h = reinterpret_cast<__half*>(d_gate_f32);
-        __half* const up_h = reinterpret_cast<__half*>(d_up_f32);
-        // y_tc carved from d_dequant: the TC path performs NO weight dequant,
-        // so the (max w*_el)-float dequant arena slice is free; H halves fit.
-        __half* const y_tc = reinterpret_cast<__half*>(d_dequant);
-        // W1: y = W1 @ x  (N=I, K=H)
-        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, d_hidden, d_w1,
-                                         d_w1_scales_tc, 1.0f, gate_h, 1,
-                                         kHiddenDim,
-                                         kIntermediateDim) != cudaSuccess)
-            return cudaGetLastError();
-        // W3: same shape
-        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, d_hidden, d_w3,
-                                         d_w3_scales_tc, 1.0f, up_h, 1,
-                                         kHiddenDim,
-                                         kIntermediateDim) != cudaSuccess)
-            return cudaGetLastError();
-        // SwiGLU FP16 (same clamp semantics as the FP32 reference path):
-        // out = silu(clamp_max(gate, 10)) * clamp_pm(up, 10) — silu_mul
-        // applies silu to its FIRST arg and writes in-place, so the result
-        // lands in gate_h (W2 input), leaving up_h intact.
-        silu_mul_kernel<<<(kIntermediateDim + 255) / 256, 256, 0, stream>>>(
-            gate_h, up_h, kIntermediateDim, 10.0f);
-        // W2 with the routing weight folded into the TC epilogue scale
-        // (w_global_scale == weight — post-GEMM scaling, mathematically
-        // equal to the legacy pre-W2 FP32 scale_float_kernel).
-        if (lsx_tc::RunLsxTcNvfp4Gemm(stream, gate_h, d_w2, d_w2_scales_tc,
-                                         weight, y_tc, 1, kIntermediateDim,
-                                         kHiddenDim) != cudaSuccess)
-            return cudaGetLastError();
-        acc_half_to_f32_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
-            d_output, y_tc, kHiddenDim, accumulate);
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] += w * __half2float(y[i]);
+}
+
+// v1-nvfp4 routed-expert FFN: weights stay NVFP4-packed end to end. The
+// neutral lsx_nvfp4 layer streams them straight through the seq==1
+// weight-streaming GEMV (no dequantization stage, no cuBLAS). gate/up share
+// one pair-GEMV launch over the contiguous [w1|w3] rows of the cache slot /
+// staging area; w2 follows the GLM-Flash 32 t/s pattern:
+// pair-GEMV -> silu_mul -> w2 GEMV -> weighted FP32 accumulate.
+//   d_w13/d_s13: [w1|w3] rows ([I,H] each) + scales [s1|s3] (per-16)
+//   d_w2/d_s2:   [H,I] packed + scales; gs* decode with the vault's
+//                per-tensor global scales (repack-folded 2^m).
+// Tolerance class: FP16 SwiGLU intermediates + k-order-free GEMV (same
+// numeric contract as every other model on the lsx_nvfp4 contour).
+cudaError_t run_routed_expert_ffn(
+    cudaStream_t stream,
+    const __half *d_hidden,
+    const uint8_t *d_w13, const uint8_t *d_s13, float gs1, float gs3,
+    const uint8_t *d_w2, const uint8_t *d_s2, float gs2,
+    __half *d_yg,        // [2*I] halves: [gate | up] pair-GEMV output
+    __half *d_y2,        // [H] halves: w2 GEMV output
+    float *d_output,
+    float weight)
+{
+    constexpr int I = kIntermediateDim;
+    constexpr int H = kHiddenDim;
+
+    if (lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(stream, d_hidden, d_w13, d_s13,
+            gs1, gs3, d_yg, H, I, false) != cudaSuccess)
         return cudaGetLastError();
-    }
-    cublasSetStream(cublas_h, stream);
-    float alpha = 1.0f, beta = 0.0f;
-    const int block = 256;
-
-    // FP16 scratch carved from the (float-typed) d_dequant arena slice:
-    // [dequanted W1/W3 weights: w1_el halves][act fp16: kHiddenDim halves].
-    // The carve sits inside the W2 FP32 region but is only read by the W1/W3
-    // GEMMs, which complete (stream order) before the W2 dequant overwrites
-    // it. Callers allocate ≥ max(w*_el) floats, so the carve always fits.
-    __half* const d_w_half = reinterpret_cast<__half*>(d_dequant);
-    __half* const d_act_h  = d_w_half + kIntermediateDim * kHiddenDim;
-
-    // ── Per-128 block activation quantization ──────────────────────────────
-    // Quantizes d_hidden → d_act_quant (FP8_E4M3, FP32) + d_act_h (FP16 copy),
-    // stores scales → d_act_scales. The per-128 act scales (powers of two)
-    // are then folded into the ACTIVATION (exact in FP16) rather than into
-    // the dequanted weights: E2M1×E8M0 weight products stay bit-exact in
-    // FP16, while folding the scale into small-magnitude weights would push
-    // them into the FP16 subnormal range and destroy their precision.
-    {
-        int n_blocks = (kHiddenDim + 127) / 128;
-        act_quant_block_kernel<<<n_blocks, block, 0, stream>>>(
-            d_hidden, d_act_quant, d_act_h, d_act_scales, kHiddenDim);
-        int grid = (kHiddenDim + block - 1) / block;
-        scale_act_blocks_kernel<<<grid, block, 0, stream>>>(
-            d_act_h, d_act_scales, kHiddenDim);
-    }
-
-    // ── W1 GEMM: exact-FP16 weights × act-scaled activation ────────────────
-    if (w1_el > 0) {
-        int64_t packed_bytes = (w1_el + 1) / 2;
-        int64_t scale_bytes  = (w1_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0_half(stream, d_w1, packed_bytes,
-            d_w1_scales, scale_bytes, d_w_half, w1_el);
-        if (de != cudaSuccess) return de;
-        cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     kIntermediateDim, 1, kHiddenDim, &alpha,
-                     d_w_half, CUDA_R_16F, kHiddenDim,
-                     d_act_h, CUDA_R_16F, kHiddenDim, &beta,
-                     d_gate_f32, CUDA_R_32F, kIntermediateDim,
-                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (w1s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-    }
-
-    // ── W3 GEMM: same exact-FP16 weights × act-scaled activation ───────────
-    if (w3_el > 0) {
-        int64_t packed_bytes = (w3_el + 1) / 2;
-        int64_t scale_bytes  = (w3_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0_half(stream, d_w3, packed_bytes,
-            d_w3_scales, scale_bytes, d_w_half, w3_el);
-        if (de != cudaSuccess) return de;
-        cublasStatus_t w3s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     kIntermediateDim, 1, kHiddenDim, &alpha,
-                     d_w_half, CUDA_R_16F, kHiddenDim,
-                     d_act_h, CUDA_R_16F, kHiddenDim, &beta,
-                     d_up_f32, CUDA_R_32F, kIntermediateDim,
-                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (w3s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-    }
-
-    // ── SwiGLU in FP32: silu(clamp(gate,max=10)) * clamp(up,±10) → FP32 ─────
-    if (kIntermediateDim > 0) {
-        int grid = (kIntermediateDim + block - 1) / block;
-        ::lsxcommon::kernels::SwigluSigKernel<float, ::lsxcommon::kernels::ExpFlavor::Precise, true><<<grid, block, 0, stream>>>(
-            d_gate_f32, d_up_f32, d_swiglu_out, kIntermediateDim, 10.0f);
-        // Apply routing weight (norm_topk_prob * 1.5) in FP32 BEFORE W2
-        scale_float_kernel<<<grid, block, 0, stream>>>(
-            d_swiglu_out, weight, kIntermediateDim);
-    }
-
-    // ── W2 GEMM: pure FP32 matmul of dequantized W2 against the raw
-    // SwiGLU output (FP32 accumulate/output). W2 deliberately stays on the
-    // FP32 CUDA-core path: routing-weighted SwiGLU terms are large and
-    // heavily cancelling, so FP16-rounding the W2 activation shifts outputs
-    // by up to ~3% — far outside the numeric contract that the W1/W3 exact-
-    // input path preserves. No act_scale fusion here either: the W2
-    // activation is NOT divided by any per-128 block scale, so the weights
-    // must stay unscaled. (Fusing the input's d_act_scales — as an older
-    // quantized-activation path did — scaled every routed-expert output by
-    // ~act_scale≈2^-9, silently zeroing routed experts.)
-    if (w2_el > 0) {
-        int64_t packed_bytes = (w2_el + 1) / 2;
-        int64_t scale_bytes  = (w2_el + 31) / 32;
-        cudaError_t de = dequant_fp4_e8m0(stream, d_w2, packed_bytes,
-                                          d_w2_scales, scale_bytes,
-                                          d_dequant, w2_el);
-        if (de != cudaSuccess) return de;
-
-        float gbeta = accumulate ? 1.0f : 0.0f;
-        cublasStatus_t w2s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     kHiddenDim, 1, kIntermediateDim, &alpha,
-                     d_dequant, CUDA_R_32F, kIntermediateDim,
-                     d_swiglu_out, CUDA_R_32F, kIntermediateDim, &gbeta,
-                     d_output, CUDA_R_32F, kHiddenDim,
-                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (w2s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
-    }
-
+    // SwiGLU FP16: silu(clamp(gate, max=limit)) * clamp(up, +/-limit) in
+    // place — the result lands in d_yg[0..I), ready for w2.
+    silu_mul_kernel<<<(I + 255) / 256, 256, 0, stream>>>(
+        d_yg, d_yg + I, I, 10.0f);
+    if (lsx_nvfp4::RunLsxNvfp4Gemm(stream, d_yg, d_w2, d_s2, gs2, d_y2, 1,
+            I, H, false) != cudaSuccess)
+        return cudaGetLastError();
+    coeff_add_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        d_y2, weight, d_output, H);
     return cudaGetLastError();
 }
 
@@ -686,33 +565,24 @@ cudaError_t route_token(
 // the H2D copies are skipped entirely and the cached slot is addressed
 // directly (single-stream ordering makes slot reuse safe).
 cudaError_t run_routed_experts_ex(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
-    float *d_gate_f32, float *d_up_f32,   // FP32 W1/W3 outputs
-    float *d_dequant,
-    float *d_act_quant,                  // FP32 activation
-    float *d_swiglu_out,
-    float *d_act_scales,
+    __half *d_yg, __half *d_y2,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
-    const ExpertDeviceCache *cache,
-    uint8_t *d_scale_stage_tc = nullptr)
+    const ExpertDeviceCache *cache)
 {
     const int64_t w1_el = static_cast<int64_t>(kHiddenDim) * kIntermediateDim;
     const int64_t w2_el = static_cast<int64_t>(kIntermediateDim) * kHiddenDim;
     const int64_t w3_el = w1_el;
 
     // d_output already holds the shared-expert FFN result (or was freshly
-    // zeroed by the caller when there are no shared experts — see
-    // deepseek_moe_inference_pipeline.cu's d_ffn_accum setup) *before* this function is
-    // called, so every routed expert's W2 GEMM must accumulate (beta=1),
-    // never overwrite (beta=0). This used to start `false`, which silently
-    // discarded the shared-expert contribution on every layer/token that
-    // selected >=1 routed expert.
-    const bool accumulate = true;
+    // zeroed by the caller when there are no shared experts), so every
+    // routed expert's weighted output must accumulate (coeff add), never
+    // overwrite.
     for (int k = 0; k < topk; ++k) {
         int idx = h_top_indices[k];
         if (idx < 0 || idx >= experts_per_layer) continue;
@@ -725,9 +595,10 @@ cudaError_t run_routed_experts_ex(
         if (w1b <= 0 || w2b <= 0 || w3b <= 0 || s1b <= 0 || s2b <= 0 || s3b <= 0)
             continue;
 
-        uint8_t *p1, *p2, *p3, *s1, *s2, *s3;
-
         // ── Resolve source pointers: resident cache hit or H2D staging ──────
+        // Cache slot / staging layout: packed [w1|w3|w2], scales [s1|s3|s2]
+        // — w1/w3 adjacent so the pair-GEMV reads one contiguous range.
+        uint8_t *p13, *p2, *s13, *s2;
         int cache_slot = -1;
         bool use_cache = false;
         if (cache && cache->slots > 0
@@ -737,30 +608,33 @@ cudaError_t run_routed_experts_ex(
             if (flat >= 0 && flat < cache->total_experts)
                 cache_slot = cache->h_slot_of[flat];
             if (cache_slot < 0) {
-                // Miss: evict the LRU tail slot and stage the expert into it.
+                // Miss: evict the LRU tail slot and stage the expert into
+                // it in the pair layout (w1, w3, w2 / s1, s3, s2).
                 cache_slot = cache->h_lru[cache->slots - 1];
                 const int victim = cache->h_slot_owner[cache_slot];
                 if (victim >= 0 && victim < cache->total_experts)
                     cache->h_slot_of[victim] = -1;
-                p1 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
-                s1 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
+                uint8_t *pk = cache->d_pack
+                    + static_cast<int64_t>(cache_slot) * cache->pack_stride;
+                uint8_t *sc = cache->d_scale
+                    + static_cast<int64_t>(cache_slot) * cache->scale_stride;
                 cudaError_t e = cudaSuccess;
-                e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
+                e = cudaMemcpyAsync(pk, en.host_w1, static_cast<size_t>(w1b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
-                e = cudaMemcpyAsync(p1 + w1b, en.host_w2, static_cast<size_t>(w2b),
+                e = cudaMemcpyAsync(pk + w1b, en.host_w3, static_cast<size_t>(w3b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
-                e = cudaMemcpyAsync(p1 + w1b + w2b, en.host_w3, static_cast<size_t>(w3b),
+                e = cudaMemcpyAsync(pk + w1b + w3b, en.host_w2, static_cast<size_t>(w2b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
-                e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
+                e = cudaMemcpyAsync(sc, en.host_w1_scales, static_cast<size_t>(s1b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
-                e = cudaMemcpyAsync(s1 + s1b, en.host_w2_scales, static_cast<size_t>(s2b),
+                e = cudaMemcpyAsync(sc + s1b, en.host_w3_scales, static_cast<size_t>(s3b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
-                e = cudaMemcpyAsync(s1 + s1b + s2b, en.host_w3_scales, static_cast<size_t>(s3b),
+                e = cudaMemcpyAsync(sc + s1b + s3b, en.host_w2_scales, static_cast<size_t>(s2b),
                                     cudaMemcpyHostToDevice, stream);
                 if (e != cudaSuccess) return e;
                 cache->h_slot_of[flat] = cache_slot;
@@ -775,70 +649,46 @@ cudaError_t run_routed_experts_ex(
                     break;
                 }
             }
-            p1 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
-            p2 = p1 + w1b;
-            p3 = p2 + w2b;
-            s1 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
-            s2 = s1 + s1b;
-            s3 = s2 + s2b;
+            p13 = cache->d_pack + static_cast<int64_t>(cache_slot) * cache->pack_stride;
+            p2 = p13 + w1b + w3b;
+            s13 = cache->d_scale + static_cast<int64_t>(cache_slot) * cache->scale_stride;
+            s2 = s13 + s1b + s3b;
             use_cache = true;
         }
         if (!use_cache) {
-            if (w1b + w2b + w3b > pack_stage_bytes || s1b + s2b + s3b > scale_stage_bytes)
+            if (w1b + w2b + w3b > pack_stage_bytes
+                || s1b + s2b + s3b > scale_stage_bytes)
                 continue;
-            p1 = d_pack_stage;
-            p2 = d_pack_stage + w1b;
-            p3 = d_pack_stage + w1b + w2b;
-            s1 = d_scale_stage;
-            s2 = d_scale_stage + s1b;
-            s3 = d_scale_stage + s1b + s2b;
+            p13 = d_pack_stage;
+            p2 = d_pack_stage + w1b + w3b;
+            s13 = d_scale_stage;
+            s2 = d_scale_stage + s1b + s3b;
 
             cudaError_t e = cudaSuccess;
-            e = cudaMemcpyAsync(p1, en.host_w1, static_cast<size_t>(w1b),
+            e = cudaMemcpyAsync(p13, en.host_w1, static_cast<size_t>(w1b),
+                                cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(p13 + w1b, en.host_w3, static_cast<size_t>(w3b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(p2, en.host_w2, static_cast<size_t>(w2b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(p3, en.host_w3, static_cast<size_t>(w3b),
+            e = cudaMemcpyAsync(s13, en.host_w1_scales, static_cast<size_t>(s1b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(s1, en.host_w1_scales, static_cast<size_t>(s1b),
+            e = cudaMemcpyAsync(s13 + s1b, en.host_w3_scales, static_cast<size_t>(s3b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
                                 cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) return e;
-            e = cudaMemcpyAsync(s3, en.host_w3_scales, static_cast<size_t>(s3b),
-                                cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) return e;
         }
 
-        // TC W4A4 (fast_math): repack the freshly staged E8M0 scales into
-        // UE4M3 per-16 slabs inside the paired TC stage region. Cache hits
-        // keep the dequant+cuBLAS route: per-hit UE4M3 repack + M=1 TC MMA
-        // measured ~1.7x slower than the F32 GEMV on resident weights.
-        uint8_t *s1_tc = nullptr, *s2_tc = nullptr, *s3_tc = nullptr;
-        if (DeepseekFastMath() && d_scale_stage_tc && !use_cache &&
-            s1b + s2b + s3b <= scale_stage_bytes) {
-            s1_tc = d_scale_stage_tc;
-            s2_tc = s1_tc + (w1_el + 15) / 16;
-            s3_tc = s2_tc + (w2_el + 15) / 16;
-            cudaError_t e = RepackE8m0ToUe4m3(stream, s1, w1_el, s1_tc);
-            if (e != cudaSuccess) return e;
-            e = RepackE8m0ToUe4m3(stream, s2, w2_el, s2_tc);
-            if (e != cudaSuccess) return e;
-            e = RepackE8m0ToUe4m3(stream, s3, w3_el, s3_tc);
-            if (e != cudaSuccess) return e;
-        }
-
-        cudaError_t e = run_routed_expert_ffn(cublas_h, stream, d_normed,
-            p1, s1, w1_el,
-            p2, s2, w2_el,
-            p3, s3, w3_el,
-            d_gate_f32, d_up_f32, d_dequant, d_output,
-            d_act_quant, d_swiglu_out, d_act_scales,
-            h_top_weights[k], accumulate, s1_tc, s2_tc, s3_tc);
+        cudaError_t e = run_routed_expert_ffn(stream, d_normed,
+            p13, s13, en.w1_global_scale, en.w3_global_scale,
+            p2, s2, en.w2_global_scale,
+            d_yg, d_y2, d_output, h_top_weights[k]);
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
@@ -847,24 +697,19 @@ cudaError_t run_routed_experts_ex(
 // Legacy entry point (no resident cache) — kept stable for existing callers
 // and tests; the production pipeline uses run_routed_experts_ex with a cache.
 cudaError_t run_routed_experts(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
-    float *d_gate_f32, float *d_up_f32,   // FP32 W1/W3 outputs
-    float *d_dequant,
-    float *d_act_quant,                  // FP32 activation
-    float *d_swiglu_out,
-    float *d_act_scales,
+    __half *d_yg, __half *d_y2,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
-    return run_routed_experts_ex(cublas_h, stream, d_normed,
+    return run_routed_experts_ex(stream, d_normed,
         db_entries, layer, experts_per_layer,
         h_top_indices, h_top_weights, topk,
-        d_output, d_gate_f32, d_up_f32, d_dequant,
-        d_act_quant, d_swiglu_out, d_act_scales,
+        d_output, d_yg, d_y2,
         d_pack_stage, d_scale_stage, pack_stage_bytes, scale_stage_bytes,
         nullptr);
 }

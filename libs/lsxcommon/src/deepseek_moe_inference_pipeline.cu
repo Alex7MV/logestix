@@ -87,20 +87,15 @@ cudaError_t run_shared_experts_ffn(
     const float *d_w2_f32_cache = nullptr);
 
 cudaError_t run_routed_experts_ex(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
     float *d_output,
-    float *d_gate_f32, float *d_up_f32,
-    float *d_dequant,
-    float *d_act_quant,
-    float *d_swiglu_out,
-    float *d_act_scales,
+    __half *d_yg, __half *d_y2,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes,
-    const ExpertDeviceCache *cache,
-    uint8_t *d_scale_stage_tc = nullptr);
+    const ExpertDeviceCache *cache);
 
 // run_mla_attention is declared in deepseek_moe_load.cuh (included
 // above) — that header's signature now matches the real definition in
@@ -702,17 +697,15 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     ensure_expert_resident(expert_db, lay, h_topk[i], stream,
                                            evict_done);
                 INFER_CHECK(run_routed_experts_ex(
-                    cublas_h, stream, d_normed,
+                    stream, d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_accum,
-                    d_gate_f32, d_up_f32, d_dequant_scratch,
-                    d_act_quant, d_swiglu_out, d_act_scales,
+                    reinterpret_cast<__half *>(d_gate_f32),
+                    reinterpret_cast<__half *>(d_up_f32),
                     d_pack_stage, d_scale_stage,
                     routed_pack_total, routed_scale_total,
-                    expert_cache.slots > 0 ? &expert_cache : nullptr,
-                    gpu::DeepseekFastMath() ? arena.d_scale_stage_tc
-                                            : nullptr));
+                    expert_cache.slots > 0 ? &expert_cache : nullptr));
             }
 
             // Convert FP32 FFN accumulation → FP16 for hc_post
