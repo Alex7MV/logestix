@@ -87,7 +87,7 @@ cudaError_t run_shared_experts_ffn(
     const float *d_w2_f32_cache = nullptr);
 
 cudaError_t run_routed_experts_ex(
-    cudaStream_t stream,
+    cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
@@ -242,6 +242,11 @@ InferenceResult RunInferenceModel(
     ExpertDb expert_db;
     cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     cudaEvent_t evict_done = nullptr;   // mmap-eviction barrier (event form)
+    // Dual-stream expert staging: H2D miss copies run on copy_stream with a
+    // per-expert event; the compute stream waits only for the expert it is
+    // about to multiply (GLM-Flash pattern). Hides copy latency under GEMV.
+    cudaStream_t copy_stream = nullptr;
+    cudaEvent_t stage_ev[kTopK] = {};
     cudaEvent_t ev_route = nullptr;     // router readback fence (async split)
     // Device-side resident-expert cache (see ExpertDeviceCache in
     // deepseek_moe_load.cuh): repeated expert selections skip the
@@ -294,6 +299,9 @@ InferenceResult RunInferenceModel(
         }
     }
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
+    // Staging copy lane — created regardless of stream ownership (the model
+    // hands in its own stream, own_context is false in production).
+    INFER_CHECK(cudaStreamCreate(&copy_stream));
 
     // The whole per-run footprint (every scratch buffer, KV cache, CSA state,
     // logits, routing staging) is carved from DeepSeekInferArena below — after
@@ -471,6 +479,9 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaEventCreate(&t_stop));
     INFER_CHECK(cudaEventCreateWithFlags(&evict_done, cudaEventDisableTiming));
     INFER_CHECK(cudaEventCreateWithFlags(&ev_route, cudaEventDisableTiming));
+    for (int k = 0; k < kTopK; ++k)
+        INFER_CHECK(cudaEventCreateWithFlags(&stage_ev[k],
+                                             cudaEventDisableTiming));
     INFER_CHECK(cudaEventRecord(t_start, stream));
 
     // 9b. Device-side resident-expert cache. Slot count is overridable via
@@ -700,7 +711,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                     ensure_expert_resident(expert_db, lay, h_topk[i], stream,
                                            evict_done);
                 INFER_CHECK(run_routed_experts_ex(
-                    stream, d_normed,
+                    stream, copy_stream, stage_ev, d_normed,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, h_top_weights, kLocalTopK,
                     d_ffn_accum,
@@ -885,6 +896,9 @@ cleanup:
     if (stream && own_context) cudaStreamDestroy(stream);
     if (cublas_h && own_context) cublasDestroy(cublas_h);
     arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
+    for (int k = 0; k < kTopK; ++k)
+        if (stage_ev[k]) cudaEventDestroy(stage_ev[k]);
+    if (copy_stream) cudaStreamDestroy(copy_stream);
     if (expert_cache.d_base) cudaFree(expert_cache.d_base);
     if (t_start)       cudaEventDestroy(t_start);
     if (t_ttft)        cudaEventDestroy(t_ttft);

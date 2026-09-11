@@ -576,7 +576,7 @@ cudaError_t route_token(
 // the H2D copies are skipped entirely and the cached slot is addressed
 // directly (single-stream ordering makes slot reuse safe).
 cudaError_t run_routed_experts_ex(
-    cudaStream_t stream,
+    cudaStream_t stream, cudaStream_t copy_stream, cudaEvent_t *stage_ev,
     const __half *d_normed,
     const ExpertEntry *db_entries, int layer, int experts_per_layer,
     const int *h_top_indices, const float *h_top_weights, int topk,
@@ -629,21 +629,21 @@ cudaError_t run_routed_experts_ex(
                     + static_cast<int64_t>(cache_slot) * cache->scale_stride;
                 cudaError_t e = cudaSuccess;
                 e = cudaMemcpyAsync(pk, en.host_w1, static_cast<size_t>(w1b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 e = cudaMemcpyAsync(pk + w1b, en.host_w3, static_cast<size_t>(w3b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 if (e != cudaSuccess) return e;
                 e = cudaMemcpyAsync(pk + w1b + w3b, en.host_w2, static_cast<size_t>(w2b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 if (e != cudaSuccess) return e;
                 e = cudaMemcpyAsync(sc, en.host_w1_scales, static_cast<size_t>(s1b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 if (e != cudaSuccess) return e;
                 e = cudaMemcpyAsync(sc + s1b, en.host_w3_scales, static_cast<size_t>(s3b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 if (e != cudaSuccess) return e;
                 e = cudaMemcpyAsync(sc + s1b + s3b, en.host_w2_scales, static_cast<size_t>(s2b),
-                                    cudaMemcpyHostToDevice, stream);
+                                    cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
                 if (e != cudaSuccess) return e;
                 cache->h_slot_of[flat] = cache_slot;
                 cache->h_slot_owner[cache_slot] = flat;
@@ -674,24 +674,33 @@ cudaError_t run_routed_experts_ex(
 
             cudaError_t e = cudaSuccess;
             e = cudaMemcpyAsync(p13, en.host_w1, static_cast<size_t>(w1b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(p13 + w1b, en.host_w3, static_cast<size_t>(w3b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(p2, en.host_w2, static_cast<size_t>(w2b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(s13, en.host_w1_scales, static_cast<size_t>(s1b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(s13 + s1b, en.host_w3_scales, static_cast<size_t>(s3b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
             e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
-                                cudaMemcpyHostToDevice, stream);
+                                cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
-                en.w2_global_scale, h_top_weights[k]);
+        }
+        // Fence the staging copies for THIS expert; the compute stream
+        // waits here so the w13 GEMV never reads a half-copied slot. Copies
+        // of the remaining experts keep flowing on copy_stream in parallel.
+        if (copy_stream) {
+            cudaError_t ee = cudaEventRecord(stage_ev[k], copy_stream);
+            if (ee != cudaSuccess) return ee;
+            ee = cudaStreamWaitEvent(stream, stage_ev[k], 0);
+            if (ee != cudaSuccess) return ee;
+        }
         cudaError_t e = run_routed_expert_ffn(stream, d_normed,
             p13, s13, en.w1_global_scale, en.w3_global_scale,
             p2, s2, en.w2_global_scale,
@@ -713,7 +722,7 @@ cudaError_t run_routed_experts(
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
     int64_t pack_stage_bytes, int64_t scale_stage_bytes)
 {
-    return run_routed_experts_ex(stream, d_normed,
+    return run_routed_experts_ex(stream, nullptr, nullptr, d_normed,
         db_entries, layer, experts_per_layer,
         h_top_indices, h_top_weights, topk,
         d_output, d_yg, d_y2,
