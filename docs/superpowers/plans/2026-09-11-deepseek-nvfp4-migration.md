@@ -323,3 +323,22 @@ byte-exact probes at issue time vs GEMV-read time):
 
 State: prefetch env-gated OFF (LSX_DS_PREFETCH), production stable at
 11.7 tok/s, SelfCheck Paris green, fast 43/43.
+
+## Round 5 additions (2026-09-11, evening)
+
+- Drain-hook wired end-to-end (lsx_pending_copy_drain in expert_store,
+  registry in moe.cu) — munmap-under-DMA race closed.
+- CORRUPTION root-cause CONFIRMED DIFFERENT: byte-exact probes show the
+  prefetch copies are correct at issue time AND the slot content matches
+  at GEMV-read time in 5669/5676 cases — the 7 mismatches are exactly the
+  write-after-read slot conflicts described above.
+- Canonical O(1) LRU migration experiment (expert_device_cache.h
+  Lookup/Insert/Touch wired into ex()/issue(), free-stack init): measured
+  a STABLE 8.0 tok/s vs 11.6 — hit-refreshing real LRU is SLOWER on this
+  traffic than the legacy "FIFO-of-first-fill" order. Reverted; both
+  variants kept in git history for the follow-up study.
+
+Production state unchanged: 11.7 tok/s steady, Paris green, fast 43/43.
+Round-6 candidates: (1) prefetch with slot-retire guard + per-layer
+bands (fix race (b) by construction, keep legacy fill order inside each
+band), (2) attention NVFP4, (3) host-gap trims.
