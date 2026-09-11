@@ -25,6 +25,8 @@
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/log.h"
 
+#include "deepseek_moe_load.cuh"
+
 namespace lsxcommon {
 namespace perf {
 
@@ -198,6 +200,10 @@ void ApplyKnobs(const LsxPerfKnobs &knobs, PerfSource source)
     lsx_nvfp4::SetLsxGemmMaxMib(knobs.gemv_max_mib);
     lsx_nvfp4::SetLsxDualStreamStaging(knobs.dual_stream_staging);
     lsx_tc::SetLsxSplitKGridMin(knobs.splitk_grid_min);
+    // DeepSeek routed experts carry a process-local TC toggle (F-12) outside
+    // the lsx_nvfp4 globals; the perf policy must drive it too, or kAuto
+    // silently pins the family to the dequant+cuBLAS fallback.
+    gpu::SetDeepseekFastMath(knobs.tc_fast_math_default);
 }
 
 void EnsurePerfPolicyApplied()

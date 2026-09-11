@@ -6,6 +6,7 @@
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/deepseek_moe_inference_csa.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/gpu_perf.h"
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -485,13 +486,28 @@ InferenceResult RunInferenceModel(
             slots = std::atoi(env);
             explicit_slots = true;   // verbatim: 0 legitimately disables
         }
-        // Routed working set (kTopK experts x layers x ~13 MB per expert)
-        // exceeds any single-GPU VRAM by orders of magnitude, so a partial
-        // LRU cache thrashes every token (measured 0.6 vs 2.6 tok/s on
-        // RTX 5090). Stream experts from pinned host memory by default;
-        // LSX_DEEPSEEK_EXPERT_CACHE_SLOTS still opts into a fixed cache for
-        // experiments.
-        if (!explicit_slots) slots = 0;
+        // GLM-Flash ResolveExpertSlots pattern: cache everything that fits
+        // into free VRAM minus a generation reserve. The old "thrashes every
+        // token" note applied to fixed small slot counts; full-free-VRAM
+        // sizing measured 4.6 -> 8.5 tok/s on RTX 5090.
+        if (!explicit_slots) {
+            size_t free_bytes = 0, total_bytes = 0;
+            if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
+                constexpr size_t kReserve = size_t{2} << 30;  // arenas + ctx
+                const size_t budget =
+                    free_bytes > kReserve ? free_bytes - kReserve : 0;
+                // Perf policy: scale the VRAM budget by the resolved slot
+                // percentage (default 100 = unchanged behavior).
+                const int pct = perf::CurrentKnobs().expert_slots_pct;
+                size_t eff = budget;
+                if (pct < 100) eff = budget / 100u * static_cast<unsigned>(pct);
+                const int64_t slot_bytes =
+                    routed_pack_total + routed_scale_total;
+                if (slot_bytes > 0)
+                    slots = static_cast<int>(
+                        eff / static_cast<size_t>(slot_bytes));
+            }
+        }
         if (slots > 0 && total_experts > 0 && !expert_db.entries.empty()) {
             expert_cache.slots = std::min(slots, total_experts);
             expert_cache.pack_stride = routed_pack_total;

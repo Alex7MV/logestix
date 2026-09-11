@@ -815,7 +815,9 @@ cudaError_t run_routed_experts_ex(
         }
 
         // TC W4A4 (fast_math): repack the freshly staged E8M0 scales into
-        // UE4M3 per-16 slabs inside the paired TC stage region.
+        // UE4M3 per-16 slabs inside the paired TC stage region. Cache hits
+        // keep the dequant+cuBLAS route: per-hit UE4M3 repack + M=1 TC MMA
+        // measured ~1.7x slower than the F32 GEMV on resident weights.
         uint8_t *s1_tc = nullptr, *s2_tc = nullptr, *s3_tc = nullptr;
         if (DeepseekFastMath() && d_scale_stage_tc && !use_cache &&
             s1b + s2b + s3b <= scale_stage_bytes) {

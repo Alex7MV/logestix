@@ -1096,24 +1096,48 @@ target_link_libraries(test_perf_baseline PRIVATE lsxcommon
 # models sharing one process contend for VRAM (expert caches of the previous
 # model starve the next one: ~2x measured spread). Process exit frees VRAM,
 # giving every model the lsxbenchmark-isolated measurement it baselines.
-foreach(perf_m IN ITEMS
-        "gemma-4-26b-a4b-it|gemma-4-26B-A4B-it"
-        "glm-5.3-flash|GLM-5.3-Flash"
-        "deepseek-v4-flash|DeepSeek-V4-Flash"
-        "qwen3.5-35b-a3b|Qwen3.5-35B-A3B"
-        "qwen3.6-35b-a3b|Qwen3.6-35B-A3B")
-    string(REPLACE "|" ";" perf_pair "${perf_m}")
-    list(GET perf_pair 0 perf_type)
-    list(GET perf_pair 1 perf_dir)
-    string(REGEX REPLACE "[^a-zA-Z0-9]" "_" perf_target "${perf_type}")
-    add_test(NAME test_perf_baseline_${perf_target}
-             COMMAND test_perf_baseline
-             "perf baseline: ${perf_type}")
-    set_tests_properties(test_perf_baseline_${perf_target} PROPERTIES
-        LABELS "perf"
-        TIMEOUT 1200
-        ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=${perf_dir}")
-endforeach()
+# Literal names (no foreach): test_ctest_labels_guard statically parses
+# add_test/set_tests_properties and requires literal, quoted-label-free calls.
+add_test(NAME test_perf_baseline_gemma_4_26b_a4b_it
+         COMMAND test_perf_baseline "perf baseline: gemma-4-26b-a4b-it")
+set_tests_properties(test_perf_baseline_gemma_4_26b_a4b_it PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=gemma-4-26B-A4B-it")
+set_tests_properties(test_perf_baseline_gemma_4_26b_a4b_it
+    PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_glm_5_3_flash
+         COMMAND test_perf_baseline "perf baseline: glm-5.3-flash")
+set_tests_properties(test_perf_baseline_glm_5_3_flash PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=GLM-5.3-Flash")
+set_tests_properties(test_perf_baseline_glm_5_3_flash
+    PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_deepseek_v4_flash
+         COMMAND test_perf_baseline "perf baseline: deepseek-v4-flash")
+set_tests_properties(test_perf_baseline_deepseek_v4_flash PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=DeepSeek-V4-Flash")
+set_tests_properties(test_perf_baseline_deepseek_v4_flash
+    PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_qwen3_5_35b_a3b
+         COMMAND test_perf_baseline "perf baseline: qwen3.5-35b-a3b")
+set_tests_properties(test_perf_baseline_qwen3_5_35b_a3b PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.5-35B-A3B")
+set_tests_properties(test_perf_baseline_qwen3_5_35b_a3b
+    PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_qwen3_6_35b_a3b
+         COMMAND test_perf_baseline "perf baseline: qwen3.6-35b-a3b")
+set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.6-35B-A3B")
+set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b
+    PROPERTIES LABELS perf)
 
 # ── Тест zero-alloc токенизатора ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
