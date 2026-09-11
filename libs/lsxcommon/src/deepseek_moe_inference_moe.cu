@@ -737,7 +737,23 @@ cudaError_t run_routed_experts_ex(
             s13 = d_scale_stage;
             s2 = d_scale_stage + s1b + s3b;
 
-            cudaError_t e = cudaSuccess;
+cudaError_t e = cudaSuccess;
+            if (en.pinned_blob) {
+                // Pinned-blob fast path: the blob is already laid out
+                // [w1|w3|w2][s1|s3|s2] — two large contiguous DMAs instead
+                // of six fragments.
+                e = cudaMemcpyAsync(p13, en.pinned_blob,
+                    static_cast<size_t>(en.blob_pack_bytes),
+                    cudaMemcpyHostToDevice,
+                    copy_stream ? copy_stream : stream);
+                if (e != cudaSuccess) return e;
+                e = cudaMemcpyAsync(s13,
+                    en.pinned_blob + en.blob_pack_bytes,
+                    static_cast<size_t>(en.blob_scale_bytes),
+                    cudaMemcpyHostToDevice,
+                    copy_stream ? copy_stream : stream);
+                if (e != cudaSuccess) return e;
+            } else {
             e = cudaMemcpyAsync(p13, en.host_w1, static_cast<size_t>(w1b),
                                 cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
@@ -756,6 +772,7 @@ cudaError_t run_routed_experts_ex(
             e = cudaMemcpyAsync(s2, en.host_w2_scales, static_cast<size_t>(s2b),
                                 cudaMemcpyHostToDevice, copy_stream ? copy_stream : stream);
             if (e != cudaSuccess) return e;
+            }
         }
         // Fence the staging copies for THIS expert; the compute stream
         // waits here so the w13 GEMV never reads a half-copied slot. Copies
@@ -832,6 +849,17 @@ cudaError_t issue_routed_staging(
         uint8_t *pk = cache->d_pack + static_cast<int64_t>(slot) * cache->pack_stride;
         uint8_t *sc = cache->d_scale + static_cast<int64_t>(slot) * cache->scale_stride;
         cudaError_t e = cudaSuccess;
+if (en.pinned_blob) {
+            // Pinned-blob fast path (two contiguous DMAs).
+            e = cudaMemcpyAsync(pk, en.pinned_blob,
+                static_cast<size_t>(en.blob_pack_bytes),
+                cudaMemcpyHostToDevice, copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(sc, en.pinned_blob + en.blob_pack_bytes,
+                static_cast<size_t>(en.blob_scale_bytes),
+                cudaMemcpyHostToDevice, copy_stream);
+            if (e != cudaSuccess) return e;
+        } else {
         e = cudaMemcpyAsync(pk, en.host_w1, static_cast<size_t>(w1b),
                             cudaMemcpyHostToDevice, copy_stream);
         if (e != cudaSuccess) return e;
@@ -850,6 +878,7 @@ cudaError_t issue_routed_staging(
         e = cudaMemcpyAsync(sc + s1b + s3b, en.host_w2_scales, static_cast<size_t>(s2b),
                             cudaMemcpyHostToDevice, copy_stream);
         if (e != cudaSuccess) return e;
+        }
         cache->h_slot_of[flat] = slot;
         cache->h_slot_owner[slot] = flat;
         if (std::getenv("LSX_DS_VERIFY_COPY")) {

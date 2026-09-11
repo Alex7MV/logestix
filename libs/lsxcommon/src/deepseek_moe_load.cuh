@@ -75,6 +75,12 @@ struct ExpertEntry {
     int64_t w1_scales_bytes = 0;
     int64_t w2_scales_bytes = 0;
     int64_t w3_scales_bytes = 0;
+    // Pinned-blob fast path (LSX pin pass): when set, the entry's data
+    // lives in one locked-host blob laid out [w1|w3|w2][s1|s3|s2] — the
+    // exact GEMV streaming order — so staging is 2 copies instead of 6.
+    const uint8_t *pinned_blob = nullptr;
+    int64_t blob_pack_bytes = 0;    // w1b + w3b + w2b
+    int64_t blob_scale_bytes = 0;   // s1b + s3b + s2b
 };
 
 struct ModelTopology {

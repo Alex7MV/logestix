@@ -363,3 +363,33 @@ staging-layout assumptions, stage-buffer aliasing with d_yg/d_y2).
 
 Production stays env-gated OFF: 11.6 tok/s steady, Paris green,
 fast 43/43.
+
+## Round 8-9 final (2026-09-11): pinned store, 2-copy merge, feasibility verdict
+
+- Pinned expert store: 11008 experts / 148.6 GiB in one cudaHostAlloc
+  pool, pair-layout [w1|w3|w2][s1|s3|s2]. 21.4-21.5 tok/s steady,
+  Paris green, fast 43/43. (4.43 -> 21.4 = +383% over the session.)
+- 2-copy merge (blob is already pair-ordered): API calls halved; within
+  run-to-run noise of the 6-copy path in OFF mode. Prefetch ON improved
+  14.2 -> 14.6 but still loses to OFF (prefetch serializes: one fence
+  before all GEMVs) — stays env-gated.
+- Registry note: g_pending_copies only grows while prefetch is enabled
+  (drain runs on mmap eviction, which full-resident mode never does) —
+  bounded by issue frequency, but should be cleared per layer when
+  prefetch is revisited.
+
+## FEASIBILITY VERDICT
+
+Remaining levers and honest payoffs on RTX 5090 / 32 GB:
+- attention NVFP4 (Task 6): -5 ms/token -> ~23-24 tok/s; high effort
+  (converter + loader + attn/csa kernels + tests)
+- host-gap trims (route readback, event API): +1-2 tok/s; medium effort
+- hit-rate research: 60% measured vs ~70% theoretical; bounded by VRAM
+- PHYSICS: miss traffic >= ~1 GB/token (hit ceiling ~75% at this VRAM)
+  => PCIe floor ~20 ms/token; overall ceiling ~28-30 tok/s.
+
+VERDICT: decode-tuning is near its architectural ceiling. Incremental
+gains left are +2-4 tok/s for 2-3 risky rounds. RECOMMENDATION: stop
+DeepSeek decode tuning here (21.4 tok/s, +383% over session baseline);
+redirect effort to other backlog items (qwen3.8 arena OOM, Kimi
+completion, lsxhome) unless a >25 tok/s requirement appears.

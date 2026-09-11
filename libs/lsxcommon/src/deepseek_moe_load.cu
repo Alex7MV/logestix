@@ -317,6 +317,10 @@ ExpertDb load_expert_index(const std::string &model_path,
             auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
             int pinned_cnt = 0;
             for (auto &en : db.entries) {
+                en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
+                en.blob_pack_bytes = en.w1_bytes + en.w3_bytes + en.w2_bytes;
+                en.blob_scale_bytes = en.w1_scales_bytes + en.w3_scales_bytes
+                                    + en.w2_scales_bytes;
                 std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
                             static_cast<std::size_t>(en.w1_bytes));
                 en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
