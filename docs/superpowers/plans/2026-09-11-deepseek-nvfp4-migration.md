@@ -267,3 +267,32 @@ coeff_add_f32_kernel<<<(kHiddenDim + 255) / 256, 256, 0, stream>>>(
 - Спека покрыта: кэш (Task 0), кодек-разрыв (Tasks 1-4), GEMM-контур (Tasks 5-7), верификация/доки (Task 8).
 - Placeholder-скан: код дан для ключевых правок; Task 2/6 детали привязаны к существующим функциям (quantize_fp8_nvfp4, LaunchNvfp4Gemm) — сигнатуры проверены в исходниках.
 - Типы: `E8m0ScaleToE4m3Pair(uint8_t, uint8_t[2])`, ExpertEntry global_scale-поля уже существуют (deepseek_moe_load.cuh:93-95).
+
+## Round 3-4 findings (2026-09-11, post-migration tuning)
+
+State: 11.7 tok/s steady (baseline 4.43, +164%), SelfCheck Paris green.
+
+- H2D miss transfers = 57 ms/token (44 GB per 30 steps, 1.46 GB/token at
+  40% LRU miss) — the hard ceiling; GPU compute is ~17 ms and mostly
+  hidden under copies by the dual-stream interleave.
+- cudaMemcpyBatchAsync for pageable mmap H2D measured SLOWER than plain
+  per-copy calls (10.3 vs 11.7 tok/s) — different staging path. Plain
+  loop retained.
+- Phase-split ex() (batch copies first, GEMVs after one fence) loses the
+  GEMV-under-copy interleave: +110 us/layer visible GEMV time. Interleave
+  (copy k -> fence k -> GEMV k) is optimal at this shape.
+- Early-issue prefetch is blocked by an unresolved race (silent numeric
+  corruption both plain and with a layer-boundary event sync). Needs a
+  root-cause session (candidate: cache-slot overwrite while a previous
+  layer's GEMV still reads the slot — issue(N+1) victims vs in-flight
+  main-stream readers).
+- Per-layer partitioned cache: worse (10.7). Shared experts: already on
+  load-time dequant caches, lsx_nvfp4 payoff ~0.3 tok/s — deferred.
+- Task 6 (attention NVFP4) payoff re-estimated at ~+1 tok/s (dequant_f8
+  4.4 ms + fp32 GEMV 1 ms of an 85 ms token) — deferred until the H2D
+  ceiling moves.
+
+Conclusion: without cutting miss BYTES (hit rate/coverage bounded by
+VRAM) or solving the prefetch race, ~12 tok/s is the practical ceiling
+of this architecture generation on 32 GB. The 11.7 state is committed
+and selfcheck-green.
