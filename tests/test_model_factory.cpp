@@ -7,6 +7,7 @@
 
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/gpu_perf.h"
 
 namespace {
 
@@ -132,4 +133,16 @@ TEST_CASE("Typed Register<T>() resolves kType and constructs", "[factory]")
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(m != nullptr);
     CHECK(m->Type() == "typed-probe");
+}
+
+TEST_CASE("Create applies the per-GPU perf policy without engine session",
+          "[factory]")
+{
+    if (lsxcommon::perf::ProbeGpuPerfProfile().name.empty()) SKIP();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = R"(D:\nonexistent\model\path)";
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);  // nullptr; policy on entry
+    REQUIRE(m == nullptr);
+    REQUIRE(lsxcommon::perf::CurrentKnobsSource() !=
+            lsxcommon::perf::PerfSource::kLegacy);
 }

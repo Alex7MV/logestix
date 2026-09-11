@@ -5,6 +5,7 @@
 #include <absl/strings/str_format.h>
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/gpu_perf.h"
 
 #include "deepseek_moe_load.cuh"
 
@@ -56,6 +57,9 @@ std::string LsxModelFactory::DetectType(const std::string &model_path)
 
 std::unique_ptr<IModel> LsxModelFactory::Create(const ModelInitConfig &cfg)
 {
+    // Fixed-speed default: every model consumer gets the pinned per-GPU
+    // perf policy (call-once; explicit SetCurrentKnobs overrides win).
+    perf::EnsurePerfPolicyApplied();
     EnsureModelRegistry();
 
     std::string type = cfg.model_type;
