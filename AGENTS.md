@@ -7,7 +7,7 @@ Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Te
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
 No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
-CUDA Toolkit 13.3 Update 1 (nvcc V13.3.73; минимум 13.2+), full native C++23 support in NVCC.
+CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 support in NVCC.
 
 ## Dependencies
 
