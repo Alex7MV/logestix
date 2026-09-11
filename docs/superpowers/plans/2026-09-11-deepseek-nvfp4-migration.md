@@ -342,3 +342,24 @@ Production state unchanged: 11.7 tok/s steady, Paris green, fast 43/43.
 Round-6 candidates: (1) prefetch with slot-retire guard + per-layer
 bands (fix race (b) by construction, keep legacy fill order inside each
 band), (2) attention NVFP4, (3) host-gap trims.
+
+## Round 6 (2026-09-11): prefetch race — timing ruled OUT
+
+Decisive experiment: banded slot fills (per-layer bands, race (b)
+eliminated by construction) + munmap drain (race (a) fixed) + early
+issue on the MAIN stream itself (zero copy-lane concurrency,
+LSX_DS_PREFETCH_SYNC): output is STILL garbage (3.8 tok/s, 513-token
+no-EOS run). Meanwhile byte-exact probes prove the copies and the slot
+reads are all correct (5669/5676 matches, mismatches = races already
+handled).
+
+Conclusion: the corruption is LOGICAL, not a timing race. Something in
+the prefetch state change (slot bookkeeping via the banded path /
+hit-vs-miss path divergence between issue() and ex()) breaks numerics
+even with fully synchronous main-stream copies. Next session: diff the
+FULL cache state (slot_of/owner/rotor) issue-vs-ex for one layer, and
+audit ex()'s hit path for a subtle difference vs its miss path (e.g.,
+staging-layout assumptions, stage-buffer aliasing with d_yg/d_y2).
+
+Production stays env-gated OFF: 11.6 tok/s steady, Paris green,
+fast 43/43.

@@ -823,7 +823,14 @@ cudaError_t issue_routed_staging(
         const int flat = static_cast<int>(layer) * experts_per_layer + idx;
         if (flat < 0 || flat >= cache->total_experts) continue;
         if (cache->h_slot_of[flat] >= 0) continue;   // resident hit
-        int slot = cache->h_lru[cache->slots - 1];
+        // Banded victim: this layer's own slot band (round-robin rotor).
+        // Bands of other layers are never written here, so in-flight GEMVs
+        // of neighbouring layers cannot observe a write-after-read hazard
+        // (round-5 race (b), eliminated by construction).
+        const int band_base = layer * cache->layer_slots;
+        int slot = band_base
+            + (cache->h_rotor[layer] % cache->layer_slots);
+        ++cache->h_rotor[layer];
         const int victim = cache->h_slot_owner[slot];
         if (victim >= 0 && victim < cache->total_experts)
             cache->h_slot_of[victim] = -1;

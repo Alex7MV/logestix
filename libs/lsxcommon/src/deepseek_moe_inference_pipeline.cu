@@ -534,12 +534,21 @@ InferenceResult RunInferenceModel(
             cache_slot_of.assign(static_cast<size_t>(total_experts), -1);
             cache_slot_owner.assign(static_cast<size_t>(expert_cache.slots), -1);
             cache_lru.resize(static_cast<size_t>(expert_cache.slots));
-            // Per-layer partition A/B (2026-09): measured WORSE than the
-            // global LRU (10.7 vs 11.7 tok/s) — round-robin evicts hot slots
-            // the LRU would keep. layer_slots stays 0 (legacy global LRU);
-            // the partition path is retained for future experiments.
-            expert_cache.layer_slots = 0;
+            // Per-layer slot bands are REQUIRED for the early-issue
+            // prefetch (issue(L+1) must never write the band layer L's
+            // GEMVs read — removes the write-after-read slot race by
+            // construction). Without prefetch the global LRU measured
+            // faster (11.7 vs 10.7) and stays the default.
+            const bool pf = std::getenv("LSX_DS_PREFETCH") != nullptr;
+            expert_cache.layer_slots =
+                pf ? std::max(1, expert_cache.slots
+                                    / std::max(1, topo.num_layers)) : 0;
             expert_cache.num_layers = topo.num_layers;
+            if (pf) {
+                cache_rotor.assign(
+                    static_cast<size_t>(topo.num_layers), 0);
+                expert_cache.h_rotor = cache_rotor.data();
+            }
             for (int i = 0; i < expert_cache.slots; ++i)
                 cache_lru[static_cast<size_t>(i)] = expert_cache.slots - 1 - i; // back = LRU
             expert_cache.h_slot_of = cache_slot_of.data();
@@ -688,8 +697,12 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
                 for (int i = 0; i < kLocalTopK; ++i)
                     ensure_expert_resident(expert_db, lay, h_topk[i], stream,
                                            evict_done);
+                // LSX_DS_PREFETCH_SYNC: issue on the MAIN stream (no copy
+                // lane concurrency at all) to isolate logic vs timing.
+                const bool pf_sync =
+                    std::getenv("LSX_DS_PREFETCH_SYNC") != nullptr;
                 INFER_CHECK(issue_routed_staging(
-                    copy_stream, stage_ev[0], &expert_cache,
+                    pf_sync ? stream : copy_stream, stage_ev[0], &expert_cache,
                     expert_db.entries.data(), lay, topo.experts_per_layer,
                     h_topk, kLocalTopK));
             }
