@@ -637,6 +637,12 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                         db.pinned_pools[static_cast<size_t>(i)] = nullptr;
                         continue;
                     }
+                    // Fault the pages first (parallel user-space memset,
+                    // ~34 GB/s per worker): register on UNFAULTED memory
+                    // costs 5.7 s/chunk (driver faults serially), on
+                    // faulted — 1.6 s/chunk.
+                    std::memset(chunk, 0,
+                                static_cast<size_t>(kPinChunkBytes));
                     cudaError_t ce = cudaHostRegister(
                         chunk, static_cast<size_t>(kPinChunkBytes),
                         cudaHostRegisterDefault);
