@@ -620,15 +620,41 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                 for (;;) {
                     const int i = next.fetch_add(1);
                     if (i >= n_chunks) return;
-                    void *chunk = nullptr;
-                    cudaError_t ce = cudaHostAlloc(
-                        &chunk, static_cast<size_t>(kPinChunkBytes),
-                        cudaHostAllocDefault);
+                    // Anonymous mmap + cudaHostRegister: the driver-serializing
+                    // cudaHostAlloc zerofill (measured 332 s for 34 x 16 GiB,
+                    // 1.6 GB/s) both dominated the load and evicted the
+                    // parse's page cache, turning the copy pass into a disk
+                    // re-read. Register takes ~1.6 s per chunk and leaves
+                    // pages unfaulted — the copy pass faults them with data
+                    // in a single write.
+                    void *chunk = mmap(nullptr,
+                                       static_cast<size_t>(kPinChunkBytes),
+                                       PROT_READ | PROT_WRITE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS
+                                           | MAP_NORESERVE,
+                                       -1, 0);
+                    if (chunk == MAP_FAILED) {
+                        db.pinned_pools[static_cast<size_t>(i)] = nullptr;
+                        continue;
+                    }
+                    cudaError_t ce = cudaHostRegister(
+                        chunk, static_cast<size_t>(kPinChunkBytes),
+                        cudaHostRegisterDefault);
+                    if (ce != cudaSuccess) {
+                        cudaGetLastError();
+                        munmap(chunk, static_cast<size_t>(kPinChunkBytes));
+                        db.pinned_pools[static_cast<size_t>(i)] = nullptr;
+                        continue;
+                    }
                     db.pinned_pools[static_cast<size_t>(i)] = chunk;
-                    if (ce != cudaSuccess) cudaGetLastError();
+                    db.pinned_registered[static_cast<size_t>(i)] = true;
+                    db.pinned_chunk_sizes[static_cast<size_t>(i)] =
+                        static_cast<size_t>(kPinChunkBytes);
                 }
             };
             db.pinned_pools.assign(static_cast<size_t>(n_chunks), nullptr);
+            db.pinned_registered.assign(static_cast<size_t>(n_chunks), false);
+            db.pinned_chunk_sizes.assign(static_cast<size_t>(n_chunks), 0);
             db.pinned_bytes = static_cast<std::size_t>(n_chunks)
                             * static_cast<std::size_t>(kPinChunkBytes);
             const unsigned hw = std::thread::hardware_concurrency();
@@ -643,12 +669,27 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
             if (!all_ok) {
                 log::warn("[kimi_load] expert pinning stopped — chunk alloc "
                           "failed; store stays file-backed");
-                for (void *c : db.pinned_pools)
-                    if (c) cudaFreeHost(c);
+                for (size_t ci = 0; ci < db.pinned_pools.size(); ++ci) {
+                    if (!db.pinned_pools[ci]) continue;
+                    if (db.pinned_registered[ci]) {
+                        cudaHostUnregister(db.pinned_pools[ci]);
+                        munmap(db.pinned_pools[ci],
+                               db.pinned_chunk_sizes[ci]);
+                    } else {
+                        cudaFreeHost(db.pinned_pools[ci]);
+                    }
+                }
                 db.pinned_pools.clear();
+                db.pinned_registered.clear();
+                db.pinned_chunk_sizes.clear();
                 db.pinned_bytes = 0;
             }
         }
+        const auto alloc_t1 = std::chrono::steady_clock::now();
+        log::info("[kimi_load] pin: chunk alloc done in " +
+                  std::to_string(std::chrono::duration_cast<
+                                     std::chrono::milliseconds>(
+                                     alloc_t1 - pin_t0).count()) + " ms");
         // Phase 3 — parallel span copies from the captured mmap views;
         // entry pointers re-pointed afterwards (single-threaded).
         if (!db.pinned_pools.empty()) {

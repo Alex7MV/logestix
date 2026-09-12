@@ -16,7 +16,11 @@
 #include <cstdio>
 #include <cstdint>
 #include <cuda_runtime.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#endif
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <filesystem>
 #include <memory>
@@ -66,6 +70,11 @@ struct ExpertStore {
     // Chunked variant (Kimi 1T store): the driver fails a single >~300 GiB
     // cudaHostAlloc, so large stores pin as a vector of 16 GiB chunks.
     std::vector<void *> pinned_pools;
+    // true = chunk is anonymous mmap + cudaHostRegister (fast path, no
+    // driver zerofill); false = cudaHostAlloc (DeepSeek path). Free() picks
+    // the matching release primitive per chunk.
+    std::vector<bool> pinned_registered;
+    std::vector<size_t> pinned_chunk_sizes;
 
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
@@ -132,6 +141,7 @@ struct ExpertStore {
                 if (ParseFile(idx)) ok_cnt.fetch_add(1);
             }
         };
+        const auto t0 = std::chrono::steady_clock::now();
         std::vector<std::thread> pool;
         for (int t = 1; t < n_threads; ++t) pool.emplace_back(worker);
         worker();
@@ -141,7 +151,11 @@ struct ExpertStore {
         log::info(log_prefix + "parallel parse: " +
                   std::to_string(ok_cnt.load()) + "/" +
                   std::to_string(total) + " experts in " +
-                  std::to_string(n_threads) + " threads");
+                  std::to_string(n_threads) + " threads, " +
+                  std::to_string(std::chrono::duration_cast<
+                                     std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count()) + " ms");
         return ok_cnt.load() > 0;
 #else
         (void)n_threads;
@@ -313,9 +327,23 @@ struct ExpertStore {
         if (pinned_pool) cudaFreeHost(pinned_pool);
         pinned_pool = nullptr;
         pinned_bytes = 0;
-        for (void *p : pinned_pools)
-            if (p) cudaFreeHost(p);
+        for (size_t ci = 0; ci < pinned_pools.size(); ++ci) {
+            void *p = pinned_pools[ci];
+            if (!p) continue;
+            const bool reg = ci < pinned_registered.size()
+                                 ? pinned_registered[ci] : false;
+            const size_t bytes = ci < pinned_chunk_sizes.size()
+                                     ? pinned_chunk_sizes[ci] : 0;
+            if (reg && bytes > 0) {
+                cudaHostUnregister(p);
+                munmap(p, bytes);
+            } else {
+                cudaFreeHost(p);
+            }
+        }
         pinned_pools.clear();
+        pinned_registered.clear();
+        pinned_chunk_sizes.clear();
         for (auto &m : mmaps) m.reset();
         for (auto &b : batches) b.reset();
         mmaps.clear(); batches.clear(); lru.clear(); entries.clear(); paths.clear();
