@@ -135,7 +135,7 @@ ValidationResult ValidatePinnedTensors(const std::string &pinned_dir, int64_t ex
         if (!batch.ok()) { r.add_error(); lsxcommon::log::error(absl::StrFormat("  Cannot read record from %s", path)); return; }
         int ncol = (*batch)->num_columns();
         lsxcommon::log::info(absl::StrFormat("  %s: %d columns, %d rows", path, ncol, (*batch)->num_rows()));
-        loaded += ncol;
+        loaded += (*batch)->num_rows();
     };
 
     lsxcommon::log::info(absl::StrFormat("Validating pinned tensors from %s...", pinned_dir));
@@ -146,7 +146,10 @@ ValidationResult ValidatePinnedTensors(const std::string &pinned_dir, int64_t ex
 
     for (const auto &entry : fs::directory_iterator(pinned_dir)) {
         if (entry.path().extension() != ".arrow") continue;
-        if (entry.path().filename() == "global.arrow") continue;
+        const std::string fname = entry.path().filename().string();
+        if (fname == "global.arrow") continue;
+        if (fname.rfind("tokenizer_", 0) == 0) continue;
+        if (fname == "shared_experts.arrow") continue;
         check_batch(entry.path().string());
     }
 
@@ -295,7 +298,7 @@ ValidationResult RunValidator(const std::string &model_path)
         info.model_name, info.format, info.num_layers, info.experts_per_layer,
         info.total_pinned, info.total_experts));
 
-    auto pinned_dir = fs::path(model_path) / "pinned";
+    auto pinned_dir = fs::path(model_path) / "logestix" / "pinned";
     if (fs::exists(pinned_dir)) {
         auto pr = ValidatePinnedTensors(pinned_dir.string(), info.total_pinned);
         if (!pr.ok) r.add_error();
@@ -308,7 +311,7 @@ ValidationResult RunValidator(const std::string &model_path)
     int experts_checked = 0;
     if (is_qwen || is_glm) {
         lsxcommon::log::info(absl::StrFormat("  Format %s: validating DenseNvfp4Schema tensors", info.format));
-        auto pinned_dir = fs::path(model_path) / "pinned";
+        auto pinned_dir = fs::path(model_path) / "logestix" / "pinned";
         if (fs::exists(pinned_dir)) {
             for (const auto &entry : fs::directory_iterator(pinned_dir)) {
                 auto fn = entry.path().filename().string();
@@ -320,9 +323,9 @@ ValidationResult RunValidator(const std::string &model_path)
         }
     } else {
         for (int layer = 0; layer < info.num_layers; ++layer) {
-            auto exp_path = fs::path(model_path)
+            auto exp_path = fs::path(model_path) / "logestix"
                 / absl::StrCat("experts/layer_", layer)
-                / "exp_000.arrow";
+                / absl::StrCat("exp_", layer, ".arrow");
             if (!fs::exists(exp_path)) {
                 lsxcommon::log::warn(absl::StrFormat("  Expert not found: %s", exp_path.string()));
                 r.add_warning();
