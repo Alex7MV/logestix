@@ -1674,9 +1674,14 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
 
     // Batched TC chain state (fast-math path): scratch + pinned/device
     // slot-table staging. Allocated once per generation; freed at the end.
-    const bool kTcOff = std::getenv("LSX_KIMI_TC_OFF") != nullptr;
-    const bool kTcBatch = fast_math && !kTcOff &&
-                          lsxcommon::lsx_tc::LsxTcRuntimeSupported();
+    // TC batch chain is OPT-IN (LSX_KIMI_TC=1): on the real checkpoint the
+    // tolerance-class activation quantization shifts the greedy top-1 away
+    // from the bit-exact reference (selfcheck "Paris" -> garbage), while the
+    // synthetic tolerance test passes. The legacy dequant-GEMV chain stays
+    // the default numeric path until the divergence is root-caused.
+    const bool kTcBatch = fast_math
+                          && std::getenv("LSX_KIMI_TC") != nullptr
+                          && lsxcommon::lsx_tc::LsxTcRuntimeSupported();
     void *d_tc_scratch = nullptr;
     lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl = nullptr;
     lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl = nullptr;
