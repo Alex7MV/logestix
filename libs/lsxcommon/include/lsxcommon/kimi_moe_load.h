@@ -100,6 +100,12 @@ struct KimiLayerWeights {
     float *h_gate_bias = nullptr;
     int gate_bias_n = 0;
 
+    // kv_b dequantized to BF16 for the absorbed-attention kernel, decoded
+    // lazily on first use (per layer — a single static memo slot used to
+    // thrash across layers, re-dequantizing 60x per token). Weights are
+    // read-only for the process lifetime.
+    __nv_bfloat16 *d_kv_b_bf16 = nullptr;
+
     // Dense MLP (layer 0 only)
     __nv_bfloat16 *d_mlp_gate = nullptr;
     __nv_bfloat16 *d_mlp_down = nullptr;

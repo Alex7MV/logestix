@@ -10,6 +10,8 @@
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/fast_math_mode.h"
+#include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/resource_governor.h"
@@ -94,10 +96,18 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
         // policy for the duration of the generation (LsxFastMathScope).
         const lsx_nvfp4::LsxFastMathScope fm_scope(
             EffectiveFastMathMode(cfg_));
+        // Legacy bool (cfg_.fast_math) is never set by the CLI/engine — the
+        // tri-state below is the routing source. kAuto follows the per-GPU
+        // perf policy resolved at engine init (tc_fast_math_default).
+        const FastMathMode eff = EffectiveFastMathMode(cfg_);
+        const bool fast_math =
+            eff == FastMathMode::kOn
+                || (eff == FastMathMode::kAuto
+                    && perf::CurrentKnobs().tc_fast_math_default);
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
-                                       Tokenizer().eos_id, cfg_.fast_math);
+                                       Tokenizer().eos_id, fast_math);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);

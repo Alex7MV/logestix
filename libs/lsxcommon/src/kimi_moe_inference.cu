@@ -658,31 +658,28 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
 
 
     // 7. Fused absorbed attention. kv_b projection is consumed inside the
-    // kernel as BF16: dequantize the NVFP4 kv_b once per layer pointer
-    // (memoized; the weights are read-only for the process lifetime).
-    static __nv_bfloat16 *d_kv_b_bf16 = nullptr;
-    static const uint8_t *kv_b_packed_seen = nullptr;
-    if (kv_b_packed_seen != lw.d_kv_b_packed) {
-        if (d_kv_b_bf16) cudaFree(d_kv_b_bf16);
-        const int64_t kv_b_numel = kKimiQbRows * kKimiKvLoraRank;  // 12288? no
-        (void)kv_b_numel;
-        // kv_b logical shape: [kKimiNumHeads*(kKimiQkNope+kKimiHeadV),
-        // kKimiKvLoraRank]
+    // kernel as BF16: dequantize the NVFP4 kv_b once per LAYER (lazy,
+    // cached in the layer's weights — a single static memo slot used to
+    // thrash across layers, re-dequantizing 60x per token).
+    if (!lw.d_kv_b_bf16) {
+        // The weights object is model-owned and mutable in practice (pw is
+        // const along the call chain only); the dequant cache writes once.
+        auto &kv_b_cache =
+            const_cast<KimiLayerWeights &>(lw).d_kv_b_bf16;
         const int64_t rows =
             kKimiNumHeads * (kKimiQkNope + kKimiHeadV);
         const int64_t numel = rows * kKimiKvLoraRank;
-        if (cudaMalloc(&d_kv_b_bf16, numel * 2) != cudaSuccess)
+        if (cudaMalloc(&kv_b_cache, numel * 2) != cudaSuccess)
             return cudaErrorMemoryAllocation;
         const int64_t blocks = (numel + 255) / 256;
         ::lsxcommon::kernels::Nvfp4DequantKernel<__nv_bfloat16>
             <<<static_cast<unsigned>(blocks), 256, 0, stream>>>(
                 lw.d_kv_b_packed, lw.d_kv_b_scale, lw.kv_b_gs,
-                d_kv_b_bf16, numel);
-        kv_b_packed_seen = lw.d_kv_b_packed;
+                kv_b_cache, numel);
     }
     dim3 attn_grid(seq, kKimiNumHeads);
     kimi_mla_attn_kernel<<<attn_grid, 512,
-                           0, stream>>>(d_qall, d_kv_b_bf16, d_state,
+                           0, stream>>>(d_qall, lw.d_kv_b_bf16, d_state,
                                         d_attn, seq, base_slot);
 
     // 8. o_proj.

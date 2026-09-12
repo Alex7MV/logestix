@@ -279,6 +279,8 @@ void KimiLayerWeights::Free()
     if (h_gate_bias) cudaFreeHost(h_gate_bias);
     h_gate_bias = nullptr;
     gate_bias_n = 0;
+    if (d_kv_b_bf16) cudaFree(d_kv_b_bf16);
+    d_kv_b_bf16 = nullptr;
     if (d_arena) {
         cudaFree(d_arena);
         d_arena = nullptr;
