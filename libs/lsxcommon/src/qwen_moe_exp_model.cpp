@@ -161,11 +161,15 @@ bool Qwen38FlashNextModel::Load()
         }
     }
     const size_t per_expert = align_up(max_pack) + align_up(max_scale);
+    // Largest supported generation context: the indexer budget caps retrieval
+    // at 2048 tokens; +64 slack for prompt/decode overhead. The LRU reserve
+    // must cover the context-scaled arena + KV (max-gen-2048 OOM root cause).
+    const int kSizingMaxSeq = qwen_moe_exp::frozen::kIndexerBudget + 64;
     if (!explicit_slots) {
         size_t free_bytes = 0, total_bytes = 0;
         if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-            slots = lifecycle::ExpertCacheSlots(
-                free_bytes, per_expert, total_experts,
+            slots = qwen_moe_exp::SizeExpertCacheSlots(
+                free_bytes, per_expert, total_experts, kSizingMaxSeq,
                 perf::CurrentKnobs().expert_slots_pct);
             if (slots > 0 && slots < total_experts)
                 log::info(absl::StrCat(

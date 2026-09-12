@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include "test_qwen_moe_exp_fixture.h"
 #include "lsxcommon/qwen_moe_exp_load.h"
+#include "qwen_moe_exp_constants.h"
+
+#include <cstddef>
 
 #include <filesystem>
 
@@ -193,3 +196,80 @@ TEST_CASE("expert cache alloc sizes to largest payload", "[qwen-exp-loader]")
     FreeQwen4ExpExpertCache(cache);
     store.Free();
 }
+
+namespace {
+
+// Independent replica of the post-cache generation-context device footprint
+// (arena + KV) used as the sizing invariant oracle. Mirrors
+// qwen_moe_exp_inference.cu RunExpGeneration arena carving and
+// QwenKvCache::Allocate for the frozen qwen38 geometry.
+std::size_t OracleGenContextBytes(int seq)
+{
+    using namespace lsxcommon::qwen_moe_exp::frozen;
+    const int H = kHidden, HCH = kHcHidden, NH = kHeads, HD = kHeadDim;
+    const int NKV = kKVHeads, rot = kRotaryDim;
+    const int KD = kLinearNumKeyHeads * kLinearKeyHeadDim;         // 2048
+    const int VD = kLinearNumValueHeads * kLinearValueHeadDim;     // 6144
+    const int S = KD * 2 + VD;                                     // 10240
+    const int nv = kLinearNumValueHeads, V = kVocab;
+    const int I = kMoeIntermediate, K = kTopK, SI = kSharedIntermediate;
+
+    std::size_t half_per_tok = 2 * (std::size_t)H + 3 * (std::size_t)HCH +
+                               3 * (std::size_t)(NH * HD) +
+                               2 * (std::size_t)(NH * HD * 2) +
+                               2 * (std::size_t)(NKV * HD) +
+                               2 * (std::size_t)rot +
+                               2 * (std::size_t)S + 3 * (std::size_t)VD +
+                               2 * (std::size_t)nv;
+    std::size_t half_fixed = (std::size_t)K * 2 * I + (std::size_t)K * I +
+                             (std::size_t)K * H + (std::size_t)I + I + H + SI + H;
+    std::size_t float_per_tok = 2 * (std::size_t)V + 2 * (std::size_t)H +
+                                16 + 2560 + 2 * (std::size_t)nv;
+    std::size_t float_fixed = 1024;
+
+    // 36 linear + 12 full layers (kFullAttnInterval = 4, full at i%4==3).
+    constexpr int kLayers = 48, kFull = 12, kLin = 36;
+    std::size_t kv_bytes =
+        2 * (std::size_t)kFull * seq * NKV * HD * sizeof(__half) +
+        (std::size_t)kLin * seq * S * sizeof(__half) +
+        (std::size_t)kLin * nv * kLinearValueHeadDim * kLinearKeyHeadDim *
+            kLinearNumKeyHeads * sizeof(float);
+
+    return (half_per_tok * seq + half_fixed) * sizeof(__half) +
+           (float_per_tok * seq + float_fixed) * sizeof(float) + 4096 +
+           kv_bytes;
+}
+
+} // namespace
+
+TEST_CASE("gen-context byte estimate covers arena+kv at 2k ctx",
+          "[qwen-exp-loader]")
+{
+    const int seq = 2053;
+    const std::size_t oracle = OracleGenContextBytes(seq);
+    const std::size_t est = GenContextBytes(seq);
+    // Must cover the oracle (under-reserve repeats the max-gen-2048 OOM) and
+    // must not wildly overshoot (would starve the LRU).
+    REQUIRE(est >= oracle);
+    REQUIRE(est <= oracle + (256ull << 20));
+}
+
+TEST_CASE("cache slots sizing leaves room for the gen context",
+          "[qwen-exp-loader]")
+{
+    const std::size_t per_expert = 2611200; // frozen geometry payload
+    const std::size_t free_bytes = 26009ull << 20;
+    const int total = 48 * 512;
+    const int slots =
+        SizeExpertCacheSlots(free_bytes, per_expert, total, 2053, 100);
+    REQUIRE(slots > 0);
+    REQUIRE(slots < total);
+    // The OOM invariant: cache + post-cache context must fit the budget.
+    REQUIRE(static_cast<std::size_t>(slots) * per_expert +
+                GenContextBytes(2053) <=
+            free_bytes);
+    // Shorter contexts allow at least as many slots.
+    REQUIRE(SizeExpertCacheSlots(free_bytes, per_expert, total, 261, 100) >=
+            slots);
+}
+

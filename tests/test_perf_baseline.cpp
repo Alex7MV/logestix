@@ -48,8 +48,9 @@ struct PerfModel {
     int max_gen;
 };
 
-// All vault models that can run on this machine. Models with known-broken
-// vaults (qwen3.8-flash-next: conversion OOM) stay out until they load.
+// All vault models that can run on this machine. The qwen3.8-flash-next
+// exclusion (conversion OOM) is obsolete since the GenContextBytes cache
+// sizing fix (2026-09-12) — the vault loads and benchmarks.
 const PerfModel kGemma = {
     "gemma-4-26b-a4b-it", "gemma-4-26B-A4B-it",
     "Write a detailed long essay about the history of computing, from "
@@ -64,6 +65,9 @@ const PerfModel kQwen35 = {
     "qwen3.5-35b-a3b", "Qwen3.5-35B-A3B", "The capital of France is", 2048};
 const PerfModel kQwen36 = {
     "qwen3.6-35b-a3b", "Qwen3.6-35B-A3B", "The capital of France is", 2048};
+const PerfModel kQwen38 = {
+    "qwen3.8-flash-next", "Qwen3.8-Flash-Next", "The capital of France is",
+    2048};
 const PerfModel kKimi = {
     "kimi-k2.7-code", "Kimi-K2.7-Code", "The capital of France is", 2048};
 
@@ -223,6 +227,11 @@ TEST_CASE("perf baseline: qwen3.5-35b-a3b", "[perf]")
 TEST_CASE("perf baseline: qwen3.6-35b-a3b", "[perf]")
 {
     RunPerfModel(kQwen36);
+}
+
+TEST_CASE("perf baseline: qwen3.8-flash-next", "[perf]")
+{
+    RunPerfModel(kQwen38);
 }
 
 TEST_CASE("perf baseline: kimi-k2.7-code", "[perf]")

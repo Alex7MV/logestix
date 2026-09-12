@@ -2,6 +2,7 @@
 #include "qwen_moe_exp_constants.h"
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/resource_governor.h"
 #include "lsxcommon/schema.h"
 #include "fast_load_internal.h"
 
@@ -1295,6 +1296,68 @@ bool LoadQwen4ExpPleShards(const std::string &model_path, ExpPinnedWeights &pw,
 #endif
     }
     return true;
+}
+
+std::size_t GenContextBytes(int max_seq)
+{
+    using namespace frozen;
+    if (max_seq <= 0) return 0;
+
+    const int H = kHidden, HCH = kHcHidden, NH = kHeads, HD = kHeadDim;
+    const int NKV = kKVHeads, rot = kRotaryDim;
+    const int KD = kLinearNumKeyHeads * kLinearKeyHeadDim;
+    const int VD = kLinearNumValueHeads * kLinearValueHeadDim;
+    const int S = KD * 2 + VD;
+    const int nv = kLinearNumValueHeads;
+
+    // Arena carving replica (qwen_moe_exp_inference.cu RunExpGeneration):
+    // the __half and float sections of the persistent scratch.
+    std::size_t half_per_tok =
+        2 * (std::size_t)H + 3 * (std::size_t)HCH +
+        3 * (std::size_t)(NH * HD) + 2 * (std::size_t)(NH * HD * 2) +
+        2 * (std::size_t)(NKV * HD) + 2 * (std::size_t)rot +
+        2 * (std::size_t)S + 3 * (std::size_t)VD + 2 * (std::size_t)nv;
+    std::size_t half_fixed =
+        (std::size_t)kTopK * 2 * kMoeIntermediate +
+        (std::size_t)kTopK * kMoeIntermediate + (std::size_t)kTopK * H +
+        2 * (std::size_t)kMoeIntermediate + 2 * (std::size_t)H +
+        kSharedIntermediate;
+    std::size_t float_per_tok = 2 * (std::size_t)kVocab +
+                                2 * (std::size_t)H + 16 + 2560 +
+                                2 * (std::size_t)nv;
+    const std::size_t half_bytes =
+        ((half_per_tok * (std::size_t)max_seq + half_fixed) * sizeof(__half) +
+         255) &
+        ~(std::size_t)255;
+    const std::size_t float_bytes =
+        ((float_per_tok * (std::size_t)max_seq + 1024) * sizeof(float) + 255) &
+        ~(std::size_t)255;
+
+    // KV history (QwenKvCache::Allocate): full-attention k/v + linear qkv
+    // history scale with max_seq; the linear GDN column state does not.
+    constexpr int kFull = kLayers / kFullAttnInterval;
+    constexpr int kLin = kLayers - kFull;
+    const std::size_t kv_bytes =
+        2 * (std::size_t)kFull * (std::size_t)max_seq * NKV * HD *
+            sizeof(__half) +
+        (std::size_t)kLin * (std::size_t)max_seq * S * sizeof(__half) +
+        (std::size_t)kLin * nv * kLinearValueHeadDim * kLinearKeyHeadDim *
+            kLinearNumKeyHeads * sizeof(float);
+
+    return half_bytes + float_bytes + 4096 + kv_bytes;
+}
+
+int SizeExpertCacheSlots(std::size_t free_bytes, std::size_t per_expert_bytes,
+                         int total_experts, int max_seq, int slots_pct)
+{
+    // max_seq-independent post-cache floor: persistent fp16 embed table
+    // (V x H x 2B ~ 1.2 GiB), per-layer TC fused builds (~1.6 GiB), driver
+    // margin. Conservative: under-reserving repeats the max-gen-2048 OOM.
+    constexpr std::size_t kPostCacheFloorBytes = 4ull << 30;
+    const std::size_t reserve =
+        GenContextBytes(max_seq) + kPostCacheFloorBytes;
+    return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
+                                       total_experts, slots_pct, reserve);
 }
 
 } // namespace lsxcommon::qwen_moe_exp
