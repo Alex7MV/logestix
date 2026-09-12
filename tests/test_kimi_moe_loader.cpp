@@ -145,7 +145,7 @@ TEST_CASE("kimi expert pinning: LSX_EXPERT_PIN=0 falls back to mmap",
 #endif
     auto db = load_kimi_expert_index(model, /*num_layers=*/3,
                                      /*experts_per_layer=*/2);
-    REQUIRE(db.pinned_pool == nullptr);
+    REQUIRE(db.pinned_pools.empty());
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     ensure_kimi_expert_resident(db, /*layer=*/1, /*expert=*/0, stream);

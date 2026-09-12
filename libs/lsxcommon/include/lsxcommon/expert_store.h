@@ -16,10 +16,13 @@
 #include <cstdio>
 #include <cstdint>
 #include <cuda_runtime.h>
+#include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "lsxcommon/log.h"
@@ -101,6 +104,49 @@ struct ExpertStore {
             if (ParseFile(idx)) lru.push_back(idx);
         }
         return true;
+    }
+
+    // Parallel bulk-parse (Linux): same work as the Load() warm loop but
+    // spread over worker threads. NVMe reads at 23040-file scale are
+    // latency-bound single-threaded (~2.5 GB/s); parallel mmap+parse
+    // saturates the device (~7 GB/s). Thread safety: each worker touches
+    // only its own entries[idx]/batches[idx]/mmaps[idx] slot; lru is
+    // filled afterwards on the calling thread. Used by the pinned-store
+    // path where every entry is resident anyway (max_open cap not applied
+    // — no eviction bookkeeping needed).
+    bool LoadParallelParse(int n_threads)
+    {
+#if defined(__unix__) || defined(__APPLE__)
+        namespace fs = std::filesystem;
+        const size_t total = entries.size();
+        if (total == 0 || paths.size() != total) return false;
+        if (n_threads <= 0)
+            n_threads = std::clamp<unsigned>(
+                std::thread::hardware_concurrency() / 4u, 8u, 32u);
+        std::atomic<size_t> next{0};
+        std::atomic<size_t> ok_cnt{0};
+        auto worker = [&]() {
+            for (;;) {
+                const size_t idx = next.fetch_add(1);
+                if (idx >= total) return;
+                if (ParseFile(idx)) ok_cnt.fetch_add(1);
+            }
+        };
+        std::vector<std::thread> pool;
+        for (int t = 1; t < n_threads; ++t) pool.emplace_back(worker);
+        worker();
+        for (auto &th : pool) th.join();
+        for (size_t idx = 0; idx < total; ++idx)
+            if (mmaps[idx]) lru.push_back(idx);
+        log::info(log_prefix + "parallel parse: " +
+                  std::to_string(ok_cnt.load()) + "/" +
+                  std::to_string(total) + " experts in " +
+                  std::to_string(n_threads) + " threads");
+        return ok_cnt.load() > 0;
+#else
+        (void)n_threads;
+        return false;
+#endif
     }
 
     // Decodes the shared 6-bin + 3-float ExpertSchema fields into @p out.

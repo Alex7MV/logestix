@@ -507,7 +507,6 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
     db.mmap_fail_verb = "expert mmap fail ";
     db.emit_diag = false;
     db.log_batch_fails = true;
-    db.Load(model_path, /*fallback=*/true);
     // ── Pin the routed-expert store into locked host memory ──────────────
     // File-backed mmap sources carry a driver VMA-lookup penalty on every
     // H2D copy and vanish under munmap while an async copy is in flight.
@@ -524,11 +523,44 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
     // warm mmaps left behind — bounded per-alloc work, no storm — and the
     // copy pass then reads the blobs from the still-warm cache (RAM speed,
     // no disk round-trip).
-    if (std::getenv("LSX_EXPERT_PIN") == nullptr
-        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+    // Expert paths + slot bookkeeping are built unconditionally: the pin
+    // pass and the mmap fallback share the same table geometry.
+    {
+        const int total = num_layers * experts_per_layer;
+        db.entries.assign(static_cast<size_t>(total), KimiExpertEntry());
+        db.mmaps.assign(static_cast<size_t>(total), nullptr);
+        db.batches.assign(static_cast<size_t>(total), nullptr);
+        db.paths.resize(static_cast<size_t>(total));
+        namespace fs = std::filesystem;
+        fs::path exp_dir = fs::path(model_path) / "logestix" / "experts";
+        if (!fs::exists(exp_dir)
+            && fs::exists(fs::path(model_path) / "experts"))
+            exp_dir = fs::path(model_path) / "experts";
+        for (int layer = 0; layer < num_layers; ++layer) {
+            for (int exp = 0; exp < experts_per_layer; ++exp) {
+                const size_t idx =
+                    static_cast<size_t>(layer)
+                        * static_cast<size_t>(experts_per_layer)
+                    + static_cast<size_t>(exp);
+                db.paths[idx] =
+                    (exp_dir / ("layer_" + std::to_string(layer))
+                     / ("exp_" + std::to_string(exp) + ".arrow"))
+                        .string();
+            }
+        }
+    }
+    const bool pin_enabled =
+        std::getenv("LSX_EXPERT_PIN") == nullptr
+        || std::getenv("LSX_EXPERT_PIN")[0] != '0';
+    if (pin_enabled) {
         constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
         auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
         auto pin_t0 = std::chrono::steady_clock::now();
+        // Parallel parse (23040 NVMe files are latency-bound sequentially):
+        // fills entries/mmaps for the pin plan. When pinning succeeds the
+        // mmaps are dropped immediately (blobs live in locked host chunks);
+        // on fallback the mmap table doubles as the legacy view source.
+        db.LoadParallelParse(/*n_threads=*/0);
         // Phase 1 — plan (no IO): span sizes, chunk assignment, offsets.
         struct PinPlan {
             KimiExpertEntry *en;
@@ -683,6 +715,16 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
             log::warn("[kimi_load] expert pinning unavailable — "
                       "keeping file-backed mmap sources");
         }
+    }
+    if (!pin_enabled || db.pinned_pools.empty()) {
+        // Fallback (pin disabled or impossible): the classic sequential
+        // Load parses the files again into the pre-sized tables and warms
+        // the LRU-bounded mmap view cache.
+        db.entries.assign(db.paths.size(), KimiExpertEntry());
+        db.mmaps.assign(db.paths.size(), nullptr);
+        db.batches.assign(db.paths.size(), nullptr);
+        db.lru.clear();
+        db.Load(model_path, /*fallback=*/false);
     }
     return db;
 }
