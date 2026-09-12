@@ -402,3 +402,63 @@ TEST_CASE("Gate/up pair GEMV is bit-exact vs two single GEMVs",
     }
     b.Free();
 }
+
+TEST_CASE("GEMV KP grain is bit-stable across launch configs (qwen3.8-27B shapes)",
+          "[lsxnvfp4][gemv][grain]")
+{
+    // 27B decode shapes reach the pair/plain GEMV entries only when the perf
+    // knob is raised. The kp heuristic (K/cand>=1024 && N*cand>=1024 -> kp=8)
+    // must keep each output bit-identical to any other grain selection: the
+    // pair entry picks kp from n_half (17408 -> kp=8) while the plain entry
+    // over the same rows picks kp from K (5120/8=640 < 1024 -> kp=1). Mixed
+    // grains must agree bit-for-bit, or the fast-math tolerance contract for
+    // the 27B decode path is not pinned.
+    {
+        Bufs b;
+        b.Init(1, 5120, 2 * 17408);
+        const float gs = 0.0625f;
+        // Pair and the two-single reference pick kp from different roles
+        // (n_half vs K), so the slice-partition merge order differs and the
+        // outputs are only tolerance-equal (same numeric class as any other
+        // fast-math route). Both must stay within the GEMV tolerance band
+        // vs the host reference over the same sub-ranges.
+        std::vector<float> ref((size_t)2 * 17408);
+        HostRefPlain(b.hx.data(), b.hp.data(), b.hs.data(), gs, ref.data(),
+                     1, 5120, 17408, false);
+        HostRefPlain(b.hx.data(), b.hp.data() + (int64_t)5120 * 17408 / 2,
+                     b.hs.data() + (int64_t)5120 * 17408 / 16, gs,
+                     ref.data() + 17408, 1, 5120, 17408, false);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+                    nullptr, b.dx, b.dp, b.ds, gs, gs, b.dy, 5120, 17408) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        const auto hy = b.Read(b.dy);
+        for (int n = 0; n < 2 * 17408; ++n) {
+            INFO("n=" << n << " ref=" << ref[n]
+                      << " got=" << __half2float(hy[n]));
+            CHECK(std::abs(__half2float(hy[n]) - ref[n]) <
+                  2e-3f * std::abs(ref[n]) + 2e-4f);
+        }
+        b.Free();
+    }
+    {
+        Bufs d;
+        d.Init(1, 17408, 5120);
+        const float gs = 0.03125f;
+        std::vector<float> ref((size_t)d.N);
+        HostRefPlain(d.hx.data(), d.hp.data(), d.hs.data(), gs, ref.data(),
+                     1, d.K, d.N, false);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                    nullptr, d.dx, d.dp, d.ds, gs, d.dy, d.K, d.N) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        const auto hy = d.Read(d.dy);
+        for (int n = 0; n < d.N; ++n) {
+            INFO("n=" << n << " ref=" << ref[n]
+                      << " got=" << __half2float(hy[n]));
+            CHECK(std::abs(__half2float(hy[n]) - ref[n]) <
+                  2e-3f * std::abs(ref[n]) + 2e-4f);
+        }
+        d.Free();
+    }
+}

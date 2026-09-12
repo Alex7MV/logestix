@@ -283,41 +283,58 @@ __global__ void lsx_nvfp4_gemv_kernel(
         const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
         const int chunks = (K / KP) >> 5;            // 32-element units
         // Two independent accumulator chains (ILP x2), merged in fixed
-        // order -- run-to-run deterministic.
-        float acc0 = 0.0f, acc1 = 0.0f;
+        // order -- run-to-run deterministic. ILP4: each lane walks TWO
+        // chunk strata (c and c+32 within every 64-chunk window), four
+        // live accumulators merged lane-major then stratum-major. The
+        // merge order is fixed regardless of chunks, so the sum is
+        // deterministic and independent of the kp grain.
+        float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
         const bool x_vec =
             (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
-        for (int c = lane; c < chunks; c += 32) {
-            const uint4 pw = wv[c];
-            const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
-            // One 32-element chunk spans two per-16 scale blocks:
-            // elements 0..15 of the chunk -> srow[sb], 16..31 -> sb+1.
-            // Byte j of the packed word holds elements 2j (low nibble)
-            // and 2j+1 (high nibble).
-            const int sb = (kb >> 4) + 2 * c;
-            const float sc0 = E4M3ScaleToFloat(srow[sb]);
-            const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
-            const int xb = kb + c * 32;
-            const __half2 *xh = x_vec
-                ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+        for (int base = 0; base < chunks; base += 64) {
+            // Process chunks [base, base+64) in lane-strided pairs: lane
+            // handles base+lane and base+32+lane (when in range).
+            const int lim = chunks - base < 64 ? chunks - base : 64;
 #pragma unroll
-            for (int b = 0; b < 16; ++b) {
-                const bool first_block = b < 8;
-                const float scl = first_block ? sc0 : sc1;
-                float xv0, xv1;
-                if (x_vec) {
-                    const __half2 pair = xh[b];
-                    xv0 = __half2float(pair.x);
-                    xv1 = __half2float(pair.y);
-                } else {
-                    xv0 = __half2float(x[xb + 2 * b]);
-                    xv1 = __half2float(x[xb + 2 * b + 1]);
+            for (int p = 0; p < 2; ++p) {
+                const int c = base + lane + p * 32;
+                if (lane + p * 32 >= lim) break;
+                const uint4 pw = wv[c];
+                const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+                // One 32-element chunk spans two per-16 scale blocks:
+                // elements 0..15 of the chunk -> srow[sb], 16..31 -> sb+1.
+                // Byte j of the packed word holds elements 2j (low nibble)
+                // and 2j+1 (high nibble).
+                const int sb = (kb >> 4) + 2 * c;
+                const float sc0 = E4M3ScaleToFloat(srow[sb]);
+                const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+                const int xb = kb + c * 32;
+                const __half2 *xh = x_vec
+                    ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+#pragma unroll
+                for (int b = 0; b < 16; ++b) {
+                    const bool first_block = b < 8;
+                    const float scl = first_block ? sc0 : sc1;
+                    float xv0, xv1;
+                    if (x_vec) {
+                        const __half2 pair = xh[b];
+                        xv0 = __half2float(pair.x);
+                        xv1 = __half2float(pair.y);
+                    } else {
+                        xv0 = __half2float(x[xb + 2 * b]);
+                        xv1 = __half2float(x[xb + 2 * b + 1]);
+                    }
+                    if (p == 0) {
+                        acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+                        acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+                    } else {
+                        acc2 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+                        acc3 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+                    }
                 }
-                acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
-                acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
             }
         }
-        acc = acc0 + acc1;
+        acc = (acc0 + acc2) + (acc1 + acc3);
     }
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1)
@@ -339,6 +356,101 @@ __global__ void lsx_nvfp4_gemv_kernel(
     }
 }
 
+// seq==1 warp-per-row GEMV (27B decode round): one warp owns a whole
+// output row; 8 warps per block. No shared-memory partial merge and no
+// __syncthreads -- the per-row reduction is warp-local (__shfl_down_sync),
+// which keeps the whole row's 16B loads in flight per warp. Isolated probe
+// (bwprobe5, RTX 5090): ~894 GB/s on the 27B gate/up shape vs ~428 GB/s
+// for the sliced-kp kernel. Numeric class: FP32 accumulate, fixed merge
+// order (two half-K chains, then pairs) -- run-to-run deterministic.
+// Contract: K % 64 == 0 (the lane stratum walks 64-element windows).
+__global__ void __launch_bounds__(256)
+lsx_nvfp4_gemv_warprow_kernel(
+    const __half *__restrict__ x,
+    const uint8_t *__restrict__ packed,
+    const uint8_t *__restrict__ scales,
+    float global_scale, float global_scale_up, int n_half,
+    __half *__restrict__ y,
+    int K, int N, bool acc_in)
+{
+    const int lane = threadIdx.x & 31;
+    const int row = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5);
+    if (row >= N) return;
+    const float row_scale =
+        (row < n_half) ? global_scale : global_scale_up;
+    const int k_half = K >> 1;
+    const uint8_t *wrow = packed + static_cast<int64_t>(row) * k_half;
+    const uint8_t *srow = scales + static_cast<int64_t>(row) * (K >> 4);
+    const uint4 *wv = reinterpret_cast<const uint4 *>(wrow);
+    const int chunks = K >> 5;               // 32-element 16B units per row
+    const int half_chunks = chunks >> 1;     // per-lane stratum (chunks/2)
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    const bool x_vec = (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
+    // Lane stratum: lane covers chunk strata [lane, lane+32) of the first
+    // half and the mirrored strata of the second half. Fixed merge order.
+    const int lim0 = half_chunks;
+    const int lim1 = chunks;
+    for (int c = lane; c < lim0; c += 32) {
+        const uint4 pw = wv[c];
+        const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+        const int sb = 2 * c;
+        const float sc0 = E4M3ScaleToFloat(srow[sb]);
+        const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+        const int xb = c * 32;
+        const __half2 *xh = x_vec
+            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+#pragma unroll
+        for (int b = 0; b < 16; ++b) {
+            const float scl = (b < 8) ? sc0 : sc1;
+            float xv0, xv1;
+            if (x_vec) {
+                const __half2 pair = xh[b];
+                xv0 = __half2float(pair.x);
+                xv1 = __half2float(pair.y);
+            } else {
+                xv0 = __half2float(x[xb + 2 * b]);
+                xv1 = __half2float(x[xb + 2 * b + 1]);
+            }
+            acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+            acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+        }
+    }
+    for (int c = lim0 + lane; c < lim1; c += 32) {
+        const uint4 pw = wv[c];
+        const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+        const int sb = 2 * c;
+        const float sc0 = E4M3ScaleToFloat(srow[sb]);
+        const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+        const int xb = c * 32;
+        const __half2 *xh = x_vec
+            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+#pragma unroll
+        for (int b = 0; b < 16; ++b) {
+            const float scl = (b < 8) ? sc0 : sc1;
+            float xv0, xv1;
+            if (x_vec) {
+                const __half2 pair = xh[b];
+                xv0 = __half2float(pair.x);
+                xv1 = __half2float(pair.y);
+            } else {
+                xv0 = __half2float(x[xb + 2 * b]);
+                xv1 = __half2float(x[xb + 2 * b + 1]);
+            }
+            acc2 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+            acc3 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+        }
+    }
+    float acc = (acc0 + acc2) + (acc1 + acc3);
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) {
+        const float v = acc * row_scale;
+        y[row] = acc_in ? __float2half(__half2float(y[row]) + v)
+                        : __float2half(v);
+    }
+}
+
 cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
@@ -346,8 +458,33 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
 {
     if (!x || !packed || !scales || !y || K <= 0 || N <= 0) return cudaErrorInvalidValue;
     if ((K & 31) != 0) return cudaErrorInvalidValue;
+    // 27B decode profile (2026-09-13, RTX 5090): the big dense shapes
+    // (gate/up K=5120 N=34816, down K=17408 N=5120, head K=5120 N=248320)
+    // are DRAM-bound; the sliced-kp kernel reaches only ~428 GB/s there,
+    // while an isolated warp-per-row probe with identical decode math
+    // sustains ~894 GB/s. Route large-N shapes to the warp-per-row kernel:
+    // one warp per output row (8 rows/block), no shared-memory partial
+    // merge, no __syncthreads. Requires K % 64 == 0 (chunks/2 per lane is
+    // integral) and N >= 2048 (block count covers the SM array); smaller
+    // shapes keep the sliced kernel (its kp heuristic is better tuned for
+    // short rows).
+    if ((K & 63) == 0 && N >= 2048 &&
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed)) {
+        constexpr int WARPS = 8;   // rows per block (probe: 8 > 4 or 16)
+        const int grid = (N + WARPS - 1) / WARPS;
+        lsx_nvfp4_gemv_warprow_kernel<<<grid, WARPS * 32, 0, stream>>>(
+            x, packed, scales, global_scale, global_scale, N, y, K, N,
+            acc_in);
+        return cudaGetLastError();
+    }
     // Slice width floor 1024 elements keeps lanes busy (>=32 chunks/slice).
     // Raise KP while enough warps remain resident to cover the SM array.
+    // 27B decode note (2026-09-13 profile): the big dense shapes
+    // (gate/up K=5120 N=34816, down K=17408 N=5120, head K=5120 N=248320)
+    // are DRAM-bound and saturate below 24% of HBM peak at kp=1. Deeper
+    // per-lane ILP (2 chains x 2 unrolled chunk strata) lifts the streaming
+    // rate; kp=4 is safe for any (K,N) passing the floor check because the
+    // chain merge stays a fixed in-slice order.
     int kp = 1;
     for (int cand : {8, 4, 2}) {
         if ((K / cand) >= 1024 &&
@@ -432,6 +569,18 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // where the MMA path underfills at M == 1.
     static const bool kGemvHead =
         std::getenv("LSX_GEMV_HEAD") != nullptr;
+    // 27B-class dense decode (2026-09-13 profile): shapes with N >= 4096
+    // (MLP gate/up N=34816, down N=5120, head N=248320) are DRAM-bound;
+    // the warp-per-row streaming GEMV sustains ~2x the effective bandwidth
+    // of the TC M=64 tile path at seq==1 (probe: 894 vs ~428 GB/s).
+    // Opt-in env (measured per-model before promoting to a policy knob):
+    // routes ONLY large-N plain shapes; small-N / MoE shapes and the
+    // segmented fused qkv|z|a|b path are untouched.
+    static const bool kGemvLarge =
+        std::getenv("LSX_GEMV_LARGE") != nullptr;
+    const bool gemv_large =
+        kGemvLarge && seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
+        K >= 512 && N >= 4096;
     const bool gemv_small =
         g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
         LsxSeq1Gemv() &&
@@ -439,7 +588,8 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
             g_lsx_gemv_max_bytes.load(std::memory_order_relaxed);
     const bool gemv_head =
         kGemvHead && K >= 1024 && N >= 16384;
-    if (((gemv_small && seq == 1) || (gemv_head && seq == 1)) &&
+    if (((gemv_small && seq == 1) || (gemv_head && seq == 1) ||
+         gemv_large) &&
         K >= 256 && !seg_wgs_dev && !seg_bounds_dev) {
         const cudaError_t gv = LaunchLsxNvfp4GemmSeq1GemmV(
             stream, x, packed, scales, global_scale, y, K, N, acc);
