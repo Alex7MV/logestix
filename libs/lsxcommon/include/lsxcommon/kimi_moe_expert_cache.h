@@ -78,6 +78,11 @@ struct KimiMoeExpertCachePlan {
 
 // Slot count per the unified residency policy. env_value (may be nullptr or
 // empty): explicit value wins and is clamped to total_experts; "0" disables.
+// Reserve: Kimi's post-cache runtime allocations measured < 1 GiB (920-slot
+// run with 0.7 GiB spare), so a 2 GiB guard replaces the 8 GiB model-neutral
+// reserve — 4 GiB more VRAM under expert slots on a 32 GiB part.
+inline constexpr std::size_t kKimiVramReserveBytes = 2ull << 30;
+
 inline int KimiMoeExpertCacheSlots(std::size_t free_bytes,
                                    std::size_t per_expert_bytes,
                                    int total_experts, const char *env_value)
@@ -91,7 +96,8 @@ inline int KimiMoeExpertCacheSlots(std::size_t free_bytes,
     return lifecycle::ExpertCacheSlots(free_bytes, per_expert_bytes,
                                        total_experts,
                                        lsxcommon::perf::CurrentKnobs()
-                                           .expert_slots_pct);
+                                           .expert_slots_pct,
+                                       kKimiVramReserveBytes);
 }
 
 // One layer's top-k residency decision. Advances the LRU clock; assigns
@@ -198,6 +204,11 @@ struct KimiMoeExpertDeviceCache {
     int slots = 0;
     cudaStream_t copy_stream = nullptr;
     cudaEvent_t ready = nullptr;       // recorded after each batch upload
+    // Split-fence upload (r3): ready13 fires after the [w1|w3][s1|s3] spans
+    // land, ready2 after [w2][s2] — the w2 GEMM waits only ready2 while the
+    // w13 GEMM overlaps the down-projection upload.
+    cudaEvent_t ready13 = nullptr;
+    cudaEvent_t ready2 = nullptr;
 };
 
 // Host state owned by the model across turns.

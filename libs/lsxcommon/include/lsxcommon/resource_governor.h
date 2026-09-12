@@ -187,15 +187,14 @@ inline constexpr std::size_t kExpertCacheVramReserveBytes = 8ull << 30;
 // resolved perf policy (gpu_perf.h; default 100 = full budget).
 inline int ExpertCacheSlots(std::size_t free_bytes,
                             std::size_t per_expert_bytes,
-                            int total_experts,
-                            int slots_pct = 100)
+                            int total_experts, int slots_pct = 100,
+                            std::size_t reserve_bytes
+                            = kExpertCacheVramReserveBytes)
 {
     if (total_experts <= 0) return 0;
     if (per_expert_bytes == 0) return total_experts;
     const std::size_t usable_raw =
-        free_bytes > kExpertCacheVramReserveBytes
-            ? free_bytes - kExpertCacheVramReserveBytes
-            : 0;
+        free_bytes > reserve_bytes ? free_bytes - reserve_bytes : 0;
     const unsigned pct = static_cast<unsigned>(std::clamp(slots_pct, 0, 100));
     const std::size_t usable =
         pct >= 100 ? usable_raw : usable_raw / 100u * pct;

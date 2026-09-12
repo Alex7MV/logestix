@@ -516,29 +516,14 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
     // 12-minute direct-reclaim storm (probed: mlock succeeds, chunked
     // 16 GiB cudaHostAlloc succeeds in ~280 s), so the store pins as a
     // vector of 16 GiB chunks; an expert block never spans two chunks.
-    // Reclaim-storm guard: db.Load() leaves the whole vault in the page
-    // cache — drop the expert-file page cache first (clean pages, no IO).
+    // Each chunk alloc self-reclaims its 16 GiB from the page cache the
+    // warm mmaps left behind — bounded per-alloc work, no storm — and the
+    // copy pass then reads the blobs from the still-warm cache (RAM speed,
+    // no disk round-trip).
     if (std::getenv("LSX_EXPERT_PIN") == nullptr
         || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
         constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
         auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
-#if defined(__unix__) || defined(__APPLE__)
-        auto drop_t0 = std::chrono::steady_clock::now();
-        int dropped = 0;
-        for (const auto &p : db.paths) {
-            int fd = ::open(p.c_str(), O_RDONLY);
-            if (fd >= 0) {
-                ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-                ::close(fd);
-                ++dropped;
-            }
-        }
-        auto drop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - drop_t0).count();
-        log::info("[kimi_load] dropped expert-file page cache: "
-                  + std::to_string(dropped) + " files in "
-                  + std::to_string(drop_ms) + " ms");
-#endif
         auto pin_t0 = std::chrono::steady_clock::now();
         int pinned_cnt = 0;
         uintptr_t cur = 0;
@@ -548,10 +533,13 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                 || !en.host_w1_scales || !en.host_w2_scales
                 || !en.host_w3_scales)
                 continue;
-            const int64_t block =
-                aln(en.w1_bytes) + aln(en.w3_bytes) + aln(en.w2_bytes)
-                + aln(en.w1_scales_bytes) + aln(en.w3_scales_bytes)
-                + aln(en.w2_scales_bytes);
+            en.blob_a_bytes = aln(en.w1_bytes) + en.w3_bytes;
+            en.blob_b_bytes = aln(en.w1_scales_bytes) + en.w3_scales_bytes;
+            en.blob_c_bytes = en.w2_bytes;
+            en.blob_d_bytes = en.w2_scales_bytes;
+            const int64_t block = aln(en.blob_a_bytes) + aln(en.blob_b_bytes)
+                                + aln(en.blob_c_bytes)
+                                + aln(en.blob_d_bytes);
             if (chunk_left < block) {
                 void *chunk = nullptr;
                 cudaError_t ce = cudaHostAlloc(&chunk,
@@ -572,9 +560,9 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                 chunk_left = kPinChunkBytes;
             }
             en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
-            en.blob_pack_bytes = en.w1_bytes + en.w3_bytes + en.w2_bytes;
-            en.blob_scale_bytes = en.w1_scales_bytes + en.w3_scales_bytes
-                                + en.w2_scales_bytes;
+            // Block layout [w1|w3][s1|s3][w2][s2] — per-blob 256-B
+            // alignment inside each span matches the device slot view
+            // (KimiMoeSlotPointers), so each span is a single DMA.
             std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
                         static_cast<std::size_t>(en.w1_bytes));
             en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
@@ -582,11 +570,7 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
             std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
                         static_cast<std::size_t>(en.w3_bytes));
             en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w3_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
-                        static_cast<std::size_t>(en.w2_bytes));
-            en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w2_bytes);
+            cur = aln(cur + en.blob_a_bytes);
             std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
                         static_cast<std::size_t>(en.w1_scales_bytes));
             en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
@@ -594,11 +578,15 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
             std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
                         static_cast<std::size_t>(en.w3_scales_bytes));
             en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w3_scales_bytes);
+            cur = aln(cur + en.blob_b_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
+                        static_cast<std::size_t>(en.w2_bytes));
+            en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.blob_c_bytes);
             std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
                         static_cast<std::size_t>(en.w2_scales_bytes));
             en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w2_scales_bytes);
+            cur = aln(cur + en.blob_d_bytes);
             chunk_left -= block;
             ++pinned_cnt;
         }

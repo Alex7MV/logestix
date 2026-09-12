@@ -1078,7 +1078,8 @@ cudaError_t RunKimiRoutedTcBatch(cublasHandle_t, cudaStream_t stream,
                                  const lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl,
                                  int K, const __nv_bfloat16 *d_x,
                                  __nv_bfloat16 *d_out, void *d_scratch,
-                                 size_t scratch_bytes)
+                                 size_t scratch_bytes,
+                                 cudaEvent_t ev13, cudaEvent_t ev2)
 {
     namespace tc = lsxcommon::lsx_tc;
     constexpr int I = kKimiMoeIntermediate;
@@ -1097,6 +1098,14 @@ cudaError_t RunKimiRoutedTcBatch(cublasHandle_t, cudaStream_t stream,
                                                    s.xq, s.xqs);
     if (e != cudaSuccess) return e;
 
+    // Split-fence: the w13 spans may still be in flight on the copy
+    // stream — wait for ready13 before the gate/up GEMM. The activation
+    // quant above runs regardless (no upload dependency).
+    if (ev13) {
+        e = cudaStreamWaitEvent(stream, ev13, 0);
+        if (e != cudaSuccess) return e;
+    }
+
     // w13 batch: gate|up for K slots in ONE launch; {gs1|gs3} segment
     // split at N/2 via the slot table's gs1/gs3.
     e = tc::RunLsxTcGemmBatch13(stream, s.xq, s.xqs, pack_base, scale_base,
@@ -1112,6 +1121,12 @@ cudaError_t RunKimiRoutedTcBatch(cublasHandle_t, cudaStream_t stream,
                                       256, 0, stream>>>(s.ygu, K, I, s.hbf,
                                                         s.hq, s.hqs);
         e = cudaGetLastError();
+        if (e != cudaSuccess) return e;
+    }
+
+    // The down-projection spans land while the w13 GEMM+SwiGLU run.
+    if (ev2) {
+        e = cudaStreamWaitEvent(stream, ev2, 0);
         if (e != cudaSuccess) return e;
     }
 
@@ -1352,7 +1367,6 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                             return ue;
                         }
                     }
-                    cudaStreamWaitEvent(stream, cache->device->ready, 0);
                     if (fast_math && d_tc_scratch && d_tc_tbl && h_tc_tbl) {
                         // ── Batched TC chain: host-built 8-entry slot
                         // table (dev_slot + per-segment global scales +
@@ -1397,10 +1411,13 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                                     (size_t)(base + t) * kKimiHidden,
                                 d_scratch_a +
                                     (size_t)(base + t) * kKimiHidden,
-                                d_tc_scratch, KimiTcBatchScratchBytes());
+                                d_tc_scratch, KimiTcBatchScratchBytes(),
+                                cache->device->ready13,
+                                cache->device->ready2);
                             if (fe != cudaSuccess) return fe;
                         }
                     } else {
+                    cudaStreamWaitEvent(stream, cache->device->ready, 0);
                     // Pass 3: GEMV from cache slots; accumulation order is
                     // the fixed k index order (bit-exact contract).
                     // Slot resolution per k: resident experts map through

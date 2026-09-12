@@ -85,6 +85,9 @@ size_t KimiExpertFfnStagingBytes();
 // site adds the residual). Tolerance-class vs the legacy dequant->BF16
 // GEMV chain (act-quant + split-K); run-to-run deterministic.
 // d_scratch: caller-allocated KimiTcBatchScratchBytes() buffer.
+// ev13/ev2 (nullable): split-fence upload events — the w13 GEMM waits ev13,
+// the w2 GEMM waits ev2; null waits degenerate to no-op (uploads already
+// fenced by the caller).
 cudaError_t RunKimiRoutedTcBatch(cublasHandle_t cublas_h, cudaStream_t stream,
                                  const uint8_t *pack_base,
                                  const uint8_t *scale_base,
@@ -92,7 +95,9 @@ cudaError_t RunKimiRoutedTcBatch(cublasHandle_t cublas_h, cudaStream_t stream,
                                  const lsxcommon::lsx_tc::LsxTcBatchSlot *d_tbl,
                                  int K, const __nv_bfloat16 *d_x,
                                  __nv_bfloat16 *d_out, void *d_scratch,
-                                 size_t scratch_bytes);
+                                 size_t scratch_bytes,
+                                 cudaEvent_t ev13 = nullptr,
+                                 cudaEvent_t ev2 = nullptr);
 
 // Upper bound of the RunKimiRoutedTcBatch scratch requirement (K=8).
 size_t KimiTcBatchScratchBytes();

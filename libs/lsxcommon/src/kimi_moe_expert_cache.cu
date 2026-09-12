@@ -99,6 +99,10 @@ cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db, int slots,
         e = cudaStreamCreate(&c->copy_stream);
     if (e == cudaSuccess)
         e = cudaEventCreateWithFlags(&c->ready, cudaEventDisableTiming);
+    if (e == cudaSuccess)
+        e = cudaEventCreateWithFlags(&c->ready13, cudaEventDisableTiming);
+    if (e == cudaSuccess)
+        e = cudaEventCreateWithFlags(&c->ready2, cudaEventDisableTiming);
     if (e != cudaSuccess) {
         err = "kimi cache alloc failed";
         FreeKimiMoeExpertDeviceCache(c);
@@ -117,6 +121,8 @@ void FreeKimiMoeExpertDeviceCache(KimiMoeExpertDeviceCache *&c)
     if (c->d_scale) cudaFree(c->d_scale);
     if (c->copy_stream) cudaStreamDestroy(c->copy_stream);
     if (c->ready) cudaEventDestroy(c->ready);
+    if (c->ready13) cudaEventDestroy(c->ready13);
+    if (c->ready2) cudaEventDestroy(c->ready2);
     delete c;
     c = nullptr;
 }
@@ -144,30 +150,70 @@ cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
             db.entries[static_cast<size_t>(layer) * experts_per_layer +
                        static_cast<size_t>(bid)];
         const KimiMoeSlotView v = KimiMoeSlotPointers(*cache, slot, ent);
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w1), ent.host_w1,
-                            ent.w1_bytes, cudaMemcpyHostToDevice,
-                            cache->copy_stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w3), ent.host_w3,
-                            ent.w3_bytes, cudaMemcpyHostToDevice,
-                            cache->copy_stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w2), ent.host_w2,
-                            ent.w2_bytes, cudaMemcpyHostToDevice,
-                            cache->copy_stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s1),
-                            ent.host_w1_scales, ent.w1_scales_bytes,
-                            cudaMemcpyHostToDevice, cache->copy_stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s3),
-                            ent.host_w3_scales, ent.w3_scales_bytes,
-                            cudaMemcpyHostToDevice, cache->copy_stream);
-        if (e != cudaSuccess) return e;
-        e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s2),
-                            ent.host_w2_scales, ent.w2_scales_bytes,
-                            cudaMemcpyHostToDevice, cache->copy_stream);
-        if (e != cudaSuccess) return e;
+        if (ent.pinned_blob != nullptr) {
+            // Split-fence pinned upload: the locked-host block is laid out
+            // as [w1|w3][s1|s3][w2][s2] — stream the gate/up pair first,
+            // fence it (ready13), then overlap the down-projection upload
+            // with the w13 GEMM (ready2). Slot layout is [w1|w3|w2] with
+            // per-blob 256-B alignment — identical rounding to the block.
+            const uint8_t *blob = ent.pinned_blob;
+            auto aln = [](int64_t x) { return (x + 255) / 256 * 256; };
+            const uint8_t *b = blob;
+            const uint8_t *c = b + aln(ent.blob_a_bytes);
+            const uint8_t *d = c + aln(ent.blob_b_bytes);
+            const uint8_t *e4 = d + aln(ent.blob_c_bytes);
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w1), b,
+                                ent.blob_a_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s1),
+                                c, ent.blob_b_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaEventRecord(cache->ready13, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w2), d,
+                                ent.blob_c_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s2),
+                                e4, ent.blob_d_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaEventRecord(cache->ready2, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+        } else {
+            // File-backed fallback: six mmap-sourced copies, both fences
+            // fire together at the end (legacy single-fence behavior).
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w1), ent.host_w1,
+                                ent.w1_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w3), ent.host_w3,
+                                ent.w3_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_w2), ent.host_w2,
+                                ent.w2_bytes, cudaMemcpyHostToDevice,
+                                cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s1),
+                                ent.host_w1_scales, ent.w1_scales_bytes,
+                                cudaMemcpyHostToDevice, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s3),
+                                ent.host_w3_scales, ent.w3_scales_bytes,
+                                cudaMemcpyHostToDevice, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaMemcpyAsync(const_cast<unsigned char *>(v.p_s2),
+                                ent.host_w2_scales, ent.w2_scales_bytes,
+                                cudaMemcpyHostToDevice, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaEventRecord(cache->ready13, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+            e = cudaEventRecord(cache->ready2, cache->copy_stream);
+            if (e != cudaSuccess) return e;
+        }
     }
     return cudaEventRecord(cache->ready, cache->copy_stream);
 }
