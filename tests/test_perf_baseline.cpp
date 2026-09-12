@@ -70,6 +70,8 @@ const PerfModel kQwen38 = {
     2048};
 const PerfModel kKimi = {
     "kimi-k2.7-code", "Kimi-K2.7-Code", "The capital of France is", 2048};
+const PerfModel kQwen27 = {
+    "qwen3.8-27b", "Qwen3.8-27B", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -237,4 +239,9 @@ TEST_CASE("perf baseline: qwen3.8-flash-next", "[perf]")
 TEST_CASE("perf baseline: kimi-k2.7-code", "[perf]")
 {
     RunPerfModel(kKimi);
+}
+
+TEST_CASE("perf baseline: qwen3.8-27b", "[perf]")
+{
+    RunPerfModel(kQwen27);
 }

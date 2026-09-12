@@ -1170,6 +1170,14 @@ set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b PROPERTIES
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.6-35B-A3B")
 set_tests_properties(test_perf_baseline_qwen3_6_35b_a3b
     PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_qwen3_8_27b
+         COMMAND test_perf_baseline "perf baseline: qwen3.8-27b")
+set_tests_properties(test_perf_baseline_qwen3_8_27b PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.8-27B")
+set_tests_properties(test_perf_baseline_qwen3_8_27b
+    PROPERTIES LABELS perf)
 
 # ── Тест E8M0 -> pow2-E4M3 scale-пары (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
