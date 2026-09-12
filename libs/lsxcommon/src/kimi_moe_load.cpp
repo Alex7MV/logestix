@@ -9,12 +9,14 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 #if defined(__unix__) || defined(__APPLE__)
 #include <fcntl.h>
@@ -525,79 +527,156 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
         constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
         auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
         auto pin_t0 = std::chrono::steady_clock::now();
-        int pinned_cnt = 0;
-        uintptr_t cur = 0;
-        int64_t chunk_left = 0;
-        for (auto &en : db.entries) {
-            if (!en.host_w1 || !en.host_w2 || !en.host_w3
-                || !en.host_w1_scales || !en.host_w2_scales
-                || !en.host_w3_scales)
-                continue;
-            en.blob_a_bytes = aln(en.w1_bytes) + en.w3_bytes;
-            en.blob_b_bytes = aln(en.w1_scales_bytes) + en.w3_scales_bytes;
-            en.blob_c_bytes = en.w2_bytes;
-            en.blob_d_bytes = en.w2_scales_bytes;
-            const int64_t block = aln(en.blob_a_bytes) + aln(en.blob_b_bytes)
-                                + aln(en.blob_c_bytes)
-                                + aln(en.blob_d_bytes);
-            if (chunk_left < block) {
-                void *chunk = nullptr;
-                cudaError_t ce = cudaHostAlloc(&chunk,
-                                               static_cast<size_t>(
-                                                   kPinChunkBytes),
-                                               cudaHostAllocDefault);
-                if (ce != cudaSuccess) {
-                    cudaGetLastError();   // clear sticky error
-                    log::warn("[kimi_load] expert pinning stopped at "
-                              + std::to_string(pinned_cnt) + " experts ("
-                              + std::string(cudaGetErrorString(ce))
-                              + ") — rest stays file-backed");
-                    break;
+        // Phase 1 — plan (no IO): span sizes, chunk assignment, offsets.
+        struct PinPlan {
+            KimiExpertEntry *en;
+            uint32_t chunk;
+            int64_t off_a, off_b, off_c, off_d;   // span starts in the chunk
+        };
+        std::vector<PinPlan> plan;
+        std::vector<const uint8_t *> src_w1, src_w3, src_s1, src_s3,
+            src_w2, src_s2;   // captured mmap views (freed after copy)
+        {
+            int64_t cur = 0;
+            uint32_t chunk_idx = 0;
+            for (auto &en : db.entries) {
+                if (!en.host_w1 || !en.host_w2 || !en.host_w3
+                    || !en.host_w1_scales || !en.host_w2_scales
+                    || !en.host_w3_scales)
+                    continue;
+                en.blob_a_bytes = aln(en.w1_bytes) + en.w3_bytes;
+                en.blob_b_bytes = aln(en.w1_scales_bytes)
+                                + en.w3_scales_bytes;
+                en.blob_c_bytes = en.w2_bytes;
+                en.blob_d_bytes = en.w2_scales_bytes;
+                const int64_t block = aln(en.blob_a_bytes)
+                                    + aln(en.blob_b_bytes)
+                                    + aln(en.blob_c_bytes)
+                                    + aln(en.blob_d_bytes);
+                if (cur != 0 && cur + block > kPinChunkBytes) {
+                    ++chunk_idx;
+                    cur = 0;
                 }
-                db.pinned_pools.push_back(chunk);
-                db.pinned_bytes += static_cast<std::size_t>(kPinChunkBytes);
-                cur = reinterpret_cast<uintptr_t>(chunk);
-                chunk_left = kPinChunkBytes;
+                PinPlan pp{};
+                pp.en = &en;
+                pp.chunk = chunk_idx;
+                pp.off_a = cur;
+                pp.off_b = pp.off_a + aln(en.blob_a_bytes);
+                pp.off_c = pp.off_b + aln(en.blob_b_bytes);
+                pp.off_d = pp.off_c + aln(en.blob_c_bytes);
+                src_w1.push_back(en.host_w1);
+                src_w3.push_back(en.host_w3);
+                src_s1.push_back(en.host_w1_scales);
+                src_s3.push_back(en.host_w3_scales);
+                src_w2.push_back(en.host_w2);
+                src_s2.push_back(en.host_w2_scales);
+                plan.push_back(pp);
+                cur = pp.off_d + aln(en.blob_d_bytes);
             }
-            en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
-            // Block layout [w1|w3][s1|s3][w2][s2] — per-blob 256-B
-            // alignment inside each span matches the device slot view
-            // (KimiMoeSlotPointers), so each span is a single DMA.
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
-                        static_cast<std::size_t>(en.w1_bytes));
-            en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w1_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
-                        static_cast<std::size_t>(en.w3_bytes));
-            en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.blob_a_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
-                        static_cast<std::size_t>(en.w1_scales_bytes));
-            en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.w1_scales_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
-                        static_cast<std::size_t>(en.w3_scales_bytes));
-            en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.blob_b_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
-                        static_cast<std::size_t>(en.w2_bytes));
-            en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.blob_c_bytes);
-            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
-                        static_cast<std::size_t>(en.w2_scales_bytes));
-            en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
-            cur = aln(cur + en.blob_d_bytes);
-            chunk_left -= block;
-            ++pinned_cnt;
         }
+        // Phase 2 — chunk allocations in parallel (each cudaHostAlloc
+        // zero-fills 16 GiB at ~8 GiB/s single-threaded; 6 workers cut the
+        // wall time ~5x on a 542 GiB store).
+        const int n_chunks = static_cast<int>(plan.empty() ? 0
+                                                          : plan.back().chunk
+                                                                + 1);
+        {
+            std::atomic<int> next{0};
+            auto alloc_worker = [&]() {
+                for (;;) {
+                    const int i = next.fetch_add(1);
+                    if (i >= n_chunks) return;
+                    void *chunk = nullptr;
+                    cudaError_t ce = cudaHostAlloc(
+                        &chunk, static_cast<size_t>(kPinChunkBytes),
+                        cudaHostAllocDefault);
+                    db.pinned_pools[static_cast<size_t>(i)] = chunk;
+                    if (ce != cudaSuccess) cudaGetLastError();
+                }
+            };
+            db.pinned_pools.assign(static_cast<size_t>(n_chunks), nullptr);
+            db.pinned_bytes = static_cast<std::size_t>(n_chunks)
+                            * static_cast<std::size_t>(kPinChunkBytes);
+            const unsigned hw = std::thread::hardware_concurrency();
+            const int n_threads = std::clamp<unsigned>(hw / 16u, 4u, 8u);
+            std::vector<std::thread> pool;
+            for (int t = 1; t < n_threads; ++t) pool.emplace_back(alloc_worker);
+            alloc_worker();
+            for (auto &th : pool) th.join();
+            bool all_ok = true;
+            for (void *c : db.pinned_pools)
+                if (!c) all_ok = false;
+            if (!all_ok) {
+                log::warn("[kimi_load] expert pinning stopped — chunk alloc "
+                          "failed; store stays file-backed");
+                for (void *c : db.pinned_pools)
+                    if (c) cudaFreeHost(c);
+                db.pinned_pools.clear();
+                db.pinned_bytes = 0;
+            }
+        }
+        // Phase 3 — parallel span copies from the captured mmap views;
+        // entry pointers re-pointed afterwards (single-threaded).
         if (!db.pinned_pools.empty()) {
-            auto pin_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - pin_t0).count();
+            std::atomic<size_t> next{0};
+            auto copy_worker = [&]() {
+                for (;;) {
+                    const size_t i = next.fetch_add(1);
+                    if (i >= plan.size()) return;
+                    const PinPlan &pp = plan[i];
+                    auto *base = static_cast<uint8_t *>(
+                        db.pinned_pools[pp.chunk]);
+                    std::memcpy(base + pp.off_a, src_w1[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w1_bytes));
+                    std::memcpy(base + pp.off_a + aln(pp.en->w1_bytes),
+                                src_w3[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w3_bytes));
+                    std::memcpy(base + pp.off_b, src_s1[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w1_scales_bytes));
+                    std::memcpy(base + pp.off_b
+                                    + aln(pp.en->w1_scales_bytes),
+                                src_s3[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w3_scales_bytes));
+                    std::memcpy(base + pp.off_c, src_w2[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w2_bytes));
+                    std::memcpy(base + pp.off_d, src_s2[i],
+                                static_cast<std::size_t>(
+                                    pp.en->w2_scales_bytes));
+                }
+            };
+            const unsigned hw = std::thread::hardware_concurrency();
+            const int n_threads = std::clamp<unsigned>(hw / 8u, 8u, 24u);
+            std::vector<std::thread> pool;
+            for (int t = 1; t < n_threads; ++t) pool.emplace_back(copy_worker);
+            copy_worker();
+            for (auto &th : pool) th.join();
+            for (size_t i = 0; i < plan.size(); ++i) {
+                PinPlan &pp = plan[i];
+                auto *base = static_cast<uint8_t *>(
+                    db.pinned_pools[pp.chunk]);
+                KimiExpertEntry &en = *pp.en;
+                en.pinned_blob = base + pp.off_a;
+                en.host_w1 = base + pp.off_a;
+                en.host_w3 = base + pp.off_a + aln(en.w1_bytes);
+                en.host_w1_scales = base + pp.off_b;
+                en.host_w3_scales =
+                    base + pp.off_b + aln(en.w1_scales_bytes);
+                en.host_w2 = base + pp.off_c;
+                en.host_w2_scales = base + pp.off_d;
+            }
+            const int pinned_cnt = static_cast<int>(plan.size());
+            auto pin_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - pin_t0).count();
             log::info("[kimi_load] pinned routed-expert store: "
                       + std::to_string(pinned_cnt) + " experts, "
-                      + std::to_string(db.pinned_pools.size())
-                      + " x 16 GiB chunks in " + std::to_string(pin_ms)
-                      + " ms");
+                      + std::to_string(n_chunks) + " x 16 GiB chunks in "
+                      + std::to_string(pin_ms) + " ms");
         } else {
             log::warn("[kimi_load] expert pinning unavailable — "
                       "keeping file-backed mmap sources");
