@@ -637,23 +637,15 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                         db.pinned_pools[static_cast<size_t>(i)] = nullptr;
                         continue;
                     }
-                    // Fault the pages first (parallel user-space memset,
-                    // ~34 GB/s per worker): register on UNFAULTED memory
-                    // costs 5.7 s/chunk (driver faults serially), on
-                    // faulted — 1.6 s/chunk.
-                    std::memset(chunk, 0,
-                                static_cast<size_t>(kPinChunkBytes));
-                    cudaError_t ce = cudaHostRegister(
-                        chunk, static_cast<size_t>(kPinChunkBytes),
-                        cudaHostRegisterDefault);
-                    if (ce != cudaSuccess) {
-                        cudaGetLastError();
-                        munmap(chunk, static_cast<size_t>(kPinChunkBytes));
-                        db.pinned_pools[static_cast<size_t>(i)] = nullptr;
-                        continue;
-                    }
+                    // NOTE: no fault, no register here. The copy phase
+                    // faults pages with data in a single write (fault-at-
+                    // write), and register runs LAST, pinning the already
+                    // populated pages. Faulting before copy (memset or
+                    // register-on-unfaulted) evicts the parse's page cache
+                    // — pinned 542 GiB + cache 542 GiB never fit in RAM
+                    // together, and the copy degenerates to a disk
+                    // re-read (measured 333 s).
                     db.pinned_pools[static_cast<size_t>(i)] = chunk;
-                    db.pinned_registered[static_cast<size_t>(i)] = true;
                     db.pinned_chunk_sizes[static_cast<size_t>(i)] =
                         static_cast<size_t>(kPinChunkBytes);
                 }
@@ -750,14 +742,40 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
                 en.host_w2 = base + pp.off_c;
                 en.host_w2_scales = base + pp.off_d;
             }
+            // Phase 4 — register the now-populated pages. All chunks are
+            // faulted by the copy phase (fault-at-write), so register pays
+            // the 1.6 s/chunk path instead of the 5.7 s driver-fault path.
+            const auto reg_t0 = std::chrono::steady_clock::now();
+            for (size_t ci = 0; ci < db.pinned_pools.size(); ++ci) {
+                void *chunk = db.pinned_pools[ci];
+                if (!chunk) continue;
+                cudaError_t ce = cudaHostRegister(
+                    chunk, db.pinned_chunk_sizes[ci],
+                    cudaHostRegisterDefault);
+                if (ce != cudaSuccess) {
+                    cudaGetLastError();
+                    // Registered chunks keep the data; on failure the
+                    // chunk just stays pageable (uploads still work via
+                    // the kernel page cache) — log and continue.
+                    log::warn("[kimi_load] cudaHostRegister failed for "
+                              "chunk " + std::to_string(ci) + ": "
+                              + cudaGetErrorString(ce));
+                } else {
+                    db.pinned_registered[ci] = true;
+                }
+            }
             const int pinned_cnt = static_cast<int>(plan.size());
             auto pin_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - pin_t0).count();
+            auto reg_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - reg_t0).count();
             log::info("[kimi_load] pinned routed-expert store: "
                       + std::to_string(pinned_cnt) + " experts, "
                       + std::to_string(n_chunks) + " x 16 GiB chunks in "
-                      + std::to_string(pin_ms) + " ms");
+                      + std::to_string(pin_ms) + " ms (register "
+                      + std::to_string(reg_ms) + " ms)");
         } else {
             log::warn("[kimi_load] expert pinning unavailable — "
                       "keeping file-backed mmap sources");
