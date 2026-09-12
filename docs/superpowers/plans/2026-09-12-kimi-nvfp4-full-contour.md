@@ -340,3 +340,54 @@ git add tests/perf/perf_baselines.json AGENTS.md docs/superpowers/plans/2026-09-
 git commit -m "perf: kimi-k2.7-code pinned routed-expert store — <T> tok/s (final)"
 git push
 ```
+
+## Финальные результаты (2026-09-12)
+
+| Метрика | Было (round-2) | Стало | Прирост |
+|---|---|---|---|
+| Decode t/s (бит-точный, дефолт) | 1.3 | **3.1** | 2.4× |
+| Decode t/s (TC opt-in, tolerance) | — | 5.5 | 4.2× |
+| Загрузка expert store (542 GiB) | — | 302 с | — |
+| SelfCheck Paris ×3 | ✅ | ✅ | — |
+| VRAM resident (dense+MLA) | 8.9 GiB | 8.9 GiB | — |
+| Expert cache slots | 595 | 809 | +36% |
+
+### Выжатые рычаги (коммиты сессии)
+1. **Pinned expert store** 542 GiB в 34×16 GiB locked чанках — драйвер не
+   даёт один cudaHostAlloc >~300 GiB (12-минутный reclaim-шторм, probe:
+   mlock проходит, chunked cudaHostAlloc проходит). `LSX_EXPERT_PIN=0`
+   отключает (927c4fe, 0d84844).
+2. **TC-batch не включался** — `cfg_.fast_math` legacy bool всегда false при
+   CLI; tri-state игнорировался. Фикс резолва (751aa44) дал 3.0→5.1 t/s.
+3. **TC-путь сломан на реальном чекпойнте** — tolerance-class act-quant
+   уводит greedy top-1 в мусор ('碧芙碧芙' вместо Paris), синтетический
+   tolerance-тест при этом зелёный. Переведён в opt-in `LSX_KIMI_TC=1`
+   до root-cause (14:23 фикс). Дефолт — бит-точная legacy GEMV chain.
+4. **kv_b dequant thrash** — static-memo слот на ВСЕ 61 слой ре-деквантил
+   kv_b 60×/токен; per-layer кэш в KimiLayerWeights (30% GPU-окна).
+5. **Split-fence upload** — layout [w1|w3][s1|s3][w2][s2], ev13/ev2:
+   w13 GEMM стартует, не дожидаясь down-upload (7c2058b).
+6. **Резерв VRAM 8→2 GiB** (измерено: runtime-аллокации <1 GiB) →
+   549→809 слотов (7c2058b).
+7. **Скоростная загрузка**: 635→~280 с. Parallel parse 32 потока
+   (450→8 с, c332d53); zerofill cudaHostAlloc (332 с, сериализован
+   драйвером, выдавливал page cache → копия с диска) заменён на
+   mmap → copy fault-at-write из горячего кэша → register последним
+   (b76c76e + register-after-copy).
+
+### Измеренная анатомия токена (nsys, TC on, 2.6 t/s снапшот)
+- H2D 53% (PCIe ~50-57 GiB/s — насыщение, эксперты 200 MiB/токен cold)
+- Nvfp4Dequant 30% → после kv_b-фикса ~0 (декод)
+- Экспертные GEMV: cuBLASLt nvjet_**tmaAB** (TMA уже задействован)
+- gaps 7% (route split-phase sync)
+
+### Потолок
+Miss-трафик ~7-11 GiB/токен при 809/23424 слотах; физический предел
+PCIe RTX 5090 (~57 GiB/s) ≈ 4-6 t/s cold. 3.1 бит-точных = 65% потолка
+(хвост: route sync, GEMV compute). Качественный рост дальше — только
+точнее попадать в кэш (hit-rate) или wider bus.
+
+### Бэклог
+- Root-cause TC-batch top-1 divergence на реальном чекпойнте (потенциал 5.5 t/s)
+- Пиндить expert store по умолчанию для ВСЕХ моделей (768 ГБ ОЗУ)
+- Unify DeepSeek/Kimi pin-pass в ExpertStore::PinAll
