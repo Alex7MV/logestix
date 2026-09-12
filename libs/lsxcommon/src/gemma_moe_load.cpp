@@ -563,6 +563,18 @@ GemmaExpertDb load_gemma_expert_index(const std::string &model_path,
     db.num_layers = num_layers;
     db.experts_per_layer = experts_per_layer;
     db.Load(model_path, /*fallback=*/true);
+    // Pin the routed-expert store into locked host memory (shared
+    // ExpertStore::PinChunked): mmap chunks, fault-at-write copies,
+    // cudaHostRegister last. 768 GiB host RAM exists for exactly this —
+    // PCIe H2D from pinned memory runs ~2x the file-mmap rate and never
+    // faults under an in-flight copy. LSX_EXPERT_PIN=0 keeps mmap views.
+    if (std::getenv("LSX_EXPERT_PIN") == nullptr
+        || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+        if (!db.PinChunked<GemmaExpertDb::PinLayout::kStream>()) {
+            log::warn("[gemma_load] expert pinning unavailable — "
+                      "keeping file-backed mmap sources");
+        }
+    }
     return db;
 }
 

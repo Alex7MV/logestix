@@ -334,12 +334,10 @@ struct ExpertStore {
                                  ? pinned_registered[ci] : false;
             const size_t bytes = ci < pinned_chunk_sizes.size()
                                      ? pinned_chunk_sizes[ci] : 0;
-            if (reg && bytes > 0) {
-                cudaHostUnregister(p);
-                munmap(p, bytes);
-            } else {
-                cudaFreeHost(p);
-            }
+            // PinChunked chunks are anonymous mmap + cudaHostRegister;
+            // registered or not, release is munmap.
+            if (reg) cudaHostUnregister(p);
+            if (bytes > 0) munmap(p, bytes);
         }
         pinned_pools.clear();
         pinned_registered.clear();
@@ -349,6 +347,220 @@ struct ExpertStore {
         mmaps.clear(); batches.clear(); lru.clear(); entries.clear(); paths.clear();
         error_msg.clear();
         num_layers = 0; experts_per_layer = 0;
+    }
+
+    // ── Chunked locked-host pin (shared by Kimi / GLM / Gemma / any TEntry
+    // with the six host_w* / *_bytes fields) ─────────────────────────────
+    //
+    // Pins the whole routed-expert store into locked host memory as a
+    // vector of kPinChunkBytes chunks. Phases (timings for the 542 GiB
+    // Kimi store, 2026-09-12):
+    //   plan    — span sizes + chunk assignment (no IO)
+    //   chunks  — parallel anonymous mmap (NO cudaHostAlloc: its driver-
+    //             serialized zerofill costs 332 s at 542 GiB and evicts
+    //             the page cache, turning the copy into a disk re-read)
+    //   copy    — parallel fault-at-write span copies from the mmap views
+    //             (reads the hot page cache; faults pinned pages with data)
+    //   register— cudaHostRegister last, pinning already-populated pages
+    //             (~1.6 s/chunk vs 5.7 s on unfaulted pages)
+    //
+    // kSplitFence layout packs per expert [w1|w3][s1|s3][w2][s2] and fills
+    // the entry's blob_a..d/pinned_blob fields (requires TEntry to have
+    // them — KimiExpertEntry); the stream layout packs [w1|w3|w2][s1|s3|s2]
+    // (DeepSeek round-8 convention) without touching blob fields.
+    //
+    // Returns false when nothing was pinned (alloc failure) — the caller
+    // falls back to mmap views; entries keep their mmap pointers in that
+    // case. Entries without weights (dense holes) are skipped.
+    enum class PinLayout { kStream, kSplitFence };
+    using element_type = TEntry;
+
+    template <PinLayout kLayout>
+    bool PinChunked(int n_threads = 0)
+    {
+#if defined(__unix__) || defined(__APPLE__)
+        if (entries.empty()) return false;
+        constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
+        auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
+        auto t0 = std::chrono::steady_clock::now();
+
+        // Phase 1 — plan.
+        struct PinSpan {
+            TEntry *en;
+            uint32_t chunk;
+            int64_t off[6];   // w1,w3,w2,s1,s3,s2 span starts
+        };
+        std::vector<PinSpan> plan;
+        std::vector<const uint8_t *> src[6];
+        {
+            int64_t cur = 0;
+            uint32_t chunk_idx = 0;
+            for (auto &en : entries) {
+                if (!en.host_w1 || !en.host_w2 || !en.host_w3
+                    || !en.host_w1_scales || !en.host_w2_scales
+                    || !en.host_w3_scales)
+                    continue;
+                int64_t block;
+                if constexpr (kLayout == PinLayout::kSplitFence) {
+                    en.blob_a_bytes = aln(en.w1_bytes) + en.w3_bytes;
+                    en.blob_b_bytes = aln(en.w1_scales_bytes)
+                                    + en.w3_scales_bytes;
+                    en.blob_c_bytes = en.w2_bytes;
+                    en.blob_d_bytes = en.w2_scales_bytes;
+                    block = aln(en.blob_a_bytes) + aln(en.blob_b_bytes)
+                          + aln(en.blob_c_bytes) + aln(en.blob_d_bytes);
+                } else {
+                    block = aln(en.w1_bytes) + aln(en.w3_bytes)
+                          + aln(en.w2_bytes) + aln(en.w1_scales_bytes)
+                          + aln(en.w3_scales_bytes) + aln(en.w2_scales_bytes);
+                }
+                if (cur != 0 && cur + block > kPinChunkBytes) {
+                    ++chunk_idx;
+                    cur = 0;
+                }
+                PinSpan ps{};
+                ps.en = &en;
+                ps.chunk = chunk_idx;
+                if constexpr (kLayout == PinLayout::kSplitFence) {
+                    ps.off[0] = cur;                       // w1
+                    ps.off[1] = ps.off[0] + aln(en.w1_bytes);  // w3
+                    ps.off[3] = ps.off[1] + aln(en.w3_bytes);  // s1
+                    ps.off[4] = ps.off[3] + aln(en.w1_scales_bytes);  // s3
+                    ps.off[2] = ps.off[4] + aln(en.w3_scales_bytes);  // w2
+                    ps.off[5] = ps.off[2] + aln(en.w2_bytes);         // s2
+                    cur = ps.off[5] + aln(en.w2_scales_bytes);
+                } else {
+                    ps.off[0] = cur;
+                    ps.off[1] = ps.off[0] + aln(en.w1_bytes);
+                    ps.off[2] = ps.off[1] + aln(en.w3_bytes);
+                    ps.off[3] = ps.off[2] + aln(en.w2_bytes);
+                    ps.off[4] = ps.off[3] + aln(en.w1_scales_bytes);
+                    ps.off[5] = ps.off[4] + aln(en.w3_scales_bytes);
+                    cur = ps.off[5] + aln(en.w2_scales_bytes);
+                }
+                src[0].push_back(en.host_w1);
+                src[1].push_back(en.host_w3);
+                src[2].push_back(en.host_w2);
+                src[3].push_back(en.host_w1_scales);
+                src[4].push_back(en.host_w3_scales);
+                src[5].push_back(en.host_w2_scales);
+                plan.push_back(ps);
+            }
+        }
+        if (plan.empty()) return false;
+
+        // Phase 2 — parallel chunk mmap.
+        const int n_chunks = static_cast<int>(plan.back().chunk + 1);
+        pinned_pools.assign(static_cast<size_t>(n_chunks), nullptr);
+        pinned_registered.assign(static_cast<size_t>(n_chunks), false);
+        pinned_chunk_sizes.assign(static_cast<size_t>(n_chunks), 0);
+        {
+            std::atomic<int> next{0};
+            auto alloc_worker = [&]() {
+                for (;;) {
+                    const int i = next.fetch_add(1);
+                    if (i >= n_chunks) return;
+                    void *chunk = mmap(nullptr,
+                                       static_cast<size_t>(kPinChunkBytes),
+                                       PROT_READ | PROT_WRITE,
+                                       MAP_PRIVATE | MAP_ANONYMOUS
+                                           | MAP_NORESERVE,
+                                       -1, 0);
+                    if (chunk == MAP_FAILED) continue;
+                    pinned_pools[static_cast<size_t>(i)] = chunk;
+                    pinned_chunk_sizes[static_cast<size_t>(i)] =
+                        static_cast<size_t>(kPinChunkBytes);
+                }
+            };
+            if (n_threads <= 0)
+                n_threads = static_cast<int>(std::clamp<unsigned>(
+                    std::thread::hardware_concurrency() / 16u, 4u, 8u));
+            std::vector<std::thread> pool;
+            for (int t = 1; t < n_threads; ++t) pool.emplace_back(alloc_worker);
+            alloc_worker();
+            for (auto &th : pool) th.join();
+        }
+        bool all_ok = true;
+        for (void *c : pinned_pools)
+            if (!c) all_ok = false;
+        if (!all_ok) {
+            for (void *c : pinned_pools)
+                if (c) munmap(c, static_cast<size_t>(kPinChunkBytes));
+            pinned_pools.clear();
+            pinned_registered.clear();
+            pinned_chunk_sizes.clear();
+            return false;
+        }
+        pinned_bytes = static_cast<std::size_t>(n_chunks)
+                     * static_cast<std::size_t>(kPinChunkBytes);
+
+        // Phase 3 — parallel fault-at-write span copies.
+        {
+            std::atomic<size_t> next{0};
+            auto copy_worker = [&]() {
+                for (;;) {
+                    const size_t i = next.fetch_add(1);
+                    if (i >= plan.size()) return;
+                    const PinSpan &ps = plan[i];
+                    auto *base = static_cast<uint8_t *>(
+                        pinned_pools[ps.chunk]);
+                    TEntry &en = *ps.en;
+                    const int64_t lens[6] = {en.w1_bytes, en.w3_bytes,
+                                             en.w2_bytes, en.w1_scales_bytes,
+                                             en.w3_scales_bytes,
+                                             en.w2_scales_bytes};
+                    for (int s = 0; s < 6; ++s)
+                        std::memcpy(base + ps.off[s], src[s][i],
+                                    static_cast<std::size_t>(lens[s]));
+                }
+            };
+            const int nt = std::clamp<unsigned>(
+                std::thread::hardware_concurrency() / 8u, 8u, 24u);
+            std::vector<std::thread> pool;
+            for (int t = 1; t < nt; ++t) pool.emplace_back(copy_worker);
+            copy_worker();
+            for (auto &th : pool) th.join();
+        }
+
+        // Phase 4 — register populated pages; entry pointers re-pointed.
+        for (size_t ci = 0; ci < pinned_pools.size(); ++ci) {
+            void *chunk = pinned_pools[ci];
+            if (!chunk) continue;
+            const cudaError_t ce = cudaHostRegister(
+                chunk, pinned_chunk_sizes[ci], cudaHostRegisterDefault);
+            if (ce != cudaSuccess) {
+                cudaGetLastError();
+                log::warn(log_prefix + "cudaHostRegister failed for chunk "
+                          + std::to_string(ci) + " — chunk stays pageable");
+            } else {
+                pinned_registered[ci] = true;
+            }
+        }
+        for (size_t i = 0; i < plan.size(); ++i) {
+            PinSpan &ps = plan[i];
+            auto *base = static_cast<uint8_t *>(pinned_pools[ps.chunk]);
+            TEntry &en = *ps.en;
+            en.host_w1 = base + ps.off[0];
+            en.host_w3 = base + ps.off[1];
+            en.host_w2 = base + ps.off[2];
+            en.host_w1_scales = base + ps.off[3];
+            en.host_w3_scales = base + ps.off[4];
+            en.host_w2_scales = base + ps.off[5];
+            if constexpr (kLayout == PinLayout::kSplitFence) {
+                en.pinned_blob = base + ps.off[0];
+            }
+        }
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        log::info(log_prefix + "pinned routed-expert store: "
+                  + std::to_string(plan.size()) + " experts, "
+                  + std::to_string(n_chunks) + " x 16 GiB chunks in "
+                  + std::to_string(ms) + " ms");
+        return true;
+#else
+        (void)n_threads;
+        return false;
+#endif
     }
 };
 
