@@ -286,6 +286,38 @@ foreach(qt test_lsx_kernels)
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
+add_library(test_cuda_toolkit_guard_cu OBJECT
+    test_cuda_toolkit_guard.cu
+)
+set_target_properties(test_cuda_toolkit_guard_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_cuda_toolkit_guard_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_link_libraries(test_cuda_toolkit_guard_cu PRIVATE
+    Catch2::Catch2WithMain CUDA::cudart)
+
+foreach(qt test_cuda_toolkit_guard)
+    add_executable(${qt})
+    set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(${qt} PRIVATE test_cuda_toolkit_guard_cu Catch2::Catch2WithMain)
+    if(WIN32)
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+        add_custom_command(TARGET ${qt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:arrow_cuda_shared>"
+                "$<TARGET_FILE_DIR:${qt}>"
+        )
+    endif()
+    add_test(NAME ${qt} COMMAND ${qt})
+endforeach()
+
 set_target_properties(test_qwen_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
     CUDA_ARCHITECTURES OFF
@@ -2938,6 +2970,7 @@ set_tests_properties(
     test_kimi_moe_model
     test_kimi_moe_selfcheck
     test_kimi_moe_inference
+    test_cuda_toolkit_guard
     PROPERTIES LABELS inference)
 
 set_tests_properties(

@@ -45,7 +45,7 @@ Each of us took a step in the right direction, and together we reached a goal th
 - C++20 / C23 compiler (GCC 15+ on Ubuntu 26.04, MSVC in Visual Studio 2026)
 - Ninja build system (required on Ubuntu; optional on Windows)
 - Git
-- NVIDIA CUDA Toolkit 13.2+ (optional, for GPU support)
+- NVIDIA CUDA Toolkit 13.2+ (optional, for GPU support; verified on 13.4)
 
 ## Clone with submodules
 

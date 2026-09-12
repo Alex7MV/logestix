@@ -32,7 +32,8 @@ Toolchain notes (tested, higher than the minimums below also work):
 - CMake 4.2.3 / 3.25+ (CMakePresets, `CMAKE_POLICY_VERSION_MINIMUM=3.5`)
 - GCC 15.2 (Ubuntu 26.04) — C++20 baseline; GCC 15+ supports C++23, but the
   project pins to C++20 deliberately
-- NVCC 13.2.78 — CUDA `LANGUAGES ... CUDA` enabled at top level
+- NVCC 13.4.59 (Linux, `/usr/local/cuda`; Windows — 13.3, см. ниже) — CUDA
+  `LANGUAGES ... CUDA` enabled at top level
   (`find_package(CUDAToolkit)`), not `enable_language()` in a subdirectory
   (CMake 4.x breaks when CUDA is enabled in a nested dir)
 - Arrow `BUILD_WARNING_LEVEL=PRODUCTION` — GCC 15 treats previously-ignored
@@ -316,6 +317,7 @@ model-тесты (GLM, DeepSeek и т.д.) на этой OS не запуска�
   - `tests/test_model_independence_guard.cpp` — независимость моделей: уникальные паспорта констант, без cross-includes, routing-тумблеры в lsx_nvfp4 (одно определение), каждый consumer-модель открывает `LsxFastMathScope(cfg_.fast_math, ...)` в Infer (список consumers расширять в коммите новой модели)
   - `tests/test_model_suite_guard.cpp` — автономность+полнота тест-сьют моделей (зеркало model-independence для тестов): реестр lifecycle-стадий на модель (convert → load → model → kernels → selfcheck; каждая стадия обязана иметь зарегистрированный ctest-таргет, шаринг стадий между сиблингами — явно в реестре), SKIP_RETURN_CODE 4 на selfcheck-таргетах, запрет кросс-семейственных include тест-заголовков (family-stem: glm/qwen/deepseek/gemma/kimi) и ЗАПРЕТ загрузки model-vault в loader/model-стадиях (`test_*_loader*`/`test_*_load_fast*`/`test_<family>_model.cpp` — только синтетические конвертированные фикстуры; vault-интеграция живёт в selfcheck/perf-сьют; env-var opt-in + SKIP допустим вне loader-файлов). Модельно-нейтральные примитивы синтетических чекпойнтов (FakeTensor/WriteSafetensors/MakeBf16*/TensorNamesIn) живут ТОЛЬКО в `tests/test_synth_checkpoint.h` (namespace `synthtest`) — family-фикстуры реэкспортируют их, заимствовать чужую family-фикстуру запрещено. Реестр сьют расширять в том же коммите, что и тесты новой модели
   - `tests/test_absl_format_guard.cpp` — host-only guard: `absl::StrFormat`/`StrAppendFormat`/`StreamFormat`/`Format` — printf-стиль (`%s/%d/%u/%f`); fmt-плейсхолдеры `{}` в format-строках запрещены (печатается литеральный `{}`; compile-time checker abseil инертен на GCC и заглушен `#if 0` для AOCC в корневом CMakeLists). Шпаргалка конверсий: строки → `%s` (path → `.string()`), signed int (вкл. int64_t) → `%d`, unsigned (вкл. size_t) → `%u`, float/double → `%f`/`%.Nf`; спеки `{:03d}`/`{:<N}`/`{:>N}`/`{:.Nf}` → `%03d`/`%-Ns`/`%Ns`/`%.Nf`. Плюс runtime-пин семантики этих пар (checker выключен — компилятор типы не проверяет). Сканирует `libs/` и `apps/`, обязан быть зелёным в CI
+  - `tests/test_cuda_toolkit_guard.cu` — CUDA-тулчейн guard (label inference): рантайм 13.x (пол 13.2, AGENTS.md), header/runtime версии совпадают, семантика `cuda_fp4.h` E2M1 (RNE ties-to-even, SATFINITE→±MAXNORM, NaN→+6) и pack-порядок float2-API (`x.x`→low nibble — измерено на 13.4, см. справочник §B3), наличные GPU — только Blackwell CC 12.x
 - `third_party/cccl/` — NVIDIA CCCL (сабмодуль)
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19 (сабмодуль)
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5 (сабмодуль)

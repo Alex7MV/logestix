@@ -208,6 +208,13 @@ Consequences for this repo:
 - Saturation (`__NV_SATFINITE`): out-of-range values saturate to **MAXNORM of
   the same sign** (E2M1 MAXNORM = ±6).
 - **NaN inputs produce +MAXNORM (+6)**, not a NaN payload (E2M1 has none).
+- Header-API pack order (measured on Toolkit 13.4, pinned by
+  `tests/test_cuda_toolkit_guard.cu`): `__nv_cvt_float2_to_fp4x2({x, y}, ...)`
+  puts `x.x` in the **LOW** nibble and `x.y` in the **HIGH** nibble of the
+  result byte — i.e. element 0 → low nibble, element 1 → high nibble. This
+  matches the repo's "lo nibble first" element convention above; the PTX
+  operand sentence ("input `a` → upper bits") uses PTX operand naming where
+  the header's `x.y` is operand `a`. Verified: `{1.0, 0.5}` → `0x12`.
 
 ## B4. Blackwell tcgen05 block-scaled MMA (PTX ISA §9.7.17.10)
 
