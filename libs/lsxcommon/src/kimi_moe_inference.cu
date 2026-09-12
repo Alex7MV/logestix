@@ -1332,6 +1332,35 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                     return cudaGetLastError();
                 }
 
+                // Diagnostic dump (env-gated, LSX_KIMI_DUMP_L1=<layer>):
+                // captures the real post-norm MoE input row + routing for
+                // offline legacy-vs-TC differential debugging. Syncs the
+                // stream once per captured layer — diagnostics only.
+                if (turn >= 1) {
+                    static const int dump_l1 =
+                        getenv("LSX_KIMI_DUMP_L1")
+                            ? atoi(getenv("LSX_KIMI_DUMP_L1")) : -1;
+                    if (l == dump_l1 && !getenv("LSX_KIMI_DUMP_DONE")) {
+                        FILE *f = std::fopen("/tmp/kimi_diag_l1.bin", "wb");
+                        if (f) {
+                            const __nv_bfloat16 *row_in =
+                                d_scratch_b + (size_t)base * kKimiHidden;
+                            std::vector<__nv_bfloat16> hx(kKimiHidden);
+                            cudaMemcpy(hx.data(), row_in, kKimiHidden * 2,
+                                       cudaMemcpyDeviceToHost);
+                            std::fwrite(&l, sizeof(int), 1, f);
+                            std::fwrite(h_ids, sizeof(int), kKimiTopK, f);
+                            std::fwrite(h_w, sizeof(float), kKimiTopK, f);
+                            std::fwrite(hx.data(), 2, kKimiHidden, f);
+                            std::fclose(f);
+                            setenv("LSX_KIMI_DUMP_DONE", "1", 1);
+                            fprintf(stderr,
+                                    "[DIAG] dumped l=%d ids=%d,%d...\n",
+                                    l, h_ids[0], h_ids[1]);
+                        }
+                    }
+                }
+
                 if (getenv("KIMI_DIAG_IDS") && (l == atoi(getenv("KIMI_DIAG_IDS")) || l == 59)) {
                     fprintf(stderr, "[DIAG-IDS] l=%d ids=%d,%d,%d,%d\n",
                             l, h_ids[0], h_ids[1], h_ids[2], h_ids[3]);

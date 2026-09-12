@@ -2129,6 +2129,47 @@ endif()
 
 add_test(NAME test_kimi_moe_tc_batch COMMAND test_kimi_moe_tc_batch)
 
+add_library(test_kimi_moe_tc_diag_cu OBJECT test_kimi_moe_tc_diag.cu)
+set_target_properties(test_kimi_moe_tc_diag_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kimi_moe_tc_diag_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kimi_moe_tc_diag_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+)
+target_compile_definitions(test_kimi_moe_tc_diag_cu PRIVATE
+    LOGESTIX_HAS_CUDA
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE lsxcommon_kimi_cu)
+
+add_executable(test_kimi_moe_tc_diag)
+set_target_properties(test_kimi_moe_tc_diag PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kimi_moe_tc_diag PRIVATE
+    test_kimi_moe_tc_diag_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_tc_diag POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_tc_diag>"
+    )
+endif()
+
+add_test(NAME test_kimi_moe_tc_diag COMMAND test_kimi_moe_tc_diag)
+
 # ── Тест Kimi модели (фабрика + lifecycle) ────────────────────────────────
 add_executable(test_kimi_moe_model test_kimi_moe_model.cpp)
 target_compile_definitions(test_kimi_moe_model PRIVATE
@@ -2837,6 +2878,7 @@ set_tests_properties(
     test_kimi_moe_attention
     test_kimi_moe_experts
     test_kimi_moe_tc_batch
+    test_kimi_moe_tc_diag
     test_glm_moe_load_fast
     test_deepseek_moe_load_fast
     test_glm_moe_model_lifecycle
