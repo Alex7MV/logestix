@@ -60,6 +60,9 @@ struct ExpertStore {
     // releases it with cudaFreeHost.
     void *pinned_pool = nullptr;
     std::size_t pinned_bytes = 0;
+    // Chunked variant (Kimi 1T store): the driver fails a single >~300 GiB
+    // cudaHostAlloc, so large stores pin as a vector of 16 GiB chunks.
+    std::vector<void *> pinned_pools;
 
     // Model toggles (see top-of-file).
     std::string log_prefix = "";
@@ -264,6 +267,9 @@ struct ExpertStore {
         if (pinned_pool) cudaFreeHost(pinned_pool);
         pinned_pool = nullptr;
         pinned_bytes = 0;
+        for (void *p : pinned_pools)
+            if (p) cudaFreeHost(p);
+        pinned_pools.clear();
         for (auto &m : mmaps) m.reset();
         for (auto &b : batches) b.reset();
         mmaps.clear(); batches.clear(); lru.clear(); entries.clear(); paths.clear();

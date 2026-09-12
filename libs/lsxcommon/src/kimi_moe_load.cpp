@@ -16,6 +16,10 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/str_cat.h>
 #include <simdjson.h>
@@ -503,71 +507,109 @@ KimiExpertDb load_kimi_expert_index(const std::string &model_path,
     // ── Pin the routed-expert store into locked host memory ──────────────
     // File-backed mmap sources carry a driver VMA-lookup penalty on every
     // H2D copy and vanish under munmap while an async copy is in flight.
-    // One cudaHostAlloc pool, per expert packed [w1|w3|w2] then scales
+    // Per expert the blobs are laid out as packed [w1|w3|w2] then scales
     // [s1|s3|s2] — the order the slot upload streams. Entries without
     // weights (dense layer 0 of the 61-layer passport) are skipped.
     // Disable with LSX_EXPERT_PIN=0 (falls back to mmap views).
+    //
+    // Chunked: the driver fails a single ~530 GiB cudaHostAlloc after a
+    // 12-minute direct-reclaim storm (probed: mlock succeeds, chunked
+    // 16 GiB cudaHostAlloc succeeds in ~280 s), so the store pins as a
+    // vector of 16 GiB chunks; an expert block never spans two chunks.
+    // Reclaim-storm guard: db.Load() leaves the whole vault in the page
+    // cache — drop the expert-file page cache first (clean pages, no IO).
     if (std::getenv("LSX_EXPERT_PIN") == nullptr
         || std::getenv("LSX_EXPERT_PIN")[0] != '0') {
-        int64_t pool_bytes = 0;
-        for (const auto &en : db.entries) {
+        constexpr int64_t kPinChunkBytes = int64_t{16} << 30;
+        auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
+#if defined(__unix__) || defined(__APPLE__)
+        auto drop_t0 = std::chrono::steady_clock::now();
+        int dropped = 0;
+        for (const auto &p : db.paths) {
+            int fd = ::open(p.c_str(), O_RDONLY);
+            if (fd >= 0) {
+                ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+                ::close(fd);
+                ++dropped;
+            }
+        }
+        auto drop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - drop_t0).count();
+        log::info("[kimi_load] dropped expert-file page cache: "
+                  + std::to_string(dropped) + " files in "
+                  + std::to_string(drop_ms) + " ms");
+#endif
+        auto pin_t0 = std::chrono::steady_clock::now();
+        int pinned_cnt = 0;
+        uintptr_t cur = 0;
+        int64_t chunk_left = 0;
+        for (auto &en : db.entries) {
             if (!en.host_w1 || !en.host_w2 || !en.host_w3
                 || !en.host_w1_scales || !en.host_w2_scales
                 || !en.host_w3_scales)
-                continue;   // dense layer or partial expert
-            pool_bytes += ((en.w1_bytes + en.w3_bytes + en.w2_bytes + 255)
-                           / 256) * 256;
-            pool_bytes += ((en.w1_scales_bytes + en.w3_scales_bytes
-                            + en.w2_scales_bytes + 255) / 256) * 256;
-        }
-        void *pool = nullptr;
-        if (pool_bytes > 0
-            && cudaHostAlloc(&pool, static_cast<size_t>(pool_bytes),
-                             cudaHostAllocDefault) == cudaSuccess) {
-            db.pinned_pool = pool;
-            db.pinned_bytes = static_cast<std::size_t>(pool_bytes);
-            uintptr_t cur = reinterpret_cast<uintptr_t>(pool);
-            auto aln = [](uintptr_t v) { return (v + 255) / 256 * 256; };
-            int pinned_cnt = 0;
-            for (auto &en : db.entries) {
-                if (!en.host_w1 || !en.host_w2 || !en.host_w3
-                    || !en.host_w1_scales || !en.host_w2_scales
-                    || !en.host_w3_scales)
-                    continue;
-                en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
-                en.blob_pack_bytes = en.w1_bytes + en.w3_bytes + en.w2_bytes;
-                en.blob_scale_bytes = en.w1_scales_bytes + en.w3_scales_bytes
-                                    + en.w2_scales_bytes;
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
-                            static_cast<std::size_t>(en.w1_bytes));
-                en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w1_bytes);
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
-                            static_cast<std::size_t>(en.w3_bytes));
-                en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w3_bytes);
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
-                            static_cast<std::size_t>(en.w2_bytes));
-                en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w2_bytes);
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
-                            static_cast<std::size_t>(en.w1_scales_bytes));
-                en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w1_scales_bytes);
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
-                            static_cast<std::size_t>(en.w3_scales_bytes));
-                en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w3_scales_bytes);
-                std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
-                            static_cast<std::size_t>(en.w2_scales_bytes));
-                en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
-                cur = aln(cur + en.w2_scales_bytes);
-                ++pinned_cnt;
+                continue;
+            const int64_t block =
+                aln(en.w1_bytes) + aln(en.w3_bytes) + aln(en.w2_bytes)
+                + aln(en.w1_scales_bytes) + aln(en.w3_scales_bytes)
+                + aln(en.w2_scales_bytes);
+            if (chunk_left < block) {
+                void *chunk = nullptr;
+                cudaError_t ce = cudaHostAlloc(&chunk,
+                                               static_cast<size_t>(
+                                                   kPinChunkBytes),
+                                               cudaHostAllocDefault);
+                if (ce != cudaSuccess) {
+                    cudaGetLastError();   // clear sticky error
+                    log::warn("[kimi_load] expert pinning stopped at "
+                              + std::to_string(pinned_cnt) + " experts ("
+                              + std::string(cudaGetErrorString(ce))
+                              + ") — rest stays file-backed");
+                    break;
+                }
+                db.pinned_pools.push_back(chunk);
+                db.pinned_bytes += static_cast<std::size_t>(kPinChunkBytes);
+                cur = reinterpret_cast<uintptr_t>(chunk);
+                chunk_left = kPinChunkBytes;
             }
+            en.pinned_blob = reinterpret_cast<const uint8_t *>(cur);
+            en.blob_pack_bytes = en.w1_bytes + en.w3_bytes + en.w2_bytes;
+            en.blob_scale_bytes = en.w1_scales_bytes + en.w3_scales_bytes
+                                + en.w2_scales_bytes;
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w1,
+                        static_cast<std::size_t>(en.w1_bytes));
+            en.host_w1 = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w1_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w3,
+                        static_cast<std::size_t>(en.w3_bytes));
+            en.host_w3 = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w3_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2,
+                        static_cast<std::size_t>(en.w2_bytes));
+            en.host_w2 = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w2_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w1_scales,
+                        static_cast<std::size_t>(en.w1_scales_bytes));
+            en.host_w1_scales = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w1_scales_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w3_scales,
+                        static_cast<std::size_t>(en.w3_scales_bytes));
+            en.host_w3_scales = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w3_scales_bytes);
+            std::memcpy(reinterpret_cast<void *>(cur), en.host_w2_scales,
+                        static_cast<std::size_t>(en.w2_scales_bytes));
+            en.host_w2_scales = reinterpret_cast<const uint8_t *>(cur);
+            cur = aln(cur + en.w2_scales_bytes);
+            chunk_left -= block;
+            ++pinned_cnt;
+        }
+        if (!db.pinned_pools.empty()) {
+            auto pin_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - pin_t0).count();
             log::info("[kimi_load] pinned routed-expert store: "
                       + std::to_string(pinned_cnt) + " experts, "
-                      + std::to_string(pool_bytes / (1024 * 1024))
-                      + " MiB locked host memory");
+                      + std::to_string(db.pinned_pools.size())
+                      + " x 16 GiB chunks in " + std::to_string(pin_ms)
+                      + " ms");
         } else {
             log::warn("[kimi_load] expert pinning unavailable — "
                       "keeping file-backed mmap sources");

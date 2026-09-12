@@ -112,23 +112,24 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     REQUIRE(e.host_w1_scales != nullptr);
     // Fixture gate proj is [4,32]: packed nibbles 4*16=64 bytes.
     CHECK(e.w1_bytes == 64);
-    // Pinned store (r3): blobs live in one locked host pool; pointers stay
-    // valid for async H2D without the file-backed VMA penalty.
-    REQUIRE(db.pinned_pool != nullptr);
+    // Pinned store (r3): blobs live in locked-host 16 GiB chunks (the driver
+    // fails a single >300 GiB cudaHostAlloc); pointers stay valid for async
+    // H2D without the file-backed VMA penalty.
+    REQUIRE(!db.pinned_pools.empty());
+    const auto *chunk0 = static_cast<const uint8_t *>(db.pinned_pools.front());
+    constexpr int64_t kChunk = int64_t{16} << 30;
     REQUIRE(db.pinned_bytes >= static_cast<std::size_t>(e.blob_pack_bytes
                                                      + e.blob_scale_bytes));
     REQUIRE(e.pinned_blob != nullptr);
-    REQUIRE(e.pinned_blob >= static_cast<const uint8_t *>(db.pinned_pool));
-    REQUIRE(e.pinned_blob < static_cast<const uint8_t *>(db.pinned_pool)
-                              + db.pinned_bytes);
+    REQUIRE(e.pinned_blob >= chunk0);
+    REQUIRE(e.pinned_blob < chunk0 + kChunk);
     // pair layout [w1|w3|w2][s1|s3|s2] — DeepSeek round-8 convention
     REQUIRE(e.blob_pack_bytes == e.w1_bytes + e.w3_bytes + e.w2_bytes);
     REQUIRE(e.blob_scale_bytes == e.w1_scales_bytes + e.w3_scales_bytes
                                 + e.w2_scales_bytes);
-    // upload source pointers were re-pointed INTO the pool
-    REQUIRE(e.host_w1 >= static_cast<const uint8_t *>(db.pinned_pool));
-    REQUIRE(e.host_w1 < static_cast<const uint8_t *>(db.pinned_pool)
-                           + db.pinned_bytes);
+    // upload source pointers were re-pointed INTO the pinned chunks
+    REQUIRE(e.host_w1 >= chunk0);
+    REQUIRE(e.host_w1 < chunk0 + kChunk);
     free_kimi_expert_index(db);
     cudaStreamDestroy(stream);
 }
