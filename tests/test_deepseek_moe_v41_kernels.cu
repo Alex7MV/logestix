@@ -674,7 +674,77 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
 
     cudaFree(wq_a); cudaFree(q_norm); cudaFree(wq_b); cudaFree(wkv);
     cudaFree(kv_norm); cudaFree(wo_a); cudaFree(wo_b); cudaFree(x);
-    cudaFree(out); cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
+    cudaFree(out);     cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
     cudaFree(sin_t);
+    cublasDestroy(h);
+}
+
+TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
+          "[deepseek-v41][kernels]")
+{
+    const int hidden = 8, inter = 8;
+    std::vector<float> xf(hidden), w1f(inter * hidden), w3f(inter * hidden),
+        w2f(hidden * inter);
+    for (int j = 0; j < hidden; ++j) xf[j] = 0.2f * static_cast<float>(j) - 0.5f;
+    for (int i = 0; i < inter * hidden; ++i) {
+        w1f[i] = 0.15f * static_cast<float>((i % 11) - 5);
+        w3f[i] = 0.12f * static_cast<float>((i % 7) - 3);
+        w2f[i] = 0.1f * static_cast<float>((i % 9) - 4);
+    }
+    auto to_h = [](const std::vector<float> &f) {
+        std::vector<uint16_t> h;
+        for (float v : f) h.push_back(H(v));
+        return h;
+    };
+    std::vector<uint16_t> xh = to_h(xf), w1h = to_h(w1f), w3h = to_h(w3f),
+                         w2h = to_h(w2f);
+    auto dev = [](const std::vector<uint16_t> &h) {
+        uint16_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, h.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, h.data(), h.size() * 2, cudaMemcpyHostToDevice) ==
+                cudaSuccess);
+        return d;
+    };
+    uint16_t *dx = dev(xh), *dw1 = dev(w1h), *dw3 = dev(w3h), *dw2 = dev(w2h);
+    uint16_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, hidden * 2) == cudaSuccess);
+
+    cublasHandle_t h = nullptr;
+    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
+    REQUIRE(lsxcommon::deepseek_v41::SharedExpertForward(
+                h, nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout) ==
+            cudaSuccess);
+    std::vector<uint16_t> got(hidden);
+    REQUIRE(cudaMemcpy(got.data(), dout, hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    auto Fv = [](const std::vector<uint16_t> &h) {
+        std::vector<float> f;
+        for (uint16_t b : h) f.push_back(F(b));
+        return f;
+    };
+    std::vector<float> xff = Fv(xh), w1ff = Fv(w1h), w3ff = Fv(w3h),
+                       w2ff = Fv(w2h);
+    std::vector<float> mid(inter);
+    for (int i = 0; i < inter; ++i) {
+        float g = 0.0f, u = 0.0f;
+        for (int j = 0; j < hidden; ++j) {
+            g += w1ff[i * hidden + j] * xff[j];
+            u += w3ff[i * hidden + j] * xff[j];
+        }
+        const float uc = std::clamp(u, -10.0f, 10.0f);
+        const float gc = std::min(g, 10.0f);
+        mid[i] = (gc / (1.0f + std::exp(-gc))) * uc;
+    }
+    std::vector<uint16_t> midh;
+    for (float v : mid) midh.push_back(H(v));
+    for (int i = 0; i < hidden; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < inter; ++j)
+            acc += w2ff[i * inter + j] * F(midh[j]);
+        CHECK(F(got[i]) == Catch::Approx(acc).margin(3e-3f));
+    }
+
+    cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2); cudaFree(dout);
     cublasDestroy(h);
 }

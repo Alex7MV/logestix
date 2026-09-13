@@ -307,6 +307,13 @@ __global__ void hc_expand_kernel(const __half *__restrict__ x,
     out[c * dim + d] = __half2float(x[d]);
 }
 
+__global__ void cast_f32_to_half_kernel(const float *__restrict__ src,
+                                        __half *__restrict__ dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __float2half_rn(src[i]);
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -467,6 +474,65 @@ cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
     hc_expand_kernel<<<grid, block, 0, stream>>>(
         reinterpret_cast<const __half *>(x), out, dim, hc);
     return cudaGetLastError();
+}
+
+cudaError_t LaunchCastF32ToHalf(const float *src, uint16_t *dst, int n,
+                                cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    const int block = 256;
+    cast_f32_to_half_kernel<<<(n + block - 1) / block, block, 0, stream>>>(
+        src, reinterpret_cast<__half *>(dst), n);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
+                                const uint16_t *w, const uint16_t *x, float *y,
+                                int M, int K)
+{
+    if (M <= 0 || K <= 0) return cudaSuccess;
+    const float alpha = 1.0f, beta = 0.0f;
+    // y[M,1] = W[M,K]*x[K,1] -> column-major [1,M] = x_col[1,K]*W_col[K,M].
+    const cublasStatus_t st = cublasGemmEx(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, M, K, &alpha, x, CUDA_R_16F, 1, w,
+        CUDA_R_16F, K, &beta, y, CUDA_R_32F, 1, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+}
+
+cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
+                                const uint16_t *x, int hidden,
+                                const uint16_t *w1, const uint16_t *w3,
+                                const uint16_t *w2, int inter, float limit,
+                                uint16_t *out)
+{
+    float *gate = nullptr, *up = nullptr, *mid = nullptr;
+    uint16_t *mid_h = nullptr;
+    if (cudaMalloc(&gate, static_cast<size_t>(inter) * 4) != cudaSuccess ||
+        cudaMalloc(&up, static_cast<size_t>(inter) * 4) != cudaSuccess ||
+        cudaMalloc(&mid, static_cast<size_t>(inter) * 4) != cudaSuccess ||
+        cudaMalloc(&mid_h, static_cast<size_t>(inter) * 2) != cudaSuccess) {
+        if (gate) cudaFree(gate);
+        if (up) cudaFree(up);
+        if (mid) cudaFree(mid);
+        if (mid_h) cudaFree(mid_h);
+        return cudaErrorInvalidValue;
+    }
+    cudaError_t e = LaunchGemvFp16ToF32(handle, stream, w1, x, gate, inter,
+                                        hidden);
+    if (e == cudaSuccess)
+        e = LaunchGemvFp16ToF32(handle, stream, w3, x, up, inter, hidden);
+    if (e == cudaSuccess)
+        e = LaunchExpertSwiglu(gate, up, mid, inter, limit, stream);
+    if (e == cudaSuccess)
+        e = LaunchCastF32ToHalf(mid, mid_h, inter, stream);
+    if (e == cudaSuccess)
+        e = LaunchGemmFp16(handle, stream, w2, mid_h, out, hidden, 1, inter);
+    cudaFree(gate);
+    cudaFree(up);
+    cudaFree(mid);
+    cudaFree(mid_h);
+    return e;
 }
 
 } // namespace deepseek_v41

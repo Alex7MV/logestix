@@ -69,6 +69,23 @@ cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
                            const uint16_t *A, const uint16_t *B, uint16_t *C,
                            int M, int N, int K);
 
+// Matrix-vector with F32 output: y[M] = W[M,K] * x[K] (FP16 inputs).
+cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
+                                const uint16_t *w, const uint16_t *x, float *y,
+                                int M, int K);
+
+// Elementwise F32 -> FP16 (RNE).
+cudaError_t LaunchCastF32ToHalf(const float *src, uint16_t *dst, int n,
+                                cudaStream_t stream);
+
+// Shared expert SwiGLU FFN: gate=w1@x, up=w3@x (F32), silu(clamped)*clamped,
+// then out=w2@mid (FP16). Scratch is allocated internally.
+cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
+                                const uint16_t *x, int hidden,
+                                const uint16_t *w1, const uint16_t *w3,
+                                const uint16_t *w2, int inter, float limit,
+                                uint16_t *out);
+
 // Head logits (F32): logits[V] = W[V,H] * x[H], FP16 inputs, F32 accumulation.
 cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
