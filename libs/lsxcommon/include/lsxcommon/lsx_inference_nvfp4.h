@@ -79,6 +79,13 @@ bool LsxSeq1Gemv();
 void SetLsxGemmMaxMib(int mib);
 int LsxGemmMaxMib();
 
+// Large-N warp-per-row streaming GEMV (seq==1 decode): routes big dense
+// shapes (K >= 512, N >= 4096) to the warp-per-row kernel, which sustains
+// ~2x the TC-tile bandwidth at M == 1 (27B decode profile, 2026-09).
+// Applied from the resolved perf policy (gemv_large_default).
+void SetLsxGemmLarge(bool on);
+bool LsxGemmLarge();
+
 // Dual-stream expert-staging toggle (H2D/compute overlap). Default true;
 // narrow-bus GPUs resolve this to false and keep single-stream staging.
 void SetLsxDualStreamStaging(bool on);

@@ -42,6 +42,7 @@ std::string GpuProfileKey(const GpuPerfProfile &g);
 struct LsxPerfKnobs {
     bool tc_fast_math_default = false;  // default-enable TC mxf4nvf4 path
     bool seq1_gemv_default = false;     // default-enable streaming GEMV
+    bool gemv_large_default = false;    // large-N warp-per-row GEMV (decode)
     int gemv_max_mib = 32;              // seq==1 GEMV weight-size limit
     int splitk_grid_min = 96;           // split-K grid_x threshold
     int expert_slots_pct = 100;         // % usable VRAM for expert cache

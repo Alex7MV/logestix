@@ -91,6 +91,7 @@ inline void SetQwenTcFastMath(bool on) { lsx_nvfp4::SetLsxTcFastMath(on); }
 inline bool QwenTcFastMath() { return lsx_nvfp4::LsxTcFastMath(); }
 inline void SetQwenSeq1Gemv(bool on) { lsx_nvfp4::SetLsxSeq1Gemv(on); }
 inline bool QwenSeq1Gemv() { return lsx_nvfp4::LsxSeq1Gemv(); }
+inline bool QwenGemmLarge() { return lsx_nvfp4::LsxGemmLarge(); }
 
 // Model-independence guard (AGENTS.md: модели независимы): every model
 // asserts its OWN fast_math policy for the duration of Infer/SelfCheck via

@@ -90,6 +90,9 @@ std::optional<LsxPerfKnobSet> BaseKnobs(const std::string &key)
         LsxPerfKnobs rtx5090;
         rtx5090.tc_fast_math_default = true;
         rtx5090.seq1_gemv_default = true;
+        // 27B decode profile (2026-09-13): warp-per-row GEMV on large-N
+        // dense shapes beats the TC M=64 tile path (27.5 -> 30.5 tok/s).
+        rtx5090.gemv_large_default = true;
         // gemv_max_mib 32 / splitk_grid_min 96 / slots 100 / dual true are
         // the profiled RTX 5090 defaults (see lsx_inference_nvfp4.cu).
         m.emplace("rtx 5090", rtx5090);
@@ -196,6 +199,7 @@ void ApplyKnobs(const LsxPerfKnobs &knobs, PerfSource source)
     SetCurrentKnobs(knobs, source);
     lsx_nvfp4::SetLsxTcFastMath(knobs.tc_fast_math_default);
     lsx_nvfp4::SetLsxSeq1Gemv(knobs.seq1_gemv_default);
+    lsx_nvfp4::SetLsxGemmLarge(knobs.gemv_large_default);
     lsx_nvfp4::SetLsxGemmMaxMib(knobs.gemv_max_mib);
     lsx_nvfp4::SetLsxDualStreamStaging(knobs.dual_stream_staging);
     lsx_tc::SetLsxSplitKGridMin(knobs.splitk_grid_min);

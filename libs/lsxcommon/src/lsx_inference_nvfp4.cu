@@ -39,6 +39,7 @@ bool LsxSeq1Gemv()
 }
 
 static std::atomic<int64_t> g_lsx_gemv_max_bytes{int64_t{32} << 20};
+static std::atomic<bool> g_lsx_gemv_large{false};
 static std::atomic<bool> g_lsx_dual_stream{true};
 
 void SetLsxGemmMaxMib(int mib)
@@ -52,6 +53,16 @@ int LsxGemmMaxMib()
 {
     return static_cast<int>(g_lsx_gemv_max_bytes.load(
                std::memory_order_relaxed) >> 20);
+}
+
+void SetLsxGemmLarge(bool on)
+{
+    g_lsx_gemv_large.store(on, std::memory_order_relaxed);
+}
+
+bool LsxGemmLarge()
+{
+    return g_lsx_gemv_large.load(std::memory_order_relaxed);
 }
 
 void SetLsxDualStreamStaging(bool on)
@@ -573,13 +584,15 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // (MLP gate/up N=34816, down N=5120, head N=248320) are DRAM-bound;
     // the warp-per-row streaming GEMV sustains ~2x the effective bandwidth
     // of the TC M=64 tile path at seq==1 (probe: 894 vs ~428 GB/s).
-    // Opt-in env (measured per-model before promoting to a policy knob):
-    // routes ONLY large-N plain shapes; small-N / MoE shapes and the
-    // segmented fused qkv|z|a|b path are untouched.
-    static const bool kGemvLarge =
+    // Controlled by the perf policy (gemv_large_default; LSX_GEMV_LARGE env
+    // kept as a legacy override): routes ONLY large-N plain shapes;
+    // small-N / MoE shapes and the segmented fused qkv|z|a|b path are
+    // untouched.
+    static const bool kGemvLargeEnv =
         std::getenv("LSX_GEMV_LARGE") != nullptr;
     const bool gemv_large =
-        kGemvLarge && seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
+        (kGemvLargeEnv || g_lsx_gemv_large.load(std::memory_order_relaxed)) &&
+        seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
         K >= 512 && N >= 4096;
     const bool gemv_small =
         g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&

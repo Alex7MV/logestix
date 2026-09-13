@@ -75,7 +75,7 @@
       "model_type": "qwen3.8-27b",
       "gpu_key": "rtx 5090",
       "os": "linux",
-      "tokens_per_sec": 27.46,
+      "tokens_per_sec": 30.47,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-09-13",
