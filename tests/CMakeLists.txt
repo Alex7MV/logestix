@@ -315,6 +315,58 @@ endif()
 
 add_test(NAME test_deepseek_moe_v41_kernels COMMAND test_deepseek_moe_v41_kernels)
 
+# ── DeepSeek-V4.1-Flash: pipeline smoke (synthetic full geometry) ────────
+add_library(test_deepseek_moe_v41_pipeline_cu OBJECT
+            test_deepseek_moe_v41_pipeline.cu)
+set_target_properties(test_deepseek_moe_v41_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    Catch2::Catch2WithMain absl::strings)
+
+add_executable(test_deepseek_moe_v41_pipeline)
+set_target_properties(test_deepseek_moe_v41_pipeline PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_pipeline PRIVATE
+    test_deepseek_moe_v41_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_pipeline COMMAND test_deepseek_moe_v41_pipeline)
+
 # ── DeepSeek-V4.1-Flash: FP4 activation quant (CUDA) ────────────────────
 add_library(test_deepseek_moe_v41_actquant_cu OBJECT
             test_deepseek_moe_v41_actquant.cu)
@@ -3167,6 +3219,7 @@ set_tests_properties(
     test_deepseek_moe_v41_load_fast
     test_deepseek_moe_v41_kernels
     test_deepseek_moe_v41_actquant
+    test_deepseek_moe_v41_pipeline
     test_qwen_moe_kernels
     test_qwen_moe_exp_kernels
     test_glm_moe_flash_kernels

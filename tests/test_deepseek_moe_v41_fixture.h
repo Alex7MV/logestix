@@ -6,6 +6,7 @@
 // test_synth_checkpoint.h when P2 lands — never from another family's fixture.
 #include <filesystem>
 #include <fstream>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -197,9 +198,10 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
         pe.w1_scales.assign(8, 0x20);
         pe.w2_scales.assign(8, 0x20);
         pe.w3_scales.assign(8, 0x20);
-        pe.w1_global_scale = 1.0f;
-        pe.w2_global_scale = 1.0f;
-        pe.w3_global_scale = 1.0f;
+        const float gs = std::ldexp(1.0f, -14);
+        pe.w1_global_scale = gs;
+        pe.w2_global_scale = gs;
+        pe.w3_global_scale = gs;
         auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
         if (!batch.ok()) return batch.status();
         if (auto st = lsxcommon::WriteRecordBatchToFile(
@@ -207,6 +209,228 @@ inline arrow::Status BuildSyntheticConverted(const std::filesystem::path &dir,
                             ("exp_" + std::to_string(e) + ".arrow"));
             !st.ok())
             return st;
+    }
+    return arrow::Status::OK();
+}
+
+// ── Full-geometry synthetic converted model (one ratio-0 layer) ─────────────
+// The frozen V4.1 shapes (hidden 5120, 64 heads x 512, q_lora 1280, o_groups 8
+// x 1024, MoE inter 2304) so the production pipeline can actually run on the
+// synthetic path. All weights are constant fills (finite, non-degenerate);
+// this validates the execution graph, not the model numerics.
+inline arrow::Status BuildSyntheticFullGeometry(
+    const std::filesystem::path &dir, int vocab = 64, int experts = 2)
+{
+    const int hidden = 5120, q_lora = 1280, head_dim = 512;
+    const int heads = 64, o_groups = 8, o_lora = 1024, inter = 2304;
+    const int q_dim = heads * head_dim, oa_rows = o_groups * o_lora,
+              oa_cols = q_dim / o_groups;
+
+    std::filesystem::create_directories(dir / "logestix" / "pinned");
+    std::filesystem::create_directories(dir / "logestix" / "experts" /
+                                        "layer_0");
+
+    std::string json = "{";
+    json += "\"format\": \"logestix-v41-nvfp4\",";
+    json += "\"model\": \"DeepSeek-V4.1-Flash\",";
+    json += "\"num_layers\": 1,";
+    json += "\"experts_per_layer\": " + std::to_string(experts) + ",";
+    json += "\"total_experts\": " + std::to_string(experts) + ",";
+    json += "\"vram\": {\"min_bytes\": 1, \"optimal_bytes\": 2, "
+            "\"max_bytes\": 3, \"context_tokens\": 4096},";
+    json += "\"layers\": [{\"compress_ratio\": 0, \"is_kv_source\": false, "
+            "\"is_index_source\": false, \"is_candidate_source\": false}]";
+    json += "}";
+    WriteIndex(dir, json);
+
+    std::vector<lsxcommon::TensorRecord> g;
+    g.push_back(Bf16Rec("embed.weight", {vocab, hidden}, 0x3C00));
+    g.push_back(Bf16Rec("head.weight", {vocab, hidden}, 0x3C00));
+    g.push_back(Bf16Rec("norm.weight", {hidden}, 0x3C00));
+    if (auto st = WritePinned(dir / "logestix" / "pinned" / "global.arrow", g);
+        !st.ok())
+        return st;
+
+    auto fp8v = [&](std::vector<lsxcommon::TensorRecord> &v, const char *name,
+                    int rows, int cols) {
+        v.push_back(F8Rec(std::string("layers.0.") + name + ".weight",
+                          {rows, cols}, 0x03));
+        v.push_back(E8m0Rec(std::string("layers.0.") + name + ".scale",
+                            {(rows + 31) / 32, (cols + 31) / 32}, 127));
+    };
+    std::vector<lsxcommon::TensorRecord> v;
+    v.push_back(Bf16Rec("layers.0.attn_norm.weight", {hidden}, 0x3C00));
+    v.push_back(Bf16Rec("layers.0.ffn_norm.weight", {hidden}, 0x3C00));
+    v.push_back(Bf16Rec("layers.0.attn.q_norm.weight", {q_lora}, 0x3C00));
+    v.push_back(Bf16Rec("layers.0.attn.kv_norm.weight", {head_dim}, 0x3C00));
+    v.push_back(F32Rec("layers.0.attn.attn_sink", {heads}, 0.0f));
+    fp8v(v, "attn.wq_a", q_lora, hidden);
+    fp8v(v, "attn.wq_b", q_dim, q_lora);
+    fp8v(v, "attn.wkv", head_dim, hidden);
+    fp8v(v, "attn.wo_a", oa_rows, oa_cols);
+    fp8v(v, "attn.wo_b", hidden, oa_rows);
+    v.push_back(Bf16Rec("layers.0.ffn.gate.weight", {experts, hidden},
+                        0x3C00));
+    v.push_back(F32Rec("layers.0.ffn.gate.bias", {experts}, 0.0f));
+    v.push_back(F32Rec("layers.0.ffn.gate.bias_vl", {experts}, 0.0f));
+    fp8v(v, "ffn.shared_experts.w1", inter, hidden);
+    fp8v(v, "ffn.shared_experts.w2", hidden, inter);
+    fp8v(v, "ffn.shared_experts.w3", inter, hidden);
+    v.push_back(F32Rec("layers.0.hc_attn_fn", {24, 4 * hidden}, 0.0f));
+    v.push_back(F32Rec("layers.0.hc_attn_base", {24}, 0.0f));
+    v.push_back(F32Rec("layers.0.hc_attn_scale", {3}, 1.0f));
+    v.push_back(F32Rec("layers.0.hc_ffn_fn", {24, 4 * hidden}, 0.0f));
+    v.push_back(F32Rec("layers.0.hc_ffn_base", {24}, 0.0f));
+    v.push_back(F32Rec("layers.0.hc_ffn_scale", {3}, 1.0f));
+    if (auto st = WritePinned(dir / "logestix" / "pinned" / "layer_000.arrow",
+                              v);
+        !st.ok())
+        return st;
+
+    const size_t packed = static_cast<size_t>(inter) * hidden / 2;
+    const size_t scales = static_cast<size_t>(inter) * hidden / 16;
+    for (int e = 0; e < experts; ++e) {
+        lsxcommon::PackedExpert pe;
+        pe.w1_packed.assign(packed, 0x11);
+        pe.w2_packed.assign(packed, 0x22);
+        pe.w3_packed.assign(packed, 0x33);
+        pe.w1_scales.assign(scales, 0x38);
+        pe.w2_scales.assign(scales, 0x38);
+        pe.w3_scales.assign(scales, 0x38);
+        const float gs = std::ldexp(1.0f, -14);
+        pe.w1_global_scale = gs;
+        pe.w2_global_scale = gs;
+        pe.w3_global_scale = gs;
+        auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
+        if (!batch.ok()) return batch.status();
+        if (auto st = lsxcommon::WriteRecordBatchToFile(
+                *batch, dir / "logestix" / "experts" / "layer_0" /
+                            ("exp_" + std::to_string(e) + ".arrow"));
+            !st.ok())
+            return st;
+    }
+    return arrow::Status::OK();
+}
+
+// Two-layer geometry: layer 0 is pure SWA, layer 1 is a ratio-1 kv/index
+// source (exercises the CED compressor + indexer + top-k + concat path).
+inline arrow::Status BuildSyntheticCedGeometry(
+    const std::filesystem::path &dir, int vocab = 64, int experts = 2)
+{
+    const int hidden = 5120, q_lora = 1280, head_dim = 512;
+    const int heads = 64, o_groups = 8, o_lora = 1024, inter = 2304;
+    const int q_dim = heads * head_dim, oa_rows = o_groups * o_lora,
+              oa_cols = q_dim / o_groups;
+    const int idx_heads = 32, idx_dim = 128, idx_qdim = idx_heads * idx_dim;
+    const int idx_wkrow = idx_dim;
+
+    std::filesystem::create_directories(dir / "logestix" / "pinned");
+    for (int l = 0; l < 2; ++l)
+        std::filesystem::create_directories(
+            dir / "logestix" / "experts" / ("layer_" + std::to_string(l)));
+
+    std::string json = "{";
+    json += "\"format\": \"logestix-v41-nvfp4\",";
+    json += "\"model\": \"DeepSeek-V4.1-Flash\",";
+    json += "\"num_layers\": 2,";
+    json += "\"experts_per_layer\": " + std::to_string(experts) + ",";
+    json += "\"total_experts\": " + std::to_string(2 * experts) + ",";
+    json += "\"vram\": {\"min_bytes\": 1, \"optimal_bytes\": 2, "
+            "\"max_bytes\": 3, \"context_tokens\": 4096},";
+    json += "\"layers\": [";
+    json += "{\"compress_ratio\": 0, \"is_kv_source\": false, "
+            "\"is_index_source\": false, \"is_candidate_source\": false},";
+    json += "{\"compress_ratio\": 1, \"is_kv_source\": true, "
+            "\"is_index_source\": true, \"is_candidate_source\": false}";
+    json += "]}";
+    WriteIndex(dir, json);
+
+    std::vector<lsxcommon::TensorRecord> g;
+    g.push_back(Bf16Rec("embed.weight", {vocab, hidden}, 0x3C00));
+    g.push_back(Bf16Rec("head.weight", {vocab, hidden}, 0x3C00));
+    g.push_back(Bf16Rec("norm.weight", {hidden}, 0x3C00));
+    if (auto st = WritePinned(dir / "logestix" / "pinned" / "global.arrow", g);
+        !st.ok())
+        return st;
+
+    auto fp8v = [&](std::vector<lsxcommon::TensorRecord> &v,
+                    const std::string &pfx, const char *name, int rows,
+                    int cols) {
+        v.push_back(F8Rec(pfx + name + ".weight", {rows, cols}, 0x03));
+        v.push_back(E8m0Rec(pfx + name + ".scale",
+                            {(rows + 31) / 32, (cols + 31) / 32}, 127));
+    };
+
+    for (int l = 0; l < 2; ++l) {
+        const bool ced = (l == 1);
+        const std::string pfx = "layers." + std::to_string(l) + ".";
+        std::vector<lsxcommon::TensorRecord> v;
+        v.push_back(Bf16Rec(pfx + "attn_norm.weight", {hidden}, 0x3C00));
+        v.push_back(Bf16Rec(pfx + "ffn_norm.weight", {hidden}, 0x3C00));
+        v.push_back(Bf16Rec(pfx + "attn.q_norm.weight", {q_lora}, 0x3C00));
+        v.push_back(Bf16Rec(pfx + "attn.kv_norm.weight", {head_dim}, 0x3C00));
+        v.push_back(F32Rec(pfx + "attn.attn_sink", {heads}, 0.0f));
+        fp8v(v, pfx, "attn.wq_a", q_lora, hidden);
+        fp8v(v, pfx, "attn.wq_b", q_dim, q_lora);
+        fp8v(v, pfx, "attn.wkv", head_dim, hidden);
+        fp8v(v, pfx, "attn.wo_a", oa_rows, oa_cols);
+        fp8v(v, pfx, "attn.wo_b", hidden, oa_rows);
+        v.push_back(Bf16Rec(pfx + "ffn.gate.weight", {experts, hidden},
+                            0x3C00));
+        v.push_back(F32Rec(pfx + "ffn.gate.bias", {experts}, 0.0f));
+        v.push_back(F32Rec(pfx + "ffn.gate.bias_vl", {experts}, 0.0f));
+        fp8v(v, pfx, "ffn.shared_experts.w1", inter, hidden);
+        fp8v(v, pfx, "ffn.shared_experts.w2", hidden, inter);
+        fp8v(v, pfx, "ffn.shared_experts.w3", inter, hidden);
+        v.push_back(F32Rec(pfx + "hc_attn_fn", {24, 4 * hidden}, 0.0f));
+        v.push_back(F32Rec(pfx + "hc_attn_base", {24}, 0.0f));
+        v.push_back(F32Rec(pfx + "hc_attn_scale", {3}, 1.0f));
+        v.push_back(F32Rec(pfx + "hc_ffn_fn", {24, 4 * hidden}, 0.0f));
+        v.push_back(F32Rec(pfx + "hc_ffn_base", {24}, 0.0f));
+        v.push_back(F32Rec(pfx + "hc_ffn_scale", {3}, 1.0f));
+        if (ced) {
+            v.push_back(Bf16Rec(pfx + "attn.compressor.wkv.weight",
+                                {head_dim, hidden}, 0x3C00));
+            v.push_back(Bf16Rec(pfx + "attn.compressor.norm.weight",
+                                {head_dim}, 0x3C00));
+            fp8v(v, pfx, "attn.indexer.wq_b", idx_qdim, q_lora);
+            v.push_back(Bf16Rec(pfx + "attn.indexer.weights_proj.weight",
+                                {idx_heads, hidden}, 0x3C00));
+            v.push_back(Bf16Rec(pfx + "attn.indexer.wk.weight",
+                                {idx_wkrow, head_dim}, 0x3C00));
+            v.push_back(Bf16Rec(pfx + "attn.indexer.k_norm.weight", {idx_dim},
+                                0x3C00));
+        }
+        const std::string lname = "layer_00" + std::to_string(l);
+        if (auto st = WritePinned(dir / "logestix" / "pinned" /
+                                      (lname + ".arrow"),
+                                  v);
+            !st.ok())
+            return st;
+
+        const size_t packed = static_cast<size_t>(inter) * hidden / 2;
+        const size_t scales = static_cast<size_t>(inter) * hidden / 16;
+        const float gs = std::ldexp(1.0f, -14);
+        for (int e = 0; e < experts; ++e) {
+            lsxcommon::PackedExpert pe;
+            pe.w1_packed.assign(packed, 0x11);
+            pe.w2_packed.assign(packed, 0x22);
+            pe.w3_packed.assign(packed, 0x33);
+            pe.w1_scales.assign(scales, 0x38);
+            pe.w2_scales.assign(scales, 0x38);
+            pe.w3_scales.assign(scales, 0x38);
+            pe.w1_global_scale = gs;
+            pe.w2_global_scale = gs;
+            pe.w3_global_scale = gs;
+            auto batch = lsxcommon::ExpertSchema::MakeBatch(pe);
+            if (!batch.ok()) return batch.status();
+            if (auto st = lsxcommon::WriteRecordBatchToFile(
+                    *batch, dir / "logestix" / "experts" /
+                                ("layer_" + std::to_string(l)) /
+                                ("exp_" + std::to_string(e) + ".arrow"));
+                !st.ok())
+                return st;
+        }
     }
     return arrow::Status::OK();
 }

@@ -16,7 +16,7 @@ namespace gpu {
 // Internal engine entry point (deepseek_moe_v41_inference_pipeline.cu).
 gpu::InferenceResult RunDeepSeekV41Inference(
     const std::string &model_path, const std::vector<int32_t> &input_ids,
-    int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb &tok_db,
+    int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
     const deepseek_v41::gpu::PinnedWeights &pw,
     deepseek_v41::gpu::ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
@@ -96,7 +96,8 @@ gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
     }
     return RunUnderResidencyLock([&] {
         return gpu::RunDeepSeekV41Inference(
-            cfg_.model_path, req.input_ids, req.max_gen_tokens, *tok_db_, pw_,
+            cfg_.model_path, req.input_ids, req.max_gen_tokens, tok_db_.get(),
+            pw_,
             expert_db_, lsxcommon::sample::DefaultSampler(), stream(),
             cublas());
     });

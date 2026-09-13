@@ -645,9 +645,10 @@ cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
                              int topk, float temp, float route_scale, bool norm,
                              int32_t *out_idx, float *out_w)
 {
-    if (n_routed <= 0 || hidden <= 0 || topk <= 0 || topk > 32)
-        return cudaSuccess;
+    if (n_routed <= 0 || hidden <= 0 || topk <= 0) return cudaSuccess;
     if (n_routed > 1024) return cudaErrorInvalidValue;
+    if (topk > n_routed) topk = n_routed;
+    if (topk > 32) topk = 32;
     float *scores = nullptr;
     if (cudaMalloc(&scores, sizeof(float) * n_routed) != cudaSuccess)
         return cudaGetLastError();

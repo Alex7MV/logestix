@@ -79,7 +79,7 @@ struct DevSet {
 
 gpu::InferenceResult RunDeepSeekV41Inference(
     const std::string &model_path, const std::vector<int32_t> &input_ids,
-    int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb &tok_db,
+    int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
     const V41PinnedWeights &pw, V41ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
     cublasHandle_t cublas)
@@ -140,7 +140,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     std::vector<float *> kv_state(static_cast<size_t>(num_layers), nullptr);
     std::vector<float *> score_state(static_cast<size_t>(num_layers), nullptr);
     for (int l = 0; l < num_layers; ++l) {
-        const auto meta = dv41::LayerMetaAt(l);
+        const auto meta = pw.layers[l].meta;
         if (meta.is_kv_source)
             compress_kv[l] = dev.typed<uint16_t>(
                 static_cast<size_t>(kCompressCap) * kHeadDim);
@@ -150,7 +150,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             score_state[l] = dev.typed<float>(static_cast<size_t>(
                 meta.compress_ratio) * kHeadDim);
         }
-        if (dv41::OwnsIndexK(l))
+        if (meta.is_kv_source)
             index_k[l] = dev.typed<uint16_t>(
                 static_cast<size_t>(kCompressCap) * kIdxDim);
     }
@@ -206,7 +206,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     }
     // Reset compressor states: kv_state 0, score_state -inf.
     for (int l = 0; l < num_layers; ++l) {
-        const auto meta = dv41::LayerMetaAt(l);
+        const auto meta = pw.layers[l].meta;
         if (!(meta.is_kv_source && meta.compress_ratio > 1)) continue;
         const int n = meta.compress_ratio * kHeadDim;
         if (lsxcommon::deepseek_v41::LaunchFillF32(kv_state[l], n, 0.0f,
@@ -221,7 +221,9 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     dv41::CsaRuntime csa;
     csa.Reset();
 
-    const int topk = dv41::kTopK;
+    int topk = dv41::kTopK;
+    for (const auto &lw : pw.layers)
+        if (lw.gate_rows > 0) topk = std::min(topk, lw.gate_rows);
     std::vector<int32_t> h_ridx(static_cast<size_t>(topk));
     std::vector<float> h_rw(static_cast<size_t>(topk));
     std::vector<int32_t> gen;
@@ -233,7 +235,10 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     for (int step = 0; step < total_steps; ++step) {
         const int cur_tok = (step < prompt_len) ? input_ids[step] : gen.back();
         if (cur_tok < 0 || cur_tok >= pw.vocab_size) {
-            result.error_msg = "token id out of vocab range";
+            result.error_msg =
+                "token id " + std::to_string(cur_tok) + " out of vocab range (" +
+                std::to_string(pw.vocab_size) + ") at step " +
+                std::to_string(step);
             return result;
         }
         if (cudaMemcpyAsync(d_tok, &cur_tok, 4, cudaMemcpyHostToDevice,
@@ -258,7 +263,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
 
         for (int lay = 0; lay < num_layers; ++lay) {
             const dv41::gpu::LayerWeights &lw = pw.layers[lay];
-            const auto meta = dv41::LayerMetaAt(lay);
+            const auto meta = lw.meta;
 
             // ── Attention sub-block ──────────────────────────────────────
             if (dv41::LaunchHcMixes(d_h, lw.d_hc_attn_fn, lw.d_hc_attn_scale,
@@ -289,7 +294,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 p.is_kv_source = meta.is_kv_source;
                 p.is_index_source = meta.is_index_source;
                 p.is_candidate_source = meta.is_candidate_source;
-                p.owns_k = dv41::OwnsIndexK(lay);
+                p.owns_k = meta.is_kv_source;
                 p.uses_candidates = dv41::UsesCandidates(lay);
                 p.wq_a = U(lw.d_wq_a);
                 p.q_lora = kQLora;
@@ -362,7 +367,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             // Router + routed experts + shared expert.
             if (dv41::LaunchRouterTopK(
                     cublas, stream, d_xh, U(lw.d_gate_weight), lw.d_gate_bias,
-                    dv41::kNumRouted, kHidden, topk, dv41::kGateTemp,
+                    lw.gate_rows, kHidden, topk, dv41::kGateTemp,
                     dv41::kRouteScale, true, d_ridx, d_rw) != cudaSuccess) {
                 result.error_msg = "router failed";
                 return result;
@@ -382,7 +387,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             for (int k = 0; k < topk; ++k) {
                 const int e = h_ridx[static_cast<size_t>(k)];
                 dv41::gpu::ensure_expert_resident(expert_db, lay, e, stream);
-                const size_t idx = static_cast<size_t>(lay) * dv41::kNumRouted +
+                const size_t idx = static_cast<size_t>(lay) *
+                                       static_cast<size_t>(expert_db.experts_per_layer) +
                                    static_cast<size_t>(e);
                 if (idx >= expert_db.entries.size()) continue;
                 const V41ExpertEntry &en = expert_db.entries[idx];
@@ -473,15 +479,20 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             result.error_msg = "sampler readback failed";
             return result;
         }
+        if (std::getenv("LSX_V41_DEBUG")) {
+            log::info("[v41-debug] step=" + std::to_string(step) +
+                      " tok=" + std::to_string(next_tok) +
+                      " maxv=" + std::to_string(maxv));
+        }
         gen.push_back(next_tok);
         if (!first_gen_captured && step == prompt_len - 1) {
             result.first_gen_tok_id = next_tok;
             result.first_gen_maxv = maxv;
             result.first_gen_text =
-                lsxcommon::runtime::DecodeGeneratedText(tok_db, {next_tok});
+                tok_db ? lsxcommon::runtime::DecodeGeneratedText(*tok_db, {next_tok}) : std::string();
             first_gen_captured = true;
         }
-        if (next_tok == tok_db.eos_id && step >= prompt_len) {
+        if (tok_db && next_tok == tok_db->eos_id && step >= prompt_len) {
             result.eos_terminated = true;
             break;
         }
@@ -502,8 +513,9 @@ gpu::InferenceResult RunDeepSeekV41Inference(
         gen_tokens.push_back(gen[i]);
     result.gen_tokens = gen_tokens;
     result.num_tokens = static_cast<int>(gen_tokens.size());
-    result.output_text = lsxcommon::runtime::DecodeGeneratedText(tok_db,
-                                                                gen_tokens);
+    result.output_text = tok_db ? lsxcommon::runtime::DecodeGeneratedText(*tok_db,
+                                                                gen_tokens)
+                               : std::string();
     result.weight_resident_bytes = pw.resident_bytes;
     result.ok = true;
     return result;

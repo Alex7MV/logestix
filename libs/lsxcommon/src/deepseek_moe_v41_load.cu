@@ -184,6 +184,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
             return cudaErrorInvalidValue;
         const std::string p = "layers." + std::to_string(l) + ".";
         const LayerMeta &meta = topo.layers[static_cast<size_t>(l)];
+        lw.meta = meta;
         auto req = [&](const char *suffix) -> const TensorRecord * {
             return Get(m, p + suffix);
         };

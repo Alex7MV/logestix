@@ -311,7 +311,10 @@ cudaError_t CedAttentionForwardDecode(
     const int end_pos = start_pos + 1;
     const int compress_len = end_pos / ratio;
     const int slot = start_pos % ratio;
-    const int group_pos = start_pos + 1 - ratio;
+    // The completed group starts at (start_pos + 1 - ratio); when no group
+    // completed yet this index is negative, so clamp to keep the pointer
+    // in-bounds (it is never dereferenced while have_latent is false).
+    const int group_pos = start_pos + 1 >= ratio ? start_pos + 1 - ratio : 0;
     const float *cos_tok = rope_cos + static_cast<size_t>(start_pos) * half;
     const float *sin_tok = rope_sin + static_cast<size_t>(start_pos) * half;
     const float *cos_grp = rope_cos + static_cast<size_t>(group_pos) * half;
