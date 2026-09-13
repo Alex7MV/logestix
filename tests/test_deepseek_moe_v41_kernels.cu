@@ -7,6 +7,7 @@
 
 #include "deepseek_moe_v41_device_math.h"
 #include "deepseek_moe_v41_inference.h"
+#include "deepseek_moe_v41_inference_csa.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -380,4 +381,53 @@ TEST_CASE("deepseek-v41 indexer score kernel matches the host reference",
     }
 
     cudaFree(dq); cudaFree(dk); cudaFree(dw); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 CED shared-attention runtime contract",
+          "[deepseek-v41][kernels]")
+{
+    using lsxcommon::deepseek_v41::CsaRuntime;
+    using lsxcommon::deepseek_v41::OwnsIndexK;
+    using lsxcommon::deepseek_v41::UsesCandidates;
+    using lsxcommon::deepseek_v41::UsesSharedTopk;
+
+    // Ownership follows the frozen source sets.
+    CHECK(OwnsIndexK(2));
+    CHECK(OwnsIndexK(20));
+    CHECK_FALSE(OwnsIndexK(24));   // index source, but not a kv/compressor layer
+    CHECK_FALSE(UsesSharedTopk(2));
+    CHECK_FALSE(UsesSharedTopk(24));
+    CHECK(UsesSharedTopk(3));      // between sources -> reuses layer 2's topk
+    CHECK(UsesSharedTopk(25));
+
+    // Two-level indexer: only downstream of the candidate source (layer 20).
+    CHECK_FALSE(UsesCandidates(2));
+    CHECK_FALSE(UsesCandidates(20));
+    CHECK(UsesCandidates(21));
+    CHECK(UsesCandidates(24));
+    CHECK(UsesCandidates(36));
+
+    // Publish/read within the in-order walk: later sources overwrite the slot.
+    CsaRuntime rt;
+    float kv_a[2] = {1.0f, 2.0f};
+    float kv_b[2] = {3.0f, 4.0f};
+    rt.PublishCompressKv(kv_a, 1);
+    CHECK(rt.compress_kv == kv_a);
+    CHECK(rt.compress_len == 1);
+    rt.PublishCompressKv(kv_b, 2);
+    CHECK(rt.compress_kv == kv_b);
+    CHECK(rt.compress_len == 2);
+
+    int32_t idx_a[2] = {1, 2};
+    int32_t idx_b[2] = {3, 4};
+    rt.PublishTopk(idx_a, 2);
+    CHECK(rt.topk_idxs == idx_a);
+    rt.PublishTopk(idx_b, 2);
+    CHECK(rt.topk_idxs == idx_b);
+
+    rt.Reset();
+    CHECK(rt.compress_kv == nullptr);
+    CHECK(rt.topk_idxs == nullptr);
+    CHECK(rt.candidates == nullptr);
+    CHECK(rt.compress_len == 0);
 }
