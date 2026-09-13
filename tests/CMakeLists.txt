@@ -352,6 +352,14 @@ target_link_libraries(test_deepseek_moe_v41_actquant PRIVATE
 
 add_test(NAME test_deepseek_moe_v41_actquant COMMAND test_deepseek_moe_v41_actquant)
 
+# ── DeepSeek-V4.1-Flash: real-model selfcheck (Paris, env opt-in) ────────
+add_executable(test_deepseek_moe_v41_selfcheck test_deepseek_moe_v41_selfcheck.cpp)
+target_link_libraries(test_deepseek_moe_v41_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_v41_selfcheck COMMAND test_deepseek_moe_v41_selfcheck)
+set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)

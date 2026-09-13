@@ -329,12 +329,18 @@ __global__ void fill_f32_kernel(float *__restrict__ dst, int n, float value)
     if (i < n) dst[i] = value;
 }
 
-__global__ void weighted_accum_kernel(const __half *__restrict__ src,
-                                      float weight, float *__restrict__ accum,
-                                      int n)
+__global__ void scale_f32_inplace_kernel(float *__restrict__ x, int n,
+                                         float s)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) accum[i] += weight * __half2float(src[i]);
+    if (i < n) x[i] *= s;
+}
+
+__global__ void accum_half_into_f32_kernel(const __half *__restrict__ src,
+                                           float *__restrict__ accum, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) accum[i] += __half2float(src[i]);
 }
 
 // torch F.softplus default: threshold 20 returns the input unchanged.
@@ -613,6 +619,26 @@ cudaError_t LaunchFillF32(float *dst, int n, float value, cudaStream_t stream)
     return cudaGetLastError();
 }
 
+cudaError_t LaunchCastHalfToF32(const uint16_t *src, float *dst, int n,
+                                cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    const int block = 256;
+    cast_half_to_f32_kernel<<<(n + block - 1) / block, block, 0, stream>>>(
+        reinterpret_cast<const __half *>(src), dst, n);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
+                                      cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    const int block = 256;
+    accum_half_into_f32_kernel<<<(n + block - 1) / block, block, 0, stream>>>(
+        reinterpret_cast<const __half *>(src), acc, n);
+    return cudaGetLastError();
+}
+
 cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
@@ -692,6 +718,12 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
     }
     if (e == cudaSuccess)
         e = LaunchExpertSwiglu(gate_f, up_f, mid_f, inter, swiglu_limit, stream);
+    // The routing weight scales the SwiGLU activation before w2 (model.py:850).
+    if (e == cudaSuccess && weight != 1.0f) {
+        scale_f32_inplace_kernel<<<(inter + 255) / 256, 256, 0, stream>>>(
+            mid_f, inter, weight);
+        e = cudaGetLastError();
+    }
     if (e == cudaSuccess)
         e = LaunchCastF32ToHalf(mid_f, reinterpret_cast<uint16_t *>(mid_h),
                                 inter, stream);
@@ -700,8 +732,8 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
                                        w2.global_scale, out_h, 1, inter,
                                        hidden);
     if (e == cudaSuccess) {
-        weighted_accum_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
-            out_h, weight, accum_f32, hidden);
+        accum_half_into_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
+            out_h, accum_f32, hidden);
         e = cudaGetLastError();
     }
     cudaFree(base);

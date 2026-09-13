@@ -80,9 +80,17 @@ cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
 cudaError_t LaunchCastF32ToHalf(const float *src, uint16_t *dst, int n,
                                 cudaStream_t stream);
 
+// Elementwise FP16 -> F32.
+cudaError_t LaunchCastHalfToF32(const uint16_t *src, float *dst, int n,
+                                cudaStream_t stream);
+
 // fill dst[0..n) with `value`.
 cudaError_t LaunchFillF32(float *dst, int n, float value,
                           cudaStream_t stream);
+
+// acc[i] += half_to_float(src[i]).
+cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
+                                      cudaStream_t stream);
 
 // Shared expert SwiGLU FFN: gate=w1@x, up=w3@x (F32), silu(clamped)*clamped,
 // then out=w2@mid (FP16). Scratch is allocated internally.

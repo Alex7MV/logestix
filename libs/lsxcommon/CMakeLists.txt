@@ -20,6 +20,7 @@ add_library(lsxcommon STATIC
     src/deepseek_moe_model.cpp
     src/deepseek_moe_v41_convert.cpp
     src/deepseek_moe_v41_load.cpp
+    src/deepseek_moe_v41_model.cpp
     src/generation_cli.cpp
     src/glm_moe_convert.cpp
     src/glm_moe_flash_convert.cpp
@@ -332,6 +333,7 @@ add_library(lsxcommon_deepseek_v41_cu OBJECT
     src/deepseek_moe_v41_load.cu
     src/deepseek_moe_v41_inference.cu
     src/deepseek_moe_v41_inference_attn.cu
+    src/deepseek_moe_v41_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_deepseek_v41_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

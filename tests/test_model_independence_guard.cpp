@@ -59,6 +59,8 @@ struct PassportRow {
 const std::vector<PassportRow> kPassports = {
     {"glm-5.2", "../include/lsxcommon/glm_moe_load.h", "lsxcommon::glm"},
     {"deepseek-v4-flash", "deepseek_moe_load.cuh", "lsxcommon::gpu"},
+    {"deepseek-v4.1-flash", "deepseek_moe_v41_constants.h",
+     "lsxcommon::deepseek_v41"},
     {"gemma-4-26b-a4b-it", "../include/lsxcommon/gemma_moe_load.h",
      "lsxcommon::gemma"},
     {"kimi-k2.7-code", "../include/lsxcommon/kimi_moe_load.h",
@@ -231,6 +233,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "glm_moe_flash_model.cpp",  // glm-5.3-flash
         "kimi_moe_model.cpp",       // kimi-k2.7-code (TC batch, 100 t/s round)
         "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
+        "deepseek_moe_v41_model.cpp",  // deepseek-v4.1-flash
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
