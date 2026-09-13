@@ -22,5 +22,11 @@ cudaError_t LaunchFp8BlockDequantToHalf(const uint8_t *w,
                                         int rows, int cols,
                                         cudaStream_t stream);
 
+// In-place FP4 activation quantize-dequant (E2M1, per `block`-element block) on
+// FP16 x [rows, n]. e8m0_scale=true -> pow2 scale (indexer); false -> E4M3
+// (compressed KV). Mirrors kernel.py:fp4_act_quant.
+cudaError_t LaunchFp4ActQuantInplace(uint16_t *x, int rows, int n, int block,
+                                     bool e8m0_scale, cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

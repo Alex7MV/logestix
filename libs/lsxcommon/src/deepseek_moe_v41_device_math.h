@@ -169,5 +169,60 @@ inline void CompressorPoolGroupRef(const float *kv, const float *score,
     }
 }
 
+// Round to the E2M1 grid {0,0.5,1,1.5,2,3,4,6} (nearest, ties to even index).
+inline float E2m1RneRef(float v)
+{
+    const float tab[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    const float a = std::fabs(v);
+    int best = 0;
+    float bd = 1e30f;
+    for (int i = 0; i < 8; ++i) {
+        const float d = std::fabs(a - tab[i]);
+        if (d < bd) { bd = d; best = i; }
+    }
+    for (int i = 0; i < 8; ++i) {
+        if (i == best) continue;
+        if (std::fabs(std::fabs(a - tab[i]) - bd) < 1e-6f &&
+            (i % 2 == 0) && (best % 2 == 1))
+            best = i;
+    }
+    return std::copysign(tab[best], v);
+}
+
+// 2^ceil(log2(t)) via IEEE bit inspection (matches kernel.py:fast_round_scale).
+inline float FastRoundScaleRef(float t)
+{
+    if (t <= 0.0f) return std::ldexp(1.0f, -127);
+    uint32_t bits;
+    std::memcpy(&bits, &t, sizeof(bits));
+    const int exp = static_cast<int>((bits >> 23) & 0xFF) - 127 +
+                    (((bits & 0x7FFFFF) != 0) ? 1 : 0);
+    return std::ldexp(1.0f, exp);
+}
+
+// In-place FP4 activation quantize-dequant over `n` elements in `block` blocks.
+// e8m0_scale=true -> pow2 scale, else E4M3 scale (value kept as float here).
+inline void Fp4ActQuantRef(float *x, int n, int block, bool e8m0_scale)
+{
+    constexpr float kFp4Max = 6.0f;
+    for (int b = 0; b < n; b += block) {
+        float amax = 0.0f;
+        for (int j = 0; j < block; ++j)
+            amax = std::max(amax, std::fabs(x[b + j]));
+        float s;
+        if (e8m0_scale) {
+            amax = std::max(amax, kFp4Max * std::ldexp(1.0f, -126));
+            s = FastRoundScaleRef(amax / kFp4Max);
+        } else {
+            amax = std::max(amax, kFp4Max * std::ldexp(1.0f, -9));
+            s = amax / kFp4Max;
+        }
+        for (int j = 0; j < block; ++j) {
+            const float q = std::clamp(x[b + j] / s, -kFp4Max, kFp4Max);
+            x[b + j] = E2m1RneRef(q) * s;
+        }
+    }
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

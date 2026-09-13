@@ -315,6 +315,43 @@ endif()
 
 add_test(NAME test_deepseek_moe_v41_kernels COMMAND test_deepseek_moe_v41_kernels)
 
+# ── DeepSeek-V4.1-Flash: FP4 activation quant (CUDA) ────────────────────
+add_library(test_deepseek_moe_v41_actquant_cu OBJECT
+            test_deepseek_moe_v41_actquant.cu)
+set_target_properties(test_deepseek_moe_v41_actquant_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_actquant_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_actquant_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_actquant_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_actquant_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_v41_actquant)
+set_target_properties(test_deepseek_moe_v41_actquant PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_actquant PRIVATE
+    test_deepseek_moe_v41_actquant_cu lsxcommon Catch2::Catch2WithMain)
+
+add_test(NAME test_deepseek_moe_v41_actquant COMMAND test_deepseek_moe_v41_actquant)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -3121,6 +3158,7 @@ set_tests_properties(
     test_deepseek_moe_v41_dequant
     test_deepseek_moe_v41_load_fast
     test_deepseek_moe_v41_kernels
+    test_deepseek_moe_v41_actquant
     test_qwen_moe_kernels
     test_qwen_moe_exp_kernels
     test_glm_moe_flash_kernels
