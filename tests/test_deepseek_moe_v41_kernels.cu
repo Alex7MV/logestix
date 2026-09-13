@@ -200,3 +200,67 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
     cudaFree(dpre); cudaFree(dpost); cudaFree(dcomb);
     cudaFree(dpre_out); cudaFree(dpost_out); cudaFree(dsub);
 }
+
+TEST_CASE("deepseek-v41 sparse attention matches a float reference",
+          "[deepseek-v41][kernels]")
+{
+    const int heads = 2, d = 32, q_rows = 1, kv_rows = 4, topk = 4;
+    std::vector<float> qf(q_rows * heads * d), kvf(kv_rows * d);
+    for (size_t i = 0; i < qf.size(); ++i)
+        qf[i] = 0.1f * static_cast<float>(static_cast<int>(i % 17) - 8);
+    for (size_t i = 0; i < kvf.size(); ++i)
+        kvf[i] = 0.05f * static_cast<float>(static_cast<int>(i % 23) - 11);
+    const float sink[heads] = {0.5f, -0.25f};
+    const int32_t idx[topk] = {0, 2, -1, 3};
+
+    std::vector<uint16_t> qh = ToHalf(qf), kvh = ToHalf(kvf);
+    uint16_t *dq, *dkv, *dout;
+    int32_t *didx;
+    float *dsink;
+    REQUIRE(cudaMalloc(&dq, qh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dkv, kvh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, qh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&didx, sizeof(idx)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dsink, sizeof(sink)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dq, qh.data(), qh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dkv, kvh.data(), kvh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(didx, idx, sizeof(idx), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dsink, sink, sizeof(sink), cudaMemcpyHostToDevice) == cudaSuccess);
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+    REQUIRE(lsxcommon::deepseek_v41::LaunchSparseAttnHalf(
+                dq, q_rows, heads, d, dkv, kv_rows, dsink, didx, topk, dout,
+                scale, nullptr) == cudaSuccess);
+    std::vector<uint16_t> got(qh.size());
+    REQUIRE(cudaMemcpy(got.data(), dout, qh.size() * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    // Float reference over the same FP16-rounded inputs.
+    std::vector<float> qf16 = ToFloat(qh), kvf16 = ToFloat(kvh);
+    for (int h = 0; h < heads; ++h) {
+        std::vector<float> score(topk);
+        float m = -INFINITY;
+        for (int t = 0; t < topk; ++t) {
+            if (idx[t] < 0) { score[t] = -INFINITY; continue; }
+            float dot = 0.0f;
+            for (int k = 0; k < d; ++k)
+                dot += qf16[h * d + k] * kvf16[idx[t] * d + k];
+            score[t] = dot * scale;
+            m = std::max(m, score[t]);
+        }
+        float s = std::exp(sink[h] - m);
+        std::vector<float> acc(d, 0.0f);
+        for (int t = 0; t < topk; ++t) {
+            if (idx[t] < 0) continue;
+            const float p = std::exp(score[t] - m);
+            s += p;
+            for (int k = 0; k < d; ++k) acc[k] += p * kvf16[idx[t] * d + k];
+        }
+        for (int k = 0; k < d; ++k)
+            CHECK(F(got[h * d + k]) ==
+                  Catch::Approx(acc[k] / s).margin(3e-3f));
+    }
+
+    cudaFree(dq); cudaFree(dkv); cudaFree(dout); cudaFree(didx);
+    cudaFree(dsink);
+}

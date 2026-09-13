@@ -175,6 +175,60 @@ __global__ void hc_post_kernel(const float *__restrict__ x,
     out[idx] = acc;
 }
 
+__global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
+                                        const __half *__restrict__ kv,
+                                        const float *__restrict__ sink,
+                                        const int *__restrict__ idxs,
+                                        __half *__restrict__ o, int heads,
+                                        int d, int topk, float scale)
+{
+    const int row = blockIdx.x;
+    const int head = blockIdx.y;
+    const int lane = threadIdx.x;      // one warp per (row, head)
+    const int per = d / 32;
+    float acc[32];
+    for (int k = 0; k < per; ++k) acc[k] = 0.0f;
+    float m = -1e30f, s = 0.0f;
+
+    const __half *qh = q + (static_cast<size_t>(row) * heads + head) * d;
+    const int *ridx = idxs + static_cast<size_t>(row) * topk;
+    for (int t = 0; t < topk; ++t) {
+        const int idx = ridx[t];
+        float dot = 0.0f;
+        const __half *kh = nullptr;
+        if (idx >= 0) {
+            kh = kv + static_cast<size_t>(idx) * d;
+            for (int k = 0; k < per; ++k)
+                dot += __half2float(qh[lane + k * 32]) *
+                       __half2float(kh[lane + k * 32]);
+        } else {
+            dot = -INFINITY;
+        }
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            dot += __shfl_xor_sync(0xFFFFFFFFu, dot, off);
+        dot *= scale;
+        const float m_new = fmaxf(m, dot);
+        const float corr = expf(m - m_new);
+        s *= corr;
+        if (idx >= 0) {
+            const float p = expf(dot - m_new);
+            s += p;
+            for (int k = 0; k < per; ++k)
+                acc[k] = acc[k] * corr + p * __half2float(kh[lane + k * 32]);
+        } else {
+            for (int k = 0; k < per; ++k) acc[k] *= corr;
+        }
+        m = m_new;
+    }
+    const float sinkv = sink ? sink[head] : -INFINITY;
+    s += expf(sinkv - m);
+    const float inv = (s > 0.0f) ? (1.0f / s) : 0.0f;
+    __half *oh = o + (static_cast<size_t>(row) * heads + head) * d;
+    for (int k = 0; k < per; ++k)
+        oh[lane + k * 32] = __float2half_rn(acc[k] * inv);
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -231,6 +285,25 @@ cudaError_t LaunchHcPost(const float *x, const float *residual,
     const int total = hc * dim;
     hc_post_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
         x, residual, post, comb, out, hc, dim);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
+                                 int d, const uint16_t *kv, int kv_rows,
+                                 const float *sink, const int32_t *idxs,
+                                 int topk, uint16_t *out, float softmax_scale,
+                                 cudaStream_t stream)
+{
+    (void)kv_rows;
+    if (q_rows <= 0 || heads <= 0 || d <= 0 || topk <= 0)
+        return cudaSuccess;
+    if (d % 32 != 0) return cudaErrorInvalidValue;
+    const dim3 grid(q_rows, heads);
+    sparse_attn_half_kernel<<<grid, 32, 0, stream>>>(
+        reinterpret_cast<const __half *>(q),
+        reinterpret_cast<const __half *>(kv),
+        sink, reinterpret_cast<const int *>(idxs),
+        reinterpret_cast<__half *>(out), heads, d, topk, softmax_scale);
     return cudaGetLastError();
 }
 

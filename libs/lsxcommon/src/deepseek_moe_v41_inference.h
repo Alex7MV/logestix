@@ -36,5 +36,14 @@ cudaError_t LaunchHcPost(const float *x, const float *residual,
                          const float *post, const float *comb, float *out,
                          int hc, int dim, cudaStream_t stream);
 
+// Sparse attention over gathered KV indices with a learnable attn_sink.
+// q: [q_rows, heads, d] FP16; kv: [kv_rows, d] FP16; sink: [heads] F32 (may be
+// null); idxs: [q_rows, topk] INT32 (-1 = invalid); out: [q_rows, heads, d].
+cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
+                                 int d, const uint16_t *kv, int kv_rows,
+                                 const float *sink, const int32_t *idxs,
+                                 int topk, uint16_t *out, float softmax_scale,
+                                 cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon
