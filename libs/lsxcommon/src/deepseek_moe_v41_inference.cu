@@ -1,0 +1,238 @@
+#include "deepseek_moe_v41_inference.h"
+
+#include <cuda_fp16.h>
+
+namespace lsxcommon {
+namespace deepseek_v41 {
+
+namespace {
+
+__device__ __forceinline__ float HcSigmoid(float v)
+{
+    return 1.0f / (1.0f + expf(-v));
+}
+
+__global__ void rmsnorm_half_kernel(const __half *__restrict__ x,
+                                    const __half *__restrict__ gamma,
+                                    __half *__restrict__ out, int n, float eps)
+{
+    __shared__ float s_red[32];
+    const int tid = threadIdx.x;
+    double ss = 0.0;
+    for (int i = tid; i < n; i += blockDim.x)
+        ss += static_cast<double>(__half2float(x[i])) *
+              static_cast<double>(__half2float(x[i]));
+    float v = static_cast<float>(ss);
+    const int lane = tid & 31, warp = tid >> 5;
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
+    if (lane == 0) s_red[warp] = v;
+    __syncthreads();
+    const int nwarp = blockDim.x >> 5;
+    if (warp == 0) {
+        float w = (lane < nwarp) ? s_red[lane] : 0.0f;
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            w += __shfl_xor_sync(0xFFFFFFFFu, w, off);
+        if (lane == 0) s_red[0] = w;
+    }
+    __syncthreads();
+    const float inv = 1.0f / sqrtf(s_red[0] / static_cast<float>(n) + eps);
+    for (int i = tid; i < n; i += blockDim.x)
+        out[i] = __float2half_rn(__half2float(gamma[i]) *
+                                 __half2float(x[i]) * inv);
+}
+
+__global__ void rope_half_kernel(__half *__restrict__ x, int rows, int row_len,
+                                 int rope_dim, const float *__restrict__ cos_row,
+                                 const float *__restrict__ sin_row,
+                                 bool inverse)
+{
+    const int row = blockIdx.x;
+    if (row >= rows) return;
+    const int half = rope_dim / 2;
+    for (int j = threadIdx.x; j < half; j += blockDim.x) {
+        const int base = row * row_len + (row_len - rope_dim);
+        const float c = cos_row[j];
+        const float s = inverse ? -sin_row[j] : sin_row[j];
+        const float x0 = __half2float(x[base + 2 * j]);
+        const float x1 = __half2float(x[base + 2 * j + 1]);
+        x[base + 2 * j] = __float2half_rn(x0 * c - x1 * s);
+        x[base + 2 * j + 1] = __float2half_rn(x0 * s + x1 * c);
+    }
+}
+
+// One block per token. `mix_hc` warps each reduce one hc_fn row; warp 0 also
+// produces the stream rsqrt; thread 0 splits and Sinkhorns the comb matrix.
+__global__ void hc_mixes_kernel(const float *__restrict__ x,
+                                const float *__restrict__ hc_fn,
+                                const float *__restrict__ hc_scale,
+                                const float *__restrict__ hc_base, int hc,
+                                int dim, int iters, float eps, float *pre,
+                                float *post, float *comb)
+{
+    const int mix_hc = (2 + hc) * hc;
+    const int total = hc * dim;
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    __shared__ float s_rsqrt;
+    __shared__ float s_mix[64];
+
+    if (warp == 0) {  // stream rsqrt
+        double ss = 0.0;
+        for (int k = lane; k < total; k += 32)
+            ss += static_cast<double>(x[k]) * x[k];
+        float v = static_cast<float>(ss);
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
+        if (lane == 0)
+            s_rsqrt = 1.0f / sqrtf(v / static_cast<float>(total) + eps);
+    }
+    if (warp < mix_hc) {
+        float d = 0.0f;
+        for (int k = lane; k < total; k += 32)
+            d += hc_fn[warp * total + k] * x[k];
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
+        if (lane == 0) s_mix[warp] = d;
+    }
+    __syncthreads();
+    if (threadIdx.x != 0) return;
+
+    for (int m = 0; m < mix_hc; ++m) s_mix[m] = s_mix[m] * s_rsqrt;
+    const float *mx = s_mix;
+    for (int j = 0; j < hc; ++j) {
+        pre[j] = HcSigmoid(mx[j] * hc_scale[0] + hc_base[j]) + eps;
+        post[j] = 2.0f *
+                  HcSigmoid(mx[j + hc] * hc_scale[1] + hc_base[j + hc]);
+    }
+    for (int j = 0; j < hc; ++j)
+        for (int k = 0; k < hc; ++k)
+            comb[j * hc + k] =
+                mx[j * hc + k + hc * 2] * hc_scale[2] +
+                hc_base[j * hc + k + hc * 2];
+    // comb = comb.softmax(-1) + eps
+    for (int j = 0; j < hc; ++j) {
+        float m = comb[j * hc];
+        for (int k = 1; k < hc; ++k) m = fmaxf(m, comb[j * hc + k]);
+        float s = 0.0f;
+        for (int k = 0; k < hc; ++k) {
+            comb[j * hc + k] = expf(comb[j * hc + k] - m);
+            s += comb[j * hc + k];
+        }
+        for (int k = 0; k < hc; ++k)
+            comb[j * hc + k] = comb[j * hc + k] / s + eps;
+    }
+    // comb = comb / (comb.sum(-2) + eps)
+    for (int k = 0; k < hc; ++k) {
+        float s = 0.0f;
+        for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
+        for (int j = 0; j < hc; ++j)
+            comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+    }
+    for (int it = 0; it < iters - 1; ++it) {
+        for (int j = 0; j < hc; ++j) {  // row normalize
+            float s = 0.0f;
+            for (int k = 0; k < hc; ++k) s += comb[j * hc + k];
+            for (int k = 0; k < hc; ++k)
+                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        }
+        for (int k = 0; k < hc; ++k) {  // column normalize
+            float s = 0.0f;
+            for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
+            for (int j = 0; j < hc; ++j)
+                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        }
+    }
+}
+
+__global__ void hc_pre_kernel(const float *__restrict__ x,
+                              const float *__restrict__ pre_mix,
+                              float *__restrict__ out, int hc, int dim)
+{
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= dim) return;
+    float acc = 0.0f;
+    for (int c = 0; c < hc; ++c) acc += pre_mix[c] * x[c * dim + d];
+    out[d] = acc;
+}
+
+__global__ void hc_post_kernel(const float *__restrict__ x,
+                               const float *__restrict__ residual,
+                               const float *__restrict__ post,
+                               const float *__restrict__ comb,
+                               float *__restrict__ out, int hc, int dim)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= hc * dim) return;
+    const int c = idx / dim;
+    const int d = idx % dim;
+    float acc = post[c] * x[d];
+    for (int cp = 0; cp < hc; ++cp) acc += comb[cp * hc + c] * residual[cp * dim + d];
+    out[idx] = acc;
+}
+
+} // namespace
+
+cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
+                              uint16_t *out, int n, float eps,
+                              cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    rmsnorm_half_kernel<<<1, 256, 0, stream>>>(
+        reinterpret_cast<const __half *>(x),
+        reinterpret_cast<const __half *>(gamma),
+        reinterpret_cast<__half *>(out), n, eps);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchRopeHalf(uint16_t *x, int rows, int row_len, int rope_dim,
+                           const float *cos_row, const float *sin_row,
+                           bool inverse, cudaStream_t stream)
+{
+    if (rows <= 0 || rope_dim <= 0) return cudaSuccess;
+    const int half = rope_dim / 2;
+    rope_half_kernel<<<rows, std::min(half, 256), 0, stream>>>(
+        reinterpret_cast<__half *>(x), rows, row_len, rope_dim, cos_row,
+        sin_row, inverse);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchHcMixes(const float *x, const float *hc_fn,
+                          const float *hc_scale, const float *hc_base, int hc,
+                          int dim, int sinkhorn_iters, float eps, float *pre,
+                          float *post, float *comb, cudaStream_t stream)
+{
+    const int mix_hc = (2 + hc) * hc;
+    const int threads = 32 * mix_hc;
+    hc_mixes_kernel<<<1, threads, 0, stream>>>(x, hc_fn, hc_scale, hc_base, hc,
+                                               dim, sinkhorn_iters, eps, pre,
+                                               post, comb);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchHcPre(const float *x, const float *pre_mix, float *out,
+                        int hc, int dim, cudaStream_t stream)
+{
+    const int block = 256;
+    hc_pre_kernel<<<(dim + block - 1) / block, block, 0, stream>>>(
+        x, pre_mix, out, hc, dim);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchHcPost(const float *x, const float *residual,
+                         const float *post, const float *comb, float *out,
+                         int hc, int dim, cudaStream_t stream)
+{
+    const int block = 256;
+    const int total = hc * dim;
+    hc_post_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
+        x, residual, post, comb, out, hc, dim);
+    return cudaGetLastError();
+}
+
+} // namespace deepseek_v41
+} // namespace lsxcommon
