@@ -250,6 +250,28 @@ __global__ void compressor_pool_kernel(const float *__restrict__ kv,
     out[g * d + j] = acc / s;
 }
 
+__global__ void indexer_scores_kernel(const __half *__restrict__ q, int heads,
+                                      int dim, const __half *__restrict__ k,
+                                      int n_pos, const float *__restrict__ w,
+                                      float *__restrict__ out)
+{
+    const int pos = blockIdx.x;
+    const int lane = threadIdx.x;   // one warp per position
+    const __half *kp = k + static_cast<size_t>(pos) * dim;
+    float acc = 0.0f;
+    for (int h = 0; h < heads; ++h) {
+        const __half *qh = q + static_cast<size_t>(h) * dim;
+        float d = 0.0f;
+        for (int j = lane; j < dim; j += 32)
+            d += __half2float(qh[j]) * __half2float(kp[j]);
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1)
+            d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
+        acc += fmaxf(d, 0.0f) * w[h];
+    }
+    if (lane == 0) out[pos] = acc;
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -337,6 +359,17 @@ cudaError_t LaunchCompressorPool(const float *kv, const float *score,
     compressor_pool_kernel<<<n_groups, d, 0, stream>>>(
         kv + static_cast<size_t>(first_token) * d,
         score + static_cast<size_t>(first_token) * d, ratio, d, out);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchIndexerScores(const uint16_t *q, int heads, int dim,
+                                const uint16_t *k, int n_pos, const float *w,
+                                float *out, cudaStream_t stream)
+{
+    if (n_pos <= 0 || heads <= 0 || dim <= 0) return cudaSuccess;
+    indexer_scores_kernel<<<n_pos, 32, 0, stream>>>(
+        reinterpret_cast<const __half *>(q), heads, dim,
+        reinterpret_cast<const __half *>(k), n_pos, w, out);
     return cudaGetLastError();
 }
 

@@ -52,5 +52,11 @@ cudaError_t LaunchCompressorPool(const float *kv, const float *score,
                                  int first_token, float *out,
                                  cudaStream_t stream);
 
+// indexer score[t] = sum_h relu(q[h] . k[t]) * w[h]. q: [heads, dim] FP16;
+// k: [n_pos, dim] FP16; w: [heads] F32; out: [n_pos] F32.
+cudaError_t LaunchIndexerScores(const uint16_t *q, int heads, int dim,
+                                const uint16_t *k, int n_pos, const float *w,
+                                float *out, cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

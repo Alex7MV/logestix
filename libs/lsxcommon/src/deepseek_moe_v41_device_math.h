@@ -224,5 +224,60 @@ inline void Fp4ActQuantRef(float *x, int n, int block, bool e8m0_scale)
     }
 }
 
+// ── Indexer top-k + candidate blocks (model.py:488,583) ────────────────────
+//
+// Keeps the `topk` best compressed positions (ties: lower position first),
+// re-sorted into position order, shifted by `offset`; unreachable slots are -1.
+// `num_valid` = number of reachable compressed positions (compress_len).
+inline void IndexTopkRef(const float *score, int n_pos, int num_valid, int topk,
+                         int offset, int *out)
+{
+    std::vector<int> idx(static_cast<size_t>(n_pos));
+    for (int i = 0; i < n_pos; ++i) idx[i] = i;
+    std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) {
+        if (score[a] != score[b]) return score[a] > score[b];
+        return a < b;
+    });
+    const int k = std::min(topk, num_valid);
+    std::vector<int> sel(idx.begin(), idx.begin() + k);
+    std::sort(sel.begin(), sel.end());
+    for (int i = 0; i < topk; ++i)
+        out[i] = (i < k) ? sel[i] + offset : -1;
+}
+
+// Level-one candidate mask: block score = max over the block; the block holding
+// the newest reachable position is pinned to +inf; the `topk_blocks` best blocks
+// with a finite score are kept. mask has n_pos entries (1 = keep).
+inline void SelectCandidateBlocksRef(const float *score, int n_pos,
+                                     int num_valid, int topk_blocks,
+                                     int block_size, uint8_t *mask)
+{
+    const int nblocks = (n_pos + block_size - 1) / block_size;
+    std::vector<float> bs(static_cast<size_t>(nblocks), -INFINITY);
+    for (int b = 0; b < nblocks; ++b)
+        for (int j = 0; j < block_size; ++j) {
+            const int p = b * block_size + j;
+            if (p < n_pos) bs[b] = std::max(bs[b], score[p]);
+        }
+    const int last = (num_valid - 1) / block_size;
+    if (last >= 0 && last < nblocks) bs[last] = INFINITY;
+
+    std::vector<int> order(static_cast<size_t>(nblocks));
+    for (int i = 0; i < nblocks; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return bs[a] > bs[b]; });
+
+    std::fill(mask, mask + n_pos, 0);
+    const int keep = std::min(topk_blocks, nblocks);
+    for (int i = 0; i < keep; ++i) {
+        const int b = order[i];
+        if (bs[b] == -INFINITY) continue;
+        for (int j = 0; j < block_size; ++j) {
+            const int p = b * block_size + j;
+            if (p < n_pos) mask[p] = 1;
+        }
+    }
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

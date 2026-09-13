@@ -309,3 +309,75 @@ TEST_CASE("deepseek-v41 compressor softmax-pool matches the host reference",
 
     cudaFree(dkv); cudaFree(dscore); cudaFree(dout);
 }
+
+TEST_CASE("deepseek-v41 indexer top-k and candidate blocks (host)",
+          "[deepseek-v41][kernels]")
+{
+    const float inf = INFINITY;
+    const float score[8] = {0.1f, 0.5f, -inf, 0.9f, 0.2f, -inf, -inf, -inf};
+    int idxs[3] = {0, 0, 0};
+    lsxcommon::deepseek_v41::IndexTopkRef(score, 8, /*num_valid=*/5, /*topk=*/3,
+                                          /*offset=*/100, idxs);
+    CHECK(idxs[0] == 101);
+    CHECK(idxs[1] == 103);
+    CHECK(idxs[2] == 104);
+
+    // Candidate blocks: 20 positions, 3 blocks of 8; block 0 max 0.2,
+    // block 1 (newest) max 0.1, block 2 all -inf.
+    std::vector<float> cs(20, -inf);
+    cs[0] = 0.2f;
+    cs[8] = 0.1f;
+    std::vector<uint8_t> mask(20, 0);
+    lsxcommon::deepseek_v41::SelectCandidateBlocksRef(cs.data(), 20,
+                                                      /*num_valid=*/10,
+                                                      /*topk_blocks=*/2,
+                                                      /*block_size=*/8,
+                                                      mask.data());
+    for (int i = 0; i < 16; ++i) CHECK(mask[i] == 1);
+    for (int i = 16; i < 20; ++i) CHECK(mask[i] == 0);
+}
+
+TEST_CASE("deepseek-v41 indexer score kernel matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int heads = 2, dim = 32, n_pos = 3;
+    std::vector<float> qf(heads * dim), kf(n_pos * dim);
+    for (size_t i = 0; i < qf.size(); ++i)
+        qf[i] = 0.1f * static_cast<float>(static_cast<int>(i % 13) - 6);
+    for (size_t i = 0; i < kf.size(); ++i)
+        kf[i] = 0.05f * static_cast<float>(static_cast<int>(i % 17) - 8);
+    const float w[heads] = {0.5f, 1.5f};
+    std::vector<uint16_t> qh, kh;
+    for (float v : qf) qh.push_back(H(v));
+    for (float v : kf) kh.push_back(H(v));
+
+    uint16_t *dq, *dk;
+    float *dw, *dout;
+    REQUIRE(cudaMalloc(&dq, qh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dk, kh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dw, sizeof(w)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dq, qh.data(), qh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dk, kh.data(), kh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, w, sizeof(w), cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerScores(
+                dq, heads, dim, dk, n_pos, dw, dout, nullptr) == cudaSuccess);
+    std::vector<float> got(n_pos);
+    REQUIRE(cudaMemcpy(got.data(), dout, n_pos * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    std::vector<float> qff = ToFloat(qh), kff = ToFloat(kh);
+    for (int p = 0; p < n_pos; ++p) {
+        float acc = 0.0f;
+        for (int h = 0; h < heads; ++h) {
+            float d = 0.0f;
+            for (int j = 0; j < dim; ++j)
+                d += qff[h * dim + j] * kff[p * dim + j];
+            acc += std::max(d, 0.0f) * w[h];
+        }
+        CHECK(got[p] == Catch::Approx(acc).margin(1e-3f));
+    }
+
+    cudaFree(dq); cudaFree(dk); cudaFree(dw); cudaFree(dout);
+}
