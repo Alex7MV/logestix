@@ -74,5 +74,15 @@ cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
                              int vocab, int hidden);
 
+// Gathers `n` embedding rows (FP16) by token id into out [n, hidden].
+cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
+                              const int32_t *ids, int n, uint16_t *out,
+                              cudaStream_t stream);
+
+// Expands one hidden vector (FP16) into `hc` identical F32 copies
+// (model.py h.unsqueeze(2).repeat): out[c*dim + d] = x[d].
+cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
+                           cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

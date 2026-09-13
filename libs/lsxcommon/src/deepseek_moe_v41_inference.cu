@@ -287,6 +287,26 @@ __global__ void expert_swiglu_kernel(const float *__restrict__ gate,
     out[i] = (g / (1.0f + expf(-g))) * u;
 }
 
+__global__ void embed_lookup_kernel(const __half *__restrict__ embed,
+                                    int hidden, const int *__restrict__ ids,
+                                    __half *__restrict__ out)
+{
+    const int tok = blockIdx.x;
+    const int id = ids[tok];
+    const __half *src = embed + static_cast<size_t>(id) * hidden;
+    __half *dst = out + static_cast<size_t>(tok) * hidden;
+    for (int j = threadIdx.x; j < hidden; j += blockDim.x) dst[j] = src[j];
+}
+
+__global__ void hc_expand_kernel(const __half *__restrict__ x,
+                                 float *__restrict__ out, int dim, int hc)
+{
+    const int c = blockIdx.y;
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= dim) return;
+    out[c * dim + d] = __half2float(x[d]);
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -424,6 +444,29 @@ cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
         CUDA_R_16F, 1, w, CUDA_R_16F, hidden, &beta, logits, CUDA_R_32F, 1,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
     return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+}
+
+cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
+                              const int32_t *ids, int n, uint16_t *out,
+                              cudaStream_t stream)
+{
+    (void)vocab;
+    if (n <= 0 || hidden <= 0) return cudaSuccess;
+    embed_lookup_kernel<<<n, 256, 0, stream>>>(
+        reinterpret_cast<const __half *>(embed), hidden,
+        reinterpret_cast<const int *>(ids), reinterpret_cast<__half *>(out));
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
+                           cudaStream_t stream)
+{
+    if (dim <= 0 || hc <= 0) return cudaSuccess;
+    const int block = 256;
+    const dim3 grid((dim + block - 1) / block, hc);
+    hc_expand_kernel<<<grid, block, 0, stream>>>(
+        reinterpret_cast<const __half *>(x), out, dim, hc);
+    return cudaGetLastError();
 }
 
 } // namespace deepseek_v41

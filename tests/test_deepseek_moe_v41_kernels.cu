@@ -554,3 +554,54 @@ TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
     cudaFree(dW); cudaFree(dx); cudaFree(dlog);
     cublasDestroy(h);
 }
+
+TEST_CASE("deepseek-v41 embed lookup and hc expand",
+          "[deepseek-v41][kernels]")
+{
+    const int vocab = 4, hidden = 8;
+    std::vector<float> ef(vocab * hidden);
+    for (int r = 0; r < vocab; ++r)
+        for (int j = 0; j < hidden; ++j)
+            ef[r * hidden + j] = 0.1f * static_cast<float>(r) +
+                                 0.01f * static_cast<float>(j);
+    std::vector<uint16_t> eh;
+    for (float v : ef) eh.push_back(H(v));
+    const int32_t ids[2] = {2, 0};
+    uint16_t *de, *dout;
+    int32_t *did;
+    REQUIRE(cudaMalloc(&de, eh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, 2 * hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&did, sizeof(ids)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(de, eh.data(), eh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(did, ids, sizeof(ids), cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchEmbedLookup(de, vocab, hidden, did, 2,
+                                                       dout, nullptr) == cudaSuccess);
+    std::vector<uint16_t> got(2 * hidden);
+    REQUIRE(cudaMemcpy(got.data(), dout, 2 * hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int t = 0; t < 2; ++t)
+        for (int j = 0; j < hidden; ++j)
+            CHECK(got[t * hidden + j] == eh[ids[t] * hidden + j]);
+
+    // HC expand: 3 identical F32 copies of a 4-wide vector.
+    const int dim = 4, hc = 3;
+    std::vector<float> xf = {1.5f, -2.0f, 0.25f, 3.0f};
+    std::vector<uint16_t> xh;
+    for (float v : xf) xh.push_back(H(v));
+    uint16_t *dhx;
+    float *dhout;
+    REQUIRE(cudaMalloc(&dhx, xh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dhout, hc * dim * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dhx, xh.data(), xh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchHcExpand(dhx, dim, hc, dhout,
+                                                    nullptr) == cudaSuccess);
+    std::vector<float> hgot(hc * dim);
+    REQUIRE(cudaMemcpy(hgot.data(), dhout, hc * dim * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int c = 0; c < hc; ++c)
+        for (int d = 0; d < dim; ++d)
+            CHECK(hgot[c * dim + d] == F(xh[d]));
+
+    cudaFree(de); cudaFree(dout); cudaFree(did);
+    cudaFree(dhx); cudaFree(dhout);
+}
