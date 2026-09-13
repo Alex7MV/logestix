@@ -129,6 +129,27 @@ endif()
 
 add_test(NAME test_deepseek_moe_v41_model COMMAND test_deepseek_moe_v41_model)
 
+# ── DeepSeek-V4.1-Flash: topology contract (load stage, host-only) ───────
+add_executable(test_deepseek_moe_v41_loader test_deepseek_moe_v41_loader.cpp)
+target_link_libraries(test_deepseek_moe_v41_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_v41_loader PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_loader COMMAND test_deepseek_moe_v41_loader)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2878,6 +2899,7 @@ set_tests_properties(
     test_deepseek_moe_loader
     test_deepseek_moe_model
     test_deepseek_moe_v41_model
+    test_deepseek_moe_v41_loader
     test_expert_store
     test_glm_moe_expert_cache
     test_model_integrity
