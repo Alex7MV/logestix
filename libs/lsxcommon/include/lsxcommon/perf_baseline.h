@@ -14,7 +14,7 @@
 namespace lsxcommon {
 namespace perf_baseline {
 
-inline constexpr int kPerfBaselineFormatVersion = 1;
+inline constexpr int kPerfBaselineFormatVersion = 2;
 
 struct PerfBaselineEntry {
     std::string model_type;
@@ -25,6 +25,8 @@ struct PerfBaselineEntry {
     std::string prompt;
     std::string date;           // ISO date of the measurement
     std::string commit;         // repo commit the measurement was taken at
+    int gen_tokens = 0;         // ACTUAL generated length (0 = legacy entry);
+                                // t/s is only comparable at equal length
 };
 
 struct PerfBaselineTable {
@@ -55,6 +57,17 @@ enum class PerfVerdict {
 // below baseline -> pass; else degrade.
 PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
                       double tolerance_pct = 3.0);
+
+// Length-aware verdict: t/s depends on the actual generated length (EOS
+// timing shifts the KV-attention cost curve), so a run is only comparable
+// to a baseline recorded at the same fact length. actual_len is the run's
+// generated-token count; baseline_len is the entry's recorded fact length
+// (0 = legacy entry, falls back to comparing the max_gen protocol).
+// Length mismatch -> kUpdate (re-seed) regardless of the t/s direction;
+// match -> JudgePerf semantics.
+PerfVerdict JudgePerfLen(const std::optional<double> &baseline,
+                         double actual, int actual_len, int baseline_len,
+                         double tolerance_pct = 3.0);
 
 } // namespace perf_baseline
 } // namespace lsxcommon

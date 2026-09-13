@@ -8,6 +8,7 @@
 #include <string>
 
 using lsxcommon::perf_baseline::JudgePerf;
+using lsxcommon::perf_baseline::JudgePerfLen;
 using lsxcommon::perf_baseline::ParsePerfBaselines;
 using lsxcommon::perf_baseline::PerfBaselineEntry;
 using lsxcommon::perf_baseline::PerfBaselineTable;
@@ -49,6 +50,25 @@ TEST_CASE("JudgePerf: custom tolerance", "[perf_baseline]")
     REQUIRE(JudgePerf(base, 89.0, 10.0) == PerfVerdict::kDegrade);
 }
 
+TEST_CASE("JudgePerf: generation-length mismatch re-seeds, not degrades",
+          "[perf_baseline]")
+{
+    // t/s depends on the actual generated length (EOS timing shifts the
+    // KV-attention cost curve). A run whose fact length differs from the
+    // baseline protocol's fact length is NOT comparable: it re-seeds the
+    // reference (kUpdate) regardless of the direction of the change.
+    const std::optional<double> base{134.84};
+    REQUIRE(JudgePerfLen(base, 125.0, 1484, 2048) == PerfVerdict::kUpdate);
+    REQUIRE(JudgePerfLen(base, 160.0, 300, 2048) == PerfVerdict::kUpdate);
+    // Same fact length: normal verdicts apply.
+    REQUIRE(JudgePerfLen(base, 133.0, 2048, 2048) == PerfVerdict::kPass);
+    REQUIRE(JudgePerfLen(base, 125.0, 2048, 2048) == PerfVerdict::kDegrade);
+    // Unknown baseline length (legacy v1 entries) falls back to the
+    // max_gen protocol check: equal protocol = comparable.
+    REQUIRE(JudgePerfLen(base, 133.0, 2048, 0) == PerfVerdict::kPass);
+    REQUIRE(JudgePerfLen(base, 125.0, 2048, 0) == PerfVerdict::kDegrade);
+}
+
 TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
 {
     PerfBaselineTable t;
@@ -62,10 +82,12 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     e.prompt = "Write a detailed long essay";
     e.date = "2026-09-11";
     e.commit = "8c3a20e";
+    e.gen_tokens = 2048;
     t.entries.push_back(e);
     e.model_type = "glm-5.3-flash";
     e.os = "windows";
     e.tokens_per_sec = 32.1;
+    e.gen_tokens = 0;   // legacy-style entry
     t.entries.push_back(e);
 
     const auto parsed = ParsePerfBaselines(SerializePerfBaselines(t));
@@ -80,8 +102,35 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     REQUIRE(parsed->entries[0].prompt == "Write a detailed long essay");
     REQUIRE(parsed->entries[0].date == "2026-09-11");
     REQUIRE(parsed->entries[0].commit == "8c3a20e");
+    REQUIRE(parsed->entries[0].gen_tokens == 2048);
     REQUIRE(parsed->entries[1].os == "windows");
     REQUIRE(parsed->entries[1].tokens_per_sec == 32.1);
+    REQUIRE(parsed->entries[1].gen_tokens == 0);
+}
+
+TEST_CASE("Perf baselines: v1 file without gen_tokens still parses",
+          "[perf_baseline]")
+{
+    const std::string v1 = R"({
+  "format_version": 1,
+  "entries": [
+    {
+      "model_type": "qwen3.5-35b-a3b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "tokens_per_sec": 134.84,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-09-11",
+      "commit": "-"
+    }
+  ]
+})";
+    const auto parsed = ParsePerfBaselines(v1);
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->entries.size() == 1);
+    REQUIRE(parsed->entries[0].tokens_per_sec == 134.84);
+    REQUIRE(parsed->entries[0].gen_tokens == 0);
 }
 
 TEST_CASE("Perf baselines: empty table and garbage rejected", "[perf_baseline]")

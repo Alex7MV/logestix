@@ -107,8 +107,15 @@ std::string TodayIso()
 }
 
 // Measures one model; returns the lsxbenchmark-style t/s (the value is
-// computed by the model itself from its generation wall time).
-std::optional<double> MeasureModel(const PerfModel &m)
+// computed by the model itself from its generation wall time) plus the
+// ACTUAL generated token count (EOS timing is part of the measurement
+// protocol: t/s is only comparable at equal fact length).
+struct MeasureResult {
+    double tokens_per_sec = 0.0;
+    int gen_tokens = 0;
+};
+
+std::optional<MeasureResult> MeasureModel(const PerfModel &m)
 {
     // The ctest entry pins the vault subdir via env (per-model process);
     // direct binary runs fall back to the struct value.
@@ -138,24 +145,29 @@ std::optional<double> MeasureModel(const PerfModel &m)
     model->Unload();
     if (!r.ok) FAIL("Infer failed for " << m.model_type << ": "
                                         << r.error_msg);
-    return r.tokens_per_sec;
+    return MeasureResult{r.tokens_per_sec,
+                         static_cast<int>(r.gen_tokens.size())};
 }
 
-void CheckAgainstBaseline(const PerfModel &m, double actual)
+void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
 {
     pb::PerfBaselineTable table = LoadTable();
     const std::string gpu_key = lsxcommon::perf::GpuProfileKey(
         lsxcommon::perf::ProbeGpuPerfProfile());
     REQUIRE_FALSE(gpu_key.empty());
+    const double actual = mr.tokens_per_sec;
 
     const pb::PerfBaselineEntry *entry =
         pb::FindEntry(table, m.model_type, gpu_key, kThisOs);
     std::optional<double> baseline;
+    int baseline_len = 0;
     if (entry != nullptr && entry->max_gen == m.max_gen &&
         entry->prompt == m.prompt) {
         baseline = entry->tokens_per_sec;
+        baseline_len = entry->gen_tokens;
     }
-    const pb::PerfVerdict verdict = pb::JudgePerf(baseline, actual);
+    const pb::PerfVerdict verdict =
+        pb::JudgePerfLen(baseline, actual, mr.gen_tokens, baseline_len);
 
     switch (verdict) {
     case pb::PerfVerdict::kDegrade:
@@ -163,8 +175,9 @@ void CheckAgainstBaseline(const PerfModel &m, double actual)
                           << "]: DEGRADED baseline=" << *baseline
                           << " t/s, actual=" << actual
                           << " t/s (" << (100.0 * actual / *baseline)
-                          << "%). Root-cause the regression; the reference "
-                             "is not updated.");
+                          << "%) at equal fact length " << mr.gen_tokens
+                          << " tok. Root-cause the regression; the "
+                             "reference is not updated.");
         break;
     case pb::PerfVerdict::kUpdate: {
         pb::PerfBaselineEntry upsert;
@@ -176,6 +189,7 @@ void CheckAgainstBaseline(const PerfModel &m, double actual)
         upsert.prompt = m.prompt;
         upsert.date = TodayIso();
         upsert.commit = "-";
+        upsert.gen_tokens = mr.gen_tokens;
         bool replaced = false;
         for (auto &e : table.entries) {
             if (e.model_type == upsert.model_type && e.gpu_key == gpu_key &&
@@ -188,12 +202,19 @@ void CheckAgainstBaseline(const PerfModel &m, double actual)
         if (!replaced) table.entries.push_back(upsert);
         SaveTable(table);
         INFO(m.model_type << ": reference updated -> " << actual << " t/s"
-                          << (replaced ? " (improvement)" : " (new entry)"));
+                          << " at " << mr.gen_tokens << " tok"
+                          << (replaced ? (baseline.has_value() &&
+                                          baseline_len != 0 &&
+                                          mr.gen_tokens != baseline_len)
+                                           ? " (length re-seed)"
+                                           : " (improvement)"
+                                       : " (new entry)"));
         break;
     }
     case pb::PerfVerdict::kPass:
         INFO(m.model_type << ": within tolerance, baseline=" << *baseline
-                          << " t/s, actual=" << actual << " t/s");
+                          << " t/s, actual=" << actual << " t/s at "
+                          << mr.gen_tokens << " tok");
         break;
     }
 }

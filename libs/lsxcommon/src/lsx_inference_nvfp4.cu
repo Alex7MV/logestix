@@ -310,58 +310,47 @@ __global__ void lsx_nvfp4_gemv_kernel(
         const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
         const int chunks = (K / KP) >> 5;            // 32-element units
         // Two independent accumulator chains (ILP x2), merged in fixed
-        // order -- run-to-run deterministic. ILP4: each lane walks TWO
-        // chunk strata (c and c+32 within every 64-chunk window), four
-        // live accumulators merged lane-major then stratum-major. The
-        // merge order is fixed regardless of chunks, so the sum is
-        // deterministic and independent of the kp grain.
-        float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+        // order -- run-to-run deterministic. NOTE: keep this the plain
+        // 2-chain loop. An ILP4 strata variant (4 accs, 64-chunk windows)
+        // measured ~7% WORSE end-to-end on MoE models (qwen3.5/3.6, gemma:
+        // 134.8 -> 125 t/s, bisected 2026-09-13): expert rows are short
+        // (chunks ~ 16 at K=512), where the extra loop/break machinery
+        // costs more than the ILP buys. Large deep-K dense shapes use the
+        // dedicated warp-per-row kernel instead (K >= 4096 gate).
+        float acc0 = 0.0f, acc1 = 0.0f;
         const bool x_vec =
             (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
-        for (int base = 0; base < chunks; base += 64) {
-            // Process chunks [base, base+64) in lane-strided pairs: lane
-            // handles base+lane and base+32+lane (when in range).
-            const int lim = chunks - base < 64 ? chunks - base : 64;
+        for (int c = lane; c < chunks; c += 32) {
+            const uint4 pw = wv[c];
+            const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+            // One 32-element chunk spans two per-16 scale blocks:
+            // elements 0..15 of the chunk -> srow[sb], 16..31 -> sb+1.
+            // Byte j of the packed word holds elements 2j (low nibble)
+            // and 2j+1 (high nibble).
+            const int sb = (kb >> 4) + 2 * c;
+            const float sc0 = E4M3ScaleToFloat(srow[sb]);
+            const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+            const int xb = kb + c * 32;
+            const __half2 *xh = x_vec
+                ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
 #pragma unroll
-            for (int p = 0; p < 2; ++p) {
-                const int c = base + lane + p * 32;
-                if (lane + p * 32 >= lim) break;
-                const uint4 pw = wv[c];
-                const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
-                // One 32-element chunk spans two per-16 scale blocks:
-                // elements 0..15 of the chunk -> srow[sb], 16..31 -> sb+1.
-                // Byte j of the packed word holds elements 2j (low nibble)
-                // and 2j+1 (high nibble).
-                const int sb = (kb >> 4) + 2 * c;
-                const float sc0 = E4M3ScaleToFloat(srow[sb]);
-                const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
-                const int xb = kb + c * 32;
-                const __half2 *xh = x_vec
-                    ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
-#pragma unroll
-                for (int b = 0; b < 16; ++b) {
-                    const bool first_block = b < 8;
-                    const float scl = first_block ? sc0 : sc1;
-                    float xv0, xv1;
-                    if (x_vec) {
-                        const __half2 pair = xh[b];
-                        xv0 = __half2float(pair.x);
-                        xv1 = __half2float(pair.y);
-                    } else {
-                        xv0 = __half2float(x[xb + 2 * b]);
-                        xv1 = __half2float(x[xb + 2 * b + 1]);
-                    }
-                    if (p == 0) {
-                        acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
-                        acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
-                    } else {
-                        acc2 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
-                        acc3 += xv1 * E2M1Value(pb[b] >> 4) * scl;
-                    }
+            for (int b = 0; b < 16; ++b) {
+                const bool first_block = b < 8;
+                const float scl = first_block ? sc0 : sc1;
+                float xv0, xv1;
+                if (x_vec) {
+                    const __half2 pair = xh[b];
+                    xv0 = __half2float(pair.x);
+                    xv1 = __half2float(pair.y);
+                } else {
+                    xv0 = __half2float(x[xb + 2 * b]);
+                    xv1 = __half2float(x[xb + 2 * b + 1]);
                 }
+                acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+                acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
             }
         }
-        acc = (acc0 + acc2) + (acc1 + acc3);
+        acc = acc0 + acc1;
     }
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1)

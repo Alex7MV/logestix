@@ -19,7 +19,7 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
         return std::nullopt;
     int64_t ver = 0;
     if (root["format_version"].get(ver) != simdjson::SUCCESS ||
-        ver != kPerfBaselineFormatVersion)
+        (ver != kPerfBaselineFormatVersion && ver != 1))
         return std::nullopt;
     simdjson::dom::array entries;
     if (root["entries"].get_array().get(entries) != simdjson::SUCCESS)
@@ -55,6 +55,8 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
             e.date = sv;
         if (o["commit"].get_string().get(sv) == simdjson::SUCCESS)
             e.commit = sv;
+        if (o["gen_tokens"].get_int64().get(v) == simdjson::SUCCESS)
+            e.gen_tokens = static_cast<int>(v);
         t.entries.push_back(std::move(e));
     }
     return t;
@@ -77,7 +79,8 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
         absl::StrAppend(&s, "      \"max_gen\": ", e.max_gen, ",\n");
         absl::StrAppend(&s, "      \"prompt\": \"", e.prompt, "\",\n");
         absl::StrAppend(&s, "      \"date\": \"", e.date, "\",\n");
-        absl::StrAppend(&s, "      \"commit\": \"", e.commit, "\"\n");
+        absl::StrAppend(&s, "      \"commit\": \"", e.commit, "\",\n");
+        absl::StrAppend(&s, "      \"gen_tokens\": ", e.gen_tokens, "\n");
         absl::StrAppend(&s, "    }");
     }
     absl::StrAppend(&s, t.entries.empty() ? "]\n" : "\n  ]\n");
@@ -106,6 +109,19 @@ PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
     if (actual >= *baseline * (1.0 - tolerance_pct / 100.0))
         return PerfVerdict::kPass;
     return PerfVerdict::kDegrade;
+}
+
+PerfVerdict JudgePerfLen(const std::optional<double> &baseline,
+                         double actual, int actual_len, int baseline_len,
+                         double tolerance_pct)
+{
+    // Legacy entry (no recorded fact length): comparable iff the run used
+    // the same max_gen protocol.
+    if (baseline_len <= 0)
+        return JudgePerf(baseline, actual, tolerance_pct);
+    if (!baseline.has_value() || actual_len != baseline_len)
+        return PerfVerdict::kUpdate;
+    return JudgePerf(baseline, actual, tolerance_pct);
 }
 
 } // namespace perf_baseline
