@@ -65,6 +65,22 @@ bool LsxGemmLarge()
     return g_lsx_gemv_large.load(std::memory_order_relaxed);
 }
 
+int LsxGemmLargeEnvState()
+{
+    static const int s = [] {
+        const char *v = std::getenv("LSX_GEMV_LARGE");
+        return v ? (v[0] == '0' ? -1 : 1) : 0;
+    }();
+    return s;
+}
+
+bool LsxGemmLargeActive()
+{
+    const int env = LsxGemmLargeEnvState();
+    return env == 1 ||
+           (env == 0 && g_lsx_gemv_large.load(std::memory_order_relaxed));
+}
+
 void SetLsxDualStreamStaging(bool on)
 {
     g_lsx_dual_stream.store(on, std::memory_order_relaxed);
@@ -580,20 +596,23 @@ cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     // where the MMA path underfills at M == 1.
     static const bool kGemvHead =
         std::getenv("LSX_GEMV_HEAD") != nullptr;
-    // 27B-class dense decode (2026-09-13 profile): shapes with N >= 4096
-    // (MLP gate/up N=34816, down N=5120, head N=248320) are DRAM-bound;
-    // the warp-per-row streaming GEMV sustains ~2x the effective bandwidth
-    // of the TC M=64 tile path at seq==1 (probe: 894 vs ~428 GB/s).
+    // 27B-class dense decode (2026-09-13 profile): shapes with deep K and
+    // wide N (MLP gate/up K=5120 N=34816, down K=17408 N=5120, head
+    // K=5120 N=248320) are DRAM-bound; the warp-per-row streaming GEMV
+    // sustains ~2x the effective bandwidth of the TC M=64 tile path at
+    // seq==1 (probe: 894 vs ~428 GB/s).
+    // K floor 4096 is load-bearing: shallow-K shapes lose on warp-per-row
+    // (qwen3.5 lm_head K=2048 N=151936 / q_proj K=2048 N=4096 measured
+    // 139 -> 130 tok/s with the route on; A/B bisected 2026-09-13) --
+    // short rows cannot keep the per-warp chunk strata busy.
     // Controlled by the perf policy (gemv_large_default; LSX_GEMV_LARGE env
-    // kept as a legacy override): routes ONLY large-N plain shapes;
-    // small-N / MoE shapes and the segmented fused qkv|z|a|b path are
-    // untouched.
-    static const bool kGemvLargeEnv =
-        std::getenv("LSX_GEMV_LARGE") != nullptr;
+    // kept as a tri-state override: 1=force on, 0=force off, unset=policy):
+    // routes ONLY large-N plain shapes; small-N / MoE shapes and the
+    // segmented fused qkv|z|a|b path are untouched.
     const bool gemv_large =
-        (kGemvLargeEnv || g_lsx_gemv_large.load(std::memory_order_relaxed)) &&
+        LsxGemmLargeActive() &&
         seq == 1 && !seg_wgs_dev && !seg_bounds_dev &&
-        K >= 512 && N >= 4096;
+        K >= 4096 && N >= 4096;
     const bool gemv_small =
         g_lsx_tc_fast_math.load(std::memory_order_relaxed) &&
         LsxSeq1Gemv() &&

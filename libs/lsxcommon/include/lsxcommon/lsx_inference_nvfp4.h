@@ -86,6 +86,11 @@ int LsxGemmMaxMib();
 void SetLsxGemmLarge(bool on);
 bool LsxGemmLarge();
 
+// Effective large-N GEMV state with the LSX_GEMV_LARGE tri-state env applied
+// (1=forced on, 0=forced off, unset=policy knob). Side gates that must stay
+// consistent with the dispatcher's routing read this, not LsxGemmLarge().
+bool LsxGemmLargeActive();
+
 // Dual-stream expert-staging toggle (H2D/compute overlap). Default true;
 // narrow-bus GPUs resolve this to false and keep single-stream staging.
 void SetLsxDualStreamStaging(bool on);

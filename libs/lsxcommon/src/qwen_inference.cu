@@ -1399,12 +1399,16 @@ cudaError_t RunQwenFusedMLP(cudaStream_t stream, const QwenLayerWeights &lw,
 
         // Producer-fused quant: swiglu emits the NVFP4 form of d_gate so
         // the down GEMM skips its standalone ActQuant pass (TC only).
-        // 27B decode profile: with the large-N GEMV policy the down
-        // projection (K=17408, N=5120) streams faster on the warp-per-row
-        // GEMV than on the TC tile path, so skip the PreQuant branch and
-        // let the plain GEMV route handle both GEMMs (swiglu output stays
-        // fp16; ActQuant runs inside the GEMV dispatch).
-        if (!QwenGemmLarge() && QwenTcFastMath() && (I % 16) == 0) {
+        // 27B decode profile: when the down projection will actually route
+        // through the warp-per-row GEMV (K%64==0, deep-K large-N policy
+        // active), skipping PreQuant lets the plain GEMV handle both GEMMs
+        // and wins. For shallower shapes (e.g. qwen3.5 down K=512 N=2048)
+        // the PreQuant TC branch stays — the sliced GEMV loses to TC there
+        // (qwen3.5 139 -> 130 tok/s A/B, bisected 2026-09-13).
+        const bool down_warprow =
+            QwenGemmLargeActive() && seq == 1 && (I % 64) == 0 &&
+            H >= 2048 && I >= 4096;
+        if (!down_warprow && QwenTcFastMath() && (I % 16) == 0) {
             const size_t qb = static_cast<size_t>(seq) * I / 2;
             const size_t sb2 = static_cast<size_t>(seq) * ((I + 15) / 16);
             uint8_t *ap = nullptr, *as = nullptr;

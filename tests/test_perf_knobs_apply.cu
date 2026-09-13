@@ -50,3 +50,24 @@ TEST_CASE("LsxTcBatchSplitK follows the splitk_grid_min knob", "[perf_knobs]")
     REQUIRE(LsxTcBatchSplitK(2048, 1024) == 8);  // grid_x=16: 16*8=128 >= 64
     SetLsxSplitKGridMin(96);  // restore default
 }
+
+TEST_CASE("LsxGemmLarge knob toggles the large-N GEMV route", "[perf_knobs]")
+{
+    SetLsxGemmLarge(true);
+    REQUIRE(LsxGemmLarge());
+    SetLsxGemmLarge(false);
+    REQUIRE_FALSE(LsxGemmLarge());
+}
+
+TEST_CASE("LsxGemmLargeActive honors knob and tri-state env", "[perf_knobs]")
+{
+    // Policy alone.
+    SetLsxGemmLarge(false);
+    REQUIRE_FALSE(LsxGemmLargeActive());
+    SetLsxGemmLarge(true);
+    REQUIRE(LsxGemmLargeActive());
+    // Note: the LSX_GEMV_LARGE env (1/-1 state) overrides both ways and is
+    // process-static by design (read once); this process runs with the env
+    // unset (state 0 -> policy decides), asserted indirectly above.
+    SetLsxGemmLarge(false);
+}
