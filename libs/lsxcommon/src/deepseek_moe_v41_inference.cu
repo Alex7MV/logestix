@@ -272,6 +272,21 @@ __global__ void indexer_scores_kernel(const __half *__restrict__ q, int heads,
     if (lane == 0) out[pos] = acc;
 }
 
+__global__ void expert_swiglu_kernel(const float *__restrict__ gate,
+                                     const float *__restrict__ up,
+                                     float *__restrict__ out, int n, float limit)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float u = up[i];
+    float g = gate[i];
+    if (limit > 0.0f) {
+        u = fminf(fmaxf(u, -limit), limit);
+        g = fminf(g, limit);
+    }
+    out[i] = (g / (1.0f + expf(-g))) * u;
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -370,6 +385,16 @@ cudaError_t LaunchIndexerScores(const uint16_t *q, int heads, int dim,
     indexer_scores_kernel<<<n_pos, 32, 0, stream>>>(
         reinterpret_cast<const __half *>(q), heads, dim,
         reinterpret_cast<const __half *>(k), n_pos, w, out);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
+                               int n, float limit, cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    const int block = 256;
+    expert_swiglu_kernel<<<(n + block - 1) / block, block, 0, stream>>>(
+        gate, up, out, n, limit);
     return cudaGetLastError();
 }
 

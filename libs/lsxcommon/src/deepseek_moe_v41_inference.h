@@ -58,5 +58,10 @@ cudaError_t LaunchIndexerScores(const uint16_t *q, int heads, int dim,
                                 const uint16_t *k, int n_pos, const float *w,
                                 float *out, cudaStream_t stream);
 
+// out[i] = silu(min(gate[i], limit)) * clamp(up[i], -limit, limit). limit<=0
+// disables the clamps. F32 vectors of length n.
+cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
+                               int n, float limit, cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

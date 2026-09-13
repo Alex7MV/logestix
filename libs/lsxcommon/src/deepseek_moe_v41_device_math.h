@@ -317,5 +317,21 @@ inline void GateRouteRef(const float *scores, const float *bias, int n_routed,
     for (int k = 0; k < topk; ++k) out_w[k] *= route_scale;
 }
 
+// Expert SwiGLU (model.py:841): up clamped both sides, gate only above, then
+// silu(gate)*up. limit <= 0 disables the clamps.
+inline void ExpertSwigluRef(const float *gate, const float *up, float *out,
+                            int n, float limit)
+{
+    for (int i = 0; i < n; ++i) {
+        float u = up[i];
+        float g = gate[i];
+        if (limit > 0.0f) {
+            u = std::clamp(u, -limit, limit);
+            g = std::min(g, limit);
+        }
+        out[i] = (g / (1.0f + std::exp(-g))) * u;
+    }
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

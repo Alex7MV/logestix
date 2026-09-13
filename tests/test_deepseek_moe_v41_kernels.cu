@@ -457,3 +457,30 @@ TEST_CASE("deepseek-v41 router gate matches the reference selection",
     CHECK(w[1] == Catch::Approx(1.5f * b / (a + b)).margin(1e-5f));
     CHECK((w[0] + w[1]) == Catch::Approx(1.5f).margin(1e-5f));
 }
+
+TEST_CASE("deepseek-v41 expert swiglu clamps match the host reference",
+          "[deepseek-v41][kernels]")
+{
+    using lsxcommon::deepseek_v41::ExpertSwigluRef;
+    const int n = 64;
+    std::vector<float> gate(n), up(n);
+    for (int i = 0; i < n; ++i) {
+        // Include values beyond the +-10 clamp range.
+        gate[i] = 0.9f * static_cast<float>((i * 5) % 29) - 13.0f;
+        up[i] = 0.8f * static_cast<float>((i * 7) % 31) - 12.5f;
+    }
+    float *dg, *du, *dout;
+    REQUIRE(cudaMalloc(&dg, n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&du, n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, n * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dg, gate.data(), n * 4, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(du, up.data(), n * 4, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchExpertSwiglu(dg, du, dout, n, 10.0f,
+                                                        nullptr) == cudaSuccess);
+    std::vector<float> got(n), ref(n);
+    REQUIRE(cudaMemcpy(got.data(), dout, n * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+    ExpertSwigluRef(gate.data(), up.data(), ref.data(), n, 10.0f);
+    for (int i = 0; i < n; ++i)
+        CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-5f));
+    cudaFree(dg); cudaFree(du); cudaFree(dout);
+}
