@@ -44,9 +44,34 @@ cudaError_t ReadPinnedFile(const fs::path &path, TensorMap *out)
     return cudaSuccess;
 }
 
+// Reusable device staging buffer. Host tensors are copied here before any
+// conversion kernel touches them: passing a pageable host pointer straight to
+// a kernel is only legal where the device can address host memory
+// (cudaDevAttrPageableMemoryAccess), and even there it is fragile. All uses are
+// on one stream, so the next copy waits for the previous kernel.
+struct StageBuf {
+    void *buf = nullptr;
+    size_t cap = 0;
+    ~StageBuf()
+    {
+        if (buf) cudaFree(buf);
+    }
+    cudaError_t Ensure(size_t n)
+    {
+        if (n <= cap) return cudaSuccess;
+        if (buf) cudaFree(buf);
+        buf = nullptr;
+        cap = 0;
+        if (cudaMalloc(&buf, n) != cudaSuccess) return cudaGetLastError();
+        cap = n;
+        return cudaSuccess;
+    }
+};
+
 // BF16 [n] -> FP16 device allocation.
 cudaError_t UploadBf16(const TensorRecord &t, std::vector<void *> &owned,
-                       uint64_t &bytes, __half **out, cudaStream_t stream)
+                       uint64_t &bytes, __half **out, cudaStream_t stream,
+                       StageBuf &stage)
 {
     const int64_t n = Numel(t.shape);
     if (t.dtype != "BF16" ||
@@ -58,8 +83,13 @@ cudaError_t UploadBf16(const TensorRecord &t, std::vector<void *> &owned,
     owned.push_back(d);
     bytes += static_cast<uint64_t>(n) * 2;
     *out = static_cast<__half *>(d);
-    return LaunchBf16ToHalf(t.data.data(), static_cast<uint16_t *>(d), n,
-                            stream);
+    const size_t nb = static_cast<size_t>(n) * 2;
+    if (stage.Ensure(nb) != cudaSuccess) return cudaGetLastError();
+    if (cudaMemcpyAsync(stage.buf, t.data.data(), nb,
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess)
+        return cudaGetLastError();
+    return LaunchBf16ToHalf(static_cast<const uint8_t *>(stage.buf),
+                            static_cast<uint16_t *>(d), n, stream);
 }
 
 // F32 passthrough.
@@ -84,7 +114,8 @@ cudaError_t UploadF32(const TensorRecord &t, std::vector<void *> &owned,
 cudaError_t UploadFp8(const TensorRecord &w, const TensorRecord &sc,
                       std::vector<void *> &owned, uint64_t &bytes,
                       __half **out, int *rows_out, int *cols_out,
-                      cudaStream_t stream)
+                      cudaStream_t stream, StageBuf &stage_w,
+                      StageBuf &stage_s)
 {
     if (w.dtype != "F8_E4M3" || w.shape.size() != 2 ||
         sc.dtype != "F8_E8M0" || sc.shape.size() != 2)
@@ -108,9 +139,20 @@ cudaError_t UploadFp8(const TensorRecord &w, const TensorRecord &sc,
     *out = static_cast<__half *>(d);
     if (rows_out) *rows_out = rows;
     if (cols_out) *cols_out = cols;
+    const size_t wb = static_cast<size_t>(rows) * cols;
+    const size_t sb = static_cast<size_t>(srows) * scols;
+    if (stage_w.Ensure(wb) != cudaSuccess ||
+        stage_s.Ensure(sb) != cudaSuccess)
+        return cudaGetLastError();
+    if (cudaMemcpyAsync(stage_w.buf, w.data.data(), wb,
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess ||
+        cudaMemcpyAsync(stage_s.buf, sc.data.data(), sb,
+                        cudaMemcpyHostToDevice, stream) != cudaSuccess)
+        return cudaGetLastError();
     return LaunchFp8BlockDequantToHalf(
-        w.data.data(), sc.data.data(), static_cast<uint16_t *>(d), rows, cols,
-        stream);
+        static_cast<const uint8_t *>(stage_w.buf),
+        static_cast<const uint8_t *>(stage_s.buf), static_cast<uint16_t *>(d),
+        rows, cols, stream);
 }
 
 #define V41_REQUIRE(expr)                                   \
@@ -161,14 +203,14 @@ cudaError_t load_pinned_weights(const std::string &model_path,
     pw.vocab_size = static_cast<int>(embed->shape[0]);
     pw.hidden = static_cast<int>(embed->shape[1]);
 
+    StageBuf stage_bf16, stage_w, stage_s;
     V41_REQUIRE(UploadBf16(*embed, pw.owned, pw.resident_bytes, &pw.d_embed,
-                           stream));
+                           stream, stage_bf16));
     V41_REQUIRE(UploadBf16(*head, pw.owned, pw.resident_bytes, &pw.d_head,
-                           stream));
+                           stream, stage_bf16));
     V41_REQUIRE(UploadBf16(*fnorm, pw.owned, pw.resident_bytes,
-                           &pw.d_final_norm, stream));
-    // The upload kernels/copies read the host TensorRecord buffers directly;
-    // drain the stream before `globals` (and its vectors) goes out of scope.
+                           &pw.d_final_norm, stream, stage_bf16));
+    // Drain the stream before `globals` (and its vectors) goes out of scope.
     if (cudaStreamSynchronize(stream) != cudaSuccess)
         return cudaErrorInvalidValue;
 
@@ -195,7 +237,8 @@ cudaError_t load_pinned_weights(const std::string &model_path,
                 if (!required) { *dst = nullptr; return cudaSuccess; }
                 return cudaErrorInvalidValue;
             }
-            return UploadBf16(*t, lw.owned, pw.resident_bytes, dst, stream);
+            return UploadBf16(*t, lw.owned, pw.resident_bytes, dst, stream,
+                              stage_bf16);
         };
         auto f32 = [&](const char *suffix, float **dst, bool required) {
             const auto *t = req(suffix);
@@ -213,7 +256,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
             const auto *sc = req(sc_name.c_str());
             if (!w || !sc) return cudaErrorInvalidValue;
             return UploadFp8(*w, *sc, lw.owned, pw.resident_bytes, dst, rows,
-                             cols, stream);
+                             cols, stream, stage_w, stage_s);
         };
 
         V41_REQUIRE(bf16("attn_norm.weight", &lw.d_attn_norm, true));
@@ -234,6 +277,14 @@ cudaError_t load_pinned_weights(const std::string &model_path,
                         &lw.wo_b_cols));
 
         V41_REQUIRE(bf16("ffn.gate.weight", &lw.d_gate_weight, true));
+        // The router launcher needs [n_routed, hidden]; UploadBf16 does not
+        // record shapes, so read them from the source record.
+        {
+            const auto *g = req("ffn.gate.weight");
+            if (!g || g->shape.size() != 2) return cudaErrorInvalidValue;
+            lw.gate_rows = static_cast<int>(g->shape[0]);
+            lw.gate_cols = static_cast<int>(g->shape[1]);
+        }
         V41_REQUIRE(f32("ffn.gate.bias", &lw.d_gate_bias, true));
         V41_REQUIRE(f32("ffn.gate.bias_vl", &lw.d_gate_bias_vl, false));
 

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -54,6 +55,22 @@ constexpr int kIdxTopk = dv41::kIndexTopk;
 constexpr int kCompressCap = 4096;
 
 // Frees every device allocation registered through add().
+struct EventSet {
+    cudaEvent_t start = nullptr, ttft = nullptr, stop = nullptr;
+    EventSet()
+    {
+        cudaEventCreate(&start);
+        cudaEventCreate(&ttft);
+        cudaEventCreate(&stop);
+    }
+    ~EventSet()
+    {
+        if (start) cudaEventDestroy(start);
+        if (ttft) cudaEventDestroy(ttft);
+        if (stop) cudaEventDestroy(stop);
+    }
+};
+
 struct DevSet {
     std::vector<void *> ptrs;
     ~DevSet()
@@ -65,6 +82,13 @@ struct DevSet {
     {
         void *p = nullptr;
         if (cudaMalloc(&p, bytes) != cudaSuccess) return nullptr;
+        // Deterministic baseline: every scratch/persistent buffer starts at
+        // zero, so a read-before-full-write (e.g. an invalid attention index
+        // that must never be dereferenced) cannot leak stale memory.
+        if (cudaMemset(p, 0, bytes) != cudaSuccess) {
+            cudaFree(p);
+            return nullptr;
+        }
         ptrs.push_back(p);
         return p;
     }
@@ -231,6 +255,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
 
     // LayerWeights stores __half*, the kernel API takes uint16_t bit patterns.
 #define U(x) reinterpret_cast<const uint16_t *>(x)
+    EventSet ev;
+    cudaEventRecord(ev.start, stream);
     bool first_gen_captured = false;
     for (int step = 0; step < total_steps; ++step) {
         const int cur_tok = (step < prompt_len) ? input_ids[step] : gen.back();
@@ -490,6 +516,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             result.first_gen_maxv = maxv;
             result.first_gen_text =
                 tok_db ? lsxcommon::runtime::DecodeGeneratedText(*tok_db, {next_tok}) : std::string();
+            cudaEventRecord(ev.ttft, stream);
             first_gen_captured = true;
         }
         if (tok_db && next_tok == tok_db->eos_id && step >= prompt_len) {
@@ -497,6 +524,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             break;
         }
     }
+    cudaEventRecord(ev.stop, stream);
 
     {
         result.final_logits.resize(static_cast<size_t>(pw.vocab_size));
@@ -517,6 +545,15 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                                                                 gen_tokens)
                                : std::string();
     result.weight_resident_bytes = pw.resident_bytes;
+    float total_ms = 0.0f, ttft_ms = 0.0f;
+    cudaStreamSynchronize(stream);
+    cudaEventElapsedTime(&total_ms, ev.start, ev.stop);
+    cudaEventElapsedTime(&ttft_ms, ev.start, ev.ttft);
+    result.total_time_ms = static_cast<double>(total_ms);
+    result.ttft_ms = static_cast<double>(ttft_ms);
+    result.tokens_per_sec = (total_ms > 0.0f)
+        ? (static_cast<double>(result.num_tokens) / (total_ms / 1000.0))
+        : 0.0;
     result.ok = true;
     return result;
 }
