@@ -398,5 +398,33 @@ cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
     return cudaGetLastError();
 }
 
+cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
+                           const uint16_t *A, const uint16_t *B, uint16_t *C,
+                           int M, int N, int K)
+{
+    if (M <= 0 || N <= 0 || K <= 0) return cudaSuccess;
+    const float alpha = 1.0f, beta = 0.0f;
+    // Row-major C[M,N] = A[M,K]*B[K,N] == column-major C^T[N,M] = B^T[N,K]*A^T[K,M].
+    const cublasStatus_t st = cublasGemmEx(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F, N,
+        A, CUDA_R_16F, K, &beta, C, CUDA_R_16F, N, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+}
+
+cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
+                             const uint16_t *w, const uint16_t *x,
+                             float *logits, int vocab, int hidden)
+{
+    if (vocab <= 0 || hidden <= 0) return cudaSuccess;
+    const float alpha = 1.0f, beta = 0.0f;
+    // logits[V] = W[V,H]*x[H] -> column-major [1,V] = x_col[1,H] * W_col[H,V].
+    const cublasStatus_t st = cublasGemmEx(
+        handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, vocab, hidden, &alpha, x,
+        CUDA_R_16F, 1, w, CUDA_R_16F, hidden, &beta, logits, CUDA_R_32F, 1,
+        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

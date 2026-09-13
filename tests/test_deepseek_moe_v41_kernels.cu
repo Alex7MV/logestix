@@ -11,6 +11,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <cmath>
 #include <cstdint>
@@ -483,4 +484,73 @@ TEST_CASE("deepseek-v41 expert swiglu clamps match the host reference",
     for (int i = 0; i < n; ++i)
         CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-5f));
     cudaFree(dg); cudaFree(du); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
+          "[deepseek-v41][kernels]")
+{
+    cublasHandle_t h = nullptr;
+    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
+
+    // C[2,3] = A[2,4] * B[4,3].
+    const int M = 2, N = 3, K = 4;
+    std::vector<float> Af(M * K), Bf(K * N);
+    for (size_t i = 0; i < Af.size(); ++i)
+        Af[i] = 0.25f * static_cast<float>(static_cast<int>(i % 9) - 4);
+    for (size_t i = 0; i < Bf.size(); ++i)
+        Bf[i] = 0.2f * static_cast<float>(static_cast<int>(i % 7) - 3);
+
+    std::vector<uint16_t> Ah, Bh;
+    for (float v : Af) Ah.push_back(H(v));
+    for (float v : Bf) Bh.push_back(H(v));
+    uint16_t *dA, *dB, *dC;
+    REQUIRE(cudaMalloc(&dA, Ah.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dB, Bh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dC, M * N * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dA, Ah.data(), Ah.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dB, Bh.data(), Bh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(h, nullptr, dA, dB, dC, M,
+                                                    N, K) == cudaSuccess);
+    std::vector<uint16_t> Ch(M * N);
+    REQUIRE(cudaMemcpy(Ch.data(), dC, M * N * 2, cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    std::vector<float> Aff = ToFloat(Ah), Bff = ToFloat(Bh);
+    for (int m = 0; m < M; ++m)
+        for (int n = 0; n < N; ++n) {
+            float acc = 0.0f;
+            for (int k = 0; k < K; ++k)
+                acc += Aff[m * K + k] * Bff[k * N + n];
+            CHECK(F(Ch[m * N + n]) == Catch::Approx(acc).margin(3e-3f));
+        }
+
+    // Head logits: logits[3] = W[3,4] * x[4], F32 output.
+    const int V = 3, Hd = 4;
+    std::vector<float> Wf(V * Hd), xf(Hd);
+    for (size_t i = 0; i < Wf.size(); ++i)
+        Wf[i] = 0.3f * static_cast<float>(static_cast<int>(i % 5) - 2);
+    for (size_t i = 0; i < xf.size(); ++i) xf[i] = 0.1f * static_cast<float>(i) + 0.05f;
+    std::vector<uint16_t> Wh, xh;
+    for (float v : Wf) Wh.push_back(H(v));
+    for (float v : xf) xh.push_back(H(v));
+    uint16_t *dW, *dx;
+    float *dlog;
+    REQUIRE(cudaMalloc(&dW, Wh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, xh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dlog, V * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dW, Wh.data(), Wh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), xh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchHeadLogits(h, nullptr, dW, dx, dlog,
+                                                      V, Hd) == cudaSuccess);
+    std::vector<float> logits(V);
+    REQUIRE(cudaMemcpy(logits.data(), dlog, V * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+    std::vector<float> Wff = ToFloat(Wh), xff = ToFloat(xh);
+    for (int v = 0; v < V; ++v) {
+        float acc = 0.0f;
+        for (int j = 0; j < Hd; ++j) acc += Wff[v * Hd + j] * xff[j];
+        CHECK(logits[v] == Catch::Approx(acc).margin(1e-4f));
+    }
+
+    cudaFree(dA); cudaFree(dB); cudaFree(dC);
+    cudaFree(dW); cudaFree(dx); cudaFree(dlog);
+    cublasDestroy(h);
 }

@@ -345,6 +345,7 @@ target_include_directories(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_INCL
 target_compile_definitions(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_deepseek_v41_cu
     "${CUDA_CUDART_LIBRARY}"
+    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     absl::strings
 )

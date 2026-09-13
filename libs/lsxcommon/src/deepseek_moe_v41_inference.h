@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 namespace lsxcommon {
@@ -62,6 +63,16 @@ cudaError_t LaunchIndexerScores(const uint16_t *q, int heads, int dim,
 // disables the clamps. F32 vectors of length n.
 cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
                                int n, float limit, cudaStream_t stream);
+
+// Row-major FP16 dense GEMM: C[M,N] = A[M,K] * B[K,N]. F32 accumulation.
+cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
+                           const uint16_t *A, const uint16_t *B, uint16_t *C,
+                           int M, int N, int K);
+
+// Head logits (F32): logits[V] = W[V,H] * x[H], FP16 inputs, F32 accumulation.
+cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
+                             const uint16_t *w, const uint16_t *x, float *logits,
+                             int vocab, int hidden);
 
 } // namespace deepseek_v41
 } // namespace lsxcommon
