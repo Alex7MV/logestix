@@ -39,6 +39,7 @@ std::regex SchemeRegex()
         "|expert_kernels"
         "|expert_cache"
         "|device_math"
+        "|dequant"
         "|norm_kernels"
         "|fp8"
         "|constants)";
@@ -152,4 +153,5 @@ TEST_CASE("naming guard accepts deepseek_moe_v41_* stems", "[naming][guard]")
     CHECK(m("deepseek_moe_v41_inference"));
     CHECK(m("deepseek_moe_v41_inference_attn"));
     CHECK(m("deepseek_moe_v41_device_math"));
+    CHECK(m("deepseek_moe_v41_dequant"));
 }
