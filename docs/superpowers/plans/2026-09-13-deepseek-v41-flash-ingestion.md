@@ -822,13 +822,22 @@ CED kv/index source, 2 experts) and runs the production
 `RunDeepSeekV41Inference` graph end-to-end; tokens are byte-identical across
 repeated runs. This is the execution-graph proof (no real numerics).
 
-**Remaining operator step (not an AI session):** convert the real
-`DeepSeek-V4.1-Flash` checkpoint via
-`lsxforge --deepseek_v41 --input <model_dir> --output <model_dir>` (~350 GB
-read, heavy GPU/disk job), then run
-`ctest -R test_deepseek_moe_v41_selfcheck` with `LSX_TEST_DEEPSEEK_V41_ROOT`
-pointing at the converted tree for the `"Paris"` / bit-exact selfcheck.
-Until then the selfcheck SKIPs (`SKIP_RETURN_CODE 4`), as designed.
+**Real-model Paris selfcheck PASSES (2026-09-13):** the vault was converted with
+`lsxforge --deepseek_v41` (1246 pinned tensors, 15360 experts, engram/mtp/vision
+cut) and `test_deepseek_moe_v41_selfcheck` passes 3/3 cycles with bit-exact
+`final_logits`: top-1 token 11111 -> `"Paris"`. Measured baseline on RTX 5090:
+**1.1 tok/s**, TTFT ~2.15 s, resident 15.3 GiB, `--max-gen 16`. All 1243 pinned
+tensors were verified byte-identical to the source checkpoint; the expert
+NVFP4/E8M0->E4M3 repack is exact by construction.
+
+Bug found and fixed during real-model bring-up: the loader never populated
+`LayerWeights::gate_rows`, so `LaunchRouterTopK` early-returned with
+`n_routed == 0` and every token silently routed to expert 0 with zero weight
+(routed MoE contributed nothing). Fixed by reading `[n_routed, hidden]` from the
+gate weight record. Host tensors are now staged to device before the
+dequant/convert kernels (pageable host pointers are only device-addressable on
+host-coherent systems).
 
 **Deferred by design:** engram (not converted), DSpark MTP (stored), vision
-(cut), performance pass (correctness first).
+(cut), performance pass (the 1.1 tok/s baseline is correctness-first: no device
+expert LRU cache; each token stages 6 experts x 40 layers over H2D).
