@@ -18,6 +18,7 @@
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
+#include "lsxcommon/deepseek_moe_v41_convert.h"
 #include "lsxcommon/log.h"
 #include <arrow/api.h>
 #include <fstream>
@@ -57,6 +58,11 @@ ABSL_FLAG(bool, vram_recompute, false,
 // --input = source vault, --output = destination vault (same layout).
 ABSL_FLAG(bool, deepseek_nvfp4, false,
           "repack DeepSeek routed experts to NVFP4 (logestix-v1 -> v1-nvfp4)");
+// DeepSeek-V4.1-Flash ingestion: HF safetensors -> logestix-v41-nvfp4
+// (dense FP8 passthrough, routed experts E8M0/32 -> NVFP4, vision/engram/MTP
+// excluded with a counted record).
+ABSL_FLAG(bool, deepseek_v41, false,
+          "convert DeepSeek-V4.1-Flash to the logestix-v41-nvfp4 layout");
 // Generation path execution option: routes the resolved prompt straight into
 // the tokenizer encode channel and the single end-to-end cudaStream_t
 // Prefill->Decode autogeneration sequence loop (IModel::Infer), bypassing the
@@ -179,6 +185,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("DeepSeek NVFP4 repack complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (absl::GetFlag(FLAGS_deepseek_v41)) {
+        lsxcommon::log::info(absl::StrFormat(
+            "DeepSeek-V4.1-Flash conversion (%s -> %s)", input_path,
+            output_path));
+        auto st = lsxcommon::deepseek_v41::ConvertDeepSeekV41Model(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "DeepSeek-V4.1-Flash conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("DeepSeek-V4.1-Flash conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

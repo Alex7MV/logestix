@@ -18,6 +18,7 @@ add_library(lsxcommon STATIC
     src/core.cpp
     src/common.cpp
     src/deepseek_moe_model.cpp
+    src/deepseek_moe_v41_convert.cpp
     src/deepseek_moe_v41_load.cpp
     src/generation_cli.cpp
     src/glm_moe_convert.cpp

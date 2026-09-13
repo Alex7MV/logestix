@@ -150,6 +150,19 @@ endif()
 
 add_test(NAME test_deepseek_moe_v41_loader COMMAND test_deepseek_moe_v41_loader)
 
+# ── DeepSeek-V4.1-Flash: converter (synthetic e2e, host-only) ────────────
+add_executable(test_deepseek_moe_v41_convert test_deepseek_moe_v41_convert.cpp)
+target_compile_definitions(test_deepseek_moe_v41_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_deepseek_moe_v41_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_v41_convert PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_deepseek_moe_v41_convert COMMAND test_deepseek_moe_v41_convert)
+set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES LABELS convert)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
