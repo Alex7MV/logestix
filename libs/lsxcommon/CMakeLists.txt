@@ -296,6 +296,7 @@ target_link_libraries(lsxcommon_gemma_cu
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
+    lsxcommon_deepseek_v41_cu
     lsx_tune)
 
 # qwen4_exp (Qwen3.8-Flash-Next) bit-exact kernels: hc GatedResidual, QSA
@@ -319,6 +320,28 @@ target_compile_options(lsxcommon_qwen_moe_exp_cu PRIVATE
 target_include_directories(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_qwen_moe_exp_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_moe_exp_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    absl::strings
+)
+
+# DeepSeek-V4.1-Flash load-time dense dequant (F8_E4M3 x UE8M0 32x32 -> FP16)
+# and BF16->FP16 upload. -fmad=false keeps the load path bit-exact.
+add_library(lsxcommon_deepseek_v41_cu OBJECT
+    src/deepseek_moe_v41_dequant.cu
+)
+set_target_properties(lsxcommon_deepseek_v41_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_deepseek_v41_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_deepseek_v41_cu
     "${CUDA_CUDART_LIBRARY}"
     arrow_shared
     absl::strings
