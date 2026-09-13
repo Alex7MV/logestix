@@ -748,3 +748,176 @@ TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
     cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2); cudaFree(dout);
     cublasDestroy(h);
 }
+
+namespace {
+
+// Values assumed already on the E2M1 grid; encodes the sign-magnitude nibble.
+uint8_t E2m1Nibble(float v)
+{
+    const float a = std::fabs(v);
+    int code = 0;
+    if (a > 5.0f) code = 7;        // 6
+    else if (a > 3.5f) code = 6;   // 4
+    else if (a > 2.5f) code = 5;   // 3
+    else if (a > 1.75f) code = 4;  // 2
+    else if (a > 1.25f) code = 3;  // 1.5
+    else if (a > 0.75f) code = 2;  // 1
+    else if (a > 0.25f) code = 1;  // 0.5
+    return static_cast<uint8_t>(code | (v < 0.0f ? 8 : 0));
+}
+
+struct Nvfp4Host {
+    std::vector<uint8_t> packed, scales;
+};
+
+// [N,K] row-major weight, every value on the E2M1 grid, per-16 scale 1.0
+// (E4M3 0x38), global_scale 1.0. Low nibble = even K index.
+Nvfp4Host PackNvfp4(const std::vector<float> &w, int N, int K)
+{
+    Nvfp4Host o;
+    o.packed.assign(static_cast<size_t>(N) * K / 2, 0);
+    o.scales.assign(static_cast<size_t>(N) * K / 16, 0x38);
+    for (int n = 0; n < N; ++n)
+        for (int k = 0; k < K; k += 2) {
+            const uint8_t lo =
+                E2m1Nibble(w[static_cast<size_t>(n) * K + k]);
+            const uint8_t hi =
+                E2m1Nibble(w[static_cast<size_t>(n) * K + k + 1]);
+            o.packed[static_cast<size_t>(n) * K / 2 + k / 2] =
+                static_cast<uint8_t>(lo | (hi << 4));
+        }
+    return o;
+}
+
+uint8_t *DevBytes(const std::vector<uint8_t> &b)
+{
+    uint8_t *d = nullptr;
+    REQUIRE(cudaMalloc(&d, b.size()) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d, b.data(), b.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    return d;
+}
+
+} // namespace
+
+TEST_CASE("deepseek-v41 router top-k matches the gate reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n = 6, hidden = 8, topk = 2;
+    std::vector<float> wf(n * hidden), xf(hidden), bias(n);
+    for (int i = 0; i < n * hidden; ++i)
+        wf[i] = 0.1f * static_cast<float>((i % 13) - 6);
+    for (int j = 0; j < hidden; ++j) xf[j] = 0.25f * static_cast<float>(j - 4);
+    for (int i = 0; i < n; ++i) bias[i] = 0.05f * static_cast<float>(i - 3);
+
+    uint16_t *dw = nullptr, *dx = nullptr;
+    REQUIRE(cudaMalloc(&dw, n * hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    std::vector<uint16_t> wh(n * hidden), xh(hidden);
+    for (int i = 0; i < n * hidden; ++i) wh[i] = H(wf[i]);
+    for (int j = 0; j < hidden; ++j) xh[j] = H(xf[j]);
+    REQUIRE(cudaMemcpy(dw, wh.data(), n * hidden * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    cublasHandle_t h = nullptr;
+    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
+    int32_t got_idx[32];
+    float got_w[32];
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
+                h, nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f,
+                true, got_idx, got_w) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+
+    std::vector<float> wff(wh.size()), xff(xh.size());
+    for (size_t i = 0; i < wh.size(); ++i) wff[i] = F(wh[i]);
+    for (size_t i = 0; i < xh.size(); ++i) xff[i] = F(xh[i]);
+    std::vector<float> scores(n);
+    for (int i = 0; i < n; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < hidden; ++j) acc += wff[i * hidden + j] * xff[j];
+        scores[i] = acc;
+    }
+    int ref_idx[32];
+    float ref_w[32];
+    lsxcommon::deepseek_v41::GateRouteRef(scores.data(), bias.data(), n, topk,
+                                          1.0f, 1.5f, true, ref_idx, ref_w);
+    for (int k = 0; k < topk; ++k) {
+        CHECK(got_idx[k] == ref_idx[k]);
+        CHECK(got_w[k] == Catch::Approx(ref_w[k]).margin(1e-5f));
+    }
+
+    cudaFree(dw); cudaFree(dx);
+    cublasDestroy(h);
+}
+
+TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
+          "[deepseek-v41][kernels]")
+{
+    const int hidden = 16, inter = 16;
+    std::vector<float> xf(hidden), w1f(inter * hidden), w3f(inter * hidden),
+        w2f(hidden * inter);
+    for (int j = 0; j < hidden; ++j) xf[j] = (j % 3 == 0) ? 0.5f : -1.0f;
+    for (int i = 0; i < inter * hidden; ++i) {
+        static const float grid[8] = {0.0f, 0.5f, 1.0f, 1.5f,
+                                      2.0f, 3.0f, 4.0f, 6.0f};
+        w1f[i] = ((i % 2) ? 1.0f : -1.0f) * grid[(i * 3) % 8];
+        w3f[i] = ((i % 3) ? 1.0f : -1.0f) * grid[(i * 5) % 8];
+        w2f[i] = ((i % 2) ? -1.0f : 1.0f) * grid[(i * 7) % 8];
+    }
+    Nvfp4Host p1 = PackNvfp4(w1f, inter, hidden);
+    Nvfp4Host p3 = PackNvfp4(w3f, inter, hidden);
+    Nvfp4Host p2 = PackNvfp4(w2f, hidden, inter);
+    uint8_t *d1p = DevBytes(p1.packed), *d1s = DevBytes(p1.scales);
+    uint8_t *d3p = DevBytes(p3.packed), *d3s = DevBytes(p3.scales);
+    uint8_t *d2p = DevBytes(p2.packed), *d2s = DevBytes(p2.scales);
+    uint16_t *dx = nullptr;
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    std::vector<uint16_t> xh(hidden);
+    for (int j = 0; j < hidden; ++j) xh[j] = H(xf[j]);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    float *dacc = nullptr;
+    REQUIRE(cudaMalloc(&dacc, hidden * 4) == cudaSuccess);
+    REQUIRE(cudaMemset(dacc, 0, hidden * 4) == cudaSuccess);
+
+    cublasHandle_t h = nullptr;
+    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
+    lsxcommon::deepseek_v41::DeviceExpertWeight e1{d1p, d1s, 1.0f};
+    lsxcommon::deepseek_v41::DeviceExpertWeight e3{d3p, d3s, 1.0f};
+    lsxcommon::deepseek_v41::DeviceExpertWeight e2{d2p, d2s, 1.0f};
+    REQUIRE(lsxcommon::deepseek_v41::LaunchExpertFfn(h, nullptr, dx, hidden,
+                                                     e1, e3, e2, inter, 10.0f,
+                                                     2.0f, dacc) == cudaSuccess);
+    std::vector<float> got(hidden);
+    REQUIRE(cudaMemcpy(got.data(), dacc, hidden * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    std::vector<float> xff(hidden);
+    for (int j = 0; j < hidden; ++j) xff[j] = F(xh[j]);
+    std::vector<float> mid(inter);
+    for (int i = 0; i < inter; ++i) {
+        float g = 0.0f, u = 0.0f;
+        for (int j = 0; j < hidden; ++j) {
+            g += w1f[i * hidden + j] * xff[j];
+            u += w3f[i * hidden + j] * xff[j];
+        }
+        // RunLsxNvfp4Gemm writes the projection result through FP16.
+        g = F(H(g));
+        u = F(H(u));
+        lsxcommon::deepseek_v41::ExpertSwigluRef(&g, &u, &mid[i], 1, 10.0f);
+    }
+    std::vector<uint16_t> midh(inter);
+    for (int i = 0; i < inter; ++i) midh[i] = H(mid[i]);
+    for (int i = 0; i < hidden; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < inter; ++j)
+            acc += w2f[i * inter + j] * F(midh[j]);
+        CHECK(got[i] == Catch::Approx(2.0f * acc).margin(3e-3f));
+    }
+
+    cudaFree(d1p); cudaFree(d1s); cudaFree(d3p); cudaFree(d3s);
+    cudaFree(d2p); cudaFree(d2s); cudaFree(dx); cudaFree(dacc);
+    cublasDestroy(h);
+}

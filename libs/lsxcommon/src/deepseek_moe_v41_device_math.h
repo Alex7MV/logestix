@@ -286,7 +286,8 @@ inline void SelectCandidateBlocksRef(const float *score, int n_pos,
 // weights are renormalized and multiplied by route_scale.
 inline float SoftplusSqrtRef(float v)
 {
-    return std::sqrt(std::log1p(std::exp(v)));
+    // torch F.softplus default threshold=20: above it the input passes through.
+    return std::sqrt(v > 20.0f ? v : std::log1p(std::exp(v)));
 }
 
 inline void GateRouteRef(const float *scores, const float *bias, int n_routed,

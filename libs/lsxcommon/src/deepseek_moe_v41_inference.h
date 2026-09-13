@@ -91,6 +91,37 @@ cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
                              int vocab, int hidden);
 
+// ── MoE router + routed expert FFN (model.py:792,830) ──────────────────────
+// One routed NVFP4 expert's three projections ([N,K] row-major nibbles +
+// per-16 E4M3 scales + per-tensor global scale), as served by the neutral
+// lsx_nvfp4 layer.
+struct DeviceExpertWeight {
+    const uint8_t *packed = nullptr;
+    const uint8_t *scales = nullptr;
+    float global_scale = 1.0f;
+};
+
+// sqrtsoftplus top-k router. scores = gate_w @ x / temp; experts are selected
+// by scores + bias (bias steers selection only), the returned weights are the
+// selected unbiased scores, renormalized when topk > 1 and scaled by
+// route_scale. x/gate_w are FP16; bias F32.
+cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
+                             const uint16_t *x, const uint16_t *gate_w,
+                             const float *bias, int n_routed, int hidden,
+                             int topk, float temp, float route_scale, bool norm,
+                             int32_t *out_idx, float *out_w);
+
+// One routed expert on a single token:
+//   accum[d] += weight * w2( silu(clamp(w1@x)) * clamp(w3@x) ).
+// accum is F32 [hidden]; weight is applied to the expert output.
+cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
+                            const uint16_t *x, int hidden,
+                            const DeviceExpertWeight &w1,
+                            const DeviceExpertWeight &w3,
+                            const DeviceExpertWeight &w2, int inter,
+                            float swiglu_limit, float weight,
+                            float *accum_f32);
+
 // Gathers `n` embedding rows (FP16) by token id into out [n, hidden].
 cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
                               const int32_t *ids, int n, uint16_t *out,

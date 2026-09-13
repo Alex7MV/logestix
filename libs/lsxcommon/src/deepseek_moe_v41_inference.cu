@@ -2,6 +2,8 @@
 
 #include <cuda_fp16.h>
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
+
 namespace lsxcommon {
 namespace deepseek_v41 {
 
@@ -314,6 +316,67 @@ __global__ void cast_f32_to_half_kernel(const float *__restrict__ src,
     if (i < n) dst[i] = __float2half_rn(src[i]);
 }
 
+__global__ void cast_half_to_f32_kernel(const __half *__restrict__ src,
+                                        float *__restrict__ dst, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __half2float(src[i]);
+}
+
+__global__ void weighted_accum_kernel(const __half *__restrict__ src,
+                                      float weight, float *__restrict__ accum,
+                                      int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) accum[i] += weight * __half2float(src[i]);
+}
+
+// torch F.softplus default: threshold 20 returns the input unchanged.
+__device__ __forceinline__ float Softplus(float v)
+{
+    return (v > 20.0f) ? v : log1pf(expf(v));
+}
+
+__global__ void router_topk_kernel(const float *__restrict__ scores,
+                                   const float *__restrict__ bias, int n,
+                                   int topk, float temp, float route_scale,
+                                   bool norm, int *__restrict__ out_idx,
+                                   float *__restrict__ out_w)
+{
+    extern __shared__ float sc[];   // n softplus-sqrt scores
+    __shared__ int s_used[1024];
+    __shared__ int s_idx[32];
+    __shared__ float s_w[32];
+    const int t = threadIdx.x;
+    if (t < n) {
+        const float v = scores[t] / temp;
+        sc[t] = sqrtf(Softplus(v));
+        s_used[t] = 0;
+    }
+    __syncthreads();
+    if (t != 0) return;
+    for (int k = 0; k < topk; ++k) {
+        int best = -1;
+        float bestval = 0.0f;
+        for (int i = 0; i < n; ++i) {
+            if (s_used[i]) continue;
+            const float v = sc[i] + (bias ? bias[i] : 0.0f);
+            if (best < 0 || v > bestval) { bestval = v; best = i; }
+        }
+        s_used[best] = 1;
+        s_idx[k] = best;
+        s_w[k] = sc[best];
+    }
+    float sum = 0.0f;
+    for (int k = 0; k < topk; ++k) sum += s_w[k];
+    for (int k = 0; k < topk; ++k) {
+        float w = s_w[k];
+        if (norm && topk > 1) w /= (sum + 1e-20f);
+        out_idx[k] = s_idx[k];
+        out_w[k] = w * route_scale;
+    }
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -532,6 +595,101 @@ cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
     cudaFree(up);
     cudaFree(mid);
     cudaFree(mid_h);
+    return e;
+}
+
+cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
+                             const uint16_t *x, const uint16_t *gate_w,
+                             const float *bias, int n_routed, int hidden,
+                             int topk, float temp, float route_scale, bool norm,
+                             int32_t *out_idx, float *out_w)
+{
+    if (n_routed <= 0 || hidden <= 0 || topk <= 0 || topk > 32)
+        return cudaSuccess;
+    if (n_routed > 1024) return cudaErrorInvalidValue;
+    float *scores = nullptr;
+    if (cudaMalloc(&scores, sizeof(float) * n_routed) != cudaSuccess)
+        return cudaGetLastError();
+    cudaError_t e = LaunchGemvFp16ToF32(handle, stream, gate_w, x, scores,
+                                        n_routed, hidden);
+    if (e == cudaSuccess) {
+        router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
+            scores, bias, n_routed, topk, temp, route_scale, norm,
+            reinterpret_cast<int *>(out_idx), out_w);
+        e = cudaGetLastError();
+    }
+    cudaFree(scores);
+    return e;
+}
+
+cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
+                            const uint16_t *x, int hidden,
+                            const DeviceExpertWeight &w1,
+                            const DeviceExpertWeight &w3,
+                            const DeviceExpertWeight &w2, int inter,
+                            float swiglu_limit, float weight,
+                            float *accum_f32)
+{
+    (void)handle;
+    if (hidden <= 0 || inter <= 0) return cudaSuccess;
+    if (!w1.packed || !w1.scales || !w3.packed || !w3.scales || !w2.packed ||
+        !w2.scales)
+        return cudaErrorInvalidValue;
+
+    size_t bytes = 0;
+    auto bump = [&](size_t n) { bytes += (n + 255) / 256 * 256; };
+    bump(static_cast<size_t>(inter) * 2);      // gate_h
+    bump(static_cast<size_t>(inter) * 2);      // up_h
+    bump(static_cast<size_t>(inter) * 4);      // gate_f
+    bump(static_cast<size_t>(inter) * 4);      // up_f
+    bump(static_cast<size_t>(inter) * 4);      // mid_f
+    bump(static_cast<size_t>(inter) * 2);      // mid_h
+    bump(static_cast<size_t>(hidden) * 2);     // out_h
+    void *base = nullptr;
+    if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
+    uint8_t *p = static_cast<uint8_t *>(base);
+    auto take = [&](size_t n) {
+        uint8_t *r = p;
+        p += (n + 255) / 256 * 256;
+        return r;
+    };
+    __half *gate_h = reinterpret_cast<__half *>(take(inter * 2));
+    __half *up_h = reinterpret_cast<__half *>(take(inter * 2));
+    float *gate_f = reinterpret_cast<float *>(take(inter * 4));
+    float *up_f = reinterpret_cast<float *>(take(inter * 4));
+    float *mid_f = reinterpret_cast<float *>(take(inter * 4));
+    __half *mid_h = reinterpret_cast<__half *>(take(inter * 2));
+    __half *out_h = reinterpret_cast<__half *>(take(hidden * 2));
+
+    const __half *xh = reinterpret_cast<const __half *>(x);
+    cudaError_t e = lsx_nvfp4::RunLsxNvfp4Gemm(
+        stream, xh, w1.packed, w1.scales, w1.global_scale, gate_h, 1, hidden,
+        inter);
+    if (e == cudaSuccess)
+        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, xh, w3.packed, w3.scales,
+                                       w3.global_scale, up_h, 1, hidden, inter);
+    if (e == cudaSuccess) {
+        cast_half_to_f32_kernel<<<(inter + 255) / 256, 256, 0, stream>>>(
+            gate_h, gate_f, inter);
+        cast_half_to_f32_kernel<<<(inter + 255) / 256, 256, 0, stream>>>(
+            up_h, up_f, inter);
+        e = cudaGetLastError();
+    }
+    if (e == cudaSuccess)
+        e = LaunchExpertSwiglu(gate_f, up_f, mid_f, inter, swiglu_limit, stream);
+    if (e == cudaSuccess)
+        e = LaunchCastF32ToHalf(mid_f, reinterpret_cast<uint16_t *>(mid_h),
+                                inter, stream);
+    if (e == cudaSuccess)
+        e = lsx_nvfp4::RunLsxNvfp4Gemm(stream, mid_h, w2.packed, w2.scales,
+                                       w2.global_scale, out_h, 1, inter,
+                                       hidden);
+    if (e == cudaSuccess) {
+        weighted_accum_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
+            out_h, weight, accum_f32, hidden);
+        e = cudaGetLastError();
+    }
+    cudaFree(base);
     return e;
 }
 
