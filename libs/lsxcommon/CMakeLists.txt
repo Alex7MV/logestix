@@ -331,6 +331,7 @@ add_library(lsxcommon_deepseek_v41_cu OBJECT
     src/deepseek_moe_v41_dequant.cu
     src/deepseek_moe_v41_load.cu
     src/deepseek_moe_v41_inference.cu
+    src/deepseek_moe_v41_inference_attn.cu
 )
 set_target_properties(lsxcommon_deepseek_v41_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

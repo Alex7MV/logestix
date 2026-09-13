@@ -84,5 +84,19 @@ cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
 cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
                            cudaStream_t stream);
 
+// One decode step of DeepSeek-V4.1 MLA attention for a pure-SWA layer
+// (compress_ratio == 0): q_lora -> q -> RoPE; wkv -> norm -> RoPE -> FP8
+// quant; window ring + sparse attn + attn_sink; un-RoPE; grouped wo_a -> wo_b.
+// All weights/shapes are explicit so callers can test with synthetic tensors.
+// rope_cos/rope_sin point at the single position's [rope_dim/2] row.
+cudaError_t AttentionForwardDecode(
+    cublasHandle_t handle, cudaStream_t stream, const uint16_t *x, int hidden,
+    const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
+    const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
+    const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
+    const uint16_t *wo_a, int o_groups, int o_lora_rank, const uint16_t *wo_b,
+    const float *rope_cos, const float *rope_sin, uint16_t *kv_cache,
+    int window, int start_pos, uint16_t *out);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

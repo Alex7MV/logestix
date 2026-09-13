@@ -605,3 +605,76 @@ TEST_CASE("deepseek-v41 embed lookup and hc expand",
     cudaFree(de); cudaFree(dout); cudaFree(did);
     cudaFree(dhx); cudaFree(dhout);
 }
+
+TEST_CASE("deepseek-v41 attention decode plumbing runs",
+          "[deepseek-v41][kernels]")
+{
+    const int hidden = 32, q_lora = 32, heads = 2, head_dim = 32, rope_dim = 8,
+              o_groups = 2, o_lora = 32, window = 4;
+    const int q_dim = heads * head_dim;
+    const int per_group = head_dim * (heads / o_groups);
+
+    auto pat = [](int i) {
+        return H(0.05f * static_cast<float>((i % 13) - 6));
+    };
+    auto mk = [&](int n) {
+        std::vector<uint16_t> h(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) h[i] = pat(i);
+        uint16_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, static_cast<size_t>(n) * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, h.data(), static_cast<size_t>(n) * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        return d;
+    };
+    uint16_t *wq_a = mk(q_lora * hidden);
+    uint16_t *q_norm = mk(q_lora);
+    uint16_t *wq_b = mk(q_dim * q_lora);
+    uint16_t *wkv = mk(head_dim * hidden);
+    uint16_t *kv_norm = mk(head_dim);
+    uint16_t *wo_a = mk(o_groups * o_lora * per_group);
+    uint16_t *wo_b = mk(hidden * o_groups * o_lora);
+    uint16_t *x = mk(hidden);
+    uint16_t *out = mk(hidden);
+    uint16_t *kv_cache = nullptr;
+    REQUIRE(cudaMalloc(&kv_cache, static_cast<size_t>(window) * head_dim * 2) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(kv_cache, 0, static_cast<size_t>(window) * head_dim * 2) ==
+            cudaSuccess);
+    float *sink = nullptr;
+    REQUIRE(cudaMalloc(&sink, heads * 4) == cudaSuccess);
+    std::vector<float> sink_h(heads, 0.1f);
+    REQUIRE(cudaMemcpy(sink, sink_h.data(), heads * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    float *cos_t = nullptr, *sin_t = nullptr;
+    const int half_rope = rope_dim / 2;
+    std::vector<float> cos_h(half_rope, 1.0f), sin_h(half_rope, 0.0f);
+    REQUIRE(cudaMalloc(&cos_t, half_rope * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&sin_t, half_rope * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(cos_t, cos_h.data(), half_rope * 4,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(sin_t, sin_h.data(), half_rope * 4,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    cublasHandle_t h = nullptr;
+    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
+
+    for (int pos = 1; pos <= 2; ++pos) {
+        REQUIRE(lsxcommon::deepseek_v41::AttentionForwardDecode(
+                    h, nullptr, x, hidden, wq_a, q_lora, q_norm, wq_b, heads,
+                    head_dim, rope_dim, wkv, kv_norm, sink, wo_a, o_groups,
+                    o_lora, wo_b, cos_t, sin_t, kv_cache, window, pos,
+                    out) == cudaSuccess);
+    }
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    std::vector<uint16_t> out_h(hidden);
+    REQUIRE(cudaMemcpy(out_h.data(), out, hidden * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < hidden; ++i)
+        CHECK(std::isfinite(F(out_h[i])));
+
+    cudaFree(wq_a); cudaFree(q_norm); cudaFree(wq_b); cudaFree(wkv);
+    cudaFree(kv_norm); cudaFree(wo_a); cudaFree(wo_b); cudaFree(x);
+    cudaFree(out); cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
+    cudaFree(sin_t);
+    cublasDestroy(h);
+}
