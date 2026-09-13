@@ -333,5 +333,58 @@ inline void ExpertSwigluRef(const float *gate, const float *up, float *out,
     }
 }
 
+// Decode a standard E4M3 byte (0x7F/0xFF are NaN and never returned).
+inline float E4m3ByteToFloatRef(uint8_t b)
+{
+    const int s = (b >> 7) & 1;
+    const int e = (b >> 3) & 0xF;
+    const int m = b & 0x7;
+    float v;
+    if (e == 0)
+        v = (static_cast<float>(m) / 8.0f) * std::ldexp(1.0f, -6);
+    else
+        v = (1.0f + static_cast<float>(m) / 8.0f) * std::ldexp(1.0f, e - 7);
+    return s ? -v : v;
+}
+
+// Round to the nearest E4M3 value (ties -> even codepoint, matching RNE).
+inline float E4m3RoundRef(float v)
+{
+    const bool neg = std::signbit(v);
+    const float a = std::fabs(v);
+    float best = 0.0f;
+    float bd = 1e30f;
+    int best_code = 0;
+    for (int code = 0; code < 128; ++code) {   // magnitudes only
+        if (code == 0x7F) continue;            // NaN
+        const float c = E4m3ByteToFloatRef(static_cast<uint8_t>(code));
+        const float d = std::fabs(a - c);
+        if (d < bd - 1e-9f ||
+            (std::fabs(d - bd) <= 1e-9f && (code % 2 == 0) &&
+             (best_code % 2 == 1))) {
+            bd = d;
+            best = c;
+            best_code = code;
+        }
+    }
+    return neg ? -best : best;
+}
+
+// In-place FP8 activation quantize-dequant (E4M3, per `block`) with a pow2
+// scale. Mirrors kernel.py:act_quant with scale_fmt="ue8m0", inplace=True.
+inline void Fp8ActQuantRef(float *x, int n, int block)
+{
+    for (int b = 0; b < n; b += block) {
+        float amax = 1e-4f;
+        for (int j = 0; j < block; ++j)
+            amax = std::max(amax, std::fabs(x[b + j]));
+        const float s = FastRoundScaleRef(amax / 448.0f);
+        for (int j = 0; j < block; ++j) {
+            const float q = std::clamp(x[b + j] / s, -448.0f, 448.0f);
+            x[b + j] = E4m3RoundRef(q) * s;
+        }
+    }
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

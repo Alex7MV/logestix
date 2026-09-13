@@ -63,3 +63,39 @@ TEST_CASE("deepseek-v41 fp4 e8m0 activation quant matches the host reference",
 
     cudaFree(dx);
 }
+
+TEST_CASE("deepseek-v41 fp8 ue8m0 activation quant matches the host reference",
+          "[deepseek-v41][actquant]")
+{
+    const int rows = 2, n = 64, block = 32;
+    std::vector<float> xf(rows * n);
+    for (int r = 0; r < rows; ++r)
+        for (int j = 0; j < n; ++j)
+            xf[r * n + j] =
+                1.3f *
+                (static_cast<float>((r * 11 + j * 5) % 23) - 11.0f) / 4.0f;
+
+    std::vector<uint16_t> xh(xf.size());
+    for (size_t i = 0; i < xf.size(); ++i) xh[i] = H(xf[i]);
+
+    uint16_t *dx = nullptr;
+    REQUIRE(cudaMalloc(&dx, xh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), xh.size() * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchFp8ActQuantInplace(dx, rows, n, block,
+                                                              nullptr) ==
+            cudaSuccess);
+    std::vector<uint16_t> got(xh.size());
+    REQUIRE(cudaMemcpy(got.data(), dx, xh.size() * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    for (int r = 0; r < rows; ++r) {
+        std::vector<float> rr(xf.begin() + r * n, xf.begin() + (r + 1) * n);
+        for (int j = 0; j < n; ++j) rr[j] = F(xh[r * n + j]);
+        lsxcommon::deepseek_v41::Fp8ActQuantRef(rr.data(), n, block);
+        for (int j = 0; j < n; ++j)
+            CHECK(F(got[r * n + j]) == Catch::Approx(rr[j]).margin(1e-3f));
+    }
+
+    cudaFree(dx);
+}

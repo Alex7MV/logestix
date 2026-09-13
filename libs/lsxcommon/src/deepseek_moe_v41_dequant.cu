@@ -120,6 +120,27 @@ __global__ void fp4_act_quant_kernel(__half *__restrict__ x, int n, int block,
     xr[j] = __float2half_rn(E2m1Rne(q) * s);
 }
 
+__global__ void fp8_act_quant_kernel(__half *__restrict__ x, int n, int block)
+{
+    __shared__ float s_amax[32];
+    const int row = blockIdx.y;
+    const int base = blockIdx.x * block;
+    const int j = threadIdx.x;
+    __half *xr = x + static_cast<size_t>(row) * n + base;
+
+    s_amax[j] = fabsf(__half2float(xr[j]));
+    __syncthreads();
+    if (j == 0) {
+        float m = 1e-4f;
+        for (int k = 0; k < block; ++k) m = fmaxf(m, s_amax[k]);
+        s_amax[0] = FastRoundScale(m / 448.0f);
+    }
+    __syncthreads();
+    const float s = s_amax[0];
+    const float q = fminf(fmaxf(__half2float(xr[j]) / s, -448.0f), 448.0f);
+    xr[j] = __float2half_rn(E4m3Round(q) * s);
+}
+
 } // namespace
 
 cudaError_t LaunchBf16ToHalf(const uint8_t *src, uint16_t *dst, int64_t n,
@@ -158,6 +179,17 @@ cudaError_t LaunchFp4ActQuantInplace(uint16_t *x, int rows, int n, int block,
     const dim3 grid(n / block, rows);
     fp4_act_quant_kernel<<<grid, block, 0, stream>>>(
         reinterpret_cast<__half *>(x), n, block, e8m0_scale ? 1 : 0);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchFp8ActQuantInplace(uint16_t *x, int rows, int n, int block,
+                                     cudaStream_t stream)
+{
+    if (rows <= 0 || n <= 0) return cudaSuccess;
+    if (n % block != 0 || block > 32) return cudaErrorInvalidValue;
+    const dim3 grid(n / block, rows);
+    fp8_act_quant_kernel<<<grid, block, 0, stream>>>(
+        reinterpret_cast<__half *>(x), n, block);
     return cudaGetLastError();
 }
 
