@@ -1,10 +1,9 @@
 #include "deepseek_moe_v41_load_internal.h"
 
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
-
-#include <absl/container/flat_hash_map.h>
-#include <absl/strings/str_cat.h>
+#include <unordered_map>
 
 #include "deepseek_moe_v41_dequant.h"
 #include "lsxcommon/log.h"
@@ -19,7 +18,7 @@ using lsxcommon::TensorRecord;
 
 namespace {
 
-using TensorMap = absl::flat_hash_map<std::string, TensorRecord>;
+using TensorMap = std::unordered_map<std::string, TensorRecord>;
 
 int64_t Numel(const std::vector<int64_t> &shape)
 {
@@ -220,8 +219,9 @@ cudaError_t load_pinned_weights(const std::string &model_path,
     for (int l = 0; l < num_layers; ++l) {
         LayerWeights &lw = pw.layers[static_cast<size_t>(l)];
         TensorMap m;
-        const auto layer_path = pinned /
-            (absl::StrCat("layer_", absl::StrFormat("%03d", l)) + ".arrow");
+        char layer_name[32];
+        std::snprintf(layer_name, sizeof(layer_name), "layer_%03d.arrow", l);
+        const auto layer_path = pinned / layer_name;
         if (ReadPinnedFile(layer_path, &m) != cudaSuccess)
             return cudaErrorInvalidValue;
         const std::string p = "layers." + std::to_string(l) + ".";
@@ -329,9 +329,12 @@ cudaError_t load_pinned_weights(const std::string &model_path,
             return cudaErrorInvalidValue;
     }
 
-    lsxcommon::log::info(absl::StrFormat(
-        "[v41-load] pinned dense: %d layers, %llu bytes resident",
-        num_layers, static_cast<unsigned long long>(pw.resident_bytes)));
+    char msg[128];
+    std::snprintf(msg, sizeof(msg),
+                  "[v41-load] pinned dense: %d layers, %llu bytes resident",
+                  num_layers,
+                  static_cast<unsigned long long>(pw.resident_bytes));
+    lsxcommon::log::info(msg);
     return cudaSuccess;
 }
 
