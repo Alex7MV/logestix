@@ -921,3 +921,74 @@ TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
     cudaFree(d2p); cudaFree(d2s); cudaFree(dx); cudaFree(dacc);
     cublasDestroy(h);
 }
+
+TEST_CASE("deepseek-v41 indexer top-k matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 20, topk = 5, offset = 128;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = 0.1f * static_cast<float>((i * 7) % 11) - 0.4f;
+    score[3] = score[9];  // tie: lower position must win
+
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    int32_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, topk * 4) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerTopk(ds, n_pos, topk, offset,
+                                                       dout, topk, nullptr) ==
+            cudaSuccess);
+    std::vector<int32_t> got(topk);
+    REQUIRE(cudaMemcpy(got.data(), dout, topk * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    std::vector<int> ref(topk);
+    lsxcommon::deepseek_v41::IndexTopkRef(score.data(), n_pos, n_pos, topk,
+                                          offset, ref.data());
+    for (int i = 0; i < topk; ++i) CHECK(got[i] == ref[i]);
+
+    cudaFree(ds); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 20, topk_blocks = 2, block_size = 8;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = 0.5f * static_cast<float>(i % 4) - 1.0f;
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    uint8_t *dm = nullptr;
+    REQUIRE(cudaMalloc(&dm, n_pos) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchSelectCandidateBlocks(
+                ds, n_pos, n_pos, topk_blocks, block_size, dm, nullptr) ==
+            cudaSuccess);
+    std::vector<uint8_t> got(n_pos);
+    REQUIRE(cudaMemcpy(got.data(), dm, n_pos, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    std::vector<uint8_t> ref(n_pos);
+    lsxcommon::deepseek_v41::SelectCandidateBlocksRef(score.data(), n_pos,
+                                                      n_pos, topk_blocks,
+                                                      block_size, ref.data());
+    for (int i = 0; i < n_pos; ++i) CHECK(got[i] == ref[i]);
+
+    // Masking: outside positions become -inf.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchMaskIndexerScores(ds, n_pos, dm,
+                                                             nullptr) ==
+            cudaSuccess);
+    std::vector<float> masked(n_pos);
+    REQUIRE(cudaMemcpy(masked.data(), ds, n_pos * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < n_pos; ++i) {
+        if (ref[i]) CHECK(masked[i] == score[i]);
+        else CHECK(masked[i] == -INFINITY);
+    }
+
+    cudaFree(ds); cudaFree(dm);
+}

@@ -323,6 +323,12 @@ __global__ void cast_half_to_f32_kernel(const __half *__restrict__ src,
     if (i < n) dst[i] = __half2float(src[i]);
 }
 
+__global__ void fill_f32_kernel(float *__restrict__ dst, int n, float value)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = value;
+}
+
 __global__ void weighted_accum_kernel(const __half *__restrict__ src,
                                       float weight, float *__restrict__ accum,
                                       int n)
@@ -596,6 +602,15 @@ cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
     cudaFree(mid);
     cudaFree(mid_h);
     return e;
+}
+
+cudaError_t LaunchFillF32(float *dst, int n, float value, cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    const int block = 256;
+    fill_f32_kernel<<<(n + block - 1) / block, block, 0, stream>>>(dst, n,
+                                                                   value);
+    return cudaGetLastError();
 }
 
 cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
