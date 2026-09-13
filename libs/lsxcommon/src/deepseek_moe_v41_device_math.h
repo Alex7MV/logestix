@@ -279,5 +279,43 @@ inline void SelectCandidateBlocksRef(const float *score, int n_pos,
     }
 }
 
+// ── Router / Gate (model.py:809) ───────────────────────────────────────────
+//
+// scores are the raw gate logits (gate_weight @ x). sqrtsoftplus selects and
+// scales; the noaux_tc bias only steers selection (never scales); the top-k
+// weights are renormalized and multiplied by route_scale.
+inline float SoftplusSqrtRef(float v)
+{
+    return std::sqrt(std::log1p(std::exp(v)));
+}
+
+inline void GateRouteRef(const float *scores, const float *bias, int n_routed,
+                         int topk, float gate_temp, float route_scale,
+                         bool norm_topk_prob, int *out_idx, float *out_w)
+{
+    std::vector<float> sc(static_cast<size_t>(n_routed));
+    for (int i = 0; i < n_routed; ++i)
+        sc[i] = SoftplusSqrtRef(scores[i] / gate_temp);
+
+    std::vector<int> order(static_cast<size_t>(n_routed));
+    for (int i = 0; i < n_routed; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        const float sa = sc[a] + bias[a];
+        const float sb = sc[b] + bias[b];
+        if (sa != sb) return sa > sb;
+        return a < b;
+    });
+
+    float sum = 0.0f;
+    for (int k = 0; k < topk; ++k) {
+        out_idx[k] = order[k];
+        out_w[k] = sc[order[k]];
+        sum += out_w[k];
+    }
+    if (norm_topk_prob && topk > 1)
+        for (int k = 0; k < topk; ++k) out_w[k] /= (sum + 1e-20f);
+    for (int k = 0; k < topk; ++k) out_w[k] *= route_scale;
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

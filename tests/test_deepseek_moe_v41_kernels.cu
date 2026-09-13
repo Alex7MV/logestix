@@ -431,3 +431,29 @@ TEST_CASE("deepseek-v41 CED shared-attention runtime contract",
     CHECK(rt.candidates == nullptr);
     CHECK(rt.compress_len == 0);
 }
+
+TEST_CASE("deepseek-v41 router gate matches the reference selection",
+          "[deepseek-v41][kernels]")
+{
+    using lsxcommon::deepseek_v41::GateRouteRef;
+    using lsxcommon::deepseek_v41::SoftplusSqrtRef;
+
+    const float scores[4] = {1.0f, 3.0f, 2.0f, 0.0f};
+    const float bias[4] = {0.0f, -10.0f, 5.0f, 0.0f};
+    int idx[2] = {-1, -1};
+    float w[2] = {0.0f, 0.0f};
+    GateRouteRef(scores, bias, 4, 2, 1.0f, 1.5f, /*norm_topk_prob=*/true, idx,
+                 w);
+
+    // Bias steers selection: expert 2 (bias +5) and expert 0 win over the
+    // higher raw score at expert 1 (bias -10).
+    CHECK(idx[0] == 2);
+    CHECK(idx[1] == 0);
+
+    // Weights come from the unbiased scores, renormalized and scaled.
+    const float a = SoftplusSqrtRef(2.0f);
+    const float b = SoftplusSqrtRef(1.0f);
+    CHECK(w[0] == Catch::Approx(1.5f * a / (a + b)).margin(1e-5f));
+    CHECK(w[1] == Catch::Approx(1.5f * b / (a + b)).margin(1e-5f));
+    CHECK((w[0] + w[1]) == Catch::Approx(1.5f).margin(1e-5f));
+}
