@@ -229,6 +229,27 @@ __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
         oh[lane + k * 32] = __float2half_rn(acc[k] * inv);
 }
 
+__global__ void compressor_pool_kernel(const float *__restrict__ kv,
+                                       const float *__restrict__ score,
+                                       int ratio, int d,
+                                       float *__restrict__ out)
+{
+    const int g = blockIdx.x;
+    const int j = threadIdx.x;
+    if (j >= d) return;
+    const float *kvg = kv + static_cast<size_t>(g) * ratio * d;
+    const float *scg = score + static_cast<size_t>(g) * ratio * d;
+    float m = scg[j];
+    for (int r = 1; r < ratio; ++r) m = fmaxf(m, scg[r * d + j]);
+    float s = 0.0f, acc = 0.0f;
+    for (int r = 0; r < ratio; ++r) {
+        const float e = expf(scg[r * d + j] - m);
+        s += e;
+        acc += e * kvg[r * d + j];
+    }
+    out[g * d + j] = acc / s;
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -304,6 +325,18 @@ cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
         reinterpret_cast<const __half *>(kv),
         sink, reinterpret_cast<const int *>(idxs),
         reinterpret_cast<__half *>(out), heads, d, topk, softmax_scale);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchCompressorPool(const float *kv, const float *score,
+                                 int n_groups, int ratio, int d,
+                                 int first_token, float *out,
+                                 cudaStream_t stream)
+{
+    if (n_groups <= 0 || ratio <= 0 || d <= 0) return cudaSuccess;
+    compressor_pool_kernel<<<n_groups, d, 0, stream>>>(
+        kv + static_cast<size_t>(first_token) * d,
+        score + static_cast<size_t>(first_token) * d, ratio, d, out);
     return cudaGetLastError();
 }
 

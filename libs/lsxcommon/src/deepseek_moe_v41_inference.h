@@ -45,5 +45,12 @@ cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
                                  int topk, uint16_t *out, float softmax_scale,
                                  cudaStream_t stream);
 
+// Softmax-pools `n_groups` groups of `ratio` consecutive tokens starting at
+// `first_token` from kv/score [tokens, d] F32 into out [n_groups, d] F32.
+cudaError_t LaunchCompressorPool(const float *kv, const float *score,
+                                 int n_groups, int ratio, int d,
+                                 int first_token, float *out,
+                                 cudaStream_t stream);
+
 } // namespace deepseek_v41
 } // namespace lsxcommon

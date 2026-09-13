@@ -264,3 +264,48 @@ TEST_CASE("deepseek-v41 sparse attention matches a float reference",
     cudaFree(dq); cudaFree(dkv); cudaFree(dout); cudaFree(didx);
     cudaFree(dsink);
 }
+
+TEST_CASE("deepseek-v41 compressor softmax-pool matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int d = 8, ratio = 2, tokens = 4;
+    std::vector<float> kv(tokens * d), score(tokens * d);
+    for (int t = 0; t < tokens; ++t)
+        for (int j = 0; j < d; ++j) {
+            kv[t * d + j] = 0.1f * static_cast<float>(t) -
+                            0.05f * static_cast<float>(j) + 0.02f;
+            score[t * d + j] =
+                0.3f * static_cast<float>((t + 1) * (j + 1) % 7) - 1.0f;
+        }
+
+    float *dkv, *dscore, *dout;
+    REQUIRE(cudaMalloc(&dkv, kv.size() * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dscore, score.size() * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, 2 * d * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dkv, kv.data(), kv.size() * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dscore, score.data(), score.size() * 4,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    // Group 0 = tokens {0,1}; group 1 = tokens {2,3}.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchCompressorPool(
+                dkv, dscore, 1, ratio, d, 0, dout, nullptr) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchCompressorPool(
+                dkv, dscore, 1, ratio, d, 2, dout + d, nullptr) == cudaSuccess);
+
+    std::vector<float> got(2 * d);
+    REQUIRE(cudaMemcpy(got.data(), dout, 2 * d * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    std::vector<float> ref0(d), ref1(d);
+    lsxcommon::deepseek_v41::CompressorPoolGroupRef(kv.data(), score.data(),
+                                                    ratio, d, ref0.data());
+    lsxcommon::deepseek_v41::CompressorPoolGroupRef(
+        kv.data() + 2 * d, score.data() + 2 * d, ratio, d, ref1.data());
+    for (int j = 0; j < d; ++j) {
+        CHECK(got[j] == Catch::Approx(ref0[j]).margin(1e-6f));
+        CHECK(got[d + j] == Catch::Approx(ref1[j]).margin(1e-6f));
+    }
+
+    cudaFree(dkv); cudaFree(dscore); cudaFree(dout);
+}

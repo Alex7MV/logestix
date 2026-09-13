@@ -149,5 +149,25 @@ inline void HcPostRef(const float *x, const float *residual, const float *post,
         }
 }
 
+// Softmax-pool `ratio` rows of kv/score per element into out[d] (compressor,
+// model.py:458). Softmax is taken over the ratio axis independently for each
+// head_dim element.
+inline void CompressorPoolGroupRef(const float *kv, const float *score,
+                                   int ratio, int d, float *out)
+{
+    for (int j = 0; j < d; ++j) {
+        float m = score[j];
+        for (int r = 1; r < ratio; ++r)
+            m = std::max(m, score[r * d + j]);
+        float s = 0.0f, acc = 0.0f;
+        for (int r = 0; r < ratio; ++r) {
+            const float e = std::exp(score[r * d + j] - m);
+            s += e;
+            acc += e * kv[r * d + j];
+        }
+        out[j] = acc / s;
+    }
+}
+
 } // namespace deepseek_v41
 } // namespace lsxcommon
