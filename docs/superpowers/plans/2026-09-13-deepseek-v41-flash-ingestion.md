@@ -799,3 +799,36 @@ once.
 **Fixture note:** the fixture is created inside Task 2 (Step 3) rather than as a
 separate task, because it is scaffolding for Task 2's test; this removes the
 earlier cross-task ordering hazard.
+
+---
+
+## Status (2026-09-13, milestone 1 text backbone)
+
+Plans 2–7 landed as `deepseek_moe_v41_*` (autonomous contour, no V4-Flash
+includes). All stages are green on the synthetic path:
+
+| Plan | Deliverable | Evidence |
+|---|---|---|
+| P2 | converter `ConvertDeepSeekV41Model` + `lsxforge --deepseek_v41` + tokenizer bridge | `test_deepseek_moe_v41_convert` (label `convert`) |
+| P3 | pinned loader + FP8 dequant + expert store | `test_deepseek_moe_v41_loader`, `..._load_fast`, `..._dequant` |
+| P4 | RMSNorm/RoPE/HC/Window sparse attention | `test_deepseek_moe_v41_kernels` |
+| P5 | compressor / CED runtime / indexer / candidate blocks | `test_deepseek_moe_v41_kernels` |
+| P6 | router, routed MoE, shared expert, head, `DeepSeekV41FlashModel`, registry, guards | `test_deepseek_moe_v41_pipeline` (synthetic full geometry, SWA + CED) |
+| P7 | Paris selfcheck harness | `test_deepseek_moe_v41_selfcheck` (SKIP without vault) |
+
+**Runtime validation done:** `test_deepseek_moe_v41_pipeline` builds a synthetic
+FULL-GEOMETRY converted model (hidden 5120, one ratio-0 layer and one ratio-1
+CED kv/index source, 2 experts) and runs the production
+`RunDeepSeekV41Inference` graph end-to-end; tokens are byte-identical across
+repeated runs. This is the execution-graph proof (no real numerics).
+
+**Remaining operator step (not an AI session):** convert the real
+`DeepSeek-V4.1-Flash` checkpoint via
+`lsxforge --deepseek_v41 --input <model_dir> --output <model_dir>` (~350 GB
+read, heavy GPU/disk job), then run
+`ctest -R test_deepseek_moe_v41_selfcheck` with `LSX_TEST_DEEPSEEK_V41_ROOT`
+pointing at the converted tree for the `"Paris"` / bit-exact selfcheck.
+Until then the selfcheck SKIPs (`SKIP_RETURN_CODE 4`), as designed.
+
+**Deferred by design:** engram (not converted), DSpark MTP (stored), vision
+(cut), performance pass (correctness first).
