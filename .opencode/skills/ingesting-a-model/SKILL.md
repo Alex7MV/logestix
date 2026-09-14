@@ -159,7 +159,11 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
   optional; absence skips, never fails).
 - Add the perf baseline: an entry in `tests/perf/perf_baselines.json` plus a
   `test_perf_baseline_<model>` target (label `perf`), and record the measured
-  t/s.
+  t/s. Add **both** — a JSON entry without a target is an unguarded baseline.
+- The determinism/correctness discipline these tests implement (bit-exact vs
+  tolerance class, canonical-length validation, revert-on-red-determinism,
+  `SKIP_RETURN_CODE 4`) is `Verifying a numeric change` in
+  `perf-tuning-a-model`.
 
 ## Model code file-naming convention
 

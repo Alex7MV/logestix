@@ -110,6 +110,7 @@ kernels beat guessing.
 - Unit tests + `ctest --preset linux-debug -L fast`.
 - Re-measure E2E at `--max-gen 2048`, **twice**: agreement within ~1% is the
   reproducibility evidence.
+- Gates and traps in full: see **Verifying a numeric change** below.
 
 ## Step 7 — record
 
@@ -158,6 +159,40 @@ Rules that bite:
   add both (the `ingesting-a-model` skill's Definition of done).
 - **Rebuild the target first**: a stale binary measures the old code (see
   Common mistakes).
+
+## Verifying a numeric change
+
+Any change to a numeric path — a kernel, the quantizer, a dispatch threshold,
+the cache policy, stream scheduling — must clear all of these before it lands:
+
+1. `test_<model>_selfcheck` — Paris ×3 with bit-exact `final_logits` between
+   cycles, on the **real** model (not a synthetic fixture).
+2. A two-call `Infer` `final_logits` memcmp — run-to-run determinism (the
+   round-25b gate).
+3. The model's unit tests + `ctest -L fast`.
+4. E2E at the canonical length, reproduced twice.
+
+Then the traps:
+
+- **Bit-exact vs tolerance class.** The legacy dequant→bf16 GEMV chain is the
+  bit-exact reference. The TC/W4A4 path and split-K compositions are *tolerance
+  class*: parity with the legacy chain is not required, but determinism is
+  binding. Tests that pin the numeric class set `FastMathMode::kOff`.
+- **A scheduling change must be numeric-neutral.** Same bytes, kernels and
+  accumulation order ⇒ the same token stream. If the stream changes you have a
+  bug, not a faster kernel — this is how the LFU eviction policy was caught
+  (early EOS at 1386 of 2048 tokens) while the upload-pipelining change was
+  cleared (2048 tokens, twice).
+- **Validate at the canonical length, not 128 tokens.** LFU measured +15% at
+  128 tokens and 3.7 t/s at 2048.
+- **Keep any simulator/reference faithful to the shipped code.** An unguarded
+  LFU simulation predicted a hit-rate gain the real guarded policy never
+  delivered.
+- **A red determinism test reverts the lever** (precedent: device-side decode
+  was re-parked after the round-25b divergence).
+- **Any test that can skip needs `SKIP_RETURN_CODE 4`**, otherwise CTest
+  reports the skip as a failure (`test_kimi_moe_tc_diag` fails this way on a
+  machine without the model).
 
 ## GPU perf knobs (`gpu_perf`)
 
