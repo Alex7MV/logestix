@@ -32,158 +32,46 @@ versions")` (`STATIC_REQUIRE` для Arrow, spdlog, simdjson, Catch2, CCCL, abse
 
 ## Build
 
-Use CMakePresets — ready-made for both supported OSes. Replace `debug` with
-`release` in the preset name for an optimization build.
+Пресеты, AOCC-сборка, Windows-тулчейн (VS 2026) с точными путями, тулчейн-минимумы
+и пути бинарников — скил **`building-the-project`**
+(`.opencode/skills/building-the-project/SKILL.md`).
+
+Быстрая проверка:
 
 ```bash
-# Linux (Ubuntu 26.04, Ninja + GCC)
-git submodule update --init --recursive
 cmake --preset linux-debug && cmake --build --preset linux-debug
 ctest --preset linux-debug                     # fast only
-
-# Linux release (AMD EPYC 9V74 / Zen 4): LSX_ARCH_ZNVER4=ON + LSX_LTO=ON
-cmake --preset linux-release-znver4 && cmake --build --preset linux-release-znver4
-ctest --preset linux-release-znver4
-
-# Windows (Visual Studio 2026)
-cmake --preset windows-debug && cmake --build --preset windows-debug
 ```
-
-`arrow.dll` / `arrow_cuda.dll` копируются в каталог exe через POST_BUILD;
-Arrow's xsimd требует `CMAKE_POLICY_VERSION_MINIMUM=3.5`, но оно уже применяется
-через `CMakePresets.json` — ручной env-переменной не нужно.
-
-Тулчейн-минимумы (протестированные версии; большие тоже работают): CMake 3.25+
-(в дереве 4.2.3), GCC 15.2 (Ubuntu 26.04) — проект сознательно пиннится на C++20,
-NVCC 13.4.59 (Linux, `/usr/local/cuda`) / 13.3 (Windows), CUDA Toolkit ≥13.2
-(guard `test_cuda_toolkit_guard`).
 
 Неочевидные грабли сборки — скил **`cuda-cmake-build-gotchas`**
 (`.opencode/skills/cuda-cmake-build-gotchas/SKILL.md`): CMake 4.x и
 `enable_language(CUDA)` во вложенном каталоге, флаги хоста, протекающие в NVCC,
 `/Zc:preprocessor` vs CCCL/thrust, `CMAKE_POLICY_VERSION_MINIMUM` для xsimd,
-патчи Arrow/Boost, `lsx_tune`/LTO-гейтинг, `cc12x`-only arch set, host-only
-CUDA-поверхности и `_putenv`-guard. Там же — таблица «симптом → причина».
-
-### Linux release — AOCC (AMD Optimizing C/C++ 5.2.0)
-
-Альтернативный хост-компилятор (clang 17.0.6) для znver4-сборки; NVCC
-использует его как `-ccbin`. Проверено 2026-08 (RTX 5090, EPYC 9V74): сборка и
-110/110 тестов зелёные.
-
-```bash
-AOCC=/home/alexmv2025/projects/amd/aocc-compiler-5.2.0/bin
-cmake -S . -B build/linux-release-znver4-aocc -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DLSX_ARCH_ZNVER4=ON -DLSX_LTO=ON \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-  -DCMAKE_C_COMPILER=$AOCC/clang -DCMAKE_CXX_COMPILER=$AOCC/clang++ \
-  -DCMAKE_CUDA_HOST_COMPILER=$AOCC/clang++
-cmake --build build/linux-release-znver4-aocc -j 160
-ctest --test-dir build/linux-release-znver4-aocc
-```
-
-Особенности AOCC/Clang (`-flto=thin` fallback, активация abseil
-format-checker'а и её патч, host-only CUDA-поверхности, `_putenv` guard) —
-в скиле `cuda-cmake-build-gotchas`.
-
-### Windows — расположение тулчейна (VS 2026, MSVC 14.51, CUDA 13.3)
-
-`cmake`/`ctest`/`ninja` НЕ в PATH — их поставляет Visual Studio 2026
-(`18\Community`), CUDA Toolkit 13.3 лежит отдельно. Кэш сборки — `build\`
-уже сконфигурирован (пресет `windows-debug`, `WIN32` generator). Точные пути
-(актуально для этой машины; проверил в 2026-08):
-
-- CMake 4.3: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"`
-- CTest: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"`
-- Ninja: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"`
-- MSVC `cl.exe` (Hostx64): `"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe"`
-- NVCC 13.3: `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe"`
-  (в PATH уже есть; CMake находит через `find_package(CUDAToolkit)`)
-
-PowerShell-вызовы (без добавления в PATH):
-
-```powershell
-$cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-& $cmake --build build --config Debug --target <target>
-$cmake --preset windows-debug && $cmake --build --preset windows-debug
-```
-
-Если VS обновится (новый `MSVC\<ver>`), сверь номер каталога `14.51.36231`
-через `Get-ChildItem "$vs\VC\Tools\MSVC"`. Альтернативный CMake 4.2.3 в
-системе НЕ установлен — используется только встроенный в VS 4.3.
+патчи Arrow/Boost/abseil, `lsx_tune`/LTO-гейтинг, `cc12x`-only arch set, host-only
+CUDA-поверхности и `_putenv`-guard, bump зависимостей. Там же — таблица
+«симптом → причина».
 
 ## Resources (host)
 
-Политика расхода ресурсов хост-машины. Показатели относятся к **Windows**
-dev box (машина со свежим тулчейном даёт ещё меньшую загрузку):
-
-- Средняя утилизация CPU при сборках и работе инструментов ≈ **10%**.
-  Процессорное время экономить НЕ нужно: параллельность не ограничивать,
-  отдельные треды/ядра не сдерживать.
-- RAM занята примерно на **35%**. Память тоже экономить НЕ нужно — никаких
-  ухищрений по снижению потребления в обычном инструментальном коде.
-- Под **Linux** (Ubuntu 26.04 dev box) ничего экономить не нужно вообще:
-  загрузка там ещё ниже, чем под Windows, поэтому ограничений дополнительных
-  не вводить — обычные правила (подробности выше) не трактовать жёстче.
-
-ИСКЛЮЧЕНИЕ (оба OS-профиля): когда запускается **инференс** или **тесты
-инференса** (`--bench`/`--selfcheck` lsxbenchmark, `--testprompt`, infer-тесты,
-CUDA-ядра на реальных весах), потребление памяти и GPU-ресурсов считается
-критичным: не запускать параллельные тяжёлые нагрузки, следить за VRAM/RAM
-и освобождать модели по завершении. Работающие инференсы не дублировать.
-
-**lsxbenchmark — строгий GPU-эксклюзив**: `lsxbenchmark` занимает GPU целиком
-и его ЗАПРЕЩЕНО запускать параллельно с другими GPU-нагрузками (инференс,
-CUDA-тесты, другой lsxbenchmark, perf-сьюты `ctest -L perf`). Конкуренция за
-VRAM и SM искажает замер t/s (измерено: ~2x разброс при разделении VRAM
-несколькими моделями) — замер становится непригодным для perf-справочника.
-Одна GPU-нагрузка за раз; perf-тест `test_perf_baseline_*` при обращении к
-справочнику `tests/perf/perf_baselines.json` обязан гоняться после
-завершения всех прочих GPU-задач.
+Политика расхода ресурсов хост-машины, исключение для инференса и правило
+«одна GPU-нагрузка за раз» (включая строгую GPU-эксклюзивность `lsxbenchmark` и
+запуск perf последним) — раздел «Host resource policy and GPU scheduling» скила
+**`running-a-model`**
+(`.opencode/skills/running-a-model/SKILL.md`).
 
 ## Test
 
-`BUILD_TESTING=ON` is included in every preset. Тесты разбиты на 4 категории
-(CTest labels; дисциплину проверяет guard `test_ctest_labels_guard`; счётчики —
-Linux, текущее дерево):
+`BUILD_TESTING=ON` включён во все пресеты. Категории тестов (labels
+`fast`/`convert`/`inference`/`perf`), пресеты, роутер путей
+(`tools/test_router.cmake`, `LSX_PRESET`/`LSX_LIST`/`LSX_DIFF`), дисциплина
+label'ов в том же коммите, реестр guard-тестов и WINDOWS-ограничение
+(`ctest -R "qwen|gemma"`) — скил **`test-lifecycle`**
+(`.opencode/skills/test-lifecycle/SKILL.md`).
 
-| Label | Что это | Когда запускается |
-|---|---|---|
-| `fast` (45) | host-only тесты | каждый `ctest --preset` (дефолт всех пресетов) |
-| `convert` (13) | конвертеры моделей | при правке конвертера (роутер) или отладке модели |
-| `inference` (85) | CUDA/модельный контур | когда изменился контур (роутер) или вручную |
-| `perf` (15) | perf-бенчмарки на реальных весах | только отдельной командой и только из Release |
-
-```bash
-ctest --preset linux-debug                  # fast only (Ubuntu 26.04)
-ctest --preset linux-debug-convert          # convert sweep
-ctest --preset linux-debug-inference        # inference sweep
-ctest --preset linux-release-znver4-perf    # perf; baseline-числа только из Release
-ctest -L "^(fast|convert|inference|perf)$"  # полный прогон
-
-# Автодетект по git diff (fast всегда; convert/inference — при изменении
-# соответствующего контура):
-cmake -DLSX_PRESET=linux-debug -P tools/test_router.cmake
-cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-run
-```
-
-Дисциплина: новый тест обязан получить label в том же коммите (иначе красный
-`test_ctest_labels_guard`). Правила классификации путей — таблица
-`lsx_router_rule(...)` в `tools/test_router.cmake`.
-Процедура подъёма/замера скорости (nsys-профиль, budget-тесты, нобы, перф-базлайн,
-запуск perf-сьюта) — скил `perf-tuning-a-model`. Учти: `test_perf_baseline_*`
-пишет `tests/perf/perf_baselines.json` в дереве исходников при улучшении (дифф
-ревьюить и коммитить осознанно), в Debug-сборке baseline-числа невалидны, а
-запускать perf нужно после всех прочих GPU-задач. Правила тестов конвертеров (label `convert` +
-ограниченный TIMEOUT, синтетический чекпоинт, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY`
-как runtime-env, покрытие фикстуры, FP8-тайлы, чтение реального чекпоинта только
-одного лёгкого файла) — раздел «Converter test rules» в скиле `ingesting-a-model`.
-
-**WINDOWS-ОГРАНИЧЕНИЕ**: под Windows запускать тесты ТОЛЬКО для моделей
-Qwen3.5-9B и gemma-4-26B-A4B-it (фильтр `ctest -R "qwen|gemma"`); остальные
-model-тесты (GLM, DeepSeek и т.д.) на этой OS не запускать.
+Правила тестов конвертеров (label `convert`, bounded TIMEOUT, синтетический
+чекпоинт, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` как runtime-env) — раздел
+«Converter test rules» в `ingesting-a-model`; процедура замера/подъёма скорости —
+`perf-tuning-a-model`.
 
 ## Structure
 
@@ -264,13 +152,11 @@ SelfCheck/тесты), соглашение об именах файлов мо�
 
 ## Conventions
 
-- C++20, C23
-- Все логирование через spdlog (никаких `std::cout` / `printf`)
-- `#include` paths без лишних комментариев
-- `target_include_directories` с генераторными выражениями `$<BUILD_INTERFACE:...>`
-- Новые `.cpp` добавлять в `apps/*/CMakeLists.txt` в `add_executable`, логику — в
-  `libs/lsxcommon/`
-- Комментарии: сохраняй все Doxygen/JSDoc при рефакторинге
+Язык C++20/C23, логирование только через spdlog (никаких `std::cout`/`printf`),
+стиль `#include`, `target_include_directories` с `$<BUILD_INTERFACE:...>`, место
+новых `.cpp` (app `add_executable` vs `libs/lsxcommon/`) и сохранение
+Doxygen/JSDoc — скил **`coding-conventions`**
+(`.opencode/skills/coding-conventions/SKILL.md`).
 
 Kernel/Blackwell-правила — скил **`nvfp4-blackwell-conventions`**
 (`.opencode/skills/nvfp4-blackwell-conventions/SKILL.md`): один стрим и минимум
@@ -327,8 +213,9 @@ crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
 
 ## Git
 
-- Английский язык сообщений коммитов
-- Префиксы: `build:`, `feat:`, `fix:`, `refactor:`, `test:`, `docs:`
+Английский язык сообщений коммитов и префиксы `build:`/`feat:`/`fix:`/`refactor:`/
+`test:`/`docs:` (плюс правило «коммит только по явной просьбе») — скил
+**`coding-conventions`** (`.opencode/skills/coding-conventions/SKILL.md`).
 
 ## Autonomous Mode
 
@@ -336,4 +223,3 @@ crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
 - The operator manages the process exclusively through high-level prompts and changes to instruction files.
 - If manual code changes are detected outside AI sessions, perform a full diff audit and reconcile with the operator before proceeding.
 - **ЗАПРЕТ на параллельных/субагентов**: использование Task-субагентов (explore/general/parallel agents) запрещено — они допускают много ошибок. Все исследования кодовой базы, аудит и правки выполняются только основной сессией напрямую (Read/Grep/Edit/etc.).
-  - `tests/test_qwen_moe_exp_{convert,loader,model}.cpp`, `tests/test_qwen_moe_exp_kernels.cu`, `tests/test_qwen_moe_exp_selfcheck.cpp` + `qwen_moe_exp_test_fixture.h` — Qwen3.8-Flash-Next (qwen4_exp) suite: классификация/NVFP4-политика/splitmix64+prime таблицы (parity против чекпоинта), loader strictness+LRU 512-экспертных слотов, hc GatedResidual/scatter бит-точные против host-реплики, QSA indexer degenerate/top-k, router top-10 parity, реальный селфчек Paris (`LSX_TEST_QWEN38_SELFCHECK_CYCLES`, SKIP_RETURN_CODE 4)

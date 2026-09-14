@@ -228,11 +228,31 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
   recipe: `perf-tuning-a-model` Step 2.
 - **TC-path correctness** — `test_kimi_moe_tc_diag` documents why Kimi's W4A4
   chain is numerically unusable (`LSX_KIMI_TC` stays off).
-- **GPU exclusivity** — never run two GPU tasks concurrently (inference, CUDA
-  tests, perf suites). VRAM/SM contention skews t/s by up to 2x. Perf runs go
-  last.
+- **GPU exclusivity** — never run two GPU tasks concurrently; see §8.
 - Session notes worth reading: `docs/GEMMA_DEBUG_RESOLVED.md`,
   `docs/KIMI_DEBUG_NEXT.md`, `docs/QWEN38_SESSION_SUMMARY.md`.
+
+## 8. Host resource policy and GPU scheduling
+
+Host CPU/RAM are never the constraint on the dev boxes: during builds and
+tooling the CPU sits around ~10% and RAM around ~35%, so do not throttle
+parallelism, threads/cores, or memory usage for ordinary tool work. Under Linux
+there is nothing to economize at all.
+
+The **exception** — both OS profiles — is inference and inference tests
+(`lsxbenchmark --bench`/`--selfcheck`, `--testprompt`, infer tests, CUDA kernels
+on real weights). There memory and GPU are critical:
+
+- Run **one GPU workload at a time**. No parallel inference, CUDA test, or perf
+  suite.
+- `lsxbenchmark` is a **strict GPU-exclusive**: VRAM/SM contention skews t/s by
+  up to ~2x, which makes the number worthless for the perf reference. Do not run
+  it alongside anything else on the GPU.
+- Watch VRAM/RAM and unload models when done; do not duplicate a running
+  inference.
+- **Perf comes last**, after every other GPU task — `test_perf_baseline_*` reads
+  the committed `tests/perf/perf_baselines.json`, so a contaminated measurement
+  would be recorded as the reference.
 
 ## Common mistakes
 
