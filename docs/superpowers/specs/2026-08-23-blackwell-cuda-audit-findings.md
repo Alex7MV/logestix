@@ -1373,3 +1373,81 @@ tok/s / ttft 116 ms.
   order + adversarial per-segment scales), fallback parity under partial
   residency, device-feed two-call `final_logits` memcmp gate, EOS
   truncation helper.
+
+## Round 27 — full CUDA-inference test-integrity audit (2026-09-14)
+
+Method: static invariant review + `compute-sanitizer`
+(memcheck/initcheck/racecheck) sweep over every synthetic CUDA test
+(kernels, pipeline, loader, micro/mma). Findings (all TDD: failing
+detector -> minimal fix -> green).
+
+1. **T-27-1 (critical, fixed): Round-26 real-geometry TC-batch parity
+   test was vacuous.** Commit `7aa7008` ("clean debug markers")
+   accidentally deleted the four `cudaMemcpy(..., DeviceToHost)` lines
+   when rewriting the memcmp loop, so `r13/b13/r2/b2` stayed
+   zero-initialised and every `CHECK(ok13/ok2)` passed unconditionally.
+   The verification claim in Round 26 ("real-geometry GEMM parity ...
+   caught 9f85044") was therefore false as of `7aa7008`. Restoring the
+   copies immediately exposed a second defect: the test reused a
+   single-row activation as the *per-slot* down-GEMM activation
+   (`a_slot_off = slot*K/2`), reading OOB (`memcheck`: 28 invalid global
+   reads in `lsx_tc_gemm.cu cp_async16`). Fixed with per-slot activation
+   buffers (`K*I/2` packed + `K*(I+15)/16` scales), matching per-slot
+   reference windows, plus two anti-vacuity checks (slot 0 != slot 1).
+   Production callers (qwen `qpack_batch`, kimi `s.hq`) were already
+   correctly sized — test-only defect.
+
+2. **T-27-2 (critical, fixed): synthetic MoE fixture geometry drift.**
+   `qwen_moe_test::MoeCfg().num_attention_heads = 4` while
+   `BuildSyntheticMoeTensors` derives every dense shape from
+   `qwentest::TestCfg()` (`= 2`). The converted topology advertised
+   `NH*HD*2 = 256` but the q_proj weight had 128 rows, so
+   `qwen_split_query_kernel` read uninitialised `d_qc` (`initcheck`:
+   2972 errors). Added a fixture self-consistency guard
+   (`test_qwen_moe_convert`) and aligned `MoeCfg` with `TestCfg`
+   (`num_attention_heads = 2`). `initcheck` -> 0.
+
+3. **T-27-3 (pre-existing red, fixed): qwen SelfCheck scratch
+   expectation.** `test_qwen_moe_{,36_}selfcheck` asserted
+   `arena_allocs <= 1`, but the `Load()` 1-token warmup (`8d85335`)
+   sizes the arena for `max_seq == 2` before the first real generation,
+   so the first SelfCheck grows it exactly once (`allocs == 2`).
+   The persistence invariant (no reallocation across cycles) still
+   holds; both tests now assert `allocs <= 2` after cycle 0 and
+   `allocs == allocs0` after cycle 1. `test_qwen_moe_36_selfcheck`
+   (real model) green; 3.5 sibling SKIPs without its vault.
+
+4. **T-27-4 (hygiene, fixed): uninitialised copies in kernel tests.**
+   `test_glm_moe_flash_kernels` D2H-read slots the `flash_exp0_probe`
+   never writes; `test_blackwell_micro_gemm` D2H-read the 4-byte struct
+   tail padding of `QwenMoeGvSlotDev` the gather kernel does not write.
+   Zeroed the probe output and the device slot table (`initcheck` -> 0).
+
+### Parked / reported (no change this round)
+
+- **F-06 still open**: `-fmad=false` covers whole object libraries
+  (`lsxcommon_glm_cu` etc.). Shared kernels use explicit `*_rn`
+  intrinsics, so narrowing is numerically inert, but per-source CUDA
+  flag surgery is deferred (risk > value).
+- **GLM-5.3-Flash stream invariant deviation**:
+  `glm_moe_flash_inference.cu` performs a per-token
+  `cudaStreamSynchronize` (token-id H2D staging, line ~1606) and a
+  per-token argmax D2H readback (line ~1896). Both are documented in
+  code as deliberate; unlike qwen/kimi there is no device-side feed, so
+  AGENTS' "one stream, no per-token host return" invariant is formally
+  violated. Correctness-neutral; a device-feed port (qwen/kimi pattern)
+  is the follow-up, gated on a real-model selfcheck.
+- **Dead TU**: `deepseek_moe_inference_csa.cu` is a 15-line
+  include-only stub (bodies live in `deepseek_moe_inference_attn.cu`);
+  candidate for removal.
+
+### Verification (this round)
+
+- `ctest --preset linux-debug` (fast): 45/45 green.
+- Affected: `test_qwen_moe_kernels`, `test_qwen_moe_convert`,
+  `test_qwen_moe_loader`, `test_glm_moe_flash_kernels`,
+  `test_blackwell_micro_gemm`, `test_qwen_moe_36_selfcheck` green;
+  `test_qwen_moe_selfcheck` SKIP (no 3.5 vault).
+- `compute-sanitizer` (memcheck + initcheck + racecheck) on the
+  synthetic kernel/pipeline suite: 0 errors/hazards after the fixes
+  (`test_qwen_moe_kernels`: memcheck 235 -> 0, initcheck 2972 -> 0).
