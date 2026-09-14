@@ -28,45 +28,41 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 suppo
 Use CMakePresets — ready-made for both supported OSes. Replace `debug` with
 `release` in the preset name for an optimization build.
 
-Toolchain notes (tested, higher than the minimums below also work):
-- CMake 4.2.3 / 3.25+ (CMakePresets, `CMAKE_POLICY_VERSION_MINIMUM=3.5`)
-- GCC 15.2 (Ubuntu 26.04) — C++20 baseline; GCC 15+ supports C++23, but the
-  project pins to C++20 deliberately
-- NVCC 13.4.59 (Linux, `/usr/local/cuda`; Windows — 13.3, см. ниже) — CUDA
-  `LANGUAGES ... CUDA` enabled at top level
-  (`find_package(CUDAToolkit)`), not `enable_language()` in a subdirectory
-  (CMake 4.x breaks when CUDA is enabled in a nested dir)
-- Arrow `BUILD_WARNING_LEVEL=PRODUCTION` — GCC 15 treats previously-ignored
-  warnings as errors (`-Werror=unused-parameter` in Arrow 25.0.0 under the
-  default CHECKIN debug level); PRODUCTION never adds `-Werror`
-
-### Linux (Ubuntu 26.04, Ninja + GCC)
-
 ```bash
+# Linux (Ubuntu 26.04, Ninja + GCC)
 git submodule update --init --recursive
-cmake --preset linux-debug
-cmake --build --preset linux-debug
-```
+cmake --preset linux-debug && cmake --build --preset linux-debug
+ctest --preset linux-debug                     # fast only
 
-### Linux release (tuned for AMD EPYC 9V74, Zen 4)
-
-```bash
-cmake --preset linux-release-znver4
-cmake --build --preset linux-release-znver4   # Ninja -j160
+# Linux release (AMD EPYC 9V74 / Zen 4): LSX_ARCH_ZNVER4=ON + LSX_LTO=ON
+cmake --preset linux-release-znver4 && cmake --build --preset linux-release-znver4
 ctest --preset linux-release-znver4
+
+# Windows (Visual Studio 2026)
+cmake --preset windows-debug && cmake --build --preset windows-debug
 ```
 
-Enables `LSX_ARCH_ZNVER4=ON` + `LSX_LTO=ON`: `lsx_tune` INTERFACE library
-applies `-march=znver4` (-mtune=znver4, -O3, -fno-math-errno,
--falign-loops=16, -funroll-loops) and LTO (`-flto` GCC / `-flto=thin`
-Clang-AOCC) to C/C++ targets only. CUDA (`lsxcommon_cu`), dependencies and
-the Windows/MSVC build are never affected.
+`arrow.dll` / `arrow_cuda.dll` копируются в каталог exe через POST_BUILD;
+Arrow's xsimd требует `CMAKE_POLICY_VERSION_MINIMUM=3.5`, но оно уже применяется
+через `CMakePresets.json` — ручной env-переменной не нужно.
+
+Тулчейн-минимумы (протестированные версии; большие тоже работают): CMake 3.25+
+(в дереве 4.2.3), GCC 15.2 (Ubuntu 26.04) — проект сознательно пиннится на C++20,
+NVCC 13.4.59 (Linux, `/usr/local/cuda`) / 13.3 (Windows), CUDA Toolkit ≥13.2
+(guard `test_cuda_toolkit_guard`).
+
+Неочевидные грабли сборки — скил **`cuda-cmake-build-gotchas`**
+(`.opencode/skills/cuda-cmake-build-gotchas/SKILL.md`): CMake 4.x и
+`enable_language(CUDA)` во вложенном каталоге, флаги хоста, протекающие в NVCC,
+`/Zc:preprocessor` vs CCCL/thrust, `CMAKE_POLICY_VERSION_MINIMUM` для xsimd,
+патчи Arrow/Boost, `lsx_tune`/LTO-гейтинг, `cc12x`-only arch set, host-only
+CUDA-поверхности и `_putenv`-guard. Там же — таблица «симптом → причина».
 
 ### Linux release — AOCC (AMD Optimizing C/C++ 5.2.0)
 
 Альтернативный хост-компилятор (clang 17.0.6) для znver4-сборки; NVCC
-использует его как `-ccbin`. Проверено 2026-08 (Linux, RTX 5090, EPYC 9V74):
-конфигурация, полная сборка и 110/110 тестов зелёные.
+использует его как `-ccbin`. Проверено 2026-08 (RTX 5090, EPYC 9V74): сборка и
+110/110 тестов зелёные.
 
 ```bash
 AOCC=/home/alexmv2025/projects/amd/aocc-compiler-5.2.0/bin
@@ -81,35 +77,9 @@ cmake --build build/linux-release-znver4-aocc -j 160
 ctest --test-dir build/linux-release-znver4-aocc
 ```
 
-Особенности AOCC (проверено на 5.2.0):
-- `-flto=thin` НЕ поддерживается — clang падает на `-flto=full` (warning
-  "Unsupported lto mode -flto=thin, falling back to -flto=full"), сборка
-  при этом корректна.
-- `__has_attribute(enable_if)` у AOCC = 1, поэтому abseil compile-time
-  format checker активируется (у GCC = 0, checker инертен). Его
-  `ValidFormatImpl` понимает только printf-`%`-конверсии и отвергает
-  fmt-style `{}`, используемый проектом повсеместно. Лечится идемпотентным
-  патчем abseil в корневом `CMakeLists.txt` (guard `#if 0 &&`), приводящим
-  checker к GCC-поведению. Не убирать при сборке под AOCC/Clang.
-- Host-only тест `test_kimi_moe_expert_cache` требует, чтобы CUDA-поверхность
-  `kimi_moe_expert_cache.h` была под `#if defined(LOGESTIX_HAS_CUDA) ||
-  defined(__CUDACC__)` — иначе host-TU без CUDA include-путей не соберётся.
-- В `.cu`-тестах не использовать Windows-only `_putenv` без guard'а — только
-  `_putenv_s`/`setenv` под `#ifdef _WIN32` (эталон: `test_qwen_nvfp4_gemv.cu`).
-
-### Windows (Visual Studio 2026)
-
-```powershell
-git submodule update --init --recursive
-cmake --preset windows-debug
-cmake --build --preset windows-debug
-```
-
-`arrow.dll` and `arrow_cuda.dll` are auto-copied via `POST_BUILD`.
-
-Arrow's xsimd sub-dependency requires `CMAKE_POLICY_VERSION_MINIMUM=3.5`; the
-variable is now applied automatically through `CMakePresets.json` — no manual
-`$env:CMAKE_POLICY_VERSION_MINIMUM` needed.
+Особенности AOCC/Clang (`-flto=thin` fallback, активация abseil
+format-checker'а и её патч, host-only CUDA-поверхности, `_putenv` guard) —
+в скиле `cuda-cmake-build-gotchas`.
 
 ### Windows — расположение тулчейна (VS 2026, MSVC 14.51, CUDA 13.3)
 
@@ -318,30 +288,22 @@ SelfCheck/тесты), соглашение об именах файлов мо�
 
 ## CMake Key Points
 
-- `lsxcommon` — STATIC library в `libs/lsxcommon/CMakeLists.txt`; линкуется PUBLIC с `spdlog::spdlog`, `flatbuffers`, `libzmq-static`, `cudart`, `lsxnetwork`; PRIVATE с `arrow_shared`, `arrow_cuda_shared`, `simdjson::simdjson`
-- CUDA `.cu` файлы вынесены в отдельные OBJECT библиотеки: `lsxcommon_cu` (DeepSeek inference + safetensors), `lsxcommon_glm_cu` (GLM-5.2 kernels, `-fmad=false` для бит-точной математики) и `lsxcommon_qwen_moe_cu` (Qwen3.5-35B-A3B MoE kernels, `-fmad=false`) — линкуются в `lsxcommon` PUBLIC. Это изолирует NVCC от MSVC-флагов
-- `lsxcommon_cu`/`lsxcommon_glm_cu` линкуются с `cudart` и `cublas` (CUDA Toolkit system libs). Пути к CUDA
-  Toolkit находятся через `find_package(CUDAToolkit)` (работает и в Linux, и в Windows),
-  а не через жёсткие пути `C:/Program Files/...
-- `lsxnetwork` — STATIC library (`libs/lsxnetwork/CMakeLists.txt`); simdjson, libzmq-static и Threads — PUBLIC (STATIC-библиотека ре-экспортирует link-зависимости потребителям); spdlog — PRIVATE
-- Each app in `apps/*/` links `lsxcommon` PRIVATE
-- Catch2 v3.16.0 fetched at root level (via FetchContent) when `BUILD_TESTING=ON`
-- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` установлен в `${CMAKE_BINARY_DIR}/bin` (до `add_subdirectory`)
-- `add_custom_command(TARGET ... POST_BUILD)` копирует `arrow.dll` + `arrow_cuda.dll` в директорию exe (только Win32); applies to all 4 app targets, all test targets (кроме `test_mosaic_network`)
-- **MSVC flags**: `/W4 /utf-8 /MP /arch:AVX512` через `CMAKE_CXX_FLAGS` (НЕ `add_compile_options`, чтобы не попадали в NVCC). `/arch:AVX512` включает AVX-512F/BW/CD/DQ/VL. `WIN32_LEAN_AND_MEAN NOMINMAX` (suppress Windows macro conflicts with CCCL). DO NOT use `/Zc:preprocessor` (breaks CCCL/thrust). Use `CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING` + `THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP` for CCCL/MSVC compat.
-- **CMAKE_POLICY_VERSION_MINIMUM**: задаётся через `CMakePresets.json` (`cacheVariables`), ручная установка env-переменной не требуется. Arrow's xsimd требует значения 3.5.
-- **GCC/Clang Linux flags**: НЕ глобальные. Тюнинг под EPYC 9V74 (Zen 4) живёт в
-  INTERFACE-библиотеке `lsx_tune` (root `CMakeLists.txt`) и включается через
-  `LSX_ARCH_ZNVER4`/`LSX_LTO` (см. пресет `linux-release-znver4`): `-march=znver4`,
-  `-mtune=znver4`, `-O3` (Release), `-fno-math-errno`, `-falign-loops=16`,
-  `-funroll-loops`, LTO `-flto` (GCC) / `-flto=thin` (Clang/AOCC). Всё обёрнуто в
-  `$<$<PLATFORM_ID:Linux>...$<COMPILE_LANGUAGE:C,CXX>>`, LTO ещё и в
-  `$<$<LINK_LANGUAGE:CXX> $<CONFIG:Release>>` — в NVCC и MSVC не протекает.
-  Обычные `linux-debug`/`linux-release` пресеты остаются generic-сборками без
-  `-march`.
-- **Arrow 25.0.0 + Boost patch**: On MSVC, Boost 1.88.0's `literals.hpp` fails with C++20 due to `operator""_cppi` / `_cppui` sized literal redefinition. Workaround: remove the 4 `BOOST_MP_DEFINE_SIZED_CPP_INT_LITERAL(...)` invocations after Arrow download (see `CMakeLists.txt` lines 85-98).
-- Arrow include paths добавлены PUBLIC напрямую к `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`)
-- CUDA: архитектуры `120-real;121-real` (Blackwell only; Hopper/Ada/Ampere запрещены), флаг `--extended-lambda` для thrust `__host__ __device__` лямбд
+- `lsxcommon` — STATIC (`libs/lsxcommon/CMakeLists.txt`); PUBLIC линк со spdlog,
+  flatbuffers, libzmq-static, cudart, lsxnetwork; PRIVATE — arrow_shared,
+  arrow_cuda_shared, simdjson. Arrow include-пути добавлены PUBLIC напрямую к
+  `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`).
+- CUDA `.cu` вынесены в отдельные OBJECT-библиотеки (`lsxcommon_cu`,
+  `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), линкуются в `lsxcommon`
+  PUBLIC — это изолирует NVCC от MSVC-флагов. `cudart`/`cublas` находятся через
+  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями.
+- `lsxnetwork` — STATIC; simdjson, libzmq-static и Threads PUBLIC
+  (STATIC-библиотека ре-экспортирует link-зависимости), spdlog PRIVATE.
+- Каждое app из `apps/*/` линкует `lsxcommon` PRIVATE; Catch2 v3.16.0
+  через FetchContent при `BUILD_TESTING=ON`.
+- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` (до
+  `add_subdirectory`); POST_BUILD копирует `arrow.dll`/`arrow_cuda.dll` (Win32).
+- Флаги (MSVC/NVCC), гейтинг `lsx_tune`/LTO, патчи зависимостей и CUDA-архитектуры
+  — скил `cuda-cmake-build-gotchas`.
 
 ## Conventions
 
