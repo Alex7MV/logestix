@@ -28,16 +28,11 @@ end.
 - **Frozen geometry.** hidden_size / layers / heads / experts / top-k are locked
   as compile-time constants with `static_assert` (runtime config reads are
   legacy — new models do not do it).
-- **Model neutrality.** NVFP4 GEMM goes ONLY through the model-neutral layer
-  `libs/lsxcommon/include/lsxcommon/lsx_inference_nvfp4.h`
-  (`RunLsxNvfp4Gemm` + `LsxFastMathScope`). Never create a family-named copy of
-  the dispatcher.
-- **One stream.** The whole prefill→decode loop runs inside a single
-  `cudaStream_t`; no `cudaDeviceSynchronize` inside the token loop (final sync
-  only).
-- **Shared-memory sandbox.** Any read-modify-write in shared memory is
-  `thread 0` only, behind hard `__syncthreads()`; after the barrier the other
-  threads only read. Removes Independent-Thread-Scheduling nondeterminism.
+- **Kernel-level rules** — one stream with no per-token `cudaDeviceSynchronize`,
+  the shared-memory sandbox, NVFP4 GEMM only through the model-neutral
+  `lsx_inference_nvfp4` layer, CCCL/cub priority, tile programming, alignment
+  and the NVIDIA docs mirror: **REQUIRED SUB-SKILL**
+  `nvfp4-blackwell-conventions` (do not restate them here).
 - **No abseil containers in `.cu`/`.cuh`-reachable headers.** Containers and
   streams in device TUs stay `std::`.
 - **Norms and biases are never quantized** — they stay FP16/BF16.
@@ -134,10 +129,10 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
 
 ### 6. Memory synchronization (Shared Memory Sandbox)
 
-- Thread-0-only RMW behind barriers (rule above); reference implementation:
+- Apply the shared-memory sandbox and deterministic-reduction rules from
+  `nvfp4-blackwell-conventions` (thread-0-only RMW behind `__syncthreads()`;
+  no `atomicAdd` in anything feeding `final_logits`). Reference implementation:
   `full_attn_softmax_kernel`.
-- Prefer deterministic reductions (partials in shared memory + a fixed
-  sequential sum) over `atomicAdd` for anything feeding `final_logits`.
 
 ### 7. Thread-isolated mapping (LsxTokenTranslator)
 
@@ -236,8 +231,9 @@ ingested.
 
 - Adding kernels or a converter without the failing test first (TDD violation).
 - Reading geometry from `config.json` at runtime instead of frozen constants.
-- A family-named copy of the NVFP4 dispatcher instead of the neutral layer.
-- `atomicAdd` in a reduction that feeds `final_logits` → nondeterministic decode.
+- Violating a kernel-level rule that already lives in
+  `nvfp4-blackwell-conventions` (a family-named NVFP4 dispatcher, a shared-memory
+  race, an `atomicAdd` feeding `final_logits`).
 - Forgetting a ctest label, or a selfcheck target without `SKIP_RETURN_CODE 4`
   (a skip then reports as a failure).
 - Loading the real model vault inside a loader/model-stage test (forbidden —
