@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash|36)";
+    const std::string var    = "(?:27b|flash|36|v41)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -39,6 +39,7 @@ std::regex SchemeRegex()
         "|expert_kernels"
         "|expert_cache"
         "|device_math"
+        "|dequant"
         "|norm_kernels"
         "|fp8"
         "|constants)";
@@ -138,4 +139,19 @@ TEST_CASE("naming guard accepts qwen_moe_exp_* stems", "[naming][guard]")
     CHECK(m("qwen_moe_exp_model"));
     CHECK(m("qwen_moe_exp_load"));
     CHECK(m("qwen_moe_exp_constants"));
+}
+
+TEST_CASE("naming guard accepts deepseek_moe_v41_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("deepseek_moe_v41_constants"));
+    CHECK(m("deepseek_moe_v41_load"));
+    CHECK(m("deepseek_moe_v41_convert"));
+    CHECK(m("deepseek_moe_v41_model"));
+    CHECK(m("deepseek_moe_v41_inference"));
+    CHECK(m("deepseek_moe_v41_inference_attn"));
+    CHECK(m("deepseek_moe_v41_device_math"));
+    CHECK(m("deepseek_moe_v41_dequant"));
 }

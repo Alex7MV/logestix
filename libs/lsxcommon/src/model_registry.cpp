@@ -1,6 +1,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include "deepseek_moe_model.h"
+#include "deepseek_moe_v41_model.h"
 #include "gemma_moe_model.h"
 #include "glm_moe_flash_model.h"
 #include "glm_moe_model.h"
@@ -17,6 +18,7 @@ void EnsureModelRegistry()
 {
     static bool init = [] {
         LsxModelFactory::Register<DeepSeekV4FlashModel>();
+        LsxModelFactory::Register<DeepSeekV41FlashModel>();
         LsxModelFactory::Register<GlmV5Model>();
         LsxModelFactory::Register<KimiK27CodeModel>();
         LsxModelFactory::Register<Qwen3_5_9BModel>();

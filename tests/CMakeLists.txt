@@ -108,6 +108,310 @@ endif()
 
 add_test(NAME test_deepseek_moe_model COMMAND test_deepseek_moe_model)
 
+# ── DeepSeek-V4.1-Flash: frozen passport (model stage, host-only) ────────
+add_executable(test_deepseek_moe_v41_model test_deepseek_moe_v41_model.cpp)
+target_link_libraries(test_deepseek_moe_v41_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_v41_model PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_model>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_model>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_model COMMAND test_deepseek_moe_v41_model)
+
+# ── DeepSeek-V4.1-Flash: topology contract (load stage, host-only) ───────
+add_executable(test_deepseek_moe_v41_loader test_deepseek_moe_v41_loader.cpp)
+target_link_libraries(test_deepseek_moe_v41_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_v41_loader PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_loader>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_loader COMMAND test_deepseek_moe_v41_loader)
+
+# ── DeepSeek-V4.1-Flash: converter (synthetic e2e, host-only) ────────────
+add_executable(test_deepseek_moe_v41_convert test_deepseek_moe_v41_convert.cpp)
+target_compile_definitions(test_deepseek_moe_v41_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_deepseek_moe_v41_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_deepseek_moe_v41_convert PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_deepseek_moe_v41_convert COMMAND test_deepseek_moe_v41_convert)
+set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES LABELS convert)
+
+# ── DeepSeek-V4.1-Flash: dense dequant kernels (CUDA) ────────────────────
+add_library(test_deepseek_moe_v41_dequant_cu OBJECT
+            test_deepseek_moe_v41_dequant.cu)
+set_target_properties(test_deepseek_moe_v41_dequant_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_dequant_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_dequant_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_dequant_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_dequant_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_v41_dequant)
+set_target_properties(test_deepseek_moe_v41_dequant PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_dequant PRIVATE
+    test_deepseek_moe_v41_dequant_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_dequant>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_dequant>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_dequant COMMAND test_deepseek_moe_v41_dequant)
+
+# ── DeepSeek-V4.1-Flash: pinned load + expert store (CUDA) ───────────────
+add_library(test_deepseek_moe_v41_load_fast_cu OBJECT
+            test_deepseek_moe_v41_load_fast.cu)
+set_target_properties(test_deepseek_moe_v41_load_fast_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_load_fast_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_load_fast_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_load_fast_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_load_fast_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_v41_load_fast)
+set_target_properties(test_deepseek_moe_v41_load_fast PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_load_fast PRIVATE
+    test_deepseek_moe_v41_load_fast_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_load_fast>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_load_fast>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_load_fast COMMAND test_deepseek_moe_v41_load_fast)
+
+# ── DeepSeek-V4.1-Flash: device-math kernels (CUDA) ─────────────────────
+add_library(test_deepseek_moe_v41_kernels_cu OBJECT
+            test_deepseek_moe_v41_kernels.cu)
+set_target_properties(test_deepseek_moe_v41_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_kernels_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_kernels_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_v41_kernels)
+set_target_properties(test_deepseek_moe_v41_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_kernels PRIVATE
+    test_deepseek_moe_v41_kernels_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_kernels>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_kernels>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_kernels COMMAND test_deepseek_moe_v41_kernels)
+
+# ── DeepSeek-V4.1-Flash: pipeline smoke (synthetic full geometry) ────────
+add_library(test_deepseek_moe_v41_pipeline_cu OBJECT
+            test_deepseek_moe_v41_pipeline.cu)
+set_target_properties(test_deepseek_moe_v41_pipeline_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_pipeline_cu PRIVATE
+    Catch2::Catch2WithMain absl::strings)
+
+add_executable(test_deepseek_moe_v41_pipeline)
+set_target_properties(test_deepseek_moe_v41_pipeline PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_pipeline PRIVATE
+    test_deepseek_moe_v41_pipeline_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
+    )
+    add_custom_command(TARGET test_deepseek_moe_v41_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_pipeline>"
+    )
+endif()
+
+add_test(NAME test_deepseek_moe_v41_pipeline COMMAND test_deepseek_moe_v41_pipeline)
+
+# ── DeepSeek-V4.1-Flash: FP4 activation quant (CUDA) ────────────────────
+add_library(test_deepseek_moe_v41_actquant_cu OBJECT
+            test_deepseek_moe_v41_actquant.cu)
+set_target_properties(test_deepseek_moe_v41_actquant_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_deepseek_moe_v41_actquant_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_deepseek_moe_v41_actquant_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+)
+target_compile_definitions(test_deepseek_moe_v41_actquant_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+)
+target_link_libraries(test_deepseek_moe_v41_actquant_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_v41_actquant)
+set_target_properties(test_deepseek_moe_v41_actquant PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_v41_actquant PRIVATE
+    test_deepseek_moe_v41_actquant_cu lsxcommon Catch2::Catch2WithMain)
+
+add_test(NAME test_deepseek_moe_v41_actquant COMMAND test_deepseek_moe_v41_actquant)
+
+# ── DeepSeek-V4.1-Flash: real-model selfcheck (Paris, env opt-in) ────────
+add_executable(test_deepseek_moe_v41_selfcheck test_deepseek_moe_v41_selfcheck.cpp)
+target_link_libraries(test_deepseek_moe_v41_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_v41_selfcheck COMMAND test_deepseek_moe_v41_selfcheck)
+set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 # ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2856,6 +3160,8 @@ set_tests_properties(
     test_schema_views
     test_deepseek_moe_loader
     test_deepseek_moe_model
+    test_deepseek_moe_v41_model
+    test_deepseek_moe_v41_loader
     test_expert_store
     test_glm_moe_expert_cache
     test_model_integrity
@@ -2909,6 +3215,11 @@ set_tests_properties(
     test_deepseek_moe_inference_kernels
     test_deepseek_moe_moe
     test_deepseek_moe_arena
+    test_deepseek_moe_v41_dequant
+    test_deepseek_moe_v41_load_fast
+    test_deepseek_moe_v41_kernels
+    test_deepseek_moe_v41_actquant
+    test_deepseek_moe_v41_pipeline
     test_qwen_moe_kernels
     test_qwen_moe_exp_kernels
     test_glm_moe_flash_kernels
