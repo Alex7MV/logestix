@@ -57,10 +57,37 @@ end.
   `lsxcommon::lsx_model_metadata(rel)` / `lsx_model_metadata_root()`
   (`libs/lsxcommon/src/path_registry.cpp`). Vault-root invariants and path
   switches live in `path_registry` only — no hardcoded paths in converters.
-- Test: label `convert`, explicit bounded TIMEOUT (≤600 s, canonically 120 s).
-  Never convert a real model in a test — build a synthetic checkpoint
-  (`tests/test_synth_checkpoint.h`: `FakeTensor`/`WriteSafetensors`) in a temp
-  dir. See "Converter test rules" in `AGENTS.md` for the six fixture rules.
+- Test: see **Converter test rules** below — a `convert`-labelled synthetic E2E.
+
+#### Converter test rules (fixed)
+
+Reference: `tests/test_glm_moe_flash_convert.cpp` (synthetic E2E) +
+`tests/test_synth_checkpoint.h` (family-neutral primitives
+`synthtest::FakeTensor`/`WriteSafetensors`/`MakeBf16*`/`TensorNamesIn`; family
+fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
+
+1. **Label `convert` in the same commit**, and a mandatory bounded TIMEOUT
+   (≤600 s; canonically 120 s) — guard `CheckConvertTimeout`. The TIMEOUT is
+   the mechanical defence against a test that actually converts a model.
+2. **Converting a real model in a test is forbidden.** Run the converter E2E
+   pipeline on a synthetic checkpoint: `config.json` + `*.safetensors` written
+   with `WriteSafetensors` into a temporary directory.
+3. **Synthetic geometry**: the converter's frozen gates are relaxed with
+   `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` — a **runtime env var** set through
+   `set_tests_properties(... PROPERTIES ENVIRONMENT ...)`, NOT a compile
+   define (a compile define does not export env).
+4. **The fixture must cover every pipeline path**: globals (embed / lm_head /
+   final norm — without them the converter errors), BF16→NVFP4, FP8→NVFP4 with
+   scale tiles, raw tensors, routed experts (all 3 projections), empty layers
+   of the frozen range, and the `model.index.json` layout (format tag +
+   kda/dsa/moe lists).
+5. **FP8 fixture tensors**: sides a multiple of 128 (GPU kernel); scale tile
+   `[ceil(R/128), ceil(C/128)]` F32; safetensors dtype strings `BF16`,
+   `F8_E4M3`, `F32`.
+6. **A real checkpoint is allowed only to read one light file** (e.g.
+   `config.json` in `ParseFlashConfig`) with `SKIP()` when the model is absent;
+   full weight reads/conversions never. Synthetic fixtures do not replace
+   tests that validate the real format's field names.
 
 ### 2. Quantization and compression (NVFP4)
 
