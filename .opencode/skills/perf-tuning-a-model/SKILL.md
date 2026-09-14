@@ -15,6 +15,9 @@ skipped step 2 was discarded.
 
 **REQUIRED SUB-SKILL:** use `test-driven-development`.
 
+Launching and operating the engine (apps, vault paths, engine session, env knobs)
+is the `running-a-model` skill; this skill owns profiling and baselines.
+
 ## Hard rules
 
 - **`lsxbenchmark` is GPU-exclusive.** One GPU workload at a time (no other
