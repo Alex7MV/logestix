@@ -388,48 +388,23 @@ SelfCheck/тесты), соглашение об именах файлов мо�
 
 ## absl:: Priority (Container/String policy)
 
-Приоритет `absl::` над `std::` в host-only C++ коде (НЕ компилируемом NVCC):
+Host-only C++ (НЕ компилируемый NVCC) предпочитает `absl::`: `unordered_map/set` →
+`flat_hash_map/set`, `map/set` → `btree_map/set`, простые конкатенации →
+`absl::StrCat`/`StrAppend`. Таблица приоритетов, исключения (что остаётся `std::`),
+NVCC-инкомпатибельность контейнеров с правилом достижимости и recipe-проверкой,
+printf-контракт `absl::StrFormat` и CMake-якоря (ABSL_PROPAGATE_CXX_STD, патчи
+crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
+(`.opencode/skills/absl-in-cuda-cpp/SKILL.md`). Здесь остаётся незыблемое:
 
-| Приоритет | std:: | → absl:: | Заголовок |
-|---|---|---|---|
-| ДОЛЖЕН | `std::unordered_map` | `absl::flat_hash_map` | `<absl/container/flat_hash_map.h>` |
-| ДОЛЖЕН | `std::unordered_set` | `absl::flat_hash_set` | `<absl/container/flat_hash_set.h>` |
-| ДОЛЖЕН | `std::map` | `absl::btree_map` | `<absl/container/btree_map.h>` |
-| ДОЛЖЕН | `std::set` | `absl::btree_set` | `<absl/container/btree_set.h>` |
-| МОЖНО | `std::ostringstream` (простые конкатенации) | `absl::StrCat` / `absl::StrAppend` | `<absl/strings/str_cat.h>` |
-
-Исключения — остаётся `std::`:
-- `std::string_view`, `std::optional`, `std::variant`, `std::function`, `std::unique_ptr` —
-  для C++17+ abseil сам рекомендует `std::*-версии (absl-версии — полифилы).
-- Потоковый JSON/отчёт builder с цикловым мемпингом (`std::ostringstream` c setw/setfill
-  и т.п.) — легитимный потоковый use, НЕ конвертируется (эталон: `qwen_dense_convert.cpp`
-  `ConvertQwenModel`, билдер model.index.json).
-- Кастомные хэшер-функторы (`ExpertKeyHash`, `GlmExpertKeyHash`) — передаются как
-  Hasher параметр напрямую, менять не нужно.
-
-NVCC ИНКОМПАТИБИЛЬНОСТЬ (критично):
-- abseil контейнеры (flat_, btree_ и все `absl/container/internal/*`) НЕ компилируются
-  NVCC-ом (raw_hash_map ломается в `.cu`: `C2794`/`C2938` MSVC-in-NVCC).
-- ЗАПРЕЩЕНО добавлять `#include <absl/container/*>` какие-либо в заголовки, достижимые
-  транзитивно из `.cu`/`.cuh` TU (эталоны безопасных заголовков: `schema.h`,
-  `tokenizer.h`, `shared_experts.h`; НЕбезопасные — только host-заголовки:
-  `model_integrity.h`, `lsx_orchestrator.h`, `converter.h`, `http_router.h`).
-- В `.cu`/`.cuh` файлах контейнеры и стриммы остаются `std::`; при сомнении проверь
-  транзитивной граф: `rg 'include "[^"]+"' libs/lsxcommon/src/*.cu`.
-- `absl::strings` подтягивается к объект-библиотекам `lsxcommon_cu`/`glm_cu`/`qwen_cu`
-  через `target_link_libraries(... absl::strings)` — это даёт include-пути, но
-  НЕ вносит контейнерных заголов во `.cu`.
-
-CMake-якоря:
-- `absl::flat_hash_map` / `absl::span` / `absl::strings` — PUBLIC линк `lsxcommon`
-  и `lsxhome` (apps/lsxhome PRIVATE), `absl::flat_hash_map` — PUBLIC `lsxnetwork`;
-  реализация в lsxcommon_cu/glm_cu/qwen_cu линкует `absl::strings`.
-- `ABSL_PROPAGATE_CXX_STD=ON` выравнивает abseil по стандарту проекта (C++20);
-  `CMAKE_CXX_STANDARD`/`CMAKE_CXX_FLAGS` вынужденно CACHE для probe-try_compile
-  (`/std:c++20` нужен, чтобы `ABSL_INTERNAL_AT_LEAST_CXX20` в under-проекте).
-- LTS-тег фиксируется на `20260526.0`; после FetchContent применяется идемпотентный
-  патч `crc32_x86_arm_combined_simd.h` (MSVC+`/arch:AVX512` → G-asm не парсится;
-  патч отключает MSVC-ветку SIMD в CRC).
+- Заголовки, достижимые из `.cu`/`.cuh`, НЕ должны включать `<absl/container/*>`
+  (NVCC падает в raw_hash_map: `C2794`/`C2938`); в `.cu`/`.cuh` контейнеры и
+  стриммы остаются `std::`. Сейчас container-заголовок включают только
+  `lsx_orchestrator.h` и `model_integrity.h` (host-only), нарушений из `.cu` нет;
+  проверка транзитивного графа — в скиле (guard это НЕ автоматизирует).
+- `absl::StrFormat`/`StrAppendFormat`/`Format` — printf-стиль (`%s/%d/%u/%f`);
+  `{}` печатается литерально (guard `test_absl_format_guard`).
+- Остаются `std::`: `string_view`/`optional`/`variant`/`function`/`unique_ptr`,
+  потоковые builders с `setw`/`setfill`, кастомные хэшер-функторы.
 
 ## NVIDIA Docs Reference (обязательный справочник)
 
