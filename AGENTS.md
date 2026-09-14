@@ -139,20 +139,21 @@ VRAM и SM искажает замер t/s (измерено: ~2x разброс
 ## Test
 
 `BUILD_TESTING=ON` is included in every preset. Тесты разбиты на 4 категории
-(CTest labels; дисциплину проверяет guard `test_ctest_labels_guard`):
+(CTest labels; дисциплину проверяет guard `test_ctest_labels_guard`; счётчики —
+Linux, текущее дерево):
 
 | Label | Что это | Когда запускается |
 |---|---|---|
-| `fast` (37+4 app) | host-only тесты | каждый `ctest --preset` (дефолт всех пресетов) |
-| `convert` (10) | конвертеры моделей | при правке конвертера (роутер) или отладке модели |
-| `inference` (77) | CUDA/модельный контур | когда изменился контур (роутер) или вручную |
-| `perf` (6) | perf-бенчмарки на реальных весах | только отдельной командой |
+| `fast` (45) | host-only тесты | каждый `ctest --preset` (дефолт всех пресетов) |
+| `convert` (13) | конвертеры моделей | при правке конвертера (роутер) или отладке модели |
+| `inference` (85) | CUDA/модельный контур | когда изменился контур (роутер) или вручную |
+| `perf` (15) | perf-бенчмарки на реальных весах | только отдельной командой и только из Release |
 
 ```bash
 ctest --preset linux-debug                  # fast only (Ubuntu 26.04)
 ctest --preset linux-debug-convert          # convert sweep
 ctest --preset linux-debug-inference        # inference sweep
-ctest --preset linux-debug-perf             # perf, отдельная команда
+ctest --preset linux-release-znver4-perf    # perf; baseline-числа только из Release
 ctest -L "^(fast|convert|inference|perf)$"  # полный прогон
 
 # Автодетект по git diff (fast всегда; convert/inference — при изменении
@@ -164,8 +165,11 @@ cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-r
 Дисциплина: новый тест обязан получить label в том же коммите (иначе красный
 `test_ctest_labels_guard`). Правила классификации путей — таблица
 `lsx_router_rule(...)` в `tools/test_router.cmake`.
-Процедура подъёма/замера скорости (nsys-профиль, budget-тесты, нобы, перф-базлайн)
-— скил `perf-tuning-a-model`. Правила тестов конвертеров (label `convert` +
+Процедура подъёма/замера скорости (nsys-профиль, budget-тесты, нобы, перф-базлайн,
+запуск perf-сьюта) — скил `perf-tuning-a-model`. Учти: `test_perf_baseline_*`
+пишет `tests/perf/perf_baselines.json` в дереве исходников при улучшении (дифф
+ревьюить и коммитить осознанно), в Debug-сборке baseline-числа невалидны, а
+запускать perf нужно после всех прочих GPU-задач. Правила тестов конвертеров (label `convert` +
 ограниченный TIMEOUT, синтетический чекпоинт, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY`
 как runtime-env, покрытие фикстуры, FP8-тайлы, чтение реального чекпоинта только
 одного лёгкого файла) — раздел «Converter test rules» в скиле `ingesting-a-model`.

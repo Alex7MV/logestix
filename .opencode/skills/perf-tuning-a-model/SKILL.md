@@ -119,6 +119,46 @@ kernels beat guessing.
 - One AGENTS.md line for the model + a findings section in the design doc
   (profile tables, changes, rejected experiments, next levers).
 
+## Running the perf test suite (ctest)
+
+Two target families share the `perf` label and answer different questions:
+
+| family | what it measures | notes |
+|---|---|---|
+| `test_perf_baseline_*` | real-model t/s over 2048 tokens, one model per test | guards the committed `tests/perf/perf_baselines.json`; loads the full vault model (Kimi re-pins 544 GiB ≈ 5 min) |
+| `test_blackwell_perf_*` | kernel-level microbenchmarks | needs the weights they name, not a full model run |
+
+`ctest -L perf` is currently **15 tests** on Linux — a long, GPU-exclusive,
+disk-heavy run.
+
+Rules that bite:
+
+- **Baseline numbers require a Release build**:
+  `ctest --preset linux-release-znver4-perf` (or the AOCC equivalent).
+  `test_perf_baseline` has **no build-type guard**, so a Debug run measures a
+  Debug build, lands far below the reference and fails with `DEGRADED` — there
+  is no useful Debug baseline run.
+- **The baseline test rewrites the source tree.** It writes
+  `tests/perf/perf_baselines.json` (through `LSX_SOURCE_DIR`) whenever the
+  measured value is *higher* (`kUpdate`), or when the generated length changes;
+  on a lower value it fails (`kDegrade`) and does **not** rewrite. A perf run
+  therefore mutates a tracked file: review and commit that diff deliberately,
+  and never run it while other GPU work is in flight — a contaminated
+  measurement would be committed as the new reference.
+- **A protocol change re-seeds.** An entry whose `max_gen`/`prompt` no longer
+  matches the test is treated as absent and rewritten; keep the recorded prompt
+  exactly.
+- **Manual invocation needs the vault subdir**: `LSX_PERF_VAULT_SUBDIR=<ModelDir>
+  test_perf_baseline "perf baseline: <model_type>"`. ctest wires it per target
+  through `ENVIRONMENT`.
+- **Ordering**: run perf last, after every other GPU task (host-resource
+  policy).
+- **Missing vault → SKIP, not fail** (`SKIP_RETURN_CODE 4` per target). A model
+  with a JSON entry but no ctest target is unguarded — when you ingest a model,
+  add both (the `ingesting-a-model` skill's Definition of done).
+- **Rebuild the target first**: a stale binary measures the old code (see
+  Common mistakes).
+
 ## GPU perf knobs (`gpu_perf`)
 
 - `gpu_perf` (`include/lsxcommon/gpu_perf.h`) resolves per-GPU knobs at engine

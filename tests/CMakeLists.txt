@@ -1492,6 +1492,26 @@ set_tests_properties(test_perf_baseline_qwen3_8_27b PROPERTIES
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.8-27B")
 set_tests_properties(test_perf_baseline_qwen3_8_27b
     PROPERTIES LABELS perf)
+# Qwen3.8-Flash-Next and Kimi-K2.7-Code had [perf] TEST_CASEs (and JSON
+# entries) but no ctest target, so their baselines were never guarded.
+add_test(NAME test_perf_baseline_qwen3_8_flash_next
+         COMMAND test_perf_baseline "perf baseline: qwen3.8-flash-next")
+set_tests_properties(test_perf_baseline_qwen3_8_flash_next PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.8-Flash-Next")
+set_tests_properties(test_perf_baseline_qwen3_8_flash_next
+    PROPERTIES LABELS perf)
+# Kimi re-pins its 544 GiB routed store on every Load (~5 min) before the
+# 2048-token decode, so its budget is wider than the 1200 s default.
+add_test(NAME test_perf_baseline_kimi_k2_7_code
+         COMMAND test_perf_baseline "perf baseline: kimi-k2.7-code")
+set_tests_properties(test_perf_baseline_kimi_k2_7_code PROPERTIES
+    TIMEOUT 2400
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Kimi-K2.7-Code")
+set_tests_properties(test_perf_baseline_kimi_k2_7_code
+    PROPERTIES LABELS perf)
 
 # ── Тест E8M0 -> pow2-E4M3 scale-пары (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
