@@ -61,6 +61,9 @@ const PerfModel kGlmFlash = {
 const PerfModel kDeepseek = {
     "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
     2048};
+const PerfModel kDeepseekV41 = {
+    "deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", "The capital of France is",
+    2048};
 const PerfModel kQwen35 = {
     "qwen3.5-35b-a3b", "Qwen3.5-35B-A3B", "The capital of France is", 2048};
 const PerfModel kQwen36 = {
@@ -240,6 +243,11 @@ TEST_CASE("perf baseline: glm-5.3-flash", "[perf]")
 TEST_CASE("perf baseline: deepseek-v4-flash", "[perf]")
 {
     RunPerfModel(kDeepseek);
+}
+
+TEST_CASE("perf baseline: deepseek-v4.1-flash", "[perf]")
+{
+    RunPerfModel(kDeepseekV41);
 }
 
 TEST_CASE("perf baseline: qwen3.5-35b-a3b", "[perf]")

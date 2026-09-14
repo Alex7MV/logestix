@@ -1458,6 +1458,16 @@ set_tests_properties(test_perf_baseline_deepseek_v4_flash PROPERTIES
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=DeepSeek-V4-Flash")
 set_tests_properties(test_perf_baseline_deepseek_v4_flash
     PROPERTIES LABELS perf)
+# V4.1 decode is the slowest of the suite (~13 min for 2048 tokens on the
+# release build), so its budget is wider than the 1200 s default.
+add_test(NAME test_perf_baseline_deepseek_v41_flash
+         COMMAND test_perf_baseline "perf baseline: deepseek-v4.1-flash")
+set_tests_properties(test_perf_baseline_deepseek_v41_flash PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=DeepSeek-V4.1-Flash")
+set_tests_properties(test_perf_baseline_deepseek_v41_flash
+    PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_qwen3_5_35b_a3b
          COMMAND test_perf_baseline "perf baseline: qwen3.5-35b-a3b")
 set_tests_properties(test_perf_baseline_qwen3_5_35b_a3b PROPERTIES
