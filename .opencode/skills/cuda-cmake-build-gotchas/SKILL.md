@@ -103,6 +103,48 @@ Abseil-specific build patches (crc32 SIMD, format checker) live in the
   The root CMakeLists patches it to GCC behaviour — **do not remove that patch
   for AOCC/Clang builds** (details: `absl-in-cuda-cpp`).
 
+## Bumping a pinned dependency
+
+A version pin lives in three places that must change in the **same commit**, and
+two of them are machine-enforced.
+
+1. **The pin.**
+   - FetchContent (root `CMakeLists.txt`) `GIT_TAG`: Arrow
+     (`apache-arrow-25.0.1`), spdlog (`v1.17.0`), abseil (`20260526.0`), Catch2
+     (`v3.16.0`).
+   - Submodules under `third_party/`: flatbuffers, libzmq, simdjson, cccl — move
+     the gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the
+     updated submodule pointer.
+2. **The guard** — `tests/test_core.cpp` → `TEST_CASE("pinned dependency
+   versions")` asserts Arrow / spdlog / simdjson / Catch2 / CCCL with
+   `STATIC_REQUIRE`, so a bump without updating it either fails to compile or
+   fails the test. `flatbuffers`, `libzmq`, `abseil` and the system cuBLAS are
+   **not** guarded — check those by hand.
+3. **The documentation tables** — both `AGENTS.md` and `README.md` carry a
+   dependency table; update them here too. They have drifted before: the CCCL row
+   read "3.3 (latest)" while the submodule and the guard were already at 3.4.2.
+
+### Then re-verify the patch-after-fetch blocks
+
+Each patch is keyed to an **exact source string** and only rewrites when its
+marker is absent — so a new upstream version can change the string and the patch
+becomes a **silent no-op**:
+
+| patch | target | what it does |
+|---|---|---|
+| `CMAKE_PROJECT_INCLUDE` policy file | Arrow / xsimd | forces `cmake_minimum_required(3.5)` so CMake 4.x does not reject the nested sub-project |
+| Boost 1.88 multiprecision `literals.hpp` | MSVC + C++20 | removes the `operator""_cppi` sized-literal redefinition |
+| bundled fmt (in spdlog) | nvcc 13.x on Windows | replaces the `U"…"` `fractional_part_rounding_thresholds` literal (code points > U+10FFFF, rejected by the nvcc front end) with a `uint32_t` array; marker `gNvccRoundingThresholds` |
+| abseil crc32 SIMD | MSVC + `/arch:AVX512` | disables the GCC/Clang-only VPCLMULQDQ inline asm |
+| abseil str_format checker | Clang/AOCC | `#if 0 &&` so a fmt-style `{}` is not a hard compile error |
+
+After a bump, confirm each rewritten file actually contains the patch (or that
+the build no longer needs it). The spdlog/fmt patch's own comment still says
+"against v1.15.0" — version-sensitive comments like that are the tell.
+
+Finally, rebuild on **both** toolchains (MSVC and GCC/AOCC) because most of these
+patches fire on only one of them, then run `ctest -L fast` for the guard.
+
 ## Diagnosing by symptom
 
 | Symptom | Cause |
