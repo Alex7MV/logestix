@@ -222,6 +222,14 @@ assertions, env-переменные selfcheck'ов, GUI-инварианты ls
 ctest-таргеты) и `test_model_independence_guard.cpp::kPassports` (модель →
 паспорт-заголовок → namespace) — при расхождении верны они.
 
+Запуск и эксплуатация инференса — скил **`running-a-model`**
+(`.opencode/skills/running-a-model/SKILL.md`): приложения и их флаги
+(`lsxbenchmark --bench/--selfcheck`, `lsxfabric --localmodel --testprompt/--validate`,
+`lsxforge`, `lsxcli`), vault-пути (`path_registry`; CLI принимает КОРЕНЬ модели,
+не `logestix/`), lifecycle движка (`InferenceEngine::Session`), prompt
+framing/sampling, ресурсный слой (governor/VRAM/LRU-планирование) и каталог
+runtime env-нобов `LSX_*`/`KIMI_*`.
+
 ## Model Ingestion Protocol
 
 Добавление/адаптация новой модели — скил **`ingesting-a-model`**
