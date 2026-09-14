@@ -186,9 +186,13 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 
 `KIMI_TRACE_FILE=<path>` (per-layer top-8 trace), `KIMI_DIAG_LAYER`,
 `KIMI_DIAG_IDS`, `KIMI_CACHE_MAX_LAYER`, `KIMI_NOEVICTION`, `KIMI_ALLOC`,
+`LSX_KIMI_DUMP_L1` / `LSX_KIMI_DUMP_DONE` (L1 input capture for `test_kimi_moe_tc_diag`),
 `LSX_TRACE_TOKENS`, `LSX_TRACE_FLASH`, `LSX_PERF_PHASES`, `LSX_AUDIT_STAGES`,
-`LSX_GEMV_TRACE`, `LSX_PROBE_FFN`, `LSX_DS_FFN_PROBE`, `LSX_FLASH_*_DEBUG`,
-`LSX_TEST_MOE_STAGE_DEBUG`.
+`LSX_GEMV_TRACE`, `LSX_PROBE_FFN`, `LSX_DS_FFN_PROBE`,
+`LSX_DS_PF_NOOP` / `LSX_DS_PF_NOPRE` (DeepSeek prefetch A/B),
+`LSX_DS_VERIFY_COPY` / `LSX_DS_VERIFY_READ` (DeepSeek copy/read verify),
+`LSX_V41_RLOC=<slots>` (DeepSeek-V4.1 routed-expert locality probe),
+`LSX_FLASH_*_DEBUG`, `LSX_TEST_MOE_STAGE_DEBUG`.
 
 **Tests / selfcheck** (read by test targets; see `ingesting-a-model`)
 
@@ -199,6 +203,9 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_TEST_PERF_GEN_TOKENS` | generated length for perf tests |
 | `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count |
 | `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | real-model path; absence → `SKIP` (exit 4) |
+| `LSX_TEST_<MODEL>_SOURCE_PATH` | source checkpoint for converter tests (Qwen36/Qwen-MoE) |
+| `LSX_TEST_<MODEL>_GEN_TOKENS` | generated length for a model's model-stage test (Kimi) |
+| `LSX_TEST_GEMMA_{DEBUG,DEBUG_SYNC,HASH,NO_ATTN,NO_DENSE,NO_MOE}` | Gemma ablation/debug toggles |
 | `LSX_TEST_FAST_MATH` | force the TC path in tests |
 
 **Build / router**
