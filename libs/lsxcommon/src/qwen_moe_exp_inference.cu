@@ -163,37 +163,46 @@ __global__ void hc_gated_residual_f32_kernel(
 
 // grid-stride group-RMSNorm with (1+w): reads x[n] (already upcast), writes
 // out[n]. One group of H normalized by block g (thread 0 sequential — the
-// bit-exact reduction order).
+// bit-exact reduction order). The row is cooperatively staged in shared memory
+// first: thread 0's 2560-iteration dependent sum then runs at shared latency
+// instead of stalling on global loads (measured 119 -> ~20 us/call), and the
+// elementwise normalize/weight/write phase is spread over the block. Sum order
+// and per-element arithmetic are unchanged, so the output is bit-identical.
 __global__ void hc_norm_kernel(const float *__restrict__ x, int H, int hc,
                                float eps, const uint8_t *__restrict__ norm_w,
                                float *__restrict__ out)
 {
+    extern __shared__ float sh_x[];
+    __shared__ float sh_scale;
     for (int g = blockIdx.x; g < hc; g += gridDim.x) {
+        const float *xg = x + static_cast<int64_t>(g) * H;
+        for (int i = threadIdx.x; i < H; i += blockDim.x) sh_x[i] = xg[i];
+        __syncthreads();
         if (threadIdx.x == 0) {
             float acc = 0.f;
             for (int i = 0; i < H; ++i) {
-                const float v = x[g * H + i];
+                const float v = sh_x[i];
                 acc = fmaf(v, v, acc);
             }
-            const float scale = rsqrtf(acc / H + eps);
-            for (int i = 0; i < H; ++i) {
-                float v = x[g * H + i] * scale;
-                if (norm_w) {
-                    const int idx = g * H + i;
-                    const uint16_t b16 =
-                        static_cast<uint16_t>(norm_w[idx * 2]) |
-                        (static_cast<uint16_t>(norm_w[idx * 2 + 1]) << 8);
-                    float wf = 1.f;
-                    if (b16) {
-                        const uint32_t u = static_cast<uint32_t>(b16) << 16;
-                        const float f = __uint_as_float(u);
-                        wf = 1.f + f;
-                    }
-                    v *= wf;
-                }
-                out[g * H + i] = v;
-            }
+            sh_scale = rsqrtf(acc / H + eps);
         }
+        __syncthreads();
+        const float scale = sh_scale;
+        for (int i = threadIdx.x; i < H; i += blockDim.x) {
+            float v = sh_x[i] * scale;
+            if (norm_w) {
+                const int idx = g * H + i;
+                const uint16_t b16 =
+                    static_cast<uint16_t>(norm_w[idx * 2]) |
+                    (static_cast<uint16_t>(norm_w[idx * 2 + 1]) << 8);
+                if (b16) {
+                    const uint32_t u = static_cast<uint32_t>(b16) << 16;
+                    v *= 1.f + __uint_as_float(u);
+                }
+            }
+            out[g * H + i] = v;
+        }
+        __syncthreads();
     }
 }
 
@@ -220,16 +229,24 @@ __global__ void hc_down_gemv_kernel(const __half *__restrict__ down,
 }
 
 // elementwise up GEMV + sigmoid: up_row[i], accumulate over lowrank.
+// Warp-per-output-row with a lane-strided accumulation and a fixed shfl tree
+// (deterministic, same reduction class as hc_down_gemv_kernel): the former
+// thread-per-row form read up[i*lowrank + r] with a 640-byte lane stride, so
+// every warp touched 32 separate cache lines per step (~15 GB/s effective).
 __global__ void hc_up_gemv_kernel(const __half *__restrict__ up,
                                   const float *__restrict__ dn, int n,
                                   int lowrank, float *upout)
 {
-    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    for (int i = tid; i < n; i += gridDim.x * blockDim.x) {
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const int warps = blockDim.x >> 5;
+    for (int i = blockIdx.x * warps + warp; i < n; i += gridDim.x * warps) {
         float acc = 0.f;
-        for (int r = 0; r < lowrank; ++r)
+        for (int r = lane; r < lowrank; r += 32)
             acc = fmaf(__half2float(up[i * lowrank + r]), dn[r], acc);
-        upout[i] = 1.0f / (1.0f + expf(-acc));
+        for (int off = 16; off > 0; off >>= 1)
+            acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) upout[i] = 1.0f / (1.0f + expf(-acc));
     }
 }
 
@@ -681,10 +698,45 @@ __device__ __forceinline__ float bf16_one_plus(const uint8_t *bits, int idx)
     return 1.f + __uint_as_float(u);
 }
 
+// Multi-block projection phases (key/value GEMV, one thread per output row).
+// Same sequential ascending-c double accumulation as the parity twin, so each
+// row is bit-identical to the former single-block loop; splitting across
+// blocks lifts the double-throughput ceiling off a single SM (the key GEMV is
+// 26.2 M DP FMAs — the dominant decode cost when confined to one block).
+__global__ void ple_row_proj_kernel(Nvfp4RowView w,
+                                    const float *__restrict__ d_emb_row,
+                                    int rows, float *__restrict__ out)
+{
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rows) return;
+    const uint8_t *packed =
+        w.d_packed + static_cast<int64_t>(r) * (w.cols >> 1);
+    const uint8_t *scales =
+        w.d_scales + static_cast<int64_t>(r) * (w.cols >> 4);
+    double acc = 0.0;
+    for (int c = 0; c < w.cols; ++c) {
+        const uint8_t byte = packed[c >> 1];
+        const uint8_t nib = (c & 1) ? static_cast<uint8_t>(byte >> 4)
+                                    : static_cast<uint8_t>(byte & 0xF);
+        const float v = e2m1_value(nib);
+        float dv = 0.f;
+        if (v != 0.f) {
+            const uint8_t sb = scales[c >> 4];
+            const uint32_t e4 = (sb >> 3) & 0x0Fu;
+            const float scale =
+                e4 == 0 ? 0.0f
+                        : __int_as_float(static_cast<int>((e4 + 120u) << 23));
+            dv = v * scale * w.global_scale;
+        }
+        acc += static_cast<double>(dv) * d_emb_row[c];
+    }
+    out[r] = static_cast<float>(acc);
+}
+
 // One block (1024 threads) per token. Parallel decomposition of the
-// bit-exact op sequence (decode path): GEMVs run one thread per output row
-// with the SAME sequential ascending-c accumulation as the parity twin
-// (bit-identical results), norm reductions stay on thread 0, elementwise
+// bit-exact op sequence (decode path): the projection GEMVs run as separate
+// multi-block kernels (ple_row_proj_kernel above) so the DP-bound work is not
+// capped by a single SM; norm reductions stay on thread 0, elementwise
 // scales/scatters parallel across threads with __syncthreads() barriers
 // between phases (protocol step 6: no multi-writer RMW races).
 __global__ void ple_inject_kernel(
@@ -700,6 +752,9 @@ __global__ void ple_inject_kernel(
     float *__restrict__ d_scratch,            // [4*n + H + E] global workspace
     int state_len, int H, int hc, int k_conv, int dilation, float eps)
 {
+    (void)key_proj;    // projections run as multi-block ple_row_proj_kernel
+    (void)value_proj;
+    (void)d_emb_row;
     const int n = H * hc;
     float *s_key = d_scratch;          // [n]
     float *s_query = s_key + n;        // [n]
@@ -711,33 +766,8 @@ __global__ void ple_inject_kernel(
     __shared__ float sh_scale[8];      // per-group norm scale
     __shared__ float sh_sg[8];         // sigmoid(gate) per stream
 
-    // 1. key = key_proj @ emb — one thread per row, sequential fp32-accum
-    //    (double acc, ascending c) exactly as the parity twin.
-    for (int r = threadIdx.x; r < n; r += blockDim.x) {
-        const uint8_t *packed = key_proj.d_packed +
-                                static_cast<int64_t>(r) * (key_proj.cols >> 1);
-        const uint8_t *scales = key_proj.d_scales +
-                                static_cast<int64_t>(r) * (key_proj.cols >> 4);
-        double acc = 0.0;
-        for (int c = 0; c < key_proj.cols; ++c) {
-            const uint8_t byte = packed[c >> 1];
-            const uint8_t nib = (c & 1) ? static_cast<uint8_t>(byte >> 4)
-                                        : static_cast<uint8_t>(byte & 0xF);
-            const float v = e2m1_value(nib);
-            float dv = 0.f;
-            if (v != 0.f) {
-                const uint8_t sb = scales[c >> 4];
-                const uint32_t e4 = (sb >> 3) & 0x0Fu;
-                const float scale =
-                    e4 == 0 ? 0.0f
-                            : __int_as_float(static_cast<int>((e4 + 120u)
-                                                              << 23));
-                dv = v * scale * key_proj.global_scale;
-            }
-            acc += static_cast<double>(dv) * d_emb_row[c];
-        }
-        s_key[r] = static_cast<float>(acc);
-    }
+    // 1. key = key_proj @ emb — precomputed by ple_row_proj_kernel (multi-
+    //    block, bit-identical per-row accumulation) into s_key.
     __syncthreads();
 
     // 1b. group-RMS(key), then (1 + norm_key) — thread-0 reduction (the
@@ -796,32 +826,8 @@ __global__ void ple_inject_kernel(
     }
     __syncthreads();
 
-    // 4. value = value_proj @ emb — one thread per row (bit-exact order).
-    for (int r = threadIdx.x; r < H; r += blockDim.x) {
-        const uint8_t *packed = value_proj.d_packed +
-                                static_cast<int64_t>(r) * (value_proj.cols >> 1);
-        const uint8_t *scales = value_proj.d_scales +
-                                static_cast<int64_t>(r) * (value_proj.cols >> 4);
-        double acc = 0.0;
-        for (int c = 0; c < value_proj.cols; ++c) {
-            const uint8_t byte = packed[c >> 1];
-            const uint8_t nib = (c & 1) ? static_cast<uint8_t>(byte >> 4)
-                                        : static_cast<uint8_t>(byte & 0xF);
-            const float v = e2m1_value(nib);
-            float dv = 0.f;
-            if (v != 0.f) {
-                const uint8_t sb = scales[c >> 4];
-                const uint32_t e4 = (sb >> 3) & 0x0Fu;
-                const float scale =
-                    e4 == 0 ? 0.0f
-                            : __int_as_float(static_cast<int>((e4 + 120u)
-                                                              << 23));
-                dv = v * scale * value_proj.global_scale;
-            }
-            acc += static_cast<double>(dv) * d_emb_row[c];
-        }
-        s_value[r] = static_cast<float>(acc);
-    }
+    // 4. value = value_proj @ emb — precomputed by the value projection
+    //    launch into s_value (bit-identical per-row accumulation).
     __syncthreads();
 
     // 5. gated = sigmoid(gate) * value, broadcast to streams.
@@ -946,6 +952,17 @@ static void LaunchPleInjectKernel(const Nvfp4RowView &kv,
     int state_len_a = state_len, H_a = H, hc_a = hc, k_conv_a = k_conv,
         dilation_a = dilation;
     float eps_a = eps;
+
+    // Projection phases first (multi-block): key -> s_key (scratch[0]),
+    // value -> s_value (scratch[4*n]). Disjoint outputs; same stream orders
+    // them before ple_inject_kernel consumes them.
+    const int n = H * hc;
+    const int proj_block = 256;
+    ple_row_proj_kernel<<<(n + proj_block - 1) / proj_block, proj_block, 0,
+                          stream>>>(kv, emb, n, scratch);
+    ple_row_proj_kernel<<<(H + proj_block - 1) / proj_block, proj_block, 0,
+                          stream>>>(vv, emb, H, scratch + 4 * n);
+
     void *args[] = {&kv_a, &vv_a, &nk_a, &nq_a, &nc_a, &cw_a, &emb_a,
                     &hid_a, &win_a, &scratch_a, &state_len_a, &H_a, &hc_a,
                     &k_conv_a, &dilation_a, &eps_a};
@@ -1357,11 +1374,12 @@ cudaError_t RunExpHcGatedResidualCached(
     if (e != cudaSuccess) return e;
     half_to_float_rows_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
         d_hyper_input, s.d_x32, n);
-    hc_norm_kernel<<<hc, 128, 0, stream>>>(s.d_x32, H, hc, 1e-6f, d_hc_norm,
-                                           s.d_normed);
+    hc_norm_kernel<<<hc, 128, static_cast<size_t>(H) * sizeof(float),
+                     stream>>>(s.d_x32, H, hc, 1e-6f, d_hc_norm, s.d_normed);
     hc_down_gemv_kernel<<<(lowrank + 7) / 8, 256, 0, stream>>>(
         w.down, s.d_normed, n, lowrank, hc, s.d_dn);
-    hc_up_gemv_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
+    // Warp-per-row: grid covers n rows with 8 warps per 256-thread block.
+    hc_up_gemv_kernel<<<(n + 7) / 8, 256, 0, stream>>>(
         w.up, s.d_dn, n, lowrank, s.d_upout);
     hc_epilogue_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
         s.d_upout, s.d_normed, w.inject, H, hc, n, d_mixed, d_mixed_h,
@@ -1672,6 +1690,13 @@ cudaError_t RunExpGeneration(
     int32_t *h_ids = nullptr;
     bool have_pinned = cudaMallocHost(&h_ids, sizeof(int32_t) * 4) ==
                        cudaSuccess;
+    // Persistent pinned PLE gather buffer: a pageable std::vector + the
+    // cudaStreamSynchronize that kept it alive forced a full pipeline flush
+    // every token. Pinned + persistent keeps the H2D truly stream-ordered.
+    float *h_emb_rows = nullptr;
+    constexpr int kEmbRowsCap = 32 * 256;  // ExpPleMeta::kMaxHeads * head_dim
+    cudaMallocHost(reinterpret_cast<void **>(&h_emb_rows),
+                   sizeof(float) * kEmbRowsCap);
     cudaEvent_t tok_ready_ev = nullptr;
     cudaEventCreate(&tok_ready_ev);
 
@@ -1791,7 +1816,13 @@ cudaError_t RunExpGeneration(
             const int heads_per = meta.num_heads / ctx_len;    // 8
             // head_dim 160; each head contributes head_dim floats; gather
             // heads*head_dim floats total into d_emb_rows.
-            std::vector<float> emb_rows(meta.num_heads * meta.head_dim);
+            const int emb_count = meta.num_heads * meta.head_dim;
+            std::vector<float> emb_rows_fallback;
+            float *emb_rows = h_emb_rows;
+            if (!emb_rows || emb_count > kEmbRowsCap) {
+                emb_rows_fallback.resize(emb_count);
+                emb_rows = emb_rows_fallback.data();
+            }
             for (int h = 0; h < meta.num_heads; ++h) {
                 int64_t mixed;
                 if (h < heads_per) {
@@ -1834,7 +1865,7 @@ cudaError_t RunExpGeneration(
                         static_cast<int64_t>(meta.head_dim) * 2;
                     const uint8_t *src = base + row * row_bytes;
                     // BF16 -> float into the tail of the gather buffer.
-                    float *dst = emb_rows.data() +
+                    float *dst = emb_rows +
                                  static_cast<int64_t>(h) * meta.head_dim;
                     for (int d = 0; d < meta.head_dim; ++d) {
                         const uint16_t b16 = static_cast<uint16_t>(src[d * 2]) |
@@ -1850,12 +1881,14 @@ cudaError_t RunExpGeneration(
             // The model stream is created with cudaStreamNonBlocking: this
             // H2D MUST be enqueued on the model stream (a legacy-stream copy
             // does not order against it — the PLE kernel at layer 1 would
-            // otherwise read the un-gathered arena). The staging vector is
-            // kept alive until the copy completes via stream sync below.
-            cudaMemcpyAsync(d_emb_rows, emb_rows.data(),
-                            emb_rows.size() * sizeof(float),
+            // otherwise read the un-gathered arena). From the persistent
+            // pinned buffer no completion sync is needed; the fallback path
+            // (pageable) keeps the old flush.
+            cudaMemcpyAsync(d_emb_rows, emb_rows,
+                            emb_count * sizeof(float),
                             cudaMemcpyHostToDevice, stream);
-            cudaStreamSynchronize(stream);
+            if (emb_rows == emb_rows_fallback.data())
+                cudaStreamSynchronize(stream);
         }
 
         for (int l = 0; l < static_cast<int>(pw.layers.size()); ++l) {
@@ -1939,8 +1972,11 @@ cudaError_t RunExpGeneration(
             e = RunExpRouterTop10(stream, lw.d_router, d_mixed, 1, H, E, K,
                                   d_slots);
             if (e != cudaSuccess) { result.error_msg = "router"; break; }
-            // Host readback of the selected slots (LRU staging); the TC
-            // batch chain composes its table from d_slots.
+            // Host readback of the selected slots; the TC batch chain composes
+            // its table from d_slots. Residency staging uses the fused-store
+            // fast path (2 contiguous blobs per miss) rather than the base
+            // segmented path: decode is GPU-bound here (cache hit rate ~86%),
+            // so overlap buys nothing while the 6-vs-2 copies do cost.
             qwen_moe::QwenMoeRoutedSlot h_slots[16];
             cudaMemcpyAsync(h_slots, d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
@@ -2102,6 +2138,7 @@ cudaError_t RunExpGeneration(
     if (t_start_ev) cudaEventDestroy(t_start_ev);
     if (t_stop_ev) cudaEventDestroy(t_stop_ev);
     if (h_ids) cudaFreeHost(h_ids);
+    if (h_emb_rows) cudaFreeHost(h_emb_rows);
     if (tok_ready_ev) cudaEventDestroy(tok_ready_ev);
     if (copy_stream) cudaStreamDestroy(copy_stream);
     if (ev_front) cudaEventDestroy(ev_front);

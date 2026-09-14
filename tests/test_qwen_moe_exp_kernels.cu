@@ -5,6 +5,7 @@
 #include "qwen_moe_exp_device_math.h"
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -497,4 +498,155 @@ TEST_CASE("PLE inject kernel executes at real-model shared-memory scale",
     REQUIRE(std::isfinite(__half2float(got[0])));
     REQUIRE(__half2float(got[0]) != 0.25f);
     lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
+}
+
+TEST_CASE("PLE inject real-scale decode latency budget", "[qwen-exp-kernels]")
+{
+    // Real geometry H=2560, hc=4, E=2560 -> key_proj [10240, 2560],
+    // value_proj [2560, 2560]. nsys on RTX 5090 measured 26.8 ms/call: the
+    // projection phases were the only single-block (1 SM) work left, so the
+    // double-accumulate key GEMV (26.2 M DP FMAs) was DP-throughput bound on
+    // one SM. Budget: median of 10 warm decode calls < 6 ms.
+    constexpr int H = 2560, hc = 4, E = 2560, HEADS = 16, HDIM = 160;
+    const int n = H * hc;
+    const int state_len = 9;
+    lsxcommon::qwen_moe_exp::ExpPleState st;
+    REQUIRE(lsxcommon::qwen_moe_exp::ExpPleStateAlloc(st, H, hc, state_len) ==
+            cudaSuccess);
+    const int key_packed = (n * E) / 2, key_scales = (n * E) / 16;
+    const int val_packed = (H * E) / 2, val_scales = (H * E) / 16;
+    CudaBuf d_keyp(key_packed), d_keys(key_scales), d_valp(val_packed),
+        d_vals(val_scales);
+    // Non-zero nibbles (E2M1 code 2 == 1.0) so the dequant zero fast-path is
+    // never taken; scale byte 0x38 == 1.0 in the converter's exponent layout.
+    {
+        std::vector<uint8_t> kp(key_packed, 0x22), ks(key_scales, 0x38);
+        std::vector<uint8_t> vp(val_packed, 0x22), vs(val_scales, 0x38);
+        cudaMemcpy(d_keyp.p, kp.data(), key_packed, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_keys.p, ks.data(), key_scales, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_valp.p, vp.data(), val_packed, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_vals.p, vs.data(), val_scales, cudaMemcpyHostToDevice);
+    }
+    CudaBuf d_nk(n * 2), d_nq(n * 2), d_nc(n * 2), d_emb(2560 * 4),
+        d_hidden(n * 2), d_cvb(n * 4 * 2);
+    std::vector<float> embv(2560);
+    for (int i = 0; i < 2560; ++i) embv[i] = 0.01f * (i % 7) - 0.03f;
+    cudaMemcpy(d_emb.p, embv.data(), 2560 * 4, cudaMemcpyHostToDevice);
+    lsxcommon::qwen::QwenNvfp4Weight kp, vp;
+    kp.d_packed = d_keyp.as<uint8_t>();
+    kp.d_scales = d_keys.as<uint8_t>();
+    kp.global_scale = 1.f;
+    kp.cols = E;
+    kp.rows = n;
+    vp.d_packed = d_valp.as<uint8_t>();
+    vp.d_scales = d_vals.as<uint8_t>();
+    vp.global_scale = 1.f;
+    vp.cols = E;
+    vp.rows = H;
+    cudaStream_t s = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) ==
+            cudaSuccess);
+    auto run = [&] {
+        return lsxcommon::qwen_moe_exp::RunExpPleInject(
+            s, st, kp, vp, d_nk.as<uint8_t>(), d_nq.as<uint8_t>(),
+            d_nc.as<uint8_t>(), d_cvb.as<uint8_t>(), nullptr,
+            d_emb.as<float>(), HEADS, HDIM, 1e-6f, d_hidden.as<__half>());
+    };
+    for (int i = 0; i < 3; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    constexpr int kReps = 10;
+    std::vector<float> ms(kReps);
+    cudaEvent_t e0 = nullptr, e1 = nullptr;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    for (int i = 0; i < kReps; ++i) {
+        cudaEventRecord(e0, s);
+        REQUIRE(run() == cudaSuccess);
+        cudaEventRecord(e1, s);
+        cudaEventSynchronize(e1);
+        cudaEventElapsedTime(&ms[i], e0, e1);
+    }
+    std::sort(ms.begin(), ms.end());
+    const float median = ms[kReps / 2];
+    INFO("PLE inject real-scale median " << median << " ms/call");
+#if defined(NDEBUG)
+    REQUIRE(median < 6.0f);
+#else
+    (void)median;  // latency budget is a release-only perf guard
+#endif
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    cudaStreamDestroy(s);
+    lsxcommon::qwen_moe_exp::ExpPleStateFree(st);
+}
+
+TEST_CASE("hc cached GatedResidual real-scale decode latency budget",
+          "[qwen-exp-kernels]")
+{
+    // Real geometry H=2560, hc=4, lowrank=320. The driver calls this twice per
+    // layer (attn + mlp) x 48 layers + mixer = 97x/token. nsys attributed
+    // ~11.6 ms/token to hc_norm_kernel alone: thread 0 summed 2560 fp32 values
+    // from global memory with the other 127 lanes idle (latency-bound), then
+    // wrote the normalized row single-threaded. Budget: median < 0.15 ms/call.
+    constexpr int H = 2560, hc = 4, lowrank = 320;
+    const int n = H * hc;
+    CudaBuf d_down((size_t)lowrank * n * 2), d_up((size_t)n * lowrank * 2);
+    CudaBuf d_norm(n * 2), d_hyper((size_t)n * 2);
+    CudaBuf d_mixed(H * 4), d_inj(hc * 4), d_mixed_h(H * 2);
+    {
+        std::vector<__half> dn((size_t)lowrank * n), up((size_t)n * lowrank),
+            hv((size_t)n), nw((size_t)n);
+        for (size_t i = 0; i < dn.size(); ++i)
+            dn[i] = __float2half(0.01f * static_cast<int>(i % 13) - 0.06f);
+        for (size_t i = 0; i < up.size(); ++i)
+            up[i] = __float2half(0.01f * static_cast<int>(i % 11) - 0.05f);
+        for (size_t i = 0; i < hv.size(); ++i)
+            hv[i] = __float2half(0.02f * static_cast<int>(i % 7) - 0.06f);
+        for (size_t i = 0; i < nw.size(); ++i)
+            nw[i] = __float2half(0.01f * static_cast<int>(i % 5));
+        cudaMemcpy(d_down.p, dn.data(), dn.size() * 2, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_up.p, up.data(), up.size() * 2, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_hyper.p, hv.data(), hv.size() * 2,
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(d_norm.p, nw.data(), nw.size() * 2,
+                   cudaMemcpyHostToDevice);
+    }
+    lsxcommon::qwen_moe_exp::ExpHcDequantCache w;
+    w.down = d_down.as<__half>();
+    w.up = d_up.as<__half>();
+    w.down_elems = static_cast<int64_t>(lowrank) * n;
+    w.up_elems = static_cast<int64_t>(n) * lowrank;
+    cudaStream_t s = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) ==
+            cudaSuccess);
+    auto run = [&] {
+        return lsxcommon::qwen_moe_exp::RunExpHcGatedResidualCached(
+            s, d_hyper.as<__half>(), w, d_norm.as<uint8_t>(), /*seq=*/1, H, hc,
+            lowrank, d_mixed.as<float>(), d_inj.as<float>(), d_mixed_h.as<__half>());
+    };
+    for (int i = 0; i < 3; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    constexpr int kReps = 20;
+    std::vector<float> ms(kReps);
+    cudaEvent_t e0 = nullptr, e1 = nullptr;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    for (int i = 0; i < kReps; ++i) {
+        cudaEventRecord(e0, s);
+        REQUIRE(run() == cudaSuccess);
+        cudaEventRecord(e1, s);
+        cudaEventSynchronize(e1);
+        cudaEventElapsedTime(&ms[i], e0, e1);
+    }
+    std::sort(ms.begin(), ms.end());
+    const float median = ms[kReps / 2];
+    INFO("hc cached real-scale median " << median << " ms/call");
+#if defined(NDEBUG)
+    REQUIRE(median < 0.045f);
+#else
+    (void)median;  // latency budget is a release-only perf guard
+#endif
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    cudaStreamDestroy(s);
 }
