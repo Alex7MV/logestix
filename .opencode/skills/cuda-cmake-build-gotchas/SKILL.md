@@ -116,10 +116,11 @@ two of them are machine-enforced.
      the gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the
      updated submodule pointer.
 2. **The guard** — `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-   versions")` asserts Arrow / spdlog / simdjson / Catch2 / CCCL with
-   `STATIC_REQUIRE`, so a bump without updating it either fails to compile or
-   fails the test. `flatbuffers`, `libzmq`, `abseil` and the system cuBLAS are
-   **not** guarded — check those by hand.
+   versions")` asserts Arrow / spdlog / simdjson / Catch2 / CCCL / abseil with
+   `STATIC_REQUIRE` (abseil through `ABSL_LTS_RELEASE_VERSION`, which exists
+   only on LTS tags — a non-LTS pin fails to compile by design), so a bump
+   without updating it either fails to compile or fails the test. `flatbuffers`,
+   `libzmq` and the system cuBLAS are **not** guarded — check those by hand.
 3. **The documentation tables** — both `AGENTS.md` and `README.md` carry a
    dependency table; update them here too. They have drifted before: the CCCL row
    read "3.3 (latest)" while the submodule and the guard were already at 3.4.2.

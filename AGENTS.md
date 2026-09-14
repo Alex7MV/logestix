@@ -19,13 +19,14 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 suppo
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
-| abseil-cpp | 20260526.0 | FetchContent (`20260526.0`, LTS May 2026) | Header-only + static libs |
+| abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
 | CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 
 Версии принуждаются кодом: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-versions")` (`STATIC_REQUIRE` для Arrow, spdlog, simdjson, Catch2, CCCL); у
-`flatbuffers`/`libzmq`/`abseil`/cuBLAS guard'а нет. Процедура обновления
+versions")` (`STATIC_REQUIRE` для Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
+последний через `ABSL_LTS_RELEASE_VERSION`, так что не-LTS пин не соберётся); у
+`flatbuffers`/`libzmq`/cuBLAS guard'а нет. Процедура обновления
 зависимости (pin сабмодуля/FetchContent `GIT_TAG` + guard + таблицы AGENTS/README
 + перепроверка патчей-after-fetch) — скил `cuda-cmake-build-gotchas`.
 

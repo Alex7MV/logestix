@@ -190,8 +190,10 @@ endif()
 unset(_spdlog_fmt)
 
 # ── ЗАВИСИМОСТИ: abseil-cpp через FetchContent (статические flat-структуры) ─
-# Стабильный LTS-тег (проверен 2026-06: "Abseil LTS branch, May 2026", 20260526.0,
-# коммит 5650e9c). Статика обязана учитывать верхнеуровневый C++ стандарт проекта:
+# Стабильный LTS-тег (проверен 2026-09: "Abseil LTS branch, August 2026",
+# 20260817.0, коммит 2065f4d). Версия принуждается guard'ом
+# tests/test_core.cpp "pinned dependency versions" (ABSL_LTS_RELEASE_VERSION).
+# Статика обязана учитывать верхнеуровневый C++ стандарт проекта:
 # ABSL_PROPAGATE_CXX_STD=ON заставляет каждую abseil-цель наследовать
 # CMAKE_CXX_STANDARD родителя (проект осознанно зафиксирован на C++20), а не
 # дефолтный C++14, иначе ABI-расхождение при линковке в lsxcommon/lsxhome.
@@ -210,7 +212,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "C++ standard required (CACHE for 
 FetchContent_Declare(
   abseil-cpp
   GIT_REPOSITORY "https://github.com/abseil/abseil-cpp.git"
-  GIT_TAG        "20260526.0" # Abseil LTS, May 2026
+  GIT_TAG        "20260817.0" # Abseil LTS, August 2026
   GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(abseil-cpp)
@@ -221,7 +223,7 @@ FetchContent_MakeAvailable(abseil-cpp)
 # abseil's GCC/Clang-only VPCLMULQDQ inline-asm path (crc_x86_arm_combined.cc's
 # `__asm__`), and MSVC cannot parse those statements. Disabling the MSVC SIMD
 # branch keeps CRC on the generic intrinsic fallback. Rebuilds cleanly anyway,
-# since 20260526.0 re-fetches; the guard is applied each configure.
+# since 20260817.0 re-fetches; the guard is applied each configure.
 set(_absx86simd "${abseil-cpp_SOURCE_DIR}/absl/crc/internal/crc32_x86_arm_combined_simd.h")
 if(EXISTS "${_absx86simd}")
     file(READ "${_absx86simd}" _absxsimd_content)

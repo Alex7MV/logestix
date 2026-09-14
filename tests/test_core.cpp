@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_version_macros.hpp>
 #include <spdlog/version.h>
+#include <absl/base/config.h>
 #include <lsxcommon/common.h>
 
 // Apache Arrow Core Data Layers
@@ -432,6 +433,18 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     STATIC_REQUIRE(CCCL_MAJOR_VERSION == 3);
     STATIC_REQUIRE(CCCL_MINOR_VERSION == 4);
     STATIC_REQUIRE(CCCL_PATCH_VERSION == 2);
+
+    // abseil-cpp (FetchContent). The LTS macros exist only on LTS tags, so a
+    // non-LTS pin (e.g. a master commit) is a hard error here rather than a
+    // silently unguarded version.
+#if defined(ABSL_LTS_RELEASE_VERSION)
+    STATIC_REQUIRE(ABSL_LTS_RELEASE_VERSION == 20260817);
+    STATIC_REQUIRE(ABSL_LTS_RELEASE_PATCH_LEVEL == 0);
+#else
+    STATIC_REQUIRE(false &&
+                   "abseil LTS macros missing: the FetchContent pin is not an "
+                   "LTS tag");
+#endif
 }
 
 TEST_CASE("lsxcommon common module version and GPU info", "[dependencies][lsxcommon]") {
