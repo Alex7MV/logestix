@@ -186,7 +186,7 @@ static cudaError_t RunGemmaRmsNormPlain(const __nv_bfloat16 *d_x,
 {
     if (!d_x || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
-    constexpr int kBlock = 256;
+    constexpr int kBlock = 512;
     ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::None><<<rows, kBlock,
         kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
         d_x, nullptr, d_out, rows, hidden, eps);
@@ -199,7 +199,7 @@ cudaError_t RunGemmaRMSNorm(const __nv_bfloat16 *d_x, const __nv_bfloat16 *d_w, 
 {
     if (!d_x || !d_w || !d_out || rows <= 0 || hidden <= 0)
         return cudaErrorInvalidValue;
-    constexpr int kBlock = 256;
+    constexpr int kBlock = 512;
     ::lsxcommon::kernels::RmsNormTreeKernel<__nv_bfloat16, ::lsxcommon::kernels::NormWeight::Direct><<<rows, kBlock,
         kBlock * sizeof(float) + std::min(hidden * int(sizeof(__nv_bfloat16)), 48 * 1024), stream>>>(
         d_x, d_w, d_out, rows, hidden, eps);
@@ -1205,64 +1205,60 @@ __global__ void gemma_logits_rows_nvfp4_kernel(
         const uint8_t *row_s = scales + row_i * (hidden >> 4);
         // Lane-major accumulation: each lane owns chunks lane, lane+32, ...
         // two interleaved accumulator streams (2 uint4 loads in flight per
-        // lane), then one 5-step shfl_down tree merge. The legacy 32-step
-        // sequential per-round merge cost 352 dependent shfl ops per row
-        // and capped the kernel at ~21% of peak bandwidth. Order is
-        // launch-shape-stable (deterministic); the argmax contract only
-        // pins the winner, not the logit bits.
+        // lane), then one 5-step shfl_down tree merge. The weight chunk is
+        // loaded as a single 16B uint4 and decoded from registers -- a
+        // byte-scalar walk (row_p + c*16 then pb[b]) issues 16 separate
+        // 1-byte global loads per chunk and caps the kernel at ~440 GB/s;
+        // the uint4 walk reaches ~1.1 TB/s on the identical bytes (probe,
+        // RTX 5090, V=262144 K=2816). x is read as bf162 pairs for the same
+        // reason. Order is launch-shape-stable (deterministic); the argmax
+        // contract only pins the winner, not the logit bits.
+        const uint4 *wv = reinterpret_cast<const uint4 *>(row_p);
         float acc_a = 0.f, acc_b = 0.f;
         int c = lane;
         for (; c + 32 < chunks; c += 64) {
-            {
-                const uint8_t *pb = row_p + c * 16;
+#pragma unroll
+            for (int k = 0; k < 2; ++k) {
+                const int cc = c + 32 * k;
+                const uint4 pw = wv[cc];
+                const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
                 const float sc0 =
-                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * cc]);
                 const float sc1 =
-                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
-                const int xb = c * 32;
+                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * cc + 1]);
+                const int xb = cc * 32;
+                const __nv_bfloat162 *xh =
+                    reinterpret_cast<const __nv_bfloat162 *>(x + xb);
                 float part = 0.f;
 #pragma unroll
                 for (int b = 0; b < 16; ++b) {
                     const float scl = (b < 8) ? sc0 : sc1;
-                    part += __bfloat162float(x[xb + 2 * b]) *
+                    const __nv_bfloat162 p = xh[b];
+                    part += __bfloat162float(p.x) *
                             gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
-                    part += __bfloat162float(x[xb + 2 * b + 1]) *
+                    part += __bfloat162float(p.y) *
                             gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
                 }
-                acc_a += part;
-            }
-            {
-                const int c2 = c + 32;
-                const uint8_t *pb = row_p + c2 * 16;
-                const float sc0 =
-                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c2]);
-                const float sc1 =
-                    gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c2 + 1]);
-                const int xb = c2 * 32;
-                float part = 0.f;
-#pragma unroll
-                for (int b = 0; b < 16; ++b) {
-                    const float scl = (b < 8) ? sc0 : sc1;
-                    part += __bfloat162float(x[xb + 2 * b]) *
-                            gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
-                    part += __bfloat162float(x[xb + 2 * b + 1]) *
-                            gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
-                }
-                acc_b += part;
+                if (k == 0) acc_a += part;
+                else acc_b += part;
             }
         }
         for (; c < chunks; c += 32) {
-            const uint8_t *pb = row_p + c * 16;
+            const uint4 pw = wv[c];
+            const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
             const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c]);
             const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(row_s[2 * c + 1]);
             const int xb = c * 32;
+            const __nv_bfloat162 *xh =
+                reinterpret_cast<const __nv_bfloat162 *>(x + xb);
             float part = 0.f;
 #pragma unroll
             for (int b = 0; b < 16; ++b) {
                 const float scl = (b < 8) ? sc0 : sc1;
-                part += __bfloat162float(x[xb + 2 * b]) *
+                const __nv_bfloat162 p = xh[b];
+                part += __bfloat162float(p.x) *
                         gpu::nvfp4::E2M1Value(pb[b] & 0xF) * scl;
-                part += __bfloat162float(x[xb + 2 * b + 1]) *
+                part += __bfloat162float(p.y) *
                         gpu::nvfp4::E2M1Value(pb[b] >> 4) * scl;
             }
             acc_a += part;

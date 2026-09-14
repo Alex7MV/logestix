@@ -418,3 +418,86 @@ TEST_CASE("gemma dense MLP NVFP4 GEMV chain parity vs host reference",
     cudaFree(ddp); cudaFree(ddsc); cudaFree(dxh); cudaFree(dgu);
     cudaFree(du); cudaFree(dh); cudaFree(dy);
 }
+
+// The LM head is one warp-per-vocab-row NVFP4 GEMV over the whole 262144-row
+// embedding per token, i.e. the second-largest single kernel in gemma-4
+// decode. Pin both the argmax contract and the streaming rate: the byte-scalar
+// weight walk this guards against stalls the memory pipe at ~0.5 TB/s while
+// uint4-chunk loads reach ~1.1 TB/s on the same bytes.
+TEST_CASE("gemma NVFP4 logits decode latency budget",
+          "[gemma][moe][logits][budget]")
+{
+#if defined(NDEBUG)
+    constexpr int H = 2816, V = 262144;
+    const size_t pb = static_cast<size_t>(V) * (H / 2);
+    const size_t sb = static_cast<size_t>(V) * (H / 16);
+    std::vector<uint8_t> hp(pb, 0x00);   // E2M1 0 -> zero logits
+    std::vector<uint8_t> hs(sb, 0x08);   // 2^-6, irrelevant where nibble==0
+    const int planted = V - 3;
+    // Row `planted`: nibble 7 (6.0) with the max pow2 scale (2^8) dominates.
+    for (size_t i = static_cast<size_t>(planted) * (H / 2);
+         i < static_cast<size_t>(planted + 1) * (H / 2); ++i)
+        hp[i] = 0x77;
+    for (size_t i = static_cast<size_t>(planted) * (H / 16);
+         i < static_cast<size_t>(planted + 1) * (H / 16); ++i)
+        hs[i] = 0xF8;                     // e4=15 -> 2^8
+    std::vector<__nv_bfloat16> hx(H, __float2bfloat16(1.0f));
+
+    uint8_t *dp, *ds;
+    __nv_bfloat16 *dx;
+    float *d_logits, *d_blkbest, *d_max;
+    int *d_blkidx;
+    int32_t *d_argmax;
+    REQUIRE(cudaMalloc(&dp, pb) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, sb) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_logits, static_cast<size_t>(V) * 4) == cudaSuccess);
+    // The rows kernel stages one winner per block at blk_best[vocab + block],
+    // so the buffers span vocab + grid (grid = V/8 here).
+    const size_t blk_n = static_cast<size_t>(V) + V / 8 + 4096;
+    REQUIRE(cudaMalloc(&d_blkbest, blk_n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_blkidx, blk_n * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_max, 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_argmax, 4) == cudaSuccess);
+    cudaMemcpy(dp, hp.data(), pb, cudaMemcpyHostToDevice);
+    cudaMemcpy(ds, hs.data(), sb, cudaMemcpyHostToDevice);
+    cudaMemcpy(dx, hx.data(), H * 2, cudaMemcpyHostToDevice);
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    REQUIRE(lsxcommon::gemma::RunGemmaLogitsArgmaxNvfp4(
+                stream, dp, ds, 1.0f, dx, V, H, /*cap=*/0.f, d_argmax, d_max,
+                d_logits, d_blkbest, d_blkidx) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    int got = -1;
+    cudaMemcpy(&got, d_argmax, 4, cudaMemcpyDeviceToHost);
+    CHECK(got == planted);
+    for (int i = 0; i < 20; ++i)
+        REQUIRE(lsxcommon::gemma::RunGemmaLogitsArgmaxNvfp4(
+                    stream, dp, ds, 1.0f, dx, V, H, 0.f, d_argmax, d_max,
+                    d_logits, d_blkbest, d_blkidx) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    constexpr int kIters = 20;
+    REQUIRE(cudaEventRecord(e0, stream) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i)
+        REQUIRE(lsxcommon::gemma::RunGemmaLogitsArgmaxNvfp4(
+                    stream, dp, ds, 1.0f, dx, V, H, 0.f, d_argmax, d_max,
+                    d_logits, d_blkbest, d_blkidx) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e1, stream) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1000.0 / kIters;
+    INFO("NVFP4 LM-head latency = " << us << " us (" <<
+         (static_cast<double>(pb + sb) / (us * 1e-6) / 1e9) << " GB/s)");
+    // Byte-scalar weight walk ~957 us; uint4-chunk walk ~430 us.
+    CHECK(us < 700.0);
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    cudaStreamDestroy(stream);
+    cudaFree(dp); cudaFree(ds); cudaFree(dx); cudaFree(d_logits);
+    cudaFree(d_blkbest); cudaFree(d_blkidx); cudaFree(d_max); cudaFree(d_argmax);
+#endif
+}

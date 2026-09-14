@@ -478,13 +478,20 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     // (gate/up K=5120 N=34816, down K=17408 N=5120, head K=5120 N=248320)
     // are DRAM-bound; the sliced-kp kernel reaches only ~428 GB/s there,
     // while an isolated warp-per-row probe with identical decode math
-    // sustains ~894 GB/s. Route large-N shapes to the warp-per-row kernel:
+    // sustains ~894 GB/s. Route large-K shapes to the warp-per-row kernel:
     // one warp per output row (8 rows/block), no shared-memory partial
     // merge, no __syncthreads. Requires K % 64 == 0 (chunks/2 per lane is
     // integral) and N >= 2048 (block count covers the SM array); smaller
     // shapes keep the sliced kernel (its kp heuristic is better tuned for
     // short rows).
-    if ((K & 63) == 0 && N >= 2048 &&
+    // K floor 4096 is load-bearing (2026-09-14): the shallow-K dense-decode
+    // shapes are dominated by short rows where warp-per-row has too little
+    // in flight. The gemma-4 dense shapes (K in {2112,2816}, N in
+    // {2048..4096}) measured 266-396 GB/s on warp-per-row vs 317-453 on the
+    // 8-warp sliced KP=2 launch; routing them to the small-block sliced path
+    // lifted gemma-4-26B decode 88.7 -> 95.5 t/s (+7.7%, equal 1024-token
+    // fact length). Deep-K shapes (>=4096) keep warp-per-row.
+    if ((K & 63) == 0 && K >= 4096 && N >= 2048 &&
         g_lsx_tc_fast_math.load(std::memory_order_relaxed)) {
         constexpr int WARPS = 8;   // rows per block (probe: 8 > 4 or 16)
         const int grid = (N + WARPS - 1) / WARPS;

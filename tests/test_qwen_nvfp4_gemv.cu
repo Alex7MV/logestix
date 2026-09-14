@@ -220,6 +220,86 @@ TEST_CASE("NVFP4 GEMV deterministic across launches",
     cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(d1); cudaFree(d2);
 }
 
+// Real dense-decode shapes of gemma-4-26B-A4B (K in {2112, 2816}, N in
+// {2048, 2112, 2816, 4096}) streamed back-to-back out of DRAM exactly like
+// the per-layer decode chain does. The seq==1 GEMV is that model's dominant
+// kernel family; pin the aggregate effective bandwidth so a dispatch change
+// that silently drops back to a low-occupancy launch is caught here instead
+// of only end-to-end. L2 is flushed between launches (the real decode walks
+// a ~2 GB working set, so the weight is never L2-resident).
+TEST_CASE("seq1 GEMV dense-decode aggregate bandwidth budget",
+          "[qwen][gemm][nvfp4][gemv][budget]")
+{
+#if defined(NDEBUG)
+    // The warp-per-row route this budget guards against is only reachable
+    // under the TC fast-math policy (the production dispatch gate); enable it
+    // so a regression to that launch is really exercised.
+    lsxcommon::qwen::SetQwenTcFastMath(true);
+    lsxcommon::qwen::SetQwenSeq1Gemv(true);
+    const GemvCase shapes[] = {
+        {2816, 2816}, {2112, 2816}, {2816, 2112}, {2816, 2048}, {2816, 4096},
+    };
+    constexpr int kIters = 40;
+    constexpr size_t kFlushBytes = 128u << 20;   // > RTX 5090 L2 (96 MiB)
+    uint8_t *flush = nullptr;
+    REQUIRE(cudaMalloc(&flush, kFlushBytes) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    double total_bytes = 0.0, total_us = 0.0;
+    for (const auto &c : shapes) {
+        std::vector<__half> hx(c.K);
+        std::vector<uint8_t> hp(static_cast<size_t>(c.K) * c.N / 2),
+            hs(static_cast<size_t>(c.K) * c.N / 16);
+        for (int i = 0; i < c.K; ++i)
+            hx[i] = __float2half(float((i % 13) - 6) * 0.25f);
+        for (size_t i = 0; i < hp.size(); ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hs.size(); ++i)
+            hs[i] = static_cast<uint8_t>(128 + (i % 48));
+        __half *dx, *dy;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(c.K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy, static_cast<size_t>(c.N) * 2) == cudaSuccess);
+        cudaMemcpy(dx, hx.data(), static_cast<size_t>(c.K) * 2,
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(dp, hp.data(), hp.size(), cudaMemcpyHostToDevice);
+        cudaMemcpy(ds, hs.data(), hs.size(), cudaMemcpyHostToDevice);
+        REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+                    nullptr, dx, dp, ds, 0.125f, dy, c.K, c.N, false) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        double shape_us = 0.0;
+        for (int i = 0; i < kIters; ++i) {
+            REQUIRE(cudaMemsetAsync(flush, 0, kFlushBytes) == cudaSuccess);
+            REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+            REQUIRE(lsxcommon::qwen::RunQwenNvfp4GemmSeq1GemmV(
+                        nullptr, dx, dp, ds, 0.125f, dy, c.K, c.N, false) ==
+                    cudaSuccess);
+            REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+            REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+            float ms = 0.0f;
+            REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+            shape_us += static_cast<double>(ms) * 1000.0;
+        }
+        total_us += shape_us;
+        total_bytes += static_cast<double>(hp.size() + hs.size()) * kIters;
+        cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
+    }
+    const double gbps = total_bytes / (total_us * 1e-6) / 1e9;
+    INFO("aggregate dense-decode GEMV bandwidth = " << gbps << " GB/s");
+    // The warp-per-row launch (fast-math route, shallow K) measured 229 GB/s
+    // on the RTX 5090; the 8-warp sliced KP=2 launch measures 285 at the same
+    // shapes (gemma-4-26B decode: 88.7 -> 95.5 t/s). Budget sits between.
+    CHECK(gbps > 260.0);
+    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
+    lsxcommon::qwen::SetQwenTcFastMath(false);
+    lsxcommon::qwen::SetQwenSeq1Gemv(false);
+#endif
+}
+
 TEST_CASE("RunQwenNvfp4Gemm fast-math seq==1 dispatch reaches GEMV "
           "(bitwise equal)",
           "[qwen][gemm][nvfp4][gemv]")

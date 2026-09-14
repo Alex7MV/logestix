@@ -110,5 +110,48 @@ TEST_CASE("RunGemmaRMSNorm handles multi-block-hidden rows", "[gemma][kernels]")
     cudaFree(dout);
 }
 
-
+// Decode is one row per norm and gemma-4 runs 211 weighted RMSNorms per token,
+// so the per-launch latency of the single-row kernel is a first-order decode
+// cost (second only to the dense GEMV family). The 256-thread launch measures
+// ~4.2 us at hidden=2816; the latency is the per-thread grid-stride chain, not
+// bandwidth, so a wider block shortens it. Pin the single-row latency.
+TEST_CASE("gemma RMSNorm decode latency budget", "[gemma][kernels][budget]")
+{
+#if defined(NDEBUG)
+    constexpr int H = 2816;
+    constexpr int kIters = 2000;
+    std::vector<__nv_bfloat16> hx(H, __float2bfloat16(0.5f));
+    std::vector<__nv_bfloat16> hw(H, __float2bfloat16(1.0f));
+    __nv_bfloat16 *dx, *dw, *dout;
+    REQUIRE(cudaMalloc(&dx, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dw, H * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, H * 2) == cudaSuccess);
+    cudaMemcpy(dx, hx.data(), H * 2, cudaMemcpyHostToDevice);
+    cudaMemcpy(dw, hw.data(), H * 2, cudaMemcpyHostToDevice);
+    for (int i = 0; i < 50; ++i)
+        REQUIRE(lsxcommon::gemma::RunGemmaRMSNorm(dx, dw, dout, 1, H, 1e-6f,
+                                                  0) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i)
+        REQUIRE(lsxcommon::gemma::RunGemmaRMSNorm(dx, dw, dout, 1, H, 1e-6f,
+                                                  0) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1000.0 / kIters;
+    INFO("single-row gemma RMSNorm latency = " << us << " us");
+    // 256-thread launch ~4.2 us; a 512-thread launch ~2.3 us. Budget between.
+    CHECK(us < 3.4);
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    cudaFree(dx);
+    cudaFree(dw);
+    cudaFree(dout);
+#endif
+}
 
