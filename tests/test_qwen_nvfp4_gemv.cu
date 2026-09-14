@@ -483,6 +483,10 @@ TEST_CASE("GemvGatherTable composes slot table from device inputs",
     cudaMalloc(&d_routes, routes.size() * sizeof(routes[0]));
     cudaMalloc(&d_meta, meta.size() * sizeof(meta[0]));
     cudaMalloc(&d_tbl, K * sizeof(*d_tbl));
+    // GatherTable writes the five value fields per slot but not the trailing
+    // struct padding; zero it so the device->host copy never reads
+    // uninitialized device memory (initcheck).
+    cudaMemset(d_tbl, 0, K * sizeof(*d_tbl));
     cudaMemcpy(d_routes, routes.data(), routes.size() * sizeof(routes[0]),
                cudaMemcpyHostToDevice);
     cudaMemcpy(d_meta, meta.data(), meta.size() * sizeof(meta[0]),

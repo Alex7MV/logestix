@@ -21,7 +21,7 @@ TEST_CASE("ParseQwenMoeConfig reads text_config MoE fields", "[qwen-moe-convert]
     REQUIRE(top.num_experts_per_tok == 2);
     REQUIRE(top.moe_intermediate_size == 16);
     REQUIRE(top.shared_expert_intermediate_size == 16);
-    REQUIRE(top.num_attention_heads == 4);
+    REQUIRE(top.num_attention_heads == 2);
     REQUIRE(top.num_key_value_heads == 1);
     REQUIRE(top.head_dim == 32);
     REQUIRE(top.linear_num_key_heads == 2);
@@ -43,6 +43,26 @@ TEST_CASE("ParseQwenMoeConfig fails on missing config", "[qwen-moe-convert]")
 {
     auto top = ParseQwenMoeConfig("/nonexistent_dir_lsx_qwen_moe");
     REQUIRE_FALSE(top.error_msg.empty());
+}
+
+// The synthetic MoE fixture derives tensor SHAPES from qwentest::TestCfg()
+// but writes the model config from qwen_moe_test::MoeCfg(); if the two drift,
+// the converted model's topology disagrees with its weights (uninitialized
+// attention scratch reads). This guard pins the two configs together.
+TEST_CASE("synthetic MoE fixture attention geometry is self-consistent",
+          "[qwen-moe-convert]")
+{
+    const auto &c = qwen_moe_test::MoeCfg();
+    const auto &q = qwentest::TestCfg();
+    CHECK(c.hidden_size == q.hidden_size);
+    CHECK(c.num_attention_heads == q.num_attention_heads);
+    CHECK(c.num_key_value_heads == q.num_key_value_heads);
+    CHECK(c.head_dim == q.head_dim);
+    CHECK(c.linear_num_key_heads == q.linear_num_key_heads);
+    CHECK(c.linear_num_value_heads == q.linear_num_value_heads);
+    CHECK(c.linear_key_head_dim == q.linear_key_head_dim);
+    CHECK(c.linear_value_head_dim == q.linear_value_head_dim);
+    CHECK(c.linear_conv_kernel_dim == q.linear_conv_kernel_dim);
 }
 
 TEST_CASE("MoE tensor classification", "[qwen-moe-convert]")

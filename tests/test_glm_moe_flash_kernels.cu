@@ -372,6 +372,9 @@ TEST_CASE("flash_expf_glibc: exp(0)==1 on device")
     REQUIRE(cudaMalloc(&d_out, 64) == cudaSuccess);
     cudaStream_t s;
     cudaStreamCreate(&s);
+    // The probe kernels write only the slots they print; zero the buffer so
+    // the device->host copy never reads uninitialized device memory.
+    REQUIRE(cudaMemsetAsync(d_out, 0, 64, s) == cudaSuccess);
     REQUIRE(RunFlashExp0Probe(s, d_out) == cudaSuccess);
     float hv[16] = {};
     REQUIRE(cudaMemcpyAsync(hv, d_out, 64, cudaMemcpyDeviceToHost, s)

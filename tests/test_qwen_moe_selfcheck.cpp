@@ -132,14 +132,17 @@ TEST_CASE("Qwen3.5-35B-A3B generation scratch persists across SelfCheck cycles",
 
     auto *qm = dynamic_cast<lsxcommon::Qwen35MoeModel *>(m.get());
     REQUIRE(qm != nullptr);
-    const auto &scratch = qm->GenScratchForTest();
-    CHECK(scratch.dequant_runs == 1);
-    CHECK(scratch.arena_allocs <= 1);
+    // Load() runs a 1-token warmup generation, so the arena is first sized
+    // for a tiny sequence and the first SelfCheck may grow it exactly once.
+    // The invariant under test is that subsequent cycles never reallocate.
+    const int allocs0 = qm->GenScratchForTest().arena_allocs;
+    CHECK(qm->GenScratchForTest().dequant_runs == 1);
+    CHECK(allocs0 <= 2);
 
     auto sc1 = m->SelfCheck(req);
     REQUIRE(sc1.ok);
     CHECK(qm->GenScratchForTest().dequant_runs == 1);
-    CHECK(qm->GenScratchForTest().arena_allocs <= 1);
+    CHECK(qm->GenScratchForTest().arena_allocs == allocs0);
 
     REQUIRE(sc1.final_logits.size() == sc0.final_logits.size());
     CHECK(std::memcmp(sc1.final_logits.data(), sc0.final_logits.data(),

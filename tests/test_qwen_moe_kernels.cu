@@ -1002,6 +1002,27 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
+    // Down projection consumes a DISTINCT per-slot activation (each expert has
+    // its own swiglu output). The batch kernel applies a_slot_off = slot*K/2,
+    // so the reference must read the same per-slot windows and the buffers
+    // must be sized for all K slots (a single-row buffer would be read OOB by
+    // the kernel and would make the parity comparison meaningless).
+    const int64_t down_pack_slot = static_cast<int64_t>(I) / 2;
+    const int64_t down_scale_slot = static_cast<int64_t>((I + 15) / 16);
+    std::vector<__half> hdown(static_cast<size_t>(K) * I);
+    for (size_t i = 0; i < hdown.size(); ++i)
+        hdown[i] = __float2half(sinf(static_cast<float>(i) * 0.31f) * 0.5f);
+    uint8_t *d_ad, *d_ads;
+    cudaMalloc(&d_ad, static_cast<size_t>(K) * down_pack_slot);
+    cudaMalloc(&d_ads, static_cast<size_t>(K) * down_scale_slot);
+    for (int k = 0; k < K; ++k) {
+        REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
+                    stream, hdown.data() + static_cast<size_t>(k) * I, 1, I,
+                    d_ad + static_cast<int64_t>(k) * down_pack_slot,
+                    d_ads + static_cast<int64_t>(k) * down_scale_slot) ==
+                cudaSuccess);
+    }
+
     // Distinct per-segment global scales (catch gs mixups bitwise).
     std::vector<lsxcommon::lsx_tc::LsxTcBatchSlot> tbl(K);
     std::vector<float> hseg(2 * 8);
@@ -1033,9 +1054,11 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
                     d_ref13 + static_cast<int64_t>(k) * N13, 1, H, N13,
                     false, d_seg + 2 * k, nullptr) == cudaSuccess);
         REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmPreQuant(
-                    stream, d_xq, d_xqs, pk + w13_bytes, sc + s13_bytes,
-                    tbl[k].gs2, d_ref2 + static_cast<int64_t>(k) * H, 1, I,
-                    H, false) == cudaSuccess);
+                    stream, d_ad + static_cast<int64_t>(k) * down_pack_slot,
+                    d_ads + static_cast<int64_t>(k) * down_scale_slot,
+                    pk + w13_bytes, sc + s13_bytes, tbl[k].gs2,
+                    d_ref2 + static_cast<int64_t>(k) * H, 1, I, H,
+                    false) == cudaSuccess);
     }
     // Batched.
     {
@@ -1051,7 +1074,7 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     {
         float *d_part = nullptr;
         REQUIRE(lsxcommon::lsx_tc::RunLsxTcGemmBatchDown(
-                    stream, d_xq, d_xqs, d_pack, d_scale,
+                    stream, d_ad, d_ads, d_pack, d_scale,
                     static_cast<int64_t>(pack_stride),
                     static_cast<int64_t>(scale_stride), d_tbl, K, w13_bytes,
                     s13_bytes, I, H, d_bat2, d_part) == cudaSuccess);
@@ -1062,8 +1085,16 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     std::vector<uint8_t> b13(static_cast<size_t>(K) * N13 * 2);
     std::vector<uint8_t> r2(static_cast<size_t>(K) * H * 2);
     std::vector<uint8_t> b2(static_cast<size_t>(K) * H * 2);
+    REQUIRE(cudaMemcpy(r13.data(), d_ref13, r13.size(),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(b13.data(), d_bat13, b13.size(),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(r2.data(), d_ref2, r2.size(),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(b2.data(), d_bat2, b2.size(),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
 
-    // Slot 0 must be bitwise identical (same kernels, same order).
+    // Every slot must be bitwise identical to its per-slot reference.
     const size_t slot13 = r13.size() / static_cast<size_t>(K);
     const size_t slot2 = r2.size() / static_cast<size_t>(K);
     bool ok13 = true, ok2 = true;
@@ -1077,8 +1108,14 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     }
     CHECK(ok13);
     CHECK(ok2);
+    // Non-vacuity: the per-slot weights/activations are distinct, so slot 0
+    // and slot 1 results must differ. If these ever match, the test has been
+    // silently defanged (e.g. missing device->host copy) and proves nothing.
+    CHECK(std::memcmp(r13.data(), r13.data() + slot13, slot13) != 0);
+    CHECK(std::memcmp(r2.data(), r2.data() + slot2, slot2) != 0);
 
     cudaFree(d_pack); cudaFree(d_scale); cudaFree(d_xq); cudaFree(d_xqs);
+    cudaFree(d_ad); cudaFree(d_ads);
     cudaFree(d_seg); cudaFree(d_tbl); cudaFree(d_ref13); cudaFree(d_ref2);
     cudaFree(d_bat13); cudaFree(d_bat2);
     cudaStreamDestroy(stream);

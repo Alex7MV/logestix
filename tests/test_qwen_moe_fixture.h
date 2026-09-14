@@ -45,7 +45,7 @@ inline void MoeUnsetEnv(const char *name)
 
 // Tiny MoE geometry. Attention side matches qwentest::TestCfg() defaults so
 // both fixtures agree on dense record shapes:
-//   hidden=64, layers=4 (full attention at index 3), heads=4/kv=1/head_dim=32
+//   hidden=64, layers=4 (full attention at index 3), heads=2/kv=1/head_dim=32
 //   linear nk=2/kd=8, nv=4/vd=8, conv=4, vocab=64
 // MoE side: experts=8, top_k=2, moe_inter=16, shared_inter=16.
 struct QwenMoeTestConfig {
@@ -60,7 +60,7 @@ struct QwenMoeTestConfig {
     int linear_key_head_dim = 8;
     int linear_value_head_dim = 8;
     int linear_conv_kernel_dim = 4;
-    int num_attention_heads = 4;
+    int num_attention_heads = 2;
     int num_key_value_heads = 1;
     int head_dim = 32;
 
