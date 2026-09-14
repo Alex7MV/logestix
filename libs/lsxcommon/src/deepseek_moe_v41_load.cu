@@ -1,6 +1,7 @@
 #include "deepseek_moe_v41_load_internal.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <unordered_map>
@@ -347,6 +348,18 @@ ExpertDb load_expert_index(const std::string &model_path, int num_layers,
     db.max_open = 65536;
     db.log_prefix = "[v41-expert] ";
     db.Load(model_path, /*fallback=*/false);
+    // Pin the whole routed store into locked host memory (V4-Flash / Kimi /
+    // GLM / Gemma parity). The per-expert staging copy then DMAs straight out
+    // of pinned memory instead of the driver's pageable staging path, and it
+    // can overlap compute once double-buffered. With 768 GiB host RAM the full
+    // 285 GiB store fits; the mmap views are released lazily. Disable with
+    // LSX_EXPERT_PIN=0 (falls back to mmap views, byte-identical results).
+    if (std::getenv("LSX_EXPERT_PIN") == nullptr ||
+        std::getenv("LSX_EXPERT_PIN")[0] != '0') {
+        if (!db.PinChunked<ExpertDb::PinLayout::kStream>())
+            lsxcommon::log::warn(
+                "[v41-expert] pinned store unavailable; using mmap views");
+    }
     return db;
 }
 

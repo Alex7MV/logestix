@@ -93,7 +93,7 @@
       "model_type": "deepseek-v4.1-flash",
       "gpu_key": "rtx 5090",
       "os": "linux",
-      "tokens_per_sec": 2.67,
+      "tokens_per_sec": 6.62,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-09-14",

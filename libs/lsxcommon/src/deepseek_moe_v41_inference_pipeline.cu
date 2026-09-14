@@ -24,6 +24,7 @@
 
 #include "deepseek_moe_v41_device_math.h"
 #include "deepseek_moe_v41_inference.h"
+#include "lsxcommon/expert_device_cache.h"
 #include "deepseek_moe_v41_inference_csa.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
@@ -99,6 +100,46 @@ struct DevSet {
     }
 };
 
+// Double-buffered expert-weight prefetch. A dedicated non-blocking copy stream
+// DMAs the next expert's pinned NVFP4 slabs while the current expert's FFN runs
+// on the compute stream. ev_copy[b] fires when staging buffer b is filled;
+// ev_free[b] fires when the compute stream is done reading buffer b.
+struct CopyPipeline {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t ev_copy[2] = {nullptr, nullptr};
+    cudaEvent_t ev_free[2] = {nullptr, nullptr};
+    cudaEvent_t ev_ready[8] = {};
+
+    bool Init()
+    {
+        if (cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) !=
+            cudaSuccess)
+            return false;
+        for (int b = 0; b < 2; ++b) {
+            if (cudaEventCreateWithFlags(&ev_copy[b], cudaEventDisableTiming) !=
+                    cudaSuccess ||
+                cudaEventCreateWithFlags(&ev_free[b], cudaEventDisableTiming) !=
+                    cudaSuccess)
+                return false;
+        }
+        for (int b = 0; b < 8; ++b)
+            if (cudaEventCreateWithFlags(&ev_ready[b], cudaEventDisableTiming) !=
+                cudaSuccess)
+                return false;
+        return true;
+    }
+    ~CopyPipeline()
+    {
+        for (int b = 0; b < 2; ++b) {
+            if (ev_copy[b]) cudaEventDestroy(ev_copy[b]);
+            if (ev_free[b]) cudaEventDestroy(ev_free[b]);
+        }
+        for (int b = 0; b < 8; ++b)
+            if (ev_ready[b]) cudaEventDestroy(ev_ready[b]);
+        if (stream) cudaStreamDestroy(stream);
+    }
+};
+
 } // namespace
 
 gpu::InferenceResult RunDeepSeekV41Inference(
@@ -144,16 +185,41 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     int32_t *d_next = dev.typed<int32_t>(1);
     float *d_maxv = dev.typed<float>(1);
 
-    // Expert staging (largest projection).
+    // Expert staging (largest projection), double-buffered so the next
+    // expert's slabs can be prefetched while the current one computes. The
+    // pinned kStream layout packs an expert as [w1|w3|w2|s1|s3|s2] with
+    // 256-byte-aligned spans, so a whole expert is one contiguous transfer.
     const int inter = dv41::kMoeIntermediate;
-    const int packed_max = inter * kHidden / 2;
-    const int scales_max = inter * kHidden / 16;
-    uint8_t *d_w1p = dev.typed<uint8_t>(packed_max);
-    uint8_t *d_w3p = dev.typed<uint8_t>(packed_max);
-    uint8_t *d_w2p = dev.typed<uint8_t>(packed_max);
-    uint8_t *d_w1s = dev.typed<uint8_t>(scales_max);
-    uint8_t *d_w3s = dev.typed<uint8_t>(scales_max);
-    uint8_t *d_w2s = dev.typed<uint8_t>(scales_max);
+    auto aln256 = [](int64_t v) { return (v + 255) / 256 * 256; };
+    const int64_t packed_bytes = static_cast<int64_t>(inter) * kHidden / 2;
+    const int64_t scales_bytes = static_cast<int64_t>(inter) * kHidden / 16;
+    const size_t expert_block = static_cast<size_t>(
+        3 * aln256(packed_bytes) + 3 * aln256(scales_bytes));
+    uint8_t *d_stage[2] = {};
+    for (int b = 0; b < 2; ++b) d_stage[b] = dev.typed<uint8_t>(expert_block);
+    // Expert-FFN activation scratch: per-expert cudaMalloc/cudaFree inside
+    // LaunchExpertFfn serializes the device and would defeat the overlap.
+    const size_t ffn_scratch_bytes =
+        dv41::ExpertFfnScratchBytes(inter, kHidden);
+    uint8_t *d_ffn_scratch = dev.typed<uint8_t>(ffn_scratch_bytes);
+
+    // Device span offsets for one staged expert (mirrors the pinned layout).
+    struct StagePtrs {
+        uint8_t *w1 = nullptr, *w3 = nullptr, *w2 = nullptr;
+        uint8_t *s1 = nullptr, *s3 = nullptr, *s2 = nullptr;
+        size_t block = 0;
+    };
+    auto stage_ptrs = [&](uint8_t *base, const V41ExpertEntry &en) {
+        StagePtrs p;
+        p.w1 = base;
+        p.w3 = p.w1 + aln256(en.w1_bytes);
+        p.w2 = p.w3 + aln256(en.w3_bytes);
+        p.s1 = p.w2 + aln256(en.w2_bytes);
+        p.s3 = p.s1 + aln256(en.w1_scales_bytes);
+        p.s2 = p.s3 + aln256(en.w3_scales_bytes);
+        p.block = static_cast<size_t>(p.s2 + aln256(en.w2_scales_bytes) - p.w1);
+        return p;
+    };
 
     // Per-layer CED persistent state.
     uint16_t *d_window_kv = dev.typed<uint16_t>(
@@ -253,11 +319,115 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     std::vector<int32_t> gen;
     gen.reserve(static_cast<size_t>(total_steps));
 
+    // Host-only routed-expert locality probe (LSX_V41_RLOC=<slots>): replays
+    // the exact router ids through the shared device-cache LRU bookkeeping to
+    // report the hit rate a real device cache of that size would achieve.
+    const char *rloc_env = std::getenv("LSX_V41_RLOC");
+    const bool rloc = rloc_env != nullptr;
+    const int total_experts =
+        num_layers * expert_db.experts_per_layer;
+    gpu::ExpertDeviceCache sim;
+    std::vector<int32_t> sim_slot_of, sim_owner, sim_lru, sim_prev, sim_next,
+        sim_free;
+    if (rloc) {
+        const int S = std::max(1, std::atoi(rloc_env) == 0
+                                      ? 800
+                                      : std::atoi(rloc_env));
+        sim_slot_of.assign(static_cast<size_t>(total_experts), -1);
+        sim_owner.assign(static_cast<size_t>(S), -1);
+        sim_lru.assign(static_cast<size_t>(S), 0);
+        sim_prev.assign(static_cast<size_t>(S), -1);
+        sim_next.assign(static_cast<size_t>(S), -1);
+        sim_free.resize(static_cast<size_t>(S));
+        for (int i = 0; i < S; ++i) sim_free[static_cast<size_t>(i)] = i;
+        sim.slots = S;
+        sim.total_experts = total_experts;
+        sim.h_slot_of = sim_slot_of.data();
+        sim.h_slot_owner = sim_owner.data();
+        sim.h_lru = sim_lru.data();
+        sim.h_prev = sim_prev.data();
+        sim.h_next = sim_next.data();
+        sim.h_free = sim_free.data();
+        sim.h_free_top = S;
+        sim.h_lru_front = -1;
+        sim.h_lru_back = -1;
+    }
+
     // LayerWeights stores __half*, the kernel API takes uint16_t bit patterns.
 #define U(x) reinterpret_cast<const uint16_t *>(x)
     EventSet ev;
-    cudaEventRecord(ev.start, stream);
+    // Expert staging overlap is only safe when the store is pinned (locked
+    // host memory): the mmap path can evict/munmap an entry whose async DMA is
+    // still in flight on the copy stream. Pinned stores never evict.
+    const bool overlapped = !expert_db.pinned_pools.empty();
+    CopyPipeline cp;
+    if (overlapped && !cp.Init()) {
+        result.error_msg = "expert copy pipeline init failed";
+        return result;
+    }
+    if (overlapped)
+        for (int b = 0; b < 2; ++b) cudaEventRecord(cp.ev_free[b], stream);
+
+    // ── Device routed-expert cache ────────────────────────────────────────
+    // 64.5% of the topk expert requests repeat within a 800-slot window
+    // (LSX_V41_RLOC), so a VRAM residency cache removes most of the per-token
+    // 4.8 GB host->device expert traffic. Slots hold the pinned kStream block
+    // layout; eviction is safe because the per-layer router readback drains
+    // the compute stream before the next layer stages its experts.
+    const char *cache_env = std::getenv("LSX_V41_EXPERT_CACHE");
+    const bool cache_enabled = cache_env == nullptr || cache_env[0] != '0';
+    void *cache_mem = nullptr;
+    int cache_slots = 0;
+    if (overlapped && cache_enabled) {
+        size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        const size_t reserve = static_cast<size_t>(2) << 30;
+        if (free_b > reserve) {
+            size_t n = (free_b - reserve) / expert_block;
+            if (n > static_cast<size_t>(total_experts))
+                n = static_cast<size_t>(total_experts);
+            cache_slots = static_cast<int>(n);
+        }
+        if (cache_slots > 0 &&
+            cudaMalloc(&cache_mem,
+                       static_cast<size_t>(cache_slots) * expert_block) !=
+                cudaSuccess) {
+            cache_mem = nullptr;
+            cache_slots = 0;
+        }
+        if (cache_mem) dev.ptrs.push_back(cache_mem);
+    }
+    gpu::ExpertDeviceCache cache;
+    std::vector<int32_t> c_slot_of, c_owner, c_lru, c_prev, c_next, c_free;
+    std::vector<float> slot_gs;
+    if (cache_slots > 0) {
+        c_slot_of.assign(static_cast<size_t>(total_experts), -1);
+        c_owner.assign(static_cast<size_t>(cache_slots), -1);
+        c_lru.assign(static_cast<size_t>(cache_slots), 0);
+        c_prev.assign(static_cast<size_t>(cache_slots), -1);
+        c_next.assign(static_cast<size_t>(cache_slots), -1);
+        c_free.resize(static_cast<size_t>(cache_slots));
+        for (int i = 0; i < cache_slots; ++i) c_free[i] = i;
+        slot_gs.assign(static_cast<size_t>(cache_slots) * 3, 1.0f);
+        cache.slots = cache_slots;
+        cache.total_experts = total_experts;
+        cache.h_slot_of = c_slot_of.data();
+        cache.h_slot_owner = c_owner.data();
+        cache.h_lru = c_lru.data();
+        cache.h_prev = c_prev.data();
+        cache.h_next = c_next.data();
+        cache.h_free = c_free.data();
+        cache.h_free_top = cache_slots;
+        cache.h_lru_front = -1;
+        cache.h_lru_back = -1;
+        log::info("[v41-cache] device expert cache: " +
+                  std::to_string(cache_slots) + " slots x " +
+                  std::to_string(expert_block) + " B");
+    }
+    const bool use_cache = cache_slots > 0;
     bool first_gen_captured = false;
+    cudaEventRecord(ev.start, stream);
+
     for (int step = 0; step < total_steps; ++step) {
         const int cur_tok = (step < prompt_len) ? input_ids[step] : gen.back();
         if (cur_tok < 0 || cur_tok >= pw.vocab_size) {
@@ -406,50 +576,214 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 result.error_msg = "router readback failed";
                 return result;
             }
+            if (rloc) {
+                for (int k = 0; k < topk; ++k) {
+                    const int flat =
+                        lay * expert_db.experts_per_layer +
+                        h_ridx[static_cast<size_t>(k)];
+                    if (sim.Lookup(flat) < 0) sim.Insert(flat);
+                }
+            }
             if (cudaMemsetAsync(d_acc, 0, kHidden * 4, stream) != cudaSuccess) {
                 result.error_msg = "accum reset failed";
                 return result;
             }
-            for (int k = 0; k < topk; ++k) {
-                const int e = h_ridx[static_cast<size_t>(k)];
+            // Stage one expert block into double-buffer `buf` on the copy
+            // stream. The pinned kStream layout is one contiguous
+            // [w1|w3|w2|s1|s3|s2] span, so the locked path is a single ~20 MB
+            // transfer. en_stg[buf]/sp_stg[buf] feed the compute step.
+            V41ExpertEntry en_stg[2] = {};
+            StagePtrs sp_stg[2];
+            auto stage_expert = [&](int kk, int buf) -> bool {
+                const int e = h_ridx[static_cast<size_t>(kk)];
                 dv41::gpu::ensure_expert_resident(expert_db, lay, e, stream);
-                const size_t idx = static_cast<size_t>(lay) *
-                                       static_cast<size_t>(expert_db.experts_per_layer) +
-                                   static_cast<size_t>(e);
-                if (idx >= expert_db.entries.size()) continue;
+                const size_t idx =
+                    static_cast<size_t>(lay) *
+                        static_cast<size_t>(expert_db.experts_per_layer) +
+                    static_cast<size_t>(e);
+                if (idx >= expert_db.entries.size()) return false;
                 const V41ExpertEntry &en = expert_db.entries[idx];
-                if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
-                if (cudaMemcpyAsync(d_w1p, en.host_w1, en.w1_bytes,
-                                    cudaMemcpyHostToDevice, stream) !=
-                        cudaSuccess ||
-                    cudaMemcpyAsync(d_w3p, en.host_w3, en.w3_bytes,
-                                    cudaMemcpyHostToDevice, stream) !=
-                        cudaSuccess ||
-                    cudaMemcpyAsync(d_w2p, en.host_w2, en.w2_bytes,
-                                    cudaMemcpyHostToDevice, stream) !=
-                        cudaSuccess ||
-                    cudaMemcpyAsync(d_w1s, en.host_w1_scales,
-                                    en.w1_scales_bytes, cudaMemcpyHostToDevice,
-                                    stream) != cudaSuccess ||
-                    cudaMemcpyAsync(d_w3s, en.host_w3_scales,
-                                    en.w3_scales_bytes, cudaMemcpyHostToDevice,
-                                    stream) != cudaSuccess ||
-                    cudaMemcpyAsync(d_w2s, en.host_w2_scales,
-                                    en.w2_scales_bytes, cudaMemcpyHostToDevice,
-                                    stream) != cudaSuccess) {
-                    result.error_msg = "expert staging failed";
-                    return result;
+                if (!en.host_w1 || !en.host_w2 || !en.host_w3) return false;
+                StagePtrs sp = stage_ptrs(d_stage[buf], en);
+                if (sp.block > expert_block) return false;
+                if (cudaStreamWaitEvent(cp.stream, cp.ev_free[buf], 0) !=
+                    cudaSuccess)
+                    return false;
+                if (cudaMemcpyAsync(d_stage[buf], en.host_w1, sp.block,
+                                    cudaMemcpyHostToDevice,
+                                    cp.stream) != cudaSuccess)
+                    return false;
+                if (cudaEventRecord(cp.ev_copy[buf], cp.stream) != cudaSuccess)
+                    return false;
+                en_stg[buf] = en;
+                sp_stg[buf] = sp;
+                return true;
+            };
+            if (use_cache) {
+                // Phase 1: resolve each topk expert to a device cache slot; on
+                // a miss copy its pinned block on the copy stream. Phase 2:
+                // wait for the miss copies, then run each FFN off its slot.
+                int cslot[8] = {};
+                bool cact[8] = {}, cwait[8] = {};
+                for (int k = 0; k < topk; ++k) {
+                    const int e = h_ridx[static_cast<size_t>(k)];
+                    dv41::gpu::ensure_expert_resident(expert_db, lay, e, stream);
+                    const size_t idx =
+                        static_cast<size_t>(lay) *
+                            static_cast<size_t>(expert_db.experts_per_layer) +
+                        static_cast<size_t>(e);
+                    if (idx >= expert_db.entries.size()) continue;
+                    const V41ExpertEntry &en = expert_db.entries[idx];
+                    if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
+                    const int flat = lay * expert_db.experts_per_layer + e;
+                    int slot = cache.Lookup(flat);
+                    if (slot < 0) {
+                        int evicted = -1;
+                        slot = cache.Insert(flat, &evicted);
+                        StagePtrs sp = stage_ptrs(
+                            static_cast<uint8_t *>(cache_mem) +
+                                static_cast<size_t>(slot) * expert_block,
+                            en);
+                        if (sp.block > expert_block) continue;
+                        if (cudaMemcpyAsync(
+                                static_cast<uint8_t *>(cache_mem) +
+                                    static_cast<size_t>(slot) * expert_block,
+                                en.host_w1, sp.block, cudaMemcpyHostToDevice,
+                                cp.stream) != cudaSuccess) {
+                            result.error_msg = "expert cache fill failed";
+                            return result;
+                        }
+                        slot_gs[static_cast<size_t>(slot) * 3 + 0] =
+                            en.w1_global_scale;
+                        slot_gs[static_cast<size_t>(slot) * 3 + 1] =
+                            en.w2_global_scale;
+                        slot_gs[static_cast<size_t>(slot) * 3 + 2] =
+                            en.w3_global_scale;
+                        if (cudaEventRecord(cp.ev_ready[k], cp.stream) !=
+                            cudaSuccess) {
+                            result.error_msg = "expert cache event failed";
+                            return result;
+                        }
+                        cwait[k] = true;
+                    }
+                    cslot[k] = slot;
+                    cact[k] = true;
                 }
-                dv41::DeviceExpertWeight ew1{d_w1p, d_w1s, en.w1_global_scale};
-                dv41::DeviceExpertWeight ew3{d_w3p, d_w3s, en.w3_global_scale};
-                dv41::DeviceExpertWeight ew2{d_w2p, d_w2s, en.w2_global_scale};
-                if (dv41::LaunchExpertFfn(cublas, stream, d_xh, kHidden, ew1,
-                                          ew3, ew2, inter,
-                                          dv41::kSwigluLimit,
-                                          h_rw[static_cast<size_t>(k)],
-                                          d_acc) != cudaSuccess) {
-                    result.error_msg = "routed expert failed";
-                    return result;
+                for (int k = 0; k < topk; ++k) {
+                    if (!cact[k]) continue;
+                    const int slot = cslot[k];
+                    const V41ExpertEntry &en =
+                        expert_db.entries[static_cast<size_t>(lay) *
+                                              static_cast<size_t>(
+                                                  expert_db
+                                                      .experts_per_layer) +
+                                          static_cast<size_t>(
+                                              h_ridx[static_cast<size_t>(k)])];
+                    StagePtrs sp = stage_ptrs(
+                        static_cast<uint8_t *>(cache_mem) +
+                            static_cast<size_t>(slot) * expert_block,
+                        en);
+                    if (cwait[k] &&
+                        cudaStreamWaitEvent(stream, cp.ev_ready[k], 0) !=
+                            cudaSuccess) {
+                        result.error_msg = "expert cache wait failed";
+                        return result;
+                    }
+                    dv41::DeviceExpertWeight ew1{sp.w1, sp.s1,
+                                                 slot_gs[slot * 3 + 0]};
+                    dv41::DeviceExpertWeight ew3{sp.w3, sp.s3,
+                                                 slot_gs[slot * 3 + 2]};
+                    dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
+                                                 slot_gs[slot * 3 + 1]};
+                    if (dv41::LaunchExpertFfnScratch(
+                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            dv41::kSwigluLimit,
+                            h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
+                            ffn_scratch_bytes) != cudaSuccess) {
+                        result.error_msg = "routed expert failed";
+                        return result;
+                    }
+                }
+            } else if (overlapped) {
+                bool act[2] = {false, false};
+                act[0] = stage_expert(0, 0);
+                for (int k = 0; k < topk; ++k) {
+                    const int buf = k & 1;
+                    if (k + 1 < topk)
+                        act[(k + 1) & 1] = stage_expert(k + 1, (k + 1) & 1);
+                    if (!act[buf]) continue;
+                    if (cudaStreamWaitEvent(stream, cp.ev_copy[buf], 0) !=
+                        cudaSuccess) {
+                        result.error_msg = "expert event wait failed";
+                        return result;
+                    }
+                    const StagePtrs &sp = sp_stg[buf];
+                    dv41::DeviceExpertWeight ew1{sp.w1, sp.s1,
+                                                 en_stg[buf].w1_global_scale};
+                    dv41::DeviceExpertWeight ew3{sp.w3, sp.s3,
+                                                 en_stg[buf].w3_global_scale};
+                    dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
+                                                 en_stg[buf].w2_global_scale};
+                    if (dv41::LaunchExpertFfnScratch(
+                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            dv41::kSwigluLimit,
+                            h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
+                            ffn_scratch_bytes) != cudaSuccess) {
+                        result.error_msg = "routed expert failed";
+                        return result;
+                    }
+                    if (cudaEventRecord(cp.ev_free[buf], stream) !=
+                        cudaSuccess) {
+                        result.error_msg = "expert event record failed";
+                        return result;
+                    }
+                }
+            } else {
+                uint8_t *base = d_stage[0];
+                for (int k = 0; k < topk; ++k) {
+                    const int e = h_ridx[static_cast<size_t>(k)];
+                    dv41::gpu::ensure_expert_resident(expert_db, lay, e, stream);
+                    const size_t idx =
+                        static_cast<size_t>(lay) *
+                            static_cast<size_t>(expert_db.experts_per_layer) +
+                        static_cast<size_t>(e);
+                    if (idx >= expert_db.entries.size()) continue;
+                    const V41ExpertEntry &en = expert_db.entries[idx];
+                    if (!en.host_w1 || !en.host_w2 || !en.host_w3) continue;
+                    StagePtrs sp = stage_ptrs(base, en);
+                    if (sp.block > expert_block) continue;
+                    auto cpy = [&](void *dst, const void *src, size_t n) {
+                        return n == 0 ? cudaSuccess
+                                      : cudaMemcpyAsync(dst, src, n,
+                                                        cudaMemcpyHostToDevice,
+                                                        stream);
+                    };
+                    if (cpy(sp.w1, en.host_w1, en.w1_bytes) != cudaSuccess ||
+                        cpy(sp.w3, en.host_w3, en.w3_bytes) != cudaSuccess ||
+                        cpy(sp.w2, en.host_w2, en.w2_bytes) != cudaSuccess ||
+                        cpy(sp.s1, en.host_w1_scales, en.w1_scales_bytes) !=
+                            cudaSuccess ||
+                        cpy(sp.s3, en.host_w3_scales, en.w3_scales_bytes) !=
+                            cudaSuccess ||
+                        cpy(sp.s2, en.host_w2_scales, en.w2_scales_bytes) !=
+                            cudaSuccess) {
+                        result.error_msg = "expert staging failed";
+                        return result;
+                    }
+                    dv41::DeviceExpertWeight ew1{sp.w1, sp.s1,
+                                                 en.w1_global_scale};
+                    dv41::DeviceExpertWeight ew3{sp.w3, sp.s3,
+                                                 en.w3_global_scale};
+                    dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
+                                                 en.w2_global_scale};
+                    if (dv41::LaunchExpertFfnScratch(
+                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            dv41::kSwigluLimit,
+                            h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
+                            ffn_scratch_bytes) != cudaSuccess) {
+                        result.error_msg = "routed expert failed";
+                        return result;
+                    }
                 }
             }
             if (dv41::SharedExpertForward(
@@ -555,6 +889,19 @@ gpu::InferenceResult RunDeepSeekV41Inference(
         ? (static_cast<double>(result.num_tokens) / (total_ms / 1000.0))
         : 0.0;
     result.ok = true;
+    if (rloc) {
+        const double total = static_cast<double>(sim.hits + sim.misses);
+        log::info("[v41-rloc] slots=" + std::to_string(sim.slots) +
+                  " hits=" + std::to_string(sim.hits) +
+                  " misses=" + std::to_string(sim.misses) + " hit_rate=" +
+                  std::to_string(total > 0 ? sim.hits / total : 0.0));
+    }
+    if (use_cache) {
+        const double total = static_cast<double>(cache.hits + cache.misses);
+        log::info("[v41-cache] hits=" + std::to_string(cache.hits) +
+                  " misses=" + std::to_string(cache.misses) + " hit_rate=" +
+                  std::to_string(total > 0 ? cache.hits / total : 0.0));
+    }
     return result;
 }
 

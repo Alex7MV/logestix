@@ -664,20 +664,8 @@ cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
     return e;
 }
 
-cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
-                            const uint16_t *x, int hidden,
-                            const DeviceExpertWeight &w1,
-                            const DeviceExpertWeight &w3,
-                            const DeviceExpertWeight &w2, int inter,
-                            float swiglu_limit, float weight,
-                            float *accum_f32)
+std::size_t ExpertFfnScratchBytes(int inter, int hidden)
 {
-    (void)handle;
-    if (hidden <= 0 || inter <= 0) return cudaSuccess;
-    if (!w1.packed || !w1.scales || !w3.packed || !w3.scales || !w2.packed ||
-        !w2.scales)
-        return cudaErrorInvalidValue;
-
     size_t bytes = 0;
     auto bump = [&](size_t n) { bytes += (n + 255) / 256 * 256; };
     bump(static_cast<size_t>(inter) * 2);      // gate_h
@@ -687,9 +675,27 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
     bump(static_cast<size_t>(inter) * 4);      // mid_f
     bump(static_cast<size_t>(inter) * 2);      // mid_h
     bump(static_cast<size_t>(hidden) * 2);     // out_h
-    void *base = nullptr;
-    if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
-    uint8_t *p = static_cast<uint8_t *>(base);
+    return bytes;
+}
+
+cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
+                                   const uint16_t *x, int hidden,
+                                   const DeviceExpertWeight &w1,
+                                   const DeviceExpertWeight &w3,
+                                   const DeviceExpertWeight &w2, int inter,
+                                   float swiglu_limit, float weight,
+                                   float *accum_f32, void *scratch,
+                                   std::size_t scratch_bytes)
+{
+    (void)handle;
+    if (hidden <= 0 || inter <= 0) return cudaSuccess;
+    if (!w1.packed || !w1.scales || !w3.packed || !w3.scales || !w2.packed ||
+        !w2.scales)
+        return cudaErrorInvalidValue;
+    if (!scratch || scratch_bytes < ExpertFfnScratchBytes(inter, hidden))
+        return cudaErrorInvalidValue;
+
+    uint8_t *p = static_cast<uint8_t *>(scratch);
     auto take = [&](size_t n) {
         uint8_t *r = p;
         p += (n + 255) / 256 * 256;
@@ -737,6 +743,23 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
             out_h, accum_f32, hidden);
         e = cudaGetLastError();
     }
+    return e;
+}
+
+cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
+                            const uint16_t *x, int hidden,
+                            const DeviceExpertWeight &w1,
+                            const DeviceExpertWeight &w3,
+                            const DeviceExpertWeight &w2, int inter,
+                            float swiglu_limit, float weight,
+                            float *accum_f32)
+{
+    void *base = nullptr;
+    const size_t bytes = ExpertFfnScratchBytes(inter, hidden);
+    if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
+    const cudaError_t e = LaunchExpertFfnScratch(
+        handle, stream, x, hidden, w1, w3, w2, inter, swiglu_limit, weight,
+        accum_f32, base, bytes);
     cudaFree(base);
     return e;
 }

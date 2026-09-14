@@ -4,6 +4,7 @@
 // bridges cast at the boundary).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
@@ -135,6 +136,22 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
                             const DeviceExpertWeight &w2, int inter,
                             float swiglu_limit, float weight,
                             float *accum_f32);
+
+// Byte size of the activation scratch used by LaunchExpertFfnScratch.
+std::size_t ExpertFfnScratchBytes(int inter, int hidden);
+
+// Same as LaunchExpertFfn but reuses a caller-owned scratch buffer. The decode
+// loop runs top-k experts per layer and must not cudaMalloc/cudaFree per expert
+// (cudaFree serializes the device and kills copy/compute overlap): allocate the
+// scratch once via ExpertFfnScratchBytes and pass it here.
+cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
+                                   const uint16_t *x, int hidden,
+                                   const DeviceExpertWeight &w1,
+                                   const DeviceExpertWeight &w3,
+                                   const DeviceExpertWeight &w2, int inter,
+                                   float swiglu_limit, float weight,
+                                   float *accum_f32, void *scratch,
+                                   std::size_t scratch_bytes);
 
 // Gathers `n` embedding rows (FP16) by token id into out [n, hidden].
 cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
