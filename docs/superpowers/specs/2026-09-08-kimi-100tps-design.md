@@ -350,3 +350,177 @@ Commit `3ed7979` (deps) + `34daa37` (CCCL), all pushed to `feat/kimi-100tps`:
 - Unchanged parked items for the next iteration: kimi device-cache slot
   corruption (needs compute-sanitizer session) → un-park cache → re-engage
   TC batch (wired, selfcheck-gated); optional MLA NVFP4 requant.
+
+---
+
+## Findings (execution round, 2026-09-14) — copy/compute overlap + shared-expert residency
+
+### Result
+
+**3.10 -> 5.10 tok/s @2048** (RTX 5090, Linux, `linux-release-znver4-aocc`,
+LRU device cache), reproduced twice: 398.4 s / 399.5 s. TTFT 4012 -> 1421 ms.
+Intermediates: 3.8 t/s after the pipeline, 4.7 t/s @128 after residency.
+Commits: `e255048` (perf), `9a6c237` (docs). Gates: selfcheck Paris x3
+bit-exact (18 assertions), 12/12 kimi ctest, fast label 45/45.
+
+Contradicts the earlier "cached decode ceiling 4-15 tok/s regardless of
+kernels" pessimism only in degree: the wall was never the bus alone, it was
+the bus **plus** a fully serial compute stream that the batch-wide upload
+fence prevented from overlapping.
+
+### Phase 0 profile (the decisive measurement)
+
+`nsys profile -t cuda --stats=false ... --max-gen 64`, then
+`nsys stats --report cuda_gpu_kern_sum,cuda_gpu_mem_time_sum`.
+Per decode token: **142 ms of kernels, 204 ms of H2D, wall = their sum**
+(333 ms at 3.0 t/s) — i.e. zero overlap.
+
+Kernels (9.088 s / 64 tok):
+
+| share | kernel | note |
+|---|---|---|
+| 71.4% | `Nvfp4DequantKernel<__nv_bfloat16>` | 111,841 calls = 1747/token, 58 us each; materializes 29.4 MB of bf16 per projection, then cuBLAS re-reads it (~648 GB/s effective) |
+| 8.2% + 2.8% + 0.2% | cuBLAS `nvjet` bf16 GEMMs | the routed/shared FFN projections |
+| 3.2% | `kimi_router_topk_kernel` | 70 us x 61 layers |
+| 3.1% | `kimi_mla_attn_kernel` | |
+| 2.6% | `lsx_nvfp4_gemv_warprow_kernel` | MLA absorbed projections |
+
+H2D = 8.60 GB/token, and the per-stream split was the root cause:
+
+| stream | bytes/token | ms/token | rate | what |
+|---|---|---|---|---|
+| copy (14) | 6.86 GiB | 120 | **57 GB/s** | 277 routed-expert misses x 24.78 MiB ([w1|w3] 14.68 MB, [s1|s3] 1.835 MB, w2 7.34 MB, s2 0.917 MB, 4 copies/miss) |
+| compute (13) | 1.42 GiB | 84 | **18.8 GB/s** | the 61 shared experts (3 projections each) re-streamed EVERY token from a **pageable** mmap, host-blocking, serially ahead of the routed FFN |
+
+The copy stream is already at the Gen5 bus ceiling, so the only H2D levers
+are (a) fewer misses and (b) overlap. The compute-stream pageable blob was
+pure waste: identical bytes, every token. Cache: 809 slots x 23.6 MiB
+against 21.2 GiB free before it.
+
+### Change 1 — per-slice upload pipeline (+27%)
+
+`KimiMoeCacheBatch::wait_miss_pos[]` (`kimi_moe_expert_cache.h`) now states,
+per batch entry, *which* missing entry's upload delivers its slot: a miss
+waits on its own upload, a same-batch duplicate inherits the first
+occurrence's position, and a pre-resident expert needs no wait at all. The
+CUDA side (`kimi_moe_expert_cache.cu`) records one readiness event per
+missing entry (`ready_slot[8]`) and gates the upload on the last-read event
+of the slot it evicts (`slot_read[slots]`, published by
+`KimiMoeSlotMarkRead` after the FFN) instead of a batch-wide fence. The old
+fence made the copy stream wait for ALL already-enqueued compute, which
+serialized upload against compute by construction. `upload_fence` is gone;
+the routed loop waits per entry and the copy engine keeps uploading while
+the SMs compute.
+
+### Change 2 — shared-expert device arena (+24%, and TTFT x2.5)
+
+One `[w1|w3|w2]` / `[s1|s3|s2]` slab per MoE layer (61 x 1441 MiB),
+uploaded once per model, consumed through `RunKimiExpertFfnCached`. The
+upload and the inference-time view both call `KimiSharedSlabLayout`, so a
+layout disagreement (silent corruption of every shared expert) is
+impossible by construction. Sized BEFORE the routed cache so the slot budget
+sees the reduced free VRAM: slots 809 -> 748, which costs ~8% more routed
+misses and is more than paid back by the 84 ms that disappears.
+
+### TDD artifacts
+
+Each test was watched fail first (compile error for a missing API counts,
+but the behavioural tests were also seen red at runtime):
+
+- `tests/test_kimi_moe_expert_cache.cpp`
+  `"Kimi cache batch: per-slice upload dependency plan"` — pins the
+  dependency plan (pre-resident -> -1, miss -> own position, duplicate ->
+  first occurrence's position, disabled cache -> all -1).
+- `tests/test_kimi_moe_expert_cache.cpp`
+  `"Kimi shared-expert slab layout: 256-aligned, gap-free"` — pins the
+  single layout function shared by upload and view.
+- The overlap itself is a scheduling property with no host-observable
+  state; its TDD proxy is the dependency plan above plus the E2E bench.
+
+### Rejected: LFU cache policy (measured, then reverted)
+
+Frequency-based victim selection with periodic count ageing: **+15% at 128
+tokens** (4.7 -> 5.4 t/s), the exact direction the trace simulation
+predicted (283 -> 219 misses/token at 748 slots). But at 2048 tokens it
+regressed to **3.7 t/s and stopped at 1386 tokens (early EOS)** — an output
+divergence, and functionally a much worse cache. Structural cause: LFU
+evicts recently read *low-count* slots, so the copy stream repeatedly waits
+on `slot_read` of the immediately preceding compute, which is exactly the
+dependency the pipeline exists to avoid. Reverting to LRU reproduced 2048
+tokens @5.1 t/s (398.4 s vs 399.5 s, 0.3%).
+
+Offline bound worth knowing before retrying any policy: Belady's MIN on the
+captured 125-token routing trace at 748 slots is **158 misses/token vs LRU's
+283** — at this capacity recency is *not* the limiting factor, so a policy
+retry needs a fence-aware victim rule (account for last-read time in the
+victim metric) and MUST be validated at 2048 tokens, not 128.
+
+### Remaining levers, ranked
+
+1. **Eliminate the dequant (largest).** 101 ms/token, 71% of kernel time, is
+   pure overhead: it materializes bf16 that is immediately re-read. The
+   model-neutral `lsx_nvfp4` layer already streams packed NVFP4 weights with
+   fp32 accumulate (`RunLsxNvfp4GemmSeq1GemmV`,
+   `RunLsxNvfp4GemmGateUpPair`), and Kimi's slot layout is already that
+   container (`[w1|w3|w2]` + per-16 pow2 E4M3 scales + global scale). What is
+   missing is a bf16 activation path (the neutral entries take `__half`);
+   precedent for a bf16 twin exists (`LsxTcQuantizeActsNvfp4Bf16`). If the
+   routed+shared FFN moves off dequant, kernels fall 142 -> ~45 ms/token and
+   the wall becomes the 120 ms copy stream: **~7-8 t/s** (estimate, unvalidated).
+   Numeric caution: bf16-rounded dequant + cuBLAS becomes fp32 dequant with a
+   different summation order — re-run the determinism gate and selfcheck
+   (the design doc already exempts parity with the legacy GEMV chain, but
+   determinism is binding).
+2. **Free VRAM for slots** — the only way to cut the 120 ms of compulsory
+   PCIe once compute is cheap. Per-expert NVFP4 (not bf16) on the *device*
+   MLA projections is the historical candidate (~17.3 -> ~6 GiB host; the
+   device copies are what matters here) for ~+470 slots (748 -> ~1218, +63%),
+   on top of embed+head at 4.7 GiB bf16.
+3. **TC batch (W4A4)** — still the biggest single jump, still blocked by the
+   2026-09-12 root cause (swiglu output incompatible with per-16 E2M1
+   pow2 quantization, QUANT hq rel = 120%). Per NVIDIA reference §B4 the
+   higher-precision activation route is `kind::mxf8f6f4` with UE8M0 vec-32
+   scales; `kind::mxf4nvf4` is E2M1-only, so this also means repacking the
+   weights away from per-16 E4M3.
+4. **Host-side per-layer sync** — 61 `KimiRouteFinish` busy-polls per token
+   plus the per-step argmax readback. The router kernel itself is 70 us/layer.
+   The pipeline now wants the routing as early as possible, so quantify the
+   host timeline (nsys `cuda_api_sum`/OS-runtime) before changing it.
+5. **Shared-expert FFN compute** — after residency its upload is gone but it
+   still runs 3 dequant + 3 cuBLAS per token; subsumed by lever 1.
+
+Dead ends, do not retry as-is: making the copy faster (57 GB/s is the bus
+ceiling); prefetching the next layer from the previous token's routing
+(measured reuse ~46%, and prefetch would inflate traffic that is already
+bus-bound); LFU/ageing without a fence-aware victim rule.
+
+### Reproduction
+
+```bash
+ninja -C build/linux-release-znver4-aocc lsxbenchmark test_kimi_moe_selfcheck
+./build/linux-release-znver4-aocc/apps/lsxbenchmark/lsxbenchmark \
+    --model /mnt/llm_models/models/Kimi-K2.7-Code --bench --max-gen 2048 \
+    --prompt "The capital of France is"          # expect 2048 @ ~5.1 t/s, ttft ~1.4 s
+./build/linux-release-znver4-aocc/tests/test_kimi_moe_selfcheck   # Paris x3
+./build/linux-debug/tests/test_kimi_moe_expert_cache              # host-only policy/layout
+# routing trace for offline cache-policy work (125 tokens -> 300 KB):
+KIMI_TRACE_FILE=/tmp/kimi_trace.bin ./.../lsxbenchmark ... --max-gen 128
+# profile (delay/duration windows silently produce NO report on this box):
+nsys profile -t cuda --stats=false -o /tmp/kimi ./.../lsxbenchmark ... --max-gen 64
+nsys stats --report cuda_gpu_kern_sum,cuda_gpu_mem_time_sum --format table /tmp/kimi.nsys-rep
+```
+
+Offline cache-policy analysis costs seconds and needs no GPU: the
+`KIMI_TRACE_FILE` capture is a flat array of 10 int32 records
+`{turn, layer, top8[8]}`, one per decode layer, so any policy can be
+replayed by re-implementing `KimiMoeResolveBatch`'s loop (slot array +
+`last_use` guard for LRU; slot array + per-slot count + same-batch guard for
+LFU) in a script; Belady's MIN over the same stream is the optimal bound.
+Keep the replay semantics identical to the shipped header — the first LFU
+attempt was tuned on a subtly different (unguarded) simulator and its +15%
+did not survive at 2048 tokens.
+
+Environment notes: every process re-pins the 544 GiB routed store (~300 s,
+34 x 16 GiB chunks; needs `ulimit -l unlimited`); `lsxbenchmark` is
+GPU-exclusive; `ncu` counters are unavailable on this box, so kernel
+arguments come from `nsys` plus standalone event-timed `.cu` probes.
