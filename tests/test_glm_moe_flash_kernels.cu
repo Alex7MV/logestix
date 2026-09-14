@@ -70,6 +70,174 @@ TEST_CASE("flash conv1d: causal depthwise window")
     cudaStreamDestroy(s);
 }
 
+TEST_CASE("flash conv decode + fused silu is bit-exact")
+{
+    CudaGuard g;
+    constexpr int C = 16, K = 4;
+    std::mt19937 rng = Rng();
+    std::uniform_real_distribution<float> ud(-1.5f, 1.5f);
+    std::vector<__half> w(C * K), hist((K - 1) * C), x(C);
+    for (auto &v : w) v = __float2half(ud(rng));
+    for (auto &v : hist) v = __float2half(ud(rng));
+    for (auto &v : x) v = __float2half(ud(rng));
+
+    __half *d_w, *d_hist, *d_x, *d_ref, *d_fused;
+    REQUIRE(cudaMalloc(&d_w, w.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_hist, hist.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_x, x.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ref, C * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_fused, C * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_w, w.data(), w.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_hist, hist.data(), hist.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    cudaStream_t s;
+    REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
+    // Reference: separate conv launch then in-place silu launch.
+    REQUIRE(RunFlashConvDecodeTest(s, d_hist, d_x, d_w, d_ref, C, K, false)
+            == cudaSuccess);
+    REQUIRE(RunFlashSiluTest(s, d_ref, C) == cudaSuccess);
+    // Fused: single launch with post-conv silu.
+    REQUIRE(RunFlashConvDecodeTest(s, d_hist, d_x, d_w, d_fused, C, K, true)
+            == cudaSuccess);
+
+    std::vector<__half> ref(C), fused(C);
+    REQUIRE(cudaMemcpyAsync(ref.data(), d_ref, C * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(fused.data(), d_fused, C * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    REQUIRE(std::memcmp(ref.data(), fused.data(), C * sizeof(__half)) == 0);
+
+    cudaFree(d_w);
+    cudaFree(d_hist);
+    cudaFree(d_x);
+    cudaFree(d_ref);
+    cudaFree(d_fused);
+    cudaStreamDestroy(s);
+}
+
+TEST_CASE("flash rmsnorm gated + fused gate act is bit-exact")
+{
+    CudaGuard g;
+    constexpr int Hh = 4, D = 8;
+    std::mt19937 rng = Rng();
+    std::uniform_real_distribution<float> ud(-2.0f, 2.0f);
+    std::vector<float> core(Hh * D);
+    std::vector<__half> gate(Hh * D), normw(D);
+    for (auto &v : core) v = ud(rng);
+    for (auto &v : gate) v = __float2half(ud(rng));
+    for (auto &v : normw) v = __float2half(ud(rng));
+
+    float *d_core;
+    __half *d_gate, *d_gate_sep, *d_normw, *d_ref, *d_fused;
+    REQUIRE(cudaMalloc(&d_core, core.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_gate, gate.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_gate_sep, gate.size() * sizeof(__half))
+            == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_normw, normw.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_ref, Hh * D * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_fused, Hh * D * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_core, core.data(), core.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_gate, gate.data(), gate.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_normw, normw.data(), normw.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_gate_sep, gate.data(), gate.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    cudaStream_t s;
+    REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
+    for (const bool silu : {false, true}) {
+        // Reference: in-place gate activation, then the norm kernel.
+        REQUIRE(RunFlashGateActTest(s, d_gate_sep, Hh * D, silu)
+                == cudaSuccess);
+        REQUIRE(RunFlashRmsnormGatedTest(s, d_core, d_gate_sep, d_normw, d_ref,
+                                         Hh, D, 1e-5f, false, silu)
+                == cudaSuccess);
+        // Fused: norm kernel applies the activation on the fly.
+        REQUIRE(RunFlashRmsnormGatedTest(s, d_core, d_gate, d_normw, d_fused,
+                                         Hh, D, 1e-5f, true, silu)
+                == cudaSuccess);
+        std::vector<__half> ref(Hh * D), fused(Hh * D);
+        REQUIRE(cudaMemcpyAsync(ref.data(), d_ref, Hh * D * sizeof(__half),
+                                cudaMemcpyDeviceToHost, s) == cudaSuccess);
+        REQUIRE(cudaMemcpyAsync(fused.data(), d_fused, Hh * D * sizeof(__half),
+                                cudaMemcpyDeviceToHost, s) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+        REQUIRE(std::memcmp(ref.data(), fused.data(),
+                            Hh * D * sizeof(__half)) == 0);
+        // Restore the raw gate for the next toggle iteration.
+        REQUIRE(cudaMemcpy(d_gate_sep, gate.data(), gate.size() * sizeof(__half),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+    }
+
+    cudaFree(d_core);
+    cudaFree(d_gate);
+    cudaFree(d_gate_sep);
+    cudaFree(d_normw);
+    cudaFree(d_ref);
+    cudaFree(d_fused);
+    cudaStreamDestroy(s);
+}
+
+TEST_CASE("flash l2norm q/k fused launch is bit-exact")
+{
+    CudaGuard g;
+    constexpr int Hh = 4, D = 8;
+    constexpr float q_scale = 0.08838834764831845f;  // 1/sqrt(128)
+    std::mt19937 rng = Rng();
+    std::uniform_real_distribution<float> ud(-2.0f, 2.0f);
+    std::vector<__half> q(Hh * D), k(Hh * D);
+    for (auto &v : q) v = __float2half(ud(rng));
+    for (auto &v : k) v = __float2half(ud(rng));
+
+    __half *d_q, *d_k, *d_qf, *d_kf;
+    REQUIRE(cudaMalloc(&d_q, q.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_k, k.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_qf, q.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_kf, k.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_q, q.data(), q.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_k, k.data(), k.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_qf, q.data(), q.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_kf, k.data(), k.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    cudaStream_t s;
+    REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
+    // Reference: two separate single-plane launches.
+    REQUIRE(RunFlashL2normTest(s, d_q, D, q_scale, Hh) == cudaSuccess);
+    REQUIRE(RunFlashL2normTest(s, d_k, D, 1.0f, Hh) == cudaSuccess);
+    // Fused: one launch covering q and k rows.
+    REQUIRE(RunFlashL2normQKTest(s, d_qf, d_kf, D, q_scale, Hh) == cudaSuccess);
+
+    std::vector<__half> qr(Hh * D), qf(Hh * D), kr(Hh * D), kf(Hh * D);
+    REQUIRE(cudaMemcpyAsync(qr.data(), d_q, qr.size() * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(qf.data(), d_qf, qf.size() * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(kr.data(), d_k, kr.size() * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(kf.data(), d_kf, kf.size() * sizeof(__half),
+                            cudaMemcpyDeviceToHost, s) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    REQUIRE(std::memcmp(qr.data(), qf.data(), qr.size() * sizeof(__half)) == 0);
+    REQUIRE(std::memcmp(kr.data(), kf.data(), kr.size() * sizeof(__half)) == 0);
+
+    cudaFree(d_q);
+    cudaFree(d_k);
+    cudaFree(d_qf);
+    cudaFree(d_kf);
+    cudaStreamDestroy(s);
+}
+
 TEST_CASE("flash gated delta: device vs host parity (per-channel decay)")
 {
     CudaGuard g;

@@ -267,11 +267,15 @@ cudaError_t FlashGemmV16(cudaStream_t stream, const __half *w,
 // Depthwise causal conv1d, seq=1: y[c] = sum_k w[c,k] * window[k, c] where
 // window = [(K-1) history rows (oldest..newest), current row x].
 // history: [(K-1), C] FP16 rows (oldest first), x: [C].
+// Fused variant: when apply_silu is set, the post-conv SiLU is applied here
+// instead of in a separate flash_silu_kernel launch. Bit-exact with the
+// two-launch sequence: the conv result is rounded to FP16 first, then read
+// back and activated (matching the store/load boundary of the old path).
 __global__ void flash_conv_decode_kernel(const __half *__restrict__ hist,
                                          const __half *__restrict__ x,
                                          const __half *__restrict__ w,
                                          __half *__restrict__ y, int channels,
-                                         int kernel)
+                                         int kernel, bool apply_silu)
 {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= channels) return;
@@ -281,7 +285,13 @@ __global__ void flash_conv_decode_kernel(const __half *__restrict__ hist,
              * __half2float(hist[k * channels + c]);
     acc += __half2float(w[c * kernel + (kernel - 1)])
          * __half2float(x[c]);
-    y[c] = __float2half(acc);
+    const __half conv = __float2half(acc);
+    if (apply_silu) {
+        const float v = __half2float(conv);
+        y[c] = __float2half(v / (1.0f + flash_expf_glibc(-v)));
+    } else {
+        y[c] = conv;
+    }
 }
 
 // SiLU in place: x * sigmoid(x) with the glibc exp replica.
@@ -293,12 +303,12 @@ __global__ void flash_silu_kernel(__half *__restrict__ x, int n)
     x[i] = __float2half(v / (1.0f + flash_expf_glibc(-v)));
 }
 
-// L2-normalize one head row (dim elements) in place; q gets extra scale.
-__global__ void flash_l2norm_kernel(__half *row, int dim, float extra_scale)
+// L2-normalize one head row (dim elements) in place; the row gets an extra
+// scale. Shared by the single-row kernel and the fused q/k launch.
+__device__ __forceinline__ void l2norm_row_device(__half *row, int dim,
+                                                  float extra_scale,
+                                                  float *red)
 {
-    extern __shared__ float red[];
-    // One block per head: block h normalizes row[h*dim .. h*dim+dim).
-    row += static_cast<int64_t>(blockIdx.x) * dim;
     const int l = threadIdx.x;
     float v = 0.0f;
     if (l < dim) v = __half2float(row[l]);
@@ -312,6 +322,29 @@ __global__ void flash_l2norm_kernel(__half *row, int dim, float extra_scale)
     __syncthreads();
     if (l < dim)
         row[l] = __float2half(__half2float(row[l]) / red[0] * extra_scale);
+}
+
+// L2-normalize one head row (dim elements) in place; q gets extra scale.
+__global__ void flash_l2norm_kernel(__half *row, int dim, float extra_scale)
+{
+    extern __shared__ float red[];
+    // One block per head: block h normalizes row[h*dim .. h*dim+dim).
+    row += static_cast<int64_t>(blockIdx.x) * dim;
+    l2norm_row_device(row, dim, extra_scale, red);
+}
+
+// Fused q/k l2norm: blocks [0, heads) normalize q rows with q_scale, blocks
+// [heads, 2*heads) normalize k rows with scale 1. One launch instead of two;
+// per-row math and reduction order are identical to flash_l2norm_kernel.
+__global__ void flash_l2norm_qk_kernel(__half *q, __half *k, int dim,
+                                       float q_scale, int heads)
+{
+    extern __shared__ float red[];
+    const int blk = blockIdx.x;
+    const int h = blk < heads ? blk : blk - heads;
+    __half *row =
+        (blk < heads ? q : k) + static_cast<int64_t>(h) * dim;
+    l2norm_row_device(row, dim, blk < heads ? q_scale : 1.0f, red);
 }
 
 // Gating prep: one thread per (h, l) over S_out = 3*8192? KDA uses
@@ -392,7 +425,9 @@ __global__ void flash_rmsnorm_gated_kernel(const float *__restrict__ core,
                                            const __half *__restrict__ gate,
                                            const __half *__restrict__ norm_w,
                                            __half *__restrict__ out, int heads,
-                                           int dim, float eps)
+                                           int dim, float eps,
+                                           bool fuse_gate_act,
+                                           bool gate_silu)
 {
     extern __shared__ float red2[];
     const int h = blockIdx.x;
@@ -407,10 +442,17 @@ __global__ void flash_rmsnorm_gated_kernel(const float *__restrict__ core,
     }
     if (l == 0) red2[0] = rsqrtf(red2[0] / static_cast<float>(dim) + eps);
     __syncthreads();
-    if (l < dim)
+    if (l < dim) {
+        float gv = __half2float(gate[h * dim + l]);
+        if (fuse_gate_act) {
+            const __half a =
+                gate_silu ? __float2half(gv / (1.0f + flash_expf_glibc(-gv)))
+                          : __float2half(sigmoid_dev(gv));
+            gv = __half2float(a);
+        }
         out[h * dim + l] = __float2half(
-            v * red2[0] * __half2float(gate[h * dim + l])
-            * __half2float(norm_w[l]));
+            v * red2[0] * gv * __half2float(norm_w[l]));
+    }
     if (flash_dbg_on && h == 0 && l == 0)
         printf("[gated] v0=%.8f inv=%.4f gate0=%.6f w0=%.6f out0=%.8f\n",
                v, red2[0], __half2float(gate[0]), __half2float(norm_w[0]),
@@ -495,6 +537,62 @@ __global__ void flash_coeff_add_kernel(const __half *__restrict__ y,
 
 } // namespace
 
+// ── Test twins for the fused decode kernels (bit-parity harness) ─────────
+
+cudaError_t RunFlashConvDecodeTest(cudaStream_t stream, const __half *hist,
+                                   const __half *x, const __half *w, __half *y,
+                                   int channels, int kernel, bool apply_silu)
+{
+    const int threads = 256;
+    flash_conv_decode_kernel<<<(channels + threads - 1) / threads, threads, 0,
+                               stream>>>(hist, x, w, y, channels, kernel,
+                                         apply_silu);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashSiluTest(cudaStream_t stream, __half *x, int n)
+{
+    flash_silu_kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, n);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashGateActTest(cudaStream_t stream, __half *g, int n,
+                                bool silu)
+{
+    flash_gate_act_kernel<<<(n + 255) / 256, 256, 0, stream>>>(g, n, silu);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashRmsnormGatedTest(cudaStream_t stream, const float *core,
+                                     const __half *gate, const __half *norm_w,
+                                     __half *out, int heads, int dim, float eps,
+                                     bool fuse_gate_act, bool gate_silu)
+{
+    const int threads = dim;
+    flash_rmsnorm_gated_kernel<<<heads, threads, threads * sizeof(float),
+                                 stream>>>(core, gate, norm_w, out, heads, dim,
+                                           eps, fuse_gate_act, gate_silu);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashL2normTest(cudaStream_t stream, __half *row, int dim,
+                               float extra_scale, int heads)
+{
+    const int threads = dim;
+    flash_l2norm_kernel<<<heads, threads, threads * sizeof(float), stream>>>(
+        row, dim, extra_scale);
+    return cudaGetLastError();
+}
+
+cudaError_t RunFlashL2normQKTest(cudaStream_t stream, __half *q, __half *k,
+                                 int dim, float q_scale, int heads)
+{
+    const int threads = dim;
+    flash_l2norm_qk_kernel<<<2 * heads, threads, threads * sizeof(float),
+                             stream>>>(q, k, dim, q_scale, heads);
+    return cudaGetLastError();
+}
+
 cudaError_t FlashKdaStateAlloc(FlashKdaState &st, int64_t max_ctx)
 {
     (void) max_ctx;
@@ -558,23 +656,30 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
 
     // 2. Depthwise causal conv over [hist(K-1) prev rows oldest..newest,
     //    current raw row] — the window EXCLUDES cur from hist; the shift
-    //    appending cur happens AFTER the conv (below).
+    //    appending cur happens AFTER the conv (below). Post-conv SiLU is
+    //    fused into this launch (FLA short-conv applies silu AFTER the
+    //    depthwise conv, BEFORE the qk l2norm). Toggle: default ON.
+    static const bool conv_silu = [] {
+        const char *e = std::getenv("LSX_FLASH_CONV_SILU");
+        return !e || std::string_view(e) != "0";
+    }();
     {
         const int threads = 256;
         const int plane = (conv_kernel - 1) * KD;  // (K-1) rows x KD halves
         flash_conv_decode_kernel<<<(KD + threads - 1) / threads, threads, 0,
                                    stream>>>(
-            st.d_conv_hist, d_q, lw.d_kda_q_conv, d_qc, KD, conv_kernel);
+            st.d_conv_hist, d_q, lw.d_kda_q_conv, d_qc, KD, conv_kernel,
+            conv_silu);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
         flash_conv_decode_kernel<<<(KD + threads - 1) / threads, threads, 0,
                                    stream>>>(
             st.d_conv_hist + plane, d_k, lw.d_kda_k_conv, d_kc, KD,
-            conv_kernel);
+            conv_kernel, conv_silu);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
         flash_conv_decode_kernel<<<(KD + threads - 1) / threads, threads, 0,
                                    stream>>>(
             st.d_conv_hist + 2 * plane, d_v, lw.d_kda_v_conv, d_vc, KD,
-            conv_kernel);
+            conv_kernel, conv_silu);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
@@ -590,34 +695,15 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    // 3b. Post-conv activation (FLA short-conv applies silu AFTER the
-    // depthwise conv, BEFORE the qk l2norm — HF causal_conv1d_update takes
-    // activation=silu inside the conv; the recurrent kernel l2norms the
-    // activated q/k). Toggle: default ON.
-    {
-        static const bool conv_silu = [] {
-            const char *e = std::getenv("LSX_FLASH_CONV_SILU");
-            return !e || std::string_view(e) != "0";
-        }();
-        if (conv_silu) {
-            flash_silu_kernel<<<(3 * KD + 255) / 256, 256, 0, stream>>>(
-                d_qc, 3 * KD);
-            if ((e = cudaGetLastError()) != cudaSuccess) return e;
-        }
-    }
-
-    // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)).
+    // 4. L2-normalize q, k per head (q scaled 1/sqrt(dim)) — one fused launch.
     {
         const int threads = 128;  // == dim
         static const float q_scale = [] {
             const char *e = std::getenv("LSX_FLASH_QSCALE");
             return e ? std::strtof(e, nullptr) : (1.0f / sqrtf(128.0f));
         }();
-        flash_l2norm_kernel<<<heads, threads, threads * sizeof(float), stream>>>(
-            d_qc, dim, q_scale);
-        if ((e = cudaGetLastError()) != cudaSuccess) return e;
-        flash_l2norm_kernel<<<heads, threads, threads * sizeof(float), stream>>>(
-            d_kc, dim, 1.0f);
+        flash_l2norm_qk_kernel<<<2 * heads, threads, threads * sizeof(float),
+                                 stream>>>(d_qc, d_kc, dim, q_scale, heads);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
@@ -653,20 +739,21 @@ cudaError_t RunFlashKdaDecode(cudaStream_t stream, FlashKdaState &st,
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 
-    // 7. RMSNormGated(core=attn, gate=act(g), o_norm).
+    // 7. RMSNormGated(core=attn, gate=act(g), o_norm). The gate activation
+    //    (sigmoid by default, silu via LSX_FLASH_GATE=silu) is applied on
+    //    the fly inside the norm kernel — bit-exact with the former
+    //    separate in-place activation launch.
     static const bool gate_silu = [] {
         const char *e = std::getenv("LSX_FLASH_GATE");
         return e && std::string_view(e) == "silu";
     }();
     {
         const int threads = 128;
-        flash_gate_act_kernel<<<(heads * dim + 255) / 256, 256, 0, stream>>>(
-            d_g, heads * dim, gate_silu);
-        if ((e = cudaGetLastError()) != cudaSuccess) return e;
         flash_rmsnorm_gated_kernel<<<heads, threads, threads * sizeof(float),
                                      stream>>>(
             d_attn_f, d_g, lw.d_o_norm, d_gated, heads, dim,
-                       1e-5f);  // RMSNormGated eps = config.rms_norm_eps
+                       1e-5f,  // RMSNormGated eps = config.rms_norm_eps
+                       true, gate_silu);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
 

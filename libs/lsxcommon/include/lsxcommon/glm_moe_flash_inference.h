@@ -89,6 +89,35 @@ cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
                                 __half *d_out, int heads, int dim,
                                 float scale, size_t smem);
 
+// ── Fused decode test twins (FP16 bit-parity harness) ────────────────────
+// Depthwise causal conv decode with optional fused post-conv SiLU (the
+// production decode path). hist [K-1, channels], x [channels], w [channels,
+// K], y [channels], all FP16.
+cudaError_t RunFlashConvDecodeTest(cudaStream_t stream, const __half *hist,
+                                   const __half *x, const __half *w, __half *y,
+                                   int channels, int kernel, bool apply_silu);
+
+// In-place SiLU over n FP16 elements (reference for the conv+silu parity).
+cudaError_t RunFlashSiluTest(cudaStream_t stream, __half *x, int n);
+
+// In-place gate activation (sigmoid default, silu opt-in) over n FP16 elems.
+cudaError_t RunFlashGateActTest(cudaStream_t stream, __half *g, int n,
+                                bool silu);
+
+// RMSNormGated per head with optional fused on-the-fly gate activation.
+cudaError_t RunFlashRmsnormGatedTest(cudaStream_t stream, const float *core,
+                                     const __half *gate, const __half *norm_w,
+                                     __half *out, int heads, int dim, float eps,
+                                     bool fuse_gate_act, bool gate_silu);
+
+// L2-normalize q rows in place (single-plane reference path).
+cudaError_t RunFlashL2normTest(cudaStream_t stream, __half *row, int dim,
+                               float extra_scale, int heads);
+
+// Fused q/k L2-normalize (one launch; q rows use q_scale, k rows use 1.0).
+cudaError_t RunFlashL2normQKTest(cudaStream_t stream, __half *q, __half *k,
+                                 int dim, float q_scale, int heads);
+
 // ── MoE: clamped-swiglu routed chain (flash-local; GLM semantics) ────────
 // Per-slot chain over LRU-resident experts (staging via
 // EnsureQwenMoeExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),
