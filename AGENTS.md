@@ -194,6 +194,8 @@ cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-r
 Дисциплина: новый тест обязан получить label в том же коммите (иначе красный
 `test_ctest_labels_guard`). Правила классификации путей — таблица
 `lsx_router_rule(...)` в `tools/test_router.cmake`.
+Процедура подъёма/замера скорости (nsys-профиль, budget-тесты, нобы, перф-базлайн)
+— скил `perf-tuning-a-model`.
 
 ### Converter test rules (фиксированные правила тестов конвертеров)
 
@@ -449,37 +451,18 @@ CMake-якоря:
 
 ## GPU Perf Auto-Tuning
 
-- `gpu_perf` (модельно-нейтральный слой, `include/lsxcommon/gpu_perf.h`) на
-  инициализации движка (`InitializeEngine`) резолвит нобы под конкретный GPU:
-  TC fast-math по умолчанию, лимит размера GEMV (MiB), порог split-K,
-  процент VRAM под expert-кэш, dual-stream staging.
-- Приоритет разрешения: env > тестовый cli_mode(kOn/kOff в `ResolvePerfKnobs`,
-  только тесты) > vault-кэш калибровки (`perf-cache/<gpu-key>.json`) >
-  эвристика по паспорту > коммитимая база (`BaseKnobs` в `gpu_perf.cpp`).
-  `LSX_PERF_AUTO=0` возвращает legacy-поведение (bit-exact дефолты).
-  `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты). CLI speed/perf-флагов
-  нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
-  запуска — `--bit-exact` (lsxbenchmark), он маппится в `FastMathMode::kOff`
-  модели.
-- Политика применяется по умолчанию в каждом потребителе моделей: call-once
-  гарант `perf::EnsurePerfPolicyApplied()` (resolve + apply, честный
-  `PerfSource` — `ApplyKnobs` его не затирает) вызывается из
-  `LsxModelFactory::Create` и `InferenceEngine::InitializeEngine`; lsxhome
-  открывает `InferenceEngine::Session` в compute-треде. Явные тестовые
-  `SetCurrentKnobs` работают поверх гаранта (once-флаг не пере-resolve).
-- Неизвестный GPU: первый `Load` запускает одноразовую GEMV-калибровку
-  (синтетические NVFP4-буферы представительских форм), результат сохраняется
-  в vault. `RunCliCalibrate`/`lsxfabric --calibrate` удалены (2026-09,
-  бит-точная политика CLI): записи коммитимой базы авторятся вручную из
-  сниппетов авто-калибровки (vault `perf-cache/<gpu-key>.json`).
-- Tri-state `FastMathMode { kAuto, kOn, kOff }` (`fast_math_mode.h`):
-  модели открывают `LsxFastMathScope(EffectiveFastMathMode(cfg_))` в Infer
-  (kAuto не трогает глобальное состояние — политика применена при Init).
-  Тесты, пинящие численный класс, обязаны ставить `kOff` явно.
-- Потребители ноб: диспетчер NVFP4 (`SetLsxGemmMaxMib`), split-K
-  (`SetLsxSplitKGridMin`, `lsx_tc_gemm`), expert-cache
-  (`lifecycle::ExpertCacheSlots(..., slots_pct)` + `perf::CurrentKnobs()`),
-  dual-stream staging (`LsxDualStreamStaging()` в GLM-Flash/Qwen драйверах).
+Вся скоростная работа — профилирование decode-токена (nsys), budget-тесты по TDD,
+нобы `gpu_perf`, перф-базлайн — описана в скиле **`perf-tuning-a-model`**
+(`.opencode/skills/perf-tuning-a-model/SKILL.md`). Здесь остаётся незыблемое:
+
+- **CLI speed/perf-флагов нет**: движок всегда гоняет per-GPU auto-политику;
+  единственный численный флаг запуска — `--bit-exact` (lsxbenchmark), он маппится
+  в `FastMathMode::kOff`. `LSX_PERF_AUTO=0` возвращает legacy bit-exact дефолты,
+  `LSX_TEST_FAST_MATH` форсирует TC. Тесты, пинящие численный класс, ставят `kOff`.
+- `gpu_perf` (`include/lsxcommon/gpu_perf.h`) резолвит нобы на `InitializeEngine`
+  (TC fast-math, лимит GEMV MiB, порог split-K, % VRAM под expert-кэш, dual-stream
+  staging); приоритет разрешения и потребители ноб — в скиле.
+- `lsxbenchmark` — строгий GPU-эксклюзив (см. Resources).
 
 ## Git
 
