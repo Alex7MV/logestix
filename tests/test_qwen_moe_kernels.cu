@@ -312,6 +312,88 @@ TEST_CASE("router decode-split matches prefill bit-exact", "[qwen-moe-router]")
     cudaStreamDestroy(stream);
 }
 
+// Real-shape decode router latency budget (frozen Qwen3.5/3.6 geometry:
+// E=256, H=2048, top-8, seq=1). The router is the single largest kernel
+// family in the decode step (~19% of GPU time); this budget pins the
+// production entry so the stage-1 dots lever cannot silently regress.
+// Correctness of the same entry is covered by the two cases above; this
+// case additionally re-checks the real-shape selection against the host
+// replica so a "fast but wrong" rewrite cannot pass on timing alone.
+TEST_CASE("router real-shape decode latency budget", "[qwen-moe-router]")
+{
+    using lsxcommon::qwen_moe::QwenMoeRoutedSlot;
+    const int E = 256, K = 8, H = 2048;
+    std::vector<__nv_bfloat16> w(static_cast<size_t>(E) * H);
+    std::vector<__half> x(static_cast<size_t>(H));
+    for (size_t i = 0; i < w.size(); ++i)
+        w[i] = __float2bfloat16(((float)(i * 37 % 251) / 251.0f) - 0.5f);
+    for (int i = 0; i < H; ++i)
+        x[static_cast<size_t>(i)] =
+            __float2half(sinf((float)i * 0.19f) * 0.4f);
+
+    __nv_bfloat16 *d_w;
+    __half *d_x;
+    QwenMoeRoutedSlot *d_slots;
+    cudaMalloc(&d_w, w.size() * sizeof(__nv_bfloat16));
+    cudaMalloc(&d_x, x.size() * sizeof(__half));
+    cudaMalloc(&d_slots, sizeof(QwenMoeRoutedSlot) * K);
+    cudaMemcpy(d_w, w.data(), w.size() * sizeof(__nv_bfloat16),
+               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x, x.data(), x.size() * sizeof(__half),
+               cudaMemcpyHostToDevice);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    for (int i = 0; i < 5; ++i)
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRouterTopK(
+                    stream, d_w, d_x, 1, E, K, H, d_slots) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    // Selection sanity + host-replica agreement at real scale.
+    std::vector<QwenMoeRoutedSlot> got(static_cast<size_t>(K));
+    cudaMemcpy(got.data(), d_slots, got.size() * sizeof(got[0]),
+               cudaMemcpyDeviceToHost);
+    std::vector<QwenMoeRoutedSlot> want;
+    HostRouter(w, x, 1, E, K, H, want);
+    for (int k = 0; k < K; ++k) {
+        CHECK(got[static_cast<size_t>(k)].eid ==
+              want[static_cast<size_t>(k)].eid);
+        CHECK(got[static_cast<size_t>(k)].eid >= 0);
+        CHECK(got[static_cast<size_t>(k)].eid < E);
+        for (int j = 0; j < k; ++j)
+            CHECK(got[static_cast<size_t>(k)].eid !=
+                  got[static_cast<size_t>(j)].eid);
+    }
+
+    cudaEvent_t a, b;
+    cudaEventCreate(&a);
+    cudaEventCreate(&b);
+    constexpr int kIters = 200;
+    cudaEventRecord(a, stream);
+    for (int i = 0; i < kIters; ++i)
+        REQUIRE(lsxcommon::qwen_moe::RunQwenMoeRouterTopK(
+                    stream, d_w, d_x, 1, E, K, H, d_slots) == cudaSuccess);
+    cudaEventRecord(b, stream);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.f;
+    cudaEventElapsedTime(&ms, a, b);
+    const double us = ms * 1000.0 / kIters;
+    std::fprintf(stderr,
+                 "[QWEN-MOE-ROUTER] E=%d H=%d K=%d seq=1 avg=%.2f us\n", E, H,
+                 K, us);
+
+#ifdef NDEBUG
+    // Release-only budget: the deep-unrolled uint4 stage-1 walk lands
+    // ~30 us; the narrow strided walk + select lands ~12 us.
+    REQUIRE(us < 20.0);
+#endif
+
+    cudaFree(d_w);
+    cudaFree(d_x);
+    cudaFree(d_slots);
+    cudaStreamDestroy(stream);
+}
+
 TEST_CASE("routed ffn slot chain matches dequant reference", "[qwen-moe-experts]")
 {
     namespace fs2 = std::filesystem;

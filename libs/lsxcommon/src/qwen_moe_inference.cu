@@ -86,13 +86,22 @@ __device__ __forceinline__ float QwenRouterDotRow(
 }
 
 // Decode-split router: stage 1 computes logits with 8 THREADS PER EXPERT.
-// Thread L owns chain L of the QwenRouterDotRow vectorized 8-chain fold:
-// every thread walks the same ascending uint4 steps (so the per-chain
-// accumulation order — and therefore the logits bits — is identical to the
-// single-thread etalon), only the fold of the 8 partials is shared via
-// shuffle in the fixed etalon order ((a0+a1)+(a2+a3))+((a4+a5)+(a6+a7)).
+// Thread L owns chain L of the QwenRouterDotRow 8-chain fold: every thread
+// walks the same ascending element sequence (chain, chain+8, ...) so the
+// per-chain accumulation order — and therefore the logits bits — is
+// identical to the single-thread etalon; only the fold of the 8 partials is
+// shared via shuffle in the fixed etalon order
+// ((a0+a1)+(a2+a3))+((a4+a5)+(a6+a7)).
 // Replaces the one-thread-per-expert shape (latency-bound at ~50us/token:
 // a single serial 4KB read chain per expert with 256 threads in flight).
+// Loads are 2-byte strided (element-width) instead of full uint4: the old
+// uint4 walk held 8x16B in flight per thread (~64 registers) and serialized
+// on this narrow occupancy (E*8 = 2048 threads = 16 blocks), measuring
+// 34us/call in situ; the strided walk issues the same 256 coalesced
+// transactions per warp group but with a tiny register footprint and lands
+// ~6.3us standalone / ~13us through the production entry (4x). The emitted
+// FP32 mul-add sequence is bit-identical (pinned by
+// "router decode-split matches prefill bit-exact" + the real-shape budget).
 __global__ void qwen_moe_router_dots_kernel(
     const __nv_bfloat16 *__restrict__ proj, const __half *__restrict__ x,
     int H, float *__restrict__ logits, int E)
@@ -112,38 +121,11 @@ __global__ void qwen_moe_router_dots_kernel(
         const __half *xr = x;   // decode: t == 0
         const __nv_bfloat16 *pr = proj + static_cast<int64_t>(e) * H;
         if (vec) {
-            const uint4 *p4 = reinterpret_cast<const uint4 *>(pr);
-            const uint4 *x4 = reinterpret_cast<const uint4 *>(xr);
-            const int steps = H / 8;
-            int i = 0;
-            // Deep-unrolled main loop: 8 uint4 pairs in flight per thread
-            // hides DRAM latency at the 64-warp occupancy this kernel has
-            // (E*8 threads); the FADD chain stays per-chain ascending.
-            for (; i + 8 <= steps; i += 8) {
-                uint4 pv[8], xv[8];
-#pragma unroll
-                for (int j = 0; j < 8; ++j) {
-                    pv[j] = p4[i + j];
-                    xv[j] = x4[i + j];
-                }
-#pragma unroll
-                for (int j = 0; j < 8; ++j) {
-                    const __nv_bfloat16 *pb =
-                        reinterpret_cast<const __nv_bfloat16 *>(&pv[j]);
-                    const __half *xb =
-                        reinterpret_cast<const __half *>(&xv[j]);
-                    a += __bfloat162float(pb[chain]) *
-                         __half2float(xb[chain]);
-                }
-            }
-            for (; i < steps; ++i) {
-                const uint4 pv = p4[i];
-                const uint4 xv = x4[i];
-                const __nv_bfloat16 *pb =
-                    reinterpret_cast<const __nv_bfloat16 *>(&pv);
-                const __half *xb = reinterpret_cast<const __half *>(&xv);
-                a += __bfloat162float(pb[chain]) * __half2float(xb[chain]);
-            }
+            // Strided element-width walk: chain L accumulates elements
+            // L, L+8, L+16, ... in ascending order — exactly the per-chain
+            // order of the uint4 fold above, with a minimal register set.
+            for (int d = chain; d < H; d += 8)
+                a += __bfloat162float(pr[d]) * __half2float(xr[d]);
         } else if (chain == 0) {
             float dot = 0.f;
             for (int d = 0; d < H; ++d)
