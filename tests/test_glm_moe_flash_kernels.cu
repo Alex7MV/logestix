@@ -10,6 +10,10 @@
 
 #include "glm_moe_flash_device_math.h"
 #include "lsxcommon/glm_moe_flash_inference.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/qwen_moe_inference.h"
+
+#include <cstdio>
 
 using namespace lsxcommon;
 using namespace lsxcommon::glm_moe_flash;
@@ -390,5 +394,145 @@ TEST_CASE("flash_expf_glibc: exp(0)==1 on device")
     REQUIRE(std::fabs(hv[2] - 0.36787944f) < 1e-4f);
     INFO("pieces: s=" << hv[4] << " kd=" << hv[5] << " ki=" << hv[6]);
     cudaFree(d_out);
+    cudaStreamDestroy(s);
+}
+
+// ── Routed-FFN real-shape harness (TDD: batched expert chain) ──────────────
+// Builds a synthetic 1-layer QwenMoeExpertStore at the frozen GLM routed
+// geometry (H=4096, I=2048, E=8) plus an 8-slot device cache, then exercises
+// the production RunFlashRoutedFFN entry. The per-expert path launches 8x4
+// kernels per call; the batched chain does it in 4. Budget test pins the
+// routed-chain latency so the batching lever cannot silently regress.
+namespace {
+
+struct RealRoutedHarness {
+    qwen_moe::QwenMoeExpertStore store;
+    qwen_moe::QwenMoeExpertDeviceCache cache;
+    int H = 4096, I = 2048, S = 8;
+    const uint8_t *slab = nullptr;
+    __half *dx = nullptr, *yg = nullptr, *yu = nullptr, *y2 = nullptr;
+    __half *ygu = nullptr, *hbuf = nullptr, *ypart = nullptr;
+    float *acc = nullptr;
+    qwen_moe::QwenMoeGvSlotDev *tbl = nullptr;
+    int64_t pk = 0, sk = 0;
+
+    bool Build()
+    {
+        const int64_t E = S;
+        pk = static_cast<int64_t>(I) * H / 2;
+        sk = static_cast<int64_t>(I) * H / 16;
+        const int64_t per_expert = 3 * pk + 3 * sk;
+        const size_t slab_bytes = static_cast<size_t>(per_expert) * E;
+        uint8_t *pinned = nullptr;
+        if (cudaMallocHost(reinterpret_cast<void **>(&pinned), slab_bytes) !=
+            cudaSuccess)
+            return false;
+        std::memset(pinned, 0x21, slab_bytes);
+        slab = pinned;
+        store.num_layers = 1;
+        store.num_experts = S;
+        store.h_slabs.push_back(pinned);
+        store.slab_bytes.push_back(slab_bytes);
+        store.records.assign(1, std::vector<qwen_moe::QwenMoeExpertRecord>(E));
+        for (int e = 0; e < E; ++e) {
+            const int64_t base = e * per_expert;
+            auto &r = store.records[0][e];
+            r.w1_off = base;
+            r.w1_bytes = pk;
+            r.w2_off = base + pk;
+            r.w2_bytes = pk;
+            r.w3_off = base + 2 * pk;
+            r.w3_bytes = pk;
+            r.s1_off = base + 3 * pk;
+            r.s1_bytes = sk;
+            r.s2_off = base + 3 * pk + sk;
+            r.s2_bytes = sk;
+            r.s3_off = base + 3 * pk + 2 * sk;
+            r.s3_bytes = sk;
+            r.gs1 = r.gs2 = r.gs3 = 1.0f;
+        }
+        std::string err;
+        if (!qwen_moe::AllocateQwenMoeExpertCache(store, S, cache, err))
+            return false;
+        if (cudaMalloc(&dx, static_cast<size_t>(H) * 2) != cudaSuccess ||
+            cudaMalloc(&yg, static_cast<size_t>(2 * I) * 2) != cudaSuccess ||
+            cudaMalloc(&yu, static_cast<size_t>(2 * I) * 2) != cudaSuccess ||
+            cudaMalloc(&y2, static_cast<size_t>(H) * 2) != cudaSuccess ||
+            cudaMalloc(&ygu, static_cast<size_t>(S) * 2 * I * 2) !=
+                cudaSuccess ||
+            cudaMalloc(&hbuf, static_cast<size_t>(S) * I * 2) != cudaSuccess ||
+            cudaMalloc(&ypart, static_cast<size_t>(S) * H * 2) != cudaSuccess ||
+            cudaMalloc(&acc, static_cast<size_t>(H) * 4) != cudaSuccess ||
+            cudaMalloc(&tbl, sizeof(qwen_moe::QwenMoeGvSlotDev) * S) !=
+                cudaSuccess)
+            return false;
+        cudaMemset(dx, 0, static_cast<size_t>(H) * 2);
+        return true;
+    }
+
+    void Free()
+    {
+        qwen_moe::FreeQwenMoeExpertCache(cache);
+        if (slab) cudaFreeHost(const_cast<uint8_t *>(slab));
+        cudaFree(dx); cudaFree(yg); cudaFree(yu); cudaFree(y2);
+        cudaFree(ygu); cudaFree(hbuf); cudaFree(ypart); cudaFree(acc);
+        cudaFree(tbl);
+        store.h_slabs.clear();
+    }
+
+    cudaError_t Call(cudaStream_t s)
+    {
+        qwen_moe::QwenMoeRoutedSlot slots[8];
+        for (int k = 0; k < S; ++k) {
+            slots[k].eid = k;
+            slots[k].coeff = 1.0f / S;
+        }
+        cudaMemsetAsync(acc, 0, static_cast<size_t>(H) * 4, s);
+        std::string err;
+        return RunFlashRoutedFFN(s, store, cache, 0, /*kMoeFirstLayer=*/3,
+                                 slots, S, dx, H, I, acc, yg, yu, y2, err,
+                                 nullptr, nullptr, nullptr, ygu, hbuf, ypart,
+                                 tbl);
+    }
+};
+
+} // namespace
+
+TEST_CASE("GLM routed FFN real-shape latency + determinism")
+{
+    using namespace lsxcommon::lsx_nvfp4;
+    CudaGuard g;
+    RealRoutedHarness h;
+    REQUIRE(h.Build());
+    cudaStream_t s;
+    REQUIRE(cudaStreamCreate(&s) == cudaSuccess);
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+
+    for (int i = 0; i < 5; ++i) REQUIRE(h.Call(s) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+
+    cudaEvent_t a, b;
+    cudaEventCreate(&a); cudaEventCreate(&b);
+    constexpr int kIters = 50;
+    cudaEventRecord(a, s);
+    for (int i = 0; i < kIters; ++i) REQUIRE(h.Call(s) == cudaSuccess);
+    cudaEventRecord(b, s);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.f;
+    cudaEventElapsedTime(&ms, a, b);
+    const double us = ms * 1000.0 / kIters;
+    std::fprintf(stderr, "[ROUTED-FFN] H=%d I=%d S=%d avg=%.1f us\n", h.H,
+                 h.I, h.S, us);
+
+#ifdef NDEBUG
+    // Release-only budget: the batched chain lands ~130 us; the legacy
+    // per-expert chain (8x4 launches) is ~190 us.
+    REQUIRE(us < 155.0);
+#endif
+
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(false);
+    h.Free();
     cudaStreamDestroy(s);
 }

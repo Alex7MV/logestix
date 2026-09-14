@@ -93,12 +93,21 @@ cudaError_t RunFlashMlaAttnTest(cudaStream_t stream, const __half *d_q,
 // Per-slot chain over LRU-resident experts (staging via
 // EnsureQwenMoeExpertResident): y_g = w1@x, y_u = w3@x (NVFP4 GEMM),
 // inter = clamp10(silu(y_g)) * clamp10(y_u), y2 = w2@inter, acc += c*y2.
+//
+// Perf path: when `batch_ygu`/`batch_hbuf`/`batch_ypart`/`d_gemv_tbl` are
+// supplied, the K slots run through the shared batched routed-GEMV chain
+// (qwen_moe::RunQwenMoeRoutedGemmVBatchCore) -- 4 launches per layer instead
+// of K*4, same slot-major weight streaming. Nulls fall back to the legacy
+// per-slot chain (also the test/ad-hoc path).
 cudaError_t RunFlashRoutedFFN(
     cudaStream_t stream, qwen_moe::QwenMoeExpertStore &store,
     gpu::ExpertDeviceCache &cache, int layer, int moe_layer,
     const qwen_moe::QwenMoeRoutedSlot *h_slots, int k_top,
     const __half *d_x, int hidden, int moe_inter, float *d_acc,
-    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error);
+    __half *d_yg, __half *d_yu, __half *d_y2, std::string &error,
+    cudaStream_t h2d_stream, cudaEvent_t *copy_ev, cudaEvent_t *slot_free_ev,
+    __half *batch_ygu, __half *batch_hbuf, __half *batch_ypart,
+    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl);
 
 // Shared expert: same clamped swiglu semantics; out += result.
 cudaError_t RunFlashSharedFFN(cudaStream_t stream,
