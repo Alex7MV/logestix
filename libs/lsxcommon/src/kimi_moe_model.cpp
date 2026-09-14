@@ -28,6 +28,7 @@ KimiK27CodeModel::~KimiK27CodeModel() { Unload(); }
 void KimiK27CodeModel::TeardownWeights()
 {
     kimi::FreeKimiMoeExpertDeviceCache(expert_cache_.device);
+    kimi::FreeKimiSharedExpertArena(expert_cache_);
     kimi::free_kimi_expert_index(experts_);
     pw_.Free();
     TeardownContext();

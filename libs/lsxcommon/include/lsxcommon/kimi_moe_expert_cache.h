@@ -47,10 +47,47 @@ namespace kimi {
 
 inline constexpr int kKimiCacheBatch = 8;   // router top-k
 
+// Shared-expert device arena slab layout: pack [w1|w3|w2], scales
+// [s1|s3|s2], every section 256-byte aligned (same rounding the routed
+// cache slots use). Pure host arithmetic, shared by the one-time upload and
+// the inference-time view so the two can never disagree.
+struct KimiSharedSlab {
+    std::size_t p_w1 = 0, p_w3 = 0, p_w2 = 0;   // pack offsets in the slab
+    std::size_t s_s1 = 0, s_s3 = 0, s_s2 = 0;   // scale offsets in the slab
+    std::size_t pack_bytes = 0;                 // slab stride (pack)
+    std::size_t scale_bytes = 0;                // slab stride (scales)
+};
+
+inline KimiSharedSlab KimiSharedSlabLayout(int64_t w1b, int64_t w3b, int64_t w2b,
+                                           int64_t s1b, int64_t s3b, int64_t s2b)
+{
+    auto aln = [](int64_t v) {
+        return static_cast<std::size_t>((v + 255) / 256 * 256);
+    };
+    KimiSharedSlab s;
+    s.p_w1 = 0;
+    s.p_w3 = aln(w1b);
+    s.p_w2 = s.p_w3 + aln(w3b);
+    s.pack_bytes = s.p_w2 + aln(w2b);
+    s.s_s1 = 0;
+    s.s_s3 = aln(s1b);
+    s.s_s2 = s.s_s3 + aln(s3b);
+    s.scale_bytes = s.s_s2 + aln(s2b);
+    return s;
+}
+
 struct KimiMoeCacheBatch {
     int resident_slot[kKimiCacheBatch];  // device slot per batch idx, -1 = miss
     int missing_idx[kKimiCacheBatch];    // batch indices that need upload
     int missing_slot[kKimiCacheBatch];   // device slot per missing idx, -1 = none
+    // Per batch idx: which missing entry's upload must complete before this
+    // entry's weights are readable (-1 = no upload dependency: the expert was
+    // already resident before this batch, so an earlier layer's compute
+    // already gated it). This is what lets the routed loop overlap: a miss
+    // waits only for ITS OWN upload, and a same-batch duplicate waits for
+    // that same upload — instead of every entry waiting for a batch-wide
+    // fence recorded after the last miss.
+    int wait_miss_pos[kKimiCacheBatch];
     int missing_count = 0;
     bool invalid = false;                // out-of-range layer/id input
 };
@@ -105,6 +142,8 @@ inline int KimiMoeExpertCacheSlots(std::size_t free_bytes,
 // last_use strictly below the current step; ties break on the lowest slot
 // index). Same-batch residents are never evicted (their last_use equals
 // the current step). Fixed arrays: zero allocations per call.
+// Also fills wait_miss_pos[]: the upload dependency per batch entry (see
+// KimiMoeCacheBatch) so the caller can pipeline uploads with compute.
 inline KimiMoeCacheBatch KimiMoeResolveBatch(KimiMoeExpertCachePlan &plan,
                                              int layer, int experts_per_layer,
                                              const int *top_ids, int k)
@@ -115,6 +154,7 @@ inline KimiMoeCacheBatch KimiMoeResolveBatch(KimiMoeExpertCachePlan &plan,
         b.resident_slot[i] = -1;
         b.missing_idx[i] = -1;
         b.missing_slot[i] = -1;
+        b.wait_miss_pos[i] = -1;
     }
     if (layer < 0 || k <= 0 || k > kKimiCacheBatch || top_ids == nullptr ||
         experts_per_layer <= 0) {
@@ -142,6 +182,15 @@ inline KimiMoeCacheBatch KimiMoeResolveBatch(KimiMoeExpertCachePlan &plan,
         if (slot >= 0) {
             plan.last_use[static_cast<size_t>(slot)] = cur;
             b.resident_slot[i] = slot;
+            // Same expert earlier in THIS batch: its bytes arrive with that
+            // entry's upload, so inherit its wait position. Otherwise the
+            // expert was resident before the batch (wait -1).
+            for (int j = 0; j < i; ++j) {
+                if (layer * experts_per_layer + top_ids[j] == flat) {
+                    b.wait_miss_pos[i] = b.wait_miss_pos[j];
+                    break;
+                }
+            }
             continue;
         }
         // Victim: empty slot first, else min last_use strictly below the
@@ -172,6 +221,7 @@ inline KimiMoeCacheBatch KimiMoeResolveBatch(KimiMoeExpertCachePlan &plan,
         plan.last_use[vi] = cur;
         b.missing_idx[b.missing_count] = i;
         b.missing_slot[b.missing_count] = victim;
+        b.wait_miss_pos[i] = b.missing_count;
         ++b.missing_count;
     }
     return b;
@@ -209,13 +259,39 @@ struct KimiMoeExpertDeviceCache {
     // w13 GEMM overlaps the down-projection upload.
     cudaEvent_t ready13 = nullptr;
     cudaEvent_t ready2 = nullptr;
+    // Intra-layer pipeline (r4): one readiness event per missing entry of the
+    // current batch, recorded on the copy stream once THAT expert's spans
+    // have landed. The compute of batch entry k waits only on its own entry
+    // (KimiMoeCacheBatch::wait_miss_pos), so the tail of the upload overlaps
+    // the head of the expert compute. Without this, the whole routed FFN
+    // waits for the last miss and the copy engine idles through every GEMM.
+    cudaEvent_t ready_slot[kKimiCacheBatch] = {};
+    // Per-slot last-read events, recorded on the compute stream after a slot's
+    // weights have been consumed by its expert FFN. An upload that evicts a
+    // slot waits on that slot's event: a per-victim dependency that replaces
+    // the old batch-wide fence (which made the copy stream wait for ALL
+    // already-enqueued compute, serializing upload against compute).
+    cudaEvent_t *slot_read = nullptr;  // [slots]
 };
 
 // Host state owned by the model across turns.
 struct KimiExpertCacheState {
     KimiMoeExpertCachePlan plan;                 // bookkeeping
     KimiMoeExpertDeviceCache *device = nullptr;  // CUDA arena (nullable)
+    // Shared-expert device residency: one KimiSharedSlab per MoE layer,
+    // uploaded once. The shared blob is a pageable mmap view; streaming it
+    // per layer cost 84 ms/token of H2D at 18.8 GB/s ON THE COMPUTE STREAM
+    // (pageable copies do not overlap and block the host), which no amount
+    // of copy-stream pipelining can hide.
+    uint8_t *d_shared_pack = nullptr;
+    uint8_t *d_shared_scale = nullptr;
+    std::size_t shared_pack_stride = 0;
+    std::size_t shared_scale_stride = 0;
+    int shared_layers = 0;
 };
+
+// Releases the shared-expert arena (idempotent).
+void FreeKimiSharedExpertArena(KimiExpertCacheState &state);
 
 cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db,
                                        int slots,
@@ -234,6 +310,16 @@ cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
                                      const int *routed_ids);
 KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
                                     int slot, const KimiExpertEntry &entry);
+
+// Marks @p slot's weights as consumed on @p compute_stream (records the
+// slot's last-read event). A later upload that reuses the slot waits on it.
+inline cudaError_t KimiMoeSlotMarkRead(const KimiMoeExpertDeviceCache &cache,
+                                       int slot, cudaStream_t compute_stream)
+{
+    if (!cache.slot_read || slot < 0 || slot >= cache.slots)
+        return cudaErrorInvalidValue;
+    return cudaEventRecord(cache.slot_read[slot], compute_stream);
+}
 
 #endif  // LOGESTIX_HAS_CUDA || __CUDACC__
 

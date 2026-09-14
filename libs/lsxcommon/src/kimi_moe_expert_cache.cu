@@ -8,6 +8,7 @@
 
 #include <cuda_runtime.h>
 #include <cstdlib>
+#include <new>
 
 namespace lsxcommon {
 namespace kimi {
@@ -30,6 +31,17 @@ size_t KimiScaleStride(const KimiExpertEntry &e)
 } // namespace
 
 struct KimiMoeExpertDeviceCache;   // definition in kimi_moe_expert_cache.h
+
+void FreeKimiSharedExpertArena(KimiExpertCacheState &state)
+{
+    if (state.d_shared_pack) cudaFree(state.d_shared_pack);
+    if (state.d_shared_scale) cudaFree(state.d_shared_scale);
+    state.d_shared_pack = nullptr;
+    state.d_shared_scale = nullptr;
+    state.shared_pack_stride = 0;
+    state.shared_scale_stride = 0;
+    state.shared_layers = 0;
+}
 
 KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
                                     int slot, const KimiExpertEntry &e)
@@ -103,6 +115,17 @@ cudaError_t AllocateKimiMoeExpertCache(KimiExpertDb &db, int slots,
         e = cudaEventCreateWithFlags(&c->ready13, cudaEventDisableTiming);
     if (e == cudaSuccess)
         e = cudaEventCreateWithFlags(&c->ready2, cudaEventDisableTiming);
+    // Intra-layer pipeline events: per-missing-entry readiness (ready_slot)
+    // and per-slot last-read (slot_read). Both are created once for the whole
+    // generation; recording is the only per-layer cost.
+    for (int i = 0; e == cudaSuccess && i < kKimiCacheBatch; ++i)
+        e = cudaEventCreateWithFlags(&c->ready_slot[i], cudaEventDisableTiming);
+    if (e == cudaSuccess) {
+        c->slot_read = new (std::nothrow) cudaEvent_t[c->slots]();
+        if (c->slot_read == nullptr) e = cudaErrorMemoryAllocation;
+    }
+    for (int i = 0; e == cudaSuccess && i < c->slots; ++i)
+        e = cudaEventCreateWithFlags(&c->slot_read[i], cudaEventDisableTiming);
     if (e != cudaSuccess) {
         err = "kimi cache alloc failed";
         FreeKimiMoeExpertDeviceCache(c);
@@ -123,6 +146,14 @@ void FreeKimiMoeExpertDeviceCache(KimiMoeExpertDeviceCache *&c)
     if (c->ready) cudaEventDestroy(c->ready);
     if (c->ready13) cudaEventDestroy(c->ready13);
     if (c->ready2) cudaEventDestroy(c->ready2);
+    for (int i = 0; i < kKimiCacheBatch; ++i)
+        if (c->ready_slot[i]) cudaEventDestroy(c->ready_slot[i]);
+    if (c->slot_read) {
+        for (int i = 0; i < c->slots; ++i)
+            if (c->slot_read[i]) cudaEventDestroy(c->slot_read[i]);
+        delete[] c->slot_read;
+        c->slot_read = nullptr;
+    }
     delete c;
     c = nullptr;
 }
@@ -143,6 +174,12 @@ cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
         const int bid = routed_ids[batch_i];   // routed expert, NOT batch idx
         const int slot = batch.missing_slot[i];
         if (bid < 0 || slot < 0) continue;
+        // Eviction fence: never overwrite a slot whose weights are still being
+        // read by already-enqueued compute. Per-victim dependency — a slot
+        // that was never read waits on a never-recorded event (a no-op), so
+        // the copy stream can otherwise run ahead of the compute stream.
+        e = cudaStreamWaitEvent(cache->copy_stream, cache->slot_read[slot], 0);
+        if (e != cudaSuccess) return e;
         // Host-mmap residency for the DMA source (ExpertStore fd LRU);
         // cheap no-op when the mmap is already open.
         db.EnsureResident(layer, bid, cache->copy_stream);
@@ -214,6 +251,10 @@ cudaError_t UploadKimiMoeExpertBatch(KimiExpertDb &db,
             e = cudaEventRecord(cache->ready2, cache->copy_stream);
             if (e != cudaSuccess) return e;
         }
+        // Per-entry readiness: gates ONLY this batch entry's compute (and any
+        // same-batch duplicate), not the whole layer's routed FFN.
+        e = cudaEventRecord(cache->ready_slot[i], cache->copy_stream);
+        if (e != cudaSuccess) return e;
     }
     return cudaEventRecord(cache->ready, cache->copy_stream);
 }

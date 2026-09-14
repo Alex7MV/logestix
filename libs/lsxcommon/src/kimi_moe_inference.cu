@@ -1213,6 +1213,29 @@ __global__ void kimi_argmax_kernel(const float *__restrict__ logits, int n,
     }
 }
 
+// Inference-time view into the shared-expert device arena. Uses the same
+// KimiSharedSlabLayout that the one-time upload used, so the two can never
+// disagree (a disagreement would silently corrupt every shared expert).
+KimiMoeSlotView KimiSharedSlotView(const KimiExpertCacheState &st,
+                                   const PackedExpertView &v, int layer)
+{
+    const KimiSharedSlab slab = KimiSharedSlabLayout(
+        v.w1_packed_bytes, v.w3_packed_bytes, v.w2_packed_bytes,
+        v.w1_scale_bytes, v.w3_scale_bytes, v.w2_scale_bytes);
+    const uint8_t *pk =
+        st.d_shared_pack + static_cast<size_t>(layer) * st.shared_pack_stride;
+    const uint8_t *sc =
+        st.d_shared_scale + static_cast<size_t>(layer) * st.shared_scale_stride;
+    KimiMoeSlotView out;
+    out.p_w1 = pk + slab.p_w1;
+    out.p_w3 = pk + slab.p_w3;
+    out.p_w2 = pk + slab.p_w2;
+    out.p_s1 = sc + slab.s_s1;
+    out.p_s3 = sc + slab.s_s3;
+    out.p_s2 = sc + slab.s_s2;
+    return out;
+}
+
 } // namespace
 
 namespace {
@@ -1229,8 +1252,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                            int *h_ids, float *h_w, cudaEvent_t route_ev,
                            bool fast_math, void *d_tc_scratch,
                            lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl,
-                           lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl,
-                           cudaEvent_t upload_fence)
+                           lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl)
 {
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
@@ -1284,10 +1306,30 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
             // Residual contract: scratch_a still holds x (post-attention);
             // expert FFNs accumulate their weighted outputs onto it.
 
-            // Shared expert (weight 1.0).
+            // Shared expert (weight 1.0). Device-resident when the arena is
+            // present (no per-layer H2D at all); the legacy staging path is
+            // the fallback (arena allocation failed / cache disabled).
             if ((int)pw.shared_host.size() > l &&
                 pw.shared_host[l].w1_packed) {
                 const PackedExpertView &v = pw.shared_host[l];
+                const bool dev_shared =
+                    cache && cache->d_shared_pack && l < cache->shared_layers;
+                if (dev_shared) {
+                    KimiExpertEntry se{};
+                    se.w1_global_scale = v.w1_global_scale;
+                    se.w2_global_scale = v.w2_global_scale;
+                    se.w3_global_scale = v.w3_global_scale;
+                    const KimiMoeSlotView sv =
+                        KimiSharedSlotView(*cache, v, l);
+                    for (int t = 0; t < seq; ++t) {
+                        cudaError_t ee = RunKimiExpertFfnCached(
+                            cublas_h, stream, se, 1.0f,
+                            d_scratch_b + (size_t)(base + t) * kKimiHidden,
+                            d_scratch_a + (size_t)(base + t) * kKimiHidden,
+                            d_staging, staging_bytes, sv);
+                        if (ee != cudaSuccess) return ee;
+                    }
+                } else {
                 KimiExpertEntry se;
                 se.host_w1 = v.w1_packed;
                 se.host_w2 = v.w2_packed;
@@ -1312,6 +1354,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                         d_staging, staging_bytes);
                     if (ee != cudaSuccess) return ee;
                 }
+                }
             }
 
             // Routed top-k per token row.
@@ -1330,6 +1373,26 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 }
                 if (KimiRouteFinish(route_ev) != cudaSuccess) {
                     return cudaGetLastError();
+                }
+
+                // Routing-trace dump (env-gated, KIMI_TRACE_FILE=<path>):
+                // appends {turn, layer, top-k ids} per decode layer so
+                // cache-policy hit rates can be replayed offline without a
+                // GPU (diagnostics only; no numeric effect).
+                if (turn >= 1 && getenv("KIMI_TRACE_FILE")) {
+                    static FILE *trace_f = []() {
+                        const char *p = getenv("KIMI_TRACE_FILE");
+                        return p ? std::fopen(p, "wb") : nullptr;
+                    }();
+                    if (trace_f) {
+                        int rec[2 + kKimiTopK];
+                        rec[0] = turn;
+                        rec[1] = l;
+                        for (int k = 0; k < kKimiTopK; ++k)
+                            rec[2 + k] = h_ids[k];
+                        std::fwrite(rec, sizeof(int), 2 + kKimiTopK, trace_f);
+                        std::fflush(trace_f);
+                    }
                 }
 
                 // Diagnostic dump (env-gated, LSX_KIMI_DUMP_L1=<layer>):
@@ -1376,17 +1439,12 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                     KimiMoeCacheBatch b = KimiMoeResolveBatch(
                         cache->plan, l, kKimiNumRouted, h_ids, kKimiTopK);
                     // Pass 2: batch upload of misses on the copy stream.
-                    // FENCE: the copy stream must not overwrite a victim
-                    // slot still being read by already-enqueued compute —
-                    // make it wait for the compute stream's progress first
-                    // (Qwen ev_front pattern).
+                    // Pipeline contract: each miss is uploaded and fenced
+                    // individually (ready_slot), and an upload waits only on
+                    // the read event of the slot it evicts (slot_read) — so
+                    // the copy engine overlaps the expert compute instead of
+                    // draining behind a batch-wide fence.
                     if (b.missing_count > 0) {
-                        cudaError_t fe_ = cudaEventRecord(upload_fence,
-                                                          stream);
-                        if (fe_ != cudaSuccess) return fe_;
-                        fe_ = cudaStreamWaitEvent(cache->device->copy_stream,
-                                                  upload_fence, 0);
-                        if (fe_ != cudaSuccess) return fe_;
                         cudaError_t ue = UploadKimiMoeExpertBatch(
                             db, *cache, b, l, kKimiNumRouted, h_ids);
                         if (ue != cudaSuccess) {
@@ -1443,12 +1501,13 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                             if (fe != cudaSuccess) return fe;
                         }
                     } else {
-                    cudaStreamWaitEvent(stream, cache->device->ready, 0);
                     // Pass 3: GEMV from cache slots; accumulation order is
                     // the fixed k index order (bit-exact contract).
                     // Slot resolution per k: resident experts map through
                     // resident_slot[k]; first-touch (missing) experts map
                     // through their missing_slot assignment in pass 2.
+                    // Per-entry wait: only the upload that delivers THIS
+                    // entry's slot is a dependency (wait_miss_pos).
                     int miss_pos = 0;
                     for (int k = 0; k < kKimiTopK; ++k) {
                         int slot = b.resident_slot[k];
@@ -1464,6 +1523,12 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                         if (slot < 0) {
                             return cudaErrorInvalidValue;
                         }
+                        const int wp = b.wait_miss_pos[k];
+                        if (wp >= 0) {
+                            cudaError_t we = cudaStreamWaitEvent(
+                                stream, cache->device->ready_slot[wp], 0);
+                            if (we != cudaSuccess) return we;
+                        }
                         const KimiExpertEntry &ent =
                             db.entries[(size_t)l * kKimiNumRouted + h_ids[k]];
                         const KimiMoeSlotView v =
@@ -1476,6 +1541,10 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                                     l, h_ids[k], cudaGetErrorString(fe));
                             return fe;
                         }
+                        // Publish the read so a later upload evicting this
+                        // slot can fence against it (never the whole stream).
+                        fe = KimiMoeSlotMarkRead(*cache->device, slot, stream);
+                        if (fe != cudaSuccess) return fe;
                     }
                     }
                 } else {
@@ -1624,6 +1693,79 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     if (cudaMalloc(&d_staging, staging_bytes) != cudaSuccess)
         return cudaErrorMemoryAllocation;
 
+    // Shared-expert device residency (once per model). Sized BEFORE the
+    // routed cache so the slot budget below sees the reduced free VRAM.
+    if (cache && !cache->d_shared_pack && !pw.shared_host.empty()) {
+        KimiSharedSlab slab{};
+        bool uniform = true;
+        for (const PackedExpertView &v : pw.shared_host) {
+            if (!v.w1_packed) continue;
+            const KimiSharedSlab s = KimiSharedSlabLayout(
+                v.w1_packed_bytes, v.w3_packed_bytes, v.w2_packed_bytes,
+                v.w1_scale_bytes, v.w3_scale_bytes, v.w2_scale_bytes);
+            if (slab.pack_bytes == 0) {
+                slab = s;
+            } else if (s.pack_bytes != slab.pack_bytes ||
+                       s.scale_bytes != slab.scale_bytes) {
+                uniform = false;
+                break;
+            }
+        }
+        if (slab.pack_bytes > 0 && uniform) {
+            const int n_sh = static_cast<int>(pw.shared_host.size());
+            uint8_t *dp = nullptr;
+            uint8_t *ds = nullptr;
+            cudaError_t ae = cudaMalloc(&dp, (size_t)n_sh * slab.pack_bytes);
+            if (ae == cudaSuccess)
+                ae = cudaMalloc(&ds, (size_t)n_sh * slab.scale_bytes);
+            if (ae == cudaSuccess) {
+                for (int sl = 0; sl < n_sh; ++sl) {
+                    const PackedExpertView &v =
+                        pw.shared_host[static_cast<size_t>(sl)];
+                    if (!v.w1_packed) continue;
+                    uint8_t *p = dp + (size_t)sl * slab.pack_bytes;
+                    uint8_t *q = ds + (size_t)sl * slab.scale_bytes;
+                    const struct {
+                        uint8_t *dst;
+                        const uint8_t *src;
+                        int64_t n;
+                    } cp[6] = {
+                        {p + slab.p_w1, v.w1_packed, v.w1_packed_bytes},
+                        {p + slab.p_w3, v.w3_packed, v.w3_packed_bytes},
+                        {p + slab.p_w2, v.w2_packed, v.w2_packed_bytes},
+                        {q + slab.s_s1, v.w1_scales, v.w1_scale_bytes},
+                        {q + slab.s_s3, v.w3_scales, v.w3_scale_bytes},
+                        {q + slab.s_s2, v.w2_scales, v.w2_scale_bytes},
+                    };
+                    for (const auto &c : cp) {
+                        ae = cudaMemcpyAsync(c.dst, c.src, c.n,
+                                             cudaMemcpyHostToDevice, stream);
+                        if (ae != cudaSuccess) break;
+                    }
+                    if (ae != cudaSuccess) break;
+                }
+            }
+            if (ae == cudaSuccess) {
+                cache->d_shared_pack = dp;
+                cache->d_shared_scale = ds;
+                cache->shared_pack_stride = slab.pack_bytes;
+                cache->shared_scale_stride = slab.scale_bytes;
+                cache->shared_layers = n_sh;
+                log::info("[kimi-infer] shared experts device-resident: " +
+                          std::to_string(n_sh) + " layers, " +
+                          std::to_string(((size_t)n_sh *
+                                          (slab.pack_bytes + slab.scale_bytes)) >>
+                                         20) +
+                          " MiB");
+            } else {
+                log::warn("[kimi-infer] shared-expert arena alloc/upload "
+                          "failed - legacy per-layer staging");
+                if (dp) cudaFree(dp);
+                if (ds) cudaFree(ds);
+            }
+        }
+    }
+
     // Resident-expert cache (unified VRAM residency policy). Lazy: the
     // arena is allocated on the first generation and freed at Unload.
     // LSX_KIMI_EXPERT_CACHE_SLOTS=0 (or an alloc failure) keeps the legacy
@@ -1740,20 +1882,16 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     int *h_ids = nullptr;
     float *h_w = nullptr;
     cudaEvent_t route_ev = nullptr;
-    cudaEvent_t upload_fence = nullptr;
     if (cudaHostAlloc(&h_ids, kKimiTopK * sizeof(int),
                       cudaHostAllocDefault) != cudaSuccess ||
         cudaHostAlloc(&h_w, kKimiTopK * sizeof(float),
                       cudaHostAllocDefault) != cudaSuccess ||
         cudaEventCreateWithFlags(&route_ev, cudaEventDisableTiming) !=
-            cudaSuccess ||
-        cudaEventCreateWithFlags(&upload_fence,
-                                 cudaEventDisableTiming) != cudaSuccess) {
+            cudaSuccess) {
         gen.error_msg = "router fence alloc failed";
         cudaFreeHost(h_ids);
         cudaFreeHost(h_w);
         if (route_ev) cudaEventDestroy(route_ev);
-        if (upload_fence) cudaEventDestroy(upload_fence);
         return cudaErrorMemoryAllocation;
     }
 
@@ -1791,7 +1929,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
                            d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
                            d_top_w, step, base, seq, base_slot, base, cache,
                            h_ids, h_w, route_ev, fast_math, d_tc_scratch,
-                           d_tc_tbl, h_tc_tbl, upload_fence);
+                           d_tc_tbl, h_tc_tbl);
         if (e != cudaSuccess) {
             gen.error_msg = std::string("layer stack failed: ") +
                             cudaGetErrorString(e);
@@ -1878,7 +2016,6 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     cudaFreeHost(h_ids);
     cudaFreeHost(h_w);
     cudaEventDestroy(route_ev);
-    cudaEventDestroy(upload_fence);
     if (d_tc_scratch) cudaFree(d_tc_scratch);
     if (d_tc_tbl) cudaFree(d_tc_tbl);
     if (h_tc_tbl) cudaFreeHost(h_tc_tbl);

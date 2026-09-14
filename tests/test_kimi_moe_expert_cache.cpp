@@ -16,6 +16,38 @@ namespace {
 constexpr int kEPL = 384;   // Kimi experts per layer
 } // namespace
 
+// The shared-expert device arena stores one [w1|w3|w2] pack slab and one
+// [s1|s3|s2] scale slab per MoE layer. The SAME layout function drives the
+// one-time upload and the inference-time view, so a disagreement between
+// them (a silent weight corruption) is impossible by construction.
+TEST_CASE("Kimi shared-expert slab layout: 256-aligned, gap-free", "[kimi][cache]")
+{
+    using lsxcommon::kimi::KimiSharedSlabLayout;
+    // Kimi-K2.7-Code real geometry: I*H/2 = 2048*7168/2 packed, /16 scales.
+    const int64_t w1 = 7340032, w3 = 7340032, w2 = 7340032;
+    const int64_t s1 = 917504, s3 = 917504, s2 = 917504;
+    const auto s = KimiSharedSlabLayout(w1, w3, w2, s1, s3, s2);
+    REQUIRE(s.p_w1 == 0);
+    REQUIRE(s.p_w3 == 7340032);       // already 256-aligned
+    REQUIRE(s.p_w2 == 14680064);
+    REQUIRE(s.s_s1 == 0);
+    REQUIRE(s.s_s3 == 917504);
+    REQUIRE(s.s_s2 == 1835008);
+    REQUIRE(s.pack_bytes == 3 * 7340032);
+    REQUIRE(s.scale_bytes == 3 * 917504);
+
+    // Shapes that are not multiples of 256 round UP (alignment contract).
+    const auto r = KimiSharedSlabLayout(10, 20, 30, 5, 6, 7);
+    REQUIRE(r.p_w1 == 0);
+    REQUIRE(r.p_w3 == 256);
+    REQUIRE(r.p_w2 == 512);
+    REQUIRE(r.s_s1 == 0);
+    REQUIRE(r.s_s3 == 256);
+    REQUIRE(r.s_s2 == 512);
+    REQUIRE(r.pack_bytes == 768);
+    REQUIRE(r.scale_bytes == 768);
+}
+
 TEST_CASE("Kimi cache slots: policy wiring and env override", "[kimi][cache]")
 {
     const std::size_t per_expert = 26ull << 20;   // ~26 MiB pack+scale
@@ -91,6 +123,56 @@ TEST_CASE("Kimi cache LRU: cold slot evicted before hot one", "[kimi][cache]")
     REQUIRE(r1.resident_slot[0] == 1);
     KimiMoeCacheBatch r0 = KimiMoeResolveBatch(p, 0, kEPL, id0, 1);
     REQUIRE(r0.missing_count == 1);
+}
+
+// The cached routed-FFN loop overlaps the per-expert H2D upload of a layer's
+// misses with the compute of the experts that already landed. That requires
+// the residency decision to say, per batch entry, WHICH missing upload
+// delivers its slot: a pre-resident expert needs no wait (its bytes were
+// gated by an earlier layer's compute), while a miss and any same-batch
+// duplicate of it must wait on that specific missing entry's upload event.
+// A single batch-wide fence (the previous design) forces the compute of
+// every entry to wait for the LAST upload and re-serializes the pipeline.
+TEST_CASE("Kimi cache batch: per-slice upload dependency plan", "[kimi][cache]")
+{
+    KimiMoeExpertCachePlan p;
+    p.Init(4, 2 * kEPL);
+
+    // Prime three residents (as an earlier layer would have).
+    int pre[3] = {10, 11, 12};
+    KimiMoeResolveBatch(p, 1, kEPL, pre, 3);
+
+    // Layer-1 batch: two pre-resident hits, one new miss, a same-batch
+    // duplicate of the new miss, a repeated pre-resident, one more miss.
+    int ids[6] = {10, 11, 20, 20, 10, 30};
+    KimiMoeCacheBatch b = KimiMoeResolveBatch(p, 1, kEPL, ids, 6);
+
+    REQUIRE(b.wait_miss_pos[0] == -1);   // 10: resident before the batch
+    REQUIRE(b.wait_miss_pos[1] == -1);   // 11: resident before the batch
+
+    const int pos20 = b.wait_miss_pos[2];   // 20's own upload
+    REQUIRE(pos20 >= 0);
+    REQUIRE(b.missing_idx[pos20] == 2);
+    REQUIRE(b.missing_slot[pos20] >= 0);
+    REQUIRE(b.wait_miss_pos[3] == pos20);   // duplicate of 20: same upload
+
+    REQUIRE(b.wait_miss_pos[4] == -1);      // 10 again: still no wait
+
+    const int pos30 = b.wait_miss_pos[5];   // 30's own upload
+    REQUIRE(pos30 >= 0);
+    REQUIRE(pos30 != pos20);
+    REQUIRE(b.missing_idx[pos30] == 5);
+
+    // Every wait position is a real missing entry, and the plan is stable.
+    for (int i = 0; i < 6; ++i)
+        if (b.wait_miss_pos[i] >= 0)
+            REQUIRE(b.wait_miss_pos[i] < b.missing_count);
+
+    // Disabled cache: no slots, so no upload events to wait on.
+    KimiMoeExpertCachePlan off;
+    off.Init(0, 2 * kEPL);
+    KimiMoeCacheBatch bo = KimiMoeResolveBatch(off, 0, kEPL, ids, 6);
+    for (int i = 0; i < 6; ++i) REQUIRE(bo.wait_miss_pos[i] == -1);
 }
 
 TEST_CASE("Kimi cache rejects out-of-range input deterministically",
