@@ -1450,6 +1450,16 @@ set_tests_properties(test_perf_baseline_glm_5_3_flash PROPERTIES
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=GLM-5.3-Flash")
 set_tests_properties(test_perf_baseline_glm_5_3_flash
     PROPERTIES LABELS perf)
+# glm-5.2 and qwen3.5-9b are registered but currently absent from the local
+# vault: the target SKIPs until the model is converted, then seeds the JSON.
+add_test(NAME test_perf_baseline_glm_5_2
+         COMMAND test_perf_baseline "perf baseline: glm-5.2")
+set_tests_properties(test_perf_baseline_glm_5_2 PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=GLM-5.2")
+set_tests_properties(test_perf_baseline_glm_5_2
+    PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_deepseek_v4_flash
          COMMAND test_perf_baseline "perf baseline: deepseek-v4-flash")
 set_tests_properties(test_perf_baseline_deepseek_v4_flash PROPERTIES
@@ -1491,6 +1501,14 @@ set_tests_properties(test_perf_baseline_qwen3_8_27b PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.8-27B")
 set_tests_properties(test_perf_baseline_qwen3_8_27b
+    PROPERTIES LABELS perf)
+add_test(NAME test_perf_baseline_qwen3_5_9b
+         COMMAND test_perf_baseline "perf baseline: qwen3.5-9b")
+set_tests_properties(test_perf_baseline_qwen3_5_9b PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Qwen3.5-9B")
+set_tests_properties(test_perf_baseline_qwen3_5_9b
     PROPERTIES LABELS perf)
 # Qwen3.8-Flash-Next and Kimi-K2.7-Code had [perf] TEST_CASEs (and JSON
 # entries) but no ctest target, so their baselines were never guarded.

@@ -58,6 +58,10 @@ const PerfModel kGemma = {
     2048};
 const PerfModel kGlmFlash = {
     "glm-5.3-flash", "GLM-5.3-Flash", "The capital of France is", 2048};
+// glm-5.2 and qwen3.5-9b are registered but not present in the local vault:
+// their targets SKIP until the model is converted, then seed the reference.
+const PerfModel kGlm52 = {
+    "glm-5.2", "GLM-5.2", "The capital of France is", 2048};
 const PerfModel kDeepseek = {
     "deepseek-v4-flash", "DeepSeek-V4-Flash", "The capital of France is",
     2048};
@@ -75,6 +79,8 @@ const PerfModel kKimi = {
     "kimi-k2.7-code", "Kimi-K2.7-Code", "The capital of France is", 2048};
 const PerfModel kQwen27 = {
     "qwen3.8-27b", "Qwen3.8-27B", "The capital of France is", 2048};
+const PerfModel kQwen35_9B = {
+    "qwen3.5-9b", "Qwen3.5-9B", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -273,4 +279,14 @@ TEST_CASE("perf baseline: kimi-k2.7-code", "[perf]")
 TEST_CASE("perf baseline: qwen3.8-27b", "[perf]")
 {
     RunPerfModel(kQwen27);
+}
+
+TEST_CASE("perf baseline: glm-5.2", "[perf]")
+{
+    RunPerfModel(kGlm52);
+}
+
+TEST_CASE("perf baseline: qwen3.5-9b", "[perf]")
+{
+    RunPerfModel(kQwen35_9B);
 }
