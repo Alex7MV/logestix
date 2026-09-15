@@ -4,17 +4,18 @@
 contract's requirements, and inventory C-exact vs C-fast paths. Measured
 2026-09-15 on RTX 5090, AOCC build `linux-release-znver4-aocc`.
 
-> Status: the first-pass conformance fixes are **done**; one item (cuBLAS
-> algorithm, cross-model) remains. This document reflects the code as of the
-> commit "feat: fixed-length perf measurement (ignore_eos) across models".
+> Status: **all conformance items are done** — deterministic GEMM paths,
+> workspace/allocation invariance, device-independent numeric knobs and
+> calibration, no library algorithm heuristics (B1: all cuBLAS GEMM replaced by
+> `lsx_gemv`), and the cross-model hash gate. This document reflects the code at
+> the B1 completion commit.
 
 ## Inventory
 
-- **cuBLAS GEMM calls: 21 `cublasGemmEx`** (23 GEMM calls total), all
-  `CUBLAS_GEMM_DEFAULT`, in `deepseek_moe_v41_inference.cu`,
-  `deepseek_moe_inference_{attn,head,moe}.cu`, `gemma_moe_inference.cu`,
-  `kimi_moe_inference.cu`. Workspace and atomics are **now pinned** (see
-  Conformance status).
+- **cuBLAS GEMM calls: 0** (was 21 `cublasGemmEx` + strided-batched). All
+  replaced by the model-neutral, device-independent `lsx_gemv`. The workspace /
+  atomics pin (`CUBLAS_WORKSPACE_CONFIG` + `cublasSetAtomicsMode`) is kept as a
+  belt-and-braces default for any future cuBLAS use.
 - Runtime-memory use: `cudaMemGetInfo` only for **expert-cache sizing**
   (residency, not arithmetic).
 - Numeric-path selection: `gpu_perf.cpp` / `perf_calibration.cu` — numeric knobs
@@ -30,7 +31,7 @@ contract's requirements, and inventory C-exact vs C-fast paths. Measured
 | §1.1.4 no per-GPU numeric calibration | **DONE**: `EnsureCalibrated` no longer overrides `gemv_max_mib`; per-GPU numeric tuning is C-fast-only opt-in. |
 | Cross-model verification hook | **DONE**: `RunParisSelfCheck` emits `logits_hash=<fnv1a64>` and gates on `LSX_SELFCHECK_EXPECT_HASH` (mismatch -> `selfcheck_passed=false`). |
 | Perf cost of conformance | **~zero**: forcing a deterministic workspace changed t/s by <1% on the decode GEMV shapes. |
-| §1.1.1 no library algorithm heuristics | **OPEN** (see below). |
+| §1.1.1 no library algorithm heuristics | **DONE**: all 21 `cublasGemm*` sites replaced by the model-neutral, device-independent `lsx_gemv` (fixed geometry, no workspace, no device/heuristic dependence). Models: Kimi, Gemma, DeepSeek-V4-Flash, DeepSeek-V4.1-Flash. |
 
 ## Measurement
 
@@ -59,25 +60,18 @@ bit-drift. Example correction: qwen3.8-flash-next 16.75 @1370 -> 26.52 @2048.
 | qwen3.8-flash-next | 26.52 | 6.40 |
 | deepseek-v4-flash | 18.16 | 8.37 |
 
-## Remaining (cross-model) — fix-list #2
+## Remaining
 
-`CUBLAS_GEMM_DEFAULT` selects its algorithm by SM count/workspace; workspace +
-atomics pinning does **not** fix the algorithm. 5090 (170 SMs) and 5060 Ti
-(~36 SMs) may pick different algorithms for the same shape -> different bits.
-Decide by measurement with the hash gate:
-
-```
-# 5060 Ti, same build:
-LSX_SELFCHECK_EXPECT_HASH=<5090 hash>  <lsxbenchmark> --model <vault> --selfcheck [--bit-exact]
-```
-- **Match** -> same algorithm across models; #2 closed as verified.
-- **Mismatch** -> replace split-K-eligible `cublasGemmEx` sites with own
-  fixed-geometry kernels (or the model-neutral NVFP4 GEMV).
-
-Hashes are **build-specific** (host toolchain), so record and compare on the
-same build; AOCC-build examples (perf / r3): Kimi `d340d91e89467bcc` /
-`f9e51ad5c57eb1ff`, GLM-5.3-Flash `358d6dcbc80aac34` / `b4df9a1e73b05b42`. Only
-the RTX 5090 is available locally; the 5060 Ti run is an operator step.
+- **§1.1.1 — DONE (B1).** Every `cublasGemm*` call is gone; the decode GEMV/GEMM
+  paths use `lsx_gemv` (own fixed-geometry kernels, `RunLxGemmVec` /
+  `RunLxGemmVecWT`; batched cases run per-row/per-batch loops). Replacing cuBLAS
+  moved every model's `final_logits` hash (the numeric path changed) but the
+  golden token is preserved on all four models (Kimi/Gemma/DeepSeek-V4/V4.1
+  selfcheck Paris). The cross-model hash gate (`LSX_SELFCHECK_EXPECT_HASH`)
+  still applies for regression evidence.
+- **Consequence: recorded hashes/perf numbers are stale.** The two-mode perf
+  baseline and the hash examples in this doc predate B1; re-record them on the
+  new (device-independent) path. The `perf` vs `r3` distinction is unchanged.
 
 ## Note on `perf` vs `r3` hashes
 
