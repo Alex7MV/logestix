@@ -160,6 +160,10 @@ bool ModelBase::EnsureContext(bool with_cublas)
         ctx_cublas_ = nullptr;
         return false;
     }
+    // Numeric contract: deterministic, workspace-invariant GEMM (no split-K
+    // atomics). Perf-neutral on the M=1 decode shapes (measured).
+    if (ctx_cublas_)
+        cublasSetAtomicsMode(ctx_cublas_, CUBLAS_ATOMICS_NOT_ALLOWED);
     if (ctx_cublas_) cublasSetStream(ctx_cublas_, ctx_stream_);
     return true;
 }

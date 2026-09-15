@@ -2559,6 +2559,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         out.error_msg = "cublas create failed";
         return cudaErrorInvalidValue;
     }
+    // Numeric contract: deterministic, workspace-invariant GEMM.
+    cublasSetAtomicsMode(c.cublas, CUBLAS_ATOMICS_NOT_ALLOWED);
     cublasHandle_t cublas = c.cublas;
 
     const int P = static_cast<int>(input_ids.size());

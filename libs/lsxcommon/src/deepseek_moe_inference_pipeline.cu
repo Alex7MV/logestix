@@ -308,6 +308,9 @@ InferenceResult RunInferenceModel(
         }
     }
     CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
+    // Numeric contract: deterministic, workspace-invariant GEMM (no split-K
+    // atomics). Perf-neutral on the M=1 decode shapes (measured).
+    CUBLAS_INFER_CHECK(cublasSetAtomicsMode(cublas_h, CUBLAS_ATOMICS_NOT_ALLOWED));
     // Staging copy lane — created regardless of stream ownership (the model
     // hands in its own stream, own_context is false in production).
     INFER_CHECK(cudaStreamCreate(&copy_stream));
