@@ -151,7 +151,8 @@ InferenceResult RunInferenceModel(
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
     cudaStream_t ext_stream = nullptr,
-    cublasHandle_t ext_cublas = nullptr)
+    cublasHandle_t ext_cublas = nullptr,
+    bool ignore_eos = false)
 {
     InferenceResult result;
     auto mp = model_path;
@@ -868,7 +869,8 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             cudaEventRecord(t_ttft, stream);
         }
 
-        if (next_tok == tok_db.eos_id && step >= static_cast<int>(input_ids.size())) {
+        if (!ignore_eos && next_tok == tok_db.eos_id &&
+            step >= static_cast<int>(input_ids.size())) {
             result.eos_terminated = true;
             break;
         }

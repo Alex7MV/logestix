@@ -147,7 +147,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
     const V41PinnedWeights &pw, V41ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
-    cublasHandle_t cublas)
+    cublasHandle_t cublas, bool ignore_eos)
 {
     (void)model_path;
     gpu::InferenceResult result;
@@ -853,7 +853,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             cudaEventRecord(ev.ttft, stream);
             first_gen_captured = true;
         }
-        if (tok_db && next_tok == tok_db->eos_id && step >= prompt_len) {
+        if (!ignore_eos && tok_db && next_tok == tok_db->eos_id &&
+            step >= prompt_len) {
             result.eos_terminated = true;
             break;
         }

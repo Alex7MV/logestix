@@ -20,7 +20,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     const deepseek_v41::gpu::PinnedWeights &pw,
     deepseek_v41::gpu::ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
-    cublasHandle_t cublas);
+    cublasHandle_t cublas, bool ignore_eos = false);
 } // namespace gpu
 
 const std::string DeepSeekV41FlashModel::kType = "deepseek-v4.1-flash";
@@ -99,7 +99,7 @@ gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
             cfg_.model_path, req.input_ids, req.max_gen_tokens, tok_db_.get(),
             pw_,
             expert_db_, lsxcommon::sample::DefaultSampler(), stream(),
-            cublas());
+            cublas(), req.ignore_eos);
     });
 }
 

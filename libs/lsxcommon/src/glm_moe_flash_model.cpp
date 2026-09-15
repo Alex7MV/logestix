@@ -161,9 +161,11 @@ gpu::InferenceResult Glm5NextFlashModel::Infer(const ModelRequest &req)
     qwen::QwenGenerationResult gen;
     sample::GreedySampler greedy;
     const cudaError_t err = RunUnderResidencyLock([&] {
+        std::vector<int> eos_ids =
+            req.ignore_eos ? std::vector<int>{lsxcommon::kIgnoreEosTokenId} : pw_.top.eos_ids;
         return glm_moe_flash::RunGlmFlashGeneration(
             stream(), pw_, experts_, cache_, req.input_ids, req.max_gen_tokens,
-            pw_.top.eos_ids, gen, greedy);
+            eos_ids, gen, greedy);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);

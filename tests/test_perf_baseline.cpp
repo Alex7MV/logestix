@@ -152,7 +152,12 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
     std::vector<int32_t> input_ids;
     if (!model->BuildPromptInputIds(model->Tokenizer(), m.prompt, input_ids))
         FAIL("prompt tokenization failed for " << m.model_type);
-    lsxcommon::ModelRequest req{std::move(input_ids), m.max_gen};
+    lsxcommon::ModelRequest req;
+    req.input_ids = std::move(input_ids);
+    req.max_gen_tokens = m.max_gen;
+    // Fixed-length measurement: ignore EOS so exactly max_gen steps decode and
+    // t/s is comparable across numeric modes (perf/r3) and across bit-drift.
+    req.ignore_eos = true;
 
     const auto r = model->Infer(req);
     model->Unload();

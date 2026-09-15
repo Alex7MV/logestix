@@ -305,7 +305,12 @@ int RunCliBenchmark(const GenerationCliArgs &args)
         m.model->Unload();
         return 1;
     }
-    lsxcommon::ModelRequest req{std::move(input_ids), args.max_gen_tokens};
+    lsxcommon::ModelRequest req;
+    req.input_ids = std::move(input_ids);
+    req.max_gen_tokens = args.max_gen_tokens;
+    // Fixed-length benchmark: ignore EOS so t/s is comparable across numeric
+    // modes and unaffected by where EOS lands.
+    req.ignore_eos = true;
     gpu::InferenceResult result = m.model->Infer(req);
     m.model->Unload();
     if (!result.ok) {

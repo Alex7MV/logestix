@@ -108,7 +108,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
         return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
-                                       Tokenizer().eos_id, fast_math);
+                                       req.ignore_eos ? lsxcommon::kIgnoreEosTokenId : Tokenizer().eos_id, fast_math);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);

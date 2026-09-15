@@ -283,7 +283,7 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
     const std::vector<int32_t> &gen_input = session.gen_input;
 
     qwen::QwenGenerationResult gen;
-    const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+    const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
     cudaError_t e = RunUnderResidencyLock([&] {
         return qwen_moe::RunQwenMoeGeneration(
             stream(), pw_, experts_, cache_, scratch_, gen_input,

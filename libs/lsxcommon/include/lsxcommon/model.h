@@ -52,9 +52,18 @@ inline FastMathMode EffectiveFastMathMode(const ModelInitConfig &cfg)
     return cfg.fast_math ? FastMathMode::kOn : cfg.fast_math_mode;
 }
 
+// Sentinel "no EOS" token id: out of any vocab range, so drivers that require
+// eos_id >= 0 still run to exactly max_gen_tokens (fixed-length measurement).
+inline constexpr int32_t kIgnoreEosTokenId = 0x7fffffff;
+
 struct ModelRequest {
     std::vector<int32_t> input_ids;   // pre-tokenized prompt
     int max_gen_tokens = 64;
+    // Fixed-length measurement: when true, EOS does not terminate generation,
+    // so exactly `max_gen_tokens` steps are decoded and t/s is comparable
+    // across numeric modes (perf/r3) regardless of where EOS lands. Used by the
+    // perf baseline; streaming/selfcheck leave it false.
+    bool ignore_eos = false;
     // Streaming hook: invoked with each generated TokenChunk. Passed by const
     // reference (no store/copy). nullptr = streaming disabled.
     TokenCallback token_callback = nullptr;

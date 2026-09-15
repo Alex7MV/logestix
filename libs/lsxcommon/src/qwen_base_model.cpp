@@ -111,7 +111,7 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
 
     qwen::QwenGenerationResult gen;
     auto run = [&]() -> cudaError_t {
-        const int eos_id = tok_db_ ? tok_db_->eos_id : -1;
+        const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
         return qwen::RunQwenGeneration(st, pw_, gen_input,
                                        req.max_gen_tokens, eos_id, gen,
                                        lsxcommon::sample::DefaultSampler(),

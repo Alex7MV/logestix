@@ -182,7 +182,7 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     e = RunUnderResidencyLock([&] {
         return gemma::RunGemmaGeneration(
             st, pw_, expert_db, gen_input, req.max_gen_tokens,
-            tok_db_ ? tok_db_->eos_id : -1,
+            (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id,
             pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
             gen, *kv_, gen_ctx_);
     });
