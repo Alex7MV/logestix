@@ -58,11 +58,15 @@ RTX 5090, AOCC build `linux-release-znver4-aocc`, model DeepSeek-V4-Flash
 
 ## Fix-list (C-exact conformance)
 
-1. Initialize cuBLAS with a pinned workspace + atomics off (single place in the
-   engine init / cublas handle creation).
+1. **DONE (commit "pin cuBLAS workspace + disable reduce atomics").** Initialize
+   cuBLAS with a pinned workspace (`CUBLAS_WORKSPACE_CONFIG=:4096:8` in
+   `Core::Initialize`) + `cublasSetAtomicsMode(CUBLAS_ATOMICS_NOT_ALLOWED)` on
+   every handle (model_base/gemma/deepseek). Verified: external `:16:8` no
+   longer flips the output (105 -> 83, matching default); DeepSeek 21.6 t/s (no
+   perf loss); Kimi golden selfcheck Paris x3; fast suite 47/47.
 2. Replace `CUBLAS_GEMM_DEFAULT` where split-K is eligible with an explicit
-   deterministic algorithm (or keep `CUBLAS_GEMM_DEFAULT` but verify bit-identity
-   across `:16:8`/`:4096:8` after pinning).
+   deterministic algorithm (verify bit-identity across `:16:8`/`:4096:8` after
+   the pin).
 3. Gate `perf_calibration`/`gpu_perf` numeric knobs to device-keyed values that
    do not read free memory; document that residency sizing is exempt.
 4. Add a cross-instance/workspace-variant selfcheck to CI for C-exact models.
