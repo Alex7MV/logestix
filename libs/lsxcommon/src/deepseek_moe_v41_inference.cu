@@ -1,4 +1,5 @@
 #include "deepseek_moe_v41_inference.h"
+#include "lsxcommon/lsx_gemv.h"
 
 #include <cuda_fp16.h>
 
@@ -505,13 +506,17 @@ cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
                            int M, int N, int K)
 {
     if (M <= 0 || N <= 0 || K <= 0) return cudaSuccess;
-    const float alpha = 1.0f, beta = 0.0f;
-    // Row-major C[M,N] = A[M,K]*B[K,N] == column-major C^T[N,M] = B^T[N,K]*A^T[K,M].
-    const cublasStatus_t st = cublasGemmEx(
-        handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F, N,
-        A, CUDA_R_16F, K, &beta, C, CUDA_R_16F, N, CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+    (void) handle;
+    // Row-major C[M,N] = A[M,K]*B[K,N]; B is K-major -> transposed-W GEMV per
+    // row. Device-independent (numeric-contract 1.1.1).
+    for (int m = 0; m < M; ++m) {
+        const cudaError_t e = gemv::RunLxGemmVecWT(
+            stream, B, A + static_cast<int64_t>(m) * K, 1, N, K,
+            gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
+            C + static_cast<int64_t>(m) * N, gemv::LxDtype::kF16, 0.0f);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaSuccess;
 }
 
 cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
@@ -519,13 +524,10 @@ cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
                              float *logits, int vocab, int hidden)
 {
     if (vocab <= 0 || hidden <= 0) return cudaSuccess;
-    const float alpha = 1.0f, beta = 0.0f;
-    // logits[V] = W[V,H]*x[H] -> column-major [1,V] = x_col[1,H] * W_col[H,V].
-    const cublasStatus_t st = cublasGemmEx(
-        handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, vocab, hidden, &alpha, x,
-        CUDA_R_16F, 1, w, CUDA_R_16F, hidden, &beta, logits, CUDA_R_32F, 1,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+    (void) handle;
+    return gemv::RunLxGemmVec(stream, w, x, 1, vocab, hidden,
+                              gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
+                              logits, gemv::LxDtype::kF32, 0.0f);
 }
 
 cudaError_t LaunchEmbedLookup(const uint16_t *embed, int vocab, int hidden,
@@ -566,13 +568,10 @@ cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
                                 int M, int K)
 {
     if (M <= 0 || K <= 0) return cudaSuccess;
-    const float alpha = 1.0f, beta = 0.0f;
-    // y[M,1] = W[M,K]*x[K,1] -> column-major [1,M] = x_col[1,K]*W_col[K,M].
-    const cublasStatus_t st = cublasGemmEx(
-        handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, M, K, &alpha, x, CUDA_R_16F, 1, w,
-        CUDA_R_16F, K, &beta, y, CUDA_R_32F, 1, CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+    (void) handle;
+    return gemv::RunLxGemmVec(stream, w, x, 1, M, K, gemv::LxDtype::kF16,
+                              gemv::LxDtype::kF16, 1.0f, y,
+                              gemv::LxDtype::kF32, 0.0f);
 }
 
 cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,

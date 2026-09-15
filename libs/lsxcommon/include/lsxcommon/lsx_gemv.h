@@ -27,5 +27,10 @@ cudaError_t RunLxGemmVec(cudaStream_t stream, const void *w, const void *x,
                          int seq, int N, int K, LxDtype wdt, LxDtype xdt,
                          float alpha, void *y, LxDtype ydt, float beta);
 
+// Same result, but W is stored [K, N] (K-major): y[s][n] = sum_k x[s][k]*W[k][n].
+cudaError_t RunLxGemmVecWT(cudaStream_t stream, const void *w, const void *x,
+                           int seq, int N, int K, LxDtype wdt, LxDtype xdt,
+                           float alpha, void *y, LxDtype ydt, float beta);
+
 } // namespace gemv
 } // namespace lsxcommon
