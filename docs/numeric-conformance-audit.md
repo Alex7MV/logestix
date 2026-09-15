@@ -69,9 +69,20 @@ bit-drift. Example correction: qwen3.8-flash-next 16.75 @1370 -> 26.52 @2048.
   golden token is preserved on all four models (Kimi/Gemma/DeepSeek-V4/V4.1
   selfcheck Paris). The cross-model hash gate (`LSX_SELFCHECK_EXPECT_HASH`)
   still applies for regression evidence.
-- **Consequence: recorded hashes/perf numbers are stale.** The two-mode perf
-  baseline and the hash examples in this doc predate B1; re-record them on the
-  new (device-independent) path. The `perf` vs `r3` distinction is unchanged.
+- **Re-recorded on the B1 path** (AOCC build; `perf` / `r3` hashes, 2048-token
+  perf in `perf_baselines.json`). Hashes changed for the models whose selfcheck
+  path used the replaced cuBLAS calls (Kimi, DeepSeek-V4, DeepSeek-V4.1);
+  unchanged for GLM/Qwen/Gemma (their paths already used own kernels):
+
+  | model | perf hash | r3 hash | perf t/s | r3 t/s |
+  |---|---|---|---|---|
+  | glm-5.3-flash | 358d6dcbc80aac34 | b4df9a1e73b05b42 | 33.93 | 18.48 |
+  | qwen3.6-35b-a3b | 5209e2295509aa7d | 4759fe1466ffcf89 | 142.73 | 13.32 |
+  | gemma-4-26b-a4b-it | c06c0f18ae3cabda | f343ce41dd246552 | 102.31 | 104.61 |
+  | qwen3.8-flash-next | 139814718cb71a0c | 7dd22315feb10d6f | 26.53 | 6.40 |
+  | deepseek-v4-flash | 36ed938bf67c6eba | 15498f4a82ef1b21 | 18.16 | 8.37 |
+  | deepseek-v4.1-flash | cef7be674130a967 | cc41f19daf3af712 | — | — |
+  | kimi-k2.7-code | dcf5782ad6a10f1f | 6bd162f60b49405c | 5.10 | — |
 
 ## Note on `perf` vs `r3` hashes
 
