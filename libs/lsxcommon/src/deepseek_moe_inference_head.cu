@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include "lsxcommon/lsx_gemv.h"
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
 
@@ -69,14 +70,10 @@ cudaError_t run_lm_head(
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
-    cublasStatus_t stat = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        vocab_size, 1, hidden_dim, &alpha,
-        d_head_weight, CUDA_R_16F, hidden_dim,
-        d_hidden, CUDA_R_16F, hidden_dim, &beta,
-        d_logits, CUDA_R_32F, vocab_size,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (stat != CUBLAS_STATUS_SUCCESS)
+    if (gemv::RunLxGemmVec(stream, d_head_weight, d_hidden, 1, vocab_size,
+                           hidden_dim, gemv::LxDtype::kF16,
+                           gemv::LxDtype::kF16, alpha, d_logits,
+                           gemv::LxDtype::kF32, beta) != cudaSuccess)
         return cudaErrorUnknown;
 
     if (!d_next_token) return cudaGetLastError();

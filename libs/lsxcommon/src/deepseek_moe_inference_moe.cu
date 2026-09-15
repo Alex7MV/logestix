@@ -1,4 +1,5 @@
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/shared_experts.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/log.h"
@@ -280,13 +281,11 @@ cudaError_t run_shared_experts_ffn(
 
     // 2. intermediate = W1^T @ hidden → d_intermediate (FP16 TC GEMM, FP32 out)
     {
-        cublasStatus_t w1s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     intermediate_dim, 1, hidden_dim, &alpha,
-                     w1_ptr, CUDA_R_16F, hidden_dim,
-                      d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                      d_intermediate_f32, CUDA_R_32F, intermediate_dim,
-                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (w1s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+        if (gemv::RunLxGemmVec(stream, w1_ptr, d_hidden, 1, intermediate_dim,
+                               hidden_dim, gemv::LxDtype::kF16,
+                               gemv::LxDtype::kF16, alpha, d_intermediate_f32,
+                               gemv::LxDtype::kF32, beta) != cudaSuccess)
+            return cudaErrorUnknown;
     }
 
     // 3. Dequant W3 → d_w_half (reuse)
@@ -298,13 +297,11 @@ cudaError_t run_shared_experts_ffn(
 
     // 4. gate = W3^T @ hidden → d_gate
     {
-        cublasStatus_t w3s = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     intermediate_dim, 1, hidden_dim, &alpha,
-                     w3_ptr, CUDA_R_16F, hidden_dim,
-                      d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                      d_gate_f32, CUDA_R_32F, intermediate_dim,
-                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (w3s != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+        if (gemv::RunLxGemmVec(stream, w3_ptr, d_hidden, 1, intermediate_dim,
+                               hidden_dim, gemv::LxDtype::kF16,
+                               gemv::LxDtype::kF16, alpha, d_gate_f32,
+                               gemv::LxDtype::kF32, beta) != cudaSuccess)
+            return cudaErrorUnknown;
     }
 
     // 5. SiLU + multiply: d_intermediate = silu(d_intermediate) * d_gate (FP32).
@@ -331,13 +328,12 @@ cudaError_t run_shared_experts_ffn(
 
     // 7. output = W2^T @ activated → FP32 scratch → clamped FP16 output
     {
-        cublasStatus_t wbst = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     hidden_dim, 1, intermediate_dim, &alpha,
-                     w2_ptr, CUDA_R_32F, intermediate_dim,
-                     d_intermediate_f32, CUDA_R_32F, intermediate_dim, &beta,
-                     d_w2out_f32, CUDA_R_32F, hidden_dim,
-                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        if (wbst != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+        if (gemv::RunLxGemmVec(stream, w2_ptr, d_intermediate_f32, 1,
+                               hidden_dim, intermediate_dim,
+                               gemv::LxDtype::kF32, gemv::LxDtype::kF32, alpha,
+                               d_w2out_f32, gemv::LxDtype::kF32,
+                               beta) != cudaSuccess)
+            return cudaErrorUnknown;
         int b = 256;
         int g2 = (hidden_dim + b - 1) / b;
         clamp_f32_to_f16_moe_kernel<<<g2, b, 0, stream>>>(
@@ -438,13 +434,11 @@ cudaError_t route_token_begin(
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
-    cublasStatus_t rstat = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 num_routed, 1, hidden_dim, &alpha,
-                 d_gate, CUDA_R_16F, hidden_dim,
-                 d_hidden, CUDA_R_16F, hidden_dim, &beta,
-                 d_logits_scratch, CUDA_R_16F, num_routed,
-                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (rstat != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+    if (gemv::RunLxGemmVec(stream, d_gate, d_hidden, 1, num_routed, hidden_dim,
+                           gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha,
+                           d_logits_scratch, gemv::LxDtype::kF16,
+                           beta) != cudaSuccess)
+        return cudaErrorUnknown;
 
     // Async readback; the fence is the caller-owned event so the pipeline can
     // enqueue independent GPU work (shared-expert FFN) before waiting.

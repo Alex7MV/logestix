@@ -130,6 +130,19 @@ cudaError_t RunLxGemmVec(cudaStream_t stream, const void *w, const void *x,
                     stream, w, x, seq, N, K, alpha, y, beta);
         }
     }
+    if (wdt == LxDtype::kF32 && xdt == LxDtype::kF32) {
+        switch (OutKind(ydt)) {
+            case 0:
+                return Launch<float, float, 0>(stream, w, x, seq, N, K, alpha,
+                                               y, beta);
+            case 1:
+                return Launch<float, float, 1>(stream, w, x, seq, N, K, alpha,
+                                               y, beta);
+            default:
+                return Launch<float, float, 2>(stream, w, x, seq, N, K, alpha,
+                                               y, beta);
+        }
+    }
     return cudaErrorNotSupported;
 }
 

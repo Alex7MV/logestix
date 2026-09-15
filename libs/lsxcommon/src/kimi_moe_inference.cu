@@ -1259,20 +1259,13 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
 
         if (lw.d_router_gate) {
             // ── MoE path ──
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                         kKimiNumRouted, seq, kKimiHidden, &alpha,
-                         lw.d_router_gate, CUDA_R_16BF, kKimiHidden,
-                         d_scratch_b + (size_t)base * kKimiHidden,
-                         CUDA_R_16BF, kKimiHidden, &beta0,
-                         d_scores, CUDA_R_32F, kKimiNumRouted,
-                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_router_gate,
+                    d_scratch_b + (size_t)base * kKimiHidden, seq,
+                    kKimiNumRouted, kKimiHidden, gemv::LxDtype::kBF16,
+                    gemv::LxDtype::kBF16, alpha, d_scores,
+                    gemv::LxDtype::kF32, beta0) != cudaSuccess)
+                return cudaGetLastError();
         if (getenv("KIMI_DIAG_LAYER") && l == atoi(getenv("KIMI_DIAG_LAYER"))) {
             static thread_local float dbg[384];
             cudaMemcpy(dbg, d_scores, kKimiNumRouted * sizeof(float),
@@ -1543,53 +1536,32 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
             }
         } else {
             // ── Dense MLP path (layer 0) ──
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                         kKimiDenseIntermediate, seq, kKimiHidden, &alpha,
-                         lw.d_mlp_gate, CUDA_R_16BF, kKimiHidden,
-                         d_scratch_b + (size_t)base * kKimiHidden,
-                         CUDA_R_16BF, kKimiHidden, &beta0,
-                         d_mlp_g, CUDA_R_16BF, kKimiDenseIntermediate,
-                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                         kKimiDenseIntermediate, seq, kKimiHidden, &alpha,
-                         lw.d_mlp_up, CUDA_R_16BF, kKimiHidden,
-                         d_scratch_b + (size_t)base * kKimiHidden,
-                         CUDA_R_16BF, kKimiHidden, &beta0,
-                         d_mlp_u, CUDA_R_16BF, kKimiDenseIntermediate,
-                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_mlp_gate,
+                    d_scratch_b + (size_t)base * kKimiHidden, seq,
+                    kKimiDenseIntermediate, kKimiHidden,
+                    gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, alpha,
+                    d_mlp_g, gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+                return cudaGetLastError();
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_mlp_up,
+                    d_scratch_b + (size_t)base * kKimiHidden, seq,
+                    kKimiDenseIntermediate, kKimiHidden,
+                    gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, alpha,
+                    d_mlp_u, gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+                return cudaGetLastError();
             {
                 const int64_t n = (int64_t)seq * kKimiDenseIntermediate;
                 ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
                 <<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
                     d_mlp_g, d_mlp_u, d_mlp_h, n, 0.f);
             }
-            cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                         kKimiHidden, seq, kKimiDenseIntermediate, &alpha,
-                         lw.d_mlp_down, CUDA_R_16BF, kKimiDenseIntermediate,
-                         d_mlp_h, CUDA_R_16BF, kKimiDenseIntermediate, &beta0,
-                         d_mlp_g, CUDA_R_16BF, kKimiHidden,
-                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_mlp_down, d_mlp_h, seq, kKimiHidden,
+                    kKimiDenseIntermediate, gemv::LxDtype::kBF16,
+                    gemv::LxDtype::kBF16, alpha, d_mlp_g,
+                    gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+                return cudaGetLastError();
             {
                 int total = seq * kKimiHidden;
                 int block = 256;
@@ -1920,19 +1892,11 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
             pw.d_final_norm, d_scratch_b, kKimiHidden);
         cublasSetStream(cublas_h, stream);
         const float alpha = 1.0f, beta0 = 0.0f;
-        cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                     kKimiVocab, 1, kKimiHidden, &alpha,
-                     pw.d_head, CUDA_R_16BF, kKimiHidden,
-                     d_scratch_b, CUDA_R_16BF, kKimiHidden, &beta0,
-                     d_logits, CUDA_R_32F, kKimiVocab,
-                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+        if (gemv::RunLxGemmVec(stream, pw.d_head, d_scratch_b, 1,
+                               kKimiVocab, kKimiHidden, gemv::LxDtype::kBF16,
+                               gemv::LxDtype::kBF16, alpha, d_logits,
+                               gemv::LxDtype::kF32, beta0) != cudaSuccess)
+            return cudaGetLastError();
         kimi_argmax_kernel<<<1, kRouterMaxBlock, 0, stream>>>(
             d_logits, kKimiVocab, d_best, d_bestv);
         if (step == 0) cudaEventRecord(ev_ttft, stream);

@@ -26,7 +26,7 @@ InferenceResult RunDeepSeekV41Inference(
     int max_gen_tokens, ArrowTokenizerDb *tok_db,
     const deepseek_v41::gpu::PinnedWeights &pw,
     deepseek_v41::gpu::ExpertDb &expert_db, sample::ISampler &sampler,
-    cudaStream_t stream, cublasHandle_t cublas);
+    cudaStream_t stream, cublasHandle_t cublas, bool ignore_eos = false);
 } // namespace gpu
 } // namespace lsxcommon
 

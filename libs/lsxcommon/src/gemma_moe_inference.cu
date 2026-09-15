@@ -3,6 +3,8 @@
 
 #include <cublas_v2.h>
 
+#include "lsxcommon/lsx_gemv.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -940,15 +942,10 @@ static cudaError_t Matmul(cublasHandle_t cublas, const __nv_bfloat16 *w,
                           const __nv_bfloat16 *x, __nv_bfloat16 *out, int rows, int cols,
                           int seq, cudaStream_t stream)
 {
-    // Compute type FP32 => alpha/beta must be host floats.
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    cublasSetStream(cublas, stream);
-    cublasStatus_t st = cublasGemmEx(
-        cublas, CUBLAS_OP_T, CUBLAS_OP_N, rows, seq, cols, &alpha, w,
-        CUDA_R_16BF, cols, x, CUDA_R_16BF, cols, &beta, out, CUDA_R_16BF,
-        rows, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+    (void) cublas;  // device-independent GEMV (numeric-contract 1.1.1)
+    return gemv::RunLxGemmVec(stream, w, x, seq, rows, cols,
+                              gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, 1.0f,
+                              out, gemv::LxDtype::kBF16, 0.0f);
 }
 
 // h[t,i] = gelu_tanh(g[t,i]) * u[t,i]
@@ -1002,15 +999,17 @@ static cudaError_t MatmulBatched(cublasHandle_t cublas,
                                  long long stride_out, int rows, int cols,
                                  int batch, cudaStream_t stream)
 {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    cublasSetStream(cublas, stream);
-    cublasStatus_t st = cublasGemmStridedBatchedEx(
-        cublas, CUBLAS_OP_T, CUBLAS_OP_N, rows, 1, cols, &alpha, a,
-        CUDA_R_16BF, cols, stride_a, x, CUDA_R_16BF, cols, stride_x, &beta,
-        out, CUDA_R_16BF, rows, stride_out, batch, CUBLAS_COMPUTE_32F,
-        CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorInvalidValue;
+    (void) cublas;  // device-independent GEMV, per-batch (numeric-contract 1.1.1)
+    for (int b = 0; b < batch; ++b) {
+        const __nv_bfloat16 *ab = a + static_cast<long long>(b) * stride_a;
+        const __nv_bfloat16 *xb = x + static_cast<long long>(b) * stride_x;
+        __nv_bfloat16 *ob = out + static_cast<long long>(b) * stride_out;
+        const cudaError_t e = gemv::RunLxGemmVec(
+            stream, ab, xb, 1, rows, cols, gemv::LxDtype::kBF16,
+            gemv::LxDtype::kBF16, 1.0f, ob, gemv::LxDtype::kBF16, 0.0f);
+        if (e != cudaSuccess) return e;
+    }
+    return cudaSuccess;
 }
 
 // Per-head RMSNorm over packed [seq, heads*dim]; Gemma4 w-form when w

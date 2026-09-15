@@ -6,6 +6,7 @@
 // attention with a learnable attn_sink.  CSA (compressor/indexer) is out of scope.
 
 #include "lsxcommon/inference_gpu.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/deepseek_moe_inference_csa.h"
 #include "lsxcommon/deepseek_moe_norm_kernels.h"
 #include "lsxcommon/shared_experts.h"
@@ -556,14 +557,9 @@ static cudaError_t gemm_f16_1d(cublasHandle_t cublas_h, cudaStream_t stream,
 {
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
-    cublasStatus_t st = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        m, 1, k, &alpha,
-        d_w, CUDA_R_16F, k,
-        d_x, CUDA_R_16F, k,
-        &beta, d_out, CUDA_R_16F, m,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    return st == CUBLAS_STATUS_SUCCESS ? cudaSuccess : cudaErrorUnknown;
+    return gemv::RunLxGemmVec(stream, d_w, d_x, 1, m, k, gemv::LxDtype::kF16,
+                              gemv::LxDtype::kF16, alpha, d_out,
+                              gemv::LxDtype::kF16, beta);
 }
 
 // Clamp FP32→FP16 kernel: prevents overflow when dequanted weights exceed FP16 range
@@ -599,14 +595,11 @@ static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
     float* d_out_f32 = reinterpret_cast<float*>(d_w_half + n);
     cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
-    cublasStatus_t st = cublasGemmEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        rows, 1, cols, &alpha,
-        d_w_half, CUDA_R_16F, cols,
-        d_x, CUDA_R_16F, cols,
-        &beta, d_out_f32, CUDA_R_32F, rows,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+    if (gemv::RunLxGemmVec(stream, d_w_half, d_x, 1, rows, cols,
+                           gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha,
+                           d_out_f32, gemv::LxDtype::kF32,
+                           beta) != cudaSuccess)
+        return cudaErrorUnknown;
     int block = 256;
     int grid = (rows + block - 1) / block;
     clamp_f32_to_f16_kernel<<<grid, block, 0, stream>>>(d_out_f32, d_out, rows);
@@ -733,16 +726,18 @@ static cudaError_t run_o_projection(
     // FP32 olora scratch, then one clamped FP16 store.
     const int gd = (kAttnHeads / kOGroups) * kHeadDim;  // 4096
     float* d_olora_f32 = reinterpret_cast<float*>(d_w_half + n);
-    cublasSetStream(cublas_h, stream);
-    float alpha = 1.0f, beta = 0.0f;
-    cublasStatus_t st = cublasGemmStridedBatchedEx(
-        cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-        kOloraRank, 1, gd, &alpha,
-        d_w_half, CUDA_R_16F, gd, static_cast<long long>(kOloraRank) * gd,
-        d_o, CUDA_R_16F, gd, gd,
-        &beta, d_olora_f32, CUDA_R_32F, kOloraRank, kOloraRank,
-        kOGroups, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-    if (st != CUBLAS_STATUS_SUCCESS) return cudaErrorUnknown;
+    const float alpha = 1.0f, beta = 0.0f;
+    // Device-independent per-group GEMV (numeric-contract 1.1.1); the former
+    // strided-batched cuBLAS call selected its algorithm by device.
+    for (int b = 0; b < kOGroups; ++b) {
+        const __half *wb = d_w_half + static_cast<int64_t>(b) * kOloraRank * gd;
+        const __half *xb = d_o + static_cast<int64_t>(b) * gd;
+        float *yb = d_olora_f32 + static_cast<int64_t>(b) * kOloraRank;
+        const cudaError_t e = gemv::RunLxGemmVec(
+            stream, wb, xb, 1, kOloraRank, gd, gemv::LxDtype::kF16,
+            gemv::LxDtype::kF16, alpha, yb, gemv::LxDtype::kF32, beta);
+        if (e != cudaSuccess) return e;
+    }
     {
         int block = 256;
         int g3 = (kOGroups * kOloraRank + block - 1) / block;
@@ -1136,23 +1131,17 @@ cudaError_t run_csa_attention(
         {
             float alpha = 1.0f, beta = 0.0f;
             cublasSetStream(cublas_h, stream);
-            cublasStatus_t s1 = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                comp_out, 1, kHiddenDim, &alpha,
-                lw.d_comp_wkv, CUDA_R_16F, kHiddenDim,
-                d_x, CUDA_R_16F, kHiddenDim, &beta,
-                d_qr2, CUDA_R_16F, comp_out,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-            if (s1 != CUBLAS_STATUS_SUCCESS) {
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_comp_wkv, d_x, 1, comp_out, kHiddenDim,
+                    gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha, d_qr2,
+                    gemv::LxDtype::kF16, beta) != cudaSuccess) {
                 log::error("[csa] compressor wkv GEMM failed");
                 return cudaErrorInvalidValue;
             }
-            cublasStatus_t s2 = cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                comp_out, 1, kHiddenDim, &alpha,
-                lw.d_comp_wgate, CUDA_R_16F, kHiddenDim,
-                d_x, CUDA_R_16F, kHiddenDim, &beta,
-                d_qr, CUDA_R_16F, comp_out,
-                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
-            if (s2 != CUBLAS_STATUS_SUCCESS) {
+            if (gemv::RunLxGemmVec(
+                    stream, lw.d_comp_wgate, d_x, 1, comp_out, kHiddenDim,
+                    gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha, d_qr,
+                    gemv::LxDtype::kF16, beta) != cudaSuccess) {
                 log::error("[csa] compressor wgate GEMM failed");
                 return cudaErrorInvalidValue;
             }
