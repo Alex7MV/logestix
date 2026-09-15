@@ -88,3 +88,24 @@ not just one SKU. Audit of device-dependent numeric paths:
 | `perf_calibration` writes `perf-cache/<gpu-key>.json`; if a calibration entry sets a numeric knob, it becomes device-dependent. | **FIXED**: `EnsureCalibrated` no longer overrides `gemv_max_mib` (a numeric knob); it applies the canonical knobs only. Per-GPU numeric tuning is a C-fast-only, explicit-opt-in facility. |
 | `lsx_tc_gemm.cu` `cudaGetDeviceProperties` probes (TC availability) | Same CC 12 across the set -> consistent; must never select a different numeric path per model (perf-only gating). |
 | Cross-model verification | Only RTX 5090 is available locally; the 5060 Ti run must be done on that box. CI hook (fix-list #4) should run the selfcheck on both and record a cross-model diff. |
+
+## Remaining (cross-model)
+
+- **fix-list #2 — cuBLAS algorithm (MANDATORY, open).** `CUBLAS_GEMM_DEFAULT`
+  selects by SM count/workspace; workspace/atomics pinning does not fix the
+  algorithm. Two options:
+  1. **Verify first (cheap):** on the 5060 Ti box, run the selfchecks and
+     compare `final_logits` against the 5090 hashes. If bit-identical, cuBLAS
+     happens to choose the same algorithm for these (mostly N=1 GEMV) shapes and
+     #2 can be closed as "verified".
+  2. **If it fails:** replace the split-K-eligible `cublasGemmEx` sites with own
+     fixed-geometry kernels (or, where applicable, the model-neutral NVFP4 GEMV),
+     which is device-independent by construction.
+- **fix-list #4 — CI hook.** Add a selfcheck job that runs on every GPU in the
+  supported set and records a stable `final_logits` hash per model; fail if the
+  hash differs between models. Procedure (both boxes, same build):
+  ```
+  LSX_TEST_<MODEL>_ROOT=<vault> <selftest>         # prints/records logits hash
+  ```
+  Only the RTX 5090 is available in this dev environment; the 5060 Ti run is an
+  operator step.
