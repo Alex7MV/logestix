@@ -1,6 +1,6 @@
 # Numeric & Reproducibility Contract
 
-Status: draft (operator review required)
+Status: accepted (2026-09-15)
 Owner: operator (FSI product requirements); engineering enforces
 
 This document defines, once, what numerical guarantees the engine makes,
