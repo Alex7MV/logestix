@@ -1,6 +1,7 @@
 #include "kimi_moe_kernels.h"
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsx_kernels_common.cuh"
 #include "lsx_kernels_math.cuh"
@@ -740,49 +741,26 @@ static cudaError_t RunKimiExpertFfnTail(
     cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
 
-    // gate/up projections: [I x 1] = W(I x Hd)^T @ x(Hd).
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 I, 1, Hd, &alpha, dq_gate, CUDA_R_16BF, Hd,
-                 d_x, CUDA_R_16BF, Hd, &beta0,
-                 act_g, CUDA_R_16BF, I, CUBLAS_COMPUTE_32F,
-                 CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 I, 1, Hd, &alpha, dq_up, CUDA_R_16BF, Hd,
-                 d_x, CUDA_R_16BF, Hd, &beta0,
-                 act_u, CUDA_R_16BF, I, CUBLAS_COMPUTE_32F,
-                 CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    // gate/up projections: [I] = W(I x Hd) @ x(Hd) — device-independent GEMV
+    // (numeric-contract §1.1.1; replaces the cuBLAS heuristic call).
+    if (gemv::RunLxGemmVec(stream, dq_gate, d_x, 1, I, Hd,
+                           gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, alpha,
+                           act_g, gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+        return cudaGetLastError();
+    if (gemv::RunLxGemmVec(stream, dq_up, d_x, 1, I, Hd, gemv::LxDtype::kBF16,
+                           gemv::LxDtype::kBF16, alpha, act_u,
+                           gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+        return cudaGetLastError();
 
     ::lsxcommon::kernels::SwigluKernel<__nv_bfloat16, ::lsxcommon::kernels::ExpFlavor::Fast, false>
         <<<static_cast<unsigned>((I + 255) / 256), 256, 0, stream>>>(
             act_g, act_u, act_h, I, 0.f);
 
-    // down projection: y(Hd) = W_down(Hd x I)^T @ h(I).
-    cublasGemmEx(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
-                 Hd, 1, I, &alpha, dq_down, CUDA_R_16BF, I,
-                 act_h, CUDA_R_16BF, I, &beta0,
-                 y, CUDA_R_16BF, Hd, CUBLAS_COMPUTE_32F,
-                 CUBLAS_GEMM_DEFAULT);
-        do {
-            cudaError_t ce_ = cudaGetLastError();
-            if (ce_ != cudaSuccess)
-                fprintf(stderr,
-                        "[cublas] err=%s at line %d\n",
-                        cudaGetErrorString(ce_), __LINE__);
-        } while (0);
+    // down projection: y(Hd) = W_down(Hd x I) @ h(I) — device-independent GEMV.
+    if (gemv::RunLxGemmVec(stream, dq_down, act_h, 1, Hd, I,
+                           gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, alpha,
+                           y, gemv::LxDtype::kBF16, beta0) != cudaSuccess)
+        return cudaGetLastError();
 
     kimi_accum_kernel<<<static_cast<unsigned>((Hd + 255) / 256), 256, 0,
                         stream>>>(y, expert_weight, d_out, Hd);
