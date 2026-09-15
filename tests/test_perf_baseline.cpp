@@ -124,7 +124,8 @@ struct MeasureResult {
     int gen_tokens = 0;
 };
 
-std::optional<MeasureResult> MeasureModel(const PerfModel &m)
+std::optional<MeasureResult> MeasureModel(const PerfModel &m,
+                                          const std::string &mode)
 {
     // The ctest entry pins the vault subdir via env (per-model process);
     // direct binary runs fall back to the struct value.
@@ -141,6 +142,9 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m)
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_dir.string();
     cfg.model_type = m.model_type;
+    // R3 = explicit bit-exact (kOff); perf = per-GPU max-speed policy (kAuto).
+    cfg.fast_math_mode = (mode == "r3") ? lsxcommon::FastMathMode::kOff
+                                        : lsxcommon::FastMathMode::kAuto;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     if (!model) FAIL("factory returned nullptr for " << m.model_type);
     if (!model->Load()) FAIL("model Load failed for " << m.model_type);
@@ -158,7 +162,8 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m)
                          static_cast<int>(r.gen_tokens.size())};
 }
 
-void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
+void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
+                          const std::string &mode)
 {
     pb::PerfBaselineTable table = LoadTable();
     const std::string gpu_key = lsxcommon::perf::GpuProfileKey(
@@ -167,7 +172,7 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
     const double actual = mr.tokens_per_sec;
 
     const pb::PerfBaselineEntry *entry =
-        pb::FindEntry(table, m.model_type, gpu_key, kThisOs);
+        pb::FindEntry(table, m.model_type, gpu_key, kThisOs, mode);
     std::optional<double> baseline;
     int baseline_len = 0;
     if (entry != nullptr && entry->max_gen == m.max_gen &&
@@ -193,6 +198,7 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
         upsert.model_type = m.model_type;
         upsert.gpu_key = gpu_key;
         upsert.os = kThisOs;
+        upsert.mode = mode;
         upsert.tokens_per_sec = actual;
         upsert.max_gen = m.max_gen;
         upsert.prompt = m.prompt;
@@ -202,7 +208,7 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
         bool replaced = false;
         for (auto &e : table.entries) {
             if (e.model_type == upsert.model_type && e.gpu_key == gpu_key &&
-                e.os == kThisOs) {
+                e.os == kThisOs && e.mode == mode) {
                 e = upsert;
                 replaced = true;
                 break;
@@ -230,8 +236,12 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr)
 
 void RunPerfModel(const PerfModel &m)
 {
-    const auto actual = MeasureModel(m);
-    if (actual.has_value()) CheckAgainstBaseline(m, *actual);
+    // Two numeric modes, one mechanism: "perf" (kAuto) and "r3" (kOff,
+    // bit-exact). Both are recorded in perf_baselines.json, keyed by mode.
+    for (const char *mode : {"perf", "r3"}) {
+        const auto actual = MeasureModel(m, mode);
+        if (actual.has_value()) CheckAgainstBaseline(m, *actual, mode);
+    }
 }
 
 } // namespace

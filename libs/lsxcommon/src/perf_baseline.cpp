@@ -42,6 +42,9 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
         if (o["os"].get_string().get(sv) != simdjson::SUCCESS)
             return std::nullopt;
         e.os = sv;
+        // Numeric mode is optional (pre-mode entries default to "perf").
+        if (o["mode"].get_string().get(sv) == simdjson::SUCCESS)
+            e.mode = sv;
         if (o["tokens_per_sec"].get_double().get(d) != simdjson::SUCCESS)
             return std::nullopt;
         e.tokens_per_sec = d;
@@ -74,6 +77,7 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
                         "\",\n");
         absl::StrAppend(&s, "      \"gpu_key\": \"", e.gpu_key, "\",\n");
         absl::StrAppend(&s, "      \"os\": \"", e.os, "\",\n");
+        absl::StrAppend(&s, "      \"mode\": \"", e.mode, "\",\n");
         absl::StrAppendFormat(&s, "      \"tokens_per_sec\": %.2f,\n",
                               e.tokens_per_sec);
         absl::StrAppend(&s, "      \"max_gen\": ", e.max_gen, ",\n");
@@ -91,11 +95,12 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
 const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
                                    const std::string &model_type,
                                    const std::string &gpu_key,
-                                   const std::string &os)
+                                   const std::string &os,
+                                   const std::string &mode)
 {
     for (const auto &e : t.entries) {
         if (e.model_type == model_type && e.gpu_key == gpu_key &&
-            e.os == os)
+            e.os == os && e.mode == mode)
             return &e;
     }
     return nullptr;

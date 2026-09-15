@@ -20,6 +20,7 @@ struct PerfBaselineEntry {
     std::string model_type;
     std::string gpu_key;
     std::string os;             // "windows" | "linux" (compile-time)
+    std::string mode = "perf";  // numeric mode: "perf" (kAuto) | "r3" (kOff)
     double tokens_per_sec = 0.0;
     int max_gen = 0;            // measurement protocol (honest comparisons)
     std::string prompt;
@@ -40,11 +41,13 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json);
 // Hand-rolled stable-order writer (mirrors perf-cache serializer).
 std::string SerializePerfBaselines(const PerfBaselineTable &t);
 
-// Entry lookup by the full (model_type, gpu_key, os) key; nullptr if absent.
+// Entry lookup by the full (model_type, gpu_key, os, mode) key; nullptr if
+// absent. mode defaults to "perf" so older single-mode callers keep working.
 const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
                                    const std::string &model_type,
                                    const std::string &gpu_key,
-                                   const std::string &os);
+                                   const std::string &os,
+                                   const std::string &mode = "perf");
 
 enum class PerfVerdict {
     kUpdate,   // absent entry or actual > baseline: record it
