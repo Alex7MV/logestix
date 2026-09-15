@@ -5,6 +5,7 @@
 #include <absl/strings/str_format.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -134,6 +135,36 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
         "[selfcheck] top1_tok=%d text='%s' passed=%s",
         static_cast<int>(r.first_gen_tok_id), r.first_gen_text.c_str(),
         r.selfcheck_passed ? "true" : "false"));
+    // Cross-model R3 evidence (numeric-contract §1): emit a stable hash of the
+    // selfcheck logits so the SAME build can be compared across the supported
+    // GPU-model set (RTX 5090 / RTX 5060 Ti). Set LSX_SELFCHECK_EXPECT_HASH to
+    // the golden machine's hash to make a cross-machine mismatch a hard failure.
+    if (!r.final_logits.empty()) {
+        uint64_t h = 1469598103934665603ull;   // FNV-1a 64
+        const uint8_t *bytes =
+            reinterpret_cast<const uint8_t *>(r.final_logits.data());
+        const size_t nbytes = r.final_logits.size() * sizeof(float);
+        for (size_t i = 0; i < nbytes; ++i) {
+            h ^= bytes[i];
+            h *= 1099511628211ull;
+        }
+        lsxcommon::log::info(absl::StrFormat(
+            "[selfcheck] logits_hash=%016llx n=%u tok=%d",
+            static_cast<unsigned long long>(h),
+            static_cast<unsigned>(r.final_logits.size()),
+            static_cast<int>(r.first_gen_tok_id)));
+        const char *expect = std::getenv("LSX_SELFCHECK_EXPECT_HASH");
+        if (expect && *expect) {
+            const uint64_t want = std::strtoull(expect, nullptr, 16);
+            if (want != h) {
+                lsxcommon::log::error(absl::StrFormat(
+                    "[selfcheck] logits hash mismatch: got %016llx want %016llx",
+                    static_cast<unsigned long long>(h),
+                    static_cast<unsigned long long>(want)));
+                r.selfcheck_passed = false;
+            }
+        }
+    }
     return r;
 }
 

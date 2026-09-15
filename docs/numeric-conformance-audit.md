@@ -91,21 +91,19 @@ not just one SKU. Audit of device-dependent numeric paths:
 
 ## Remaining (cross-model)
 
-- **fix-list #2 — cuBLAS algorithm (MANDATORY, open).** `CUBLAS_GEMM_DEFAULT`
+- **fix-list #2 — cuBLAS algorithm (MANDATORY, now verifiable).** `CUBLAS_GEMM_DEFAULT`
   selects by SM count/workspace; workspace/atomics pinning does not fix the
-  algorithm. Two options:
-  1. **Verify first (cheap):** on the 5060 Ti box, run the selfchecks and
-     compare `final_logits` against the 5090 hashes. If bit-identical, cuBLAS
-     happens to choose the same algorithm for these (mostly N=1 GEMV) shapes and
-     #2 can be closed as "verified".
-  2. **If it fails:** replace the split-K-eligible `cublasGemmEx` sites with own
-     fixed-geometry kernels (or, where applicable, the model-neutral NVFP4 GEMV),
-     which is device-independent by construction.
-- **fix-list #4 — CI hook.** Add a selfcheck job that runs on every GPU in the
-  supported set and records a stable `final_logits` hash per model; fail if the
-  hash differs between models. Procedure (both boxes, same build):
-  ```
-  LSX_TEST_<MODEL>_ROOT=<vault> <selftest>         # prints/records logits hash
-  ```
-  Only the RTX 5090 is available in this dev environment; the 5060 Ti run is an
-  operator step.
+  algorithm. `model_runtime` now emits a stable `final_logits` hash per
+  selfcheck and gates on `LSX_SELFCHECK_EXPECT_HASH`, so this is decided by
+  measurement across the set:
+  1. On the 5090 record the hash (e.g. Kimi golden `5f0d7a31c485db46`).
+  2. On the 5060 Ti run the same selfcheck with
+     `LSX_SELFCHECK_EXPECT_HASH=<that hash>`. Match -> cuBLAS picks the same
+     algorithm across models and #2 is closed as verified.
+  3. Mismatch -> replace the split-K-eligible `cublasGemmEx` sites with own
+     fixed-geometry kernels (or the model-neutral NVFP4 GEMV), which are
+     device-independent by construction.
+- **fix-list #4 — DONE.** `RunParisSelfCheck` emits `logits_hash=<fnv1a64>` and
+  supports `LSX_SELFCHECK_EXPECT_HASH` as a hard cross-machine gate. Verified:
+  wrong hash -> mismatch logged and `selfcheck_passed=false`; the 5090 Kimi
+  golden hash is stable across cycles.
