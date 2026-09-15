@@ -64,9 +64,14 @@ RTX 5090, AOCC build `linux-release-znver4-aocc`, model DeepSeek-V4-Flash
    every handle (model_base/gemma/deepseek). Verified: external `:16:8` no
    longer flips the output (105 -> 83, matching default); DeepSeek 21.6 t/s (no
    perf loss); Kimi golden selfcheck Paris x3; fast suite 47/47.
-2. Replace `CUBLAS_GEMM_DEFAULT` where split-K is eligible with an explicit
-   deterministic algorithm (verify bit-identity across `:16:8`/`:4096:8` after
-   the pin).
-3. Gate `perf_calibration`/`gpu_perf` numeric knobs to device-keyed values that
-   do not read free memory; document that residency sizing is exempt.
-4. Add a cross-instance/workspace-variant selfcheck to CI for C-exact models.
+2. **Mandatory (R3 spans 5090 + 5060 Ti, different SM counts).** cuBLAS
+   heuristics are SM-count-dependent, so `CUBLAS_GEMM_DEFAULT` is not
+   cross-model safe even with the workspace pinned: replace split-K-eligible
+   GEMMs with an explicit deterministic algorithm (or our own fixed-geometry
+   kernels) and verify bit-identity across every supported model.
+3. Gate `perf_calibration`/`gpu_perf` numeric knobs to values that do not change
+   the numeric path across the supported models (device-dependent *perf* knobs
+   are fine; device-dependent *numerics* are not); document that residency sizing
+   is exempt.
+4. Add cross-model + workspace-variant selfchecks to CI (run on 5090 and
+   5060 Ti, and under `:16:8`/`:4096:8`) for C-exact models.
