@@ -359,12 +359,16 @@ bool EnsureCalibrated(const GpuPerfProfile &gpu,
         return false;
     }
     LsxPerfKnobs knobs = HeuristicKnobs(gpu).knobs;
-    knobs.gemv_max_mib = mib;
+    // R3 numeric contract §1.1.4: gemv_max_mib changes the GEMV numeric path,
+    // so a per-GPU calibrated value would make the arithmetic device-dependent
+    // and break cross-model bit-identity (5090 vs 5060 Ti). Keep the canonical
+    // value; per-GPU numeric tuning is a C-fast-only facility (explicit opt-in).
+    (void)mib;
     if (!SavePerfCache(gpu, knobs)) return false;
     SetCurrentKnobs(knobs, PerfSource::kCalibrated);
     ApplyKnobs(knobs, PerfSource::kCalibrated);
-    log::info("[perf] calibrated gemv_max_mib=" + std::to_string(mib) +
-              " (gpu '" + gpu.name + "')");
+    log::info("[perf] canonical knobs applied (gpu '" + gpu.name +
+              "'; per-GPU numeric calibration disabled for R3)");
     return true;
 }
 
