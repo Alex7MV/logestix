@@ -105,17 +105,21 @@ std::optional<LsxPerfKnobSet> BaseKnobs(const std::string &key)
 
 LsxPerfKnobSet HeuristicKnobs(const GpuPerfProfile &g)
 {
+    // R3 (numeric contract §1.1.4): the numeric path must not depend on device
+    // properties. Every knob that changes the arithmetic (GEMV path/limit,
+    // split-K threshold, TC on/off) is pinned to the SAME canonical values as
+    // the RTX 5090 base profile, so all GPUs in the supported set run the
+    // identical numeric path. Only non-numeric knobs (expert-cache residency,
+    // H2D/compute overlap) may be device-derived.
     LsxPerfKnobs k;
     k.tc_fast_math_default = (g.cc_major == 12);
     k.seq1_gemv_default = true;
-    const double bw = PeakBandwidthGbs(g);
-    if (bw > 0) {
-        const double scaled = 32.0 * bw / kRtx5090PeakGbs;
-        k.gemv_max_mib = static_cast<int>(std::clamp(scaled, 8.0, 64.0));
-    }
-    k.splitk_grid_min = (g.sm_count > 0 && g.sm_count < 160) ? 64 : 96;
+    k.gemv_large_default = true;   // canonical (was base-only)
+    k.gemv_max_mib = 32;           // canonical (was bandwidth-scaled)
+    k.splitk_grid_min = 96;        // canonical (was SM-count-derived)
     k.expert_slots_pct = 100;
-    k.dual_stream_staging = bw >= 768.0;
+    const double bw = PeakBandwidthGbs(g);
+    k.dual_stream_staging = bw >= 768.0;  // overlap only, not numerics
     return {k, PerfSource::kHeuristic};
 }
 

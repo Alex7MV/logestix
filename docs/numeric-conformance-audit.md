@@ -75,3 +75,16 @@ RTX 5090, AOCC build `linux-release-znver4-aocc`, model DeepSeek-V4-Flash
    is exempt.
 4. Add cross-model + workspace-variant selfchecks to CI (run on 5090 and
    5060 Ti, and under `:16:8`/`:4096:8`) for C-exact models.
+
+## Cross-model conformance (R3 spans RTX 5090 + RTX 5060 Ti, both sm_120)
+
+Operator requirement: bit-identity must hold across the supported GPU-model set,
+not just one SKU. Audit of device-dependent numeric paths:
+
+| Finding | Status |
+|---|---|
+| `HeuristicKnobs` (fallback for unknown GPUs, i.e. 5060 Ti) derived **numeric** knobs from device props: `gemv_large_default` (base-only), `gemv_max_mib` (bandwidth-scaled), `splitk_grid_min` (SM-count: 64 vs 96) — a device-conditional numeric path (§1.1.4). | **FIXED**: numeric knobs pinned to the canonical (5090-base) values; only non-numeric knobs (expert-cache residency, overlap `dual_stream_staging`) stay device-derived. `test_gpu_perf` updated to assert device-independence. |
+| `CUBLAS_GEMM_DEFAULT` heuristic is SM-count-dependent: 5090 (170 SMs) and 5060 Ti (~36 SMs) may select different algorithms for the same shape -> different bits. Workspace/atomics pinning does NOT fix this. | **Open (mandatory, fix-list #2)**: replace split-K-eligible GEMMs with an explicit deterministic algorithm or own fixed-geometry kernels; verify bit-identity across both models. |
+| `perf_calibration` writes `perf-cache/<gpu-key>.json`; if a calibration entry sets a numeric knob, it becomes device-dependent. | **To verify**: ensure calibration only overrides non-numeric knobs, or that numeric overrides are validated per model by the selfcheck. |
+| `lsx_tc_gemm.cu` `cudaGetDeviceProperties` probes (TC availability) | Same CC 12 across the set -> consistent; must never select a different numeric path per model (perf-only gating). |
+| Cross-model verification | Only RTX 5090 is available locally; the 5060 Ti run must be done on that box. CI hook (fix-list #4) should run the selfcheck on both and record a cross-model diff. |

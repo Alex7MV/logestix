@@ -69,27 +69,35 @@ TEST_CASE("ResolvePerfKnobs: committed base entry (RTX 5090)", "[gpu_perf]")
     REQUIRE(r.knobs.dual_stream_staging == true);
 }
 
-TEST_CASE("ResolvePerfKnobs: heuristic scales with bandwidth and SM count",
+TEST_CASE("ResolvePerfKnobs: heuristic keeps numeric knobs device-independent",
           "[gpu_perf]")
 {
+    // R3 (numeric contract §1.1.4): numeric knobs must not vary with device
+    // properties. The heuristic fallback (unknown GPU) therefore uses the SAME
+    // canonical numeric values as the base profile; only non-numeric knobs
+    // (overlap/residency) may be device-derived.
     GpuPerfProfile small = Rtx5090();
     small.name = "Unknown GPU X";
     small.sm_count = 64;
     small.bus_width_bits = 128;
-    small.memory_clock_khz = 1000000;   // 32 GB/s
+    small.memory_clock_khz = 1000000;   // low bandwidth
     small.cc_major = 11;                // non-Blackwell
     auto r = lsxcommon::perf::ResolvePerfKnobs(small);
     REQUIRE(r.source == lsxcommon::perf::PerfSource::kHeuristic);
-    REQUIRE(r.knobs.gemv_max_mib == 8);            // 32*32/1792 clamped low
-    REQUIRE(r.knobs.splitk_grid_min == 64);        // sm < 160
-    REQUIRE(r.knobs.dual_stream_staging == false); // bw < 768
-    REQUIRE(r.knobs.tc_fast_math_default == false); // only base-12 TC
+    REQUIRE(r.knobs.gemv_max_mib == 32);             // canonical, not scaled
+    REQUIRE(r.knobs.splitk_grid_min == 96);          // canonical, not SM-based
+    REQUIRE(r.knobs.gemv_large_default == true);     // canonical
+    REQUIRE(r.knobs.dual_stream_staging == false);   // overlap: bw-derived OK
+    REQUIRE(r.knobs.tc_fast_math_default == false);  // only CC 12
     REQUIRE(r.knobs.expert_slots_pct == 100);
 
     GpuPerfProfile blackwell = small;
     blackwell.cc_major = 12;
     auto rb = lsxcommon::perf::ResolvePerfKnobs(blackwell);
     REQUIRE(rb.knobs.tc_fast_math_default == true);
+    // Same numeric knobs regardless of SM count / bandwidth.
+    REQUIRE(rb.knobs.gemv_max_mib == r.knobs.gemv_max_mib);
+    REQUIRE(rb.knobs.splitk_grid_min == r.knobs.splitk_grid_min);
 }
 
 TEST_CASE("ResolvePerfKnobs: precedence env > CLI > base/heuristic",
