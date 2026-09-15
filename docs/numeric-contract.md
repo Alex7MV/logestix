@@ -26,7 +26,10 @@ Two implementation classes, named in code and in every kernel's header:
   logits. Allowed: bf16/fp16 activations, weight-only quantization, fused
   kernels with a strictly fixed and invariant accumulation order, exact-verify
   speculative decoding, CUDA graphs / PDL / multi-stream that do not reorder
-  numerics, TMA staging.
+  numerics, TMA staging. Explicitly required: deterministic GEMM execution
+  paths (e.g. forced deterministic cuBLAS tiling, static workspace size
+  allocation, and banned dynamic autotuning/heuristics across execution
+  environments).
 - **C-fast** — tolerance-class. Allowed (in addition): activation quantization
   (NVFP4/FP8/two-term), tensor-core W4A4/W8A8, arbitrary split-K / reordered
   accumulation, batch-shape-dependent kernels.
@@ -53,6 +56,10 @@ atomics in the reduce path, unseeded stochastic ops.
    opts in.
 5. Enabling any C-fast path requires: (a) explicit operator opt-in, (b) a
    quality harness result, (c) a tolerance bound recorded.
+6. **Workspace & Allocation Invariance:** to guarantee R3 across different
+   physical instances of the same GPU SKU, kernels must not alter execution
+   paths based on runtime host/device memory availability. All GEMM operations
+   must use explicit, fixed-size workspace bounds.
 
 ## 4. Verification obligations
 
