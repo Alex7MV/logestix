@@ -20,7 +20,7 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 suppo
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
-| CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`) |
+| CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`); link/handle-lifecycle only — production GEMM calls are 0 (`lsx_gemv`) |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 
 Версии принуждаются кодом: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
@@ -80,8 +80,9 @@ label'ов в том же коммите, реестр guard-тестов и WIN
   `converter.cpp` (GPU NVFP4-квантование), `loader.cpp`, `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, модельно-нейтральный
-  слой `lsx_inference_nvfp4.cu`, `expert_store.h`. Модели: glm / qwen / deepseek /
-  gemma / kimi.
+  слой `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
+  (`RunLxGemmVec`/`RunLxGemmVecWT`; единственный GEMM-путь), `expert_store.h`.
+  Модели: glm / qwen / deepseek / gemma / kimi.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
@@ -140,7 +141,9 @@ SelfCheck/тесты), соглашение об именах файлов мо�
 - CUDA `.cu` вынесены в отдельные OBJECT-библиотеки (`lsxcommon_cu`,
   `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), линкуются в `lsxcommon`
   PUBLIC — это изолирует NVCC от MSVC-флагов. `cudart`/`cublas` находятся через
-  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями.
+  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями; cuBLAS
+  линкуется только ради link/handle-lifecycle — его GEMM не вызывается (см.
+  `lsx_gemv`), workspace/atomics-пин оставлен как страховка на будущее.
 - `lsxnetwork` — STATIC; simdjson, libzmq-static и Threads PUBLIC
   (STATIC-библиотека ре-экспортирует link-зависимости), spdlog PRIVATE.
 - Каждое app из `apps/*/` линкует `lsxcommon` PRIVATE; Catch2 v3.16.0
