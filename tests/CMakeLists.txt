@@ -2928,6 +2928,40 @@ target_include_directories(test_kimi_moe_expert_cache PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include")
 add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
 
+# ── Nemotron-3.5 host reference math (header-only, no CUDA) ───────────────
+add_executable(test_nemotron_moe_math test_nemotron_moe_math.cpp)
+target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_math PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_nemotron_moe_math COMMAND test_nemotron_moe_math)
+
+# ── Тесты Nemotron-3.5-Lightning-30B-A3B (гибрид Mamba-2/MoE/attention) ───
+add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
+target_compile_definitions(test_nemotron_moe_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_nemotron_moe_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_convert PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+
+if(WIN32)
+    add_custom_command(TARGET test_nemotron_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_convert>"
+    )
+    add_custom_command(TARGET test_nemotron_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_convert>"
+    )
+endif()
+
+add_test(NAME test_nemotron_moe_convert COMMAND test_nemotron_moe_convert)
+set_tests_properties(test_nemotron_moe_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Тесты Qwen3.8-Flash-Next (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
 target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
@@ -3238,6 +3272,7 @@ set_tests_properties(
     test_model_independence_guard
     test_ctest_labels_guard
     test_model_suite_guard
+    test_nemotron_moe_math
     PROPERTIES LABELS fast)
 
 set_tests_properties(
@@ -3251,6 +3286,7 @@ set_tests_properties(
     test_qwen_moe_36_convert
     test_qwen_moe_exp_convert
     test_nvfp4_pack
+    test_nemotron_moe_convert
     PROPERTIES LABELS convert)
 
 set_tests_properties(
