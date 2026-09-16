@@ -372,6 +372,94 @@ __global__ void lsx_nvfp4_gemv_kernel(
     }
 }
 
+// Batched expert GEMV: one expert per gridDim.y column. `x_stride == 0`
+// broadcasts the shared input row; `x_stride > 0` reads expert e's own slice.
+// Body is the plain lsx_nvfp4_gemv_kernel inner loop (KP k-slicing, fixed
+// 2-chain merge), so each expert row is bit-identical to the single call.
+struct LsxExpertBatchPtrs {
+    const uint8_t *packed[8];
+    const uint8_t *scales[8];
+    float gs[8];
+};
+
+template <int KP>
+__global__ void lsx_nvfp4_gemv_expert_batch_kernel(
+    const __half *__restrict__ x, LsxExpertBatchPtrs ptrs,
+    __half *__restrict__ y, int K, int N, int x_stride, bool acc_in)
+{
+    constexpr int WARPS = 8;
+    constexpr int ROWS = WARPS / KP;
+    static_assert(ROWS >= 1 && KP <= WARPS);
+    __shared__ float sp[WARPS];
+
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int e = blockIdx.y;
+    const __half *xe = x + static_cast<int64_t>(e) * x_stride;
+    const uint8_t *packed = ptrs.packed[e];
+    const uint8_t *scales = ptrs.scales[e];
+    const float gs = ptrs.gs[e];
+
+    float acc = 0.0f;
+    const int row = blockIdx.x * ROWS + (warp / KP);
+    if (row < N) {
+        const int k_half = K >> 1;
+        const uint8_t *wrow = packed + static_cast<int64_t>(row) * k_half;
+        const uint8_t *srow = scales + static_cast<int64_t>(row) * (K >> 4);
+        const int kb = (K / KP) * (warp % KP);
+        const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
+        const int chunks = (K / KP) >> 5;
+        float acc0 = 0.0f, acc1 = 0.0f;
+        const bool x_vec = (reinterpret_cast<uintptr_t>(xe) & 3u) == 0;
+        for (int c = lane; c < chunks; c += 32) {
+            const uint4 pw = wv[c];
+            const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
+            const int sb = (kb >> 4) + 2 * c;
+            const float sc0 = E4M3ScaleToFloat(srow[sb]);
+            const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
+            const int xb = kb + c * 32;
+            const __half2 *xh =
+                x_vec ? reinterpret_cast<const __half2 *>(xe + xb) : nullptr;
+#pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const bool first_block = b < 8;
+                const float scl = first_block ? sc0 : sc1;
+                float xv0, xv1;
+                if (x_vec) {
+                    const __half2 pair = xh[b];
+                    xv0 = __half2float(pair.x);
+                    xv1 = __half2float(pair.y);
+                } else {
+                    xv0 = __half2float(xe[xb + 2 * b]);
+                    xv1 = __half2float(xe[xb + 2 * b + 1]);
+                }
+                acc0 += xv0 * E2M1Value(pb[b] & 0xF) * scl;
+                acc1 += xv1 * E2M1Value(pb[b] >> 4) * scl;
+            }
+        }
+        acc = acc0 + acc1;
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) sp[warp] = acc;
+    __syncthreads();
+    if (lane == 0 && (warp % KP) == 0) {
+        const int wbase = (warp / KP) * KP;
+        float t = 0.0f;
+#pragma unroll
+        for (int j = 0; j < KP; ++j) t += sp[wbase + j];
+        const int r = blockIdx.x * ROWS + (warp / KP);
+        if (r < N) {
+            const float v = t * gs;
+            __half *yr = y + static_cast<int64_t>(e) * N + r;
+            *yr = acc_in ? __float2half(__half2float(*yr) + v)
+                         : __float2half(v);
+        }
+    }
+}
+
 // seq==1 warp-per-row GEMV (27B decode round): one warp owns a whole
 // output row; 8 warps per block. No shared-memory partial merge and no
 // __syncthreads -- the per-row reduction is warp-local (__shfl_down_sync),
@@ -565,7 +653,59 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GateUpPair(
     default: return launch(std::integral_constant<int, 1>{});
     }
 }
+
 } // namespace
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+    cudaStream_t stream, const __half *x, const uint8_t *const *packed,
+    const uint8_t *const *scales, const float *gs, int count, int x_stride,
+    __half *y, int K, int N, bool acc)
+{
+    if (!x || !y || !packed || !scales || !gs || count <= 0 || count > 8 ||
+        K <= 0 || N <= 0)
+        return cudaErrorInvalidValue;
+    if ((K & 31) != 0) return cudaErrorInvalidValue;
+    // Preserve the numeric class when the streaming GEMV is not active
+    // (kOff / r3): fall back to one dispatcher call per expert, exactly as a
+    // caller looping RunLsxNvfp4Gemm would.
+    if (!(LsxTcFastMath() && LsxSeq1Gemv())) {
+        for (int e = 0; e < count; ++e) {
+            cudaError_t er = RunLsxNvfp4Gemm(
+                stream, x + static_cast<int64_t>(e) * x_stride, packed[e],
+                scales[e], gs[e], y + static_cast<int64_t>(e) * N, 1, K, N,
+                acc);
+            if (er != cudaSuccess) return er;
+        }
+        return cudaSuccess;
+    }
+    LsxExpertBatchPtrs ptrs{};
+    for (int e = 0; e < count; ++e) {
+        if (!packed[e] || !scales[e]) return cudaErrorInvalidValue;
+        ptrs.packed[e] = packed[e];
+        ptrs.scales[e] = scales[e];
+        ptrs.gs[e] = gs[e];
+    }
+    int kp = 1;
+    for (int cand : {8, 4, 2}) {
+        if ((K / cand) >= 1024 &&
+            (static_cast<int64_t>(N) * cand) >= 1024) { kp = cand; break; }
+    }
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const dim3 grid((N + ROWS - 1) / ROWS, count);
+        lsx_nvfp4_gemv_expert_batch_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
+            x, ptrs, y, K, N, x_stride, acc);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
 
 cudaError_t RunLsxNvfp4Gemm(    cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,

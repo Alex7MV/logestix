@@ -14,6 +14,7 @@
 
 #include <cuda_fp16.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace lsxcommon::nemotron_moe {
@@ -199,7 +200,8 @@ bool AllocNemotronSession(const NemotronIndex &idx, int max_seq, NmSession &s,
         !alloc_f(s.v, kv_total) || !alloc_f(s.attn, attn_hd_total) ||
         !alloc_f(s.router_logits, s.num_experts) || !alloc_f(s.topk_w, s.topk) ||
         !alloc_f(s.expert_acc, s.H) || !alloc_f(s.head_logits, idx.vocab_size) ||
-        !alloc_h(s.proj16, in_proj) || !alloc_h(s.out16, s.H)) {
+        !alloc_h(s.proj16, std::max(in_proj, s.topk * idx.moe_intermediate_size)) ||
+        !alloc_h(s.out16, std::max(s.H, s.topk * s.H))) {
         error = "session scratch alloc failed";
         s.Free();
         return false;
@@ -338,50 +340,51 @@ cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
             RunNemotronRouter(s.router_logits, lw.d_router_bias, s.num_experts,
                               s.topk, frozen::kRoutedScale, s.topk_w, s.topk_i,
                               stream);
-            std::vector<float> tw(s.topk);
             std::vector<int> ti(s.topk);
-            if (cudaMemcpyAsync(tw.data(), s.topk_w, sizeof(float) * s.topk,
-                                cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
-                cudaMemcpyAsync(ti.data(), s.topk_i, sizeof(int) * s.topk,
+            if (cudaMemcpyAsync(ti.data(), s.topk_i, sizeof(int) * s.topk,
                                 cudaMemcpyDeviceToHost, stream) != cudaSuccess)
                 return cudaErrorUnknown;
             if (cudaStreamSynchronize(stream) != cudaSuccess)
                 return cudaErrorUnknown;
 
             cudaMemsetAsync(s.expert_acc, 0, sizeof(float) * H, stream);
+            const int I = w.experts[l][ti[0]].up.rows;
+            const int SI = lw.shared_up.rows;
+            std::vector<const uint8_t *> up_p(s.topk), up_s(s.topk);
+            std::vector<const uint8_t *> dn_p(s.topk), dn_s(s.topk);
+            std::vector<float> up_g(s.topk), dn_g(s.topk);
             for (int t = 0; t < s.topk; ++t) {
                 const NmExpertWeight &ew = w.experts[l][ti[t]];
-                e = RunLsxNvfp4Gemm(stream, s.normed, ew.up.d_packed,
-                                    ew.up.d_scales, ew.up.global_scale, s.proj16,
-                                    1, H, ew.up.rows);
-                if (e != cudaSuccess) return e;
-                HalfToFloat(s.proj16, ew.up.rows, s.ssm_out, stream);
-                RunNemotronRelu2(s.ssm_out, ew.up.rows, s.ssm_out, stream);
-                FloatToHalf(s.ssm_out, ew.up.rows, s.proj16, stream);
-                e = RunLsxNvfp4Gemm(stream, s.proj16, ew.down.d_packed,
-                                    ew.down.d_scales, ew.down.global_scale,
-                                    s.out16, 1, ew.down.cols, ew.down.rows);
-                if (e != cudaSuccess) return e;
-                HalfToFloat(s.out16, H, s.ssm_out, stream);
-                axpy_f32_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(
-                    s.expert_acc, s.ssm_out, tw[t], H);
+                up_p[t] = ew.up.d_packed;
+                up_s[t] = ew.up.d_scales;
+                up_g[t] = ew.up.global_scale;
+                dn_p[t] = ew.down.d_packed;
+                dn_s[t] = ew.down.d_scales;
+                dn_g[t] = ew.down.global_scale;
             }
+            // Routed experts in two batched launches (one per projection).
+            e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, s.normed, up_p.data(), up_s.data(), up_g.data(), s.topk,
+                /*x_stride=*/0, s.proj16, H, I, false);
+            if (e != cudaSuccess) return e;
+            RunNemotronRelu2Half(s.proj16, s.topk * I, stream);
+            e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, s.proj16, dn_p.data(), dn_s.data(), dn_g.data(), s.topk,
+                /*x_stride=*/I, s.out16, I, H, false);
+            if (e != cudaSuccess) return e;
+            RunNemotronMoeWeightedSum(s.out16, s.topk_w, s.topk, H,
+                                      s.expert_acc, /*add=*/false, stream);
             // Shared expert (ungated relu2 MLP, every token).
             e = RunLsxNvfp4Gemm(stream, s.normed, lw.shared_up.d_packed,
                                 lw.shared_up.d_scales, lw.shared_up.global_scale,
-                                s.proj16, 1, H, lw.shared_up.rows);
+                                s.proj16, 1, H, SI);
             if (e != cudaSuccess) return e;
-            HalfToFloat(s.proj16, lw.shared_up.rows, s.ssm_out, stream);
-            RunNemotronRelu2(s.ssm_out, lw.shared_up.rows, s.ssm_out, stream);
-            FloatToHalf(s.ssm_out, lw.shared_up.rows, s.proj16, stream);
+            RunNemotronRelu2Half(s.proj16, SI, stream);
             e = RunLsxNvfp4Gemm(stream, s.proj16, lw.shared_down.d_packed,
                                 lw.shared_down.d_scales,
-                                lw.shared_down.global_scale, s.out16, 1,
-                                lw.shared_down.cols, lw.shared_down.rows);
+                                lw.shared_down.global_scale, s.out16, 1, SI, H);
             if (e != cudaSuccess) return e;
-            HalfToFloat(s.out16, H, s.ssm_out, stream);
-            axpy_f32_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(
-                s.expert_acc, s.ssm_out, 1.0f, H);
+            RunNemotronAddHalfToF32(s.out16, H, s.expert_acc, stream);
             FloatToHalf(s.expert_acc, H, s.sub, stream);
             residual_add_kernel<<<Grid1D(H, 256), 256, 0, stream>>>(s.h, s.sub,
                                                                     H);

@@ -7,9 +7,14 @@
 #include "nemotron_moe_device_math.h"
 #include "nemotron_moe_kernels.h"
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/safetensors_gpu.h"
+
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 using namespace lsxcommon::nemotron_moe;
@@ -290,6 +295,190 @@ TEST_CASE("relu2 activation", "[nemotron][kernels]")
         CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-6f));
     cudaFree(d_x); cudaFree(d_o);
 }
+
+TEST_CASE("FP16 relu2 and routed weighted-sum helpers match the reference",
+          "[nemotron][kernels]")
+{
+    const int n = 8;
+    std::vector<__half> x(n);
+    for (int i = 0; i < n; ++i) x[i] = __float2half(0.1f * (i - 4));
+    std::vector<__half> ref(n);
+    for (int i = 0; i < n; ++i) {
+        const float v = __half2float(x[i]);
+        const float r = v > 0.0f ? v : 0.0f;
+        ref[i] = __float2half(r * r);
+    }
+    __half *d_x = ToDevice(x);
+    RunNemotronRelu2Half(d_x, n, 0);
+    cudaDeviceSynchronize();
+    auto got = FromDevice(d_x, n);
+    for (int i = 0; i < n; ++i)
+        CHECK(__half2float(got[i]) == __half2float(ref[i]));
+
+    const int count = 3;
+    std::vector<__half> y(count * n);
+    for (int i = 0; i < count * n; ++i)
+        y[i] = __float2half(0.05f * (i + 1));
+    std::vector<float> w = {0.5f, 1.0f, 2.0f};
+    std::vector<float> ref_acc(n, 0.0f);
+    for (int j = 0; j < n; ++j)
+        for (int e = 0; e < count; ++e)
+            ref_acc[j] += w[e] * __half2float(y[e * n + j]);
+    __half *d_y = ToDevice(y);
+    float *d_w = ToDevice(w);
+    float *d_acc = nullptr;
+    cudaMalloc(&d_acc, n * sizeof(float));
+    RunNemotronMoeWeightedSum(d_y, d_w, count, n, d_acc, false, 0);
+    cudaDeviceSynchronize();
+    auto acc = FromDevice(d_acc, n);
+    for (int j = 0; j < n; ++j)
+        CHECK(acc[j] == Catch::Approx(ref_acc[j]).margin(1e-6f));
+
+    std::vector<__half> sh(n);
+    for (int i = 0; i < n; ++i) sh[i] = __float2half(0.25f * (i + 1));
+    __half *d_sh = ToDevice(sh);
+    RunNemotronAddHalfToF32(d_sh, n, d_acc, 0);
+    cudaDeviceSynchronize();
+    auto acc2 = FromDevice(d_acc, n);
+    for (int j = 0; j < n; ++j)
+        CHECK(acc2[j] ==
+              Catch::Approx(ref_acc[j] + __half2float(sh[j])).margin(1e-6f));
+
+    cudaFree(d_x); cudaFree(d_y); cudaFree(d_w); cudaFree(d_acc); cudaFree(d_sh);
+}
+
+TEST_CASE("batched expert GEMV is bit-identical to per-expert GEMV",
+          "[nemotron][kernels]")
+{
+    const int K = 512, N = 64, count = 3;
+    const bool fm = lsxcommon::lsx_nvfp4::LsxTcFastMath();
+    const bool s1 = lsxcommon::lsx_nvfp4::LsxSeq1Gemv();
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+
+    std::vector<std::vector<uint8_t>> packed(count), scales(count);
+    std::vector<float> gs(count);
+    std::vector<const uint8_t *> dp(count), ds(count);
+    std::vector<uint8_t *> d_packed(count), d_scales(count);
+    for (int e = 0; e < count; ++e) {
+        std::vector<uint8_t> raw((size_t)K * N * 2);
+        for (size_t i = 0; i < raw.size(); ++i)
+            raw[i] = static_cast<uint8_t>((i * (e + 3) + 7) & 0xff);
+        if (!lsxcommon::gpu::quantize_tensor_gpu(raw.data(), (int64_t)K * N,
+                                                 "BF16", nullptr, {N, K}, {},
+                                                 packed[e], scales[e], gs[e]))
+            FAIL("quantize_tensor_gpu failed");
+        cudaMalloc(&d_packed[e], packed[e].size());
+        cudaMemcpy(d_packed[e], packed[e].data(), packed[e].size(),
+                   cudaMemcpyHostToDevice);
+        cudaMalloc(&d_scales[e], scales[e].size());
+        cudaMemcpy(d_scales[e], scales[e].data(), scales[e].size(),
+                   cudaMemcpyHostToDevice);
+        dp[e] = d_packed[e];
+        ds[e] = d_scales[e];
+    }
+    std::vector<__half> x(K);
+    for (int i = 0; i < K; ++i) x[i] = __float2half(0.01f * (i + 1));
+    __half *d_x = ToDevice(x);
+    __half *d_ref = nullptr, *d_batch = nullptr;
+    cudaMalloc(&d_ref, (size_t)count * N * sizeof(__half));
+    cudaMalloc(&d_batch, (size_t)count * N * sizeof(__half));
+    for (int e = 0; e < count; ++e)
+        lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+            0, d_x, dp[e], ds[e], gs[e], d_ref + (size_t)e * N, K, N);
+    cudaDeviceSynchronize();
+    lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+        0, d_x, dp.data(), ds.data(), gs.data(), count, /*x_stride=*/0, d_batch,
+        K, N);
+    cudaDeviceSynchronize();
+    auto ref = FromDevice(d_ref, (size_t)count * N);
+    auto got = FromDevice(d_batch, (size_t)count * N);
+    for (size_t i = 0; i < ref.size(); ++i)
+        CHECK(std::memcmp(&ref[i], &got[i], sizeof(__half)) == 0);
+
+    for (int e = 0; e < count; ++e) { cudaFree(d_packed[e]); cudaFree(d_scales[e]); }
+    cudaFree(d_x); cudaFree(d_ref); cudaFree(d_batch);
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(fm);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(s1);
+}
+
+#if defined(NDEBUG)
+TEST_CASE("budget: batched expert GEMV (6 experts)", "[nemotron][kernels][budget]")
+{
+    const int K = 2688, N = 1856, count = 6;
+    const bool fm = lsxcommon::lsx_nvfp4::LsxTcFastMath();
+    const bool s1 = lsxcommon::lsx_nvfp4::LsxSeq1Gemv();
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+
+    std::vector<std::vector<uint8_t>> packed(count), scales(count);
+    std::vector<float> gs(count);
+    std::vector<const uint8_t *> dp(count), ds(count);
+    std::vector<uint8_t *> d_packed(count), d_scales(count);
+    for (int e = 0; e < count; ++e) {
+        std::vector<uint8_t> raw((size_t)K * N * 2);
+        for (size_t i = 0; i < raw.size(); ++i)
+            raw[i] = static_cast<uint8_t>((i * (e + 3) + 11) & 0xff);
+        REQUIRE(lsxcommon::gpu::quantize_tensor_gpu(
+            raw.data(), (int64_t)K * N, "BF16", nullptr, {N, K}, {}, packed[e],
+            scales[e], gs[e]));
+        cudaMalloc(&d_packed[e], packed[e].size());
+        cudaMemcpy(d_packed[e], packed[e].data(), packed[e].size(),
+                   cudaMemcpyHostToDevice);
+        cudaMalloc(&d_scales[e], scales[e].size());
+        cudaMemcpy(d_scales[e], scales[e].data(), scales[e].size(),
+                   cudaMemcpyHostToDevice);
+        dp[e] = d_packed[e];
+        ds[e] = d_scales[e];
+    }
+    std::vector<__half> x(K, __float2half(0.01f));
+    __half *d_x = ToDevice(x);
+    __half *d_y = nullptr;
+    cudaMalloc(&d_y, (size_t)count * N * sizeof(__half));
+    void *d_flush = nullptr;
+    cudaMalloc(&d_flush, size_t{128} << 20);
+
+    cudaEvent_t e0 = nullptr, e1 = nullptr;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    const int reps = 100;
+    float sum_single = 0.0f, sum_batch = 0.0f;
+    for (int r = 0; r < reps; ++r) {
+        cudaMemsetAsync(d_flush, 0, size_t{128} << 20, 0);
+        cudaEventRecord(e0, 0);
+        for (int e = 0; e < count; ++e)
+            lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                0, d_x, dp[e], ds[e], gs[e], d_y + (size_t)e * N, K, N);
+        cudaEventRecord(e1, 0);
+        cudaEventSynchronize(e1);
+        float ms = 0.0f;
+        cudaEventElapsedTime(&ms, e0, e1);
+        sum_single += ms;
+
+        cudaMemsetAsync(d_flush, 0, size_t{128} << 20, 0);
+        cudaEventRecord(e0, 0);
+        lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+            0, d_x, dp.data(), ds.data(), gs.data(), count, 0, d_y, K, N);
+        cudaEventRecord(e1, 0);
+        cudaEventSynchronize(e1);
+        cudaEventElapsedTime(&ms, e0, e1);
+        sum_batch += ms;
+    }
+    const float single_us = sum_single / reps * 1000.0f;
+    const float batch_us = sum_batch / reps * 1000.0f;
+    INFO("expert GEMV x6: single=" << single_us << " us  batch=" << batch_us
+                                   << " us");
+    CHECK(batch_us < single_us * 0.6f);
+    CHECK(batch_us < 80.0f);
+
+    cudaFree(d_x); cudaFree(d_y); cudaFree(d_flush);
+    for (int e = 0; e < count; ++e) { cudaFree(d_packed[e]); cudaFree(d_scales[e]); }
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(fm);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(s1);
+}
+#endif
 
 #if defined(NDEBUG)
 // Perf budget (perf-tuning-a-model Step 3): the router top-k runs once per MoE

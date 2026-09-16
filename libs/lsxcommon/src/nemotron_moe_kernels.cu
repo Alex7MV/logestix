@@ -165,6 +165,36 @@ __global__ void relu2_kernel(const float *__restrict__ x, int n,
     out[i] = r * r;
 }
 
+__global__ void relu2_half_kernel(__half *__restrict__ x, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float v = __half2float(x[i]);
+    const float r = v > 0.0f ? v : 0.0f;
+    x[i] = __float2half(r * r);
+}
+
+__global__ void moe_weighted_sum_kernel(const __half *__restrict__ y,
+                                        const float *__restrict__ w, int count,
+                                        int n, float *__restrict__ acc,
+                                        int add)
+{
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n) return;
+    float s = add ? acc[j] : 0.0f;
+    for (int e = 0; e < count; ++e)
+        s += w[e] * __half2float(y[static_cast<size_t>(e) * n + j]);
+    acc[j] = s;
+}
+
+__global__ void add_half_to_f32_kernel(const __half *__restrict__ x, int n,
+                                       float *__restrict__ acc)
+{
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n) return;
+    acc[j] += __half2float(x[j]);
+}
+
 } // namespace
 
 void RunNemotronRouter(const float *logits, const float *e_score_bias, int E,
@@ -182,6 +212,30 @@ void RunNemotronRelu2(const float *x, int n, float *out, cudaStream_t stream)
     const int threads = 256;
     relu2_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(x, n,
                                                                      out);
+}
+
+void RunNemotronRelu2Half(__half *x, int n, cudaStream_t stream)
+{
+    const int threads = 256;
+    relu2_half_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(x,
+                                                                           n);
+}
+
+void RunNemotronMoeWeightedSum(const __half *y, const float *weights, int count,
+                               int n, float *acc, bool add,
+                               cudaStream_t stream)
+{
+    const int threads = 256;
+    moe_weighted_sum_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+        y, weights, count, n, acc, add ? 1 : 0);
+}
+
+void RunNemotronAddHalfToF32(const __half *x, int n, float *acc,
+                             cudaStream_t stream)
+{
+    const int threads = 256;
+    add_half_to_f32_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+        x, n, acc);
 }
 
 void RunNemotronConvStep(const float *xBC, const float *w, const float *bias,

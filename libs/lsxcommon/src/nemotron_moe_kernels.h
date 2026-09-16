@@ -5,6 +5,7 @@
 // transformers 5.15.1 modeling_nemotron_h.py.
 
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 #include "nemotron_moe_constants.h"
 
@@ -61,5 +62,19 @@ void RunNemotronRouter(const float *logits, const float *e_score_bias, int E,
 
 // relu2 activation: out[i] = max(x[i],0)^2.
 void RunNemotronRelu2(const float *x, int n, float *out, cudaStream_t stream);
+
+// In-place FP16 relu2 (applied to NVFP4 GEMV outputs to skip the F32
+// round-trip). Bit-identical to float relu2 then round-to-half.
+void RunNemotronRelu2Half(__half *x, int n, cudaStream_t stream);
+
+// Routed-expert accumulation over a batched down-GEMV output [count, n]:
+//   acc[j] = (add ? acc[j] : 0) + Σ_e w[e] * float(y[e*n + j])
+void RunNemotronMoeWeightedSum(const __half *y, const float *weights, int count,
+                               int n, float *acc, bool add,
+                               cudaStream_t stream);
+
+// acc[j] += float(x[j]); used to add the ungated shared expert.
+void RunNemotronAddHalfToF32(const __half *x, int n, float *acc,
+                             cudaStream_t stream);
 
 } // namespace lsxcommon::nemotron_moe

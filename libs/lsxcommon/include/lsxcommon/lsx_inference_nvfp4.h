@@ -165,6 +165,18 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int K, int N, bool acc = false);
 
+// Batched seq==1 streaming NVFP4 GEMV: `count` independent weights (routed
+// experts), one block-column per expert on gridDim.y. `x_stride == 0` applies
+// the same input row to every expert (up projection); `x_stride > 0` reads
+// expert e's own input slice x + e*x_stride (down projection over the
+// contiguous relu²(up) outputs). Same per-row math and k-order as
+// RunLsxNvfp4GemmSeq1GemmV, so each expert's row is bit-identical to the
+// single call. count <= 8.
+cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+    cudaStream_t stream, const __half *x, const uint8_t *const *packed,
+    const uint8_t *const *scales, const float *gs, int count, int x_stride,
+    __half *y, int K, int N, bool acc = false);
+
 // Fused gate/up streaming GEMV for seq==1: W is the contiguous
 // [2*n_half, K] NVFP4 pack ([n_half, K] gate rows followed by [n_half, K]
 // up rows; E4M3 scale rows follow the same split). Rows < n_half scale by
