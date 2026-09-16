@@ -81,6 +81,10 @@ const PerfModel kQwen27 = {
     "qwen3.8-27b", "Qwen3.8-27B", "The capital of France is", 2048};
 const PerfModel kQwen35_9B = {
     "qwen3.5-9b", "Qwen3.5-9B", "The capital of France is", 2048};
+const PerfModel kNemotron = {
+    "nemotron-3.5-lightning-30b-a3b",
+    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "The capital of France is",
+    2048};
 
 std::string BaselinePath()
 {
@@ -289,6 +293,11 @@ TEST_CASE("perf baseline: qwen3.8-flash-next", "[perf]")
 TEST_CASE("perf baseline: kimi-k2.7-code", "[perf]")
 {
     RunPerfModel(kKimi);
+}
+
+TEST_CASE("perf baseline: nemotron-3.5-lightning-30b-a3b", "[perf]")
+{
+    RunPerfModel(kNemotron);
 }
 
 TEST_CASE("perf baseline: qwen3.8-27b", "[perf]")

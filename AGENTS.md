@@ -81,7 +81,12 @@ label'ов в том же коммите, реестр guard-тестов и WIN
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, модельно-нейтральный
   слой `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; единственный GEMM-путь), `expert_store.h`.
-  Модели: glm / qwen / deepseek / gemma / kimi.
+  Модели: glm / qwen / deepseek / gemma / kimi / nemotron (NemotronH-гибрид
+  Mamba-2 + MoE + full-attention: `nemotron_moe_constants.h` (frozen passport),
+  `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp`, `nemotron_moe_model.*`,
+  `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
+  `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
+  `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

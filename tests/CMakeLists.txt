@@ -1531,6 +1531,15 @@ set_tests_properties(test_perf_baseline_kimi_k2_7_code PROPERTIES
 set_tests_properties(test_perf_baseline_kimi_k2_7_code
     PROPERTIES LABELS perf)
 
+add_test(NAME test_perf_baseline_nemotron
+         COMMAND test_perf_baseline "perf baseline: nemotron-3.5-lightning-30b-a3b")
+set_tests_properties(test_perf_baseline_nemotron PROPERTIES
+    TIMEOUT 2400
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
+set_tests_properties(test_perf_baseline_nemotron
+    PROPERTIES LABELS perf)
+
 # ── Тест E8M0 -> pow2-E4M3 scale-пары (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
