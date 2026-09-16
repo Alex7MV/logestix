@@ -49,4 +49,14 @@ void RunNemotronAttnDecode(const float *q, const float *k_cache,
                            int head_dim, int seq_len, float scale, float *out,
                            cudaStream_t stream);
 
+// Sigmoid top-k router with e_score_correction_bias (n_group == 1 in this
+// checkpoint, so the group stage is the identity). Bias selects only.
+//   logits [E] F32; weights [k]; indices [k].
+void RunNemotronRouter(const float *logits, const float *e_score_bias, int E,
+                       int k, float scale, float *weights, int *indices,
+                       cudaStream_t stream);
+
+// relu2 activation: out[i] = max(x[i],0)^2.
+void RunNemotronRelu2(const float *x, int n, float *out, cudaStream_t stream);
+
 } // namespace lsxcommon::nemotron_moe

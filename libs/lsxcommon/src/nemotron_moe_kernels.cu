@@ -103,7 +103,68 @@ __global__ void gated_rmsnorm_kernel(const float *__restrict__ x,
     }
 }
 
+__global__ void router_kernel(const float *__restrict__ logits,
+                              const float *__restrict__ bias, int E, int k,
+                              float scale, float *__restrict__ weights,
+                              int *__restrict__ indices)
+{
+    extern __shared__ float sh[];  // [E] sigmoid scores, [E] choice + bias
+    float *s = sh;
+    float *ch = sh + E;
+    const int e = threadIdx.x;
+    if (e < E) {
+        const float sg = 1.0f / (1.0f + expf(-logits[e]));
+        s[e] = sg;
+        ch[e] = sg + bias[e];
+    }
+    __syncthreads();
+    if (e == 0) {
+        for (int t = 0; t < k; ++t) {
+            int best = -1;
+            for (int j = 0; j < E; ++j) {
+                bool taken = false;
+                for (int p = 0; p < t; ++p)
+                    if (indices[p] == j) taken = true;
+                if (taken) continue;
+                if (best < 0 || ch[j] > ch[best]) best = j;
+            }
+            indices[t] = best;
+        }
+        float sum = 0.0f;
+        for (int t = 0; t < k; ++t) {
+            weights[t] = s[indices[t]];
+            sum += weights[t];
+        }
+        const float denom = sum + 1e-20f;
+        for (int t = 0; t < k; ++t) weights[t] = weights[t] / denom * scale;
+    }
+}
+
+__global__ void relu2_kernel(const float *__restrict__ x, int n,
+                             float *__restrict__ out)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float r = x[i] > 0.0f ? x[i] : 0.0f;
+    out[i] = r * r;
+}
+
 } // namespace
+
+void RunNemotronRouter(const float *logits, const float *e_score_bias, int E,
+                       int k, float scale, float *weights, int *indices,
+                       cudaStream_t stream)
+{
+    router_kernel<<<1, E, 2 * E * sizeof(float), stream>>>(
+        logits, e_score_bias, E, k, scale, weights, indices);
+}
+
+void RunNemotronRelu2(const float *x, int n, float *out, cudaStream_t stream)
+{
+    const int threads = 256;
+    relu2_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(x, n,
+                                                                     out);
+}
 
 void RunNemotronConvStep(const float *xBC, const float *w, const float *bias,
                          const float *state_in, float *state_out, float *out,

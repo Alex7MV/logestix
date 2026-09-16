@@ -218,3 +218,77 @@ TEST_CASE("GQA decode attention matches the host softmax reference",
     cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_o);
 }
 
+TEST_CASE("sigmoid top-k router matches the host reference", "[nemotron][kernels]")
+{
+    const int E = 8, k = 2;
+    const float scale = 2.5f;
+    std::vector<float> logits = {0.0f, 1.0f, 2.0f, -1.0f, 0.5f, -0.5f, 3.0f, -2.0f};
+    std::vector<float> bias(E, 0.0f);
+
+    std::vector<float> ref_w(k);
+    std::vector<int> ref_i(k);
+    ref::RouterTopK(logits.data(), bias.data(), E, k, scale, ref_w.data(),
+                    ref_i.data());
+
+    float *d_l = ToDevice(logits), *d_b = ToDevice(bias);
+    float *d_w = nullptr;
+    int *d_i = nullptr;
+    cudaMalloc(&d_w, k * sizeof(float));
+    cudaMalloc(&d_i, k * sizeof(int));
+    RunNemotronRouter(d_l, d_b, E, k, scale, d_w, d_i, 0);
+    cudaDeviceSynchronize();
+    auto got_w = FromDevice(d_w, k);
+    auto got_i = FromDevice(d_i, k);
+    for (int t = 0; t < k; ++t) {
+        CHECK(got_i[t] == ref_i[t]);
+        CHECK(got_w[t] == Catch::Approx(ref_w[t]).margin(1e-5f));
+    }
+    cudaFree(d_l); cudaFree(d_b); cudaFree(d_w); cudaFree(d_i);
+}
+
+TEST_CASE("router e_score_correction_bias selects without scaling",
+          "[nemotron][kernels]")
+{
+    const int E = 8, k = 1;
+    const float scale = 2.5f;
+    std::vector<float> logits = {0.0f, 1.0f, 2.0f, -1.0f, 0.5f, -0.5f, 0.0f, -2.0f};
+    std::vector<float> bias(E, 0.0f);
+    bias[7] = 10.0f;  // push expert 7 to the top by selection
+    std::vector<float> ref_w(k);
+    std::vector<int> ref_i(k);
+    ref::RouterTopK(logits.data(), bias.data(), E, k, scale, ref_w.data(),
+                    ref_i.data());
+
+    float *d_l = ToDevice(logits), *d_b = ToDevice(bias);
+    float *d_w = nullptr;
+    int *d_i = nullptr;
+    cudaMalloc(&d_w, k * sizeof(float));
+    cudaMalloc(&d_i, k * sizeof(int));
+    RunNemotronRouter(d_l, d_b, E, k, scale, d_w, d_i, 0);
+    cudaDeviceSynchronize();
+    auto got_w = FromDevice(d_w, k);
+    auto got_i = FromDevice(d_i, k);
+    CHECK(got_i[0] == 7);
+    CHECK(got_w[0] == Catch::Approx(2.5f).margin(1e-5f));  // weight from raw score
+    CHECK(got_i[0] == ref_i[0]);
+    cudaFree(d_l); cudaFree(d_b); cudaFree(d_w); cudaFree(d_i);
+}
+
+TEST_CASE("relu2 activation", "[nemotron][kernels]")
+{
+    std::vector<float> x = {-2.0f, -0.5f, 0.0f, 0.5f, 2.0f, 3.0f};
+    std::vector<float> ref(x.size());
+    for (size_t i = 0; i < x.size(); ++i) ref[i] = ref::Relu2(x[i]);
+
+    float *d_x = ToDevice(x);
+    float *d_o = nullptr;
+    cudaMalloc(&d_o, x.size() * sizeof(float));
+    RunNemotronRelu2(d_x, static_cast<int>(x.size()), d_o, 0);
+    cudaDeviceSynchronize();
+    auto got = FromDevice(d_o, x.size());
+    for (size_t i = 0; i < x.size(); ++i)
+        CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-6f));
+    cudaFree(d_x); cudaFree(d_o);
+}
+
+
