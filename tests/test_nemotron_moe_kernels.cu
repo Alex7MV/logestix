@@ -137,3 +137,84 @@ TEST_CASE("gated rmsnorm matches the host reference", "[nemotron][kernels]")
 
     cudaFree(d_x); cudaFree(d_g); cudaFree(d_w); cudaFree(d_o);
 }
+
+TEST_CASE("full-dimension RoPE matches the rotate_half reference",
+          "[nemotron][kernels]")
+{
+    const int heads = 2, head_dim = 8, pos = 3;
+    const float theta = 10000.0f;
+    std::vector<float> x(heads * head_dim);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = 0.1f * (i + 1);
+
+    std::vector<float> ref = x;
+    const int half = head_dim / 2;
+    for (int h = 0; h < heads; ++h) {
+        for (int j = 0; j < half; ++j) {
+            const float freq = std::pow(theta, -2.0f * j / head_dim);
+            const float a = pos * freq;
+            const float c = std::cos(a), s = std::sin(a);
+            const float x1 = x[h * head_dim + j];
+            const float x2 = x[h * head_dim + half + j];
+            ref[h * head_dim + j] = x1 * c - x2 * s;
+            ref[h * head_dim + half + j] = x1 * s + x2 * c;
+        }
+    }
+
+    float *d_x = ToDevice(x);
+    RunNemotronRope(d_x, heads, head_dim, pos, theta, 0);
+    cudaDeviceSynchronize();
+    auto got = FromDevice(d_x, x.size());
+    for (size_t i = 0; i < x.size(); ++i)
+        CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-5f));
+    cudaFree(d_x);
+}
+
+TEST_CASE("GQA decode attention matches the host softmax reference",
+          "[nemotron][kernels]")
+{
+    const int heads = 2, kv_heads = 1, head_dim = 4, seq_len = 3;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+    std::vector<float> q(heads * head_dim), k(kv_heads * seq_len * head_dim),
+        v(kv_heads * seq_len * head_dim);
+    for (size_t i = 0; i < q.size(); ++i) q[i] = 0.05f * (i + 1);
+    for (size_t i = 0; i < k.size(); ++i) k[i] = 0.03f * (i + 2);
+    for (size_t i = 0; i < v.size(); ++i) v[i] = 0.07f * (i + 1);
+
+    std::vector<float> ref(heads * head_dim);
+    for (int h = 0; h < heads; ++h) {
+        const int hk = h / (heads / kv_heads);
+        float scores[4];
+        float mx = -INFINITY;
+        for (int t = 0; t < seq_len; ++t) {
+            float dot = 0.0f;
+            for (int d = 0; d < head_dim; ++d)
+                dot += q[h * head_dim + d] *
+                       k[(hk * seq_len + t) * head_dim + d];
+            scores[t] = dot * scale;
+            mx = std::max(mx, scores[t]);
+        }
+        float sum = 0.0f, p[4];
+        for (int t = 0; t < seq_len; ++t) {
+            p[t] = std::exp(scores[t] - mx);
+            sum += p[t];
+        }
+        for (int d = 0; d < head_dim; ++d) {
+            float acc = 0.0f;
+            for (int t = 0; t < seq_len; ++t)
+                acc += p[t] * v[(hk * seq_len + t) * head_dim + d];
+            ref[h * head_dim + d] = acc / sum;
+        }
+    }
+
+    float *d_q = ToDevice(q), *d_k = ToDevice(k), *d_v = ToDevice(v);
+    float *d_o = nullptr;
+    cudaMalloc(&d_o, ref.size() * sizeof(float));
+    RunNemotronAttnDecode(d_q, d_k, d_v, heads, kv_heads, head_dim, seq_len,
+                          scale, d_o, 0);
+    cudaDeviceSynchronize();
+    auto got = FromDevice(d_o, ref.size());
+    for (size_t i = 0; i < ref.size(); ++i)
+        CHECK(got[i] == Catch::Approx(ref[i]).margin(1e-5f));
+    cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_o);
+}
+

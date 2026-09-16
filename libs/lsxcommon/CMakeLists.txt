@@ -291,6 +291,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
 # -fmad=false: bit-exact against the host reference (protocol invariant).
 add_library(lsxcommon_nemotron_cu OBJECT
     src/nemotron_moe_kernels.cu
+    src/nemotron_moe_inference_attn.cu
 )
 set_target_properties(lsxcommon_nemotron_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
