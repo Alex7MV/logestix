@@ -1,8 +1,13 @@
 #pragma once
 
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
+
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/vram_estimate.h"
 
 namespace lsxcommon::nemotron_moe {
@@ -50,5 +55,52 @@ bool LoadNemotronIndex(const std::string &model_path, NemotronIndex &out,
 // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 for synthetic fixtures. Returns false and
 // fills `error` on the first mismatch.
 bool ValidateNemotronGeometry(const NemotronIndex &idx, std::string &error);
+
+// ── Device weight graph ─────────────────────────────────────────────────────
+
+// Per-layer device weights. Untouched fields stay null by layer type.
+struct NmLayerWeights {
+    __half *d_norm = nullptr;                       // [H] FP16
+    // Mamba-2 mixer.
+    lsx_nvfp4::LsxNvfp4Weight in_proj;               // [in_proj, H]
+    lsx_nvfp4::LsxNvfp4Weight out_proj;              // [H, d_inner]
+    float *d_conv_w = nullptr;                       // [conv_dim * K] F32
+    float *d_conv_b = nullptr;                       // [conv_dim] F32
+    float *d_A_log = nullptr;                        // [heads] F32
+    float *d_D = nullptr;                            // [heads] F32
+    float *d_dt_bias = nullptr;                      // [heads] F32
+    float *d_mamba_norm = nullptr;                   // [d_inner] F32
+    // Full attention.
+    lsx_nvfp4::LsxNvfp4Weight q, k, v, o;
+    // MoE.
+    __half *d_router = nullptr;                      // [E, H] FP16
+    float *d_router_bias = nullptr;                  // [E] F32
+    lsx_nvfp4::LsxNvfp4Weight shared_up;             // [SI, H]
+    lsx_nvfp4::LsxNvfp4Weight shared_down;           // [H, SI]
+    void Free();
+};
+
+// One routed expert (non-gated: up/down only).
+struct NmExpertWeight {
+    lsx_nvfp4::LsxNvfp4Weight up;    // [I, H]
+    lsx_nvfp4::LsxNvfp4Weight down;  // [H, I]
+    void Free() { up.Free(); down.Free(); }
+};
+
+struct NmWeights {
+    __half *d_embed = nullptr;       // [vocab, H] FP16
+    __half *d_head = nullptr;        // [vocab, H] FP16
+    __half *d_final_norm = nullptr;  // [H] FP16
+    std::vector<NmLayerWeights> layers;                 // [num_layers]
+    std::vector<std::vector<NmExpertWeight>> experts;   // [num_layers][E]
+    std::uint64_t resident_bytes = 0;
+    void Free();
+};
+
+// Uploads the converted weights under <model_path>/logestix/ to the device.
+// Routed experts are uploaded resident (per-expert NVFP4). Strict: returns
+// false and fills `error` on any missing/malformed tensor.
+bool LoadNemotronWeights(const std::string &model_path, const NemotronIndex &idx,
+                         NmWeights &w, cudaStream_t stream, std::string &error);
 
 } // namespace lsxcommon::nemotron_moe

@@ -1,8 +1,10 @@
 #include "lsxcommon/nemotron_moe_load.h"
 #include "nemotron_moe_constants.h"
+#include "fast_load_internal.h"
 
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/path_registry.h"
+#include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
 
 #include <simdjson.h>
@@ -10,6 +12,8 @@
 #include <absl/strings/str_format.h>
 
 #include <cstdlib>
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -214,6 +218,269 @@ bool ValidateNemotronGeometry(const NemotronIndex &idx, std::string &error)
         if (idx.attn_layer_idx[i] != kAttnLayerIdx[i])
             return bad("attn_layer_idx", idx.attn_layer_idx[i],
                        kAttnLayerIdx[i]);
+    return true;
+}
+
+// ── Device weight graph ─────────────────────────────────────────────────────
+
+void NmLayerWeights::Free()
+{
+    cudaFree(d_norm); d_norm = nullptr;
+    in_proj.Free(); out_proj.Free();
+    cudaFree(d_conv_w); d_conv_w = nullptr;
+    cudaFree(d_conv_b); d_conv_b = nullptr;
+    cudaFree(d_A_log); d_A_log = nullptr;
+    cudaFree(d_D); d_D = nullptr;
+    cudaFree(d_dt_bias); d_dt_bias = nullptr;
+    cudaFree(d_mamba_norm); d_mamba_norm = nullptr;
+    q.Free(); k.Free(); v.Free(); o.Free();
+    cudaFree(d_router); d_router = nullptr;
+    cudaFree(d_router_bias); d_router_bias = nullptr;
+    shared_up.Free(); shared_down.Free();
+}
+
+void NmWeights::Free()
+{
+    cudaFree(d_embed); d_embed = nullptr;
+    cudaFree(d_head); d_head = nullptr;
+    cudaFree(d_final_norm); d_final_norm = nullptr;
+    for (auto &l : layers) l.Free();
+    layers.clear();
+    for (auto &per_layer : experts)
+        for (auto &e : per_layer) e.Free();
+    experts.clear();
+    resident_bytes = 0;
+}
+
+namespace {
+
+using fastload::CvKind;
+using fastload::FindNvfp4Suffix;
+using fastload::FindTensorSuffix;
+using fastload::PinnedStagingRing;
+using fastload::UploadJob;
+using fastload::UploadNvfp4Weight;
+
+bool UploadOne(const TensorView *t, CvKind kind, void **dst,
+               const std::string &what, cudaStream_t stream,
+               PinnedStagingRing &ring, std::uint64_t &acc, std::string &error)
+{
+    if (!t) {
+        error = "missing tensor: " + what;
+        return false;
+    }
+    std::vector<UploadJob> jobs = {{t, dst, kind, nullptr, nullptr}};
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::string e2;
+    cudaError_t e = fastload::RunUploadJobs(std::move(jobs), &arena,
+                                            &arena_bytes, stream, ring, acc,
+                                            &e2);
+    if (e != cudaSuccess) {
+        error = "upload failed: " + what + ": " + e2;
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool LoadNemotronWeights(const std::string &model_path,
+                         const NemotronIndex &idx, NmWeights &w,
+                         cudaStream_t stream, std::string &error)
+{
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(model_path) / "logestix";
+    PinnedStagingRing ring;
+    if (!ring.ok()) {
+        error = "pinned staging ring allocation failed";
+        return false;
+    }
+    fastload::StreamDrain drain{stream};
+    std::uint64_t acc = 0;
+
+    auto global = LoadTensorBatchViews(base / "pinned" / "global.arrow");
+    if (!global.ok()) {
+        error = "cannot open pinned/global.arrow: " + global.status().ToString();
+        return false;
+    }
+    if (!UploadOne(FindTensorSuffix(*global, "embeddings.weight"),
+                   CvKind::kBf16ToHalf, reinterpret_cast<void **>(&w.d_embed),
+                   "embeddings.weight", stream, ring, acc, error))
+        return false;
+    if (!UploadOne(FindTensorSuffix(*global, "lm_head.weight"),
+                   CvKind::kBf16ToHalf, reinterpret_cast<void **>(&w.d_head),
+                   "lm_head.weight", stream, ring, acc, error))
+        return false;
+    if (!UploadOne(FindTensorSuffix(*global, "norm_f.weight"),
+                   CvKind::kBf16ToHalf,
+                   reinterpret_cast<void **>(&w.d_final_norm), "norm_f.weight",
+                   stream, ring, acc, error))
+        return false;
+
+    w.layers.resize(idx.num_layers);
+    w.experts.resize(idx.num_layers);
+
+    for (int l = 0; l < idx.num_layers; ++l) {
+        NmLayerWeights &lw = w.layers[l];
+        const auto nv_path = base / "pinned" /
+                             absl::StrCat("layer_", l, "_nvfp4.arrow");
+        const auto raw_path = base / "pinned" /
+                              absl::StrCat("layer_", l, ".arrow");
+        auto nv = LoadDenseNvfp4BatchViews(nv_path);
+        auto raw = LoadTensorBatchViews(raw_path);
+        if (!nv.ok() || !raw.ok()) {
+            error = absl::StrCat("cannot open layer ", l, " arrow files");
+            w.Free();
+            return false;
+        }
+        const std::string lp = absl::StrCat("layers.", l, ".");
+        auto raw_suffix = [&](const char *s) {
+            return FindTensorSuffix(*raw, lp + s);
+        };
+
+        if (!UploadOne(raw_suffix("norm.weight"), CvKind::kBf16ToHalf,
+                       reinterpret_cast<void **>(&lw.d_norm), "layer norm",
+                       stream, ring, acc, error)) {
+            w.Free();
+            return false;
+        }
+
+        const std::string &lt = idx.layer_types[l];
+        if (lt == "mamba") {
+            if (UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.in_proj.weight"),
+                                  lw.in_proj, stream, ring, acc, &error) !=
+                    cudaSuccess ||
+                UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.out_proj.weight"),
+                                  lw.out_proj, stream, ring, acc, &error) !=
+                    cudaSuccess) {
+                w.Free();
+                return false;
+            }
+            if (!UploadOne(raw_suffix("mixer.conv1d.weight"),
+                           CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_conv_w), "conv1d.w",
+                           stream, ring, acc, error) ||
+                !UploadOne(raw_suffix("mixer.conv1d.bias"),
+                           CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_conv_b), "conv1d.b",
+                           stream, ring, acc, error) ||
+                !UploadOne(raw_suffix("mixer.A_log"), CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_A_log), "A_log",
+                           stream, ring, acc, error) ||
+                !UploadOne(raw_suffix("mixer.D"), CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_D), "D", stream, ring,
+                           acc, error) ||
+                !UploadOne(raw_suffix("mixer.dt_bias"), CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_dt_bias), "dt_bias",
+                           stream, ring, acc, error) ||
+                !UploadOne(raw_suffix("mixer.norm.weight"), CvKind::kBf16ToF32,
+                           reinterpret_cast<void **>(&lw.d_mamba_norm),
+                           "mamba norm", stream, ring, acc, error)) {
+                w.Free();
+                return false;
+            }
+        } else if (lt == "attention") {
+            if (UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.q_proj.weight"),
+                                  lw.q, stream, ring, acc, &error) !=
+                    cudaSuccess ||
+                UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.k_proj.weight"),
+                                  lw.k, stream, ring, acc, &error) !=
+                    cudaSuccess ||
+                UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.v_proj.weight"),
+                                  lw.v, stream, ring, acc, &error) !=
+                    cudaSuccess ||
+                UploadNvfp4Weight(FindNvfp4Suffix(*nv, "mixer.o_proj.weight"),
+                                  lw.o, stream, ring, acc, &error) !=
+                    cudaSuccess) {
+                w.Free();
+                return false;
+            }
+        } else {  // moe
+            if (!UploadOne(raw_suffix("mixer.gate.weight"), CvKind::kBf16ToHalf,
+                           reinterpret_cast<void **>(&lw.d_router), "router",
+                           stream, ring, acc, error) ||
+                !UploadOne(raw_suffix("mixer.gate.e_score_correction_bias"),
+                           CvKind::kF32Raw,
+                           reinterpret_cast<void **>(&lw.d_router_bias),
+                           "router bias", stream, ring, acc, error) ||
+                UploadNvfp4Weight(
+                    FindNvfp4Suffix(*nv, "mixer.shared_experts.up_proj.weight"),
+                    lw.shared_up, stream, ring, acc, &error) != cudaSuccess ||
+                UploadNvfp4Weight(
+                    FindNvfp4Suffix(*nv, "mixer.shared_experts.down_proj.weight"),
+                    lw.shared_down, stream, ring, acc, &error) != cudaSuccess) {
+                w.Free();
+                return false;
+            }
+            // Routed experts (resident, per-expert NVFP4).
+            w.experts[l].resize(idx.num_experts);
+            for (int e = 0; e < idx.num_experts; ++e) {
+                const auto exp_path = base / "experts" /
+                                      absl::StrCat("layer_", l) /
+                                      absl::StrCat("exp_", e, ".arrow");
+                auto batch = ReadRecordBatchFromFile(exp_path);
+                if (!batch.ok()) {
+                    error = "cannot open expert file: " + exp_path.string();
+                    w.Free();
+                    return false;
+                }
+                auto pe = ExpertSchema::UnpackBatch(*batch);
+                if (!pe.ok()) {
+                    error = "malformed expert: " + exp_path.string();
+                    w.Free();
+                    return false;
+                }
+                NmExpertWeight &ew = w.experts[l][e];
+                auto upload_block = [&](const std::vector<uint8_t> &src,
+                                        const uint8_t *&dp, int64_t &bytes) {
+                    bytes = static_cast<int64_t>(src.size());
+                    if (bytes == 0) { dp = nullptr; return true; }
+                    void *d = nullptr;
+                    if (cudaMalloc(&d, static_cast<size_t>(bytes)) !=
+                        cudaSuccess) return false;
+                    if (cudaMemcpyAsync(d, src.data(),
+                                        static_cast<size_t>(bytes),
+                                        cudaMemcpyHostToDevice, stream) !=
+                        cudaSuccess) {
+                        cudaFree(d);
+                        return false;
+                    }
+                    dp = static_cast<const uint8_t *>(d);
+                    return true;
+                };
+                if (!upload_block(pe->w3_packed, ew.up.d_packed,
+                                  ew.up.packed_bytes) ||
+                    !upload_block(pe->w3_scales, ew.up.d_scales,
+                                  ew.up.scale_bytes) ||
+                    !upload_block(pe->w2_packed, ew.down.d_packed,
+                                  ew.down.packed_bytes) ||
+                    !upload_block(pe->w2_scales, ew.down.d_scales,
+                                  ew.down.scale_bytes)) {
+                    error = "expert upload failed: " + exp_path.string();
+                    w.Free();
+                    return false;
+                }
+                ew.up.global_scale = pe->w3_global_scale;
+                ew.up.rows = idx.moe_intermediate_size;
+                ew.up.cols = idx.hidden_size;
+                ew.down.global_scale = pe->w2_global_scale;
+                ew.down.rows = idx.hidden_size;
+                ew.down.cols = idx.moe_intermediate_size;
+                acc += static_cast<std::uint64_t>(ew.up.packed_bytes +
+                                                  ew.up.scale_bytes +
+                                                  ew.down.packed_bytes +
+                                                  ew.down.scale_bytes);
+            }
+        }
+    }
+
+    if (cudaStreamSynchronize(stream) != cudaSuccess) {
+        error = "weight upload stream sync failed";
+        w.Free();
+        return false;
+    }
+    w.resident_bytes = acc;
     return true;
 }
 

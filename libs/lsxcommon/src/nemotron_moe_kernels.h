@@ -6,6 +6,8 @@
 
 #include <cuda_runtime.h>
 
+#include "nemotron_moe_constants.h"
+
 namespace lsxcommon::nemotron_moe {
 
 // Single-token depthwise causal conv + silu (groups == conv_dim, kernel K).
@@ -44,10 +46,11 @@ void RunNemotronRope(float *x, int n_heads, int head_dim, int pos, float theta,
 //   k_cache [kv_heads, seq_len, head_dim]
 //   v_cache [kv_heads, seq_len, head_dim]
 //   out     [heads, head_dim]
+// `cache_stride` is the KV cache row stride (max_seq).
 void RunNemotronAttnDecode(const float *q, const float *k_cache,
                            const float *v_cache, int heads, int kv_heads,
-                           int head_dim, int seq_len, float scale, float *out,
-                           cudaStream_t stream);
+                           int head_dim, int seq_len, int cache_stride,
+                           float scale, float *out, cudaStream_t stream);
 
 // Sigmoid top-k router with e_score_correction_bias (n_group == 1 in this
 // checkpoint, so the group stage is the identity). Bias selects only.

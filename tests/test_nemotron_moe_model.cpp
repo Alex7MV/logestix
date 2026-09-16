@@ -54,6 +54,35 @@ TEST_CASE("nemotron Load accepts a synthetic converted model", "[nemotron][model
     model->Unload();
 }
 
+TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",
+          "[nemotron][model]")
+{
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_infer_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_infer_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    REQUIRE(nemotron_moe::ConvertNemotronModel(src.string(), dst.string()).ok());
+
+    ModelInitConfig cfg;
+    cfg.model_path = dst.string();
+    cfg.model_type = NemotronHModel::kType;
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    ModelRequest req;
+    req.input_ids = {1, 2, 3};
+    req.max_gen_tokens = 2;
+    req.ignore_eos = true;
+    auto r = model->Infer(req);
+    REQUIRE(r.error_msg.empty());
+    REQUIRE(r.ok);
+    CHECK(r.num_tokens == 2);
+    CHECK(r.gen_tokens.size() == 2);
+    CHECK(r.final_logits.size() == 32);
+    model->Unload();
+}
+
 TEST_CASE("nemotron Load rejects a frozen-geometry mismatch", "[nemotron][model]")
 {
     SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "0");

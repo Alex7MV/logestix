@@ -210,7 +210,7 @@ TEST_CASE("GQA decode attention matches the host softmax reference",
     float *d_o = nullptr;
     cudaMalloc(&d_o, ref.size() * sizeof(float));
     RunNemotronAttnDecode(d_q, d_k, d_v, heads, kv_heads, head_dim, seq_len,
-                          scale, d_o, 0);
+                          seq_len, scale, d_o, 0);
     cudaDeviceSynchronize();
     auto got = FromDevice(d_o, ref.size());
     for (size_t i = 0; i < ref.size(); ++i)

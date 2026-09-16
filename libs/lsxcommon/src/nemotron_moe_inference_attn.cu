@@ -33,7 +33,8 @@ __global__ void attn_decode_kernel(const float *__restrict__ q,
                                    const float *__restrict__ k_cache,
                                    const float *__restrict__ v_cache, int heads,
                                    int kv_heads, int head_dim, int seq_len,
-                                   float scale, float *__restrict__ out)
+                                   int cache_stride, float scale,
+                                   float *__restrict__ out)
 {
     __shared__ float red[512];
     const int h = blockIdx.x;
@@ -48,7 +49,7 @@ __global__ void attn_decode_kernel(const float *__restrict__ q,
     float o = 0.0f;
     for (int t = 0; t < seq_len; ++t) {
         const size_t kv_base =
-            (static_cast<size_t>(hk) * seq_len + t) * head_dim;
+            (static_cast<size_t>(hk) * cache_stride + t) * head_dim;
         red[d] = qd * k_cache[kv_base + d];
         __syncthreads();
         for (int s = blockDim.x / 2; s > 0; s >>= 1) {
@@ -82,12 +83,13 @@ void RunNemotronRope(float *x, int n_heads, int head_dim, int pos, float theta,
 
 void RunNemotronAttnDecode(const float *q, const float *k_cache,
                            const float *v_cache, int heads, int kv_heads,
-                           int head_dim, int seq_len, float scale, float *out,
-                           cudaStream_t stream)
+                           int head_dim, int seq_len, int cache_stride,
+                           float scale, float *out, cudaStream_t stream)
 {
     // One block per query head; head_dim threads (<= 512).
     attn_decode_kernel<<<heads, head_dim, 0, stream>>>(
-        q, k_cache, v_cache, heads, kv_heads, head_dim, seq_len, scale, out);
+        q, k_cache, v_cache, heads, kv_heads, head_dim, seq_len, cache_stride,
+        scale, out);
 }
 
 } // namespace lsxcommon::nemotron_moe

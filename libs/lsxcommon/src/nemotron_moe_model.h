@@ -14,6 +14,7 @@
 #include <string>
 
 #include "lsxcommon/model_base.h"
+#include "lsxcommon/nemotron_moe_inference.h"
 #include "lsxcommon/nemotron_moe_load.h"
 
 namespace lsxcommon {
@@ -39,6 +40,8 @@ private:
     bool ValidateGeometry(const nemotron_moe::NemotronIndex &idx) const;
 
     nemotron_moe::NemotronIndex idx_;
+    nemotron_moe::NmWeights weights_;
+    nemotron_moe::NmSession session_;
 };
 
 } // namespace lsxcommon
