@@ -291,4 +291,54 @@ TEST_CASE("relu2 activation", "[nemotron][kernels]")
     cudaFree(d_x); cudaFree(d_o);
 }
 
+#if defined(NDEBUG)
+// Perf budget (perf-tuning-a-model Step 3): the router top-k runs once per MoE
+// layer per token, so its latency is on the decode critical path. Budget < 15 us
+// for the real E=128/k=6 shape (baseline measured ~70 us with the serial
+// single-thread selection). L2 is flushed with a >L2 memset between launches;
+// the event window covers only the kernel.
+TEST_CASE("budget: nemotron router latency (E=128, k=6)",
+          "[nemotron][kernels][budget]")
+{
+    const int E = 128, k = 6;
+    std::vector<float> logits(E), bias(E, 0.0f);
+    for (int i = 0; i < E; ++i) logits[i] = 0.01f * static_cast<float>(i);
+    float *d_l = ToDevice(logits), *d_b = ToDevice(bias);
+    float *d_w = nullptr;
+    int *d_i = nullptr;
+    cudaMalloc(&d_w, k * sizeof(float));
+    cudaMalloc(&d_i, k * sizeof(int));
+    void *d_flush = nullptr;
+    cudaMalloc(&d_flush, size_t{128} << 20);
+
+    for (int i = 0; i < 5; ++i)
+        RunNemotronRouter(d_l, d_b, E, k, 2.5f, d_w, d_i, 0);
+    cudaDeviceSynchronize();
+
+    cudaEvent_t e0 = nullptr, e1 = nullptr;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    const int N = 200;
+    float sum_ms = 0.0f;
+    for (int i = 0; i < N; ++i) {
+        cudaMemsetAsync(d_flush, 0, size_t{128} << 20, 0);
+        cudaEventRecord(e0, 0);
+        RunNemotronRouter(d_l, d_b, E, k, 2.5f, d_w, d_i, 0);
+        cudaEventRecord(e1, 0);
+        cudaEventSynchronize(e1);
+        float ms = 0.0f;
+        cudaEventElapsedTime(&ms, e0, e1);
+        sum_ms += ms;
+    }
+    const float avg_us = sum_ms / static_cast<float>(N) * 1000.0f;
+    INFO("router kernel avg latency: " << avg_us << " us");
+    CHECK(avg_us < 15.0f);
+
+    cudaFree(d_l); cudaFree(d_b); cudaFree(d_w); cudaFree(d_i); cudaFree(d_flush);
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+}
+#endif
+
+
 

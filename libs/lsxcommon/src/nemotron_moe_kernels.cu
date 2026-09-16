@@ -108,28 +108,44 @@ __global__ void router_kernel(const float *__restrict__ logits,
                               float scale, float *__restrict__ weights,
                               int *__restrict__ indices)
 {
-    extern __shared__ float sh[];  // [E] sigmoid scores, [E] choice + bias
-    float *s = sh;
-    float *ch = sh + E;
+    // Parallel top-k: each iteration block-reduces the max unselected choice
+    // (lowest index wins ties, matching ref::RouterTopK). E <= 128 (frozen
+    // passport). One block; the reduction is O(k log2 E) with all threads
+    // active instead of a serial O(k*E^2) scan on thread 0.
+    __shared__ float s[128];
+    __shared__ float ch[128];
+    __shared__ int sel[128];
+    __shared__ float rv[128];
+    __shared__ int ri[128];
     const int e = threadIdx.x;
     if (e < E) {
         const float sg = 1.0f / (1.0f + expf(-logits[e]));
         s[e] = sg;
         ch[e] = sg + bias[e];
+        sel[e] = 0;
     }
     __syncthreads();
-    if (e == 0) {
-        for (int t = 0; t < k; ++t) {
-            int best = -1;
-            for (int j = 0; j < E; ++j) {
-                bool taken = false;
-                for (int p = 0; p < t; ++p)
-                    if (indices[p] == j) taken = true;
-                if (taken) continue;
-                if (best < 0 || ch[j] > ch[best]) best = j;
+    for (int t = 0; t < k; ++t) {
+        rv[e] = (e < E && !sel[e]) ? ch[e] : -INFINITY;
+        ri[e] = e;
+        __syncthreads();
+        for (int sft = blockDim.x / 2; sft > 0; sft >>= 1) {
+            if (e < sft) {
+                if (rv[e + sft] > rv[e] ||
+                    (rv[e + sft] == rv[e] && ri[e + sft] < ri[e])) {
+                    rv[e] = rv[e + sft];
+                    ri[e] = ri[e + sft];
+                }
             }
-            indices[t] = best;
+            __syncthreads();
         }
+        if (e == 0) {
+            indices[t] = ri[0];
+            sel[ri[0]] = 1;
+        }
+        __syncthreads();
+    }
+    if (e == 0) {
         float sum = 0.0f;
         for (int t = 0; t < k; ++t) {
             weights[t] = s[indices[t]];
@@ -155,7 +171,9 @@ void RunNemotronRouter(const float *logits, const float *e_score_bias, int E,
                        int k, float scale, float *weights, int *indices,
                        cudaStream_t stream)
 {
-    router_kernel<<<1, E, 2 * E * sizeof(float), stream>>>(
+    int threads = 1;
+    while (threads < E) threads <<= 1;  // power-of-two reduction width
+    router_kernel<<<1, threads, 0, stream>>>(
         logits, e_score_bias, E, k, scale, weights, indices);
 }
 
