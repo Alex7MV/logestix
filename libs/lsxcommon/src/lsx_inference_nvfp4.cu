@@ -664,11 +664,11 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatch(
     if (!x || !y || !packed || !scales || !gs || count <= 0 || count > 8 ||
         K <= 0 || N <= 0)
         return cudaErrorInvalidValue;
-    if ((K & 31) != 0) return cudaErrorInvalidValue;
-    // Preserve the numeric class when the streaming GEMV is not active
-    // (kOff / r3): fall back to one dispatcher call per expert, exactly as a
-    // caller looping RunLsxNvfp4Gemm would.
-    if (!(LsxTcFastMath() && LsxSeq1Gemv())) {
+    // Preserve the numeric class when the streaming GEMV is not usable:
+    // either the toggle is off (kOff / r3) or the shape is below the streaming
+    // kernel's K % 32 contract. Fall back to one dispatcher call per expert,
+    // exactly as a caller looping RunLsxNvfp4Gemm would.
+    if ((K & 31) != 0 || !(LsxTcFastMath() && LsxSeq1Gemv())) {
         for (int e = 0; e < count; ++e) {
             cudaError_t er = RunLsxNvfp4Gemm(
                 stream, x + static_cast<int64_t>(e) * x_stride, packed[e],
