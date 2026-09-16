@@ -284,7 +284,29 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
+    lsxcommon_nemotron_cu
     lsx_tune)
+
+# Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.
+# -fmad=false: bit-exact against the host reference (protocol invariant).
+add_library(lsxcommon_nemotron_cu OBJECT
+    src/nemotron_moe_kernels.cu
+)
+set_target_properties(lsxcommon_nemotron_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_nemotron_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_nemotron_cu
+    "${CUDA_CUDART_LIBRARY}"
+    absl::strings
+)
 
 # qwen4_exp (Qwen3.8-Flash-Next) bit-exact kernels: hc GatedResidual, QSA
 # indexer, PLE inject. -fmad=false contract (protocol invariant).
