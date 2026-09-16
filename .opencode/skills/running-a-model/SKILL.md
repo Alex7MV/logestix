@@ -171,7 +171,7 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_EXPERT_PIN` | `=0` disables routed-expert host pinning (pageable, slow) |
 | `LSX_FLASH_SLOTS` | GLM-5.3-Flash expert LRU slot override |
 | `LSX_V41_EXPERT_CACHE` | DeepSeek-V4.1 expert-cache override |
-| `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`) |
+| `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`) |
 | `LSX_KIMI_CACHE_BYPASS` | bypass the Kimi expert cache |
 
 **Prod — numeric / model toggles** (A/B switches; leave unset in production)

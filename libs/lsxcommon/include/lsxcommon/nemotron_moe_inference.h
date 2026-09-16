@@ -12,6 +12,8 @@
 
 namespace lsxcommon::nemotron_moe {
 
+struct NmExpertCache;  // nemotron_moe_expert_cache.h
+
 struct NmSession {
     int H = 0, num_layers = 0, num_experts = 0, topk = 0, d_inner = 0;
     int conv_dim = 0, heads = 0, head_dim = 0, ssm_groups = 0,
@@ -63,9 +65,10 @@ void FreeNemotronSession(NmSession &s);
 void ResetNemotronSession(NmSession &s, cudaStream_t stream);
 
 // Runs ONE token through all layers; writes [vocab] F32 logits into
-// s.head_logits. `pos` is the token's position in the sequence.
+// s.head_logits. `pos` is the token's position in the sequence. Routed
+// experts are made resident in `experts` on demand (device slot LRU).
 cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
-                                 NmSession &s, int token, int pos,
-                                 cudaStream_t stream);
+                                 NmSession &s, NmExpertCache &experts, int token,
+                                 int pos, cudaStream_t stream);
 
 } // namespace lsxcommon::nemotron_moe

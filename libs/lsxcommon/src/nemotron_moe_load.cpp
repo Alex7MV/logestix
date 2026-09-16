@@ -246,9 +246,6 @@ void NmWeights::Free()
     cudaFree(d_final_norm); d_final_norm = nullptr;
     for (auto &l : layers) l.Free();
     layers.clear();
-    for (auto &per_layer : experts)
-        for (auto &e : per_layer) e.Free();
-    experts.clear();
     resident_bytes = 0;
 }
 
@@ -319,7 +316,6 @@ bool LoadNemotronWeights(const std::string &model_path,
         return false;
 
     w.layers.resize(idx.num_layers);
-    w.experts.resize(idx.num_layers);
 
     for (int l = 0; l < idx.num_layers; ++l) {
         NmLayerWeights &lw = w.layers[l];
@@ -412,65 +408,6 @@ bool LoadNemotronWeights(const std::string &model_path,
                     lw.shared_down, stream, ring, acc, &error) != cudaSuccess) {
                 w.Free();
                 return false;
-            }
-            // Routed experts (resident, per-expert NVFP4).
-            w.experts[l].resize(idx.num_experts);
-            for (int e = 0; e < idx.num_experts; ++e) {
-                const auto exp_path = base / "experts" /
-                                      absl::StrCat("layer_", l) /
-                                      absl::StrCat("exp_", e, ".arrow");
-                auto batch = ReadRecordBatchFromFile(exp_path);
-                if (!batch.ok()) {
-                    error = "cannot open expert file: " + exp_path.string();
-                    w.Free();
-                    return false;
-                }
-                auto pe = ExpertSchema::UnpackBatch(*batch);
-                if (!pe.ok()) {
-                    error = "malformed expert: " + exp_path.string();
-                    w.Free();
-                    return false;
-                }
-                NmExpertWeight &ew = w.experts[l][e];
-                auto upload_block = [&](const std::vector<uint8_t> &src,
-                                        const uint8_t *&dp, int64_t &bytes) {
-                    bytes = static_cast<int64_t>(src.size());
-                    if (bytes == 0) { dp = nullptr; return true; }
-                    void *d = nullptr;
-                    if (cudaMalloc(&d, static_cast<size_t>(bytes)) !=
-                        cudaSuccess) return false;
-                    if (cudaMemcpyAsync(d, src.data(),
-                                        static_cast<size_t>(bytes),
-                                        cudaMemcpyHostToDevice, stream) !=
-                        cudaSuccess) {
-                        cudaFree(d);
-                        return false;
-                    }
-                    dp = static_cast<const uint8_t *>(d);
-                    return true;
-                };
-                if (!upload_block(pe->w3_packed, ew.up.d_packed,
-                                  ew.up.packed_bytes) ||
-                    !upload_block(pe->w3_scales, ew.up.d_scales,
-                                  ew.up.scale_bytes) ||
-                    !upload_block(pe->w2_packed, ew.down.d_packed,
-                                  ew.down.packed_bytes) ||
-                    !upload_block(pe->w2_scales, ew.down.d_scales,
-                                  ew.down.scale_bytes)) {
-                    error = "expert upload failed: " + exp_path.string();
-                    w.Free();
-                    return false;
-                }
-                ew.up.global_scale = pe->w3_global_scale;
-                ew.up.rows = idx.moe_intermediate_size;
-                ew.up.cols = idx.hidden_size;
-                ew.down.global_scale = pe->w2_global_scale;
-                ew.down.rows = idx.hidden_size;
-                ew.down.cols = idx.moe_intermediate_size;
-                acc += static_cast<std::uint64_t>(ew.up.packed_bytes +
-                                                  ew.up.scale_bytes +
-                                                  ew.down.packed_bytes +
-                                                  ew.down.scale_bytes);
             }
         }
     }

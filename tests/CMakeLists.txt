@@ -2978,6 +2978,17 @@ target_include_directories(test_nemotron_moe_loader PRIVATE
     ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_loader COMMAND test_nemotron_moe_loader)
 
+# test_nemotron_moe_expert_cache — routed-expert host store + device LRU
+# bookkeeping (slot layout/policy host-only, allocator/staging on device).
+add_executable(test_nemotron_moe_expert_cache
+    test_nemotron_moe_expert_cache.cpp)
+target_link_libraries(test_nemotron_moe_expert_cache PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_expert_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_expert_cache
+         COMMAND test_nemotron_moe_expert_cache)
+
 add_executable(test_nemotron_moe_model test_nemotron_moe_model.cpp)
 target_compile_definitions(test_nemotron_moe_model PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
@@ -3369,6 +3380,7 @@ set_tests_properties(
     test_model_suite_guard
     test_nemotron_moe_math
     test_nemotron_moe_loader
+    test_nemotron_moe_expert_cache
     test_nemotron_moe_model
     PROPERTIES LABELS fast)
 

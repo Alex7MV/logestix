@@ -164,6 +164,7 @@ TEST_CASE("naming guard accepts nemotron_moe_* stems", "[naming][guard]")
     CHECK(m("nemotron_moe_constants"));
     CHECK(m("nemotron_moe_convert"));
     CHECK(m("nemotron_moe_load"));
+    CHECK(m("nemotron_moe_expert_cache"));
     CHECK(m("nemotron_moe_model"));
     CHECK(m("nemotron_moe_inference"));
     CHECK(m("nemotron_moe_inference_pipeline"));

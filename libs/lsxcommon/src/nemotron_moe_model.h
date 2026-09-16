@@ -14,6 +14,7 @@
 #include <string>
 
 #include "lsxcommon/model_base.h"
+#include "lsxcommon/nemotron_moe_expert_cache.h"
 #include "lsxcommon/nemotron_moe_inference.h"
 #include "lsxcommon/nemotron_moe_load.h"
 
@@ -39,6 +40,12 @@ public:
     // Test/diagnostics access to the parsed passport.
     const nemotron_moe::NemotronIndex &IndexForTest() const { return idx_; }
 
+    // Test/diagnostics access to the routed-expert slot LRU.
+    const nemotron_moe::NmExpertCache &ExpertCacheForTest() const
+    {
+        return expert_cache_;
+    }
+
 private:
     void TeardownWeights() override;
     bool ValidateGeometry(const nemotron_moe::NemotronIndex &idx) const;
@@ -46,6 +53,7 @@ private:
     nemotron_moe::NemotronIndex idx_;
     nemotron_moe::NmWeights weights_;
     nemotron_moe::NmSession session_;
+    nemotron_moe::NmExpertCache expert_cache_;
 };
 
 } // namespace lsxcommon

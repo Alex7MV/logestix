@@ -83,7 +83,10 @@ label'ов в том же коммите, реестр guard-тестов и WIN
   (`RunLxGemmVec`/`RunLxGemmVecWT`; единственный GEMM-путь), `expert_store.h`.
   Модели: glm / qwen / deepseek / gemma / kimi / nemotron (NemotronH-гибрид
   Mamba-2 + MoE + full-attention: `nemotron_moe_constants.h` (frozen passport),
-  `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp`, `nemotron_moe_model.*`,
+  `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
+  `nemotron_moe_expert_cache.{h,cpp}` (host mmap-стор 2944 экспертов + device
+  slot-LRU; dense всегда резидент, эксперты стримятся — модель влезает в 16 ГиБ,
+  ноб `LSX_NEMOTRON_EXPERT_CACHE_SLOTS`), `nemotron_moe_model.*`,
   `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
   `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
   `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).

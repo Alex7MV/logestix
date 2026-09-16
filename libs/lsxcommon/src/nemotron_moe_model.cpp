@@ -7,6 +7,8 @@
 
 #include <absl/strings/str_format.h>
 
+#include <cstdlib>
+
 namespace lsxcommon {
 
 const std::string NemotronHModel::kType = nemotron_moe::frozen::kType;
@@ -61,7 +63,54 @@ bool NemotronHModel::Load()
             weights_.Free();
             return AbortLoad();
         }
-        resident_bytes_ = weights_.resident_bytes;
+        // Routed experts: host mmap store + device slot LRU sized from free
+        // VRAM. Only the dense backbone is permanent; the expert pool streams.
+        nemotron_moe::LoadNmExpertStore(cfg_.model_path, idx_.num_layers,
+                                        idx_.num_experts, expert_cache_.store);
+        expert_cache_.experts_per_layer = idx_.num_experts;
+        expert_cache_.moe_index_of_layer.assign(idx_.num_layers, -1);
+        expert_cache_.moe_layers = 0;
+        for (int l = 0; l < idx_.num_layers; ++l)
+            if (idx_.layer_types[l] == "moe")
+                expert_cache_.moe_index_of_layer[l] =
+                    expert_cache_.moe_layers++;
+        expert_cache_.total_experts =
+            expert_cache_.moe_layers * idx_.num_experts;
+        expert_cache_.layout =
+            nemotron_moe::PlanNmExpertSlotFromStore(expert_cache_.store);
+        if (!expert_cache_.layout.ok) {
+            log::error("[nemotron] expert store carried no usable payload");
+            TeardownWeights();
+            return AbortLoad();
+        }
+        std::size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        const std::size_t per_expert = static_cast<std::size_t>(
+            nemotron_moe::NmExpertCachePerExpertBytes(expert_cache_.layout));
+        const int slots = nemotron_moe::NmExpertCacheSlots(
+            free_b, per_expert, expert_cache_.total_experts,
+            idx_.num_experts_per_tok,
+            std::getenv("LSX_NEMOTRON_EXPERT_CACHE_SLOTS"));
+        log::info(absl::StrFormat(
+            "[nemotron] expert cache: %d/%d slots (~%llu MiB), free=%llu MiB",
+            slots, expert_cache_.total_experts,
+            static_cast<unsigned long long>(slots * (per_expert >> 20)),
+            static_cast<unsigned long long>(free_b >> 20)));
+        if (!nemotron_moe::AllocateNmExpertCache(expert_cache_, slots, err)) {
+            log::error(absl::StrFormat("[nemotron] expert cache error: %s", err));
+            TeardownWeights();
+            return AbortLoad();
+        }
+        // Fill the slots now (untimed): a full-size cache then behaves exactly
+        // like the old resident loader on the first decode token.
+        if (nemotron_moe::PrewarmNmExpertCache(expert_cache_, stream(), err) !=
+            cudaSuccess) {
+            log::error(absl::StrFormat("[nemotron] expert prewarm error: %s",
+                                       err));
+            TeardownWeights();
+            return AbortLoad();
+        }
+        resident_bytes_ = weights_.resident_bytes + expert_cache_.cache_bytes;
     }
 
     FinishLoad();
@@ -73,6 +122,7 @@ bool NemotronHModel::Load()
 
 void NemotronHModel::TeardownWeights()
 {
+    nemotron_moe::FreeNmExpertCache(expert_cache_);
     session_.Free();
     weights_.Free();
 }
@@ -108,7 +158,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         int pos = 0;
         for (int32_t id : req.input_ids) {
             cudaError_t e = nemotron_moe::NemotronForwardToken(
-                idx_, weights_, session_, id, pos, stream());
+                idx_, weights_, session_, expert_cache_, id, pos, stream());
             if (e != cudaSuccess) {
                 r.error_msg = std::string("forward failed: ") +
                               cudaGetErrorString(e);
@@ -144,7 +194,8 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
             }
             if (step + 1 < req.max_gen_tokens) {
                 cudaError_t e = nemotron_moe::NemotronForwardToken(
-                    idx_, weights_, session_, next, pos, stream());
+                    idx_, weights_, session_, expert_cache_, next, pos,
+                    stream());
                 if (e != cudaSuccess) {
                     r.error_msg = std::string("forward failed: ") +
                                   cudaGetErrorString(e);
@@ -164,6 +215,11 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         r.num_tokens = generated;
         r.num_layers = idx_.num_layers;
         r.weight_resident_bytes = resident_bytes_;
+        log::info(absl::StrFormat(
+            "[nemotron] expert cache: hits=%lld misses=%lld slots=%d",
+            static_cast<long long>(expert_cache_.device.hits),
+            static_cast<long long>(expert_cache_.device.misses),
+            expert_cache_.device.slots));
         cudaEventRecord(ev1, stream());
         cudaEventSynchronize(ev1);
         float ttft = 0.0f, total = 0.0f;

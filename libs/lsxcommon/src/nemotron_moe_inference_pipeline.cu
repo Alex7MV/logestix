@@ -11,10 +11,12 @@
 
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/nemotron_moe_expert_cache.h"
 
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
 namespace lsxcommon::nemotron_moe {
@@ -239,8 +241,8 @@ void ResetNemotronSession(NmSession &s, cudaStream_t stream)
 }
 
 cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
-                                 NmSession &s, int token, int pos,
-                                 cudaStream_t stream)
+                                 NmSession &s, NmExpertCache &experts, int token,
+                                 int pos, cudaStream_t stream)
 {
     using namespace lsx_nvfp4;
     const int H = s.H;
@@ -348,19 +350,25 @@ cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
                 return cudaErrorUnknown;
 
             cudaMemsetAsync(s.expert_acc, 0, sizeof(float) * H, stream);
-            const int I = w.experts[l][ti[0]].up.rows;
+            const int I = idx.moe_intermediate_size;
             const int SI = lw.shared_up.rows;
+            // Materialize the routed top-k in the device slot LRU (staging on
+            // a miss, in the same stream) and read back the slot views.
+            std::vector<NmExpertView> ev(s.topk);
+            std::string res_err;
+            e = ResolveNmExperts(experts, l, ti.data(), s.topk, stream, ev.data(),
+                                 res_err);
+            if (e != cudaSuccess) return e;
             std::vector<const uint8_t *> up_p(s.topk), up_s(s.topk);
             std::vector<const uint8_t *> dn_p(s.topk), dn_s(s.topk);
             std::vector<float> up_g(s.topk), dn_g(s.topk);
             for (int t = 0; t < s.topk; ++t) {
-                const NmExpertWeight &ew = w.experts[l][ti[t]];
-                up_p[t] = ew.up.d_packed;
-                up_s[t] = ew.up.d_scales;
-                up_g[t] = ew.up.global_scale;
-                dn_p[t] = ew.down.d_packed;
-                dn_s[t] = ew.down.d_scales;
-                dn_g[t] = ew.down.global_scale;
+                up_p[t] = ev[t].up_packed;
+                up_s[t] = ev[t].up_scales;
+                up_g[t] = ev[t].up_global_scale;
+                dn_p[t] = ev[t].down_packed;
+                dn_s[t] = ev[t].down_scales;
+                dn_g[t] = ev[t].down_global_scale;
             }
             // Routed experts in two batched launches (one per projection).
             e = RunLsxNvfp4GemmSeq1GemmVExpertBatch(

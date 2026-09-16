@@ -80,26 +80,23 @@ struct NmLayerWeights {
     void Free();
 };
 
-// One routed expert (non-gated: up/down only).
-struct NmExpertWeight {
-    lsx_nvfp4::LsxNvfp4Weight up;    // [I, H]
-    lsx_nvfp4::LsxNvfp4Weight down;  // [H, I]
-    void Free() { up.Free(); down.Free(); }
-};
+// ── Routed experts ──────────────────────────────────────────────────────────
+// Routed experts are NOT part of the resident graph: they stream through the
+// NmExpertCache host store + device slot LRU (nemotron_moe_expert_cache.h),
+// so the model fits a 16 GiB board. `resident_bytes` covers dense weights.
 
 struct NmWeights {
     __half *d_embed = nullptr;       // [vocab, H] FP16
     __half *d_head = nullptr;        // [vocab, H] FP16
     __half *d_final_norm = nullptr;  // [H] FP16
     std::vector<NmLayerWeights> layers;                 // [num_layers]
-    std::vector<std::vector<NmExpertWeight>> experts;   // [num_layers][E]
-    std::uint64_t resident_bytes = 0;
+    std::uint64_t resident_bytes = 0;                   // dense only
     void Free();
 };
 
-// Uploads the converted weights under <model_path>/logestix/ to the device.
-// Routed experts are uploaded resident (per-expert NVFP4). Strict: returns
-// false and fills `error` on any missing/malformed tensor.
+// Uploads the converted dense weights under <model_path>/logestix/ to the
+// device. Routed experts are handled by LoadNmExpertStore/AllocateNmExpertCache.
+// Strict: returns false and fills `error` on any missing/malformed tensor.
 bool LoadNemotronWeights(const std::string &model_path, const NemotronIndex &idx,
                          NmWeights &w, cudaStream_t stream, std::string &error);
 

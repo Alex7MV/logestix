@@ -7,7 +7,9 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 
 using namespace lsxcommon;
@@ -95,4 +97,63 @@ TEST_CASE("nemotron Load rejects a frozen-geometry mismatch", "[nemotron][model]
     auto model = LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     CHECK_FALSE(model->Load());
+}
+
+TEST_CASE("nemotron expert LRU stays bit-identical under slot eviction",
+          "[nemotron][model]")
+{
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_lru_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_lru_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    REQUIRE(nemotron_moe::ConvertNemotronModel(src.string(), dst.string()).ok());
+
+    struct Run {
+        std::vector<int32_t> tokens;
+        std::vector<float> logits;
+        int slots = 0;
+        std::uint64_t cache_bytes = 0;
+    };
+    auto run = [&](const char *slots_env) -> Run {
+        SetEnv("LSX_NEMOTRON_EXPERT_CACHE_SLOTS", slots_env);
+        ModelInitConfig cfg;
+        cfg.model_path = dst.string();
+        cfg.model_type = NemotronHModel::kType;
+        auto model = LsxModelFactory::Create(cfg);
+        REQUIRE(model != nullptr);
+        REQUIRE(model->Load());
+
+        ModelRequest req;
+        req.input_ids = {1, 2, 3};
+        req.max_gen_tokens = 4;
+        req.ignore_eos = true;
+        auto r = model->Infer(req);
+        REQUIRE(r.error_msg.empty());
+        REQUIRE(r.ok);
+
+        Run out;
+        out.tokens = r.gen_tokens;
+        out.logits = r.final_logits;
+        const auto &cache =
+            static_cast<NemotronHModel *>(model.get())->ExpertCacheForTest();
+        out.slots = cache.device.slots;
+        out.cache_bytes = cache.cache_bytes;
+        model->Unload();
+        return out;
+    };
+
+    // 4 routed experts, top-k 2: the full cache is the old resident path; the
+    // 2-slot cache reserves half the device bytes. Output must not shift.
+    const Run full = run("4");
+    const Run tight = run("2");
+    SetEnv("LSX_NEMOTRON_EXPERT_CACHE_SLOTS", "");
+
+    CHECK(full.slots == 4);
+    CHECK(tight.slots == 2);
+    CHECK(tight.cache_bytes < full.cache_bytes);
+
+    CHECK(tight.tokens == full.tokens);
+    REQUIRE(tight.logits.size() == full.logits.size());
+    CHECK(std::memcmp(tight.logits.data(), full.logits.data(),
+                      full.logits.size() * sizeof(float)) == 0);
 }
