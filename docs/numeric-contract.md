@@ -43,12 +43,14 @@ Any kernel that cannot meet these is C-fast by definition.
 
 Two implementation classes, named in code and in every kernel's header:
 
-- **C-exact** — every kernel preserves the R3 token output and bit-identical
-  logits. Allowed: bf16/fp16 activations, weight-only quantization, fused
-  kernels with a strictly fixed and invariant accumulation order, exact-verify
-  speculative decoding, CUDA graphs / PDL / multi-stream that do not reorder
-  numerics, TMA staging. Explicitly required: deterministic GEMM execution
-  paths (e.g. forced deterministic cuBLAS tiling, static workspace size
+- **C-exact** — every kernel preserves the R3 token output, and its logits are
+  **bit-reproducible for the declared reference path** (identical across ≥3 runs
+  and across the supported GPU-model set) — not necessarily bit-equal to the
+  optional `kOff` scalar path. Allowed: bf16/fp16 activations, weight-only
+  quantization, fused kernels with a strictly fixed and invariant accumulation
+  order, exact-verify speculative decoding, CUDA graphs / PDL / multi-stream that
+  do not reorder numerics, TMA staging. Explicitly required: deterministic GEMM
+  execution paths (e.g. forced deterministic cuBLAS tiling, static workspace size
   allocation, and banned dynamic autotuning/heuristics across execution
   environments).
 - **C-fast** — tolerance-class. Allowed (in addition): activation quantization
@@ -71,10 +73,12 @@ atomics in the reduce path, unseeded stochastic ops.
 3. **Toolchain clause:** any update to the compiler, CUDA Toolkit, or core build
    toolchain is treated as a code change and requires a full re-validation of
    the R3/C-exact status.
-4. FSI-facing default paths are always **C-exact / R3** for modes that need it.
-   `--bit-exact` (`FastMathMode::kOff`) is the explicit R3/C-exact switch; the
-   default `kAuto` must resolve to C-exact for FSI models unless the operator
-   opts in.
+4. FSI-facing default paths are **R3**: the production path (default `kAuto`,
+   including its tensor-core fast-math kernels) must be deterministic,
+   device-independent (§1.1) and golden-token-correct; its own logits are the R3
+   reference. `--bit-exact` (`FastMathMode::kOff`) is an **optional strict
+   scalar mode** for verification/audit, not a required default, and it is not
+   bit-equal to the production path.
 5. Enabling any C-fast path requires: (a) explicit operator opt-in, (b) a
    quality harness result, (c) a tolerance bound recorded.
 6. **Workspace & Allocation Invariance:** to guarantee R3 across the supported
@@ -105,10 +109,13 @@ atomics in the reduce path, unseeded stochastic ops.
   not a bug to keep chasing.
 - Spec-decode with exact verify: **C-exact** (accepted tokens equal greedy
   bit-for-bit). Allowed as default.
-- Fused FP4→bf16 dequant with bf16 activations: **C-fast candidate** if the
-  accumulation order changes (math drift breaks R3 bit-identity), or C-exact
-  candidate only if the implementation strictly guarantees an invariant math
-  accumulation order that passes the R3 selfcheck.
+- Default `kAuto` (tensor-core fast-math) vs `--bit-exact` (`kOff`): **both
+  C-exact** — each is deterministic, device-independent and golden-token-correct.
+  They are distinct numeric paths (different bits); the production (`kAuto`) path
+  is the R3 reference, and `kOff` is the optional strict scalar mode.
+- Fused FP4→bf16 dequant with bf16 activations: **C-exact** if it is
+  deterministic, device-independent and golden-token-correct (its own path then
+  is the reference); **C-fast** otherwise.
 
 ## 6. Open operator decisions
 

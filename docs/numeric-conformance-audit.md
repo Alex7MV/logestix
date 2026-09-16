@@ -68,11 +68,12 @@ cuBLAS calls (Kimi, DeepSeek-V4, DeepSeek-V4.1); GLM/Qwen/Gemma were unchanged
 four cuBLAS-affected models (selfcheck Paris). Slower models (kimi r3,
 deepseek-v4.1) are not in the "fast" measurement set.
 
-## Open point (contract interpretation)
+## Contract interpretation (resolved 2026-09-15)
 
-The default (`kAuto`) `final_logits` hash differs from `kOff` for every model:
-the default is a distinct numeric path (TC fast-math), golden-token-correct but
-not bit-identical to `kOff`. Per the contract's §2 wording this classifies the
-default as C-fast; per §3.4 the FSI default must resolve to C-exact. Operator
-decision: make the default the `kOff` path, or define R3 as determinism + golden
-tokens.
+Resolved in favour of **B**: R3 = deterministic + device-independent + golden
+tokens **for the production path**, whose own logits are the R3 reference.
+`kAuto` (tensor-core fast-math) and `kOff` (`--bit-exact`) are distinct numeric
+paths but **both C-exact**; `kOff` remains an optional strict scalar mode for
+verification/audit and is no longer treated as the mandatory default reference
+(numeric-contract §2/§3.4 updated). Recorded consequence: the default keeps its
+throughput (e.g. qwen3.6-35b-a3b 142.73 vs 13.32 t/s kOff).
