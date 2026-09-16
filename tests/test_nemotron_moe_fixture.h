@@ -133,4 +133,51 @@ inline void WriteNemotronCheckpoint(const std::filesystem::path &dir)
     WriteSafetensors(dir, "model.safetensors", ts);
 }
 
+// Real frozen-geometry layer mix (attention at 5/12/19/26/33/42).
+inline std::vector<std::string> RealLayerTypes()
+{
+    return {"mamba", "moe", "mamba", "moe", "mamba", "attention", "moe",
+            "mamba", "moe",   "mamba", "moe",   "mamba",   "attention", "moe",
+            "mamba", "moe",   "mamba", "moe",   "mamba",   "attention", "moe",
+            "mamba", "moe",   "mamba", "moe",   "mamba",   "attention", "moe",
+            "mamba", "moe",   "mamba", "moe",   "mamba",   "attention", "moe",
+            "mamba", "moe",   "mamba", "moe",   "mamba",   "moe",       "mamba",
+            "attention", "moe", "mamba", "moe", "mamba",   "moe", "mamba",
+            "moe", "mamba", "moe"};
+}
+
+// Writes a real-geometry model.index.json (no weights) so the loader's frozen
+// passport can be exercised without the synthetic-geometry bypass.
+inline void WriteNemotronIndex(
+    const std::filesystem::path &model_root, int hidden_override = 2688,
+    bool experts_no_gate = true,
+    const std::string &format_tag = "logestix-nemotron-nvfp4")
+{
+    std::filesystem::create_directories(model_root / "logestix");
+    const auto types = RealLayerTypes();
+    std::ofstream f(model_root / "logestix" / "model.index.json");
+    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+      << "  \"model\": \"NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\",\n"
+      << "  \"num_layers\": 52,\n  \"layer_types\": [";
+    for (size_t i = 0; i < types.size(); ++i) {
+        if (i) f << ",";
+        f << "\"" << types[i] << "\"";
+    }
+    f << "],\n  \"attn_layer_idx\": [5,12,19,26,33,42],\n"
+      << "  \"hidden_size\": " << hidden_override << ",\n"
+      << "  \"vocab_size\": 131072,\n  \"mamba_num_heads\": 64,\n"
+      << "  \"mamba_head_dim\": 64,\n  \"ssm_state_size\": 128,\n"
+      << "  \"n_groups\": 8,\n  \"conv_kernel\": 4,\n"
+      << "  \"num_attention_heads\": 32,\n  \"num_key_value_heads\": 2,\n"
+      << "  \"head_dim\": 128,\n  \"rope_theta\": 10000,\n"
+      << "  \"rms_norm_eps\": 1e-05,\n  \"num_experts\": 128,\n"
+      << "  \"num_experts_per_tok\": 6,\n  \"moe_intermediate_size\": 1856,\n"
+      << "  \"shared_expert_intermediate_size\": 3712,\n"
+      << "  \"router_scaling_factor\": 2.5,\n"
+      << "  \"experts_no_gate\": " << (experts_no_gate ? "true" : "false")
+      << ",\n  \"bos_token_id\": 1,\n  \"eos_token_id\": 2,\n"
+      << "  \"pad_token_id\": 0,\n  \"deferred\": {\"mtp\": \"cut\", "
+         "\"mtp_tensors\": 128},\n  \"total_pinned_tensors\": 0\n}\n";
+}
+
 } // namespace nemotrontest

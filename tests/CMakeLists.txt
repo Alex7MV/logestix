@@ -2962,6 +2962,13 @@ set_tests_properties(test_nemotron_moe_convert PROPERTIES
     TIMEOUT 120
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+add_executable(test_nemotron_moe_loader test_nemotron_moe_loader.cpp)
+target_link_libraries(test_nemotron_moe_loader PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_loader PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_loader COMMAND test_nemotron_moe_loader)
+
 # ── Тесты Qwen3.8-Flash-Next (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
 target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
@@ -3273,6 +3280,7 @@ set_tests_properties(
     test_ctest_labels_guard
     test_model_suite_guard
     test_nemotron_moe_math
+    test_nemotron_moe_loader
     PROPERTIES LABELS fast)
 
 set_tests_properties(
