@@ -43,7 +43,7 @@ namespace {
 const std::set<std::string> &FamilyStems()
 {
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
-                                            "kimi"};
+                                            "kimi", "nemotron"};
     return v;
 }
 
@@ -312,7 +312,7 @@ std::vector<std::string> CheckLoaderSyntheticDiscipline(
     static const std::regex fixture_inc_re(
         R"inc(^\s*#\s*include\s+"(test_[A-Za-z0-9_]+_fixture\.h|test_synth_checkpoint\.h)")inc");
     static const std::regex model_stage_re(
-        R"(test_(glm|qwen|deepseek|gemma|kimi)[A-Za-z0-9_]*_model\.cpp$)");
+        R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron)[A-Za-z0-9_]*_model\.cpp$)");
     const std::vector<std::string> vault_markers = {
         "mnt/llm_models/models", "huggingface.co"};
     std::error_code ec;

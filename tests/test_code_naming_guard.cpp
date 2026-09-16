@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -49,7 +49,7 @@ std::regex SchemeRegex()
 const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
-        {"glm", "qwen", "gemma", "kimi", "deepseek"};
+        {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron"};
     return v;
 }
 
@@ -154,4 +154,20 @@ TEST_CASE("naming guard accepts deepseek_moe_v41_* stems", "[naming][guard]")
     CHECK(m("deepseek_moe_v41_inference_attn"));
     CHECK(m("deepseek_moe_v41_device_math"));
     CHECK(m("deepseek_moe_v41_dequant"));
+}
+
+TEST_CASE("naming guard accepts nemotron_moe_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("nemotron_moe_constants"));
+    CHECK(m("nemotron_moe_convert"));
+    CHECK(m("nemotron_moe_load"));
+    CHECK(m("nemotron_moe_model"));
+    CHECK(m("nemotron_moe_inference"));
+    CHECK(m("nemotron_moe_inference_pipeline"));
+    CHECK(m("nemotron_moe_inference_attn"));
+    CHECK(m("nemotron_moe_kernels"));
+    CHECK(m("nemotron_moe_device_math"));
 }
