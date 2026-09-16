@@ -2,7 +2,6 @@
 
 #include "kimi_moe_kernels.h"
 
-#include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -352,8 +351,6 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     cudaStream_t stream;
     cudaStreamCreate(&stream);
     REQUIRE(KimiMlaReset(d_state, stream) == cudaSuccess);
-    cublasHandle_t cublas;
-    cublasCreate(&cublas);
 
     // Sequential single-token passes (decode-style): isolates rope
     // positions and incremental cache from batched-prefill effects.
@@ -362,7 +359,7 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
             RunKimiMlaAttention(stream, /*turn=*/t, lw, 1,
                                 d_x + (size_t)t * H,
                                 /*residual=*/d_x + (size_t)t * H,
-                                d_out + (size_t)t * H, d_state, cublas,
+                                d_out + (size_t)t * H, d_state,
                                 /*base_slot=*/t, /*pos_offset=*/t);
         REQUIRE(err == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -416,7 +413,7 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
                    cudaMemcpyHostToDevice);
         cudaError_t err =
             RunKimiMlaAttention(stream, 0, lw, seq, d_x, d_x, d_out,
-                                d_state, cublas, 0, 0);
+                                d_state, 0, 0);
         REQUIRE(err == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         KimiMlaState st_b;
@@ -440,7 +437,6 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
         }
     }
 
-    cublasDestroy(cublas);
     cudaStreamDestroy(stream);
     cudaFree(d_x); cudaFree(d_out); cudaFree(d_state);
     cudaFree(lw.d_q_a_norm);

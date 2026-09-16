@@ -2,7 +2,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
@@ -43,7 +42,7 @@ bool QwenBaseModel::Load()
         qwen::SetQwenSeq1Gemv(fm == FastMathMode::kOn);
     }
     if (!BeginLoad(cfg_.model_path)) return false;
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         lsxcommon::log::error("[qwen-model] stream create failed");
         return AbortLoad();
     }
@@ -88,13 +87,12 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
     // Persistent execution context: created once in Load(), reused for
-    // every request (no temp-per-call stream/cuBLAS churn).
-    if (!EnsureContext(/*with_cublas=*/true)) {
-        r.error_msg = "cuda/cublas init failed";
+    // every request (no temp-per-call stream churn).
+    if (!EnsureContext()) {
+        r.error_msg = "cuda init failed";
         return r;
     }
     cudaStream_t st = stream();
-    cublasHandle_t ch = cublas();
 
         // Incremental session policy (spec item 15): a request whose input_ids
     // exactly match the previous call's generated tail continues the session

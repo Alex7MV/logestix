@@ -144,7 +144,7 @@ cudaError_t RunExpPleInject(cudaStream_t stream, ExpPleState &st,
                             __half *d_hidden /*[hc*H] in/out*/);
 
 // LM head GEMM: logits[v] = head_w[v,:] . hidden[:] (FP16 weights in,
-// FP32 accumulate + output). Uses a process-wide cuBLAS handle.
+// FP32 accumulate + output). Device-independent, deterministic GEMV.
 cudaError_t RunExpHeadGemm(cudaStream_t stream, const __half *d_head_f16,
                            const __half *d_hidden, float *d_logits, int H,
                            int V);

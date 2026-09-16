@@ -2,7 +2,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 
 #include <filesystem>
 #include <shared_mutex>
@@ -16,7 +15,8 @@
 namespace lsxcommon {
 
 // fast-math policy: family-own (no process-global toggles). GLM-5.2 kernels
-// run the bit-exact cuBLAS path unconditionally; no TC/GEMV routing state.
+// run the bit-exact fp64-accumulate GEMV path unconditionally; no TC routing
+// state.
 const std::string GlmV5Model::kType = "glm-5.2";
 
 // GLM-5.2 chat framing — model-owned (prompt_framing.h declares the symbol).
@@ -80,8 +80,8 @@ bool GlmV5Model::Load()
     }
     vram_ = topo.vram;
 
-    if (!EnsureContext(/*with_cublas=*/true)) {
-        log::error("[glm-model] cublas/stream init failed");
+    if (!EnsureContext()) {
+        log::error("[glm-model] stream init failed");
         return AbortLoad();
     }
 
@@ -148,7 +148,7 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
 
     glm::GlmGenerationResult gen;
     const cudaError_t err = RunUnderResidencyLock([&] {
-        return glm::RunGlmRealGeneration(cublas(), stream(), pw_, experts_,
+        return glm::RunGlmRealGeneration(stream(), pw_, experts_,
                                          req.input_ids, req.max_gen_tokens,
                                          gen);
     });

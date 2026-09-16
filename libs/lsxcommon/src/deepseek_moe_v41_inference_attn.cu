@@ -215,7 +215,7 @@ cudaError_t LaunchMaskIndexerScores(float *score, int n_pos, const uint8_t *mask
 }
 
 cudaError_t AttentionForwardDecode(
-    cublasHandle_t handle, cudaStream_t stream, const uint16_t *x, int hidden,
+    cudaStream_t stream, const uint16_t *x, int hidden,
     const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
     const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
     const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
@@ -231,19 +231,19 @@ cudaError_t AttentionForwardDecode(
 
     cudaError_t e = cudaSuccess;
     do {
-        if ((e = LaunchGemmFp16(handle, stream, wq_a, x, sc.qr, q_lora, 1,
+        if ((e = LaunchGemmFp16(stream, wq_a, x, sc.qr, q_lora, 1,
                                 hidden)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.qr, q_norm, sc.qr, q_lora, 1e-20f,
                                    stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(handle, stream, wq_b, sc.qr, sc.q, q_dim, 1,
+        if ((e = LaunchGemmFp16(stream, wq_b, sc.qr, sc.q, q_dim, 1,
                                 q_lora)) != cudaSuccess)
             break;
         if ((e = LaunchRopeHalf(sc.q, heads, head_dim, rope_dim, rope_cos,
                                 rope_sin, false, stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(handle, stream, wkv, x, sc.kv, head_dim, 1,
+        if ((e = LaunchGemmFp16(stream, wkv, x, sc.kv, head_dim, 1,
                                 hidden)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.kv, kv_norm, sc.kv, head_dim, 1e-20f,
@@ -282,13 +282,13 @@ cudaError_t AttentionForwardDecode(
             const uint16_t *x_g = sc.o + static_cast<size_t>(g) * per_group;
             uint16_t *y_g = sc.olora +
                 static_cast<size_t>(g) * o_lora_rank;
-            if ((e = LaunchGemmFp16(handle, stream, w_g, x_g, y_g, o_lora_rank,
+            if ((e = LaunchGemmFp16(stream, w_g, x_g, y_g, o_lora_rank,
                                     1, per_group)) != cudaSuccess)
                 break;
         }
         if (e != cudaSuccess) break;
 
-        if ((e = LaunchGemmFp16(handle, stream, wo_b, sc.olora, out, hidden, 1,
+        if ((e = LaunchGemmFp16(stream, wo_b, sc.olora, out, hidden, 1,
                                 o_groups * o_lora_rank)) != cudaSuccess)
             break;
     } while (false);
@@ -298,7 +298,7 @@ cudaError_t AttentionForwardDecode(
 }
 
 cudaError_t CedAttentionForwardDecode(
-    cublasHandle_t handle, cudaStream_t stream, const uint16_t *x, int hidden,
+    cudaStream_t stream, const uint16_t *x, int hidden,
     int window, int layer_id, const CedLayerParams &p, CedLayerBuffers &b,
     const float *rope_cos, const float *rope_sin, int start_pos,
     CsaRuntime &csa, uint16_t *out)
@@ -328,16 +328,16 @@ cudaError_t CedAttentionForwardDecode(
     } while (false)
 
     // q path.
-    V41_TRY(LaunchGemmFp16(handle, stream, p.wq_a, x, b.qr, p.q_lora, 1,
+    V41_TRY(LaunchGemmFp16(stream, p.wq_a, x, b.qr, p.q_lora, 1,
                            hidden));
     V41_TRY(LaunchRmsNormHalf(b.qr, p.q_norm, b.qr, p.q_lora, 1e-20f, stream));
-    V41_TRY(LaunchGemmFp16(handle, stream, p.wq_b, b.qr, b.q, p.heads * hd, 1,
+    V41_TRY(LaunchGemmFp16(stream, p.wq_b, b.qr, b.q, p.heads * hd, 1,
                            p.q_lora));
     V41_TRY(LaunchRopeHalf(b.q, p.heads, hd, rd, cos_tok, sin_tok, false,
                            stream));
 
     // Window KV: norm -> rope -> fp8 act-quant -> ring write.
-    V41_TRY(LaunchGemmFp16(handle, stream, p.wkv, x, b.kv, hd, 1, hidden));
+    V41_TRY(LaunchGemmFp16(stream, p.wkv, x, b.kv, hd, 1, hidden));
     V41_TRY(LaunchRmsNormHalf(b.kv, p.kv_norm, b.kv, hd, 1e-20f, stream));
     V41_TRY(LaunchRopeHalf(b.kv, 1, hd, rd, cos_tok, sin_tok, false, stream));
     V41_TRY(LaunchFp8ActQuantInplace(b.kv, 1, hd, 32, stream));
@@ -355,15 +355,15 @@ cudaError_t CedAttentionForwardDecode(
     bool have_latent = false;
     if (p.is_kv_source) {
         if (ratio == 1) {
-            V41_TRY(LaunchGemmFp16(handle, stream, p.comp_wkv, x, b.latent, hd,
+            V41_TRY(LaunchGemmFp16(stream, p.comp_wkv, x, b.latent, hd,
                                    1, hidden));
             V41_TRY(LaunchRmsNormHalf(b.latent, p.comp_norm, b.latent, hd,
                                       1e-20f, stream));
             have_latent = true;
         } else {
-            V41_TRY(LaunchGemmFp16(handle, stream, p.comp_wkv, x, b.kv, hd, 1,
+            V41_TRY(LaunchGemmFp16(stream, p.comp_wkv, x, b.kv, hd, 1,
                                    hidden));
-            V41_TRY(LaunchGemmFp16(handle, stream, p.comp_wgate, x, b.latent,
+            V41_TRY(LaunchGemmFp16(stream, p.comp_wgate, x, b.latent,
                                    hd, 1, hidden));
             store_comp_state_kernel<<<(hd + 255) / 256, 256, 0, stream>>>(
                 reinterpret_cast<const __half *>(b.kv),
@@ -389,7 +389,7 @@ cudaError_t CedAttentionForwardDecode(
     // same buffer is rotated for the compressed-KV cache.
     if (p.owns_k && have_latent) {
         const int id = p.idx_head_dim;
-        V41_TRY(LaunchGemmFp16(handle, stream, p.idx_wk, b.latent, b.idx_knew,
+        V41_TRY(LaunchGemmFp16(stream, p.idx_wk, b.latent, b.idx_knew,
                                id, 1, hd));
         V41_TRY(LaunchRmsNormHalf(b.idx_knew, p.idx_k_norm, b.idx_knew, id,
                                   1e-20f, stream));
@@ -420,14 +420,14 @@ cudaError_t CedAttentionForwardDecode(
     int ctopk = 0;
     if (p.is_index_source) {
         const int id = p.idx_head_dim;
-        V41_TRY(LaunchGemmFp16(handle, stream, p.idx_wq_b, b.qr, b.idx_q,
+        V41_TRY(LaunchGemmFp16(stream, p.idx_wq_b, b.qr, b.idx_q,
                                p.idx_n_heads * id, 1, p.q_lora));
         V41_TRY(LaunchRopeHalf(b.idx_q, p.idx_n_heads, id, rd, cos_tok,
                                sin_tok, false, stream));
         V41_TRY(LaunchFp4ActQuantInplace(b.idx_q, p.idx_n_heads, id, 32, true,
                                          stream));
         if (compress_len > 0) {
-            V41_TRY(LaunchGemvFp16ToF32(handle, stream, p.idx_wproj, x,
+            V41_TRY(LaunchGemvFp16ToF32(stream, p.idx_wproj, x,
                                         b.idx_w, p.idx_n_heads, hidden));
             const float ws = (1.0f / std::sqrt(static_cast<float>(id))) *
                              (1.0f / std::sqrt(static_cast<float>(
@@ -489,10 +489,10 @@ cudaError_t CedAttentionForwardDecode(
             static_cast<size_t>(g) * p.o_lora_rank * per_group;
         const uint16_t *x_g = b.o + static_cast<size_t>(g) * per_group;
         uint16_t *y_g = b.olora + static_cast<size_t>(g) * p.o_lora_rank;
-        V41_TRY(LaunchGemmFp16(handle, stream, w_g, x_g, y_g, p.o_lora_rank, 1,
+        V41_TRY(LaunchGemmFp16(stream, w_g, x_g, y_g, p.o_lora_rank, 1,
                                per_group));
     }
-    V41_TRY(LaunchGemmFp16(handle, stream, p.wo_b, b.olora, out, hidden, 1,
+    V41_TRY(LaunchGemmFp16(stream, p.wo_b, b.olora, out, hidden, 1,
                            p.o_groups * p.o_lora_rank));
 #undef V41_TRY
     return cudaSuccess;

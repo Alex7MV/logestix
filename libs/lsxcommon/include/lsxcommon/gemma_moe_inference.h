@@ -2,7 +2,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
-#include <cublas_v2.h>
 
 #include <cstdint>
 #include <string>
@@ -134,7 +133,7 @@ struct GemmaGenerationResult {
 // pinned handshake). kv must be pre-allocated for prompt+gen capacity.
 // Applies final RMSNorm, tied-head logits and softcap tanh(l/cap)*cap.
 //
-// Persistent generation context: cuBLAS handle + capacity-grown workspace +
+// Persistent generation context: capacity-grown workspace +
 // routed-expert device slot cache. Owned by the model; created lazily,
 // single-threaded (one consumer). Plain host-safe members only (no absl).
 struct GenWorkspace {
@@ -227,7 +226,6 @@ struct GenWorkspace {
 struct GemmaGenContext {
     ~GemmaGenContext()
     {
-        if (cublas) cublasDestroy(cublas);
         if (ec.d_base) cudaFree(ec.d_base);
         delete[] ec.h_slot_of;
         delete[] ec.h_slot_owner;
@@ -239,7 +237,6 @@ struct GemmaGenContext {
         d_tbl = nullptr;
         if (ev_router) cudaEventDestroy(ev_router);
     }
-    cublasHandle_t cublas = nullptr;
     GenWorkspace ws;
     bool ws_ready = false;
     size_t seq0_cap = 0, q_rows_cap = 0, kv_rows_cap = 0, rot_half_cap = 0;

@@ -61,7 +61,7 @@ protected:
     gemma::GemmaExpertDb expert_db_;
     bool expert_db_ready_ = false;
 
-    // Persistent generation context (cublas + workspace [+ expert cache]).
+    // Persistent generation context (workspace + expert cache).
     gemma::GemmaGenContext *gen_ctx_ = nullptr;
 };
 

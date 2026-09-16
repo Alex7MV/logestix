@@ -8,7 +8,6 @@
 #include "lsxcommon/kimi_moe_load.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 
-#include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -68,8 +67,6 @@ TEST_CASE("Kimi batched TC routed chain: tolerance parity vs legacy GEMV",
     if (!tc::LsxTcRuntimeSupported()) return;
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
-    cublasHandle_t cub;
-    REQUIRE(cublasCreate(&cub) == cudaSuccess);
 
     const int64_t el = static_cast<int64_t>(I) * H;
     HostProj w1 = MakeProj(1, I, H), w3 = MakeProj(2, I, H),
@@ -150,7 +147,7 @@ TEST_CASE("Kimi batched TC routed chain: tolerance parity vs legacy GEMV",
             v.p_s1 = dev.d_scale;
             v.p_s3 = dev.d_scale + align_up(s1_b);
             v.p_s2 = v.p_s3 + align_up(s3_b);
-            REQUIRE(RunKimiExpertFfnCached(cub, st, se, coeffs[k], d_x,
+            REQUIRE(RunKimiExpertFfnCached(st, se, coeffs[k], d_x,
                                            d_out_legacy, d_staging,
                                            staging, v) == cudaSuccess);
         }
@@ -163,7 +160,7 @@ TEST_CASE("Kimi batched TC routed chain: tolerance parity vs legacy GEMV",
     void *d_scratch;
     REQUIRE(cudaMalloc(&d_scratch, scratch) == cudaSuccess);
     REQUIRE(cudaMemset(d_out_tc, 0, H * 2) == cudaSuccess);
-    REQUIRE(RunKimiRoutedTcBatch(cub, st, dev.d_pack, dev.d_scale,
+    REQUIRE(RunKimiRoutedTcBatch(st, dev.d_pack, dev.d_scale,
                                  dev.pack_stride, dev.scale_stride, d_tbl, K,
                                  d_x, d_out_tc, d_scratch, scratch) ==
             cudaSuccess);
@@ -198,6 +195,5 @@ TEST_CASE("Kimi batched TC routed chain: tolerance parity vs legacy GEMV",
     cudaFree(d_scratch); cudaFree(d_tbl); cudaFree(d_out_tc);
     cudaFree(d_out_legacy); cudaFree(d_x);
     cudaFree(dev.d_pack); cudaFree(dev.d_scale);
-    cublasDestroy(cub);
     cudaStreamDestroy(st);
 }

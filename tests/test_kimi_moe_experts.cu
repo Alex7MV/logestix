@@ -4,7 +4,6 @@
 #include "lsxcommon/kimi_moe_expert_cache.h"
 #include "lsxcommon/kimi_moe_load.h"
 
-#include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -189,12 +188,10 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     void *d_staging = nullptr;
     REQUIRE(cudaMalloc(&d_staging, staging_bytes) == cudaSuccess);
 
-    cublasHandle_t cublas;
-    REQUIRE(cublasCreate(&cublas) == CUBLAS_STATUS_SUCCESS);
 
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
-    cudaError_t err = RunKimiExpertFfn(cublas, stream, entry, /*weight=*/1.0f,
+    cudaError_t err = RunKimiExpertFfn(stream, entry, /*weight=*/1.0f,
                                        d_x, d_out, d_staging, staging_bytes);
     REQUIRE(err == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -243,7 +240,6 @@ TEST_CASE("Kimi routed-expert FFN matches CPU reference", "[kimi][experts]")
     CHECK(max_abs <= 0.01 * ref_scale + 1.0);
 
     cudaDeviceSynchronize();
-    cublasDestroy(cublas);
     cudaFree(d_x);
     cudaFree(d_out);
     cudaFree(d_staging);
@@ -469,11 +465,8 @@ TEST_CASE("Kimi cached FFN bit-identical to staging FFN (real expert file)",
     std::vector<float> xf(Hd);
     for (int j = 0; j < Hd; ++j) xf[j] = Frand(3, j) * 0.5f;
 
-    cublasHandle_t cublas;
-    REQUIRE(cublasCreate(&cublas) == cudaSuccess);
     cudaStream_t stream;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
-    cublasSetStream(cublas, stream);
 
     __nv_bfloat16 *d_x = nullptr, *d_out_s = nullptr, *d_out_c = nullptr;
     REQUIRE(cudaMalloc(&d_x, Hd * 2) == cudaSuccess);
@@ -513,9 +506,9 @@ TEST_CASE("Kimi cached FFN bit-identical to staging FFN (real expert file)",
     const KimiMoeSlotView v = KimiMoeSlotPointers(*cache, 0, e);
 
     const float coeff = 0.25f;
-    REQUIRE(RunKimiExpertFfn(cublas, stream, e, coeff, d_x, d_out_s,
+    REQUIRE(RunKimiExpertFfn(stream, e, coeff, d_x, d_out_s,
                              d_staging, staging_bytes) == cudaSuccess);
-    REQUIRE(RunKimiExpertFfnCached(cublas, stream, e, coeff, d_x, d_out_c,
+    REQUIRE(RunKimiExpertFfnCached(stream, e, coeff, d_x, d_out_c,
                                    d_staging, staging_bytes, v) ==
             cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -543,5 +536,4 @@ TEST_CASE("Kimi cached FFN bit-identical to staging FFN (real expert file)",
     cudaFree(d_staging);
     cudaFree(d_x); cudaFree(d_out_s); cudaFree(d_out_c);
     cudaStreamDestroy(stream);
-    cublasDestroy(cublas);
 }

@@ -2,7 +2,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 
 #include <filesystem>
 #include <shared_mutex>
@@ -41,8 +40,8 @@ bool KimiK27CodeModel::Load()
 
     namespace fs = std::filesystem;
 
-    if (!EnsureContext(/*with_cublas=*/true)) {
-        log::error("[kimi-model] cublas/stream init failed");
+    if (!EnsureContext()) {
+        log::error("[kimi-model] stream init failed");
         return AbortLoad();
     }
 
@@ -105,7 +104,7 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
             eff == FastMathMode::kOn
                 || (eff == FastMathMode::kAuto
                     && perf::CurrentKnobs().tc_fast_math_default);
-        return kimi::RunKimiGeneration(cublas(), stream(), pw_, experts_,
+        return kimi::RunKimiGeneration(stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
                                        req.ignore_eos ? lsxcommon::kIgnoreEosTokenId : Tokenizer().eos_id, fast_math);

@@ -59,6 +59,25 @@ DiagRow LoadDiagRow(const char *path)
     return r;
 }
 
+// Host FP32-accumulate matvec reference (independent of any GPU GEMM path):
+// out[r] = sum_c W[r*cols+c] * x[c], bf16 in / bf16 out.
+std::vector<__nv_bfloat16> HostMatvecRef(const std::vector<__nv_bfloat16> &w,
+                                         int rows, int cols,
+                                         const std::vector<__nv_bfloat16> &x)
+{
+    std::vector<__nv_bfloat16> out(static_cast<size_t>(rows));
+    for (int r = 0; r < rows; ++r) {
+        double acc = 0.0;
+        for (int c = 0; c < cols; ++c)
+            acc += static_cast<double>(__bfloat162float(
+                       w[static_cast<size_t>(r) * cols + c])) *
+                   static_cast<double>(__bfloat162float(
+                       x[static_cast<size_t>(c)]));
+        out[static_cast<size_t>(r)] = __float2bfloat16(static_cast<float>(acc));
+    }
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
@@ -82,9 +101,6 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
 
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
-    cublasHandle_t cub;
-    REQUIRE(cublasCreate(&cub) == cudaSuccess);
-    cublasSetStream(cub, st);
 
     // ── Legacy chain: per-expert dequant GEMV, accumulate into acc.
     __nv_bfloat16 *d_x = nullptr, *d_acc_legacy = nullptr;
@@ -98,7 +114,7 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
     REQUIRE(cudaMemset(d_acc_legacy, 0, H * 2) == cudaSuccess);
     for (int k = 0; k < K; ++k) {
         ensure_kimi_expert_resident(db, row.layer, row.ids[k], st);
-        REQUIRE(RunKimiExpertFfn(cub, st,
+        REQUIRE(RunKimiExpertFfn(st,
                                  db.entries[static_cast<size_t>(row.layer)
                                                 * kKimiNumRouted
                                             + row.ids[k]],
@@ -155,7 +171,7 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
     __nv_bfloat16 *d_acc_tc = nullptr;
     REQUIRE(cudaMalloc(&d_acc_tc, H * 2) == cudaSuccess);
     REQUIRE(cudaMemset(d_acc_tc, 0, H * 2) == cudaSuccess);
-    REQUIRE(RunKimiRoutedTcBatch(cub, st, cache.device->d_pack,
+    REQUIRE(RunKimiRoutedTcBatch(st, cache.device->d_pack,
                                  cache.device->d_scale,
                                  cache.device->pack_stride,
                                  cache.device->scale_stride, d_tbl, K, d_x,
@@ -184,7 +200,7 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
 
     // ── Stage isolation: replicate the TC scratch layout, pull ygu
     // (w13 batch output) for slot 0 and compare gate/up halves against a
-    // dequant-based cublas reference on the SAME packed bytes.
+    // dequant-based host reference on the SAME packed bytes.
     {
         auto aln = [](size_t v) { return (v + 255) / 256 * 256; };
         size_t off = 0;
@@ -223,33 +239,25 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
         REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
 
         // ref = W_dec [I x H] @ x_dec [H] (FP32 accumulate, BF16 in/out).
-        __nv_bfloat16 *d_ref_g = nullptr, *d_ref_u = nullptr;
-        REQUIRE(cudaMalloc(&d_ref_g, I * 2) == cudaSuccess);
-        REQUIRE(cudaMalloc(&d_ref_u, I * 2) == cudaSuccess);
-        cublasSetStream(cub, st);
-        const float alpha = 1.0f, beta = 0.0f;
-        REQUIRE(cublasGemmEx(cub, CUBLAS_OP_T, CUBLAS_OP_N, I, 1, H, &alpha,
-                             d_w1dec, CUDA_R_16BF, H, d_xdec, CUDA_R_16BF, H,
-                             &beta, d_ref_g, CUDA_R_16BF, I,
-                             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT)
-                == cudaSuccess);
-        REQUIRE(cublasGemmEx(cub, CUBLAS_OP_T, CUBLAS_OP_N, I, 1, H, &alpha,
-                             d_w3dec, CUDA_R_16BF, H, d_xdec, CUDA_R_16BF, H,
-                             &beta, d_ref_u, CUDA_R_16BF, I,
-                             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT)
-                == cudaSuccess);
-        REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
-
         std::vector<__half> tc_g(I), tc_u(I);
-        std::vector<__nv_bfloat16> ref_g(I), ref_u(I);
         REQUIRE(cudaMemcpy(tc_g.data(), d_ygu, I * 2, cudaMemcpyDeviceToHost)
                 == cudaSuccess);
         REQUIRE(cudaMemcpy(tc_u.data(), d_ygu + I, I * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
-        REQUIRE(cudaMemcpy(ref_g.data(), d_ref_g, I * 2,
+
+        std::vector<__nv_bfloat16> h_xdec(H);
+        std::vector<__nv_bfloat16> h_w1dec(static_cast<size_t>(w13_el));
+        std::vector<__nv_bfloat16> h_w3dec(static_cast<size_t>(w13_el));
+        REQUIRE(cudaMemcpy(h_xdec.data(), d_xdec, H * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
-        REQUIRE(cudaMemcpy(ref_u.data(), d_ref_u, I * 2,
+        REQUIRE(cudaMemcpy(h_w1dec.data(), d_w1dec, w13_el * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(h_w3dec.data(), d_w3dec, w13_el * 2,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        const std::vector<__nv_bfloat16> ref_g =
+            HostMatvecRef(h_w1dec, I, H, h_xdec);
+        const std::vector<__nv_bfloat16> ref_u =
+            HostMatvecRef(h_w3dec, I, H, h_xdec);
         auto stage_rel = [](const std::vector<__half> &tcv,
                             const std::vector<__nv_bfloat16> &ref) {
             double n = 0, d = 0;
@@ -290,22 +298,19 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
         Nvfp4DequantKernel<__nv_bfloat16>
             <<<static_cast<unsigned>((w13_el + 255) / 256), 256, 0, st>>>(
                 v0.p_w2, v0.p_s2, e0.w2_global_scale, d_w2dec, w13_el);
-        __nv_bfloat16 *d_ref_d = nullptr;
-        REQUIRE(cudaMalloc(&d_ref_d, H * 2) == cudaSuccess);
-        cublasSetStream(cub, st);
-        REQUIRE(cublasGemmEx(cub, CUBLAS_OP_T, CUBLAS_OP_N, H, 1, I, &alpha,
-                             d_w2dec, CUDA_R_16BF, I, d_hqdec, CUDA_R_16BF, I,
-                             &beta, d_ref_d, CUDA_R_16BF, H,
-                             CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT)
+        std::vector<__half> tc_d(H);
+        REQUIRE(cudaMemcpy(tc_d.data(), d_yp, H * 2, cudaMemcpyDeviceToHost)
                 == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
 
-        std::vector<__half> tc_d(H);
-        std::vector<__nv_bfloat16> ref_d(H);
-        REQUIRE(cudaMemcpy(tc_d.data(), d_yp, H * 2, cudaMemcpyDeviceToHost)
-                == cudaSuccess);
-        REQUIRE(cudaMemcpy(ref_d.data(), d_ref_d, H * 2,
+        std::vector<__nv_bfloat16> h_hqdec(I);
+        std::vector<__nv_bfloat16> h_w2dec(static_cast<size_t>(w13_el));
+        REQUIRE(cudaMemcpy(h_hqdec.data(), d_hqdec, I * 2,
                            cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(h_w2dec.data(), d_w2dec, w13_el * 2,
+                           cudaMemcpyDeviceToHost) == cudaSuccess);
+        const std::vector<__nv_bfloat16> ref_d =
+            HostMatvecRef(h_w2dec, H, I, h_hqdec);
         double n2 = 0, d2 = 0;
         for (int i = 0; i < H; ++i) {
             const double a = __half2float(tc_d[static_cast<size_t>(i)]);
@@ -454,19 +459,16 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
             ::lsxcommon::kernels::HalfToBf16Kernel
                 <<<static_cast<unsigned>((I + 255) / 256), 256, 0, st>>>(
                     d_hbf, d_hbf_bf, I);
-            __nv_bfloat16 *d_ref_d2 = nullptr;
-            REQUIRE(cudaMalloc(&d_ref_d2, H * 2) == cudaSuccess);
-            cublasSetStream(cub, st);
-            REQUIRE(cublasGemmEx(cub, CUBLAS_OP_T, CUBLAS_OP_N, H, 1, I,
-                                 &alpha, d_w2dec_h, CUDA_R_16BF, I, d_hbf_bf,
-                                 CUDA_R_16BF, I, &beta, d_ref_d2, CUDA_R_16BF,
-                                 H, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT)
-                    == cudaSuccess);
-            cudaFree(d_hbf_bf);
             REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
-            std::vector<__nv_bfloat16> ref_d2(H);
-            REQUIRE(cudaMemcpy(ref_d2.data(), d_ref_d2, H * 2,
+            std::vector<__nv_bfloat16> h_hbf(I);
+            std::vector<__nv_bfloat16> h_w2dec_h(static_cast<size_t>(w13_el));
+            REQUIRE(cudaMemcpy(h_hbf.data(), d_hbf_bf, I * 2,
                                cudaMemcpyDeviceToHost) == cudaSuccess);
+            REQUIRE(cudaMemcpy(h_w2dec_h.data(), d_w2dec_h, w13_el * 2,
+                               cudaMemcpyDeviceToHost) == cudaSuccess);
+            cudaFree(d_hbf_bf);
+            const std::vector<__nv_bfloat16> ref_d2 =
+                HostMatvecRef(h_w2dec_h, H, I, h_hbf);
             double n3 = 0, d3 = 0;
             for (int i = 0; i < H; ++i) {
                 const double a = __half2float(tc_d[static_cast<size_t>(i)]);
@@ -478,12 +480,11 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
             WARN("SLOT0 down: hq-quant damage rel="
                  << (d3 > 0 ? std::sqrt(n3 / d3) : 0.0));
             CHECK((d3 > 0 ? std::sqrt(n3 / d3) : 0.0) > 0.3);
-            cudaFree(d_w2dec_h); cudaFree(d_ref_d2);
+            cudaFree(d_w2dec_h);
         }
 
-        cudaFree(d_hqdec); cudaFree(d_w2dec); cudaFree(d_ref_d);
+        cudaFree(d_hqdec); cudaFree(d_w2dec);
         cudaFree(d_xdec); cudaFree(d_w1dec); cudaFree(d_w3dec);
-        cudaFree(d_ref_g); cudaFree(d_ref_u);
     }
 
     WARN("FFN sum: rel(legacy_vs_tc)=" << rel << " maxdiff=" << maxdiff
@@ -493,6 +494,5 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
     cudaFree(d_tbl); cudaFree(d_scratch); cudaFree(d_acc_tc);
     FreeKimiMoeExpertDeviceCache(cache.device);
     free_kimi_expert_index(db);
-    cublasDestroy(cub);
     cudaStreamDestroy(st);
 }

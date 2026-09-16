@@ -25,7 +25,6 @@ InferenceResult RunInferenceModel(
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
     cudaStream_t ext_stream = nullptr,
-    cublasHandle_t ext_cublas = nullptr,
     bool ignore_eos = false);
 } // namespace gpu
 
@@ -78,9 +77,9 @@ bool DeepSeekV4FlashModel::Load()
     }
     vram_ = topo.vram;
 
-    // Persistent execution context (stream + cuBLAS handle created ONCE and
-    // reused across Infer calls; GLM/Qwen-parity ownership model).
-    if (!EnsureContext(/*with_cublas=*/true)) {
+    // Persistent execution context (stream created ONCE and reused across
+    // Infer calls; GLM/Qwen-parity ownership model).
+    if (!EnsureContext()) {
         lsxcommon::log::error("[deepseek-model] context create failed");
         return AbortLoad();
     }
@@ -113,7 +112,7 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     return RunUnderResidencyLock([&] {
         return gpu::RunInferenceModel(
             cfg_.model_path, req.input_ids, req.max_gen_tokens, *tok_db_, pw_,
-            lsxcommon::sample::DefaultSampler(), stream(), cublas(),
+            lsxcommon::sample::DefaultSampler(), stream(),
             req.ignore_eos);
     });
 }

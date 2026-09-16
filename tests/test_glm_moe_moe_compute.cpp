@@ -18,7 +18,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -217,8 +216,6 @@ TEST_CASE("GLM MoE compute layers 3-77: contiguous arena, full-range loop, "
     static_assert(kScaleBytes  == 786432,  "GLM expert block-scale count regression");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -320,7 +317,7 @@ TEST_CASE("GLM MoE compute layers 3-77: contiguous arena, full-range loop, "
 
     // ── Drive the FULL layers-3..77 MoE MLP loop on the explicit stream ─────
     REQUIRE(lsxcommon::glm::RunGlmMoEStack(
-                ch, st, pw, experts, kFirst, kLast, kSeq,
+                st, pw, experts, kFirst, kLast, kSeq,
                 d_in, d_alt, d_out, arena) == cudaSuccess);
     REQUIRE(cudaMemcpy(guard_expect.data(), guard, kGuardBytes,
                        cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -452,5 +449,4 @@ TEST_CASE("GLM MoE compute layers 3-77: contiguous arena, full-range loop, "
     cudaFree(d_out);
     for (void *a : allocs) cudaFree(a);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

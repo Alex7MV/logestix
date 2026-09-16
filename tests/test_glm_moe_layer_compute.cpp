@@ -1,7 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -128,8 +127,6 @@ TEST_CASE("GLM dense MLP layers 0-2: pure FP16 matmul, host strides intact",
           "[glm][compute]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -173,7 +170,7 @@ TEST_CASE("GLM dense MLP layers 0-2: pure FP16 matmul, host strides intact",
             == cudaSuccess);
 
     REQUIRE(lsxcommon::glm::RunGlmDenseMLPStack(
-                ch, st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
+                st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<__half> hout(kSeq * kHidden);
@@ -207,7 +204,6 @@ TEST_CASE("GLM dense MLP layers 0-2: pure FP16 matmul, host strides intact",
     cudaFree(d_r);
     cudaFree(d_s);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }
 
 TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
@@ -221,8 +217,6 @@ TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -268,7 +262,7 @@ TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
             == cudaSuccess);
 
     REQUIRE(lsxcommon::glm::RunGlmDenseMLPStack(
-                ch, st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
+                st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<__half> hout(kSeq * kHidden);
@@ -311,5 +305,4 @@ TEST_CASE("GLM real dense stack layers 0-2: loader filter, finite, FP64 ref",
     cudaFree(d_r);
     cudaFree(d_s);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

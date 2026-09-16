@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 #include <memory>
@@ -95,15 +94,13 @@ protected:
     virtual void TeardownWeights() {}
 
     // ── Persistent CUDA execution context (model-unification 2026-08) ──────
-    // Lazy-creates a non-blocking stream (and optionally a cuBLAS handle bound
-    // to it). Idempotent: repeated calls keep the existing resources; passing
-    // with_cublas=true upgrades a stream-only context in place. Every model
-    // owns exactly one context for its whole lifetime (no temp-per-call
-    // churn); Unload paths must call TeardownContext().
-    bool EnsureContext(bool with_cublas);
+    // Lazy-creates a non-blocking stream. Idempotent: repeated calls keep the
+    // existing stream. Every model owns exactly one context for its whole
+    // lifetime (no temp-per-call churn); Unload paths must call
+    // TeardownContext().
+    bool EnsureContext();
     void TeardownContext();
     cudaStream_t stream() const { return ctx_stream_; }
-    cublasHandle_t cublas() const { return ctx_cublas_; }
     bool ContextReady() const { return ctx_stream_ != nullptr; }
 
     // Persistent device-resident weight set (pinned for MoE GLM/DeepSeek; full
@@ -137,7 +134,6 @@ protected:
 
     // Persistent CUDA execution context (see EnsureContext above).
     cudaStream_t ctx_stream_ = nullptr;
-    cublasHandle_t ctx_cublas_ = nullptr;
 
     // Residency lock (see IModel::ResidencyMutex). Held shared during Infer.
     std::shared_mutex residency_mutex_;

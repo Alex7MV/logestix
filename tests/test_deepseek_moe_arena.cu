@@ -8,7 +8,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cstdint>
 #include <vector>
 
@@ -23,7 +22,7 @@ namespace {
 
 // Deterministic synthetic router fixture: num_routed=16, hidden=8, identity-ish
 // gate so routing is reproducible. Mirrors the plan's Step-1 test exactly.
-void build_synthetic_router(cublasHandle_t &ch, cudaStream_t &stream,
+void build_synthetic_router(cudaStream_t &stream,
                             __half *&d_gate, __half *&d_hidden,
                             float *&h_bias, int *&h_top, float *&h_weights,
                             __half *&d_logits_scratch,
@@ -53,7 +52,6 @@ void build_synthetic_router(cublasHandle_t &ch, cudaStream_t &stream,
                        cudaMemcpyHostToDevice) == cudaSuccess);
     for (int i = 0; i < kRouted; ++i) h_bias[i] = static_cast<float>(i);
 
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
 }
 
@@ -67,7 +65,6 @@ TEST_CASE("route_token performs zero allocations after arena refactor",
     constexpr int kRouted = 16;
     constexpr int kTopK = 2;
 
-    cublasHandle_t ch = nullptr;
     cudaStream_t stream = nullptr;
     __half *d_gate = nullptr;
     __half *d_hidden = nullptr;
@@ -76,13 +73,13 @@ TEST_CASE("route_token performs zero allocations after arena refactor",
     float *h_weights = nullptr;
     __half *d_logits_scratch = nullptr;
     float *h_logits_scratch = nullptr;
-    build_synthetic_router(ch, stream, d_gate, d_hidden, h_bias, h_top,
+    build_synthetic_router(stream, d_gate, d_hidden, h_bias, h_top,
                            h_weights, d_logits_scratch, h_logits_scratch);
 
     auto &count = InferenceAllocCount();
     const auto before = count.load();
 
-    cudaError_t e = route_token(ch, stream, d_gate, d_hidden,
+    cudaError_t e = route_token(stream, d_gate, d_hidden,
                                 kHidden, kRouted,
                                 nullptr, 0, 3 /*token_id*/,
                                 h_bias, kTopK,
@@ -101,7 +98,6 @@ TEST_CASE("route_token performs zero allocations after arena refactor",
     REQUIRE(h_top[0] != h_top[1]);
 
     cudaStreamDestroy(stream);
-    cublasDestroy(ch);
     cudaFreeHost(h_logits_scratch);
     cudaFree(d_logits_scratch);
     cudaFreeHost(h_weights);

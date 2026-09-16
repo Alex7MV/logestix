@@ -2,7 +2,6 @@
 #include <catch2/catch_approx.hpp>
 
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -111,8 +110,6 @@ TEST_CASE("GLM dense stack layers 0-2: hash fixture, host strides intact, "
           "FP64 reference convergence (RED/GREEN)", "[glm][compute][dense]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -173,7 +170,7 @@ TEST_CASE("GLM dense stack layers 0-2: hash fixture, host strides intact, "
 
     // Run the concrete Phase 4.5 dense loop on the explicit async stream.
     REQUIRE(lsxcommon::glm::RunGlmDenseMLPStack(
-                ch, st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
+                st, pw, kSeq, d_x, d_alt, d_r, d_s) == cudaSuccess);
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
 
     std::vector<__half> hout(static_cast<size_t>(kSeq) * kHidden);
@@ -212,5 +209,4 @@ TEST_CASE("GLM dense stack layers 0-2: hash fixture, host strides intact, "
     cudaFree(d_r);
     cudaFree(d_s);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

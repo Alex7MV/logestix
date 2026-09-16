@@ -9,7 +9,6 @@
 #include "lsxcommon/gpu_perf.h"
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -74,7 +73,7 @@ static __host__ cudaError_t run_rmsnorm(
 
 // From deepseek_moe_inference_moe.cu
 cudaError_t run_shared_experts_ffn(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
     const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
@@ -112,7 +111,7 @@ cudaError_t issue_routed_staging(
 
 // From deepseek_moe_inference_attn.cu
 cudaError_t run_csa_attention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const LayerWeights& lw,
     const __half* d_x,
     __half* d_kv_cache_layer,
@@ -126,7 +125,6 @@ cudaError_t run_csa_attention(
 
 // From deepseek_moe_inference_head.cu
 cudaError_t run_lm_head(
-    cublasHandle_t cublas_h,
     cudaStream_t stream,
     const __half *d_head_weight,
     const __half *d_hidden,
@@ -151,13 +149,12 @@ InferenceResult RunInferenceModel(
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
     cudaStream_t ext_stream = nullptr,
-    cublasHandle_t ext_cublas = nullptr,
     bool ignore_eos = false)
 {
     InferenceResult result;
     auto mp = model_path;
     // Persistent-context mode (ModelBase::EnsureContext): the caller owns the
-    // stream/cuBLAS handle across Infer calls, saving per-call handle setup.
+    // stream across Infer calls, saving per-call stream setup.
     const bool own_context = (ext_stream == nullptr);
 
     // 1. Log the incoming prompt tokens
@@ -192,16 +189,6 @@ InferenceResult RunInferenceModel(
         }                                                              \
     } while (0)
 
-#define CUBLAS_INFER_CHECK(call)                                       \
-    do {                                                               \
-        cublasStatus_t _s = call;                                      \
-        if (_s != CUBLAS_STATUS_SUCCESS) {                             \
-            result.error_msg = std::string(#call)                       \
-                + " failed: code="                                     \
-                + std::to_string(static_cast<int>(_s));                \
-            goto cleanup;                                              \
-        }                                                              \
-    } while (0)
 
     // 4. Allocate device buffers
     int max_gen = std::min(max_gen_tokens, 4096);
@@ -210,7 +197,6 @@ InferenceResult RunInferenceModel(
     gen_ids.reserve(static_cast<size_t>(total_tokens));
 
     cudaStream_t stream = nullptr;
-    cublasHandle_t cublas_h = nullptr;
     // Per-run single-allocation arena (spec item 12). Local aliases below are
     // bound to arena slices right after Allocate(); d_hidden/d_hidden_next get
     // swapped by the layer loop (pointers swap, arena members stay fixed).
@@ -299,19 +285,13 @@ InferenceResult RunInferenceModel(
     INFER_CHECK(cudaSetDeviceFlags(cudaDeviceScheduleSpin));
     if (own_context) {
         INFER_CHECK(cudaStreamCreate(&stream));
-        CUBLAS_INFER_CHECK(cublasCreate(&cublas_h));
     } else {
         stream = ext_stream;
-        cublas_h = ext_cublas;
-        if (!stream || !cublas_h) {
-            result.error_msg = "external context requires stream and cublas";
+        if (!stream) {
+            result.error_msg = "external context requires stream";
             goto cleanup;
         }
     }
-    CUBLAS_INFER_CHECK(cublasSetStream(cublas_h, stream));
-    // Numeric contract: deterministic, workspace-invariant GEMM (no split-K
-    // atomics). Perf-neutral on the M=1 decode shapes (measured).
-    CUBLAS_INFER_CHECK(cublasSetAtomicsMode(cublas_h, CUBLAS_ATOMICS_NOT_ALLOWED));
     // Staging copy lane — created regardless of stream ownership (the model
     // hands in its own stream, own_context is false in production).
     INFER_CHECK(cudaStreamCreate(&copy_stream));
@@ -614,7 +594,7 @@ InferenceResult RunInferenceModel(
                                          kHiddenDim, rms_eps));
                 if (lw.compress_ratio > 0) {
                     INFER_CHECK(run_csa_attention(
-                        cublas_h, stream, lw, d_normed,
+                        stream, lw, d_normed,
                         d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
                         csa_states[lay], step,
                         d_q, d_qr, d_qr2, d_kv, d_kv2,
@@ -622,7 +602,7 @@ InferenceResult RunInferenceModel(
                         d_attn_dequant, d_norm_scratch, d_norm_gamma_scratch));
                  } else {
                      INFER_CHECK(run_mla_attention(
-                         cublas_h, stream, lw, d_normed,
+                         stream, lw, d_normed,
                          d_kv_cache + static_cast<size_t>(lay) * (kAttnWindow + max_compressed) * kHeadDim,
                          step,
                          d_q, d_qr, d_qr2, d_kv, d_kv2, d_o, d_olora, d_attn_out_h,
@@ -679,7 +659,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             const int64_t *tid = lw.h_tid2eid;
             if (tid && (cur_tok < 0 || cur_tok >= lw.tid2eid_vocab)) tid = nullptr;
             if (have_router) {
-                INFER_CHECK(route_token_begin(cublas_h, stream, lw.d_gate_weight,
+                INFER_CHECK(route_token_begin(stream, lw.d_gate_weight,
                                               d_normed, kHiddenDim, num_routed,
                                               arena.d_routing_scratch,
                                               arena.h_routing_scratch,
@@ -712,7 +692,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
             if (lw.d_shared_w1 && lw.shared_w1_bytes > 0) {
                 // Shared FFN outputs FP16 to d_ffn_out, then convert to FP32 accum
                 INFER_CHECK(run_shared_experts_ffn(
-                    cublas_h, stream, d_normed,
+                    stream, d_normed,
                     lw.d_shared_w1, lw.d_shared_w2, lw.d_shared_w3,
                     lw.d_shared_w1_scales, lw.d_shared_w2_scales, lw.d_shared_w3_scales,
                     lw.shared_w1_global_scale, lw.shared_w2_global_scale,
@@ -809,7 +789,7 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
         // twice per token).
         INFER_CHECK(cudaMemsetAsync(d_logits, 0,
             static_cast<size_t>(pw.vocab_size) * sizeof(float), stream));
-        INFER_CHECK(run_lm_head(cublas_h, stream,
+        INFER_CHECK(run_lm_head(stream,
                                  pw.d_head, d_normed,
                                  pw.vocab_size, kHiddenDim,
                                  d_logits, nullptr, nullptr));
@@ -941,7 +921,6 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 
 cleanup:
     if (stream && own_context) cudaStreamDestroy(stream);
-    if (cublas_h && own_context) cublasDestroy(cublas_h);
     arena.Free();      // single cudaFree + single cudaFreeHost for the whole run
     for (int k = 0; k < kTopK; ++k)
         if (stage_ev[k]) cudaEventDestroy(stage_ev[k]);

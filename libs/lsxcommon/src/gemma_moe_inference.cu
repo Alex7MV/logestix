@@ -1,7 +1,6 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
-#include <cublas_v2.h>
 
 #include "lsxcommon/lsx_gemv.h"
 
@@ -934,15 +933,13 @@ __global__ void gemma_embed_nvfp4_kernel(
 }
 
 // out[t,r] = sum_d W[r,d] * x[t,d]   (W [rows, cols] row-major)
-// cuBLAS FP16 GEMM (FP32 compute): row-major trick via column-major views —
-//   C_cm[rows x seq] = W_cmᵀ[rows x cols] · X_cm[cols x seq]
+// Device-independent GEMV (numeric-contract §1.1.1): sequence rows loop.
 __global__ void gemma_matmul_kernel_unused_guard() {}
 
-static cudaError_t Matmul(cublasHandle_t cublas, const __nv_bfloat16 *w,
+static cudaError_t Matmul(const __nv_bfloat16 *w,
                           const __nv_bfloat16 *x, __nv_bfloat16 *out, int rows, int cols,
                           int seq, cudaStream_t stream)
 {
-    (void) cublas;  // device-independent GEMV (numeric-contract 1.1.1)
     return gemv::RunLxGemmVec(stream, w, x, seq, rows, cols,
                               gemv::LxDtype::kBF16, gemv::LxDtype::kBF16, 1.0f,
                               out, gemv::LxDtype::kBF16, 0.0f);
@@ -990,16 +987,15 @@ __global__ void gemma_combine_batched_kernel(__nv_bfloat16 *__restrict__ acc,
     acc[d] = __float2bfloat16(a);
 }
 
-// cuBLAS FP32-compute batched GEMM over @p batch rows (same op/modes as the
-// scalar Matmul wrapper): C_b[rows x seq] = W_bᵀ · X (X shared when x_stride==0).
-static cudaError_t MatmulBatched(cublasHandle_t cublas,
+// Batched form of the scalar Matmul wrapper over @p batch rows:
+// C_b[rows x seq] = W_bᵀ · X (X shared when x_stride==0).
+static cudaError_t MatmulBatched(
                                  const __nv_bfloat16 *a,
                                  long long stride_a, const __nv_bfloat16 *x,
                                  long long stride_x, __nv_bfloat16 *out,
                                  long long stride_out, int rows, int cols,
                                  int batch, cudaStream_t stream)
 {
-    (void) cublas;  // device-independent GEMV, per-batch (numeric-contract 1.1.1)
     for (int b = 0; b < batch; ++b) {
         const __nv_bfloat16 *ab = a + static_cast<long long>(b) * stride_a;
         const __nv_bfloat16 *xb = x + static_cast<long long>(b) * stride_x;
@@ -1692,7 +1688,7 @@ cudaError_t EnsureGemmaExpertCache(GemmaGenContext &ctx,
 
 // Forward `seq` tokens (hidden states in ws.d_x) through one layer; writes
 // k/v rows at [pos_base .. pos_base+seq) of the layer cache.
-cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
+cudaError_t ForwardLayer(cudaStream_t stream,
                          const GemmaPinnedWeights &pw,
                          const GemmaLayerWeights &lw, int layer_idx,
                          GenWorkspace &ws, int seq, int pos_base, __nv_bfloat16 *dk,
@@ -1797,14 +1793,14 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             }
         }
     } else {
-    e = Matmul(cublas, lw.d_q, ws.d_normed, ws.d_qr, q_rows,
+    e = Matmul(lw.d_q, ws.d_normed, ws.d_qr, q_rows,
                static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L804: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-    e = Matmul(cublas, lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
+    e = Matmul(lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
                static_cast<int>(H), seq, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L807: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     if (!v_tied_to_k) {
-        e = Matmul(cublas, lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
+        e = Matmul(lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
                    static_cast<int>(H), seq, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L811: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     } else {
@@ -1925,7 +1921,7 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (e != cudaSuccess) { std::printf("[gemma-chk] L899nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         }
     } else {
-    e = Matmul(cublas, lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows,
+    e = Matmul(lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows,
                seq, stream);
     if (e != cudaSuccess) { std::printf("[gemma-chk] L898: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
     }
@@ -1977,17 +1973,17 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (e != cudaSuccess) { std::printf("[gemma-chk] L920nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         } else {
         const int64_t numel = static_cast<int64_t>(seq) * I;
-        e = Matmul(cublas, lw.d_mlp_gate, ws.d_normed, ws.d_gg,
+        e = Matmul(lw.d_mlp_gate, ws.d_normed, ws.d_gg,
                    static_cast<int>(I), static_cast<int>(H), seq, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L919: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-        e = Matmul(cublas, lw.d_mlp_up, ws.d_normed, ws.d_gu,
+        e = Matmul(lw.d_mlp_up, ws.d_normed, ws.d_gu,
                    static_cast<int>(I), static_cast<int>(H), seq, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L922: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         gemma_geglu_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
                              stream>>>(ws.d_gg, ws.d_gu, ws.d_gg, numel);
         e = cudaGetLastError();
         if (e != cudaSuccess) { std::printf("[gemma-chk] L926: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-        e = Matmul(cublas, lw.d_mlp_down, ws.d_gg, ws.d_qr, static_cast<int>(H),
+        e = Matmul(lw.d_mlp_down, ws.d_gg, ws.d_qr, static_cast<int>(H),
                    static_cast<int>(I), seq, stream);
         if (e != cudaSuccess) { std::printf("[gemma-chk] L929: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         }
@@ -2362,23 +2358,23 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
 
         // gate/up projections over all experts sharing the same token x.
         if (batch_gemms) {
-            e = MatmulBatched(cublas, ws.d_bw1, MIH, ws.d_normed, 0,
+            e = MatmulBatched(ws.d_bw1, MIH, ws.d_normed, 0,
                               ws.d_beg, MI, static_cast<int>(MI),
                               static_cast<int>(H), filled, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] bgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = MatmulBatched(cublas, ws.d_bw3, MIH, ws.d_normed, 0,
+            e = MatmulBatched(ws.d_bw3, MIH, ws.d_normed, 0,
                               ws.d_beu, MI, static_cast<int>(MI),
                               static_cast<int>(H), filled, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] bgem3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         } else {
             for (int r = 0; r < filled; ++r) {
-                e = Matmul(cublas, ws.d_bw1 + static_cast<int64_t>(r) * MIH,
+                e = Matmul(ws.d_bw1 + static_cast<int64_t>(r) * MIH,
                            ws.d_normed,
                            ws.d_beg + static_cast<int64_t>(r) * MI,
                            static_cast<int>(MI), static_cast<int>(H), 1,
                            stream);
                 if (e != cudaSuccess) { std::printf("[gemma-chk] sgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-                e = Matmul(cublas, ws.d_bw3 + static_cast<int64_t>(r) * MIH,
+                e = Matmul(ws.d_bw3 + static_cast<int64_t>(r) * MIH,
                            ws.d_normed,
                            ws.d_beu + static_cast<int64_t>(r) * MI,
                            static_cast<int>(MI), static_cast<int>(H), 1,
@@ -2396,13 +2392,13 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
         }
         // Down projection: [K][H] outputs.
         if (batch_gemms) {
-            e = MatmulBatched(cublas, ws.d_bw2, H * MI, ws.d_beg, MI,
+            e = MatmulBatched(ws.d_bw2, H * MI, ws.d_beg, MI,
                               ws.d_beo, H, static_cast<int>(H),
                               static_cast<int>(MI), filled, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] bgem2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
         } else {
             for (int r = 0; r < filled; ++r) {
-                e = Matmul(cublas, ws.d_bw2 + static_cast<int64_t>(r) * MI * H,
+                e = Matmul(ws.d_bw2 + static_cast<int64_t>(r) * MI * H,
                            ws.d_beg + static_cast<int64_t>(r) * MI,
                            ws.d_beo + static_cast<int64_t>(r) * H,
                            static_cast<int>(H), static_cast<int>(MI), 1,
@@ -2466,20 +2462,20 @@ cudaError_t ForwardLayer(cudaStream_t stream, cublasHandle_t cublas,
             if (e != cudaSuccess) { std::printf("[gemma-chk] L1045: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
 
             // Expert FFN: out_e[t] = w2 @ (gelu(w1 @ x) * (w3 @ x)) —
-            // cuBLAS GEMMs + elementwise GeGLU.
+            // GEMV projections + elementwise GeGLU.
             const __nv_bfloat16 *x_t =
                 ws.d_normed + static_cast<int64_t>(t) * H;
-            e = Matmul(cublas, ws.d_w1, x_t, ws.d_eg, static_cast<int>(MI),
+            e = Matmul(ws.d_w1, x_t, ws.d_eg, static_cast<int>(MI),
                        static_cast<int>(H), 1, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L1053: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = Matmul(cublas, ws.d_w3, x_t, ws.d_eu, static_cast<int>(MI),
+            e = Matmul(ws.d_w3, x_t, ws.d_eu, static_cast<int>(MI),
                        static_cast<int>(H), 1, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L1056: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
             gemma_geglu_kernel<<<static_cast<unsigned>((MI + 255) / 256), 256,
                                  0, stream>>>(ws.d_eg, ws.d_eu, ws.d_eg, MI);
             e = cudaGetLastError();
             if (e != cudaSuccess) { std::printf("[gemma-chk] L1060: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
-            e = Matmul(cublas, ws.d_w2, ws.d_eg, ws.d_eout, static_cast<int>(H),
+            e = Matmul(ws.d_w2, ws.d_eg, ws.d_eout, static_cast<int>(H),
                        static_cast<int>(MI), 1, stream);
             if (e != cudaSuccess) { std::printf("[gemma-chk] L1063: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
 
@@ -2553,15 +2549,6 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 
     GemmaGenContext local_ctx;
     GemmaGenContext &c = ctx ? *ctx : local_ctx;
-    if (!c.cublas &&
-        cublasCreate(&c.cublas) != CUBLAS_STATUS_SUCCESS) {
-        out.error_msg = "cublas create failed";
-        return cudaErrorInvalidValue;
-    }
-    // Numeric contract: deterministic, workspace-invariant GEMM.
-    cublasSetAtomicsMode(c.cublas, CUBLAS_ATOMICS_NOT_ALLOWED);
-    cublasHandle_t cublas = c.cublas;
-
     const int P = static_cast<int>(input_ids.size());
     if (kv.max_total < P + max_gen_tokens) {
         out.error_msg = "kv cache capacity too small";
@@ -2632,7 +2619,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
     const auto t0 = std::chrono::steady_clock::now();
 
     for (size_t l = 0; l < pw.layers.size(); ++l) {
-        e = ForwardLayer(stream, cublas, pw, pw.layers[l],
+        e = ForwardLayer(stream, pw, pw.layers[l],
                          static_cast<int>(l), ws, P, 0, kv.dk[l], kv.dv[l]);
         if (e != cudaSuccess) {
             out.error_msg = "prefill layer " + std::to_string(l) + ": " +
@@ -2713,7 +2700,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         bool failed = false;
             std::getenv("LSX_TEST_GEMMA_HASH") != nullptr;
         for (size_t l = 0; l < pw.layers.size(); ++l) {
-            e = ForwardLayer(stream, cublas, pw, pw.layers[l],
+            e = ForwardLayer(stream, pw, pw.layers[l],
                              static_cast<int>(l), ws, /*seq=*/1, pos,
                              kv.dk[l], kv.dv[l]);
             if (e != cudaSuccess) { failed = true; break; }

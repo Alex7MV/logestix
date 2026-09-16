@@ -20,7 +20,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 
 #include "deepseek_moe_v41_device_math.h"
 #include "deepseek_moe_v41_inference.h"
@@ -147,7 +146,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
     const V41PinnedWeights &pw, V41ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
-    cublasHandle_t cublas, bool ignore_eos)
+    bool ignore_eos)
 {
     (void)model_path;
     gpu::InferenceResult result;
@@ -478,7 +477,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             cudaError_t ae;
             if (meta.compress_ratio == 0) {
                 ae = dv41::AttentionForwardDecode(
-                    cublas, stream, d_xh, kHidden, U(lw.d_wq_a), kQLora,
+                    stream, d_xh, kHidden, U(lw.d_wq_a), kQLora,
                     U(lw.d_q_norm), U(lw.d_wq_b), kHeads, kHeadDim, kRopeDim,
                     U(lw.d_wkv), U(lw.d_kv_norm), lw.d_attn_sink, U(lw.d_wo_a), kOGroups,
                     kOLora, U(lw.d_wo_b), d_cos0, d_sin0,
@@ -526,7 +525,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 sb.score_state = score_state[lay];
                 sb.compress_cap = kCompressCap;
                 ae = dv41::CedAttentionForwardDecode(
-                    cublas, stream, d_xh, kHidden, kWindow, lay, p, sb, d_cos1,
+                    stream, d_xh, kHidden, kWindow, lay, p, sb, d_cos1,
                     d_sin1, step, csa, d_attn_h);
             }
             if (ae != cudaSuccess) {
@@ -562,7 +561,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
 
             // Router + routed experts + shared expert.
             if (dv41::LaunchRouterTopK(
-                    cublas, stream, d_xh, U(lw.d_gate_weight), lw.d_gate_bias,
+                    stream, d_xh, U(lw.d_gate_weight), lw.d_gate_bias,
                     lw.gate_rows, kHidden, topk, dv41::kGateTemp,
                     dv41::kRouteScale, true, d_ridx, d_rw) != cudaSuccess) {
                 result.error_msg = "router failed";
@@ -696,7 +695,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                     dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
                                                  slot_gs[slot * 3 + 1]};
                     if (dv41::LaunchExpertFfnScratch(
-                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            stream, d_xh, kHidden, ew1, ew3, ew2, inter,
                             dv41::kSwigluLimit,
                             h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
                             ffn_scratch_bytes) != cudaSuccess) {
@@ -725,7 +724,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                     dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
                                                  en_stg[buf].w2_global_scale};
                     if (dv41::LaunchExpertFfnScratch(
-                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            stream, d_xh, kHidden, ew1, ew3, ew2, inter,
                             dv41::kSwigluLimit,
                             h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
                             ffn_scratch_bytes) != cudaSuccess) {
@@ -777,7 +776,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                     dv41::DeviceExpertWeight ew2{sp.w2, sp.s2,
                                                  en.w2_global_scale};
                     if (dv41::LaunchExpertFfnScratch(
-                            cublas, stream, d_xh, kHidden, ew1, ew3, ew2, inter,
+                            stream, d_xh, kHidden, ew1, ew3, ew2, inter,
                             dv41::kSwigluLimit,
                             h_rw[static_cast<size_t>(k)], d_acc, d_ffn_scratch,
                             ffn_scratch_bytes) != cudaSuccess) {
@@ -787,7 +786,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 }
             }
             if (dv41::SharedExpertForward(
-                    cublas, stream, d_xh, kHidden, U(lw.d_shared_w1),
+                    stream, d_xh, kHidden, U(lw.d_shared_w1),
                     U(lw.d_shared_w3), U(lw.d_shared_w2), dv41::kSharedIntermediate,
                     dv41::kSwigluLimit, d_shared_h) != cudaSuccess ||
                 dv41::LaunchAccumulateHalfToF32(d_shared_h, d_acc, kHidden,
@@ -818,7 +817,7 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 cudaSuccess ||
             dv41::LaunchRmsNormHalf(d_xh, U(pw.d_final_norm), d_xh, kHidden,
                                     dv41::kRmsEps, stream) != cudaSuccess ||
-            dv41::LaunchHeadLogits(cublas, stream, U(pw.d_head), d_xh, d_logits,
+            dv41::LaunchHeadLogits(stream, U(pw.d_head), d_xh, d_logits,
                                    pw.vocab_size, kHidden) != cudaSuccess) {
             result.error_msg = "final head failed";
             return result;

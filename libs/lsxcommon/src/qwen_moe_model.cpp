@@ -103,7 +103,7 @@ bool QwenMoeModelBase::Load()
     Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
 
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         log::error("[qwen-moe-model] stream init failed");
         return AbortLoad();
     }

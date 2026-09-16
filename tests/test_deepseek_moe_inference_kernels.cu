@@ -6,7 +6,6 @@
 #include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cmath>
 #include <vector>
 #include <cstring>

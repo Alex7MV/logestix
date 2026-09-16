@@ -96,7 +96,7 @@ bool Glm5NextFlashModel::Load()
     Unload();  // idempotent re-load support
     if (!BeginLoad(cfg_.model_path)) return false;
 
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         log::error("[glm-flash-model] stream init failed");
         return AbortLoad();
     }

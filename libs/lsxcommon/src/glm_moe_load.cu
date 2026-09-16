@@ -7,7 +7,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cfloat>
 #include <cstring>
 
@@ -420,13 +419,12 @@ __global__ void GlmIdxAttnKernel(GlmIndexShareState *__restrict__ s,
 
 } // anonymous namespace
 
-cudaError_t RunGlmMoERouter(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunGlmMoERouter(cudaStream_t stream,
                             const GlmLayerWeights &lw, int seq,
                             const __half *d_hidden, const float *d_gate_bias,
                             __half *d_normed, float *d_logits,
                             GlmRoutedSlot *d_routing)
 {
-    (void)cublas_h;
     if (!lw.d_post_attn_norm || !lw.d_router_gate ||
         !d_hidden || !d_normed || !d_logits || !d_routing || seq <= 0)
         return cudaErrorInvalidValue;
@@ -515,13 +513,12 @@ __global__ void GlmRealTopkKernel(const float *__restrict__ d_logits,
 // RunGlmMoERouter (post-attn RMSNorm -> logits -> d_routing grid), but the
 // top-k selection follows GlmMoeDsaTopkRouter (sigmoid scores + bias-only
 // selection + norm_topk_prob + routed_scaling_factor=2.5).
-cudaError_t RunGlmRealRouter(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunGlmRealRouter(cudaStream_t stream,
                              const GlmLayerWeights &lw, int seq,
                              const __half *d_hidden, const float *d_gate_bias,
                              __half *d_normed, float *d_logits,
                              GlmRoutedSlot *d_routing)
 {
-    (void)cublas_h;
     if (!lw.d_post_attn_norm || !lw.d_router_gate ||
         !d_hidden || !d_normed || !d_logits || !d_routing || seq <= 0)
         return cudaErrorInvalidValue;
@@ -552,12 +549,11 @@ cudaError_t RunGlmRealRouter(cublasHandle_t cublas_h, cudaStream_t stream,
 // * gate -> swig, w2^T @ swig -> tmp, out += coeff * tmp. `eb` is a single
 // NVFP4 block descriptor; inactive / foreign-format blocks contribute nothing
 // (deterministic zero contribution). All kernels run on <stream>.
-cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunGlmExpertSlot(cudaStream_t stream,
                              const GlmExpertDeviceBlock &eb,
                              const __half *x_t, __half *out_t,
                              __half *d_scratch, float coeff)
 {
-    (void)cublas_h;
     constexpr int64_t kMatEl = kGlmExpertMatEl;
     constexpr int64_t kExpectPacked = kMatEl / 2;
     constexpr int64_t kExpectScale  = kMatEl / kGlmNvfp4Block;
@@ -659,7 +655,7 @@ cudaError_t RunGlmExpertSlot(cublasHandle_t cublas_h, cudaStream_t stream,
 }
 
 cudaError_t RunGlmExpertsStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
@@ -667,7 +663,7 @@ cudaError_t RunGlmExpertsStack(
     GlmRoutedSlot *h_routing_staging /* = nullptr */)
 {
     if (!d_routing || !d_act || !h_experts || !d_out || !d_scratch ||
-        seq <= 0 || n_experts <= 0 || !cublas_h)
+        seq <= 0 || n_experts <= 0)
         return cudaErrorInvalidValue;
 
     const int slots = seq * kGlmMoETopK;
@@ -711,7 +707,7 @@ cudaError_t RunGlmExpertsStack(
         const int   t    = s / kGlmMoETopK;
         const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
         __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-        e = RunGlmExpertSlot(cublas_h, stream, h_experts[rs.eid],
+        e = RunGlmExpertSlot(stream, h_experts[rs.eid],
                              x_t, out_t, d_scratch, rs.coeff);
         if (e != cudaSuccess) break;
     }
@@ -729,7 +725,7 @@ cudaError_t RunGlmExpertsStack(
 // RunGlmExpertSlot chain runs against them. A full 385 GiB expert model never
 // needs more than the pinned weights + ~2 × one-expert staging in VRAM.
 cudaError_t RunGlmExpertsStackOnDemand(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     cudaStream_t stream_copy,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
@@ -748,7 +744,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
 
     if (!d_routing || !d_act || !d_out || !d_scratch ||
         !d_pack_stage || !d_scale_stage ||
-        seq <= 0 || n_experts <= 0 || layer < 0 || !cublas_h)
+        seq <= 0 || n_experts <= 0 || layer < 0)
         return cudaErrorInvalidValue;
 
     const bool use_cache =
@@ -918,7 +914,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
                 const int   t    = s / kGlmMoETopK;
                 const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
                 __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-                last = RunGlmExpertSlot(cublas_h, stream, eb,
+                last = RunGlmExpertSlot(stream, eb,
                                         x_t, out_t, d_scratch,
                                         rs.coeff);
                 if (last != cudaSuccess) break;
@@ -963,7 +959,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
             const int   t    = s / kGlmMoETopK;
             const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
             __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-            last = RunGlmExpertSlot(cublas_h, stream, eb,
+            last = RunGlmExpertSlot(stream, eb,
                                     x_t, out_t, d_scratch, rs.coeff);
             if (last != cudaSuccess) break;
         }
@@ -1018,7 +1014,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
             const int   t    = s / kGlmMoETopK;
             const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
             __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-            last = RunGlmExpertSlot(cublas_h, stream, eb,
+            last = RunGlmExpertSlot(stream, eb,
                                     x_t, out_t, d_scratch,
                                     h_routing[s].coeff);
             if (last != cudaSuccess) break;
@@ -1081,7 +1077,7 @@ cudaError_t RunGlmExpertsStackOnDemand(
         const int t = s / kGlmMoETopK;
         const __half *x_t = d_act + static_cast<size_t>(t) * kGlmHidden;
         __half *out_t = d_out + static_cast<size_t>(t) * kGlmHidden;
-        last = RunGlmExpertSlot(cublas_h, stream, eb, x_t, out_t,
+        last = RunGlmExpertSlot(stream, eb, x_t, out_t,
                                 d_scratch, rs.coeff);
         if (last != cudaSuccess) break;
         cudaEventRecord(ev_gemm[this_set], stream);
@@ -1324,7 +1320,7 @@ void GlmMoEArena::Free()
 }
 
 cudaError_t RunGlmMoESlices(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
@@ -1337,7 +1333,7 @@ cudaError_t RunGlmMoESlices(
     constexpr int    kBlock  = 256;
 
     if (!d_routing || !d_act || !h_experts || !d_slices || !d_out ||
-        !d_scratch || seq <= 0 || n_experts <= 0 || !cublas_h)
+        !d_scratch || seq <= 0 || n_experts <= 0)
         return cudaErrorInvalidValue;
 
     const int slots = seq * kGlmMoETopK;
@@ -1452,13 +1448,13 @@ cudaError_t RunGlmMoESlices(
 }
 
 cudaError_t RunGlmMoEStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     int first_layer, int last_layer, int seq,
     __half *d_act, __half *d_alt, __half *d_result,
     GlmMoEArena &arena)
 {
-    if (!cublas_h || !stream || seq <= 0 || first_layer < 0 ||
+    if (!stream || seq <= 0 || first_layer < 0 ||
         last_layer <= first_layer ||
         pw.layers.size() < static_cast<size_t>(last_layer) ||
         experts.tables.size() < static_cast<size_t>(last_layer) ||
@@ -1495,10 +1491,10 @@ cudaError_t RunGlmMoEStack(
             if (e != cudaSuccess) return e;
             d_bias = arena.d_gate_bias;
         }
-        e = RunGlmMoERouter(cublas_h, stream, lw, seq, cur, d_bias,
+        e = RunGlmMoERouter(stream, lw, seq, cur, d_bias,
                             arena.d_normed, arena.d_logits, arena.d_routing);
         if (e != cudaSuccess) return e;
-        e = RunGlmMoESlices(cublas_h, stream, arena.d_routing, seq,
+        e = RunGlmMoESlices(stream, arena.d_routing, seq,
                             arena.d_normed, experts.tables[l].data(),
                             arena.n_experts, arena.d_slices, arena.d_moe,
                             arena.d_scratch, arena.h_routing_staging);

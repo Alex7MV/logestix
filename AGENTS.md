@@ -20,13 +20,12 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 suppo
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
-| CUDA cuBLAS | 13.2+ | system (CUDA Toolkit) | Dynamic (`cublas.dll`); link/handle-lifecycle only — production GEMM calls are 0 (`lsx_gemv`) |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 
 Версии принуждаются кодом: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (`STATIC_REQUIRE` для Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
 последний через `ABSL_LTS_RELEASE_VERSION`, так что не-LTS пин не соберётся); у
-`flatbuffers`/`libzmq`/cuBLAS guard'а нет. Процедура обновления
+`flatbuffers`/`libzmq` guard'а нет. Процедура обновления
 зависимости (pin сабмодуля/FetchContent `GIT_TAG` + guard + таблицы AGENTS/README
 + перепроверка патчей-after-fetch) — скил `cuda-cmake-build-gotchas`.
 
@@ -140,10 +139,10 @@ SelfCheck/тесты), соглашение об именах файлов мо�
   `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`).
 - CUDA `.cu` вынесены в отдельные OBJECT-библиотеки (`lsxcommon_cu`,
   `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), линкуются в `lsxcommon`
-  PUBLIC — это изолирует NVCC от MSVC-флагов. `cudart`/`cublas` находятся через
-  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями; cuBLAS
-  линкуется только ради link/handle-lifecycle — его GEMM не вызывается (см.
-  `lsx_gemv`), workspace/atomics-пин оставлен как страховка на будущее.
+  PUBLIC — это изолирует NVCC от MSVC-флагов. `cudart` находится через
+  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями; cuBLAS не
+  линкуется и не используется вообще — единственный GEMM-путь это
+  device-independent `lsx_gemv` (см. `numeric-conformance-audit.md`).
 - `lsxnetwork` — STATIC; simdjson, libzmq-static и Threads PUBLIC
   (STATIC-библиотека ре-экспортирует link-зависимости), spdlog PRIVATE.
 - Каждое app из `apps/*/` линкует `lsxcommon` PRIVATE; Catch2 v3.16.0

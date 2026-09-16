@@ -103,7 +103,7 @@ bool Qwen38FlashNextModel::Load()
     Unload();
     if (!BeginLoad(cfg_.model_path)) return false;
 
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         log::error("[qwen38-model] stream init failed");
         return AbortLoad();
     }

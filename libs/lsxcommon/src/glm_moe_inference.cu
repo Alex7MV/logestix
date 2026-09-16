@@ -4,7 +4,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
@@ -76,13 +75,12 @@ cudaError_t RunGlmRmsNorm(cudaStream_t stream, const __half *x,
     return cudaGetLastError();
 }
 
-cudaError_t RunDenseMLPLayer(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunDenseMLPLayer(cudaStream_t stream,
                              const GlmLayerWeights &lw,
                              int seq, int hidden, int inter,
                              const __half *d_x, __half *d_y,
                              __half *d_normed, __half *d_gate, __half *d_up)
 {
-    (void)cublas_h;
     if (!lw.d_post_attn_norm ||
         !lw.d_mlp_gate || !lw.d_mlp_up || !lw.d_mlp_down)
         return cudaErrorInvalidValue;
@@ -112,7 +110,7 @@ cudaError_t RunDenseMLPLayer(cublasHandle_t cublas_h, cudaStream_t stream,
 } // namespace
 
 cudaError_t RunGlmDenseMLPStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, int seq,
     __half *d_act, __half *d_alt, __half *d_result, __half *d_scratch)
 {
@@ -126,7 +124,7 @@ cudaError_t RunGlmDenseMLPStack(
     for (int l = 0; l < 3; ++l) {
         __half *nxt = (l == 2) ? d_result
                      : (cur == d_act ? d_alt : d_act);
-        cudaError_t e = RunDenseMLPLayer(cublas_h, stream, pw.layers[l],
+        cudaError_t e = RunDenseMLPLayer(stream, pw.layers[l],
                                          seq, hidden, inter,
                                          cur, nxt, d_normed, d_gate, d_up);
         if (e != cudaSuccess) return e;
@@ -247,7 +245,6 @@ __global__ void GlmHeadLogitsKernel(const __half *__restrict__ head,
 
 // Per-pass scratch + persistent state of the 79-layer generation loop.
 struct GlmLoopCtx {
-    cublasHandle_t ch = nullptr;
     cudaStream_t   st = nullptr;
     const GlmPinnedWeights *pw = nullptr;
     const GlmExpertTables *experts = nullptr;   // device-table path
@@ -302,7 +299,7 @@ cudaError_t RunLoopExpertStack(GlmLoopCtx &c, int l)
 {
     if (c.db) {
         return RunGlmExpertsStackOnDemand(
-            c.ch, c.st, c.stream_copy, c.d_routing, 1, c.d_normed,
+            c.st, c.stream_copy, c.d_routing, 1, c.d_normed,
             *c.db, l, kGlmNumRouted, c.d_moe, c.d_scratch_e,
             c.d_pack_stage, c.d_scale_stage,
             c.d_pack_stage_b, c.d_scale_stage_b,
@@ -310,7 +307,7 @@ cudaError_t RunLoopExpertStack(GlmLoopCtx &c, int l)
             c.xcache, c.ev_cache_gemm);
     }
     return RunGlmExpertsStack(
-        c.ch, c.st, c.d_routing, 1, c.d_normed,
+        c.st, c.d_routing, 1, c.d_normed,
         c.experts->tables[static_cast<size_t>(l)].data(),
         kGlmNumRouted, c.d_moe, c.d_scratch_e, c.h_routing);
 }
@@ -342,7 +339,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
             c.d_attn, c.d_hidrow, hidden);
         e = cudaGetLastError();
         if (e != cudaSuccess) return e;
-        return RunDenseMLPLayer(c.ch, c.st, lw, 1, hidden, inter,
+        return RunDenseMLPLayer(c.st, lw, 1, hidden, inter,
                                 c.d_hidrow, d_out, c.d_normed,
                                 c.d_gate, c.d_up);
     }
@@ -372,7 +369,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
             if (e != cudaSuccess) return e;
             d_bias = c.d_gate_bias;
         }
-        e = RunGlmMoERouter(c.ch, c.st, lw, 1, c.d_hmtp, d_bias,
+        e = RunGlmMoERouter(c.st, lw, 1, c.d_hmtp, d_bias,
                             c.d_normed, c.d_logits, c.d_routing);
         if (e != cudaSuccess) return e;
         e = RunLoopExpertStack(c, 78);
@@ -413,7 +410,7 @@ cudaError_t RunGlmLoopLayer(GlmLoopCtx &c, int l, int turn, int seq,
         if (e != cudaSuccess) return e;
         d_bias = c.d_gate_bias;
     }
-    e = RunGlmMoERouter(c.ch, c.st, lw, 1, c.d_hidrow, d_bias,
+    e = RunGlmMoERouter(c.st, lw, 1, c.d_hidrow, d_bias,
                         c.d_normed, c.d_logits, c.d_routing);
     if (e != cudaSuccess) return e;
     e = RunLoopExpertStack(c, l);
@@ -443,7 +440,7 @@ cudaError_t RunGlmEmbed(cudaStream_t stream, const __half *d_embed,
 //   experts    device-resident GlmExpertTables (all layers resident in VRAM)
 //   expert_db  on-demand mmap index + staging buffers (one expert at a time)
 static cudaError_t RunGlmGenerationImpl(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw,
     const GlmExpertTables *experts, GlmExpertDb *expert_db,
     uint8_t *d_pack_stage, uint8_t *d_scale_stage,
@@ -467,15 +464,14 @@ static cudaError_t RunGlmGenerationImpl(
     const int P  = static_cast<int>(prompt.size());
     const int vocab = pw.vocab_size;
     const bool on_demand = (expert_db != nullptr);
-    log::debug("[glm_gen] validate: ch=" + std::to_string(cublas_h != nullptr) +
-               " st=" + std::to_string(stream != nullptr) +
+    log::debug("[glm_gen] validate: st=" + std::to_string(stream != nullptr) +
                " P=" + std::to_string(P) +
                " max_new=" + std::to_string(max_new) +
                " vocab=" + std::to_string(vocab) +
                " layers=" + std::to_string(pw.layers.size()) +
                " tables=" + std::to_string(experts ? experts->tables.size() : 0) +
                " on_demand=" + std::to_string(on_demand));
-    if (!cublas_h || !stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
+    if (!stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
         !pw.d_embed || !pw.d_head ||
         pw.layers.size() != static_cast<size_t>(kGlmNumLayers))
         return cudaErrorInvalidValue;
@@ -613,7 +609,6 @@ static cudaError_t RunGlmGenerationImpl(
 
 
     GlmLoopCtx ctx;
-    ctx.ch = cublas_h;
     ctx.st = stream;
     ctx.pw = &pw;
 if (on_demand) {
@@ -764,20 +759,20 @@ if (on_demand) {
 }
 
 cudaError_t RunGlmGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler)
 {
-    return RunGlmGenerationImpl(cublas_h, stream, pw, &experts, nullptr,
+    return RunGlmGenerationImpl(stream, pw, &experts, nullptr,
                                 nullptr, nullptr, nullptr, nullptr,
                                 nullptr, nullptr, nullptr,
                                 prompt, max_new, result, sampler);
 }
 
 cudaError_t RunGlmGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
@@ -855,7 +850,7 @@ cudaError_t RunGlmGeneration(
         }
     }
 
-    e = RunGlmGenerationImpl(cublas_h, stream, pw, nullptr, &expert_db,
+    e = RunGlmGenerationImpl(stream, pw, nullptr, &expert_db,
                              d_pack, d_scale, d_pack_b, d_scale_b,
                              stream_copy, ev_h2d, ev_gemm,
                              prompt, max_new, result, sampler);
@@ -1025,7 +1020,6 @@ __global__ void GlmMlaAttnKernel(const __half *__restrict__ q,
 // GLM-5.2 generation pass. One contiguous device allocation + one pinned host
 // staging block.
 struct GlmRealCtx {
-    cublasHandle_t ch = nullptr;
     cudaStream_t   st = nullptr;
     const GlmPinnedWeights *pw = nullptr;
     GlmExpertDb *db = nullptr;
@@ -1203,8 +1197,8 @@ cudaError_t GlmRealCtxAllocate(GlmRealCtx &c, int cap, int vocab)
         c.xcache.scale_stride = 3 * kScalePerMat;
         c.xcache.total_experts = kGlmNumLayers * kGlmNumRouted;
 
-        // Adaptive sizing with a VRAM keep-out margin: generation kernels and
-        // cuBLAS workspaces still need headroom after the cache is placed, so
+        // Adaptive sizing with a VRAM keep-out margin: generation kernels still
+        // need headroom after the cache is placed, so
         // a cache that would leave less than kVramMargin free is shrunk
         // (halving down to a 4-slot floor) or disabled entirely. A malloc that
         // succeeded without the margin check caused OOM aborts at the first
@@ -1382,10 +1376,10 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         if (e != cudaSuccess) return e;
         d_bias = c.d_gate_bias;
     }
-    e = RunGlmRealRouter(c.ch, c.st, lw, 1, c.d_hid, d_bias,
+    e = RunGlmRealRouter(c.st, lw, 1, c.d_hid, d_bias,
                          c.d_mlpn, c.d_logits, c.d_routing);
     if (e != cudaSuccess) return e;
-    e = RunGlmExpertsStackOnDemand(c.ch, c.st, nullptr, c.d_routing, 1, c.d_mlpn,
+    e = RunGlmExpertsStackOnDemand(c.st, nullptr, c.d_routing, 1, c.d_mlpn,
                                    *c.db, l, kGlmNumRouted, c.d_routed,
                                    c.d_scratch_e, c.d_pack, c.d_scale,
                                    nullptr, nullptr, nullptr, nullptr,
@@ -1453,7 +1447,7 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
         e = cudaMemsetAsync(c.d_shared, 0,
                             static_cast<size_t>(hidden) * sizeof(__half), c.st);
         if (e != cudaSuccess) return e;
-        e = RunGlmExpertSlot(c.ch, c.st, seb, c.d_mlpn, c.d_shared,
+        e = RunGlmExpertSlot(c.st, seb, c.d_mlpn, c.d_shared,
                              c.d_scratch_e, 1.0f);
         if (e != cudaSuccess) return e;
         shared_ok = true;
@@ -1474,7 +1468,7 @@ cudaError_t RunGlmRealLayer(GlmRealCtx &c, int l, int pos,
 
 } // anonymous namespace
 
-cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunGlmRealGeneration(cudaStream_t stream,
                                  const GlmPinnedWeights &pw,
                                  GlmExpertDb &expert_db,
                                  const std::vector<int32_t> &prompt,
@@ -1492,7 +1486,7 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     }
     const int P = static_cast<int>(prompt.size());
     const int vocab = pw.vocab_size;
-    if (!cublas_h || !stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
+    if (!stream || P <= 0 || max_new <= 0 || vocab <= 0 ||
         !pw.d_embed || !pw.d_head ||
         pw.layers.size() != static_cast<size_t>(kGlmNumLayers))
         return cudaErrorInvalidValue;
@@ -1512,7 +1506,6 @@ cudaError_t RunGlmRealGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
     }
 
     GlmRealCtx c;
-    c.ch = cublas_h;
     c.st = stream;
     c.pw = &pw;
     c.db = &expert_db;

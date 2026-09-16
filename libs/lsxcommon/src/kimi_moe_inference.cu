@@ -222,7 +222,6 @@ cudaError_t KimiRouteFinish(cudaEvent_t ev)
 // ── MLA attention (DeepSeek-V3 math, absorbed decode form) ─────────────────
 
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cmath>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -512,14 +511,13 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 const __nv_bfloat16 *d_hidden,
                                 const __nv_bfloat16 *d_residual, __nv_bfloat16 *d_out,
                                 KimiMlaState *d_state,
-                                cublasHandle_t cublas_h, int base_slot,
+                                int base_slot,
                                 int pos_offset)
 {
     if (!lw.d_q_a_packed || !lw.d_kv_a_packed || !lw.d_o_packed || !d_state ||
         seq <= 0 || turn < 0)
         return cudaErrorInvalidValue;
 
-    cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
 
     static const std::vector<float> kInvFreq = BuildYarnInvFreq();
@@ -730,7 +728,7 @@ __global__ void kimi_accum_kernel(const __nv_bfloat16 *__restrict__ y, float wei
 // down projection and weighted accumulation into d_out. Single source for
 // the legacy staging path and the resident-cache path (bit-exact contract).
 static cudaError_t RunKimiExpertFfnTail(
-    cublasHandle_t cublas_h, cudaStream_t stream, float expert_weight,
+    cudaStream_t stream, float expert_weight,
     const __nv_bfloat16 *d_x, __nv_bfloat16 *d_out, __nv_bfloat16 *dq_gate,
     __nv_bfloat16 *dq_up, __nv_bfloat16 *dq_down, __nv_bfloat16 *act_g,
     __nv_bfloat16 *act_u, __nv_bfloat16 *act_h, __nv_bfloat16 *y)
@@ -738,7 +736,6 @@ static cudaError_t RunKimiExpertFfnTail(
     constexpr int I = kKimiMoeIntermediate;
     constexpr int Hd = kKimiHidden;
 
-    cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
 
     // gate/up projections: [I] = W(I x Hd) @ x(Hd) — device-independent GEMV
@@ -769,7 +766,7 @@ static cudaError_t RunKimiExpertFfnTail(
     return cudaGetLastError();
 }
 
-cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunKimiExpertFfn(cudaStream_t stream,
                              const KimiExpertEntry &expert,
                              float expert_weight, const __nv_bfloat16 *d_x,
                              __nv_bfloat16 *d_out, void *d_staging,
@@ -851,7 +848,7 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
     dequant(p_w2, p_s2, expert.w2_global_scale, dq_down,
             static_cast<int64_t>(Hd) * I);
 
-    return RunKimiExpertFfnTail(cublas_h, stream, expert_weight, d_x, d_out,
+    return RunKimiExpertFfnTail(stream, expert_weight, d_x, d_out,
                                 dq_gate, dq_up, dq_down, act_g, act_u, act_h,
                                 y);
 }
@@ -860,8 +857,7 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
 // are read from the expert's device cache slot (uploaded by the copy stream
 // ahead of the event wait) instead of being staged per call. Bit-exact:
 // same bytes, same dequant kernel, same GEMV tail.
-cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
-                                   cudaStream_t stream,
+cudaError_t RunKimiExpertFfnCached(cudaStream_t stream,
                                    const KimiExpertEntry &expert,
                                    float expert_weight,
                                    const __nv_bfloat16 *d_x,
@@ -901,7 +897,7 @@ cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
     dequant(view.p_w2, view.p_s2, expert.w2_global_scale, dq_down,
             static_cast<int64_t>(Hd) * I);
 
-    return RunKimiExpertFfnTail(cublas_h, stream, expert_weight, d_x, d_out,
+    return RunKimiExpertFfnTail(stream, expert_weight, d_x, d_out,
                                 dq_gate, dq_up, dq_down, act_g, act_u, act_h,
                                 y);
 }
@@ -1046,7 +1042,7 @@ size_t KimiTcBatchScratchBytes()
     return b;
 }
 
-cudaError_t RunKimiRoutedTcBatch(cublasHandle_t, cudaStream_t stream,
+cudaError_t RunKimiRoutedTcBatch(cudaStream_t stream,
                                  const uint8_t *pack_base,
                                  const uint8_t *scale_base,
                                  int64_t pack_stride, int64_t scale_stride,
@@ -1218,7 +1214,7 @@ KimiMoeSlotView KimiSharedSlotView(const KimiExpertCacheState &st,
 
 namespace {
 
-cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t KimiLayerStack(cudaStream_t stream,
                            const KimiPinnedWeights &pw, KimiExpertDb &db,
                            KimiMlaState *d_states, float *d_bias_all,
                            void *d_staging, size_t staging_bytes,
@@ -1232,7 +1228,6 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                            lsxcommon::lsx_tc::LsxTcBatchSlot *d_tc_tbl,
                            lsxcommon::lsx_tc::LsxTcBatchSlot *h_tc_tbl)
 {
-    cublasSetStream(cublas_h, stream);
     const float alpha = 1.0f, beta0 = 0.0f;
 
     for (int l = 0; l < kKimiNumLayers; ++l) {
@@ -1249,7 +1244,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
             d_scratch_b + (size_t)base * kKimiHidden,   // normed input
             d_scratch_a + (size_t)base * kKimiHidden,   // residual = x
             d_scratch_a + (size_t)base * kKimiHidden,   // out
-            d_states + l, cublas_h, base_slot, pos_offset);
+            d_states + l, base_slot, pos_offset);
         if (ae != cudaSuccess) return ae;
 
         // 3. post_attention_layernorm -> scratch_b.
@@ -1294,7 +1289,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                         KimiSharedSlotView(*cache, v, l);
                     for (int t = 0; t < seq; ++t) {
                         cudaError_t ee = RunKimiExpertFfnCached(
-                            cublas_h, stream, se, 1.0f,
+                            stream, se, 1.0f,
                             d_scratch_b + (size_t)(base + t) * kKimiHidden,
                             d_scratch_a + (size_t)(base + t) * kKimiHidden,
                             d_staging, staging_bytes, sv);
@@ -1319,7 +1314,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                 se.w3_scales_bytes = v.w3_scale_bytes;
                 for (int t = 0; t < seq; ++t) {
                     cudaError_t ee = RunKimiExpertFfn(
-                        cublas_h, stream, se, 1.0f,
+                        stream, se, 1.0f,
                         d_scratch_b + (size_t)(base + t) * kKimiHidden,
                         d_scratch_a + (size_t)(base + t) * kKimiHidden,
                         d_staging, staging_bytes);
@@ -1457,7 +1452,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                             cudaMemcpyHostToDevice, stream);
                         for (int t = 0; t < seq; ++t) {
                             cudaError_t fe = RunKimiRoutedTcBatch(
-                                cublas_h, stream, cache->device->d_pack,
+                                stream, cache->device->d_pack,
                                 cache->device->d_scale,
                                 cache->device->pack_stride,
                                 cache->device->scale_stride, d_tc_tbl,
@@ -1505,7 +1500,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                         const KimiMoeSlotView v =
                             KimiMoeSlotPointers(*cache->device, slot, ent);
                         cudaError_t fe = RunKimiExpertFfnCached(
-                            cublas_h, stream, ent, h_w[k], row, acc,
+                            stream, ent, h_w[k], row, acc,
                             d_staging, staging_bytes, v);
                         if (fe != cudaSuccess) {
                             fprintf(stderr, "[trace] FFN l=%d e=%d err=%s\n",
@@ -1523,7 +1518,7 @@ cudaError_t KimiLayerStack(cublasHandle_t cublas_h, cudaStream_t stream,
                     for (int k = 0; k < kKimiTopK; ++k) {
                         ensure_kimi_expert_resident(db, l, h_ids[k], stream);
                         cudaError_t fe = RunKimiExpertFfn(
-                             cublas_h, stream,
+                             stream,
                              db.entries[(size_t)l * kKimiNumRouted + h_ids[k]],
                              h_w[k], row, acc, d_staging, staging_bytes);
                         if (fe != cudaSuccess) {
@@ -1596,7 +1591,7 @@ KimiEosCut TruncateAtEos(const std::vector<int> &tokens, int eos_id)
     return r;
 }
 
-cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunKimiGeneration(cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,
@@ -1614,7 +1609,6 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         return cudaErrorInvalidValue;
     }
 
-    cublasSetStream(cublas_h, stream);
     if (getenv("KIMI_NOEVICTION")) db.max_open = 1000000;
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -1874,7 +1868,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         const int base = (step == 0) ? 0 : (prefill_seq + step - 1);
         const int seq = (step == 0) ? prefill_seq : 1;
         const int base_slot = (step == 0) ? 0 : (prefill_seq + step - 1);
-        e = KimiLayerStack(cublas_h, stream, pw, db, d_states, d_bias_all,
+        e = KimiLayerStack(stream, pw, db, d_states, d_bias_all,
                            d_staging, staging_bytes, d_hidden, d_scratch_b,
                            d_mlp_g, d_mlp_u, d_mlp_h, d_scores, d_top_ids,
                            d_top_w, step, base, seq, base_slot, base, cache,
@@ -1890,8 +1884,7 @@ cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
         kimi_rmsnorm_rows_op_kernel<<<dim3(1), 256, 0, stream>>>(
             d_hidden + (size_t)(base + seq - 1) * kKimiHidden,
             pw.d_final_norm, d_scratch_b, kKimiHidden);
-        cublasSetStream(cublas_h, stream);
-        const float alpha = 1.0f, beta0 = 0.0f;
+            const float alpha = 1.0f, beta0 = 0.0f;
         if (gemv::RunLxGemmVec(stream, pw.d_head, d_scratch_b, 1,
                                kKimiVocab, kKimiHidden, gemv::LxDtype::kBF16,
                                gemv::LxDtype::kBF16, alpha, d_logits,

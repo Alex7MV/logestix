@@ -15,7 +15,6 @@
 #include "deepseek_moe_load.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cstring>
 #include <cmath>
 #include <sstream>
@@ -551,11 +550,10 @@ mla_attn_kernel(
 
 // ── FP32 GEMM: out[m] = W[m,k] @ x[k] (W FP32 row-major, x FP16) ────────────
 // ── FP16 GEMM: out[m] = W[m,k] @ x[k] (W row-major) ──────────────────────────
-static cudaError_t gemm_f16_1d(cublasHandle_t cublas_h, cudaStream_t stream,
+static cudaError_t gemm_f16_1d(cudaStream_t stream,
                                const __half* d_w, int m, int k,
                                const __half* d_x, __half* d_out)
 {
-    cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
     return gemv::RunLxGemmVec(stream, d_w, d_x, 1, m, k, gemv::LxDtype::kF16,
                               gemv::LxDtype::kF16, alpha, d_out,
@@ -581,7 +579,7 @@ static __global__ void clamp_f32_to_f16_kernel(const float* __restrict__ src,
 // runs on the 5th-gen Tensor Cores instead of the FP32 CUDA-core path.
 // d_scratch needs (n halves + rows floats) — strictly less than the old
 // (n + cols + rows) floats footprint.
-static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
+static cudaError_t f8_gemm_1d(cudaStream_t stream,
                               const uint8_t* d_w, const uint8_t* d_scale,
                               int rows, int cols,
                               const __half* d_x, __half* d_out,
@@ -593,7 +591,6 @@ static cudaError_t f8_gemm_1d(cublasHandle_t cublas_h, cudaStream_t stream,
                                            d_w_half, n, cols);
     if (e != cudaSuccess) return e;
     float* d_out_f32 = reinterpret_cast<float*>(d_w_half + n);
-    cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
     if (gemv::RunLxGemmVec(stream, d_w_half, d_x, 1, rows, cols,
                            gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha,
@@ -711,7 +708,7 @@ cudaError_t run_expand_hc(cudaStream_t stream,
 // 3 launches instead of the old 24 (per-group dequant + convert + GEMM +
 // clamp × 8), with proper tensor-core GEMM shapes.
 static cudaError_t run_o_projection(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const LayerWeights &lw,
     __half *d_o, __half *d_olora, __half *d_out,
     float *d_dequant)
@@ -748,12 +745,12 @@ static cudaError_t run_o_projection(
     }
 
     // out = wo_b @ olora → [kHiddenDim]
-    return f8_gemm_1d(cublas_h, stream, lw.d_wo_b, lw.d_wo_b_scales,
+    return f8_gemm_1d(stream, lw.d_wo_b, lw.d_wo_b_scales,
                       lw.wo_b_rows, lw.wo_b_cols, d_olora, d_out, d_dequant);
 }
 
 cudaError_t run_mla_attention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const LayerWeights& lw,
     const __half* d_x,
     __half* d_kv_cache_layer,
@@ -776,7 +773,7 @@ cudaError_t run_mla_attention(
     }
 
     // qr = wq_a @ x
-    cudaError_t e = f8_gemm_1d(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
+    cudaError_t e = f8_gemm_1d(stream, lw.d_wq_a, lw.d_wq_a_scales,
                                lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
     if (e != cudaSuccess) return e;
     // qr = q_norm(qr)
@@ -784,7 +781,7 @@ cudaError_t run_mla_attention(
                          d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
     if (e != cudaSuccess) return e;
     // q = wq_b @ qr2 → [32768]
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wq_b, lw.d_wq_b_scales,
+    e = f8_gemm_1d(stream, lw.d_wq_b, lw.d_wq_b_scales,
                    lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
     if (e != cudaSuccess) return e;
     // per-head RMS + RoPE on last 64 dims
@@ -799,7 +796,7 @@ cudaError_t run_mla_attention(
     }
 
     // kv = wkv @ x → [512]
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wkv, lw.d_wkv_scales,
+    e = f8_gemm_1d(stream, lw.d_wkv, lw.d_wkv_scales,
                    lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
     if (e != cudaSuccess) return e;
     e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
@@ -848,7 +845,7 @@ cudaError_t run_mla_attention(
 
     // o-projection: o[64,512] → view [8,4096]; per-group wo_a[1024,4096] → [8,1024]
     // wo_a.weight [8192,4096] row-major, groups are contiguous 1024-row blocks.
-    e = run_o_projection(cublas_h, stream, lw, d_o, d_olora, d_out, d_dequant);
+    e = run_o_projection(stream, lw, d_o, d_olora, d_out, d_dequant);
     if (e != cudaSuccess) return e;
 
     return cudaSuccess;
@@ -1056,7 +1053,7 @@ __global__ void compressor_step_kernel(
 // For now, uses mla_attn_kernel for attention (window-only, no compressed positions).
 // The compressor state is maintained for future use when sparse_attn is added.
 cudaError_t run_csa_attention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const LayerWeights& lw,
     const __half* d_x,
     __half* d_kv_cache_layer,
@@ -1080,13 +1077,13 @@ cudaError_t run_csa_attention(
     }
 
     // ── Q projection (identical to MLA) ──────────────────────────────────
-    cudaError_t e = f8_gemm_1d(cublas_h, stream, lw.d_wq_a, lw.d_wq_a_scales,
+    cudaError_t e = f8_gemm_1d(stream, lw.d_wq_a, lw.d_wq_a_scales,
                                lw.wq_a_rows, lw.wq_a_cols, d_x, d_qr, d_dequant);
     if (e != cudaSuccess) return e;
     e = run_rmsnorm_attn(stream, d_qr, lw.d_q_norm, d_qr2,
                          d_norm_scratch, d_norm_gamma_scratch, kQloraRank, kRmsEps);
     if (e != cudaSuccess) return e;
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wq_b, lw.d_wq_b_scales,
+    e = f8_gemm_1d(stream, lw.d_wq_b, lw.d_wq_b_scales,
                    lw.wq_b_rows, lw.wq_b_cols, d_qr2, d_q, d_dequant);
     if (e != cudaSuccess) return e;
     per_head_rms_kernel<<<kAttnHeads, 128, 0, stream>>>(d_q, kAttnHeads, kHeadDim);
@@ -1098,7 +1095,7 @@ cudaError_t run_csa_attention(
     }
 
     // ── KV projection (identical to MLA) ──────────────────────────────────
-    e = f8_gemm_1d(cublas_h, stream, lw.d_wkv, lw.d_wkv_scales,
+    e = f8_gemm_1d(stream, lw.d_wkv, lw.d_wkv_scales,
                    lw.wkv_rows, lw.wkv_cols, d_x, d_kv, d_dequant);
     if (e != cudaSuccess) return e;
     e = run_rmsnorm_attn(stream, d_kv, lw.d_kv_norm, d_kv2,
@@ -1130,8 +1127,7 @@ cudaError_t run_csa_attention(
         int comp_out = coff * kHeadDim;
         {
             float alpha = 1.0f, beta = 0.0f;
-            cublasSetStream(cublas_h, stream);
-            if (gemv::RunLxGemmVec(
+                    if (gemv::RunLxGemmVec(
                     stream, lw.d_comp_wkv, d_x, 1, comp_out, kHiddenDim,
                     gemv::LxDtype::kF16, gemv::LxDtype::kF16, alpha, d_qr2,
                     gemv::LxDtype::kF16, beta) != cudaSuccess) {
@@ -1220,7 +1216,7 @@ cudaError_t run_csa_attention(
     }
 
     // ── O-projection (identical to MLA — FP32×FP32→FP32→FP16) ────────────
-    e = run_o_projection(cublas_h, stream, lw, d_o, d_olora, d_out, d_dequant);
+    e = run_o_projection(stream, lw, d_o, d_olora, d_out, d_dequant);
     return e;
 }
 

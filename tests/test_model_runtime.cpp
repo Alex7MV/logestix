@@ -288,7 +288,6 @@ TEST_CASE("DecideSession continuation vs fresh", "[session]")
 
 // ── ModelBase persistent CUDA execution context ─────────────────────────────
 
-#include <cublas_v2.h>
 #include <shared_mutex>
 
 namespace {
@@ -299,7 +298,6 @@ public:
     using ModelBase::EnsureContext;
     using ModelBase::TeardownContext;
     using ModelBase::stream;
-    using ModelBase::cublas;
     using ModelBase::RunUnderResidencyLock;
 
     bool Load() override { return false; }
@@ -325,38 +323,18 @@ TEST_CASE("ModelBase context is lazy, idempotent and teardown-safe",
 {
     ContextProbe m{lsxcommon::ModelInitConfig{}};
     CHECK(m.stream() == nullptr);
-    CHECK(m.cublas() == nullptr);
 
-    // Stream-only context.
-    REQUIRE(m.EnsureContext(/*with_cublas=*/false));
+    REQUIRE(m.EnsureContext());
     cudaStream_t s1 = m.stream();
     REQUIRE(s1 != nullptr);
-    CHECK(m.cublas() == nullptr);
 
-    // Idempotent: same stream, no churn; upgrades to cublas on request.
-    REQUIRE(m.EnsureContext(false));
-    CHECK(m.stream() == s1);
-    REQUIRE(m.EnsureContext(true));
-    cublasHandle_t h1 = m.cublas();
-    REQUIRE(h1 != nullptr);
-    REQUIRE(m.EnsureContext(true));
-    CHECK(m.cublas() == h1);
+    // Idempotent: same stream, no churn.
+    REQUIRE(m.EnsureContext());
     CHECK(m.stream() == s1);
 
-    // Teardown releases both; safe to call twice.
+    // Teardown releases the stream; safe to call twice.
     m.TeardownContext();
     CHECK(m.stream() == nullptr);
-    CHECK(m.cublas() == nullptr);
-    m.TeardownContext();
-}
-
-TEST_CASE("EnsureContext binds cuBLAS to the owned stream", "[model_base][gpu]")
-{
-    ContextProbe m{lsxcommon::ModelInitConfig{}};
-    REQUIRE(m.EnsureContext(/*with_cublas=*/true));
-    cudaStream_t s = nullptr;
-    CHECK(cublasGetStream(m.cublas(), &s) == CUBLAS_STATUS_SUCCESS);
-    CHECK(s == m.stream());
     m.TeardownContext();
 }
 

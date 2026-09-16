@@ -7,15 +7,19 @@ contract's requirements, and inventory C-exact vs C-fast paths. Measured
 > Status: **all conformance items are done** — deterministic GEMM paths,
 > workspace/allocation invariance, device-independent numeric knobs and
 > calibration, no library algorithm heuristics (B1: all cuBLAS GEMM replaced by
-> `lsx_gemv`), and the cross-model hash gate. Reflects the code at the B1
-> completion commit.
+> `lsx_gemv`), and the cross-model hash gate. A follow-up refactor then removed
+> the cuBLAS dependency from the build entirely; all 7 models reproduce their
+> recorded `logits_hash` byte-for-byte in both modes.
 
 ## Inventory
 
 - **cuBLAS GEMM calls: 0** (was 21 `cublasGemmEx` + strided-batched). All
-  replaced by the model-neutral, device-independent `lsx_gemv`. The workspace /
-  atomics pin (`CUBLAS_WORKSPACE_CONFIG` + `cublasSetAtomicsMode`) is kept as a
-  belt-and-braces default for any future cuBLAS use.
+  replaced by the model-neutral, device-independent `lsx_gemv`. The cuBLAS
+  dependency was then **removed from the build entirely** (no handle, no
+  `cublas_v2.h`, no `CUDA::cublas` link): every `cublasHandle_t` parameter,
+  `cublasCreate/SetStream/SetAtomicsMode` call and the
+  `CUBLAS_WORKSPACE_CONFIG` pin are gone, so workspace/allocation invariance is
+  now structural rather than a runtime guarantee.
 - Runtime-memory use: `cudaMemGetInfo` only for **expert-cache sizing**
   (residency, not arithmetic).
 - Numeric-path selection: `gpu_perf.cpp` / `perf_calibration.cu` — numeric knobs
@@ -26,7 +30,7 @@ contract's requirements, and inventory C-exact vs C-fast paths. Measured
 
 | Requirement (contract) | Status |
 |---|---|
-| §2 deterministic GEMM paths / §3.6 workspace invariance | **DONE**: `Core::Initialize` pins `CUBLAS_WORKSPACE_CONFIG=:4096:8`; every handle sets `cublasSetAtomicsMode(CUBLAS_ATOMICS_NOT_ALLOWED)` (model_base / gemma / deepseek). |
+| §2 deterministic GEMM paths / §3.6 workspace invariance | **DONE**: `lsx_gemv` is the only GEMM path and cuBLAS is not linked at all, so split-K atomics / workspace-dependent algorithm selection cannot occur; the former `CUBLAS_WORKSPACE_CONFIG` + `cublasSetAtomicsMode` pin was removed with the dependency. |
 | §1.1.4 no device-conditional numeric path | **DONE**: `HeuristicKnobs` numeric knobs (`gemv_large_default`, `gemv_max_mib`, `splitk_grid_min`) pinned to canonical values; `test_gpu_perf` asserts invariance. |
 | §1.1.4 no per-GPU numeric calibration | **DONE**: `EnsureCalibrated` no longer overrides `gemv_max_mib`; per-GPU numeric tuning is C-fast-only opt-in. |
 | §1.1.1 no library algorithm heuristics | **DONE**: all 21 `cublasGemm*` sites replaced by the model-neutral, device-independent `lsx_gemv` (`RunLxGemmVec` N-major, `RunLxGemmVecWT` K-major; batched cases run per-row/per-batch loops). Models: Kimi, Gemma, DeepSeek-V4-Flash, DeepSeek-V4.1-Flash. |

@@ -15,16 +15,6 @@
 namespace lsxcommon {
 
 void Core::Initialize(const std::string& log_file_path) {
-    // Numeric contract §3.6 (workspace & allocation invariance): pin the cuBLAS
-    // workspace so the GEMM algorithm cannot depend on the runtime memory
-    // environment. Must happen before the first cuBLAS handle is created.
-    // Overwrite unconditionally: a non-default value changes the greedy output
-    // (measured 83 vs 105 tokens), which R3 forbids.
-#ifdef _WIN32
-    _putenv_s("CUBLAS_WORKSPACE_CONFIG", ":4096:8");
-#else
-    setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8", 1);
-#endif
     try {
         spdlog::init_thread_pool(8192, 1);
 

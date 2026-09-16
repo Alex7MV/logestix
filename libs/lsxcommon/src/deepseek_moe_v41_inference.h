@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 #include "deepseek_moe_v41_inference_csa.h"
@@ -68,12 +67,12 @@ cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
                                int n, float limit, cudaStream_t stream);
 
 // Row-major FP16 dense GEMM: C[M,N] = A[M,K] * B[K,N]. F32 accumulation.
-cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchGemmFp16(cudaStream_t stream,
                            const uint16_t *A, const uint16_t *B, uint16_t *C,
                            int M, int N, int K);
 
 // Matrix-vector with F32 output: y[M] = W[M,K] * x[K] (FP16 inputs).
-cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                                 const uint16_t *w, const uint16_t *x, float *y,
                                 int M, int K);
 
@@ -95,14 +94,14 @@ cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
 
 // Shared expert SwiGLU FFN: gate=w1@x, up=w3@x (F32), silu(clamped)*clamped,
 // then out=w2@mid (FP16). Scratch is allocated internally.
-cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t SharedExpertForward(cudaStream_t stream,
                                 const uint16_t *x, int hidden,
                                 const uint16_t *w1, const uint16_t *w3,
                                 const uint16_t *w2, int inter, float limit,
                                 uint16_t *out);
 
 // Head logits (F32): logits[V] = W[V,H] * x[H], FP16 inputs, F32 accumulation.
-cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchHeadLogits(cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
                              int vocab, int hidden);
 
@@ -120,7 +119,7 @@ struct DeviceExpertWeight {
 // by scores + bias (bias steers selection only), the returned weights are the
 // selected unbiased scores, renormalized when topk > 1 and scaled by
 // route_scale. x/gate_w are FP16; bias F32.
-cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
                              int topk, float temp, float route_scale, bool norm,
@@ -129,7 +128,7 @@ cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
 // One routed expert on a single token:
 //   accum[d] += weight * w2( silu(clamp(w1@x)) * clamp(w3@x) ).
 // accum is F32 [hidden]; weight is applied to the expert output.
-cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchExpertFfn(cudaStream_t stream,
                             const uint16_t *x, int hidden,
                             const DeviceExpertWeight &w1,
                             const DeviceExpertWeight &w3,
@@ -144,7 +143,7 @@ std::size_t ExpertFfnScratchBytes(int inter, int hidden);
 // loop runs top-k experts per layer and must not cudaMalloc/cudaFree per expert
 // (cudaFree serializes the device and kills copy/compute overlap): allocate the
 // scratch once via ExpertFfnScratchBytes and pass it here.
-cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchExpertFfnScratch(cudaStream_t stream,
                                    const uint16_t *x, int hidden,
                                    const DeviceExpertWeight &w1,
                                    const DeviceExpertWeight &w3,
@@ -169,7 +168,7 @@ cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
 // All weights/shapes are explicit so callers can test with synthetic tensors.
 // rope_cos/rope_sin point at the single position's [rope_dim/2] row.
 cudaError_t AttentionForwardDecode(
-    cublasHandle_t handle, cudaStream_t stream, const uint16_t *x, int hidden,
+    cudaStream_t stream, const uint16_t *x, int hidden,
     const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
     const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
     const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
@@ -270,7 +269,7 @@ struct CedLayerBuffers {
 // layer's theta; they are indexed by position. On return `csa` holds the
 // resources this layer published for its consumers.
 cudaError_t CedAttentionForwardDecode(
-    cublasHandle_t handle, cudaStream_t stream, const uint16_t *x, int hidden,
+    cudaStream_t stream, const uint16_t *x, int hidden,
     int window, int layer_id, const CedLayerParams &p, CedLayerBuffers &b,
     const float *rope_cos, const float *rope_sin, int start_pos,
     CsaRuntime &csa, uint16_t *out);

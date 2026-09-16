@@ -3,7 +3,6 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
-#include <cublas_v2.h>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -336,7 +335,7 @@ struct PinnedWeights {
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned (arena carve) — the
 // function performs ZERO CUDA allocations (spec item 12, malloc-per-layer kill).
 cudaError_t route_token(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
     int hidden_dim, int num_routed,
     const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
@@ -352,7 +351,7 @@ cudaError_t route_token(
 // e.g. the shared-expert FFN) and then runs the identical host-side scoring.
 // Fused route_token == begin + finish, bit-exact.
 cudaError_t route_token_begin(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
     int hidden_dim, int num_routed,
     __half *d_logits_scratch,   // caller-owned [num_routed] __half
@@ -471,7 +470,7 @@ cudaError_t run_expand_hc(cudaStream_t stream,
 
 // MLA forward (one token)
 cudaError_t run_mla_attention(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const LayerWeights &lw,
     const __half *d_x,
     __half *d_kv_cache_layer,

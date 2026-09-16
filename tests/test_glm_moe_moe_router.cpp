@@ -5,7 +5,6 @@
 #include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -74,8 +73,6 @@ TEST_CASE("GLM MoE Layer 3 router: top_k=8 slots per token, no OOB corruption",
                   "GlmRoutedSlot must honour 8-byte alignment");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -131,7 +128,7 @@ TEST_CASE("GLM MoE Layer 3 router: top_k=8 slots per token, no OOB corruption",
 
     // ── Layer-3 routing, single explicit async stream, no device sync ──────
     REQUIRE(lsxcommon::glm::RunGlmMoERouter(
-                ch, st, l3, kSeq, d_x, nullptr, d_normed, d_logits,
+                st, l3, kSeq, d_x, nullptr, d_normed, d_logits,
                 reinterpret_cast<GlmRoutedSlot *>(d_route)) == cudaSuccess);
     REQUIRE(cudaMemcpy(hbuf.data(), d_route, hbuf.size() * sizeof(uint64_t),
                        cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -181,7 +178,6 @@ TEST_CASE("GLM MoE Layer 3 router: top_k=8 slots per token, no OOB corruption",
     cudaFree(d_logits);
     cudaFree(d_route);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }
 
 // CPU reference for the real-model case: RMSNorm a constant ±1 input, project
@@ -239,8 +235,6 @@ TEST_CASE("GLM MoE Layer 3 router on real model weights: smoke + determinism",
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -284,7 +278,7 @@ TEST_CASE("GLM MoE Layer 3 router on real model weights: smoke + determinism",
                             cudaMemcpyDeviceToHost, st) == cudaSuccess);
 
     REQUIRE(lsxcommon::glm::RunGlmMoERouter(
-                ch, st, l3, seq, d_x, nullptr, d_normed, d_logits,
+                st, l3, seq, d_x, nullptr, d_normed, d_logits,
                 reinterpret_cast<GlmRoutedSlot *>(d_route)) == cudaSuccess);
     REQUIRE(cudaMemcpy(hbuf.data(), d_route, hbuf.size() * sizeof(uint64_t),
                        cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -342,5 +336,4 @@ TEST_CASE("GLM MoE Layer 3 router on real model weights: smoke + determinism",
     cudaFree(d_logits);
     cudaFree(d_route);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

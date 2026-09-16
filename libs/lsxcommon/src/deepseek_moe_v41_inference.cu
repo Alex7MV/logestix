@@ -501,12 +501,11 @@ cudaError_t LaunchExpertSwiglu(const float *gate, const float *up, float *out,
     return cudaGetLastError();
 }
 
-cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchGemmFp16(cudaStream_t stream,
                            const uint16_t *A, const uint16_t *B, uint16_t *C,
                            int M, int N, int K)
 {
     if (M <= 0 || N <= 0 || K <= 0) return cudaSuccess;
-    (void) handle;
     // Row-major C[M,N] = A[M,K]*B[K,N]; B is K-major -> transposed-W GEMV per
     // row. Device-independent (numeric-contract 1.1.1).
     for (int m = 0; m < M; ++m) {
@@ -519,12 +518,11 @@ cudaError_t LaunchGemmFp16(cublasHandle_t handle, cudaStream_t stream,
     return cudaSuccess;
 }
 
-cudaError_t LaunchHeadLogits(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchHeadLogits(cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x,
                              float *logits, int vocab, int hidden)
 {
     if (vocab <= 0 || hidden <= 0) return cudaSuccess;
-    (void) handle;
     return gemv::RunLxGemmVec(stream, w, x, 1, vocab, hidden,
                               gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
                               logits, gemv::LxDtype::kF32, 0.0f);
@@ -563,18 +561,17 @@ cudaError_t LaunchCastF32ToHalf(const float *src, uint16_t *dst, int n,
     return cudaGetLastError();
 }
 
-cudaError_t LaunchGemvFp16ToF32(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                                 const uint16_t *w, const uint16_t *x, float *y,
                                 int M, int K)
 {
     if (M <= 0 || K <= 0) return cudaSuccess;
-    (void) handle;
     return gemv::RunLxGemmVec(stream, w, x, 1, M, K, gemv::LxDtype::kF16,
                               gemv::LxDtype::kF16, 1.0f, y,
                               gemv::LxDtype::kF32, 0.0f);
 }
 
-cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t SharedExpertForward(cudaStream_t stream,
                                 const uint16_t *x, int hidden,
                                 const uint16_t *w1, const uint16_t *w3,
                                 const uint16_t *w2, int inter, float limit,
@@ -592,16 +589,16 @@ cudaError_t SharedExpertForward(cublasHandle_t handle, cudaStream_t stream,
         if (mid_h) cudaFree(mid_h);
         return cudaErrorInvalidValue;
     }
-    cudaError_t e = LaunchGemvFp16ToF32(handle, stream, w1, x, gate, inter,
+    cudaError_t e = LaunchGemvFp16ToF32(stream, w1, x, gate, inter,
                                         hidden);
     if (e == cudaSuccess)
-        e = LaunchGemvFp16ToF32(handle, stream, w3, x, up, inter, hidden);
+        e = LaunchGemvFp16ToF32(stream, w3, x, up, inter, hidden);
     if (e == cudaSuccess)
         e = LaunchExpertSwiglu(gate, up, mid, inter, limit, stream);
     if (e == cudaSuccess)
         e = LaunchCastF32ToHalf(mid, mid_h, inter, stream);
     if (e == cudaSuccess)
-        e = LaunchGemmFp16(handle, stream, w2, mid_h, out, hidden, 1, inter);
+        e = LaunchGemmFp16(stream, w2, mid_h, out, hidden, 1, inter);
     cudaFree(gate);
     cudaFree(up);
     cudaFree(mid);
@@ -638,7 +635,7 @@ cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
     return cudaGetLastError();
 }
 
-cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
                              int topk, float temp, float route_scale, bool norm,
@@ -651,7 +648,7 @@ cudaError_t LaunchRouterTopK(cublasHandle_t handle, cudaStream_t stream,
     float *scores = nullptr;
     if (cudaMalloc(&scores, sizeof(float) * n_routed) != cudaSuccess)
         return cudaGetLastError();
-    cudaError_t e = LaunchGemvFp16ToF32(handle, stream, gate_w, x, scores,
+    cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores,
                                         n_routed, hidden);
     if (e == cudaSuccess) {
         router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
@@ -677,7 +674,7 @@ std::size_t ExpertFfnScratchBytes(int inter, int hidden)
     return bytes;
 }
 
-cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchExpertFfnScratch(cudaStream_t stream,
                                    const uint16_t *x, int hidden,
                                    const DeviceExpertWeight &w1,
                                    const DeviceExpertWeight &w3,
@@ -686,7 +683,6 @@ cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
                                    float *accum_f32, void *scratch,
                                    std::size_t scratch_bytes)
 {
-    (void)handle;
     if (hidden <= 0 || inter <= 0) return cudaSuccess;
     if (!w1.packed || !w1.scales || !w3.packed || !w3.scales || !w2.packed ||
         !w2.scales)
@@ -745,7 +741,7 @@ cudaError_t LaunchExpertFfnScratch(cublasHandle_t handle, cudaStream_t stream,
     return e;
 }
 
-cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
+cudaError_t LaunchExpertFfn(cudaStream_t stream,
                             const uint16_t *x, int hidden,
                             const DeviceExpertWeight &w1,
                             const DeviceExpertWeight &w3,
@@ -757,7 +753,7 @@ cudaError_t LaunchExpertFfn(cublasHandle_t handle, cudaStream_t stream,
     const size_t bytes = ExpertFfnScratchBytes(inter, hidden);
     if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
     const cudaError_t e = LaunchExpertFfnScratch(
-        handle, stream, x, hidden, w1, w3, w2, inter, swiglu_limit, weight,
+        stream, x, hidden, w1, w3, w2, inter, swiglu_limit, weight,
         accum_f32, base, bytes);
     cudaFree(base);
     return e;

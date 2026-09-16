@@ -104,7 +104,7 @@ struct ExpPinnedWeights {
     qwen::QwenNvfp4Weight embed;
     qwen::QwenNvfp4Weight head;   // legacy NVFP4 view (unused for qwen38)
     // LM head as a persistent FP16 table ([V, H], from BF16 raw global.arrow)
-    // for the cuBLAS head GEMM: NVFP4 logit noise exceeds the top-1/top-2
+    // for the FP16 head GEMV: NVFP4 logit noise exceeds the top-1/top-2
     // margin of this model.
     __half *d_head_f16 = nullptr;
     int64_t head_elems = 0;

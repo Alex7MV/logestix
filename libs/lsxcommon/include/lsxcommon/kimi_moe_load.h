@@ -4,7 +4,6 @@
 #include "lsxcommon/expert_store.h"
 
 #include <cuda_bf16.h>
-#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstddef>
@@ -232,7 +231,7 @@ cudaError_t RunKimiMlaAttention(cudaStream_t stream, int turn,
                                 const __nv_bfloat16 *d_hidden,
                                 const __nv_bfloat16 *d_residual, __nv_bfloat16 *d_out,
                                 KimiMlaState *d_state,
-                                cublasHandle_t cublas_h, int base_slot,
+                                int base_slot,
                                 int pos_offset);
 
 } // namespace kimi

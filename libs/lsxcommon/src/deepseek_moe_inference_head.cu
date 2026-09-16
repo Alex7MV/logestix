@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 #include "lsxcommon/lsx_gemv.h"
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 
 namespace lsxcommon {
 namespace gpu {
@@ -57,7 +56,6 @@ __global__ void argmax_kernel(const float *logits, int32_t *out_idx,
 // sampler runs its own reduction over d_logits right after — avoids a
 // duplicate full-vocab scan per token).
 cudaError_t run_lm_head(
-    cublasHandle_t cublas_h,
     cudaStream_t stream,
     const __half *d_head_weight,
     const __half *d_hidden,
@@ -67,7 +65,6 @@ cudaError_t run_lm_head(
     int32_t *d_next_token,
     float *d_next_maxv)
 {
-    cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
     if (gemv::RunLxGemmVec(stream, d_head_weight, d_hidden, 1, vocab_size,

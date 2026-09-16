@@ -11,7 +11,6 @@
 #include <catch2/catch_approx.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cmath>
 #include <vector>
 #include <cstring>
@@ -31,7 +30,7 @@ namespace lsxcommon::gpu {
 // existing kernel test does for run_routed_expert_ffn. route_token comes from
 // deepseek_moe_load.cuh (included above).
 cudaError_t run_shared_experts_ffn(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
     const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
@@ -508,8 +507,6 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
           "[deepseek][moe][router]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -550,7 +547,7 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
     std::vector<int> eidx;
     std::vector<float> eweight;
     {
-        lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
+        lsxcommon::gpu::route_token(st, d_gate, d_hidden, kHidden, kNumRouted,
                                     nullptr, 0, 0, nullptr, kTopk,
                                     d_logits_scratch, h_logits_scratch,
                                     topk, weights);
@@ -578,7 +575,7 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
     {
         std::vector<float> bias(static_cast<size_t>(kNumRouted), 0.0f);
         bias[3] = 100.0f; // expert 3 has an average rank, but bias forces it in
-        lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
+        lsxcommon::gpu::route_token(st, d_gate, d_hidden, kHidden, kNumRouted,
                                     nullptr, 0, 0, bias.data(), kTopk,
                                     d_logits_scratch, h_logits_scratch,
                                     topk, weights);
@@ -605,7 +602,7 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
         std::vector<int64_t> tid2eid(static_cast<size_t>(2) * kTidStride);
         for (int k = 0; k < 2 * kTidStride; ++k)
             tid2eid[k] = (kNumRouted - 1 - k) % kNumRouted; // descending distinct
-        lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
+        lsxcommon::gpu::route_token(st, d_gate, d_hidden, kHidden, kNumRouted,
                                     tid2eid.data(), kTidStride, 1,
                                     nullptr, kTopk,
                                     d_logits_scratch, h_logits_scratch,
@@ -628,7 +625,6 @@ TEST_CASE("route_token selects top-k by sqrt(softplus) with bias and scales weig
     cudaFree(d_hidden);
     cudaFree(d_logits_scratch);
     cudaFreeHost(h_logits_scratch);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
 
@@ -641,8 +637,6 @@ TEST_CASE("route_token split begin/finish matches fused route_token exactly",
           "[deepseek][moe][router]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -698,7 +692,7 @@ TEST_CASE("route_token split begin/finish matches fused route_token exactly",
     for (const Case &tc : cases) {
         int fused_idx[kTopk];
         float fused_w[kTopk];
-        lsxcommon::gpu::route_token(ch, st, d_gate, d_hidden, kHidden, kNumRouted,
+        lsxcommon::gpu::route_token(st, d_gate, d_hidden, kHidden, kNumRouted,
                                     tc.tid, tc.stride, tc.token_id, tc.bias, kTopk,
                                     d_logits_scratch, h_logits_scratch,
                                     fused_idx, fused_w);
@@ -706,7 +700,7 @@ TEST_CASE("route_token split begin/finish matches fused route_token exactly",
 
         int split_idx[kTopk];
         float split_w[kTopk];
-        REQUIRE(lsxcommon::gpu::route_token_begin(ch, st, d_gate, d_hidden,
+        REQUIRE(lsxcommon::gpu::route_token_begin(st, d_gate, d_hidden,
                                                   kHidden, kNumRouted,
                                                   d_logits_scratch,
                                                   h_logits_scratch,
@@ -733,7 +727,6 @@ TEST_CASE("route_token split begin/finish matches fused route_token exactly",
     cudaFree(d_hidden);
     cudaFree(d_logits_scratch);
     cudaFreeHost(h_logits_scratch);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
 
@@ -743,8 +736,6 @@ TEST_CASE("run_shared_experts_ffn computes the F8 SwiGLU FFN correctly",
           "[deepseek][moe][shared-ffn]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -802,7 +793,7 @@ TEST_CASE("run_shared_experts_ffn computes the F8 SwiGLU FFN correctly",
     REQUIRE(cudaMemcpy(d_s3, s3.data(), s3.size(), cudaMemcpyHostToDevice) == cudaSuccess);
 
     lsxcommon::gpu::run_shared_experts_ffn(
-        ch, st, d_hidden,
+        st, d_hidden,
         d_w1, d_w2, d_w3,
         d_s1, d_s2, d_s3,
         1.0f, 1.0f, 1.0f,
@@ -824,7 +815,6 @@ TEST_CASE("run_shared_experts_ffn computes the F8 SwiGLU FFN correctly",
     cudaFree(d_inter);
     cudaFree(d_gate);
     cudaFree(d_dequant);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
 
@@ -834,8 +824,6 @@ TEST_CASE("run_routed_experts accumulates weighted NVFP4 expert FFNs",
           "[deepseek][moe][routed-experts]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
     // Production always runs under the resolved perf policy (TC + seq1
@@ -958,7 +946,6 @@ TEST_CASE("run_routed_experts accumulates weighted NVFP4 expert FFNs",
     cudaFree(d_act_scales);
     cudaFree(d_pack);
     cudaFree(d_scale);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
 
@@ -968,8 +955,6 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
           "[deepseek][moe][layer-mix]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
     // Production always runs under the resolved perf policy (TC + seq1
@@ -1094,7 +1079,7 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
     float *h_logits_scratch = nullptr;
     REQUIRE(cudaMalloc(&d_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(__half)) == cudaSuccess);
     REQUIRE(cudaMallocHost(&h_logits_scratch, static_cast<size_t>(kNumRouted) * sizeof(float)) == cudaSuccess);
-    lsxcommon::gpu::route_token(ch, st, d_gate_in, d_hidden_in, kHidden, kNumRouted,
+    lsxcommon::gpu::route_token(st, d_gate_in, d_hidden_in, kHidden, kNumRouted,
                                 nullptr, 0, 0, nullptr, kTopk,
                                 d_logits_scratch, h_logits_scratch,
                                 topk, weights);
@@ -1120,7 +1105,7 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
 
     // 2. Shared experts FFN -> d_ffn_out (FP16), then half->float accumulator.
     lsxcommon::gpu::run_shared_experts_ffn(
-        ch, st, d_hidden_in,
+        st, d_hidden_in,
         d_sw1, d_sw2, d_sw3,
         d_ss1, d_ss2, d_ss3,
         1.0f, 1.0f, 1.0f,
@@ -1181,7 +1166,6 @@ TEST_CASE("MoE layer mix preserves the shared-expert accumulation (beta=1)",
     cudaFree(d_scale);
     cudaFree(d_logits_scratch);
     cudaFreeHost(h_logits_scratch);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }
 // ── shared-expert dequant caching: bit-exact vs per-call dequant ────────────
@@ -1189,8 +1173,6 @@ TEST_CASE("run_shared_experts_ffn dequant cache is bit-exact",
           "[deepseek][moe][shared-cache]")
 {
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -1252,7 +1234,7 @@ TEST_CASE("run_shared_experts_ffn dequant cache is bit-exact",
 
     // Legacy (per-call dequant).
     REQUIRE(lsxcommon::gpu::run_shared_experts_ffn(
-                ch, st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
+                st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
                 1.0f, 1.0f, 1.0f,
                 static_cast<int64_t>(w1.size()), static_cast<int64_t>(w2.size()),
                 static_cast<int64_t>(w3.size()),
@@ -1270,7 +1252,7 @@ TEST_CASE("run_shared_experts_ffn dequant cache is bit-exact",
                 st, d_w2, static_cast<int64_t>(w2.size()), d_s2,
                 static_cast<int64_t>(s2.size()), d_c2, w2el, kInter) == cudaSuccess);
     REQUIRE(lsxcommon::gpu::run_shared_experts_ffn(
-                ch, st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
+                st, d_hidden, d_w1, d_w2, d_w3, d_s1, d_s2, d_s3,
                 1.0f, 1.0f, 1.0f,
                 static_cast<int64_t>(w1.size()), static_cast<int64_t>(w2.size()), static_cast<int64_t>(w3.size()),
                 d_inter, d_gate, d_dequant, d_out_b,
@@ -1287,6 +1269,5 @@ TEST_CASE("run_shared_experts_ffn dequant cache is bit-exact",
     cudaFree(d_s1); cudaFree(d_s2); cudaFree(d_s3);
     cudaFree(d_inter); cudaFree(d_gate); cudaFree(d_dequant);
     cudaFree(d_c1); cudaFree(d_c3); cudaFree(d_c2);
-    cublasDestroy(ch);
     cudaStreamDestroy(st);
 }

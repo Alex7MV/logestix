@@ -1,18 +1,6 @@
 find_package(CUDAToolkit REQUIRED)
 set(CUDA_INCLUDE_DIR     "${CUDAToolkit_INCLUDE_DIRS}")
 set(CUDA_CUDART_LIBRARY  "${CUDAToolkit_CUDART_LIBRARY}")
-# cublas: prefer the imported target (defined by FindCUDAToolkit on all
-# platforms); fall back to a hardcoded search only if the toolkit's CMake
-# config does not expose it.
-if(TARGET CUDA::cublas)
-    set(CUDA_CUBLAS_LIBRARY "CUDA::cublas")
-else()
-    find_library(CUDA_CUBLAS_LIBRARY cublas
-        PATHS "/usr/local/cuda/lib64" "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.3/lib/x64"
-        REQUIRED
-    )
-endif()
-
 add_library(lsxcommon STATIC
     src/converter.cpp
     src/core.cpp
@@ -144,7 +132,6 @@ target_include_directories(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -169,7 +156,6 @@ target_include_directories(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_glm_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_glm_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -195,7 +181,6 @@ target_include_directories(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_qwen_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -217,7 +202,6 @@ target_include_directories(lsxcommon_qwen_moe_cu PRIVATE ${LSXCOMMON_CU_INCLUDES
 target_compile_definitions(lsxcommon_qwen_moe_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_qwen_moe_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -268,7 +252,6 @@ target_include_directories(lsxcommon_kimi_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_kimi_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_kimi_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -290,7 +273,6 @@ target_include_directories(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_gemma_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_gemma_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     arrow_cuda_shared
     absl::strings
@@ -349,7 +331,6 @@ target_include_directories(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_INCL
 target_compile_definitions(lsxcommon_deepseek_v41_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_deepseek_v41_cu
     "${CUDA_CUDART_LIBRARY}"
-    "${CUDA_CUBLAS_LIBRARY}"
     arrow_shared
     absl::strings
 )

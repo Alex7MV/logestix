@@ -355,7 +355,7 @@ bool LoadQwen4ExpDenseWeights(const std::string &model_path,
             }
         }
         // LM head: BF16 bits, converted to a persistent FP16 table for the
-        // cuBLAS head GEMM (NVFP4 logit noise exceeds the top-1/top-2 margin
+        // FP16 head GEMV (NVFP4 logit noise exceeds the top-1/top-2 margin
         // of this model).
         if (auto *hd = fastload::FindTensorSuffix(*raw_res, "lm_head.weight");
             hd && hd->rank >= 2) {

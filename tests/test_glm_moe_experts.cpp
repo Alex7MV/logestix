@@ -7,7 +7,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -234,8 +233,6 @@ TEST_CASE("GLM MoE expert stack: multi-token NVFP4 decode + SwiGLU vs "
                   "Cycle 4 locks the NVFP4 block size to 16");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -354,7 +351,7 @@ TEST_CASE("GLM MoE expert stack: multi-token NVFP4 decode + SwiGLU vs "
 
     // ── Run the expert stack on one explicit async stream (no device sync) ──
     REQUIRE(lsxcommon::glm::RunGlmExpertsStack(
-                ch, st,
+                st,
                 reinterpret_cast<GlmRoutedSlot *>(d_route), kSeq,
                 d_act, experts.data(), kNRouted,
                 d_out, d_scratch) == cudaSuccess);
@@ -392,5 +389,4 @@ TEST_CASE("GLM MoE expert stack: multi-token NVFP4 decode + SwiGLU vs "
     cudaFree(d_scratch);
     cudaFree(d_route);
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

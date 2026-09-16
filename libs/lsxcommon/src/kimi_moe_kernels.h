@@ -56,7 +56,7 @@ cudaError_t KimiRouteFinish(cudaEvent_t ev);
 // GEMM and accumulates `expert_weight * y` into d_out (caller pre-zeroes or
 // seeds d_out). d_staging must hold >= RunKimiExpertFfnStagingBytes bytes.
 // Staging layout is internal; sizes are derived from kKimi* geometry.
-cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunKimiExpertFfn(cudaStream_t stream,
                              const KimiExpertEntry &expert,
                              float expert_weight, const __nv_bfloat16 *d_x,
                              __nv_bfloat16 *d_out, void *d_staging,
@@ -65,8 +65,7 @@ cudaError_t RunKimiExpertFfn(cublasHandle_t cublas_h, cudaStream_t stream,
 // Resident-cache variant: identical math, weights read from the expert's
 // device cache slot (KimiMoeSlotView) instead of per-call staging.
 // d_scratch must hold >= KimiExpertFfnStagingBytes bytes (dequant + acts).
-cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
-                                   cudaStream_t stream,
+cudaError_t RunKimiExpertFfnCached(cudaStream_t stream,
                                    const KimiExpertEntry &expert,
                                    float expert_weight,
                                    const __nv_bfloat16 *d_x,
@@ -88,7 +87,7 @@ size_t KimiExpertFfnStagingBytes();
 // ev13/ev2 (nullable): split-fence upload events — the w13 GEMM waits ev13,
 // the w2 GEMM waits ev2; null waits degenerate to no-op (uploads already
 // fenced by the caller).
-cudaError_t RunKimiRoutedTcBatch(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunKimiRoutedTcBatch(cudaStream_t stream,
                                  const uint8_t *pack_base,
                                  const uint8_t *scale_base,
                                  int64_t pack_stride, int64_t scale_stride,
@@ -127,7 +126,7 @@ KimiEosCut TruncateAtEos(const std::vector<int> &tokens, int eos_id);
 // final norm + lm_head + argmax. Prefill covers the whole prompt in one pass;
 // every decoded step runs seq=1. Entire loop async on `stream`; the only
 // synchronization happens when the caller drains results.
-cudaError_t RunKimiGeneration(cublasHandle_t cublas_h, cudaStream_t stream,
+cudaError_t RunKimiGeneration(cudaStream_t stream,
                               const KimiPinnedWeights &pw, KimiExpertDb &db,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,

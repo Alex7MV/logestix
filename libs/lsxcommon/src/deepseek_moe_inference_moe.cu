@@ -7,7 +7,6 @@
 #include "lsx_kernels_act.cuh"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <atomic>
 #include <vector>
 #include <cmath>
@@ -237,7 +236,7 @@ __global__ void scale_float_kernel(float* d_buf, float scalar, int n)
 // traffic of the old FP32 path and full 5th-gen Tensor Core utilization.
 // W1/W3 GEMM outputs stay FP32 to prevent FP16 overflow.
 cudaError_t run_shared_experts_ffn(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_hidden,
     const uint8_t *d_w1, const uint8_t *d_w2, const uint8_t *d_w3,
     const uint8_t *d_w1_scales, const uint8_t *d_w2_scales, const uint8_t *d_w3_scales,
@@ -249,7 +248,6 @@ cudaError_t run_shared_experts_ffn(
     const __half *d_w3_h_cache = nullptr,
     const float *d_w2_f32_cache = nullptr)
 {
-    cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
     int hidden_dim = kHiddenDim;
@@ -422,7 +420,7 @@ cudaError_t run_routed_expert_ffn(
 // `d_logits_scratch` / `h_logits_scratch` are caller-owned arena carves sized
 // [num_routed] — route_token performs ZERO CUDA allocations (spec item 12).
 cudaError_t route_token_begin(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
     int hidden_dim, int num_routed,
     __half *d_logits_scratch, float *h_logits_scratch,
@@ -431,7 +429,6 @@ cudaError_t route_token_begin(
     if (num_routed <= 0 || num_routed > kNumRouted)
         return cudaErrorInvalidValue;
 
-    cublasSetStream(cublas_h, stream);
     float alpha = 1.0f, beta = 0.0f;
 
     if (gemv::RunLxGemmVec(stream, d_gate, d_hidden, 1, num_routed, hidden_dim,
@@ -570,7 +567,7 @@ cudaError_t route_token_finish(
 }
 
 cudaError_t route_token(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const __half *d_gate, const __half *d_hidden,
     int hidden_dim, int num_routed,
     const int64_t *h_tid2eid, int tid2eid_stride, int token_id,
@@ -582,7 +579,7 @@ cudaError_t route_token(
     cudaEvent_t ev = nullptr;
     cudaError_t e = cudaEventCreate(&ev);
     if (e != cudaSuccess) return e;
-    e = route_token_begin(cublas_h, stream, d_gate, d_hidden, hidden_dim,
+    e = route_token_begin(stream, d_gate, d_hidden, hidden_dim,
                           num_routed, d_logits_scratch, h_logits_scratch, ev);
     if (e == cudaSuccess)
         e = route_token_finish(num_routed, token_id, h_tid2eid, tid2eid_stride,

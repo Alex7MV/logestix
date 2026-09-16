@@ -78,7 +78,7 @@ bool GemmaBaseModel::Load()
     if (!BeginLoad(cfg_.model_path)) return false;
     double pinned_ms = 0.0;
     const auto t_pinned = std::chrono::steady_clock::now();
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         lsxcommon::log::error("[gemma-model] stream create failed");
         return AbortLoad();
     }
@@ -152,7 +152,7 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
         fm == FastMathMode::kAuto ? true : fm == FastMathMode::kOn,
         /*seq1_gemv=*/true);
 
-    if (!EnsureContext(/*with_cublas=*/false)) {
+    if (!EnsureContext()) {
         r.error_msg = "cuda stream create failed";
         return r;
     }

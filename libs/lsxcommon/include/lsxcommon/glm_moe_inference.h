@@ -2,7 +2,6 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -18,10 +17,8 @@ namespace glm {
 // async stream. MoE routing, expert loading and indexer ("IndexShare")
 // attention logic are fully branched out for these layers: activations feed
 // the layer norms, then gate_proj -> up_proj -> swiglu -> down_proj via the
-// custom FP64-accumulate GlmGemmFp64Kernel (RunGemmFp64) — NOT cuBLAS;
-// `cublas_h` is threaded through for API-shape consistency with the other
-// Run*Stack entry points but is unused on this path (see the `(void)cublas_h`
-// in RunDenseMLPLayer) — residual-added per layer. hidden_size is
+// custom FP64-accumulate GlmGemmFp64Kernel (RunGemmFp64) — residual-added per
+// layer. hidden_size is
 // hard-locked to kGlmHidden (6144); intermediate is kGlmMoeIntermediate (2048).
 //
 //   d_act:    [seq, hidden] FP16 input
@@ -29,7 +26,7 @@ namespace glm {
 //   d_result: [seq, hidden] FP16 output (must be distinct from d_act/d_alt)
 //   d_scratch: >= seq*(hidden + 2*intermediate) __half scratch
 cudaError_t RunGlmDenseMLPStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, int seq,
     __half *d_act, __half *d_alt, __half *d_result, __half *d_scratch);
 
@@ -112,7 +109,7 @@ struct alignas(8) GlmRoutedSlot {
 //   d_logits:    [seq, kGlmNumRouted] FP32 scratch (gate projections)
 //   d_routing:   [seq, kGlmMoETopK] output grid (8-byte aligned)
 cudaError_t RunGlmMoERouter(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmLayerWeights &lw, int seq,
     const __half *d_hidden, const float *d_gate_bias,
     __half *d_normed, float *d_logits, GlmRoutedSlot *d_routing);
@@ -124,7 +121,7 @@ cudaError_t RunGlmMoERouter(
 // (bias never leaks into the weights), then norm_topk_prob (÷(Σ+1e-20)) and
 // routed_scaling_factor (×2.5). Grouping is a no-op (n_group = topk_group = 1).
 cudaError_t RunGlmRealRouter(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmLayerWeights &lw, int seq,
     const __half *d_hidden, const float *d_gate_bias,
     __half *d_normed, float *d_logits, GlmRoutedSlot *d_routing);
@@ -138,8 +135,7 @@ cudaError_t RunGlmRealRouter(
 // kGlmMoeIntermediate (2048). Weights are decoded inline from the packed E2M1
 // nibble / per-16 E4M3 block-scale / E8M0 global-modifier layout straight
 // into FP16 scratch and piped through the same custom FP64-accumulate
-// GlmGemmFp64Kernel (RunGemmFp64) as the dense-MLP stack — NOT cuBLAS;
-// `cublas_h` is accepted for API-shape consistency but unused here. Every
+// GlmGemmFp64Kernel (RunGemmFp64) as the dense-MLP stack. Every
 // kernel/enqueue runs on the caller's explicit async stream; the ONLY
 // synchronization is a single localized cudaStreamSynchronize used to stage
 // the tiny routing grid back to a pinned host buffer so per-slot expert
@@ -175,12 +171,12 @@ cudaError_t RunGlmRealRouter(
 // on <stream> with no synchronization. d_scratch follows the RunGlmExpertsStack
 // layout: kGlmExpertMatEl + kGlmHidden + 2*kGlmMoeIntermediate halves.
 cudaError_t RunGlmExpertSlot(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmExpertDeviceBlock &eb,
     const __half *x_t, __half *out_t, __half *d_scratch, float coeff);
 
 cudaError_t RunGlmExpertsStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
@@ -216,7 +212,7 @@ cudaError_t RunGlmExpertsStack(
 //                  the copy stream waits it before overwriting an evicted
 //                  victim slot that a prior GEMM may still be reading.
 cudaError_t RunGlmExpertsStackOnDemand(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     cudaStream_t stream_copy,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
@@ -322,7 +318,7 @@ struct GlmMoEArena {
 //                nullptr to have it allocated internally, but the arena owns
 //                one that a caller reuses to avoid per-call MallocHost pairs).
 cudaError_t RunGlmMoESlices(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmRoutedSlot *d_routing, int seq,
     const __half *d_act,
     const GlmExpertDeviceBlock *h_experts, int n_experts,
@@ -348,7 +344,7 @@ cudaError_t RunGlmMoESlices(
 //   arena:    must be Allocate()'d with n_experts >= kGlmNumRouted, hidden
 //             == kGlmHidden, seq == the block length.
 cudaError_t RunGlmMoEStack(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     int first_layer, int last_layer, int seq,
     __half *d_act, __half *d_alt, __half *d_result,
@@ -406,7 +402,7 @@ struct GlmGenerationResult {
 };
 
 // Full greedy multi-token generation over the frozen 79-layer GLM-5.2 loop on
-// ONE explicit async stream (a caller-owned cublasHandle + cudaStream_t):
+// ONE explicit async stream (a caller-owned cudaStream_t):
 //
 //   layers 0-2   Dense MLP (post-attn RMSNorm -> gate/up -> swiglu -> down)
 //   layers 3-77  IndexShare attention + MoE router + NVFP4 expert stack
@@ -442,7 +438,7 @@ struct GlmGenerationResult {
 // forward with per-layer stream barriers; throughput is launch-latency-bound,
 // not device-bound. Correctness is the goal; see RunGlmExpertsStack.
 cudaError_t RunGlmGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
@@ -458,7 +454,7 @@ cudaError_t RunGlmGeneration(
 // ~2 × one-expert staging. Semantics, capacity validation and the
 // GlmGenerationResult contract are identical to the device-table overload.
 cudaError_t RunGlmGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
@@ -487,7 +483,7 @@ cudaError_t RunGlmGeneration(
 // routed experts are mmap'd on demand; the shared experts + pinned weights
 // are resident.
 cudaError_t RunGlmRealGeneration(
-    cublasHandle_t cublas_h, cudaStream_t stream,
+    cudaStream_t stream,
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,

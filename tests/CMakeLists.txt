@@ -2425,7 +2425,7 @@ target_link_libraries(test_kimi_moe_attention_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_attention)
 set_target_properties(test_kimi_moe_attention PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_attention PRIVATE
-    test_kimi_moe_attention_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+    test_kimi_moe_attention_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_kimi_moe_attention POST_BUILD
@@ -2467,7 +2467,7 @@ target_link_libraries(test_kimi_moe_experts_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_experts)
 set_target_properties(test_kimi_moe_experts PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_experts PRIVATE
-    test_kimi_moe_experts_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+    test_kimi_moe_experts_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_kimi_moe_experts POST_BUILD
@@ -2509,7 +2509,7 @@ target_link_libraries(test_kimi_moe_tc_batch_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_tc_batch)
 set_target_properties(test_kimi_moe_tc_batch PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_tc_batch PRIVATE
-    test_kimi_moe_tc_batch_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+    test_kimi_moe_tc_batch_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_kimi_moe_tc_batch POST_BUILD
@@ -2550,7 +2550,7 @@ target_link_libraries(test_kimi_moe_tc_diag_cu PRIVATE lsxcommon_kimi_cu)
 add_executable(test_kimi_moe_tc_diag)
 set_target_properties(test_kimi_moe_tc_diag PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_kimi_moe_tc_diag PRIVATE
-    test_kimi_moe_tc_diag_cu lsxcommon Catch2::Catch2WithMain CUDA::cublas)
+    test_kimi_moe_tc_diag_cu lsxcommon Catch2::Catch2WithMain)
 
 if(WIN32)
     add_custom_command(TARGET test_kimi_moe_tc_diag POST_BUILD

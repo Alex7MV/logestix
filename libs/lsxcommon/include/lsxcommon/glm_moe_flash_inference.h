@@ -62,7 +62,7 @@ void FlashKdaStateFree(FlashKdaState &st);
 // Single-token KDA decode for one layer (seq == 1):
 //   d_x: [H] current token hidden (post hc mixing, FP16).
 //   d_out: [H] FP16 layer attention output (pre o_norm? no: post o_proj).
-// Pipeline: q/k/v GEMM (FP16 cuBLAS via RunExpHeadGemm) -> depthwise causal
+// Pipeline: q/k/v GEMM (own FP16 GEMV path) -> depthwise causal
 // conv1d (window = history + current) -> l2norm q/k per head -> gating prep
 // (beta = sigmoid(b_proj@x), decay = exp(-exp(A_log)*softplus(dt+dt_bias))
 // per (h,l), dt = f_b(f_a(x))) -> per-channel-decay delta step (state seed

@@ -15,7 +15,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -503,8 +502,6 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -607,7 +604,7 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
 
     // ── Device run #1 ─────────────────────────────────────────────────────
     GlmGenerationResult r1;
-    REQUIRE(lsxcommon::glm::RunGlmGeneration(ch, st, pw, experts, kPrompt,
+    REQUIRE(lsxcommon::glm::RunGlmGeneration(st, pw, experts, kPrompt,
                                              kMaxNew, r1) == cudaSuccess);
     REQUIRE(r1.ok);
     REQUIRE(r1.error_msg.empty());
@@ -670,7 +667,7 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
         for (int rep = 0; rep < 2; ++rep) {
             GlmGenerationResult rr;
             REQUIRE(lsxcommon::glm::RunGlmGeneration(
-                        ch, st, pw, experts, p, kMaxNew, rr) == cudaSuccess);
+                        st, pw, experts, p, kMaxNew, rr) == cudaSuccess);
             REQUIRE(rr.ok);
             for (int32_t id : rr.tokens) { CHECK(id >= 0); CHECK(id < kVocab); }
             const bool e = !rr.tokens.empty() &&
@@ -690,5 +687,4 @@ TEST_CASE("GLM-5.2 full 79-layer SKWOS regression: multi-turn decode, no leak, "
     experts.Free();
     pw.Free();
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

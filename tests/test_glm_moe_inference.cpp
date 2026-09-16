@@ -10,7 +10,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include <cublas_v2.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -572,8 +571,6 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
         SKIP("GLM real model directory not present");
 
     cudaFree(0);
-    cublasHandle_t ch;
-    REQUIRE(cublasCreate(&ch) == CUBLAS_STATUS_SUCCESS);
     cudaStream_t st;
     REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
 
@@ -701,7 +698,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     // ── Device generation (first run = the model under test) ────────────────
     GlmGenerationResult r1;
     REQUIRE(lsxcommon::glm::RunGlmGeneration(
-                ch, st, pw, experts, kPrompt, kMaxNew, r1) == cudaSuccess);
+                st, pw, experts, kPrompt, kMaxNew, r1) == cudaSuccess);
     REQUIRE(r1.ok);
     REQUIRE(r1.error_msg.empty());
     REQUIRE(r1.tokens.size() == static_cast<size_t>(kMaxNew));
@@ -743,7 +740,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
     // (b) Full determinism: a second fresh run must be byte-identical.
     GlmGenerationResult r2;
     REQUIRE(lsxcommon::glm::RunGlmGeneration(
-                ch, st, pw, experts, kPrompt, kMaxNew, r2) == cudaSuccess);
+                st, pw, experts, kPrompt, kMaxNew, r2) == cudaSuccess);
     REQUIRE(r2.ok);
     REQUIRE(r2.tokens.size() == r1.tokens.size());
     CHECK(std::memcmp(r2.tokens.data(), r1.tokens.data(),
@@ -756,7 +753,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
         const std::vector<int32_t> one = {5};
         GlmGenerationResult rs;
         REQUIRE(lsxcommon::glm::RunGlmGeneration(
-                    ch, st, pw, experts, one, 1, rs) == cudaSuccess);
+                    st, pw, experts, one, 1, rs) == cudaSuccess);
         REQUIRE(rs.ok);
         REQUIRE(rs.tokens.size() == 1);
         const bool eos_one = rs.tokens[0] == kEosIds[0] ||
@@ -772,7 +769,7 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
         const std::vector<int32_t> big(static_cast<size_t>(kMaxSlots - 1), 0);
         GlmGenerationResult rb;
         CHECK(lsxcommon::glm::RunGlmGeneration(
-                  ch, st, pw, experts, big, 2, rb) == cudaErrorInvalidValue);
+                  st, pw, experts, big, 2, rb) == cudaErrorInvalidValue);
         CHECK(!rb.ok);
     }
 
@@ -782,17 +779,16 @@ TEST_CASE("GLM-5.2 79-layer loop + MTP epilogue: real-weight generation "
         const std::vector<int32_t> bad0 = {0, 200000};
         GlmGenerationResult rb0;
         CHECK(lsxcommon::glm::RunGlmGeneration(
-                  ch, st, pw, experts, bad0, 1, rb0) == cudaErrorInvalidValue);
+                  st, pw, experts, bad0, 1, rb0) == cudaErrorInvalidValue);
         CHECK(!rb0.ok);
         const std::vector<int32_t> bad1 = {0, -3};
         GlmGenerationResult rb1;
         CHECK(lsxcommon::glm::RunGlmGeneration(
-                  ch, st, pw, experts, bad1, 1, rb1) == cudaErrorInvalidValue);
+                  st, pw, experts, bad1, 1, rb1) == cudaErrorInvalidValue);
         CHECK(!rb1.ok);
     }
 
     experts.Free();
     pw.Free();
     cudaStreamDestroy(st);
-    cublasDestroy(ch);
 }

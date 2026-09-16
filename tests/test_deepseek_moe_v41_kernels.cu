@@ -11,7 +11,6 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#include <cublas_v2.h>
 
 #include <cmath>
 #include <cstdint>
@@ -489,8 +488,6 @@ TEST_CASE("deepseek-v41 expert swiglu clamps match the host reference",
 TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
           "[deepseek-v41][kernels]")
 {
-    cublasHandle_t h = nullptr;
-    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
 
     // C[2,3] = A[2,4] * B[4,3].
     const int M = 2, N = 3, K = 4;
@@ -509,7 +506,7 @@ TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
     REQUIRE(cudaMalloc(&dC, M * N * 2) == cudaSuccess);
     REQUIRE(cudaMemcpy(dA, Ah.data(), Ah.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dB, Bh.data(), Bh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(h, nullptr, dA, dB, dC, M,
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(nullptr, dA, dB, dC, M,
                                                     N, K) == cudaSuccess);
     std::vector<uint16_t> Ch(M * N);
     REQUIRE(cudaMemcpy(Ch.data(), dC, M * N * 2, cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -539,7 +536,7 @@ TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
     REQUIRE(cudaMalloc(&dlog, V * 4) == cudaSuccess);
     REQUIRE(cudaMemcpy(dW, Wh.data(), Wh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dx, xh.data(), xh.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
-    REQUIRE(lsxcommon::deepseek_v41::LaunchHeadLogits(h, nullptr, dW, dx, dlog,
+    REQUIRE(lsxcommon::deepseek_v41::LaunchHeadLogits(nullptr, dW, dx, dlog,
                                                       V, Hd) == cudaSuccess);
     std::vector<float> logits(V);
     REQUIRE(cudaMemcpy(logits.data(), dlog, V * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -552,7 +549,6 @@ TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
 
     cudaFree(dA); cudaFree(dB); cudaFree(dC);
     cudaFree(dW); cudaFree(dx); cudaFree(dlog);
-    cublasDestroy(h);
 }
 
 TEST_CASE("deepseek-v41 embed lookup and hc expand",
@@ -655,12 +651,10 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     REQUIRE(cudaMemcpy(sin_t, sin_h.data(), half_rope * 4,
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
-    cublasHandle_t h = nullptr;
-    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
 
     for (int pos = 1; pos <= 2; ++pos) {
         REQUIRE(lsxcommon::deepseek_v41::AttentionForwardDecode(
-                    h, nullptr, x, hidden, wq_a, q_lora, q_norm, wq_b, heads,
+                    nullptr, x, hidden, wq_a, q_lora, q_norm, wq_b, heads,
                     head_dim, rope_dim, wkv, kv_norm, sink, wo_a, o_groups,
                     o_lora, wo_b, cos_t, sin_t, kv_cache, window, pos,
                     out) == cudaSuccess);
@@ -676,7 +670,6 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     cudaFree(kv_norm); cudaFree(wo_a); cudaFree(wo_b); cudaFree(x);
     cudaFree(out);     cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
     cudaFree(sin_t);
-    cublasDestroy(h);
 }
 
 TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
@@ -709,10 +702,8 @@ TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
     uint16_t *dout = nullptr;
     REQUIRE(cudaMalloc(&dout, hidden * 2) == cudaSuccess);
 
-    cublasHandle_t h = nullptr;
-    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
     REQUIRE(lsxcommon::deepseek_v41::SharedExpertForward(
-                h, nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout) ==
+                nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout) ==
             cudaSuccess);
     std::vector<uint16_t> got(hidden);
     REQUIRE(cudaMemcpy(got.data(), dout, hidden * 2,
@@ -746,7 +737,6 @@ TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
     }
 
     cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2); cudaFree(dout);
-    cublasDestroy(h);
 }
 
 namespace {
@@ -821,12 +811,10 @@ TEST_CASE("deepseek-v41 router top-k matches the gate reference",
     REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
             cudaSuccess);
 
-    cublasHandle_t h = nullptr;
-    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
     int32_t got_idx[32];
     float got_w[32];
     REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
-                h, nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f,
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f,
                 true, got_idx, got_w) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
 
@@ -849,7 +837,6 @@ TEST_CASE("deepseek-v41 router top-k matches the gate reference",
     }
 
     cudaFree(dw); cudaFree(dx);
-    cublasDestroy(h);
 }
 
 TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
@@ -882,12 +869,10 @@ TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
     REQUIRE(cudaMalloc(&dacc, hidden * 4) == cudaSuccess);
     REQUIRE(cudaMemset(dacc, 0, hidden * 4) == cudaSuccess);
 
-    cublasHandle_t h = nullptr;
-    REQUIRE(cublasCreate(&h) == CUBLAS_STATUS_SUCCESS);
     lsxcommon::deepseek_v41::DeviceExpertWeight e1{d1p, d1s, 1.0f};
     lsxcommon::deepseek_v41::DeviceExpertWeight e3{d3p, d3s, 1.0f};
     lsxcommon::deepseek_v41::DeviceExpertWeight e2{d2p, d2s, 1.0f};
-    REQUIRE(lsxcommon::deepseek_v41::LaunchExpertFfn(h, nullptr, dx, hidden,
+    REQUIRE(lsxcommon::deepseek_v41::LaunchExpertFfn(nullptr, dx, hidden,
                                                      e1, e3, e2, inter, 10.0f,
                                                      2.0f, dacc) == cudaSuccess);
     std::vector<float> got(hidden);
@@ -919,7 +904,6 @@ TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
 
     cudaFree(d1p); cudaFree(d1s); cudaFree(d3p); cudaFree(d3s);
     cudaFree(d2p); cudaFree(d2s); cudaFree(dx); cudaFree(dacc);
-    cublasDestroy(h);
 }
 
 TEST_CASE("deepseek-v41 indexer top-k matches the host reference",
