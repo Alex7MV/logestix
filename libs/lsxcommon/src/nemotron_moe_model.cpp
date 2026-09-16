@@ -99,6 +99,12 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         nemotron_moe::ResetNemotronSession(session_, stream());
         std::vector<float> logits(static_cast<size_t>(idx_.vocab_size));
 
+        cudaEvent_t ev0 = nullptr, ev_first = nullptr, ev1 = nullptr;
+        cudaEventCreate(&ev0);
+        cudaEventCreate(&ev_first);
+        cudaEventCreate(&ev1);
+        cudaEventRecord(ev0, stream());
+
         int pos = 0;
         for (int32_t id : req.input_ids) {
             cudaError_t e = nemotron_moe::NemotronForwardToken(
@@ -110,6 +116,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
             }
             ++pos;
         }
+        cudaEventRecord(ev_first, stream());
 
         const int eos = idx_.eos_token_id;
         int generated = 0;
@@ -157,6 +164,20 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         r.num_tokens = generated;
         r.num_layers = idx_.num_layers;
         r.weight_resident_bytes = resident_bytes_;
+        cudaEventRecord(ev1, stream());
+        cudaEventSynchronize(ev1);
+        float ttft = 0.0f, total = 0.0f;
+        cudaEventElapsedTime(&ttft, ev0, ev_first);
+        cudaEventElapsedTime(&total, ev0, ev1);
+        r.ttft_ms = static_cast<double>(ttft);
+        r.total_time_ms = static_cast<double>(total);
+        r.tokens_per_sec =
+            total > 0.0f ? static_cast<double>(generated) * 1000.0 /
+                               static_cast<double>(total)
+                         : 0.0;
+        cudaEventDestroy(ev0);
+        cudaEventDestroy(ev_first);
+        cudaEventDestroy(ev1);
         r.ok = true;
         return r;
     });
@@ -168,14 +189,28 @@ gpu::InferenceResult NemotronHModel::SelfCheck(const ModelRequest &req)
     r.selfcheck_passed = false;
     if (!r.ok || r.gen_tokens.empty() || !tok_db_ || !tok_db_->valid())
         return r;
+    // Decode the first generated token (the top-1 control token) and trim the
+    // BPE leading space; the control prompt must answer "Paris".
     char buf[512];
     size_t cap = sizeof(buf);
-    const size_t n = r.gen_tokens.size() < 8 ? r.gen_tokens.size() : 8;
-    if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(), n, buf, &cap) == 0) {
-        const std::string text(buf, cap);
+    if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(), 1, buf, &cap) == 0) {
+        std::string text(buf, cap);
+        const auto first = text.find_first_not_of(" \t\n");
+        const auto last = text.find_last_not_of(" \t\n");
+        if (first != std::string::npos)
+            text = text.substr(first, last - first + 1);
+        else
+            text.clear();
         r.first_gen_text = text;
-        r.output_text = text;
-        r.selfcheck_passed = text.find("Paris") != std::string::npos;
+        r.selfcheck_passed = text == "Paris";
+    }
+    // Full output text (all generated tokens) for callers that want it.
+    if (!r.gen_tokens.empty()) {
+        char obuf[1024];
+        size_t ocap = sizeof(obuf);
+        if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(),
+                                   r.gen_tokens.size(), obuf, &ocap) == 0)
+            r.output_text.assign(obuf, ocap);
     }
     return r;
 }

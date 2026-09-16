@@ -379,6 +379,10 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
         for (auto &t : shard.tensors) {
             auto p = classify_nemotron_tensor(t.name);
             if (p.kind == NemotronTensorKind::Mtp) continue;  // counted cut
+            // Routed experts are converted by the dedicated per-expert pass.
+            if (p.kind == NemotronTensorKind::ExpertUpProj ||
+                p.kind == NemotronTensorKind::ExpertDownProj)
+                continue;
 
             auto data = read_tensor_data(input_dir, shard, t);
             if (data.empty() ||
@@ -475,9 +479,11 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             pe.w2_global_scale = dn->second.global_scale;
             pe.w1_shape = {0, 0};
             ARROW_RETURN_NOT_OK(write_expert_file(base, l, e, std::move(pe)));
-            total_pinned += 2;
         }
     }
+    int total_experts = 0;
+    for (int l = 0; l < top.num_layers; ++l)
+        if (top.layer_types[l] == "moe") total_experts += E;
 
     if (!global_raw.empty()) {
         ARROW_RETURN_NOT_OK(write_batch(PinnedSchema::MakeBatch(global_raw),
@@ -544,7 +550,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
         std::ostringstream j;
         j << "{\n"
           << "  \"format\": \"logestix-nemotron-nvfp4\",\n"
-          << "  \"model\": \"NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\",\n"
+          << "  \"model\": \"Nemotron-3.5-Lightning-30B-A3B\",\n"
           << "  \"num_layers\": " << top.num_layers << ",\n"
           << "  \"layer_types\": [";
         for (size_t i = 0; i < top.layer_types.size(); ++i) {
@@ -591,6 +597,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
           << ",\n  \"deferred\": {\"mtp\": \"cut\", \"mtp_tensors\": " << mtp_cut
           << "}"
           << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
+          << ",\n  \"total_experts\": " << total_experts
           << "\n}";
         std::ofstream out(base / "model.index.json");
         out << j.str();
