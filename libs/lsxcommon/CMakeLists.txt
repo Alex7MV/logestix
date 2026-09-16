@@ -26,6 +26,7 @@ add_library(lsxcommon STATIC
     src/gemma_moe_model.cpp
     src/nemotron_moe_convert.cpp
     src/nemotron_moe_load.cpp
+    src/nemotron_moe_model.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp

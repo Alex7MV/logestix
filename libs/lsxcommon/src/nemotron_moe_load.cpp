@@ -130,6 +130,19 @@ bool LoadNemotronIndex(const std::string &model_path, NemotronIndex &out,
         def.error() == simdjson::SUCCESS) {
         get_i(def.value(), "mtp_tensors", out.mtp_tensors);
     }
+    if (auto vr = root["vram"].get_object(); vr.error() == simdjson::SUCCESS) {
+        uint64_t u;
+        auto vo = vr.value();
+        if (vo["min_bytes"].get_uint64().get(u) == simdjson::SUCCESS)
+            out.vram.min_bytes = u;
+        if (vo["optimal_bytes"].get_uint64().get(u) == simdjson::SUCCESS)
+            out.vram.optimal_bytes = u;
+        if (vo["max_bytes"].get_uint64().get(u) == simdjson::SUCCESS)
+            out.vram.max_bytes = u;
+        int64_t c;
+        if (vo["context_tokens"].get_int64().get(c) == simdjson::SUCCESS)
+            out.vram.context_tokens = c;
+    }
 
     if (out.num_layers <= 0 || out.hidden_size <= 0 || out.vocab_size <= 0 ||
         static_cast<int>(out.layer_types.size()) != out.num_layers) {
