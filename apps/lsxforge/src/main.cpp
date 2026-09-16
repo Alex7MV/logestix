@@ -11,6 +11,7 @@
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/gemma_moe_convert.h"
+#include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "lsxcommon/qwen_moe_36_convert.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
@@ -48,6 +49,8 @@ ABSL_FLAG(bool, qwen36moe, false, "Qwen3.6-35B-A3B MoE conversion pipeline");
 ABSL_FLAG(bool, qwen38flashnext, false,
           "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
+ABSL_FLAG(bool, nemotron, false,
+          "Nemotron-3.5-Lightning-30B-A3B (NemotronH hybrid) conversion pipeline");
 ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
@@ -99,6 +102,7 @@ int main(int argc, char* argv[]) {
     bool qwen36moe = absl::GetFlag(FLAGS_qwen36moe);
     bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
+    bool nemotron = absl::GetFlag(FLAGS_nemotron);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
@@ -275,6 +279,22 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Gemma conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (nemotron) {
+        lsxcommon::log::info(
+            "Nemotron-3.5-Lightning pipeline (unified logestix layout)");
+        auto st = lsxcommon::nemotron_moe::ConvertNemotronModel(input_path,
+                                                                output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Nemotron conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Nemotron conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

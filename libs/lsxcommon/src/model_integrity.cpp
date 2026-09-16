@@ -261,7 +261,7 @@ arrow::Result<VerificationReport> VerifyConvertedModel(
     static const std::string_view kKnownFmts[] = {
         "logestix-qwen", "logestix-glm", "logestix-kimi",
         "logestix-kimi-r2", "logestix-v1", "logestix-v1-nvfp4",
-        "logestix-gemma"};
+        "logestix-gemma", "logestix-nemotron-nvfp4"};
     bool known = false;
     for (auto kf : kKnownFmts)
         if (fmt == kf) { known = true; break; }
