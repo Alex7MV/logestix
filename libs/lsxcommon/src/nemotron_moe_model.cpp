@@ -3,6 +3,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/prompt_framing.h"
 
 #include <absl/strings/str_format.h>
 
@@ -165,7 +166,25 @@ gpu::InferenceResult NemotronHModel::SelfCheck(const ModelRequest &req)
 {
     gpu::InferenceResult r = Infer(req);
     r.selfcheck_passed = false;
+    if (!r.ok || r.gen_tokens.empty() || !tok_db_ || !tok_db_->valid())
+        return r;
+    char buf[512];
+    size_t cap = sizeof(buf);
+    const size_t n = r.gen_tokens.size() < 8 ? r.gen_tokens.size() : 8;
+    if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(), n, buf, &cap) == 0) {
+        const std::string text(buf, cap);
+        r.first_gen_text = text;
+        r.output_text = text;
+        r.selfcheck_passed = text.find("Paris") != std::string::npos;
+    }
     return r;
+}
+
+bool NemotronHModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                         std::string_view raw_prompt,
+                                         std::vector<int32_t> &out_ids) const
+{
+    return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
 }
 
 } // namespace lsxcommon

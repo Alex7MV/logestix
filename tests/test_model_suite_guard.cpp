@@ -165,6 +165,12 @@ const std::vector<SuiteSpec> &Suites()
            {"test_kimi_moe_router", "test_kimi_moe_attention",
             "test_kimi_moe_experts", "test_kimi_moe_int4_dequant"}},
           {"selfcheck", {"test_kimi_moe_selfcheck"}}}},
+        {"nemotron-3.5-lightning-30b-a3b",
+         {{"convert", {"test_nemotron_moe_convert"}},
+          {"load", {"test_nemotron_moe_loader"}},
+          {"model", {"test_nemotron_moe_model"}},
+          {"kernels", {"test_nemotron_moe_kernels"}},
+          {"selfcheck", {"test_nemotron_moe_selfcheck"}}}},
     };
     return v;
 }

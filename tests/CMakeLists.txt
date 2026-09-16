@@ -3038,6 +3038,16 @@ endif()
 
 add_test(NAME test_nemotron_moe_kernels COMMAND test_nemotron_moe_kernels)
 
+add_executable(test_nemotron_moe_selfcheck test_nemotron_moe_selfcheck.cpp)
+target_link_libraries(test_nemotron_moe_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_selfcheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_selfcheck COMMAND test_nemotron_moe_selfcheck)
+set_tests_properties(test_nemotron_moe_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_TEST_NEMOTRON_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
+
 # ── Тесты Qwen3.8-Flash-Next (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
 target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
@@ -3385,6 +3395,7 @@ set_tests_properties(
     test_qwen_moe_kernels
     test_qwen_moe_exp_kernels
     test_nemotron_moe_kernels
+    test_nemotron_moe_selfcheck
     test_glm_moe_flash_kernels
     test_kimi_moe_int4_dequant
     test_kimi_moe_int4_real
