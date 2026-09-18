@@ -35,6 +35,7 @@ add_test(NAME test_geometry_guard COMMAND test_geometry_guard)
 add_executable(test_gpu_perf test_gpu_perf.cpp)
 target_link_libraries(test_gpu_perf PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_gpu_perf COMMAND test_gpu_perf)
+set_tests_properties(test_gpu_perf PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Perf baseline reference logic (host-only) ───────────────────────────
 add_executable(test_perf_baseline_logic test_perf_baseline_logic.cpp)
@@ -552,6 +553,7 @@ foreach(qt test_blackwell_tc_mma)
         )
     endif()
     add_test(NAME ${qt} COMMAND ${qt})
+    set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
 
 # Shared lsx_kernels_* equivalence harness (Phase A). Generic kernels: plain
@@ -620,6 +622,7 @@ foreach(qt test_cuda_toolkit_guard)
         )
     endif()
     add_test(NAME ${qt} COMMAND ${qt})
+    set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
 
 set_target_properties(test_qwen_cu PROPERTIES
@@ -859,6 +862,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_moe_flash_convert COMMAND test_glm_moe_flash_convert)
+set_tests_properties(test_glm_moe_flash_convert PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_glm_moe_flash_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
@@ -883,6 +887,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_convert COMMAND test_kimi_moe_convert)
+set_tests_properties(test_kimi_moe_convert PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_moe_loader test_glm_moe_loader.cpp)
@@ -1202,6 +1207,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_model_factory COMMAND test_model_factory)
+set_tests_properties(test_model_factory PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест generation-path CLI (--run / -r нормализация + default prompt) ─────
 add_executable(test_generation_cli test_generation_cli.cpp)
@@ -1611,6 +1617,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_moe_layer_compute COMMAND test_glm_moe_layer_compute)
+set_tests_properties(test_glm_moe_layer_compute PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест GLM-5.2 Dense MLP forward (слои 0-2, Phase 4.5 hash-фикстура) ───────
 # Прогоняет конкретный C++/CUDA execution loop RunGlmDenseMLPStack (SwiGLU
@@ -1653,6 +1660,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_moe_moe_router COMMAND test_glm_moe_moe_router)
+set_tests_properties(test_glm_moe_moe_router PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест GLM-5.2 эксперт-стека (NVFP4 dequant + SwiGLU, слои 3-77) ─────────
 add_executable(test_glm_moe_experts test_glm_moe_experts.cpp)
@@ -2138,6 +2146,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_glm_moe_model_lifecycle COMMAND test_glm_moe_model_lifecycle)
+set_tests_properties(test_glm_moe_model_lifecycle PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест общих fast-load примитивов (GPU BF16→FP16 + pinned ring) ───────────
 # Same OBJECT-lib pattern as test_glm_moe_load_fast_cu.
@@ -2347,6 +2356,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_tokenizer COMMAND test_kimi_moe_tokenizer)
+set_tests_properties(test_kimi_moe_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi pinned-загрузчика ───────────────────────────────────────────
 add_executable(test_kimi_moe_loader test_kimi_moe_loader.cpp)
@@ -2487,6 +2497,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_experts COMMAND test_kimi_moe_experts)
+set_tests_properties(test_kimi_moe_experts PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi batched TC routed chain (fast-math; SKIP на не-sm_12x) ──────
 add_library(test_kimi_moe_tc_batch_cu OBJECT test_kimi_moe_tc_batch.cu)
@@ -2570,6 +2581,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_tc_diag COMMAND test_kimi_moe_tc_diag)
+set_tests_properties(test_kimi_moe_tc_diag PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi модели (фабрика + lifecycle) ────────────────────────────────
 add_executable(test_kimi_moe_model test_kimi_moe_model.cpp)
@@ -2587,6 +2599,7 @@ if(WIN32)
 endif()
 
 add_test(NAME test_kimi_moe_model COMMAND test_kimi_moe_model)
+set_tests_properties(test_kimi_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Тест Kimi SelfCheck (реальные веса; SKIP без модели) ──────────────────
 add_executable(test_kimi_moe_selfcheck test_kimi_moe_selfcheck.cpp)

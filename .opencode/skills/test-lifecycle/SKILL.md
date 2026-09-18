@@ -42,7 +42,7 @@ fails the build otherwise. Classification rules for a changed path are the
 | `test_code_naming_guard.cpp` | model file-naming scheme (`SchemeRegex()` / `AllowedCommon()`) |
 | `test_model_independence_guard.cpp` | unique frozen-geometry passport per model, no cross-family borrowing, `LsxFastMathScope` in `Infer` (`kPassports`, `consumers`) |
 | `test_model_suite_guard.cpp` | per-model lifecycle stages exist as ctest targets (`Suites()`); `SKIP_RETURN_CODE 4` on selfcheck; no vault loading in loader/model stages |
-| `test_ctest_labels_guard.cpp` | every test target carries a label |
+| `test_ctest_labels_guard.cpp` | every test target carries a label; every skip-capable target (`SKIP(` in its source) has `SKIP_RETURN_CODE 4`; `test_perf_baseline.cpp` carries an NDEBUG Release guard (all in addition to the label/TIMEOUT/preset/router checks) |
 | `test_absl_format_guard.cpp` | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
 | `test_cuda_toolkit_guard.cu` | CUDA runtime ≥13.2, header/runtime match, `cuda_fp4` E2M1 semantics, Blackwell-only GPUs |
 
@@ -64,11 +64,13 @@ from the base (`linux-debug`, `linux-release`, `linux-release-znver4`,
 `windows-debug`, `windows-release`) plus a `-fast`/`-convert`/`-inference`/`-perf`
 suffix that maps to the label filter. The base test preset filters `^fast$`.
 
-- **Perf baselines require Release.** `test_perf_baseline` has no build-type
-  guard, so a Debug run measures a Debug build and reports `DEGRADED`. There is
-  no useful Debug perf run.
+- **Perf baselines require Release.** `test_perf_baseline` is NDEBUG-gated: a
+  Debug run `SKIP`s (exit 4) before loading, because an unoptimized binary would
+  be judged `DEGRADED` against the Release reference. There is no useful Debug
+  perf run.
 - **`SKIP_RETURN_CODE 4`** must be set on any target that can skip (real weights
-  absent); otherwise CTest reports the skip as a failure.
+  absent); otherwise CTest reports the skip as a failure. `test_ctest_labels_guard`
+  enforces this for every target whose source calls `SKIP(`.
 - **WINDOWS-ONLY RESTRICTION**: on Windows run model tests only for Qwen3.5-9B
   and gemma-4-26B-A4B-it — `ctest -R "qwen|gemma"`. Other model tests (GLM,
   DeepSeek, …) must not run on that OS.

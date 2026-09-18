@@ -131,6 +131,12 @@ struct MeasureResult {
 std::optional<MeasureResult> MeasureModel(const PerfModel &m,
                                           const std::string &mode)
 {
+#ifndef NDEBUG
+    // A Debug build measures an unoptimized binary: the t/s is far below the
+    // Release reference and would be judged DEGRADED. There is no useful Debug
+    // perf baseline, so SKIP (ctest SKIP_RETURN_CODE 4) instead of failing.
+    SKIP("perf baseline requires a Release build (NDEBUG)");
+#endif
     // The ctest entry pins the vault subdir via env (per-model process);
     // direct binary runs fall back to the struct value.
     const char *subdir_env = std::getenv("LSX_PERF_VAULT_SUBDIR");
