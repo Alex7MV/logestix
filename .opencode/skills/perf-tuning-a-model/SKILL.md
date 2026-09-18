@@ -139,9 +139,9 @@ Rules that bite:
 
 - **Baseline numbers require a Release build**:
   `ctest --preset linux-release-znver4-perf` (or the AOCC equivalent).
-  `test_perf_baseline` has **no build-type guard**, so a Debug run measures a
-  Debug build, lands far below the reference and fails with `DEGRADED` — there
-  is no useful Debug baseline run.
+  `test_perf_baseline` is NDEBUG-gated: a Debug run `SKIP`s (exit 4) before
+  loading, because an unoptimized binary would land far below the reference and
+  fail with `DEGRADED`. There is no useful Debug baseline run.
 - **The baseline test rewrites the source tree.** It writes
   `tests/perf/perf_baselines.json` (through `LSX_SOURCE_DIR`) whenever the
   measured value is *higher* (`kUpdate`), or when the generated length changes;
@@ -194,8 +194,8 @@ Then the traps:
 - **A red determinism test reverts the lever** (precedent: device-side decode
   was re-parked after the round-25b divergence).
 - **Any test that can skip needs `SKIP_RETURN_CODE 4`**, otherwise CTest
-  reports the skip as a failure (`test_kimi_moe_tc_diag` fails this way on a
-  machine without the model).
+  reports the skip as a failure. `test_ctest_labels_guard` now enforces this for
+  every target whose source calls `SKIP(` (it caught `test_kimi_moe_tc_diag`).
 
 ## GPU perf knobs (`gpu_perf`)
 

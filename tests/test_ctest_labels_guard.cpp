@@ -39,6 +39,50 @@ std::string ReadFileOrThrow(const fs::path& p)
     return ss.str();
 }
 
+// Remove // and /* */ comments so source scans do not match documented
+// mentions of a macro (e.g. this guard's own "SKIP()" prose).
+std::string StripComments(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    bool line = false, block = false;
+    for (std::size_t i = 0; i < s.size(); ++i)
+    {
+        if (line)
+        {
+            if (s[i] == '\n')
+            {
+                line = false;
+                out += '\n';
+            }
+            continue;
+        }
+        if (block)
+        {
+            if (s[i] == '*' && i + 1 < s.size() && s[i + 1] == '/')
+            {
+                block = false;
+                ++i;
+            }
+            continue;
+        }
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '/')
+        {
+            line = true;
+            ++i;
+            continue;
+        }
+        if (s[i] == '/' && i + 1 < s.size() && s[i + 1] == '*')
+        {
+            block = true;
+            ++i;
+            continue;
+        }
+        out += s[i];
+    }
+    return out;
+}
+
 std::vector<std::string> RegisteredTestNames(const std::string& text)
 {
     std::vector<std::string> names;
@@ -263,6 +307,98 @@ std::vector<std::string> CheckTestsNaming(const fs::path& tests_dir)
     return v;
 }
 
+// Any test target whose C++/CUDA source calls Catch2's SKIP() must declare
+// SKIP_RETURN_CODE 4; otherwise CTest reports the expected skip (missing real
+// weights / no GPU support) as a failure. Source is located by the convention
+// test_<name>.cpp|test_<name>.cu in tests/.
+std::vector<std::string> CheckSkipCapableHaveCode(
+    const std::vector<std::string>& tests, const std::string& cmake_text,
+    const fs::path& tests_dir)
+{
+    std::vector<std::string> v;
+    std::set<std::string> has_code;
+    // foreach(<var> <items...>): a later set_tests_properties(${var} ...) with
+    // SKIP_RETURN_CODE 4 applies to every item.
+    std::map<std::string, std::vector<std::string>> loop_items;
+    {
+        static const std::regex fe_re(
+            R"(foreach\s*\(\s*(\w+)((?:\s+(?!IN\b|LISTS\b|RANGE\b)[A-Za-z0-9_]+)+)\s*\))");
+        std::smatch fm;
+        auto b = cmake_text.cbegin();
+        while (std::regex_search(b, cmake_text.cend(), fm, fe_re))
+        {
+            std::istringstream is(fm[2].str());
+            std::string tok;
+            auto &items = loop_items[fm[1].str()];
+            while (is >> tok)
+                items.push_back(tok);
+            b = fm.suffix().first;
+        }
+    }
+    static const std::regex re(
+        R"(set_tests_properties\s*\(([^)]*?)SKIP_RETURN_CODE\s+4)");
+    std::smatch m;
+    auto begin = cmake_text.cbegin();
+    while (std::regex_search(begin, cmake_text.cend(), m, re))
+    {
+        std::istringstream is(m[1].str());
+        std::string tok;
+        while (is >> tok)
+        {
+            if (tok.size() > 3 && tok.front() == '$' && tok[1] == '{' &&
+                tok.back() == '}')
+            {
+                const auto it = loop_items.find(tok.substr(2, tok.size() - 3));
+                if (it != loop_items.end())
+                    has_code.insert(it->second.begin(), it->second.end());
+            }
+            else
+            {
+                has_code.insert(tok);
+            }
+        }
+        begin = m.suffix().first;
+    }
+    static const std::regex skip_call(R"(\bSKIP\s*\()");
+    for (const auto& t : tests)
+    {
+        if (has_code.count(t))
+            continue;
+        for (const char* ext : {".cpp", ".cu"})
+        {
+            const fs::path p = tests_dir / (t + ext);
+            std::error_code ec;
+            if (!fs::exists(p, ec))
+                continue;
+            if (std::regex_search(StripComments(ReadFileOrThrow(p)), skip_call))
+                v.push_back("skip-capable test without SKIP_RETURN_CODE 4: " +
+                            t);
+            break;
+        }
+    }
+    return v;
+}
+
+// test_perf_baseline measures a Release build against the committed reference;
+// a Debug run silently measures an unoptimized binary and reports a bogus
+// DEGRADED verdict. The harness must SKIP under a non-NDEBUG build instead.
+std::vector<std::string> CheckPerfBaselineReleaseGuard(const fs::path& tests_dir)
+{
+    std::vector<std::string> v;
+    const std::string src =
+        ReadFileOrThrow(tests_dir / "test_perf_baseline.cpp");
+    if (src.find("NDEBUG") == std::string::npos)
+    {
+        v.push_back("test_perf_baseline.cpp: no NDEBUG Release guard "
+                    "(a Debug run reports a bogus DEGRADED verdict)");
+        return v;
+    }
+    static const std::regex skip_call(R"(\bSKIP\s*\()");
+    if (!std::regex_search(src, skip_call))
+        v.push_back("test_perf_baseline.cpp: NDEBUG guard never calls SKIP");
+    return v;
+}
+
 // Converter tests are unified on synthetic fixtures and must stay fast:
 // every convert-labeled test declares a bounded ctest TIMEOUT (seconds).
 // A converter test without a TIMEOUT is exactly how a full-model
@@ -402,6 +538,33 @@ TEST_CASE("ctest labels guard: perf tests declare SKIP_RETURN_CODE 4",
     for (const auto& s : v)
         joined += s + "\n";
     INFO("perf skip violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: skip-capable tests declare SKIP_RETURN_CODE 4",
+          "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::string cmake_text =
+        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    auto tests = RegisteredTestNames(cmake_text);
+    auto v = CheckSkipCapableHaveCode(tests, cmake_text, root / "tests");
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("skip-code violations:\n" << joined);
+    REQUIRE(v.empty());
+}
+
+TEST_CASE("ctest labels guard: perf baseline is Release-gated",
+          "[labels][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    auto v = CheckPerfBaselineReleaseGuard(root / "tests");
+    std::string joined;
+    for (const auto& s : v)
+        joined += s + "\n";
+    INFO("perf release-guard violations:\n" << joined);
     REQUIRE(v.empty());
 }
 
