@@ -2943,6 +2943,16 @@ target_compile_definitions(test_absl_format_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_FMT}\"")
 add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
 
+# Guard: license compliance — no GPL/LGPL/AGPL/copyleft headers or SPDX license
+# tags in first-party source (would block the commercial Enterprise license).
+# Host-only static scan of libs/, apps/, tests/ and tools/.
+add_executable(test_license_guard test_license_guard.cpp)
+target_link_libraries(test_license_guard PRIVATE Catch2::Catch2WithMain)
+file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_LIC)
+target_compile_definitions(test_license_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LIC}\"")
+add_test(NAME test_license_guard COMMAND test_license_guard)
+
 # Kimi MoE expert cache bookkeeping (host-only, pure logic, no CUDA).
 add_executable(test_kimi_moe_expert_cache test_kimi_moe_expert_cache.cpp)
 target_link_libraries(test_kimi_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -3387,6 +3397,7 @@ set_tests_properties(
     test_kimi_moe_tokenizer
     test_code_naming_guard
     test_absl_format_guard
+    test_license_guard
     test_kimi_moe_expert_cache
     test_model_independence_guard
     test_ctest_labels_guard
