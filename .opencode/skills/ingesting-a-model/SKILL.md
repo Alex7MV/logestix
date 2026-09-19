@@ -1,6 +1,6 @@
 ---
 name: ingesting-a-model
-description: Use when adding, adapting or ingesting a new model architecture into logestix, or porting an existing family to a new variant — lsxforge converter, NVFP4 packing, IModel + LsxModelFactory registration, tokenizer arrow bridge, CUDA inference kernels, token passport, SelfCheck harness, and the ctest lifecycle stages. Triggers - новая модель, адаптация модели, Model Ingestion Protocol, MODEL INGEST INVARIANT, kType, frozen geometry, selfcheck Paris.
+description: Use when adding, adapting or ingesting a new model architecture into logestix, or porting an existing family to a new variant — lsxforge converter, NVFP4 packing, IModel + LsxModelFactory registration, tokenizer arrow bridge, CUDA inference kernels, token passport, SelfCheck harness, and the ctest lifecycle stages. Triggers - new model, model adaptation, Model Ingestion Protocol, MODEL INGEST INVARIANT, kType, frozen geometry, selfcheck Paris.
 ---
 
 # Ingesting a new model into logestix

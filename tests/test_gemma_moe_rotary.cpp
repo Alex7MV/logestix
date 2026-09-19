@@ -1,4 +1,4 @@
-// Тест Gemma-4 partial RoPE против CPU FP64-референса (HF rotate_half).
+// Gemma-4 partial RoPE test against a CPU FP64 reference (HF rotate_half).
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>

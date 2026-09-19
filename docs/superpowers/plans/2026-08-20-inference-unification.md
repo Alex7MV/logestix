@@ -595,9 +595,9 @@ Add two blocks, mirroring `test_glm_selfcheck` (lines 355-375) and `test_deepsee
 - [ ] **Step 1: Append the Qwen selfcheck block** (after line ~446, before the `test_model_factory` block):
 
 ```cmake
-# ── Тест Qwen3.5-9B SelfCheck (шаг 8 протокола): инкрементальный 1->2-токенный
-#    селфчек на реальной модели, минимум 3 цикла, детерминированный final_logits.
-#    SKIP без чекпоинта.
+# ── Qwen3.5-9B SelfCheck test (protocol step 8): incremental 1->2-token
+#    selfcheck on the real model, at least 3 cycles, deterministic final_logits.
+#    SKIP without a checkpoint.
 add_executable(test_qwen_selfcheck test_qwen_selfcheck.cpp)
 target_compile_definitions(test_qwen_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"

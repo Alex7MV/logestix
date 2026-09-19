@@ -60,7 +60,7 @@ Frontmatter (verbatim):
 ```yaml
 ---
 name: running-a-model
-description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic/lsxhome, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - запуск инференса, запустить модель, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
+description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic/lsxhome, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - run inference, launch model, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
 ---
 ```
 Body sections 1–3: `# Running a model`, `## Overview` (operational cycle + cross-refs to `ingesting-a-model`/`perf-tuning-a-model`/`logestix-repo-map`/`nvfp4-blackwell-conventions`), `## Vault and paths` (roots, `model-metadata/`, `lsx_model_metadata`, the root-not-`logestix/` gotcha), `## Applications and exact invocations` (table with one canonical command per app from the verified facts).
@@ -120,7 +120,7 @@ Change the intro claim from an implied complete inventory to either a complete o
 
 - [ ] **Step 5: Add the `AGENTS.md` anchor**
 
-In the Structure/skills area, add one line pointing to `running-a-model` for "запуск/эксплуатация инференса" (vault path, apps, env knobs).
+In the Structure/skills area, add one line pointing to `running-a-model` for "running/operating inference" (vault path, apps, env knobs).
 
 - [ ] **Step 6: Verify the map is now complete**
 

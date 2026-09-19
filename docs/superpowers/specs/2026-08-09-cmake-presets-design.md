@@ -2,32 +2,32 @@
 
 ## 1. Overview
 
-Настройки сборки по умолчанию для двух целевых ОС — Windows 11 (Visual Studio
-2026, multi-config) и Ubuntu 26.04 (Ninja + GCC) — через единый `CMakePresets.json`
-в корне репозитория. Цель: убрать ручные флаги/переменные окружения из
-ежедневного флоу разработки.
+Default build settings for the two target OSes — Windows 11 (Visual Studio
+2026, multi-config) and Ubuntu 26.04 (Ninja + GCC) — via a single `CMakePresets.json`
+at the repository root. Goal: remove manual flags/env variables from the
+daily development flow.
 
-Сейчас сборка требует вручную (README/AGENTS.md):
+Today the build requires manual steps (README/AGENTS.md):
 
-- Windows: `-G "Visual Studio 18 2026"` + `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"` (env-var теряется после configure, ставится перед каждой сборкой) + `--config Debug` + `-C Debug`.
-- Ubuntu: `-DCMAKE_BUILD_TYPE=Debug` + `-march=native` (внутренний флаг, не меняется).
+- Windows: `-G "Visual Studio 18 2026"` + `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"` (the env var is lost after configure, set before every build) + `--config Debug` + `-C Debug`.
+- Ubuntu: `-DCMAKE_BUILD_TYPE=Debug` + `-march=native` (internal flag, unchanged).
 
-Проект: два пресета (Debug/Release) на каждую ОС, команды сводятся к
+Project: two presets (Debug/Release) per OS, commands reduced to
 `cmake --preset <name>` / `cmake --build --preset <name>` / `ctest --preset <name>`.
 
 ## 2. Constraints
 
-- **Отсутствие нового кода** — только конфигурационные и документационные файлы.
-- `CMakePresets.json` едет в git; личные оверрайды — `CMakeUserPresets.json` (уже в `.gitignore`, правило сохраняется).
-- `.gitignore` покрывает `/build/` — новые каталоги `build/windows-debug` и пр. автоматически игнорируются, запасного правила не требуется.
-- Внутренние флаги сборки (`/arch:AVX512`, `-march=native`, Boost patch, CCCL-дефайны) не меняются — правки только во внешнем слое вызова.
-- `CMAKE_POLICY_VERSION_MINIMUM=3.5` решается через cache-variable в пресете, а не env-var; ручная установка env более не требуется.
+- **No new code** — configuration and documentation files only.
+- `CMakePresets.json` goes into git; personal overrides — `CMakeUserPresets.json` (already in `.gitignore`, the rule stays).
+- `.gitignore` covers `/build/` — the new `build/windows-debug` etc. directories are ignored automatically, no extra rule needed.
+- Internal build flags (`/arch:AVX512`, `-march=native`, Boost patch, CCCL defines) are unchanged — edits only in the outer invocation layer.
+- `CMAKE_POLICY_VERSION_MINIMUM=3.5` is handled via a cache variable in the preset, not an env var; setting the env manually is no longer required.
 
 ## 3. CMakePresets.json
 
-Новый файл `CMakePresets.json` в корне, `version: 6` (CMake 3.25+).
+New file `CMakePresets.json` at the root, `version: 6` (CMake 3.25+).
 
-### Configure-пресеты
+### Configure presets
 
 | name | displayName | generator | arch | binaryDir | cacheVariables |
 |---|---|---|---|---|---|
@@ -36,21 +36,21 @@
 | `linux-debug` | Ubuntu 26.04 (Ninja/GCC) - Debug | `Ninja` | — | `${sourceDir}/build/linux-debug` | `CMAKE_BUILD_TYPE=Debug`, `BUILD_TESTING=ON` |
 | `linux-release` | Ubuntu 26.04 (Ninja/GCC) - Release | `Ninja` | — | `${sourceDir}/build/linux-release` | `CMAKE_BUILD_TYPE=Release`, `BUILD_TESTING=ON` |
 
-JSON-скелет (см. секцию «Реализация» для полного файла):
+JSON skeleton (see the "Implementation" section for the full file):
 
 ```json
 {
   "version": 6,
   "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
-  "configurePresets": [ ...4 записи... ],
-  "buildPresets": [ ...4 записи... ],
-  "testPresets": [ ...4 записи... ]
+  "configurePresets": [ ...4 entries... ],
+  "buildPresets": [ ...4 entries... ],
+  "testPresets": [ ...4 entries... ]
 }
 ```
 
-## 4. Build и Test пресеты
+## 4. Build and Test presets
 
-`buildPresets` — деривативы от configure-пресетов (используют их binaryDir через `configurePreset`):
+`buildPresets` — derivatives of the configure presets (they use their binaryDir via `configurePreset`):
 
 ```json
 { "name": "windows-debug", "configurePreset": "windows-debug" },
@@ -59,57 +59,57 @@ JSON-скелет (см. секцию «Реализация» для полно
 { "name": "linux-release", "configurePreset": "linux-release" }
 ```
 
-`testPresets` — деривативы от build-пресетов (наследуют buildDir) с `output.outputOnFailure: true`:
+`testPresets` — derivatives of the build presets (inherit buildDir) with `output.outputOnFailure: true`:
 
 ```json
 { "name": "windows-debug", "configurePreset": "windows-debug",
   "output": { "outputOnFailure": true } }
-// ... и остальные 3
+// ... and the other 3
 ```
 
-`jobCount` в buildPresets не задаётся — CMake использует дефолтные потоки.
+`jobCount` is not set in buildPresets — CMake uses the default threads.
 
-## 5. Команды разработчика
+## 5. Developer commands
 
-| Действие | Windows 11 | Ubuntu 26.04 |
+| Action | Windows 11 | Ubuntu 26.04 |
 |---|---|---|
 | Configure | `cmake --preset windows-debug` | `cmake --preset linux-debug` |
 | Build | `cmake --build --preset windows-debug` | `cmake --build --preset linux-debug` |
 | Test | `ctest --preset windows-debug` | `ctest --preset linux-debug` |
 
-- `$env:CMAKE_POLICY_VERSION_MINIMUM` больше не нужен на Windows — политика задаётся cache-переменной в пресете.
-- `--config` / `-C` не нужны: multi-config generator берёт конфиг из имени buildPreset; для Release заменить `debug` → `release` в имени пресета.
-- Выполняемые файлы на Windows: `build/windows-debug/bin/<config>/`, на Linux: `build/linux-debug/bin/`.
+- `$env:CMAKE_POLICY_VERSION_MINIMUM` is no longer needed on Windows — the policy is set by a cache variable in the preset.
+- `--config` / `-C` are not needed: the multi-config generator takes the config from the buildPreset name; for Release replace `debug` → `release` in the preset name.
+- Executables on Windows: `build/windows-debug/bin/<config>/`, on Linux: `build/linux-debug/bin/`.
 
-## 6. Обновление документации
+## 6. Documentation update
 
 ### README.md
 
-Секции «Build» и «Test» заменяются на пресет-флоу:
+The "Build" and "Test" sections are replaced with the preset flow:
 
 - Windows: `cmake --preset windows-debug` + `cmake --build --preset windows-debug`.
 - Ubuntu: `cmake --preset linux-debug` + `cmake --build --preset linux-debug`.
-- Тесты: `ctest --preset windows-debug` / `ctest --preset linux-debug`.
-- Примечание: заменить `debug` → `release` для Release-сборки; `BUILD_TESTING=ON` уже в пресетах.
-- Удаляется всё упоминание `$env:CMAKE_POLICY_VERSION_MINIMUM` и `-G "Visual Studio 18 2026"` из команд.
-- Раздел «Prerequisites»: явно указать CMake ≥ 3.25 (для presets), GCC 13+ (Ubuntu 26.04) и наличие Ninja (Linux) / VS 2026 (Windows).
+- Tests: `ctest --preset windows-debug` / `ctest --preset linux-debug`.
+- Note: replace `debug` → `release` for a Release build; `BUILD_TESTING=ON` is already in the presets.
+- All mention of `$env:CMAKE_POLICY_VERSION_MINIMUM` and `-G "Visual Studio 18 2026"` is removed from the commands.
+- "Prerequisites" section: explicitly state CMake ≥ 3.25 (for presets), GCC 13+ (Ubuntu 26.04) and the presence of Ninja (Linux) / VS 2026 (Windows).
 
 ### AGENTS.md
 
-- Разделы Build/Test для Windows и Linux приводятся к пресет-командам.
-- Пункт про `CMAKE_POLICY_VERSION_MINIMUM` в «CMake Key Points» переформулировать: переменная задаётся через `CMakePresets.json` (cacheVariables), ручная установка env не требуется.
-- Прочее (флаги компилятора, Boost patch, требования CUDA) не меняется.
+- The Build/Test sections for Windows and Linux are reduced to the preset commands.
+- The `CMAKE_POLICY_VERSION_MINIMUM` bullet in "CMake Key Points" is reworded: the variable is set via `CMakePresets.json` (cacheVariables); setting the env manually is not required.
+- Everything else (compiler flags, Boost patch, CUDA requirements) is unchanged.
 
 ## 7. Non-goals
 
-- Build-скрипты (`build.ps1` / `build.sh`), CI (.github/workflows), .editorconfig / .clang-format / VS Code настройки.
-- Изменение внутренних флагов компиляции и структуры CMakeLists.
-- Поддержка macOS / ARM / не-NVIDIA GPU.
+- Build scripts (`build.ps1` / `build.sh`), CI (.github/workflows), .editorconfig / .clang-format / VS Code settings.
+- Changing the internal compilation flags and the CMakeLists structure.
+- macOS / ARM / non-NVIDIA GPU support.
 
-## 8. Реализация (ориентир для плана)
+## 8. Implementation (plan reference)
 
-`CMakePresets.json` (полный файл) — 4 configure, 4 build, 4 test пресета по скелетам выше. Правки только в `README.md` и `AGENTS.md`. Проверка:
+`CMakePresets.json` (full file) — 4 configure, 4 build, 4 test presets per the skeletons above. Edits only in `README.md` and `AGENTS.md`. Verification:
 
-- Windows: `cmake --preset windows-debug` (новый каталог `build/windows-debug`), `cmake --build --preset windows-debug`, `ctest --preset windows-debug` — все тесты проходят.
-- Ubuntu: те же команды с `linux-debug`.
-- `cmake --list-presets` показывает 12 пресетов.
+- Windows: `cmake --preset windows-debug` (new `build/windows-debug` directory), `cmake --build --preset windows-debug`, `ctest --preset windows-debug` — all tests pass.
+- Ubuntu: the same commands with `linux-debug`.
+- `cmake --list-presets` shows 12 presets.

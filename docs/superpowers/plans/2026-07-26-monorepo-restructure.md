@@ -427,12 +427,12 @@ Move `CMAKE_RUNTIME_OUTPUT_DIRECTORY` block to before `add_subdirectory` calls (
 
 Replace the subdirectory section at the bottom:
 ```cmake
-# ── Поддиректории ───────────────────────────────────────────────────────
+# ── Subdirectories ───────────────────────────────────────────────────────
 #
 add_subdirectory(libs)
 add_subdirectory(apps)
 
-# Тесты собираются только для корневого проекта
+# Tests are built only for the root project
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
@@ -507,13 +507,13 @@ Replace with:
 ## Structure
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`
-  - `libs/lsxcommon/src/core.cpp` — ядро (логирование, инициализация)
-  - `libs/lsxcommon/include/lsxcommon/core.h` — публичный заголовок
+  - `libs/lsxcommon/src/core.cpp` — core (logging, initialization)
+  - `libs/lsxcommon/include/lsxcommon/core.h` — public header
 - `apps/lsxfabric/` — B2B inference engine
 - `apps/lsxforge/` — data preprocessing utility (placeholder)
 - `apps/taskmosaic/` — task orchestrator (placeholder)
 - `apps/lsxc/` — CLI client (placeholder)
-- `tests/test_core.cpp` — тесты Catch2 v3; 10 test cases, 101 assertions
+- `tests/test_core.cpp` — Catch2 v3 tests; 10 test cases, 101 assertions
 ```
 
 - [ ] **Step 2: Commit**

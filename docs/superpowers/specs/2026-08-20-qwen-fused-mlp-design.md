@@ -84,7 +84,7 @@ Post-RMSNorm is a cheap elemental op; fusing it into the gate/up GEMM would requ
 
 ## Self-review
 
-- §1 quantifies 6 launches; §2 goal (→5, dst-add residual removed); §3.1 accumulate mode (default=false bit-identical); §3.2 composition; §3.3 post-norm defer (YAGNI); §4 tests; §5 files. Consistent with the operator's "tile-GEMM + fused-окружение" and "decoder+prefill" choices.
+- §1 quantifies 6 launches; §2 goal (→5, dst-add residual removed); §3.1 accumulate mode (default=false bit-identical); §3.2 composition; §3.3 post-norm defer (YAGNI); §4 tests; §5 files. Consistent with the operator's "tile-GEMM + fused environment" and "decoder+prefill" choices.
 - Numeric: swiglu/residual/dst-add elemental; `accumulate` preserves default behavior. §4 covers accumulate-unit + full-MLP parity (seq 1 & 2).
 - No AI-confusion: the residual-add is absorbed by dst-add; no single-launch fusion of swiglu+down is claimed.
 - Scope: one kernel-flag + MLP composition + tests — a single plan. No placeholders.

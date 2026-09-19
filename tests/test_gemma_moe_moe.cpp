@@ -1,5 +1,5 @@
-// Тесты Gemma-4 MoE: router top-k (детерминизм, tie-break, скейлы),
-// dense MLP (GELU-tanh) и NVFP4 expert FFN против CPU-референсов.
+// Gemma-4 MoE tests: router top-k (determinism, tie-break, scales),
+// dense MLP (GELU-tanh) and NVFP4 expert FFN against CPU references.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>

@@ -2,41 +2,41 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Адаптировать GLM-5.3-Flash (гибрид KDA + DSA + MoE, hyper-connections) в logestix по Model Ingestion Protocol с TDD, максимально возможной скоростью генерации на RTX 5090.
+**Goal:** Adapt GLM-5.3-Flash (a KDA + DSA + MoE hybrid with hyper-connections) into logestix per the Model Ingestion Protocol with TDD, at the highest possible generation speed on the RTX 5090.
 
-**Architecture:** Гибридный клон проверенных стеков: KDA-слои на механике qwen4_exp (GDN + новый short conv1d), DSA-слои на механике GLM-5.2 (MLA + Indexer), MoE sigmoid/noaux_tc top-8 на NVFP4 GEMM-пути, LRU expert cache. Все новые файлы `glm_moe_flash_*`; существующие примитивы используются по ссылке, не модифицируются.
+**Architecture:** A hybrid clone of proven stacks: KDA layers on the qwen4_exp mechanics (GDN + a new short conv1d), DSA layers on the GLM-5.2 mechanics (MLA + Indexer), a sigmoid/noaux_tc top-8 MoE on the NVFP4 GEMM path, an LRU expert cache. All new files are `glm_moe_flash_*`; existing primitives are used by reference, not modified.
 
 **Tech Stack:** C++20, CUDA 13.3 (Blackwell 120-real/121-real), CCCL 3.3, Arrow 25.0.0 (IPC), Catch2 v3.7.0, spdlog, abseil (host-only), simdjson.
 
 ## Global Constraints
 
-- Инвариант №1 (spec): файлы `glm_moe_*` (GLM-5.2) НЕ редактировать. Механические правки разрешены только в: `model_registry.cpp` (+1 строка Register), `test_code_naming_guard.cpp` (allowlist `flash`), CMakeLists (новые таргеты).
-- Нужен изменённый примитив — новая функция/перегрузка, не правка существующей.
-- Naming: `glm_moe_flash_<role>[.<ext>]` — variant `flash` добавляется в guard-реестр тем же коммитом, что и первые файлы.
-- NVFP4: E2M1 nibbles + E4M3 per-block scales + float global_scale (структура `qwen::QwenNvfp4Weight`). Нормы/biases/embed/lm_head/conv1d/hc/gates — BF16/FP16 без квантования.
-- Квантование конвертера: исходник FP8_E4M3 blockwise 128×128 (`weight_scale_inv` F32) → dequant FP32 → requant NVFP4.
-- Frozen-геометрия: `static_assert` + ValidateGeometry при загрузке (hidden=4096, layers=45+1 MTP, KDA 34, DSA 11, E=288, top-k=8, hc=4, vocab=154880).
-- CUDA-инварианты: один сквозной stream (без `cudaDeviceSynchronize` в цикле генерации), RMW в shared memory только thread 0 под `__syncthreads()`, stride-арифметика conv/KV-буферов, `-fmad=false` для бит-точных ядер.
-- absl: только host-only код, не достижимый из `.cu`/`.cuh` TU.
-- Комментарии: сохранять Doxygen/JSDoc. Никаких `std::cout`/`printf` — только spdlog.
-- Пути метаданных: только `lsxcommon::lsx_model_metadata(rel)`, никаких хардкодов.
-- Сборка Linux: `cmake --preset linux-debug && cmake --build --preset linux-debug` (CMake 4.x, GCC 15.2, `CMAKE_POLICY_VERSION_MINIMUM=3.5` уже в пресете).
-- Тесты реальных моделей SKIP без чекпоинта; селфчек SKIP_RETURN_CODE 4.
+- Invariant #1 (spec): do NOT edit the `glm_moe_*` files (GLM-5.2). Mechanical edits are allowed only in: `model_registry.cpp` (+1 Register line), `test_code_naming_guard.cpp` (the `flash` allowlist), CMakeLists (new targets).
+- If a modified primitive is needed — a new function/overload, not an edit of the existing one.
+- Naming: `glm_moe_flash_<role>[.<ext>]` — the `flash` variant is added to the guard registry in the same commit as the first files.
+- NVFP4: E2M1 nibbles + E4M3 per-block scales + a float global_scale (the `qwen::QwenNvfp4Weight` structure). Norms/biases/embed/lm_head/conv1d/hc/gates — BF16/FP16 without quantization.
+- Converter quantization: the source FP8_E4M3 blockwise 128×128 (`weight_scale_inv` F32) → dequant FP32 → requant NVFP4.
+- Frozen geometry: `static_assert` + ValidateGeometry on load (hidden=4096, layers=45+1 MTP, KDA 34, DSA 11, E=288, top-k=8, hc=4, vocab=154880).
+- CUDA invariants: a single end-to-end stream (no `cudaDeviceSynchronize` in the generation loop), shared-memory RMW by thread 0 only under `__syncthreads()`, stride arithmetic for the conv/KV buffers, `-fmad=false` for the bit-exact kernels.
+- absl: host-only code only, not reachable from a `.cu`/`.cuh` TU.
+- Comments: preserve Doxygen/JSDoc. No `std::cout`/`printf` — spdlog only.
+- Metadata paths: only `lsxcommon::lsx_model_metadata(rel)`, no hardcoded paths.
+- Linux build: `cmake --preset linux-debug && cmake --build --preset linux-debug` (CMake 4.x, GCC 15.2, `CMAKE_POLICY_VERSION_MINIMUM=3.5` already in the preset).
+- Real-model tests SKIP without a checkpoint; selfcheck SKIP_RETURN_CODE 4.
 
 ## Frozen Geometry Passport (constant source for all tasks)
 
 ```
 hidden=4096, vocab=154880, layers=45 (main 0..44) + MTP layer 45 (store-not-apply)
-KDA (linear_attention): 34 слоя [0,1,2,4,5,6,8,9,10,12,13,14,16,17,18,20,21,22,24,25,26,
+KDA (linear_attention): 34 layers [0,1,2,4,5,6,8,9,10,12,13,14,16,17,18,20,21,22,24,25,26,
   28,29,30,32,33,34,36,37,38,40,41,42,44]
   64 heads x head_dim=128; conv1d kernel=4 (q/k/v [8192,1,4]); A_log F32[64];
   dt_bias F32[8192]; b_proj BF16[64,4096]; f_a[128,4096] f_b[8192,128]
   g_a[128,4096] g_b[8192,128] (BF16 low-rank 128); o_norm BF16[128]
-DSA (deepseek_sparse_attention): 11 слоёв [3,7,11,15,19,23,27,31,35,39,43]
+DSA (deepseek_sparse_attention): 11 layers [3,7,11,15,19,23,27,31,35,39,43]
   MLA: q_lora=1536, kv_lora=512, qk_head_dim=256, v_head_dim=256, 64 heads
   Indexer: 32 heads HD128, topk=2048, kpool=4 compress, always_select_tail
 hc: hc_mult=4; attn_fn/ffn_fn BF16[24,16384]; base F32[24]; scale F32[3]
-MoE: dense MLP слои 0..2 (I=12288 FP8); MoE слои 3..45; 288 experts I=2048;
+MoE: dense MLP layers 0..2 (I=12288 FP8); MoE layers 3..45; 288 experts I=2048;
   shared I=2048; router sigmoid noaux_tc n_group=1 topk_group=1 top-8 renorm
   routed_scaling=2.5; gate BF16[288,4096]; bias F32[288]
 eos=[154820,154827,154829], pad=154820
@@ -49,24 +49,24 @@ eos=[154820,154827,154829], pad=154820
 **Files:**
 - Create: `libs/lsxcommon/src/glm_moe_flash_constants.h`
 - Create: `tests/test_glm_moe_flash_convert.cpp`
-- Modify: `tests/test_code_naming_guard.cpp` (variant `flash` в regex)
-- Modify: `tests/CMakeLists.txt` (новый test executable)
+- Modify: `tests/test_code_naming_guard.cpp` (the `flash` variant in the regex)
+- Modify: `tests/CMakeLists.txt` (a new test executable)
 
 **Interfaces:**
 - Produces: `namespace lsxcommon::glm_moe_flash { namespace frozen { inline constexpr int kHidden=4096; kLayers=45; kMtpLayer=45; kHeads=64; kHeadDim=128; kQkHeadDim=256; kQLora=1536; kKvLora=512; kNumExperts=288; kTopK=8; kMoeIntermediate=2048; kDenseIntermediate=12288; kHcCount=4; kConvKernel=4; kGateLowrank=128; kIndexerHeads=32; kIndexerHeadDim=128; kIndexerTopk=2048; kIndexerKpool=4; kVocab=154880; kFirstKDense=3; kRoutedScalingNum=25; kRoutedScalingDen=10; } }`; `struct FlashTopology { ... std::string error_msg; };` `FlashTopology ParseFlashConfig(const std::string &input_dir);` `enum class FlashTensorKind { ... }; struct ParsedFlashTensor { FlashTensorKind kind; int layer=-1; int expert=-1; int proj_id=0; };` `ParsedFlashTensor classify_flash_tensor(const std::string &name);` `bool flash_tensor_is_nvfp4(FlashTensorKind kind);`
 
-- [ ] **Step 1: Расширить naming guard (сначала тест — он красный без новых имён, но зелёный сам по себе; правка — механическая)**
+- [ ] **Step 1: Extend the naming guard (test first — it is red without the new names, but green by itself; the edit is mechanical)**
 
-В `tests/test_code_naming_guard.cpp` в `SchemeRegex()` заменить строку
+In `tests/test_code_naming_guard.cpp`, in `SchemeRegex()`, replace the line
 ```cpp
     const std::string var    = "(?:27b)";
 ```
-на
+with
 ```cpp
     const std::string var    = "(?:27b|flash)";
 ```
 
-- [ ] **Step 2: Добавить test executable в tests/CMakeLists.txt (рядом с test_qwen_moe_exp_convert, ~строка 459)**
+- [ ] **Step 2: Add the test executable to tests/CMakeLists.txt (next to test_qwen_moe_exp_convert, ~line 459)**
 
 ```cmake
 add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
@@ -86,7 +86,7 @@ if(WIN32)
 endif()
 ```
 
-- [ ] **Step 3: Написать failing тест `tests/test_glm_moe_flash_convert.cpp` (часть 1: классификатор + геометрия)**
+- [ ] **Step 3: Write the failing test `tests/test_glm_moe_flash_convert.cpp` (part 1: classifier + geometry)**
 
 ```cpp
 // GLM-5.3-Flash converter suite. Part 1: frozen geometry + tensor
@@ -610,7 +610,7 @@ git commit -m "feat: glm5next flash frozen constants + tensor classifier"
 
 **Interfaces:**
 - Consumes: `qwen::QwenNvfp4Weight` layout (E2M1 nibbles + E4M3 per-16-block scales + global_scale, [N,K] row-major); Arrow IPC writer machinery from `lsxcommon::converter` (`PackExpertNVFP4` in `converter.h` for GPU quantization).
-- Produces: `struct FlashTopology { int hidden, layers, vocab, heads, qk_head_dim, q_lora, kv_lora, num_experts, top_k, moe_intermediate, dense_intermediate, hc_count, gate_lowrank, conv_kernel; double routed_scaling; std::vector<int> eos_ids; int pad_id; std::string error_msg; };` `FlashTopology ParseFlashConfig(const std::string &input_dir);` — simdjson, читает text_config. Для NVFP4: `struct FlashNvfp4Blob { std::vector<uint8_t> packed, scales; float global_scale; int rows, cols; };` `FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data, const float *scale_inv, int rows, int cols);` — host-эталон (бит-точная база для GPU-пути и parity-тестов).
+- Produces: `struct FlashTopology { int hidden, layers, vocab, heads, qk_head_dim, q_lora, kv_lora, num_experts, top_k, moe_intermediate, dense_intermediate, hc_count, gate_lowrank, conv_kernel; double routed_scaling; std::vector<int> eos_ids; int pad_id; std::string error_msg; };` `FlashTopology ParseFlashConfig(const std::string &input_dir);` — simdjson, reads text_config. For NVFP4: `struct FlashNvfp4Blob { std::vector<uint8_t> packed, scales; float global_scale; int rows, cols; };` `FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data, const float *scale_inv, int rows, int cols);` — a host reference (the bit-exact base for the GPU path and parity tests).
 
 - [ ] **Step 1: Write failing tests (append to test_glm_moe_flash_convert.cpp)**
 
@@ -706,7 +706,7 @@ float Fp8E4m3Decode(uint8_t bits);
 } // namespace lsxcommon::glm_moe_flash
 ```
 
-Реализация в новом `libs/lsxcommon/src/glm_moe_flash_fp8.cpp` (host-only, добавить в `lsxcommon` STATIC sources рядом с `glm_moe_flash_convert.cpp`):
+Implementation in the new `libs/lsxcommon/src/glm_moe_flash_fp8.cpp` (host-only, add to the `lsxcommon` STATIC sources next to `glm_moe_flash_convert.cpp`):
 
 ```cpp
 #include "glm_moe_flash_fp8.h"
@@ -864,12 +864,12 @@ FlashNvfp4Blob RequantFp8ToNvfp4Host(const void *fp8_data,
 } // namespace lsxcommon::glm_moe_flash
 ```
 
-Добавить `FlashTopology` + `ParseFlashConfig` объявление в `glm_moe_flash_constants.h` (низ файла) и реализацию в `glm_moe_flash_convert.cpp` — simdjson-парсинг `text_config` по образцу `ParseQwen4ExpConfig` (`libs/lsxcommon/src/qwen_moe_exp_convert.cpp`, копировать структуру ondemand-парсера, поля: hidden_size, num_hidden_layers, vocab_size, num_attention_heads, qk_head_dim, q_lora_rank, kv_lora_rank, n_routed_experts, num_experts_per_tok, moe_intermediate_size, intermediate_size (dense), hc_mult, linear_attn_config.head_dim/num_heads/short_conv_kernel_size, routed_scaling_factor, eos_token_id (array), pad_token_id). При любом структурном сбое — `error_msg`.
+Add the `FlashTopology` + `ParseFlashConfig` declaration to `glm_moe_flash_constants.h` (bottom of the file) and the implementation to `glm_moe_flash_convert.cpp` — simdjson parsing of `text_config` modeled on `ParseQwen4ExpConfig` (`libs/lsxcommon/src/qwen_moe_exp_convert.cpp`, copy the on-demand parser structure, fields: hidden_size, num_hidden_layers, vocab_size, num_attention_heads, qk_head_dim, q_lora_rank, kv_lora_rank, n_routed_experts, num_experts_per_tok, moe_intermediate_size, intermediate_size (dense), hc_mult, linear_attn_config.head_dim/num_heads/short_conv_kernel_size, routed_scaling_factor, eos_token_id (array), pad_token_id). On any structural failure — `error_msg`.
 
 - [ ] **Step 4: Run tests to verify PASS**
 
 Run: `cmake --build --preset linux-debug --target test_glm_moe_flash_convert && ctest --preset linux-debug -R glm_moe_flash_convert --output-on-failure`
-Expected: PASS. Проверка квант-пути против реального тензора (крупный sanity в Task 3 GPU-части).
+Expected: PASS. A check of the quant path against a real tensor (a large sanity in the Task 3 GPU part).
 
 - [ ] **Step 5: Commit**
 
@@ -888,8 +888,8 @@ git commit -m "feat: glm5next flash FP8->NVFP4 host requant + config parser"
 - Test: `tests/test_glm_moe_flash_convert.cpp` (append)
 
 **Interfaces:**
-- Consumes: `ParseFlashConfig`, `classify_flash_tensor`, `flash_tensor_is_nvfp4`, `RequantFp8ToNvfp4Host`; GPU-квантизатор `lsxcommon::converter` `PackExpertNVFP4` (converter.h; GPU-only — использовать как основной путь, host-эталон для теста); safetensors reader `qwen::SafetensorsGpu` / load helpers из `qwen_dense_convert.h` (`ReadFileBytes`); vault path `lsxcommon::lsx_model_metadata`.
-- Produces: `arrow::Status ConvertGlm5NextModel(const std::string &input_dir, const std::string &output_root);` — layout `<output_root>/logestix/`: `model.index.json` (format `logestix-glm5next`, vram block, topology: kda_layers/dsa_layers/moe_layers/dense_layers списки), `pinned/global.arrow` (embed BF16 raw, lm_head BF16 raw, final_norm), `pinned/layer_NNN.arrow` (per-layer: norms BF16, KDA-веса BF16 raw, hc веса raw, router BF16, bias F32, indexer raw, DSA NVFP4-матрицы, shared experts NVFP4), `pinned/dense_mlp.arrow` (слои 0..2 NVFP4), `experts/layer_NNN/exp_EEE.arrow` (NVFP4: packed w1|w2|w3 + scales + 3 global scales, GLM-5.2 expert schema), `tokenizer/` (Task 8).
+- Consumes: `ParseFlashConfig`, `classify_flash_tensor`, `flash_tensor_is_nvfp4`, `RequantFp8ToNvfp4Host`; the GPU quantizer `lsxcommon::converter` `PackExpertNVFP4` (converter.h; GPU-only — use as the main path, host reference for the test); the safetensors reader `qwen::SafetensorsGpu` / load helpers from `qwen_dense_convert.h` (`ReadFileBytes`); the vault path `lsxcommon::lsx_model_metadata`.
+- Produces: `arrow::Status ConvertGlm5NextModel(const std::string &input_dir, const std::string &output_root);` — layout `<output_root>/logestix/`: `model.index.json` (format `logestix-glm5next`, vram block, topology: kda_layers/dsa_layers/moe_layers/dense_layers lists), `pinned/global.arrow` (embed BF16 raw, lm_head BF16 raw, final_norm), `pinned/layer_NNN.arrow` (per-layer: norms BF16, KDA weights BF16 raw, hc weights raw, router BF16, bias F32, indexer raw, DSA NVFP4 matrices, shared experts NVFP4), `pinned/dense_mlp.arrow` (layers 0..2 NVFP4), `experts/layer_NNN/exp_EEE.arrow` (NVFP4: packed w1|w2|w3 + scales + 3 global scales, GLM-5.2 expert schema), `tokenizer/` (Task 8).
 
 - [ ] **Step 1: Write failing test (append)**
 
@@ -929,7 +929,7 @@ TEST_CASE("ConvertGlm5NextModel: layout + index on real checkpoint")
 }
 ```
 
-- [ ] **Step 2: Run to verify FAIL** — сборка падает: `lsxcommon/glm_moe_flash_convert.h` not found.
+- [ ] **Step 2: Run to verify FAIL** — the build fails: `lsxcommon/glm_moe_flash_convert.h` not found.
 
 - [ ] **Step 3: Implement converter.** Create `libs/lsxcommon/include/lsxcommon/glm_moe_flash_convert.h`:
 
@@ -951,18 +951,18 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
 } // namespace lsxcommon::glm_moe_flash
 ```
 
-Реализация `ConvertGlm5NextModel` (в `glm_moe_flash_convert.cpp`), структура — по образцу `ConvertQwen38FlashNextModel`:
-1. `ParseFlashConfig(input_dir)` — fail fast на error_msg.
-2. Scan `model.safetensors.index.json` (simdjson): карта тензора → shard-файл; подсчёт vision-тензоров (лог spdlog `vision tensors skipped: N`).
-3. Dense pass: iterировать шард-файлы, содержащие НЕ-expert тензоры; для каждого — GPU-квантование NVFP4 через `PackExpertNVFP4` когда `flash_tensor_is_nvfp4`, иначе raw BF16→FP16/сохранение исходного dtype. BF16 raw пишется как `uint8` массив в Arrow (как в GLM-5.2 loader raw bits).
-4. Per-layer MoE passes (слои 3..45): для каждого слоя отдельный проход по шардам с expert-тензорами слоя; FP8 dequant → GPU NVFP4; запись `experts/layer_NNN/exp_EEE.arrow` со схемой эксперта GLM-5.2 (`schema.h` `PackedExpert`: weights E2M1 + e4m3 scales uint8[] + float32 global_scale ×3).
-5. `model.index.json`: format `logestix-glm5next`, списки `kda_layers`, `dsa_layers`, `moe_layers`, `dense_layers`, vram block через `RecomputeGlmVram`-аналог (VramProfile по инвентарю), tokenizer-пути.
-6. Проверка полноты: каждый ожидаемый тензор классифицирован и записан ровно один раз; неизвестные тензоры — жёсткая ошибка (strictness, как GLM-5.2 loader).
+Implementation of `ConvertGlm5NextModel` (in `glm_moe_flash_convert.cpp`), the structure modeled on `ConvertQwen38FlashNextModel`:
+1. `ParseFlashConfig(input_dir)` — fail fast on error_msg.
+2. Scan `model.safetensors.index.json` (simdjson): a tensor → shard-file map; count vision tensors (the spdlog log `vision tensors skipped: N`).
+3. Dense pass: iterate over the shard files containing NOT-expert tensors; for each — GPU NVFP4 quantization via `PackExpertNVFP4` when `flash_tensor_is_nvfp4`, otherwise raw BF16→FP16/preserve the source dtype. Raw BF16 is written as a `uint8` array in Arrow (as in the GLM-5.2 loader raw bits).
+4. Per-layer MoE passes (layers 3..45): for each layer a separate pass over the shards containing the layer's expert tensors; FP8 dequant → GPU NVFP4; write `experts/layer_NNN/exp_EEE.arrow` with the GLM-5.2 expert schema (`schema.h` `PackedExpert`: weights E2M1 + e4m3 scales uint8[] + float32 global_scale ×3).
+5. `model.index.json`: format `logestix-glm5next`, the lists `kda_layers`, `dsa_layers`, `moe_layers`, `dense_layers`, a vram block via a `RecomputeGlmVram` analog (a VramProfile over the inventory), tokenizer paths.
+6. Completeness check: every expected tensor is classified and written exactly once; unknown tensors — a hard error (strictness, like the GLM-5.2 loader).
 
 - [ ] **Step 4: Run test to verify PASS**
 
 Run: `cmake --build --preset linux-debug --target test_glm_moe_flash_convert && ctest --preset linux-debug -R glm_moe_flash_convert --output-on-failure`
-Expected: PASS. Конвертация реального чекпоинта (~306 GB) — длительная (1-2 ч); запускается один раз в этом шаге.
+Expected: PASS. Converting the real checkpoint (~306 GB) is lengthy (1-2 h); it is run once in this step.
 
 - [ ] **Step 5: Commit**
 
@@ -982,8 +982,8 @@ git commit -m "feat: glm5next flash converter pipeline (dense + per-layer shards
 - Modify: `tests/CMakeLists.txt`, `libs/lsxcommon/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `qwen::QwenNvfp4Weight`, `QwenLayerWeights` (нормы/аттн-слоты), `qwen_moe::QwenMoeExpertStore` (pinned slabs + records + gemv meta), `qwen_moe::LoadQwenMoeExpertStore`-паттерн, `gpu::ExpertDeviceCache`, Arrow IPC readers.
-- Produces: `struct FlashLayerWeights` (union KDA/DSA: `bool is_kda`; KDA-поля — `__half *d_qkv_conv`-подобные raw FP16-указатели + `d_A_log`, `d_dt_bias`, `d_b_proj`, low-rank f/g, `d_o_norm`; DSA-поля — NVFP4 `q_a/q_b/kv_a/o` + `d_q_a_norm`, `d_kv_a_norm` FP16 + indexer raw BF16 указатели + hc-веса: `d_hc_attn_fn` BF16 bits [24,16384], `d_hc_attn_base` F32[24], `d_hc_attn_scale` F32[3], аналогично ffn; router `d_router` BF16 bits + `d_router_bias` F32[288]; shared NVFP4 w1/w2/w3 + `d_shared_gate` FP16). `struct FlashPinnedWeights { FlashTopology top; QwenNvfp4Weight embed, head; __half *d_final_norm; std::vector<FlashLayerWeights> layers; uint64_t resident_bytes; void Free(); };` `bool LoadGlmFlashDenseWeights(const std::string &model_path, FlashPinnedWeights &pw, cudaStream_t stream, std::string &error);` — строгий (любой отсутствующий/битый тензор → false + error). Experts через `qwen_moe::QwenMoeExpertStore` напрямую: `bool LoadGlmFlashExpertStore(const std::string &model_path, qwen_moe::QwenMoeExpertStore &store, std::string &error);` + `AllocateQwenMoeExpertCache`/`EnsureQwenMoeExpertResident` из qwen_moe_load.h переиспользуются как есть (обе take generic store/cache).
+- Consumes: `qwen::QwenNvfp4Weight`, `QwenLayerWeights` (norms/attn slots), `qwen_moe::QwenMoeExpertStore` (pinned slabs + records + gemv meta), the `qwen_moe::LoadQwenMoeExpertStore` pattern, `gpu::ExpertDeviceCache`, Arrow IPC readers.
+- Produces: `struct FlashLayerWeights` (a KDA/DSA union: `bool is_kda`; KDA fields — `__half *d_qkv_conv`-like raw FP16 pointers + `d_A_log`, `d_dt_bias`, `d_b_proj`, low-rank f/g, `d_o_norm`; DSA fields — NVFP4 `q_a/q_b/kv_a/o` + `d_q_a_norm`, `d_kv_a_norm` FP16 + indexer raw BF16 pointers + hc weights: `d_hc_attn_fn` BF16 bits [24,16384], `d_hc_attn_base` F32[24], `d_hc_attn_scale` F32[3], likewise ffn; router `d_router` BF16 bits + `d_router_bias` F32[288]; shared NVFP4 w1/w2/w3 + `d_shared_gate` FP16). `struct FlashPinnedWeights { FlashTopology top; QwenNvfp4Weight embed, head; __half *d_final_norm; std::vector<FlashLayerWeights> layers; uint64_t resident_bytes; void Free(); };` `bool LoadGlmFlashDenseWeights(const std::string &model_path, FlashPinnedWeights &pw, cudaStream_t stream, std::string &error);` — strict (any missing/broken tensor → false + error). Experts via `qwen_moe::QwenMoeExpertStore` directly: `bool LoadGlmFlashExpertStore(const std::string &model_path, qwen_moe::QwenMoeExpertStore &store, std::string &error);` + `AllocateQwenMoeExpertCache`/`EnsureQwenMoeExpertResident` from qwen_moe_load.h are reused as-is (both take a generic store/cache).
 
 - [ ] **Step 1: Write failing tests `tests/test_glm_moe_flash_loader.cpp`**
 
@@ -1075,18 +1075,18 @@ TEST_CASE("AllocateQwenMoeExpertCache: slot bookkeeping")
 
 - [ ] **Step 2: Run to verify FAIL** — `glm_moe_flash_load.h` not found.
 
-- [ ] **Step 3: Implement loader.** Create `libs/lsxcommon/include/lsxcommon/glm_moe_flash_load.h` (структуры из Interfaces) и `libs/lsxcommon/src/glm_moe_flash_load.cpp`:
-  - Чтение `model.index.json` (format validation `logestix-glm5next`).
-  - `global.arrow` → embed/lm_head (raw BF16 bits на device), final_norm FP16.
-  - Per-layer: `layer_NNN.arrow` — KDA: BF16→FP16 upload q/k/v/o/conv (q/k/v/o raw BF16, хранить как FP16 на device), A_log/dt_bias F32 raw, b_proj/f_a/f_b/g_a/g_b FP16, o_norm FP16; DSA: NVFP4 blobs → `QwenNvfp4Weight` (rows/cols из index.json), norms FP16, indexer raw BF16 bits; hc: fn BF16 bits raw, base/scale F32 raw; router gate BF16 bits + bias F32 (только MoE-слои); shared NVFP4 w1/w2/w3 + `d_shared_gate` (после Task 7 — scalar gate 1.0/learned).
-  - Experts: переиспользование `qwen_moe::QwenMoeExpertStore` slab-формата — читаем `experts/layer_NNN/exp_EEE.arrow` в pinned slabs (тот же layout w1|w2|w3 + s1|s2|s3 + gs1..3).
+- [ ] **Step 3: Implement loader.** Create `libs/lsxcommon/include/lsxcommon/glm_moe_flash_load.h` (the structures from Interfaces) and `libs/lsxcommon/src/glm_moe_flash_load.cpp`:
+  - Read `model.index.json` (format validation `logestix-glm5next`).
+  - `global.arrow` → embed/lm_head (raw BF16 bits on device), final_norm FP16.
+  - Per-layer: `layer_NNN.arrow` — KDA: BF16→FP16 upload q/k/v/o/conv (q/k/v/o raw BF16, store as FP16 on device), A_log/dt_bias F32 raw, b_proj/f_a/f_b/g_a/g_b FP16, o_norm FP16; DSA: NVFP4 blobs → `QwenNvfp4Weight` (rows/cols from index.json), norms FP16, indexer raw BF16 bits; hc: fn BF16 bits raw, base/scale F32 raw; router gate BF16 bits + bias F32 (MoE layers only); shared NVFP4 w1/w2/w3 + `d_shared_gate` (after Task 7 — scalar gate 1.0/learned).
+  - Experts: reuse the `qwen_moe::QwenMoeExpertStore` slab format — read `experts/layer_NNN/exp_EEE.arrow` into pinned slabs (the same layout w1|w2|w3 + s1|s2|s3 + gs1..3).
   - Strict: missing tensor / size mismatch / wrong dtype → `error` + false.
-  - `ValidateGeometry`: cross-check топологии index.json против frozen-констант; mismatch — false.
+  - `ValidateGeometry`: cross-check the index.json topology against the frozen constants; mismatch — false.
 
 - [ ] **Step 4: Run tests to verify PASS**
 
 Run: `cmake --build --preset linux-debug --target test_glm_moe_flash_loader && ctest --preset linux-debug -R glm_moe_flash_loader --output-on-failure`
-Expected: PASS (требует завершённой Task 3 конвертации).
+Expected: PASS (requires a completed Task 3 conversion).
 
 - [ ] **Step 5: Commit**
 
@@ -1108,12 +1108,12 @@ git commit -m "feat: glm5next flash loader (pinned dense + expert store + LRU)"
 
 **Interfaces:**
 - Consumes: `RunQwenNvfp4Gemm` (GEMM), `RunExpHcGatedResidualCached` + `ExpHcDequantCache` + `BuildExpHcDequantCache` (hc), `qwen_moe::QwenMoeRoutedSlot` (router slots).
-- Produces (все в `namespace lsxcommon::glm_moe_flash`):
-  - `struct FlashKdaState { float *d_state; int heads; int head_dim; int64_t capacity_ctx; }` — per-layer рекуррентное состояние S[heads, head_dim, head_dim]; `cudaError_t FlashKdaStateAlloc(FlashKdaState&, int max_ctx)`; `FlashKdaStateFree`.
-  - `cudaError_t RunFlashKdaLayer(cudaStream_t, FlashKdaState &st, const FlashLayerWeights &w, const __half *d_input /*[seq,H]*/, __half *d_out /*[seq,H]*/, int seq, int past_ctx);` — полный KDA блок: in-proj q/k/v → depthwise short conv1d (kernel 4, causal, ring/stride по `past_ctx`) → gated delta rule (A_log→decay, dt_bias, beta из b_proj, gates f/g) → o_norm RMS per-head → o_proj. Математика FP32 в state, FP16 IO.
-  - `cudaError_t RunFlashKdaLayerF32(...)` — test-only twin (raw FP32 матрицы, no FP16) для bit-parity с host-репликой.
-  - `cudaError_t RunFlashDsaLayer(...)` — MLA + indexer (композиция: q_a/q_b/kv_a/kv_b/o GEMM + q_a_norm/kv_a_norm + indexer top-2048 mask + masked attention; indexer/attention mechanics портируются из GLM-5.2 `glm_moe_inference.cu` как НОВЫЕ функции в этом файле — чтение + копирование, не правка GLM-5.2).
-  - Host-референс в `glm_moe_flash_device_math.h`: `void FlashKdaLayerHost(...)` (наивный цикл, FP64→FP32), `void FlashHcCombineHost(...)`, `void FlashRouterTop8Host(...)` — sigmoid scores + noaux_tc + bias + top-8 + renorm + scaling 2.5.
+- Produces (all in `namespace lsxcommon::glm_moe_flash`):
+  - `struct FlashKdaState { float *d_state; int heads; int head_dim; int64_t capacity_ctx; }` — the per-layer recurrent state S[heads, head_dim, head_dim]; `cudaError_t FlashKdaStateAlloc(FlashKdaState&, int max_ctx)`; `FlashKdaStateFree`.
+  - `cudaError_t RunFlashKdaLayer(cudaStream_t, FlashKdaState &st, const FlashLayerWeights &w, const __half *d_input /*[seq,H]*/, __half *d_out /*[seq,H]*/, int seq, int past_ctx);` — the full KDA block: in-proj q/k/v → depthwise short conv1d (kernel 4, causal, ring/stride over `past_ctx`) → gated delta rule (A_log→decay, dt_bias, beta from b_proj, gates f/g) → o_norm RMS per-head → o_proj. FP32 math in the state, FP16 IO.
+  - `cudaError_t RunFlashKdaLayerF32(...)` — a test-only twin (raw FP32 matrices, no FP16) for bit-parity with the host replica.
+  - `cudaError_t RunFlashDsaLayer(...)` — MLA + indexer (composition: q_a/q_b/kv_a/kv_b/o GEMM + q_a_norm/kv_a_norm + indexer top-2048 mask + masked attention; the indexer/attention mechanics are ported from GLM-5.2 `glm_moe_inference.cu` as NEW functions in this file — reading + copying, not editing GLM-5.2).
+  - Host reference in `glm_moe_flash_device_math.h`: `void FlashKdaLayerHost(...)` (a naive loop, FP64→FP32), `void FlashHcCombineHost(...)`, `void FlashRouterTop8Host(...)` — sigmoid scores + noaux_tc + bias + top-8 + renorm + scaling 2.5.
 
 - [ ] **Step 1: Write failing kernel tests `tests/test_glm_moe_flash_kernels.cu`**
 
@@ -1271,24 +1271,24 @@ TEST_CASE("flash router: sigmoid noaux_tc top-8 + renorm + scaling")
 }
 ```
 
-(Примечание для implementer: третий тест требует также d_x_hidden alloc/memcpy [TOK,4096] random — добавить по образцу остальных буферов.)
+(Note for the implementer: the third test also needs a d_x_hidden alloc/memcpy [TOK,4096] random — add it modeled on the other buffers.)
 
 - [ ] **Step 2: Run to verify FAIL** — `glm_moe_flash_inference.h` not found.
 
 - [ ] **Step 3: Implement kernels.**
 
 `glm_moe_flash_device_math.h` (host-only, std:: only):
-- `FlashGatedDeltaHost(q,k,v,beta,a,S,Hh,D,state,out)`: для каждого head h: `S_t = exp(A_log[h]) * exp(-dt[h]) ...` — точная семантика HF `gated_delta_rule` с коротким conv уже применённым к q/k: `S = exp(a_h) * S; S += beta_t * (k_t ⊗ (v_t - k_tᵀS))`… wait — точная формула: `S ← exp(a_h)·S + β_t·k_t(v_t − Sᵀk_t)`, `out_t = Sᵀq_t`; dt_bias включён в a: `a_h = exp(A_log[h])·exp(-dt_bias[head_slice])` — в GLM-5.3-Flash dt_bias per-channel [8192] (по 128 на head) — применяется к decay по каналу внутри head. Реализация: канальный decay `D[h,128] = exp(A_log[h])·exp(-dt_bias[h*128..])`, `S ← D ⊙_row S + β_t·k_t(v_t − Sᵀk_t)`.
-- `FlashRouterTop8Host(gate_bits, bias, tok, E)`: `score_e = sigmoid(BF16→F32(gate)) + bias_e` (noaux_tc: sigmoid + bias, без нормализации групп при n_group=1), top-8 по score, `coeff = score / sum(top8) * 2.5`.
-- `FlashConv1dHost`, `FlashHcCombineHost` — по семантике ниже.
-- RMW-инвариант: state-обновление в ядре — thread 0 пишет state, `__syncthreads()`, остальные read-only.
+- `FlashGatedDeltaHost(q,k,v,beta,a,S,Hh,D,state,out)`: for each head h: `S_t = exp(A_log[h]) * exp(-dt[h]) ...` — the exact HF `gated_delta_rule` semantics with the short conv already applied to q/k: `S = exp(a_h) * S; S += beta_t * (k_t ⊗ (v_t - k_tᵀS))`… wait — the exact formula: `S ← exp(a_h)·S + β_t·k_t(v_t − Sᵀk_t)`, `out_t = Sᵀq_t`; dt_bias is folded into a: `a_h = exp(A_log[h])·exp(-dt_bias[head_slice])` — in GLM-5.3-Flash dt_bias is per-channel [8192] (128 per head) — applied to the per-channel decay within a head. Implementation: per-channel decay `D[h,128] = exp(A_log[h])·exp(-dt_bias[h*128..])`, `S ← D ⊙_row S + β_t·k_t(v_t − Sᵀk_t)`.
+- `FlashRouterTop8Host(gate_bits, bias, tok, E)`: `score_e = sigmoid(BF16→F32(gate)) + bias_e` (noaux_tc: sigmoid + bias, without group normalization when n_group=1), top-8 by score, `coeff = score / sum(top8) * 2.5`.
+- `FlashConv1dHost`, `FlashHcCombineHost` — per the semantics below.
+- RMW invariant: state update in the kernel — thread 0 writes the state, `__syncthreads()`, the rest are read-only.
 
 `glm_moe_flash_inference.h` / `.cu`:
-- `RunFlashConv1dF32`: depthwise causal conv, window из ring-буфера (`d_x` [K+1, C], newest last); stride = C.
-- `RunFlashGatedDeltaF32`: grid по heads, block 128; state [Hh, D, D] в global (F32), FP32 математика, `-fmad=false` OBJECT lib.
-- `RunFlashRouterTop8`: по образцу qwen router kernel — thread-0 selection в shared, sigmoid + bias, top-8 selection loop, renorm + scale 2.5 (kRoutedScalingNum/kRoutedScalingDen).
-- `RunFlashKdaLayer`: композиция (GEMM q/k/v via `RunQwenNvfp4Gemm` — KDA проекции хранятся FP16, поэтому используется cuBLAS-путь `RunExpHeadGemm`-стиль; conv1d + delta + o_norm + o_proj).
-- `RunFlashDsaLayer`: копия MLA/Indexer логики GLM-5.2 (q_a_layernorm RMS, q_b up, kv_a + kv_a_layernorm, kv_b fused, indexer wq_b/wk/weights_proj + kpool compress + top-2048 + always_select_tail, masked attention, o_proj NVFP4) — переносится в новые функции в этом файле (копирование, не include GLM-5.2 impl).
+- `RunFlashConv1dF32`: depthwise causal conv, the window from a ring buffer (`d_x` [K+1, C], newest last); stride = C.
+- `RunFlashGatedDeltaF32`: grid over heads, block 128; state [Hh, D, D] in global (F32), FP32 math, `-fmad=false` OBJECT lib.
+- `RunFlashRouterTop8`: modeled on the qwen router kernel — thread-0 selection in shared, sigmoid + bias, a top-8 selection loop, renorm + scale 2.5 (kRoutedScalingNum/kRoutedScalingDen).
+- `RunFlashKdaLayer`: composition (GEMM q/k/v via `RunQwenNvfp4Gemm` — KDA projections are stored FP16, so the cuBLAS path `RunExpHeadGemm`-style is used; conv1d + delta + o_norm + o_proj).
+- `RunFlashDsaLayer`: a copy of the GLM-5.2 MLA/Indexer logic (q_a_layernorm RMS, q_b up, kv_a + kv_a_layernorm, kv_b fused, indexer wq_b/wk/weights_proj + kpool compress + top-2048 + always_select_tail, masked attention, o_proj NVFP4) — ported into new functions in this file (copying, not including the GLM-5.2 impl).
 
 - [ ] **Step 4: Run tests to verify PASS**
 
@@ -1312,8 +1312,8 @@ git commit -m "feat: glm5next flash KDA/DSA/router CUDA kernels + host refs"
 - Test: `tests/test_glm_moe_flash_kernels.cu` (append synthetic-model end-to-end)
 
 **Interfaces:**
-- Consumes: всё из Task 5, `FlashPinnedWeights`, `QwenMoeExpertStore` + `gpu::ExpertDeviceCache` + `EnsureQwenMoeExpertResident`, `RunExpHcGatedResidualCached`/`BuildExpHcDequantCache`, `sample::ISampler`, `qwen::QwenGenerationResult`.
-- Produces: `cudaError_t RunGlmFlashGeneration(cudaStream_t stream, const FlashPinnedWeights &pw, qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache, const std::vector<int32_t> &prompt, int max_new, const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result, sample::ISampler &sampler);` — единый stream, инкрементальный decode, KDA state per-layer, DSA KV-cache + indexer state per-layer, LRU expert residency до GEMM.
+- Consumes: everything from Task 5, `FlashPinnedWeights`, `QwenMoeExpertStore` + `gpu::ExpertDeviceCache` + `EnsureQwenMoeExpertResident`, `RunExpHcGatedResidualCached`/`BuildExpHcDequantCache`, `sample::ISampler`, `qwen::QwenGenerationResult`.
+- Produces: `cudaError_t RunGlmFlashGeneration(cudaStream_t stream, const FlashPinnedWeights &pw, qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache, const std::vector<int32_t> &prompt, int max_new, const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result, sample::ISampler &sampler);` — a single stream, incremental decode, KDA state per-layer, DSA KV cache + indexer state per-layer, LRU expert residency before GEMM.
 
 - [ ] **Step 1: Write failing test (append to test_glm_moe_flash_kernels.cu)**
 
@@ -1349,27 +1349,27 @@ TEST_CASE("RunGlmFlashGeneration: synthetic tiny model e2e determinism")
 }
 ```
 
-(`MakeSyntheticFlashWeights` / `FreeSyntheticFlashWeights` — тестовые хелперы в том же файле: аллоцируют случайные (seeded) но валидные device-тензоры; hc-веса — identity-подобные, чтобы сигнал проходил.)
+(`MakeSyntheticFlashWeights` / `FreeSyntheticFlashWeights` — test helpers in the same file: they allocate random (seeded) but valid device tensors; the hc weights are identity-like so the signal passes through.)
 
 - [ ] **Step 2: Run to verify FAIL** — `RunGlmFlashGeneration` unresolved.
 
-- [ ] **Step 3: Implement driver.** Псевдо-структура одного шага decode (t):
+- [ ] **Step 3: Implement driver.** Pseudo-structure of one decode step (t):
   1. embed[t] → hyper_input [hc*H] (broadcast), hc GatedResidual norm+mix (cached).
   2. For each layer l in 0..44:
-     a. hc_attn branch: GatedResidualCached (down/up/inject из `attn_hc_*`).
-     b. branch out → KDA-слой: `RunFlashKdaLayer` (conv ring stride по `past_ctx`); DSA-слой: `RunFlashDsaLayer` (KV append, indexer mask).
-     c. `RunExpHcInjectScatter` (attn_scale F32[3] → inject weights — семантика scale-групп GLM hc: `hc_attn_scale` подаётся в inject scatter).
-     d. hc_ffn branch: если MoE — router top-8 (`RunFlashRouterTop8`) → ensure resident top-8 экспертов (`EnsureQwenMoeExpertResident`, h2d_stream copy stream + event fence) → routed FFN (per-slot chain `RunQwenNvfp4Gemm` w1→swiglu(limit 10)→w3, coeff-add) + shared expert + sum × scale; если dense (0..2) — NVFP4 gate/up/down MLP (swiglu_limit=10.0).
+     a. hc_attn branch: GatedResidualCached (down/up/inject from `attn_hc_*`).
+     b. branch out → KDA layer: `RunFlashKdaLayer` (conv ring stride over `past_ctx`); DSA layer: `RunFlashDsaLayer` (KV append, indexer mask).
+     c. `RunExpHcInjectScatter` (attn_scale F32[3] → inject weights — the GLM hc scale-group semantics: `hc_attn_scale` is fed into the inject scatter).
+     d. hc_ffn branch: if MoE — router top-8 (`RunFlashRouterTop8`) → ensure the top-8 experts resident (`EnsureQwenMoeExpertResident`, h2d_stream copy stream + event fence) → routed FFN (per-slot chain `RunQwenNvfp4Gemm` w1→swiglu(limit 10)→w3, coeff-add) + shared expert + sum × scale; if dense (0..2) — NVFP4 gate/up/down MLP (swiglu_limit=10.0).
      e. `RunExpHcInjectScatter` ffn.
   3. Final mixer → final norm → head GEMM (`RunExpHeadGemm`) → logits.
-  4. Greedy/sampler → token; EOS check против `eos_ids`; argmax логирование gen_tokens.
-  Инварианты: один stream, без device synchronize в цикле, RMW shared — thread 0 + барьер, conv ring stride арифметика, expert residency до GEMM.
-  ВНИМАНИЕ (hc_scale): F32[3] scale-вектор применяется к трём группам hc-стримов при scatter; точную семантику уточнить по HF glm5_next моделированию `hyper_connection` forward (scale = per-stream-group multiplier) — зафиксировать в `glm_moe_flash_device_math.h` `FlashHcCombineHost` + parity-тест.
+  4. Greedy/sampler → token; EOS check against `eos_ids`; argmax logging of gen_tokens.
+  Invariants: one stream, no device synchronize in the loop, RMW shared — thread 0 + a barrier, conv ring stride arithmetic, expert residency before GEMM.
+  NOTE (hc_scale): the F32[3] scale vector is applied to the three hc-stream groups at scatter; verify the exact semantics against the HF glm5_next `hyper_connection` forward modeling (scale = a per-stream-group multiplier) — record it in `glm_moe_flash_device_math.h` `FlashHcCombineHost` + a parity test.
 
 - [ ] **Step 4: Run to verify PASS**
 
 Run: `cmake --build --preset linux-debug --target test_glm_moe_flash_kernels && ctest --preset linux-debug -R glm_moe_flash_kernels --output-on-failure`
-Expected: PASS (включая deterministic rerun).
+Expected: PASS (including a deterministic rerun).
 
 - [ ] **Step 5: Commit**
 
@@ -1384,13 +1384,13 @@ git commit -m "feat: glm5next flash generation driver (single-stream incremental
 
 **Files:**
 - Create: `libs/lsxcommon/src/glm_moe_flash_model.h`, `libs/lsxcommon/src/glm_moe_flash_model.cpp`
-- Modify: `libs/lsxcommon/src/model_registry.cpp` (+1 Register строка), `libs/lsxcommon/CMakeLists.txt`
+- Modify: `libs/lsxcommon/src/model_registry.cpp` (+1 Register line), `libs/lsxcommon/CMakeLists.txt`
 - Create: `tests/test_glm_moe_flash_model.cpp`
 - Modify: `tests/CMakeLists.txt`
 
 **Interfaces:**
 - Consumes: `ModelBase` (`Load/Infer/SelfCheck/Unload/Inspect/Tokenizer/TeardownWeights/BuildPromptInputIds/ResidencyMutex`), `RunGlmFlashGeneration`, `RunParisSelfCheck` (model_runtime.h), `BuildTokenizerArrowFiles`, `LsxModelFactory::Register<T>()`.
-- Produces: `class Glm5NextFlashModel final : public ModelBase` с `static const std::string kType;  // "glm-5.3-flash"`; registry entry; артефакты: `ArrowTokenizerDb` из конвертированного tokenizer (Task 8 fills files, model reads them).
+- Produces: `class Glm5NextFlashModel final : public ModelBase` with `static const std::string kType;  // "glm-5.3-flash"`; a registry entry; artifacts: `ArrowTokenizerDb` from the converted tokenizer (Task 8 fills the files, the model reads them).
 
 - [ ] **Step 1: Write failing test `tests/test_glm_moe_flash_model.cpp`**
 
@@ -1428,12 +1428,12 @@ TEST_CASE("Glm5NextFlashModel: Load on real checkpoint")
 
 - [ ] **Step 2: Run to verify FAIL** — `glm_moe_flash_model.h` not found / factory returns null.
 
-- [ ] **Step 3: Implement.** `glm_moe_flash_model.h/.cpp` по образцу `qwen_moe_exp_model.h/.cpp`:
-  - `kType = "glm-5.3-flash"`; `Load()`: `LoadGlmFlashDenseWeights` + `LoadGlmFlashExpertStore` + `AllocateQwenMoeExpertCache` (slots по свободной VRAM: budget 32GB минус dense residency; оценка per-expert payload) + `BuildExpHcDequantCache` per layer + tokenizer load; `ValidateGeometry` против frozen.
-  - `Infer(req)`: `RunGlmFlashGeneration` (единый stream, EOS из top.eos_ids).
+- [ ] **Step 3: Implement.** `glm_moe_flash_model.h/.cpp` modeled on `qwen_moe_exp_model.h/.cpp`:
+  - `kType = "glm-5.3-flash"`; `Load()`: `LoadGlmFlashDenseWeights` + `LoadGlmFlashExpertStore` + `AllocateQwenMoeExpertCache` (slots from free VRAM: a 32GB budget minus dense residency; an estimate of the per-expert payload) + `BuildExpHcDequantCache` per layer + tokenizer load; `ValidateGeometry` against frozen.
+  - `Infer(req)`: `RunGlmFlashGeneration` (a single stream, EOS from top.eos_ids).
   - `SelfCheck(req)`: `RunParisSelfCheck(*this, req, opts)` — Paris, min_tokens 2.
-  - `Inspect()`, `Unload()`/`TeardownWeights()`, `BuildPromptInputIds` (Base-реализация), `ResidencyMutex`.
-  - Registry: в `model_registry.cpp` добавить `#include "glm_moe_flash_model.h"` и строку `LsxModelFactory::Register<Glm5NextFlashModel>();` после `Qwen38FlashNextModel`.
+  - `Inspect()`, `Unload()`/`TeardownWeights()`, `BuildPromptInputIds` (the Base implementation), `ResidencyMutex`.
+  - Registry: in `model_registry.cpp` add `#include "glm_moe_flash_model.h"` and the line `LsxModelFactory::Register<Glm5NextFlashModel>();` after `Qwen38FlashNextModel`.
 
 - [ ] **Step 4: Run test to verify PASS**
 
@@ -1453,12 +1453,12 @@ git commit -m "feat: Glm5NextFlashModel (glm-5.3-flash) + factory registration"
 
 **Files:**
 - Modify: `libs/lsxcommon/src/glm_moe_flash_convert.cpp` (append tokenizer build call)
-- Create: `libs/lsxcommon/src/glm_moe_flash_passport.cpp` (или inline в convert.cpp — role остаётся convert)
+- Create: `libs/lsxcommon/src/glm_moe_flash_passport.cpp` (or inline in convert.cpp — the role stays convert)
 - Test: `tests/test_glm_moe_flash_convert.cpp` (append)
 
 **Interfaces:**
 - Consumes: `BuildTokenizerArrowFiles(tokenizer_json, pinned_dir)` (converter.h), `lsxnetwork::BuildPassport`/`WritePassport`, `lsxcommon::lsx_model_metadata("passport/passport.bin")`.
-- Produces: в layout: `pinned/tokenizer_*.arrow`; vault `passport/passport.bin` перегенерирован с byte-bridge записями GLM-5.3-Flash.
+- Produces: in the layout: `pinned/tokenizer_*.arrow`; the vault `passport/passport.bin` regenerated with the GLM-5.3-Flash byte-bridge entries.
 
 - [ ] **Step 1: Write failing test (append)**
 
@@ -1490,7 +1490,7 @@ TEST_CASE("ConvertGlm5NextModel: tokenizer arrows + passport written")
 
 - [ ] **Step 2: Run to verify FAIL.**
 
-- [ ] **Step 3: Implement.** В конце `ConvertGlm5NextModel`: вызвать `BuildTokenizerArrowFiles((fs::path(input_dir)/"tokenizer.json").string(), (base/"pinned").string())` (tokenizer.json — byte-level BPE, 154880 токенов; merges в array-формате GLM-5.2 уже поддержаны); записать `bos_id=-1/eos=[154820,154827,154829]/pad=154820` в `model.index.json`; `WritePassport(lsx_model_metadata("passport/passport.bin"), ...)` с маппингом токен↔байт для сетевого транслятора (по образцу GLM-5.2 вызова в `lsxnetwork`).
+- [ ] **Step 3: Implement.** At the end of `ConvertGlm5NextModel`: call `BuildTokenizerArrowFiles((fs::path(input_dir)/"tokenizer.json").string(), (base/"pinned").string())` (tokenizer.json is byte-level BPE, 154880 tokens; merges in the GLM-5.2 array format are already supported); write `bos_id=-1/eos=[154820,154827,154829]/pad=154820` into `model.index.json`; `WritePassport(lsx_model_metadata("passport/passport.bin"), ...)` with a token↔byte mapping for the network translator (modeled on the GLM-5.2 call in `lsxnetwork`).
 
 - [ ] **Step 4: Run to verify PASS.**
 
@@ -1571,7 +1571,7 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
 }
 ```
 
-- [ ] **Step 2: Register in tests/CMakeLists.txt** (по образцу test_qwen_moe_exp_selfcheck: `add_executable`, link lsxcommon+Catch2, `set_tests_properties ... SKIP_RETURN_CODE 4`):
+- [ ] **Step 2: Register in tests/CMakeLists.txt** (modeled on test_qwen_moe_exp_selfcheck: `add_executable`, link lsxcommon+Catch2, `set_tests_properties ... SKIP_RETURN_CODE 4`):
 
 ```cmake
 add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
@@ -1590,7 +1590,7 @@ endif()
 ```
 
 - [ ] **Step 3: Run** — `ctest --preset linux-debug -R glm_moe_flash_selfcheck --output-on-failure`
-Expected: PASS (или SKIP 4 без модели). Если Paris не сходится — см. spec Risk section: hc scale семантика, swiglu_limit, routed_scaling порядок — править по systematic-debugging, не ослабляя тесты.
+Expected: PASS (or SKIP 4 without a model). If Paris does not converge — see the spec Risk section: hc scale semantics, swiglu_limit, routed_scaling order — fix per systematic-debugging, without weakening the tests.
 
 - [ ] **Step 4: Commit**
 
@@ -1607,18 +1607,18 @@ git commit -m "test: glm5next flash Paris selfcheck 3-cycle bit-exact harness"
 - Modify: none (verification-only task; fixes go into owning tasks' files)
 
 **Interfaces:**
-- Consumes: всё выше.
-- Produces: зелёный полный suite; GLM-5.2 не тронут (12 test_glm_* executables bit-exact зелёные).
+- Consumes: everything above.
+- Produces: a green full suite; GLM-5.2 untouched (12 test_glm_* executables bit-exact green).
 
 - [ ] **Step 1: Naming guard + model independence guard**
 
 Run: `cmake --build --preset linux-debug && ctest --preset linux-debug -R "naming|independence" --output-on-failure`
-Expected: PASS (`flash` вариант принят, model-independence зелёный).
+Expected: PASS (the `flash` variant accepted, model-independence green).
 
-- [ ] **Step 2: GLM-5.2 regression (инвариант №1)**
+- [ ] **Step 2: GLM-5.2 regression (invariant #1)**
 
 Run: `ctest --preset linux-debug -R glm --output-on-failure -E flash`
-Expected: все 12+ test_glm_* PASS (SKIP на реальных моделях, если чекпоинт отсутствует; бит-точные детерминизм-тесты не изменились).
+Expected: all 12+ test_glm_* PASS (SKIP on real models if the checkpoint is absent; the bit-exact determinism tests are unchanged).
 
 - [ ] **Step 3: New-model suite**
 
@@ -1628,11 +1628,11 @@ Expected: convert/loader/kernels/model/selfcheck PASS.
 - [ ] **Step 4: Full suite**
 
 Run: `ctest --preset linux-debug --output-on-failure`
-Expected: 0 failures (тяжёлые CUDA-тесты по времени — как обычно в CI).
+Expected: 0 failures (heavy CUDA tests are slow — as usual in CI).
 
-- [ ] **Step 5: Fix-forward** — при падениях: systematic-debugging skill, фикс в файлах соответствующей задачи, отдельный commit `fix: ...`.
+- [ ] **Step 5: Fix-forward** — on failures: the systematic-debugging skill, a fix in the files of the relevant task, a separate commit `fix: ...`.
 
-- [ ] **Step 6: Commit (если были фиксы) + финальная ревизия ветки**
+- [ ] **Step 6: Commit (if there were fixes) + final branch review**
 
 ```bash
 git log --oneline main..HEAD
@@ -1643,25 +1643,25 @@ git log --oneline main..HEAD
 ### Task 11: Performance phase 1 — baseline t/s + fast-math levers
 
 **Files:**
-- Modify: `libs/lsxcommon/src/glm_moe_flash_inference.cu` (оптимизации)
-- Test: замеры через `apps/lsxfabric` `--benchmark` / generation CLI
+- Modify: `libs/lsxcommon/src/glm_moe_flash_inference.cu` (optimizations)
+- Test: measurements via `apps/lsxfabric` `--benchmark` / the generation CLI
 
 **Interfaces:**
-- Consumes: `SetQwenTcFastMath(true)`, `SetQwenSeq1Gemv(true)` (процессные флаги, уже есть), LRU hit/miss counters (`ExpertDeviceCache::hits/misses`).
-- Produces: baseline t/s метрика; зафиксированная в отчёте (log spdlog + текст в commit message).
+- Consumes: `SetQwenTcFastMath(true)`, `SetQwenSeq1Gemv(true)` (process flags, already present), the LRU hit/miss counters (`ExpertDeviceCache::hits/misses`).
+- Produces: the baseline t/s metric; recorded in the report (a spdlog log + text in the commit message).
 
-- [ ] **Step 1: Baseline замер**
+- [ ] **Step 1: Baseline measurement**
 
 Run: `cmake --build --preset linux-release-znver4 && ./build/linux-release-znver4/bin/lsxfabric --model /mnt/llm_models/models/GLM-5.3-Flash --benchmark`
 Record: tokens/sec decode, prefill t/s, LRU hit-rate, VRAM peak.
 
-- [ ] **Step 2: Levers (по одному, после каждого — замер):**
-  1. `SetQwenTcFastMath(true)` — sm_120a mxf4nvf4 tensor-core путь для NVFP4 GEMM.
-  2. `SetQwenSeq1Gemv(true)` — weight-streaming GEMV для decode.
-  3. LRU slots budget: максимизировать число device-слотов в свободной VRAM (32 GB - dense) — замерить hit-rate при 8 experts/layer active: нужно >= top-8 slots live на слой; tuning по misses counter.
-  4. KDA-ядро occupancy: block 128→256, warps 8/16 замеры; 48 warps/SM cap.
-  5. hc cached path (уже бит-точен) — убедиться, что per-token dequant путь не активен.
-- После каждого рычага: ctest -R glm_moe_flash (bit-exact selfcheck может отпасть при fast-math — тогда fast-math только на GEMM, не на атомарные ядра; фиксировать выбор в отчёте).
+- [ ] **Step 2: Levers (one at a time, a measurement after each):**
+  1. `SetQwenTcFastMath(true)` — the sm_120a mxf4nvf4 tensor-core path for NVFP4 GEMM.
+  2. `SetQwenSeq1Gemv(true)` — the weight-streaming GEMV for decode.
+  3. LRU slots budget: maximize the number of device slots in free VRAM (32 GB - dense) — measure the hit rate with 8 experts/layer active: need >= top-8 slots live per layer; tune by the misses counter.
+  4. KDA kernel occupancy: block 128→256, warps 8/16 measurements; the 48 warps/SM cap.
+  5. The hc cached path (already bit-exact) — make sure the per-token dequant path is not active.
+- After each lever: ctest -R glm_moe_flash (the bit-exact selfcheck may drop under fast-math — then fast-math only on GEMM, not on the atomic kernels; record the choice in the report).
 
 - [ ] **Step 3: Commit**
 
@@ -1674,22 +1674,22 @@ git add -A && git commit -m "perf: glm5next flash decode baseline + TC/GEMV leve
 ### Task 12: Performance phase 2 — tile tuning + hot-spot profiling
 
 **Files:**
-- Modify: `libs/lsxcommon/src/glm_moe_flash_inference.cu` (по профилю)
+- Modify: `libs/lsxcommon/src/glm_moe_flash_inference.cu` (per the profile)
 
-- [ ] **Step 1: Профиль** — `nsys profile` / `ncu` на `--benchmark`; топ-5 kernel'ов по времени.
-- [ ] **Step 2: Тюнинг тайлов** — CompileIQ-подбор параметров критических ядер (KDA delta, NVFP4 GEMM tile shapes под head_dim 128/256, router).
-- [ ] **Step 3: Замер + регресс** — `ctest -R glm_moe_flash` зелёный, t/s апдейт.
+- [ ] **Step 1: Profile** — `nsys profile` / `ncu` on `--benchmark`; the top-5 kernels by time.
+- [ ] **Step 2: Tile tuning** — CompileIQ parameter search for the critical kernels (KDA delta, NVFP4 GEMM tile shapes for head_dim 128/256, router).
+- [ ] **Step 3: Measurement + regression** — `ctest -R glm_moe_flash` green, a t/s update.
 - [ ] **Step 4: Commit** — `perf: glm5next flash tile tuning (X -> Y t/s)`.
 
 ---
 
 ## Self-Review
 
-**Spec coverage:** frozen-геометрия → Task 1; FP8→NVFP4 + classifier → Tasks 1-2; converter shards → Task 3; loader+LRU → Task 4; KDA/DSA ядра + инварианты stream/RMW/stride → Task 5; генерационный драйвер → Task 6; модель+фабрика+static_assert → Task 7; токенизатор+passport (шаги 4,7 протокола) → Task 8; селфчек 3-цикла (шаг 8) → Task 9; регрессия GLM-5.2 (инвариант №1) → Task 10; скорость (цель оператора) → Tasks 11-12. Naming guard реестры → Task 1 Step 1. Метаданные через path_registry → Task 3 (vault layout). ✅
+**Spec coverage:** frozen geometry → Task 1; FP8→NVFP4 + classifier → Tasks 1-2; converter shards → Task 3; loader+LRU → Task 4; KDA/DSA kernels + the stream/RMW/stride invariants → Task 5; the generation driver → Task 6; model+factory+static_assert → Task 7; tokenizer+passport (protocol steps 4, 7) → Task 8; the 3-cycle selfcheck (step 8) → Task 9; GLM-5.2 regression (invariant #1) → Task 10; speed (the operator's goal) → Tasks 11-12. Naming guard registries → Task 1 Step 1. Metadata via path_registry → Task 3 (vault layout). ✅
 
-**Placeholder scan:** Task 4 Step 1 synthetic slab builder — «Setup mirrors tests/test_qwen_moe_loader.cpp» — эталон существует и копируется при исполнении, допустимая ссылка на конкретный файл (не «similar to Task N»). Task 6 Step 1 MakeSyntheticFlashWeights — описан контрактом (seeded, identity-подобные hc). Task 8 idx-read comment — конкретный файл. Остальное — полный код. ✅
+**Placeholder scan:** Task 4 Step 1 synthetic slab builder — "Setup mirrors tests/test_qwen_moe_loader.cpp" — the reference exists and is copied during execution, an acceptable reference to a specific file (not "similar to Task N"). Task 6 Step 1 MakeSyntheticFlashWeights — described by contract (seeded, identity-like hc). Task 8 the idx-read comment — a specific file. The rest — full code. ✅
 
-**Type consistency:** `FlashPinnedWeights`/`FlashLayerWeights`/`FlashKdaState`/`FlashNvfp4Blob`/`RunGlmFlashGeneration` сигнатуры согласованы между Tasks 4→5→6→7; `QwenMoeExpertStore`/`ExpertDeviceCache` — реальные типы из `qwen_moe_load.h`/`expert_device_cache.h`; `RunQwenNvfp4Gemm`/`RunExpHcGatedResidualCached`/`RunExpHeadGemm`/`EnsureQwenMoeExpertResident` — реальные сигнатуры (проверены в заголовках 2026-09-04). ✅
+**Type consistency:** the `FlashPinnedWeights`/`FlashLayerWeights`/`FlashKdaState`/`FlashNvfp4Blob`/`RunGlmFlashGeneration` signatures are consistent across Tasks 4→5→6→7; `QwenMoeExpertStore`/`ExpertDeviceCache` — real types from `qwen_moe_load.h`/`expert_device_cache.h`; `RunQwenNvfp4Gemm`/`RunExpHcGatedResidualCached`/`RunExpHeadGemm`/`EnsureQwenMoeExpertResident` — real signatures (verified in the headers 2026-09-04). ✅
 
 ---
 

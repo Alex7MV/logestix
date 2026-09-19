@@ -314,7 +314,7 @@ add_library(lsxcommon STATIC
 Append to `tests/CMakeLists.txt`:
 
 ```cmake
-# ── Тест zero-alloc токенизатора ─────────────────────────────────────────
+# ── Zero-alloc tokenizer test ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"

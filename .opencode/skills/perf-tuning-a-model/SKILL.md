@@ -1,6 +1,6 @@
 ---
 name: perf-tuning-a-model
-description: Use when raising or measuring inference throughput (t/s) of a logestix model — profiling a decode token with nsys, finding the serial bottleneck per stream, writing RED latency/bandwidth/miss-count budget tests, tuning gpu_perf knobs, validating at the canonical 2048-token protocol, or recording a perf_baselines.json entry. Triggers - decode tok/s, t/s, lsxbenchmark --bench, perf-базлайн, узкое место, budget test.
+description: Use when raising or measuring inference throughput (t/s) of a logestix model — profiling a decode token with nsys, finding the serial bottleneck per stream, writing RED latency/bandwidth/miss-count budget tests, tuning gpu_perf knobs, validating at the canonical 2048-token protocol, or recording a perf_baselines.json entry. Triggers - decode tok/s, t/s, lsxbenchmark --bench, perf baseline, bottleneck, budget test.
 ---
 
 # Perf-tuning a model

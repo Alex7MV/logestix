@@ -187,7 +187,7 @@ TEST_CASE("kEmptyVramProfile is all zeros", "[vram]")
 Append at the end of `tests/CMakeLists.txt` (follow the existing pattern, e.g. `test_path_registry`):
 
 ```cmake
-# ── Тест модуля оценки VRAM-профиля (conversion-time) ───────────────────
+# ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)
 

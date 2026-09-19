@@ -1,44 +1,44 @@
-# Kimi-K2.7-Code — полный NVFP4-контур + максимальная скорость
+# Kimi-K2.7-Code — full NVFP4 contour + maximum speed
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans.
-> Subagents ЗАПРЕЩЕНЫ политикой AGENTS.md — выполнение только inline основной
-> сессией. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Subagents are FORBIDDEN by AGENTS.md policy — execute inline in the main
+> session only. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Конвертировать Kimi-K2.7-Code в полный NVFP4-контур (конвертер/репак/лоадер), замерить decode t/s, довести до максимума оборудования RTX 5090 32GB, найти и исправить причины деградации.
+**Goal:** Convert Kimi-K2.7-Code to the full NVFP4 contour (converter/repack/loader), measure decode t/s, push to the maximum of the RTX 5090 32GB hardware, and find and fix the causes of degradation.
 
-**Architecture:** Kimi уже на формате `logestix-kimi-r2` (MLA NVFP4 + routed-эксперты NVFP4 через `PackExpertNVFP4`, раунд-2, 127/127). Эксперты — NVFP4 E2M1+E4M3/16 (24.77 MiB/эксперт × 60×384 = 23040 → ~558 GiB vault). Decode остался на **1.3 t/s** (раунд-2): файловый mmap-источник H2D ~17 GiB/s effective. Решение — перенос доказанного DeepSeek-пакета: **pinned expert store** (один cudaHostAlloc-пул, layout [w1|w3|w2][s1|s3|s2], LSX_EXPERT_PIN=0 opt-out) поверх уже работающих full-resident mmaps (max_open=65536 дефолт стора) + LRU-кэша из свободной VRAM. Загрузка в кэш-слоты (6×cudaMemcpyAsync из entry-поинтеров) не меняется — pinned-источник ускоряет её автоматически.
+**Architecture:** Kimi is already on the `logestix-kimi-r2` format (MLA NVFP4 + NVFP4 routed experts via `PackExpertNVFP4`, round-2, 127/127). The experts are NVFP4 E2M1+E4M3/16 (24.77 MiB/expert × 60×384 = 23040 → ~558 GiB vault). Decode stayed at **1.3 t/s** (round-2): the file mmap source gives ~17 GiB/s effective H2D. The solution is to port the proven DeepSeek package: a **pinned expert store** (a single cudaHostAlloc pool, layout [w1|w3|w2][s1|s3|s2], LSX_EXPERT_PIN=0 opt-out) over the already working full-resident mmaps (max_open=65536 store default) + an LRU cache over free VRAM. Loading into cache slots (6×cudaMemcpyAsync from entry pointers) is unchanged — the pinned source speeds it up automatically.
 
 **Tech Stack:** CUDA 13.4 / Blackwell sm_120, CMake presets linux-release-znver4, Catch2, spdlog, abseil (host-only).
 
 ## Global Constraints
 
-- CPU/GPU-эксклюзив: lsxbenchmark/perf-тесты не запускать параллельно с другими GPU-нагрузками (AGENTS.md).
-- RAM: 750 GiB total; pin ~558 GiB допустим (политика «RAM не экономим»), fallback на mmap при неудаче cudaHostAlloc — обязан быть.
+- CPU/GPU exclusivity: do not run lsxbenchmark/perf tests concurrently with other GPU work (AGENTS.md).
+- RAM: 750 GiB total; pinning ~558 GiB is acceptable (the "we do not skimp on RAM" policy), a fallback to mmap on a cudaHostAlloc failure is mandatory.
 - Bit-exact SelfCheck "Paris" ×3 (LSX_TEST_KIMI_SELFCHECK_CYCLES / SKIP_RETURN_CODE 4).
-- Тесты Windows-only env: только `setenv` под `#ifdef _WIN32` guard (эталон `test_qwen_nvfp4_gemv.cu`).
-- Все логи — spdlog; новые тесты — label в том же коммите.
-- Физический потолок: miss-трафик ~7–12 GiB/токен; pinned H2D ~45–50 GiB/s (DeepSeek-замер) ⇒ потолок ~4–6 t/s при нулевом reuse, выше при hit-rate. Ниже 80% потолка — искать причину (nsys).
+- Windows-only env tests: `setenv` only under an `#ifdef _WIN32` guard (reference `test_qwen_nvfp4_gemv.cu`).
+- All logs via spdlog; new tests — a label in the same commit.
+- Physical ceiling: miss traffic ~7–12 GiB/token; pinned H2D ~45–50 GiB/s (DeepSeek measurement) ⇒ a ceiling of ~4–6 t/s at zero reuse, higher with a hit rate. Below 80% of the ceiling — find the cause (nsys).
 
 ---
 
-### Task 1: Конвертация vault + baseline-замер (ops, GPU-эксклюзив)
+### Task 1: Vault conversion + baseline measurement (ops, GPU-exclusive)
 
 **Files:**
-- Create: `/mnt/llm_models/models/Kimi-K2.7-Code/logestix/` (vault, вне репо)
+- Create: `/mnt/llm_models/models/Kimi-K2.7-Code/logestix/` (vault, outside the repo)
 - Create: `/tmp/opencode/kimi_convert.log`
 
 **Interfaces:**
-- Consumes: `lsxforge --kimi --input <dir> --output <dir>` (main.cpp:324 → `kimi::ConvertKimiModel`), in-place как DeepSeek.
-- Produces: vault `logestix/model.index.json` (формат `logestix-kimi-r2`, `mla_nvfp4`), `logestix/pinned/*.arrow`, `logestix/experts/layer_N/exp_E.arrow`; baseline t/s в журнале задачи.
+- Consumes: `lsxforge --kimi --input <dir> --output <dir>` (main.cpp:324 → `kimi::ConvertKimiModel`), in-place like DeepSeek.
+- Produces: vault `logestix/model.index.json` (format `logestix-kimi-r2`, `mla_nvfp4`), `logestix/pinned/*.arrow`, `logestix/experts/layer_N/exp_E.arrow`; baseline t/s in the task journal.
 
-- [ ] **Step 1: Пересобрать текущий main (fresh lsxforge)**
+- [ ] **Step 1: Rebuild the current main (fresh lsxforge)**
 
 ```bash
 cmake --build build/linux-release-znver4 -j 160 --target lsxforge 2>&1 | tail -2
 ```
-Expected: `ninja: no work to do` либо успешная линковка, 0 errors.
+Expected: `ninja: no work to do` or a successful link, 0 errors.
 
-- [ ] **Step 2: Запустить конвертацию in-place (фон, 20–60 мин)**
+- [ ] **Step 2: Run the in-place conversion (background, 20–60 min)**
 
 ```bash
 nohup ./build/linux-release-znver4/apps/lsxforge/lsxforge --kimi \
@@ -47,9 +47,9 @@ nohup ./build/linux-release-znver4/apps/lsxforge/lsxforge --kimi \
   > /tmp/opencode/kimi_convert.log 2>&1 &
 echo $! > /tmp/opencode/kimi_convert.pid
 ```
-Expected: PID записан; лог растёт. Пока идёт — GPU занят, никаких CUDA-запусков.
+Expected: PID recorded; the log grows. While it runs — the GPU is busy, no CUDA launches.
 
-- [ ] **Step 3: Дождаться завершения, проверить vault**
+- [ ] **Step 3: Wait for completion, verify the vault**
 
 ```bash
 while kill -0 $(cat /tmp/opencode/kimi_convert.pid) 2>/dev/null; do sleep 60; done
@@ -59,32 +59,32 @@ import json;d=json.load(open('/mnt/llm_models/models/Kimi-K2.7-Code/logestix/mod
 print(d['format'], d['layers'], d['experts_per_layer'], d.get('total_experts'), 'mla' , 'mla_nvfp4' in d)"
 ls /mnt/llm_models/models/Kimi-K2.7-Code/logestix/experts | wc -l
 ```
-Expected: лог `Done ... experts processed, incomplete 0 / Conversion complete`; формат `logestix-kimi-r2`; experts dir = 60 слоёв (layer_1..layer_60; layer_0 dense); `mla_nvfp4` присутствует.
+Expected: the log `Done ... experts processed, incomplete 0 / Conversion complete`; format `logestix-kimi-r2`; experts dir = 60 layers (layer_1..layer_60; layer_0 dense); `mla_nvfp4` present.
 
-- [ ] **Step 4: Baseline-замер (GPU эксклюзивно)**
+- [ ] **Step 4: Baseline measurement (GPU exclusive)**
 
 ```bash
 LSX_TEST_KIMI_MODEL_PATH=/mnt/llm_models/models/Kimi-K2.7-Code \
   timeout 600 ./build/linux-release-znver4/tests/test_blackwell_perf_kimi 2>&1 | grep -E "PERF|tok/s|expert cache|pinned"
 ```
-Expected: tok/s ≈ 1.3 (раунд-2 воспроизведение); запись числа в журналы задачи как baseline.
+Expected: tok/s ≈ 1.3 (round-2 reproduction); record the number in the task journal as the baseline.
 
 ---
 
-### Task 2: Pinned expert store для Kimi (TDD)
+### Task 2: Pinned expert store for Kimi (TDD)
 
 **Files:**
-- Modify: `libs/lsxcommon/include/lsxcommon/kimi_moe_load.h:148-164` (KimiExpertEntry +3 поля)
-- Modify: `libs/lsxcommon/src/kimi_moe_load.cpp` (`load_kimi_expert_index`, pin-проход)
-- Test: `tests/test_kimi_moe_loader.cpp` (расширить "Kimi expert index resolves routed experts" + новый negative-case)
+- Modify: `libs/lsxcommon/include/lsxcommon/kimi_moe_load.h:148-164` (KimiExpertEntry +3 fields)
+- Modify: `libs/lsxcommon/src/kimi_moe_load.cpp` (`load_kimi_expert_index`, the pin pass)
+- Test: `tests/test_kimi_moe_loader.cpp` (extend "Kimi expert index resolves routed experts" + a new negative case)
 
 **Interfaces:**
-- Consumes: `ExpertStore::pinned_pool/pinned_bytes` (уже в expert_store.h, добавлены в DeepSeek round-8), `Free()` уже делает `cudaFreeHost(pinned_pool)`.
-- Produces: `KimiExpertEntry::pinned_blob (const uint8_t*), blob_pack_bytes (int64_t), blob_scale_bytes (int64_t)`; pin-проход внутри `load_kimi_expert_index`; env `LSX_EXPERT_PIN=0` отключает.
+- Consumes: `ExpertStore::pinned_pool/pinned_bytes` (already in expert_store.h, added in DeepSeek round-8), `Free()` already does `cudaFreeHost(pinned_pool)`.
+- Produces: `KimiExpertEntry::pinned_blob (const uint8_t*), blob_pack_bytes (int64_t), blob_scale_bytes (int64_t)`; the pin pass inside `load_kimi_expert_index`; env `LSX_EXPERT_PIN=0` disables it.
 
-- [ ] **Step 1: Красный тест — pinned-пул в синтетическом fixture**
+- [ ] **Step 1: Red test — the pinned pool in a synthetic fixture**
 
-В `tests/test_kimi_moe_loader.cpp` расширить `TEST_CASE("Kimi expert index resolves routed experts", ...)`:
+In `tests/test_kimi_moe_loader.cpp`, extend `TEST_CASE("Kimi expert index resolves routed experts", ...)`: (extend it)
 
 ```cpp
     // Pinned store (r3): blobs live in one locked host pool; pointers stay
@@ -106,17 +106,17 @@ Expected: tok/s ≈ 1.3 (раунд-2 воспроизведение); запи�
                            + db.pinned_bytes);
 ```
 
-- [ ] **Step 2: Запустить тест — красный**
+- [ ] **Step 2: Run the test — red**
 
 ```bash
 cmake --build build/linux-release-znver4 -j 160 --target test_kimi_moe_loader 2>&1 | tail -1
 LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 ./build/linux-release-znver4/tests/test_kimi_moe_loader "Kimi expert index resolves routed experts" 2>&1 | tail -5
 ```
-Expected: FAIL — `pinned_pool` ещё не заполняется (поле, вероятно, уже есть в сторе — тогда nullptr).
+Expected: FAIL — `pinned_pool` is not filled yet (the field probably already exists in the store — then nullptr).
 
-- [ ] **Step 3: Реализация — поля entry**
+- [ ] **Step 3: Implementation — the entry fields**
 
-`kimi_moe_load.h`, в `struct KimiExpertEntry` после `w3_scales_bytes`:
+`kimi_moe_load.h`, in `struct KimiExpertEntry` after `w3_scales_bytes`:
 
 ```cpp
     // Pinned-store view (DeepSeek round-8 parity): when the whole store is
@@ -128,9 +128,9 @@ Expected: FAIL — `pinned_pool` ещё не заполняется (поле, �
     int64_t blob_scale_bytes = 0;
 ```
 
-- [ ] **Step 4: Реализация — pin-проход в `load_kimi_expert_index`**
+- [ ] **Step 4: Implementation — the pin pass in `load_kimi_expert_index`**
 
-После `db.Load(model_path, /*fallback=*/true);` вставить (mirror deepseek_moe_load.cu:280-355, но per-entry tolerant — dense layer 0 не имеет экспертов):
+After `db.Load(model_path, /*fallback=*/true);`, insert (mirror deepseek_moe_load.cu:280-355, but per-entry tolerant — dense layer 0 has no experts):
 
 ```cpp
     // ── Pin the routed-expert store into locked host memory ──────────────
@@ -208,9 +208,9 @@ Expected: FAIL — `pinned_pool` ещё не заполняется (поле, �
     }
 ```
 
-- [ ] **Step 5: Green + negative-case тест**
+- [ ] **Step 5: Green + negative-case test**
 
-Новый TEST_CASE рядом:
+A new TEST_CASE nearby:
 
 ```cpp
 TEST_CASE("kimi expert pinning: LSX_EXPERT_PIN=0 falls back to mmap",
@@ -245,7 +245,7 @@ TEST_CASE("kimi expert pinning: LSX_EXPERT_PIN=0 falls back to mmap",
 cmake --build build/linux-release-znver4 -j 160 --target test_kimi_moe_loader 2>&1 | tail -1
 LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 ./build/linux-release-znver4/tests/test_kimi_moe_loader 2>&1 | tail -3
 ```
-Expected: все assertion зелёные, pinned store лог `pinned routed-expert store: ... experts`.
+Expected: all assertions green, the pinned-store log `pinned routed-expert store: ... experts`.
 
 - [ ] **Step 6: Commit**
 
@@ -256,84 +256,84 @@ git commit -m "perf: kimi pinned routed-expert store (LSX_EXPERT_PIN=0 opt-out)"
 
 ---
 
-### Task 3: Замер с pinned-стором + диагностика деградации
+### Task 3: Measurement with the pinned store + degradation diagnostics
 
 **Files:**
-- Create: `/tmp/opencode/kimi_r3_*.log`, возможно `/tmp/opencode/kimi_r3.nsys-rep`
+- Create: `/tmp/opencode/kimi_r3_*.log`, possibly `/tmp/opencode/kimi_r3.nsys-rep`
 
 **Interfaces:**
 - Consumes: Task 1 vault, Task 2 pin pass; `test_blackwell_perf_kimi` / `lsxbenchmark --model`.
-- Produces: финальный t/s, вердикт «потолок/причина», список выжатых рычагов.
+- Produces: the final t/s, a verdict "ceiling/cause", a list of the levers extracted.
 
-- [ ] **Step 1: Полный пересбор + no-env замер**
+- [ ] **Step 1: Full rebuild + no-env measurement**
 
 ```bash
 cmake --build build/linux-release-znver4 -j 160 2>&1 | grep -cE "error|FAILED" || true
 LSX_TEST_KIMI_MODEL_PATH=/mnt/llm_models/models/Kimi-K2.7-Code \
   timeout 900 ./build/linux-release-znver4/tests/test_blackwell_perf_kimi 2>&1 | grep -E "PERF|pinned|expert cache" 
 ```
-Expected: лог `pinned routed-expert store: 23040 experts, ~558000 MiB`; tok/s в 2–4× выше baseline 1.3. Записать число.
+Expected: the log `pinned routed-expert store: 23040 experts, ~558000 MiB`; tok/s 2–4× above the 1.3 baseline. Record the number.
 
-- [ ] **Step 2: Верификация корректности на реальном выводе**
+- [ ] **Step 2: Correctness verification on real output**
 
 ```bash
 ./build/linux-release-znver4/apps/lsxbenchmark/lsxbenchmark \
   --model /mnt/llm_models/models/Kimi-K2.7-Code --max-gen 256 2>&1 | tail -5
 ```
-Expected: связный текст ("Paris..."-канон), не мусор; t/s согласован с шагом 1.
+Expected: coherent text (the "Paris..." canon), not garbage; the t/s is consistent with step 1.
 
-- [ ] **Step 3: Анализ «деградация vs потолок»**
+- [ ] **Step 3: "Degradation vs ceiling" analysis**
 
-Потолок = эффективный pinned H2D (~45–50 GiB/s, DeepSeek-замер) ÷ miss-байты/токен (из лога кэша: misses × 24.77 MiB). Если t/s < 80% потолка:
-1. `nsys profile -o /tmp/opencode/kimi_r3 --trace=cuda ./build/.../test_blackwell_perf_kimi` — искать серийность копий (copy_stream vs main stream), простои.
-2. Проверить slot-бюджет: лог `expert cache: N slots` — если slot ≈ 48 MiB (2× эксперта) — найти двойную резервацию (`KimiMoeExpertDeviceCache` alloc), поднять slots.
-3. Эксперименты env: `LSX_KIMI_EXPERT_CACHE_SLOTS` (0.5×/1×/2× от дефолта).
-Каждая гипотеза — замер до/после; бесполезные откатываются (дисциплина DeepSeek-раундов).
+Ceiling = effective pinned H2D (~45–50 GiB/s, DeepSeek measurement) ÷ miss bytes/token (from the cache log: misses × 24.77 MiB). If t/s < 80% of the ceiling:
+1. `nsys profile -o /tmp/opencode/kimi_r3 --trace=cuda ./build/.../test_blackwell_perf_kimi` — look for serialization of copies (copy_stream vs main stream), stalls.
+2. Check the slot budget: the log `expert cache: N slots` — if slot ≈ 48 MiB (2× an expert) — find the double reservation (`KimiMoeExpertDeviceCache` alloc), raise slots.
+3. Env experiments: `LSX_KIMI_EXPERT_CACHE_SLOTS` (0.5×/1×/2× of the default).
+Each hypothesis — a before/after measurement; useless ones are reverted (the DeepSeek-round discipline).
 
-- [ ] **Step 4: Зафиксировать находки в плане (этот файл), коммит промежуточный при изменениях кода**
+- [ ] **Step 4: Record the findings in the plan (this file), an intermediate commit on code changes**
 
 ---
 
-### Task 4: SelfCheck ×3 + fast-сьют
+### Task 4: SelfCheck ×3 + fast suite
 
-- [ ] **Step 1: Реальный селфчек Paris, 3 бит-точных цикла**
+- [ ] **Step 1: Real Paris selfcheck, 3 bit-exact cycles**
 
 ```bash
 LSX_TEST_KIMI_MODEL_PATH=/mnt/llm_models/models/Kimi-K2.7-Code \
   ./build/linux-release-znver4/tests/test_kimi_moe_selfcheck 2>&1 | tail -4
 ```
-Expected: PASS ×3, `r.selfcheck_passed`, exit 0 (SKIP 4 недопустим при наличии vault).
+Expected: PASS ×3, `r.selfcheck_passed`, exit 0 (SKIP 4 is not allowed when a vault is present).
 
-- [ ] **Step 2: Fast-сьют целиком**
+- [ ] **Step 2: The whole fast suite**
 
 ```bash
 ctest --test-dir build/linux-release-znver4 -L fast 2>&1 | tail -3
 ```
-Expected: 100% tests passed, 0 failed (skips только там, где нет vault-а других моделей).
+Expected: 100% tests passed, 0 failed (skips only where other models' vaults are absent).
 
 - [ ] **Step 3: Guards**
 
 ```bash
 ctest --test-dir build/linux-release-znver4 -R "test_model_independence_guard|test_code_naming_guard|test_absl_format_guard" --output-on-failure 2>&1 | tail -3
 ```
-Expected: зелёные без правок реестров (kimi consumer зарегистрирован ранее).
+Expected: green without touching the registries (the kimi consumer was registered earlier).
 
 ---
 
-### Task 5: Финализация (baseline JSON + AGENTS.md + docs + push)
+### Task 5: Finalization (baseline JSON + AGENTS.md + docs + push)
 
 - [ ] **Step 1: perf baseline kimi (kAdd/kUpdate)**
 
-Добавить kimi-запись в `tests/perf/perf_baselines.json` (gemma-формат: model_type `kimi-k2.7-code`, gpu_key `rtx 5090`, os `linux`, tokens_per_sec = финальный замер, max_gen 2048, prompt канонический "The capital of France is", date, commit `-`), затем:
+Add a kimi entry to `tests/perf/perf_baselines.json` (gemma format: model_type `kimi-k2.7-code`, gpu_key `rtx 5090`, os `linux`, tokens_per_sec = the final measurement, max_gen 2048, the canonical prompt "The capital of France is", date, commit `-`), then:
 
 ```bash
 ctest --test-dir build/linux-release-znver4 -R test_perf_baseline --output-on-failure 2>&1 | tail -3
 ```
-Expected: kUpdate/kAdd, тест зелёный.
+Expected: kUpdate/kAdd, the test green.
 
-- [ ] **Step 2: AGENTS.md kimi-запись** — обновить буллет `kimi-k2.7-code` (новый t/s, pinned store, формат r2 NVFP4-эксперты; `deepseek_inference_*.cu`-стиль путей выверить по факту файлов).
+- [ ] **Step 2: AGENTS.md kimi entry** — update the `kimi-k2.7-code` bullet (the new t/s, pinned store, r2 NVFP4-expert format; verify the `deepseek_inference_*.cu`-style paths against the actual files).
 
-- [ ] **Step 3: Findings в этот план-док** (final-таблица этапов, потолок, выжатые рычаги, что осталось) + commit + push:
+- [ ] **Step 3: Findings into this plan doc** (the final stage table, the ceiling, the levers extracted, what remains) + commit + push:
 
 ```bash
 git add tests/perf/perf_baselines.json AGENTS.md docs/superpowers/plans/2026-09-12-kimi-nvfp4-full-contour.md
@@ -341,72 +341,72 @@ git commit -m "perf: kimi-k2.7-code pinned routed-expert store — <T> tok/s (fi
 git push
 ```
 
-## Финальные результаты (2026-09-12)
+## Final results (2026-09-12)
 
-| Метрика | Было (round-2) | Стало | Прирост |
+| Metric | Was (round-2) | Became | Gain |
 |---|---|---|---|
-| Decode t/s (бит-точный, дефолт) | 1.3 | **3.1** | 2.4× |
+| Decode t/s (bit-exact, default) | 1.3 | **3.1** | 2.4× |
 | Decode t/s (TC opt-in, tolerance) | — | 5.5 | 4.2× |
-| Загрузка expert store (542 GiB) | — | 302 с | — |
+| Expert store load (542 GiB) | — | 302 s | — |
 | SelfCheck Paris ×3 | ✅ | ✅ | — |
 | VRAM resident (dense+MLA) | 8.9 GiB | 8.9 GiB | — |
 | Expert cache slots | 595 | 809 | +36% |
 
-### Выжатые рычаги (коммиты сессии)
-1. **Pinned expert store** 542 GiB в 34×16 GiB locked чанках — драйвер не
-   даёт один cudaHostAlloc >~300 GiB (12-минутный reclaim-шторм, probe:
-   mlock проходит, chunked cudaHostAlloc проходит). `LSX_EXPERT_PIN=0`
-   отключает (927c4fe, 0d84844).
-2. **TC-batch не включался** — `cfg_.fast_math` legacy bool всегда false при
-   CLI; tri-state игнорировался. Фикс резолва (751aa44) дал 3.0→5.1 t/s.
-3. **TC-путь сломан на реальном чекпойнте** — tolerance-class act-quant
-   уводит greedy top-1 в мусор ('碧芙碧芙' вместо Paris), синтетический
-   tolerance-тест при этом зелёный. Переведён в opt-in `LSX_KIMI_TC=1`
-   до root-cause (14:23 фикс). Дефолт — бит-точная legacy GEMV chain.
-4. **kv_b dequant thrash** — static-memo слот на ВСЕ 61 слой ре-деквантил
-   kv_b 60×/токен; per-layer кэш в KimiLayerWeights (30% GPU-окна).
+### Levers extracted (session commits)
+1. **Pinned expert store** 542 GiB in 34×16 GiB locked chunks — the driver does not
+   allow a single cudaHostAlloc >~300 GiB (a 12-minute reclaim storm, probe:
+   mlock passes, chunked cudaHostAlloc passes). `LSX_EXPERT_PIN=0`
+   disables it (927c4fe, 0d84844).
+2. **TC-batch was not enabled** — the legacy `cfg_.fast_math` bool is always false on the
+   CLI; the tri-state was ignored. A resolution fix (751aa44) gave 3.0→5.1 t/s.
+3. **The TC path is broken on the real checkpoint** — tolerance-class act-quant
+   drives the greedy top-1 into garbage ('碧芙碧芙' instead of Paris), while the synthetic
+   tolerance test is green. Moved to opt-in `LSX_KIMI_TC=1`
+   until root-cause (14:23 fix). The default is the bit-exact legacy GEMV chain.
+4. **kv_b dequant thrash** — a static-memo slot for ALL 61 layers re-dequantized
+   kv_b 60×/token; a per-layer cache in KimiLayerWeights (30% of the GPU window).
 5. **Split-fence upload** — layout [w1|w3][s1|s3][w2][s2], ev13/ev2:
-   w13 GEMM стартует, не дожидаясь down-upload (7c2058b).
-6. **Резерв VRAM 8→2 GiB** (измерено: runtime-аллокации <1 GiB) →
-   549→809 слотов (7c2058b).
-7. **Скоростная загрузка**: 635→~280 с. Parallel parse 32 потока
-   (450→8 с, c332d53); zerofill cudaHostAlloc (332 с, сериализован
-   драйвером, выдавливал page cache → копия с диска) заменён на
-   mmap → copy fault-at-write из горячего кэша → register последним
+   w13 GEMM starts without waiting for the down upload (7c2058b).
+6. **VRAM reserve 8→2 GiB** (measured: runtime allocations <1 GiB) →
+   549→809 slots (7c2058b).
+7. **Fast load**: 635→~280 s. Parallel parse with 32 threads
+   (450→8 s, c332d53); the cudaHostAlloc zerofill (332 s, serialized by the
+   driver, evicting the page cache → copying from disk) replaced with
+   mmap → fault-at-write copy from the hot cache → register last
    (b76c76e + register-after-copy).
 
-### Измеренная анатомия токена (nsys, TC on, 2.6 t/s снапшот)
-- H2D 53% (PCIe ~50-57 GiB/s — насыщение, эксперты 200 MiB/токен cold)
-- Nvfp4Dequant 30% → после kv_b-фикса ~0 (декод)
-- Экспертные GEMV: cuBLASLt nvjet_**tmaAB** (TMA уже задействован)
+### Measured token anatomy (nsys, TC on, 2.6 t/s snapshot)
+- H2D 53% (PCIe ~50-57 GiB/s — saturation, experts 200 MiB/token cold)
+- Nvfp4Dequant 30% → ~0 after the kv_b fix (decode)
+- Expert GEMV: cuBLASLt nvjet_**tmaAB** (TMA already engaged)
 - gaps 7% (route split-phase sync)
 
-### Потолок
-Miss-трафик ~7-11 GiB/токен при 809/23424 слотах; физический предел
-PCIe RTX 5090 (~57 GiB/s) ≈ 4-6 t/s cold. 3.1 бит-точных = 65% потолка
-(хвост: route sync, GEMV compute). Качественный рост дальше — только
-точнее попадать в кэш (hit-rate) или wider bus.
+### Ceiling
+Miss traffic ~7-11 GiB/token at 809/23424 slots; the physical PCIe
+limit of the RTX 5090 (~57 GiB/s) ≈ 4-6 t/s cold. 3.1 bit-exact = 65% of the ceiling
+(tail: route sync, GEMV compute). Qualitative growth further — only by
+hitting the cache more precisely (hit rate) or a wider bus.
 
 ### Root cause TC-batch divergence (2026-09-12, test_kimi_moe_tc_diag)
 
-Дифференциальная диагностика на реальном входном векторе MoE-блока
-(дамп через LSX_KIMI_DUMP_L1):
-- TC-ядра корректны на квантованных данных: w13 rel 0.16-0.19%,
+Differential diagnostics on a real MoE-block input vector
+(a dump via LSX_KIMI_DUMP_L1):
+- The TC kernels are correct on quantized data: w13 rel 0.16-0.19%,
   down rel 0.19%, reduce rel 0.17%.
-- Квантирование x (post-norm hidden): rel 12% — приемлемо.
-- **Квантирование swiglu-выхода (hq): rel 120%** — E2M1 per-16 pow2
-  превращает тензор в шум: у swiglu-выхода тяжёлый хвост + масса
-  значений у нуля, блоки неравномерны.
-- Вклад hq-кванта в down-выход: **69%** — совпадает с полным
-  расхождением legacy vs TC (67%).
-- Вывод: формат mxf4nvf4 (per-16 E2M1 активации) фундаментально
-  непригоден для swiglu-тензоров Kimi. TC-batch остаётся opt-in;
-  дефолт — бит-точная legacy GEMV (3.1 t/s). Путь к 5.5 t/s — формат
-  активаций повышенной точности для down-GEMM (HW HW-формат per-16
-  ue4m3 уже полный E4M3 — но E2M1-нибблы данных остаются узким
-  местом; нужен hw-путь с BF16 A-операндом, которого в mxf4nvf4 нет).
+- Quantizing x (post-norm hidden): rel 12% — acceptable.
+- **Quantizing the swiglu output (hq): rel 120%** — E2M1 per-16 pow2
+  turns the tensor into noise: the swiglu output has a heavy tail + a mass
+  of values near zero, and the blocks are uneven.
+- The hq-quant contribution to the down output: **69%** — matches the total
+  divergence of legacy vs TC (67%).
+- Conclusion: the mxf4nvf4 format (per-16 E2M1 activations) is fundamentally
+  unsuitable for Kimi's swiglu tensors. TC-batch stays opt-in;
+  the default is the bit-exact legacy GEMV (3.1 t/s). The path to 5.5 t/s is a
+  higher-precision activation format for the down-GEMM (the HW per-16
+  ue4m3 format is already full E4M3 — but the E2M1 data nibbles remain the
+  bottleneck; an hw path with a BF16 A operand is needed, which mxf4nvf4 lacks).
 
-### Бэклог
-- Пиндить expert store по умолчанию для ВСЕХ моделей (768 ГБ ОЗУ)
-- Unify DeepSeek/Kimi pin-pass в ExpertStore::PinAll
-- TC-путь Kimi: поднять точность акт-кванта down-GEMM (см. root cause)
+### Backlog
+- Pin the expert store by default for ALL models (768 GB RAM)
+- Unify the DeepSeek/Kimi pin pass into ExpertStore::PinAll
+- The Kimi TC path: raise the precision of the down-GEMM act-quant (see root cause)

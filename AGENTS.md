@@ -7,7 +7,7 @@ Target architecture: NVIDIA Blackwell (CC 12.0 / 12.1). Active use of 5th-gen Te
 Max warps per SM on Blackwell: 48 (factor into occupancy calculations).
 Forbidden architectures: Hopper (90), Ada (89), Ampere (80).
 No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is rejected.
-CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 support in NVCC.
+CUDA Toolkit 13.4 (nvcc V13.4.59; minimum 13.2+), full native C++23 support in NVCC.
 
 ## Dependencies
 
@@ -22,210 +22,211 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; минимум 13.2+), full native C++23 suppo
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 
-Версии принуждаются кодом: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-versions")` (`STATIC_REQUIRE` для Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
-последний через `ABSL_LTS_RELEASE_VERSION`, так что не-LTS пин не соберётся); у
-`flatbuffers`/`libzmq` guard'а нет. Процедура обновления
-зависимости (pin сабмодуля/FetchContent `GIT_TAG` + guard + таблицы AGENTS/README
-+ перепроверка патчей-after-fetch) — скил `cuda-cmake-build-gotchas`.
+Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
+versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
+the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will not build); there is
+no guard for `flatbuffers`/`libzmq`. The dependency bump procedure
+(pin the submodule/FetchContent `GIT_TAG` + guard + AGENTS/README tables
++ re-check after-fetch patches) — skill `cuda-cmake-build-gotchas`.
 
 ## Build
 
-Пресеты, AOCC-сборка, Windows-тулчейн (VS 2026) с точными путями, тулчейн-минимумы
-и пути бинарников — скил **`building-the-project`**
+Presets, the AOCC build, the Windows toolchain (VS 2026) with exact paths, toolchain
+minimums and binary locations — skill **`building-the-project`**
 (`.opencode/skills/building-the-project/SKILL.md`).
 
-Быстрая проверка:
+Quick check:
 
 ```bash
 cmake --preset linux-debug && cmake --build --preset linux-debug
 ctest --preset linux-debug                     # fast only
 ```
 
-Неочевидные грабли сборки — скил **`cuda-cmake-build-gotchas`**
-(`.opencode/skills/cuda-cmake-build-gotchas/SKILL.md`): CMake 4.x и
-`enable_language(CUDA)` во вложенном каталоге, флаги хоста, протекающие в NVCC,
-`/Zc:preprocessor` vs CCCL/thrust, `CMAKE_POLICY_VERSION_MINIMUM` для xsimd,
-патчи Arrow/Boost/abseil, `lsx_tune`/LTO-гейтинг, `cc12x`-only arch set, host-only
-CUDA-поверхности и `_putenv`-guard, bump зависимостей. Там же — таблица
-«симптом → причина».
+Non-obvious build pitfalls — skill **`cuda-cmake-build-gotchas`**
+(`.opencode/skills/cuda-cmake-build-gotchas/SKILL.md`): CMake 4.x and
+`enable_language(CUDA)` in a nested directory, host flags leaking into NVCC,
+`/Zc:preprocessor` vs CCCL/thrust, `CMAKE_POLICY_VERSION_MINIMUM` for xsimd,
+Arrow/Boost/abseil patches, `lsx_tune`/LTO gating, the `cc12x`-only arch set, host-only
+CUDA surfaces and the `_putenv` guard, dependency bumps. It also has the
+"symptom → cause" table.
 
 ## Resources (host)
 
-Политика расхода ресурсов хост-машины, исключение для инференса и правило
-«одна GPU-нагрузка за раз» (включая строгую GPU-эксклюзивность `lsxbenchmark` и
-запуск perf последним) — раздел «Host resource policy and GPU scheduling» скила
+Host-machine resource policy, the inference exemption and the
+"one GPU load at a time" rule (including strict GPU exclusivity for `lsxbenchmark` and
+running perf last) — the "Host resource policy and GPU scheduling" section of skill
 **`running-a-model`**
 (`.opencode/skills/running-a-model/SKILL.md`).
 
 ## Test
 
-`BUILD_TESTING=ON` включён во все пресеты. Категории тестов (labels
-`fast`/`convert`/`inference`/`perf`), пресеты, роутер путей
-(`tools/test_router.cmake`, `LSX_PRESET`/`LSX_LIST`/`LSX_DIFF`), дисциплина
-label'ов в том же коммите, реестр guard-тестов и WINDOWS-ограничение
-(`ctest -R "qwen|gemma"`) — скил **`test-lifecycle`**
+`BUILD_TESTING=ON` is enabled in all presets. Test categories (labels
+`fast`/`convert`/`inference`/`perf`), presets, the path router
+(`tools/test_router.cmake`, `LSX_PRESET`/`LSX_LIST`/`LSX_DIFF`), label discipline
+in the same commit, the guard-test registry and the WINDOWS restriction
+(`ctest -R "qwen|gemma"`) — skill **`test-lifecycle`**
 (`.opencode/skills/test-lifecycle/SKILL.md`).
 
-Правила тестов конвертеров (label `convert`, bounded TIMEOUT, синтетический
-чекпоинт, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` как runtime-env) — раздел
-«Converter test rules» в `ingesting-a-model`; процедура замера/подъёма скорости —
-`perf-tuning-a-model`.
+Converter test rules (label `convert`, bounded TIMEOUT, synthetic
+checkpoint, `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` as a runtime env) — the
+"Converter test rules" section in `ingesting-a-model`; the measurement/speed-up
+procedure — `perf-tuning-a-model`.
 
 ## Structure
 
-- `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`. Ядро:
-  `core.cpp` (логирование/init), `schema.cpp` (ExpertSchema/PackedExpert),
-  `converter.cpp` (GPU NVFP4-квантование), `loader.cpp`, `tokenizer.cpp` +
+- `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`. Core:
+  `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
+  `converter.cpp` (GPU NVFP4 quantization), `loader.cpp`, `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
-  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, модельно-нейтральный
-  слой `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
-  (`RunLxGemmVec`/`RunLxGemmVecWT`; единственный GEMM-путь), `expert_store.h`.
-  Модели: glm / qwen / deepseek / gemma / kimi / nemotron (NemotronH-гибрид
-  Mamba-2 + MoE + full-attention: `nemotron_moe_constants.h` (frozen passport),
+  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, the model-neutral
+  layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
+  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`.
+  Models: glm / qwen / deepseek / gemma / kimi / nemotron (NemotronH hybrid
+  Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
-  `nemotron_moe_expert_cache.{h,cpp}` (host mmap-стор 2944 экспертов + device
-  slot-LRU; dense всегда резидент, эксперты стримятся — модель влезает в 16 ГиБ,
-  ноб `LSX_NEMOTRON_EXPERT_CACHE_SLOTS`), `nemotron_moe_model.*`,
+  `nemotron_moe_expert_cache.{h,cpp}` (host mmap store of 2944 experts + device
+  slot-LRU; dense always resident, experts streamed — the model fits in 16 GiB,
+  knob `LSX_NEMOTRON_EXPERT_CACHE_SLOTS`), `nemotron_moe_model.*`,
   `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
   `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
   `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
-  async сетевой слой TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
+  async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
-- `apps/lsxfabric/` — B2B inference engine, всегда максимальная скорость
-  (`--localmodel`, `--validate`, `--testprompt`); замер скорости и бит-точность
-  переехали в lsxbenchmark. `apps/lsxforge/` — data preprocessing utility
-  (`--glm`/GLM-5.2 pipeline, `--tokenizer`, repack-флаги). `apps/taskmosaic/` —
-  CLI-обёртка над `lsxcommon::LsxOrchestrator`. `apps/lsxcli/` — CLI client
+- `apps/lsxfabric/` — B2B inference engine, always maximum speed
+  (`--localmodel`, `--validate`, `--testprompt`); speed measurement and bit-exactness
+  moved to lsxbenchmark. `apps/lsxforge/` — data preprocessing utility
+  (`--glm`/GLM-5.2 pipeline, `--tokenizer`, repack flags). `apps/taskmosaic/` —
+  CLI wrapper over `lsxcommon::LsxOrchestrator`. `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
-- `apps/lsxbenchmark/` — замер скорости генерации + бит-точность: `--bench`
-  (реальная генерация `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
-  (`FastMathMode::kOff`); единственное приложение с численным режимом.
+- `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
+  (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
+  (`FastMathMode::kOff`); the only app with a numeric mode.
 - `apps/lsxhome/` — Windows-native desktop shell (D3D12 + Dear ImGui docking
-  branch, WIN32 subsystem, только Windows); compute-тред публикует токены в
-  lock-free SPSC `GuiBridge` → UI-тред дренирует их каждый кадр.
-- `tests/` — Catch2 v3.16.0 suite; label'ы `fast`/`convert`/`inference`/`perf`
-  (см. § Test) + guard-тесты моделей/именования/absl/тулчейна.
+  branch, WIN32 subsystem, Windows only); the compute thread publishes tokens to a
+  lock-free SPSC `GuiBridge` → the UI thread drains them every frame.
+- `tests/` — Catch2 v3.16.0 suite; labels `fast`/`convert`/`inference`/`perf`
+  (see § Test) + model/naming/absl/toolchain guard tests.
 - `third_party/cccl/`, `third_party/flatbuffers/`, `third_party/libzmq/`,
-  `third_party/simdjson/` — сабмодули.
+  `third_party/simdjson/` — submodules.
 
-Полный пофайловый инвентарь (по семействам и подсистемам: состав сьютов и
-assertions, env-переменные selfcheck'ов, GUI-инварианты lsxhome, перф-детали
-моделей) — скил **`logestix-repo-map`**
-(`.opencode/skills/logestix-repo-map/SKILL.md`). Его машино-проверяемые
-эквиваленты: `test_model_suite_guard.cpp::Suites()` (модель → стадии →
-ctest-таргеты) и `test_model_independence_guard.cpp::kPassports` (модель →
-паспорт-заголовок → namespace) — при расхождении верны они.
+The full per-file inventory (by family and subsystem: suite membership and
+assertions, selfcheck env vars, lsxhome GUI invariants, model perf details) — skill
+**`logestix-repo-map`**
+(`.opencode/skills/logestix-repo-map/SKILL.md`). Its machine-checked
+equivalents: `test_model_suite_guard.cpp::Suites()` (model → stages →
+ctest targets) and `test_model_independence_guard.cpp::kPassports` (model →
+passport header → namespace) — when they disagree, they are authoritative.
 
-Запуск и эксплуатация инференса — скил **`running-a-model`**
-(`.opencode/skills/running-a-model/SKILL.md`): приложения и их флаги
+Running and operating inference — skill **`running-a-model`**
+(`.opencode/skills/running-a-model/SKILL.md`): apps and their flags
 (`lsxbenchmark --bench/--selfcheck`, `lsxfabric --localmodel --testprompt/--validate`,
-`lsxforge`, `lsxcli`), vault-пути (`path_registry`; CLI принимает КОРЕНЬ модели,
-не `logestix/`), lifecycle движка (`InferenceEngine::Session`), prompt
-framing/sampling, ресурсный слой (governor/VRAM/LRU-планирование) и каталог
-runtime env-нобов `LSX_*`/`KIMI_*`.
+`lsxforge`, `lsxcli`), vault paths (`path_registry`; the CLI takes the model ROOT,
+not `logestix/`), the engine lifecycle (`InferenceEngine::Session`), prompt
+framing/sampling, the resource layer (governor/VRAM/LRU planning) and the catalog of
+runtime env knobs `LSX_*`/`KIMI_*`.
 
 ## Model Ingestion Protocol
 
-Добавление/адаптация новой модели — скил **`ingesting-a-model`**
-(`.opencode/skills/ingesting-a-model/SKILL.md`): 8-этапный MODEL INGEST INVARIANT
-(lsxforge-конвертер → NVFP4-квантование → регистрация в `LsxModelFactory` +
-frozen geometry → tokenizer-мост → CUDA-ядра → shared-mem sandbox → passport →
-SelfCheck/тесты), соглашение об именах файлов моделей
-(`<family>_<type>[_<variant>]_<role>[_<subsystem>]`) и реестры guard-тестов
+Adding/adapting a new model — skill **`ingesting-a-model`**
+(`.opencode/skills/ingesting-a-model/SKILL.md`): the 8-step MODEL INGEST INVARIANT
+(lsxforge converter → NVFP4 quantization → registration in `LsxModelFactory` +
+frozen geometry → tokenizer bridge → CUDA kernels → shared-mem sandbox → passport →
+SelfCheck/tests), the model file naming convention
+(`<family>_<type>[_<variant>]_<role>[_<subsystem>]`) and the guard-test registries
 (`test_code_naming_guard`, `test_model_independence_guard`,
-`test_model_suite_guard`), которые обязательно расширяются в том же коммите, что и
-файлы модели. Единственный источник истины — SKILL.md; здесь оставлен только якорь,
-потому что протокол цитируется в коде как «Model Ingestion Protocol step N».
+`test_model_suite_guard`), which must be extended in the same commit as the
+model files. The single source of truth is SKILL.md; only an anchor is kept here
+because the protocol is cited in code as "Model Ingestion Protocol step N".
 
 ## CMake Key Points
 
-- `lsxcommon` — STATIC (`libs/lsxcommon/CMakeLists.txt`); PUBLIC линк со spdlog,
+- `lsxcommon` — STATIC (`libs/lsxcommon/CMakeLists.txt`); PUBLIC links to spdlog,
   flatbuffers, libzmq-static, cudart, lsxnetwork; PRIVATE — arrow_shared,
-  arrow_cuda_shared, simdjson. Arrow include-пути добавлены PUBLIC напрямую к
+  arrow_cuda_shared, simdjson. Arrow include paths are added PUBLIC directly to
   `lsxcommon` (`_deps/arrow-src/cpp/src`, `_deps/arrow-build/src`).
-- CUDA `.cu` вынесены в отдельные OBJECT-библиотеки (`lsxcommon_cu`,
-  `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), линкуются в `lsxcommon`
-  PUBLIC — это изолирует NVCC от MSVC-флагов. `cudart` находится через
-  `find_package(CUDAToolkit)` (Linux и Windows), не жёсткими путями; cuBLAS не
-  линкуется и не используется вообще — единственный GEMM-путь это
-  device-independent `lsx_gemv` (см. `numeric-conformance-audit.md`).
-- `lsxnetwork` — STATIC; simdjson, libzmq-static и Threads PUBLIC
-  (STATIC-библиотека ре-экспортирует link-зависимости), spdlog PRIVATE.
-- Каждое app из `apps/*/` линкует `lsxcommon` PRIVATE; Catch2 v3.16.0
-  через FetchContent при `BUILD_TESTING=ON`.
-- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` (до
-  `add_subdirectory`); POST_BUILD копирует `arrow.dll`/`arrow_cuda.dll` (Win32).
-- Флаги (MSVC/NVCC), гейтинг `lsx_tune`/LTO, патчи зависимостей и CUDA-архитектуры
-  — скил `cuda-cmake-build-gotchas`.
+- CUDA `.cu` files are split into separate OBJECT libraries (`lsxcommon_cu`,
+  `lsxcommon_glm_cu`, `lsxcommon_qwen_moe_cu`, ...), linked into `lsxcommon`
+  PUBLIC — this isolates NVCC from MSVC flags. `cudart` is found via
+  `find_package(CUDAToolkit)` (Linux and Windows), not hardcoded paths; cuBLAS is not
+  linked and not used at all — the only GEMM path is device-independent `lsx_gemv`
+  (see `numeric-conformance-audit.md`).
+- `lsxnetwork` — STATIC; simdjson, libzmq-static and Threads PUBLIC
+  (a STATIC library re-exports link dependencies), spdlog PRIVATE.
+- Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.0
+  via FetchContent when `BUILD_TESTING=ON`.
+- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` (before
+  `add_subdirectory`); POST_BUILD copies `arrow.dll`/`arrow_cuda.dll` (Win32).
+- Flags (MSVC/NVCC), `lsx_tune`/LTO gating, dependency patches and CUDA architectures
+  — skill `cuda-cmake-build-gotchas`.
 
 ## Conventions
 
-Язык C++20/C23, логирование только через spdlog (никаких `std::cout`/`printf`),
-стиль `#include`, `target_include_directories` с `$<BUILD_INTERFACE:...>`, место
-новых `.cpp` (app `add_executable` vs `libs/lsxcommon/`) и сохранение
-Doxygen/JSDoc — скил **`coding-conventions`**
+Language C++20/C23, logging only via spdlog (no `std::cout`/`printf`),
+`#include` style, `target_include_directories` with `$<BUILD_INTERFACE:...>`, placement
+of new `.cpp` files (app `add_executable` vs `libs/lsxcommon/`) and preservation of
+Doxygen/JSDoc — skill **`coding-conventions`**
 (`.opencode/skills/coding-conventions/SKILL.md`).
 
-Kernel/Blackwell-правила — скил **`nvfp4-blackwell-conventions`**
-(`.opencode/skills/nvfp4-blackwell-conventions/SKILL.md`): один стрим и минимум
-`cudaDeviceSynchronize`, shared-mem sandbox (thread 0 + барьеры), NVFP4 только через
-нейтральный `lsx_inference_nvfp4` + `std::mdspan`, CCCL-приоритет (cub, thrust
-fallback на MSVC), Tile C++, CompileIQ, alignment/48 warps, zero-copy Arrow+CUDA и
-simdjson+libzmq, «не уверен в сигнатуре — проверь `.h`/`.cuh`».
+Kernel/Blackwell rules — skill **`nvfp4-blackwell-conventions`**
+(`.opencode/skills/nvfp4-blackwell-conventions/SKILL.md`): one stream and minimal
+`cudaDeviceSynchronize`, shared-mem sandbox (thread 0 + barriers), NVFP4 only via the
+neutral `lsx_inference_nvfp4` + `std::mdspan`, CCCL priority (cub, thrust
+fallback on MSVC), Tile C++, CompileIQ, alignment/48 warps, zero-copy Arrow+CUDA and
+simdjson+libzmq, "if unsure about a signature — check the `.h`/`.cuh`".
 
 ## absl:: Priority (Container/String policy)
 
-Host-only C++ (НЕ компилируемый NVCC) предпочитает `absl::`: `unordered_map/set` →
-`flat_hash_map/set`, `map/set` → `btree_map/set`, простые конкатенации →
-`absl::StrCat`/`StrAppend`. Таблица приоритетов, исключения (что остаётся `std::`),
-NVCC-инкомпатибельность контейнеров с правилом достижимости и recipe-проверкой,
-printf-контракт `absl::StrFormat` и CMake-якоря (ABSL_PROPAGATE_CXX_STD, патчи
-crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
-(`.opencode/skills/absl-in-cuda-cpp/SKILL.md`). Здесь остаётся незыблемое:
+Host-only C++ (NOT compiled by NVCC) prefers `absl::`: `unordered_map/set` →
+`flat_hash_map/set`, `map/set` → `btree_map/set`, simple concatenations →
+`absl::StrCat`/`StrAppend`. The priority table, exceptions (what stays `std::`),
+the NVCC container incompatibility with the reachability rule and recipe check,
+the printf contract of `absl::StrFormat` and the CMake anchors (ABSL_PROPAGATE_CXX_STD,
+crc32 and format-checker patches) — skill **`absl-in-cuda-cpp`**
+(`.opencode/skills/absl-in-cuda-cpp/SKILL.md`). The inviolable parts stay here:
 
-- Заголовки, достижимые из `.cu`/`.cuh`, НЕ должны включать `<absl/container/*>`
-  (NVCC падает в raw_hash_map: `C2794`/`C2938`); в `.cu`/`.cuh` контейнеры и
-  стриммы остаются `std::`. Сейчас container-заголовок включают только
-  `lsx_orchestrator.h` и `model_integrity.h` (host-only), нарушений из `.cu` нет;
-  проверка транзитивного графа — в скиле (guard это НЕ автоматизирует).
-- `absl::StrFormat`/`StrAppendFormat`/`Format` — printf-стиль (`%s/%d/%u/%f`);
-  `{}` печатается литерально (guard `test_absl_format_guard`).
-- Остаются `std::`: `string_view`/`optional`/`variant`/`function`/`unique_ptr`,
-  потоковые builders с `setw`/`setfill`, кастомные хэшер-функторы.
+- Headers reachable from `.cu`/`.cuh` must NOT include `<absl/container/*>`
+  (NVCC fails in raw_hash_map: `C2794`/`C2938`); in `.cu`/`.cuh` containers and
+  streams stay `std::`. Currently only `lsx_orchestrator.h` and
+  `model_integrity.h` (host-only) include a container header; there are no
+  violations from `.cu`; the transitive-graph check is in the skill (the guard does NOT
+  automate it).
+- `absl::StrFormat`/`StrAppendFormat`/`Format` — printf style (`%s/%d/%u/%f`);
+  `{}` is printed literally (guard `test_absl_format_guard`).
+- These stay `std::`: `string_view`/`optional`/`variant`/`function`/`unique_ptr`,
+  stream builders with `setw`/`setfill`, custom hasher functors.
 
-## NVIDIA Docs Reference (обязательный справочник)
+## NVIDIA Docs Reference (mandatory)
 
-- NVIDIA-документация **не вендорится**: выгрузки из MCP `nvidia-cuda-docs`
-  удалены из репозитория во избежание распространения копирайтных материалов.
-  Указатель и порядок действий — `docs/NVIDIA_DOCS.md`.
-- Перед правкой NVFP4/CUDA-ядер загружай актуальную документацию из MCP
-  `nvidia-cuda-docs` (PTX ISA, CUDA C++ Programming Guide, `cuda_fp4`/`cuda_fp8`,
-  CUTLASS, TMA, tcgen05), а не полагайся на устаревшие выдержки. Если MCP
-  недоступен — остановись и получи доступ к актуальным докам.
-- Дисциплина (сверять семантику ПЕРЕД правкой, фиксировать производные
-  инварианты в коде/регрессионных тестах) — скил `nvfp4-blackwell-conventions`.
+- NVIDIA documentation is NOT vendored: dumps from the `nvidia-cuda-docs` MCP
+  have been removed from the repository to avoid distributing copyrighted material.
+  The pointer and procedure — `docs/NVIDIA_DOCS.md`.
+- Before editing NVFP4/CUDA kernels, load the current documentation from the
+  `nvidia-cuda-docs` MCP (PTX ISA, CUDA C++ Programming Guide, `cuda_fp4`/`cuda_fp8`,
+  CUTLASS, TMA, tcgen05) instead of relying on outdated excerpts. If the MCP is
+  unavailable — stop and get access to the current docs.
+- Discipline (verify semantics BEFORE editing, record derived
+  invariants in code/regression tests) — skill `nvfp4-blackwell-conventions`.
 
 ## GPU Perf Auto-Tuning
 
-Вся скоростная работа — профилирование decode-токена (nsys), budget-тесты по TDD,
-нобы `gpu_perf`, перф-базлайн — описана в скиле **`perf-tuning-a-model`**
-(`.opencode/skills/perf-tuning-a-model/SKILL.md`). Здесь остаётся незыблемое:
+All speed work — decode-token profiling (nsys), TDD budget tests,
+`gpu_perf` knobs, the perf baseline — is described in skill **`perf-tuning-a-model`**
+(`.opencode/skills/perf-tuning-a-model/SKILL.md`). The inviolable parts stay here:
 
-- **CLI speed/perf-флагов нет**: движок всегда гоняет per-GPU auto-политику;
-  единственный численный флаг запуска — `--bit-exact` (lsxbenchmark), он маппится
-  в `FastMathMode::kOff`. `LSX_PERF_AUTO=0` возвращает legacy bit-exact дефолты,
-  `LSX_TEST_FAST_MATH` форсирует TC. Тесты, пинящие численный класс, ставят `kOff`.
-- `gpu_perf` (`include/lsxcommon/gpu_perf.h`) резолвит нобы на `InitializeEngine`
-  (TC fast-math, лимит GEMV MiB, порог split-K, % VRAM под expert-кэш, dual-stream
-  staging); приоритет разрешения и потребители ноб — в скиле.
-- `lsxbenchmark` — строгий GPU-эксклюзив (см. Resources).
+- **No CLI speed/perf flags**: the engine always runs a per-GPU auto policy;
+  the only numeric run flag is `--bit-exact` (lsxbenchmark), which maps
+  to `FastMathMode::kOff`. `LSX_PERF_AUTO=0` restores the legacy bit-exact defaults,
+  `LSX_TEST_FAST_MATH` forces TC. Tests that pin the numeric class set `kOff`.
+- `gpu_perf` (`include/lsxcommon/gpu_perf.h`) resolves the knobs at `InitializeEngine`
+  (TC fast-math, GEMV MiB limit, split-K threshold, % VRAM for the expert cache,
+  dual-stream staging); the resolution priority and knob consumers are in the skill.
+- `lsxbenchmark` — strict GPU exclusivity (see Resources).
 
 ## Git
 
-Английский язык сообщений коммитов и префиксы `build:`/`feat:`/`fix:`/`refactor:`/
-`test:`/`docs:` (плюс правило «коммит только по явной просьбе») — скил
+English commit messages and the prefixes `build:`/`feat:`/`fix:`/`refactor:`/
+`test:`/`docs:` (plus the "commit only on explicit request" rule) — skill
 **`coding-conventions`** (`.opencode/skills/coding-conventions/SKILL.md`).
 
 ## Autonomous Mode
@@ -233,4 +234,4 @@ crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
 - The AI agent is the sole creator and editor of code files (`.cu`, `.cpp`, `.h`, `CMakeLists.txt`).
 - The operator manages the process exclusively through high-level prompts and changes to instruction files.
 - If manual code changes are detected outside AI sessions, perform a full diff audit and reconcile with the operator before proceeding.
-- **ЗАПРЕТ на параллельных/субагентов**: использование Task-субагентов (explore/general/parallel agents) запрещено — они допускают много ошибок. Все исследования кодовой базы, аудит и правки выполняются только основной сессией напрямую (Read/Grep/Edit/etc.).
+- **No parallel/subagents**: using Task subagents (explore/general/parallel agents) is forbidden — they make many mistakes. All codebase research, audits and edits are done by the main session directly (Read/Grep/Edit/etc.).

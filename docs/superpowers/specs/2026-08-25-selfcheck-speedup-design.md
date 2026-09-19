@@ -2,7 +2,7 @@
 
 - **Date**: 2026-08-25
 - **Status**: Approved (approach A — production-path caching)
-- **Goal**: Reduce `test_qwen_moe_selfcheck` (~177 s) and `test_gemma4_selfcheck` (~87 s) to seconds by eliminating repeated one-time work inside `Infer`. Target: pragmatic maximum from safe optimizations ("сколько получится"), no fixed deadline.
+- **Goal**: Reduce `test_qwen_moe_selfcheck` (~177 s) and `test_gemma4_selfcheck` (~87 s) to seconds by eliminating repeated one-time work inside `Infer`. Target: pragmatic maximum from safe optimizations ("as much as we can get"), no fixed deadline.
 - **Hardware assumption**: RTX 5060 Ti 16 GB VRAM is sufficient once redundant transfers are removed.
 
 ## Invariants

@@ -1,38 +1,41 @@
-# Kimi-K2.7-Code: план продолжения отладки SelfCheck
+# Kimi-K2.7-Code: SelfCheck debugging continuation plan
 
-РЕШЕНО 2026-08-24. SelfCheck проходит: 'The capital of France is' → 'Paris'
-(top-1 tok=17374), 3+ циклов с бит-точной детерминированностью final_logits.
+RESOLVED 2026-08-24. SelfCheck passes: 'The capital of France is' → 'Paris'
+(top-1 tok=17374), 3+ cycles with bit-exact determinism of final_logits.
 
-## Root causes (найдены независимой валидацией слоя 1)
+## Root causes (found by independent layer-1 validation)
 
 1. **INT4 zero-point convention** (`kimi_int4_dequant_kernel`): compressed-tensors
-   pack-quantized symmetric int4 хранит unsigned нимбл с неявным zero-point 8
-   (offset binary), а ядро декодировало как two's complement (`nib>7 ? nib-16 :
-   nib`). Правильно: `(nib - 8) * scale`. Диагностика: гистограмма нимблов
-   исходного чекпоинта симметрична вокруг q=8; group-mean статистика ~0 только
-   при offset-binary; corr(NVFP4, INT4 twos-comp)=0.994 подтверждает, что
-   конвертер закодировал неверные веса. Юнит-тест кодировал ту же ошибку
-   (круговая проверка) — переписан на offset-binary. Модель переконвертирована.
+   pack-quantized symmetric int4 stores an unsigned nibble with an implicit
+   zero-point of 8 (offset binary), while the kernel decoded it as two's
+   complement (`nib>7 ? nib-16 : nib`). Correct: `(nib - 8) * scale`.
+   Diagnostics: the nibble histogram of the source checkpoint is symmetric around
+   q=8; group-mean statistics are ~0 only under offset-binary;
+   corr(NVFP4, INT4 twos-comp)=0.994 confirms the converter encoded wrong
+   weights. The unit test encoded the same error (circular check) — rewritten to
+   offset-binary. The model was reconverted.
 
-2. **Недетерминированный float atomicAdd** в трёх RMSNorm-ядрах
+2. **Non-deterministic float atomicAdd** in three RMSNorm kernels
    (`kimi_rmsnorm_rows_kernel`, `kimi_rmsnorm_rows_op_kernel`,
-   `kimi_kv_postprocess_kernel`): порядок суммирования варпов менялся между
-   запусками → биты final_logits гуляли. Заменено на детерминированную редукцию:
-   partials в shared memory + фиксированный последовательный сумминг thread 0.
+   `kimi_kv_postprocess_kernel`): the warp summation order changed between runs
+   → final_logits bits drifted. Replaced with a deterministic reduction:
+   partials in shared memory + fixed sequential summation by thread 0.
 
-## Что НЕ было причиной
+## What was NOT the cause
 
-- yarn attention scale: softmax-scale = 1/sqrt(192) верен для этого конфига
-  (mscale=mscale_all_dim=1.0); HF DeepseekV3Attention применяет mscale²-буст
-  через yarn_get_mscale(factor, mscale_all_dim) — но это отдельная величина от
-  rotary attention_factor; проверено численно слоем 1 (attention residual
-  сходится с max|d|=0.0017).
-- Absorption kv_b_proj, renorm роутера (w = sigmoid/sum * 2.827 — совпадает с
-  HF до 1e-5), позиционные смещения rope, shared_experts (вес 1.0) — всё
-  сверено поэлементно против свежего torch-референса из оригинальных INT4.
+- yarn attention scale: softmax-scale = 1/sqrt(192) is correct for this config
+  (mscale=mscale_all_dim=1.0); HF DeepseekV3Attention applies a mscale² boost
+  via yarn_get_mscale(factor, mscale_all_dim) — but that is a separate quantity
+  from the rotary attention_factor; verified numerically on layer 1 (attention
+  residual converges with max|d|=0.0017).
+- kv_b_proj absorption, router renorm (w = sigmoid/sum * 2.827 — matches
+  HF to 1e-5), rope positional offsets, shared_experts (weight 1.0) — all
+  compared element-by-element against a fresh torch reference from the original
+  INT4.
 
-## Методика (для следующих моделей)
+## Methodology (for future models)
 
-Env-gated дампы скрытого состояния после слоя N префилла + свежий torch-референс
-слоя из оригинальных safetensors (не своих конвертированных файлов) локализуют
-расхождение за минуты: attention residual → MoE → shared/routed → router.
+Env-gated dumps of the hidden state after prefill layer N + a fresh torch
+reference of the layer from the original safetensors (not from our converted
+files) localize the divergence within minutes: attention residual → MoE →
+shared/routed → router.

@@ -44,7 +44,7 @@ Expected: file moved, `git status` shows `R  tests/test_loader.cpp -> tests/test
 In `tests/CMakeLists.txt`, replace the block at lines 21-38 (comment through `add_test`) from:
 
 ```cmake
-# ── Тест round-trip загрузчика ──────────────────────────────────────────
+# ── Loader round-trip test ──────────────────────────────────────────
 add_executable(test_loader test_loader.cpp)
 target_link_libraries(test_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -67,7 +67,7 @@ add_test(NAME test_loader COMMAND test_loader)
 to:
 
 ```cmake
-# ── Тест DeepSeek round-trip загрузчика ─────────────────────────────────
+# ── DeepSeek loader round-trip test ─────────────────────────────────
 add_executable(test_deepseek_loader test_deepseek_loader.cpp)
 target_link_libraries(test_deepseek_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 

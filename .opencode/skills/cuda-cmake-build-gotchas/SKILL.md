@@ -1,6 +1,6 @@
 ---
 name: cuda-cmake-build-gotchas
-description: Use when a logestix build breaks or when setting up/wiring the CMake build — CUDA language enablement under CMake 4.x, host flags leaking into NVCC, MSVC/CCCL incompatibilities (/Zc:preprocessor, thrust), Arrow/Boost/xsimd patch-after-fetch failures, lsx_tune/LTO leaking into CUDA, or an AOCC/Clang host compiler. Triggers - CMake error, NVCC flag, C2794, C2938, unresolved policy, enable_language(CUDA), lsx_tune, LTO, сборка падает.
+description: Use when a logestix build breaks or when setting up/wiring the CMake build — CUDA language enablement under CMake 4.x, host flags leaking into NVCC, MSVC/CCCL incompatibilities (/Zc:preprocessor, thrust), Arrow/Boost/xsimd patch-after-fetch failures, lsx_tune/LTO leaking into CUDA, or an AOCC/Clang host compiler. Triggers - CMake error, NVCC flag, C2794, C2938, unresolved policy, enable_language(CUDA), lsx_tune, LTO, build fails.
 ---
 
 # CUDA C++ build gotchas

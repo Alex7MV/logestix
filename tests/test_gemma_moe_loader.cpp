@@ -1,4 +1,4 @@
-// Тест Gemma-4 загрузчика: BF16 raw-passthrough (без конверсии) + арена + LRU.
+// Gemma-4 loader test: BF16 raw passthrough (no conversion) + arena + LRU.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cstdint>

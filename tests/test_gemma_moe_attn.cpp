@@ -1,4 +1,4 @@
-// Тесты Gemma-4 attention: band-mask скольжения + full attention (GQA).
+// Gemma-4 attention tests: sliding band-mask + full attention (GQA).
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>

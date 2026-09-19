@@ -27,7 +27,7 @@
 Edit `tests/CMakeLists.txt`, add after the `add_test(NAME test_core ...)` line (line 19):
 
 ```cmake
-# ── Тест round-trip загрузчика ──────────────────────────────────────────
+# ── Loader round-trip test ──────────────────────────────────────────
 add_executable(test_loader test_loader.cpp)
 target_link_libraries(test_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 

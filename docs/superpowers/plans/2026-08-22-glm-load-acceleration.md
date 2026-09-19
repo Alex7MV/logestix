@@ -154,7 +154,7 @@ TEST_CASE("Bf16ToHalfInPlace ragged tails stay bit-exact", "[glm][loadfast]")
 Add to `tests/CMakeLists.txt` right after the `test_sampling` block (after line 1116):
 
 ```cmake
-# ── Тест GLM fast loader (in-place BF16→FP16 kernel + pinned ring + арена) ──
+# ── GLM fast loader test (in-place BF16→FP16 kernel + pinned ring + arena) ──
 add_library(test_glm_load_fast_cu OBJECT test_glm_load_fast.cu)
 set_target_properties(test_glm_load_fast_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -1656,7 +1656,7 @@ Expected: PASS (real-model suites SKIP without checkpoints).
 In `AGENTS.md`, under `libs/lsxcommon/`, update the loader bullet:
 
 ```markdown
-  - `libs/lsxcommon/src/glm_inference_load.cpp` + `include/lsxcommon/glm_inference_load.h` + `src/glm_load_internal.h` — host-only GLM loader: `LoadGlmPinnedWeights` (GPU in-place BF16→FP16 через `GlmBf16ToHalfInPlace`, pinned staging ring, per-layer device-арены, строгие ошибки на отсутствующие файлы слоёв/битые тензоры), `GlmLayerWeights`/`GlmPinnedWeights`
+  - `libs/lsxcommon/src/glm_inference_load.cpp` + `include/lsxcommon/glm_inference_load.h` + `src/glm_load_internal.h` — host-only GLM loader: `LoadGlmPinnedWeights` (GPU in-place BF16→FP16 via `GlmBf16ToHalfInPlace`, pinned staging ring, per-layer device arenas, strict errors on missing layer files/broken tensors), `GlmLayerWeights`/`GlmPinnedWeights`
 ```
 
 - [ ] **Step 5: Commit**

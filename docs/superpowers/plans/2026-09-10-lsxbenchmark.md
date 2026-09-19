@@ -2,8 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
 > implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for
-> tracking. **AGENTS.md forbids subagents** (`ЗАПРЕТ на
-> параллельных/субагентов`) — execute inline in the main session only.
+> tracking. **AGENTS.md forbids subagents** ("no parallel/subagents") — execute inline in the main session only.
 
 **Goal:** Create `apps/lsxbenchmark` as the single owner of generation-speed
 measurement (`--bench`) and bit-exactness verification (`--selfcheck
@@ -932,27 +931,27 @@ git commit -m "refactor: delete consumer-less IModel::Benchmark API (lsxbenchmar
 with:
 
 ```
-  - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): реальная генерация через IModel::Infer на args.fast_math_mode, отчёт tokens/t/s/ttft/resident
+  - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): real generation via IModel::Infer on args.fast_math_mode, report tokens/t/s/ttft/resident
 ```
 
 - [ ] **Step 2: Update the lsxfabric entry (AGENTS.md line ~264-266)** —
   replace:
 
 ```
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse в `src/cli.{h,cpp}`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse in `src/cli.{h,cpp}`)
 ```
 
 with:
 
 ```
-- `apps/lsxfabric/` — B2B inference engine, всегда максимальная скорость (`--localmodel`, `--validate`, `--testprompt`; CLI parse в `src/cli.{h,cpp}`); замер скорости и бит-точность переехали в lsxbenchmark
+- `apps/lsxfabric/` — B2B inference engine, always maximum speed (`--localmodel`, `--validate`, `--testprompt`; CLI parse in `src/cli.{h,cpp}`); speed measurement and bit-exactness moved to lsxbenchmark
 ```
 
 - [ ] **Step 3: Add the lsxbenchmark entry** right after the lsxcli block
   (AGENTS.md, after `apps/lsxcli/tests/` line):
 
 ```
-- `apps/lsxbenchmark/` — замер скорости генерации + бит-точность (`--bench` — дефолтный режим, реальная генерация IModel::Infer; `--selfcheck` — Paris-проверка; `--bit-exact` — `FastMathMode::kOff` для активного режима; `--model`, `--prompt`, `--max-gen`; CLI parse в `src/cli.{h,cpp}`)
+- `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness (`--bench` — default mode, real generation IModel::Infer; `--selfcheck` — Paris check; `--bit-exact` — `FastMathMode::kOff` for the active mode; `--model`, `--prompt`, `--max-gen`; CLI parse in `src/cli.{h,cpp}`)
   - `apps/lsxbenchmark/tests/` — 5 test cases (CLI parser, label fast)
 ```
 
@@ -960,17 +959,15 @@ with:
   line ~548-551)** — replace:
 
 ```
-  нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
-  запуска — `--bit-exact` (lsxfabric), он маппится в `FastMathMode::kOff`
-  модели.
+  no: the engine always runs a per-GPU auto policy; the only numeric run flag
+  is `--bit-exact` (lsxfabric), which maps into the model's `FastMathMode::kOff`.
 ```
 
 with:
 
 ```
-  нет: движок всегда гоняет per-GPU auto-политику; единственный численный флаг
-  запуска — `--bit-exact` (lsxbenchmark), он маппится в `FastMathMode::kOff`
-  модели.
+  no: the engine always runs a per-GPU auto policy; the only numeric run flag
+  is `--bit-exact` (lsxbenchmark), which maps into the model's `FastMathMode::kOff`.
 ```
 
 - [ ] **Step 5: Full fast sweep + guards**

@@ -122,7 +122,7 @@ argmax kernel: grid=(vocab+255)/256, block=256, block reduce → global max
 **Pipeline** (`inference_pipeline.cu`):
 ```
 1. tokenizer.Encode(prompt) → ids
-2. embed[ids[0]] → h     (сall only — prefill первый токен)
+2. embed[ids[0]] → h     (call only — prefill the first token)
 3. for token in 0..max_gen:
      for layer in 0..42:
        rms_norm → router → shared_ffn → routed_ffn → h += shared + routed

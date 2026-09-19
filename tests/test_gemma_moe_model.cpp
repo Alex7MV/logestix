@@ -1,4 +1,4 @@
-// Тест Gemma-4 модели: фабрика + Load + Infer на синтетической геометрии.
+// Gemma-4 model test: factory + Load + Infer on synthetic geometry.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cstring>

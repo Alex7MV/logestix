@@ -1,6 +1,6 @@
 ---
 name: building-the-project
-description: Use when configuring, building or locating binaries in logestix — CMake presets (linux-debug/release-znver4/windows-debug), the AOCC host-compiler build, the Windows VS 2026 toolchain paths, toolchain minimums, and where the executables land. Triggers - собрать, build, preset, AOCC, windows toolchain, cmake not found.
+description: Use when configuring, building or locating binaries in logestix — CMake presets (linux-debug/release-znver4/windows-debug), the AOCC host-compiler build, the Windows VS 2026 toolchain paths, toolchain minimums, and where the executables land. Triggers - build, preset, AOCC, windows toolchain, cmake not found.
 ---
 
 # Building the project

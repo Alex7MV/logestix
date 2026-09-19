@@ -1,54 +1,54 @@
-# Gemma-4-26B-A4B-it: SelfCheck решён (2026-08-24)
+# Gemma-4-26B-A4B-it: SelfCheck resolved (2026-08-24)
 
-SelfCheck проходит: 'The capital of France is' → «The capital of France is
-**Paris**.» (жадное продолжение этой модели; 'Paris' в первых токенах),
-бит-точная детерминированность по циклам.
+SelfCheck passes: 'The capital of France is' → "The capital of France is
+**Paris**." (greedy continuation of this model; 'Paris' among the first tokens),
+bit-exact determinism across cycles.
 
-## Root causes (по порядку находки)
+## Root causes (in order of discovery)
 
-1. **Фрейминг неполный**: после `<|turn>model\n` шаблон (enable_thinking
-   default=false) добавляет ПУСТОЙ thinking-канал
-   `<|channel>thought\n<channel|>` (=100, 45518, 107, 101). Без него модель
-   предсказывает мусор. Фрейминг при этом стал **модель-зависимым**:
-   `IModel::BuildPromptInputIds` (виртуальный, дефолт = сырой энкод), GLM и
-   Gemma владеют своими дескрипторами (`glm::kFraming` / `gemma::kFraming`),
-   центрального реестра больше нет.
+1. **Incomplete framing**: after `<|turn>model\n` the template (enable_thinking
+   default=false) adds an EMPTY thinking channel
+   `<|channel>thought\n<channel|>` (=100, 45518, 107, 101). Without it the model
+   predicts garbage. Framing thus became **model-dependent**:
+   `IModel::BuildPromptInputIds` (virtual, default = raw encode), GLM and
+   Gemma own their descriptors (`glm::kFraming` / `gemma::kFraming`),
+   there is no central registry anymore.
 
-2. **Двойной BOS**: энкодер сам добавляет bos_id внутрь промпта + SelfCheck
-   вставлял второй BOS в начало. Теперь политика BOS — часть дескриптора
-   фрейминга (leading_bos): авто-BOS переносится на позицию 0.
+2. **Double BOS**: the encoder itself adds bos_id inside the prompt + SelfCheck
+   inserted a second BOS at the start. Now the BOS policy is part of the
+   framing descriptor (leading_bos): auto-BOS is moved to position 0.
 
-3. **layer_scalar / router.per_expert_scale терялись**: конвертер хранит их
-   BF16 (2 байта/значение), а лоадер проверял размер по F32 → тензоры молча
-   пропускались, layer_scalar не применялся (скрытые состояния разрастались в
-   ~15 раз). Фикс: размерные гарды по dtype (+ регрессия в фикстуре/тесте).
+3. **layer_scalar / router.per_expert_scale were dropped**: the converter stores
+   them as BF16 (2 bytes/value), while the loader checked the size against F32 →
+   the tensors were silently skipped, layer_scalar was not applied (hidden states
+   grew ~15x). Fix: dtype-aware size guards (+ a regression in the fixture/test).
 
-4. **Attention scale**: HF Gemma4TextAttention использует scaling = 1.0
-   (q/k нормированы per-head); был 1/sqrt(head_dim).
+4. **Attention scale**: HF Gemma4TextAttention uses scaling = 1.0
+   (q/k are per-head normalized); it was 1/sqrt(head_dim).
 
-5. **__constant__ kE2M1Table = мусор в новом TU**: заголовочный __constant__
-   массив при линковке нескольких object-библиотек дал битую копию в
-   lsxcommon_gemma_cu (RTX 5090 / CUDA 13.3). Заменён на inline-функцию
-   `nvfp4::E2M1Value(nib)` с иммедиантами — глобального хранилища больше нет,
-   ODR-алиасинг невозможен.
+5. **__constant__ kE2M1Table = garbage in the new TU**: a header __constant__
+   array across several object libraries produced a broken copy in
+   lsxcommon_gemma_cu (RTX 5090 / CUDA 13.3). Replaced with an inline function
+   `nvfp4::E2M1Value(nib)` with immediates — no global storage anymore,
+   ODR aliasing impossible.
 
-6. **cudaEventElapsedTime на cudaEventDisableTiming-событиях** возвращал
-   sticky "invalid resource handle"; первый же getLastError в decode-цикле
-   трактовал его как ошибку генерации → обрыв после первого токена. TTFT/total
-   переведены на std::chrono.
+6. **cudaEventElapsedTime on cudaEventDisableTiming events** returned a
+   sticky "invalid resource handle"; the first getLastError in the decode loop
+   treated it as a generation error → abort after the first token. TTFT/total
+   moved to std::chrono.
 
-## Верификация
+## Verification
 
-- Абсолютный эталон: реальный HF transformers 5.15.1 (CPU, bf16) на том же
-  framed-промпте — top-1 'The', 'Paris' топ-2, greedy =
-  «The capital of France is **…»; логиты C++ vs HF corr=0.985, топ-10
-  пересекается 8/10.
-- Suite: gemma 9/9, лёгкие 53/53, glm/kimi/deepseek/integrated/blackwell
-  26/26. Прешединговые падения test_tokenizer (FIM SP-нормализация) — отдельный
-  баг ветки, к этим правкам не относится.
+- Absolute reference: real HF transformers 5.15.1 (CPU, bf16) on the same
+  framed prompt — top-1 'The', 'Paris' top-2, greedy =
+  "The capital of France is **…"; C++ vs HF logits corr=0.985, top-10
+  overlap 8/10.
+- Suite: gemma 9/9, light 53/53, glm/kimi/deepseek/integrated/blackwell
+  26/26. Preexisting test_tokenizer failures (FIM SP normalization) are a separate
+  branch bug, unrelated to these changes.
 
-## Методика
+## Methodology
 
-Env-gated дампы скрытых состояний по слоям/стадиям + свежий torch-референс из
-оригинальных safetensors (BF16) + решающая сверка с настоящим HF forward как
-ground truth.
+Env-gated dumps of hidden states per layer/stage + a fresh torch reference from
+the original safetensors (BF16) + a decisive comparison against the real HF
+forward as ground truth.

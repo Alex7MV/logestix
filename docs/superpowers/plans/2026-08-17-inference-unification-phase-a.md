@@ -265,7 +265,7 @@ bool ModelBase::ValidateInferRequest(const ModelRequest &req, gpu::InferenceResu
 Add `src/model_base.cpp` to the `lsxcommon` source list in `libs/lsxcommon/CMakeLists.txt` (alphabetical, after `src/loader.cpp`). Add the test to `tests/CMakeLists.txt`:
 
 ```cmake
-# ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
+# ── ModelBase test (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"

@@ -1,58 +1,58 @@
 # Test Categories (fast / inference / perf) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans
-> (subagent-driven development ЗАПРЕЩЁН в этом репо — см. AGENTS.md,
+> (subagent-driven development is FORBIDDEN in this repo — see AGENTS.md,
 > Autonomous Mode). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Разделить 125 ctest-тестов на категории `fast` / `inference` / `perf`
-(CTest LABELS), сделать базовый `ctest --preset` fast-only, добавить
-label-пресеты, git-diff-роутер и guard-тест, унифицировать имена фикстур.
+**Goal:** Split the 125 ctest tests into the categories `fast` / `inference` / `perf`
+(CTest LABELS), make the base `ctest --preset` fast-only, add
+label presets, a git-diff router and a guard test, and unify the fixture names.
 
-**Architecture:** CTest LABELS через три канонических блока
-`set_tests_properties(... PROPERTIES LABELS <cat>)` в конце
-`tests/CMakeLists.txt`; 15 новых + 5 изменённых testPresets в
-`CMakePresets.json`; `tools/test_router.cmake` (script mode, `-D`-флаги)
-классифицирует `git diff` и запускает `ctest -L`; дисциплину проверяет
-host-only guard `tests/test_ctest_labels_guard.cpp` (TDD: каждая проверка
-сначала RED).
+**Architecture:** CTest LABELS via three canonical blocks
+`set_tests_properties(... PROPERTIES LABELS <cat>)` at the end of
+`tests/CMakeLists.txt`; 15 new + 5 changed testPresets in
+`CMakePresets.json`; `tools/test_router.cmake` (script mode, `-D` flags)
+classifies `git diff` and runs `ctest -L`; the discipline is checked by the
+host-only guard `tests/test_ctest_labels_guard.cpp` (TDD: each check is
+RED first).
 
 **Tech Stack:** CMake 3.25+ (CTest LABELS, testPresets, script mode), Catch2
-v3.16 (guard), gcc/MSVC без изменений.
+v3.16 (guard), gcc/MSVC unchanged.
 
 **Spec:** `docs/superpowers/specs/2026-09-10-test-categories-design.md`
 
 ## Global Constraints
 
-- Ровно один label на тест: `fast` | `inference` | `perf`; никаких файлов
-  в `tests/` не переносим и не переименовываем, кроме 7 фикстур (Task 8).
-- `perf` никогда не входит в автопрогон (роутер умеет только fast+inference).
-- Существующие свойства тестов (`SKIP_RETURN_CODE 4`, `ENVIRONMENT`) не менять.
-- Windows-ограничение inference-прогона: `-R "^(test_qwen|test_gemma)"`
-  (применяет роутер, не пресеты).
-- Коммиты: английский, префиксы `build:`/`feat:`/`refactor:`/`test:`/`docs:`.
-- Рабочие команды: `cmake --preset linux-debug`,
+- Exactly one label per test: `fast` | `inference` | `perf`; we do not move or
+  rename any files in `tests/` except the 7 fixtures (Task 8).
+- `perf` never enters the automated run (the router only knows fast+inference).
+- Existing test properties (`SKIP_RETURN_CODE 4`, `ENVIRONMENT`) are not changed.
+- The Windows inference-run restriction: `-R "^(test_qwen|test_gemma)"`
+  (applied by the router, not the presets).
+- Commits: English, prefixes `build:`/`feat:`/`refactor:`/`test:`/`docs:`.
+- Working commands: `cmake --preset linux-debug`,
   `cmake --build --preset linux-debug --target <t>`,
   `ctest --preset linux-debug ...`.
 
 ---
 
-### Task 1: Guard-тест label-дисциплины (RED)
+### Task 1: Label-discipline guard test (RED)
 
 **Files:**
 - Create: `tests/test_ctest_labels_guard.cpp`
-- Modify: `tests/CMakeLists.txt` (в конец файла, после блока
+- Modify: `tests/CMakeLists.txt` (at the end of the file, after the block
   `test_model_independence_guard`)
 
 **Interfaces:**
-- Consumes: ничего (host-only, только Catch2 + std).
-- Produces: `tests/test_ctest_labels_guard.cpp`, ctest-имя
-  `test_ctest_labels_guard`; чистые функции `RegisteredTestNames`,
-  `ParseLabelCalls`, `CheckLabelCoverage`, `CheckPerfSkip` (переиспользуются
-  в Tasks 3/5/7 через добавление новых функций/TEST_CASE).
+- Consumes: nothing (host-only, Catch2 + std only).
+- Produces: `tests/test_ctest_labels_guard.cpp`, the ctest name
+  `test_ctest_labels_guard`; the pure functions `RegisteredTestNames`,
+  `ParseLabelCalls`, `CheckLabelCoverage`, `CheckPerfSkip` (reused
+  in Tasks 3/5/7 by adding new functions/TEST_CASEs).
 
 - [ ] **Step 1: Write the failing test**
 
-Создать `tests/test_ctest_labels_guard.cpp` целиком:
+Create `tests/test_ctest_labels_guard.cpp` in full:
 
 ```cpp
 // CTest category-label discipline guard (host-only, zero deps beyond Catch2).
@@ -307,7 +307,7 @@ TEST_CASE("ctest labels guard: perf tests declare SKIP_RETURN_CODE 4",
 }
 ```
 
-Зарегистрировать таргет в конце `tests/CMakeLists.txt` (после блока
+Register the target at the end of `tests/CMakeLists.txt` (after the block
 `test_model_independence_guard`):
 
 ```cmake
@@ -328,12 +328,12 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard
 ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: сборка успешна; тест FAIL на
-`REQUIRE(v.empty())` с десятками строк `unlabeled test: ...` (весь файл ещё
-без LABELS). Синтетический TEST_CASE `parser: synthetic fixtures` при этом
-зелёный — он проверяет чистые функции.
+Expected: build succeeds; the test FAILs on
+`REQUIRE(v.empty())` with dozens of `unlabeled test: ...` lines (the whole file is still
+without LABELS). The synthetic TEST_CASE `parser: synthetic fixtures` is
+green — it checks the pure functions.
 
-- [ ] **Step 3: (RED зафиксирован, реализация в Task 2)**
+- [ ] **Step 3: (RED recorded, implementation in Task 2)**
 
 - [ ] **Step 4: Commit**
 
@@ -344,19 +344,19 @@ git commit -m "test: ctest category-label guard (RED baseline)"
 
 ---
 
-### Task 2: Label-блоки fast/inference/perf (GREEN для Task 1)
+### Task 2: fast/inference/perf label blocks (GREEN for Task 1)
 
 **Files:**
-- Modify: `tests/CMakeLists.txt` (три блока в самый конец файла)
+- Modify: `tests/CMakeLists.txt` (three blocks at the very end of the file)
 
 **Interfaces:**
-- Consumes: guard из Task 1 (проверяет `PROPERTIES LABELS`).
-- Produces: каноническая разметка всех 126 тестов; список имён используется
-  в Task 4 (пресеты) и Task 6 (роутер).
+- Consumes: the Task 1 guard (checks `PROPERTIES LABELS`).
+- Produces: the canonical labelling of all 126 tests; the name list is used
+  in Task 4 (presets) and Task 6 (router).
 
-- [ ] **Step 1: Append label blocks**
+- [ ] **Step 1: Add the label blocks**
 
-Добавить в самый конец `tests/CMakeLists.txt`:
+Add the three blocks (exact test-name lists) at the very end of `tests/CMakeLists.txt`:
 
 ```cmake
 # ── Test category labels (fast | inference | perf) ────────────────────────
@@ -508,10 +508,10 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard
 ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: PASS. Если guard ругается `unlabeled test: <name>` — имя из
-foreach-цикла пропущено в списках; `label for unknown test` — опечатка.
-Сверка количества: `ctest --preset linux-debug -N` должен показывать 126
-тестов; `42 fast + 78 inference + 6 perf`.
+Expected: PASS. If the guard complains `unlabeled test: <name>` — a foreach-loop
+name was missed in the lists; `label for unknown test` — a typo.
+Count check: `ctest --preset linux-debug -N` must show 126
+tests; `42 fast + 78 inference + 6 perf`.
 
 - [ ] **Step 3: Cross-check label counts**
 
@@ -521,7 +521,7 @@ ctest --preset linux-debug -L "^inference$" -N | tail -2
 ctest --preset linux-debug -L "^perf$" -N | tail -2
 ```
 
-Expected: 42 / 78 / 6 (строка «Total Tests: N»).
+Expected: 42 / 78 / 6 (the "Total Tests: N" line).
 
 - [ ] **Step 4: Commit**
 
@@ -532,18 +532,18 @@ git commit -m "test: label all 126 ctest tests (fast/inference/perf)"
 
 ---
 
-### Task 3: Guard-проверка пресетов (RED)
+### Task 3: Preset guard check (RED)
 
 **Files:**
 - Modify: `tests/test_ctest_labels_guard.cpp`
 
 **Interfaces:**
 - Consumes: `Categories()`, `ReadFileOrThrow` (Task 1).
-- Produces: функция `CheckPresets` (используется только guard'ом).
+- Produces: the function `CheckPresets` (used only by the guard).
 
 - [ ] **Step 1: Add the failing check**
 
-В анонимный namespace `tests/test_ctest_labels_guard.cpp` добавить (после
+In the anonymous namespace of `tests/test_ctest_labels_guard.cpp`, add (after
 `CheckPerfSkip`):
 
 ```cpp
@@ -580,7 +580,7 @@ std::vector<std::string> CheckPresets(const std::string& json_text)
 }
 ```
 
-И новый TEST_CASE (после perf-теста):
+And a new TEST_CASE (after the perf test):
 
 ```cpp
 TEST_CASE("ctest labels guard: presets reference valid labels",
@@ -605,7 +605,7 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard
 ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: FAIL на `missing testPreset <base>-fast/inference/perf` (15 строк).
+Expected: FAIL on `missing testPreset <base>-fast/inference/perf` (15 lines).
 
 - [ ] **Step 3: Commit (RED)**
 
@@ -616,19 +616,19 @@ git commit -m "test: preset label-filter guard (RED)"
 
 ---
 
-### Task 4: testPresets fast/inference/perf (GREEN для Task 3)
+### Task 4: testPresets fast/inference/perf (GREEN for Task 3)
 
 **Files:**
-- Modify: `CMakePresets.json` (массив `testPresets` целиком)
+- Modify: `CMakePresets.json` (the whole `testPresets` array)
 
 **Interfaces:**
-- Consumes: labels из Task 2; `CheckPresets` из Task 3.
-- Produces: 20 testPresets — 5 базовых (теперь fast-only) + по 3 варианта
-  на каждый configurePreset.
+- Consumes: labels from Task 2; `CheckPresets` from Task 3.
+- Produces: 20 testPresets — 5 base (now fast-only) + 3 variants
+  per configurePreset.
 
 - [ ] **Step 1: Replace the testPresets array**
 
-Заменить массив `"testPresets"` в `CMakePresets.json` на:
+Replace the `"testPresets"` array in `CMakePresets.json` with:
 
 ```json
   "testPresets": [
@@ -666,9 +666,9 @@ ctest --build --preset linux-debug --target test_ctest_labels_guard && \
   ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: базовый пресет и `-fast` = 42 теста; `-inference` = 78;
-`-perf` = 6; guard PASS (CMake валидирует схему пресетов при configure —
-ошибка схемы упала бы на первом шаге).
+Expected: the base preset and `-fast` = 42 tests; `-inference` = 78;
+`-perf` = 6; guard PASS (CMake validates the preset schema at configure —
+a schema error would fail at the first step).
 
 - [ ] **Step 3: Commit**
 
@@ -679,18 +679,18 @@ git commit -m "build: label-filtered test presets (fast/inference/perf)"
 
 ---
 
-### Task 5: Guard-проверка роутера (RED)
+### Task 5: Router guard check (RED)
 
 **Files:**
 - Modify: `tests/test_ctest_labels_guard.cpp`
 
 **Interfaces:**
-- Consumes: `Categories()` не нужен (валидация одним регэкспом).
-- Produces: функция `CheckRouter`.
+- Consumes: `Categories()` not needed (validation with a single regex).
+- Produces: the function `CheckRouter`.
 
 - [ ] **Step 1: Add the failing check**
 
-В анонимный namespace добавить (после `CheckPresets`):
+In the anonymous namespace, add (after `CheckPresets`):
 
 ```cpp
 // tools/test_router.cmake declares: lsx_router_rule(<id> <label> <regex>)
@@ -722,7 +722,7 @@ std::vector<std::string> CheckRouter(const std::string& router_text)
 }
 ```
 
-И TEST_CASE (после preset-теста):
+And a TEST_CASE (after the preset test):
 
 ```cpp
 TEST_CASE("ctest labels guard: router rules valid", "[labels][guard]")
@@ -746,7 +746,7 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard && \
   ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: FAIL на `cannot read .../tools/test_router.cmake` (файла ещё нет).
+Expected: FAIL on `cannot read .../tools/test_router.cmake` (the file does not exist yet).
 
 - [ ] **Step 3: Commit (RED)**
 
@@ -757,14 +757,14 @@ git commit -m "test: router rule guard (RED)"
 
 ---
 
-### Task 6: git-diff-роутер tools/test_router.cmake (GREEN для Task 5)
+### Task 6: git-diff router tools/test_router.cmake (GREEN for Task 5)
 
 **Files:**
 - Create: `tools/test_router.cmake`
 
 **Interfaces:**
-- Consumes: labels из Task 2; testPresets из Task 4.
-- Produces: команда запуска (из корня репо):
+- Consumes: labels from Task 2; testPresets from Task 4.
+- Produces: the run command (from the repo root):
 
 ```
 cmake -DLSX_PRESET=linux-debug -P tools/test_router.cmake
@@ -774,7 +774,7 @@ cmake -DLSX_PRESET=linux-debug -DLSX_ALL=ON -P tools/test_router.cmake
 
 - [ ] **Step 1: Write the router**
 
-Создать `tools/test_router.cmake` целиком:
+Create `tools/test_router.cmake` in full:
 
 ```cmake
 # git-diff-driven ctest category router (script mode, no build system).
@@ -931,8 +931,8 @@ Expected: PASS.
 cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake
 ```
 
-Expected: `-- test_router: labels = fast` (нет диффа против origin/main) или
-`labels = fast;inference` если дифф затрагивает контур. Ошибок CMake нет.
+Expected: `-- test_router: labels = fast` (no diff against origin/main) or
+`labels = fast;inference` if the diff touches the contour. No CMake errors.
 
 - [ ] **Step 4: Commit**
 
@@ -943,18 +943,18 @@ git commit -m "feat: git-diff test router (fast+inference, perf manual)"
 
 ---
 
-### Task 7: Guard-проверка имён tests/ (RED)
+### Task 7: tests/ naming guard check (RED)
 
 **Files:**
 - Modify: `tests/test_ctest_labels_guard.cpp`
 
 **Interfaces:**
-- Consumes: ничего нового.
-- Produces: функция `CheckTestsNaming`.
+- Consumes: nothing new.
+- Produces: the function `CheckTestsNaming`.
 
 - [ ] **Step 1: Add the failing check**
 
-В анонимный namespace добавить (после `CheckRouter`):
+In the anonymous namespace, add (after `CheckRouter`):
 
 ```cpp
 // Every file in tests/ (top level) follows the test_* prefix: test_*.cpp,
@@ -978,7 +978,7 @@ std::vector<std::string> CheckTestsNaming(const fs::path& tests_dir)
 }
 ```
 
-И TEST_CASE (в конец файла):
+And a TEST_CASE (at the end of the file):
 
 ```cpp
 TEST_CASE("ctest labels guard: tests/ file naming uniformity",
@@ -1001,7 +1001,7 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard && \
   ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: FAIL с 7 нарушениями — `<family>_test_fixture.h` (glm, deepseek,
+Expected: FAIL with 7 violations — `<family>_test_fixture.h` (glm, deepseek,
 gemma, qwen_dense, qwen_moe, qwen_moe_exp, kimi).
 
 - [ ] **Step 3: Commit (RED)**
@@ -1013,7 +1013,7 @@ git commit -m "test: tests/ naming-uniformity guard (RED)"
 
 ---
 
-### Task 8: Переименование фикстур (GREEN для Task 7)
+### Task 8: Fixture rename (GREEN for Task 7)
 
 **Files:**
 - Rename: `tests/glm_moe_test_fixture.h` → `tests/test_glm_moe_fixture.h`
@@ -1023,11 +1023,11 @@ git commit -m "test: tests/ naming-uniformity guard (RED)"
 - Rename: `tests/qwen_moe_test_fixture.h` → `tests/test_qwen_moe_fixture.h`
 - Rename: `tests/qwen_moe_exp_test_fixture.h` → `tests/test_qwen_moe_exp_fixture.h`
 - Rename: `tests/kimi_moe_test_fixture.h` → `tests/test_kimi_moe_fixture.h`
-- Modify: все файлы в `tests/`, включающие эти заголовки (~30 include)
+- Modify: all files in `tests/` that include these headers (~30 includes)
 
 **Interfaces:**
-- Consumes: ничего.
-- Produces: единообразное именование `tests/test_*`; фикс-паттерн для
+- Consumes: nothing.
+- Produces: uniform `tests/test_*` naming; the fixed pattern for
   `CheckTestsNaming`.
 
 - [ ] **Step 1: Rename fixtures with git mv**
@@ -1042,8 +1042,8 @@ git mv tests/qwen_moe_test_fixture.h tests/test_qwen_moe_fixture.h
 git mv tests/kimi_moe_test_fixture.h tests/test_kimi_moe_fixture.h
 ```
 
-(qwen_moe_exp переименовывается ДО qwen_moe — защита от ложного совпадения
-при следующем шаге.)
+(qwen_moe_exp is renamed BEFORE qwen_moe — protection against a false match
+at the next step.)
 
 - [ ] **Step 2: Update includes**
 
@@ -1059,7 +1059,7 @@ rg -l 'test_fixture\.h' tests/ | xargs sed -i \
 rg -n 'test_fixture\.h' tests/ || true
 ```
 
-Expected: последняя `rg` ничего не находит (0 совпадений).
+Expected: the last `rg` finds nothing (0 matches).
 
 - [ ] **Step 3: Rebuild affected targets and run guard**
 
@@ -1070,7 +1070,7 @@ cmake --build --preset linux-debug --target test_ctest_labels_guard \
 ctest --preset linux-debug -R test_ctest_labels_guard --output-on-failure
 ```
 
-Expected: PASS (все 5 guard-TEST_CASE зелёные).
+Expected: PASS (all 5 guard TEST_CASEs green).
 
 - [ ] **Step 4: Commit**
 
@@ -1081,61 +1081,61 @@ git commit -m "refactor: unify tests/ fixture naming to test_*_fixture.h"
 
 ---
 
-### Task 9: Документация AGENTS.md + финальная верификация
+### Task 9: AGENTS.md documentation + final verification
 
 **Files:**
-- Modify: `AGENTS.md` (раздел `## Test`)
+- Modify: `AGENTS.md` (the `## Test` section)
 
 **Interfaces:**
-- Consumes: всё предыдущее.
-- Produces: задокументированные команды трёх категорий.
+- Consumes: everything above.
+- Produces: the documented commands of the three categories.
 
 - [ ] **Step 1: Update the Test section**
 
-В `AGENTS.md` сразу после строки `## Test` заменить содержимое раздела на:
+In `AGENTS.md`, right after the `## Test` line, replace the section content with:
 
 ```markdown
 ## Test
 
-`BUILD_TESTING=ON` is included in every preset. Тесты разбиты на три
-категории (CTest labels, guard: `test_ctest_labels_guard`):
+`BUILD_TESTING=ON` is included in every preset. Tests are split into three
+categories (CTest labels, guard: `test_ctest_labels_guard`):
 
-| Label | Что это | Когда запускается |
+| Label | What it is | When it runs |
 |---|---|---|
-| `fast` (42) | host-only тесты | каждый `ctest --preset` (дефолт) |
-| `inference` (78) | CUDA/модельный контур | когда изменился контур (роутер) или вручную |
-| `perf` (6) | perf-бенчмарки на реальных весах | только отдельной командой |
+| `fast` (42) | host-only tests | every `ctest --preset` (default) |
+| `inference` (78) | CUDA/model contour | when the contour changed (router) or manually |
+| `perf` (6) | perf benchmarks on real weights | only via a separate command |
 
 ```bash
-ctest --preset linux-debug                  # fast only (дефолт всех пресетов)
+ctest --preset linux-debug                  # fast only (the default of all presets)
 ctest --preset linux-debug-inference        # inference sweep
-ctest --preset linux-debug-perf             # perf, отдельная команда
-ctest -L "^(fast|inference|perf)$"          # полный прогон
+ctest --preset linux-debug-perf             # perf, a separate command
+ctest -L "^(fast|inference|perf)$"          # the full run
 
-# Автодетект по git diff (запускает fast + inference при изменении контура):
+# Autodetect via git diff (runs fast + inference when the contour changes):
 cmake -DLSX_PRESET=linux-debug -P tools/test_router.cmake
 cmake -DLSX_PRESET=linux-debug -DLSX_LIST=ON -P tools/test_router.cmake  # dry-run
 ```
 
-Дисциплина: новый тест обязан получить label в том же коммите (иначе красный
-`test_ctest_labels_guard`). Правила классификации путей — таблица
-`lsx_router_rule(...)` в `tools/test_router.cmake`.
+Discipline: a new test must get a label in the same commit (otherwise a red
+`test_ctest_labels_guard`). The path classification rules — the table
+`lsx_router_rule(...)` in `tools/test_router.cmake`.
 ```
 
-Существующий Windows-абзац
-(`**WINDOWS-ОГРАНИЧЕНИЕ**: под Windows запускать тесты ТОЛЬКО ...`)
-оставить без изменений после новой таблицы.
+Leave the existing Windows paragraph
+(`**WINDOWS RESTRICTION**: under Windows run tests ONLY ...`)
+unchanged after the new table.
 
 - [ ] **Step 2: Full verification**
 
 ```bash
 ctest --preset linux-debug -N | tail -1          # Total Tests: 42
-ctest --preset linux-debug                       # fast зелёный
+ctest --preset linux-debug                       # fast green
 ctest --preset linux-debug-perf -N | tail -1     # Total Tests: 6
 cmake -DLSX_PRESET=linux-debug -DLSX_ALL=ON -DLSX_LIST=ON -P tools/test_router.cmake
 ```
 
-Expected: 42 / зелёный / 6 / `labels = fast;inference`.
+Expected: 42 / green / 6 / `labels = fast;inference`.
 
 - [ ] **Step 3: Commit**
 

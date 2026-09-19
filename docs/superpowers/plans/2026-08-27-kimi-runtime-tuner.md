@@ -1,38 +1,38 @@
 # Kimi RuntimeTuner Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to
-> implement this plan task-by-task (субагенты в этом репозитории ЗАПРЕЩЕНЫ —
+> implement this plan task-by-task (subagents are FORBIDDEN in this repository —
 > AGENTS.md). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Довести Kimi-K2.7-Code до полного GLM-паритета адаптивного expert-cache:
-телеметрия hits/misses из CUDA-пайплайна + `lifecycle::RuntimeTuner` между
-запросами + governor lease на кэш-резиденцию.
+**Goal:** Bring Kimi-K2.7-Code to full GLM parity of the adaptive expert cache:
+hits/misses telemetry from the CUDA pipeline + `lifecycle::RuntimeTuner` between
+requests + a governor lease on cache residency.
 
-**Architecture:** Три слоя. (1) Хост-хелперы в `kimi_moe_expert_cache.h` —
-чистые inline-функции `KimiCountCacheHits`/`KimiExpertCachePerExpertBytes`
-(unit-тест без CUDA). (2) CUDA-слой — поля телеметрии в `KimiGenerationResult`,
-накопление на сайте `KimiMoeResolveBatch`, атомарный override слотов
-`SetKimiExpertCacheSlotsOverride` + realloc арены при расхождении (паритет
-`GlmExpertCacheSlotsOverride`, glm_moe_inference.cu:29). (3) Модель —
-`RuntimeTuner` в `KimiK27CodeModel`, lease через `ModelBase::
-AcquireExpertCacheLease` (уже существует), `Report()` между запросами.
+**Architecture:** Three layers. (1) Host helpers in `kimi_moe_expert_cache.h` —
+pure inline functions `KimiCountCacheHits`/`KimiExpertCachePerExpertBytes`
+(a unit test without CUDA). (2) The CUDA layer — telemetry fields in `KimiGenerationResult`,
+accumulation at the `KimiMoeResolveBatch` site, an atomic slot override
+`SetKimiExpertCacheSlotsOverride` + arena realloc on a mismatch (parity with
+`GlmExpertCacheSlotsOverride`, glm_moe_inference.cu:29). (3) The model —
+`RuntimeTuner` in `KimiK27CodeModel`, a lease via `ModelBase::
+AcquireExpertCacheLease` (already exists), `Report()` between requests.
 
 **Tech Stack:** C++20, CUDA 13.3 (Blackwell sm_120/121), Catch2 3.7.0,
 ResourceGovernor (leases), lifecycle::RuntimeTuner.
 
-**Инварианты:**
-- Бит-точность: телеметрия — только счётчики; realloc арены меняет число
-  слотов, но слот читает ТЕ же упакованные байты теми же ядрами
-  (контракт kimi_moe_expert_cache.h:13).
-- TDD: каждый шаг RED → прогон → GREEN → прогон → commit.
-- Windows-ограничение (AGENTS.md): исполнять ТОЛЬКО host-only тесты
-  (`test_kimi_moe_expert_cache`, `test_model_runtime`, ...); Kimi GPU-тесты
-  (`test_kimi_moe_*`) — только СБОРКА на Windows, прогон на Linux
+**Invariants:**
+- Bit-exactness: telemetry is counters only; an arena realloc changes the number of
+  slots, but a slot reads the SAME packed bytes with the same kernels
+  (the kimi_moe_expert_cache.h:13 contract).
+- TDD: each step RED → run → GREEN → run → commit.
+- Windows restriction (AGENTS.md): run ONLY host-only tests
+  (`test_kimi_moe_expert_cache`, `test_model_runtime`, ...); Kimi GPU tests
+  (`test_kimi_moe_*`) — only BUILD on Windows, run on Linux
   (Ubuntu 26.04, `ctest --preset linux-debug -R kimi`).
 
 ---
 
-### Task 1: Хост-хелперы телеметрии (`KimiCountCacheHits`, `KimiExpertCachePerExpertBytes`)
+### Task 1: Telemetry host helpers (`KimiCountCacheHits`, `KimiExpertCachePerExpertBytes`)
 
 **Files:**
 - Modify: `libs/lsxcommon/include/lsxcommon/kimi_moe_expert_cache.h`
@@ -40,7 +40,7 @@ ResourceGovernor (leases), lifecycle::RuntimeTuner.
 
 - [ ] **Step 1: Write the failing test**
 
-В `tests/test_kimi_moe_expert_cache.cpp` после существующих test cases добавить:
+In `tests/test_kimi_moe_expert_cache.cpp`, after the existing test cases, add:
 
 ```cpp
 TEST_CASE("KimiCountCacheHits accounts residents vs misses", "[kimi][cache]")
@@ -50,29 +50,29 @@ TEST_CASE("KimiCountCacheHits accounts residents vs misses", "[kimi][cache]")
     using lsxcommon::kimi::KimiMoeExpertCachePlan;
     constexpr int kEPL = 4;
     KimiMoeExpertCachePlan p;
-    p.Init(2, 2 * kEPL);   // 2 slots, 8 экспертов
+    p.Init(2, 2 * kEPL);   // 2 slots, 8 experts
 
-    // Первый батч: всё miss (кэш пуст) -> 0 hits / 8 misses.
+    // First batch: all miss (the cache is empty) -> 0 hits / 8 misses.
     const int ids0[8] = {0, 1, 2, 3, 0, 1, 2, 3};
     KimiMoeCacheBatch b0 = KimiMoeResolveBatch(p, 0, kEPL, ids0, 8);
     auto [h0, m0] = KimiCountCacheHits(b0, 8);
     CHECK(h0 == 0);
     CHECK(m0 == 8);
 
-    // Повтор: все resident -> 8 hits / 0 misses.
+    // Repeat: all resident -> 8 hits / 0 misses.
     KimiMoeCacheBatch b1 = KimiMoeResolveBatch(p, 0, kEPL, ids0, 8);
     auto [h1, m1] = KimiCountCacheHits(b1, 8);
     CHECK(h1 == 8);
     CHECK(m1 == 0);
 
-    // Смешанный: 4 resident + 4 eviction-miss.
+    // Mixed: 4 resident + 4 eviction-miss.
     const int ids2[8] = {4, 5, 6, 7, 0, 1, 2, 3};
     KimiMoeCacheBatch b2 = KimiMoeResolveBatch(p, 1, kEPL, ids2, 8);
     auto [h2, m2] = KimiCountCacheHits(b2, 8);
     CHECK(h2 == 4);
     CHECK(m2 == 4);
 
-    // Неактивный план: k токенов, все miss.
+    // Inactive plan: k tokens, all miss.
     KimiMoeExpertCachePlan off;
     off.Init(0, 2 * kEPL);
     KimiMoeCacheBatch b3 = KimiMoeResolveBatch(off, 0, kEPL, ids0, 8);
@@ -84,7 +84,7 @@ TEST_CASE("KimiCountCacheHits accounts residents vs misses", "[kimi][cache]")
 TEST_CASE("KimiExpertCachePerExpertBytes matches the arena stride math",
           "[kimi][cache]")
 {
-    // 3 матрицы pack (fp16-пары) + 3 блока scale (fp8/16 байт на элемент).
+    // 3 pack matrices (fp16 pairs) + 3 scale blocks (fp8/16 bytes per element).
     const std::size_t expect =
         3ull * (7168ull * 2048ull / 2) +      // packed w1|w3|w2
         3ull * (7168ull * 2048ull / 16);      // scales s1|s3|s2
@@ -100,12 +100,12 @@ TEST_CASE("KimiExpertCachePerExpertBytes matches the arena stride math",
 ```
 
 Expected: compile FAIL — `KimiCountCacheHits`/`KimiExpertCachePerExpertBytes`
-не являются членами `lsxcommon::kimi` (error C2039).
+are not members of `lsxcommon::kimi` (error C2039).
 
 - [ ] **Step 3: Write minimal implementation**
 
-В `libs/lsxcommon/include/lsxcommon/kimi_moe_expert_cache.h` после
-`KimiMoeResolveBatch` (после строки ~167) добавить:
+In `libs/lsxcommon/include/lsxcommon/kimi_moe_expert_cache.h` after
+`KimiMoeResolveBatch` (after line ~167), add:
 
 ```cpp
 // Telemetry (RuntimeTuner): residents get resident_slot >= 0 at resolve
@@ -134,12 +134,12 @@ inline std::size_t KimiExpertCachePerExpertBytes()
 }
 ```
 
-(`#include <cstdint>` уже есть; добавить `#include <utility>` для
-`std::pair`, если отсутствует.)
+(`#include <cstdint>` is already there; add `#include <utility>` for
+`std::pair` if absent.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Команда из Step 2. Expected: PASS, 0 failed.
+The command from Step 2. Expected: PASS, 0 failed.
 
 - [ ] **Step 5: Commit**
 
@@ -150,25 +150,25 @@ git commit -m "feat: kimi cache telemetry host helpers (hits/misses, per-expert 
 
 ---
 
-### Task 2: Override слотов + realloc арены в CUDA-слое (GLM-паритет)
+### Task 2: Slot override + arena realloc in the CUDA layer (GLM parity)
 
 **Files:**
 - Modify: `libs/lsxcommon/src/kimi_moe_kernels.h`
-- Modify: `libs/lsxcommon/src/kimi_moe_inference.cu` (lazy-блок ~строки 1170-1205,
-  resolve-сайт ~строки 1015-1055)
+- Modify: `libs/lsxcommon/src/kimi_moe_inference.cu` (lazy block ~lines 1170-1205,
+  resolve site ~lines 1015-1055)
 
-**Примечание:** на Windows только компиляция; прогон — Linux.
+**Note:** on Windows compilation only; the run — Linux.
 
 - [ ] **Step 1: Write the failing test (compile-level RED)**
 
-Хост-часть RED уже покрыта Task 1; для CUDA-слоя RED — это компиляция нового
-символа `SetKimiExpertCacheSlotsOverride`, на который ссылается Task 4.
-Пропустить прогон, зафиксировать ожидание: до реализации линковка Task 4
-упадёт с LNK2019. Идти сразу к Step 2.
+The RED host part is already covered by Task 1; for the CUDA layer RED is the compilation of the new
+symbol `SetKimiExpertCacheSlotsOverride`, referenced by Task 4.
+Skip the run, record the expectation: before implementation, Task 4 linking
+fails with LNK2019. Go straight to Step 2.
 
-- [ ] **Step 2: Override-атомика в `kimi_moe_kernels.h`**
+- [ ] **Step 2: Override atomics in `kimi_moe_kernels.h`**
 
-Рядом с `RunKimiGeneration` (после строки 75) добавить:
+Next to `RunKimiGeneration` (after line 75), add:
 
 ```cpp
 // RuntimeTuner hook (GLM parity, glm_moe_inference.cu:29): slots >= 0
@@ -178,9 +178,9 @@ void SetKimiExpertCacheSlotsOverride(int slots);
 int KimiExpertCacheSlotsOverride();
 ```
 
-- [ ] **Step 3: Реализация в `kimi_moe_inference.cu`**
+- [ ] **Step 3: Implementation in `kimi_moe_inference.cu`**
 
-Вверху файла (рядом с другими file-scope статиками) добавить:
+At the top of the file (next to the other file-scope statics), add:
 
 ```cpp
 std::atomic<int> g_kimi_cache_slots_override{-1};
@@ -196,9 +196,9 @@ int KimiExpertCacheSlotsOverride()
 }
 ```
 
-Ленивый блок аллокации (~строка 1170) заменить на: override → env →
-эвристика, БЕЗ вычисления per_expert вручную (Task 1-хелпер), и с realloc
-при расхождении числа слотов:
+Replace the lazy allocation block (~line 1170) with: override → env →
+heuristic, WITHOUT computing per_expert by hand (the Task 1 helper), and with a realloc
+on a slot-count mismatch:
 
 ```cpp
     if (cache && !cache->device) {
@@ -260,8 +260,8 @@ int KimiExpertCacheSlotsOverride()
     }
 ```
 
-В `KimiGenerationResult`-накопление (resolve-сайт ~строка 1018) добавить
-после `KimiMoeCacheBatch b = KimiMoeResolveBatch(...)`:
+In the `KimiGenerationResult` accumulation (resolve site ~line 1018), add
+after `KimiMoeCacheBatch b = KimiMoeResolveBatch(...)`:
 
 ```cpp
                     const auto [b_hits, b_misses] =
@@ -270,9 +270,9 @@ int KimiExpertCacheSlotsOverride()
                     batch_misses += b_misses;
 ```
 
-(переменные `batch_hits`/`batch_misses` — локальные `std::int64_t = 0;`
-рядом с объявлением счётчиков шага; structured bindings требуют C++20 —
-включено). В конце `RunKimiGeneration` перед возвратом успеха опубликовать:
+(the variables `batch_hits`/`batch_misses` — local `std::int64_t = 0;`
+next to the step counter declarations; structured bindings require C++20 —
+enabled). At the end of `RunKimiGeneration`, before returning success, publish:
 
 ```cpp
     gen.cache_hits = batch_hits;
@@ -285,7 +285,7 @@ int KimiExpertCacheSlotsOverride()
 & "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --config Debug --target lsxcommon
 ```
 
-Expected: компиляция без ошибок.
+Expected: compilation without errors.
 
 - [ ] **Step 5: Commit**
 
@@ -296,16 +296,16 @@ git commit -m "feat: kimi expert-cache slots override + arena rebuild + hits/mis
 
 ---
 
-### Task 3: Телеметрия в `KimiGenerationResult`
+### Task 3: Telemetry in `KimiGenerationResult`
 
 **Files:**
 - Modify: `libs/lsxcommon/src/kimi_moe_kernels.h:55-65` (struct
   `KimiGenerationResult`)
 
-Входит в Task 2 по факту (поля нужны для компиляции накопления), но
-зафиксировано отдельным шагом:
+Included in Task 2 de facto (the fields are needed to compile the accumulation), but
+recorded as a separate step:
 
-- [ ] **Step 1: Добавить поля**
+- [ ] **Step 1: Add the fields**
 
 ```cpp
 struct KimiGenerationResult {
@@ -335,17 +335,17 @@ git commit -m "feat: kimi generation result carries expert-cache telemetry"
 
 ---
 
-### Task 4: RuntimeTuner в `KimiK27CodeModel`
+### Task 4: RuntimeTuner in `KimiK27CodeModel`
 
 **Files:**
 - Modify: `libs/lsxcommon/src/kimi_moe_model.h`
-- Modify: `libs/lsxcommon/src/kimi_moe_model.cpp` (Load ~строки 60-105,
-  Infer ~строки 105-135, TeardownWeights)
+- Modify: `libs/lsxcommon/src/kimi_moe_model.cpp` (Load ~lines 60-105,
+  Infer ~lines 105-135, TeardownWeights)
 
-- [ ] **Step 1: Члены модели (header)**
+- [ ] **Step 1: Model members (header)**
 
-В private-секцию `KimiK27CodeModel` (после `expert_cache_`) добавить
-include `"lsxcommon/runtime_tuner.h"` в начало файла и члены:
+In the private section of `KimiK27CodeModel` (after `expert_cache_`), add
+the include `"lsxcommon/runtime_tuner.h"` at the top of the file and the members:
 
 ```cpp
     // Adaptive expert-cache controller (GLM parity): owns the cache lease
@@ -356,11 +356,11 @@ include `"lsxcommon/runtime_tuner.h"` в начало файла и члены:
     std::int64_t tuner_last_misses_ = 0;
 ```
 
-- [ ] **Step 2: Load — lease + tuner после `AcquirePermanentWeights`**
+- [ ] **Step 2: Load — lease + tuner after `AcquirePermanentWeights`**
 
-В `KimiK27CodeModel::Load` после строки
+In `KimiK27CodeModel::Load`, after the line
 `if (!AcquirePermanentWeights(pw_.resident_bytes)) return AbortLoad();`
-вставить:
+insert:
 
 ```cpp
     // Adaptive expert-cache lease + RuntimeTuner (GLM parity). Bounds span
@@ -397,14 +397,14 @@ include `"lsxcommon/runtime_tuner.h"` в начало файла и члены:
     tuner_last_hits_ = tuner_last_misses_ = 0;
 ```
 
-(удалить прежнюю строку `expert_cache_.plan.Init(0, ...)` в Load — план
-инициализирует ленивый блок .cu; `#include <cstdlib>` для `std::getenv`
-уже есть в TU через другие заголовки — при отсутствии добавить.)
+(remove the old line `expert_cache_.plan.Init(0, ...)` in Load — the plan
+is initialized by the lazy .cu block; `#include <cstdlib>` for `std::getenv`
+is already present in the TU via other headers — add it if absent.)
 
-- [ ] **Step 3: Infer — Report между запросами**
+- [ ] **Step 3: Infer — Report between requests**
 
-В `KimiK27CodeModel::Infer` после успешного `RunUnderResidencyLock` и
-перед `runtime::FillInferenceResult(...)`:
+In `KimiK27CodeModel::Infer`, after a successful `RunUnderResidencyLock` and
+before `runtime::FillInferenceResult(...)`:
 
 ```cpp
     if (tuner_) {  // between requests: adapt the expert cache (GLM parity)
@@ -418,12 +418,12 @@ include `"lsxcommon/runtime_tuner.h"` в начало файла и члены:
     }
 ```
 
-- [ ] **Step 4: TeardownWeights — tuner первым**
+- [ ] **Step 4: TeardownWeights — tuner first**
 
-В начале `KimiK27CodeModel::TeardownWeights` добавить `tuner_.reset();`
-(lease отпускается деструктором тюнера; moved-from
-`ModelBase::expert_cache_lease_` пуст — повторный release в базовом
-Unload безопасен).
+At the start of `KimiK27CodeModel::TeardownWeights`, add `tuner_.reset();`
+(the lease is released by the tuner destructor; the moved-from
+`ModelBase::expert_cache_lease_` is empty — a repeated release in the base
+Unload is safe).
 
 - [ ] **Step 5: Verify build + host-only suites**
 
@@ -432,7 +432,7 @@ Unload безопасен).
 & "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -C Debug -R "test_kimi_moe_expert_cache|test_model_runtime|test_resource_governor|test_runtime_tuner" --output-on-failure
 ```
 
-Expected: сборка без ошибок; все 4 цели PASS.
+Expected: build without errors; all 4 targets PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -443,18 +443,18 @@ git commit -m "feat: kimi model RuntimeTuner wiring (lease, telemetry report, sl
 
 ---
 
-### Task 5: Верификация (Linux + Windows) и финализация
+### Task 5: Verification (Linux + Windows) and finalization
 
-- [ ] **Step 1: Windows — полная сборка + host-only регресс**
+- [ ] **Step 1: Windows — full build + host-only regression**
 
 ```powershell
 & "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --config Debug
 & "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -C Debug -R "test_kimi_moe_expert_cache|test_model_runtime|test_model_engine|test_model_factory|test_geometry_guard|test_resource_governor|test_runtime_tuner|test_lifecycle_plan" --output-on-failure
 ```
 
-Expected: 0 failed. Kimi GPU-цели только СБОРАТСЯ (ограничение AGENTS.md).
+Expected: 0 failed. Kimi GPU targets are only BUILT (AGENTS.md restriction).
 
-- [ ] **Step 2: Linux (Ubuntu 26.04) — прогон Kimi GPU-тестов**
+- [ ] **Step 2: Linux (Ubuntu 26.04) — run the Kimi GPU tests**
 
 ```bash
 cmake --preset linux-debug && cmake --build --preset linux-debug
@@ -463,10 +463,10 @@ ctest --preset linux-debug -R kimi --output-on-failure
 
 Expected: `test_kimi_moe_expert_cache`, `test_kimi_moe_convert`,
 `test_kimi_moe_model`, `test_kimi_moe_inference`, `test_kimi_moe_selfcheck`
-— PASS/SKIP (без чекпоинта SKIP_RETURN_CODE 4). Реальная модель обязана
-генерировать "Paris" как раньше (бит-точность не затронута).
+— PASS/SKIP (without a checkpoint SKIP_RETURN_CODE 4). The real model must
+generate "Paris" as before (bit-exactness untouched).
 
-- [ ] **Step 3: Финальный коммит (если остались правки)**
+- [ ] **Step 3: Final commit (if any edits remain)**
 
 ```bash
 git add -A
@@ -478,12 +478,12 @@ git push
 
 ## Self-Review
 
-- **Покрытие цели:** телеметрия (Task 1+3), CUDA-накопление + override/realloc
-  (Task 2), модельный tuner + lease (Task 4), верификация (Task 5) — цель
-  закрыта полностью.
-- **Плейсхолдеры:** нет; все шаги содержат код/команды.
-- **Типы:** `KimiCountCacheHits` возвращает `std::pair<std::int64_t,
-  std::int64_t>` — используется structured bindings в Task 2 и test в Task 1;
-  `RuntimeTuner(gov, lease, stride, bounds)` — сигнатура
+- **Goal coverage:** telemetry (Task 1+3), CUDA accumulation + override/realloc
+  (Task 2), the model tuner + lease (Task 4), verification (Task 5) — the goal
+  is fully closed.
+- **Placeholders:** none; every step contains code/commands.
+- **Types:** `KimiCountCacheHits` returns `std::pair<std::int64_t,
+  std::int64_t>` — used with structured bindings in Task 2 and the test in Task 1;
+  `RuntimeTuner(gov, lease, stride, bounds)` — the signature
   `runtime_tuner.h:31`; `AcquireExpertCacheLease`/`expert_cache_lease_` —
-  `model_base.h` (lifecycle-unification II, коммит c2f6f72).
+  `model_base.h` (lifecycle-unification II, commit c2f6f72).

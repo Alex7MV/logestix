@@ -8,11 +8,11 @@ project(logestix
 
 find_package(CUDAToolkit REQUIRED)
 
-# ── Стандарты ────────────────────────────────────────────────────────────────
+# ── Standards ────────────────────────────────────────────────────────────────
 
-# C++20 используется как baseline для всего кода (включая CUDA через
-# CUDA_STANDARD 20). Компиляторы поддерживают более высокие стандарты
-# (GCC 15 / nvcc 13.2+ умеют C++23), но проект осознанно зафиксирован на C++20.
+# C++20 is the baseline for all code (including CUDA via
+# CUDA_STANDARD 20). The compilers support higher standards
+# (GCC 15 / nvcc 13.2+ understand C++23), but the project is deliberately pinned to C++20.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
@@ -20,7 +20,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# ── Флаги компилятора ────────────────────────────────────────────────────────
+# ── Compiler flags ────────────────────────────────────────────────────────
 
 if(MSVC)
     # CACHE FORCE so the value propagates into single-file try_compile sub-builds
@@ -39,13 +39,13 @@ else()
 endif()
 
 # ── Linux CPU-tuned build: AMD EPYC 9V74 (Zen 4) ─────────────────────────────
-# `lsx_tune` — INTERFACE-библиотека, несущая агрессивные флаги оптимизации C/C++
-# под EPYC 9V74. Линкуется PUBLIC в `lsxcommon` (а через него — транзитивно во
-# все приложения и тесты). CUDA-объекты (`lsxcommon_cu`), FetchContent- и
-# submodule-зависимости (Arrow, spdlog, simdjson, FlatBuffers, libzmq) эти флаги
-# НЕ получают: всё обёрнуто в $<$<COMPILE_LANGUAGE:C,CXX>:...> плюс
-# $<$<PLATFORM_ID:Linux>:...>. MSVC и Apple не затрагиваются.
-# Включается через LSX_ARCH_ZNVER4 / LSX_LTO (см. пресет linux-release-znver4).
+# `lsx_tune` — an INTERFACE library carrying aggressive C/C++ optimization flags
+# for the EPYC 9V74. It is linked PUBLIC into `lsxcommon` (and through it —
+# transitively into all apps and tests). CUDA objects (`lsxcommon_cu`), FetchContent
+# and submodule dependencies (Arrow, spdlog, simdjson, FlatBuffers, libzmq) do NOT
+# get these flags: everything is wrapped in $<$<COMPILE_LANGUAGE:C,CXX>:...> plus
+# $<$<PLATFORM_ID:Linux>:...>. MSVC and Apple are unaffected.
+# Enabled via LSX_ARCH_ZNVER4 / LSX_LTO (see the linux-release-znver4 preset).
 option(LSX_ARCH_ZNVER4 "Tune Linux C/C++ build for AMD EPYC 9V74 (Zen 4)" OFF)
 option(LSX_LTO "Enable LTO for Linux Release C/C++ (GCC: -flto; Clang/AOCC: -flto=thin)" OFF)
 
@@ -76,21 +76,21 @@ if(LSX_LTO AND UNIX AND NOT APPLE)
     )
 endif()
 
-# ── ЗАВИСИМОСТИ: Apache Arrow через FetchContent (Минимальная сборка) ────────
+# ── DEPENDENCIES: Apache Arrow via FetchContent (minimal build) ────────
 
 include(FetchContent)
 
-# ХАК ДЛЯ СОВМЕСТИМОСТИ С CMAKE 4.x (Для xsimd/Arrow):
-# Гарантирует, что CMake 4.x не заблокирует зависимости, требующие политики ниже 3.5
-# Используем CMAKE_PROJECT_INCLUDE, чтобы файл применялся к project() любого вложенного
-# ExternalProject (включая xsimd_ep), а не только к текущему проекту.
+# CMAKE 4.x COMPATIBILITY HACK (for xsimd/Arrow):
+# Ensures CMake 4.x does not block dependencies that require a policy below 3.5
+# We use CMAKE_PROJECT_INCLUDE so the file applies to the project() of any nested
+# ExternalProject (including xsimd_ep), not just the current project.
 set(CMAKE_PROJECT_INCLUDE "${CMAKE_BINARY_DIR}/cmake_policy.cmake")
 file(WRITE "${CMAKE_BINARY_DIR}/cmake_policy.cmake"
     "cmake_minimum_required(VERSION 3.5)\n"
     "set(CMAKE_POLICY_VERSION_MINIMUM 3.5)\n"
 )
 
-# Жестко отключаем тяжелые и ненужные модули для ускорения сборки
+# Hard-disable heavy and unneeded modules to speed up the build
 set(ARROW_BUILD_TESTS OFF CACHE INTERNAL "Disable Arrow tests")
 set(ARROW_BUILD_BENCHMARKS OFF CACHE INTERNAL "Disable Arrow benchmarks")
 set(ARROW_BUILD_SHARED ON CACHE INTERNAL "Build Arrow as shared library")
@@ -100,12 +100,12 @@ set(ARROW_FLIGHT OFF CACHE INTERNAL "Disable Arrow Flight RPC")
 set(ARROW_GANDIVA OFF CACHE INTERNAL "Disable Gandiva LLVM compiler")
 set(ARROW_HDFS OFF CACHE INTERNAL "Disable HDFS support")
 set(ARROW_PARQUET OFF CACHE INTERNAL "Disable Parquet support")
-# Новые компиляторы (GCC 15+) строже; CHECKIN добавляет -Werror в debug и
-# Arrow не собирается на CHECKIN (-Werror=unused-parameter). Используем
-# PRODUCTION, где -Werror не добавляется вовсе.
+# Newer compilers (GCC 15+) are stricter; CHECKIN adds -Werror in debug and
+# Arrow does not build under CHECKIN (-Werror=unused-parameter). We use
+# PRODUCTION, where -Werror is not added at all.
 set(BUILD_WARNING_LEVEL "PRODUCTION" CACHE STRING "Arrow: disable -Werror" FORCE)
 
-# Включаем только то, что критично для инференса и работы с данными
+# Enable only what is critical for inference and data handling
 set(ARROW_DEPENDENCY_SOURCE "BUNDLED" CACHE STRING "Use bundled dependencies")
 set(ARROW_CUDA ON CACHE INTERNAL "Enable Arrow CUDA GPU support (requires CUDA Toolkit)")
 set(ARROW_COMPUTE ON CACHE INTERNAL "Enable Arrow Compute Engine (requires Boost)")
@@ -124,10 +124,10 @@ FetchContent_Declare(
   GIT_SHALLOW    TRUE
 )
 
-# Arrow на Windows не определяет ARROW_SIMD_LEVEL (пустая строка),
-# из-за чего if(NOT (${VAR} STREQUAL "NONE") ...) ломается в CMake 4.x.
-# Явно задаём уровень, чтобы условие в src/arrow/io/CMakeLists.txt
-# корректно вычислялось как FALSE (бенчмарк memory_benchmark не соберётся).
+# On Windows Arrow does not define ARROW_SIMD_LEVEL (empty string),
+# which breaks if(NOT (${VAR} STREQUAL "NONE") ...) under CMake 4.x.
+# We set the level explicitly so the condition in src/arrow/io/CMakeLists.txt
+# evaluates to FALSE correctly (the memory_benchmark benchmark will not build).
 set(ARROW_SIMD_LEVEL "NONE" CACHE STRING "Arrow SIMD level")
 set(ARROW_RUNTIME_SIMD_LEVEL "NONE" CACHE STRING "Arrow runtime SIMD level")
 
@@ -148,16 +148,16 @@ if(EXISTS "${_boost_literals}")
   file(WRITE "${_boost_literals}" "${_content}")
 endif()
 
-# ── ЗАВИСИМОСТИ: spdlog через FetchContent ────────────────────────────────────
+# ── DEPENDENCIES: spdlog via FetchContent ────────────────────────────────────
 
-# Отключаем сборку тестов и бенчмарков самой библиотеки spdlog
+# Disable building spdlog's own tests and benchmarks
 set(SPDLOG_BUILD_TESTS OFF CACHE INTERNAL "")
 set(SPDLOG_BUILD_BENCHMARKS OFF CACHE INTERNAL "")
 
 FetchContent_Declare(
   spdlog
   GIT_REPOSITORY "https://github.com/gabime/spdlog.git"
-  GIT_TAG        "v1.17.0" # Используем стабильный релиз
+  GIT_TAG        "v1.17.0" # Use the stable release
 )
 FetchContent_MakeAvailable(spdlog)
 
@@ -189,14 +189,15 @@ if(EXISTS "${_spdlog_fmt}")
 endif()
 unset(_spdlog_fmt)
 
-# ── ЗАВИСИМОСТИ: abseil-cpp через FetchContent (статические flat-структуры) ─
-# Стабильный LTS-тег (проверен 2026-09: "Abseil LTS branch, August 2026",
-# 20260817.0, коммит 2065f4d). Версия принуждается guard'ом
+# ── DEPENDENCIES: abseil-cpp via FetchContent (static flat structures) ─
+# Stable LTS tag (verified 2026-09: "Abseil LTS branch, August 2026",
+# 20260817.0, commit 2065f4d). The version is enforced by the guard in
 # tests/test_core.cpp "pinned dependency versions" (ABSL_LTS_RELEASE_VERSION).
-# Статика обязана учитывать верхнеуровневый C++ стандарт проекта:
-# ABSL_PROPAGATE_CXX_STD=ON заставляет каждую abseil-цель наследовать
-# CMAKE_CXX_STANDARD родителя (проект осознанно зафиксирован на C++20), а не
-# дефолтный C++14, иначе ABI-расхождение при линковке в lsxcommon/lsxhome.
+# The static libs must honor the project's top-level C++ standard:
+# ABSL_PROPAGATE_CXX_STD=ON makes every abseil target inherit the parent's
+# CMAKE_CXX_STANDARD (the project is deliberately pinned to C++20) instead of
+# the default C++14, otherwise there is an ABI mismatch when linking into
+# lsxcommon/lsxhome.
 set(ABSL_BUILD_TESTING OFF CACHE INTERNAL "Disable abseil tests")
 set(ABSL_BUILD_TEST_HELPERS OFF CACHE INTERNAL "Disable abseil test helpers")
 set(ABSL_BUILD_EXAMPLES OFF CACHE INTERNAL "Disable abseil examples")
@@ -265,14 +266,14 @@ if(EXISTS "${_absfmtchk}")
 endif()
 unset(_absfmtchk)
 
-# ── ЗАВИСИМОСТИ: simdjson через submodule (быстрый JSON-парсер) ───────────
+# ── DEPENDENCIES: simdjson via submodule (fast JSON parser) ───────────
 
 set(SIMDJSON_DEVELOPER_MODE OFF CACHE INTERNAL "")
 set(SIMDJSON_ENABLE_DEPRECATED_API OFF CACHE INTERNAL "")
 
 add_subdirectory(third_party/simdjson)
 
-# ── ЗАВИСИМОСТИ: Catch2 через FetchContent (только тесты) ─────────────────
+# ── DEPENDENCIES: Catch2 via FetchContent (tests only) ─────────────────
 if(BUILD_TESTING)
     set(CATCH_BUILD_TESTING OFF CACHE INTERNAL "")
     set(CATCH_BUILD_EXAMPLES OFF CACHE INTERNAL "")
@@ -284,7 +285,7 @@ if(BUILD_TESTING)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
-# ── ЗАВИСИМОСТИ: FlatBuffers через submodule (статическая сборка) ────────────
+# ── DEPENDENCIES: FlatBuffers via submodule (static build) ────────────
 
 set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")
 set(FLATBUFFERS_BUILD_FLATC OFF CACHE INTERNAL "")
@@ -294,7 +295,7 @@ set(FLATBUFFERS_INSTALL OFF CACHE INTERNAL "")
 
 add_subdirectory(third_party/flatbuffers)
 
-# ── ЗАВИСИМОСТИ: libzmq через submodule (статическая сборка) ──────────────────
+# ── DEPENDENCIES: libzmq via submodule (static build) ──────────────────
 
 set(BUILD_SHARED OFF CACHE INTERNAL "")
 set(BUILD_STATIC ON CACHE INTERNAL "")
@@ -305,16 +306,16 @@ set(ENABLE_DRAFTS OFF CACHE INTERNAL "")
 
 add_subdirectory(third_party/libzmq)
 
-# ── Рантайм окружение для Windows ───────────────────────────────────────────
+# ── Runtime environment for Windows ───────────────────────────────────────────
 
-# Должно быть до add_subdirectory, чтобы exe и dll попали в bin/
+# Must come before add_subdirectory so the exe and dll land in bin/
 if(WIN32)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
-# THIRD_PARTY_NOTICES обязан сопровождать каждый распространяемый бинарь
-# (Apache-2.0 §4(d), MPL-2.0, OFL, Unicode). Helper определён до
-# add_subdirectory(apps), чтобы приложения могли его вызвать сразу после
+# THIRD_PARTY_NOTICES must accompany every distributed binary
+# (Apache-2.0 §4(d), MPL-2.0, OFL, Unicode). The helper is defined before
+# add_subdirectory(apps) so apps can call it right after
 # add_executable.
 function(lsx_copy_third_party_notices target)
     add_custom_command(TARGET ${target} POST_BUILD
@@ -327,12 +328,12 @@ endfunction()
 
 install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
 
-# ── Поддиректории ────────────────────────────────────────────────────────────
+# ── Subdirectories ────────────────────────────────────────────────────────────
 
-# enable_testing должен быть вызван до add_subdirectory(apps), чтобы
-# add_test() внутри каждого приложения работал корректно.
-# Guard на CMAKE_PROJECT_NAME предотвращает повторный вызов при add_subdirectory
-# из внешнего проекта.
+# enable_testing must be called before add_subdirectory(apps) so that
+# add_test() inside each app works correctly.
+# The CMAKE_PROJECT_NAME guard prevents a second call when add_subdirectory
+# is used from an external project.
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
     enable_testing()
 endif()
@@ -341,8 +342,8 @@ add_subdirectory(libs)
 add_subdirectory(apps)
 add_subdirectory(tools)
 
-# Общие тесты, не привязанные к конкретному приложению (например, интеграционные
-# проверки зависимостей: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).
+# Shared tests not tied to a specific app (e.g. dependency integration
+# checks: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

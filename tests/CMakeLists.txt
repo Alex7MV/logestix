@@ -1,8 +1,8 @@
-# ── Исполняемый файл репозиторных тестов ─────────────────────────────────
+# ── Repository test executable ─────────────────────────────────
 add_executable(test_core test_core.cpp)
 target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson Catch2::Catch2WithMain)
 
-# Копируем arrow.dll и arrow_cuda.dll в директорию с тестовым исполняемым файлом
+# Copy arrow.dll and arrow_cuda.dll into the test executable directory
 if(WIN32)
     add_custom_command(TARGET test_core POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -18,14 +18,14 @@ endif()
 
 add_test(NAME test_core COMMAND test_core)
 
-# ── Тест shared fastload-хелперов (host-only, без CUDA-аллокаций) ────────
+# ── Shared fastload helper test (host-only, no CUDA allocations) ────────
 add_executable(test_fast_load test_fast_load.cpp)
 target_link_libraries(test_fast_load PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_fast_load PRIVATE
     ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_fast_load COMMAND test_fast_load)
 
-# ── Тест общего geometry-валидатора ModelBase (host-only) ────────────────
+# ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
 target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_geometry_guard COMMAND test_geometry_guard)
@@ -44,7 +44,7 @@ target_link_libraries(test_perf_baseline_logic PRIVATE lsxcommon
 add_test(NAME test_perf_baseline_logic COMMAND test_perf_baseline_logic)
 
 
-# ── Тест zero-copy Arrow IPC view-загрузки (быстрый путь лоадеров) ──────
+# ── Zero-copy Arrow IPC view load test (the loaders' fast path) ──────
 add_executable(test_schema_views test_schema_views.cpp)
 target_link_libraries(test_schema_views PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -64,7 +64,7 @@ endif()
 add_test(NAME test_schema_views COMMAND test_schema_views)
 
 
-# ── Тест DeepSeek round-trip загрузчика ─────────────────────────────────
+# ── DeepSeek loader round-trip test ─────────────────────────────────
 add_executable(test_deepseek_moe_loader test_deepseek_moe_loader.cpp)
 target_link_libraries(test_deepseek_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_loader PRIVATE
@@ -85,10 +85,10 @@ endif()
 
 add_test(NAME test_deepseek_moe_loader COMMAND test_deepseek_moe_loader)
 
-# ── Тест DeepSeek-V4-Flash model-стадии жизненного цикла (host-only):
-#    классификация конвертированного layout (detect_model_type / фабрика) +
-#    topology-контракт (load_topology) на синтетической logestix-фикстуре.
-#    У DeepSeek нет конвертера в репо — convert-стадии by design нет.
+# ── DeepSeek-V4-Flash model lifecycle-stage test (host-only):
+#    classification of the converted layout (detect_model_type / factory) +
+#    topology contract (load_topology) on a synthetic logestix fixture.
+#    DeepSeek has no converter in the repo — there is no convert stage by design.
 add_executable(test_deepseek_moe_model test_deepseek_moe_model.cpp)
 target_link_libraries(test_deepseek_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_model PRIVATE
@@ -413,7 +413,7 @@ set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES LABELS inference
 set_tests_properties(test_deepseek_moe_v41_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4)
 
-# ── Тест общего ExpertStore (LRU-погрузчика MoE-экспертов) ──────────────
+# ── Shared ExpertStore test (LRU loader for MoE experts) ──────────────
 add_executable(test_expert_store test_expert_store.cpp)
 target_link_libraries(test_expert_store PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -433,7 +433,7 @@ endif()
 add_test(NAME test_expert_store COMMAND test_expert_store)
 set_tests_properties(test_expert_store PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Qwen3.5-9B конвертера (парсер имён + индекс + round-trip) ────────
+# ── Qwen3.5-9B converter test (name parser + index + round-trip) ────────
 add_executable(test_qwen_dense_convert test_qwen_dense_convert.cpp)
 target_compile_definitions(test_qwen_dense_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -455,7 +455,7 @@ endif()
 
 add_test(NAME test_qwen_dense_convert COMMAND test_qwen_dense_convert)
 
-# ── Тест Qwen3.5-9B загрузчика (pinned upload, topology, layer dispatch) ────
+# ── Qwen3.5-9B loader test (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_dense_loader test_qwen_dense_loader.cpp)
 target_compile_definitions(test_qwen_dense_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -670,7 +670,7 @@ foreach(qt test_qwen_dense_shuffle_reduce test_qwen_dense_mlp test_qwen_dense_nv
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
-# ── Тест Qwen3.5-9B модели (фабрика + IModel + генерация) ──────────────
+# ── Qwen3.5-9B model test (factory + IModel + generation) ──────────────
 add_executable(test_qwen_dense_model test_qwen_dense_model.cpp)
 target_compile_definitions(test_qwen_dense_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -707,7 +707,7 @@ if(WIN32)
 endif()
 add_test(NAME test_glm_moe_expert_cache COMMAND test_glm_moe_expert_cache)
 
-# ── Инкрементальный KV-кэш Qwen (Task 7) ─────────────────────────────────
+# ── Qwen incremental KV cache (Task 7) ─────────────────────────────────
 add_executable(test_qwen_dense_kv_cache test_qwen_dense_kv_cache.cpp)
 target_compile_definitions(test_qwen_dense_kv_cache PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -752,7 +752,7 @@ endif()
 
 add_test(NAME test_qwen_dense_kv_parity COMMAND test_qwen_dense_kv_parity)
 
-# ── Тест Qwen3.8-27B модели ──────────────────────────────────────────────
+# ── Qwen3.8-27B model test ──────────────────────────────────────────────
 add_executable(test_qwen_dense_27b_model test_qwen_dense_27b_model.cpp)
 target_compile_definitions(test_qwen_dense_27b_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -777,7 +777,7 @@ add_test(NAME test_qwen_dense_27b_model COMMAND test_qwen_dense_27b_model)
 set_tests_properties(test_qwen_dense_27b_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
-# ── Тест общей модели проверки целостности (integrity:: helpers) ─────────
+# ── Shared integrity-check model test (integrity:: helpers) ─────────
 add_executable(test_model_integrity test_model_integrity.cpp)
 target_compile_definitions(test_model_integrity PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -799,7 +799,7 @@ endif()
 
 add_test(NAME test_model_integrity COMMAND test_model_integrity)
 
-# ── Интеграционный тест целостности Qwen-конвертера ───────────────────────
+# ── Qwen converter integrity integration test ───────────────────────
 add_executable(test_qwen_dense_converter_integrity test_qwen_dense_converter_integrity.cpp)
 target_compile_definitions(test_qwen_dense_converter_integrity PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -821,7 +821,7 @@ endif()
 
 add_test(NAME test_qwen_dense_converter_integrity COMMAND test_qwen_dense_converter_integrity)
 
-# ── Тест GLM-5.2 конвертера (парсер имён тензоров) ────────────────────────
+# ── GLM-5.2 converter test (tensor name parser) ────────────────────────
 add_executable(test_glm_moe_convert test_glm_moe_convert.cpp)
 target_compile_definitions(test_glm_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -843,7 +843,7 @@ endif()
 
 add_test(NAME test_glm_moe_convert COMMAND test_glm_moe_convert)
 
-# ── Тест GLM-5.3-Flash конвертера (геометрия, классификатор, requant) ─────
+# ── GLM-5.3-Flash converter test (geometry, classifier, requant) ─────
 add_executable(test_glm_moe_flash_convert test_glm_moe_flash_convert.cpp)
 target_compile_definitions(test_glm_moe_flash_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1
@@ -866,7 +866,7 @@ set_tests_properties(test_glm_moe_flash_convert PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_glm_moe_flash_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
-# ── Тест Kimi-K2.7-Code конвертера (геометрия, классификатор, топология) ──
+# ── Kimi-K2.7-Code converter test (geometry, classifier, topology) ──
 add_executable(test_kimi_moe_convert test_kimi_moe_convert.cpp)
 target_compile_definitions(test_kimi_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -889,7 +889,7 @@ endif()
 add_test(NAME test_kimi_moe_convert COMMAND test_kimi_moe_convert)
 set_tests_properties(test_kimi_moe_convert PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест GLM-5.2 загрузчика (pinned BF16→FP16 upload) ─────────────────────
+# ── GLM-5.2 loader test (pinned BF16→FP16 upload) ─────────────────────
 add_executable(test_glm_moe_loader test_glm_moe_loader.cpp)
 target_compile_definitions(test_glm_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -911,7 +911,7 @@ endif()
 
 add_test(NAME test_glm_moe_loader COMMAND test_glm_moe_loader)
 
-# ── Тест GLM-5.2 модели (фабрика + IModel) ─────────────────────────────────
+# ── GLM-5.2 model test (factory + IModel) ─────────────────────────────────
 add_executable(test_glm_moe_model test_glm_moe_model.cpp)
 target_compile_definitions(test_glm_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -933,10 +933,10 @@ endif()
 
 add_test(NAME test_glm_moe_model COMMAND test_glm_moe_model)
 
-# ── Тест GLM-5.2 SelfCheck (шаг 8 протокола): инкрементальный 1->2-токенный
-#    селфчек на реальной модели, минимум 3 цикла стресса (для подачи нагрузки
-#    достаточно 3-х раз; переопределяется LSX_TEST_GLM_SELFCHECK_CYCLES),
-#    бит-точная детерминированность final_logits, exit 0. SKIP без чекпоинта.
+# ── GLM-5.2 SelfCheck test (protocol step 8): incremental 1->2-token
+#    selfcheck on the real model, at least 3 stress cycles (3 runs are enough
+#    to apply the load; overridable with LSX_TEST_GLM_SELFCHECK_CYCLES),
+#    bit-exact determinism of final_logits, exit 0. SKIP without a checkpoint.
 add_executable(test_glm_moe_selfcheck test_glm_moe_selfcheck.cpp)
 target_compile_definitions(test_glm_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -960,7 +960,7 @@ add_test(NAME test_glm_moe_selfcheck COMMAND test_glm_moe_selfcheck)
 set_tests_properties(test_glm_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── Blackwell audit Phase 0: GLM-5.2 perf baseline harness (reporting test,
-#    SKIP без чекпоинта). Число генерируемых токенов — LSX_TEST_PERF_GEN_TOKENS.
+#    SKIP without a checkpoint). The number of generated tokens — LSX_TEST_PERF_GEN_TOKENS.
 add_executable(test_blackwell_perf_glm test_blackwell_perf_glm.cpp)
 target_link_libraries(test_blackwell_perf_glm PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1046,12 +1046,12 @@ endif()
 add_test(NAME test_blackwell_perf_deepseek COMMAND test_blackwell_perf_deepseek)
 set_tests_properties(test_blackwell_perf_deepseek PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест GLM-5.2 seq-P prefill parity: MoE-слои 3..77 обязаны держать
-#    block_rows = P (полная длина промпта), каждый промпт-токен занимает один
-#    IndexShare KV-слот. FAIL при коллапсе строк (kv_slots_used != P + gen),
-#    при расхождении argmax final_logits с первым сгенерированным токеном или
-#    при потере бит-точности между двумя идентичными прогонами. SKIP без
-#    чекпоинта.
+# ── GLM-5.2 seq-P prefill parity test: MoE layers 3..77 must keep
+#    block_rows = P (the full prompt length), each prompt token occupies one
+#    IndexShare KV slot. FAIL on row collapse (kv_slots_used != P + gen),
+#    on a mismatch between the argmax of final_logits and the first generated
+#    token, or on loss of bit-exactness between two identical runs. SKIP
+#    without a checkpoint.
 add_executable(test_glm_moe_prefill_seqp test_glm_moe_prefill_seqp.cpp)
 target_compile_definitions(test_glm_moe_prefill_seqp PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1074,7 +1074,7 @@ endif()
 add_test(NAME test_glm_moe_prefill_seqp COMMAND test_glm_moe_prefill_seqp)
 set_tests_properties(test_glm_moe_prefill_seqp PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест GLM-5.2 осмысленного вывода по --run (Infer output_text) ───────────
+# ── GLM-5.2 meaningful-output test via --run (Infer output_text) ───────────
 add_executable(test_glm_moe_prompt_output test_glm_moe_prompt_output.cpp)
 target_compile_definitions(test_glm_moe_prompt_output PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1097,7 +1097,7 @@ endif()
 add_test(NAME test_glm_moe_prompt_output COMMAND test_glm_moe_prompt_output)
 set_tests_properties(test_glm_moe_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест DeepSeek-V4-Flash осмысленного вывода (Infer output_text) ────────
+# ── DeepSeek-V4-Flash meaningful-output test (Infer output_text) ────────
 add_executable(test_deepseek_moe_prompt_output test_deepseek_moe_prompt_output.cpp)
 target_link_libraries(test_deepseek_moe_prompt_output PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1117,9 +1117,9 @@ endif()
 add_test(NAME test_deepseek_moe_prompt_output COMMAND test_deepseek_moe_prompt_output)
 set_tests_properties(test_deepseek_moe_prompt_output PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест DeepSeek-V4-Flash SelfCheck (шаг 8 протокола): инкрементальный
-#    1->2-токенный селфчек на реальной модели, минимум 3 цикла, детерминированный
-#    final_logits. SKIP без чекпоинта.
+# ── DeepSeek-V4-Flash SelfCheck test (protocol step 8): incremental
+#    1->2-token selfcheck on the real model, at least 3 cycles, deterministic
+#    final_logits. SKIP without a checkpoint.
 add_executable(test_deepseek_moe_selfcheck test_deepseek_moe_selfcheck.cpp)
 target_link_libraries(test_deepseek_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1139,9 +1139,9 @@ endif()
 add_test(NAME test_deepseek_moe_selfcheck COMMAND test_deepseek_moe_selfcheck)
 set_tests_properties(test_deepseek_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Qwen3.5-9B SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
-#    селфчек на реальной модели, минимум 3 цикла, детерминированный final_logits.
-#    SKIP без чекпоинта.
+# ── Qwen3.5-9B SelfCheck test (protocol step 8): incremental 1→2-token
+#    selfcheck on the real model, at least 3 cycles, deterministic final_logits.
+#    SKIP without a checkpoint.
 add_executable(test_qwen_dense_selfcheck test_qwen_dense_selfcheck.cpp)
 target_compile_definitions(test_qwen_dense_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1164,9 +1164,9 @@ endif()
 add_test(NAME test_qwen_dense_selfcheck COMMAND test_qwen_dense_selfcheck)
 set_tests_properties(test_qwen_dense_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Qwen3.8-27B SelfCheck (реальная модель) ─────────────────────────────
-#    Селфчек на реальной модели, минимум 3 цикла, детерминированный final_logits.
-#    SKIP без чекпоинта.
+# ── Qwen3.8-27B SelfCheck (real model) ─────────────────────────────
+#    Selfcheck on the real model, at least 3 cycles, deterministic final_logits.
+#    SKIP without a checkpoint.
 add_executable(test_qwen_dense_27b_selfcheck test_qwen_dense_27b_selfcheck.cpp)
 target_compile_definitions(test_qwen_dense_27b_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1189,7 +1189,7 @@ endif()
 add_test(NAME test_qwen_dense_27b_selfcheck COMMAND test_qwen_dense_27b_selfcheck)
 set_tests_properties(test_qwen_dense_27b_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест фабрики моделей ────────────────────────────────────────────────
+# ── Model factory test ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1209,7 +1209,7 @@ endif()
 add_test(NAME test_model_factory COMMAND test_model_factory)
 set_tests_properties(test_model_factory PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест generation-path CLI (--run / -r нормализация + default prompt) ─────
+# ── Generation-path CLI test (--run / -r normalization + default prompt) ─────
 add_executable(test_generation_cli test_generation_cli.cpp)
 target_link_libraries(test_generation_cli PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1228,7 +1228,7 @@ endif()
 
 add_test(NAME test_generation_cli COMMAND test_generation_cli)
 
-# ── Тест GLM-5.2 prompt framing helper (host-only, синтетический токенизатор) ────
+# ── GLM-5.2 prompt framing helper test (host-only, synthetic tokenizer) ────
 add_executable(test_glm_moe_prompt_framing test_glm_moe_prompt_framing.cpp)
 target_compile_definitions(test_glm_moe_prompt_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1250,7 +1250,7 @@ endif()
 
 add_test(NAME test_glm_moe_prompt_framing COMMAND test_glm_moe_prompt_framing)
 
-# ── Тест Gemma-4 prompt framing helper (host-only, сентинелы tokenizer.json) ─────
+# ── Gemma-4 prompt framing helper test (host-only, tokenizer.json sentinels) ─────
 add_executable(test_gemma_prompt_framing test_gemma_prompt_framing.cpp)
 target_compile_definitions(test_gemma_prompt_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1267,7 +1267,7 @@ endif()
 
 add_test(NAME test_gemma_prompt_framing COMMAND test_gemma_prompt_framing)
 
-# ── Тест Gemma-4 конвертера (классификатор имён + NVFP4-политика) ──────────
+# ── Gemma-4 converter test (name classifier + NVFP4 policy) ──────────
 add_executable(test_gemma_moe_convert test_gemma_moe_convert.cpp)
 target_compile_definitions(test_gemma_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1291,7 +1291,7 @@ add_test(NAME test_gemma_moe_convert COMMAND test_gemma_moe_convert)
 set_tests_properties(test_gemma_moe_convert PROPERTIES
     TIMEOUT 120)
 
-# ── Тест Gemma-4 загрузчика (BF16→FP16 in-place, арена, expert LRU) ─────────
+# ── Gemma-4 loader test (BF16→FP16 in-place, arena, expert LRU) ─────────
 add_executable(test_gemma_moe_loader test_gemma_moe_loader.cpp)
 target_compile_definitions(test_gemma_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1313,7 +1313,7 @@ endif()
 
 add_test(NAME test_gemma_moe_loader COMMAND test_gemma_moe_loader)
 
-# ── Тест Gemma-4 модели (фабрика + Load + Infer, синтетическая геометрия) ────
+# ── Gemma-4 model test (factory + Load + Infer, synthetic geometry) ────
 add_executable(test_gemma_moe_model test_gemma_moe_model.cpp)
 target_include_directories(test_gemma_moe_model PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
@@ -1339,10 +1339,10 @@ add_test(NAME test_gemma_moe_model COMMAND test_gemma_moe_model)
 set_tests_properties(test_gemma_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
-# ── Тест Gemma-4 SelfCheck (шаг 8 протокола): инкрементальный 1→2-токенный
-#    селфчек на реальной модели, минимум 3 цикла стресса (переопределяется
-#    LSX_TEST_GEMMA_SELFCHECK_CYCLES), бит-точная детерминированность
-#    final_logits, exit 0. SKIP без чекпоинта.
+# ── Gemma-4 SelfCheck test (protocol step 8): incremental 1→2-token
+#    selfcheck on the real model, at least 3 stress cycles (overridable with
+#    LSX_TEST_GEMMA_SELFCHECK_CYCLES), bit-exact determinism of
+#    final_logits, exit 0. SKIP without a checkpoint.
 add_executable(test_gemma_moe_selfcheck test_gemma_moe_selfcheck.cpp)
 target_compile_definitions(test_gemma_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1384,7 +1384,7 @@ foreach(qt test_gemma_moe_norm test_gemma_moe_rotary test_gemma_moe_attn test_ge
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
-# ── Тест ModelBase (tokenizer-db load + infer guards, host-only) ─────────
+# ── ModelBase test (tokenizer-db load + infer guards, host-only) ─────────
 add_executable(test_model_runtime test_model_runtime.cpp)
 target_compile_definitions(test_model_runtime PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1393,7 +1393,7 @@ target_include_directories(test_model_runtime PRIVATE
     ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
 
-# ── Тест InferenceEngine singleton + TokenChunk streaming/abort (host-only) ──
+# ── InferenceEngine singleton + TokenChunk streaming/abort test (host-only) ──
 add_executable(test_model_engine test_model_engine.cpp)
 target_link_libraries(test_model_engine PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1546,7 +1546,7 @@ set_tests_properties(test_perf_baseline_nemotron PROPERTIES
 set_tests_properties(test_perf_baseline_nemotron
     PROPERTIES LABELS perf)
 
-# ── Тест E8M0 -> pow2-E4M3 scale-пары (DeepSeek NVFP4 repack, Task 1) ─────
+# ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
@@ -1564,7 +1564,7 @@ set_tests_properties(test_deepseek_nvfp4_repack_tool PROPERTIES
 set_tests_properties(test_deepseek_nvfp4_repack_tool
     PROPERTIES LABELS convert)
 
-# ── DeepSeek конвертер: синтетический e2e (logestix-v1-nvfp4) ─────────────
+# ── DeepSeek converter: synthetic e2e (logestix-v1-nvfp4) ─────────────
 add_executable(test_deepseek_moe_convert test_deepseek_moe_convert.cpp)
 target_compile_definitions(test_deepseek_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -1577,7 +1577,7 @@ set_tests_properties(test_deepseek_moe_convert PROPERTIES
 set_tests_properties(test_deepseek_moe_convert
     PROPERTIES LABELS convert)
 
-# ── Тест zero-alloc токенизатора ─────────────────────────────────────────
+# ── Zero-alloc tokenizer test ─────────────────────────────────────────
 add_executable(test_tokenizer test_tokenizer.cpp)
 target_compile_definitions(test_tokenizer PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -1599,7 +1599,7 @@ endif()
 
 add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
-# ── Тест GLM-5.2 Dense MLP forward (слои 0-2) ─────────────────────────────
+# ── GLM-5.2 Dense MLP forward test (layers 0-2) ─────────────────────────────
 add_executable(test_glm_moe_layer_compute test_glm_moe_layer_compute.cpp)
 target_link_libraries(test_glm_moe_layer_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1619,11 +1619,11 @@ endif()
 add_test(NAME test_glm_moe_layer_compute COMMAND test_glm_moe_layer_compute)
 set_tests_properties(test_glm_moe_layer_compute PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест GLM-5.2 Dense MLP forward (слои 0-2, Phase 4.5 hash-фикстура) ───────
-# Прогоняет конкретный C++/CUDA execution loop RunGlmDenseMLPStack (SwiGLU
-# w2(silu(w1)x*w3)) через explicit async stream по синтетической hash-фикстуре
-# hidden=6144 и сверяет поэлементно против независимого CPU FP64-референса
-# (RED/GREEN), плюс проверяет целостность указателей/стридов слоёв 0-2.
+# ── GLM-5.2 Dense MLP forward test (layers 0-2, Phase 4.5 hash fixture) ───────
+# Runs the specific C++/CUDA execution loop RunGlmDenseMLPStack (SwiGLU
+# w2(silu(w1)x*w3)) over an explicit async stream on a synthetic hash fixture
+# hidden=6144 and compares element-by-element against an independent CPU FP64
+# reference (RED/GREEN), plus checks the integrity of layer 0-2 pointers/strides.
 add_executable(test_glm_moe_dense_compute test_glm_moe_dense_compute.cpp)
 target_link_libraries(test_glm_moe_dense_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1642,7 +1642,7 @@ endif()
 
 add_test(NAME test_glm_moe_dense_compute COMMAND test_glm_moe_dense_compute)
 
-# ── Тест GLM-5.2 MoE Layer-3 router (top_k=8 warp selection) ───────────────
+# ── GLM-5.2 MoE Layer-3 router test (top_k=8 warp selection) ───────────────
 add_executable(test_glm_moe_moe_router test_glm_moe_moe_router.cpp)
 target_link_libraries(test_glm_moe_moe_router PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1662,7 +1662,7 @@ endif()
 add_test(NAME test_glm_moe_moe_router COMMAND test_glm_moe_moe_router)
 set_tests_properties(test_glm_moe_moe_router PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест GLM-5.2 эксперт-стека (NVFP4 dequant + SwiGLU, слои 3-77) ─────────
+# ── GLM-5.2 expert-stack test (NVFP4 dequant + SwiGLU, layers 3-77) ─────────
 add_executable(test_glm_moe_experts test_glm_moe_experts.cpp)
 target_link_libraries(test_glm_moe_experts PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1682,10 +1682,10 @@ endif()
 add_test(NAME test_glm_moe_experts COMMAND test_glm_moe_experts)
 
 # ── TDD Cycle 9: GLM-5.2 MoE router + NVFP4 expert stacks (layers 3-77) ───────
-# Прогоняет RunGlmMoEStack (слои 3-77) через одиночный contiguous MoE-арену
-# (256 виртуальных срезов активаций экспертов) по синтетической hash-фикстуре
-# E2M1/E4M3/E8M0 и сверяет поэлементно против независимого CPU FP64-референса
-# (RED/GREEN) + проверяет целостность указателей/границ аорены.
+# Runs RunGlmMoEStack (layers 3-77) through a single contiguous MoE arena
+# (256 virtual expert-activation slices) on a synthetic E2M1/E4M3/E8M0 hash
+# fixture and compares element-by-element against an independent CPU FP64
+# reference (RED/GREEN) + checks the integrity of arena pointers/bounds.
 add_executable(test_glm_moe_moe_compute test_glm_moe_moe_compute.cpp)
 target_link_libraries(test_glm_moe_moe_compute PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1704,7 +1704,7 @@ endif()
 
 add_test(NAME test_glm_moe_moe_compute COMMAND test_glm_moe_moe_compute)
 
-# ── Тест GLM-5.2 IndexShare attention (mod-4 refresh, слои 3-77) ────────────
+# ── GLM-5.2 IndexShare attention test (mod-4 refresh, layers 3-77) ────────────
 add_executable(test_glm_moe_attention test_glm_moe_attention.cpp)
 target_link_libraries(test_glm_moe_attention PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1723,7 +1723,7 @@ endif()
 
 add_test(NAME test_glm_moe_attention COMMAND test_glm_moe_attention)
 
-# ── Тест GLM-5.2 полного 79-слойного цикла + MTP epilogue (генерация) ───────
+# ── GLM-5.2 full 79-layer loop + MTP epilogue test (generation) ───────
 add_executable(test_glm_moe_inference test_glm_moe_inference.cpp)
 target_link_libraries(test_glm_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -1772,7 +1772,7 @@ endif()
 add_test(NAME test_glm_moe_full_compute COMMAND test_glm_moe_full_compute)
 set_tests_properties(test_glm_moe_full_compute PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест TaskMosaic CE сетевого слоя (lsxnetwork) ───────────────────────────
+# ── TaskMosaic CE network-layer test (lsxnetwork) ───────────────────────────
 add_executable(test_mosaic_network test_mosaic_network.cpp)
 target_link_libraries(test_mosaic_network PRIVATE lsxnetwork Catch2::Catch2WithMain)
 
@@ -1812,11 +1812,11 @@ target_link_libraries(test_network_translator_weld PRIVATE lsxnetwork Catch2::Ca
 
 add_test(NAME test_network_translator_weld COMMAND test_network_translator_weld)
 
-# ── Интеграционный тест TaskMosaic: мультимодальный оркестратор (lsx_orchestrator) ──
-# Прогоняет одновременный burst OpenAI-запросов на обе ветки ("glm-5.2" и
-# "deepseek-v4-flash") через длинный lock-free SPSC конвейер и проверяет
-# zero-copy retirement без token-drift. Линкует lsxcommon (оркестратор + IModel)
-# и lsxnetwork (FrameQueue).
+# ── TaskMosaic integration test: the orchestrator (lsx_orchestrator) ──
+# Runs a simultaneous burst of OpenAI requests on both branches ("glm-5.2" and
+# "deepseek-v4-flash") through a long lock-free SPSC pipeline and checks
+# zero-copy retirement without token drift. Links lsxcommon (orchestrator + IModel)
+# and lsxnetwork (FrameQueue).
 add_executable(test_integrated_pipeline test_integrated_pipeline.cpp)
 target_link_libraries(test_integrated_pipeline PRIVATE lsxcommon lsxnetwork Catch2::Catch2WithMain)
 target_compile_definitions(test_integrated_pipeline PRIVATE
@@ -1837,7 +1837,7 @@ endif()
 
 add_test(NAME test_integrated_pipeline COMMAND test_integrated_pipeline)
 
-# ── Тест CUDA inference kernels ─────────────────────────────────────────
+# ── CUDA inference kernels test ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
 # direct experimentation: when a CUDA-compiling target links (directly or
@@ -2003,7 +2003,7 @@ endif()
 
 add_test(NAME test_deepseek_moe_arena COMMAND test_deepseek_moe_arena)
 
-# ── Тест isolated sampling seam (lsxcommon::sample, GreedySampler) ──────────
+# ── Isolated sampling seam test (lsxcommon::sample, GreedySampler) ──────────
 # Same OBJECT-lib pattern as test_deepseek_moe_moe_cu: the .cu must not inherit
 # lsxcommon's C++ compile flags, so it compiles standalone and links lsxcommon
 # only at the executable's link stage.
@@ -2054,7 +2054,7 @@ endif()
 
 add_test(NAME test_sampling COMMAND test_sampling)
 
-# ── Тест GLM fast loader (in-place BF16→FP16 kernel + pinned ring + арена) ──
+# ── GLM fast loader test (in-place BF16→FP16 kernel + pinned ring + arena) ──
 add_library(test_glm_moe_load_fast_cu OBJECT test_glm_moe_load_fast.cu)
 set_target_properties(test_glm_moe_load_fast_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2100,7 +2100,7 @@ endif()
 
 add_test(NAME test_glm_moe_load_fast COMMAND test_glm_moe_load_fast)
 
-# ── Тест жизненного цикла GLM-5.2 (ResourceGovernor load-once + leases) ────
+# ── GLM-5.2 lifecycle test (ResourceGovernor load-once + leases) ────
 add_library(test_glm_moe_model_lifecycle_cu OBJECT test_glm_moe_model_lifecycle.cu)
 set_target_properties(test_glm_moe_model_lifecycle_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2148,7 +2148,7 @@ endif()
 add_test(NAME test_glm_moe_model_lifecycle COMMAND test_glm_moe_model_lifecycle)
 set_tests_properties(test_glm_moe_model_lifecycle PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест общих fast-load примитивов (GPU BF16→FP16 + pinned ring) ───────────
+# ── Shared fast-load primitives test (GPU BF16→FP16 + pinned ring) ───────────
 # Same OBJECT-lib pattern as test_glm_moe_load_fast_cu.
 add_library(test_deepseek_moe_load_fast_cu OBJECT test_deepseek_moe_load_fast.cu)
 set_target_properties(test_deepseek_moe_load_fast_cu PROPERTIES
@@ -2214,7 +2214,7 @@ endif()
 
 add_test(NAME test_path_registry COMMAND test_path_registry)
 
-# ── Тест модуля оценки VRAM-профиля (conversion-time) ───────────────────
+# ── VRAM-profile estimator test (conversion-time) ───────────────────
 add_executable(test_vram_estimate test_vram_estimate.cpp)
 target_link_libraries(test_vram_estimate PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -2305,7 +2305,7 @@ endif()
 
 add_test(NAME test_runtime_tuner COMMAND test_runtime_tuner)
 
-# ── Тест Kimi INT4→BF16 деquant-ядра ──────────────────────────────────────
+# ── Kimi INT4→BF16 dequant kernel test ──────────────────────────────────────
 add_library(test_kimi_moe_int4_dequant_cu OBJECT test_kimi_moe_int4_dequant.cu)
 set_target_properties(test_kimi_moe_int4_dequant_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2343,7 +2343,7 @@ endif()
 
 add_test(NAME test_kimi_moe_int4_dequant COMMAND test_kimi_moe_int4_dequant)
 
-# ── Тест Kimi tiktoken-токенизатора ───────────────────────────────────────
+# ── Kimi tiktoken tokenizer test ───────────────────────────────────────
 add_executable(test_kimi_moe_tokenizer test_kimi_moe_tokenizer.cpp)
 target_link_libraries(test_kimi_moe_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -2358,7 +2358,7 @@ endif()
 add_test(NAME test_kimi_moe_tokenizer COMMAND test_kimi_moe_tokenizer)
 set_tests_properties(test_kimi_moe_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi pinned-загрузчика ───────────────────────────────────────────
+# ── Kimi pinned loader test ───────────────────────────────────────────
 add_executable(test_kimi_moe_loader test_kimi_moe_loader.cpp)
 target_compile_definitions(test_kimi_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2380,7 +2380,7 @@ endif()
 
 add_test(NAME test_kimi_moe_loader COMMAND test_kimi_moe_loader)
 
-# ── Тест Kimi MoE-роутера ─────────────────────────────────────────────────
+# ── Kimi MoE router test ─────────────────────────────────────────────────
 add_library(test_kimi_moe_router_cu OBJECT test_kimi_moe_router.cu)
 set_target_properties(test_kimi_moe_router_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2418,7 +2418,7 @@ endif()
 
 add_test(NAME test_kimi_moe_router COMMAND test_kimi_moe_router)
 
-# ── Тест Kimi MLA attention ───────────────────────────────────────────────
+# ── Kimi MLA attention test ───────────────────────────────────────────────
 add_library(test_kimi_moe_attention_cu OBJECT test_kimi_moe_attention.cu)
 set_target_properties(test_kimi_moe_attention_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2456,7 +2456,7 @@ endif()
 
 add_test(NAME test_kimi_moe_attention COMMAND test_kimi_moe_attention)
 
-# ── Тест Kimi routed-expert FFN ───────────────────────────────────────────
+# ── Kimi routed-expert FFN test ───────────────────────────────────────────
 add_library(test_kimi_moe_experts_cu OBJECT test_kimi_moe_experts.cu)
 set_target_properties(test_kimi_moe_experts_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2499,7 +2499,7 @@ endif()
 add_test(NAME test_kimi_moe_experts COMMAND test_kimi_moe_experts)
 set_tests_properties(test_kimi_moe_experts PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi batched TC routed chain (fast-math; SKIP на не-sm_12x) ──────
+# ── Kimi batched TC routed chain test (fast-math; SKIP on non-sm_12x) ──────
 add_library(test_kimi_moe_tc_batch_cu OBJECT test_kimi_moe_tc_batch.cu)
 set_target_properties(test_kimi_moe_tc_batch_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2583,7 +2583,7 @@ endif()
 add_test(NAME test_kimi_moe_tc_diag COMMAND test_kimi_moe_tc_diag)
 set_tests_properties(test_kimi_moe_tc_diag PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi модели (фабрика + lifecycle) ────────────────────────────────
+# ── Kimi model test (factory + lifecycle) ────────────────────────────────
 add_executable(test_kimi_moe_model test_kimi_moe_model.cpp)
 target_compile_definitions(test_kimi_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2601,7 +2601,7 @@ endif()
 add_test(NAME test_kimi_moe_model COMMAND test_kimi_moe_model)
 set_tests_properties(test_kimi_moe_model PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi SelfCheck (реальные веса; SKIP без модели) ──────────────────
+# ── Kimi SelfCheck test (real weights; SKIP without a model) ──────────────────
 add_executable(test_kimi_moe_selfcheck test_kimi_moe_selfcheck.cpp)
 target_compile_definitions(test_kimi_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2624,7 +2624,7 @@ endif()
 add_test(NAME test_kimi_moe_selfcheck COMMAND test_kimi_moe_selfcheck)
 set_tests_properties(test_kimi_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi perf baseline (реальные веса; SKIP без модели) ──────────────
+# ── Kimi perf baseline test (real weights; SKIP without a model) ──────────────
 add_executable(test_blackwell_perf_kimi test_blackwell_perf_kimi.cpp)
 target_compile_definitions(test_blackwell_perf_kimi PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2642,7 +2642,7 @@ endif()
 add_test(NAME test_blackwell_perf_kimi COMMAND test_blackwell_perf_kimi)
 set_tests_properties(test_blackwell_perf_kimi PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi full inference (реальные веса; SKIP без модели) ─────────────
+# ── Kimi full inference test (real weights; SKIP without a model) ─────────────
 add_executable(test_kimi_moe_inference test_kimi_moe_inference.cpp)
 target_compile_definitions(test_kimi_moe_inference PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2663,7 +2663,7 @@ endif()
 add_test(NAME test_kimi_moe_inference COMMAND test_kimi_moe_inference)
 set_tests_properties(test_kimi_moe_inference PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест Kimi конвертации на реальном чекпойнте (SKIP без модели) ─────────
+# ── Kimi conversion test on the real checkpoint (SKIP without a model) ─────────
 add_library(test_kimi_moe_int4_real_cu OBJECT test_kimi_moe_int4_real.cu)
 set_target_properties(test_kimi_moe_int4_real_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
@@ -2704,7 +2704,7 @@ endif()
 add_test(NAME test_kimi_moe_int4_real COMMAND test_kimi_moe_int4_real)
 set_tests_properties(test_kimi_moe_int4_real PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тесты Qwen3.5-35B-A3B (MoE) ───────────────────────────────────────────
+# ── Qwen3.5-35B-A3B tests (MoE) ───────────────────────────────────────────
 add_executable(test_qwen_moe_convert test_qwen_moe_convert.cpp)
 target_compile_definitions(test_qwen_moe_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2729,7 +2729,7 @@ add_test(NAME test_qwen_moe_convert COMMAND test_qwen_moe_convert)
 set_tests_properties(test_qwen_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
-# ── Тесты Qwen3.6-35B-A3B (MoE, variant 36) ───────────────────────────────
+# ── Qwen3.6-35B-A3B tests (MoE, variant 36) ───────────────────────────────
 add_executable(test_qwen_moe_36_convert test_qwen_moe_36_convert.cpp)
 target_compile_definitions(test_qwen_moe_36_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -2910,7 +2910,7 @@ endif()
 add_test(NAME test_qwen_moe_selfcheck COMMAND test_qwen_moe_selfcheck)
 set_tests_properties(test_qwen_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
-# ── Тест NVFP4-упаковки экспертов (passthrough + GPU quantize contract) ───
+# ── Expert NVFP4 packing test (passthrough + GPU quantize contract) ───
 add_executable(test_nvfp4_pack test_nvfp4_pack.cpp)
 target_link_libraries(test_nvfp4_pack PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -2967,7 +2967,7 @@ target_include_directories(test_nemotron_moe_math PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_nemotron_moe_math COMMAND test_nemotron_moe_math)
 
-# ── Тесты Nemotron-3.5-Lightning-30B-A3B (гибрид Mamba-2/MoE/attention) ───
+# ── Nemotron-3.5-Lightning-30B-A3B tests (Mamba-2/MoE/attention hybrid) ───
 add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
 target_compile_definitions(test_nemotron_moe_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
@@ -3091,7 +3091,7 @@ set_tests_properties(test_nemotron_moe_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4
     ENVIRONMENT "LSX_TEST_NEMOTRON_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
 
-# ── Тесты Qwen3.8-Flash-Next (qwen4_exp MoE) ──────────────────────────────
+# ── Qwen3.8-Flash-Next tests (qwen4_exp MoE) ──────────────────────────────
 add_executable(test_qwen_moe_exp_convert test_qwen_moe_exp_convert.cpp)
 target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
     LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)

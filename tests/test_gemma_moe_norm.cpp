@@ -1,4 +1,4 @@
-// Тест Gemma-4 RMSNorm (w-form: output = rms(x) * w) против CPU FP64-референса.
+// Gemma-4 RMSNorm test (w-form: output = rms(x) * w) against a CPU FP64 reference.
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>

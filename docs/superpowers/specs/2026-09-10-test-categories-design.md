@@ -1,57 +1,57 @@
-# Тест-категории: fast / inference / perf
+# Test categories: fast / inference / perf
 
-Дата: 2026-09-10
-Статус: approved (design), реализация по TDD-плану
+Date: 2026-09-10
+Status: approved (design), implemented per the TDD plan
 
-> **Аддендум (2026-09-10, в ходе реализации):** добавлена четвёртая категория
-> `convert` — конвертеры моделей, запускаются при правке конвертера (роутер),
-> отладке модели или явно (`ctest -L convert`). В `convert` перенесены 9
-> тестов `*_convert` из `fast` и `test_nvfp4_pack` из `inference` (GPU
-> quantize-контракт конвертеров). Роутер: файлы
+> **Addendum (2026-09-10, during implementation):** a fourth category
+> `convert` was added — model converters, run when the converter is edited (router),
+> when debugging a model, or explicitly (`ctest -L convert`). 9 `*_convert`
+> tests moved from `fast` to `convert`, and `test_nvfp4_pack` moved from `inference`
+> (the converters' GPU quantize contract). Router: files
 > `libs/lsxcommon/*(converter|_convert|tokenizer_convert)` → convert,
-> `safetensors_gpu.cu` (движок квантования) → convert+inference; правило
-> `tests/` поднимает convert+inference. Пресеты: +5 `<preset>-convert`.
-> Windows-свипы convert/inference идут с фильтром `^(test_qwen|test_gemma)`.
-> Итоговые числа: fast 33 (+4 app), convert 10, inference 77, perf 6.
+> `safetensors_gpu.cu` (the quantization engine) → convert+inference; the
+> `tests/` rule raises convert+inference. Presets: +5 `<preset>-convert`.
+> Windows convert/inference sweeps run with the filter `^(test_qwen|test_gemma)`.
+> Final numbers: fast 33 (+4 app), convert 10, inference 77, perf 6.
 
-## Проблема
+## Problem
 
-109 позиций `add_test` в `tests/CMakeLists.txt` (125 зарегистрированных тестов
-с учётом foreach-циклов) выполняются одним монолитным прогоном
-`ctest --preset <preset>` — часы на машине с чекпоинтами. Фильтрация
-существует только по имени (`ctest -R`), категорий нет.
+109 `add_test` entries in `tests/CMakeLists.txt` (125 registered tests
+counting foreach loops) run in one monolithic
+`ctest --preset <preset>` pass — hours on a machine with checkpoints. Filtering
+exists only by name (`ctest -R`); there are no categories.
 
-## Цели
+## Goals
 
-1. Разделить тесты на три категории:
-   - `fast` — запускается при каждой сборке (host-only, минуты);
-   - `inference` — контур инференса (CUDA-ядра, загрузчики, модели,
-     селфчеки); запускается автоматически, когда изменился контур
-     инференса (git diff);
-   - `perf` — perf-бенчмарки на реальных весах; только отдельной командой,
-     никогда не входит в автопрогон.
-2. Базовый `ctest --preset <preset>` гоняет только `fast`.
-3. Автодетект «изменился контур инференса» — по `git diff`.
-4. Унифицировать именование файлов в `tests/` (всё `test_*`).
-5. Дисциплина категорий защищена guard-тестом (TDD).
+1. Split tests into three categories:
+   - `fast` — run on every build (host-only, minutes);
+   - `inference` — the inference contour (CUDA kernels, loaders, models,
+     selfchecks); run automatically when the inference
+     contour changed (git diff);
+   - `perf` — perf benchmarks on real weights; only via a separate command,
+     never part of the automated run.
+2. The base `ctest --preset <preset>` runs only `fast`.
+3. Autodetect "the inference contour changed" — via `git diff`.
+4. Unify file naming in `tests/` (everything `test_*`).
+5. Category discipline is protected by a guard test (TDD).
 
-## Немеханизмы (не делаем)
+## Non-mechanisms (what we do not do)
 
-- Никакого физического разноса файлов по каталогам (`tests/fast/` и т.п.) —
-  labels решают задачу без переноса 100+ файлов.
-- Никаких переименований 125 тестовых таргетов — префиксы в именах
-  (`fast_*`/`inf_*`) сломали бы рецепты `ctest -R glm` из AGENTS.md.
-- CI-логика вне скоупа (в репо нет CI-конфига); роутер работает локально
-  на обеих OS.
+- No physical separation of files into directories (`tests/fast/` etc.) —
+  labels solve the task without moving 100+ files.
+- No renaming of the 125 test targets — prefixes in names
+  (`fast_*`/`inf_*`) would break the `ctest -R glm` recipes from AGENTS.md.
+- CI logic is out of scope (there is no CI config in the repo); the router works locally
+  on both OSes.
 
-## Дизайн
+## Design
 
-### 1. Категории = CTest LABELS
+### 1. Categories = CTest LABELS
 
-Каждый тест получает ровно один label: `fast` | `inference` | `perf`.
-Присвоение — тремя каноническими блоками в конце `tests/CMakeLists.txt`
-(после всех `add_test`), в регулярной форме, удобной для статического
-парсинга guard-тестом:
+Each test gets exactly one label: `fast` | `inference` | `perf`.
+Assignment — via three canonical blocks at the end of `tests/CMakeLists.txt`
+(after all `add_test`), in a regular form convenient for static
+parsing by the guard test:
 
 ```cmake
 # ── Test category labels (fast | inference | perf) ────────────────────────
@@ -60,87 +60,86 @@ set_tests_properties(<inference tests...> PROPERTIES LABELS inference)
 set_tests_properties(<perf tests...>      PROPERTIES LABELS perf)
 ```
 
-Существующие свойства (`SKIP_RETURN_CODE 4`, `ENVIRONMENT`) не трогаются.
-`${qt}`-имена из foreach-циклов перечисляются в блоках развёрнуто.
+Existing properties (`SKIP_RETURN_CODE 4`, `ENVIRONMENT`) are not touched.
+The `${qt}` names from foreach loops are listed out explicitly in the blocks.
 
 ### 2. testPresets
 
-К каждому из 5 базовых пресетов добавляются три testPreset-варианта
-(итого +15):
+Three testPreset variants are added to each of the 5 base presets
+(15 total):
 
-- `<preset>-fast` — `filter.include.label = "^fast$"` (совпадает с базовым
-  пресетом по смыслу; базовые пресеты также переводятся на `^fast$`);
+- `<preset>-fast` — `filter.include.label = "^fast$"` (matches the base
+  preset in meaning; the base presets also switch to `^fast$`);
 - `<preset>-inference` — `label = "^inference$"`;
 - `<preset>-perf` — `label = "^perf$"`.
 
-Базовые testPresets (`linux-debug` и др.) получают тот же фильтр `^fast$` —
-дефолтный прогон становится быстрым. Полный прогон доступен вручную:
+The base testPresets (`linux-debug` etc.) get the same `^fast$` filter —
+the default run becomes fast. The full run is available manually:
 `ctest -L "^(fast|inference|perf)$"`.
 
-Ограничение Windows (только модели qwen|gemma): пресеты — чисто label-фильтры;
-правило `ctest -R "qwen|gemma"` для inference-прогона на Windows применяет
-роутер-скрипт (см. ниже) и остаётся документированной практикой в AGENTS.md.
+Windows restriction (qwen|gemma models only): presets are pure label filters;
+the `ctest -R "qwen|gemma"` rule for the inference run on Windows is applied by the
+router script (see below) and remains documented practice in AGENTS.md.
 
-### 3. Роутер `tools/test_router.cmake`
+### 3. Router `tools/test_router.cmake`
 
-CMake script mode (кроссплатформенно, без компиляции):
+CMake script mode (cross-platform, no compilation):
 
 ```
 cmake -P tools/test_router.cmake -- --preset linux-debug [--base origin/main] [--all] [--list]
 ```
 
-Алгоритм:
+Algorithm:
 
-1. `git diff --name-only <base>...HEAD` (base по умолчанию — merge-base с
-   `origin/main`; нет git/нет диффа → только `fast`).
-2. Классификация каждого изменённого файла по упорядоченной таблице правил
-   (первое совпадение выигрывает), метки накапливаются в множество:
-   - `\.cuh?$` в любом месте → `inference`;
-   - `libs/lsxcommon/...` (включая его `CMakeLists.txt`) → `inference`, КРОМЕ
-     файлов, подпадающих под fast-лексикон
+1. `git diff --name-only <base>...HEAD` (base defaults to the merge-base with
+   `origin/main`; no git/no diff → `fast` only).
+2. Classify each changed file against an ordered rule table
+   (first match wins); the labels accumulate into a set:
+   - `\.cuh?$` anywhere → `inference`;
+   - `libs/lsxcommon/...` (including its `CMakeLists.txt`) → `inference`, EXCEPT
+     files matching the fast lexicon
      `(tokenizer|unicode|pretokenizer|path_registry|schema|converter|_convert|orchestrator)`
-     (консервативный дефолт: неизвестный новый файл lsxcommon → inference);
+     (conservative default: an unknown new lsxcommon file → inference);
    - `libs/lsxnetwork/**`, `apps/**` → `fast`;
-   - `tests/**` → `inference` (инфра тестов менялась; правило стоит ДО
-     tooling-правила, чтобы `tests/CMakeLists.txt` не съедался `\.txt$`);
-   - корневые `CMakeLists.txt`/`CMakePresets.json`, `docs/**`, `*.md`
-     (верхнего уровня), `tools/**`, `cmake/**` → `fast`;
-   - прочее → `fast`.
-3. Итог: `ctest --preset <preset> -L "^(fast|inference)$"`.
-   На WIN32 к inference-прогону добавляется `-R "^(test_qwen|test_gemma)"`.
-4. Флаги: `--all` — форс `fast+inference`; `--list` — только показать
-   классификацию файлов и выбранные метки, ctest не запускать.
+   - `tests/**` → `inference` (the test infra changed; the rule sits BEFORE the
+     tooling rule so that `tests/CMakeLists.txt` is not swallowed by `\.txt$`);
+   - root `CMakeLists.txt`/`CMakePresets.json`, `docs/**`, `*.md`
+     (top-level), `tools/**`, `cmake/**` → `fast`;
+   - everything else → `fast`.
+3. Result: `ctest --preset <preset> -L "^(fast|inference)$"`.
+   On WIN32 the inference run additionally gets `-R "^(test_qwen|test_gemma)"`.
+4. Flags: `--all` — force `fast+inference`; `--list` — only show the file
+   classification and the selected labels, do not run ctest.
 
-Таблица правил живёт в начале скрипта списком `lsx_router_rule(<regex> <labels>)`
-— явная, ревьюабельная, проверяемая guard-тестом. Perf в автопрогон не
-попадает never: роутер умеет только `fast` и `inference`.
+The rule table lives at the top of the script as a list of `lsx_router_rule(<regex> <labels>)`
+— explicit, reviewable, checked by the guard test. Perf never enters the automated run:
+the router only knows `fast` and `inference`.
 
-### 4. Guard-тест `tests/test_ctest_labels_guard.cpp` (TDD-якорь)
+### 4. Guard test `tests/test_ctest_labels_guard.cpp` (TDD anchor)
 
-Host-only Catch2-тест по образцу `test_code_naming_guard` (сканирует
-`LSX_SOURCE_DIR`). Утверждает:
+A host-only Catch2 test modeled on `test_code_naming_guard` (it scans
+`LSX_SOURCE_DIR`). It asserts:
 
-1. Каждый тест (все имена из `add_test(NAME ...)` плюс все элементы
-   foreach-списков `tests/CMakeLists.txt`) встречается ровно в одном
-   `set_tests_properties(... PROPERTIES LABELS <cat>)` с категорией из
+1. Every test (all names from `add_test(NAME ...)` plus all elements of the
+   foreach lists in `tests/CMakeLists.txt`) appears in exactly one
+   `set_tests_properties(... PROPERTIES LABELS <cat>)` with a category from
    {fast, inference, perf}.
-2. Каждый perf-тест имеет `SKIP_RETURN_CODE 4` в своём
+2. Every perf test has `SKIP_RETURN_CODE 4` in its
    `set_tests_properties`.
-3. `CMakePresets.json`: все testPreset-фильтры `label` ссылаются только на
-   валидные категории; для каждого configurePreset существуют `-fast`,
-   `-inference`, `-perf` варианты.
-4. `tools/test_router.cmake`: все `lsx_router_rule` метки ∈ {fast, inference};
-   метка `perf` в правилах запрещена.
-5. Именование `tests/`: каждый файл соответствует `^test_.+\.(cpp|cu|h)$`.
+3. `CMakePresets.json`: all testPreset `label` filters reference only
+   valid categories; for every configurePreset the `-fast`,
+   `-inference`, `-perf` variants exist.
+4. `tools/test_router.cmake`: all `lsx_router_rule` labels ∈ {fast, inference};
+   the `perf` label in the rules is forbidden.
+5. `tests/` naming: every file matches `^test_.+\.(cpp|cu|h)$`.
 
-Плюс runtime-пин: мини-парсер (выделен в тестируемую функцию) на
-синтетическом CMake-сниппете — дубликат метки, неизвестная метка,
-пропущенный тест → FAILURE. Это делает guard самопроверяемым, а не
-только «регэксп по файлу».
+Plus a runtime pin: a mini-parser (extracted into a testable function) on a
+synthetic CMake snippet — a duplicate label, an unknown label, a missed test → FAILURE.
+This makes the guard self-checking, not merely "a regex over the file".
 
-### 5. Унификация имён фикстур
+### 5. Fixture name unification
 
-5 заголовков `<family>_test_fixture.h` → `test_<family>_fixture.h`:
+5 `<family>_test_fixture.h` headers → `test_<family>_fixture.h`:
 
 - `glm_moe_test_fixture.h` → `test_glm_moe_fixture.h`
 - `deepseek_moe_test_fixture.h` → `test_deepseek_moe_fixture.h`
@@ -150,18 +149,18 @@ Host-only Catch2-тест по образцу `test_code_naming_guard` (скан
 - `qwen_moe_exp_test_fixture.h` → `test_qwen_moe_exp_fixture.h`
 - `kimi_moe_test_fixture.h` → `test_kimi_moe_fixture.h`
 
-(7 файлов; обновить ~30 `#include` в тестах. Механический refactor без
-изменения поведения; пункт 5 guard-теста после этого зелёный.)
+(7 files; update ~30 `#include`s in the tests. A mechanical refactor without
+changing behaviour; guard item 5 is green after that.)
 
-### 6. Документация
+### 6. Documentation
 
-AGENTS.md, раздел Test: таблица категорий, команды
+AGENTS.md, Test section: the category table, commands
 (`ctest --preset <p>` = fast; `ctest -L inference`; `ctest -L perf`;
-`cmake -P tools/test_router.cmake -- --preset <p>`), правило
-«новый тест обязан получить label в том же коммите» (штраф — красный
-guard в CI).
+`cmake -P tools/test_router.cmake -- --preset <p>`), and the rule
+"a new test must get a label in the same commit" (penalty — a red
+guard in CI).
 
-## Классификация (полная, 125 + 1 новый)
+## Classification (full, 125 + 1 new)
 
 ### perf (6)
 
@@ -169,7 +168,7 @@ test_blackwell_perf_glm, test_blackwell_perf_dense,
 test_blackwell_perf_moe_qwen, test_blackwell_perf_moe_gemma,
 test_blackwell_perf_deepseek, test_kimi_moe_perf
 
-### fast (41 + 1 новый guard)
+### fast (41 + 1 new guard)
 
 test_core, test_fast_load, test_geometry_guard, test_gpu_perf,
 test_schema_views, test_deepseek_moe_loader, test_expert_store,
@@ -185,11 +184,11 @@ test_hardware_profile, test_lifecycle_plan, test_runtime_tuner,
 test_kimi_moe_tokenizer, test_code_naming_guard, test_absl_format_guard,
 test_kimi_moe_expert_cache, test_qwen_moe_convert, test_qwen_moe_36_convert,
 test_qwen_moe_exp_convert, test_model_independence_guard,
-**test_ctest_labels_guard** (новый)
+**test_ctest_labels_guard** (new)
 
 ### inference (78)
 
-**CUDA-ядра и model-neutral (.cu):** test_sampling, test_lsx_nvfp4_dispatch,
+**CUDA kernels and model-neutral (.cu):** test_sampling, test_lsx_nvfp4_dispatch,
 test_perf_knobs_apply, test_blackwell_tc_mma, test_lsx_kernels,
 test_blackwell_micro_gemm, test_nvfp4_pack,
 test_deepseek_moe_inference_kernels, test_deepseek_moe_moe,
@@ -230,19 +229,19 @@ test_gemma_moe_moe
 **Kimi:** test_kimi_moe_loader, test_kimi_moe_model, test_kimi_moe_selfcheck,
 test_kimi_moe_inference
 
-Принцип для спорных случаев: тест, исполняющий CUDA-контур (даже на
-синтетической фикстуре), — `inference`; host-only — `fast`.
-`test_integrated_pipeline` и `test_model_engine` — host-only (моки), → fast.
+Principle for borderline cases: a test that exercises the CUDA contour (even on a
+synthetic fixture) is `inference`; host-only is `fast`.
+`test_integrated_pipeline` and `test_model_engine` are host-only (mocks), → fast.
 `test_expert_store`/`test_glm_moe_expert_cache`/`test_kimi_moe_expert_cache`
 — host bookkeeping → fast.
 
-## TDD-план (кратко; детально — в implementation plan)
+## TDD plan (brief; details in the implementation plan)
 
-1. **Cycle 1 — guard RED→GREEN.** Написать `test_ctest_labels_guard.cpp`
-   (пп. 1–4 выше) → RED (ни одного LABELS). Добавить label-блоки,
-   testPresets, роутер → GREEN.
-2. **Cycle 2 — naming RED→GREEN.** Добавить в guard пункт 5 → RED
-   (фикстуры). Переименовать 6 фикстур + include-ы → GREEN.
-3. **Верификация:** configure (схема пресетов валидируется CMake),
-   `ctest -L fast` зелёный, `ctest -L perf` выбирает ровно 6, роутер
-   `--list` корректно классифицирует тестовый дифф.
+1. **Cycle 1 — guard RED→GREEN.** Write `test_ctest_labels_guard.cpp`
+   (items 1–4 above) → RED (no LABELS). Add the label blocks,
+   testPresets, router → GREEN.
+2. **Cycle 2 — naming RED→GREEN.** Add item 5 to the guard → RED
+   (fixtures). Rename the 6 fixtures + includes → GREEN.
+3. **Verification:** configure (the preset schema is validated by CMake),
+   `ctest -L fast` green, `ctest -L perf` selects exactly 6, the router
+   `--list` classifies a test diff correctly.

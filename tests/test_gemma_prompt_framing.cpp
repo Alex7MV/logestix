@@ -1,9 +1,9 @@
-// Тест Gemma-4 chat-template framing (host-only, no CUDA, no real model).
-// Сентинелы сверены с реальным tokenizer.json чекпоинта:
-//   <|turn>=105, <turn|>=106, "\n"=107 (vocab), "user"/"model" — одиночные ключи vocab.
+// Gemma-4 chat-template framing test (host-only, no CUDA, no real model).
+// The sentinels are checked against the checkpoint's real tokenizer.json:
+//   <|turn>=105, <turn|>=106, "\n"=107 (vocab), "user"/"model" — single vocab keys.
 //
-// Фрейминг принадлежит модели: GemmaBaseModel::BuildPromptInputIds ->
-// lsxcommon::gemma::BuildPromptInputIds (BOS-led шаблон, leading_bos=true).
+// Framing belongs to the model: GemmaBaseModel::BuildPromptInputIds ->
+// lsxcommon::gemma::BuildPromptInputIds (BOS-led template, leading_bos=true).
 #include <catch2/catch_test_macros.hpp>
 
 #include <arrow/io/file.h>

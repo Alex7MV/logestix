@@ -1,6 +1,6 @@
 ---
 name: coding-conventions
-description: Use when writing or reviewing logestix host code — spdlog-only logging, #include and target_include_directories conventions, where new .cpp files go, Doxygen preservation, and the git commit-message convention. Triggers - code style, logging, include, куда добавить cpp, commit message, коммит.
+description: Use when writing or reviewing logestix host code — spdlog-only logging, #include and target_include_directories conventions, where new .cpp files go, Doxygen preservation, and the git commit-message convention. Triggers - code style, logging, include, where to add cpp, commit message, commit.
 ---
 
 # Coding conventions

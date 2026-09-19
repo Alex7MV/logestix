@@ -127,17 +127,17 @@ The global `-march=native` is gone. Default (non-znver4) Linux builds now carry 
 
 - [ ] **Step 2: Insert the `lsx_tune` block after the flags `endif()`**
 
-Immediately after the truncated `else()...endif()` above (i.e. before `# ── ЗАВИСИМОСТИ: Apache Arrow...` at line 38), insert:
+Immediately after the truncated `else()...endif()` above (i.e. before `# ── DEPENDENCIES: Apache Arrow...` at line 38), insert:
 
 ```cmake
 # ── Linux CPU-tuned build: AMD EPYC 9V74 (Zen 4) ─────────────────────────────
-# `lsx_tune` — INTERFACE-библиотека, несущая агрессивные флаги оптимизации C/C++
-# под EPYC 9V74. Линкуется PUBLIC в `lsxcommon` (а через него — транзитивно во
-# все приложения и тесты). CUDA-объекты (`lsxcommon_cu`), FetchContent- и
-# submodule-зависимости (Arrow, spdlog, simdjson, FlatBuffers, libzmq) эти флаги
-# НЕ получают: всё обёрнуто в $<$<COMPILE_LANGUAGE:C,CXX>:...> плюс
-# $<$<PLATFORM_ID:Linux>:...>. MSVC и Apple не затрагиваются.
-# Включается через LSX_ARCH_ZNVER4 / LSX_LTO (см. пресет linux-release-znver4).
+# `lsx_tune` — an INTERFACE library carrying aggressive C/C++ optimization flags
+# for the EPYC 9V74. It is linked PUBLIC into `lsxcommon` (and through it —
+# transitively into all apps and tests). CUDA objects (`lsxcommon_cu`), FetchContent
+# and submodule dependencies (Arrow, spdlog, simdjson, FlatBuffers, libzmq) do NOT
+# get these flags: everything is wrapped in $<$<COMPILE_LANGUAGE:C,CXX>:...> plus
+# $<$<PLATFORM_ID:Linux>:...>. MSVC and Apple are unaffected.
+# Enabled via LSX_ARCH_ZNVER4 / LSX_LTO (see the linux-release-znver4 preset).
 option(LSX_ARCH_ZNVER4 "Tune Linux C/C++ build for AMD EPYC 9V74 (Zen 4)" OFF)
 option(LSX_LTO "Enable LTO for Linux Release C/C++ (GCC: -flto; Clang/AOCC: -flto=thin)" OFF)
 
@@ -383,20 +383,20 @@ the plan, but in the real AGENTS.md it is plain markdown.)
 Replace current line 120:
 
 ```markdown
-- **GCC/Clang flags**: `-march=native` в `CMAKE_CXX_FLAGS` (а не `add_compile_options`, чтобы не протекало в NVCC). Включает все ISA + тюнинг хостового CPU.
+- **GCC/Clang flags**: `-march=native` in `CMAKE_CXX_FLAGS` (not `add_compile_options`, so it does not leak into NVCC). Enables all ISAs + host CPU tuning.
 ```
 
 with:
 
 ```markdown
-- **GCC/Clang Linux flags**: НЕ глобальные. Тюнинг под EPYC 9V74 (Zen 4) живёт в
-  INTERFACE-библиотеке `lsx_tune` (root `CMakeLists.txt`) и включается через
-  `LSX_ARCH_ZNVER4`/`LSX_LTO` (см. пресет `linux-release-znver4`): `-march=znver4`,
+- **GCC/Clang Linux flags**: NOT global. The EPYC 9V74 (Zen 4) tuning lives in the
+  INTERFACE library `lsx_tune` (root `CMakeLists.txt`) and is enabled via
+  `LSX_ARCH_ZNVER4`/`LSX_LTO` (see the `linux-release-znver4` preset): `-march=znver4`,
   `-mtune=znver4`, `-O3` (Release), `-fno-math-errno`, `-falign-loops=16`,
-  `-funroll-loops`, LTO `-flto` (GCC) / `-flto=thin` (Clang/AOCC). Всё обёрнуто в
-  `$<$<PLATFORM_ID:Linux>...$<COMPILE_LANGUAGE:C,CXX>>`, LTO ещё и в
-  `$<$<LINK_LANGUAGE:CXX> $<CONFIG:Release>>` — в NVCC и MSVC не протекает.
-  Обычные `linux-debug`/`linux-release` пресеты остаются generic-сборками без
+  `-funroll-loops`, LTO `-flto` (GCC) / `-flto=thin` (Clang/AOCC). Everything is wrapped in
+  `$<$<PLATFORM_ID:Linux>...$<COMPILE_LANGUAGE:C,CXX>>`, and LTO additionally in
+  `$<$<LINK_LANGUAGE:CXX> $<CONFIG:Release>>` — it does not leak into NVCC or MSVC.
+  The regular `linux-debug`/`linux-release` presets remain generic builds without
   `-march`.
 ```
 

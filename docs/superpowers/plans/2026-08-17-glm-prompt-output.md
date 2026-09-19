@@ -224,7 +224,7 @@ TEST_CASE("prompt_framing: long prompt grows past the initial capacity", "[promp
 Append after the `test_generation_cli` block (after line 367):
 
 ```cmake
-# ── Тест GLM-5.2 prompt framing helper (host-only, синтетический токенизатор) ────
+# ── GLM-5.2 prompt framing helper test (host-only, synthetic tokenizer) ────
 add_executable(test_glm_prompt_framing test_glm_prompt_framing.cpp)
 target_compile_definitions(test_glm_prompt_framing PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -500,7 +500,7 @@ TEST_CASE("GLM-5.2 Infer: meaningful output_text on the test prompt",
 Append after the `test_glm_selfcheck` block (after line 329):
 
 ```cmake
-# ── Тест GLM-5.2 осмысленного вывода по --run (Infer output_text) ───────────
+# ── GLM-5.2 meaningful-output test via --run (Infer output_text) ───────────
 add_executable(test_glm_prompt_output test_glm_prompt_output.cpp)
 target_compile_definitions(test_glm_prompt_output PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"

@@ -1,4 +1,4 @@
-// Тест Gemma-4 конвертера: классификатор имён тензоров + NVFP4-политика.
+// Gemma-4 converter test: tensor name classifier + NVFP4 policy.
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>

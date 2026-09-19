@@ -4,42 +4,42 @@
 > this plan task-by-task. (AGENTS.md forbids Task-subagents — inline execution only.)
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Device slot-кэш экспертов Kimi по единой VRAM-политике + батчевый upload top-8
-экспертов слоя на copy-stream вместо 8 синхронных H2D на токен.
+**Goal:** A Kimi expert device slot cache under a unified VRAM policy + a batched upload of the
+layer's top-8 experts on a copy stream instead of 8 synchronous H2D per token.
 
-**Architecture:** Host-bookkeeping (`kimi_moe_expert_cache.h` — pure, без CUDA, тестируется
-юнит-ами) + CUDA-часть (`kimi_moe_expert_cache.cu`: арена слотов, copy-stream, event-фенс).
-Генерация: Pass1 ResolveBatch → Pass2 батч-upload missing ∥ GEMV resident → Pass3 GEMV
-остальных из слотов. Fallback: 0 слотов / env=0 → legacy per-call staging. Бит-точность:
-GEMV читает те же байты из слота кэша; ядро не меняется.
+**Architecture:** Host bookkeeping (`kimi_moe_expert_cache.h` — pure, without CUDA, unit-tested)
++ the CUDA part (`kimi_moe_expert_cache.cu`: slot arena, copy stream, event fence).
+Generation: Pass1 ResolveBatch → Pass2 batched upload of missing ∥ GEMV of resident → Pass3 GEMV
+of the rest from the slots. Fallback: 0 slots / env=0 → legacy per-call staging. Bit-exactness:
+GEMV reads the same bytes from the cache slot; the kernel is unchanged.
 
 **Tech Stack:** C++20/CUDA 13.3, Catch2 v3.7.0, CMake 4.3 (VS 2026 bundled).
 
 **Spec:** `docs/superpowers/specs/2026-08-27-kimi-expert-cache-design.md`
 
-**Тулчейн (AGENTS.md):**
+**Toolchain (AGENTS.md):**
 
 ```powershell
 $cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
 ```
 
-**Ключевые факты кодовой базы (проверены при планировании):**
-- `KimiExpertEntry` (в `expert_store.h` через `ExpertStore<KimiExpertEntry>` = `KimiExpertDb`):
+**Key codebase facts (verified during planning):**
+- `KimiExpertEntry` (in `expert_store.h` via `ExpertStore<KimiExpertEntry>` = `KimiExpertDb`):
   `host_w1/w2/w3`, `w{1,2,3}_bytes`, `host_w{1,3,2}_scales`, `w{1,3,2}_scales_bytes`,
   `w{1,2,3}_global_scale` (float).
-- Геометрия: `kKimiHidden=7168`, `kKimiMoeIntermediate=2048`, `kKimiNumLayers=61`,
-  `kKimiNumRouted=384`, `kKimiTopK=8`. Пacked w13 = `I*Hd/2` = 7 340 032 B,
-  scales = `I*Hd/16` = 1 835 008 B → per_expert ≈ 26 МБ.
-- Layout staging (эталон слота): `RunKimiExpertFfn` `kimi_moe_inference.cu:654-662` —
-  `[w1|w3|w2]` pack (align_up 256 секции), `[s1|s3|s2]` scales.
-- Оффсет-математика staging: `off_p_w3 = off_p_w1 + a(w1_bytes)` и т.д. — слоты кэша
-  повторяют эту схему ровно.
-- Модель: `KimiK27CodeModel` (`src/kimi_moe_model.h`, kType `kimi-k2.7-code`),
-  члены `pw_`, `experts_` (`KimiExpertDb`); `EnsureResident(layer, expert, stream)`
-  — хост-mmap LRU `ExpertStore`.
+- Geometry: `kKimiHidden=7168`, `kKimiMoeIntermediate=2048`, `kKimiNumLayers=61`,
+  `kKimiNumRouted=384`, `kKimiTopK=8`. Packed w13 = `I*Hd/2` = 7 340 032 B,
+  scales = `I*Hd/16` = 1 835 008 B → per_expert ≈ 26 MB.
+- Staging layout (the slot reference): `RunKimiExpertFfn` `kimi_moe_inference.cu:654-662` —
+  `[w1|w3|w2]` pack (align_up 256 sections), `[s1|s3|s2]` scales.
+- Staging offset math: `off_p_w3 = off_p_w1 + a(w1_bytes)` etc. — the cache slots
+  reproduce this scheme exactly.
+- Model: `KimiK27CodeModel` (`src/kimi_moe_model.h`, kType `kimi-k2.7-code`),
+  members `pw_`, `experts_` (`KimiExpertDb`); `EnsureResident(layer, expert, stream)`
+  — the host-mmap LRU `ExpertStore`.
 - `RunKimiGeneration` (`kimi_moe_inference.cu:1025+`), `KimiLayerStack` (`:845`),
-  цикл top-k `:941-959` (точный текст в Task 3).
+  the top-k loop `:941-959` (exact text in Task 3).
 
 ---
 
@@ -48,9 +48,9 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
 **Files:**
 - Create: `include/lsxcommon/kimi_moe_expert_cache.h`
 - Test: `tests/test_kimi_moe_expert_cache.cpp`
-- Modify: `tests/CMakeLists.txt` (в конец)
+- Modify: `tests/CMakeLists.txt` (at the end)
 
-- [ ] **Step 1.1: Падающий тест**
+- [ ] **Step 1.1: Failing test**
 
 ```cpp
 // tests/test_kimi_moe_expert_cache.cpp
@@ -163,7 +163,7 @@ TEST_CASE("Kimi cache disabled plan is inert", "[kimi][cache]")
 }
 ```
 
-- [ ] **Step 1.2: Регистрация цели в `tests/CMakeLists.txt` (в конец)**
+- [ ] **Step 1.2: Register the target in `tests/CMakeLists.txt` (at the end)**
 
 ```cmake
 # Kimi MoE expert cache bookkeeping (host-only, pure logic, no CUDA).
@@ -172,7 +172,7 @@ target_link_libraries(test_kimi_moe_expert_cache PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
 ```
 
-- [ ] **Step 1.3: Убедиться, что красный**
+- [ ] **Step 1.3: Confirm it is red**
 
 ```powershell
 & $cmake --build build --config Debug --target test_kimi_moe_expert_cache
@@ -180,7 +180,7 @@ add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
 
 Expected: `fatal error C1083: Cannot open include file: "lsxcommon/kimi_moe_expert_cache.h"`.
 
-- [ ] **Step 1.4: Создать заголовок (канонический, полный)**
+- [ ] **Step 1.4: Create the header (canonical, complete)**
 
 ```cpp
 // include/lsxcommon/kimi_moe_expert_cache.h
@@ -367,30 +367,30 @@ KimiMoeSlotView KimiMoeSlotPointers(const KimiMoeExpertDeviceCache &cache,
 } // namespace lsxcommon
 ```
 
-- [ ] **Step 1.5: Зелёный**
+- [ ] **Step 1.5: Green**
 
 ```powershell
 & $cmake --build build --config Debug --target test_kimi_moe_expert_cache
 & build\bin\Debug\test_kimi_moe_expert_cache.exe
 ```
 
-Expected: `All tests passed` (5 test cases). Если LRU-тест красный — правится
-семантика victim в `KimiMoeResolveBatch` до зелёного (тест = спецификация).
+Expected: `All tests passed` (5 test cases). If the LRU test is red — fix
+the victim semantics in `KimiMoeResolveBatch` until green (the test = the specification).
 
-- [ ] **Step 1.6: Коммит**
+- [ ] **Step 1.6: Commit**
 
 ```powershell
 git add include/lsxcommon/kimi_moe_expert_cache.h tests/test_kimi_moe_expert_cache.cpp tests/CMakeLists.txt
 git commit -m "feat: kimi expert cache host bookkeeping with LRU and policy wiring"
 ```
 
-### Task 2: CUDA-часть кэша
+### Task 2: The cache CUDA part
 
 **Files:**
 - Create: `src/kimi_moe_expert_cache.cu`
 - Modify: `libs/lsxcommon/CMakeLists.txt` (OBJECT `lsxcommon_kimi_cu`)
 
-- [ ] **Step 2.1: Создать `src/kimi_moe_expert_cache.cu`**
+- [ ] **Step 2.1: Create `src/kimi_moe_expert_cache.cu`**
 
 ```cpp
 // src/kimi_moe_expert_cache.cu
@@ -555,7 +555,7 @@ cudaError_t UploadKimiMoeExpertBatch(const KimiExpertDb &db,
 } // namespace lsxcommon
 ```
 
-- [ ] **Step 2.2: CMake** — в `libs/lsxcommon/CMakeLists.txt` заменить:
+- [ ] **Step 2.2: CMake** — in `libs/lsxcommon/CMakeLists.txt` replace:
 
 ```cmake
 add_library(lsxcommon_kimi_cu OBJECT
@@ -563,8 +563,8 @@ add_library(lsxcommon_kimi_cu OBJECT
 )
 ```
 
-на (файл `kimi_inference.cu` уже переименован в `kimi_moe_inference.cu`
-в рамках naming-рефакторинга — использовать актуальное имя из текущего файла):
+with (the file `kimi_inference.cu` has already been renamed to `kimi_moe_inference.cu`
+as part of the naming refactor — use the current name from the current file):
 
 ```cmake
 add_library(lsxcommon_kimi_cu OBJECT
@@ -573,7 +573,7 @@ add_library(lsxcommon_kimi_cu OBJECT
 )
 ```
 
-- [ ] **Step 2.3: Сборка**
+- [ ] **Step 2.3: Build**
 
 ```powershell
 & $cmake --build build --config Debug --target lsxcommon_kimi_cu
@@ -581,30 +581,30 @@ add_library(lsxcommon_kimi_cu OBJECT
 
 Expected: exit=0, 0 errors.
 
-- [ ] **Step 2.4: Коммит**
+- [ ] **Step 2.4: Commit**
 
 ```powershell
 git add libs/lsxcommon/src/kimi_moe_expert_cache.cu libs/lsxcommon/CMakeLists.txt
 git commit -m "feat: kimi expert cache device arena with batched copy-stream upload"
 ```
 
-### Task 3: Интеграция в генерацию
+### Task 3: Integration into generation
 
 **Files:**
-- Modify: `libs/lsxcommon/src/kimi_moe_inference.cu` (новый `RunKimiExpertFfnCached`
-  после `RunKimiExpertFfn`; сигнатура `KimiLayerStack:845` + цикл `:941-959`;
-  `RunKimiGeneration:1025+`; аллокация кэша после `d_staging:1064-1067`)
+- Modify: `libs/lsxcommon/src/kimi_moe_inference.cu` (new `RunKimiExpertFfnCached`
+  after `RunKimiExpertFfn`; the signature `KimiLayerStack:845` + the loop `:941-959`;
+  `RunKimiGeneration:1025+`; cache allocation after `d_staging:1064-1067`)
 - Modify: `libs/lsxcommon/src/kimi_moe_model.h:33-39`, `kimi_moe_model.cpp`
   (Load/Infer/Unload)
 
 - [ ] **Step 3.1: `RunKimiExpertFfnCached`**
 
-В `kimi_moe_inference.cu` после тела `RunKimiExpertFfn` добавить функцию.
-Механика: scratch-оффсеты с нуля (dequant + активации + y), H2D-копий НЕТ —
-веса читаются из `view`. GEMV-хвост копируется 1:1 из `RunKimiExpertFfn`
-(от `cublasSetStream(cublas_h, stream);` до конца функции, включая
-gate/up GemmEx, down GemmEx и аккумуляцию с `expert_weight` — параметры и
-порядок неизменны):
+In `kimi_moe_inference.cu`, after the body of `RunKimiExpertFfn`, add a function.
+Mechanics: scratch offsets from zero (dequant + activations + y), NO H2D copies —
+the weights are read from `view`. The GEMV tail is copied 1:1 from `RunKimiExpertFfn`
+(from `cublasSetStream(cublas_h, stream);` to the end of the function, including
+gate/up GemmEx, down GemmEx and the accumulation with `expert_weight` — parameters and
+order unchanged):
 
 ```cpp
 cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
@@ -653,8 +653,8 @@ cudaError_t RunKimiExpertFfnCached(cublasHandle_t cublas_h,
 }
 ```
 
-Для исключения дублирования GEMV-хвоста: в `RunKimiExpertFfn` вынести блок от
-`cublasSetStream` до конца в отдельную функцию
+To avoid duplicating the GEMV tail: in `RunKimiExpertFfn`, extract the block from
+`cublasSetStream` to the end into a separate function
 
 ```cpp
 static cudaError_t RunKimiExpertFfnTail(
@@ -664,14 +664,14 @@ static cudaError_t RunKimiExpertFfnTail(
     __nv_bfloat16 *act_u, __nv_bfloat16 *act_h, __nv_bfloat16 *y)
 ```
 
-— тело: скопировать строки от `cublasSetStream` до `return` из
-`RunKimiExpertFfn` без изменений; в `RunKimiExpertFfn` этот хвост заменить
-вызовом `RunKimiExpertFfnTail(...)` с его локальными указателями. Это
-гарантирует единственный GEMV-код (DRY) и бит-точность обоих путей.
+— body: copy the lines from `cublasSetStream` to `return` from
+`RunKimiExpertFfn` unchanged; in `RunKimiExpertFfn` replace this tail with a
+call to `RunKimiExpertFfnTail(...)` using its local pointers. This
+guarantees a single GEMV code path (DRY) and bit-exactness of both paths.
 
-- [ ] **Step 3.2: Цикл top-k (замена `kimi_moe_inference.cu:941-959`)**
+- [ ] **Step 3.2: The top-k loop (replace `kimi_moe_inference.cu:941-959`)**
 
-Текущий код (якорь):
+Current code (anchor):
 
 ```cpp
                 int h_ids[kKimiTopK];
@@ -695,7 +695,7 @@ static cudaError_t RunKimiExpertFfnTail(
                 }
 ```
 
-Новый код:
+New code:
 
 ```cpp
                 int h_ids[kKimiTopK];
@@ -752,14 +752,14 @@ static cudaError_t RunKimiExpertFfnTail(
                 }
 ```
 
-- [ ] **Step 3.3: Сигнатуры и аллокация**
+- [ ] **Step 3.3: Signatures and allocation**
 
-1. `KimiLayerStack` (`:845`): добавить последний параметр
-   `KimiExpertCacheState *cache` (nullable); единственный вызов — `:1125` —
-   дополнить `cache`.
-2. `RunKimiGeneration` (`:1025`): добавить последний параметр
-   `KimiExpertCacheState *cache`; пробросить в `KimiLayerStack`.
-3. После `d_staging` malloc (`:1064-1067`) вставить ленивую аллокацию кэша:
+1. `KimiLayerStack` (`:845`): add a last parameter
+   `KimiExpertCacheState *cache` (nullable); the single call — `:1125` —
+   add `cache`.
+2. `RunKimiGeneration` (`:1025`): add a last parameter
+   `KimiExpertCacheState *cache`; pass it into `KimiLayerStack`.
+3. After the `d_staging` malloc (`:1064-1067`), insert the lazy cache allocation:
 
 ```cpp
     if (cache && !cache->device) {
@@ -793,29 +793,29 @@ static cudaError_t RunKimiExpertFfnTail(
     }
 ```
 
-4. `kimi_moe_model.h` — в private добавить (рядом с `experts_`) и включить
+4. `kimi_moe_model.h` — add in the private section (next to `experts_`) and include
    `#include "lsxcommon/kimi_moe_expert_cache.h"`:
 
 ```cpp
     kimi::KimiExpertCacheState expert_cache_{};
 ```
 
-5. В `Load()` после инициализации `experts_`:
+5. In `Load()`, after `experts_` initialization:
 
 ```cpp
     expert_cache_.plan.Init(0, 61 * 384);   // slots decided lazily on first Infer
 ```
 
-6. В `Infer` — передавать `&expert_cache_` в `RunKimiGeneration`; в
+6. In `Infer` — pass `&expert_cache_` into `RunKimiGeneration`; in
    `Unload()` / `TeardownWeights()`:
 
 ```cpp
     kimi::FreeKimiMoeExpertDeviceCache(expert_cache_.device);
 ```
 
-### Task 4: Верификация и коммит
+### Task 4: Verification and commit
 
-- [ ] **Step 4.1: Полная сборка**
+- [ ] **Step 4.1: Full build**
 
 ```powershell
 & $cmake --build build --config Debug
@@ -823,16 +823,16 @@ static cudaError_t RunKimiExpertFfnTail(
 
 Expected: exit=0, 0 errors.
 
-- [ ] **Step 4.2: Host-тесты**
+- [ ] **Step 4.2: Host tests**
 
 ```powershell
 & $ctest --test-dir build -C Debug -R 'kimi|code_naming|resource_governor|geometry_guard|runtime_tuner' --output-on-failure
 ```
 
-Expected: 100% passed (реальные kimi модельные тесты SKIP — модели на машине
-нет; naming guard зелёный без правки allowlist).
+Expected: 100% passed (the real kimi model tests SKIP — there is no model on the
+machine; the naming guard is green without touching the allowlist).
 
-- [ ] **Step 4.3: Коммит**
+- [ ] **Step 4.3: Commit**
 
 ```powershell
 git add -A
@@ -844,16 +844,16 @@ git push
 
 ## Self-Review
 
-1. **Spec coverage:** кэш + policy + env override (Task 1/2), батч-пайплайн
-   3-pass (Task 3.2), fallback legacy-ветка и env=0 (Task 3.2/3.3),
-   shrink-retry (Task 3.3), лог-строка паритета (Task 3.3), бит-точность —
-   единый GEMV-хвост `RunKimiExpertFfnTail` (Task 3.1), тесты (Task 1),
+1. **Spec coverage:** cache + policy + env override (Task 1/2), the 3-pass batch
+   pipeline (Task 3.2), the legacy fallback branch and env=0 (Task 3.2/3.3),
+   shrink-retry (Task 3.3), the parity log line (Task 3.3), bit-exactness —
+   the single GEMV tail `RunKimiExpertFfnTail` (Task 3.1), tests (Task 1),
    CMake/naming guard (Task 2, 4).
-2. **Placeholders:** все блоки кода канонические (черновики из первой редакции
-   удалены); единственное предписание-якорь — копирование GEMV-хвоста
-   `RunKimiExpertFfn:723-конец` в `RunKimiExpertFfnTail` (точные строки
-   указаны, дублирование кода исключено).
+2. **Placeholders:** all code blocks are canonical (drafts from the first revision
+   removed); the only anchor instruction is copying the GEMV tail
+   `RunKimiExpertFfn:723-end` into `RunKimiExpertFfnTail` (exact lines
+   specified, code duplication eliminated).
 3. **Type consistency:** `KimiMoeCacheBatch`, `KimiMoeExpertCachePlan`,
    `KimiExpertCacheState`, `KimiMoeSlotView`, `KimiMoeExpertDeviceCache` —
-   сигнатуры .cu совпадают с декларациями хедера Task 1; параметр `cache`
-   пробрасывается `KimiGeneration → KimiLayerStack → цикл top-k`.
+   the .cu signatures match the Task 1 header declarations; the `cache` parameter
+   is threaded through `KimiGeneration → KimiLayerStack → top-k loop`.

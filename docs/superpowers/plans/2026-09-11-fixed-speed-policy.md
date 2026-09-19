@@ -281,12 +281,12 @@ Note: file is Windows-only (`if(NOT WIN32) return()` in its CMakeLists) — not 
 - [ ] **Step 2: AGENTS.md** — in `## GPU Perf Auto-Tuning`, immediately after the priority-resolution paragraph, add:
 
 ```markdown
-- Политика применяется по умолчанию в каждом потребителе моделей: call-once
-  гарант `perf::EnsurePerfPolicyApplied()` (resolve + apply, честный
-  `PerfSource` — `ApplyKnobs` его не затирает) вызывается из
-  `LsxModelFactory::Create` и `InferenceEngine::InitializeEngine`; lsxhome
-  открывает `InferenceEngine::Session` в compute-треде. Явные тестовые
-  `SetCurrentKnobs` работают поверх гаранта (once-флаг не пере-resolve).
+- The policy is applied by default in every model consumer: the call-once
+  guarantee `perf::EnsurePerfPolicyApplied()` (resolve + apply, an honest
+  `PerfSource` — `ApplyKnobs` does not clobber it) is invoked from
+  `LsxModelFactory::Create` and `InferenceEngine::InitializeEngine`; lsxhome
+  opens `InferenceEngine::Session` on the compute thread. Explicit test
+  `SetCurrentKnobs` calls work on top of the guarantee (the once flag does not re-resolve).
 ```
 
 - [ ] **Step 3: Full fast gate** — `cmake --build --preset linux-debug && ctest --preset linux-debug`

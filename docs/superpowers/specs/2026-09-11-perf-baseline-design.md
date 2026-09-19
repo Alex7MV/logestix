@@ -1,4 +1,4 @@
-# Perf Baseline Reference (справочник замеров) — Design
+# Perf Baseline Reference (measurement catalog) — Design
 
 Date: 2026-09-11
 Status: approved

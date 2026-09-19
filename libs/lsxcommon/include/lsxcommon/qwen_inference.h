@@ -93,7 +93,7 @@ inline bool QwenSeq1Gemv() { return lsx_nvfp4::LsxSeq1Gemv(); }
 inline bool QwenGemmLarge() { return lsx_nvfp4::LsxGemmLarge(); }
 inline bool QwenGemmLargeActive() { return lsx_nvfp4::LsxGemmLargeActive(); }
 
-// Model-independence guard (AGENTS.md: модели независимы): every model
+// Model-independence guard (AGENTS.md: models are independent): every model
 // asserts its OWN fast_math policy for the duration of Infer/SelfCheck via
 // lsx_nvfp4::LsxFastMathScope — the last-constructed model's config must not
 // leak into another model's kernel selection.

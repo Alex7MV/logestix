@@ -4,29 +4,29 @@
 > this plan task-by-task. (NOTE: AGENTS.md forbids Task-subagents — inline execution only.)
 > Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Переименовать все файлы кода моделей в `libs/lsxcommon` + `tests/` по схеме
-`<family>_<type>[_<variant>]_<role>[_<subsystem>].<ext>` и зафиксировать конвенцию
-guard-тестом + разделом в AGENTS.md.
+**Goal:** Rename all model-code files in `libs/lsxcommon` + `tests/` per the scheme
+`<family>_<type>[_<variant>]_<role>[_<subsystem>].<ext>` and pin the convention
+with a guard test + a section in AGENTS.md.
 
-**Architecture:** TDD: сначала guard-тест (host-only, сканирует дерево исходников, красный
-на legacy-именах), затем механический ренейм ~80 файлов + скриптовая замена ссылок
-(include, CMakeLists, имена тестовых целей), верификация нулевых остатков, зелёный guard,
-полная пересборка и ctest. Имена классов/неймспейсов НЕ меняются.
+**Architecture:** TDD: first the guard test (host-only, scans the source tree, red
+on legacy names), then a mechanical rename of ~80 files + a scripted replacement of references
+(includes, CMakeLists, test target names), verification of zero leftovers, a green guard,
+a full rebuild and ctest. Class/namespace names are NOT changed.
 
 **Tech Stack:** CMake 4.3 (VS 2026 bundled), Ninja, MSVC 14.51, Catch2 v3.7.0,
-PowerShell 7 (все скрипты — pwsh).
+PowerShell 7 (all scripts — pwsh).
 
 **Spec:** `docs/superpowers/specs/2026-08-27-model-code-naming-design.md`
 
-**Инструментальные пути** (AGENTS.md,这台 машина):
+**Tool paths** (AGENTS.md, this machine):
 
 ```powershell
 $cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
 ```
 
-**Каноническая карта ренеймов** (единый источник для Task 2 и Task 3). Формат:
-`<old>|<new>` — имена файлов с расширением; раскладка по корню определяется автоматически.
+**Canonical rename map** (the single source for Task 2 and Task 3). Format:
+`<old>|<new>` — file names with extensions; the root layout is determined automatically.
 
 ```
 glm_convert.cpp|glm_moe_convert.cpp
@@ -151,20 +151,20 @@ test_qwen_3_8_27b_model.cpp|test_qwen_dense_27b_model.cpp
 test_qwen_3_8_27b_selfcheck.cpp|test_qwen_dense_27b_selfcheck.cpp
 ```
 
-НЕ переименовываются (allowlist, кросс-типовые/общие): `qwen_inference.{h,cu}`,
+NOT renamed (allowlist, cross-type/shared): `qwen_inference.{h,cu}`,
 `qwen_base_model.{cpp,h}`, `qwen_inference_load.{cpp,h}`, `qwen_device_math.h`,
 `qwen_reduce.cuh`, `qwen_tc_gemm.{cu,h}`, `gemma_base_model.{cpp,h}`, `qwen_moe_*`
-(уже по схеме), все общие файлы вне family-префиксов.
+(already per the scheme), all shared files outside family prefixes.
 
 ---
 
-### Task 1: Guard-тест (красный)
+### Task 1: Guard test (red)
 
 **Files:**
 - Create: `tests/test_code_naming_guard.cpp`
-- Modify: `tests/CMakeLists.txt` (блок в конец файла)
+- Modify: `tests/CMakeLists.txt` (a block at the end of the file)
 
-- [ ] **Step 1.1: Создать тест**
+- [ ] **Step 1.1: Create the test**
 
 ```cpp
 // tests/test_code_naming_guard.cpp
@@ -298,7 +298,7 @@ TEST_CASE("naming guard: family files match family_type_[variant_]role[_subsyste
 }
 ```
 
-- [ ] **Step 1.2: Зарегистрировать цель в `tests/CMakeLists.txt` (в конец файла)**
+- [ ] **Step 1.2: Register the target in `tests/CMakeLists.txt` (at the end of the file)**
 
 ```cmake
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
@@ -310,7 +310,7 @@ target_compile_definitions(test_code_naming_guard
 add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
 ```
 
-- [ ] **Step 1.3: Собрать и запустить — тест ОБЯЗАН быть красным**
+- [ ] **Step 1.3: Build and run — the test MUST be red**
 
 ```powershell
 $cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
@@ -319,16 +319,16 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
 & $ctest --preset windows-debug -R code_naming --output-on-failure
 ```
 
-Expected: FAIL, ~49 нарушений (glm 13, qwen 9, gemma 8, kimi 8, deepseek 11), список
-совпадает с картой ренейма (каждая строка карты из Task 2, кроме allowlist). Ничего не
-коммитим — атомарный коммит в Task 4.
+Expected: FAIL, ~49 violations (glm 13, qwen 9, gemma 8, kimi 8, deepseek 11), the list
+matches the rename map (every row of the Task 2 map except the allowlist). Do not
+commit anything — an atomic commit in Task 4.
 
-### Task 2: Механический ренейм файлов (git mv)
+### Task 2: Mechanical file rename (git mv)
 
-**Files:** все пары из карты ренейма (см. в начале плана).
+**Files:** all pairs from the rename map (see the top of the plan).
 
-- [ ] **Step 2.0: Записать карту в файл-артефакт** (полное содержимое — блок
-  «Каноническая карта ренеймов» из шапки плана, дословно; файл потом читают Task 3 и Task 5)
+- [ ] **Step 2.0: Write the map to an artifact file** (the full content — the
+  "Canonical rename map" block from the plan header, verbatim; the file is then read by Task 3 and Task 5)
 
 ```powershell
 $mapText = @'
@@ -457,7 +457,7 @@ New-Item -ItemType Directory -Force "$env:TEMP\opencode" | Out-Null
 Set-Content -LiteralPath "$env:TEMP\opencode\lsx_rename_map.txt" -Value $mapText -Encoding utf8NoBOM
 ```
 
-- [ ] **Step 2.1: Выполнить git mv по карте**
+- [ ] **Step 2.1: Execute git mv per the map**
 
 ```powershell
 $moves = [ordered]@{}
@@ -479,34 +479,34 @@ foreach ($d in $roots) {
 ```
 
 Expected: `pairs loaded: 120`, `moved: 120` (38 lib src + 13 lib include + 5 fixtures +
-64 test файлов).
+64 test files).
 
-- [ ] **Step 2.2: Контрольная сверка остатков**
+- [ ] **Step 2.2: Residual check**
 
 ```powershell
 git status --short | Measure-Object -Line | Select-Object -ExpandProperty Lines
 Get-ChildItem libs\lsxcommon\src -Filter 'glm_*','qwen_*','gemma*','kimi_*','deepseek_*' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
 ```
 
-Expected: `git status` содержит только `R`-записи (renames) из карты + 2 новых файла
-Task 1 (`A tests/test_code_naming_guard.cpp`, `M tests/CMakeLists.txt`). В src/ не должно
-остаться ни одного имени из колонки old.
+Expected: `git status` contains only `R` records (renames) from the map + 2 new files
+from Task 1 (`A tests/test_code_naming_guard.cpp`, `M tests/CMakeLists.txt`). In src/ not a single
+name from the old column should remain.
 
-### Task 3: Скриптовая замена ссылок (include, CMake, имена целей)
+### Task 3: Scripted reference replacement (includes, CMake, target names)
 
 **Files (modify):** `libs/**/*.{cpp,h,cu,cuh}`, `apps/**/*.{cpp,h,cu,cuh}`,
-`tests/**/*.{cpp,cu,h,txt}`, `libs/lsxcommon/CMakeLists.txt`, корневой
-`CMakeLists.txt`. НЕ трогаем: `third_party/**`, `build/**`, `docs/**`, `*.md`
-(AGENTS.md — отдельный Task 5).
+`tests/**/*.{cpp,cu,h,txt}`, `libs/lsxcommon/CMakeLists.txt`, the root
+`CMakeLists.txt`. NOT touched: `third_party/**`, `build/**`, `docs/**`, `*.md`
+(AGENTS.md — a separate Task 5).
 
-- [ ] **Step 3.1: Запустить замену**
+- [ ] **Step 3.1: Run the replacement**
 
 ```powershell
 $moves = [ordered]@{}
 Get-Content "$env:TEMP\opencode\lsx_rename_map.txt" | ForEach-Object {
   if ($_ -match '^([^|]+)\|([^|]+)$') { $moves[$matches[1]] = $matches[2] }
 }
-# пары без расширения для тестовых целей (add_executable/add_test NAME)
+# extensionless pairs for the test targets (add_executable/add_test NAME)
 $stemMap = [ordered]@{}
 foreach ($k in $moves.Keys) {
   if ($k -like 'test_*') {
@@ -514,7 +514,7 @@ foreach ($k in $moves.Keys) {
       [IO.Path]::GetFileNameWithoutExtension($moves[$k])
   }
 }
-# longest-first — защита от префиксных наложений
+# longest-first — protection against prefix overlaps
 $all = @()
 foreach ($k in $moves.Keys)    { $all += ,@($k, $moves[$k]) }
 foreach ($k in $stemMap.Keys)  { $all += ,@($k, $stemMap[$k]) }
@@ -534,7 +534,7 @@ foreach ($f in $targets) {
 "changed files: $changed"
 ```
 
-- [ ] **Step 3.2: Верификация нулевых остатков**
+- [ ] **Step 3.2: Zero-residual verification**
 
 ```powershell
 $leftovers = 0
@@ -545,11 +545,11 @@ foreach ($k in ($moves.Keys + $stemMap.Keys)) {
 "leftover tokens: $leftovers"
 ```
 
-Expected: `leftover tokens: 0`. Если >0 — точечно исправить вручную и повторить.
+Expected: `leftover tokens: 0`. If >0 — fix individually by hand and repeat.
 
-### Task 4: Зелёный guard + пересборка + тесты
+### Task 4: Green guard + rebuild + tests
 
-- [ ] **Step 4.1: Guard зелёный**
+- [ ] **Step 4.1: Guard green**
 
 ```powershell
 & $cmake --build build --config Debug --target test_code_naming_guard
@@ -558,42 +558,42 @@ Expected: `leftover tokens: 0`. Если >0 — точечно исправит�
 
 Expected: `100% tests passed, 1 test` (`test_code_naming_guard` PASSED).
 
-- [ ] **Step 4.2: Полная пересборка**
+- [ ] **Step 4.2: Full rebuild**
 
 ```powershell
 & $cmake --build build --config Debug
 ```
 
-Expected: BUILD SUCCEEDED, 0 errors (все include уже заменены; `#pragma once` — без
-guard-макросов, дополнительных правок заголовков не требуется).
+Expected: BUILD SUCCEEDED, 0 errors (all includes already replaced; `#pragma once` — without
+guard macros, no further header edits are required).
 
-- [ ] **Step 4.3: ctest (Windows-ограничение: только qwen|gemma модели + host-only suite)**
+- [ ] **Step 4.3: ctest (Windows restriction: only qwen|gemma models + the host-only suite)**
 
 ```powershell
 & $ctest --preset windows-debug -R 'code_naming|geometry_guard|core|fast_load|schema|factory|runtime|integrity|hardware|resource_governor|runtime_tuner|lifecycle|expert_store|tokenizer|unicode|pretokenizer|path_registry|vram|sampling|pack|translator|weld|mosaic|frontend|generation_cli|prompt|nvfp4|kv_|qwen|gemma' --output-on-failure
 ```
 
-Expected: все отобранные тесты PASSED (фильтр `qwen|gemma` ловит переименованные
-`test_qwen_dense_*` / `test_qwen_moe_*` / `test_gemma_moe_*`; GLM/DeepSeek/Kimi модельные
-тесты на Windows не запускаются — ограничение AGENTS.md).
+Expected: all selected tests PASSED (the `qwen|gemma` filter catches the renamed
+`test_qwen_dense_*` / `test_qwen_moe_*` / `test_gemma_moe_*`; GLM/DeepSeek/Kimi model
+tests do not run on Windows — an AGENTS.md restriction).
 
-- [ ] **Step 4.4: Атомарный коммит**
+- [ ] **Step 4.4: Atomic commit**
 
 ```powershell
 git add -A
 git commit -m "refactor: unify model code file naming to family_type_role scheme"
 ```
 
-В этот же коммит входит правка спеки (строка `qwen_inference.cu` перенесена в allowlist —
-уже внесена в `docs/superpowers/specs/2026-08-27-model-code-naming-design.md` при
-планировании).
+The same commit includes the spec edit (the `qwen_inference.cu` row moved to the allowlist —
+already made in `docs/superpowers/specs/2026-08-27-model-code-naming-design.md` during
+planning).
 
-### Task 5: AGENTS.md — пути + конвенция
+### Task 5: AGENTS.md — paths + convention
 
 **Files:**
 - Modify: `AGENTS.md`
 
-- [ ] **Step 5.1: Заменить старые имена файлов в AGENTS.md (та же карта, longest-first)**
+- [ ] **Step 5.1: Replace the old file names in AGENTS.md (the same map, longest-first)**
 
 ```powershell
 $moves = [ordered]@{}
@@ -608,30 +608,30 @@ foreach ($p in $all) {
 [IO.File]::WriteAllText('AGENTS.md', $t)
 ```
 
-- [ ] **Step 5.2: Добавить раздел конвенции (после `## Conventions`)**
+- [ ] **Step 5.2: Add the convention section (after `## Conventions`)**
 
 ```markdown
 ## Model Code File Naming Convention
 
-Схема файлов кода моделей в `libs/lsxcommon/{src,include}` и `tests/`:
+The model-code file scheme in `libs/lsxcommon/{src,include}` and `tests/`:
 
 `<family>_<type>[_<variant>]_<role>[_<subsystem>].<ext>`
 
 - `family` ∈ {glm, qwen, gemma, kimi, deepseek}
-- `type` ∈ {moe, dense} — обязателен всегда
-- `variant` — только при коллизии двух моделей одного type (пример: `qwen_dense_27b_model`)
-- `role` — короткий словарь: convert | load | load_internal | model | inference | kernels |
+- `type` ∈ {moe, dense} — always required
+- `variant` — only on a collision of two models of one type (example: `qwen_dense_27b_model`)
+- `role` — short vocabulary: convert | load | load_internal | model | inference | kernels |
   expert_kernels | expert_cache | device_math | norm_kernels | constants
-- `subsystem` — разбиение крупного ядра: attn | csa | head | moe | pipeline
-- Версии моделей из имён файлов убраны; живут в именах классов и `kType`.
-- Кросс-типовые/базовые файлы семейства НЕ получают маркер типа
-  (`qwen_inference.*`, `qwen_base_model.*`, `qwen_device_math.h`, …) и внесены в allowlist.
-- Контроль: `tests/test_code_naming_guard.cpp` — сканирует `libs/lsxcommon/{src,include}`,
-  обязан быть зелёным в CI; реестры family/role/subsystem расширяются в том же коммите,
-  что и файлы новой модели (Model Ingestion Protocol, шаг 3).
+- `subsystem` — split of a large kernel: attn | csa | head | moe | pipeline
+- Model versions are removed from file names; they live in class names and `kType`.
+- Cross-type/base files of a family do NOT get a type marker
+  (`qwen_inference.*`, `qwen_base_model.*`, `qwen_device_math.h`, …) and are in the allowlist.
+- Control: `tests/test_code_naming_guard.cpp` — scans `libs/lsxcommon/{src,include}`,
+  must be green in CI; the family/role/subsystem registries are extended in the same commit
+  as the new model's files (Model Ingestion Protocol, step 3).
 ```
 
-- [ ] **Step 5.3: Коммит документации**
+- [ ] **Step 5.3: Documentation commit**
 
 ```powershell
 git add AGENTS.md
@@ -640,13 +640,13 @@ git commit -m "docs: record model code naming convention in AGENTS.md"
 
 ---
 
-## Self-Review (выполнено при планировании)
+## Self-Review (done during planning)
 
-1. **Spec coverage:** схема (п.2) — Task 1/2; карта (п.3) — Task 2; allowlist (п.4) — guard
-   allowlist + уточнение спеки; тесты (п.5) — Task 2 карта; guard (п.6) — Task 1; сопутствующие
-   правки (п.7) — Task 3/5; порядок TDD и коммиты (п.8) — Task 4/5; критерии (п.9) — Task 4.
-2. **Placeholders:** карта ренейма инлайнена полностью (Task 2 Step 2.0, 120 пар), guard-код
-   полный, команды точные; Task 3/5 читают артефакт карты из temp-каталога (путь и способ
-   восстановления — перезапуск Step 2.0 — указаны явно).
-3. **Type consistency:** имена в карте, guard-regex (`tail`), и AGENTS-раздел используют
-   один и тот же словарь ролей/подсистем (проверено построчно против финальных имён).
+1. **Spec coverage:** scheme (item 2) — Task 1/2; map (item 3) — Task 2; allowlist (item 4) — guard
+   allowlist + spec refinement; tests (item 5) — Task 2 map; guard (item 6) — Task 1; accompanying
+   edits (item 7) — Task 3/5; TDD order and commits (item 8) — Task 4/5; criteria (item 9) — Task 4.
+2. **Placeholders:** the rename map is inlined in full (Task 2 Step 2.0, 120 pairs), the guard code is
+   complete, the commands are exact; Task 3/5 read the map artifact from a temp directory (the path and the
+   recovery method — re-running Step 2.0 — are stated explicitly).
+3. **Type consistency:** the names in the map, the guard regex (`tail`), and the AGENTS section use
+   the same role/subsystem vocabulary (checked line by line against the final names).

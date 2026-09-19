@@ -292,7 +292,7 @@ In the `## CMake Key Points` list, find the bullet:
 
 Append a new bullet after it:
 
-> - **CMAKE_POLICY_VERSION_MINIMUM**: задаётся через `CMakePresets.json` (`cacheVariables`), ручная установка env-переменной не требуется. Arrow's xsimd требует значения 3.5.
+> - **CMAKE_POLICY_VERSION_MINIMUM**: set via `CMakePresets.json` (`cacheVariables`); manually setting the env variable is not required. Arrow's xsimd requires the value 3.5.
 
 Also confirm the existing Windows Build example that sets `$env:CMAKE_POLICY_VERSION_MINIMUM="3.5"` is gone (it was replaced in Step 1).
 

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-`lsxfabric` --validate запускает проверку целостности logestix-модели:
-индекс, pinned тензоры, MoE эксперты (NVFP4 кодировка, E4M3 scales,
+`lsxfabric --validate` runs an integrity check of a logestix model:
+the index, pinned tensors, MoE experts (NVFP4 encoding, E4M3 scales,
 global scales).
 
 ## CLI
@@ -12,11 +12,11 @@ global scales).
 lsxfabric --localmodel PATH --validate
 ```
 
-Новый флаг `--validate`. Exit code 0 при успехе, 1 при ошибках.
+New `--validate` flag. Exit code 0 on success, 1 on errors.
 
 ## Modules
 
-Новый файл `apps/lsxfabric/src/validator.h` / `validator.cpp`.
+New file `apps/lsxfabric/src/validator.h` / `validator.cpp`.
 
 ### Structs
 
@@ -40,19 +40,19 @@ struct ValidationResult {
 ### Functions
 
 ```cpp
-// Парсинг model.index.json
+// Parse model.index.json
 Result<ModelInfo> LoadModelIndex(const std::string &index_path);
 
-// Загрузка pinned .arrow, проверка схемы, логирование
+// Load pinned .arrow, verify the schema, log
 ValidationResult ValidatePinnedTensors(const std::string &pinned_dir,
                                        int64_t expected_count);
 
-// Загрузка одного эксперта, проверка всех полей
+// Load one expert, verify all fields
 ValidationResult ValidateExpert(const std::string &arrow_path,
                                 int layer, int expert);
 
-// NVFP4 data validation: каждый nibble ∈ [0x00, 0x0F]
-// Нет невалидных кодов
+// NVFP4 data validation: every nibble ∈ [0x00, 0x0F]
+// No invalid codes
 bool ValidateNVFP4Data(const uint8_t *data, int64_t nbytes);
 
 // E4M3 scale validation: sign=0, exp4 ∈ [1, 14]
@@ -61,26 +61,26 @@ bool ValidateE4M3Scales(const uint8_t *scales, int64_t count);
 // Global scale: finite, > 0
 bool ValidateGlobalScale(float scale);
 
-// Полная валидация
+// Full validation
 ValidationResult RunValidator(const std::string &model_path);
 ```
 
-### Поток RunValidator
+### RunValidator flow
 
-1. Читает `model.index.json` → `ModelInfo`
-2. Проверяет формат `logestix-v1`
-3. Валидирует `pinned/`:
-   - Загружает `pinned/global.arrow`
-   - Для каждого слоя загружает `pinned/layer_NNN.arrow`
-   - Проверяет что RecordBatch читается без ошибок
-4. Валидирует экспертов:
-   - Для каждого слоя, для первого эксперта (exp_000.arrow):
-     - Читает RecordBatch
-     - Проверяет 9 полей в схеме
-     - Валидирует NVFP4 данные w1/w2/w3
-     - Валидирует E4M3 scale массивы w1/w2/w3
-     - Валидирует global_scale (float) w1/w2/w3
-5. Сводка: сколько экспертов проверено, сколько ошибок, сколько pinned
+1. Reads `model.index.json` → `ModelInfo`
+2. Checks the `logestix-v1` format
+3. Validates `pinned/`:
+   - Loads `pinned/global.arrow`
+   - For each layer loads `pinned/layer_NNN.arrow`
+   - Checks that the RecordBatch reads without errors
+4. Validates experts:
+   - For each layer, for the first expert (exp_000.arrow):
+     - Reads the RecordBatch
+     - Checks the 9 fields in the schema
+     - Validates the NVFP4 data w1/w2/w3
+     - Validates the E4M3 scale arrays w1/w2/w3
+     - Validates global_scale (float) w1/w2/w3
+5. Summary: how many experts checked, how many errors, how many pinned
 
 ### main.cpp
 
@@ -93,8 +93,8 @@ if (validate) {
 
 ### Testing
 
-Новый `apps/lsxfabric/tests/test_validator.cpp` с Catch2:
-- `LoadModelIndex` с синтетическим index.json
-- `ValidateNVFP4Data` с корректными/некорректными данными
-- `ValidateE4M3Scales` с корректными/некорректными байтами
-- `ValidateGlobalScale` с 0, negative, inf, normal
+New `apps/lsxfabric/tests/test_validator.cpp` with Catch2:
+- `LoadModelIndex` with a synthetic index.json
+- `ValidateNVFP4Data` with valid/invalid data
+- `ValidateE4M3Scales` with valid/invalid bytes
+- `ValidateGlobalScale` with 0, negative, inf, normal

@@ -46,7 +46,7 @@ Frontmatter (verbatim):
 ```yaml
 ---
 name: test-lifecycle
-description: Use when adding or running logestix tests — the fast/convert/inference/perf CTest labels, the test_router.cmake path rules and LSX_PRESET/LSX_LIST/LSX_DIFF, label discipline and the guard-test registry, preset commands, SKIP_RETURN_CODE 4 and converter TIMEOUTs. Triggers - добавить тест, label, ctest, test router, guard test, convert timeout.
+description: Use when adding or running logestix tests — the fast/convert/inference/perf CTest labels, the test_router.cmake path rules and LSX_PRESET/LSX_LIST/LSX_DIFF, label discipline and the guard-test registry, preset commands, SKIP_RETURN_CODE 4 and converter TIMEOUTs. Triggers - add test, label, ctest, test router, guard test, convert timeout.
 ---
 ```
 `## Overview` (why labels exist), `## Categories` table with the four labels, when each runs, and the measured counts (label them "Linux snapshot 2026-09").
@@ -92,7 +92,7 @@ Frontmatter (verbatim):
 ```yaml
 ---
 name: building-the-project
-description: Use when configuring, building or locating binaries in logestix — CMake presets (linux-debug/release-znver4/windows-debug), the AOCC host-compiler build, the Windows VS 2026 toolchain paths, toolchain minimums, and where the executables land. Triggers - собрать, build, preset, AOCC, windows toolchain, cmake not found.
+description: Use when configuring, building or locating binaries in logestix — CMake presets (linux-debug/release-znver4/windows-debug), the AOCC host-compiler build, the Windows VS 2026 toolchain paths, toolchain minimums, and where the executables land. Triggers - build, preset, AOCC, windows toolchain, cmake not found.
 ---
 ```
 `## Presets` — configure presets and the test presets that select labels; which one for what (fast iteration vs perf reference).
@@ -134,7 +134,7 @@ Frontmatter (verbatim):
 ```yaml
 ---
 name: coding-conventions
-description: Use when writing or reviewing logestix host code — spdlog-only logging, #include and target_include_directories conventions, where new .cpp files go, Doxygen preservation, and the git commit-message convention. Triggers - code style, logging, include, куда добавить cpp, commit message, коммит.
+description: Use when writing or reviewing logestix host code — spdlog-only logging, #include and target_include_directories conventions, where new .cpp files go, Doxygen preservation, and the git commit-message convention. Triggers - code style, logging, include, where to add cpp, commit message, commit.
 ---
 ```
 `## Language and logging` — C++20/C23; all logging through spdlog, no `std::cout`/`printf`. `## Includes and CMake layout` — include paths without comments; `target_include_directories` with `$<BUILD_INTERFACE:...>`; new `.cpp` into `apps/*/CMakeLists.txt` `add_executable`, logic into `libs/lsxcommon/`; preserve Doxygen/JSDoc on refactor.

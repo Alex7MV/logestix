@@ -14,7 +14,7 @@
 #include <arrow/ipc/reader.h>
 #include <arrow/ipc/writer.h>
 
-// Arrow CUDA — GPU-ускоренные тензоры и NVFP4-конвертация
+// Arrow CUDA — GPU-accelerated tensors and NVFP4 conversion
 #include <arrow/gpu/cuda_api.h>
 
 // Google FlatBuffers Zero-Copy Serialization

@@ -699,7 +699,7 @@ TEST_CASE("Create + Load + Inspect on real model dir", "[factory]")
 Insert after the `test_loader` block (after line 38):
 
 ```cmake
-# ── Тест фабрики моделей ────────────────────────────────────────────────
+# ── Model factory test ────────────────────────────────────────────────
 add_executable(test_model_factory test_model_factory.cpp)
 target_link_libraries(test_model_factory PRIVATE lsxcommon Catch2::Catch2WithMain)
 

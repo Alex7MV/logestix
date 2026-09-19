@@ -461,38 +461,38 @@ git commit -m "refactor: launch parameters keep only --bit-exact, drop speed/per
 (a) GPU Perf Auto-Tuning section — replace the line:
 
 ```
-- Приоритет разрешения: env > CLI(kOn/kOff) > vault-кэш калибровки
-  (`perf-cache/<gpu-key>.json`) > эвристика по паспорту > коммитимая база
-  (`BaseKnobs` в `gpu_perf.cpp`). `LSX_PERF_AUTO=0` возвращает legacy-поведение
-  (bit-exact дефолты). `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты).
+- Resolution priority: env > CLI (kOn/kOff) > the calibration vault cache
+  (`perf-cache/<gpu-key>.json`) > passport heuristic > the committed base
+  (`BaseKnobs` in `gpu_perf.cpp`). `LSX_PERF_AUTO=0` restores the legacy behaviour
+  (bit-exact defaults). `LSX_TEST_FAST_MATH` forces TC (existing tests).
 ```
 
 with:
 
 ```
-- Приоритет разрешения: env > тестовый cli_mode(kOn/kOff в
-  `ResolvePerfKnobs`, только тесты) > vault-кэш калибровки
-  (`perf-cache/<gpu-key>.json`) > эвристика по паспорту > коммитимая база
-  (`BaseKnobs` в `gpu_perf.cpp`). `LSX_PERF_AUTO=0` возвращает legacy-поведение
-  (bit-exact дефолты). `LSX_TEST_FAST_MATH` форсирует TC (существующие тесты).
-  CLI speed/perf-флагов нет: движок всегда гоняет per-GPU auto-политику;
-  единственный численный флаг запуска — `--bit-exact` (lsxfabric), он
-  маппится в `FastMathMode::kOff` модели.
+- Resolution priority: env > test cli_mode (kOn/kOff in
+  `ResolvePerfKnobs`, tests only) > the calibration vault cache
+  (`perf-cache/<gpu-key>.json`) > passport heuristic > the committed base
+  (`BaseKnobs` in `gpu_perf.cpp`). `LSX_PERF_AUTO=0` restores the legacy behaviour
+  (bit-exact defaults). `LSX_TEST_FAST_MATH` forces TC (existing tests).
+  There are no CLI speed/perf flags: the engine always runs a per-GPU auto policy;
+  the only numeric run flag is `--bit-exact` (lsxfabric), which maps
+  into the model's `FastMathMode::kOff`.
 ```
 
 (b) GPU Perf Auto-Tuning section — replace:
 
 ```
-Записи коммитимой базы авторятся через `lsxfabric --calibrate <model>`
-(реальные веса, A/B t/s, печатает сниппет для `BaseKnobs`).
+Committed-base entries are authored via `lsxfabric --calibrate <model>`
+(real weights, A/B t/s, prints a snippet for `BaseKnobs`).
 ```
 
 with:
 
 ```
-`RunCliCalibrate`/`lsxfabric --calibrate` удалены (2026-09, бит-точная
-политика CLI): записи коммитимой базы авторятся вручную из сниппетов
-авто-калибровки неизвестных GPU (vault `perf-cache/<gpu-key>.json`).
+`RunCliCalibrate`/`lsxfabric --calibrate` were removed (2026-09, bit-exact
+CLI policy): committed-base entries are authored manually from the
+auto-calibration snippets of unknown GPUs (vault `perf-cache/<gpu-key>.json`).
 ```
 
 (c) Structure section — replace:
@@ -504,7 +504,7 @@ with:
 with:
 
 ```
-- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse в `src/cli.{h,cpp}`)
+- `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`; CLI parse in `src/cli.{h,cpp}`)
 ```
 
 - [ ] **Step 2: Full fast-suite verification**
