@@ -33,6 +33,7 @@ Each of us took a step in the right direction, and together we reached a goal th
 | libzmq | v4.3.5 | submodule (`third_party/libzmq`) | Static |
 | simdjson | v4.6.11 | submodule (`third_party/simdjson`) | Static (`.lib`) |
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
+| abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
 | Dear ImGui | 1.92.9-docking | FetchContent (lsxhome only) | Static |
 | ImPlot | 1.0 | FetchContent (lsxhome only) | Static |
@@ -158,6 +159,8 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 ## Licensing
 
 This project is dual-licensed to accommodate both open-source development and commercial production environments.
+
+Copyright (C) 2026 Alexander Mozhaev and the logestix contributors.
 
 ### Open Source License
 The open-source version of **logestix** is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](./LICENSE).
