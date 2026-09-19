@@ -5,6 +5,9 @@
 namespace lsxcommon {
 
 // Compile-time platform selector for the model root (CC 12.0 build matrix).
+// Overridable at runtime with the LSX_MODEL_ROOT environment variable (an
+// absolute path to the models directory); when unset, the platform default
+// below is used.
 #if defined(_WIN32)
 constexpr const char* kModelRootBase = "D:\\Programs\\huggingface.co";
 #else

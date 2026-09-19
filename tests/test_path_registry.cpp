@@ -2,17 +2,50 @@
 
 #include "lsxcommon/path_registry.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
+namespace {
+void set_model_root(const char *value)
+{
+#if defined(_WIN32)
+    _putenv_s("LSX_MODEL_ROOT", value ? value : "");
+#else
+    if (value)
+        setenv("LSX_MODEL_ROOT", value, 1);
+    else
+        unsetenv("LSX_MODEL_ROOT");
+#endif
+}
+} // namespace
+
 TEST_CASE("path_registry platform root base", "[path_registry]")
 {
+    set_model_root(nullptr);
     const std::string models = lsxcommon::lsx_model_models_dir();
     REQUIRE_FALSE(models.empty());
 #if defined(_WIN32)
     CHECK(models == R"(D:\Programs\huggingface.co)");
 #else
     CHECK(models == "/mnt/llm_models/models");
+#endif
+}
+
+TEST_CASE("path_registry LSX_MODEL_ROOT overrides the compile-time base", "[path_registry]")
+{
+    const char *override_root = "/tmp/lsx-vault";
+    set_model_root(override_root);
+    CHECK(lsxcommon::lsx_model_models_dir() == override_root);
+    const std::filesystem::path meta(lsxcommon::lsx_model_metadata_root());
+    CHECK(meta.parent_path().string() == override_root);
+    CHECK(meta.filename() == "model-metadata");
+
+    set_model_root(nullptr);
+#if defined(_WIN32)
+    CHECK(lsxcommon::lsx_model_models_dir() == R"(D:\Programs\huggingface.co)");
+#else
+    CHECK(lsxcommon::lsx_model_models_dir() == "/mnt/llm_models/models");
 #endif
 }
 

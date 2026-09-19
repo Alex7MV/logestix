@@ -23,10 +23,12 @@ entry point.
 
 ## 1. Vault and paths
 
-The model root is a compile-time platform constant in
-`libs/lsxcommon/include/lsxcommon/path_registry.h`:
+The model root defaults to a compile-time platform constant in
+`libs/lsxcommon/include/lsxcommon/path_registry.h`, overridable at runtime with
+the `LSX_MODEL_ROOT` environment variable (an absolute path to the models
+directory):
 
-| platform | `kModelRootBase` | converted models live in |
+| platform | `kModelRootBase` (default) | converted models live in |
 |---|---|---|
 | Linux | `/mnt/llm_models/models` | `<base>/<Model>/logestix/` |
 | Windows | `D:\Programs\huggingface.co` | `<base>\<Model>\logestix\` |
@@ -150,6 +152,12 @@ Snapshot 2026-09-14. Regenerate the raw list with:
 ```bash
 rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 ```
+
+**Prod — vault**
+
+| variable | meaning |
+|---|---|
+| `LSX_MODEL_ROOT` | absolute path to the models directory (overrides the compile-time `kModelRootBase`) |
 
 **Prod — perf / dispatch**
 

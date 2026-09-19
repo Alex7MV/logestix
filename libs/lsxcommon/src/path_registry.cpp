@@ -1,5 +1,6 @@
 #include "lsxcommon/path_registry.h"
 
+#include <cstdlib>
 #include <filesystem>
 
 namespace lsxcommon {
@@ -7,6 +8,10 @@ namespace lsxcommon {
 namespace {
 std::filesystem::path base()
 {
+    // Runtime override (LSX_MODEL_ROOT) takes precedence over the compile-time
+    // platform default so an external user can relocate the vault.
+    if (const char* env = std::getenv("LSX_MODEL_ROOT"); env && *env)
+        return std::filesystem::path(env);
     return std::filesystem::path(kModelRootBase);
 }
 } // namespace

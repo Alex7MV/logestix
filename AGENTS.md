@@ -121,8 +121,9 @@ passport header → namespace) — when they disagree, they are authoritative.
 Running and operating inference — skill **`running-a-model`**
 (`.opencode/skills/running-a-model/SKILL.md`): apps and their flags
 (`lsxbenchmark --bench/--selfcheck`, `lsxfabric --localmodel --testprompt/--validate`,
-`lsxforge`, `lsxcli`), vault paths (`path_registry`; the CLI takes the model ROOT,
-not `logestix/`), the engine lifecycle (`InferenceEngine::Session`), prompt
+`lsxforge`, `lsxcli`), vault paths (`path_registry`; override the default root with
+`LSX_MODEL_ROOT`, and the CLI takes the model ROOT, not `logestix/`), the engine
+lifecycle (`InferenceEngine::Session`), prompt
 framing/sampling, the resource layer (governor/VRAM/LRU planning) and the catalog of
 runtime env knobs `LSX_*`/`KIMI_*`.
 
