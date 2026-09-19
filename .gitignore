@@ -13,6 +13,7 @@
 *.dir/
 *.log
 *.tlog
+*.pdb
 
 # ── Compiled Binaries and Objects ────────────────────────────────────────────
 *.o
