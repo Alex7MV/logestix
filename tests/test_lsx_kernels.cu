@@ -217,7 +217,7 @@ TEST_CASE("e2m1 encode ties: tie-up and nearest both replicated", "[lsxk][quant]
 }
 
 // ── Coverage: pow2-E4M3 scale ENCODER edge classes (docs §1 deviation) ──────
-// Reference: docs/NVIDIA_DOCS_NVFP4_MEMORY.md — ceil-rounding pow2-only
+// Reference: nvidia-cuda-docs MCP (see docs/NVIDIA_DOCS.md) — ceil-rounding pow2-only
 // payload, e4 clamped to [1,14], exact powers of two map onto themselves,
 // subnormals clamp to the minimum normal scale 2^-6 (byte 0x08).
 TEST_CASE("FloatToE4m3P2 edge classes, identity and ceil property",
@@ -299,7 +299,7 @@ TEST_CASE("FloatToE4m3P2 edge classes, identity and ceil property",
 // and 0x00 yields 0; everywhere else it agrees with the canonical shift
 // decode E8m0ToFloat. (Deliberate deviation note: E8m0ToFloat decodes 0x00
 // as 0.0f, whereas PTX ue8m0 would read 2^-127 — numerically indistinguishable
-// in FP16 outputs; see docs/NVIDIA_DOCS_NVFP4_MEMORY.md Part A §3.)
+// in FP16 outputs; see docs/NVIDIA_DOCS.md (nvidia-cuda-docs MCP Part A §3).)
 TEST_CASE("E8m0ClampedToFloat clamps the saturation slot", "[lsxk][quant][scale]")
 {
     using lsxcommon::kernels::E8m0ClampedToFloat;

@@ -273,7 +273,7 @@ __global__ void lsx_nvfp4_gemm_tile_kernel(
 // (16 B alignment of every packed row) and K % 16 == 0 so scale blocks never
 // straddle rows. Numeric class: FP32 accumulate, k-order free -- tolerance
 // vs the scalar path exactly like the TC fast-math routes (see
-// docs/NVIDIA_DOCS_NVFP4_MEMORY.md §1 decode semantics).
+// nvidia-cuda-docs MCP, NVFP4 §1 decode semantics; docs/NVIDIA_DOCS.md).
 template <int KP>
 __global__ void lsx_nvfp4_gemv_kernel(
     const __half *__restrict__ x,

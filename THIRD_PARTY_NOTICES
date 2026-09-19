@@ -1953,19 +1953,7 @@ authorization of the copyright holder.
 
 ---
 
-## 9. NVIDIA documentation (docs/)
-
-The files `docs/NVIDIA_DOCS_NVFP4_MEMORY.md`, `docs/NVIDIA_DOCS_HOPPER.md`,
-`docs/NVIDIA_DOCS_AMPERE.md`, and `docs/NVIDIA_DOCS_RUBIN.md` are internal
-reference excerpts summarizing NVIDIA CUDA documentation (CUDA C++
-Programming Guide, PTX ISA, CUDA header documentation, CUTLASS notes).
-They are reproduced for in-repo reference with attribution. NVIDIA, CUDA,
-and PTX are trademarks of NVIDIA Corporation. All NVIDIA documentation is
-copyright (c) NVIDIA Corporation and is available at https://docs.nvidia.com/.
-
----
-
-## 10. Development / build-only dependencies
+## 9. Development / build-only dependencies
 
 The following are used only for building or testing and are not
 redistributed as part of the product binaries:

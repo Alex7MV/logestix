@@ -16,7 +16,7 @@
 - Subagents forbidden (AGENTS.md). All work inline in this session.
 - No `std::cout`/`printf` — spdlog only. No comments unless adapting existing Doxygen.
 - Naming guard: no new files under `libs/lsxcommon/{src,include}` — all edits inside existing `deepseek_moe_*` / `shared_experts.*` units (`tests/test_code_naming_guard` must stay green).
-- NVFP4 facts (docs/NVIDIA_DOCS_NVFP4_MEMORY.md §B2): `kind::mxf4nvf4` SF=UE4M3 vec-16; UE4M3 decode `2^(E-7)`, `E = e8 − 120`; scale byte range exact for E∈[1..15] i.e. e8∈[121..135]; E=0 decodes 0.
+- NVFP4 facts (nvidia-cuda-docs MCP §B2; see docs/NVIDIA_DOCS.md): `kind::mxf4nvf4` SF=UE4M3 vec-16; UE4M3 decode `2^(E-7)`, `E = e8 − 120`; scale byte range exact for E∈[1..15] i.e. e8∈[121..135]; E=0 decodes 0.
 - DeepSeek routed weights: row-major [rows, cols], packed E2M1 nibbles [rows, cols/2] (low nibble = even element), E8M0 scale per 32 elements, flat scale index `i >> 5` (cols % 32 == 0). Geometries: kHiddenDim=4096, kIntermediateDim=2048, kTopK=6, 43 layers × 256 experts.
 - Inference runs on real weights are resource-critical (AGENTS.md): never run two concurrently; GPU must be idle before starting (`nvidia-smi` shows ~33 MiB used).
 
@@ -492,7 +492,7 @@ git commit -m "feat: load-time FP16/FP32 dequant caches for deepseek shared expe
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-23-blackwell-cuda-audit-findings.md` (F-12 closure)
-- Modify: `docs/NVIDIA_DOCS_NVFP4_MEMORY.md` (only if new hardware facts surface — none expected)
+- Record any new hardware facts in-code (no offline NVIDIA mirror; query nvidia-cuda-docs MCP; see docs/NVIDIA_DOCS.md)
 
 - [ ] **Step 1: Full deepseek + related suites**
 

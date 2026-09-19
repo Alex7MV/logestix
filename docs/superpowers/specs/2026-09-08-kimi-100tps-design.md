@@ -5,7 +5,7 @@ Branch: `feat/kimi-100tps`
 Status: approved design (approach A, amended with model-independence correction)
 Reference: Qwen3.5-35B-A3B 101 t/s round (`2026-09-01-qwen-moe-80tps-design.md`),
 GLM-5.3-Flash dual-stream staging, NVIDIA docs reference
-(`docs/NVIDIA_DOCS_NVFP4_MEMORY.md` §B4, §B5).
+(nvidia-cuda-docs MCP §B4, §B5; see `docs/NVIDIA_DOCS.md`).
 
 ## Goal
 

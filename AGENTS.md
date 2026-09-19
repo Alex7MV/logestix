@@ -197,14 +197,15 @@ crc32 и format-checker) — скил **`absl-in-cuda-cpp`**
 
 ## NVIDIA Docs Reference (обязательный справочник)
 
-- **`docs/NVIDIA_DOCS_NVFP4_MEMORY.md`** — офлайн-зеркало документации NVIDIA
-  (nvidia-cuda-docs MCP): лимиты CC 12.x, альтернативные FP-форматы PTX
-  (E2M1/E4M3/UE4M3/UE8M0), семантика cuda_fp4/cuda_fp8 конверсий, tcgen05
-  block-scaled MMA, cuBLASLt NVFP4, TMA/bulk-copies, stream-ordered память +
-  производные инварианты кодека репозитория. Единый источник истины в офлайне.
-- Дисциплина работы с ним (сверять семантику ПЕРЕД правкой NVFP4/CUDA-ядер,
-  дополнять при новых фактах в том же коммите, не расходиться молча) — скил
-  `nvfp4-blackwell-conventions`.
+- NVIDIA-документация **не вендорится**: выгрузки из MCP `nvidia-cuda-docs`
+  удалены из репозитория во избежание распространения копирайтных материалов.
+  Указатель и порядок действий — `docs/NVIDIA_DOCS.md`.
+- Перед правкой NVFP4/CUDA-ядер загружай актуальную документацию из MCP
+  `nvidia-cuda-docs` (PTX ISA, CUDA C++ Programming Guide, `cuda_fp4`/`cuda_fp8`,
+  CUTLASS, TMA, tcgen05), а не полагайся на устаревшие выдержки. Если MCP
+  недоступен — остановись и получи доступ к актуальным докам.
+- Дисциплина (сверять семантику ПЕРЕД правкой, фиксировать производные
+  инварианты в коде/регрессионных тестах) — скил `nvfp4-blackwell-conventions`.
 
 ## GPU Perf Auto-Tuning
 

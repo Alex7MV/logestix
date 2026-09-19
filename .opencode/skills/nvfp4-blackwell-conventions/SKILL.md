@@ -73,21 +73,25 @@ Unsure about an Arrow/CCCL signature? Read the `.h`/`.cuh` in the tree or
 compile it. Do not invent APIs — the repo's third-party versions are pinned and
 differ from upstream docs.
 
-## NVIDIA docs mirror (mandatory)
+## NVIDIA docs (mandatory, MCP)
 
-`docs/NVIDIA_DOCS_NVFP4_MEMORY.md` is the offline mirror of the NVIDIA
-documentation (nvidia-cuda-docs MCP): CC 12.x limits, PTX FP formats
-(E2M1/E4M3/UE4M3/UE8M0), `cuda_fp4`/`cuda_fp8` conversion semantics, tcgen05
-block-scaled MMA, cuBLASLt NVFP4, TMA/bulk copies, stream-ordered memory, plus
-the repo's derived codec invariants.
+NVIDIA documentation is **not vendored** in this repo: the previous
+`docs/NVIDIA_DOCS_*.md` export from the `nvidia-cuda-docs` MCP was removed to
+avoid redistributing NVIDIA copyrighted material. The pointer is
+`docs/NVIDIA_DOCS.md`.
 
-1. Before changing an NVFP4/CUDA kernel, reconcile the format semantics and
-   hardware limits with the mirror. The MCP is not available on every machine —
-   the mirror is the single offline source of truth.
-2. When the MCP yields **new** facts, extend the mirror in the **same commit**
-   as the code that uses them.
-3. Never diverge silently: a codec semantics change must update the matching
-   mirror section and its regression test.
+1. Before changing an NVFP4/CUDA kernel, load the current NVIDIA documentation
+   from the `nvidia-cuda-docs` MCP (PTX ISA, CUDA C++ Programming Guide,
+   `cuda_fp4`/`cuda_fp8` semantics, CUTLASS, TMA, tcgen05, CC 12.x limits) and
+   reconcile format semantics and hardware limits. Do not rely on stale
+   excerpts.
+2. If the MCP is not available, stop and obtain access to the current
+   documentation before proceeding.
+3. When the MCP yields **new** facts the code depends on, pin the derived
+   invariant in-code (comment/regression test) in the **same commit** — there
+   is no offline mirror to extend.
+4. Never diverge silently: a codec semantics change must update the matching
+   in-code invariant and its regression test.
 
 ## Common mistakes
 
