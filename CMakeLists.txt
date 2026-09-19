@@ -312,6 +312,21 @@ if(WIN32)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 endif()
 
+# THIRD_PARTY_NOTICES обязан сопровождать каждый распространяемый бинарь
+# (Apache-2.0 §4(d), MPL-2.0, OFL, Unicode). Helper определён до
+# add_subdirectory(apps), чтобы приложения могли его вызвать сразу после
+# add_executable.
+function(lsx_copy_third_party_notices target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES"
+            "$<TARGET_FILE_DIR:${target}>/THIRD_PARTY_NOTICES"
+        COMMENT "Copy THIRD_PARTY_NOTICES next to ${target}"
+    )
+endfunction()
+
+install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
+
 # ── Поддиректории ────────────────────────────────────────────────────────────
 
 # enable_testing должен быть вызван до add_subdirectory(apps), чтобы

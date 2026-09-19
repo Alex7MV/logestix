@@ -252,6 +252,9 @@ target_link_libraries(lsxhome PRIVATE
     gdi32
     shell32
 )
+
+lsx_copy_third_party_notices(lsxhome)
+
 # Full x64 machine optimization block: /MACHINE:X64 emits the PE32+ image,
 # /OPT:REF folds dead code, /OPT:ICF merges identical COMDATs (cross-TU,
 # characteristically at high value for the IMGUI static stack).

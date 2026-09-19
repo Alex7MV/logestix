@@ -1,6 +1,8 @@
 add_executable(taskmosaic src/main.cpp)
 target_link_libraries(taskmosaic PRIVATE lsxcommon arrow_shared arrow_cuda_shared ${CMAKE_DL_LIBS})
 
+lsx_copy_third_party_notices(taskmosaic)
+
 if(WIN32)
     add_custom_command(TARGET taskmosaic POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
