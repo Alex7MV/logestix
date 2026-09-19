@@ -44,6 +44,32 @@ MPL-2.0-covered files is exactly the upstream libzmq v4.3.5 tree at the
 commit above, available from the repository link above or the matching
 `third_party/libzmq` submodule checkout.
 
+### Source disclosure (MPL-2.0)
+
+MPL-2.0 is a file-level copyleft license: proprietary code may be linked
+against libzmq, but the MPL-covered source must remain available and may
+be relicensed only under MPL-2.0. Whenever logestix binaries are
+distributed, ship or offer the libzmq Corresponding Source:
+
+1. Since the pinned tree is unmodified, the Corresponding Source is the
+   upstream v4.3.5 tarball or the `third_party/libzmq` submodule at
+   commit `622fc6dde99ee172ebaa9c8628d85a7a1995a21d`.
+2. Reproduce the MPL-2.0 text and the notices from
+   [`THIRD_PARTY_NOTICES`](./THIRD_PARTY_NOTICES) section 4 alongside the
+   binary (this is already automated: `THIRD_PARTY_NOTICES` is copied
+   next to every executable and into `install/bin`).
+3. Keep the copyright/attribution headers of libzmq and its bundled
+   `external/` components intact; do not relicense libzmq code under the
+   logestix commercial EULA.
+
+Fetch the exact source for a release with:
+
+```bash
+git submodule update --init third_party/libzmq
+git -C third_party/libzmq archive --format=tar.gz -o libzmq-4.3.5.tar.gz \
+   622fc6dde99ee172ebaa9c8628d85a7a1995a21d
+```
+
 ### Bundled libzmq components
 
 libzmq vendors a few small components with separate permissive licenses

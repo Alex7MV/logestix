@@ -1,5 +1,11 @@
 # NVIDIA Docs Reference — CUDA / Blackwell / NVFP4 / Memory
 
+> Source: NVIDIA CUDA documentation (CUDA C++ Programming Guide, PTX ISA,
+> CUDA headers, CUTLASS notes), https://docs.nvidia.com/. Excerpts are
+> copyright (c) NVIDIA Corporation and are reproduced here for in-repo
+> reference with attribution. NVIDIA, CUDA, and PTX are trademarks of
+> NVIDIA Corporation. See `THIRD_PARTY_NOTICES` section 9.
+
 Offline mirror of nvidia-cuda-docs MCP excerpts needed by this project
 (CUDA Toolkit 13.x, Blackwell sm_120/sm_121, NVFP4 inference). Kept in-repo
 because not every dev box has MCP access. Fixed 2026-08-26; sections cite

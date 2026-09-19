@@ -1,5 +1,11 @@
 # NVIDIA Docs Reference — CUDA / Ampere (CC 8.6 / 8.7) Offline Mirror
 
+> Source: NVIDIA CUDA documentation (CUDA C++ Programming Guide, PTX ISA,
+> CUDA headers, CUTLASS notes), https://docs.nvidia.com/. Excerpts are
+> copyright (c) NVIDIA Corporation and are reproduced here for in-repo
+> reference with attribution. NVIDIA, CUDA, and PTX are trademarks of
+> NVIDIA Corporation. See `THIRD_PARTY_NOTICES` section 9.
+
 Offline mirror of nvidia-cuda-docs MCP excerpts covering the Ampere
 generation, focused on the two consumer/embedded dies the operator asked
 to pin: **CC 8.6** (sm_86, desktop GA102) and **CC 8.7** (sm_87,
