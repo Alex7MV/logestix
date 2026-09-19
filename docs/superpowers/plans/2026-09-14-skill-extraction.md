@@ -99,7 +99,7 @@ description: Use when configuring, building or locating binaries in logestix —
 
 - [ ] **Step 2: Add Linux + AOCC sections**
 
-`## Linux` — `git submodule update --init --recursive`, `cmake --preset linux-debug && cmake --build --preset linux-debug`, release-znver4 (LTO). `## Linux release — AOCC` — the full configure command verbatim from AGENTS.md (`AOCC=/home/alexmv2025/projects/amd/aocc-compiler-5.2.0/bin`, `-DCMAKE_CUDA_HOST_COMPILER=$AOCC/clang++`), then `-j 160` build + `ctest --test-dir build/linux-release-znver4-aocc`.
+`## Linux` — `git submodule update --init --recursive`, `cmake --preset linux-debug && cmake --build --preset linux-debug`, release-znver4 (LTO). `## Linux release — AOCC` — the full configure command verbatim from AGENTS.md (`AOCC=$HOME/aocc-compiler-5.2.0/bin`, `-DCMAKE_CUDA_HOST_COMPILER=$AOCC/clang++`), then `-j 160` build + `ctest --test-dir build/linux-release-znver4-aocc`.
 
 - [ ] **Step 3: Add the Windows toolchain section**
 

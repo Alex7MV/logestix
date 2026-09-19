@@ -197,7 +197,7 @@ Suite state: qwen+blackwell 26/26 green.
 | ID | Sev | Evidence | Summary |
 |---|---|---|---|
 | F-08 | P2 | test_schema_views (3/78 asserts fail) | Shared-memory schema views fail on MSVC |
-| F-09 | P2 | test_gemma_prompt_framing | Path concat missing separator: `Temp\logestix_gpf_C:\Users\...` |
+| F-09 | P2 | test_gemma_prompt_framing | Path concat missing separator: `Temp\logestix_gpf_<user>\...` |
 | F-10 | P1 | test_kimi_attention SegFault | New kimi kernel crashes at runtime on sm_120 |
 
 Full suite: 95/98 (3 failed = F-08..F-10; 7 SKIP by design).

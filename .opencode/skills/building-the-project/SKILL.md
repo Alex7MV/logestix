@@ -48,7 +48,7 @@ generic `linux-debug`/`linux-release` presets stay `-march`-free.
 Alternative host compiler (clang 17.0.6) used as NVCC's `-ccbin`:
 
 ```bash
-AOCC=/home/alexmv2025/projects/amd/aocc-compiler-5.2.0/bin
+AOCC=$HOME/aocc-compiler-5.2.0/bin   # point at your AOCC install
 cmake -S . -B build/linux-release-znver4-aocc -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
