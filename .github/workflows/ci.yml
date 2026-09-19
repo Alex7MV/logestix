@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    # The full CUDA build needs an NVIDIA GPU (Blackwell, CC 12.x) plus the CUDA
+    # 13.x toolchain and multi-hour Arrow/CCCL compilation, which GitHub-hosted
+    # runners do not provide. Only cheap, deterministic checks run here; the
+    # authoritative suite is `ctest --preset linux-debug` on a Blackwell host.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON files
+        run: |
+          python3 -m json.tool CMakePresets.json > /dev/null
+          for f in tests/data/*.json tests/perf/*.json; do
+            [ -f "$f" ] || continue
+            python3 -m json.tool "$f" > /dev/null
+          done
+
+      - name: First-party language policy (English only)
+        run: |
+          if git grep -lP '[\x{0400}-\x{04FF}]' -- ':!third_party' ':!*.ttf'; then
+            echo "::error::Cyrillic text found in first-party files; the repository is English-only."
+            exit 1
+          fi
+
+      - name: Reject tracked build artifacts
+        run: |
+          if git ls-files -- ':!third_party' \
+              | grep -iE '(^|/)(build|Testing)/|\.(log|pdb|dll|exe|obj|o|a)$|node_modules'; then
+            echo "::error::build artifacts are tracked."
+            exit 1
+          fi
