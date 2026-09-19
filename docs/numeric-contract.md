@@ -131,4 +131,3 @@ atomics in the reduce path, unseeded stochastic ops.
 - Bit-identity on hardware **outside** the supported GPU-model set.
 - Batch-invariance (single-stream engine; no batch composition to be invariant
   to).
-- Matching third-party engines' (vLLM/SGLang) numerics.
