@@ -3,6 +3,9 @@
 /build_*/
 /out/
 
+# ── CTest Artifacts ──────────────────────────────────────────────────────────
+/Testing/
+
 # ── MSVC / Visual Studio Artifacts ───────────────────────────────────────────
 .vs/
 *.user
