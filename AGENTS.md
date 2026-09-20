@@ -81,7 +81,7 @@ procedure — `perf-tuning-a-model`.
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`.
-  Models: glm / qwen / deepseek / gemma / kimi / nemotron (NemotronH hybrid
+  Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
   `nemotron_moe_expert_cache.{h,cpp}` (host mmap store of 2944 experts + device
@@ -101,6 +101,16 @@ procedure — `perf-tuning-a-model`.
   slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`);
   format tag `logestix-gigachat-nvfp4`; MLA/GatedDeltaNet attention + decode
   pipeline land in Plan 2b).
+  Ornith-1.5-35B-A3B (independent family `ornith`: an MLX-exported
+  Qwen3.5-MoE reasoning fine-tune, architecture-identical to Qwen3.5/3.6-35B;
+  `ornith_moe_constants.h` (frozen passport), the standalone MLX converter
+  `ornith_moe_convert.{h,cpp}` (prefix `language_model.model.*`,
+  `mlp.switch_mlp.{gate,up,down}_proj` stacked experts, conv `[C,K,1]`),
+  `ornith_moe_load.{h,cpp}` + `ornith_moe_inference.{h,cu}` (duplicated
+  qwen_moe runtime layer; reuses the shared generic `qwen_inference.*` kernels
+  and routes NVFP4 through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
+  format tag `logestix-ornithmoe`; knob
+  `LSX_ORNITH_MOE_EXPERT_CACHE_SLOTS`).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
