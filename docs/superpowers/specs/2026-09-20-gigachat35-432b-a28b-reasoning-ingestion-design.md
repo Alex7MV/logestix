@@ -39,6 +39,51 @@ runnable inference and a real-weight SelfCheck. MTP is **structural only**
   `test_model_suite_guard`, `test_ctest_labels_guard`) are extended in the SAME
   commit as the model files.
 
+## Autonomy & radius of change
+
+The model must be autonomous: adding or tuning it never changes another model's
+geometry or runtime behaviour. Audit against the independence invariant:
+
+| Rule | GigaChat compliance |
+|---|---|
+| Unique frozen passport in a model-unique namespace | `gigachat_moe_constants.h` under `lsxcommon::gigachat::frozen` |
+| Passport is a leaf (includes no other passport) | no cross-includes; enforced by `no passport includes another model's passport` |
+| No cross-family geometry borrowing | `gigachat_moe_*` includes no `glm_*`/`qwen_*`/`deepseek_*`/`gemma_*`/`kimi_*`/`nemotron_*` header; dequant and expert cache are GigaChat-owned TUs that mirror, not include, those precedents |
+| Test suites are family-isolated | `test_gigachat_moe_*` include only `test_gigachat_moe_fixture.h` + neutral `test_synth_checkpoint.h` |
+| Per-`Infer` fast-math policy | `LsxFastMathScope(EffectiveFastMathMode(cfg_))` in `GigaChat35Model::Infer`; row added to the guard's `consumers` list |
+| Neutral infra only | `lsx_inference_nvfp4`, `lsx_gemv`, `schema`, `vram_estimate`, `safetensors_gpu`, `model_runtime`, `expert_store`, `tokenizer`, `path_registry`, `gpu_perf` |
+
+**Shared registration surfaces (additive, one row/branch each — never a
+behavioural edit to another model):**
+
+- `libs/lsxcommon/src/model_registry.cpp` — `+ Register<GigaChat35Model>()`.
+- `libs/lsxcommon/src/model_integrity.cpp` — `+ "logestix-gigachat-nvfp4"` in
+  `kKnownFmts`.
+- `libs/lsxcommon/CMakeLists.txt` — new `lsxcommon_gigachat_cu` OBJECT library
+  + source entries.
+- `apps/lsxforge/src/main.cpp` — `+ --gigachat` flag and dispatch branch.
+- `tests/CMakeLists.txt`, `tests/perf/perf_baselines.json` — new targets/entry.
+- Guard files: `test_code_naming_guard.cpp` (family token),
+  `test_model_independence_guard.cpp` (passport row, owner marker, consumer row;
+  extend the cross-family-borrowing scan to cover `gigachat_moe_*`),
+  `test_model_suite_guard.cpp` (suite row + family token).
+- `AGENTS.md` — Structure section.
+
+**Never touched:** every `glm_*` / `qwen_*` / `deepseek_*` / `gemma_*` / `kimi_*`
+/ `nemotron_*` source, header and test; `gpu_perf.*` stays family-neutral; the
+`glm`/`gemma` framing namespaces in `prompt_framing.h` (GigaChat owns its
+`BuildPromptInputIds` in its own TU).
+
+**Verification (empirical):**
+
+- Baseline before implementation: `test_code_naming_guard`,
+  `test_model_independence_guard`, `test_model_suite_guard`,
+  `test_ctest_labels_guard` all green.
+- After implementation: same four green, plus
+  `grep -rn '#include' libs/lsxcommon/src/gigachat_moe_*` shows no foreign
+  family header, and `grep -rln gigachat` outside `gigachat*` files lists only
+  the shared registration surfaces above.
+
 ## Tensor inventory (audited 2026-09-20)
 
 Non-layer tensors:
