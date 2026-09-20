@@ -78,6 +78,8 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::nemotron_moe::frozen"},
     {"gigachat3.5-432b-a28b-reasoning", "gigachat_moe_constants.h",
      "lsxcommon::gigachat::frozen"},
+    {"ornith-1.5-35b-a3b", "ornith_moe_constants.h",
+     "lsxcommon::ornith::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -161,6 +163,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"qwen_moe_36_constants.h", "namespace frozen {"},
         {"nemotron_moe_constants.h", "namespace frozen {"},
         {"gigachat_moe_constants.h", "namespace frozen {"},
+        {"ornith_moe_constants.h", "namespace frozen {"},
         {"qwen_dense_model.h", "static constexpr int kHiddenSize"},
         {"qwen_dense_27b_model.h", "static constexpr int kHiddenSize"},
     };
