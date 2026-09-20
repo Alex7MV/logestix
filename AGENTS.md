@@ -93,8 +93,14 @@ procedure — `perf-tuning-a-model`.
   GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE:
   `gigachat_moe_constants.h` (frozen passport), `gigachat_moe_convert.{h,cpp}`
   (FP8 block-128 -> neutral NVFP4), `gigachat_moe_dequant.cu` (partial-tile
-  FP8->BF16), `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`;
-  format tag `logestix-gigachat-nvfp4`; inference kernels land in Plan 2).
+  FP8->BF16),   `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`,
+  `gigachat_moe_device_math.h`, `gigachat_moe_norm_kernels.cu` /
+  `gigachat_moe_kernels.{h,cu}` (ZeroCenteredGatedNorm, GDN output norm,
+  sigmoid router, swiglu_limit, sigmoid gate),
+  `gigachat_moe_expert_cache.{h,cpp}` (host mmap store of 9472 experts + device
+  slot-LRU, knob `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`);
+  format tag `logestix-gigachat-nvfp4`; MLA/GatedDeltaNet attention + decode
+  pipeline land in Plan 2b).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
