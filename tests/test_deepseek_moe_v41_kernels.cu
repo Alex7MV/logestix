@@ -551,6 +551,50 @@ TEST_CASE("deepseek-v41 fp16 gemm and head logits match host",
     cudaFree(dW); cudaFree(dx); cudaFree(dlog);
 }
 
+TEST_CASE("deepseek-v41 fp16 gemm stays a bounded number of launches",
+          "[deepseek-v41][kernels]")
+{
+#if defined(NDEBUG)
+    // Real shared-expert down shape: C[hidden] = W[hidden,inter] * mid[inter].
+    // The per-row implementation launched M = 5120 one-row GEMVs (~22 ms,
+    // 99.6% of GPU time in the 2026-09-15 regression); one row-major GEMV is
+    // well under 1 ms. 8 ms separates the two with headroom.
+    const int M = 5120, N = 1, K = 2304;
+    std::vector<uint16_t> Ah(static_cast<size_t>(M) * K, H(0.01f));
+    std::vector<uint16_t> Bh(static_cast<size_t>(K), H(0.02f));
+    uint16_t *dA = nullptr, *dB = nullptr, *dC = nullptr;
+    REQUIRE(cudaMalloc(&dA, Ah.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dB, Bh.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dC, static_cast<size_t>(M) * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dA, Ah.data(), Ah.size() * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dB, Bh.data(), Bh.size() * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(nullptr, dA, dB, dC, M, N,
+                                                    K) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    cudaEvent_t e0 = nullptr, e1 = nullptr;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e0, nullptr) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(nullptr, dA, dB, dC, M, N,
+                                                    K) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e1, nullptr) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+    INFO("LaunchGemmFp16 M=5120 N=1 K=2304: " << ms << " ms");
+    CHECK(ms < 8.0f);
+
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+    cudaFree(dA);
+    cudaFree(dB);
+    cudaFree(dC);
+#endif
+}
+
 TEST_CASE("deepseek-v41 embed lookup and hc expand",
           "[deepseek-v41][kernels]")
 {

@@ -506,8 +506,17 @@ cudaError_t LaunchGemmFp16(cudaStream_t stream,
                            int M, int N, int K)
 {
     if (M <= 0 || N <= 0 || K <= 0) return cudaSuccess;
-    // Row-major C[M,N] = A[M,K]*B[K,N]; B is K-major -> transposed-W GEMV per
-    // row. Device-independent (numeric-contract 1.1.1).
+    // Row-major C[M,N] = A[M,K]*B[K,N].
+    if (N == 1) {
+        // Shared-expert down projection: C[M] = A[M,K]*B[K]. One row-major
+        // GEMV over the M weight rows -- replacing the per-row loop removed
+        // ~200k kernel launches per forward pass (99.6% of GPU time).
+        return gemv::RunLxGemmVec(
+            stream, A, B, 1, M, K, gemv::LxDtype::kF16, gemv::LxDtype::kF16,
+            1.0f, C, gemv::LxDtype::kF16, 0.0f);
+    }
+    // General N: B is [K,N], so each output row is a transposed-W GEMV over
+    // B. Device-independent (numeric-contract 1.1.1).
     for (int m = 0; m < M; ++m) {
         const cudaError_t e = gemv::RunLxGemmVecWT(
             stream, B, A + static_cast<int64_t>(m) * K, 1, N, K,
