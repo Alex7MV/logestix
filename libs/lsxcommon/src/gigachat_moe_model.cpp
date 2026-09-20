@@ -139,7 +139,10 @@ bool GigaChat35Model::Load()
         TeardownWeights();
         return AbortLoad();
     }
-    const int kMaxSeq = 2048;
+    // Prompt + generated tokens share the pipeline's KV/state capacity; the
+    // canonical 2048-token benchmark needs headroom for the framed prompt.
+    const int kMaxSeq = 4096;
+    max_seq_ = kMaxSeq;
     if (!pipeline_.Init(weights_, dims, kMaxSeq, err))
     {
         log::error(absl::StrFormat("[gigachat] pipeline init error: %s", err));
@@ -171,6 +174,14 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
     return RunUnderResidencyLock([&] {
         gpu::InferenceResult r;
         if (!ValidateInferRequest(req, r)) return r;
+        if (max_seq_ > 0 &&
+            static_cast<int64_t>(req.input_ids.size()) + req.max_gen_tokens >
+                max_seq_)
+        {
+            r.error_msg = "context length exceeded: prompt + max_gen > " +
+                          std::to_string(max_seq_);
+            return r;
+        }
         if (pipeline_.Reset(stream()) != cudaSuccess)
         {
             r.error_msg = "cache reset failed";

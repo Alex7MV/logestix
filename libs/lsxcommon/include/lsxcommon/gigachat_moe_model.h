@@ -50,6 +50,7 @@ private:
     gigachat::GcExpertCache expert_cache_;
     gigachat::GcPipeline pipeline_;
     float *d_logits_ = nullptr;
+    int max_seq_ = 0;  // pipeline KV/state capacity (prompt + generated)
 };
 
 } // namespace lsxcommon

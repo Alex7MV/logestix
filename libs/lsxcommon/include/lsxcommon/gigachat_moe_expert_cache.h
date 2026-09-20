@@ -140,7 +140,9 @@ struct GcExpertCache {
 };
 
 // VRAM reserved for session state (KV + GDN recurrent/conv state + logits).
-inline constexpr std::size_t kGcExpertCacheVramReserveBytes = 2ull << 30;
+// The 10 MLA layers at the 4096-token pipeline capacity cost ~3.1 GiB, so the
+// expert-cache auto-sizer must leave more than that free.
+inline constexpr std::size_t kGcExpertCacheVramReserveBytes = 4ull << 30;
 
 inline int GcExpertCacheSlots(std::size_t free_bytes,
                               std::size_t per_expert_bytes, int total_experts,
