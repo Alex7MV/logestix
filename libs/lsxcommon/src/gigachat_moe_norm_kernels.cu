@@ -58,7 +58,47 @@ __global__ void zero_centered_gated_norm_kernel(
     }
 }
 
+__global__ void gdn_output_norm_kernel(
+    const float *__restrict__ o, const float *__restrict__ z,
+    const __nv_bfloat16 *__restrict__ w, int hd, float eps, float scale,
+    float *__restrict__ out)
+{
+    const int h = blockIdx.x;
+    const float *oh = o + static_cast<size_t>(h) * hd;
+    const float *zh = z + static_cast<size_t>(h) * hd;
+    float *out_h = out + static_cast<size_t>(h) * hd;
+    extern __shared__ float smem[];  // [hd] normalized
+
+    if (threadIdx.x == 0)
+    {
+        float ss = 0.0f;
+        for (int d = 0; d < hd; ++d) ss += oh[d] * oh[d];
+        const float inv = rsqrtf(ss / static_cast<float>(hd) + eps);
+        for (int d = 0; d < hd; ++d) smem[d] = oh[d] * inv;
+    }
+    __syncthreads();
+
+    for (int d = threadIdx.x; d < hd; d += blockDim.x)
+        out_h[d] = dev::GdnOutputNormElement(smem[d],
+                                             __bfloat162float(w[d]), zh[d],
+                                             eps, scale);
+}
+
 } // namespace
+
+cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
+                             int heads, int head_dim, float eps, float scale,
+                             float *out, cudaStream_t stream)
+{
+    if (!o || !z || !w || !out || heads <= 0 || head_dim <= 0)
+        return cudaErrorInvalidValue;
+    int threads = head_dim < 256 ? head_dim : 256;
+    const size_t smem = static_cast<size_t>(head_dim) * sizeof(float);
+    gdn_output_norm_kernel<<<heads, threads, smem, stream>>>(
+        o, z, reinterpret_cast<const __nv_bfloat16 *>(w), head_dim, eps, scale,
+        out);
+    return cudaGetLastError();
+}
 
 cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
                                      const uint8_t *w, const uint8_t *w_up,

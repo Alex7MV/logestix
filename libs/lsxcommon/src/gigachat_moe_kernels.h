@@ -19,4 +19,13 @@ cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
                                      const uint8_t *w_down, float eps,
                                      float *out, cudaStream_t stream);
 
+// GatedDeltaNet output norm (zero-centered sigmoid gated RMSNorm), one block
+// per head:
+//   xn = rmsnorm(o[h]) ; out[h][d] = GdnOutputNormElement(xn[d], w[d],
+//   z[h][d], eps, scale)
+// `w` BF16 [head_dim]; `z` is the per-head gate [heads, head_dim].
+cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
+                             int heads, int head_dim, float eps, float scale,
+                             float *out, cudaStream_t stream);
+
 } // namespace lsxcommon::gigachat
