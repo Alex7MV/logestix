@@ -10,6 +10,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
+#include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -338,6 +339,73 @@ gpu::InferenceResult OrnithMoeModel::Infer(const ModelRequest &req)
 gpu::InferenceResult OrnithMoeModelBase::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+// ── Ornith chat framing (reasoning model) ─────────────────────────────────
+
+namespace {
+
+// Appends the BPE encoding of `text` to `ids` (geometric growth like every
+// other arrow_tokenizer_encode caller). Returns false on encoder rejection.
+bool AppendOrnithEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                         std::vector<int32_t> &ids)
+{
+    for (size_t cap = 256; cap <= 16384; cap *= 2) {
+        std::vector<int32_t> buf(cap, 0);
+        size_t enc_cap = cap;
+        const int32_t n = arrow_tokenizer_encode(
+            tok, text.data(), text.size(), buf.data(), &enc_cap);
+        if (n == -2) continue;
+        if (n < 0) return false;
+        ids.insert(ids.end(), buf.begin(), buf.begin() + n);
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+bool OrnithMoeModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                         std::string_view raw_prompt,
+                                         std::vector<int32_t> &out_ids) const
+{
+    const int32_t im_start = arrow_tokenizer_lookup(tok, "<|im_start|>", 12);
+    const int32_t im_end = arrow_tokenizer_lookup(tok, "<|im_end|>", 10);
+    const int32_t think = arrow_tokenizer_lookup(tok, "<think>", 7);
+    const int32_t think_end = arrow_tokenizer_lookup(tok, "</think>", 8);
+    if (im_start < 0 || im_end < 0 || think < 0 || think_end < 0)
+        return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+
+    // ChatML single turn with a prefilled empty think block (the checkpoint's
+    // enable_thinking=false path): the model answers directly.
+    out_ids.clear();
+    out_ids.push_back(im_start);
+    if (!AppendOrnithEncoded(tok, "user\n", out_ids)) return false;
+    if (!AppendOrnithEncoded(tok, raw_prompt, out_ids)) return false;
+    out_ids.push_back(im_end);
+    if (!AppendOrnithEncoded(tok, "\n", out_ids)) return false;
+    out_ids.push_back(im_start);
+    if (!AppendOrnithEncoded(tok, "assistant\n", out_ids)) return false;
+    out_ids.push_back(think);
+    if (!AppendOrnithEncoded(tok, "\n\n", out_ids)) return false;
+    out_ids.push_back(think_end);
+    if (!AppendOrnithEncoded(tok, "\n\n", out_ids)) return false;
+    return true;
+}
+
+gpu::InferenceResult OrnithMoeModel::SelfCheck(const ModelRequest &req)
+{
+    // Ornith is a reasoning fine-tune: the raw control prompt does not answer
+    // directly. Frame with the checkpoint's own ChatML template (prefilled
+    // empty think block) and accept "Paris" within a short answer window
+    // (Model Ingestion Protocol step 8 deviation, recorded in the design).
+    const runtime::ParisSelfCheckOptions opts{
+        .frame_prompt = true,
+        .min_tokens = 16,
+        .answer_window = 16,
+        .substring_match = true,
+    };
+    return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
 } // namespace lsxcommon

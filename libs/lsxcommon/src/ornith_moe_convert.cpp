@@ -65,6 +65,30 @@ std::vector<uint8_t> read_tensor_data(
     return buf;
 }
 
+// Converts a plain RMSNorm weight from the MLX absolute form (multiplier `w`)
+// to the Qwen/HF offset form used by the runtime (`out = rmsnorm(x) * (1 + w)`)
+// and stores it as F32 to preserve the small offset. RMSNormGated
+// (linear_attn.norm) is NOT offset in either exporter and must not pass here.
+std::vector<uint8_t> OffsetNormToF32(const uint8_t *data, int64_t n,
+                                     const std::string &dtype)
+{
+    std::vector<uint8_t> out(static_cast<size_t>(n) * 4);
+    for (int64_t i = 0; i < n; ++i) {
+        float f;
+        if (dtype == "F32") {
+            std::memcpy(&f, data + i * 4, 4);
+        } else {
+            uint16_t bits = static_cast<uint16_t>(data[i * 2]) |
+                            (static_cast<uint16_t>(data[i * 2 + 1]) << 8);
+            uint32_t u = static_cast<uint32_t>(bits) << 16;
+            std::memcpy(&f, &u, 4);
+        }
+        f -= 1.0f;
+        std::memcpy(out.data() + static_cast<size_t>(i) * 4, &f, 4);
+    }
+    return out;
+}
+
 // Quantizes a contiguous BF16 slice to NVFP4. Returns false on GPU failure.
 bool quantize_slice(const uint8_t *data, int64_t numel,
                     DenseNvfp4Record &r)
@@ -456,17 +480,25 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             case OrnithMoeTensorKind::InputNorm:
             case OrnithMoeTensorKind::PostNorm:
             case OrnithMoeTensorKind::FullAttnQNorm:
-            case OrnithMoeTensorKind::FullAttnKNorm:
+            case OrnithMoeTensorKind::FullAttnKNorm: {
+                // MLX absolute -> runtime offset form (see OffsetNormToF32).
+                TensorRecord r;
+                r.name = t.name; r.dtype = "F32"; r.shape = t.shape;
+                r.data = OffsetNormToF32(data.data(), t.numel(), t.dtype);
+                if (p.kind == OrnithMoeTensorKind::FinalNorm)
+                    global_raw.push_back(std::move(r));
+                else
+                    raw_by_layer[p.layer].push_back(std::move(r));
+                ++total_pinned;
+                break;
+            }
             case OrnithMoeTensorKind::LinearAttnNorm:
             case OrnithMoeTensorKind::LinearAttnALog:
             case OrnithMoeTensorKind::LinearAttnDt: {
                 TensorRecord r;
                 r.name = t.name; r.dtype = t.dtype; r.shape = t.shape;
                 r.data = std::move(data);
-                if (p.kind == OrnithMoeTensorKind::FinalNorm)
-                    global_raw.push_back(std::move(r));
-                else
-                    raw_by_layer[p.layer].push_back(std::move(r));
+                raw_by_layer[p.layer].push_back(std::move(r));
                 ++total_pinned;
                 break;
             }

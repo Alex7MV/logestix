@@ -107,22 +107,29 @@ inline std::vector<FakeTensor> BuildSyntheticOrnithTensors()
         return ((static_cast<float>(i * 37 % 251)) / 251.0f) - 0.5f;
     };
 
+    // Plain RMSNorm weights are stored by the MLX export in ABSOLUTE form
+    // (multiplier ~1.0); the converter subtracts 1 into the runtime offset
+    // form, so the fixture must use realistic near-ones (not raw bit
+    // patterns, which would become degenerate).
+    auto norm_pattern = [](int64_t) { return 1.0f; };
+
     std::vector<FakeTensor> t;
     t.push_back({"language_model.model.embed_tokens.weight", "BF16", {V, H},
                  MakeBf16(V * H)});
     t.push_back({"language_model.lm_head.weight", "BF16", {V, H},
                  MakeBf16(V * H)});
     t.push_back({"language_model.model.norm.weight", "BF16", {H},
-                 MakeBf16Values(H, [](int64_t i) { return (float)i * 0.01f; })});
+                 MakeBf16Values(H, norm_pattern)});
 
     for (int l = 0; l < c.num_layers; ++l) {
         const std::string lp =
             "language_model.model.layers." + std::to_string(l) + ".";
         const bool full = c.layer_types[static_cast<size_t>(l)] ==
                           "full_attention";
-        t.push_back({lp + "input_layernorm.weight", "BF16", {H}, MakeBf16(H)});
+        t.push_back({lp + "input_layernorm.weight", "BF16", {H},
+                     MakeBf16Values(H, norm_pattern)});
         t.push_back({lp + "post_attention_layernorm.weight", "BF16", {H},
-                     MakeBf16(H)});
+                     MakeBf16Values(H, norm_pattern)});
         if (full) {
             const auto fa = lp + "self_attn.";
             t.push_back({fa + "q_proj.weight", "BF16", {NH, H}, MakeBf16(NH * H)});
@@ -132,9 +139,9 @@ inline std::vector<FakeTensor> BuildSyntheticOrnithTensors()
                          {H, c.num_attention_heads * c.head_dim},
                          MakeBf16(H * c.num_attention_heads * c.head_dim)});
             t.push_back({fa + "q_norm.weight", "BF16", {c.head_dim},
-                         MakeBf16(c.head_dim)});
+                         MakeBf16Values(c.head_dim, norm_pattern)});
             t.push_back({fa + "k_norm.weight", "BF16", {c.head_dim},
-                         MakeBf16(c.head_dim)});
+                         MakeBf16Values(c.head_dim, norm_pattern)});
         } else {
             const auto la = lp + "linear_attn.";
             t.push_back({la + "in_proj_qkv.weight", "BF16", {CD, H},
@@ -153,13 +160,16 @@ inline std::vector<FakeTensor> BuildSyntheticOrnithTensors()
             t.push_back({la + "conv1d.weight", "BF16",
                          {CD, c.linear_conv_kernel_dim, 1},
                          MakeBf16(CD * c.linear_conv_kernel_dim)});
+            // RMSNormGated is absolute in both exporters: near-ones.
             t.push_back({la + "norm.weight", "BF16",
                          {c.linear_value_head_dim},
-                         MakeBf16(c.linear_value_head_dim)});
+                         MakeBf16Values(c.linear_value_head_dim, norm_pattern)});
             t.push_back({la + "A_log", "BF16", {c.linear_num_value_heads},
-                         MakeBf16(c.linear_num_value_heads)});
+                         MakeBf16Values(c.linear_num_value_heads,
+                                        [](int64_t) { return 1.0f; })});
             t.push_back({la + "dt_bias", "BF16", {c.linear_num_value_heads},
-                         MakeBf16(c.linear_num_value_heads)});
+                         MakeBf16Values(c.linear_num_value_heads,
+                                        [](int64_t) { return 0.0f; })});
         }
         // MLX stacked experts: [E, I, H] gate/up, [E, H, I] down.
         t.push_back({lp + "mlp.gate.weight", "BF16", {E, H},

@@ -58,6 +58,18 @@ public:
 
     gpu::InferenceResult Infer(const ModelRequest &req) override;
 
+    // Ornith is a reasoning model: the control SelfCheck frames the prompt with
+    // its own ChatML template and a prefilled empty think block so the answer
+    // is produced directly (Model Ingestion Protocol step 8; recorded as a
+    // per-model framing deviation).
+    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+
+    // Own chat framing: ChatML single turn + prefilled `<think>...</think>`
+    // (enable_thinking=false semantics of the checkpoint's chat template).
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+
     const std::string &Type() const override { return kType; }
 
 private:
