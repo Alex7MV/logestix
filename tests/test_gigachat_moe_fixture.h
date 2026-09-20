@@ -195,4 +195,39 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     WriteSafetensors(dir, "model.safetensors", ts);
 }
 
+// Real frozen-geometry full-attention layer set.
+inline const std::vector<int> &RealFullAttn()
+{
+    static const std::vector<int> v = {3, 7, 11, 15, 19, 23, 27, 31, 35, 39};
+    return v;
+}
+
+// Writes a real-geometry model.index.json (no weights) so the loader's frozen
+// passport can be exercised without the synthetic-geometry bypass.
+inline void WriteGigaChatIndex(
+    const std::filesystem::path &model_root, int hidden_override = 7168,
+    const std::string &format_tag = "logestix-gigachat-nvfp4")
+{
+    std::filesystem::create_directories(model_root / "logestix");
+    std::ofstream f(model_root / "logestix" / "model.index.json");
+    f << "{\n  \"format\": \"" << format_tag << "\",\n"
+      << "  \"model\": \"GigaChat3.5-432B-A28B-Reasoning\",\n"
+      << "  \"num_layers\": 40,\n  \"full_attention_layers\": [";
+    const auto &fa = RealFullAttn();
+    for (size_t i = 0; i < fa.size(); ++i)
+    {
+        if (i) f << ",";
+        f << fa[i];
+    }
+    f << "],\n  \"hidden_size\": " << hidden_override
+      << ",\n  \"vocab_size\": 128256,\n  \"num_attention_heads\": 64,\n"
+      << "  \"num_key_value_heads\": 64,\n  \"num_experts\": 256,\n"
+      << "  \"num_experts_per_tok\": 8,\n  \"moe_intermediate_size\": 2048,\n"
+      << "  \"first_k_dense_replace\": 3,\n  \"rms_norm_eps\": 1e-06,\n"
+      << "  \"router_scaling_factor\": 2.5,\n  \"swiglu_limit\": 10,\n"
+      << "  \"bos_token_id\": 1,\n  \"eos_token_id\": 2,\n  \"pad_token_id\": 2,\n"
+      << "  \"deferred\": {\"mtp\": \"stored\", \"mtp_layers\": [40,41,42], "
+         "\"mtp_tensors\": 129},\n  \"total_pinned_tensors\": 0\n}\n";
+}
+
 } // namespace gigachattest
