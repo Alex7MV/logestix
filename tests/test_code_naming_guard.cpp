@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -49,7 +49,8 @@ std::regex SchemeRegex()
 const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
-        {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat"};
+        {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
+         "ornith"};
     return v;
 }
 
@@ -171,4 +172,17 @@ TEST_CASE("naming guard accepts nemotron_moe_* stems", "[naming][guard]")
     CHECK(m("nemotron_moe_inference_attn"));
     CHECK(m("nemotron_moe_kernels"));
     CHECK(m("nemotron_moe_device_math"));
+}
+
+TEST_CASE("naming guard accepts ornith_moe_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("ornith_moe_constants"));
+    CHECK(m("ornith_moe_convert"));
+    CHECK(m("ornith_moe_load"));
+    CHECK(m("ornith_moe_model"));
+    CHECK(m("ornith_moe_inference"));
+    CHECK(m("ornith_moe_expert_cache"));
 }
