@@ -4,6 +4,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "gigachat_host_ref.h"
 #include "gigachat_moe_device_math.h"
 #include "lsxcommon/gigachat_moe_inference_attn.h"
 
@@ -17,11 +18,9 @@
 #include <vector>
 
 using namespace lsxcommon::gigachat;
+using namespace gigachatref;
 
 namespace {
-
-float R16(float v) { return __half2float(__float2half(v)); }
-float RBf16(float v) { return __bfloat162float(__float2bfloat16_rn(v)); }
 
 const float kE2m1[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
 
@@ -117,76 +116,6 @@ GcGatedNorm DevNorm(const std::vector<float> &w, const std::vector<float> &up,
     n.d_gate_up = DevCopy(uu);
     n.d_gate_down = DevCopy(ud);
     return n;
-}
-
-std::vector<float> GemvRef(const std::vector<float> &W,
-                           const std::vector<float> &x, int N, int K)
-{
-    std::vector<float> y(static_cast<size_t>(N), 0.0f);
-    for (int n = 0; n < N; ++n)
-    {
-        float acc = 0.0f;
-        for (int k = 0; k < K; ++k)
-            acc += W[static_cast<size_t>(n) * K + k] * x[static_cast<size_t>(k)];
-        y[static_cast<size_t>(n)] = acc;
-    }
-    return y;
-}
-
-std::vector<float> NormRef(const std::vector<float> &x,
-                           const std::vector<float> &w,
-                           const std::vector<float> &up,
-                           const std::vector<float> &down, int dim, int rank,
-                           float eps)
-{
-    double ss = 0.0;
-    for (int i = 0; i < dim; ++i) ss += static_cast<double>(x[i]) * x[i];
-    const float inv = 1.0f / std::sqrt(static_cast<float>(ss / dim) + eps);
-    std::vector<float> xn(static_cast<size_t>(dim));
-    for (int i = 0; i < dim; ++i) xn[i] = x[i] * inv;
-    std::vector<float> gu(static_cast<size_t>(rank), 0.0f);
-    for (int r = 0; r < rank; ++r)
-    {
-        float a = 0.0f;
-        for (int i = 0; i < dim; ++i)
-            a += up[static_cast<size_t>(r) * dim + i] * xn[i];
-        gu[r] = a / (1.0f + std::exp(-a));
-    }
-    std::vector<float> g(static_cast<size_t>(dim), 0.0f);
-    for (int i = 0; i < dim; ++i)
-    {
-        float a = 0.0f;
-        for (int r = 0; r < rank; ++r)
-            a += down[static_cast<size_t>(i) * rank + r] * gu[r];
-        g[i] = a;
-    }
-    std::vector<float> out(static_cast<size_t>(dim));
-    for (int i = 0; i < dim; ++i)
-        out[i] = xn[i] * (1.0f + w[i]) * 2.0f / (1.0f + std::exp(-g[i]));
-    return out;
-}
-
-void RopeRef(std::vector<float> &q, int heads, int qk, int nope,
-             std::vector<float> &k, const std::vector<float> &c,
-             const std::vector<float> &s)
-{
-    const int half = static_cast<int>(c.size());
-    for (int h = 0; h < heads; ++h)
-        for (int j = 0; j < half; ++j)
-        {
-            const int i0 = h * qk + nope + 2 * j;
-            const float a = q[i0];
-            const float b = q[i0 + 1];
-            q[i0] = a * c[j] - b * s[j];
-            q[i0 + 1] = a * s[j] + b * c[j];
-        }
-    for (int j = 0; j < half; ++j)
-    {
-        const float a = k[2 * j];
-        const float b = k[2 * j + 1];
-        k[2 * j] = a * c[j] - b * s[j];
-        k[2 * j + 1] = a * s[j] + b * c[j];
-    }
 }
 
 } // namespace
