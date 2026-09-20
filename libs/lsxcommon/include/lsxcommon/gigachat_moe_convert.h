@@ -90,6 +90,7 @@ struct GigaChatTopology {
     int bos_id = -1;
     int eos_id = -1;
     int pad_id = -1;
+    std::vector<int> full_attention_layers;
     std::string error_msg;  // non-empty when config is invalid
 };
 

@@ -3,11 +3,17 @@
 // TIMEOUT is the mechanical guard against a real full conversion.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_gigachat_moe_fixture.h"
+
 #include "lsxcommon/gigachat_moe_convert.h"
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using namespace lsxcommon::gigachat;
+namespace fs = std::filesystem;
 
 TEST_CASE("gigachat tensor classifier", "[gigachat][convert]")
 {
@@ -82,4 +88,33 @@ TEST_CASE("gigachat config parser reads the authoritative fields",
 
     auto bad = ParseGigaChatConfig("{ not json ");
     CHECK_FALSE(bad.error_msg.empty());
+}
+
+TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
+          "[gigachat][convert]")
+{
+    const auto src = gigachattest::MakeTempDir("gc_src");
+    const auto dst = gigachattest::MakeTempDir("gc_dst");
+    gigachattest::WriteGigaChatCheckpoint(src);
+
+    auto st = ConvertGigaChatModel(src.string(), dst.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    std::ifstream in(dst / "logestix" / "model.index.json");
+    REQUIRE(in.good());
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string json = ss.str();
+
+    CHECK(json.find("\"format\": \"logestix-gigachat-nvfp4\"") !=
+          std::string::npos);
+    CHECK(json.find("\"full_attention_layers\": [1]") != std::string::npos);
+    CHECK(json.find("\"mtp\": \"stored\"") != std::string::npos);
+    CHECK(json.find("\"total_experts\": 2") != std::string::npos);
+    CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_000_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_001_nvfp4.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_001" / "exp_000.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_040.arrow"));
 }
