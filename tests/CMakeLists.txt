@@ -2967,6 +2967,13 @@ target_include_directories(test_nemotron_moe_math PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_nemotron_moe_math COMMAND test_nemotron_moe_math)
 
+# ── GigaChat3.5 host reference math (header-only, no CUDA) ────────────────
+add_executable(test_gigachat_moe_math test_gigachat_moe_math.cpp)
+target_link_libraries(test_gigachat_moe_math PRIVATE Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_math PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_gigachat_moe_math COMMAND test_gigachat_moe_math)
+
 # ── Nemotron-3.5-Lightning-30B-A3B tests (Mamba-2/MoE/attention hybrid) ───
 add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
 target_compile_definitions(test_nemotron_moe_convert PRIVATE
@@ -3406,6 +3413,7 @@ set_tests_properties(
     test_nemotron_moe_loader
     test_nemotron_moe_expert_cache
     test_nemotron_moe_model
+    test_gigachat_moe_math
     PROPERTIES LABELS fast)
 
 set_tests_properties(
