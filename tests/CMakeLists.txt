@@ -2764,6 +2764,31 @@ add_test(NAME test_qwen_moe_36_convert COMMAND test_qwen_moe_36_convert)
 set_tests_properties(test_qwen_moe_36_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Ornith-1.5-35B-A3B tests (MoE, MLX source layout) ─────────────────────
+add_executable(test_ornith_moe_convert test_ornith_moe_convert.cpp)
+target_compile_definitions(test_ornith_moe_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_ornith_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_ornith_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_convert>"
+    )
+    add_custom_command(TARGET test_ornith_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_convert>"
+    )
+endif()
+
+add_test(NAME test_ornith_moe_convert COMMAND test_ornith_moe_convert)
+set_tests_properties(test_ornith_moe_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # test_qwen_moe_kernels — MoE kernel tests (router top-k, routed FFN slot
 # chain, shared-expert combine, generation driver). Same OBJECT-lib pattern as
 # test_deepseek_moe_inference_kernels_cu / test_deepseek_moe_moe_cu: passing the .cu
@@ -3678,6 +3703,7 @@ set_tests_properties(
     test_gemma_moe_convert
     test_qwen_moe_convert
     test_qwen_moe_36_convert
+    test_ornith_moe_convert
     test_qwen_moe_exp_convert
     test_nvfp4_pack
     test_nemotron_moe_convert
@@ -3802,6 +3828,7 @@ set_tests_properties(
     test_gemma_moe_convert
     test_qwen_moe_convert
     test_qwen_moe_36_convert
+    test_ornith_moe_convert
     test_qwen_moe_exp_convert
     test_nvfp4_pack
     PROPERTIES TIMEOUT 120)
