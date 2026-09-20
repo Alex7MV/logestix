@@ -24,6 +24,16 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 ### Removed
 
 - Tracked CTest artifact `Testing/Temporary/CTestCostData.txt` (now gitignored).
+- The `lsxhome` desktop shell and its GUI dependencies (Dear ImGui, ImPlot,
+  ImNodes, FreeType, Inter, JetBrains Mono); it is now the standalone
+  [`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome) repository, which pins
+  a `logestix` commit and links `lsxcommon`.
+
+### Added
+
+- `LOGESTIX_BUILD_APPS` / `LOGESTIX_BUILD_TOOLS` / `LOGESTIX_BUILD_TESTS`
+  switches so logestix can be consumed as a dependency without building the
+  sibling applications, tools or the engine test suite.
 
 ## [0.1.0] - 2026-09-19
 

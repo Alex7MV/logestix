@@ -120,18 +120,11 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
   - `apps/lsxcli/tests/` — 1 test case, 1 assertion
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness (`--bench` — default mode, real generation `IModel::Infer`; `--selfcheck` — Paris check; `--bit-exact` — `FastMathMode::kOff` for the active mode; `--model`, `--prompt`, `--max-gen`; CLI parse in `src/cli.{h,cpp}`); the only app with a numeric mode — the rest always run at maximum speed
   - `apps/lsxbenchmark/tests/` — 5 test cases (CLI parser, label fast)
-- `apps/lsxhome/` — Windows-native x64 desktop shell (`lsxhome`, WIN32 subsystem, D3D12 + Dear ImGui docking branch). Windows only — the CMakeLists block is wrapped in `if(NOT WIN32) return()`. The compute thread publishes tokens to a lock-free SPSC `GuiBridge` → the UI thread drains them every frame.
-  - `src/main_win32.cpp` — WinMain, window, render loop, SPSC compute→UI bridge, sidebar + ImPlot graph
-  - `src/d3d12_renderer.cpp` — `D3D12Renderer` (device/queue/swapchain, SRV descriptor pool, ImGui Win32+DX12 backend, fence), `CreateContext()` for ImGui+ImPlot+ImNodes
-  - `src/gui_renderer.cpp` + `include/lsxhome/gui_renderer.h` — Phase 1 theme layer: `ApplyBlackwellCoworkTheme()` (matte Blackwell/Cowork, WindowBg `0.08`, ChildBg `0.10`, Text `0.88`, all rounding exactly 6.0f) and `BuildWorkspaceSkeleton()` (`ImGui::DockSpaceOverViewport`)
-  - `src/font_loader.cpp` + `include/lsxhome/font_loader.h` — imgui_freetype LCD rasterizer, embedded TTFs (Inter + JetBrains Mono)
-  - `include/lsxhome/blackwell_theme.h` — palette `BlackwellPalette` + `Geometry` (kPalette/kGeometry)
-  - `include/lsxhome/gui_bridge.h` — `TokenPayload` (one cache line, 64B) + `GuiBridge` (SPSC publish/drop/poll/drain, zero-alloc)
-  - `include/lsxhome/spsc_token_ring.h` — lock-free SPSC ring
-  - `include/lsxhome/imnodes_offsetof_shim.h` — shim for imnodes v0.5 against obsolete IM_OFFSETOF
-  - `tests/` — `test_lsxhome_gui` (5 test cases: payload alignment, SPSC zero-alloc/backpressure/burst) + `test_lsxhome_font` (3 test cases)
-  - GUI stack (Dear ImGui 1.92.9-docking, ImPlot 1.0, ImNodes 0.5, FreeType 2.14.3) — FetchContent, static archives (`lsxhome_imgui`/`lsxhome_implot`/`lsxhome_imnodes`/`lsxhome_font`/`lsxhome_mono`)
-  - **GUI invariants**: `IMGUI_DISABLE_OBSOLETE_FUNCTIONS` is NOT used (it changes the ImGuiIO/ImGuiStyle layout → a `sizeof` desync with the app TU → assert "Mismatched struct layout!" in `IMGUI_CHECKVERSION`); ImPlot/ImNodes require their own `CreateContext()`/`DestroyContext()` (otherwise assert `GImPlot == nullptr`)
+- `apps/lsxhome/` — **moved out**: the Windows-native x64 desktop shell now lives
+  in the standalone [`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome)
+  repository. It pins a `logestix` commit and consumes `lsxcommon` as a dependency
+  (see that repository for the D3D12 + Dear ImGui stack, the lock-free SPSC
+  `GuiBridge` and the GUI invariants).
 - `tests/` — Catch2 test suite; GLM and DeepSeek tests are autonomous and run separately (`ctest -R glm` / `ctest -R deepseek`)
   - `tests/test_core.cpp` — integration tests for dependencies (Arrow, CCCL, FlatBuffers, ZMQ, simdjson); 11 test cases, 101 assertions
   - `tests/test_deepseek_moe_loader.cpp` — 3 test cases, 64 assertions (round-trip, empty fields, E4M3 encoding)

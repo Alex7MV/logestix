@@ -124,9 +124,9 @@ ever regresses (host-only static scan; label `fast`).
   behaviour for Clang/AOCC. **Do not remove it** — an AOCC build treats a stray
   `{}` as a hard compile error without it.
 - Links: `absl::flat_hash_map` + `absl::span` + `absl::strings` are PUBLIC on
-  `lsxcommon` (and `lsxhome`; `apps/lsxhome` is PRIVATE);
-  `absl::flat_hash_map` is PUBLIC on `lsxnetwork`; each CUDA OBJECT library
-  links `absl::strings`.
+  `lsxcommon`; `absl::flat_hash_map` is PUBLIC on `lsxnetwork`; each CUDA OBJECT
+  library links `absl::strings`. (The standalone `lsxhome` repository links
+  abseil PRIVATE.)
 
 ## Migration recipe
 

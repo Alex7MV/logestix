@@ -95,12 +95,6 @@ libzmq vendors a few small components with separate permissive licenses
 | Catch2 | v3.16.0 | https://github.com/catchorg/Catch2.git | FetchContent (test-only) | no |
 | Boost | 1.88.0 (bundled by Arrow) | https://github.com/boostorg/boost.git | FetchContent (transitive) | yes — `multiprecision/.../literals.hpp` |
 | xsimd | (bundled by Arrow) | https://github.com/xtensor-stack/xsimd.git | FetchContent (transitive) | no |
-| Dear ImGui | v1.92.9-docking | https://github.com/ocornut/imgui.git | FetchContent (`lsxhome`, Windows) | no |
-| ImPlot | v1.0 | https://github.com/epezent/implot.git | FetchContent (`lsxhome`, Windows) | no |
-| ImNodes | v0.5 | https://github.com/Nelarius/imnodes.git | FetchContent (`lsxhome`, Windows) | yes — `imnodes.cpp` texture-ref fix |
-| FreeType | 2.14.3 (`VER-2-14-3`) | https://gitlab.freedesktop.org/freetype/freetype.git | FetchContent (`lsxhome`, Windows) | yes — `ftoption.h` subpixel rendering |
-| Inter | — | https://github.com/rsms/inter | asset `apps/lsxhome/assets/Inter-Regular.ttf` | no |
-| JetBrains Mono | — | https://github.com/JetBrains/JetBrainsMono | asset `apps/lsxhome/assets/JetBrainsMono-Regular.ttf` | no |
 | Unicode Character Database | 16.0.0 | https://www.unicode.org/Public/16.0.0/ucd | generated `libs/lsxcommon/src/unicode_tables.inc` | derived data (see `tools/generate_unicode_tables.ps1`) |
 
 ### Notes on modified dependencies

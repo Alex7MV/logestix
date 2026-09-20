@@ -197,7 +197,7 @@ unset(_spdlog_fmt)
 # ABSL_PROPAGATE_CXX_STD=ON makes every abseil target inherit the parent's
 # CMAKE_CXX_STANDARD (the project is deliberately pinned to C++20) instead of
 # the default C++14, otherwise there is an ABI mismatch when linking into
-# lsxcommon/lsxhome.
+# lsxcommon.
 set(ABSL_BUILD_TESTING OFF CACHE INTERNAL "Disable abseil tests")
 set(ABSL_BUILD_TEST_HELPERS OFF CACHE INTERNAL "Disable abseil test helpers")
 set(ABSL_BUILD_EXAMPLES OFF CACHE INTERNAL "Disable abseil examples")
@@ -328,6 +328,16 @@ endfunction()
 
 install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
 
+# ── Consumer switches ─────────────────────────────────────────────────────────
+# When logestix is consumed as a dependency (e.g. by the standalone lsxhome
+# repository via FetchContent/add_subdirectory), the embedding project builds
+# only the engine library (libs/). These options keep the sibling applications,
+# the offline tools and the engine's own test suite out of the consumer's build
+# tree. Defaults preserve the standalone monorepo build.
+option(LOGESTIX_BUILD_APPS "Build the logestix applications" ON)
+option(LOGESTIX_BUILD_TOOLS "Build the logestix offline tools" ON)
+option(LOGESTIX_BUILD_TESTS "Build the logestix test suite" ON)
+
 # ── Subdirectories ────────────────────────────────────────────────────────────
 
 # enable_testing must be called before add_subdirectory(apps) so that
@@ -339,12 +349,18 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME AND BUILD_TESTING)
 endif()
 
 add_subdirectory(libs)
-add_subdirectory(apps)
-add_subdirectory(tools)
+
+if(LOGESTIX_BUILD_APPS)
+    add_subdirectory(apps)
+endif()
+
+if(LOGESTIX_BUILD_TOOLS)
+    add_subdirectory(tools)
+endif()
 
 # Shared tests not tied to a specific app (e.g. dependency integration
 # checks: Arrow, CCCL, FlatBuffers, ZeroMQ, simdjson).
-if(BUILD_TESTING)
+if(BUILD_TESTING AND LOGESTIX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 

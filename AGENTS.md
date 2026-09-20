@@ -102,16 +102,13 @@ procedure — `perf-tuning-a-model`.
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
   (`FastMathMode::kOff`); the only app with a numeric mode.
-- `apps/lsxhome/` — Windows-native desktop shell (D3D12 + Dear ImGui docking
-  branch, WIN32 subsystem, Windows only); the compute thread publishes tokens to a
-  lock-free SPSC `GuiBridge` → the UI thread drains them every frame.
 - `tests/` — Catch2 v3.16.0 suite; labels `fast`/`convert`/`inference`/`perf`
   (see § Test) + model/naming/absl/toolchain guard tests.
 - `third_party/cccl/`, `third_party/flatbuffers/`, `third_party/libzmq/`,
   `third_party/simdjson/` — submodules.
 
 The full per-file inventory (by family and subsystem: suite membership and
-assertions, selfcheck env vars, lsxhome GUI invariants, model perf details) — skill
+assertions, selfcheck env vars, model perf details) — skill
 **`logestix-repo-map`**
 (`.opencode/skills/logestix-repo-map/SKILL.md`). Its machine-checked
 equivalents: `test_model_suite_guard.cpp::Suites()` (model → stages →

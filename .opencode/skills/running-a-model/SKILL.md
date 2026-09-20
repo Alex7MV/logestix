@@ -1,6 +1,6 @@
 ---
 name: running-a-model
-description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic/lsxhome, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - run inference, launch model, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
+description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - run inference, launch model, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
 ---
 
 # Running a model
@@ -64,7 +64,9 @@ cmake --build build/linux-release-znver4-aocc                               # pe
 | `lsxforge` | verify a converted model | `lsxforge --input <root> --verify` |
 | `lsxcli` | inspect a converted model | `lsxcli --model <root> --info` / `--infofull` |
 | `taskmosaic` | orchestrator stub (init + GPU log) | `taskmosaic` (no flags) |
-| `lsxhome` | Windows desktop shell | Windows-only; no CLI |
+
+The `lsxhome` Windows desktop shell is a separate repository
+([`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome)); it links `lsxcommon`.
 
 Flag details (verified against `apps/*/src/cli.*`):
 

@@ -1,6 +1,10 @@
 # logestix
 
-Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client), **lsxhome** (Windows-native desktop shell). Shared core library `lsxcommon`.
+Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client), **lsxbenchmark** (speed/bit-exactness). Shared core library `lsxcommon`.
+
+The Windows-native desktop shell **lsxhome** now lives in its own repository
+([`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome)) and consumes
+`lsxcommon` as a pinned dependency.
 
 ### 💎 The Ingestion Singularity: Verified e2e C++/CUDA Inference
 
@@ -35,10 +39,6 @@ Each of us took a step in the right direction, and together we reached a goal th
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
-| Dear ImGui | 1.92.9-docking | FetchContent (lsxhome only) | Static |
-| ImPlot | 1.0 | FetchContent (lsxhome only) | Static |
-| ImNodes | 0.5 | FetchContent (lsxhome only) | Static |
-| FreeType | 2.14.3 | FetchContent (lsxhome only) | Static |
 
 ## Prerequisites
 
@@ -142,8 +142,10 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
 - `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
-- `apps/lsxhome/` — Windows-native x64 desktop shell (WIN32, D3D12 + Dear ImGui docking branch). Compute thread → lock-free SPSC `GuiBridge` → UI thread. Phase 1 theme layer (`ApplyBlackwellCoworkTheme` + `BuildWorkspaceSkeleton`) adds a matte Blackwell/Cowork styling profile.
-  - `apps/lsxhome/tests/` — `test_lsxhome_gui` (5 test cases: payload alignment, SPSC zero-alloc/backpressure/burst) + `test_lsxhome_font` (3 test cases)
+- **lsxhome** — Windows-native x64 desktop shell, extracted to the standalone
+  [`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome) repository. It pins a
+  `logestix` commit and links `lsxcommon` (`LOGESTIX_BUILD_APPS=OFF`,
+  `LOGESTIX_BUILD_TOOLS=OFF`, `LOGESTIX_BUILD_TESTS=OFF`).
 - `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
   - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
   - `test_deepseek_loader` — loader round-trip and E4M3 encoding tests
