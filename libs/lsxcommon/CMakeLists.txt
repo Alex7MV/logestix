@@ -55,6 +55,7 @@ add_library(lsxcommon STATIC
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp
+    src/ornith_moe_load.cpp
     src/qwen_inference_load.cpp
     src/qwen_dense_model.cpp
     src/qwen_base_model.cpp
