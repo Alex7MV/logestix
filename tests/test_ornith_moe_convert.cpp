@@ -85,6 +85,7 @@ TEST_CASE("ornith converter synthetic roundtrip", "[ornith][convert]")
 
     const auto st = lsxcommon::ornith::ConvertOrnithMoeModel(
         src.path.string(), out.path.string());
+    INFO("convert status: " << st.ToString());
     REQUIRE(st.ok());
 
     const fs::path base = out.path / "logestix";

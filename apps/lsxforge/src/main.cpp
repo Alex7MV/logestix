@@ -15,6 +15,7 @@
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "lsxcommon/qwen_moe_36_convert.h"
+#include "lsxcommon/ornith_moe_convert.h"
 #include "lsxcommon/qwen_moe_exp_convert.h"
 #include "lsxcommon/glm_moe_convert.h"
 #include "lsxcommon/kimi_moe_convert.h"
@@ -47,6 +48,7 @@ ABSL_FLAG(bool, kimi, false, "Kimi-K2.7-Code conversion pipeline");
 ABSL_FLAG(bool, qwen, false, "Qwen3.5 conversion pipeline");
 ABSL_FLAG(bool, qwen35moe, false, "Qwen3.5-35B-A3B MoE conversion pipeline");
 ABSL_FLAG(bool, qwen36moe, false, "Qwen3.6-35B-A3B MoE conversion pipeline");
+ABSL_FLAG(bool, ornith, false, "Ornith-1.5-35B-A3B (MLX) conversion pipeline");
 ABSL_FLAG(bool, qwen38flashnext, false,
           "Qwen3.8-Flash-Next (qwen4_exp) conversion pipeline");
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
@@ -103,6 +105,7 @@ int main(int argc, char* argv[]) {
     bool qwen = absl::GetFlag(FLAGS_qwen);
     bool qwen35moe = absl::GetFlag(FLAGS_qwen35moe);
     bool qwen36moe = absl::GetFlag(FLAGS_qwen36moe);
+    bool ornith = absl::GetFlag(FLAGS_ornith);
     bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
     bool nemotron = absl::GetFlag(FLAGS_nemotron);
@@ -341,6 +344,19 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Qwen3.6-MoE conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (ornith) {
+        lsxcommon::log::info("Ornith-1.5-35B-A3B pipeline (MLX -> unified logestix layout)");
+        auto st = lsxcommon::ornith::ConvertOrnithMoeModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat("Ornith conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Ornith conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
