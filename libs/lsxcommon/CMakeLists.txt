@@ -28,6 +28,7 @@ add_library(lsxcommon STATIC
     src/nemotron_moe_load.cpp
     src/nemotron_moe_expert_cache.cpp
     src/nemotron_moe_model.cpp
+    src/gigachat_moe_convert.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp

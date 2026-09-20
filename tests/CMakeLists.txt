@@ -2974,6 +2974,26 @@ target_include_directories(test_gigachat_moe_math PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_math COMMAND test_gigachat_moe_math)
 
+# ── GigaChat3.5-432B-A28B-Reasoning tests (hybrid MLA+GDN+MoE) ────────────
+add_executable(test_gigachat_moe_convert test_gigachat_moe_convert.cpp)
+target_compile_definitions(test_gigachat_moe_convert PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_gigachat_moe_convert PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_convert PRIVATE
+    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_gigachat_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_convert>"
+    )
+endif()
+add_test(NAME test_gigachat_moe_convert COMMAND test_gigachat_moe_convert)
+set_tests_properties(test_gigachat_moe_convert PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Nemotron-3.5-Lightning-30B-A3B tests (Mamba-2/MoE/attention hybrid) ───
 add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
 target_compile_definitions(test_nemotron_moe_convert PRIVATE
@@ -3428,6 +3448,7 @@ set_tests_properties(
     test_qwen_moe_exp_convert
     test_nvfp4_pack
     test_nemotron_moe_convert
+    test_gigachat_moe_convert
     PROPERTIES LABELS convert)
 
 set_tests_properties(
