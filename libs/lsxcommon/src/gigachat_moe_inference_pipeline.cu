@@ -251,8 +251,14 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
 
     for (const auto &lw : w.layers)
         if (!lw.moe) p.dense_inter = lw.mlp_gate.rows;
+    // ff0 holds the gate/up ([top_k, moe_intermediate]), dense ([dense_inter])
+    // AND the expert down output ([top_k, hidden]) -- the last is the widest
+    // on the real model (top_k*hidden = 8*7168 = 57344 vs
+    // top_k*moe_intermediate = 16384 and dense_inter = 18432).
     const int64_t ff0 = std::max<int64_t>(
-        static_cast<int64_t>(dims.top_k) * dims.moe_intermediate, p.dense_inter);
+        std::max<int64_t>(static_cast<int64_t>(dims.top_k) * dims.moe_intermediate,
+                          static_cast<int64_t>(dims.top_k) * hidden),
+        p.dense_inter);
 
     if (!p.mla.Alloc(dims.mla, capacity) || !p.gdn.Alloc(dims.gdn))
     {
