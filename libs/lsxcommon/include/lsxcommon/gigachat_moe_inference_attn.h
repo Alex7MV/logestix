@@ -78,4 +78,48 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
                                  GcMlaScratch &sc, float *out,
                                  cudaStream_t stream);
 
+// ── GatedDeltaNet decode ────────────────────────────────────────────────────
+
+struct GcGdnDims {
+    int hidden = 0;
+    int k_heads = 0;
+    int v_heads = 0;
+    int hk = 0;      // key head dim
+    int hv = 0;      // value head dim
+    int conv_k = 0;  // depthwise conv kernel
+};
+
+struct GcGdnScratch {
+    void *d_base = nullptr;
+    int64_t bytes = 0;
+    void *x_h = nullptr;
+    void *x_bf16 = nullptr;
+    void *qkvz_h = nullptr;
+    void *qkvz_f = nullptr;
+    void *ba_f = nullptr;
+    void *mixed = nullptr;
+    void *z = nullptr;
+    void *beta = nullptr;
+    void *g = nullptr;
+    void *conv_out = nullptr;
+    void *q = nullptr;
+    void *k = nullptr;
+    void *v = nullptr;
+    void *o = nullptr;
+    void *onorm = nullptr;
+    void *onorm_h = nullptr;
+    void *out_h = nullptr;
+    bool Alloc(const GcGdnDims &d);
+    void Free();
+};
+
+// One-token GatedDeltaNet decode. `conv_state` is [conv_dim, conv_k-1] F32 and
+// `rec_state` is [v_heads, hk, hv] F32; both are updated in place and must be
+// zero-initialized at sequence start. `out` is [hidden] F32.
+cudaError_t RunGigaChatGdnDecode(const float *x, const GcLayerWeights &lw,
+                                 const GcGdnDims &d, float norm_eps,
+                                 float o_norm_scale, float *conv_state,
+                                 float *rec_state, GcGdnScratch &sc, float *out,
+                                 cudaStream_t stream);
+
 } // namespace lsxcommon::gigachat

@@ -21,6 +21,7 @@ using namespace lsxcommon::gigachat;
 namespace {
 
 float R16(float v) { return __half2float(__float2half(v)); }
+float RBf16(float v) { return __bfloat162float(__float2bfloat16_rn(v)); }
 
 const float kE2m1[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
 
@@ -87,6 +88,15 @@ lsxcommon::lsx_nvfp4::LsxNvfp4Weight DevNvfp4(const std::vector<float> &w, int N
     out.d_packed = DevCopy(p.packed);
     out.d_scales = DevCopy(p.scales);
     return out;
+}
+
+uint8_t *DevBf16(const std::vector<float> &v)
+{
+    std::vector<__nv_bfloat16> b(v.size());
+    for (size_t i = 0; i < v.size(); ++i) b[i] = __float2bfloat16_rn(v[i]);
+    std::vector<uint8_t> bytes(v.size() * 2);
+    std::memcpy(bytes.data(), b.data(), bytes.size());
+    return DevCopy(bytes);
 }
 
 GcGatedNorm DevNorm(const std::vector<float> &w, const std::vector<float> &up,
@@ -405,4 +415,237 @@ TEST_CASE("gigachat MLA decode matches the host reference",
     cudaFree(vx);
     cudaFree(d_rc);
     cudaFree(d_rs);
+}
+
+TEST_CASE("gigachat GatedDeltaNet decode matches the host reference",
+          "[gigachat][attn]")
+{
+    if (cudaFree(0) != cudaSuccess) SKIP("no CUDA device");
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(false);
+
+    const int hidden = 32, k_heads = 1, v_heads = 2, hk = 16, hv = 16,
+              conv_k = 3;
+    const int key_dim = k_heads * hk, value_dim = v_heads * hv;
+    const int conv_dim = 2 * key_dim + value_dim;
+    const int qkvz_dim = 2 * key_dim + 2 * value_dim;
+    const int ba_dim = 2 * v_heads, rep = v_heads / k_heads;
+    const int space = 2 * hk + 2 * hv * rep;
+    const GcGdnDims d{hidden, k_heads, v_heads, hk, hv, conv_k};
+
+    auto gen = [](int n, int seed) {
+        std::vector<float> v(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) v[i] = GridVal(i * 5 + seed);
+        return v;
+    };
+    auto small = [](int n, int seed) {
+        std::vector<float> v(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            v[i] = 0.25f * static_cast<float>((i * 3 + seed) % 7 - 3);
+        return v;
+    };
+    std::vector<float> w_qkvz = gen(qkvz_dim * hidden, 1);
+    std::vector<float> w_ba = gen(ba_dim * hidden, 2);
+    std::vector<float> w_out = gen(hidden * value_dim, 3);
+    std::vector<float> w_conv = small(conv_dim * conv_k, 4);
+    std::vector<float> A_log = small(v_heads, 5);
+    std::vector<float> dt_bias = small(v_heads, 6);
+    std::vector<float> w_norm = gen(hv, 7);
+
+    GcLayerWeights lw;
+    lw.gdn_in_qkvz = DevNvfp4(w_qkvz, qkvz_dim, hidden);
+    lw.gdn_out_proj = DevNvfp4(w_out, hidden, value_dim);
+    lw.d_gdn_in_ba = DevBf16(w_ba);
+    lw.gdn_ba_rows = ba_dim;
+    lw.d_conv1d = reinterpret_cast<const uint8_t *>(DevCopy(w_conv));
+    lw.conv_dim = conv_dim;
+    lw.conv_kernel = conv_k;
+    lw.d_A_log = reinterpret_cast<const uint8_t *>(DevCopy(A_log));
+    lw.d_dt_bias = reinterpret_cast<const uint8_t *>(DevCopy(dt_bias));
+    lw.gdn_value_heads = v_heads;
+    lw.d_gdn_norm = DevBf16(w_norm);
+    lw.gdn_norm_dim = hv;
+
+    std::vector<float> x0(static_cast<size_t>(hidden)),
+        x1(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i)
+    {
+        x0[i] = 0.2f * static_cast<float>((i % 6) - 3);
+        x1[i] = 0.3f * static_cast<float>((i % 4) - 2);
+    }
+    float *dx0 = DevCopy(x0), *dx1 = DevCopy(x1);
+    float *conv_state = nullptr, *rec_state = nullptr;
+    REQUIRE(cudaMalloc(&conv_state,
+                       static_cast<size_t>(conv_dim) * (conv_k - 1) * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(conv_state, 0,
+                       static_cast<size_t>(conv_dim) * (conv_k - 1) * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&rec_state,
+                       static_cast<size_t>(v_heads) * hk * hv * 4) ==
+            cudaSuccess);
+    REQUIRE(cudaMemset(rec_state, 0,
+                       static_cast<size_t>(v_heads) * hk * hv * 4) ==
+            cudaSuccess);
+    GcGdnScratch sc;
+    REQUIRE(sc.Alloc(d));
+    float *out0 = nullptr, *out1 = nullptr;
+    REQUIRE(cudaMalloc(&out0, hidden * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&out1, hidden * 4) == cudaSuccess);
+    const float eps = 1e-6f, onorm_scale = 2.0f;
+    REQUIRE(RunGigaChatGdnDecode(dx0, lw, d, eps, onorm_scale, conv_state,
+                                 rec_state, sc, out0, nullptr) == cudaSuccess);
+    REQUIRE(RunGigaChatGdnDecode(dx1, lw, d, eps, onorm_scale, conv_state,
+                                 rec_state, sc, out1, nullptr) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    std::vector<float> hout(static_cast<size_t>(hidden));
+    REQUIRE(cudaMemcpy(hout.data(), out1, hidden * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    // ── Host reference, mirroring each F16 rounding. ──
+    std::vector<float> cstate(static_cast<size_t>(conv_dim) * (conv_k - 1), 0.0f);
+    std::vector<float> rstate(static_cast<size_t>(v_heads) * hk * hv, 0.0f);
+    auto token = [&](const std::vector<float> &x, std::vector<float> &result) {
+        std::vector<float> x16(static_cast<size_t>(hidden));
+        for (int i = 0; i < hidden; ++i) x16[i] = R16(x[i]);
+        std::vector<float> xb(static_cast<size_t>(hidden));
+        for (int i = 0; i < hidden; ++i) xb[i] = RBf16(x[i]);
+        std::vector<float> qkvz = GemvRef(w_qkvz, x16, qkvz_dim, hidden);
+        for (float &f : qkvz) f = R16(f);
+        std::vector<float> ba = GemvRef(w_ba, xb, ba_dim, hidden);
+        std::vector<float> mixed(static_cast<size_t>(conv_dim), 0.0f);
+        std::vector<float> z(static_cast<size_t>(value_dim), 0.0f);
+        for (int gh = 0; gh < k_heads; ++gh)
+        {
+            const float *base = &qkvz[static_cast<size_t>(gh) * space];
+            for (int i = 0; i < hk; ++i)
+            {
+                mixed[gh * hk + i] = base[i];
+                mixed[key_dim + gh * hk + i] = base[hk + i];
+            }
+            for (int j = 0; j < hv * rep; ++j)
+            {
+                mixed[2 * key_dim + gh * hv * rep + j] =
+                    base[2 * hk + j];
+                z[gh * hv * rep + j] = base[2 * hk + hv * rep + j];
+            }
+        }
+        std::vector<float> beta(static_cast<size_t>(v_heads));
+        std::vector<float> gv(static_cast<size_t>(v_heads));
+        for (int h = 0; h < v_heads; ++h)
+        {
+            const int kh = h / rep;
+            const float b = ba[kh * 2 * rep + (h % rep)];
+            const float a = ba[kh * 2 * rep + rep + (h % rep)];
+            beta[h] = 1.0f / (1.0f + std::exp(-b));
+            const float t = a + dt_bias[h];
+            const float sp = t > 20.0f ? t : std::log1p(std::exp(t));
+            gv[h] = -std::exp(A_log[h]) * sp;
+        }
+        std::vector<float> conv_out(static_cast<size_t>(conv_dim));
+        for (int dd = 0; dd < conv_dim; ++dd)
+        {
+            float acc = w_conv[static_cast<size_t>(dd) * conv_k + (conv_k - 1)] *
+                        mixed[dd];
+            for (int j = 0; j < conv_k - 1; ++j)
+                acc += w_conv[static_cast<size_t>(dd) * conv_k + j] *
+                       cstate[static_cast<size_t>(dd) * (conv_k - 1) + j];
+            for (int j = 0; j < conv_k - 2; ++j)
+                cstate[static_cast<size_t>(dd) * (conv_k - 1) + j] =
+                    cstate[static_cast<size_t>(dd) * (conv_k - 1) + j + 1];
+            cstate[static_cast<size_t>(dd) * (conv_k - 1) + (conv_k - 2)] =
+                mixed[dd];
+            conv_out[dd] = acc / (1.0f + std::exp(-acc));
+        }
+        std::vector<float> q(static_cast<size_t>(v_heads) * hk),
+            kk(static_cast<size_t>(v_heads) * hk),
+            vv(static_cast<size_t>(value_dim));
+        const float qscale = 1.0f / std::sqrt(static_cast<float>(hk));
+        for (int h = 0; h < v_heads; ++h)
+        {
+            const int kh = h / rep;
+            double sq = 0.0, sk = 0.0;
+            for (int i = 0; i < hk; ++i)
+            {
+                const float qv = conv_out[kh * hk + i];
+                const float kv = conv_out[key_dim + kh * hk + i];
+                sq += static_cast<double>(qv) * qv;
+                sk += static_cast<double>(kv) * kv;
+            }
+            const float iq = 1.0f / std::sqrt(static_cast<float>(sq) + 1e-6f);
+            const float ik = 1.0f / std::sqrt(static_cast<float>(sk) + 1e-6f);
+            for (int i = 0; i < hk; ++i)
+            {
+                q[static_cast<size_t>(h) * hk + i] =
+                    conv_out[kh * hk + i] * iq * qscale;
+                kk[static_cast<size_t>(h) * hk + i] =
+                    conv_out[key_dim + kh * hk + i] * ik;
+            }
+            for (int j = 0; j < hv; ++j)
+                vv[static_cast<size_t>(h) * hv + j] =
+                    conv_out[2 * key_dim + h * hv + j];
+        }
+        std::vector<float> o(static_cast<size_t>(value_dim));
+        for (int h = 0; h < v_heads; ++h)
+        {
+            const size_t sb = static_cast<size_t>(h) * hk * hv;
+            const float decay = std::exp(gv[h]);
+            for (int i = 0; i < hk; ++i)
+                for (int j = 0; j < hv; ++j)
+                    rstate[sb + static_cast<size_t>(i) * hv + j] *= decay;
+            for (int j = 0; j < hv; ++j)
+            {
+                float kvmem = 0.0f;
+                for (int i = 0; i < hk; ++i)
+                    kvmem += rstate[sb + static_cast<size_t>(i) * hv + j] *
+                             kk[static_cast<size_t>(h) * hk + i];
+                const float delta =
+                    (vv[static_cast<size_t>(h) * hv + j] - kvmem) * beta[h];
+                for (int i = 0; i < hk; ++i)
+                    rstate[sb + static_cast<size_t>(i) * hv + j] +=
+                        kk[static_cast<size_t>(h) * hk + i] * delta;
+                float acc = 0.0f;
+                for (int i = 0; i < hk; ++i)
+                    acc += rstate[sb + static_cast<size_t>(i) * hv + j] *
+                           q[static_cast<size_t>(h) * hk + i];
+                o[static_cast<size_t>(h) * hv + j] = acc;
+            }
+        }
+        std::vector<float> onorm(static_cast<size_t>(value_dim));
+        for (int h = 0; h < v_heads; ++h)
+        {
+            double ss = 0.0;
+            for (int j = 0; j < hv; ++j)
+                ss += static_cast<double>(o[static_cast<size_t>(h) * hv + j]) *
+                      o[static_cast<size_t>(h) * hv + j];
+            const float inv =
+                1.0f / std::sqrt(static_cast<float>(ss / hv) + eps);
+            for (int j = 0; j < hv; ++j)
+            {
+                const float xn = o[static_cast<size_t>(h) * hv + j] * inv;
+                const float zz = z[static_cast<size_t>(h) * hv + j];
+                onorm[static_cast<size_t>(h) * hv + j] =
+                    xn * (1.0f + w_norm[j]) * onorm_scale /
+                    (1.0f + std::exp(-zz));
+            }
+        }
+        for (float &f : onorm) f = R16(f);
+        result = GemvRef(w_out, onorm, hidden, value_dim);
+        for (float &f : result) f = R16(f);
+    };
+
+    std::vector<float> r0, r1;
+    token(x0, r0);
+    token(x1, r1);
+    for (int i = 0; i < hidden; ++i)
+        CHECK(hout[static_cast<size_t>(i)] ==
+              Catch::Approx(r1[static_cast<size_t>(i)]).margin(1e-3f));
+
+    sc.Free();
+    cudaFree(conv_state);
+    cudaFree(rec_state);
+    cudaFree(dx0);
+    cudaFree(dx1);
+    cudaFree(out0);
+    cudaFree(out1);
 }

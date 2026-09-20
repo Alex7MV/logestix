@@ -8,6 +8,9 @@
 #include "gigachat_moe_device_math.h"
 #include "gigachat_moe_kernels.h"
 
+#include "lsxcommon/lsx_gemv.h"
+
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <cmath>
@@ -35,6 +38,13 @@ __global__ void f16_to_f32_kernel(const __half *__restrict__ x,
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) y[i] = __half2float(x[i]);
+}
+
+__global__ void f32_to_bf16_kernel(const float *__restrict__ x,
+                                   __nv_bfloat16 *__restrict__ y, int n)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __float2bfloat16_rn(x[i]);
 }
 
 __global__ void scale_f32_to_f16_kernel(const float *__restrict__ x,
@@ -168,6 +178,14 @@ inline cudaError_t LaunchF16ToF32(const __half *x, float *y, int n,
 {
     if (n <= 0) return cudaSuccess;
     f16_to_f32_kernel<<<(n + 255) / 256, 256, 0, s>>>(x, y, n);
+    return cudaGetLastError();
+}
+
+inline cudaError_t LaunchF32ToBf16(const float *x, __nv_bfloat16 *y, int n,
+                                   cudaStream_t stream)
+{
+    if (n <= 0) return cudaSuccess;
+    f32_to_bf16_kernel<<<(n + 255) / 256, 256, 0, stream>>>(x, y, n);
     return cudaGetLastError();
 }
 
@@ -378,6 +396,298 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
         GC_TRY(cudaGetLastError());
     }
     GC_TRY(LaunchGemm(lw.o_proj, attn_g_h, out_h, stream));
+    GC_TRY(LaunchF16ToF32(out_h, out, d.hidden, stream));
+#undef GC_TRY
+    return cudaSuccess;
+}
+
+// ── GatedDeltaNet decode ────────────────────────────────────────────────────
+
+namespace {
+
+// Reorders the interleaved per-k-head qkvz projection into the [q|k|v] conv
+// channel order and extracts z, matching fix_query_key_value_ordering.
+__global__ void gdn_prepare_kernel(const float *__restrict__ qkvz,
+                                   float *__restrict__ mixed,
+                                   float *__restrict__ z, int hk, int hv,
+                                   int rep, int key_dim)
+{
+    const int g = blockIdx.x;
+    const int vper = hv * rep;
+    const int space = 2 * hk + 2 * vper;
+    const float *base = qkvz + static_cast<size_t>(g) * space;
+    for (int i = threadIdx.x; i < hk; i += blockDim.x)
+    {
+        mixed[g * hk + i] = base[i];
+        mixed[key_dim + g * hk + i] = base[hk + i];
+    }
+    for (int i = threadIdx.x; i < vper; i += blockDim.x)
+    {
+        mixed[2 * key_dim + g * vper + i] = base[2 * hk + i];
+        z[g * vper + i] = base[2 * hk + vper + i];
+    }
+}
+
+__global__ void gdn_gate_kernel(const float *__restrict__ ba,
+                                const float *__restrict__ A_log,
+                                const float *__restrict__ dt_bias,
+                                float *__restrict__ beta, float *__restrict__ g,
+                                int rep, int v_heads)
+{
+    const int h = blockIdx.x * blockDim.x + threadIdx.x;
+    if (h >= v_heads) return;
+    const int kh = h / rep;
+    const float b = ba[kh * 2 * rep + (h % rep)];
+    const float a = ba[kh * 2 * rep + rep + (h % rep)];
+    beta[h] = 1.0f / (1.0f + expf(-b));
+    const float t = a + dt_bias[h];
+    const float sp = t > 20.0f ? t : log1pf(expf(t));
+    g[h] = -expf(A_log[h]) * sp;
+}
+
+// Depthwise causal conv (kernel K) over one new token + the K-1 state taps.
+__global__ void gdn_conv_kernel(const float *__restrict__ mixed,
+                                const float *__restrict__ w,
+                                float *__restrict__ state,
+                                float *__restrict__ conv_out, int conv_dim,
+                                int K)
+{
+    const int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= conv_dim) return;
+    const float *wd = w + static_cast<size_t>(d) * K;
+    float *sd = state + static_cast<size_t>(d) * (K - 1);
+    float acc = wd[K - 1] * mixed[d];
+    for (int j = 0; j < K - 1; ++j) acc += wd[j] * sd[j];
+    for (int j = 0; j < K - 2; ++j) sd[j] = sd[j + 1];
+    sd[K - 2] = mixed[d];
+    conv_out[d] = acc / (1.0f + expf(-acc));
+}
+
+// Repeat query/key across the value-head ratio and L2-normalize (q also scaled
+// by 1/sqrt(hk)); copies the value slice.
+__global__ void gdn_l2_kernel(const float *__restrict__ conv_out,
+                              float *__restrict__ q, float *__restrict__ k,
+                              float *__restrict__ v, int key_dim, int hk,
+                              int hv, int rep, float eps, float scale)
+{
+    const int h = blockIdx.x;
+    const int kh = h / rep;
+    __shared__ float invq, invk;
+    if (threadIdx.x == 0)
+    {
+        float s = 0.0f;
+        for (int i = 0; i < hk; ++i)
+        {
+            const float t = conv_out[static_cast<size_t>(kh) * hk + i];
+            s += t * t;
+        }
+        invq = rsqrtf(s + eps);
+        s = 0.0f;
+        for (int i = 0; i < hk; ++i)
+        {
+            const float t =
+                conv_out[static_cast<size_t>(key_dim) + kh * hk + i];
+            s += t * t;
+        }
+        invk = rsqrtf(s + eps);
+    }
+    __syncthreads();
+    for (int i = threadIdx.x; i < hk; i += blockDim.x)
+    {
+        q[static_cast<size_t>(h) * hk + i] =
+            conv_out[static_cast<size_t>(kh) * hk + i] * invq * scale;
+        k[static_cast<size_t>(h) * hk + i] =
+            conv_out[static_cast<size_t>(key_dim) + kh * hk + i] * invk;
+    }
+    for (int j = threadIdx.x; j < hv; j += blockDim.x)
+        v[static_cast<size_t>(h) * hv + j] =
+            conv_out[2 * static_cast<size_t>(key_dim) +
+                     static_cast<size_t>(h) * hv + j];
+}
+
+// One recurrent delta-rule step for every value head (state [h, hk, hv]).
+__global__ void gdn_recurrent_kernel(const float *__restrict__ q,
+                                     const float *__restrict__ k,
+                                     const float *__restrict__ v,
+                                     const float *__restrict__ beta,
+                                     const float *__restrict__ g,
+                                     float *__restrict__ state,
+                                     float *__restrict__ o, int hk, int hv)
+{
+    const int h = blockIdx.x;
+    const int j = threadIdx.x;
+    if (j >= hv) return;
+    const size_t sb = static_cast<size_t>(h) * hk * hv;
+    const float decay = expf(g[h]);
+    for (int i = 0; i < hk; ++i)
+        state[sb + static_cast<size_t>(i) * hv + j] *= decay;
+    float kvmem = 0.0f;
+    for (int i = 0; i < hk; ++i)
+        kvmem += state[sb + static_cast<size_t>(i) * hv + j] *
+                 k[static_cast<size_t>(h) * hk + i];
+    const float delta = (v[static_cast<size_t>(h) * hv + j] - kvmem) * beta[h];
+    for (int i = 0; i < hk; ++i)
+        state[sb + static_cast<size_t>(i) * hv + j] +=
+            k[static_cast<size_t>(h) * hk + i] * delta;
+    float acc = 0.0f;
+    for (int i = 0; i < hk; ++i)
+        acc += state[sb + static_cast<size_t>(i) * hv + j] *
+               q[static_cast<size_t>(h) * hk + i];
+    o[static_cast<size_t>(h) * hv + j] = acc;
+}
+
+} // namespace
+
+bool GcGdnScratch::Alloc(const GcGdnDims &d)
+{
+    Free();
+    const int64_t key_dim = static_cast<int64_t>(d.k_heads) * d.hk;
+    const int64_t value_dim = static_cast<int64_t>(d.v_heads) * d.hv;
+    const int64_t conv_dim = 2 * key_dim + value_dim;
+    const int64_t qkvz_dim = 2 * key_dim + 2 * value_dim;
+    const int64_t ba_dim = 2 * static_cast<int64_t>(d.v_heads);
+    const int64_t qdim = static_cast<int64_t>(d.v_heads) * d.hk;
+
+    int64_t off = 0;
+    auto carve = [&](int64_t bytes) -> void * {
+        off = AlignUp(off);
+        void *p = static_cast<uint8_t *>(d_base) + off;
+        off += bytes;
+        return p;
+    };
+    int64_t total = 0;
+    auto need = [&](int64_t bytes) { total = AlignUp(total) + bytes; };
+    need(static_cast<int64_t>(d.hidden) * 2);
+    need(static_cast<int64_t>(d.hidden) * 2);
+    need(qkvz_dim * 2);
+    need(qkvz_dim * 4);
+    need(ba_dim * 4);
+    need(conv_dim * 4);
+    need(value_dim * 4);
+    need(static_cast<int64_t>(d.v_heads) * 4);
+    need(static_cast<int64_t>(d.v_heads) * 4);
+    need(conv_dim * 4);
+    need(qdim * 4);
+    need(qdim * 4);
+    need(value_dim * 4);
+    need(value_dim * 4);
+    need(value_dim * 4);
+    need(value_dim * 2);
+    need(static_cast<int64_t>(d.hidden) * 2);
+    if (total <= 0) return false;
+    void *base = nullptr;
+    if (cudaMalloc(&base, static_cast<size_t>(total)) != cudaSuccess)
+        return false;
+    d_base = base;
+    bytes = total;
+    x_h = carve(static_cast<int64_t>(d.hidden) * 2);
+    x_bf16 = carve(static_cast<int64_t>(d.hidden) * 2);
+    qkvz_h = carve(qkvz_dim * 2);
+    qkvz_f = carve(qkvz_dim * 4);
+    ba_f = carve(ba_dim * 4);
+    mixed = carve(conv_dim * 4);
+    z = carve(value_dim * 4);
+    beta = carve(static_cast<int64_t>(d.v_heads) * 4);
+    g = carve(static_cast<int64_t>(d.v_heads) * 4);
+    conv_out = carve(conv_dim * 4);
+    q = carve(qdim * 4);
+    k = carve(qdim * 4);
+    v = carve(value_dim * 4);
+    o = carve(value_dim * 4);
+    onorm = carve(value_dim * 4);
+    onorm_h = carve(value_dim * 2);
+    out_h = carve(static_cast<int64_t>(d.hidden) * 2);
+    return true;
+}
+
+void GcGdnScratch::Free()
+{
+    if (d_base)
+    {
+        cudaFree(d_base);
+        d_base = nullptr;
+    }
+    bytes = 0;
+    x_h = x_bf16 = qkvz_h = qkvz_f = ba_f = mixed = z = beta = g = nullptr;
+    conv_out = q = k = v = o = onorm = onorm_h = out_h = nullptr;
+}
+
+cudaError_t RunGigaChatGdnDecode(const float *x, const GcLayerWeights &lw,
+                                 const GcGdnDims &d, float norm_eps,
+                                 float o_norm_scale, float *conv_state,
+                                 float *rec_state, GcGdnScratch &sc, float *out,
+                                 cudaStream_t stream)
+{
+    const int key_dim = d.k_heads * d.hk;
+    const int value_dim = d.v_heads * d.hv;
+    const int conv_dim = 2 * key_dim + value_dim;
+    const int qkvz_dim = 2 * key_dim + 2 * value_dim;
+    const int ba_dim = 2 * d.v_heads;
+    const int qdim = d.v_heads * d.hk;
+    const int rep = d.v_heads / d.k_heads;
+    if (d.k_heads <= 0 || rep <= 0 || d.hk <= 0 || d.hv <= 0 || d.conv_k < 2)
+        return cudaErrorInvalidValue;
+    if (!sc.d_base || lw.gdn_in_qkvz.rows != qkvz_dim ||
+        lw.gdn_in_qkvz.cols != d.hidden || lw.gdn_ba_rows != ba_dim ||
+        lw.gdn_out_proj.cols != value_dim)
+        return cudaErrorInvalidValue;
+
+    __half *x_h = static_cast<__half *>(sc.x_h);
+    __nv_bfloat16 *x_bf16 = static_cast<__nv_bfloat16 *>(sc.x_bf16);
+    __half *qkvz_h = static_cast<__half *>(sc.qkvz_h);
+    float *qkvz_f = static_cast<float *>(sc.qkvz_f);
+    float *ba_f = static_cast<float *>(sc.ba_f);
+    float *mixed = static_cast<float *>(sc.mixed);
+    float *z = static_cast<float *>(sc.z);
+    float *beta = static_cast<float *>(sc.beta);
+    float *g = static_cast<float *>(sc.g);
+    float *conv_out = static_cast<float *>(sc.conv_out);
+    float *q = static_cast<float *>(sc.q);
+    float *k = static_cast<float *>(sc.k);
+    float *v = static_cast<float *>(sc.v);
+    float *o = static_cast<float *>(sc.o);
+    float *onorm = static_cast<float *>(sc.onorm);
+    __half *onorm_h = static_cast<__half *>(sc.onorm_h);
+    __half *out_h = static_cast<__half *>(sc.out_h);
+    const float *conv_w = reinterpret_cast<const float *>(lw.d_conv1d);
+    const float *A_log = reinterpret_cast<const float *>(lw.d_A_log);
+    const float *dt_bias = reinterpret_cast<const float *>(lw.d_dt_bias);
+
+#define GC_TRY(expr)                      \
+    do {                                  \
+        const cudaError_t _e = (expr);    \
+        if (_e != cudaSuccess) return _e; \
+    } while (false)
+
+    GC_TRY(LaunchF32ToF16(x, x_h, d.hidden, stream));
+    GC_TRY(LaunchF32ToBf16(x, x_bf16, d.hidden, stream));
+    GC_TRY(LaunchGemm(lw.gdn_in_qkvz, x_h, qkvz_h, stream));
+    GC_TRY(LaunchF16ToF32(qkvz_h, qkvz_f, qkvz_dim, stream));
+    GC_TRY(gemv::RunLxGemmVec(stream, lw.d_gdn_in_ba, x_bf16, 1, ba_dim,
+                              d.hidden, gemv::LxDtype::kBF16,
+                              gemv::LxDtype::kBF16, 1.0f, ba_f,
+                              gemv::LxDtype::kF32, 0.0f));
+    gdn_prepare_kernel<<<d.k_heads, 256, 0, stream>>>(qkvz_f, mixed, z, d.hk,
+                                                      d.hv, rep, key_dim);
+    GC_TRY(cudaGetLastError());
+    gdn_gate_kernel<<<(d.v_heads + 127) / 128, 128, 0, stream>>>(
+        ba_f, A_log, dt_bias, beta, g, rep, d.v_heads);
+    GC_TRY(cudaGetLastError());
+    gdn_conv_kernel<<<(conv_dim + 255) / 256, 256, 0, stream>>>(
+        mixed, conv_w, conv_state, conv_out, conv_dim, d.conv_k);
+    GC_TRY(cudaGetLastError());
+    gdn_l2_kernel<<<d.v_heads, 128, 0, stream>>>(conv_out, q, k, v, key_dim,
+                                                 d.hk, d.hv, rep, 1e-6f,
+                                                 rsqrtf(static_cast<float>(d.hk)));
+    GC_TRY(cudaGetLastError());
+    gdn_recurrent_kernel<<<d.v_heads, 128, 0, stream>>>(q, k, v, beta, g,
+                                                        rec_state, o, d.hk,
+                                                        d.hv);
+    GC_TRY(cudaGetLastError());
+    GC_TRY(RunGdnOutputNorm(o, z, lw.d_gdn_norm, d.v_heads, d.hv, norm_eps,
+                            o_norm_scale, onorm, stream));
+    GC_TRY(LaunchF32ToF16(onorm, onorm_h, value_dim, stream));
+    GC_TRY(LaunchGemm(lw.gdn_out_proj, onorm_h, out_h, stream));
     GC_TRY(LaunchF16ToF32(out_h, out, d.hidden, stream));
 #undef GC_TRY
     return cudaSuccess;
