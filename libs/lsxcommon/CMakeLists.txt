@@ -287,6 +287,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_nemotron_cu
+    lsxcommon_gigachat_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.
@@ -308,6 +309,27 @@ target_compile_options(lsxcommon_nemotron_cu PRIVATE
 target_include_directories(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_nemotron_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_nemotron_cu
+    "${CUDA_CUDART_LIBRARY}"
+    absl::strings
+)
+
+# GigaChat3.5 (hybrid MLA+GatedDeltaNet+MoE) kernels. Plan 1 ships the FP8
+# block-128 -> BF16 dequant; Plan 2 adds the inference kernels.
+add_library(lsxcommon_gigachat_cu OBJECT
+    src/gigachat_moe_dequant.cu
+)
+set_target_properties(lsxcommon_gigachat_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_gigachat_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_gigachat_cu
     "${CUDA_CUDART_LIBRARY}"
     absl::strings
 )
