@@ -86,7 +86,7 @@ TEST_CASE("gigachat expert cache sizing", "[gigachat][expert-cache]")
     CHECK(GcExpertCacheSlots(0, per, total, topk, "128") == 128);
     CHECK(GcExpertCacheSlots(0, per, total, topk, "999999") == total);
     const int s13 = GcExpertCacheSlots(13ull << 30, per, total, topk, nullptr);
-    CHECK(s13 == static_cast<int>(((13ull << 30) - (2ull << 30)) / per));
+    CHECK(s13 == static_cast<int>(((13ull << 30) - kGcExpertCacheVramReserveBytes) / per));
     CHECK(s13 > topk);
     CHECK(s13 < total);
     CHECK(GcExpertCacheSlots(240ull << 30, per, total, topk, nullptr) == total);
