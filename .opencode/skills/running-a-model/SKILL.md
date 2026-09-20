@@ -65,9 +65,6 @@ cmake --build build/linux-release-znver4-aocc                               # pe
 | `lsxcli` | inspect a converted model | `lsxcli --model <root> --info` / `--infofull` |
 | `taskmosaic` | orchestrator stub (init + GPU log) | `taskmosaic` (no flags) |
 
-The `lsxhome` Windows desktop shell is a separate repository
-([`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome)); it links `lsxcommon`.
-
 Flag details (verified against `apps/*/src/cli.*`):
 
 - **lsxbenchmark** — defaults: `--bench` on, `--max-gen 2048`,

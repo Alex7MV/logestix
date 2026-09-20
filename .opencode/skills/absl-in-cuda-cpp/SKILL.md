@@ -125,8 +125,7 @@ ever regresses (host-only static scan; label `fast`).
   `{}` as a hard compile error without it.
 - Links: `absl::flat_hash_map` + `absl::span` + `absl::strings` are PUBLIC on
   `lsxcommon`; `absl::flat_hash_map` is PUBLIC on `lsxnetwork`; each CUDA OBJECT
-  library links `absl::strings`. (The standalone `lsxhome` repository links
-  abseil PRIVATE.)
+  library links `absl::strings`.
 
 ## Migration recipe
 
