@@ -320,6 +320,7 @@ target_link_libraries(lsxcommon_nemotron_cu
 add_library(lsxcommon_gigachat_cu OBJECT
     src/gigachat_moe_dequant.cu
     src/gigachat_moe_norm_kernels.cu
+    src/gigachat_moe_kernels.cu
 )
 set_target_properties(lsxcommon_gigachat_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

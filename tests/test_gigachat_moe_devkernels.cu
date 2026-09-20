@@ -137,3 +137,96 @@ TEST_CASE("gigachat gdn output norm parity", "[gigachat][inference]")
         }
     }
 }
+
+TEST_CASE("gigachat swiglu-limit and sigmoid gate parity", "[gigachat][inference]")
+{
+    const int n = 256;
+    const float L = 10.0f;
+    std::vector<float> g(n), u(n), y(n);
+    for (int i = 0; i < n; ++i) {
+        g[i] = 0.27f * (i % 41) - 5.0f;
+        u[i] = 0.31f * (i % 37) - 5.0f;
+        y[i] = 0.13f * (i % 29) - 2.0f;
+    }
+    DeviceBuffer d_g(n * 4), d_u(n * 4), d_m(n * 4), d_y(n * 4);
+    cudaMemcpy(d_g.p, g.data(), n * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_u.p, u.data(), n * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_y.p, y.data(), n * 4, cudaMemcpyHostToDevice);
+
+    REQUIRE(RunSwigluLimit(d_g.as<float>(), d_u.as<float>(), L, n,
+                           d_m.as<float>(), nullptr) == cudaSuccess);
+    std::vector<float> mid(n, 0.0f);
+    cudaMemcpy(mid.data(), d_m.p, n * 4, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < n; ++i)
+        CHECK(mid[i] ==
+              Catch::Approx(dev::SwigluLimitElement(g[i], u[i], L)).margin(1e-5f));
+
+    REQUIRE(RunSigmoidGate(d_y.as<float>(), d_g.as<float>(), n, nullptr) ==
+            cudaSuccess);
+    std::vector<float> yy(n, 0.0f);
+    cudaMemcpy(yy.data(), d_y.p, n * 4, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    for (int i = 0; i < n; ++i)
+        CHECK(yy[i] ==
+              Catch::Approx(dev::SigmoidGateElement(y[i], g[i])).margin(1e-5f));
+}
+
+TEST_CASE("gigachat sigmoid router top-k parity", "[gigachat][inference]")
+{
+    const int E = 8, H = 64, top_k = 2;
+    const float scale = 2.5f;
+    std::vector<float> x(H), wf(static_cast<size_t>(E) * H), bias(E);
+    for (int i = 0; i < H; ++i) x[i] = 0.02f * (i % 23) - 0.2f;
+    for (int i = 0; i < E * H; ++i) wf[i] = 0.005f * (i % 19) - 0.05f;
+    // Bias flips the top-2 relative to raw scores (expert 6 above expert 0).
+    for (int e = 0; e < E; ++e) bias[e] = 0.0f;
+    bias[6] = 5.0f;
+
+    std::vector<uint8_t> wb(wf.size() * 2);
+    for (size_t i = 0; i < wf.size(); ++i) {
+        __nv_bfloat16 h = __float2bfloat16(wf[i]);
+        std::memcpy(wb.data() + i * 2, &h, 2);
+    }
+    DeviceBuffer d_x(H * 4), d_w(wb.size()), d_b(E * 4), d_idx(top_k * 4),
+        d_wt(top_k * 4);
+    cudaMemcpy(d_x.p, x.data(), H * 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_w.p, wb.data(), wb.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b.p, bias.data(), E * 4, cudaMemcpyHostToDevice);
+
+    REQUIRE(RunGigaChatRouterTopK(d_x.as<float>(), d_w.as<uint8_t>(),
+                                  d_b.as<float>(), E, H, top_k, scale,
+                                  d_idx.as<int>(), d_wt.as<float>(),
+                                  nullptr) == cudaSuccess);
+    std::vector<int> idx(top_k);
+    std::vector<float> wt(top_k);
+    cudaMemcpy(idx.data(), d_idx.p, top_k * 4, cudaMemcpyDeviceToHost);
+    cudaMemcpy(wt.data(), d_wt.p, top_k * 4, cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+
+    // Host reference.
+    std::vector<float> scores(E), choice(E);
+    for (int e = 0; e < E; ++e) {
+        float a = 0.0f;
+        for (int i = 0; i < H; ++i) a += wf[e * H + i] * x[i];
+        scores[e] = dev::Sigmoid(a);
+        choice[e] = scores[e] + bias[e];
+    }
+    std::vector<int> ridx(top_k);
+    for (int k = 0; k < top_k; ++k) {
+        int best = -1;
+        float bv = -1e30f;
+        for (int e = 0; e < E; ++e) {
+            bool used = false;
+            for (int j = 0; j < k; ++j) if (ridx[j] == e) used = true;
+            if (!used && choice[e] > bv) { bv = choice[e]; best = e; }
+        }
+        ridx[k] = best;
+    }
+    float sum = 0.0f;
+    for (int k = 0; k < top_k; ++k) sum += scores[ridx[k]];
+    for (int k = 0; k < top_k; ++k) {
+        CHECK(idx[k] == ridx[k]);
+        CHECK(wt[k] ==
+              Catch::Approx(scores[ridx[k]] / (sum + 1e-20f) * scale).margin(2e-3f));
+    }
+}

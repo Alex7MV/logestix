@@ -28,4 +28,25 @@ cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
                              int heads, int head_dim, float eps, float scale,
                              float *out, cudaStream_t stream);
 
+// Sigmoid router for one token:
+//   logits = x . W^T (F32); scores = sigmoid(logits);
+//   choice = scores + e_score_correction_bias;
+//   idx   = top-k(choice) (lowest index wins ties);
+//   w     = scores[idx]; w /= sum + 1e-20; w *= routed_scaling_factor.
+// `w` BF16 [num_experts, hidden]; `bias` F32 [num_experts] (may be null).
+// Deterministic: one block, thread-0 sequential selection, no atomics.
+cudaError_t RunGigaChatRouterTopK(const float *x, const uint8_t *w,
+                                  const float *bias, int num_experts, int hidden,
+                                  int top_k, float routed_scaling_factor,
+                                  int *out_idx, float *out_weights,
+                                  cudaStream_t stream);
+
+// SwiGLU with hard limit: `mid = silu(clamp(g,max=L)) * clamp(u,-L,L)`.
+cudaError_t RunSwigluLimit(const float *gate, const float *up, float limit,
+                           int n, float *mid, cudaStream_t stream);
+
+// Gated attention: `y[i] *= sigmoid(gate[i])`.
+cudaError_t RunSigmoidGate(float *y, const float *gate, int n,
+                           cudaStream_t stream);
+
 } // namespace lsxcommon::gigachat
