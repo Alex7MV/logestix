@@ -43,7 +43,7 @@ namespace {
 const std::set<std::string> &FamilyStems()
 {
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
-                                            "kimi", "nemotron"};
+                                            "kimi", "nemotron", "gigachat"};
     return v;
 }
 
