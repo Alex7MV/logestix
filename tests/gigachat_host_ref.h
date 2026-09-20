@@ -206,4 +206,266 @@ inline RefNvfp4 ReadNv(const DenseNvfp4BatchViews &nv, std::string_view suffix)
     return o;
 }
 
+struct RefMla {
+    RefNvfp4 q_a, q_b, kv_a, kv_b, gate, o_proj;
+    RefNorm q_a_norm, kv_a_norm;
+};
+
+inline void MlaDecodeRef(const RefMla &m, const GcMlaDims &d, float eps,
+                         float scale, const std::vector<float> &rc,
+                         const std::vector<float> &rs, int pos,
+                         std::vector<float> &k_cache,
+                         std::vector<float> &v_cache,
+                         const std::vector<float> &x, std::vector<float> &out)
+{
+    const int hidden = d.hidden, heads = d.heads, q_lora = d.q_lora,
+              kv_lora = d.kv_lora, nope = d.qk_nope, rope = d.rope,
+              vh = d.v_head;
+    const int qk = nope + rope, kvw = kv_lora + rope, hv = heads * vh,
+              kvb = heads * (nope + vh), half = rope / 2;
+    std::vector<float> x16(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i) x16[i] = R16(x[i]);
+
+    std::vector<float> qa = GemvRef(m.q_a.w, x16, q_lora, hidden);
+    for (float &z : qa) z = R16(z);
+    std::vector<float> qan =
+        NormRef(qa, m.q_a_norm.w, m.q_a_norm.up, m.q_a_norm.down, q_lora,
+                m.q_a_norm.rank, eps);
+    const float aq = std::sqrt(static_cast<float>(hidden) / q_lora);
+    std::vector<float> qas(static_cast<size_t>(q_lora));
+    for (int i = 0; i < q_lora; ++i) qas[i] = R16(qan[i] * aq);
+    std::vector<float> qb = GemvRef(m.q_b.w, qas, heads * qk, q_lora);
+    for (float &z : qb) z = R16(z);
+
+    std::vector<float> kv = GemvRef(m.kv_a.w, x16, kvw, hidden);
+    for (float &z : kv) z = R16(z);
+    std::vector<float> kp(kv.begin(), kv.begin() + kv_lora);
+    std::vector<float> krot(kv.begin() + kv_lora, kv.end());
+    std::vector<float> kpn =
+        NormRef(kp, m.kv_a_norm.w, m.kv_a_norm.up, m.kv_a_norm.down, kv_lora,
+                m.kv_a_norm.rank, eps);
+    const float akv = std::sqrt(static_cast<float>(hidden) / kv_lora);
+    std::vector<float> kps(static_cast<size_t>(kv_lora));
+    for (int i = 0; i < kv_lora; ++i) kps[i] = R16(kpn[i] * akv);
+    std::vector<float> kvb_w = GemvRef(m.kv_b.w, kps, kvb, kv_lora);
+    for (float &z : kvb_w) z = R16(z);
+
+    std::vector<float> c(static_cast<size_t>(half)),
+        s(static_cast<size_t>(half));
+    for (int j = 0; j < half; ++j)
+    {
+        c[static_cast<size_t>(j)] = rc[static_cast<size_t>(pos) * half + j];
+        s[static_cast<size_t>(j)] = rs[static_cast<size_t>(pos) * half + j];
+    }
+    RopeRef(qb, heads, qk, nope, krot, c, s);
+
+    for (int h = 0; h < heads; ++h)
+    {
+        for (int i = 0; i < nope; ++i)
+        {
+            k_cache[(static_cast<size_t>(pos) * heads + h) * qk + i] =
+                kvb_w[static_cast<size_t>(h) * (nope + vh) + i];
+            v_cache[(static_cast<size_t>(pos) * heads + h) * vh + i] =
+                kvb_w[static_cast<size_t>(h) * (nope + vh) + nope + i];
+        }
+        for (int i = 0; i < rope; ++i)
+            k_cache[(static_cast<size_t>(pos) * heads + h) * qk + nope + i] =
+                krot[static_cast<size_t>(i)];
+    }
+
+    std::vector<float> gate = GemvRef(m.gate.w, x16, hv, hidden);
+    for (float &z : gate) z = R16(z);
+
+    std::vector<float> attn(static_cast<size_t>(hv), 0.0f);
+    for (int h = 0; h < heads; ++h)
+    {
+        std::vector<float> sc(static_cast<size_t>(pos) + 1);
+        for (int t = 0; t <= pos; ++t)
+        {
+            float a = 0.0f;
+            for (int i = 0; i < qk; ++i)
+                a += qb[static_cast<size_t>(h) * qk + i] *
+                     k_cache[(static_cast<size_t>(t) * heads + h) * qk + i];
+            sc[static_cast<size_t>(t)] = a * scale;
+        }
+        float mx = sc[0];
+        for (int t = 1; t <= pos; ++t)
+            mx = std::fmax(mx, sc[static_cast<size_t>(t)]);
+        float sum = 0.0f;
+        for (int t = 0; t <= pos; ++t)
+        {
+            sc[static_cast<size_t>(t)] =
+                std::exp(sc[static_cast<size_t>(t)] - mx);
+            sum += sc[static_cast<size_t>(t)];
+        }
+        for (int i = 0; i < vh; ++i)
+        {
+            float o = 0.0f;
+            for (int t = 0; t <= pos; ++t)
+                o += sc[static_cast<size_t>(t)] / sum *
+                     v_cache[(static_cast<size_t>(t) * heads + h) * vh + i];
+            const float g = gate[static_cast<size_t>(h) * vh + i];
+            attn[static_cast<size_t>(h) * vh + i] =
+                R16(o / (1.0f + std::exp(-g)));
+        }
+    }
+    out = GemvRef(m.o_proj.w, attn, hidden, hv);
+    for (float &z : out) z = R16(z);
+}
+
+struct RefGdn {
+    RefNvfp4 in_qkvz, out_proj;
+    std::vector<float> in_ba, conv, A_log, dt_bias, norm;
+    int conv_dim = 0, conv_k = 0, ba_rows = 0, v_heads = 0;
+};
+
+inline void GdnDecodeRef(const RefGdn &g, const GcGdnDims &d, float eps,
+                         float onorm_scale, std::vector<float> &conv_state,
+                         std::vector<float> &rec_state,
+                         const std::vector<float> &x, std::vector<float> &out)
+{
+    const int hidden = d.hidden, k_heads = d.k_heads, v_heads = d.v_heads,
+              hk = d.hk, hv = d.hv, conv_k = d.conv_k;
+    const int key_dim = k_heads * hk, value_dim = v_heads * hv;
+    const int conv_dim = 2 * key_dim + value_dim, ba_dim = 2 * v_heads;
+    const int qkvz_dim = 2 * key_dim + 2 * value_dim, rep = v_heads / k_heads;
+    const int space = 2 * hk + 2 * hv * rep;
+
+    std::vector<float> x16(static_cast<size_t>(hidden)),
+        xb(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i)
+    {
+        x16[i] = R16(x[i]);
+        xb[i] = RBf16(x[i]);
+    }
+    std::vector<float> qkvz = GemvRef(g.in_qkvz.w, x16, qkvz_dim, hidden);
+    for (float &f : qkvz) f = R16(f);
+    std::vector<float> ba = GemvRef(g.in_ba, xb, ba_dim, hidden);
+
+    std::vector<float> mixed(static_cast<size_t>(conv_dim), 0.0f);
+    std::vector<float> z(static_cast<size_t>(value_dim), 0.0f);
+    for (int gh = 0; gh < k_heads; ++gh)
+    {
+        const float *base = &qkvz[static_cast<size_t>(gh) * space];
+        for (int i = 0; i < hk; ++i)
+        {
+            mixed[gh * hk + i] = base[i];
+            mixed[key_dim + gh * hk + i] = base[hk + i];
+        }
+        for (int j = 0; j < hv * rep; ++j)
+        {
+            mixed[2 * key_dim + gh * hv * rep + j] = base[2 * hk + j];
+            z[gh * hv * rep + j] = base[2 * hk + hv * rep + j];
+        }
+    }
+
+    std::vector<float> beta(static_cast<size_t>(v_heads));
+    std::vector<float> gv(static_cast<size_t>(v_heads));
+    for (int h = 0; h < v_heads; ++h)
+    {
+        const int kh = h / rep;
+        const float b = ba[kh * 2 * rep + (h % rep)];
+        const float a = ba[kh * 2 * rep + rep + (h % rep)];
+        beta[static_cast<size_t>(h)] = 1.0f / (1.0f + std::exp(-b));
+        const float t = a + g.dt_bias[static_cast<size_t>(h)];
+        const float sp = t > 20.0f ? t : std::log1p(std::exp(t));
+        gv[static_cast<size_t>(h)] =
+            -std::exp(g.A_log[static_cast<size_t>(h)]) * sp;
+    }
+
+    std::vector<float> conv_out(static_cast<size_t>(conv_dim));
+    for (int dd = 0; dd < conv_dim; ++dd)
+    {
+        float acc = g.conv[static_cast<size_t>(dd) * conv_k + (conv_k - 1)] *
+                    mixed[static_cast<size_t>(dd)];
+        for (int j = 0; j < conv_k - 1; ++j)
+            acc += g.conv[static_cast<size_t>(dd) * conv_k + j] *
+                   conv_state[static_cast<size_t>(dd) * (conv_k - 1) + j];
+        for (int j = 0; j < conv_k - 2; ++j)
+            conv_state[static_cast<size_t>(dd) * (conv_k - 1) + j] =
+                conv_state[static_cast<size_t>(dd) * (conv_k - 1) + j + 1];
+        conv_state[static_cast<size_t>(dd) * (conv_k - 1) + (conv_k - 2)] =
+            mixed[static_cast<size_t>(dd)];
+        conv_out[static_cast<size_t>(dd)] = acc / (1.0f + std::exp(-acc));
+    }
+
+    std::vector<float> q(static_cast<size_t>(v_heads) * hk),
+        kk(static_cast<size_t>(v_heads) * hk),
+        vv(static_cast<size_t>(value_dim));
+    const float qscale = 1.0f / std::sqrt(static_cast<float>(hk));
+    for (int h = 0; h < v_heads; ++h)
+    {
+        const int kh = h / rep;
+        double sq = 0.0, sk = 0.0;
+        for (int i = 0; i < hk; ++i)
+        {
+            const float qv = conv_out[kh * hk + i];
+            const float kv = conv_out[key_dim + kh * hk + i];
+            sq += static_cast<double>(qv) * qv;
+            sk += static_cast<double>(kv) * kv;
+        }
+        const float iq = 1.0f / std::sqrt(static_cast<float>(sq) + 1e-6f);
+        const float ik = 1.0f / std::sqrt(static_cast<float>(sk) + 1e-6f);
+        for (int i = 0; i < hk; ++i)
+        {
+            q[static_cast<size_t>(h) * hk + i] =
+                conv_out[kh * hk + i] * iq * qscale;
+            kk[static_cast<size_t>(h) * hk + i] =
+                conv_out[key_dim + kh * hk + i] * ik;
+        }
+        for (int j = 0; j < hv; ++j)
+            vv[static_cast<size_t>(h) * hv + j] =
+                conv_out[2 * key_dim + h * hv + j];
+    }
+
+    std::vector<float> o(static_cast<size_t>(value_dim));
+    for (int h = 0; h < v_heads; ++h)
+    {
+        const size_t sb = static_cast<size_t>(h) * hk * hv;
+        const float decay = std::exp(gv[static_cast<size_t>(h)]);
+        for (int i = 0; i < hk; ++i)
+            for (int j = 0; j < hv; ++j)
+                rec_state[sb + static_cast<size_t>(i) * hv + j] *= decay;
+        for (int j = 0; j < hv; ++j)
+        {
+            float kvmem = 0.0f;
+            for (int i = 0; i < hk; ++i)
+                kvmem += rec_state[sb + static_cast<size_t>(i) * hv + j] *
+                         kk[static_cast<size_t>(h) * hk + i];
+            const float delta =
+                (vv[static_cast<size_t>(h) * hv + j] - kvmem) *
+                beta[static_cast<size_t>(h)];
+            for (int i = 0; i < hk; ++i)
+                rec_state[sb + static_cast<size_t>(i) * hv + j] +=
+                    kk[static_cast<size_t>(h) * hk + i] * delta;
+            float acc = 0.0f;
+            for (int i = 0; i < hk; ++i)
+                acc += rec_state[sb + static_cast<size_t>(i) * hv + j] *
+                       q[static_cast<size_t>(h) * hk + i];
+            o[static_cast<size_t>(h) * hv + j] = acc;
+        }
+    }
+
+    std::vector<float> onorm(static_cast<size_t>(value_dim));
+    for (int h = 0; h < v_heads; ++h)
+    {
+        double ss = 0.0;
+        for (int j = 0; j < hv; ++j)
+            ss += static_cast<double>(o[static_cast<size_t>(h) * hv + j]) *
+                  o[static_cast<size_t>(h) * hv + j];
+        const float inv = 1.0f / std::sqrt(static_cast<float>(ss / hv) + eps);
+        for (int j = 0; j < hv; ++j)
+        {
+            const float xn = o[static_cast<size_t>(h) * hv + j] * inv;
+            const float zz = z[static_cast<size_t>(h) * hv + j];
+            onorm[static_cast<size_t>(h) * hv + j] =
+                xn * (1.0f + g.norm[static_cast<size_t>(j)]) * onorm_scale /
+                (1.0f + std::exp(-zz));
+        }
+    }
+    for (float &f : onorm) f = R16(f);
+    out = GemvRef(g.out_proj.w, onorm, hidden, value_dim);
+    for (float &f : out) f = R16(f);
+}
+
 } // namespace gigachatref

@@ -243,93 +243,28 @@ TEST_CASE("gigachat MLA decode matches the host reference",
     REQUIRE(cudaMemcpy(hout.data(), out1, hidden * 4, cudaMemcpyDeviceToHost) ==
             cudaSuccess);
 
-    // ── Host reference. Mirrors each F16 rounding the device applies. ──
-    auto token = [&](const std::vector<float> &x, int p,
-                     std::vector<float> &q, std::vector<float> &k,
-                     std::vector<float> &v, std::vector<float> &gate) {
-        std::vector<float> x16(static_cast<size_t>(hidden));
-        for (int i = 0; i < hidden; ++i) x16[i] = R16(x[i]);
-        std::vector<float> qa = GemvRef(w_qa, x16, q_lora, hidden);
-        for (float &z : qa) z = R16(z);
-        std::vector<float> qan = NormRef(qa, qn_w, qn_up, qn_down, q_lora, rank,
-                                         eps);
-        const float aq = std::sqrt(static_cast<float>(hidden) / q_lora);
-        std::vector<float> qas(static_cast<size_t>(q_lora));
-        for (int i = 0; i < q_lora; ++i) qas[i] = R16(qan[i] * aq);
-        std::vector<float> qb = GemvRef(w_qb, qas, heads * qk, q_lora);
-        for (float &z : qb) z = R16(z);
-
-        std::vector<float> kv = GemvRef(w_kva, x16, kvw, hidden);
-        for (float &z : kv) z = R16(z);
-        std::vector<float> kp(kv.begin(), kv.begin() + kv_lora);
-        std::vector<float> krot(kv.begin() + kv_lora, kv.end());
-        std::vector<float> kpn = NormRef(kp, kn_w, kn_up, kn_down, kv_lora,
-                                         rank, eps);
-        const float akv = std::sqrt(static_cast<float>(hidden) / kv_lora);
-        std::vector<float> kps(static_cast<size_t>(kv_lora));
-        for (int i = 0; i < kv_lora; ++i) kps[i] = R16(kpn[i] * akv);
-        std::vector<float> kvb_f = GemvRef(w_kvb, kps, kvb, kv_lora);
-        for (float &z : kvb_f) z = R16(z);
-
-        const size_t ro = static_cast<size_t>(p) * half;
-        std::vector<float> c(half), s(half);
-        for (int j = 0; j < half; ++j)
-        {
-            c[j] = rc[ro + j];
-            s[j] = rs[ro + j];
-        }
-        RopeRef(qb, heads, qk, nope, krot, c, s);
-        q = qb;
-        k.assign(static_cast<size_t>(heads) * qk, 0.0f);
-        v.assign(static_cast<size_t>(heads) * vh, 0.0f);
-        for (int h = 0; h < heads; ++h)
-        {
-            for (int i = 0; i < nope; ++i)
-            {
-                k[static_cast<size_t>(h) * qk + i] =
-                    kvb_f[static_cast<size_t>(h) * (nope + vh) + i];
-                v[static_cast<size_t>(h) * vh + i] =
-                    kvb_f[static_cast<size_t>(h) * (nope + vh) + nope + i];
-            }
-            for (int i = 0; i < rope; ++i)
-                k[static_cast<size_t>(h) * qk + nope + i] = krot[i];
-        }
-        gate = GemvRef(w_gate, x16, hv, hidden);
-        for (float &z : gate) z = R16(z);
-    };
-
-    std::vector<float> q0, k0, v0, g0, q1, k1, v1, g1;
-    token(x0, 0, q0, k0, v0, g0);
-    token(x1, 1, q1, k1, v1, g1);
-
-    std::vector<float> ref(static_cast<size_t>(hidden), 0.0f);
-    std::vector<float> attn(static_cast<size_t>(hv), 0.0f);
-    for (int h = 0; h < heads; ++h)
+    // ── Host reference (shared header). Mirrors each F16 rounding. ──
+    RefMla rmla;
+    rmla.q_a = {q_lora, hidden, w_qa};
+    rmla.q_b = {heads * qk, q_lora, w_qb};
+    rmla.kv_a = {kvw, hidden, w_kva};
+    rmla.kv_b = {kvb, kv_lora, w_kvb};
+    rmla.gate = {hv, hidden, w_gate};
+    rmla.o_proj = {hidden, hv, w_o};
+    rmla.q_a_norm = {q_lora, rank, qn_w, qn_up, qn_down};
+    rmla.kv_a_norm = {kv_lora, rank, kn_w, kn_up, kn_down};
+    std::vector<float> k_cache_ref(static_cast<size_t>(capacity) * heads * qk,
+                                   0.0f);
+    std::vector<float> v_cache_ref(static_cast<size_t>(capacity) * heads * vh,
+                                   0.0f);
+    std::vector<float> ref;
+    for (int p = 0; p < 2; ++p)
     {
-        float sc[2];
-        for (int t = 0; t < 2; ++t)
-        {
-            const std::vector<float> &kt = (t == 0) ? k0 : k1;
-            float a = 0.0f;
-            for (int i = 0; i < qk; ++i)
-                a += q1[static_cast<size_t>(h) * qk + i] *
-                     kt[static_cast<size_t>(h) * qk + i];
-            sc[t] = a * scale;
-        }
-        const float m = std::fmax(sc[0], sc[1]);
-        const float e0 = std::exp(sc[0] - m), e1 = std::exp(sc[1] - m);
-        const float p0 = e0 / (e0 + e1), p1 = e1 / (e0 + e1);
-        for (int i = 0; i < vh; ++i)
-        {
-            const float o = p0 * v0[static_cast<size_t>(h) * vh + i] +
-                            p1 * v1[static_cast<size_t>(h) * vh + i];
-            const float g = g1[static_cast<size_t>(h) * vh + i];
-            attn[static_cast<size_t>(h) * vh + i] =
-                R16(o / (1.0f + std::exp(-g)));
-        }
+        std::vector<float> out_ref;
+        MlaDecodeRef(rmla, d, eps, scale, rc, rs, p, k_cache_ref, v_cache_ref,
+                     p == 0 ? x0 : x1, out_ref);
+        ref = out_ref;
     }
-    ref = GemvRef(w_o, attn, hidden, hv);
-    for (float &z : ref) z = R16(z);
 
     for (int i = 0; i < hidden; ++i)
         CHECK(hout[static_cast<size_t>(i)] ==
@@ -431,141 +366,31 @@ TEST_CASE("gigachat GatedDeltaNet decode matches the host reference",
     REQUIRE(cudaMemcpy(hout.data(), out1, hidden * 4, cudaMemcpyDeviceToHost) ==
             cudaSuccess);
 
-    // ── Host reference, mirroring each F16 rounding. ──
-    std::vector<float> cstate(static_cast<size_t>(conv_dim) * (conv_k - 1), 0.0f);
-    std::vector<float> rstate(static_cast<size_t>(v_heads) * hk * hv, 0.0f);
-    auto token = [&](const std::vector<float> &x, std::vector<float> &result) {
-        std::vector<float> x16(static_cast<size_t>(hidden));
-        for (int i = 0; i < hidden; ++i) x16[i] = R16(x[i]);
-        std::vector<float> xb(static_cast<size_t>(hidden));
-        for (int i = 0; i < hidden; ++i) xb[i] = RBf16(x[i]);
-        std::vector<float> qkvz = GemvRef(w_qkvz, x16, qkvz_dim, hidden);
-        for (float &f : qkvz) f = R16(f);
-        std::vector<float> ba = GemvRef(w_ba, xb, ba_dim, hidden);
-        std::vector<float> mixed(static_cast<size_t>(conv_dim), 0.0f);
-        std::vector<float> z(static_cast<size_t>(value_dim), 0.0f);
-        for (int gh = 0; gh < k_heads; ++gh)
-        {
-            const float *base = &qkvz[static_cast<size_t>(gh) * space];
-            for (int i = 0; i < hk; ++i)
-            {
-                mixed[gh * hk + i] = base[i];
-                mixed[key_dim + gh * hk + i] = base[hk + i];
-            }
-            for (int j = 0; j < hv * rep; ++j)
-            {
-                mixed[2 * key_dim + gh * hv * rep + j] =
-                    base[2 * hk + j];
-                z[gh * hv * rep + j] = base[2 * hk + hv * rep + j];
-            }
-        }
-        std::vector<float> beta(static_cast<size_t>(v_heads));
-        std::vector<float> gv(static_cast<size_t>(v_heads));
-        for (int h = 0; h < v_heads; ++h)
-        {
-            const int kh = h / rep;
-            const float b = ba[kh * 2 * rep + (h % rep)];
-            const float a = ba[kh * 2 * rep + rep + (h % rep)];
-            beta[h] = 1.0f / (1.0f + std::exp(-b));
-            const float t = a + dt_bias[h];
-            const float sp = t > 20.0f ? t : std::log1p(std::exp(t));
-            gv[h] = -std::exp(A_log[h]) * sp;
-        }
-        std::vector<float> conv_out(static_cast<size_t>(conv_dim));
-        for (int dd = 0; dd < conv_dim; ++dd)
-        {
-            float acc = w_conv[static_cast<size_t>(dd) * conv_k + (conv_k - 1)] *
-                        mixed[dd];
-            for (int j = 0; j < conv_k - 1; ++j)
-                acc += w_conv[static_cast<size_t>(dd) * conv_k + j] *
-                       cstate[static_cast<size_t>(dd) * (conv_k - 1) + j];
-            for (int j = 0; j < conv_k - 2; ++j)
-                cstate[static_cast<size_t>(dd) * (conv_k - 1) + j] =
-                    cstate[static_cast<size_t>(dd) * (conv_k - 1) + j + 1];
-            cstate[static_cast<size_t>(dd) * (conv_k - 1) + (conv_k - 2)] =
-                mixed[dd];
-            conv_out[dd] = acc / (1.0f + std::exp(-acc));
-        }
-        std::vector<float> q(static_cast<size_t>(v_heads) * hk),
-            kk(static_cast<size_t>(v_heads) * hk),
-            vv(static_cast<size_t>(value_dim));
-        const float qscale = 1.0f / std::sqrt(static_cast<float>(hk));
-        for (int h = 0; h < v_heads; ++h)
-        {
-            const int kh = h / rep;
-            double sq = 0.0, sk = 0.0;
-            for (int i = 0; i < hk; ++i)
-            {
-                const float qv = conv_out[kh * hk + i];
-                const float kv = conv_out[key_dim + kh * hk + i];
-                sq += static_cast<double>(qv) * qv;
-                sk += static_cast<double>(kv) * kv;
-            }
-            const float iq = 1.0f / std::sqrt(static_cast<float>(sq) + 1e-6f);
-            const float ik = 1.0f / std::sqrt(static_cast<float>(sk) + 1e-6f);
-            for (int i = 0; i < hk; ++i)
-            {
-                q[static_cast<size_t>(h) * hk + i] =
-                    conv_out[kh * hk + i] * iq * qscale;
-                kk[static_cast<size_t>(h) * hk + i] =
-                    conv_out[key_dim + kh * hk + i] * ik;
-            }
-            for (int j = 0; j < hv; ++j)
-                vv[static_cast<size_t>(h) * hv + j] =
-                    conv_out[2 * key_dim + h * hv + j];
-        }
-        std::vector<float> o(static_cast<size_t>(value_dim));
-        for (int h = 0; h < v_heads; ++h)
-        {
-            const size_t sb = static_cast<size_t>(h) * hk * hv;
-            const float decay = std::exp(gv[h]);
-            for (int i = 0; i < hk; ++i)
-                for (int j = 0; j < hv; ++j)
-                    rstate[sb + static_cast<size_t>(i) * hv + j] *= decay;
-            for (int j = 0; j < hv; ++j)
-            {
-                float kvmem = 0.0f;
-                for (int i = 0; i < hk; ++i)
-                    kvmem += rstate[sb + static_cast<size_t>(i) * hv + j] *
-                             kk[static_cast<size_t>(h) * hk + i];
-                const float delta =
-                    (vv[static_cast<size_t>(h) * hv + j] - kvmem) * beta[h];
-                for (int i = 0; i < hk; ++i)
-                    rstate[sb + static_cast<size_t>(i) * hv + j] +=
-                        kk[static_cast<size_t>(h) * hk + i] * delta;
-                float acc = 0.0f;
-                for (int i = 0; i < hk; ++i)
-                    acc += rstate[sb + static_cast<size_t>(i) * hv + j] *
-                           q[static_cast<size_t>(h) * hk + i];
-                o[static_cast<size_t>(h) * hv + j] = acc;
-            }
-        }
-        std::vector<float> onorm(static_cast<size_t>(value_dim));
-        for (int h = 0; h < v_heads; ++h)
-        {
-            double ss = 0.0;
-            for (int j = 0; j < hv; ++j)
-                ss += static_cast<double>(o[static_cast<size_t>(h) * hv + j]) *
-                      o[static_cast<size_t>(h) * hv + j];
-            const float inv =
-                1.0f / std::sqrt(static_cast<float>(ss / hv) + eps);
-            for (int j = 0; j < hv; ++j)
-            {
-                const float xn = o[static_cast<size_t>(h) * hv + j] * inv;
-                const float zz = z[static_cast<size_t>(h) * hv + j];
-                onorm[static_cast<size_t>(h) * hv + j] =
-                    xn * (1.0f + w_norm[j]) * onorm_scale /
-                    (1.0f + std::exp(-zz));
-            }
-        }
-        for (float &f : onorm) f = R16(f);
-        result = GemvRef(w_out, onorm, hidden, value_dim);
-        for (float &f : result) f = R16(f);
-    };
-
-    std::vector<float> r0, r1;
-    token(x0, r0);
-    token(x1, r1);
+    // ── Host reference (shared header), mirroring each F16 rounding. ──
+    RefGdn rg;
+    rg.in_qkvz = {qkvz_dim, hidden, w_qkvz};
+    rg.out_proj = {hidden, value_dim, w_out};
+    rg.in_ba = w_ba;
+    rg.conv = w_conv;
+    rg.A_log = A_log;
+    rg.dt_bias = dt_bias;
+    rg.norm = w_norm;
+    rg.conv_dim = conv_dim;
+    rg.conv_k = conv_k;
+    rg.ba_rows = ba_dim;
+    rg.v_heads = v_heads;
+    std::vector<float> conv_state_ref(static_cast<size_t>(conv_dim) * (conv_k - 1),
+                                      0.0f);
+    std::vector<float> rec_state_ref(static_cast<size_t>(v_heads) * hk * hv,
+                                     0.0f);
+    std::vector<float> r1;
+    for (int p = 0; p < 2; ++p)
+    {
+        std::vector<float> out_ref;
+        GdnDecodeRef(rg, d, eps, onorm_scale, conv_state_ref, rec_state_ref,
+                     p == 0 ? x0 : x1, out_ref);
+        r1 = out_ref;
+    }
     for (int i = 0; i < hidden; ++i)
         CHECK(hout[static_cast<size_t>(i)] ==
               Catch::Approx(r1[static_cast<size_t>(i)]).margin(1e-3f));
