@@ -171,6 +171,13 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_nemotron_moe_model"}},
           {"kernels", {"test_nemotron_moe_kernels"}},
           {"selfcheck", {"test_nemotron_moe_selfcheck"}}}},
+        // GigaChat3.5: the selfcheck stage lands with the inference pipeline
+        // (Plan 3); the kernels target is the FP8 dequant parity test today.
+        {"gigachat3.5-432b-a28b-reasoning",
+         {{"convert", {"test_gigachat_moe_convert"}},
+          {"load", {"test_gigachat_moe_loader"}},
+          {"model", {"test_gigachat_moe_model"}},
+          {"kernels", {"test_gigachat_moe_kernels"}}}},
     };
     return v;
 }
@@ -318,7 +325,7 @@ std::vector<std::string> CheckLoaderSyntheticDiscipline(
     static const std::regex fixture_inc_re(
         R"inc(^\s*#\s*include\s+"(test_[A-Za-z0-9_]+_fixture\.h|test_synth_checkpoint\.h)")inc");
     static const std::regex model_stage_re(
-        R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron)[A-Za-z0-9_]*_model\.cpp$)");
+        R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron|gigachat)[A-Za-z0-9_]*_model\.cpp$)");
     const std::vector<std::string> vault_markers = {
         "mnt/llm_models/models", "huggingface.co"};
     std::error_code ec;

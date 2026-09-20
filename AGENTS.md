@@ -90,6 +90,11 @@ procedure — `perf-tuning-a-model`.
   `nemotron_moe_kernels.{h,cu}` (conv/SSM/gated-RMSNorm/router/relu2),
   `nemotron_moe_inference_attn.cu` (RoPE+GQA), `nemotron_moe_inference_pipeline.cu`,
   `nemotron_moe_device_math.h`; format tag `logestix-nemotron-nvfp4`).
+  GigaChat (GigaChat3.5-432B-A28B-Reasoning hybrid MLA + GatedDeltaNet + MoE:
+  `gigachat_moe_constants.h` (frozen passport), `gigachat_moe_convert.{h,cpp}`
+  (FP8 block-128 -> neutral NVFP4), `gigachat_moe_dequant.cu` (partial-tile
+  FP8->BF16), `gigachat_moe_load.{h,cpp}`, `gigachat_moe_model.{h,cpp}`;
+  format tag `logestix-gigachat-nvfp4`; inference kernels land in Plan 2).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
