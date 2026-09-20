@@ -3,6 +3,8 @@
 // docs/superpowers/specs/2026-09-20-gigachat35-432b-a28b-reasoning-ingestion-design.md.
 #include "lsxcommon/gigachat_moe_convert.h"
 
+#include <simdjson.h>
+
 #include <cstdlib>
 #include <string_view>
 
@@ -193,6 +195,82 @@ bool gigachat_tensor_is_expert(GigaChatTensorKind kind)
     return kind == GigaChatTensorKind::ExpertGate ||
            kind == GigaChatTensorKind::ExpertUp ||
            kind == GigaChatTensorKind::ExpertDown;
+}
+
+GigaChatTopology ParseGigaChatConfig(const std::string &config_json_text)
+{
+    GigaChatTopology t;
+    // Spec defaults (config.json is authoritative where present).
+    t.heads = 64;
+    t.kv_heads = 64;
+    t.num_experts = 256;
+    t.top_k = 8;
+    t.moe_intermediate = 2048;
+    t.first_k_dense = 3;
+    t.rms_eps = 1e-6;
+    t.routed_scale = 2.5;
+    t.swiglu_limit = 10.0;
+    t.bos_id = 1;
+    t.eos_id = 2;
+    t.pad_id = 2;
+
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(config_json_text.data(), config_json_text.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS)
+    {
+        t.error_msg = "cannot parse config.json";
+        return t;
+    }
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS)
+    {
+        t.error_msg = "config.json root is not an object";
+        return t;
+    }
+
+    auto as_num = [](simdjson::ondemand::value v, double &out) -> bool {
+        if (v.get_double().get(out) == simdjson::SUCCESS) return true;
+        int64_t i = 0;
+        if (v.get_int64().get(i) == simdjson::SUCCESS)
+        {
+            out = static_cast<double>(i);
+            return true;
+        }
+        return false;
+    };
+
+    bool have_hidden = false, have_layers = false, have_vocab = false;
+    for (auto field : root)
+    {
+        std::string_view key;
+        if (field.unescaped_key().get(key) != simdjson::SUCCESS) continue;
+        double d = 0.0;
+        if (!as_num(field.value(), d)) continue;
+        const int di = static_cast<int>(d);
+        if (key == "hidden_size") { t.hidden = di; have_hidden = true; }
+        else if (key == "num_hidden_layers") { t.layers = di; have_layers = true; }
+        else if (key == "vocab_size") { t.vocab = di; have_vocab = true; }
+        else if (key == "num_attention_heads") t.heads = di;
+        else if (key == "num_key_value_heads") t.kv_heads = di;
+        else if (key == "n_routed_experts") t.num_experts = di;
+        else if (key == "num_experts_per_tok") t.top_k = di;
+        else if (key == "moe_intermediate_size") t.moe_intermediate = di;
+        else if (key == "first_k_dense_replace") t.first_k_dense = di;
+        else if (key == "rms_norm_eps") t.rms_eps = d;
+        else if (key == "routed_scaling_factor") t.routed_scale = d;
+        else if (key == "swiglu_limit") t.swiglu_limit = d;
+        else if (key == "bos_token_id") t.bos_id = di;
+        else if (key == "eos_token_id") t.eos_id = di;
+        else if (key == "pad_token_id") t.pad_id = di;
+    }
+
+    if (!have_hidden || !have_layers || !have_vocab)
+    {
+        t.error_msg = "config.json missing required geometry "
+                      "(hidden_size/num_hidden_layers/vocab_size)";
+    }
+    return t;
 }
 
 } // namespace lsxcommon::gigachat

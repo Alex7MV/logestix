@@ -58,3 +58,28 @@ TEST_CASE("gigachat tensor classifier", "[gigachat][convert]")
     CHECK(e.layer == 5);
     CHECK(e.expert == 200);
 }
+
+TEST_CASE("gigachat config parser reads the authoritative fields",
+          "[gigachat][convert]")
+{
+    const char *cfg = R"({
+      "hidden_size": 7168, "num_hidden_layers": 40, "vocab_size": 128256,
+      "num_attention_heads": 64, "num_key_value_heads": 64,
+      "n_routed_experts": 256, "num_experts_per_tok": 8,
+      "moe_intermediate_size": 2048, "first_k_dense_replace": 3,
+      "rms_norm_eps": 1e-06, "routed_scaling_factor": 2.5, "swiglu_limit": 10,
+      "bos_token_id": 1, "eos_token_id": 2, "pad_token_id": 2
+    })";
+    auto t = ParseGigaChatConfig(cfg);
+    CHECK(t.error_msg.empty());
+    CHECK(t.hidden == 7168);
+    CHECK(t.layers == 40);
+    CHECK(t.vocab == 128256);
+    CHECK(t.num_experts == 256);
+    CHECK(t.top_k == 8);
+    CHECK(t.bos_id == 1);
+    CHECK(t.pad_id == 2);
+
+    auto bad = ParseGigaChatConfig("{ not json ");
+    CHECK_FALSE(bad.error_msg.empty());
+}
