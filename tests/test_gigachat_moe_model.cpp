@@ -1,7 +1,6 @@
 // TDD — GigaChat3.5 model contour. Synthetic converted fixture only; the
 // frozen geometry is bypassed via LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 (set by
-// the ctest environment). Inference kernels arrive in Plan 2, so Infer returns
-// a not-implemented sentinel here.
+// the ctest environment). Exercises the full 2-layer hybrid decode path.
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_gigachat_moe_fixture.h"
@@ -12,6 +11,8 @@
 #include "lsxcommon/tokenizer.h"
 
 #include <arrow/io/file.h>
+
+#include <cmath>
 
 using namespace lsxcommon;
 
@@ -32,8 +33,18 @@ TEST_CASE("gigachat model loads a synthetic converted fixture",
 
     ModelRequest req;
     req.input_ids = {1};
+    req.max_gen_tokens = 1;
     auto r = m.Infer(req);
-    CHECK_FALSE(r.ok);
+    INFO("infer error: " << r.error_msg);
+    REQUIRE(r.ok);
+    REQUIRE(r.gen_tokens.size() == 1);
+    REQUIRE(r.final_logits.size() == 128);
+    for (float f : r.final_logits) CHECK(std::isfinite(f));
+
+    // Deterministic re-run (same weights, same caches reset).
+    auto r2 = m.Infer(req);
+    REQUIRE(r2.ok);
+    CHECK(r2.gen_tokens == r.gen_tokens);
     m.Unload();
 }
 

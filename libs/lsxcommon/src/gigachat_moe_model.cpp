@@ -50,7 +50,51 @@ GigaChat35Model::GigaChat35Model(ModelInitConfig cfg)
 
 GigaChat35Model::~GigaChat35Model() { Unload(); }
 
-void GigaChat35Model::TeardownWeights() {}
+void GigaChat35Model::TeardownWeights()
+{
+    if (d_logits_)
+    {
+        cudaFree(d_logits_);
+        d_logits_ = nullptr;
+    }
+    pipeline_.Free();
+    gigachat::FreeGcExpertCache(expert_cache_);
+    weights_.Free();
+}
+
+bool GigaChat35Model::BuildPipelineDims(gigachat::GcPipelineDims &d) const
+{
+    using namespace gigachat::frozen;
+    const int hidden = idx_.hidden_size;
+    int q_lora = 0, kv_lora = 0;
+    const gigachat::GcLayerWeights *gdn = nullptr;
+    for (const auto &l : weights_.layers)
+    {
+        if (l.full_attention && q_lora == 0)
+        {
+            q_lora = l.q_a.rows;
+            kv_lora = l.kv_a.rows - kQkRopeHeadDim;
+        }
+        if (!l.full_attention && gdn == nullptr) gdn = &l;
+    }
+    if (q_lora <= 0 || kv_lora <= 0 || gdn == nullptr) return false;
+    const int value_dim = gdn->gdn_out_proj.cols;
+    const int key_dim = (gdn->conv_dim - value_dim) / 2;
+    d.mla = {hidden, idx_.num_attention_heads, q_lora, kv_lora,
+             kQkNopeHeadDim, kQkRopeHeadDim, kVHeadDim};
+    d.gdn = {hidden, key_dim / kLinearKeyHeadDim,
+             value_dim / kLinearValueHeadDim, kLinearKeyHeadDim,
+             kLinearValueHeadDim, gdn->conv_kernel};
+    d.vocab = idx_.vocab_size;
+    d.num_experts = idx_.num_experts;
+    d.top_k = idx_.num_experts_per_tok;
+    d.moe_intermediate = idx_.moe_intermediate_size;
+    d.first_k_dense = idx_.first_k_dense_replace;
+    d.rms_eps = static_cast<float>(idx_.rms_norm_eps);
+    d.routed_scale = static_cast<float>(idx_.router_scaling_factor);
+    d.swiglu_limit = static_cast<float>(idx_.swiglu_limit);
+    return true;
+}
 
 bool GigaChat35Model::Load()
 {
@@ -70,9 +114,52 @@ bool GigaChat35Model::Load()
         return AbortLoad();
     }
     vram_ = idx_.vram;
+    if (!EnsureContext()) return AbortLoad();
 
-    // Device weights, expert streaming and the decode pipeline land in Plan 2.
+    if (!gigachat::LoadGigaChatWeights(cfg_.model_path, idx_, weights_,
+                                       stream(), err))
+    {
+        log::error(absl::StrFormat("[gigachat] weight load error: %s", err));
+        weights_.Free();
+        return AbortLoad();
+    }
+    gigachat::GcPipelineDims dims;
+    if (!BuildPipelineDims(dims))
+    {
+        log::error("[gigachat] cannot derive pipeline dims from weights");
+        weights_.Free();
+        return AbortLoad();
+    }
+    if (!gigachat::InitGigaChatExpertCache(
+            cfg_.model_path, idx_.num_layers, idx_.first_k_dense_replace,
+            idx_.num_experts, idx_.num_experts_per_tok, /*slots_override=*/0,
+            stream(), expert_cache_, err))
+    {
+        log::error(absl::StrFormat("[gigachat] expert cache error: %s", err));
+        TeardownWeights();
+        return AbortLoad();
+    }
+    const int kMaxSeq = 2048;
+    if (!pipeline_.Init(weights_, dims, kMaxSeq, err))
+    {
+        log::error(absl::StrFormat("[gigachat] pipeline init error: %s", err));
+        TeardownWeights();
+        return AbortLoad();
+    }
+    if (cudaMalloc(&d_logits_, static_cast<size_t>(idx_.vocab_size) * 4) !=
+        cudaSuccess)
+    {
+        log::error("[gigachat] logits buffer allocation failed");
+        TeardownWeights();
+        return AbortLoad();
+    }
+    resident_bytes_ = weights_.resident_bytes + expert_cache_.cache_bytes;
+
     FinishLoad();
+    log::info(absl::StrFormat(
+        "[gigachat] loaded %s: %d layers, %d experts, vocab %d",
+        idx_.model.c_str(), idx_.num_layers, idx_.num_experts,
+        idx_.vocab_size));
     return true;
 }
 
@@ -81,12 +168,108 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
     // Model-independence invariant: each model asserts its OWN fast-math
     // policy per call (the routing toggles are process-global).
     lsx_nvfp4::LsxFastMathScope scope(EffectiveFastMathMode(cfg_));
-    (void)req;
-    gpu::InferenceResult r;
-    r.ok = false;
-    r.error_msg =
-        "gigachat inference pipeline not implemented yet (Plan 2)";
-    return r;
+    return RunUnderResidencyLock([&] {
+        gpu::InferenceResult r;
+        if (!ValidateInferRequest(req, r)) return r;
+        if (pipeline_.Reset(stream()) != cudaSuccess)
+        {
+            r.error_msg = "cache reset failed";
+            return r;
+        }
+
+        std::vector<float> logits(static_cast<size_t>(idx_.vocab_size));
+        cudaEvent_t ev0 = nullptr, ev_first = nullptr, ev1 = nullptr;
+        cudaEventCreate(&ev0);
+        cudaEventCreate(&ev_first);
+        cudaEventCreate(&ev1);
+        cudaEventRecord(ev0, stream());
+
+        int pos = 0;
+        for (int32_t id : req.input_ids)
+        {
+            const cudaError_t e = pipeline_.Step(
+                weights_, expert_cache_, id, pos, d_logits_, stream());
+            if (e != cudaSuccess)
+            {
+                r.error_msg =
+                    std::string("forward failed: ") + cudaGetErrorString(e);
+                return r;
+            }
+            ++pos;
+        }
+        cudaEventRecord(ev_first, stream());
+
+        const int eos = idx_.eos_token_id;
+        int generated = 0;
+        for (int step = 0; step < req.max_gen_tokens; ++step)
+        {
+            if (cudaMemcpyAsync(logits.data(), d_logits_,
+                                logits.size() * sizeof(float),
+                                cudaMemcpyDeviceToHost, stream()) !=
+                    cudaSuccess ||
+                cudaStreamSynchronize(stream()) != cudaSuccess)
+            {
+                r.error_msg = "logits readback failed";
+                return r;
+            }
+            int next = 0;
+            for (size_t i = 1; i < logits.size(); ++i)
+                if (logits[i] > logits[static_cast<size_t>(next)]) next = static_cast<int>(i);
+            r.gen_tokens.push_back(next);
+            ++generated;
+            if (step == 0)
+            {
+                r.first_gen_tok_id = next;
+                r.first_gen_maxv = logits[static_cast<size_t>(next)];
+            }
+            r.final_logits = logits;
+            if (!req.ignore_eos && next == eos)
+            {
+                r.eos_terminated = true;
+                break;
+            }
+            if (step + 1 < req.max_gen_tokens)
+            {
+                const cudaError_t e = pipeline_.Step(
+                    weights_, expert_cache_, next, pos, d_logits_, stream());
+                if (e != cudaSuccess)
+                {
+                    r.error_msg = std::string("forward failed: ") +
+                                  cudaGetErrorString(e);
+                    return r;
+                }
+                ++pos;
+            }
+            if (req.token_callback)
+            {
+                TokenChunk c;
+                c.token_id = static_cast<uint32_t>(next);
+                c.step_t = static_cast<uint32_t>(step);
+                c.logit_maxv = r.first_gen_maxv;
+                req.token_callback(c);
+            }
+            if (req.abort_flag && req.abort_flag->load()) break;
+        }
+        r.num_tokens = generated;
+        r.num_layers = idx_.num_layers;
+        r.weight_resident_bytes = resident_bytes_;
+        cudaEventRecord(ev1, stream());
+        cudaEventSynchronize(ev1);
+        float ttft = 0.0f, total = 0.0f;
+        cudaEventElapsedTime(&ttft, ev0, ev_first);
+        cudaEventElapsedTime(&total, ev0, ev1);
+        r.ttft_ms = static_cast<double>(ttft);
+        r.total_time_ms = static_cast<double>(total);
+        r.tokens_per_sec = total > 0.0f
+                               ? static_cast<double>(generated) * 1000.0 /
+                                     static_cast<double>(total)
+                               : 0.0;
+        cudaEventDestroy(ev0);
+        cudaEventDestroy(ev_first);
+        cudaEventDestroy(ev1);
+        r.ok = true;
+        return r;
+    });
 }
 
 gpu::InferenceResult GigaChat35Model::SelfCheck(const ModelRequest &req)

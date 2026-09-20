@@ -169,11 +169,13 @@ GcExpertSlotLayout PlanGcExpertSlotFromStore(const GcExpertStore &store);
 // Full cache bring-up: mmaps the routed-expert store under
 // <model_path>/logestix/experts, plans the device slot layout, allocates
 // `slots` device slots and warms them. `moe_index_of_layer` maps every model
-// layer to its dense MoE index (-1 for the leading dense layers). Returns
-// false and fills `error` on any failure.
+// layer to its dense MoE index (-1 for the leading dense layers).
+// `slots_override <= 0` auto-sizes from free VRAM (env
+// LSX_GIGACHAT_EXPERT_CACHE_SLOTS), never below top-k. Returns false and fills
+// `error` on any failure.
 bool InitGigaChatExpertCache(const std::string &model_path, int num_layers,
                              int first_k_dense, int experts_per_layer,
-                             int slots, cudaStream_t stream,
+                             int topk, int slots_override, cudaStream_t stream,
                              GcExpertCache &cache, std::string &error);
 
 bool AllocateGcExpertCache(GcExpertCache &cache, int slots, std::string &error);

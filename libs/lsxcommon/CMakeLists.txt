@@ -323,6 +323,7 @@ add_library(lsxcommon_gigachat_cu OBJECT
     src/gigachat_moe_norm_kernels.cu
     src/gigachat_moe_kernels.cu
     src/gigachat_moe_inference_attn.cu
+    src/gigachat_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_gigachat_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

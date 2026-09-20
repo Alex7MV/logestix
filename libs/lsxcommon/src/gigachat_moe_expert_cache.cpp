@@ -36,7 +36,7 @@ GcExpertSlotLayout PlanGcExpertSlotFromStore(const GcExpertStore &store)
 
 bool InitGigaChatExpertCache(const std::string &model_path, int num_layers,
                              int first_k_dense, int experts_per_layer,
-                             int slots, cudaStream_t stream,
+                             int topk, int slots_override, cudaStream_t stream,
                              GcExpertCache &cache, std::string &error)
 {
     if (num_layers <= 0 || experts_per_layer <= 0)
@@ -65,6 +65,16 @@ bool InitGigaChatExpertCache(const std::string &model_path, int num_layers,
     {
         error = "gigachat expert slot layout planning failed";
         return false;
+    }
+    int slots = slots_override;
+    if (slots <= 0)
+    {
+        const int64_t per = GcExpertCachePerExpertBytes(cache.layout);
+        std::size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        slots = GcExpertCacheSlots(free_b, static_cast<std::size_t>(per),
+                                   cache.total_experts, topk,
+                                   std::getenv("LSX_GIGACHAT_EXPERT_CACHE_SLOTS"));
     }
     if (!AllocateGcExpertCache(cache, slots, error)) return false;
     const cudaError_t ce = PrewarmGcExpertCache(cache, stream, error);

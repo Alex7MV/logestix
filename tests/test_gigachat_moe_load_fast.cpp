@@ -160,7 +160,8 @@ TEST_CASE("gigachat expert cache brings up the routed store",
     const bool init_ok =
         InitGigaChatExpertCache(root.string(), idx.num_layers,
                                 idx.first_k_dense_replace, idx.num_experts,
-                                /*slots=*/2, stream, cache, err);
+                                idx.num_experts_per_tok, /*slots_override=*/2,
+                                stream, cache, err);
     INFO("init error: " << err);
     REQUIRE(init_ok);
     CHECK(cache.total_experts == 4);

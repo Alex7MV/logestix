@@ -14,6 +14,8 @@
 #include <string>
 #include <string_view>
 
+#include "lsxcommon/gigachat_moe_expert_cache.h"
+#include "lsxcommon/gigachat_moe_inference_pipeline.h"
 #include "lsxcommon/gigachat_moe_load.h"
 #include "lsxcommon/model_base.h"
 
@@ -41,8 +43,13 @@ public:
 
 private:
     void TeardownWeights() override;
+    bool BuildPipelineDims(gigachat::GcPipelineDims &dims) const;
 
     gigachat::GigaChatIndex idx_;
+    gigachat::GcWeights weights_;
+    gigachat::GcExpertCache expert_cache_;
+    gigachat::GcPipeline pipeline_;
+    float *d_logits_ = nullptr;
 };
 
 } // namespace lsxcommon
