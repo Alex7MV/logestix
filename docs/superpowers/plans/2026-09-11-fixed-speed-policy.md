@@ -259,7 +259,7 @@ git commit -m "refactor: InitializeEngine delegates to perf::EnsurePerfPolicyApp
 ### Task 4: lsxhome session + docs + full fast gate
 
 **Files:**
-- Modify: `apps/lsxhome/src/main_win32.cpp` (`ComputeProducer`, ~line 84; include block at top)
+- Modify: `lsxhome/src/main_win32.cpp` (`ComputeProducer`, ~line 84; include block at top)
 - Modify: `AGENTS.md` (section `## GPU Perf Auto-Tuning`)
 
 **Interfaces:**
@@ -295,6 +295,6 @@ Note: file is Windows-only (`if(NOT WIN32) return()` in its CMakeLists) — not 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add apps/lsxhome/src/main_win32.cpp AGENTS.md
+git add lsxhome/src/main_win32.cpp AGENTS.md
 git commit -m "feat: lsxhome inference at pinned policy; docs for default perf guarantee"
 ```

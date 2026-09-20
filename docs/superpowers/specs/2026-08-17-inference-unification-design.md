@@ -346,7 +346,7 @@ One spec, two writing-plans cycles (Phase A plan, then Phase B plan).
 | `apps/lsxforge/src/main.cpp` | `RunCliGeneration` |
 | `apps/lsxfabric/src/main.cpp` | `RunCliSelfCheck`/helpers; delete `EncodeSelfCheckPrompt` |
 | `apps/lsxcli/src/main.cpp` | `RunCliInspect` |
-| `apps/lsxhome/src/main_win32.cpp` | real `--run` model wiring (Phase A tail) |
+| `lsxhome/src/main_win32.cpp` | real `--run` model wiring (Phase A tail) |
 | `tests/` | contract + host-only tests, `test_generation_cli` extension |
 
 ## Out of Scope

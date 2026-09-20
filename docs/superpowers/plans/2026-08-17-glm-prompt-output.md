@@ -18,7 +18,7 @@
 - GLM never auto-prepends BOS; the helper must NOT add one.
 - `gen.tokens` from `RunGlmRealGeneration` contains ONLY generated tokens (prompt excluded).
 - Real-model tests SKIP (Catch2 `SKIP`, CTest `SKIP_RETURN_CODE 4`) when `/mnt/llm_models/models/GLM-5.2/logestix/pinned` is absent.
-- `lsxhome` is out of scope — do not touch `apps/lsxhome/`.
+- `lsxhome` is out of scope — it now lives in its own repository.
 - Commit messages: English, prefixed `feat:` / `test:` / `docs:`.
 
 ---

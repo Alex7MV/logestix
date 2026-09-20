@@ -1388,9 +1388,9 @@ git commit -m "feat: unified CLI generation/selfcheck/inspect lifecycle"
 ### Task 10: `lsxhome --run` real model wiring (Phase A tail)
 
 **Files:**
-- Modify: `apps/lsxhome/src/main_win32.cpp`
-- Modify: `apps/lsxhome/src/gui_renderer.cpp` (optional token-buffer surface)
-- Modify: `apps/lsxhome/CMakeLists.txt` (link `lsxcommon` if not already)
+- Modify: `lsxhome/src/main_win32.cpp`
+- Modify: `lsxhome/src/gui_renderer.cpp` (optional token-buffer surface)
+- Modify: `lsxhome/CMakeLists.txt` (link `lsxcommon` if not already)
 
 **Interfaces:**
 - Consumes: `runtime::RunCliGeneration` style path + `GuiBridge` (`lsxhome/include/gui_bridge.h`).
@@ -1402,7 +1402,7 @@ No automated GUI test exists for the token pump. RED = the current `main_win32.c
 
 - [ ] **Step 2: Replace the demo pump**
 
-In `apps/lsxhome/src/main_win32.cpp`, `ComputeProducer` (lines 72-92): replace the fixed `MakeTokenPayload(kParisTokenId, ...)` loop with a real model run:
+In `lsxhome/src/main_win32.cpp`, `ComputeProducer` (lines 72-92): replace the fixed `MakeTokenPayload(kParisTokenId, ...)` loop with a real model run:
 
 ```cpp
 // Runs the resolved generation prompt through the model once and publishes
@@ -1459,7 +1459,7 @@ Expected: clean build. Manual smoke: `lsxhome --model <path> --run "hello"` show
 - [ ] **Step 4: Commit**
 
 ```bash
-git add apps/lsxhome/src/main_win32.cpp apps/lsxhome/include/lsxhome/gui_bridge.h apps/lsxhome/CMakeLists.txt
+git add lsxhome/src/main_win32.cpp lsxhome/include/lsxhome/gui_bridge.h lsxhome/CMakeLists.txt
 git commit -m "feat: wire lsxhome --run to the real model lifecycle"
 ```
 

@@ -216,7 +216,6 @@ add_subdirectory(lsxforge)
 add_subdirectory(taskmosaic)
 add_subdirectory(lsxcli)
 add_subdirectory(lsxbenchmark)
-add_subdirectory(lsxhome)
 ```
 
 - [ ] **Step 5: Reconfigure and verify RED** (the parser does not exist yet)
