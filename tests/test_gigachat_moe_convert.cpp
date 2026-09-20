@@ -115,6 +115,6 @@ TEST_CASE("gigachat converter emits the logestix-gigachat-nvfp4 layout",
     CHECK(fs::exists(dst / "logestix" / "pinned" / "global.arrow"));
     CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_000_nvfp4.arrow"));
     CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_001_nvfp4.arrow"));
-    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_001" / "exp_000.arrow"));
+    CHECK(fs::exists(dst / "logestix" / "experts" / "layer_1" / "exp_0.arrow"));
     CHECK(fs::exists(dst / "logestix" / "mtp" / "layer_040.arrow"));
 }

@@ -1,17 +1,22 @@
-// GigaChat3.5 loader-stage passport (index parse + frozen-geometry gate).
+// GigaChat3.5 loader-stage passport (index parse + frozen-geometry gate) and
+// the resident device weight graph.
 #include "lsxcommon/gigachat_moe_load.h"
 
+#include "fast_load_internal.h"
 #include "gigachat_moe_constants.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/schema.h"
 
 #include <simdjson.h>
 #include <absl/strings/str_format.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 
 namespace lsxcommon::gigachat {
 namespace {
@@ -195,6 +200,359 @@ bool ValidateGigaChatGeometry(const GigaChatIndex &idx, std::string &error)
         if (idx.full_attention_layers[static_cast<size_t>(i)] != kFullAttnLayers[i])
             return fail("full_attention_layers[i]", kFullAttnLayers[i],
                         idx.full_attention_layers[static_cast<size_t>(i)]);
+    error.clear();
+    return true;
+}
+
+// ── Device weight graph ─────────────────────────────────────────────────────
+
+void GcGatedNorm::Free()
+{
+    cudaFree(const_cast<uint8_t *>(d_weight));
+    cudaFree(const_cast<uint8_t *>(d_gate_up));
+    cudaFree(const_cast<uint8_t *>(d_gate_down));
+    d_weight = nullptr;
+    d_gate_up = nullptr;
+    d_gate_down = nullptr;
+}
+
+void GcLayerWeights::Free()
+{
+    input_norm.Free();
+    post_attn_norm.Free();
+    post_self_attn_norm.Free();
+    post_ffw_norm.Free();
+    q_a_norm.Free();
+    kv_a_norm.Free();
+    q_a.Free();
+    q_b.Free();
+    kv_a.Free();
+    kv_b.Free();
+    o_proj.Free();
+    attn_gate.Free();
+    gdn_in_qkvz.Free();
+    gdn_out_proj.Free();
+    cudaFree(const_cast<uint8_t *>(d_conv1d));
+    d_conv1d = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_A_log));
+    d_A_log = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_dt_bias));
+    d_dt_bias = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_gdn_in_ba));
+    d_gdn_in_ba = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_gdn_norm));
+    d_gdn_norm = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_router));
+    d_router = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_router_bias));
+    d_router_bias = nullptr;
+    shared_gate.Free();
+    shared_up.Free();
+    shared_down.Free();
+    mlp_gate.Free();
+    mlp_up.Free();
+    mlp_down.Free();
+}
+
+void GcWeights::Free()
+{
+    cudaFree(const_cast<uint8_t *>(d_embed));
+    d_embed = nullptr;
+    cudaFree(const_cast<uint8_t *>(d_lm_head));
+    d_lm_head = nullptr;
+    final_norm.Free();
+    for (auto &l : layers) l.Free();
+    layers.clear();
+    resident_bytes = 0;
+}
+
+namespace {
+
+using fastload::CvKind;
+using fastload::FindNvfp4Suffix;
+using fastload::FindTensorSuffix;
+using fastload::PinnedStagingRing;
+using fastload::UploadJob;
+
+bool UploadRaw(const TensorView *t, CvKind kind, const uint8_t **dst,
+               const std::string &what, cudaStream_t stream,
+               PinnedStagingRing &ring, std::uint64_t &acc, std::string &error)
+{
+    if (!t)
+    {
+        error = "missing tensor: " + what;
+        return false;
+    }
+    void *out = nullptr;
+    std::vector<UploadJob> jobs = {{t, &out, kind, nullptr, nullptr}};
+    void *arena = nullptr;
+    size_t arena_bytes = 0;
+    std::string e2;
+    const cudaError_t e = fastload::RunUploadJobs(
+        std::move(jobs), &arena, &arena_bytes, stream, ring, acc, &e2);
+    if (e != cudaSuccess)
+    {
+        error = "upload failed: " + what + ": " + e2;
+        return false;
+    }
+    *dst = static_cast<const uint8_t *>(out);
+    return true;
+}
+
+bool UploadNvfp4(const DenseNvfp4BatchViews &nv, std::string_view suffix,
+                 lsx_nvfp4::LsxNvfp4Weight &w, const std::string &what,
+                 cudaStream_t stream, PinnedStagingRing &ring,
+                 std::uint64_t &acc, std::string &error)
+{
+    const DenseNvfp4View *r = FindNvfp4Suffix(nv, suffix);
+    if (!r)
+    {
+        error = "missing nvfp4 tensor: " + what;
+        return false;
+    }
+    std::string e2;
+    const cudaError_t e =
+        fastload::UploadNvfp4Weight(r, w, stream, ring, acc, &e2);
+    if (e != cudaSuccess)
+    {
+        error = "nvfp4 upload failed: " + what + ": " + e2;
+        return false;
+    }
+    return true;
+}
+
+bool UploadNormTriple(const TensorBatchViews &raw, const std::string &prefix,
+                      GcGatedNorm &n, cudaStream_t stream,
+                      PinnedStagingRing &ring, std::uint64_t &acc,
+                      std::string &error)
+{
+    const TensorView *w = FindTensorSuffix(raw, prefix + ".weight");
+    const TensorView *gu =
+        FindTensorSuffix(raw, prefix + ".gate_up_projection.weight");
+    const TensorView *gd =
+        FindTensorSuffix(raw, prefix + ".gate_down_projection.weight");
+    if (!w || !gu || !gd)
+    {
+        error = "missing gated norm: " + prefix;
+        return false;
+    }
+    if (!UploadRaw(w, CvKind::kBf16Raw, &n.d_weight, prefix + ".weight", stream,
+                   ring, acc, error) ||
+        !UploadRaw(gu, CvKind::kBf16Raw, &n.d_gate_up,
+                   prefix + ".gate_up_projection.weight", stream, ring, acc,
+                   error) ||
+        !UploadRaw(gd, CvKind::kBf16Raw, &n.d_gate_down,
+                   prefix + ".gate_down_projection.weight", stream, ring, acc,
+                   error))
+        return false;
+    n.dim = static_cast<int>(w->shape[0]);
+    n.rank = static_cast<int>(gu->shape[0]);
+    return true;
+}
+
+bool LayerIsFullAttention(const GigaChatIndex &idx, int layer)
+{
+    if (!idx.layer_types.empty() &&
+        static_cast<int>(idx.layer_types.size()) == idx.num_layers)
+        return idx.layer_types[static_cast<std::size_t>(layer)] ==
+               "full_attention";
+    return std::find(idx.full_attention_layers.begin(),
+                     idx.full_attention_layers.end(),
+                     layer) != idx.full_attention_layers.end();
+}
+
+} // namespace
+
+bool LoadGigaChatWeights(const std::string &model_path, const GigaChatIndex &idx,
+                         GcWeights &w, cudaStream_t stream, std::string &error)
+{
+    namespace fs = std::filesystem;
+    const fs::path base = fs::path(model_path) / "logestix";
+    PinnedStagingRing ring;
+    if (!ring.ok())
+    {
+        error = "pinned staging ring allocation failed";
+        return false;
+    }
+    fastload::StreamDrain drain{stream};
+    std::uint64_t acc = 0;
+
+    w.hidden = idx.hidden_size;
+    w.vocab = idx.vocab_size;
+
+    auto global = LoadTensorBatchViews(base / "pinned" / "global.arrow");
+    if (!global.ok())
+    {
+        error = "cannot open pinned/global.arrow: " +
+                global.status().ToString();
+        return false;
+    }
+    if (!UploadRaw(FindTensorSuffix(*global, "model.embed_tokens.weight"),
+                   CvKind::kBf16Raw, &w.d_embed, "model.embed_tokens.weight",
+                   stream, ring, acc, error) ||
+        !UploadRaw(FindTensorSuffix(*global, "lm_head.weight"),
+                   CvKind::kBf16Raw, &w.d_lm_head, "lm_head.weight", stream,
+                   ring, acc, error) ||
+        !UploadNormTriple(*global, "model.norm", w.final_norm, stream, ring, acc,
+                          error))
+    {
+        w.Free();
+        return false;
+    }
+
+    w.layers.resize(static_cast<std::size_t>(idx.num_layers));
+    for (int l = 0; l < idx.num_layers; ++l)
+    {
+        GcLayerWeights &lw = w.layers[static_cast<std::size_t>(l)];
+        lw.layer = l;
+        lw.full_attention = LayerIsFullAttention(idx, l);
+        lw.moe = l >= idx.first_k_dense_replace;
+
+        const auto nv_path = base / "pinned" /
+                             absl::StrFormat("layer_%03d_nvfp4.arrow", l);
+        const auto raw_path =
+            base / "pinned" / absl::StrFormat("layer_%03d.arrow", l);
+        auto nv = LoadDenseNvfp4BatchViews(nv_path);
+        auto raw = LoadTensorBatchViews(raw_path);
+        if (!nv.ok() || !raw.ok())
+        {
+            error = absl::StrFormat("cannot open layer %d arrow files", l);
+            w.Free();
+            return false;
+        }
+        const std::string lp = absl::StrFormat("layers.%d.", l);
+
+        if (!UploadNormTriple(*raw, lp + "input_layernorm", lw.input_norm, stream,
+                              ring, acc, error) ||
+            !UploadNormTriple(*raw, lp + "post_attention_layernorm",
+                              lw.post_attn_norm, stream, ring, acc, error) ||
+            !UploadNormTriple(*raw, lp + "post_self_attn_layernorm",
+                              lw.post_self_attn_norm, stream, ring, acc, error) ||
+            !UploadNormTriple(*raw, lp + "post_feedforward_layernorm",
+                              lw.post_ffw_norm, stream, ring, acc, error))
+        {
+            w.Free();
+            return false;
+        }
+
+        if (lw.full_attention)
+        {
+            if (!UploadNormTriple(*raw, lp + "self_attn.q_a_layernorm",
+                                  lw.q_a_norm, stream, ring, acc, error) ||
+                !UploadNormTriple(*raw, lp + "self_attn.kv_a_layernorm",
+                                  lw.kv_a_norm, stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.q_a_proj.weight", lw.q_a,
+                             "q_a_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.q_b_proj.weight", lw.q_b,
+                             "q_b_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.kv_a_proj_with_mqa.weight",
+                             lw.kv_a, "kv_a_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.kv_b_proj.weight", lw.kv_b,
+                             "kv_b_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.o_proj.weight", lw.o_proj,
+                             "o_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.gate_proj.weight",
+                             lw.attn_gate, "attn gate_proj", stream, ring, acc,
+                             error))
+            {
+                w.Free();
+                return false;
+            }
+        }
+        else
+        {
+            const TensorView *conv = FindTensorSuffix(*raw, lp + "self_attn.conv1d.weight");
+            const TensorView *alog = FindTensorSuffix(*raw, lp + "self_attn.A_log");
+            const TensorView *dtb = FindTensorSuffix(*raw, lp + "self_attn.dt_bias");
+            const TensorView *ba =
+                FindTensorSuffix(*raw, lp + "self_attn.in_proj_ba.weight");
+            const TensorView *gnorm =
+                FindTensorSuffix(*raw, lp + "self_attn.norm.weight");
+            if (!conv || !alog || !dtb || !ba || !gnorm)
+            {
+                error = absl::StrFormat("missing GDN tensor(s) on layer %d", l);
+                w.Free();
+                return false;
+            }
+            if (!UploadNvfp4(*nv, lp + "self_attn.in_proj_qkvz.weight",
+                             lw.gdn_in_qkvz, "in_proj_qkvz", stream, ring, acc,
+                             error) ||
+                !UploadNvfp4(*nv, lp + "self_attn.out_proj.weight",
+                             lw.gdn_out_proj, "gdn out_proj", stream, ring, acc,
+                             error) ||
+                !UploadRaw(conv, CvKind::kBf16ToF32, &lw.d_conv1d,
+                           "conv1d.weight", stream, ring, acc, error) ||
+                !UploadRaw(alog, CvKind::kBf16ToF32, &lw.d_A_log, "A_log",
+                           stream, ring, acc, error) ||
+                !UploadRaw(dtb, CvKind::kBf16ToF32, &lw.d_dt_bias, "dt_bias",
+                           stream, ring, acc, error) ||
+                !UploadRaw(ba, CvKind::kBf16Raw, &lw.d_gdn_in_ba,
+                           "in_proj_ba.weight", stream, ring, acc, error) ||
+                !UploadRaw(gnorm, CvKind::kBf16Raw, &lw.d_gdn_norm,
+                           "gdn norm.weight", stream, ring, acc, error))
+            {
+                w.Free();
+                return false;
+            }
+            lw.conv_dim = static_cast<int>(conv->shape[0]);
+            lw.conv_kernel = static_cast<int>(conv->shape[2]);
+            lw.gdn_value_heads = static_cast<int>(alog->shape[0]);
+            lw.gdn_ba_rows = static_cast<int>(ba->shape[0]);
+            lw.gdn_norm_dim = static_cast<int>(gnorm->shape[0]);
+        }
+
+        if (lw.moe)
+        {
+            const TensorView *router = FindTensorSuffix(*raw, lp + "mlp.gate.weight");
+            const TensorView *rbias =
+                FindTensorSuffix(*raw, lp + "mlp.gate.e_score_correction_bias");
+            if (!router || !rbias)
+            {
+                error = absl::StrFormat("missing router tensor(s) on layer %d", l);
+                w.Free();
+                return false;
+            }
+            if (!UploadRaw(router, CvKind::kBf16Raw, &lw.d_router,
+                           "mlp.gate.weight", stream, ring, acc, error) ||
+                !UploadRaw(rbias, CvKind::kF32Raw, &lw.d_router_bias,
+                           "e_score_correction_bias", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "mlp.shared_experts.gate_proj.weight",
+                             lw.shared_gate, "shared gate_proj", stream, ring,
+                             acc, error) ||
+                !UploadNvfp4(*nv, lp + "mlp.shared_experts.up_proj.weight",
+                             lw.shared_up, "shared up_proj", stream, ring, acc,
+                             error) ||
+                !UploadNvfp4(*nv, lp + "mlp.shared_experts.down_proj.weight",
+                             lw.shared_down, "shared down_proj", stream, ring,
+                             acc, error))
+            {
+                w.Free();
+                return false;
+            }
+            lw.num_experts = static_cast<int>(router->shape[0]);
+        }
+        else
+        {
+            if (!UploadNvfp4(*nv, lp + "mlp.gate_proj.weight", lw.mlp_gate,
+                             "mlp gate_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "mlp.up_proj.weight", lw.mlp_up,
+                             "mlp up_proj", stream, ring, acc, error) ||
+                !UploadNvfp4(*nv, lp + "mlp.down_proj.weight", lw.mlp_down,
+                             "mlp down_proj", stream, ring, acc, error))
+            {
+                w.Free();
+                return false;
+            }
+        }
+    }
+
+    if (cudaStreamSynchronize(stream) != cudaSuccess)
+    {
+        error = "weight upload stream sync failed";
+        w.Free();
+        return false;
+    }
+    w.resident_bytes = acc;
     error.clear();
     return true;
 }

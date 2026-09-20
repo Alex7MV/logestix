@@ -3024,6 +3024,22 @@ target_include_directories(test_gigachat_moe_expert_cache PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_expert_cache COMMAND test_gigachat_moe_expert_cache)
 
+add_executable(test_gigachat_moe_load_fast test_gigachat_moe_load_fast.cpp)
+target_link_libraries(test_gigachat_moe_load_fast PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_load_fast PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+if(WIN32)
+    add_custom_command(TARGET test_gigachat_moe_load_fast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_load_fast>")
+endif()
+add_test(NAME test_gigachat_moe_load_fast COMMAND test_gigachat_moe_load_fast)
+set_tests_properties(test_gigachat_moe_load_fast PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1"
+    SKIP_RETURN_CODE 4)
+
 # test_gigachat_moe_devkernels — device-kernel parity (standalone .cu object +
 # link lsxcommon at the exe; same pattern as test_nemotron_moe_kernels).
 add_library(test_gigachat_moe_devkernels_cu OBJECT test_gigachat_moe_devkernels.cu)
@@ -3560,6 +3576,7 @@ set_tests_properties(
     test_nemotron_moe_selfcheck
     test_gigachat_moe_kernels
     test_gigachat_moe_devkernels
+    test_gigachat_moe_load_fast
     test_glm_moe_flash_kernels
     test_kimi_moe_int4_dequant
     test_kimi_moe_int4_real

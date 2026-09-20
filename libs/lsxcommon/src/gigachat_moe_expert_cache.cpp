@@ -34,6 +34,49 @@ GcExpertSlotLayout PlanGcExpertSlotFromStore(const GcExpertStore &store)
     return PlanGcExpertSlot(gp, gs, up, us, dp, ds);
 }
 
+bool InitGigaChatExpertCache(const std::string &model_path, int num_layers,
+                             int first_k_dense, int experts_per_layer,
+                             int slots, cudaStream_t stream,
+                             GcExpertCache &cache, std::string &error)
+{
+    if (num_layers <= 0 || experts_per_layer <= 0)
+    {
+        error = "gigachat expert cache: invalid layer/expert geometry";
+        return false;
+    }
+    cache.experts_per_layer = experts_per_layer;
+    cache.moe_layers = num_layers > first_k_dense
+                           ? num_layers - first_k_dense
+                           : 0;
+    cache.total_experts = num_layers * experts_per_layer;
+    cache.moe_index_of_layer.assign(static_cast<std::size_t>(num_layers), -1);
+    for (int l = first_k_dense; l < num_layers; ++l)
+        cache.moe_index_of_layer[static_cast<std::size_t>(l)] =
+            l - first_k_dense;
+
+    LoadGcExpertStore(model_path, num_layers, experts_per_layer, cache.store);
+    if (cache.store.entries.empty())
+    {
+        error = "gigachat expert store is empty";
+        return false;
+    }
+    cache.layout = PlanGcExpertSlotFromStore(cache.store);
+    if (!cache.layout.ok)
+    {
+        error = "gigachat expert slot layout planning failed";
+        return false;
+    }
+    if (!AllocateGcExpertCache(cache, slots, error)) return false;
+    const cudaError_t ce = PrewarmGcExpertCache(cache, stream, error);
+    if (ce != cudaSuccess)
+    {
+        if (error.empty()) error = "gigachat expert cache prewarm failed";
+        FreeGcExpertCache(cache);
+        return false;
+    }
+    return true;
+}
+
 bool AllocateGcExpertCache(GcExpertCache &cache, int slots, std::string &error)
 {
     if (!cache.layout.ok || slots <= 0 || cache.experts_per_layer <= 0 ||

@@ -4,7 +4,7 @@
 // Protocol step 1). Produces the `logestix-gigachat-nvfp4` layout under
 // <output>/logestix/: model.index.json, pinned/global.arrow,
 // pinned/layer_NNN.arrow, pinned/shared_experts.arrow,
-// experts/layer_NNN/exp_E.arrow and mtp/layer_NNN.arrow.
+// experts/layer_N/exp_E.arrow and mtp/layer_NNN.arrow.
 //
 // Source weights are FP8 E4M3 with per-128x128 F32 weight_scale_inv tiles; the
 // converter dequantizes them to BF16 and re-quantizes to the neutral NVFP4

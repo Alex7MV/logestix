@@ -576,12 +576,13 @@ arrow::Status ConvertGigaChatModel(const std::string &input_dir,
         pe.w2_scales = e.down.scales;
         pe.w2_shape = e.down.shape;
         pe.w2_global_scale = e.down.global_scale;
-        const fs::path dir = base / "experts" / LayerFile(layer, "");
+        // Shared ExpertStore path convention (unpadded, like every family).
+        const fs::path dir = base / "experts" / absl::StrCat("layer_", layer);
         std::error_code ec;
         fs::create_directories(dir, ec);
         ARROW_RETURN_NOT_OK(WriteBatchOr(
             ExpertSchema::MakeBatch(pe),
-            dir / absl::StrFormat("exp_%03d.arrow", expert)));
+            dir / absl::StrCat("exp_", expert, ".arrow")));
         ++total_experts;
     }
 
