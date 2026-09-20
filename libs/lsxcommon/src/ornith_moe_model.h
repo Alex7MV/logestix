@@ -1,0 +1,67 @@
+#pragma once
+
+// Ornith-1.5-35B-A3B MoE model (kType "ornith-1.5-35b-a3b"). Own family: the
+// MoE runtime layer is a duplicate of the qwen_moe family; the generic
+// qwen_inference kernel layer is shared (option 1b). Own frozen-geometry
+// passport (src/ornith_moe_constants.h) and its own Infer fast-math scope
+// (model independence invariant).
+
+#include <memory>
+
+#include "lsxcommon/model_base.h"
+#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_inference_load.h"
+#include "lsxcommon/expert_device_cache.h"
+#include "lsxcommon/ornith_moe_inference.h"
+#include "lsxcommon/ornith_moe_load.h"
+
+namespace lsxcommon {
+
+class OrnithMoeModelBase : public ModelBase {
+public:
+    // Test/diagnostics access to persistent generation scratch.
+    const ornith::OrnithMoeGenScratch &GenScratchForTest() const
+    {
+        return scratch_;
+    }
+
+    bool Load() override;
+    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+
+protected:
+    explicit OrnithMoeModelBase(ModelInitConfig cfg);
+
+    void TeardownWeights() override;
+
+    // Runtime geometry gate: parsed index vs the leaf model's frozen passport.
+    virtual bool ValidateGeometry(
+        const ornith::OrnithMoeTopology &top) const = 0;
+
+    // Shared Infer body. The caller MUST have opened its own
+    // LsxFastMathScope(EffectiveFastMathMode(cfg_)) first (per-model policy).
+    gpu::InferenceResult RunInferShared(const ModelRequest &req);
+
+    ornith::OrnithMoePinnedWeights pw_;
+    ornith::OrnithMoeExpertStore experts_;
+    ornith::OrnithMoeExpertDeviceCache cache_{};
+    ornith::OrnithMoeGenScratch scratch_{};
+    std::unique_ptr<qwen::QwenKvCache> kv_;
+    std::vector<int32_t> session_tail_;
+};
+
+class OrnithMoeModel final : public OrnithMoeModelBase {
+public:
+    static const std::string kType;  // "ornith-1.5-35b-a3b"
+
+    explicit OrnithMoeModel(ModelInitConfig cfg);
+    ~OrnithMoeModel() override;
+
+    gpu::InferenceResult Infer(const ModelRequest &req) override;
+
+    const std::string &Type() const override { return kType; }
+
+private:
+    bool ValidateGeometry(const ornith::OrnithMoeTopology &top) const override;
+};
+
+} // namespace lsxcommon

@@ -200,6 +200,31 @@ TEST_CASE("cross-family geometry borrowing is forbidden", "[independence]")
             REQUIRE(text.find(x) == std::string::npos);
         }
     }
+
+    // The ornith family is independent from every other family: its files must
+    // not include qwen/dense model passports, except the generic kernel layer
+    // (qwen_inference.*) which the repo documents as shared.
+    const std::vector<std::string> ornith_files = {
+        "ornith_moe_constants.h", "ornith_moe_model.h",
+        "ornith_moe_model.cpp", "ornith_moe_load.cpp",
+        "../include/lsxcommon/ornith_moe_load.h",
+        "../include/lsxcommon/ornith_moe_inference.h",
+    };
+    const std::vector<std::string> ornith_foreign = {
+        "qwen_moe_constants.h", "qwen_moe_36_constants.h",
+        "qwen_moe_exp_constants.h", "glm_moe_load.h",
+        "deepseek_moe_load.cuh", "gemma_moe_load.h", "kimi_moe_load.h",
+    };
+    for (const auto &f : ornith_files) {
+        const fs::path p =
+            f.rfind("../include/", 0) == 0 ? kIncDir / f.substr(11)
+                                           : kSrcDir / f;
+        const std::string text = ReadFile(p);
+        for (const auto &x : ornith_foreign) {
+            INFO(f << " must not include " << x);
+            REQUIRE(text.find(x) == std::string::npos);
+        }
+    }
 }
 
 TEST_CASE("fast-math toggles stay family-scoped", "[independence]")
@@ -249,6 +274,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "deepseek_moe_v41_model.cpp",  // deepseek-v4.1-flash
         "nemotron_moe_model.cpp",      // nemotron-3.5-lightning-30b-a3b
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
+        "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
