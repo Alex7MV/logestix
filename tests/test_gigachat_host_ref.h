@@ -153,6 +153,16 @@ inline std::vector<float> F32Copy(const uint8_t *p, int64_t n)
     return o;
 }
 
+// Reads a small tensor that may be either F32 or BF16 (e.g. the router
+// correction bias, which the real checkpoint stores as BF16).
+inline std::vector<float> ReadF32OrBf16(const TensorView &t)
+{
+    int64_t n = 1;
+    for (int64_t d = 0; d < t.rank; ++d) n *= t.shape[d];
+    if (t.dtype == "F32") return F32Copy(t.data, n);
+    return Bf16ToF32(t.data, n);
+}
+
 inline std::vector<float> DequantNvfp4(const uint8_t *packed,
                                        const uint8_t *scales, float gs,
                                        int64_t n)

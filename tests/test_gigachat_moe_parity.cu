@@ -153,7 +153,7 @@ RefModel LoadRefModel(const std::filesystem::path &root)
                 FindTv(*raw, lp + "mlp.gate.e_score_correction_bias");
             L.moe_w.router =
                 Bf16ToF32(router->data, router->shape[0] * router->shape[1]);
-            L.moe_w.router_bias = F32Copy(rb->data, rb->shape[0]);
+            L.moe_w.router_bias = ReadF32OrBf16(*rb);
             L.moe_w.num_experts = static_cast<int>(router->shape[0]);
             L.moe_w.top_k = 1;
             L.moe_w.intermediate = gigachattest::kTMoeI;

@@ -193,11 +193,9 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
     AddFp8(ts, "model.layers.1.self_attn.o_proj", kTH, kVOut);
     AddFp8(ts, "model.layers.1.self_attn.gate_proj", kVOut, kTH);
     AddBf16(ts, "model.layers.1.mlp.gate.weight", {kTExperts, kTH}, verified);
-    ts.push_back(FakeTensor{
-        "model.layers.1.mlp.gate.e_score_correction_bias", "F32", {kTExperts},
-        verified ? synthtest::MakeF32Values(
-                       kTExperts, [](int64_t i) { return 0.1f * (i + 1); })
-                 : MakeOnesF32(kTExperts)});
+    // The real GigaChat3.5 checkpoint stores e_score_correction_bias as BF16.
+    AddBf16(ts, "model.layers.1.mlp.gate.e_score_correction_bias", {kTExperts},
+            verified);
     AddFp8(ts, "model.layers.1.mlp.shared_experts.gate_proj", kTMoeI, kTH);
     AddFp8(ts, "model.layers.1.mlp.shared_experts.up_proj", kTMoeI, kTH);
     AddFp8(ts, "model.layers.1.mlp.shared_experts.down_proj", kTH, kTMoeI);

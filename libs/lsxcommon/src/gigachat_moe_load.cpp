@@ -512,9 +512,23 @@ bool LoadGigaChatWeights(const std::string &model_path, const GigaChatIndex &idx
                 w.Free();
                 return false;
             }
+            // The real checkpoint stores e_score_correction_bias as BF16 (the
+            // device router consumes F32); accept F32 too for older fixtures.
+            CvKind bias_kind;
+            if (rbias->dtype == "F32")
+                bias_kind = CvKind::kF32Raw;
+            else if (rbias->dtype == "BF16")
+                bias_kind = CvKind::kBf16ToF32;
+            else
+            {
+                error = absl::StrFormat(
+                    "unsupported e_score_correction_bias dtype on layer %d", l);
+                w.Free();
+                return false;
+            }
             if (!UploadRaw(router, CvKind::kBf16Raw, &lw.d_router,
                            "mlp.gate.weight", stream, ring, acc, error) ||
-                !UploadRaw(rbias, CvKind::kF32Raw, &lw.d_router_bias,
+                !UploadRaw(rbias, bias_kind, &lw.d_router_bias,
                            "e_score_correction_bias", stream, ring, acc, error) ||
                 !UploadNvfp4(*nv, lp + "mlp.shared_experts.gate_proj.weight",
                              lw.shared_gate, "shared gate_proj", stream, ring,
