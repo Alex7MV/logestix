@@ -76,6 +76,17 @@ inline std::vector<uint8_t> MakeOnesF32(int64_t n)
         n, [](int64_t) { return 1.0f; });
 }
 
+// BF16 payload. The default (raw `MakeBf16`) is bit-pattern-indexed and lands
+// in denormal/tiny territory, which is fine for converter/loader shape tests
+// but makes a forward pass collapse to ~0. `verified=true` produces small
+// non-degenerate values so numerical parity tests exercise real activations.
+inline std::vector<uint8_t> Bf16Data(int64_t n, bool verified)
+{
+    if (!verified) return MakeBf16(n);
+    return synthtest::MakeBf16Values(
+        n, [](int64_t i) { return 0.05f * static_cast<float>((i % 7) - 3); });
+}
+
 inline void AddFp8(std::vector<FakeTensor> &ts, const std::string &base,
                    int64_t rows, int64_t cols, bool scale_inv = true)
 {
@@ -90,23 +101,27 @@ inline void AddFp8(std::vector<FakeTensor> &ts, const std::string &base,
 }
 
 inline void AddBf16(std::vector<FakeTensor> &ts, const std::string &name,
-                    std::vector<int64_t> shape)
+                    std::vector<int64_t> shape, bool verified = false)
 {
     int64_t n = 1;
     for (auto d : shape) n *= d;
-    ts.push_back(FakeTensor{name, "BF16", std::move(shape), MakeBf16(n)});
+    ts.push_back(FakeTensor{name, "BF16", std::move(shape),
+                            Bf16Data(n, verified)});
 }
 
 // ZeroCenteredGatedNorm triple (weight + gate_up + gate_down).
 inline void AddGatedNorm(std::vector<FakeTensor> &ts, const std::string &base,
-                         int64_t dim)
+                         int64_t dim, bool verified = false)
 {
-    AddBf16(ts, base + ".weight", {dim});
-    AddBf16(ts, base + ".gate_up_projection.weight", {kTGateRank, dim});
-    AddBf16(ts, base + ".gate_down_projection.weight", {dim, kTGateRank});
+    AddBf16(ts, base + ".weight", {dim}, verified);
+    AddBf16(ts, base + ".gate_up_projection.weight", {kTGateRank, dim},
+            verified);
+    AddBf16(ts, base + ".gate_down_projection.weight", {dim, kTGateRank},
+            verified);
 }
 
-inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
+inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
+                                    bool verified = false)
 {
     {
         std::ofstream f(dir / "config.json");
@@ -142,22 +157,24 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     std::vector<FakeTensor> ts;
 
     // Globals.
-    AddBf16(ts, "model.embed_tokens.weight", {kTVocab, kTH});
-    AddBf16(ts, "lm_head.weight", {kTVocab, kTH});
-    AddGatedNorm(ts, "model.norm", kTH);
+    AddBf16(ts, "model.embed_tokens.weight", {kTVocab, kTH}, verified);
+    AddBf16(ts, "lm_head.weight", {kTVocab, kTH}, verified);
+    AddGatedNorm(ts, "model.norm", kTH, verified);
 
     // Layer 0: GatedDeltaNet + dense MLP.
     for (const char *n : {"input_layernorm", "post_attention_layernorm",
                           "post_self_attn_layernorm",
                           "post_feedforward_layernorm"})
-        AddGatedNorm(ts, std::string("model.layers.0.") + n, kTH);
+        AddGatedNorm(ts, std::string("model.layers.0.") + n, kTH, verified);
     AddFp8(ts, "model.layers.0.self_attn.in_proj_qkvz", kTGdnQkvz, kTH);
     AddFp8(ts, "model.layers.0.self_attn.out_proj", kTH, kTGdnValue);
-    AddBf16(ts, "model.layers.0.self_attn.conv1d.weight", {kTGdnConv, 1, 4});
-    AddBf16(ts, "model.layers.0.self_attn.A_log", {2});
-    AddBf16(ts, "model.layers.0.self_attn.dt_bias", {2});
-    AddBf16(ts, "model.layers.0.self_attn.in_proj_ba.weight", {kTGdnBa, kTH});
-    AddBf16(ts, "model.layers.0.self_attn.norm.weight", {128});
+    AddBf16(ts, "model.layers.0.self_attn.conv1d.weight", {kTGdnConv, 1, 4},
+            verified);
+    AddBf16(ts, "model.layers.0.self_attn.A_log", {2}, verified);
+    AddBf16(ts, "model.layers.0.self_attn.dt_bias", {2}, verified);
+    AddBf16(ts, "model.layers.0.self_attn.in_proj_ba.weight", {kTGdnBa, kTH},
+            verified);
+    AddBf16(ts, "model.layers.0.self_attn.norm.weight", {128}, verified);
     AddFp8(ts, "model.layers.0.mlp.gate_proj", kTDenseI, kTH);
     AddFp8(ts, "model.layers.0.mlp.up_proj", kTDenseI, kTH);
     AddFp8(ts, "model.layers.0.mlp.down_proj", kTH, kTDenseI);
@@ -166,7 +183,7 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     for (const char *n : {"input_layernorm", "post_attention_layernorm",
                           "post_self_attn_layernorm",
                           "post_feedforward_layernorm"})
-        AddGatedNorm(ts, std::string("model.layers.1.") + n, kTH);
+        AddGatedNorm(ts, std::string("model.layers.1.") + n, kTH, verified);
     AddFp8(ts, "model.layers.1.self_attn.q_a_proj", 128, kTH);
     AddGatedNorm(ts, "model.layers.1.self_attn.q_a_layernorm", 128);
     AddFp8(ts, "model.layers.1.self_attn.q_b_proj", kTQkOut, 128);
@@ -175,9 +192,12 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     AddFp8(ts, "model.layers.1.self_attn.kv_b_proj", kTKvB, 128);
     AddFp8(ts, "model.layers.1.self_attn.o_proj", kTH, kVOut);
     AddFp8(ts, "model.layers.1.self_attn.gate_proj", kVOut, kTH);
-    AddBf16(ts, "model.layers.1.mlp.gate.weight", {kTExperts, kTH});
-    ts.push_back(FakeTensor{"model.layers.1.mlp.gate.e_score_correction_bias",
-                            "F32", {kTExperts}, MakeOnesF32(kTExperts)});
+    AddBf16(ts, "model.layers.1.mlp.gate.weight", {kTExperts, kTH}, verified);
+    ts.push_back(FakeTensor{
+        "model.layers.1.mlp.gate.e_score_correction_bias", "F32", {kTExperts},
+        verified ? synthtest::MakeF32Values(
+                       kTExperts, [](int64_t i) { return 0.1f * (i + 1); })
+                 : MakeOnesF32(kTExperts)});
     AddFp8(ts, "model.layers.1.mlp.shared_experts.gate_proj", kTMoeI, kTH);
     AddFp8(ts, "model.layers.1.mlp.shared_experts.up_proj", kTMoeI, kTH);
     AddFp8(ts, "model.layers.1.mlp.shared_experts.down_proj", kTH, kTMoeI);
@@ -190,7 +210,7 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     }
 
     // MTP layer 40: stored, never applied.
-    AddBf16(ts, "model.layers.40.eh_proj.weight", {kTH, 2 * kTH});
+    AddBf16(ts, "model.layers.40.eh_proj.weight", {kTH, 2 * kTH}, verified);
 
     WriteSafetensors(dir, "model.safetensors", ts);
 }

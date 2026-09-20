@@ -4,7 +4,7 @@
 
 **Goal:** Add an independent host-F32 whole-stack reference and a GPU parity test that compares `GcPipeline::Step` logits against it on the synthetic 2-layer GigaChat3.5 model.
 
-**Architecture:** A pure-host reference header (`tests/gigachat_host_ref.h`) dequantizes the converted Arrow weights (NVFP4 + BF16/F32 raw) and reimplements every stage in F32, mirroring each F16/BF16 rounding the device applies. A new `.cu` test drives the pipeline and the reference over a 2-token sequence and compares logits.
+**Architecture:** A pure-host reference header (`tests/test_gigachat_host_ref.h`) dequantizes the converted Arrow weights (NVFP4 + BF16/F32 raw) and reimplements every stage in F32, mirroring each F16/BF16 rounding the device applies. A new `.cu` test drives the pipeline and the reference over a 2-token sequence and compares logits.
 
 **Tech Stack:** CUDA 13.4 (sm_120a/sm_121a), Catch2 v3.16.0, `lsxcommon` (Arrow, `gigachat_moe_*`), C++20.
 
@@ -36,7 +36,7 @@
 ### Task 1: Host-reference header primitives + Arrow readers; refactor the attn test
 
 **Files:**
-- Create: `tests/gigachat_host_ref.h`
+- Create: `tests/test_gigachat_host_ref.h`
 - Modify: `tests/test_gigachat_moe_attn.cu:21-192` (delete moved helpers, add include + `using`)
 
 **Interfaces:**
@@ -46,15 +46,15 @@
 - [ ] **Step 1: Refactor the attn test to consume the shared header (makes the build fail)**
 
 In `tests/test_gigachat_moe_attn.cu`:
-- Add after the existing includes: `#include "gigachat_host_ref.h"` and `using namespace gigachatref;`.
+- Add after the existing includes: `#include "test_gigachat_host_ref.h"` and `using namespace gigachatref;`.
 - Delete the moved definitions from the anonymous namespace: `R16` (line 23), `RBf16` (line 24), `GemvRef` (lines 122-134), `NormRef` (lines 136-167), `RopeRef` (lines 169-190). Keep `kE2m1`, `GridVal`, `E2m1Nibble`, `Nvfp4Host`, `PackNvfp4`, `DevCopy`, `DevNvfp4`, `DevBf16`, `DevNorm`.
 
 - [ ] **Step 2: Run the build to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_gigachat_moe_attn 2>&1 | tail -20`
-Expected: FAIL — `gigachat_host_ref.h: No such file or directory`.
+Expected: FAIL — `test_gigachat_host_ref.h: No such file or directory`.
 
-- [ ] **Step 3: Create `tests/gigachat_host_ref.h` with primitives and readers**
+- [ ] **Step 3: Create `tests/test_gigachat_host_ref.h` with primitives and readers**
 
 ```cpp
 #pragma once
@@ -277,7 +277,7 @@ Expected: PASS (all 3 test cases).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/gigachat_host_ref.h tests/test_gigachat_moe_attn.cu
+git add tests/test_gigachat_host_ref.h tests/test_gigachat_moe_attn.cu
 git commit -m "test: extract GigaChat host reference primitives + Arrow readers"
 ```
 
@@ -286,7 +286,7 @@ git commit -m "test: extract GigaChat host reference primitives + Arrow readers"
 ### Task 2: MLA and GatedDeltaNet reference functions
 
 **Files:**
-- Modify: `tests/gigachat_host_ref.h` (append structs + functions)
+- Modify: `tests/test_gigachat_host_ref.h` (append structs + functions)
 - Modify: `tests/test_gigachat_moe_attn.cu` (replace the inline MLA/GDN reference lambdas with the shared functions)
 
 **Interfaces:**
@@ -357,7 +357,7 @@ Keep the tolerance assertion `margin(1e-3f)` on `hout` vs `r1`.
 Run: `cmake --build --preset linux-debug --target test_gigachat_moe_attn 2>&1 | tail -20`
 Expected: FAIL — `MlaDecodeRef` / `GdnDecodeRef` not declared.
 
-- [ ] **Step 4: Append the reference functions to `tests/gigachat_host_ref.h`**
+- [ ] **Step 4: Append the reference functions to `tests/test_gigachat_host_ref.h`**
 
 Insert before the closing `} // namespace gigachatref`, replacing the existing `} // namespace gigachatref`:
 
@@ -632,7 +632,7 @@ Expected: PASS (bit-exact rope; MLA parity 1e-3; GDN parity 1e-3).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/gigachat_host_ref.h tests/test_gigachat_moe_attn.cu
+git add tests/test_gigachat_host_ref.h tests/test_gigachat_moe_attn.cu
 git commit -m "test: extract MLA/GDN host references into the shared header"
 ```
 
@@ -641,7 +641,7 @@ git commit -m "test: extract MLA/GDN host references into the shared header"
 ### Task 3: Stack reference + whole-stack parity test
 
 **Files:**
-- Modify: `tests/gigachat_host_ref.h` (append router / MoE / dense / stack)
+- Modify: `tests/test_gigachat_host_ref.h` (append router / MoE / dense / stack)
 - Create: `tests/test_gigachat_moe_parity.cu`
 - Modify: `tests/CMakeLists.txt` (new standalone `.cu` object + executable + `inference` label)
 
@@ -657,13 +657,13 @@ Create `tests/test_gigachat_moe_parity.cu`:
 ```cpp
 // TDD — GigaChat3.5 whole-stack parity (Plan 3 pre-work). Converts the
 // synthetic checkpoint and compares GcPipeline::Step logits against an
-// independent host-F32 reference (`gigachat_host_ref.h`) over a 2-token
+// independent host-F32 reference (`test_gigachat_host_ref.h`) over a 2-token
 // sequence. GPU-gated (CTest SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_gigachat_moe_fixture.h"
 
-#include "gigachat_host_ref.h"
+#include "test_gigachat_host_ref.h"
 
 #include "gigachat_moe_constants.h"
 #include "lsxcommon/gigachat_moe_convert.h"
@@ -1029,7 +1029,7 @@ Then add `test_gigachat_moe_parity` to the `inference` label list (the `set_test
 Run: `cmake --build --preset linux-debug --target test_gigachat_moe_parity 2>&1 | tail -25`
 Expected: FAIL — `RefModel` / `RunModelRef` / `DequantNvfp4` member types not declared (Task 3 header not yet appended).
 
-- [ ] **Step 4: Append the stack reference to `tests/gigachat_host_ref.h`**
+- [ ] **Step 4: Append the stack reference to `tests/test_gigachat_host_ref.h`**
 
 Before the closing `} // namespace gigachatref`, add (and move the closing brace after it):
 
@@ -1262,7 +1262,7 @@ Expected: all pass (including `test_ctest_labels_guard` and `test_model_suite_gu
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tests/gigachat_host_ref.h tests/test_gigachat_moe_parity.cu tests/CMakeLists.txt
+git add tests/test_gigachat_host_ref.h tests/test_gigachat_moe_parity.cu tests/CMakeLists.txt
 git commit -m "test: whole-stack GigaChat3.5 parity vs host-F32 reference"
 ```
 

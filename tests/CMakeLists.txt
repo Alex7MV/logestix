@@ -3159,6 +3159,60 @@ endif()
 add_test(NAME test_gigachat_moe_attn COMMAND test_gigachat_moe_attn)
 set_tests_properties(test_gigachat_moe_attn PROPERTIES SKIP_RETURN_CODE 4)
 
+# test_gigachat_moe_parity — whole-stack synthetic parity vs a host-F32
+# reference. Same standalone .cu object pattern.
+add_library(test_gigachat_moe_parity_cu OBJECT test_gigachat_moe_parity.cu)
+set_target_properties(test_gigachat_moe_parity_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_gigachat_moe_parity_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    -fmad=false;-Xcompiler=-ffp-contract=off;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_gigachat_moe_parity_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${CMAKE_BINARY_DIR}/third_party/libzmq"
+    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_gigachat_moe_parity_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+    SPDLOG_COMPILED_LIB
+    ZMQ_STATIC
+    SIMDJSON_THREADS_ENABLED=1
+)
+target_link_libraries(test_gigachat_moe_parity_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_gigachat_moe_parity)
+set_target_properties(test_gigachat_moe_parity PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_gigachat_moe_parity PRIVATE
+    test_gigachat_moe_parity_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_gigachat_moe_parity POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_parity>")
+endif()
+add_test(NAME test_gigachat_moe_parity COMMAND test_gigachat_moe_parity)
+set_tests_properties(test_gigachat_moe_parity PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Nemotron-3.5-Lightning-30B-A3B tests (Mamba-2/MoE/attention hybrid) ───
 add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
 target_compile_definitions(test_nemotron_moe_convert PRIVATE
@@ -3642,6 +3696,7 @@ set_tests_properties(
     test_gigachat_moe_devkernels
     test_gigachat_moe_load_fast
     test_gigachat_moe_attn
+    test_gigachat_moe_parity
     test_gigachat_moe_selfcheck
     test_glm_moe_flash_kernels
     test_kimi_moe_int4_dequant

@@ -5,6 +5,7 @@
 // containers). Shares the NVFP4 codec with the device so dequant is exact; the
 // arithmetic is independent of the device kernels and mirrors every F16/BF16
 // rounding the pipeline applies.
+#include "gigachat_moe_constants.h"
 #include "gigachat_moe_device_math.h"
 #include "nvfp4_codec.h"
 #include "lsxcommon/gigachat_moe_inference_attn.h"
@@ -466,6 +467,234 @@ inline void GdnDecodeRef(const RefGdn &g, const GcGdnDims &d, float eps,
     for (float &f : onorm) f = R16(f);
     out = GemvRef(g.out_proj.w, onorm, hidden, value_dim);
     for (float &f : out) f = R16(f);
+}
+
+struct RefExpert {
+    RefNvfp4 gate, up, down;
+};
+
+struct RefMoe {
+    std::vector<float> router;       // [E, hidden]
+    std::vector<float> router_bias;  // [E]
+    int num_experts = 0, top_k = 0, intermediate = 0;
+    RefNvfp4 shared_gate, shared_up, shared_down;
+    std::vector<RefExpert> experts;  // [E]
+};
+
+struct RefDense {
+    RefNvfp4 gate, up, down;
+};
+
+struct RefRoute {
+    std::vector<int> idx;
+    std::vector<float> w;
+};
+
+// sigmoid router: logits = x.W^T; scores = sigmoid(logits);
+// choice = scores + bias; top-k (lowest index wins ties);
+// w = scores[idx] / (sum + 1e-20) * routed_scaling_factor.
+inline RefRoute RouterTopKRef(const std::vector<float> &x,
+                              const std::vector<float> &W,
+                              const std::vector<float> &bias, int E, int hidden,
+                              int k, float routed_scale)
+{
+    std::vector<float> scores(static_cast<size_t>(E));
+    for (int e = 0; e < E; ++e)
+    {
+        float a = 0.0f;
+        for (int i = 0; i < hidden; ++i)
+            a += W[static_cast<size_t>(e) * hidden + i] *
+                 x[static_cast<size_t>(i)];
+        scores[static_cast<size_t>(e)] = 1.0f / (1.0f + std::exp(-a));
+    }
+    std::vector<int> order(static_cast<size_t>(E));
+    for (int e = 0; e < E; ++e) order[static_cast<size_t>(e)] = e;
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        const float ca =
+            scores[static_cast<size_t>(a)] + bias[static_cast<size_t>(a)];
+        const float cb =
+            scores[static_cast<size_t>(b)] + bias[static_cast<size_t>(b)];
+        if (ca != cb) return ca > cb;
+        return a < b;
+    });
+    RefRoute r;
+    r.idx.assign(order.begin(), order.begin() + k);
+    r.w.assign(static_cast<size_t>(k), 0.0f);
+    float sum = 0.0f;
+    for (int j = 0; j < k; ++j)
+    {
+        r.w[static_cast<size_t>(j)] =
+            scores[static_cast<size_t>(r.idx[static_cast<size_t>(j)])];
+        sum += r.w[static_cast<size_t>(j)];
+    }
+    for (int j = 0; j < k; ++j)
+        r.w[static_cast<size_t>(j)] =
+            r.w[static_cast<size_t>(j)] / (sum + 1e-20f) * routed_scale;
+    return r;
+}
+
+inline std::vector<float> MoeRef(const RefMoe &m,
+                                 const std::vector<float> &x_norm, int hidden,
+                                 float routed_scale, float swiglu_limit)
+{
+    std::vector<float> x16(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i) x16[i] = R16(x_norm[i]);
+    const RefRoute r = RouterTopKRef(x_norm, m.router, m.router_bias,
+                                     m.num_experts, hidden, m.top_k,
+                                     routed_scale);
+    const int I = m.intermediate;
+    std::vector<float> mlp(static_cast<size_t>(hidden), 0.0f);
+    for (int j = 0; j < m.top_k; ++j)
+    {
+        const RefExpert &e =
+            m.experts[static_cast<size_t>(r.idx[static_cast<size_t>(j)])];
+        std::vector<float> gt = GemvRef(e.gate.w, x16, I, hidden);
+        for (float &f : gt) f = R16(f);
+        std::vector<float> up = GemvRef(e.up.w, x16, I, hidden);
+        for (float &f : up) f = R16(f);
+        std::vector<float> mid(static_cast<size_t>(I));
+        for (int i = 0; i < I; ++i)
+            mid[static_cast<size_t>(i)] =
+                R16(lsxcommon::gigachat::dev::SwigluLimitElement(
+                    gt[static_cast<size_t>(i)], up[static_cast<size_t>(i)],
+                    swiglu_limit));
+        std::vector<float> dn = GemvRef(e.down.w, mid, hidden, I);
+        for (float &f : dn) f = R16(f);
+        for (int i = 0; i < hidden; ++i)
+            mlp[static_cast<size_t>(i)] +=
+                r.w[static_cast<size_t>(j)] * dn[static_cast<size_t>(i)];
+    }
+    std::vector<float> sg = GemvRef(m.shared_gate.w, x16, I, hidden);
+    for (float &f : sg) f = R16(f);
+    std::vector<float> su = GemvRef(m.shared_up.w, x16, I, hidden);
+    for (float &f : su) f = R16(f);
+    std::vector<float> sm(static_cast<size_t>(I));
+    for (int i = 0; i < I; ++i)
+        sm[static_cast<size_t>(i)] =
+            R16(lsxcommon::gigachat::dev::SwigluLimitElement(
+                sg[static_cast<size_t>(i)], su[static_cast<size_t>(i)],
+                swiglu_limit));
+    std::vector<float> sd = GemvRef(m.shared_down.w, sm, hidden, I);
+    for (float &f : sd) f = R16(f);
+    for (int i = 0; i < hidden; ++i)
+        mlp[static_cast<size_t>(i)] += sd[static_cast<size_t>(i)];
+    return mlp;
+}
+
+inline std::vector<float> DenseMlpRef(const RefDense &dm,
+                                      const std::vector<float> &x_norm,
+                                      int hidden, int inter,
+                                      float swiglu_limit)
+{
+    std::vector<float> x16(static_cast<size_t>(hidden));
+    for (int i = 0; i < hidden; ++i) x16[i] = R16(x_norm[i]);
+    std::vector<float> gt = GemvRef(dm.gate.w, x16, inter, hidden);
+    for (float &f : gt) f = R16(f);
+    std::vector<float> up = GemvRef(dm.up.w, x16, inter, hidden);
+    for (float &f : up) f = R16(f);
+    std::vector<float> mid(static_cast<size_t>(inter));
+    for (int i = 0; i < inter; ++i)
+        mid[static_cast<size_t>(i)] =
+            R16(lsxcommon::gigachat::dev::SwigluLimitElement(
+                gt[static_cast<size_t>(i)], up[static_cast<size_t>(i)],
+                swiglu_limit));
+    std::vector<float> dn = GemvRef(dm.down.w, mid, hidden, inter);
+    for (float &f : dn) f = R16(f);
+    return dn;
+}
+
+struct RefLayer {
+    bool full_attention = false, moe = false;
+    RefNorm input_norm, post_attn_norm, post_self_attn_norm, post_ffw_norm;
+    RefMla mla;
+    RefGdn gdn;
+    RefMoe moe_w;
+    RefDense dense;
+    std::vector<float> k_cache, v_cache, conv_state, rec_state;
+};
+
+struct RefModel {
+    int hidden = 0, vocab = 0, capacity = 2;
+    std::vector<float> embed, lm_head;
+    RefNorm final_norm;
+    std::vector<RefLayer> layers;
+    GcMlaDims mla_d;
+    GcGdnDims gdn_d;
+    float eps = 1e-6f;
+    float attn_scale = 0.0f;
+    float routed_scale = 2.5f;
+    float swiglu_limit = 10.0f;
+    int num_experts = 0, top_k = 0, moe_intermediate = 0, first_k_dense = 0;
+    std::vector<float> rc, rs;  // YaRN tables [capacity, rope/2]
+};
+
+inline std::vector<float> GatedNormRef(const std::vector<float> &x,
+                                       const RefNorm &n, float eps)
+{
+    return NormRef(x, n.w, n.up, n.down, n.dim, n.rank, eps);
+}
+
+inline std::vector<float> RunModelRef(RefModel &m,
+                                      const std::vector<int> &tokens)
+{
+    for (RefLayer &l : m.layers)
+    {
+        std::fill(l.k_cache.begin(), l.k_cache.end(), 0.0f);
+        std::fill(l.v_cache.begin(), l.v_cache.end(), 0.0f);
+        std::fill(l.conv_state.begin(), l.conv_state.end(), 0.0f);
+        std::fill(l.rec_state.begin(), l.rec_state.end(), 0.0f);
+    }
+    std::vector<float> logits;
+    for (int pos = 0; pos < static_cast<int>(tokens.size()); ++pos)
+    {
+        std::vector<float> h(static_cast<size_t>(m.hidden));
+        for (int i = 0; i < m.hidden; ++i)
+            h[static_cast<size_t>(i)] =
+                RBf16(m.embed[static_cast<size_t>(
+                                   tokens[static_cast<size_t>(pos)]) *
+                                   m.hidden +
+                               i]);
+        for (RefLayer &L : m.layers)
+        {
+            const std::vector<float> res = h;
+            const std::vector<float> ni = GatedNormRef(h, L.input_norm, m.eps);
+            std::vector<float> attn;
+            if (L.full_attention)
+                MlaDecodeRef(L.mla, m.mla_d, m.eps, m.attn_scale, m.rc, m.rs,
+                             pos, L.k_cache, L.v_cache, ni, attn);
+            else
+                GdnDecodeRef(L.gdn, m.gdn_d, m.eps,
+                             lsxcommon::gigachat::frozen::
+                                 kLinearSigmoidGateScale,
+                             L.conv_state, L.rec_state, ni, attn);
+            const std::vector<float> g1 =
+                GatedNormRef(attn, L.post_self_attn_norm, m.eps);
+            h.resize(static_cast<size_t>(m.hidden));
+            for (int i = 0; i < m.hidden; ++i)
+                h[static_cast<size_t>(i)] =
+                    res[static_cast<size_t>(i)] + g1[static_cast<size_t>(i)];
+
+            const std::vector<float> res2 = h;
+            const std::vector<float> np =
+                GatedNormRef(h, L.post_attn_norm, m.eps);
+            const std::vector<float> mlp =
+                L.moe ? MoeRef(L.moe_w, np, m.hidden, m.routed_scale,
+                               m.swiglu_limit)
+                      : DenseMlpRef(L.dense, np, m.hidden, L.dense.gate.rows,
+                                    m.swiglu_limit);
+            const std::vector<float> g2 =
+                GatedNormRef(mlp, L.post_ffw_norm, m.eps);
+            for (int i = 0; i < m.hidden; ++i)
+                h[static_cast<size_t>(i)] = res2[static_cast<size_t>(i)] +
+                                            g2[static_cast<size_t>(i)];
+        }
+        const std::vector<float> fn = GatedNormRef(h, m.final_norm, m.eps);
+        std::vector<float> xb(static_cast<size_t>(m.hidden));
+        for (int i = 0; i < m.hidden; ++i)
+            xb[static_cast<size_t>(i)] = RBf16(fn[static_cast<size_t>(i)]);
+        logits = GemvRef(m.lm_head, xb, m.vocab, m.hidden);
+    }
+    return logits;
 }
 
 } // namespace gigachatref

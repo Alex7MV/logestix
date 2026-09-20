@@ -4,7 +4,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include "gigachat_host_ref.h"
+#include "test_gigachat_host_ref.h"
 #include "gigachat_moe_device_math.h"
 #include "lsxcommon/gigachat_moe_inference_attn.h"
 
