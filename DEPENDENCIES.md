@@ -56,9 +56,13 @@ distributed, ship or offer the libzmq Corresponding Source:
    commit `622fc6dde99ee172ebaa9c8628d85a7a1995a21d`.
 2. Reproduce the MPL-2.0 text and the notices from
    [`THIRD_PARTY_NOTICES`](./THIRD_PARTY_NOTICES) section 4 alongside the
-   binary (this is already automated: `THIRD_PARTY_NOTICES` is copied
-   next to every executable and into `install/bin`).
-3. Keep the copyright/attribution headers of libzmq and its bundled
+   binary (already automated: `THIRD_PARTY_NOTICES` is copied next to
+   every executable and into `install/bin`).
+3. Ship the Corresponding Source archive itself (automated in release
+   builds: CMake packages the pinned submodule into
+   `libzmq-<version>-source.tar.gz` and copies it next to every executable
+   and into `install/bin`; debug builds skip it).
+4. Keep the copyright/attribution headers of libzmq and its bundled
    `external/` components intact; do not relicense libzmq code under the
    logestix commercial EULA.
 

@@ -306,6 +306,55 @@ set(ENABLE_DRAFTS OFF CACHE INTERNAL "")
 
 add_subdirectory(third_party/libzmq)
 
+# ── libzmq Corresponding Source for release builds (MPL-2.0 §3.2) ─────────────
+# libzmq is MPL-2.0 (file-level copyleft). Shipping an Executable Form that
+# links it requires the Source Code Form to be made available. Release builds
+# therefore package the pinned submodule sources into an archive that is copied
+# next to every application binary (see lsx_copy_third_party_notices) and into
+# install/bin. Debug builds are unaffected. The tree is unmodified, so the
+# archive is the exact upstream libzmq source (see DEPENDENCIES.md).
+file(READ "${CMAKE_SOURCE_DIR}/third_party/libzmq/include/zmq.h" _lsx_zmq_h)
+string(REGEX MATCH "#define ZMQ_VERSION_MAJOR ([0-9]+)" _ "${_lsx_zmq_h}")
+set(_lsx_zmq_major "${CMAKE_MATCH_1}")
+string(REGEX MATCH "#define ZMQ_VERSION_MINOR ([0-9]+)" _ "${_lsx_zmq_h}")
+set(_lsx_zmq_minor "${CMAKE_MATCH_1}")
+string(REGEX MATCH "#define ZMQ_VERSION_PATCH ([0-9]+)" _ "${_lsx_zmq_h}")
+set(_lsx_zmq_patch "${CMAKE_MATCH_1}")
+unset(_lsx_zmq_h)
+if(NOT _lsx_zmq_major OR NOT _lsx_zmq_minor OR NOT _lsx_zmq_patch)
+    message(FATAL_ERROR "Could not read the libzmq version from third_party/libzmq/include/zmq.h")
+endif()
+set(LSX_ZMQ_VERSION "${_lsx_zmq_major}.${_lsx_zmq_minor}.${_lsx_zmq_patch}")
+set(LSX_ZMQ_SOURCE_ARCHIVE
+    "${CMAKE_BINARY_DIR}/libzmq-${LSX_ZMQ_VERSION}-source.tar.gz")
+
+# A release build is a single-config Release-like CMAKE_BUILD_TYPE, or a
+# multi-config generator that offers a Release configuration.
+set(_lsx_is_release OFF)
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+    set(_lsx_is_release ON)
+endif()
+if(CMAKE_CONFIGURATION_TYPES AND "Release" IN_LIST CMAKE_CONFIGURATION_TYPES)
+    set(_lsx_is_release ON)
+endif()
+
+if(_lsx_is_release)
+    find_package(Git REQUIRED)
+    add_custom_command(
+        OUTPUT "${LSX_ZMQ_SOURCE_ARCHIVE}"
+        COMMAND "${GIT_EXECUTABLE}" archive
+                --format=tar.gz
+                --prefix=libzmq-${LSX_ZMQ_VERSION}/
+                -o "${LSX_ZMQ_SOURCE_ARCHIVE}"
+                HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/third_party/libzmq"
+        COMMENT "Packaging libzmq ${LSX_ZMQ_VERSION} source for redistribution (MPL-2.0 §3.2)"
+        VERBATIM
+    )
+    add_custom_target(lsx_mpl_sources ALL DEPENDS "${LSX_ZMQ_SOURCE_ARCHIVE}")
+    install(FILES "${LSX_ZMQ_SOURCE_ARCHIVE}" DESTINATION bin)
+endif()
+
 # ── Runtime environment for Windows ───────────────────────────────────────────
 
 # Must come before add_subdirectory so the exe and dll land in bin/
@@ -324,6 +373,19 @@ function(lsx_copy_third_party_notices target)
             "$<TARGET_FILE_DIR:${target}>/THIRD_PARTY_NOTICES"
         COMMENT "Copy THIRD_PARTY_NOTICES next to ${target}"
     )
+    # MPL-2.0 §3.2: release binaries must ship the libzmq Corresponding Source.
+    # The helper no-ops for non-release configurations (checked via $<CONFIG>).
+    if(_lsx_is_release)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND}
+                "-DLSX_CONFIG=$<CONFIG>"
+                "-DLSX_ZMQ_ARCHIVE=${LSX_ZMQ_SOURCE_ARCHIVE}"
+                "-DLSX_DEST=$<TARGET_FILE_DIR:${target}>"
+                -P "${CMAKE_SOURCE_DIR}/cmake/copy_mpl_sources.cmake"
+            COMMENT "Ship the libzmq source archive next to ${target} (MPL-2.0 §3.2)"
+            VERBATIM
+        )
+    endif()
 endfunction()
 
 install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
