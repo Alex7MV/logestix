@@ -88,6 +88,9 @@ const PerfModel kNemotron = {
 const PerfModel kGigachat = {
     "gigachat3.5-432b-a28b-reasoning", "GigaChat3.5-432B-A28B-Reasoning",
     "The capital of France is", 2048};
+const PerfModel kOrnith = {
+    "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B-MLX", "The capital of France is",
+    2048};
 
 std::string BaselinePath()
 {
@@ -327,4 +330,9 @@ TEST_CASE("perf baseline: qwen3.5-9b", "[perf]")
 TEST_CASE("perf baseline: gigachat3.5-432b-a28b-reasoning", "[perf]")
 {
     RunPerfModel(kGigachat);
+}
+
+TEST_CASE("perf baseline: ornith-1.5-35b-a3b", "[perf]")
+{
+    RunPerfModel(kOrnith);
 }

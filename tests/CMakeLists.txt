@@ -1557,6 +1557,15 @@ set_tests_properties(test_perf_baseline_gigachat PROPERTIES
 set_tests_properties(test_perf_baseline_gigachat
     PROPERTIES LABELS perf)
 
+add_test(NAME test_perf_baseline_ornith
+         COMMAND test_perf_baseline "perf baseline: ornith-1.5-35b-a3b")
+set_tests_properties(test_perf_baseline_ornith PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=Ornith-1.5-35B-A3B-MLX")
+set_tests_properties(test_perf_baseline_ornith
+    PROPERTIES LABELS perf)
+
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
