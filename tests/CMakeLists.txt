@@ -1546,6 +1546,17 @@ set_tests_properties(test_perf_baseline_nemotron PROPERTIES
 set_tests_properties(test_perf_baseline_nemotron
     PROPERTIES LABELS perf)
 
+# GigaChat3.5 is expert-streamed on a single RTX 5090 (~3.3 t/s at 2048
+# tokens), and the baseline test measures both numeric modes per invocation.
+add_test(NAME test_perf_baseline_gigachat
+         COMMAND test_perf_baseline "perf baseline: gigachat3.5-432b-a28b-reasoning")
+set_tests_properties(test_perf_baseline_gigachat PROPERTIES
+    TIMEOUT 3600
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=GigaChat3.5-432B-A28B-Reasoning")
+set_tests_properties(test_perf_baseline_gigachat
+    PROPERTIES LABELS perf)
+
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
