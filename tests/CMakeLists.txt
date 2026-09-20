@@ -3008,6 +3008,15 @@ target_include_directories(test_gigachat_moe_loader PRIVATE
     "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_loader COMMAND test_gigachat_moe_loader)
 
+add_executable(test_gigachat_moe_model test_gigachat_moe_model.cpp)
+target_link_libraries(test_gigachat_moe_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_model PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_gigachat_moe_model COMMAND test_gigachat_moe_model)
+set_tests_properties(test_gigachat_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Nemotron-3.5-Lightning-30B-A3B tests (Mamba-2/MoE/attention hybrid) ───
 add_executable(test_nemotron_moe_convert test_nemotron_moe_convert.cpp)
 target_compile_definitions(test_nemotron_moe_convert PRIVATE
@@ -3449,6 +3458,7 @@ set_tests_properties(
     test_nemotron_moe_model
     test_gigachat_moe_math
     test_gigachat_moe_loader
+    test_gigachat_moe_model
     PROPERTIES LABELS fast)
 
 set_tests_properties(

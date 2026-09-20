@@ -1,5 +1,6 @@
 #include "lsxcommon/model_factory.h"
 
+#include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_v41_model.h"
 #include "gemma_moe_model.h"
@@ -30,6 +31,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Qwen38FlashNextModel>();
         LsxModelFactory::Register<Glm5NextFlashModel>();
         LsxModelFactory::Register<NemotronHModel>();
+        LsxModelFactory::Register<GigaChat35Model>();
         return true;
     }();
     (void)init;
