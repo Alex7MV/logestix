@@ -3,7 +3,7 @@
 ## Overview
 
 Unify inference across the three engines (GLM-5.2, DeepSeek-V4-Flash,
-Qwen3.5-9B) in `lsxcommon` and the four CLI surfaces (`lsxforge`, `lsxhome`,
+Qwen3.5-9B) in `lsxcommon` and the three CLI surfaces (`lsxforge`,
 `lsxfabric`, `lsxcli`). Three workstreams, one document, two implementation
 phases:
 
@@ -32,7 +32,7 @@ Baseline anchor: **Qwen3.5-9B** is the residency and arena accounting reference
 | A3 | SelfCheck "Paris" + `max(2,...)` forcing in 3 models | `glm_v5_model.cpp:207-246`, `qwen_base_model.cpp:136-188`, `deepseek_inference_pipeline.cu:804-823` |
 | A4 | GLM chat framing re-implemented in lsxfabric | `prompt_framing.cpp:32-78` vs `lsxfabric/src/main.cpp:23-67` (`EncodeSelfCheckPrompt`) |
 | A5 | Infer-preamble guards 6x; Qwen's `SelfCheck` misses 2 of 3 | `glm_v5_model.cpp:58-69+199-206`, `deepseek_v4_flash_model.cpp:63-74+94-105`, `qwen_base_model.cpp:72-83+139-142` |
-| A6 | CLI lifecycle hand-rolled per app; lsxhome `--run` is a demo pump | `lsxforge/main.cpp:240-276`, `lsxcli/main.cpp:35-50`, `lsxfabric/main.cpp:95-156`, `lsxhome/main_win32.cpp:72-92` |
+| A6 | CLI lifecycle hand-rolled per app | `lsxforge/main.cpp:240-276`, `lsxcli/main.cpp:35-50`, `lsxfabric/main.cpp:95-156` |
 | A7 | Result contract gaps | Qwen drops `gen_tokens`/`output_text`/`final_logits`; GLM drops `kv_slots_used`; DeepSeek `ttft_ms = elapsed/total_steps` is wrong (`pipeline.cu:722`); `final_loss` never assigned anywhere |
 | A8 | DeepSeek malloc-per-layer | 36 direct `cudaMalloc` + ~246 CSA + 2×(layer×token) route allocations per run (`deepseek_inference_pipeline.cu`, `deepseek_inference_moe.cu`) |
 | A9 | Zero VRAM residency tracking | no `cudaMemGetInfo` anywhere; only GLM `kv_slots_used`, dropped at `glm_v5_model.cpp:152` |
@@ -117,10 +117,9 @@ const FramingDescriptor* LookupFraming(std::string_view model_type);
 
 | | |
 |---|---|
-| Dup sites | `lsxforge/main.cpp:240-276`, `lsxcli/main.cpp:35-50`, `lsxfabric/main.cpp:95-156`; `lsxhome/main_win32.cpp:72-92` demo pump (no model) |
+| Dup sites | `lsxforge/main.cpp:240-276`, `lsxcli/main.cpp:35-50`, `lsxfabric/main.cpp:95-156` |
 | Target | `int runtime::RunCliGeneration(GenerationCliArgs)`, `int runtime::RunCliSelfCheck(...)`, `int runtime::RunCliInspect(...)` — each encapsulates Create→Load→frame→run→`=== ... ===` print→Unload→Shutdown; returns process exit code |
 | Result printing | single `runtime::PrintGenerationResult(const gpu::InferenceResult&)` replacing the bespoke `lsxforge/main.cpp:268-272` and `lsxfabric/main.cpp:143-149` blocks |
-| lsxhome | `--run` gets real model wiring: compute thread drives `runtime::RunCliGeneration`-style loop and publishes `output_text` tokens through `GuiBridge` (`lsxhome/include/gui_bridge.h`); Phase A tail, D3D12-side token-buffer change |
 
 ---
 
@@ -346,7 +345,6 @@ One spec, two writing-plans cycles (Phase A plan, then Phase B plan).
 | `apps/lsxforge/src/main.cpp` | `RunCliGeneration` |
 | `apps/lsxfabric/src/main.cpp` | `RunCliSelfCheck`/helpers; delete `EncodeSelfCheckPrompt` |
 | `apps/lsxcli/src/main.cpp` | `RunCliInspect` |
-| `lsxhome/src/main_win32.cpp` | real `--run` model wiring (Phase A tail) |
 | `tests/` | contract + host-only tests, `test_generation_cli` extension |
 
 ## Out of Scope

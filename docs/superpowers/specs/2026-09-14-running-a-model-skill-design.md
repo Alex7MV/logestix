@@ -14,7 +14,7 @@ runtime can be configured with, and how the engine plans memory. The audit
 1. **No skill covers running inference.** Nothing documents the launch surface:
    `lsxbenchmark --bench/--selfcheck/--bit-exact`, `lsxfabric --localmodel
    --testprompt/--validate`, `lsxforge` conversion flags, `lsxcli
-   --info/--infofull`, `taskmosaic`, `lsxhome`. The vault-path rule ("pass the
+   --info/--infofull`, `taskmosaic`. The vault-path rule ("pass the
    vault ROOT, not `.../logestix`") lives only in a session note
    (`docs/QWEN38_SESSION_SUMMARY.md`). The engine lifecycle
    (`InferenceEngine::Session`), chat framing (`prompt_framing.h`) and sampling
@@ -70,7 +70,7 @@ Sections:
    **gotcha: the CLI takes the vault root, not the `logestix/` subdir**.
 3. **Applications and exact invocations** — a table with one canonical command
    per app and its flags (`lsxbenchmark`, `lsxfabric`, `lsxforge`, `lsxcli`,
-   `taskmosaic`, `lsxhome`), plus which preset/target to build first.
+   `taskmosaic`), plus which preset/target to build first.
 4. **Engine lifecycle** — `InferenceEngine::Session`
    (`InitializeEngine → CreateModel/Run → ShutdownEngine`),
    `GenerationCliArgs`/`RunCliGeneration`, `FastMathMode` (apps run `kAuto`;

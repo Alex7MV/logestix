@@ -8,9 +8,8 @@ Status: approved (user confirmed interpretation and approach B)
 The per-GPU perf policy (committed base / vault calibration cache / heuristic)
 is resolved and applied only inside `InferenceEngine::InitializeEngine()`.
 That entry point is opened only by lsxfabric and lsxbenchmark
-(`InferenceEngine::Session`). Every other consumer — lsxhome
-(`LsxModelFactory::Create` directly in `ComputeProducer`) and any future
-direct-factory user — silently runs inference on legacy defaults
+(`InferenceEngine::Session`). Every other consumer — any direct
+`LsxModelFactory::Create` user — silently runs inference on legacy defaults
 (TC fast-math off, scalar GEMV routing): not the pinned speed.
 
 ## Goal
@@ -38,10 +37,7 @@ inference, without each consumer having to remember engine initialization.
 4. **`model_factory.cpp`** — `LsxModelFactory::Create()` calls
    `EnsurePerfPolicyApplied()` on entry. Single choke point every model
    consumer passes through.
-5. **lsxhome `main_win32.cpp`** — `InferenceEngine::Session` inside
-   `ComputeProducer` (lifecycle symmetry with fabric/benchmark). Windows-only
-   file; minimal RAII edit.
-6. **AGENTS.md** — GPU Perf Auto-Tuning section: policy applies by default in
+5. **AGENTS.md** — GPU Perf Auto-Tuning section: policy applies by default in
    every consumer via the factory call-once guarantee.
 
 ## Guarantees / preserved escapes

@@ -24,10 +24,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 ### Removed
 
 - Tracked CTest artifact `Testing/Temporary/CTestCostData.txt` (now gitignored).
-- The `lsxhome` desktop shell and its GUI dependencies (Dear ImGui, ImPlot,
-  ImNodes, FreeType, Inter, JetBrains Mono); it is now the standalone
-  [`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome) repository, which pins
-  a `logestix` commit and links `lsxcommon`.
 
 ### Added
 
@@ -43,7 +39,6 @@ Initial public release of the multi-app inference monorepo:
   model factory, device-independent GEMV, model families glm / qwen / deepseek /
   gemma / kimi / nemotron).
 - `libs/lsxnetwork` — zero-alloc async network layer.
-- Apps: `lsxfabric`, `lsxforge`, `lsxbenchmark`, `taskmosaic`, `lsxcli`,
-  `lsxhome`.
+- Apps: `lsxfabric`, `lsxforge`, `lsxbenchmark`, `taskmosaic`, `lsxcli`.
 - Catch2 test suite with `fast` / `convert` / `inference` / `perf` labels.
 - Dual licensing: AGPL-3.0 for open source, commercial license on request.

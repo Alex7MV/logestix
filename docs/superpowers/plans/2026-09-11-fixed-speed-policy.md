@@ -4,7 +4,7 @@
 
 **Goal:** Per-GPU perf policy (committed base / vault cache / heuristic) applies by default in every consumer via a call-once guarantee in `LsxModelFactory::Create`.
 
-**Architecture:** New idempotent `perf::EnsurePerfPolicyApplied()` centralizes resolve+apply (env escapes preserved); `InitializeEngine` and the factory choke point both call it; `ApplyKnobs` stops clobbering `PerfSource`; lsxhome opens `InferenceEngine::Session` for lifecycle symmetry.
+**Architecture:** New idempotent `perf::EnsurePerfPolicyApplied()` centralizes resolve+apply (env escapes preserved); `InitializeEngine` and the factory choke point both call it; `ApplyKnobs` stops clobbering `PerfSource`.
 
 **Tech Stack:** C++20, Catch2 v3 (label `fast`), absl::StrFormat (printf-style — repo guard), spdlog via `lsxcommon::log`.
 
@@ -256,45 +256,27 @@ git commit -m "refactor: InitializeEngine delegates to perf::EnsurePerfPolicyApp
 
 ---
 
-### Task 4: lsxhome session + docs + full fast gate
+### Task 4: docs + full fast gate
 
 **Files:**
-- Modify: `lsxhome/src/main_win32.cpp` (`ComputeProducer`, ~line 84; include block at top)
 - Modify: `AGENTS.md` (section `## GPU Perf Auto-Tuning`)
 
-**Interfaces:**
-- Consumes: `lsxcommon::InferenceEngine::Session` (existing RAII).
-
-- [ ] **Step 1: lsxhome edit** — add `#include "lsxcommon/model_engine.h"` to the lsxcommon include block; inside `ComputeProducer`, at the top of the `if (!model_path.empty())` block:
-
-```cpp
-    if (!model_path.empty()) {
-        // Fixed-speed policy: the engine session applies the per-GPU knob
-        // policy (same as lsxfabric/lsxbenchmark) on entry and tears the
-        // engine down on scope exit.
-        lsxcommon::InferenceEngine::Session engine_session;
-        lsxcommon::ModelInitConfig cfg;
-```
-
-Note: file is Windows-only (`if(NOT WIN32) return()` in its CMakeLists) — not compiled by the Linux build; keep the edit to exactly the lines above.
-
-- [ ] **Step 2: AGENTS.md** — in `## GPU Perf Auto-Tuning`, immediately after the priority-resolution paragraph, add:
+- [ ] **Step 1: AGENTS.md** — in `## GPU Perf Auto-Tuning`, immediately after the priority-resolution paragraph, add:
 
 ```markdown
 - The policy is applied by default in every model consumer: the call-once
   guarantee `perf::EnsurePerfPolicyApplied()` (resolve + apply, an honest
   `PerfSource` — `ApplyKnobs` does not clobber it) is invoked from
-  `LsxModelFactory::Create` and `InferenceEngine::InitializeEngine`; lsxhome
-  opens `InferenceEngine::Session` on the compute thread. Explicit test
-  `SetCurrentKnobs` calls work on top of the guarantee (the once flag does not re-resolve).
+  `LsxModelFactory::Create` and `InferenceEngine::InitializeEngine`. Explicit
+  test `SetCurrentKnobs` calls work on top of the guarantee (the once flag does not re-resolve).
 ```
 
-- [ ] **Step 3: Full fast gate** — `cmake --build --preset linux-debug && ctest --preset linux-debug`
+- [ ] **Step 2: Full fast gate** — `cmake --build --preset linux-debug && ctest --preset linux-debug`
   Expected: 41/41 PASS (including `test_absl_format_guard`, `test_code_naming_guard`, `test_ctest_labels_guard`).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add lsxhome/src/main_win32.cpp AGENTS.md
-git commit -m "feat: lsxhome inference at pinned policy; docs for default perf guarantee"
+git add AGENTS.md
+git commit -m "docs: document the default perf-policy guarantee"
 ```

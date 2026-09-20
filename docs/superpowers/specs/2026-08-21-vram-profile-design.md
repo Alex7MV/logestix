@@ -178,7 +178,7 @@ model's `Load()` already parses its `model.index.json` for topology — the
 same parse fills `vram_`. `VramRequirements()` is overridden once in
 `ModelBase`; concrete models do not duplicate code.
 
-Consumers: lsxcli (`--info` / `--infofull`) and LSXHome display the three
+Consumers: lsxcli (`--info` / `--infofull`) displays the three
 values formatted via `format_size()` (GiB). The factory may expose profiles
 pre-load later (index-only read) if needed.
 

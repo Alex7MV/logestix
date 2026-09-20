@@ -40,7 +40,6 @@
 - `lsxforge` (`apps/lsxforge/src/main.cpp`): `--input`, `--output` (default `converted_model`), `--verify`, `--tokenizer <tokenizer.json>`, `--vram_recompute`, `--repack_shared`, `--repack_experts`, `--run/-r` (generation path, bare = default blueprint prompt), and family pipelines `--glm`, `--kimi`, `--qwen`, `--qwen35moe`, `--qwen36moe`, `--qwen38flashnext`, `--gemma4`, `--glmflash`, `--deepseek_nvfp4`, `--deepseek_v41`.
 - `lsxcli` (`apps/lsxcli/src/main.cpp`): `--model <path>`, `--info`, `--infofull` (both route to `runtime::RunCliInspect`).
 - `taskmosaic` (`apps/taskmosaic/src/main.cpp`): no CLI flags; init/version/GPU log only.
-- `lsxhome`: Windows-only (`if(NOT WIN32) return()` in CMake).
 - Engine (`model_engine.h`): `InferenceEngine::Instance()`, nested `Session` RAII (`InitializeEngine`/`ShutdownEngine`), `CreateModel(ModelInitConfig)`, `Run(IModel&, ModelRequest&)`.
 - Runtime (`model_runtime.h`): `runtime::RunCliGeneration`, `RunCliBenchmark`, `RunCliInspect`, `DecodeGeneratedText`, `ParisSelfCheckOptions`, unified SelfCheck.
 - Framing (`prompt_framing.h`): `prompt::FramingDescriptor` owned per model (e.g. `glm::kFraming`, `gemma::kFraming`), no central registry; raw-BPE fallback; `leading_bos` policy.
@@ -60,7 +59,7 @@ Frontmatter (verbatim):
 ```yaml
 ---
 name: running-a-model
-description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic/lsxhome, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - run inference, launch model, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
+description: Use when starting or operating inference in logestix — building and launching lsxbenchmark/lsxfabric/lsxforge/lsxcli/taskmosaic, locating a converted model in the vault, the engine session lifecycle, prompt framing and sampling, the resource-governor/VRAM planner, or looking up a runtime LSX_*/KIMI_* env knob. Triggers - run inference, launch model, lsxbenchmark --bench, lsxfabric --localmodel, vault path, env knob.
 ---
 ```
 Body sections 1–3: `# Running a model`, `## Overview` (operational cycle + cross-refs to `ingesting-a-model`/`perf-tuning-a-model`/`logestix-repo-map`/`nvfp4-blackwell-conventions`), `## Vault and paths` (roots, `model-metadata/`, `lsx_model_metadata`, the root-not-`logestix/` gotcha), `## Applications and exact invocations` (table with one canonical command per app from the verified facts).
@@ -80,7 +79,7 @@ One table per group from the verified list, each row `variable — meaning — p
 - [ ] **Step 6: Verify the skill**
 
 Run: `rg -n 'TBD|TODO|FIXME' .opencode/skills/running-a-model/SKILL.md; wc -l .opencode/skills/running-a-model/SKILL.md`
-Expected: no placeholder hits; ~200–280 lines. Then `for t in lsxbenchmark lsxfabric lsxforge lsxcli taskmosaic lsxhome InferenceEngine FramingDescriptor GreedySampler HardwareProfile LeaseKind VramProfile Archetype LifecyclePlan TuningBounds RuntimeTuner; do rg -q "$t" .opencode/skills/running-a-model/SKILL.md || echo "MISSING $t"; done`
+Expected: no placeholder hits; ~200–280 lines. Then `for t in lsxbenchmark lsxfabric lsxforge lsxcli taskmosaic InferenceEngine FramingDescriptor GreedySampler HardwareProfile LeaseKind VramProfile Archetype LifecyclePlan TuningBounds RuntimeTuner; do rg -q "$t" .opencode/skills/running-a-model/SKILL.md || echo "MISSING $t"; done`
 Expected: no `MISSING` lines.
 
 - [ ] **Step 7: Commit (gated on operator approval)**

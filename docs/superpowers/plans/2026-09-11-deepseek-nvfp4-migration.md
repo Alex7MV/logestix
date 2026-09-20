@@ -392,7 +392,7 @@ VERDICT: decode-tuning is near its architectural ceiling. Incremental
 gains left are +2-4 tok/s for 2-3 risky rounds. RECOMMENDATION: stop
 DeepSeek decode tuning here (21.4 tok/s, +383% over session baseline);
 redirect effort to other backlog items (qwen3.8 arena OOM, Kimi
-completion, lsxhome) unless a >25 tok/s requirement appears.
+completion) unless a >25 tok/s requirement appears.
 
 ## SESSION FINAL (2026-09-11)
 

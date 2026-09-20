@@ -329,9 +329,9 @@ endfunction()
 install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
 
 # ── Consumer switches ─────────────────────────────────────────────────────────
-# When logestix is consumed as a dependency (e.g. by the standalone lsxhome
-# repository via FetchContent/add_subdirectory), the embedding project builds
-# only the engine library (libs/). These options keep the sibling applications,
+# When logestix is consumed as a dependency (via FetchContent or
+# add_subdirectory), the embedding project builds only the engine library
+# (libs/). These options keep the sibling applications,
 # the offline tools and the engine's own test suite out of the consumer's build
 # tree. Defaults preserve the standalone monorepo build.
 option(LOGESTIX_BUILD_APPS "Build the logestix applications" ON)

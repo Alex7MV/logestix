@@ -20,9 +20,6 @@ TDD:
   (non-thinking generation mode) so a bare prompt yields a coherent answer.
 - `lsxforge --run` routes the resolved prompt through the helper.
 
-`lsxhome` is explicitly out of scope (GUI shell demo; real inference wiring is a
-separate feature).
-
 ## Acceptance Criteria
 
 - `GlmV5Model::Infer` returns a non-empty `output_text` (decoded without
@@ -195,7 +192,6 @@ Both tests follow the `test_glm_selfcheck` pattern: `add_executable` +
 
 ## Out of Scope
 
-- `lsxhome` (GUI shell) — untouched.
 - `lsxfabric --testprompt` — untouched (still hardcoded prompt; no output print).
 - Auto-framing inside `GlmV5Model::Infer` — rejected (violates the
   caller-owns-input-ids contract).

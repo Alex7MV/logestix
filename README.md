@@ -2,10 +2,6 @@
 
 Multi-app monorepo: **lsxfabric** (B2B inference engine), **lsxforge** (data preprocessing), **taskmosaic** (task orchestration), **lsxcli** (CLI client), **lsxbenchmark** (speed/bit-exactness). Shared core library `lsxcommon`.
 
-The Windows-native desktop shell **lsxhome** now lives in its own repository
-([`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome)) and consumes
-`lsxcommon` as a pinned dependency.
-
 ### 💎 The Ingestion Singularity: Verified e2e C++/CUDA Inference
 
 **On September 5, 2026, at exactly 19:07 UTC, the LogestiX Synthesis framework officially achieved the Point of Singularity in autonomous compilation and low-level model ingestion.**
@@ -142,10 +138,6 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
 - `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
-- **lsxhome** — Windows-native x64 desktop shell, extracted to the standalone
-  [`Alex7MV/lsxhome`](https://github.com/Alex7MV/lsxhome) repository. It pins a
-  `logestix` commit and links `lsxcommon` (`LOGESTIX_BUILD_APPS=OFF`,
-  `LOGESTIX_BUILD_TOOLS=OFF`, `LOGESTIX_BUILD_TESTS=OFF`).
 - `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
   - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
   - `test_deepseek_loader` — loader round-trip and E4M3 encoding tests

@@ -1476,6 +1476,6 @@ Existing converted models now have invalid `model.index.json` (missing `vram`). 
 
 ## Self-Review Notes
 
-- **Spec coverage:** estimation module (Tasks 1-3), three converters write mandatory block (Tasks 4-6), three readers strict (Tasks 5-7), runtime IModel surface (Task 8), CLI consumer (Task 9), reconversion contract (Task 10 Step 4). LSXHome display deferred — spec lists it as consumer but acceptance criteria do not require it; follow-up once the profile exists at runtime.
+- **Spec coverage:** estimation module (Tasks 1-3), three converters write mandatory block (Tasks 4-6), three readers strict (Tasks 5-7), runtime IModel surface (Task 8), CLI consumer (Task 9), reconversion contract (Task 10 Step 4).
 - **Type consistency:** `VramProfile`/`VramTensorPolicy`/`VramTensorClass` names identical across all tasks; `FormatVramJson(topo.vram)` in GLM writer vs `vram` param in DeepSeek writer matches each writer's local state; `ParseVramBlock(json, ...)` signature consistent in all three readers.
 - **NVCC safety:** `vram_estimate.h` is std-only (no absl) and is included from `model.h` and `deepseek_inference_load.cuh`; `vram_estimate.cpp` (simdjson) is compiled by MSVC only into the `lsxcommon` STATIC lib, never into `.cu` object libraries.
