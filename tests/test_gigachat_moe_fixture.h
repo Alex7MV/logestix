@@ -195,6 +195,50 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir)
     WriteSafetensors(dir, "model.safetensors", ts);
 }
 
+// Writes a byte-level Arrow tokenizer db (specials + ASCII bytes, no merges)
+// into `pinned`. Enough to exercise the chatml-v5 framing.
+inline void WriteTokenizerArrows(const std::filesystem::path &pinned)
+{
+    namespace fs = std::filesystem;
+    fs::create_directories(pinned);
+    constexpr int32_t kTkVocab = 128016;
+    std::vector<lsxcommon::VocabRow> rows(static_cast<size_t>(kTkVocab));
+    for (int32_t id = 0; id < kTkVocab; ++id) rows[id].token_id = id;
+    auto set = [&](int32_t id, const std::string &s, int8_t sp) {
+        rows[id].token_bytes.assign(s.begin(), s.end());
+        rows[id].is_special = sp;
+    };
+    set(1, "<s>", 1);
+    set(2, "</s>", 1);
+    for (int b = 0; b < 128; ++b)
+        rows[3 + b].token_bytes.assign(1, static_cast<char>(b));
+    set(128000, "<|role_sep|>\n", 1);
+    set(128001, "<|message_sep|>\n\n", 1);
+    set(128014, "<think>", 1);
+    set(128015, "</think>", 1);
+
+    lsxcommon::TokenizerVocabMeta meta;
+    meta.bos_id = 1;
+    meta.eos_id = 2;
+    meta.pad_id = 2;
+    meta.vocab_size = kTkVocab;
+    for (int b = 0; b < 128; ++b) meta.byte_to_token_id[b] = 3 + b;
+    auto vb = lsxcommon::TokenizerVocabSchema::MakeBatch(rows, meta);
+    if (vb.ok())
+        lsxcommon::WriteRecordBatchToFile(*vb,
+                                         pinned / "tokenizer_vocab.arrow");
+    // The loader requires at least one merge row; this one never matches.
+    std::vector<lsxcommon::MergeRow> merges(1);
+    merges[0].merge_left = 1000000;
+    merges[0].merge_right = 1000000;
+    merges[0].merge_rank = 0;
+    merges[0].merge_token_id = 0;
+    auto mb = lsxcommon::TokenizerMergesSchema::MakeBatch(merges, 1);
+    if (mb.ok())
+        lsxcommon::WriteRecordBatchToFile(*mb,
+                                          pinned / "tokenizer_merges.arrow");
+}
+
 // Real frozen-geometry full-attention layer set.
 inline const std::vector<int> &RealFullAttn()
 {

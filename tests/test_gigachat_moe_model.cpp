@@ -9,6 +9,9 @@
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/tokenizer.h"
+
+#include <arrow/io/file.h>
 
 using namespace lsxcommon;
 
@@ -32,6 +35,40 @@ TEST_CASE("gigachat model loads a synthetic converted fixture",
     auto r = m.Infer(req);
     CHECK_FALSE(r.ok);
     m.Unload();
+}
+
+TEST_CASE("gigachat chatml-v5 framing uses the right sentinels",
+          "[gigachat][model]")
+{
+    const auto pinned = gigachattest::MakeTempDir("gc_tok");
+    gigachattest::WriteTokenizerArrows(pinned);
+
+    ArrowTokenizerDb db;
+    auto v = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_vocab.arrow").string(),
+        arrow::io::FileMode::READ);
+    auto m = arrow::io::MemoryMappedFile::Open(
+        (pinned / "tokenizer_merges.arrow").string(),
+        arrow::io::FileMode::READ);
+    REQUIRE(v.ok());
+    REQUIRE(m.ok());
+    auto st = load_tokenizer_metadata(*v, *m, db);
+    INFO("load_tokenizer_metadata: " << st.ToString());
+    REQUIRE(st.ok());
+    CHECK(db.bos_id == 1);
+    CHECK(db.eos_id == 2);
+    CHECK(arrow_tokenizer_lookup(db, "<think>", 7) == 128014);
+    CHECK(arrow_tokenizer_lookup(db, "</think>", 8) == 128015);
+
+    ModelInitConfig cfg;
+    cfg.model_type = GigaChat35Model::kType;
+    GigaChat35Model model(cfg);
+    std::vector<int32_t> ids;
+    REQUIRE(model.BuildPromptInputIds(db, "The capital of France is", ids));
+    REQUIRE(ids.size() >= 2);
+    CHECK(ids.front() == db.bos_id);
+    CHECK(ids[ids.size() - 2] == 128014);  // <think>
+    CHECK(ids.back() == 128015);           // </think>
 }
 
 TEST_CASE("gigachat factory resolves the kType", "[gigachat][model]")
