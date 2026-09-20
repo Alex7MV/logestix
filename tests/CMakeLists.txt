@@ -3017,6 +3017,15 @@ add_test(NAME test_gigachat_moe_model COMMAND test_gigachat_moe_model)
 set_tests_properties(test_gigachat_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+add_executable(test_gigachat_moe_selfcheck test_gigachat_moe_selfcheck.cpp)
+target_link_libraries(test_gigachat_moe_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_gigachat_moe_selfcheck PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+add_test(NAME test_gigachat_moe_selfcheck COMMAND test_gigachat_moe_selfcheck)
+set_tests_properties(test_gigachat_moe_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 add_executable(test_gigachat_moe_expert_cache test_gigachat_moe_expert_cache.cpp)
 target_link_libraries(test_gigachat_moe_expert_cache PRIVATE
     lsxcommon Catch2::Catch2WithMain)
@@ -3633,6 +3642,7 @@ set_tests_properties(
     test_gigachat_moe_devkernels
     test_gigachat_moe_load_fast
     test_gigachat_moe_attn
+    test_gigachat_moe_selfcheck
     test_glm_moe_flash_kernels
     test_kimi_moe_int4_dequant
     test_kimi_moe_int4_real

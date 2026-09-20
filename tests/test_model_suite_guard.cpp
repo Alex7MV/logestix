@@ -171,13 +171,12 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_nemotron_moe_model"}},
           {"kernels", {"test_nemotron_moe_kernels"}},
           {"selfcheck", {"test_nemotron_moe_selfcheck"}}}},
-        // GigaChat3.5: the selfcheck stage lands with the inference pipeline
-        // (Plan 3); the kernels target is the FP8 dequant parity test today.
         {"gigachat3.5-432b-a28b-reasoning",
          {{"convert", {"test_gigachat_moe_convert"}},
           {"load", {"test_gigachat_moe_loader"}},
           {"model", {"test_gigachat_moe_model"}},
-          {"kernels", {"test_gigachat_moe_kernels"}}}},
+          {"kernels", {"test_gigachat_moe_kernels"}},
+          {"selfcheck", {"test_gigachat_moe_selfcheck"}}}},
     };
     return v;
 }

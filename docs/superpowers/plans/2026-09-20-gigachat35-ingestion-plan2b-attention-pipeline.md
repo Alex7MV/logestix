@@ -49,12 +49,22 @@ state += k⊗delta; core = state·q` (mirror `qwen_inference.cu` GDN recurrent).
 
 ## Tasks
 
-- [ ] **Task 1: device weight loader.** Parse the index `files` map; load `pinned/global.arrow`, `pinned/layer_NNN{,_nvfp4}.arrow` into `LsxNvfp4Weight` + raw BF16/FP32 device buffers (`GcWeights`), and initialize `GcExpertCache` from `<model>/logestix/experts`. Test: synthetic converted fixture loads; byte identity of a pinned tensor vs the source.
-- [ ] **Task 2: MLA decode kernel** (`gigachat_moe_inference_attn.cu`). q_a/q_b, kv_a/kv_b, interleaved yarn rope, `kAttnScale`, gated attention, o_proj. Parity vs a host MLA reference on random weights (tolerance 1e-3), plus a bit-exact rope test.
-- [ ] **Task 3: GDN decode kernel** (`gigachat_moe_inference_attn.cu`). fused qkvz/ba split, depthwise conv (prefill) + conv-state update (decode), beta/g, L2-norm QK, recurrent delta rule, output norm via `RunGdnOutputNorm`. Parity vs `torch_recurrent_gated_delta_rule` transcribed to host (see `qwen_device_math.h` for the l2norm/softplus reference).
-- [ ] **Task 4: pipeline** (`gigachat_moe_inference_pipeline.cu`). 40-layer walk; MLA or GDN per `full_attention_layers`; `pre_post` residual structure with `RunZeroCenteredGatedNorm`; MoE via `RunGigaChatRouterTopK` + `ResolveGcExperts` + `RunSwigluLimit` + NVFP4 GEMVs; dense MLP for layers 0–2; final norm + `lm_head` (F32 logits). KV cache (10 MLA layers) + GDN recurrent/conv state (30 layers).
-- [ ] **Task 5: model wiring.** `GigaChat35Model::Load` builds `GcWeights` + `GcExpertCache` (slot count via `GcExpertCacheSlots`, env `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`); `Infer` opens `LsxFastMathScope`, runs the pipeline under the residency lock, fills `gpu::InferenceResult`.
-- [ ] **Task 6: forward parity + selfcheck.** Synthetic-model forward parity vs a host reference (tolerance class), then `test_gigachat_moe_selfcheck.cpp` (Paris, ≥3 bit-exact cycles, `SKIP_RETURN_CODE 4`) — Plan 3 formalizes the real-weight run.
+- [x] **Task 1: device weight loader.** Parse the index `files` map; load `pinned/global.arrow`, `pinned/layer_NNN{,_nvfp4}.arrow` into `LsxNvfp4Weight` + raw BF16/FP32 device buffers (`GcWeights`), and initialize `GcExpertCache` from `<model>/logestix/experts`. Test: synthetic converted fixture loads; byte identity of a pinned tensor vs the source.
+- [x] **Task 2: MLA decode kernel** (`gigachat_moe_inference_attn.cu`). q_a/q_b, kv_a/kv_b, interleaved yarn rope, `kAttnScale`, gated attention, o_proj. Parity vs a host MLA reference on random weights (tolerance 1e-3), plus a bit-exact rope test.
+- [x] **Task 3: GDN decode kernel** (`gigachat_moe_inference_attn.cu`). fused qkvz/ba split, depthwise conv (prefill) + conv-state update (decode), beta/g, L2-norm QK, recurrent delta rule, output norm via `RunGdnOutputNorm`. Parity vs `torch_recurrent_gated_delta_rule` transcribed to host (see `qwen_device_math.h` for the l2norm/softplus reference).
+- [x] **Task 4: pipeline** (`gigachat_moe_inference_pipeline.cu`). 40-layer walk; MLA or GDN per `full_attention_layers`; `pre_post` residual structure with `RunZeroCenteredGatedNorm`; MoE via `RunGigaChatRouterTopK` + `ResolveGcExperts` + `RunSwigluLimit` + NVFP4 GEMVs; dense MLP for layers 0–2; final norm + `lm_head` (F32 logits). KV cache (10 MLA layers) + GDN recurrent/conv state (30 layers).
+- [x] **Task 5: model wiring.** `GigaChat35Model::Load` builds `GcWeights` + `GcExpertCache` (slot count via `GcExpertCacheSlots`, env `LSX_GIGACHAT_EXPERT_CACHE_SLOTS`); `Infer` opens `LsxFastMathScope`, runs the pipeline under the residency lock, fills `gpu::InferenceResult`.
+- [x] **Task 6: forward parity + selfcheck.** Synthetic-model forward parity vs a host reference (tolerance class), then `test_gigachat_moe_selfcheck.cpp` (Paris, ≥3 bit-exact cycles, `SKIP_RETURN_CODE 4`) — Plan 3 formalizes the real-weight run.
+
+## Status (2026-09-20)
+
+Tasks 1-5 landed with per-kernel host parity (`test_gigachat_moe_attn`: bit-exact
+RoPE, MLA block parity 1e-3, GDN block parity 1e-3 across two tokens) and a
+synthetic 2-layer end-to-end model test (`test_gigachat_moe_model`, deterministic
+re-run). `test_gigachat_moe_selfcheck` is registered and SKIPs without the real
+converted model. **Still open:** a full synthetic-model forward parity against a
+composed host reference (the per-layer parity is in place; the whole-stack
+reference belongs with the Plan 3 real-weight validation).
 
 ## Verification
 
