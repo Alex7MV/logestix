@@ -196,4 +196,24 @@ inline int BuildSyntheticOrnithCheckpoint(const std::filesystem::path &dir)
     return static_cast<int>(tensors.size());
 }
 
+// Cross-platform env gate set/clear (setenv/unsetenv are POSIX-only; MSVC uses
+// _putenv_s, where an empty value removes the variable).
+inline void OrnithSetEnv(const char *name, const char *value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+inline void OrnithUnsetEnv(const char *name)
+{
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 } // namespace ornithtest

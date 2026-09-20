@@ -287,12 +287,36 @@ target_link_libraries(lsxcommon_gemma_cu
     arrow_cuda_shared
     absl::strings
 )
+# Ornith-1.5-35B-A3B MoE kernels (duplicated qwen_moe layer).
+# -fmad=false: bit-exact router/expert math (protocol invariant).
+add_library(lsxcommon_ornith_cu OBJECT
+    src/ornith_moe_inference.cu
+)
+set_target_properties(lsxcommon_ornith_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_ornith_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_ornith_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_ornith_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_ornith_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_nemotron_cu
     lsxcommon_gigachat_cu
+    lsxcommon_ornith_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

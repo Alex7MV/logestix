@@ -2877,6 +2877,64 @@ endif()
 
 add_test(NAME test_qwen_moe_kernels COMMAND test_qwen_moe_kernels)
 
+# Ornith MoE kernel tests (duplicated qwen_moe layer, ornith namespace).
+add_library(test_ornith_moe_kernels_cu OBJECT test_ornith_moe_kernels.cu)
+set_target_properties(test_ornith_moe_kernels_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_ornith_moe_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_ornith_moe_kernels_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
+    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
+    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${CMAKE_BINARY_DIR}/third_party/libzmq"
+    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
+    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+)
+target_compile_definitions(test_ornith_moe_kernels_cu PRIVATE
+    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+    LOGESTIX_HAS_CUDA
+    SPDLOG_COMPILED_LIB
+    ZMQ_STATIC
+    SIMDJSON_THREADS_ENABLED=1
+)
+target_link_libraries(test_ornith_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_ornith_moe_kernels)
+set_target_properties(test_ornith_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_ornith_moe_kernels PRIVATE
+    test_ornith_moe_kernels_cu lsxcommon_ornith_cu lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_ornith_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_kernels>"
+    )
+    add_custom_command(TARGET test_ornith_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_kernels>"
+    )
+endif()
+
+add_test(NAME test_ornith_moe_kernels COMMAND test_ornith_moe_kernels)
+
 add_executable(test_qwen_moe_loader test_qwen_moe_loader.cpp)
 target_compile_definitions(test_qwen_moe_loader PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
@@ -3748,6 +3806,7 @@ set_tests_properties(
     test_deepseek_moe_v41_actquant
     test_deepseek_moe_v41_pipeline
     test_qwen_moe_kernels
+    test_ornith_moe_kernels
     test_qwen_moe_exp_kernels
     test_nemotron_moe_kernels
     test_nemotron_moe_selfcheck
