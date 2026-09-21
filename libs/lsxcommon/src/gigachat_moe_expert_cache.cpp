@@ -4,6 +4,8 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdlib>
+
 namespace lsxcommon::gigachat {
 
 void LoadGcExpertStore(const std::string &model_path, int num_layers,
@@ -16,6 +18,16 @@ void LoadGcExpertStore(const std::string &model_path, int num_layers,
     // 9472 files fit under the 65536 mmap cap: the store stays fully resident
     // and a slot miss is a pure H2D copy.
     store.Load(model_path, /*fallback=*/true);
+
+    // Lock the routed-expert payloads into host memory (Gemma/GLM/DeepSeek/Kimi
+    // convention; LSX_EXPERT_PIN=0 opts out). Without pinning the mmap data is
+    // faulted lazily, so the first prefill on a cold page cache reads the
+    // ~218 GiB store from disk and inflates TTFT from ~2 s (warm) to ~35 s
+    // (cold) for a 6-token prompt. Pinning moves that read to Load and leaves
+    // the per-token slot miss a true H2D copy.
+    const char *pin_env = std::getenv("LSX_EXPERT_PIN");
+    if (pin_env == nullptr || pin_env[0] != '0')
+        store.PinChunked<GcExpertStore::PinLayout::kStream>();
 }
 
 GcExpertSlotLayout PlanGcExpertSlotFromStore(const GcExpertStore &store)

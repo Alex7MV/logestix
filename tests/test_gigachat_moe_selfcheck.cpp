@@ -9,6 +9,10 @@
 #include <string>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <fcntl.h>
+#endif
+
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/path_registry.h>
@@ -19,6 +23,34 @@
 namespace {
 
 constexpr int kStressCycles = 3;
+
+// Drops the routed-expert payloads from the OS page cache so the next Load
+// sees a cold store (the state of a freshly booted host). This is the
+// regression trigger: an unpinned mmap store page-faults from disk inside
+// the first prefill and inflates TTFT (~115 s cold vs ~15 s warm on the
+// 218 GiB GigaChat store).
+void EvictExpertPageCache(const std::filesystem::path &root)
+{
+#if !defined(_WIN32)
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = root / "logestix" / "experts";
+    if (!fs::exists(dir, ec)) return;
+    for (fs::recursive_directory_iterator it(
+             dir, fs::directory_options::skip_permission_denied, ec),
+         end;
+         it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        const int fd = ::open(it->path().c_str(), O_RDONLY);
+        if (fd < 0) continue;
+        ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        ::close(fd);
+    }
+#else
+    (void)root;
+#endif
+}
 
 int SelfCheckCycles()
 {
@@ -59,6 +91,10 @@ TEST_CASE("GigaChat3.5 SelfCheck: 'The capital of France is' -> 'Paris', "
     if (!std::filesystem::exists(model_dir / "logestix" / "model.index.json"))
         SKIP("GigaChat3.5 converted model directory not present");
 
+    // Cold-store regression trigger: force the expert payloads out of page
+    // cache before Load so an unpinned store pays disk page-in inside TTFT.
+    EvictExpertPageCache(model_dir);
+
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = model_dir.string();
     auto m = lsxcommon::LsxModelFactory::Create(cfg);
@@ -79,6 +115,11 @@ TEST_CASE("GigaChat3.5 SelfCheck: 'The capital of France is' -> 'Paris', "
     REQUIRE(sc0.selfcheck_passed);
     REQUIRE(sc0.first_gen_text == "Paris");
     REQUIRE(!sc0.final_logits.empty());
+    // The cold store must not page-fault inside the measured first forward:
+    // TTFT reflects the model's warm first-token latency, not disk I/O.
+    REQUIRE(sc0.ttft_ms > 0.0);
+    REQUIRE(sc0.ttft_ms < 15000.0);
+    REQUIRE(sc0.total_time_ms >= sc0.ttft_ms);
 
     const std::vector<float> &ref_logits = sc0.final_logits;
     const int32_t ref_first = sc0.first_gen_tok_id;
