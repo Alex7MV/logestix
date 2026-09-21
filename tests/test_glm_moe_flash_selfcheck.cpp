@@ -50,6 +50,9 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
                       << r.gen_tokens.size());
         REQUIRE(r.ok);
         REQUIRE(r.selfcheck_passed);
+        // TTFT must be measured over the first forward, not a placeholder.
+        REQUIRE(r.ttft_ms > 0.0);
+        REQUIRE(r.total_time_ms >= r.ttft_ms);
         // Bit-exact determinism across cycles.
         if (c == 0) first_logits = r.final_logits;
         else REQUIRE(r.final_logits == first_logits);

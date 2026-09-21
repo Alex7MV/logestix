@@ -1732,8 +1732,9 @@ cudaError_t RunExpGeneration(
 
     int full_idx = 0, lin_idx = 0, qsa_idx = 0;
     // GPU-timeline timing (etalon: qwen_moe driver t_start/t_stop events).
-    cudaEvent_t t_start_ev = nullptr, t_stop_ev = nullptr;
+    cudaEvent_t t_start_ev = nullptr, t_ttft_ev = nullptr, t_stop_ev = nullptr;
     cudaEventCreate(&t_start_ev);
+    cudaEventCreate(&t_ttft_ev);
     cudaEventCreate(&t_stop_ev);
     if (t_start_ev) cudaEventRecord(t_start_ev, stream);
     std::vector<int32_t> token_history;  // PLE n-gram context (grows)
@@ -2051,6 +2052,8 @@ cudaError_t RunExpGeneration(
             if (e != cudaSuccess) { result.error_msg = "argmax"; break; }
             exp_record_token_kernel<<<1, 1, 0, stream>>>(d_tokens, generated,
                                                          d_argmax);
+            // TTFT: the first generated token's forward is complete.
+            if (generated == 0 && t_ttft_ev) cudaEventRecord(t_ttft_ev, stream);
             if (step + 1 < total_steps)
                 exp_feed_token_kernel<<<1, 1, 0, stream>>>(d_ids, d_argmax);
             // The PLE n-gram context lives on the host (mmap gather): pull
@@ -2132,9 +2135,14 @@ cudaError_t RunExpGeneration(
         if (cudaEventElapsedTime(&ms_total, t_start_ev, t_stop_ev) ==
             cudaSuccess)
             result.total_ms = ms_total;
-        result.ttft_ms = 0.0;
+        float ms_ttft = 0.f;
+        if (t_ttft_ev &&
+            cudaEventElapsedTime(&ms_ttft, t_start_ev, t_ttft_ev) ==
+                cudaSuccess)
+            result.ttft_ms = ms_ttft;
     }
     if (t_start_ev) cudaEventDestroy(t_start_ev);
+    if (t_ttft_ev) cudaEventDestroy(t_ttft_ev);
     if (t_stop_ev) cudaEventDestroy(t_stop_ev);
     if (h_ids) cudaFreeHost(h_ids);
     if (h_emb_rows) cudaFreeHost(h_emb_rows);
