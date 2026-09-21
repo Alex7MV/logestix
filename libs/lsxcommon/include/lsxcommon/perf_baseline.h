@@ -14,7 +14,7 @@
 namespace lsxcommon {
 namespace perf_baseline {
 
-inline constexpr int kPerfBaselineFormatVersion = 2;
+inline constexpr int kPerfBaselineFormatVersion = 3;
 
 struct PerfBaselineEntry {
     std::string model_type;
@@ -28,6 +28,10 @@ struct PerfBaselineEntry {
     std::string commit;         // repo commit the measurement was taken at
     int gen_tokens = 0;         // ACTUAL generated length (0 = legacy entry);
                                 // t/s is only comparable at equal length
+    double ttft_ms = 0.0;       // stream start -> first generated token
+    double avg_power_w = 0.0;   // mean board power over the run (0 = unknown)
+    double peak_power_w = 0.0;  // peak board power over the run (0 = unknown)
+    int power_samples = 0;      // 0 => NVML unavailable / not sampled
 };
 
 struct PerfBaselineTable {

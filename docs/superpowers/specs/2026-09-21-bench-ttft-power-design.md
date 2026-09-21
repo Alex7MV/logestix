@@ -97,7 +97,7 @@ private:
 
 NVML is resolved lazily on first use: `libnvidia-ml.so.1` on Linux, `nvml.dll`
 on Windows. Function pointers for `nvmlInit_v2`, `nvmlDeviceGetHandleByIndex_v2`,
-`nvmlDeviceGetPowerUsage`, `nvmlDeviceGetEnforcedPowerLimit`, `nvmlShutdown`.
+`nvmlDeviceGetPowerUsage`, `nvmlDeviceGetEnforcedPowerLimit`.
 Initialization is once-guarded; every failure path leaves the module
 unavailable and never throws. `nvmlDeviceGetPowerUsage` returns milliwatts.
 

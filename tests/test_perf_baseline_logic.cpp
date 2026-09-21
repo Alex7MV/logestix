@@ -83,11 +83,19 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     e.date = "2026-09-11";
     e.commit = "8c3a20e";
     e.gen_tokens = 2048;
+    e.ttft_ms = 123.45;
+    e.avg_power_w = 412.5;
+    e.peak_power_w = 601.0;
+    e.power_samples = 137;
     t.entries.push_back(e);
     e.model_type = "glm-5.3-flash";
     e.os = "windows";
     e.tokens_per_sec = 32.1;
     e.gen_tokens = 0;   // legacy-style entry
+    e.ttft_ms = 0.0;
+    e.avg_power_w = 0.0;
+    e.peak_power_w = 0.0;
+    e.power_samples = 0;
     t.entries.push_back(e);
 
     const auto parsed = ParsePerfBaselines(SerializePerfBaselines(t));
@@ -103,9 +111,46 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     REQUIRE(parsed->entries[0].date == "2026-09-11");
     REQUIRE(parsed->entries[0].commit == "8c3a20e");
     REQUIRE(parsed->entries[0].gen_tokens == 2048);
+    REQUIRE(parsed->entries[0].ttft_ms == 123.45);
+    REQUIRE(parsed->entries[0].avg_power_w == 412.5);
+    REQUIRE(parsed->entries[0].peak_power_w == 601.0);
+    REQUIRE(parsed->entries[0].power_samples == 137);
     REQUIRE(parsed->entries[1].os == "windows");
     REQUIRE(parsed->entries[1].tokens_per_sec == 32.1);
     REQUIRE(parsed->entries[1].gen_tokens == 0);
+    // Absent power/TTFT fields degrade to the "unknown" sentinels.
+    REQUIRE(parsed->entries[1].ttft_ms == 0.0);
+    REQUIRE(parsed->entries[1].avg_power_w == 0.0);
+    REQUIRE(parsed->entries[1].peak_power_w == 0.0);
+    REQUIRE(parsed->entries[1].power_samples == 0);
+}
+
+TEST_CASE("Perf baselines: v2 file without TTFT/power still parses",
+          "[perf_baseline]")
+{
+    const std::string v2 = R"({
+  "format_version": 2,
+  "entries": [
+    {
+      "model_type": "qwen3.8-27b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "perf",
+      "tokens_per_sec": 30.6,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-09-13",
+      "commit": "-",
+      "gen_tokens": 2048
+    }
+  ]
+})";
+    const auto parsed = ParsePerfBaselines(v2);
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->entries.size() == 1);
+    REQUIRE(parsed->entries[0].gen_tokens == 2048);
+    REQUIRE(parsed->entries[0].ttft_ms == 0.0);
+    REQUIRE(parsed->entries[0].power_samples == 0);
 }
 
 TEST_CASE("Perf baselines: v1 file without gen_tokens still parses",

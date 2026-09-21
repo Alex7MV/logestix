@@ -61,6 +61,7 @@ add_library(lsxcommon STATIC
     src/qwen_dense_model.cpp
     src/qwen_base_model.cpp
     src/gpu_perf.cpp
+    src/gpu_power.cpp
     src/perf_baseline.cpp
     src/resource_governor.cpp
     src/runtime_tuner.cpp
@@ -457,6 +458,7 @@ target_link_libraries(lsxcommon PRIVATE
     arrow_shared
     arrow_cuda_shared
     simdjson::simdjson
+    ${CMAKE_DL_LIBS}
 )
 # lsx_orchestrator.h lives in the PUBLIC include tree and exposes
 # lsxnetwork::FrameQueue in ServeTaskMosaic's signature -> the dependency is

@@ -118,8 +118,11 @@ kernels beat guessing.
 ## Step 7 — record
 
 - `tests/perf/perf_baselines.json`: `tokens_per_sec`, `max_gen`, `gen_tokens`,
-  `date`, `prompt`. The perf-baseline test rewrites a higher result
-  automatically (`JudgePerf`) and flags a degradation beyond ~3%.
+  `date`, `prompt`, plus the recorded evidence `ttft_ms`, `avg_power_w`,
+  `peak_power_w`, `power_samples` (NVML board power sampled over `Infer`;
+  zeros = unavailable). The perf-baseline test rewrites a higher result
+  automatically (`JudgePerf`) and flags a degradation beyond ~3%; TTFT and
+  power are recorded but not yet gating.
 - One AGENTS.md line for the model + a findings section in the design doc
   (profile tables, changes, rejected experiments, next levers).
 
