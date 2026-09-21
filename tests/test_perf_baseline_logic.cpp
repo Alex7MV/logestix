@@ -178,6 +178,38 @@ TEST_CASE("Perf baselines: v1 file without gen_tokens still parses",
     REQUIRE(parsed->entries[0].gen_tokens == 0);
 }
 
+TEST_CASE("Perf baselines: evidence backfill fills legacy entries only",
+          "[perf_baseline]")
+{
+    using lsxcommon::perf_baseline::BackfillEvidence;
+    PerfBaselineEntry legacy;
+    legacy.tokens_per_sec = 100.0;   // must never change
+    legacy.gen_tokens = 2048;
+    const bool changed = BackfillEvidence(legacy, 123.45, 400.0, 600.0, 500);
+    REQUIRE(changed);
+    REQUIRE(legacy.ttft_ms == 123.45);
+    REQUIRE(legacy.avg_power_w == 400.0);
+    REQUIRE(legacy.peak_power_w == 600.0);
+    REQUIRE(legacy.power_samples == 500);
+    REQUIRE(legacy.tokens_per_sec == 100.0);
+    REQUIRE(legacy.gen_tokens == 2048);
+
+    // Already-recorded evidence is not overwritten.
+    PerfBaselineEntry recorded = legacy;
+    REQUIRE_FALSE(BackfillEvidence(recorded, 999.0, 1.0, 2.0, 3));
+    REQUIRE(recorded.ttft_ms == 123.45);
+    REQUIRE(recorded.avg_power_w == 400.0);
+    REQUIRE(recorded.power_samples == 500);
+
+    // Missing NVML on the fresh run: TTFT is still backfilled, power is not.
+    PerfBaselineEntry no_power;
+    no_power.ttft_ms = 0.0;
+    no_power.power_samples = 0;
+    REQUIRE(BackfillEvidence(no_power, 50.0, 0.0, 0.0, 0));
+    REQUIRE(no_power.ttft_ms == 50.0);
+    REQUIRE(no_power.power_samples == 0);
+}
+
 TEST_CASE("Perf baselines: empty table and garbage rejected", "[perf_baseline]")
 {
     REQUIRE(ParsePerfBaselines("not json").has_value() == false);

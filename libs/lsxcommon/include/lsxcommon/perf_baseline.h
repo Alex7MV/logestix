@@ -65,6 +65,14 @@ enum class PerfVerdict {
 PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
                       double tolerance_pct = 3.0);
 
+// Backfills the recorded evidence (TTFT/power) of an existing entry from a
+// fresh measurement when the entry predates those fields. Never touches
+// tokens_per_sec or the measurement protocol. Returns true when the entry
+// changed. A fresh run without NVML leaves the power fields untouched; TTFT
+// is still filled when absent.
+bool BackfillEvidence(PerfBaselineEntry &entry, double ttft_ms,
+                      double avg_power_w, double peak_power_w, int samples);
+
 // Length-aware verdict: t/s depends on the actual generated length (EOS
 // timing shifts the KV-attention cost curve), so a run is only comparable
 // to a baseline recorded at the same fact length. actual_len is the run's

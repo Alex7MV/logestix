@@ -265,11 +265,33 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
                                        : " (new entry)"));
         break;
     }
-    case pb::PerfVerdict::kPass:
+    case pb::PerfVerdict::kPass: {
+        // Backfill TTFT/power evidence missing from legacy entries so a
+        // normal (non-improving) run still persists the new metrics. The
+        // baseline t/s and measurement protocol are never touched.
+        if (entry != nullptr) {
+            pb::PerfBaselineEntry updated = *entry;
+            if (pb::BackfillEvidence(updated, mr.ttft_ms, mr.avg_power_w,
+                                     mr.peak_power_w, mr.power_samples)) {
+                for (auto &e : table.entries) {
+                    if (e.model_type == m.model_type && e.gpu_key == gpu_key &&
+                        e.os == kThisOs && e.mode == mode) {
+                        e = updated;
+                        break;
+                    }
+                }
+                table.format_version = pb::kPerfBaselineFormatVersion;
+                SaveTable(table);
+                INFO(m.model_type << ": evidence backfilled (ttft=" << mr.ttft_ms
+                                  << " ms, power=" << mr.avg_power_w << "/"
+                                  << mr.peak_power_w << " W)");
+            }
+        }
         INFO(m.model_type << ": within tolerance, baseline=" << *baseline
                           << " t/s, actual=" << actual << " t/s at "
                           << mr.gen_tokens << " tok");
         break;
+    }
     }
 }
 

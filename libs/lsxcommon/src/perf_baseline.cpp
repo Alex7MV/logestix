@@ -121,6 +121,23 @@ const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
     return nullptr;
 }
 
+bool BackfillEvidence(PerfBaselineEntry &entry, double ttft_ms,
+                      double avg_power_w, double peak_power_w, int samples)
+{
+    bool changed = false;
+    if (entry.ttft_ms == 0.0 && ttft_ms > 0.0) {
+        entry.ttft_ms = ttft_ms;
+        changed = true;
+    }
+    if (entry.power_samples == 0 && samples > 0) {
+        entry.avg_power_w = avg_power_w;
+        entry.peak_power_w = peak_power_w;
+        entry.power_samples = samples;
+        changed = true;
+    }
+    return changed;
+}
+
 PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
                       double tolerance_pct)
 {

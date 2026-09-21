@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 3,
   "entries": [
     {
       "model_type": "glm-5.3-flash",
@@ -11,7 +11,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-14",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "deepseek-v4-flash",
@@ -23,7 +27,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "kimi-k2.7-code",
@@ -35,7 +43,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-14",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.8-flash-next",
@@ -47,7 +59,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.8-27b",
@@ -59,7 +75,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-13",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "gemma-4-26b-a4b-it",
@@ -69,9 +89,13 @@
       "tokens_per_sec": 102.31,
       "max_gen": 2048,
       "prompt": "Write a detailed long essay about the history of computing, from Babbage to modern GPUs.",
-      "date": "2026-09-15",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 187.31,
+      "avg_power_w": 343.25,
+      "peak_power_w": 366.24,
+      "power_samples": 1012
     },
     {
       "model_type": "qwen3.5-35b-a3b",
@@ -83,7 +107,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-13",
       "commit": "-",
-      "gen_tokens": 1484
+      "gen_tokens": 1484,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.6-35b-a3b",
@@ -95,7 +123,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "deepseek-v4.1-flash",
@@ -107,7 +139,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-14",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "glm-5.3-flash",
@@ -119,7 +155,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.6-35b-a3b",
@@ -131,19 +171,27 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "gemma-4-26b-a4b-it",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "r3",
-      "tokens_per_sec": 104.61,
+      "tokens_per_sec": 104.68,
       "max_gen": 2048,
       "prompt": "Write a detailed long essay about the history of computing, from Babbage to modern GPUs.",
-      "date": "2026-09-15",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 168.31,
+      "avg_power_w": 356.44,
+      "peak_power_w": 381.25,
+      "power_samples": 990
     },
     {
       "model_type": "qwen3.8-flash-next",
@@ -155,7 +203,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "deepseek-v4-flash",
@@ -167,7 +219,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "nemotron-3.5-lightning-30b-a3b",
@@ -179,7 +235,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "nemotron-3.5-lightning-30b-a3b",
@@ -191,7 +251,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "gigachat3.5-432b-a28b-reasoning",
@@ -203,7 +267,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-20",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "gigachat3.5-432b-a28b-reasoning",
@@ -215,7 +283,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-20",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "ornith-1.5-35b-a3b",
@@ -227,7 +299,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "ornith-1.5-35b-a3b",
@@ -239,7 +315,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     }
   ]
 }
