@@ -20,6 +20,7 @@
 #include "lsxcommon/glm_moe_convert.h"
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
+#include "lsxcommon/granite_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
 #include "lsxcommon/log.h"
@@ -58,6 +59,8 @@ ABSL_FLAG(bool, gigachat, false,
           "GigaChat3.5-432B-A28B-Reasoning (hybrid MLA+GDN+MoE) conversion pipeline");
 ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
+ABSL_FLAG(bool, granite, false,
+          "Granite-4.2-30B (dense) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -111,6 +114,7 @@ int main(int argc, char* argv[]) {
     bool nemotron = absl::GetFlag(FLAGS_nemotron);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
+    bool granite = absl::GetFlag(FLAGS_granite);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
@@ -273,6 +277,20 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("GLM-5.3-Flash conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (granite) {
+        lsxcommon::log::info("Granite-4.2-30B pipeline (logestix-granite layout)");
+        auto st = lsxcommon::granite::ConvertGraniteModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Granite conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Granite conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

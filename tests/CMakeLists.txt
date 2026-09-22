@@ -534,6 +534,60 @@ set_tests_properties(test_granite_dense_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_granite_dense_model PROPERTIES LABELS inference)
 
+# ── Granite kernel parity tests (.cu, stand-alone OBJECT lib) ──
+add_library(test_granite_cu OBJECT
+    test_granite_dense_kernels.cu
+)
+set_target_properties(test_granite_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_granite_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_granite_cu PRIVATE
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_granite_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_granite_dense_kernels)
+set_target_properties(test_granite_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_granite_dense_kernels PRIVATE test_granite_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_kernels>"
+    )
+    add_custom_command(TARGET test_granite_dense_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_kernels>"
+    )
+endif()
+add_test(NAME test_granite_dense_kernels COMMAND test_granite_dense_kernels)
+set_tests_properties(test_granite_dense_kernels PROPERTIES LABELS inference)
+
+# ── Granite-4.2-30B SelfCheck (real weights; SKIP when absent) ──
+add_executable(test_granite_dense_selfcheck test_granite_dense_selfcheck.cpp)
+target_link_libraries(test_granite_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_selfcheck>"
+    )
+    add_custom_command(TARGET test_granite_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_selfcheck>"
+    )
+endif()
+add_test(NAME test_granite_dense_selfcheck COMMAND test_granite_dense_selfcheck)
+set_tests_properties(test_granite_dense_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_granite_dense_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 # ── Qwen3.5-9B loader test (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_dense_loader test_qwen_dense_loader.cpp)
 target_compile_definitions(test_qwen_dense_loader PRIVATE

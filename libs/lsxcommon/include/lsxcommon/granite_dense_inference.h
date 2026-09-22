@@ -14,6 +14,19 @@
 namespace lsxcommon {
 namespace granite {
 
+// ── Testable low-level kernels (Model Ingestion Protocol step 5) ───────────
+// Exposed for kernel-level parity tests; the generation loop uses them too.
+cudaError_t RunGraniteRopeKernel(cudaStream_t stream, __half *q, __half *k,
+                                 const int32_t *pos, int seq, int nh, int nkv,
+                                 int hd, double theta);
+cudaError_t RunGraniteAttentionKernel(cudaStream_t stream, const __half *q,
+                                      const __half *k, const __half *v,
+                                      __half *out, int seq, int nh, int nkv,
+                                      int hd, float scale, int kv_base);
+cudaError_t RunGraniteRmsNormKernel(cudaStream_t stream, __half *out,
+                                    const __half *x, const __half *w, int rows,
+                                    int hidden, float eps);
+
 struct GraniteGenerationResult {
     bool ok = false;
     std::string error_msg;

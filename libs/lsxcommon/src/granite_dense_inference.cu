@@ -477,6 +477,31 @@ cudaError_t SampleNext(cudaStream_t stream, Workspace &ws,
 
 } // namespace
 
+// ── Testable kernel wrappers ────────────────────────────────────────────────
+
+cudaError_t RunGraniteRopeKernel(cudaStream_t stream, __half *q, __half *k,
+                                 const int32_t *pos, int seq, int nh, int nkv,
+                                 int hd, double theta)
+{
+    return GraniteRope(stream, q, k, pos, seq, nh, nkv, hd, theta);
+}
+
+cudaError_t RunGraniteAttentionKernel(cudaStream_t stream, const __half *q,
+                                      const __half *k, const __half *v,
+                                      __half *out, int seq, int nh, int nkv,
+                                      int hd, float scale, int kv_base)
+{
+    return GraniteAttention(stream, q, k, v, out, seq, nh, nkv, hd, scale,
+                            kv_base);
+}
+
+cudaError_t RunGraniteRmsNormKernel(cudaStream_t stream, __half *out,
+                                    const __half *x, const __half *w, int rows,
+                                    int hidden, float eps)
+{
+    return GraniteRmsNorm(stream, out, x, w, rows, hidden, eps);
+}
+
 // ── Generation ──────────────────────────────────────────────────────────────
 
 cudaError_t RunGraniteGeneration(cudaStream_t stream,

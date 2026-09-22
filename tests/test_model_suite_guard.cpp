@@ -184,6 +184,12 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_gigachat_moe_model"}},
           {"kernels", {"test_gigachat_moe_kernels"}},
           {"selfcheck", {"test_gigachat_moe_selfcheck"}}}},
+        {"granite-4.2-30b",
+         {{"convert", {"test_granite_dense_convert"}},
+          {"load", {"test_granite_dense_loader"}},
+          {"model", {"test_granite_dense_model"}},
+          {"kernels", {"test_granite_dense_kernels"}},
+          {"selfcheck", {"test_granite_dense_selfcheck"}}}},
     };
     return v;
 }
