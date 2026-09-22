@@ -22,6 +22,7 @@ add_library(lsxcommon STATIC
     src/glm_moe_model.cpp
     src/gemma_moe_convert.cpp
     src/gemma_moe_load.cpp
+    src/granite_dense_convert.cpp
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/nemotron_moe_convert.cpp
