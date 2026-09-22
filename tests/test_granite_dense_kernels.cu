@@ -13,6 +13,7 @@
 #include <vector>
 
 using namespace lsxcommon::granite;
+namespace lsxg = lsxcommon::lsx_nvfp4;
 
 namespace {
 
@@ -212,4 +213,92 @@ TEST_CASE("granite causal GQA attention kernel matches a CPU reference",
         }
 
     cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
+}
+
+// ── Decode-shape NVFP4 GEMV bandwidth budget (perf lever #1) ────────────────
+// Granite decode is 86% seq==1 NVFP4 GEMV (nsys, 2026-09-22): the aggregate
+// weight-streaming rate is the model's serial bottleneck. This budget pins the
+// effective GB/s across the REAL Granite decode shapes so a dispatch/kernel
+// regression is caught here instead of only end-to-end. L2 is flushed between
+// launches (the real decode walks a ~16 GB weight set, never L2-resident).
+TEST_CASE("granite seq1 GEMV decode-shape aggregate bandwidth budget",
+          "[granite][kernels][nvfp4][budget]")
+{
+#if defined(NDEBUG)
+    
+        lsxg::SetLsxTcFastMath(true);
+        lsxg::SetLsxSeq1Gemv(true);
+
+    struct Shape { int K, N; const char *name; };
+    // q/o, fused gate_up, down, head — the warmup-free warprow set.
+    const Shape shapes[] = {
+        {4096, 4096, "q_o"},      {4096, 65536, "gate_up"},
+        {32768, 4096, "down"},    {4096, 100352, "head"},
+    };
+    constexpr int kIters = 30;
+    constexpr size_t kFlushBytes = 128u << 20;  // > 5090 L2 (96 MiB)
+    uint8_t *flush = nullptr;
+    REQUIRE(cudaMalloc(&flush, kFlushBytes) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    double total_bytes = 0.0, total_us = 0.0;
+    std::string report;
+    for (const auto &c : shapes) {
+        const size_t pbytes = static_cast<size_t>(c.K) * c.N / 2;
+        const size_t sbytes = static_cast<size_t>(c.K) * c.N / 16;
+        std::vector<__half> hx(static_cast<size_t>(c.K));
+        std::vector<uint8_t> hp(pbytes), hs(sbytes);
+        for (int i = 0; i < c.K; ++i)
+            hx[static_cast<size_t>(i)] = __float2half(float((i % 13) - 6) * 0.25f);
+        for (size_t i = 0; i < pbytes; ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < sbytes; ++i)
+            hs[i] = static_cast<uint8_t>(128 + (i % 48));
+        __half *dx = nullptr, *dy = nullptr;
+        uint8_t *dp = nullptr, *ds = nullptr;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(c.K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, pbytes) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, sbytes) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy, static_cast<size_t>(c.N) * 2) == cudaSuccess);
+        cudaMemcpy(dx, hx.data(), static_cast<size_t>(c.K) * 2,
+                   cudaMemcpyHostToDevice);
+        cudaMemcpy(dp, hp.data(), pbytes, cudaMemcpyHostToDevice);
+        cudaMemcpy(ds, hs.data(), sbytes, cudaMemcpyHostToDevice);
+        REQUIRE(lsxg::RunLsxNvfp4GemmSeq1GemmV(nullptr, dx, dp, ds, 0.125f, dy, c.K,
+                                         c.N, false) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        double shape_us = 0.0;
+        for (int i = 0; i < kIters; ++i) {
+            REQUIRE(cudaMemsetAsync(flush, 0, kFlushBytes) == cudaSuccess);
+            REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+            REQUIRE(lsxg::RunLsxNvfp4GemmSeq1GemmV(nullptr, dx, dp, ds, 0.125f, dy,
+                                             c.K, c.N, false) == cudaSuccess);
+            REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+            REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+            float ms = 0.0f;
+            REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+            shape_us += static_cast<double>(ms) * 1000.0;
+        }
+        const double gbps =
+            static_cast<double>(pbytes + sbytes) * kIters /
+            (shape_us * 1e-6) / 1e9;
+        report += std::string(c.name) + " (" + std::to_string(c.K) + "x" +
+                  std::to_string(c.N) + ") = " + std::to_string(gbps) +
+                  " GB/s\n";
+        total_us += shape_us;
+        total_bytes += static_cast<double>(pbytes + sbytes) * kIters;
+        cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
+    }
+    const double agg = total_bytes / (total_us * 1e-6) / 1e9;
+    INFO(report << "aggregate = " << agg << " GB/s");
+    // Measured 2026-09-22 (RTX 5090): warp-per-row on all shapes = 812 GB/s;
+    // the occupancy floor (N >= 8192 -> sliced K-split for the N=4096 shapes)
+    // = 873 GB/s. Budget sits just below the improved figure so a silent
+    // dispatch regression to the low-occupancy launch fails here.
+    CHECK(agg > 840.0);
+    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
+        lsxg::SetLsxTcFastMath(false);
+        lsxg::SetLsxSeq1Gemv(false);
+#endif
 }

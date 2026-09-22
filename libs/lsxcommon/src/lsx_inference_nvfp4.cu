@@ -579,7 +579,17 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     // 8-warp sliced KP=2 launch; routing them to the small-block sliced path
     // lifted gemma-4-26B decode 88.7 -> 95.5 t/s (+7.7%, equal 1024-token
     // fact length). Deep-K shapes (>=4096) keep warp-per-row.
-    if ((K & 63) == 0 && K >= 4096 && N >= 2048 &&
+    // N floor 8192 = occupancy floor (2026-09-22, Granite-4.2-30B decode):
+    // warp-per-row launches exactly N warps (one row each), so it only fills
+    // the SM array (170 SMs x 48 resident warps = ~8160) when N >= ~8192.
+    // Granite's N=4096 shapes (q/o K=4096, down K=32768) under-occupied at
+    // 24 warps/SM -> 453/587 GB/s; the K-split sliced path (KP=4/8, 1-2
+    // rows/block) reaches 514/824 GB/s at the same shapes. Isolated
+    // decode-shape budget: aggregate 812 -> 873 GB/s (+7.5%) with the floor
+    // raised; the large-N shapes (gate_up N=65536, head N=100352) are
+    // unchanged at ~880/911 (already warp-per-row). K >= 4096 keeps the
+    // warp-per-row route for deep-K wide-N shapes.
+    if ((K & 63) == 0 && K >= 4096 && N >= 8192 &&
         g_lsx_tc_fast_math.load(std::memory_order_relaxed)) {
         constexpr int WARPS = 8;   // rows per block (probe: 8 > 4 or 16)
         const int grid = (N + WARPS - 1) / WARPS;
