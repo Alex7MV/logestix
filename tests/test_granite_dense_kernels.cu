@@ -215,6 +215,79 @@ TEST_CASE("granite causal GQA attention kernel matches a CPU reference",
     cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
 }
 
+// ── Split-KV (flash-decoding) attention parity ──────────────────────────────
+// At decode the single-block-per-row attention launches only nh blocks, so the
+// SM array is 19% occupied and the kernel runs ~60x above its KV-read
+// memory bound (nsys, 2026-09-22). The split path partitions the causal key
+// range across blocks and merges the online-softmax partials in fixed split
+// order. This test forces that path on a long context and checks it against a
+// CPU reference, so the split boundaries / merge are verified independently of
+// the end-to-end run.
+TEST_CASE("granite split-KV attention matches a CPU reference",
+          "[granite][kernels]")
+{
+    const int seq = 260, nh = 2, nkv = 1, hd = 16;
+    const float scale = 0.25f;
+    int64_t seed = 777;
+    std::vector<float> q(seq * nh * hd), k(seq * nkv * hd), v(seq * nkv * hd);
+    for (auto &x : q) x = lcg(seed);
+    for (auto &x : k) x = lcg(seed);
+    for (auto &x : v) x = lcg(seed);
+
+    auto hq = ToHalf(q), hk = ToHalf(k), hv = ToHalf(v);
+    __half *dq, *dk, *dv, *dout;
+    REQUIRE(cudaMalloc(&dq, hq.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dk, hk.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dv, hv.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, hq.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dq, hq.data(), hq.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dk, hk.data(), hk.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dv, hv.data(), hv.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(RunGraniteAttentionSplitKernel(nullptr, dq, dk, dv, dout, seq, nh,
+                                           nkv, hd, scale, 0) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> out(hq.size());
+    REQUIRE(cudaMemcpy(out.data(), dout, out.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    const int group = nh / nkv;
+    for (int t = 0; t < seq; ++t)
+        for (int h = 0; h < nh; ++h) {
+            const int kvh = h / group;
+            std::vector<float> sc(t + 1);
+            float m = -1e30f;
+            for (int s = 0; s <= t; ++s) {
+                float dot = 0.f;
+                for (int d = 0; d < hd; ++d)
+                    dot += q[(t * nh + h) * hd + d] *
+                           k[(s * nkv + kvh) * hd + d];
+                sc[s] = dot * scale;
+                m = std::max(m, sc[s]);
+            }
+            float sum = 0.f;
+            for (int s = 0; s <= t; ++s) {
+                sc[s] = std::exp(sc[s] - m);
+                sum += sc[s];
+            }
+            for (int d = 0; d < hd; ++d) {
+                float acc = 0.f;
+                for (int s = 0; s <= t; ++s)
+                    acc += sc[s] * v[(s * nkv + kvh) * hd + d];
+                const float ref = acc / sum;
+                INFO("t=" << t << " h=" << h << " d=" << d);
+                CHECK(std::fabs(__half2float(out[(t * nh + h) * hd + d]) -
+                                ref) < 3e-2f);
+            }
+        }
+
+    cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(dout);
+}
+
 // ── Decode-shape NVFP4 GEMV bandwidth budget (perf lever #1) ────────────────
 // Granite decode is 86% seq==1 NVFP4 GEMV (nsys, 2026-09-22): the aggregate
 // weight-streaming rate is the model's serial bottleneck. This budget pins the

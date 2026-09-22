@@ -23,6 +23,13 @@ cudaError_t RunGraniteAttentionKernel(cudaStream_t stream, const __half *q,
                                       const __half *k, const __half *v,
                                       __half *out, int seq, int nh, int nkv,
                                       int hd, float scale, int kv_base);
+// Forced split-KV (flash-decoding) variant: always routes through the
+// multi-block + combine path regardless of shape. Used by the parity test to
+// exercise the split boundaries; production dispatch is in GraniteAttention.
+cudaError_t RunGraniteAttentionSplitKernel(cudaStream_t stream, const __half *q,
+                                           const __half *k, const __half *v,
+                                           __half *out, int seq, int nh, int nkv,
+                                           int hd, float scale, int kv_base);
 cudaError_t RunGraniteRmsNormKernel(cudaStream_t stream, __half *out,
                                     const __half *x, const __half *w, int rows,
                                     int hidden, float eps);
