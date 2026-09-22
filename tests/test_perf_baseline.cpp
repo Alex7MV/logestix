@@ -92,6 +92,8 @@ const PerfModel kGigachat = {
 const PerfModel kOrnith = {
     "ornith-1.5-35b-a3b", "Ornith-1.5-35B-A3B-MLX", "The capital of France is",
     2048};
+const PerfModel kGranite = {
+    "granite-4.2-30b", "granite-4.2-30b", "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -375,4 +377,9 @@ TEST_CASE("perf baseline: gigachat3.5-432b-a28b-reasoning", "[perf]")
 TEST_CASE("perf baseline: ornith-1.5-35b-a3b", "[perf]")
 {
     RunPerfModel(kOrnith);
+}
+
+TEST_CASE("perf baseline: granite-4.2-30b", "[perf]")
+{
+    RunPerfModel(kGranite);
 }
