@@ -111,6 +111,16 @@ procedure — `perf-tuning-a-model`.
   and routes NVFP4 through the neutral `lsx_nvfp4`), `ornith_moe_model.{h,cpp}`;
   format tag `logestix-ornithmoe`; knob
   `LSX_ORNITH_MOE_EXPERT_CACHE_SLOTS`).
+  Granite-4.2-30B (independent family `granite`: dense decoder-only,
+  64L / 4096H / 32Q / 8KV / 128HD / 32768I, SwiGLU, full-dim RoPE,
+  `attention_multiplier=1/128`; `granite_dense_constants.h` (frozen passport),
+  `granite_dense_convert.{h,cpp}` (flat Granite config -> `logestix-granite`),
+  `granite_dense_load.{h,cpp}` (NVFP4 pinned weights, fused `gate_up`),
+  `granite_dense_inference.{h,cu}` (causal GQA + full RoPE + SwiGLU dense loop
+  over the neutral `lsx_nvfp4` layer and the shared `lsx_kernels_*.cuh`
+  primitives), `granite_dense_model.{h,cpp}`; converted in place with
+  `lsxforge --granite`; full 2048-token pipeline is correct-first
+  (KV-cache decode, non-incremental prefill)).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
