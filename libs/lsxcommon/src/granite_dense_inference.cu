@@ -169,7 +169,7 @@ __global__ void granite_attn_kernel(const __half *__restrict__ q,
 // fixed 8 left the SM array at 12% occupancy on long contexts); the partial
 // slab is sized for kAttnSplitMax.
 constexpr int kAttnSplitMax = 32;
-constexpr int kAttnSplitKeys = 128;
+constexpr int kAttnSplitKeys = 64;
 
 __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
                                           const __half *__restrict__ k,
