@@ -75,6 +75,49 @@ TEST_CASE("granite rmsnorm kernel matches a CPU reference",
     cudaFree(dx); cudaFree(dw); cudaFree(dout);
 }
 
+// Same parity check but with hidden >= 64, which routes through the decode
+// vectorized (half2 + warp-shuffle) path rather than the shared tree kernel.
+TEST_CASE("granite vectorized rmsnorm matches a CPU reference",
+          "[granite][kernels]")
+{
+    const int rows = 3, hidden = 512;
+    const float eps = 1e-6f;
+    int64_t seed = 606;
+    std::vector<float> x(rows * hidden), w(hidden);
+    for (auto &v : x) v = lcg(seed);
+    for (auto &v : w) v = lcg(seed) + 1.0f;
+
+    auto hx = ToHalf(x), hw = ToHalf(w);
+    __half *dx, *dw, *dout;
+    REQUIRE(cudaMalloc(&dx, hx.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dw, hw.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, hx.size() * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, hw.data(), hw.size() * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(RunGraniteRmsNormKernel(nullptr, dout, dx, dw, rows, hidden,
+                                    eps) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> out(rows * hidden);
+    REQUIRE(cudaMemcpy(out.data(), dout, out.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    for (int r = 0; r < rows; ++r) {
+        float ss = 0.f;
+        for (int j = 0; j < hidden; ++j)
+            ss += x[r * hidden + j] * x[r * hidden + j];
+        const float inv = 1.0f / std::sqrt(ss / hidden + eps);
+        for (int j = 0; j < hidden; ++j) {
+            const float ref = x[r * hidden + j] * inv * w[j];
+            INFO("r=" << r << " j=" << j);
+            CHECK(std::fabs(__half2float(out[r * hidden + j]) - ref) < 2e-2f);
+        }
+    }
+    cudaFree(dx); cudaFree(dw); cudaFree(dout);
+}
+
 TEST_CASE("granite rope kernel matches a CPU reference", "[granite][kernels]")
 {
     const int seq = 2, nh = 2, nkv = 1, hd = 8;

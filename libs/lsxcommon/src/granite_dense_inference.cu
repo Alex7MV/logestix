@@ -331,9 +331,70 @@ __global__ void granite_split_qkv_kernel(const __half *__restrict__ qkv,
 
 // ── Launchers ───────────────────────────────────────────────────────────────
 
+// Decode RMSNorm is one row per launch (seq==1), so the shared block-tree
+// kernel is pure latency: nsys (2026-09-22) put it at 16.7 us/call and 14.3%
+// of the whole decode wall, and an isolated sweep measured 12.2 us for
+// RmsNormTreeKernel<128> (its per-thread strided sum plus a 7-level
+// shared-memory tree with a __syncthreads per level). This kernel loads
+// half2, reduces with warp shuffles and a single cross-warp round (2
+// __syncthreads total) and re-reads the L2-resident row for the scale pass:
+// measured 4.0 us (128/256/512 threads all equal -- the remainder is launch
+// latency). Numeric class: FP32 accumulate, fixed warp-tree order (deterministic).
+__global__ void granite_rmsnorm_kernel(const __half *__restrict__ x,
+                                       const __half *__restrict__ w,
+                                       __half *__restrict__ out, int hidden,
+                                       float eps)
+{
+    const int row = blockIdx.x;
+    const int tpb = blockDim.x;
+    const int n2 = hidden >> 1;
+    const __half *xr = x + static_cast<int64_t>(row) * hidden;
+    __half *orow = out + static_cast<int64_t>(row) * hidden;
+    const __half2 *x2 = reinterpret_cast<const __half2 *>(xr);
+    const __half2 *w2 = reinterpret_cast<const __half2 *>(w);
+    __half2 *o2 = reinterpret_cast<__half2 *>(orow);
+
+    float sum = 0.f;
+    for (int j = threadIdx.x; j < n2; j += tpb) {
+        const float2 f = __half22float2(x2[j]);
+        sum = __fmaf_rn(f.x, f.x, __fmaf_rn(f.y, f.y, sum));
+    }
+    for (int o = 16; o > 0; o >>= 1)
+        sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, o));
+    __shared__ float ws[32];
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
+    if (lane == 0) ws[warp] = sum;
+    __syncthreads();
+    if (warp == 0) {
+        float v = (lane < (tpb >> 5)) ? ws[lane] : 0.f;
+        for (int o = 16; o > 0; o >>= 1)
+            v = __fadd_rn(v, __shfl_down_sync(0xffffffffu, v, o));
+        if (lane == 0) ws[0] = v;
+    }
+    __syncthreads();
+    const float inv =
+        rsqrtf(__fadd_rn(__fdiv_rn(ws[0], static_cast<float>(hidden)), eps));
+    for (int j = threadIdx.x; j < n2; j += tpb) {
+        const float2 f = __half22float2(x2[j]);
+        const float2 g = __half22float2(w2[j]);
+        o2[j] = __floats2half2_rn(__fmul_rn(__fmul_rn(f.x, inv), g.x),
+                                  __fmul_rn(__fmul_rn(f.y, inv), g.y));
+    }
+}
+
 cudaError_t GraniteRmsNorm(cudaStream_t stream, __half *out, const __half *x,
                            const __half *w, int rows, int hidden, float eps)
 {
+    // The vectorized kernel needs an even hidden (half2) and 4-byte-aligned
+    // rows; fall back to the shared tree kernel otherwise.
+    const bool vec_ok = (hidden % 2) == 0 && hidden >= 64;
+    if (vec_ok) {
+        constexpr int kNormThreads = 256;
+        granite_rmsnorm_kernel<<<rows, kNormThreads, 0, stream>>>(x, w, out,
+                                                                  hidden, eps);
+        return cudaGetLastError();
+    }
     const size_t shmem =
         kThreads * sizeof(float) + static_cast<size_t>(hidden) * sizeof(__half);
     if (shmem > 48 * 1024) return cudaErrorInvalidValue;
