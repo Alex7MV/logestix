@@ -331,17 +331,27 @@ __global__ void lsx_nvfp4_gemv_kernel(
             const float sc0 = E4M3ScaleToFloat(srow[sb]);
             const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
             const int xb = kb + c * 32;
-            const __half2 *xh = x_vec
-                ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+            __half2 xp[16];
+            if (x_vec) {
+                const uint4 *xq = reinterpret_cast<const uint4 *>(x + xb);
+#pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    const uint4 q = xq[k];
+                    xp[4 * k + 0] = *reinterpret_cast<const __half2 *>(&q.x);
+                    xp[4 * k + 1] = *reinterpret_cast<const __half2 *>(&q.y);
+                    xp[4 * k + 2] = *reinterpret_cast<const __half2 *>(&q.z);
+                    xp[4 * k + 3] = *reinterpret_cast<const __half2 *>(&q.w);
+                }
+            }
 #pragma unroll
             for (int b = 0; b < 16; ++b) {
                 const bool first_block = b < 8;
                 const float scl = first_block ? sc0 : sc1;
                 float xv0, xv1;
                 if (x_vec) {
-                    const __half2 pair = xh[b];
-                    xv0 = __half2float(pair.x);
-                    xv1 = __half2float(pair.y);
+                    const float2 xf = __half22float2(xp[b]);
+                    xv0 = xf.x;
+                    xv1 = xf.y;
                 } else {
                     xv0 = __half2float(x[xb + 2 * b]);
                     xv1 = __half2float(x[xb + 2 * b + 1]);
@@ -501,16 +511,29 @@ lsx_nvfp4_gemv_warprow_kernel(
         const float sc0 = E4M3ScaleToFloat(srow[sb]);
         const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
         const int xb = c * 32;
-        const __half2 *xh = x_vec
-            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+        // Force four 128-bit activation loads (the scalar __half2 loop the
+        // compiler otherwise emits is the GEMV's dominant non-DRAM cost:
+        // removing x entirely lifted this shape 878 -> 1182 GB/s).
+        __half2 xp[16];
+        if (x_vec) {
+            const uint4 *xq = reinterpret_cast<const uint4 *>(x + xb);
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                const uint4 q = xq[k];
+                xp[4 * k + 0] = *reinterpret_cast<const __half2 *>(&q.x);
+                xp[4 * k + 1] = *reinterpret_cast<const __half2 *>(&q.y);
+                xp[4 * k + 2] = *reinterpret_cast<const __half2 *>(&q.z);
+                xp[4 * k + 3] = *reinterpret_cast<const __half2 *>(&q.w);
+            }
+        }
 #pragma unroll
         for (int b = 0; b < 16; ++b) {
             const float scl = (b < 8) ? sc0 : sc1;
             float xv0, xv1;
             if (x_vec) {
-                const __half2 pair = xh[b];
-                xv0 = __half2float(pair.x);
-                xv1 = __half2float(pair.y);
+                const float2 xf = __half22float2(xp[b]);
+                xv0 = xf.x;
+                xv1 = xf.y;
             } else {
                 xv0 = __half2float(x[xb + 2 * b]);
                 xv1 = __half2float(x[xb + 2 * b + 1]);
@@ -526,16 +549,29 @@ lsx_nvfp4_gemv_warprow_kernel(
         const float sc0 = E4M3ScaleToFloat(srow[sb]);
         const float sc1 = E4M3ScaleToFloat(srow[sb + 1]);
         const int xb = c * 32;
-        const __half2 *xh = x_vec
-            ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
+        // Force four 128-bit activation loads (the scalar __half2 loop the
+        // compiler otherwise emits is the GEMV's dominant non-DRAM cost:
+        // removing x entirely lifted this shape 878 -> 1182 GB/s).
+        __half2 xp[16];
+        if (x_vec) {
+            const uint4 *xq = reinterpret_cast<const uint4 *>(x + xb);
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                const uint4 q = xq[k];
+                xp[4 * k + 0] = *reinterpret_cast<const __half2 *>(&q.x);
+                xp[4 * k + 1] = *reinterpret_cast<const __half2 *>(&q.y);
+                xp[4 * k + 2] = *reinterpret_cast<const __half2 *>(&q.z);
+                xp[4 * k + 3] = *reinterpret_cast<const __half2 *>(&q.w);
+            }
+        }
 #pragma unroll
         for (int b = 0; b < 16; ++b) {
             const float scl = (b < 8) ? sc0 : sc1;
             float xv0, xv1;
             if (x_vec) {
-                const __half2 pair = xh[b];
-                xv0 = __half2float(pair.x);
-                xv1 = __half2float(pair.y);
+                const float2 xf = __half22float2(xp[b]);
+                xv0 = xf.x;
+                xv1 = xf.y;
             } else {
                 xv0 = __half2float(x[xb + 2 * b]);
                 xv1 = __half2float(x[xb + 2 * b + 1]);

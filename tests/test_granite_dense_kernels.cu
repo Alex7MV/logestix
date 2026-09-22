@@ -292,11 +292,12 @@ TEST_CASE("granite seq1 GEMV decode-shape aggregate bandwidth budget",
     }
     const double agg = total_bytes / (total_us * 1e-6) / 1e9;
     INFO(report << "aggregate = " << agg << " GB/s");
-    // Measured 2026-09-22 (RTX 5090): warp-per-row on all shapes = 812 GB/s;
-    // the occupancy floor (N >= 8192 -> sliced K-split for the N=4096 shapes)
-    // = 873 GB/s. Budget sits just below the improved figure so a silent
-    // dispatch regression to the low-occupancy launch fails here.
-    CHECK(agg > 840.0);
+    // Measured 2026-09-22 (RTX 5090): 812 GB/s (one-warp-per-row everywhere)
+    // -> 873 (occupancy floor) -> 918 (128-bit activation loads + half22float2
+    // in the slice/warp-row kernels). Raw streaming ceiling on this part =
+    // ~1618 GB/s. Budget sits just below the current figure so a silent
+    // regression to the low-occupancy / scalar-x launch fails here.
+    CHECK(agg > 900.0);
     cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
         lsxg::SetLsxTcFastMath(false);
         lsxg::SetLsxSeq1Gemv(false);
