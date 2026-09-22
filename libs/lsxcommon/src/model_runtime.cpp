@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/gpu_power.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/prompt_framing.h"
@@ -311,7 +312,12 @@ int RunCliBenchmark(const GenerationCliArgs &args)
     // Fixed-length benchmark: ignore EOS so t/s is comparable across numeric
     // modes and unaffected by where EOS lands.
     req.ignore_eos = true;
+    // Board power is sampled on a background host thread for the Infer
+    // duration only (NVML; gracefully absent on a driverless host).
+    perf::GpuPowerSampler power;
+    power.Start();
     gpu::InferenceResult result = m.model->Infer(req);
+    const perf::PowerStats power_stats = power.Stop();
     m.model->Unload();
     if (!result.ok) {
         lsxcommon::log::error(
@@ -329,6 +335,15 @@ int RunCliBenchmark(const GenerationCliArgs &args)
         absl::StrFormat("%.1f", result.total_time_ms), " ms)"));
     lsxcommon::log::info(
         absl::StrFormat("ttft     : %.2f ms", result.ttft_ms));
+    if (power_stats.valid) {
+        const double limit_w = perf::GpuPowerLimitW();
+        lsxcommon::log::info(absl::StrFormat(
+            "power    : %.1f W avg, %.1f W peak (%d samples, limit %.0f W)",
+            power_stats.avg_w, power_stats.peak_w, power_stats.samples,
+            limit_w));
+    } else {
+        lsxcommon::log::info("power    : unavailable (NVML)");
+    }
     lsxcommon::log::info(absl::StrFormat(
         "resident : %.0f MiB",
         static_cast<double>(result.weight_resident_bytes) /

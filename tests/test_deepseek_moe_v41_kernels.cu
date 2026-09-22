@@ -1020,3 +1020,35 @@ TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
 
     cudaFree(ds); cudaFree(dm);
 }
+
+TEST_CASE("v41 cast f32->half saturates instead of overflowing to inf",
+          "[deepseek-v41][kernels]")
+{
+    // Long decode regression (2026-09-21): a hyper-connection activation that
+    // drifts past the FP16 range must clamp, not become inf -- inf in the
+    // attention input turns the softmax into NaN and killed the r3 run at
+    // generation step 322.
+    const std::vector<float> in = {0.0f, 1.5f, 70000.0f, -70000.0f,
+                                   INFINITY, -INFINITY};
+    float *d_in = nullptr;
+    uint16_t *d_out = nullptr;
+    REQUIRE(cudaMalloc(&d_in, in.size() * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out, in.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_in, in.data(), in.size() * 4,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchCastF32ToHalf(
+                d_in, d_out, static_cast<int>(in.size()), nullptr) ==
+            cudaSuccess);
+    std::vector<uint16_t> out(in.size());
+    REQUIRE(cudaMemcpy(out.data(), d_out, in.size() * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (uint16_t b : out) REQUIRE(std::isfinite(F(b)));
+    CHECK(F(out[0]) == 0.0f);
+    CHECK(F(out[1]) == 1.5f);
+    CHECK(F(out[2]) == 65504.0f);
+    CHECK(F(out[3]) == -65504.0f);
+    CHECK(F(out[4]) == 65504.0f);
+    CHECK(F(out[5]) == -65504.0f);
+    cudaFree(d_in);
+    cudaFree(d_out);
+}

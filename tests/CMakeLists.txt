@@ -43,6 +43,12 @@ target_link_libraries(test_perf_baseline_logic PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
 add_test(NAME test_perf_baseline_logic COMMAND test_perf_baseline_logic)
 
+# ── GPU board-power sampling (host-only; NVML cases SKIP when unavailable) ──
+add_executable(test_gpu_power test_gpu_power.cpp)
+target_link_libraries(test_gpu_power PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_gpu_power COMMAND test_gpu_power)
+set_tests_properties(test_gpu_power PROPERTIES SKIP_RETURN_CODE 4)
+
 
 # ── Zero-copy Arrow IPC view load test (the loaders' fast path) ──────
 add_executable(test_schema_views test_schema_views.cpp)
@@ -3772,6 +3778,7 @@ set_tests_properties(
     test_fast_load
     test_geometry_guard
     test_gpu_perf
+    test_gpu_power
     test_perf_baseline_logic
     test_schema_views
     test_deepseek_moe_loader

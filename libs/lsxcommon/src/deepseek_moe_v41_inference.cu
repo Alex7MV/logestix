@@ -314,7 +314,14 @@ __global__ void cast_f32_to_half_kernel(const float *__restrict__ src,
                                         __half *__restrict__ dst, int n)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) dst[i] = __float2half_rn(src[i]);
+    if (i < n) {
+        // Saturate to the finite FP16 range. A hyper-connection activation can
+        // drift past 65504 on a long decode; a bare __float2half_rn turns that
+        // into +inf, which the next attention softmax turns into NaN and the
+        // whole hidden state is lost. Clamping keeps the value finite.
+        const float v = src[i];
+        dst[i] = __float2half_rn(fminf(fmaxf(v, -65504.0f), 65504.0f));
+    }
 }
 
 __global__ void cast_half_to_f32_kernel(const __half *__restrict__ src,

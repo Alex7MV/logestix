@@ -14,7 +14,7 @@
 namespace lsxcommon {
 namespace perf_baseline {
 
-inline constexpr int kPerfBaselineFormatVersion = 2;
+inline constexpr int kPerfBaselineFormatVersion = 3;
 
 struct PerfBaselineEntry {
     std::string model_type;
@@ -28,6 +28,10 @@ struct PerfBaselineEntry {
     std::string commit;         // repo commit the measurement was taken at
     int gen_tokens = 0;         // ACTUAL generated length (0 = legacy entry);
                                 // t/s is only comparable at equal length
+    double ttft_ms = 0.0;       // stream start -> first generated token
+    double avg_power_w = 0.0;   // mean board power over the run (0 = unknown)
+    double peak_power_w = 0.0;  // peak board power over the run (0 = unknown)
+    int power_samples = 0;      // 0 => NVML unavailable / not sampled
 };
 
 struct PerfBaselineTable {
@@ -60,6 +64,14 @@ enum class PerfVerdict {
 // below baseline -> pass; else degrade.
 PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,
                       double tolerance_pct = 3.0);
+
+// Backfills the recorded evidence (TTFT/power) of an existing entry from a
+// fresh measurement when the entry predates those fields. Never touches
+// tokens_per_sec or the measurement protocol. Returns true when the entry
+// changed. A fresh run without NVML leaves the power fields untouched; TTFT
+// is still filled when absent.
+bool BackfillEvidence(PerfBaselineEntry &entry, double ttft_ms,
+                      double avg_power_w, double peak_power_w, int samples);
 
 // Length-aware verdict: t/s depends on the actual generated length (EOS
 // timing shifts the KV-attention cost curve), so a run is only comparable

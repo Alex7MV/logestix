@@ -84,6 +84,9 @@ TEST_CASE("Qwen3.8-Flash-Next SelfCheck: 'The capital of France is' -> 'Paris', 
     REQUIRE(sc0.selfcheck_passed);
     REQUIRE(sc0.first_gen_text == "Paris");
     REQUIRE(!sc0.final_logits.empty());
+    // TTFT must be measured over the first forward, not a placeholder.
+    REQUIRE(sc0.ttft_ms > 0.0);
+    REQUIRE(sc0.total_time_ms >= sc0.ttft_ms);
 
     const std::vector<float> &ref_logits = sc0.final_logits;
     const int32_t ref_first = sc0.first_gen_tok_id;

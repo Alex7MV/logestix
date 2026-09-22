@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "lsxcommon/gpu_perf.h"
+#include "lsxcommon/gpu_power.h"
 #include "lsxcommon/model_engine.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model.h"
@@ -132,6 +133,10 @@ std::string TodayIso()
 struct MeasureResult {
     double tokens_per_sec = 0.0;
     int gen_tokens = 0;
+    double ttft_ms = 0.0;
+    double avg_power_w = 0.0;
+    double peak_power_w = 0.0;
+    int power_samples = 0;
 };
 
 std::optional<MeasureResult> MeasureModel(const PerfModel &m,
@@ -175,12 +180,19 @@ std::optional<MeasureResult> MeasureModel(const PerfModel &m,
     // t/s is comparable across numeric modes (perf/r3) and across bit-drift.
     req.ignore_eos = true;
 
+    lsxcommon::perf::GpuPowerSampler power;
+    power.Start();
     const auto r = model->Infer(req);
+    const lsxcommon::perf::PowerStats ps = power.Stop();
     model->Unload();
     if (!r.ok) FAIL("Infer failed for " << m.model_type << ": "
                                         << r.error_msg);
     return MeasureResult{r.tokens_per_sec,
-                         static_cast<int>(r.gen_tokens.size())};
+                         static_cast<int>(r.gen_tokens.size()),
+                         r.ttft_ms,
+                         ps.valid ? ps.avg_w : 0.0,
+                         ps.valid ? ps.peak_w : 0.0,
+                         ps.samples};
 }
 
 void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
@@ -226,6 +238,10 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
         upsert.date = TodayIso();
         upsert.commit = "-";
         upsert.gen_tokens = mr.gen_tokens;
+        upsert.ttft_ms = mr.ttft_ms;
+        upsert.avg_power_w = mr.avg_power_w;
+        upsert.peak_power_w = mr.peak_power_w;
+        upsert.power_samples = mr.power_samples;
         bool replaced = false;
         for (auto &e : table.entries) {
             if (e.model_type == upsert.model_type && e.gpu_key == gpu_key &&
@@ -236,6 +252,8 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
             }
         }
         if (!replaced) table.entries.push_back(upsert);
+        // A rewritten file always carries the current schema (new fields).
+        table.format_version = pb::kPerfBaselineFormatVersion;
         SaveTable(table);
         INFO(m.model_type << ": reference updated -> " << actual << " t/s"
                           << " at " << mr.gen_tokens << " tok"
@@ -247,11 +265,33 @@ void CheckAgainstBaseline(const PerfModel &m, const MeasureResult &mr,
                                        : " (new entry)"));
         break;
     }
-    case pb::PerfVerdict::kPass:
+    case pb::PerfVerdict::kPass: {
+        // Backfill TTFT/power evidence missing from legacy entries so a
+        // normal (non-improving) run still persists the new metrics. The
+        // baseline t/s and measurement protocol are never touched.
+        if (entry != nullptr) {
+            pb::PerfBaselineEntry updated = *entry;
+            if (pb::BackfillEvidence(updated, mr.ttft_ms, mr.avg_power_w,
+                                     mr.peak_power_w, mr.power_samples)) {
+                for (auto &e : table.entries) {
+                    if (e.model_type == m.model_type && e.gpu_key == gpu_key &&
+                        e.os == kThisOs && e.mode == mode) {
+                        e = updated;
+                        break;
+                    }
+                }
+                table.format_version = pb::kPerfBaselineFormatVersion;
+                SaveTable(table);
+                INFO(m.model_type << ": evidence backfilled (ttft=" << mr.ttft_ms
+                                  << " ms, power=" << mr.avg_power_w << "/"
+                                  << mr.peak_power_w << " W)");
+            }
+        }
         INFO(m.model_type << ": within tolerance, baseline=" << *baseline
                           << " t/s, actual=" << actual << " t/s at "
                           << mr.gen_tokens << " tok");
         break;
+    }
     }
 }
 

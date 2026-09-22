@@ -19,7 +19,7 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
         return std::nullopt;
     int64_t ver = 0;
     if (root["format_version"].get(ver) != simdjson::SUCCESS ||
-        (ver != kPerfBaselineFormatVersion && ver != 1))
+        (ver != kPerfBaselineFormatVersion && ver != 2 && ver != 1))
         return std::nullopt;
     simdjson::dom::array entries;
     if (root["entries"].get_array().get(entries) != simdjson::SUCCESS)
@@ -60,6 +60,15 @@ std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
             e.commit = sv;
         if (o["gen_tokens"].get_int64().get(v) == simdjson::SUCCESS)
             e.gen_tokens = static_cast<int>(v);
+        // TTFT/power evidence is optional (v1/v2 entries keep parsing).
+        if (o["ttft_ms"].get_double().get(d) == simdjson::SUCCESS)
+            e.ttft_ms = d;
+        if (o["avg_power_w"].get_double().get(d) == simdjson::SUCCESS)
+            e.avg_power_w = d;
+        if (o["peak_power_w"].get_double().get(d) == simdjson::SUCCESS)
+            e.peak_power_w = d;
+        if (o["power_samples"].get_int64().get(v) == simdjson::SUCCESS)
+            e.power_samples = static_cast<int>(v);
         t.entries.push_back(std::move(e));
     }
     return t;
@@ -84,7 +93,13 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
         absl::StrAppend(&s, "      \"prompt\": \"", e.prompt, "\",\n");
         absl::StrAppend(&s, "      \"date\": \"", e.date, "\",\n");
         absl::StrAppend(&s, "      \"commit\": \"", e.commit, "\",\n");
-        absl::StrAppend(&s, "      \"gen_tokens\": ", e.gen_tokens, "\n");
+        absl::StrAppend(&s, "      \"gen_tokens\": ", e.gen_tokens, ",\n");
+        absl::StrAppendFormat(&s, "      \"ttft_ms\": %.2f,\n", e.ttft_ms);
+        absl::StrAppendFormat(&s, "      \"avg_power_w\": %.2f,\n",
+                              e.avg_power_w);
+        absl::StrAppendFormat(&s, "      \"peak_power_w\": %.2f,\n",
+                              e.peak_power_w);
+        absl::StrAppend(&s, "      \"power_samples\": ", e.power_samples, "\n");
         absl::StrAppend(&s, "    }");
     }
     absl::StrAppend(&s, t.entries.empty() ? "]\n" : "\n  ]\n");
@@ -104,6 +119,23 @@ const PerfBaselineEntry *FindEntry(const PerfBaselineTable &t,
             return &e;
     }
     return nullptr;
+}
+
+bool BackfillEvidence(PerfBaselineEntry &entry, double ttft_ms,
+                      double avg_power_w, double peak_power_w, int samples)
+{
+    bool changed = false;
+    if (entry.ttft_ms == 0.0 && ttft_ms > 0.0) {
+        entry.ttft_ms = ttft_ms;
+        changed = true;
+    }
+    if (entry.power_samples == 0 && samples > 0) {
+        entry.avg_power_w = avg_power_w;
+        entry.peak_power_w = peak_power_w;
+        entry.power_samples = samples;
+        changed = true;
+    }
+    return changed;
 }
 
 PerfVerdict JudgePerf(const std::optional<double> &baseline, double actual,

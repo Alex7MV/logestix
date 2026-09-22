@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 3,
   "entries": [
     {
       "model_type": "glm-5.3-flash",
@@ -11,7 +11,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-14",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 441.09,
+      "avg_power_w": 377.15,
+      "peak_power_w": 448.74,
+      "power_samples": 3068
     },
     {
       "model_type": "deepseek-v4-flash",
@@ -23,7 +27,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 400.03,
+      "avg_power_w": 100.12,
+      "peak_power_w": 315.98,
+      "power_samples": 19858
     },
     {
       "model_type": "kimi-k2.7-code",
@@ -35,19 +43,27 @@
       "prompt": "The capital of France is",
       "date": "2026-09-14",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.8-flash-next",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 26.53,
+      "tokens_per_sec": 26.61,
       "max_gen": 2048,
       "prompt": "The capital of France is",
-      "date": "2026-09-15",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 273.61,
+      "avg_power_w": 187.07,
+      "peak_power_w": 194.40,
+      "power_samples": 3834
     },
     {
       "model_type": "qwen3.8-27b",
@@ -59,7 +75,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-13",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "gemma-4-26b-a4b-it",
@@ -69,9 +89,13 @@
       "tokens_per_sec": 102.31,
       "max_gen": 2048,
       "prompt": "Write a detailed long essay about the history of computing, from Babbage to modern GPUs.",
-      "date": "2026-09-15",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 187.31,
+      "avg_power_w": 343.25,
+      "peak_power_w": 366.24,
+      "power_samples": 1012
     },
     {
       "model_type": "qwen3.5-35b-a3b",
@@ -83,7 +107,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-13",
       "commit": "-",
-      "gen_tokens": 1484
+      "gen_tokens": 1484,
+      "ttft_ms": 0.00,
+      "avg_power_w": 0.00,
+      "peak_power_w": 0.00,
+      "power_samples": 0
     },
     {
       "model_type": "qwen3.6-35b-a3b",
@@ -95,19 +123,27 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 31.58,
+      "avg_power_w": 250.48,
+      "peak_power_w": 269.88,
+      "power_samples": 718
     },
     {
       "model_type": "deepseek-v4.1-flash",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 6.62,
+      "tokens_per_sec": 6.64,
       "max_gen": 2048,
       "prompt": "The capital of France is",
-      "date": "2026-09-14",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 544.40,
+      "avg_power_w": 170.11,
+      "peak_power_w": 236.30,
+      "power_samples": 15371
     },
     {
       "model_type": "glm-5.3-flash",
@@ -119,7 +155,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 508.75,
+      "avg_power_w": 289.54,
+      "peak_power_w": 364.77,
+      "power_samples": 5540
     },
     {
       "model_type": "qwen3.6-35b-a3b",
@@ -131,19 +171,27 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 373.56,
+      "avg_power_w": 170.55,
+      "peak_power_w": 172.66,
+      "power_samples": 7667
     },
     {
       "model_type": "gemma-4-26b-a4b-it",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "r3",
-      "tokens_per_sec": 104.61,
+      "tokens_per_sec": 104.68,
       "max_gen": 2048,
       "prompt": "Write a detailed long essay about the history of computing, from Babbage to modern GPUs.",
-      "date": "2026-09-15",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 168.31,
+      "avg_power_w": 356.44,
+      "peak_power_w": 381.25,
+      "power_samples": 990
     },
     {
       "model_type": "qwen3.8-flash-next",
@@ -155,7 +203,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 800.70,
+      "avg_power_w": 168.64,
+      "peak_power_w": 172.47,
+      "power_samples": 16032
     },
     {
       "model_type": "deepseek-v4-flash",
@@ -167,7 +219,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-15",
       "commit": "-",
-      "gen_tokens": 2049
+      "gen_tokens": 2049,
+      "ttft_ms": 680.30,
+      "avg_power_w": 163.57,
+      "peak_power_w": 244.54,
+      "power_samples": 20166
     },
     {
       "model_type": "nemotron-3.5-lightning-30b-a3b",
@@ -179,7 +235,11 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 38.47,
+      "avg_power_w": 285.01,
+      "peak_power_w": 376.50,
+      "power_samples": 1039
     },
     {
       "model_type": "nemotron-3.5-lightning-30b-a3b",
@@ -191,43 +251,59 @@
       "prompt": "The capital of France is",
       "date": "2026-09-16",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 224.84,
+      "avg_power_w": 225.76,
+      "peak_power_w": 235.03,
+      "power_samples": 4242
     },
     {
       "model_type": "gigachat3.5-432b-a28b-reasoning",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 3.29,
+      "tokens_per_sec": 4.84,
       "max_gen": 2048,
       "prompt": "The capital of France is",
-      "date": "2026-09-20",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 8674.76,
+      "avg_power_w": 176.23,
+      "peak_power_w": 184.94,
+      "power_samples": 21100
     },
     {
       "model_type": "gigachat3.5-432b-a28b-reasoning",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "r3",
-      "tokens_per_sec": 1.94,
+      "tokens_per_sec": 2.47,
       "max_gen": 2048,
       "prompt": "The capital of France is",
-      "date": "2026-09-20",
+      "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 16689.23,
+      "avg_power_w": 189.15,
+      "peak_power_w": 197.81,
+      "power_samples": 41303
     },
     {
       "model_type": "ornith-1.5-35b-a3b",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 141.85,
+      "tokens_per_sec": 141.90,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 107.39,
+      "avg_power_w": 257.40,
+      "peak_power_w": 273.14,
+      "power_samples": 719
     },
     {
       "model_type": "ornith-1.5-35b-a3b",
@@ -239,7 +315,27 @@
       "prompt": "The capital of France is",
       "date": "2026-09-21",
       "commit": "-",
-      "gen_tokens": 2048
+      "gen_tokens": 2048,
+      "ttft_ms": 1267.49,
+      "avg_power_w": 171.37,
+      "peak_power_w": 173.16,
+      "power_samples": 7702
+    },
+    {
+      "model_type": "deepseek-v4.1-flash",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "r3",
+      "tokens_per_sec": 4.65,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-09-21",
+      "commit": "-",
+      "gen_tokens": 2049,
+      "ttft_ms": 833.66,
+      "avg_power_w": 192.61,
+      "peak_power_w": 228.47,
+      "power_samples": 21974
     }
   ]
 }

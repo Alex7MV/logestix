@@ -1732,8 +1732,9 @@ cudaError_t RunGlmFlashGeneration(
     int32_t cur = prompt[0];
     int generated = 0;
     cudaError_t step_err = cudaSuccess;
-    cudaEvent_t t_start = nullptr, t_stop = nullptr;
+    cudaEvent_t t_start = nullptr, t_ttft = nullptr, t_stop = nullptr;
     cudaEventCreate(&t_start);
+    cudaEventCreate(&t_ttft);
     cudaEventCreate(&t_stop);
     if (t_start) cudaEventRecord(t_start, stream);
 
@@ -2043,6 +2044,9 @@ cudaError_t RunGlmFlashGeneration(
             if (cudaStreamSynchronize(stream) != cudaSuccess)
                 { result.error_msg = "sample sync"; break; }
             result.tokens.push_back(h_tok);
+            // TTFT: first generated token's forward is complete (the stream
+            // was just synchronized on the argmax readback).
+            if (generated == 0 && t_ttft) cudaEventRecord(t_ttft, stream);
             cur = h_tok;
             ++generated;
             bool eos_hit = false;
@@ -2067,6 +2071,10 @@ cudaError_t RunGlmFlashGeneration(
             float ms = 0.f;
             if (cudaEventElapsedTime(&ms, t_start, t_stop) == cudaSuccess)
                 result.total_ms = ms;
+            float ms_ttft = 0.f;
+            if (t_ttft && cudaEventElapsedTime(&ms_ttft, t_start, t_ttft) ==
+                              cudaSuccess)
+                result.ttft_ms = ms_ttft;
         }
     }
     cudaStreamSynchronize(stream);
@@ -2082,6 +2090,7 @@ cudaError_t RunGlmFlashGeneration(
     cudaFree(d_slots);
     cudaFree(d_gemv_tbl);
     if (t_start) cudaEventDestroy(t_start);
+    if (t_ttft) cudaEventDestroy(t_ttft);
     if (t_stop) cudaEventDestroy(t_stop);
     return result.ok ? cudaSuccess : cudaErrorUnknown;
 }
