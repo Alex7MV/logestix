@@ -172,6 +172,28 @@ __global__ void granite_swiglu_fused_kernel(const __half *__restrict__ gu,
     out[i] = __float2half(__fmul_rn(s, u));
 }
 
+// Splits the fused [seq, NH*HD + 2*NKV*HD] q/k/v projection output into the
+// contiguous per-tensor buffers RoPE/attention consume.
+__global__ void granite_split_qkv_kernel(const __half *__restrict__ qkv,
+                                         __half *__restrict__ q,
+                                         __half *__restrict__ k,
+                                         __half *__restrict__ v, int seq,
+                                         int qn, int kn)
+{
+    const int row = qn + 2 * kn;
+    const int64_t i =
+        static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= static_cast<int64_t>(seq) * row) return;
+    const int t = static_cast<int>(i / row);
+    const int j = static_cast<int>(i - static_cast<int64_t>(t) * row);
+    if (j < qn)
+        q[static_cast<int64_t>(t) * qn + j] = qkv[i];
+    else if (j < qn + kn)
+        k[static_cast<int64_t>(t) * kn + (j - qn)] = qkv[i];
+    else
+        v[static_cast<int64_t>(t) * kn + (j - qn - kn)] = qkv[i];
+}
+
 // ── Launchers ───────────────────────────────────────────────────────────────
 
 cudaError_t GraniteRmsNorm(cudaStream_t stream, __half *out, const __half *x,
@@ -208,6 +230,16 @@ cudaError_t GraniteAttention(cudaStream_t stream, const __half *q,
     return cudaGetLastError();
 }
 
+cudaError_t GraniteSplitQKV(cudaStream_t stream, const __half *qkv, __half *q,
+                            __half *k, __half *v, int seq, int qn, int kn)
+{
+    const int64_t total = static_cast<int64_t>(seq) * (qn + 2 * kn);
+    const int blocks = static_cast<int>((total + kThreads - 1) / kThreads);
+    granite_split_qkv_kernel<<<blocks, kThreads, 0, stream>>>(qkv, q, k, v, seq,
+                                                              qn, kn);
+    return cudaGetLastError();
+}
+
 cudaError_t GraniteSwiGLU(cudaStream_t stream, const __half *gu, __half *out,
                           int I, int64_t n)
 {
@@ -224,6 +256,7 @@ struct Workspace {
     __half *q = nullptr;
     __half *k = nullptr;
     __half *v = nullptr;
+    __half *qkv = nullptr;
     __half *attn = nullptr;
     __half *proj = nullptr;
     __half *gate_up = nullptr;
@@ -245,6 +278,7 @@ void Workspace::Free()
 {
     cudaFree(x); cudaFree(norm); cudaFree(q); cudaFree(k); cudaFree(v);
     cudaFree(attn); cudaFree(proj); cudaFree(gate_up); cudaFree(act);
+    cudaFree(qkv);
     cudaFree(down); cudaFree(logits); cudaFree(embed_h);
     cudaFree(ids); cudaFree(pos); cudaFree(tok); cudaFree(maxv);
     *this = Workspace{};
@@ -271,6 +305,8 @@ cudaError_t Workspace::Alloc(const GraniteTopology &top, int max_seq_)
     if ((e = alloc(reinterpret_cast<void **>(&k), S * NKV * HD * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&v), S * NKV * HD * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&attn), S * NH * HD * 2))) return e;
+    if ((e = alloc(reinterpret_cast<void **>(&qkv),
+                   S * (NH + 2 * NKV) * HD * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&proj), S * H * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&gate_up), S * 2 * I * 2))) return e;
     if ((e = alloc(reinterpret_cast<void **>(&act), S * I * 2))) return e;
@@ -383,15 +419,26 @@ cudaError_t RunLayer(cudaStream_t stream, const GranitePinnedWeights &pw,
                                    H, static_cast<float>(top.rms_norm_eps));
     if (e != cudaSuccess) return e;
 
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.q.d_packed, lw.q.d_scales,
-                        lw.q.global_scale, ws.q, seq, H, NH * HD);
-    if (e != cudaSuccess) return e;
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.k.d_packed, lw.k.d_scales,
-                        lw.k.global_scale, ws.k, seq, H, NKV * HD);
-    if (e != cudaSuccess) return e;
-    e = RunLsxNvfp4Gemm(stream, ws.norm, lw.v.d_packed, lw.v.d_scales,
-                        lw.v.global_scale, ws.v, seq, H, NKV * HD);
-    if (e != cudaSuccess) return e;
+    if (lw.qkv.d_packed) {
+        // One GEMV over the fused [NH*HD + 2*NKV*HD, K] weight, then split.
+        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.qkv.d_packed, lw.qkv.d_scales,
+                            lw.qkv.global_scale, ws.qkv, seq, H,
+                            (NH + 2 * NKV) * HD);
+        if (e != cudaSuccess) return e;
+        e = GraniteSplitQKV(stream, ws.qkv, ws.q, ws.k, ws.v, seq, NH * HD,
+                            NKV * HD);
+        if (e != cudaSuccess) return e;
+    } else {
+        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.q.d_packed, lw.q.d_scales,
+                            lw.q.global_scale, ws.q, seq, H, NH * HD);
+        if (e != cudaSuccess) return e;
+        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.k.d_packed, lw.k.d_scales,
+                            lw.k.global_scale, ws.k, seq, H, NKV * HD);
+        if (e != cudaSuccess) return e;
+        e = RunLsxNvfp4Gemm(stream, ws.norm, lw.v.d_packed, lw.v.d_scales,
+                            lw.v.global_scale, ws.v, seq, H, NKV * HD);
+        if (e != cudaSuccess) return e;
+    }
 
     e = GraniteRope(stream, ws.q, ws.k, d_pos, seq, NH, NKV, HD,
                     top.rope_theta);

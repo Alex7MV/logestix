@@ -405,6 +405,18 @@ arrow::Status ConvertGraniteModel(const std::string &input_path,
     };
     absl::btree_map<int, PendingGate> pending_gate;
 
+    // q/k/v are quantized JOINTLY into one [NH*HD + 2*NKV*HD, K] NVFP4 record
+    // with a single global scale (same idea as gate_up): the decode step then
+    // streams them in ONE GEMV instead of three (the two N=1024 launches are
+    // latency-bound at ~184 GB/s).
+    struct PendingQKV {
+        std::vector<uint8_t> data[3];
+        std::vector<int64_t> shape[3];
+        std::string dtype[3];
+        bool have[3] = {false, false, false};
+    };
+    absl::btree_map<int, PendingQKV> pending_qkv;
+
     auto fused_gate_up_name = [](const std::string &src) {
         const std::string from = "gate_proj";
         const std::string to = "gate_up_proj";
@@ -464,6 +476,45 @@ arrow::Status ConvertGraniteModel(const std::string &input_path,
 
             const int layer = p.layer;
             if (nvfp4) {
+                // Intercept the q/k/v triple for joint quantization.
+                if (p.kind == TensorKind::AttnQ ||
+                    p.kind == TensorKind::AttnK ||
+                    p.kind == TensorKind::AttnV) {
+                    const int qi = (p.kind == TensorKind::AttnQ)
+                                       ? 0
+                                       : (p.kind == TensorKind::AttnK ? 1 : 2);
+                    PendingQKV &pq = pending_qkv[layer];
+                    pq.data[qi] = std::move(data);
+                    pq.shape[qi] = t.shape;
+                    pq.dtype[qi] = t.dtype;
+                    pq.have[qi] = true;
+                    if (pq.have[0] && pq.have[1] && pq.have[2]) {
+                        const int64_t cols = pq.shape[0][1];
+                        const int64_t rows = pq.shape[0][0] +
+                                             pq.shape[1][0] + pq.shape[2][0];
+                        std::vector<uint8_t> fused;
+                        fused.reserve(pq.data[0].size() + pq.data[1].size() +
+                                      pq.data[2].size());
+                        for (int z = 0; z < 3; ++z)
+                            fused.insert(fused.end(), pq.data[z].begin(),
+                                         pq.data[z].end());
+                        std::vector<int64_t> fused_shape = {rows, cols};
+                        DenseNvfp4Record r;
+                        r.name = absl::StrCat("model.layers.", layer,
+                                              ".self_attn.qkv_proj.weight");
+                        r.shape = fused_shape;
+                        r.dtype = pq.dtype[0];
+                        if (!gpu::quantize_tensor_gpu(
+                                fused.data(), rows * cols, pq.dtype[0], nullptr,
+                                fused_shape, {}, r.packed, r.scales,
+                                r.global_scale))
+                            r.packed.clear();
+                        nvfp4_by_layer[layer].push_back(std::move(r));
+                        pending_qkv.erase(layer);
+                        ++total_pinned;
+                    }
+                    continue;
+                }
                 if (p.kind == TensorKind::MlpGate) {
                     PendingGate &pg = pending_gate[layer];
                     pg.data = std::move(data);

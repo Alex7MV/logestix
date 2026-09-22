@@ -23,7 +23,10 @@ struct GraniteLayerWeights {
     __half *d_post_norm = nullptr;
     int norm_size = 0;
 
-    // Attention projections (NVFP4).
+    // Attention projections (NVFP4). q/k/v are quantized jointly by the
+    // converter into `qkv` ([NH*HD + 2*NKV*HD, K], one global scale) so decode
+    // streams them in a single GEMV; q/k/v below are non-owning row-slices.
+    lsx_nvfp4::LsxNvfp4Weight qkv;
     lsx_nvfp4::LsxNvfp4Weight q;  // hidden -> NH*HD
     lsx_nvfp4::LsxNvfp4Weight k;  // hidden -> NKV*HD
     lsx_nvfp4::LsxNvfp4Weight v;  // hidden -> NKV*HD

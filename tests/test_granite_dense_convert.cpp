@@ -108,9 +108,8 @@ TEST_CASE("Granite converter builds logestix-granite index and arrow layout",
     // Per-layer NVFP4 records: q/k/v/o + fused gate_up + down.
     auto names = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
                                    "layer_0_nvfp4.arrow");
-    CHECK(Contains(names, "model.layers.0.self_attn.q_proj.weight"));
-    CHECK(Contains(names, "model.layers.0.self_attn.k_proj.weight"));
-    CHECK(Contains(names, "model.layers.0.self_attn.v_proj.weight"));
+    // q/k/v are fused into one jointly-quantized record.
+    CHECK(Contains(names, "model.layers.0.self_attn.qkv_proj.weight"));
     CHECK(Contains(names, "model.layers.0.self_attn.o_proj.weight"));
     CHECK(Contains(names, "model.layers.0.mlp.gate_up_proj.weight"));
     CHECK(Contains(names, "model.layers.0.mlp.down_proj.weight"));

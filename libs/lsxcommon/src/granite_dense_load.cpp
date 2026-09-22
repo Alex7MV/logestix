@@ -32,7 +32,7 @@ void GraniteLayerWeights::Free()
         arena_bytes = 0;
         d_input_norm = nullptr;
         d_post_norm = nullptr;
-        q.Free(); k.Free(); v.Free(); o.Free();
+        qkv.Free(); q.Free(); k.Free(); v.Free(); o.Free();
         mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
         norm_size = 0;
         loaded = false;
@@ -40,6 +40,7 @@ void GraniteLayerWeights::Free()
     }
     cudaFree(d_input_norm); d_input_norm = nullptr;
     cudaFree(d_post_norm);  d_post_norm = nullptr;
+    qkv.Free();
     q.Free(); k.Free(); v.Free(); o.Free();
     mlp_gate.Free(); mlp_up.Free(); mlp_down.Free(); mlp_gate_up.Free();
     norm_size = 0;
@@ -73,7 +74,8 @@ CvKind NormKind(const TensorView *t)
 }
 
 cudaError_t LoadLayer(const TensorBatchViews &raw,
-                      const DenseNvfp4BatchViews &nv, GraniteLayerWeights &lw,
+                      const DenseNvfp4BatchViews &nv,
+                      const GraniteTopology &top, GraniteLayerWeights &lw,
                       cudaStream_t stream, fastload::PinnedStagingRing &ring,
                       std::uint64_t &bytes_acc)
 {
@@ -93,14 +95,20 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
                                   nullptr);
     if (e != cudaSuccess) return e;
 
-    e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.q_proj.weight"), lw.q,
-                          stream, ring, bytes_acc, nullptr);
-    if (e == cudaSuccess)
-        e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.k_proj.weight"),
-                              lw.k, stream, ring, bytes_acc, nullptr);
-    if (e == cudaSuccess)
-        e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.v_proj.weight"),
-                              lw.v, stream, ring, bytes_acc, nullptr);
+    // Fused q/k/v record (current converter); fall back to separate q/k/v
+    // records for models converted before the fusion.
+    e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.qkv_proj.weight"),
+                          lw.qkv, stream, ring, bytes_acc, nullptr);
+    if (e == cudaSuccess && !lw.qkv.d_packed) {
+        e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.q_proj.weight"),
+                              lw.q, stream, ring, bytes_acc, nullptr);
+        if (e == cudaSuccess)
+            e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.k_proj.weight"),
+                                  lw.k, stream, ring, bytes_acc, nullptr);
+        if (e == cudaSuccess)
+            e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.v_proj.weight"),
+                                  lw.v, stream, ring, bytes_acc, nullptr);
+    }
     if (e == cudaSuccess)
         e = UploadNvfp4Weight(FindNvfp4Suffix(nv, "self_attn.o_proj.weight"),
                               lw.o, stream, ring, bytes_acc, nullptr);
@@ -142,8 +150,37 @@ cudaError_t LoadLayer(const TensorBatchViews &raw,
                   lw.mlp_gate_up.d_scales + gate_scales);
     }
 
+    if (lw.qkv.d_packed) {
+        // q/k/v as non-owning row-slices of the fused [NH*HD + 2*NKV*HD, K]
+        // record (NVFP4 rows are contiguous, so the byte split is exact).
+        const int qn = top.num_attention_heads * top.head_dim;
+        const int kn = top.num_key_value_heads * top.head_dim;
+        const int64_t total_rows = static_cast<int64_t>(qn) + 2 * kn;
+        const int64_t pbytes = lw.qkv.packed_bytes;
+        const int64_t sbytes = lw.qkv.scale_bytes;
+        const int64_t qp = pbytes * qn / total_rows;
+        const int64_t kp = pbytes * kn / total_rows;
+        const int64_t qs = sbytes * qn / total_rows;
+        const int64_t ks = sbytes * kn / total_rows;
+        auto view = [&](lsx_nvfp4::LsxNvfp4Weight &w, const uint8_t *p,
+                        const uint8_t *s, int rows, int64_t pb, int64_t sb) {
+            w.d_packed = p;
+            w.d_scales = s;
+            w.global_scale = lw.qkv.global_scale;
+            w.rows = rows;
+            w.cols = lw.qkv.cols;
+            w.packed_bytes = pb;
+            w.scale_bytes = sb;
+            w.view_only = true;
+        };
+        view(lw.q, lw.qkv.d_packed, lw.qkv.d_scales, qn, qp, qs);
+        view(lw.k, lw.qkv.d_packed + qp, lw.qkv.d_scales + qs, kn, kp, ks);
+        view(lw.v, lw.qkv.d_packed + qp + kp, lw.qkv.d_scales + qs + ks, kn, kp,
+             ks);
+    }
     const bool attn_ok =
-        lw.q.d_packed && lw.k.d_packed && lw.v.d_packed && lw.o.d_packed;
+        lw.o.d_packed &&
+        (lw.qkv.d_packed || (lw.q.d_packed && lw.k.d_packed && lw.v.d_packed));
     const bool mlp_ok = lw.mlp_gate.d_packed && lw.mlp_up.d_packed &&
                         lw.mlp_down.d_packed;
     lw.loaded = attn_ok && mlp_ok && lw.d_input_norm && lw.d_post_norm;
@@ -271,7 +308,8 @@ bool LoadGranitePinnedWeights(const std::string &output_root,
             if (nv_res.ok()) nv = std::move(*nv_res);
         }
 
-        cudaError_t lerr = LoadLayer(*raw, nv, pw.layers[static_cast<size_t>(l)],
+        cudaError_t lerr = LoadLayer(*raw, nv, pw.top,
+                                     pw.layers[static_cast<size_t>(l)],
                                      stream, ring, bytes_acc);
         if (lerr != cudaSuccess) {
             pw.Free();
