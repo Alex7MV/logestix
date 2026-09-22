@@ -486,6 +486,54 @@ set_tests_properties(test_granite_dense_convert PROPERTIES
     TIMEOUT 120)
 set_tests_properties(test_granite_dense_convert PROPERTIES LABELS convert)
 
+# ── Granite-4.2-30B loader test (pinned upload, topology, fused gate_up) ──
+add_executable(test_granite_dense_loader test_granite_dense_loader.cpp)
+target_compile_definitions(test_granite_dense_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_granite_dense_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_loader>"
+    )
+    add_custom_command(TARGET test_granite_dense_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_loader>"
+    )
+endif()
+
+add_test(NAME test_granite_dense_loader COMMAND test_granite_dense_loader)
+set_tests_properties(test_granite_dense_loader PROPERTIES LABELS inference)
+
+# ── Granite-4.2-30B model test (registration + synthetic Load/Infer) ────
+add_executable(test_granite_dense_model test_granite_dense_model.cpp)
+target_compile_definitions(test_granite_dense_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_granite_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_model>"
+    )
+    add_custom_command(TARGET test_granite_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_model>"
+    )
+endif()
+
+add_test(NAME test_granite_dense_model COMMAND test_granite_dense_model)
+set_tests_properties(test_granite_dense_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_granite_dense_model PROPERTIES LABELS inference)
+
 # ── Qwen3.5-9B loader test (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_dense_loader test_qwen_dense_loader.cpp)
 target_compile_definitions(test_qwen_dense_loader PRIVATE

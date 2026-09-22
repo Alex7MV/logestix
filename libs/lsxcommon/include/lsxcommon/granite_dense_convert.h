@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/granite_dense_constants.h"
 #include "lsxcommon/vram_estimate.h"
 
 namespace lsxcommon {
@@ -40,25 +41,6 @@ ParsedTensor classify_granite_tensor(const std::string &name);
 // True when `kind` is quantized to NVFP4 by the converter (all dense linears,
 // including embed/lm_head). Norms stay raw (FP16).
 bool granite_tensor_is_nvfp4(TensorKind kind);
-
-struct GraniteTopology {
-    int num_layers = 0;
-    int hidden_size = 0;
-    int intermediate_size = 0;
-    int vocab_size = 0;
-    int num_attention_heads = 0;
-    int num_key_value_heads = 0;
-    int head_dim = 0;
-    double rms_norm_eps = 1e-5;
-    double rope_theta = 50000000.0;
-    double attention_multiplier = 0.0078125;
-    int bos_id = -1;
-    int eos_id = -1;
-    int pad_id = -1;
-    int total_pinned_tensors = 0;
-    VramProfile vram;        // conversion-time VRAM requirements (mandatory)
-    std::string error_msg;   // non-empty when index.json is invalid
-};
 
 GraniteTopology load_granite_topology(const std::string &index_path);
 

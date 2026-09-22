@@ -23,6 +23,8 @@ add_library(lsxcommon STATIC
     src/gemma_moe_convert.cpp
     src/gemma_moe_load.cpp
     src/granite_dense_convert.cpp
+    src/granite_dense_load.cpp
+    src/granite_dense_model.cpp
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/nemotron_moe_convert.cpp
@@ -313,6 +315,31 @@ target_link_libraries(lsxcommon_ornith_cu
     absl::strings
 )
 
+# Granite-4.2-30B dense runtime: family-local RoPE + causal GQA attention,
+# shared lsx_kernels_*.cuh primitives, neutral NVFP4 GEMM. No -fmad=false is
+# required (all shared arithmetic uses explicit *_rn intrinsics).
+add_library(lsxcommon_granite_cu OBJECT
+    src/granite_dense_inference.cu
+)
+set_target_properties(lsxcommon_granite_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_granite_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_granite_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_granite_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_granite_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
@@ -320,6 +347,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_nemotron_cu
     lsxcommon_gigachat_cu
     lsxcommon_ornith_cu
+    lsxcommon_granite_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

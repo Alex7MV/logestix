@@ -10,9 +10,35 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+
+#include "lsxcommon/vram_estimate.h"
 
 namespace lsxcommon {
 namespace granite {
+
+// Loaded/converted topology of a Granite checkpoint (geometry + special
+// tokens + the mandatory conversion-time VRAM profile). Device-safe (no
+// arrow/absl) so the .cu inference layer can include this header.
+struct GraniteTopology {
+    int num_layers = 0;
+    int hidden_size = 0;
+    int intermediate_size = 0;
+    int vocab_size = 0;
+    int num_attention_heads = 0;
+    int num_key_value_heads = 0;
+    int head_dim = 0;
+    double rms_norm_eps = 1e-5;
+    double rope_theta = 50000000.0;
+    double attention_multiplier = 0.0078125;
+    int bos_id = -1;
+    int eos_id = -1;
+    int pad_id = -1;
+    int total_pinned_tensors = 0;
+    VramProfile vram;        // conversion-time VRAM requirements (mandatory)
+    std::string error_msg;   // non-empty when index.json is invalid
+};
+
 namespace frozen {
 
 // ── Frozen compile-time geometry (config.json, 2026-09-22) ─────────────────

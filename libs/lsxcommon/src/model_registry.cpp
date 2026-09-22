@@ -4,6 +4,7 @@
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_v41_model.h"
 #include "gemma_moe_model.h"
+#include "granite_dense_model.h"
 #include "glm_moe_flash_model.h"
 #include "glm_moe_model.h"
 #include "kimi_moe_model.h"
@@ -34,6 +35,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Glm5NextFlashModel>();
         LsxModelFactory::Register<NemotronHModel>();
         LsxModelFactory::Register<GigaChat35Model>();
+        LsxModelFactory::Register<Granite42_30BModel>();
         return true;
     }();
     (void)init;
