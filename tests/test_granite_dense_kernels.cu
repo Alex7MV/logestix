@@ -289,11 +289,13 @@ TEST_CASE("granite split-KV attention matches a CPU reference",
 }
 
 // ── Decode-shape NVFP4 GEMV bandwidth budget (perf lever #1) ────────────────
-// Granite decode is 86% seq==1 NVFP4 GEMV (nsys, 2026-09-22): the aggregate
+// Granite decode is ~85% seq==1 NVFP4 GEMV (nsys, 2026-09-22): the aggregate
 // weight-streaming rate is the model's serial bottleneck. This budget pins the
 // effective GB/s across the REAL Granite decode shapes so a dispatch/kernel
 // regression is caught here instead of only end-to-end. L2 is flushed between
 // launches (the real decode walks a ~16 GB weight set, never L2-resident).
+// Note the harness's memset flush leaves dirty L2 lines, so the absolute
+// figures run ~15% below the read-flush probes in the design doc.
 TEST_CASE("granite seq1 GEMV decode-shape aggregate bandwidth budget",
           "[granite][kernels][nvfp4][budget]")
 {
@@ -365,12 +367,18 @@ TEST_CASE("granite seq1 GEMV decode-shape aggregate bandwidth budget",
     }
     const double agg = total_bytes / (total_us * 1e-6) / 1e9;
     INFO(report << "aggregate = " << agg << " GB/s");
-    // Measured 2026-09-22 (RTX 5090): 812 GB/s (one-warp-per-row everywhere)
+    // Measured 2026-09-22 (RTX 5090): 812 (one-warp-per-row everywhere)
     // -> 873 (occupancy floor) -> 918 (128-bit activation loads + half22float2
-    // in the slice/warp-row kernels). Raw streaming ceiling on this part =
-    // ~1618 GB/s. Budget sits just below the current figure so a silent
-    // regression to the low-occupancy / scalar-x launch fails here.
-    CHECK(agg > 900.0);
+    // in the slice/warp-row kernels) -> **1327** with the branchless
+    // E2M1Value codec. That last step is the big one: the old `switch (mag)`
+    // compiled to a data-dependent indirect branch, so the SAME kernel ran at
+    // 655 GB/s on real NVFP4 weights vs 933 on a synthetic uniform buffer; the
+    // branchless form lifted both (this harness, memset L2 flush: gate_up
+    // 906 -> 1336, down 858 -> 1306, head 934 -> 1369, q_o 576 -> 764). Raw
+    // streaming ceiling on this part = ~1618 GB/s. Budget sits just below the
+    // current figure so a silent regression to the branchy decode,
+    // low-occupancy or scalar-x launch fails here.
+    CHECK(agg > 1250.0);
     cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
         lsxg::SetLsxTcFastMath(false);
         lsxg::SetLsxSeq1Gemv(false);

@@ -24,20 +24,21 @@ namespace nvfp4 {
 
 // E2M1 decode (indexed by 4-bit nibble, sign bit 3):
 //   magnitude 0..7 -> {0, 0.5, 1, 1.5, 2, 3, 4, 6}, sign bit negates.
+// Branchless on purpose (do NOT reintroduce a switch/table): the previous
+// `switch (mag)` compiled to a data-dependent indirect branch whose cost
+// scaled with the weight nibble distribution. Measured on Granite-4.2-30B
+// decode (RTX 5090, 2026-09-22): real NVFP4 weights 655 GB/s vs 933 for a
+// synthetic uniform buffer on the SAME kernel -- a same-codec, data-dependent
+// 30% loss that in-situ made the whole decode GEMV latency-bound. This form
+// lifts both to ~1595 GB/s (near the ~1618 GB/s raw read ceiling) and is
+// bit-identical: the 8 magnitudes are stored as 2*value nibble codes
+// {0,1,2,3,4,6,8,12} in 0xC8643210, and code*0.5f is exact in fp32.
+// Guarded by tests/test_lsx_kernels.cu "E2M1Value exhaustive table and
+// lo-nibble packing order" (all 16 nibbles + the -0.0f sign bit).
 __host__ __device__ __forceinline__ float E2M1Value(int nib)
 {
-    const int mag = nib & 7;
-    float v;
-    switch (mag) {
-    case 1: v = 0.5f; break;
-    case 2: v = 1.0f; break;
-    case 3: v = 1.5f; break;
-    case 4: v = 2.0f; break;
-    case 5: v = 3.0f; break;
-    case 6: v = 4.0f; break;
-    case 7: v = 6.0f; break;
-    default: v = 0.0f; break;
-    }
+    const unsigned code = (0xC8643210u >> ((nib & 7u) * 4u)) & 0xFu;
+    const float v = static_cast<float>(code) * 0.5f;
     return (nib & 8) ? -v : v;
 }
 
