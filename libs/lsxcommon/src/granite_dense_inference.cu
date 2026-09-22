@@ -165,7 +165,11 @@ __global__ void granite_attn_kernel(const __half *__restrict__ q,
 // (row, head, split), and a second kernel merges the partials in fixed split
 // order. Fixed boundaries + fixed merge order => run-to-run deterministic.
 // Splits never straddle: n0 = total*sv/splits, n1 = total*(sv+1)/splits.
-constexpr int kAttnSplit = 8;
+// `splits` is chosen at dispatch so each split owns ~kAttnSplitKeys keys (a
+// fixed 8 left the SM array at 12% occupancy on long contexts); the partial
+// slab is sized for kAttnSplitMax.
+constexpr int kAttnSplitMax = 32;
+constexpr int kAttnSplitKeys = 128;
 
 __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
                                           const __half *__restrict__ k,
@@ -174,7 +178,7 @@ __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
                                           float *__restrict__ pl,
                                           float *__restrict__ po, int seq, int nh,
                                           int nkv, int hd, float scale,
-                                          int kv_base)
+                                          int kv_base, int splits)
 {
     const int t = blockIdx.x / nh;
     const int h = blockIdx.x % nh;
@@ -191,9 +195,9 @@ __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
 
     const int bound = kv_base + t;  // inclusive last attended key
     const int total = bound + 1;
-    const int n0 = static_cast<int>(static_cast<int64_t>(total) * sv / kAttnSplit);
+    const int n0 = static_cast<int>(static_cast<int64_t>(total) * sv / splits);
     const int n1 =
-        static_cast<int>(static_cast<int64_t>(total) * (sv + 1) / kAttnSplit);
+        static_cast<int>(static_cast<int64_t>(total) * (sv + 1) / splits);
     const int64_t slot = (static_cast<int64_t>(sv) * seq + t) * nh + h;
 
     const __half *qrow = q + (static_cast<int64_t>(t) * nh + h) * hd;
@@ -210,10 +214,17 @@ __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
         if (tid < cnt) {
             const __half *krow =
                 k + (static_cast<int64_t>(start + tid) * nkv + kvh) * hd;
-            float dot = 0.f;
-            for (int d = 0; d < hd; ++d)
-                dot = __fmaf_rn(q_s[d], __half2float(krow[d]), dot);
-            score = __fmul_rn(dot, scale);
+            // half2 loads + two accumulator chains: the single 128-deep FMA
+            // chain was the QK critical path (2x shorter chain, half the
+            // load instructions).
+            const __half2 *k2 = reinterpret_cast<const __half2 *>(krow);
+            float d0 = 0.f, d1 = 0.f;
+            for (int d2 = 0; d2 < (hd >> 1); ++d2) {
+                const float2 kf = __half22float2(k2[d2]);
+                d0 = __fmaf_rn(q_s[2 * d2], kf.x, d0);
+                d1 = __fmaf_rn(q_s[2 * d2 + 1], kf.y, d1);
+            }
+            score = __fmul_rn(__fadd_rn(d0, d1), scale);
         }
         sc[tid] = score;
         __syncthreads();
@@ -256,13 +267,13 @@ __global__ void granite_attn_split_kernel(const __half *__restrict__ q,
     for (int d = tid; d < hd; d += blockDim.x) po[slot * hd + d] = o_s[d];
 }
 
-// Merges kAttnSplit online-softmax partials per (row, head) in fixed split
+// Merges the `splits` online-softmax partials per (row, head) in fixed split
 // order. m is a max (order-free); l/o accumulate in split index order.
 __global__ void granite_attn_combine_kernel(const float *__restrict__ pm,
                                             const float *__restrict__ pl,
                                             const float *__restrict__ po,
                                             __half *__restrict__ out, int seq,
-                                            int nh, int hd)
+                                            int nh, int hd, int splits)
 {
     const int t = blockIdx.x / nh;
     const int h = blockIdx.x % nh;
@@ -271,19 +282,19 @@ __global__ void granite_attn_combine_kernel(const float *__restrict__ pm,
     const int64_t base = static_cast<int64_t>(t) * nh + h;
 
     float m = -CUDART_INF_F;
-    for (int s = 0; s < kAttnSplit; ++s) {
+    for (int s = 0; s < splits; ++s) {
         const float ms = pm[static_cast<int64_t>(s) * seq * nh + base];
         m = fmaxf(m, ms);
     }
     float l = 0.f;
-    for (int s = 0; s < kAttnSplit; ++s) {
+    for (int s = 0; s < splits; ++s) {
         const int64_t slot = static_cast<int64_t>(s) * seq * nh + base;
         l += pl[slot] * __expf(__fsub_rn(pm[slot], m));
     }
     __half *orow = out + base * hd;
     for (int d = tid; d < hd; d += blockDim.x) {
         float a = 0.f;
-        for (int s = 0; s < kAttnSplit; ++s) {
+        for (int s = 0; s < splits; ++s) {
             const int64_t slot = static_cast<int64_t>(s) * seq * nh + base;
             a += po[slot * hd + d] * __expf(__fsub_rn(pm[slot], m));
         }
@@ -424,21 +435,23 @@ constexpr int kAttnSplitMinKv = 256;
 cudaError_t GraniteAttentionSplit(cudaStream_t stream, const __half *q,
                                   const __half *k, const __half *v, __half *out,
                                   float *partials, int seq, int nh, int nkv,
-                                  int hd, float scale, int kv_base)
+                                  int hd, float scale, int kv_base, int splits)
 {
+    if (splits < 1) splits = 1;
+    if (splits > kAttnSplitMax) splits = kAttnSplitMax;
     const size_t shmem =
         (2 * static_cast<size_t>(hd) + 2 * kThreads) * sizeof(float);
-    const int64_t slots = static_cast<int64_t>(kAttnSplit) * seq * nh;
+    const int64_t slots = static_cast<int64_t>(splits) * seq * nh;
     float *pm = partials;
     float *pl = pm + slots;
     float *po = pl + slots;
-    const dim3 grid(seq * nh, kAttnSplit);
+    const dim3 grid(seq * nh, splits);
     granite_attn_split_kernel<<<grid, kThreads, shmem, stream>>>(
-        q, k, v, pm, pl, po, seq, nh, nkv, hd, scale, kv_base);
+        q, k, v, pm, pl, po, seq, nh, nkv, hd, scale, kv_base, splits);
     cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) return e;
     granite_attn_combine_kernel<<<seq * nh, kThreads, 0, stream>>>(
-        pm, pl, po, out, seq, nh, hd);
+        pm, pl, po, out, seq, nh, hd, splits);
     return cudaGetLastError();
 }
 
@@ -448,9 +461,12 @@ cudaError_t GraniteAttention(cudaStream_t stream, const __half *q,
                              float scale, int kv_base)
 {
     if (partials != nullptr && seq <= kAttnSplitMaxSeq &&
-        kv_base + 1 >= kAttnSplitMinKv)
+        kv_base + 1 >= kAttnSplitMinKv) {
+        // One split per ~kAttnSplitKeys keys, capped by the partial slab.
+        int splits = (kv_base + 1 + kAttnSplitKeys - 1) / kAttnSplitKeys;
         return GraniteAttentionSplit(stream, q, k, v, out, partials, seq, nh,
-                                     nkv, hd, scale, kv_base);
+                                     nkv, hd, scale, kv_base, splits);
+    }
     const size_t shmem =
         (2 * static_cast<size_t>(hd) + 2 * kThreads) * sizeof(float);
     granite_attn_kernel<<<seq * nh, kThreads, shmem, stream>>>(
@@ -553,7 +569,7 @@ cudaError_t Workspace::Alloc(const GraniteTopology &top, int max_seq_)
     // prefill uses the unsplit kernel (seq*nh blocks are plentiful there).
     const int64_t sp_seq = std::min<int64_t>(S, kAttnSplitMaxSeq);
     if ((e = alloc(reinterpret_cast<void **>(&attn_part),
-                   static_cast<int64_t>(kAttnSplit) * sp_seq * NH * (HD + 2) *
+                   static_cast<int64_t>(kAttnSplitMax) * sp_seq * NH * (HD + 2) *
                        sizeof(float))))
         return e;
     return cudaSuccess;
@@ -784,14 +800,16 @@ cudaError_t RunGraniteAttentionSplitKernel(cudaStream_t stream, const __half *q,
                                            __half *out, int seq, int nh, int nkv,
                                            int hd, float scale, int kv_base)
 {
-    const int64_t slots = static_cast<int64_t>(kAttnSplit) * seq * nh;
+    const int64_t slots = static_cast<int64_t>(kAttnSplitMax) * seq * nh;
     const size_t bytes = static_cast<size_t>(slots) * (hd + 2) * sizeof(float);
     float *partials = nullptr;
     if (cudaMalloc(reinterpret_cast<void **>(&partials), bytes) != cudaSuccess)
         return cudaGetLastError();
+    // Forced-split: exercise the maximum split count (many short/empty
+    // boundary ranges) regardless of shape.
     const cudaError_t e =
         GraniteAttentionSplit(stream, q, k, v, out, partials, seq, nh, nkv, hd,
-                              scale, kv_base);
+                              scale, kv_base, kAttnSplitMax);
     cudaFree(partials);
     return e;
 }
