@@ -104,7 +104,8 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
 |---|---|---|---|---|
 | audit | — | 11.3 | 6.8 | baseline |
 | P0a | preallocate shared-expert/router scratch | 11.4 | 6.8 | numeric-neutral; ~0 wall (host API overlapped the GPU) |
-| P0b | parallel indexer top-k | 12.7 | **10.6** | +55.9% at 2048, reproduced twice; selfcheck bit-exact |
+| P0b | parallel indexer top-k | 12.7 | 10.6 | +55.9% at 2048, reproduced twice; selfcheck bit-exact |
+| P0b' | parallel router + candidate selection | **13.0** | **10.9** | numeric-neutral, +2.8% at 2048, reproduced twice |
 
 Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
 
