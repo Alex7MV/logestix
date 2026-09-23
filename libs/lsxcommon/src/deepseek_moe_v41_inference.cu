@@ -69,21 +69,18 @@ __global__ void rope_half_kernel(__half *__restrict__ x, int rows, int row_len,
 
 // One block per token. `mix_hc` warps each reduce one hc_fn row; warp 0 also
 // produces the stream rsqrt; thread 0 splits and Sinkhorns the comb matrix.
-__global__ void hc_mixes_kernel(const float *__restrict__ x,
-                                const float *__restrict__ hc_fn,
-                                const float *__restrict__ hc_scale,
-                                const float *__restrict__ hc_base, int hc,
-                                int dim, int iters, float eps, float *pre,
-                                float *post, float *comb)
+// Hyper-connections split across blocks. Block 0 reduces the stream rsqrt;
+// block b>0 reduces mix row b-1. Each reduction keeps the original lane-strided
+// k order, so the values are bit-identical to the old single-block kernel --
+// only the row-level parallelism changes (mix_hc SMs instead of one).
+__global__ void hc_mix_dots_kernel(const float *__restrict__ x,
+                                   const float *__restrict__ hc_fn,
+                                   int total, float eps,
+                                   float *__restrict__ mix,
+                                   float *__restrict__ rsqrt_out)
 {
-    const int mix_hc = (2 + hc) * hc;
-    const int total = hc * dim;
     const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
-    __shared__ float s_rsqrt;
-    __shared__ float s_mix[64];
-
-    if (warp == 0) {  // stream rsqrt
+    if (blockIdx.x == 0) {
         double ss = 0.0;
         for (int k = lane; k < total; k += 32)
             ss += static_cast<double>(x[k]) * x[k];
@@ -92,34 +89,42 @@ __global__ void hc_mixes_kernel(const float *__restrict__ x,
         for (int off = 16; off > 0; off >>= 1)
             v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
         if (lane == 0)
-            s_rsqrt = 1.0f / sqrtf(v / static_cast<float>(total) + eps);
+            rsqrt_out[0] = 1.0f / sqrtf(v / static_cast<float>(total) + eps);
+        return;
     }
-    if (warp < mix_hc) {
-        float d = 0.0f;
-        for (int k = lane; k < total; k += 32)
-            d += hc_fn[warp * total + k] * x[k];
-        #pragma unroll
-        for (int off = 16; off > 0; off >>= 1)
-            d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
-        if (lane == 0) s_mix[warp] = d;
-    }
-    __syncthreads();
-    if (threadIdx.x != 0) return;
+    const int row = blockIdx.x - 1;
+    const float *fr = hc_fn + static_cast<size_t>(row) * total;
+    float d = 0.0f;
+    for (int k = lane; k < total; k += 32)
+        d += fr[k] * x[k];
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
+    if (lane == 0) mix[row] = d;
+}
 
-    for (int m = 0; m < mix_hc; ++m) s_mix[m] = s_mix[m] * s_rsqrt;
-    const float *mx = s_mix;
-    for (int j = 0; j < hc; ++j) {
-        pre[j] = HcSigmoid(mx[j] * hc_scale[0] + hc_base[j]) + eps;
-        post[j] = 2.0f *
-                  HcSigmoid(mx[j + hc] * hc_scale[1] + hc_base[j + hc]);
-    }
-    for (int j = 0; j < hc; ++j)
-        for (int k = 0; k < hc; ++k)
-            comb[j * hc + k] =
-                mx[j * hc + k + hc * 2] * hc_scale[2] +
-                hc_base[j * hc + k + hc * 2];
-    // comb = comb.softmax(-1) + eps
-    for (int j = 0; j < hc; ++j) {
+// Split + Sinkhorn, parallelized over rows (thread j = row j). Row sums are
+// over k in order and column sums over j in order, exactly like the old
+// thread-0 loops -> bit-identical.
+__global__ void hc_sinkhorn_kernel(const float *__restrict__ mix,
+                                   const float *__restrict__ rsqrt,
+                                   const float *__restrict__ hc_scale,
+                                   const float *__restrict__ hc_base, int hc,
+                                   int iters, float eps, float *pre,
+                                   float *post, float *comb)
+{
+    const int j = threadIdx.x;
+    if (j >= hc) return;
+    const float rs = rsqrt[0];
+    pre[j] = HcSigmoid(mix[j] * rs * hc_scale[0] + hc_base[j]) + eps;
+    post[j] = 2.0f * HcSigmoid(mix[j + hc] * rs * hc_scale[1] +
+                               hc_base[j + hc]);
+    for (int k = 0; k < hc; ++k)
+        comb[j * hc + k] = mix[j * hc + k + hc * 2] * rs * hc_scale[2] +
+                           hc_base[j * hc + k + hc * 2];
+    __syncthreads();
+    // comb = comb.softmax(-1) + eps (row j)
+    {
         float m = comb[j * hc];
         for (int k = 1; k < hc; ++k) m = fmaxf(m, comb[j * hc + k]);
         float s = 0.0f;
@@ -130,26 +135,26 @@ __global__ void hc_mixes_kernel(const float *__restrict__ x,
         for (int k = 0; k < hc; ++k)
             comb[j * hc + k] = comb[j * hc + k] / s + eps;
     }
-    // comb = comb / (comb.sum(-2) + eps)
-    for (int k = 0; k < hc; ++k) {
+    __syncthreads();
+    // comb = comb / (comb.sum(-2) + eps) (column j)
+    {
         float s = 0.0f;
-        for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
-        for (int j = 0; j < hc; ++j)
-            comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        for (int i = 0; i < hc; ++i) s += comb[i * hc + j];
+        for (int i = 0; i < hc; ++i)
+            comb[i * hc + j] = comb[i * hc + j] / (s + eps);
     }
+    __syncthreads();
     for (int it = 0; it < iters - 1; ++it) {
-        for (int j = 0; j < hc; ++j) {  // row normalize
-            float s = 0.0f;
-            for (int k = 0; k < hc; ++k) s += comb[j * hc + k];
-            for (int k = 0; k < hc; ++k)
-                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
-        }
-        for (int k = 0; k < hc; ++k) {  // column normalize
-            float s = 0.0f;
-            for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
-            for (int j = 0; j < hc; ++j)
-                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
-        }
+        float s = 0.0f;  // row j normalize
+        for (int k = 0; k < hc; ++k) s += comb[j * hc + k];
+        for (int k = 0; k < hc; ++k)
+            comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        __syncthreads();
+        s = 0.0f;        // column j normalize
+        for (int i = 0; i < hc; ++i) s += comb[i * hc + j];
+        for (int i = 0; i < hc; ++i)
+            comb[i * hc + j] = comb[i * hc + j] / (s + eps);
+        __syncthreads();
     }
 }
 
@@ -543,13 +548,19 @@ cudaError_t LaunchRopeHalf(uint16_t *x, int rows, int row_len, int rope_dim,
 cudaError_t LaunchHcMixes(const float *x, const float *hc_fn,
                           const float *hc_scale, const float *hc_base, int hc,
                           int dim, int sinkhorn_iters, float eps, float *pre,
-                          float *post, float *comb, cudaStream_t stream)
+                          float *post, float *comb, float *mix_scratch,
+                          float *rsqrt_scratch, cudaStream_t stream)
 {
+    if (hc <= 0 || dim <= 0) return cudaSuccess;
     const int mix_hc = (2 + hc) * hc;
-    const int threads = 32 * mix_hc;
-    hc_mixes_kernel<<<1, threads, 0, stream>>>(x, hc_fn, hc_scale, hc_base, hc,
-                                               dim, sinkhorn_iters, eps, pre,
-                                               post, comb);
+    const int total = hc * dim;
+    hc_mix_dots_kernel<<<mix_hc + 1, 32, 0, stream>>>(
+        x, hc_fn, total, eps, mix_scratch, rsqrt_scratch);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_sinkhorn_kernel<<<1, hc, 0, stream>>>(
+        mix_scratch, rsqrt_scratch, hc_scale, hc_base, hc, sinkhorn_iters, eps,
+        pre, post, comb);
     return cudaGetLastError();
 }
 

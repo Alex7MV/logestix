@@ -25,10 +25,13 @@ cudaError_t LaunchRopeHalf(uint16_t *x, int rows, int row_len, int rope_dim,
 
 // Hyper-Connections: mixes = (hc_fn @ x) * rsqrt(mean(x^2)+eps), then
 // split+Sinkhorn into pre/post/comb. x: [hc*dim] F32.
+// mix_scratch: >= (2+hc)*hc floats; rsqrt_scratch: 1 float. Caller-owned so the
+// decode loop does not cudaMalloc/cudaFree per layer.
 cudaError_t LaunchHcMixes(const float *x, const float *hc_fn,
                           const float *hc_scale, const float *hc_base, int hc,
                           int dim, int sinkhorn_iters, float eps, float *pre,
-                          float *post, float *comb, cudaStream_t stream);
+                          float *post, float *comb, float *mix_scratch,
+                          float *rsqrt_scratch, cudaStream_t stream);
 
 // out[d] = sum_c pre[c] * x[c*dim + d]. x: [hc*dim] F32.
 cudaError_t LaunchHcPre(const float *x, const float *pre_mix, float *out,

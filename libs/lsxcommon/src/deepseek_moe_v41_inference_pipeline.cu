@@ -172,6 +172,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     uint16_t *d_shared_h = dev.typed<uint16_t>(kHidden);
     float *d_acc = dev.typed<float>(kHidden);
     float *d_pre_mix = dev.typed<float>(kHc);
+    float *d_hc_mix = dev.typed<float>(dv41::kHcMix);
+    float *d_hc_rsqrt = dev.typed<float>(1);
     float *d_apre = dev.typed<float>(kHc);
     float *d_apost = dev.typed<float>(kHc);
     float *d_acomb = dev.typed<float>(kHc * kHc);
@@ -471,7 +473,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             if (dv41::LaunchHcMixes(d_h, lw.d_hc_attn_fn, lw.d_hc_attn_scale,
                                     lw.d_hc_attn_base, kHc, kHidden,
                                     dv41::kSinkhornIters, dv41::kHcEps, d_apre,
-                                    d_apost, d_acomb, stream) != cudaSuccess ||
+                                    d_apost, d_acomb, d_hc_mix, d_hc_rsqrt,
+                                    stream) != cudaSuccess ||
                 dv41::LaunchHcPre(d_h, d_pre_mix, d_xf, kHc, kHidden, stream) !=
                     cudaSuccess ||
                 dv41::LaunchCastF32ToHalf(d_xf, d_xh, kHidden, stream) !=
@@ -562,7 +565,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             if (dv41::LaunchHcMixes(d_h, lw.d_hc_ffn_fn, lw.d_hc_ffn_scale,
                                     lw.d_hc_ffn_base, kHc, kHidden,
                                     dv41::kSinkhornIters, dv41::kHcEps, d_fpre,
-                                    d_fpost, d_fcomb, stream) != cudaSuccess ||
+                                    d_fpost, d_fcomb, d_hc_mix, d_hc_rsqrt,
+                                    stream) != cudaSuccess ||
                 dv41::LaunchHcPre(d_h, d_apre, d_xf, kHc, kHidden, stream) !=
                     cudaSuccess ||
                 dv41::LaunchCastF32ToHalf(d_xf, d_xh, kHidden, stream) !=

@@ -147,6 +147,7 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
     for (int i = 0; i < mix_hc; ++i) hbase[i] = 0.01f * static_cast<float>(i);
 
     float *dx, *dfn, *dscale, *dbase, *dpre, *dpost, *dcomb;
+    float *dmix = nullptr, *drsqrt = nullptr;
     REQUIRE(cudaMalloc(&dx, total * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dfn, fn.size() * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dscale, sizeof(scale)) == cudaSuccess);
@@ -154,6 +155,8 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
     REQUIRE(cudaMalloc(&dpre, hc * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dpost, hc * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dcomb, hc * hc * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dmix, mix_hc * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&drsqrt, 4) == cudaSuccess);
     REQUIRE(cudaMemcpy(dx, x.data(), total * 4, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dfn, fn.data(), fn.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dscale, scale, sizeof(scale), cudaMemcpyHostToDevice) == cudaSuccess);
@@ -161,7 +164,7 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
 
     REQUIRE(lsxcommon::deepseek_v41::LaunchHcMixes(
                 dx, dfn, dscale, dbase, hc, dim, iters, eps, dpre, dpost, dcomb,
-                nullptr) == cudaSuccess);
+                dmix, drsqrt, nullptr) == cudaSuccess);
 
     std::vector<float> pre(hc), post(hc), comb(hc * hc);
     REQUIRE(cudaMemcpy(pre.data(), dpre, hc * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -219,7 +222,8 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
         CHECK(post_out[i] == Catch::Approx(ref_post[i]).margin(1e-6f));
 
     cudaFree(dx); cudaFree(dfn); cudaFree(dscale); cudaFree(dbase);
-    cudaFree(dpre); cudaFree(dpost); cudaFree(dcomb);
+    cudaFree(dpre); cudaFree(dpost); cudaFree(dcomb); cudaFree(dmix);
+    cudaFree(drsqrt);
     cudaFree(dpre_out); cudaFree(dpost_out); cudaFree(dsub);
 }
 
