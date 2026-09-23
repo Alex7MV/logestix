@@ -100,6 +100,21 @@ cudaError_t SharedExpertForward(cudaStream_t stream,
                                 const uint16_t *w2, int inter, float limit,
                                 uint16_t *out);
 
+// Byte size of the activation scratch used by SharedExpertForwardScratch.
+std::size_t SharedExpertScratchBytes(int inter);
+
+// Same as SharedExpertForward but reuses a caller-owned scratch buffer. The
+// decode layer loop must not cudaMalloc/cudaFree per layer (cudaFree serializes
+// the device and kills copy/compute overlap): allocate the scratch once via
+// SharedExpertScratchBytes and pass it here.
+cudaError_t SharedExpertForwardScratch(cudaStream_t stream,
+                                       const uint16_t *x, int hidden,
+                                       const uint16_t *w1, const uint16_t *w3,
+                                       const uint16_t *w2, int inter,
+                                       float limit, uint16_t *out,
+                                       void *scratch,
+                                       std::size_t scratch_bytes);
+
 // Head logits (F32): logits[V] = W[V,H] * x[H], FP16 inputs, F32 accumulation.
 cudaError_t LaunchHeadLogits(cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
@@ -124,6 +139,15 @@ cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const float *bias, int n_routed, int hidden,
                              int topk, float temp, float route_scale, bool norm,
                              int32_t *out_idx, float *out_w);
+
+// Same as LaunchRouterTopK but reuses a caller-owned scores buffer of at least
+// `n_routed` floats (avoids the per-layer cudaMalloc/cudaFree).
+cudaError_t LaunchRouterTopKScratch(cudaStream_t stream,
+                                    const uint16_t *x, const uint16_t *gate_w,
+                                    const float *bias, int n_routed, int hidden,
+                                    int topk, float temp, float route_scale,
+                                    bool norm, int32_t *out_idx, float *out_w,
+                                    float *scores_scratch);
 
 // One routed expert on a single token:
 //   accum[d] += weight * w2( silu(clamp(w1@x)) * clamp(w3@x) ).

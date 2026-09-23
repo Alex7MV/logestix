@@ -201,6 +201,13 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     const size_t ffn_scratch_bytes =
         dv41::ExpertFfnScratchBytes(inter, kHidden);
     uint8_t *d_ffn_scratch = dev.typed<uint8_t>(ffn_scratch_bytes);
+    // Shared-expert and router scratch, allocated once: allocating per layer
+    // (cudaMalloc/cudaFree) serializes the device and kills copy/compute
+    // overlap (204 alloc+free pairs per token otherwise).
+    const size_t shared_scratch_bytes =
+        dv41::SharedExpertScratchBytes(dv41::kSharedIntermediate);
+    uint8_t *d_shared_scratch = dev.typed<uint8_t>(shared_scratch_bytes);
+    float *d_router_scores = dev.typed<float>(dv41::kNumRouted);
 
     // Device span offsets for one staged expert (mirrors the pinned layout).
     struct StagePtrs {
@@ -560,10 +567,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             }
 
             // Router + routed experts + shared expert.
-            if (dv41::LaunchRouterTopK(
+            if (dv41::LaunchRouterTopKScratch(
                     stream, d_xh, U(lw.d_gate_weight), lw.d_gate_bias,
                     lw.gate_rows, kHidden, topk, dv41::kGateTemp,
-                    dv41::kRouteScale, true, d_ridx, d_rw) != cudaSuccess) {
+                    dv41::kRouteScale, true, d_ridx, d_rw,
+                    d_router_scores) != cudaSuccess) {
                 result.error_msg = "router failed";
                 return result;
             }
@@ -785,10 +793,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                     }
                 }
             }
-            if (dv41::SharedExpertForward(
+            if (dv41::SharedExpertForwardScratch(
                     stream, d_xh, kHidden, U(lw.d_shared_w1),
                     U(lw.d_shared_w3), U(lw.d_shared_w2), dv41::kSharedIntermediate,
-                    dv41::kSwigluLimit, d_shared_h) != cudaSuccess ||
+                    dv41::kSwigluLimit, d_shared_h, d_shared_scratch,
+                    shared_scratch_bytes) != cudaSuccess ||
                 dv41::LaunchAccumulateHalfToF32(d_shared_h, d_acc, kHidden,
                                                 stream) != cudaSuccess) {
                 result.error_msg = "shared expert failed";

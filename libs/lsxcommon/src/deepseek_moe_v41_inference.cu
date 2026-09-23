@@ -587,26 +587,40 @@ cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                               gemv::LxDtype::kF32, 0.0f);
 }
 
-cudaError_t SharedExpertForward(cudaStream_t stream,
-                                const uint16_t *x, int hidden,
-                                const uint16_t *w1, const uint16_t *w3,
-                                const uint16_t *w2, int inter, float limit,
-                                uint16_t *out)
+std::size_t SharedExpertScratchBytes(int inter)
 {
-    float *gate = nullptr, *up = nullptr, *mid = nullptr;
-    uint16_t *mid_h = nullptr;
-    if (cudaMalloc(&gate, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&up, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&mid, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&mid_h, static_cast<size_t>(inter) * 2) != cudaSuccess) {
-        if (gate) cudaFree(gate);
-        if (up) cudaFree(up);
-        if (mid) cudaFree(mid);
-        if (mid_h) cudaFree(mid_h);
+    size_t bytes = 0;
+    auto bump = [&](size_t n) { bytes += (n + 255) / 256 * 256; };
+    bump(static_cast<size_t>(inter) * 4);  // gate_f
+    bump(static_cast<size_t>(inter) * 4);  // up_f
+    bump(static_cast<size_t>(inter) * 4);  // mid_f
+    bump(static_cast<size_t>(inter) * 2);  // mid_h
+    return bytes;
+}
+
+cudaError_t SharedExpertForwardScratch(
+    cudaStream_t stream, const uint16_t *x, int hidden, const uint16_t *w1,
+    const uint16_t *w3, const uint16_t *w2, int inter, float limit,
+    uint16_t *out, void *scratch, std::size_t scratch_bytes)
+{
+    if (hidden <= 0 || inter <= 0) return cudaSuccess;
+    if (!scratch || scratch_bytes < SharedExpertScratchBytes(inter))
         return cudaErrorInvalidValue;
-    }
-    cudaError_t e = LaunchGemvFp16ToF32(stream, w1, x, gate, inter,
-                                        hidden);
+    uint8_t *p = static_cast<uint8_t *>(scratch);
+    auto take = [&](size_t n) {
+        uint8_t *r = p;
+        p += (n + 255) / 256 * 256;
+        return r;
+    };
+    float *gate =
+        reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    float *up = reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    float *mid =
+        reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    uint16_t *mid_h =
+        reinterpret_cast<uint16_t *>(take(static_cast<size_t>(inter) * 2));
+
+    cudaError_t e = LaunchGemvFp16ToF32(stream, w1, x, gate, inter, hidden);
     if (e == cudaSuccess)
         e = LaunchGemvFp16ToF32(stream, w3, x, up, inter, hidden);
     if (e == cudaSuccess)
@@ -615,10 +629,21 @@ cudaError_t SharedExpertForward(cudaStream_t stream,
         e = LaunchCastF32ToHalf(mid, mid_h, inter, stream);
     if (e == cudaSuccess)
         e = LaunchGemmFp16(stream, w2, mid_h, out, hidden, 1, inter);
-    cudaFree(gate);
-    cudaFree(up);
-    cudaFree(mid);
-    cudaFree(mid_h);
+    return e;
+}
+
+cudaError_t SharedExpertForward(cudaStream_t stream,
+                                const uint16_t *x, int hidden,
+                                const uint16_t *w1, const uint16_t *w3,
+                                const uint16_t *w2, int inter, float limit,
+                                uint16_t *out)
+{
+    void *base = nullptr;
+    const std::size_t bytes = SharedExpertScratchBytes(inter);
+    if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
+    const cudaError_t e = SharedExpertForwardScratch(
+        stream, x, hidden, w1, w3, w2, inter, limit, out, base, bytes);
+    cudaFree(base);
     return e;
 }
 
@@ -651,6 +676,29 @@ cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
     return cudaGetLastError();
 }
 
+cudaError_t LaunchRouterTopKScratch(cudaStream_t stream,
+                                    const uint16_t *x, const uint16_t *gate_w,
+                                    const float *bias, int n_routed, int hidden,
+                                    int topk, float temp, float route_scale,
+                                    bool norm, int32_t *out_idx, float *out_w,
+                                    float *scores_scratch)
+{
+    if (n_routed <= 0 || hidden <= 0 || topk <= 0) return cudaSuccess;
+    if (n_routed > 1024) return cudaErrorInvalidValue;
+    if (!scores_scratch) return cudaErrorInvalidValue;
+    if (topk > n_routed) topk = n_routed;
+    if (topk > 32) topk = 32;
+    cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores_scratch,
+                                        n_routed, hidden);
+    if (e == cudaSuccess) {
+        router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
+            scores_scratch, bias, n_routed, topk, temp, route_scale, norm,
+            reinterpret_cast<int *>(out_idx), out_w);
+        e = cudaGetLastError();
+    }
+    return e;
+}
+
 cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
@@ -659,19 +707,12 @@ cudaError_t LaunchRouterTopK(cudaStream_t stream,
 {
     if (n_routed <= 0 || hidden <= 0 || topk <= 0) return cudaSuccess;
     if (n_routed > 1024) return cudaErrorInvalidValue;
-    if (topk > n_routed) topk = n_routed;
-    if (topk > 32) topk = 32;
     float *scores = nullptr;
     if (cudaMalloc(&scores, sizeof(float) * n_routed) != cudaSuccess)
         return cudaGetLastError();
-    cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores,
-                                        n_routed, hidden);
-    if (e == cudaSuccess) {
-        router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
-            scores, bias, n_routed, topk, temp, route_scale, norm,
-            reinterpret_cast<int *>(out_idx), out_w);
-        e = cudaGetLastError();
-    }
+    const cudaError_t e = LaunchRouterTopKScratch(
+        stream, x, gate_w, bias, n_routed, hidden, topk, temp, route_scale,
+        norm, out_idx, out_w, scores);
     cudaFree(scores);
     return e;
 }

@@ -783,6 +783,52 @@ TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
     cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2); cudaFree(dout);
 }
 
+TEST_CASE("deepseek-v41 shared expert scratch variant matches the allocating one",
+          "[deepseek-v41][kernels]")
+{
+    const int hidden = 8, inter = 8;
+    std::vector<uint16_t> xh(hidden), w1h(inter * hidden), w3h(inter * hidden),
+        w2h(hidden * inter);
+    for (int i = 0; i < hidden; ++i) xh[i] = H(0.2f * static_cast<float>(i - 2));
+    for (int i = 0; i < inter * hidden; ++i) {
+        w1h[i] = H(0.15f * static_cast<float>((i % 11) - 5));
+        w3h[i] = H(0.12f * static_cast<float>((i % 7) - 3));
+        w2h[i] = H(0.1f * static_cast<float>((i % 9) - 4));
+    }
+    auto to_dev = [](const std::vector<uint16_t> &h) {
+        uint16_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, h.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, h.data(), h.size() * 2, cudaMemcpyHostToDevice) ==
+                cudaSuccess);
+        return d;
+    };
+    uint16_t *dx = to_dev(xh), *dw1 = to_dev(w1h), *dw3 = to_dev(w3h),
+             *dw2 = to_dev(w2h);
+    uint16_t *dout_a = nullptr, *dout_s = nullptr;
+    REQUIRE(cudaMalloc(&dout_a, hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout_s, hidden * 2) == cudaSuccess);
+    const std::size_t scratch_bytes =
+        lsxcommon::deepseek_v41::SharedExpertScratchBytes(inter);
+    void *scratch = nullptr;
+    REQUIRE(cudaMalloc(&scratch, scratch_bytes) == cudaSuccess);
+
+    REQUIRE(lsxcommon::deepseek_v41::SharedExpertForward(
+                nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout_a) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::SharedExpertForwardScratch(
+                nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout_s,
+                scratch, scratch_bytes) == cudaSuccess);
+    std::vector<uint16_t> got_a(hidden), got_s(hidden);
+    REQUIRE(cudaMemcpy(got_a.data(), dout_a, hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(got_s.data(), dout_s, hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int i = 0; i < hidden; ++i) CHECK(got_s[i] == got_a[i]);
+
+    cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2);
+    cudaFree(dout_a); cudaFree(dout_s); cudaFree(scratch);
+}
+
 namespace {
 
 // Values assumed already on the E2M1 grid; encodes the sign-magnitude nibble.
@@ -881,6 +927,44 @@ TEST_CASE("deepseek-v41 router top-k matches the gate reference",
     }
 
     cudaFree(dw); cudaFree(dx);
+}
+
+TEST_CASE("deepseek-v41 router top-k scratch variant matches the allocating one",
+          "[deepseek-v41][kernels]")
+{
+    const int n = 6, hidden = 8, topk = 2;
+    std::vector<float> bias(n);
+    std::vector<uint16_t> wh(n * hidden), xh(hidden);
+    for (int i = 0; i < n * hidden; ++i)
+        wh[i] = H(0.1f * static_cast<float>((i % 13) - 6));
+    for (int j = 0; j < hidden; ++j) xh[j] = H(0.25f * static_cast<float>(j - 4));
+    for (int i = 0; i < n; ++i) bias[i] = 0.05f * static_cast<float>(i - 3);
+
+    uint16_t *dw = nullptr, *dx = nullptr;
+    REQUIRE(cudaMalloc(&dw, n * hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, wh.data(), n * hidden * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    float *dscores = nullptr;
+    REQUIRE(cudaMalloc(&dscores, n * 4) == cudaSuccess);
+
+    int32_t a_idx[32]; float a_w[32];
+    int32_t s_idx[32]; float s_w[32];
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                a_idx, a_w) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopKScratch(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                s_idx, s_w, dscores) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+    for (int k = 0; k < topk; ++k) {
+        CHECK(s_idx[k] == a_idx[k]);
+        CHECK(s_w[k] == Catch::Approx(a_w[k]).margin(1e-6f));
+    }
+
+    cudaFree(dw); cudaFree(dx); cudaFree(dscores);
 }
 
 TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
