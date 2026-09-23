@@ -98,6 +98,31 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
    speculative next-layer prefetch) to overlap the 35 ms/token H2D.
 5. **P2** — fuse casts, merge `hc_mixes`, evaluate per-32 scales.
 
+## Results log (branch `perf/deepseek-v41-flash-decode`)
+
+| step | change | 512 t/s | 2048 t/s | notes |
+|---|---|---|---|---|
+| audit | — | 11.3 | 6.8 | baseline |
+| P0a | preallocate shared-expert/router scratch | 11.4 | 6.8 | numeric-neutral; ~0 wall (host API overlapped the GPU) |
+| P0b | parallel indexer top-k | 12.7 | **10.6** | +55.9% at 2048, reproduced twice; selfcheck bit-exact |
+
+Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
+
+| kernel | share | note |
+|---|---|---|
+| `sparse_attn_half_kernel` | 39.0% | 64 warps total (~0.8% occupancy), topk≈640 |
+| `hc_mixes_kernel` | 15.6% | 2 launches/layer, single block |
+| `GemvKernel<half,half,0/2>` | 20.1% | dense FP8->FP16 dequant weights |
+| `lsx_nvfp4_gemv_kernel` | 11.5% | routed experts |
+| `router_topk_kernel` | 4.3% | single-thread selection |
+| `indexer_topk_kernel` | 4.3% | now block-parallel (was 35.7%) |
+| expert H2D (copy stream) | ~41% of wall | still zero overlap |
+
+Remaining levers require operator direction: `sparse_attn` speedups change the
+attention reduction order (numeric-class decision, `docs/numeric-contract.md`
+§3.5); the H2D overlap change (device-side expert ids / speculative prefetch)
+is architectural. Both are tracked in the audit root-cause list.
+
 ## Numeric-class note
 
 Per `docs/numeric-contract.md` any reduction-order change (split-KV, parallel
