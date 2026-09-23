@@ -172,6 +172,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     uint16_t *d_shared_h = dev.typed<uint16_t>(kHidden);
     float *d_acc = dev.typed<float>(kHidden);
     float *d_pre_mix = dev.typed<float>(kHc);
+    float *d_hc_mix = dev.typed<float>(dv41::kHcMix);
+    float *d_hc_rsqrt = dev.typed<float>(1);
     float *d_apre = dev.typed<float>(kHc);
     float *d_apost = dev.typed<float>(kHc);
     float *d_acomb = dev.typed<float>(kHc * kHc);
@@ -201,6 +203,13 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     const size_t ffn_scratch_bytes =
         dv41::ExpertFfnScratchBytes(inter, kHidden);
     uint8_t *d_ffn_scratch = dev.typed<uint8_t>(ffn_scratch_bytes);
+    // Shared-expert and router scratch, allocated once: allocating per layer
+    // (cudaMalloc/cudaFree) serializes the device and kills copy/compute
+    // overlap (204 alloc+free pairs per token otherwise).
+    const size_t shared_scratch_bytes =
+        dv41::SharedExpertScratchBytes(dv41::kSharedIntermediate);
+    uint8_t *d_shared_scratch = dev.typed<uint8_t>(shared_scratch_bytes);
+    float *d_router_scores = dev.typed<float>(dv41::kNumRouted);
 
     // Device span offsets for one staged expert (mirrors the pinned layout).
     struct StagePtrs {
@@ -464,7 +473,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             if (dv41::LaunchHcMixes(d_h, lw.d_hc_attn_fn, lw.d_hc_attn_scale,
                                     lw.d_hc_attn_base, kHc, kHidden,
                                     dv41::kSinkhornIters, dv41::kHcEps, d_apre,
-                                    d_apost, d_acomb, stream) != cudaSuccess ||
+                                    d_apost, d_acomb, d_hc_mix, d_hc_rsqrt,
+                                    stream) != cudaSuccess ||
                 dv41::LaunchHcPre(d_h, d_pre_mix, d_xf, kHc, kHidden, stream) !=
                     cudaSuccess ||
                 dv41::LaunchCastF32ToHalf(d_xf, d_xh, kHidden, stream) !=
@@ -477,10 +487,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             cudaError_t ae;
             if (meta.compress_ratio == 0) {
                 ae = dv41::AttentionForwardDecode(
-                    stream, d_xh, kHidden, U(lw.d_wq_a), kQLora,
-                    U(lw.d_q_norm), U(lw.d_wq_b), kHeads, kHeadDim, kRopeDim,
-                    U(lw.d_wkv), U(lw.d_kv_norm), lw.d_attn_sink, U(lw.d_wo_a), kOGroups,
-                    kOLora, U(lw.d_wo_b), d_cos0, d_sin0,
+                    stream, d_xh, kHidden, lw.d_wq_a, lw.d_wq_a_scale, kQLora,
+                    U(lw.d_q_norm), lw.d_wq_b, lw.d_wq_b_scale, kHeads, kHeadDim,
+                    kRopeDim, lw.d_wkv, lw.d_wkv_scale, U(lw.d_kv_norm),
+                    lw.d_attn_sink, lw.d_wo_a, lw.d_wo_a_scale, kOGroups, kOLora,
+                    lw.d_wo_b, lw.d_wo_b_scale, d_cos0, d_sin0,
                     d_window_kv + static_cast<size_t>(lay) * kWindow * kHeadDim,
                     kWindow, step, d_attn_h);
             } else {
@@ -491,24 +502,30 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 p.is_candidate_source = meta.is_candidate_source;
                 p.owns_k = meta.is_kv_source;
                 p.uses_candidates = dv41::UsesCandidates(lay);
-                p.wq_a = U(lw.d_wq_a);
+                p.wq_a = lw.d_wq_a;
+                p.wq_a_scale = lw.d_wq_a_scale;
                 p.q_lora = kQLora;
                 p.q_norm = U(lw.d_q_norm);
-                p.wq_b = U(lw.d_wq_b);
+                p.wq_b = lw.d_wq_b;
+                p.wq_b_scale = lw.d_wq_b_scale;
                 p.heads = kHeads;
                 p.head_dim = kHeadDim;
                 p.rope_dim = kRopeDim;
-                p.wkv = U(lw.d_wkv);
+                p.wkv = lw.d_wkv;
+                p.wkv_scale = lw.d_wkv_scale;
                 p.kv_norm = U(lw.d_kv_norm);
                 p.attn_sink = lw.d_attn_sink;
-                p.wo_a = U(lw.d_wo_a);
+                p.wo_a = lw.d_wo_a;
+                p.wo_a_scale = lw.d_wo_a_scale;
                 p.o_groups = kOGroups;
                 p.o_lora_rank = kOLora;
-                p.wo_b = U(lw.d_wo_b);
+                p.wo_b = lw.d_wo_b;
+                p.wo_b_scale = lw.d_wo_b_scale;
                 p.comp_wkv = U(lw.d_comp_wkv);
                 p.comp_wgate = U(lw.d_comp_wgate);
                 p.comp_norm = U(lw.d_comp_norm);
-                p.idx_wq_b = U(lw.d_idx_wq_b);
+                p.idx_wq_b = lw.d_idx_wq_b;
+                p.idx_wq_b_scale = lw.d_idx_wq_b_scale;
                 p.idx_wk = U(lw.d_idx_wk);
                 p.idx_k_norm = U(lw.d_idx_k_norm);
                 p.idx_wproj = U(lw.d_idx_weights_proj);
@@ -548,7 +565,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             if (dv41::LaunchHcMixes(d_h, lw.d_hc_ffn_fn, lw.d_hc_ffn_scale,
                                     lw.d_hc_ffn_base, kHc, kHidden,
                                     dv41::kSinkhornIters, dv41::kHcEps, d_fpre,
-                                    d_fpost, d_fcomb, stream) != cudaSuccess ||
+                                    d_fpost, d_fcomb, d_hc_mix, d_hc_rsqrt,
+                                    stream) != cudaSuccess ||
                 dv41::LaunchHcPre(d_h, d_apre, d_xf, kHc, kHidden, stream) !=
                     cudaSuccess ||
                 dv41::LaunchCastF32ToHalf(d_xf, d_xh, kHidden, stream) !=
@@ -560,10 +578,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             }
 
             // Router + routed experts + shared expert.
-            if (dv41::LaunchRouterTopK(
+            if (dv41::LaunchRouterTopKScratch(
                     stream, d_xh, U(lw.d_gate_weight), lw.d_gate_bias,
                     lw.gate_rows, kHidden, topk, dv41::kGateTemp,
-                    dv41::kRouteScale, true, d_ridx, d_rw) != cudaSuccess) {
+                    dv41::kRouteScale, true, d_ridx, d_rw,
+                    d_router_scores) != cudaSuccess) {
                 result.error_msg = "router failed";
                 return result;
             }
@@ -785,10 +804,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                     }
                 }
             }
-            if (dv41::SharedExpertForward(
+            if (dv41::SharedExpertForwardScratch(
                     stream, d_xh, kHidden, U(lw.d_shared_w1),
                     U(lw.d_shared_w3), U(lw.d_shared_w2), dv41::kSharedIntermediate,
-                    dv41::kSwigluLimit, d_shared_h) != cudaSuccess ||
+                    dv41::kSwigluLimit, d_shared_h, d_shared_scratch,
+                    shared_scratch_bytes) != cudaSuccess ||
                 dv41::LaunchAccumulateHalfToF32(d_shared_h, d_acc, kHidden,
                                                 stream) != cudaSuccess) {
                 result.error_msg = "shared expert failed";

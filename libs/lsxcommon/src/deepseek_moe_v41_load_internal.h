@@ -51,11 +51,19 @@ struct LayerWeights {
     __half *d_ffn_norm = nullptr;
     __half *d_q_norm = nullptr;
     __half *d_kv_norm = nullptr;
-    __half *d_wq_a = nullptr;
-    __half *d_wq_b = nullptr;
-    __half *d_wkv = nullptr;
-    __half *d_wo_a = nullptr;
-    __half *d_wo_b = nullptr;
+    // Dense FP8 weights are stored as raw F8_E4M3 (1 byte/elem) + per-32x32
+    // UE8M0 scales so the GEMV dequantizes on the fly (halves HBM traffic and
+    // frees VRAM for the expert cache).
+    uint8_t *d_wq_a = nullptr;
+    uint8_t *d_wq_a_scale = nullptr;
+    uint8_t *d_wq_b = nullptr;
+    uint8_t *d_wq_b_scale = nullptr;
+    uint8_t *d_wkv = nullptr;
+    uint8_t *d_wkv_scale = nullptr;
+    uint8_t *d_wo_a = nullptr;
+    uint8_t *d_wo_a_scale = nullptr;
+    uint8_t *d_wo_b = nullptr;
+    uint8_t *d_wo_b_scale = nullptr;
     __half *d_gate_weight = nullptr;   // router BF16 -> FP16
     float *d_gate_bias = nullptr;      // [n_routed] F32
     float *d_gate_bias_vl = nullptr;   // [n_routed] F32
@@ -69,7 +77,8 @@ struct LayerWeights {
     __half *d_comp_norm = nullptr;
 
     // Indexer (index_source layers only).
-    __half *d_idx_wq_b = nullptr;
+    uint8_t *d_idx_wq_b = nullptr;
+    uint8_t *d_idx_wq_b_scale = nullptr;
     __half *d_idx_wk = nullptr;
     __half *d_idx_k_norm = nullptr;
     __half *d_idx_weights_proj = nullptr;

@@ -3,6 +3,7 @@
 
 #include <cuda_fp16.h>
 
+#include "deepseek_moe_v41_fp8.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {
@@ -68,21 +69,18 @@ __global__ void rope_half_kernel(__half *__restrict__ x, int rows, int row_len,
 
 // One block per token. `mix_hc` warps each reduce one hc_fn row; warp 0 also
 // produces the stream rsqrt; thread 0 splits and Sinkhorns the comb matrix.
-__global__ void hc_mixes_kernel(const float *__restrict__ x,
-                                const float *__restrict__ hc_fn,
-                                const float *__restrict__ hc_scale,
-                                const float *__restrict__ hc_base, int hc,
-                                int dim, int iters, float eps, float *pre,
-                                float *post, float *comb)
+// Hyper-connections split across blocks. Block 0 reduces the stream rsqrt;
+// block b>0 reduces mix row b-1. Each reduction keeps the original lane-strided
+// k order, so the values are bit-identical to the old single-block kernel --
+// only the row-level parallelism changes (mix_hc SMs instead of one).
+__global__ void hc_mix_dots_kernel(const float *__restrict__ x,
+                                   const float *__restrict__ hc_fn,
+                                   int total, float eps,
+                                   float *__restrict__ mix,
+                                   float *__restrict__ rsqrt_out)
 {
-    const int mix_hc = (2 + hc) * hc;
-    const int total = hc * dim;
     const int lane = threadIdx.x & 31;
-    const int warp = threadIdx.x >> 5;
-    __shared__ float s_rsqrt;
-    __shared__ float s_mix[64];
-
-    if (warp == 0) {  // stream rsqrt
+    if (blockIdx.x == 0) {
         double ss = 0.0;
         for (int k = lane; k < total; k += 32)
             ss += static_cast<double>(x[k]) * x[k];
@@ -91,34 +89,42 @@ __global__ void hc_mixes_kernel(const float *__restrict__ x,
         for (int off = 16; off > 0; off >>= 1)
             v += __shfl_xor_sync(0xFFFFFFFFu, v, off);
         if (lane == 0)
-            s_rsqrt = 1.0f / sqrtf(v / static_cast<float>(total) + eps);
+            rsqrt_out[0] = 1.0f / sqrtf(v / static_cast<float>(total) + eps);
+        return;
     }
-    if (warp < mix_hc) {
-        float d = 0.0f;
-        for (int k = lane; k < total; k += 32)
-            d += hc_fn[warp * total + k] * x[k];
-        #pragma unroll
-        for (int off = 16; off > 0; off >>= 1)
-            d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
-        if (lane == 0) s_mix[warp] = d;
-    }
-    __syncthreads();
-    if (threadIdx.x != 0) return;
+    const int row = blockIdx.x - 1;
+    const float *fr = hc_fn + static_cast<size_t>(row) * total;
+    float d = 0.0f;
+    for (int k = lane; k < total; k += 32)
+        d += fr[k] * x[k];
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        d += __shfl_xor_sync(0xFFFFFFFFu, d, off);
+    if (lane == 0) mix[row] = d;
+}
 
-    for (int m = 0; m < mix_hc; ++m) s_mix[m] = s_mix[m] * s_rsqrt;
-    const float *mx = s_mix;
-    for (int j = 0; j < hc; ++j) {
-        pre[j] = HcSigmoid(mx[j] * hc_scale[0] + hc_base[j]) + eps;
-        post[j] = 2.0f *
-                  HcSigmoid(mx[j + hc] * hc_scale[1] + hc_base[j + hc]);
-    }
-    for (int j = 0; j < hc; ++j)
-        for (int k = 0; k < hc; ++k)
-            comb[j * hc + k] =
-                mx[j * hc + k + hc * 2] * hc_scale[2] +
-                hc_base[j * hc + k + hc * 2];
-    // comb = comb.softmax(-1) + eps
-    for (int j = 0; j < hc; ++j) {
+// Split + Sinkhorn, parallelized over rows (thread j = row j). Row sums are
+// over k in order and column sums over j in order, exactly like the old
+// thread-0 loops -> bit-identical.
+__global__ void hc_sinkhorn_kernel(const float *__restrict__ mix,
+                                   const float *__restrict__ rsqrt,
+                                   const float *__restrict__ hc_scale,
+                                   const float *__restrict__ hc_base, int hc,
+                                   int iters, float eps, float *pre,
+                                   float *post, float *comb)
+{
+    const int j = threadIdx.x;
+    if (j >= hc) return;
+    const float rs = rsqrt[0];
+    pre[j] = HcSigmoid(mix[j] * rs * hc_scale[0] + hc_base[j]) + eps;
+    post[j] = 2.0f * HcSigmoid(mix[j + hc] * rs * hc_scale[1] +
+                               hc_base[j + hc]);
+    for (int k = 0; k < hc; ++k)
+        comb[j * hc + k] = mix[j * hc + k + hc * 2] * rs * hc_scale[2] +
+                           hc_base[j * hc + k + hc * 2];
+    __syncthreads();
+    // comb = comb.softmax(-1) + eps (row j)
+    {
         float m = comb[j * hc];
         for (int k = 1; k < hc; ++k) m = fmaxf(m, comb[j * hc + k]);
         float s = 0.0f;
@@ -129,26 +135,26 @@ __global__ void hc_mixes_kernel(const float *__restrict__ x,
         for (int k = 0; k < hc; ++k)
             comb[j * hc + k] = comb[j * hc + k] / s + eps;
     }
-    // comb = comb / (comb.sum(-2) + eps)
-    for (int k = 0; k < hc; ++k) {
+    __syncthreads();
+    // comb = comb / (comb.sum(-2) + eps) (column j)
+    {
         float s = 0.0f;
-        for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
-        for (int j = 0; j < hc; ++j)
-            comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        for (int i = 0; i < hc; ++i) s += comb[i * hc + j];
+        for (int i = 0; i < hc; ++i)
+            comb[i * hc + j] = comb[i * hc + j] / (s + eps);
     }
+    __syncthreads();
     for (int it = 0; it < iters - 1; ++it) {
-        for (int j = 0; j < hc; ++j) {  // row normalize
-            float s = 0.0f;
-            for (int k = 0; k < hc; ++k) s += comb[j * hc + k];
-            for (int k = 0; k < hc; ++k)
-                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
-        }
-        for (int k = 0; k < hc; ++k) {  // column normalize
-            float s = 0.0f;
-            for (int j = 0; j < hc; ++j) s += comb[j * hc + k];
-            for (int j = 0; j < hc; ++j)
-                comb[j * hc + k] = comb[j * hc + k] / (s + eps);
-        }
+        float s = 0.0f;  // row j normalize
+        for (int k = 0; k < hc; ++k) s += comb[j * hc + k];
+        for (int k = 0; k < hc; ++k)
+            comb[j * hc + k] = comb[j * hc + k] / (s + eps);
+        __syncthreads();
+        s = 0.0f;        // column j normalize
+        for (int i = 0; i < hc; ++i) s += comb[i * hc + j];
+        for (int i = 0; i < hc; ++i)
+            comb[i * hc + j] = comb[i * hc + j] / (s + eps);
+        __syncthreads();
     }
 }
 
@@ -178,6 +184,11 @@ __global__ void hc_post_kernel(const float *__restrict__ x,
     out[idx] = acc;
 }
 
+// Split-KV sparse attention: kWarps warps per (row, head) each run the online
+// softmax over a contiguous slice of `topk`, then the partial (m, s, acc) are
+// merged. Fixes the 0.8%-occupancy single-warp decode (64 warps total) at the
+// cost of a changed (but deterministic, fixed-geometry) reduction order.
+template <int kWarps>
 __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
                                         const __half *__restrict__ kv,
                                         const float *__restrict__ sink,
@@ -187,15 +198,20 @@ __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
 {
     const int row = blockIdx.x;
     const int head = blockIdx.y;
-    const int lane = threadIdx.x;      // one warp per (row, head)
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
     const int per = d / 32;
+    const int chunk = (topk + kWarps - 1) / kWarps;
+    const int t0 = warp * chunk;
+    const int t1 = (t0 + chunk < topk) ? t0 + chunk : topk;
+
     float acc[32];
     for (int k = 0; k < per; ++k) acc[k] = 0.0f;
     float m = -1e30f, s = 0.0f;
 
     const __half *qh = q + (static_cast<size_t>(row) * heads + head) * d;
     const int *ridx = idxs + static_cast<size_t>(row) * topk;
-    for (int t = 0; t < topk; ++t) {
+    for (int t = t0; t < t1; ++t) {
         const int idx = ridx[t];
         float dot = 0.0f;
         const __half *kh = nullptr;
@@ -224,12 +240,41 @@ __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
         }
         m = m_new;
     }
-    const float sinkv = sink ? sink[head] : -INFINITY;
-    s += expf(sinkv - m);
-    const float inv = (s > 0.0f) ? (1.0f / s) : 0.0f;
-    __half *oh = o + (static_cast<size_t>(row) * heads + head) * d;
+
+    // Merge the kWarps partials (deterministic order over warp index).
+    extern __shared__ float smem[];
+    float *sm_m = smem;                    // [kWarps] partial max
+    float *sm_s = smem + kWarps;           // [kWarps] partial sum
+    float *sm_sc = smem + 2 * kWarps;      // [kWarps] exp(m_w - m_all)
+    float *sm_inv = smem + 3 * kWarps;     // [1] 1 / total sum
+    float *sm_acc = smem + 3 * kWarps + 1; // [kWarps][d]
+    if (lane == 0) {
+        sm_m[warp] = m;
+        sm_s[warp] = s;
+    }
     for (int k = 0; k < per; ++k)
-        oh[lane + k * 32] = __float2half_rn(acc[k] * inv);
+        sm_acc[warp * d + lane + k * 32] = acc[k];
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float m_all = -1e30f;
+        for (int w = 0; w < kWarps; ++w) m_all = fmaxf(m_all, sm_m[w]);
+        float st = 0.0f;
+        for (int w = 0; w < kWarps; ++w) {
+            const float sc = expf(sm_m[w] - m_all);
+            sm_sc[w] = sc;
+            st += sm_s[w] * sc;
+        }
+        const float sinkv = sink ? sink[head] : -INFINITY;
+        st += expf(sinkv - m_all);
+        sm_inv[0] = (st > 0.0f) ? (1.0f / st) : 0.0f;
+    }
+    __syncthreads();
+    __half *oh = o + (static_cast<size_t>(row) * heads + head) * d;
+    for (int dd = threadIdx.x; dd < d; dd += blockDim.x) {
+        float a = 0.0f;
+        for (int w = 0; w < kWarps; ++w) a += sm_acc[w * d + dd] * sm_sc[w];
+        oh[dd] = __float2half_rn(a * sm_inv[0]);
+    }
 }
 
 __global__ void compressor_pool_kernel(const float *__restrict__ kv,
@@ -364,36 +409,113 @@ __global__ void router_topk_kernel(const float *__restrict__ scores,
                                    float *__restrict__ out_w)
 {
     extern __shared__ float sc[];   // n softplus-sqrt scores
+    float *r_val = sc + n;          // blockDim reductions
+    int *r_idx = reinterpret_cast<int *>(r_val + blockDim.x);
     __shared__ int s_used[1024];
     __shared__ int s_idx[32];
     __shared__ float s_w[32];
     const int t = threadIdx.x;
-    if (t < n) {
-        const float v = scores[t] / temp;
-        sc[t] = sqrtf(Softplus(v));
-        s_used[t] = 0;
+    for (int i = t; i < n; i += blockDim.x) {
+        const float v = scores[i] / temp;
+        sc[i] = sqrtf(Softplus(v));
+        s_used[i] = 0;
     }
     __syncthreads();
-    if (t != 0) return;
+    // Block-parallel selection: `topk` rounds of O(n/blockDim + log blockDim)
+    // replace the former single-thread O(topk*n) scan. Selection key is
+    // (softplus-sqrt score + bias), ties -> lower index; the stored weight is
+    // the unbiased score (matches GateRouteRef).
     for (int k = 0; k < topk; ++k) {
-        int best = -1;
-        float bestval = 0.0f;
-        for (int i = 0; i < n; ++i) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int i = t; i < n; i += blockDim.x) {
             if (s_used[i]) continue;
             const float v = sc[i] + (bias ? bias[i] : 0.0f);
-            if (best < 0 || v > bestval) { bestval = v; best = i; }
+            if (lbest < 0 || v > lbv || (v == lbv && i < lbest)) {
+                lbv = v;
+                lbest = i;
+            }
         }
-        s_used[best] = 1;
-        s_idx[k] = best;
-        s_w[k] = sc[best];
+        r_val[t] = lbv;
+        r_idx[t] = lbest;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const float v2 = r_val[t + off];
+                const int i2 = r_idx[t + off];
+                const float v1 = r_val[t];
+                const int i1 = r_idx[t];
+                if (i2 >= 0 && (i1 < 0 || v2 > v1 || (v2 == v1 && i2 < i1))) {
+                    r_val[t] = v2;
+                    r_idx[t] = i2;
+                }
+            }
+            __syncthreads();
+        }
+        if (t == 0 && r_idx[0] >= 0) {
+            s_used[r_idx[0]] = 1;
+            s_idx[k] = r_idx[0];
+            s_w[k] = sc[r_idx[0]];
+        }
+        __syncthreads();
     }
-    float sum = 0.0f;
-    for (int k = 0; k < topk; ++k) sum += s_w[k];
-    for (int k = 0; k < topk; ++k) {
-        float w = s_w[k];
-        if (norm && topk > 1) w /= (sum + 1e-20f);
-        out_idx[k] = s_idx[k];
-        out_w[k] = w * route_scale;
+    if (t == 0) {
+        float sum = 0.0f;
+        for (int k = 0; k < topk; ++k) sum += s_w[k];
+        for (int k = 0; k < topk; ++k) {
+            float w = s_w[k];
+            if (norm && topk > 1) w /= (sum + 1e-20f);
+            out_idx[k] = s_idx[k];
+            out_w[k] = w * route_scale;
+        }
+    }
+}
+
+// Dense FP8 GEMV: y[row] = alpha * sum_k W[row,k]*x[k], W F8_E4M3 [M,K] with
+// [ceil(M/32), ceil(K/32)] UE8M0 scales. The weight is dequantized on the fly
+// and rounded to FP16 before the product, exactly like the loader's
+// fp8_block_dequant_kernel, so the result is bit-identical to
+// (dequant-to-FP16 + LaunchGemmFp16) while halving the weight bytes read.
+// One warp per row, lane-strided K, fixed shuffle reduce (device-independent).
+__global__ void gemm_fp8_vec_kernel(const uint8_t *__restrict__ w,
+                                    const uint8_t *__restrict__ scales,
+                                    const __half *__restrict__ x,
+                                    void *__restrict__ y, int M, int K,
+                                    int out_f32, float alpha)
+{
+    const int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (row >= M) return;
+    const int scols = (K + 31) / 32;
+    const uint8_t *wr = w + static_cast<size_t>(row) * K;
+    const uint8_t *sr = scales + static_cast<size_t>(row / 32) * scols;
+    float acc = 0.0f;
+    // Unrolled 4x (same lane -> k mapping and per-lane k order as the scalar
+    // loop, so the result is bit-identical): each lane keeps 4 independent
+    // byte loads in flight, which hides the 32-byte-per-instruction latency.
+    int k = lane;
+    for (; k + 96 < K; k += 128) {
+#pragma unroll
+        for (int u = 0; u < 4; ++u) {
+            const int kk = k + u * 32;
+            const float wv = __half2float(__float2half_rn(
+                Fp8E4m3ToFloatFast(wr[kk]) * Fp8E8m0ToFloatFast(sr[kk / 32])));
+            acc += wv * __half2float(x[kk]);
+        }
+    }
+    for (; k < K; k += 32) {
+        const float wv = __half2float(__float2half_rn(
+            Fp8E4m3ToFloatFast(wr[k]) * Fp8E8m0ToFloatFast(sr[k / 32])));
+        acc += wv * __half2float(x[k]);
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xFFFFFFFFu, acc, off);
+    if (lane == 0) {
+        if (out_f32)
+            static_cast<float *>(y)[row] = alpha * acc;
+        else
+            static_cast<__half *>(y)[row] = __float2half_rn(alpha * acc);
     }
 }
 
@@ -426,13 +548,19 @@ cudaError_t LaunchRopeHalf(uint16_t *x, int rows, int row_len, int rope_dim,
 cudaError_t LaunchHcMixes(const float *x, const float *hc_fn,
                           const float *hc_scale, const float *hc_base, int hc,
                           int dim, int sinkhorn_iters, float eps, float *pre,
-                          float *post, float *comb, cudaStream_t stream)
+                          float *post, float *comb, float *mix_scratch,
+                          float *rsqrt_scratch, cudaStream_t stream)
 {
+    if (hc <= 0 || dim <= 0) return cudaSuccess;
     const int mix_hc = (2 + hc) * hc;
-    const int threads = 32 * mix_hc;
-    hc_mixes_kernel<<<1, threads, 0, stream>>>(x, hc_fn, hc_scale, hc_base, hc,
-                                               dim, sinkhorn_iters, eps, pre,
-                                               post, comb);
+    const int total = hc * dim;
+    hc_mix_dots_kernel<<<mix_hc + 1, 32, 0, stream>>>(
+        x, hc_fn, total, eps, mix_scratch, rsqrt_scratch);
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) return e;
+    hc_sinkhorn_kernel<<<1, hc, 0, stream>>>(
+        mix_scratch, rsqrt_scratch, hc_scale, hc_base, hc, sinkhorn_iters, eps,
+        pre, post, comb);
     return cudaGetLastError();
 }
 
@@ -466,8 +594,12 @@ cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
     if (q_rows <= 0 || heads <= 0 || d <= 0 || topk <= 0)
         return cudaSuccess;
     if (d % 32 != 0) return cudaErrorInvalidValue;
+    constexpr int kWarps = 8;
+    const int threads = 32 * kWarps;
     const dim3 grid(q_rows, heads);
-    sparse_attn_half_kernel<<<grid, 32, 0, stream>>>(
+    const size_t sh = static_cast<size_t>(3 * kWarps + 1 + kWarps * d) *
+                      sizeof(float);
+    sparse_attn_half_kernel<kWarps><<<grid, threads, sh, stream>>>(
         reinterpret_cast<const __half *>(q),
         reinterpret_cast<const __half *>(kv),
         sink, reinterpret_cast<const int *>(idxs),
@@ -534,6 +666,32 @@ cudaError_t LaunchGemmFp16(cudaStream_t stream,
     return cudaSuccess;
 }
 
+cudaError_t LaunchGemmFp8(cudaStream_t stream, const uint8_t *w,
+                          const uint8_t *scales, const uint16_t *x,
+                          uint16_t *y, int M, int K, float alpha)
+{
+    if (M <= 0 || K <= 0) return cudaSuccess;
+    constexpr int kThreads = 256;
+    const int rows_per = kThreads / 32;
+    const dim3 grid((M + rows_per - 1) / rows_per);
+    gemm_fp8_vec_kernel<<<grid, kThreads, 0, stream>>>(
+        w, scales, reinterpret_cast<const __half *>(x), y, M, K, 0, alpha);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchGemvFp8ToF32(cudaStream_t stream, const uint8_t *w,
+                               const uint8_t *scales, const uint16_t *x,
+                               float *y, int M, int K)
+{
+    if (M <= 0 || K <= 0) return cudaSuccess;
+    constexpr int kThreads = 256;
+    const int rows_per = kThreads / 32;
+    const dim3 grid((M + rows_per - 1) / rows_per);
+    gemm_fp8_vec_kernel<<<grid, kThreads, 0, stream>>>(
+        w, scales, reinterpret_cast<const __half *>(x), y, M, K, 1, 1.0f);
+    return cudaGetLastError();
+}
+
 cudaError_t LaunchHeadLogits(cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x,
                              float *logits, int vocab, int hidden)
@@ -587,26 +745,40 @@ cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                               gemv::LxDtype::kF32, 0.0f);
 }
 
-cudaError_t SharedExpertForward(cudaStream_t stream,
-                                const uint16_t *x, int hidden,
-                                const uint16_t *w1, const uint16_t *w3,
-                                const uint16_t *w2, int inter, float limit,
-                                uint16_t *out)
+std::size_t SharedExpertScratchBytes(int inter)
 {
-    float *gate = nullptr, *up = nullptr, *mid = nullptr;
-    uint16_t *mid_h = nullptr;
-    if (cudaMalloc(&gate, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&up, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&mid, static_cast<size_t>(inter) * 4) != cudaSuccess ||
-        cudaMalloc(&mid_h, static_cast<size_t>(inter) * 2) != cudaSuccess) {
-        if (gate) cudaFree(gate);
-        if (up) cudaFree(up);
-        if (mid) cudaFree(mid);
-        if (mid_h) cudaFree(mid_h);
+    size_t bytes = 0;
+    auto bump = [&](size_t n) { bytes += (n + 255) / 256 * 256; };
+    bump(static_cast<size_t>(inter) * 4);  // gate_f
+    bump(static_cast<size_t>(inter) * 4);  // up_f
+    bump(static_cast<size_t>(inter) * 4);  // mid_f
+    bump(static_cast<size_t>(inter) * 2);  // mid_h
+    return bytes;
+}
+
+cudaError_t SharedExpertForwardScratch(
+    cudaStream_t stream, const uint16_t *x, int hidden, const uint16_t *w1,
+    const uint16_t *w3, const uint16_t *w2, int inter, float limit,
+    uint16_t *out, void *scratch, std::size_t scratch_bytes)
+{
+    if (hidden <= 0 || inter <= 0) return cudaSuccess;
+    if (!scratch || scratch_bytes < SharedExpertScratchBytes(inter))
         return cudaErrorInvalidValue;
-    }
-    cudaError_t e = LaunchGemvFp16ToF32(stream, w1, x, gate, inter,
-                                        hidden);
+    uint8_t *p = static_cast<uint8_t *>(scratch);
+    auto take = [&](size_t n) {
+        uint8_t *r = p;
+        p += (n + 255) / 256 * 256;
+        return r;
+    };
+    float *gate =
+        reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    float *up = reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    float *mid =
+        reinterpret_cast<float *>(take(static_cast<size_t>(inter) * 4));
+    uint16_t *mid_h =
+        reinterpret_cast<uint16_t *>(take(static_cast<size_t>(inter) * 2));
+
+    cudaError_t e = LaunchGemvFp16ToF32(stream, w1, x, gate, inter, hidden);
     if (e == cudaSuccess)
         e = LaunchGemvFp16ToF32(stream, w3, x, up, inter, hidden);
     if (e == cudaSuccess)
@@ -615,10 +787,21 @@ cudaError_t SharedExpertForward(cudaStream_t stream,
         e = LaunchCastF32ToHalf(mid, mid_h, inter, stream);
     if (e == cudaSuccess)
         e = LaunchGemmFp16(stream, w2, mid_h, out, hidden, 1, inter);
-    cudaFree(gate);
-    cudaFree(up);
-    cudaFree(mid);
-    cudaFree(mid_h);
+    return e;
+}
+
+cudaError_t SharedExpertForward(cudaStream_t stream,
+                                const uint16_t *x, int hidden,
+                                const uint16_t *w1, const uint16_t *w3,
+                                const uint16_t *w2, int inter, float limit,
+                                uint16_t *out)
+{
+    void *base = nullptr;
+    const std::size_t bytes = SharedExpertScratchBytes(inter);
+    if (cudaMalloc(&base, bytes) != cudaSuccess) return cudaGetLastError();
+    const cudaError_t e = SharedExpertForwardScratch(
+        stream, x, hidden, w1, w3, w2, inter, limit, out, base, bytes);
+    cudaFree(base);
     return e;
 }
 
@@ -651,6 +834,33 @@ cudaError_t LaunchAccumulateHalfToF32(const uint16_t *src, float *acc, int n,
     return cudaGetLastError();
 }
 
+cudaError_t LaunchRouterTopKScratch(cudaStream_t stream,
+                                    const uint16_t *x, const uint16_t *gate_w,
+                                    const float *bias, int n_routed, int hidden,
+                                    int topk, float temp, float route_scale,
+                                    bool norm, int32_t *out_idx, float *out_w,
+                                    float *scores_scratch)
+{
+    if (n_routed <= 0 || hidden <= 0 || topk <= 0) return cudaSuccess;
+    if (n_routed > 1024) return cudaErrorInvalidValue;
+    if (!scores_scratch) return cudaErrorInvalidValue;
+    if (topk > n_routed) topk = n_routed;
+    if (topk > 32) topk = 32;
+    const int threads = 512;
+    const size_t sh = static_cast<size_t>(n_routed) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(int);
+    cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores_scratch,
+                                        n_routed, hidden);
+    if (e == cudaSuccess) {
+        router_topk_kernel<<<1, threads, sh, stream>>>(
+            scores_scratch, bias, n_routed, topk, temp, route_scale, norm,
+            reinterpret_cast<int *>(out_idx), out_w);
+        e = cudaGetLastError();
+    }
+    return e;
+}
+
 cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
@@ -659,19 +869,12 @@ cudaError_t LaunchRouterTopK(cudaStream_t stream,
 {
     if (n_routed <= 0 || hidden <= 0 || topk <= 0) return cudaSuccess;
     if (n_routed > 1024) return cudaErrorInvalidValue;
-    if (topk > n_routed) topk = n_routed;
-    if (topk > 32) topk = 32;
     float *scores = nullptr;
     if (cudaMalloc(&scores, sizeof(float) * n_routed) != cudaSuccess)
         return cudaGetLastError();
-    cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores,
-                                        n_routed, hidden);
-    if (e == cudaSuccess) {
-        router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
-            scores, bias, n_routed, topk, temp, route_scale, norm,
-            reinterpret_cast<int *>(out_idx), out_w);
-        e = cudaGetLastError();
-    }
+    const cudaError_t e = LaunchRouterTopKScratch(
+        stream, x, gate_w, bias, n_routed, hidden, topk, temp, route_scale,
+        norm, out_idx, out_w, scores);
     cudaFree(scores);
     return e;
 }

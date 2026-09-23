@@ -110,12 +110,15 @@ cudaError_t UploadF32(const TensorRecord &t, std::vector<void *> &owned,
                            cudaMemcpyHostToDevice, stream);
 }
 
-// F8_E4M3 weight + UE8M0 per-32 scale -> FP16 dequant cache.
+// F8_E4M3 weight + UE8M0 per-32 scale -> raw device FP8 bytes + scale bytes.
+// No dequant: the GEMV reads the FP8 weight and dequantizes on the fly (halves
+// the persistent bytes and the HBM traffic). The final stream sync in
+// load_pinned_weights keeps the pageable host source alive until the async
+// copy completes.
 cudaError_t UploadFp8(const TensorRecord &w, const TensorRecord &sc,
                       std::vector<void *> &owned, uint64_t &bytes,
-                      __half **out, int *rows_out, int *cols_out,
-                      cudaStream_t stream, StageBuf &stage_w,
-                      StageBuf &stage_s)
+                      uint8_t **out, uint8_t **scale_out, int *rows_out,
+                      int *cols_out, cudaStream_t stream)
 {
     if (w.dtype != "F8_E4M3" || w.shape.size() != 2 ||
         sc.dtype != "F8_E8M0" || sc.shape.size() != 2)
@@ -131,18 +134,55 @@ cudaError_t UploadFp8(const TensorRecord &w, const TensorRecord &sc,
     if (static_cast<int64_t>(sc.data.size()) < srows * scols)
         return cudaErrorInvalidValue;
 
+    const size_t wb = static_cast<size_t>(rows) * cols;
+    const size_t sb = static_cast<size_t>(srows) * scols;
+    void *d = nullptr, *ds = nullptr;
+    if (cudaMalloc(&d, wb) != cudaSuccess) return cudaGetLastError();
+    owned.push_back(d);
+    if (cudaMalloc(&ds, sb) != cudaSuccess) return cudaGetLastError();
+    owned.push_back(ds);
+    bytes += static_cast<uint64_t>(wb) + static_cast<uint64_t>(sb);
+    if (cudaMemcpyAsync(d, w.data.data(), wb, cudaMemcpyHostToDevice,
+                        stream) != cudaSuccess ||
+        cudaMemcpyAsync(ds, sc.data.data(), sb, cudaMemcpyHostToDevice,
+                        stream) != cudaSuccess)
+        return cudaGetLastError();
+    if (out) *out = static_cast<uint8_t *>(d);
+    if (scale_out) *scale_out = static_cast<uint8_t *>(ds);
+    if (rows_out) *rows_out = rows;
+    if (cols_out) *cols_out = cols;
+    return cudaSuccess;
+}
+
+// F8_E4M3 weight + UE8M0 per-32 scale -> FP16 dequant cache. Used for the
+// shared experts, which remain FP16 residents (the GEMV consumes FP16).
+cudaError_t UploadFp8ToHalf(const TensorRecord &w, const TensorRecord &sc,
+                            std::vector<void *> &owned, uint64_t &bytes,
+                            __half **out, cudaStream_t stream,
+                            StageBuf &stage_w, StageBuf &stage_s)
+{
+    if (w.dtype != "F8_E4M3" || w.shape.size() != 2 ||
+        sc.dtype != "F8_E8M0" || sc.shape.size() != 2)
+        return cudaErrorInvalidValue;
+    const int rows = static_cast<int>(w.shape[0]);
+    const int cols = static_cast<int>(w.shape[1]);
+    if (rows <= 0 || cols <= 0 || rows % 32 != 0 || cols % 32 != 0)
+        return cudaErrorInvalidValue;
+    if (static_cast<int64_t>(w.data.size()) != static_cast<int64_t>(rows) * cols)
+        return cudaErrorInvalidValue;
+    const int64_t srows = (rows + 31) / 32, scols = (cols + 31) / 32;
+    if (static_cast<int64_t>(sc.data.size()) < srows * scols)
+        return cudaErrorInvalidValue;
+
     void *d = nullptr;
     if (cudaMalloc(&d, static_cast<size_t>(rows) * cols * 2) != cudaSuccess)
         return cudaGetLastError();
     owned.push_back(d);
     bytes += static_cast<uint64_t>(rows) * cols * 2;
     *out = static_cast<__half *>(d);
-    if (rows_out) *rows_out = rows;
-    if (cols_out) *cols_out = cols;
     const size_t wb = static_cast<size_t>(rows) * cols;
     const size_t sb = static_cast<size_t>(srows) * scols;
-    if (stage_w.Ensure(wb) != cudaSuccess ||
-        stage_s.Ensure(sb) != cudaSuccess)
+    if (stage_w.Ensure(wb) != cudaSuccess || stage_s.Ensure(sb) != cudaSuccess)
         return cudaGetLastError();
     if (cudaMemcpyAsync(stage_w.buf, w.data.data(), wb,
                         cudaMemcpyHostToDevice, stream) != cudaSuccess ||
@@ -249,15 +289,24 @@ cudaError_t load_pinned_weights(const std::string &model_path,
             }
             return UploadF32(*t, lw.owned, pw.resident_bytes, dst, stream);
         };
-        auto fp8 = [&](const char *w_suffix, __half **dst, int *rows,
-                       int *cols) {
+        auto fp8 = [&](const char *w_suffix, uint8_t **dst, uint8_t **scale,
+                       int *rows, int *cols) {
             const auto *w = req(w_suffix);
             std::string sc_name(w_suffix);
             sc_name.replace(sc_name.size() - 7, 7, ".scale");
             const auto *sc = req(sc_name.c_str());
             if (!w || !sc) return cudaErrorInvalidValue;
-            return UploadFp8(*w, *sc, lw.owned, pw.resident_bytes, dst, rows,
-                             cols, stream, stage_w, stage_s);
+            return UploadFp8(*w, *sc, lw.owned, pw.resident_bytes, dst, scale,
+                             rows, cols, stream);
+        };
+        auto fp8half = [&](const char *w_suffix, __half **dst) {
+            const auto *w = req(w_suffix);
+            std::string sc_name(w_suffix);
+            sc_name.replace(sc_name.size() - 7, 7, ".scale");
+            const auto *sc = req(sc_name.c_str());
+            if (!w || !sc) return cudaErrorInvalidValue;
+            return UploadFp8ToHalf(*w, *sc, lw.owned, pw.resident_bytes, dst,
+                                   stream, stage_w, stage_s);
         };
 
         V41_REQUIRE(bf16("attn_norm.weight", &lw.d_attn_norm, true));
@@ -266,16 +315,16 @@ cudaError_t load_pinned_weights(const std::string &model_path,
         V41_REQUIRE(bf16("attn.kv_norm.weight", &lw.d_kv_norm, true));
         V41_REQUIRE(f32("attn.attn_sink", &lw.d_attn_sink, true));
 
-        V41_REQUIRE(fp8("attn.wq_a.weight", &lw.d_wq_a, &lw.wq_a_rows,
-                        &lw.wq_a_cols));
-        V41_REQUIRE(fp8("attn.wq_b.weight", &lw.d_wq_b, &lw.wq_b_rows,
-                        &lw.wq_b_cols));
-        V41_REQUIRE(fp8("attn.wkv.weight", &lw.d_wkv, &lw.wkv_rows,
-                        &lw.wkv_cols));
-        V41_REQUIRE(fp8("attn.wo_a.weight", &lw.d_wo_a, &lw.wo_a_rows,
-                        &lw.wo_a_cols));
-        V41_REQUIRE(fp8("attn.wo_b.weight", &lw.d_wo_b, &lw.wo_b_rows,
-                        &lw.wo_b_cols));
+        V41_REQUIRE(fp8("attn.wq_a.weight", &lw.d_wq_a, &lw.d_wq_a_scale,
+                        &lw.wq_a_rows, &lw.wq_a_cols));
+        V41_REQUIRE(fp8("attn.wq_b.weight", &lw.d_wq_b, &lw.d_wq_b_scale,
+                        &lw.wq_b_rows, &lw.wq_b_cols));
+        V41_REQUIRE(fp8("attn.wkv.weight", &lw.d_wkv, &lw.d_wkv_scale,
+                        &lw.wkv_rows, &lw.wkv_cols));
+        V41_REQUIRE(fp8("attn.wo_a.weight", &lw.d_wo_a, &lw.d_wo_a_scale,
+                        &lw.wo_a_rows, &lw.wo_a_cols));
+        V41_REQUIRE(fp8("attn.wo_b.weight", &lw.d_wo_b, &lw.d_wo_b_scale,
+                        &lw.wo_b_rows, &lw.wo_b_cols));
 
         V41_REQUIRE(bf16("ffn.gate.weight", &lw.d_gate_weight, true));
         // The router launcher needs [n_routed, hidden]; UploadBf16 does not
@@ -289,12 +338,9 @@ cudaError_t load_pinned_weights(const std::string &model_path,
         V41_REQUIRE(f32("ffn.gate.bias", &lw.d_gate_bias, true));
         V41_REQUIRE(f32("ffn.gate.bias_vl", &lw.d_gate_bias_vl, false));
 
-        V41_REQUIRE(fp8("ffn.shared_experts.w1.weight", &lw.d_shared_w1,
-                        nullptr, nullptr));
-        V41_REQUIRE(fp8("ffn.shared_experts.w2.weight", &lw.d_shared_w2,
-                        nullptr, nullptr));
-        V41_REQUIRE(fp8("ffn.shared_experts.w3.weight", &lw.d_shared_w3,
-                        nullptr, nullptr));
+        V41_REQUIRE(fp8half("ffn.shared_experts.w1.weight", &lw.d_shared_w1));
+        V41_REQUIRE(fp8half("ffn.shared_experts.w2.weight", &lw.d_shared_w2));
+        V41_REQUIRE(fp8half("ffn.shared_experts.w3.weight", &lw.d_shared_w3));
 
         V41_REQUIRE(f32("hc_attn_fn", &lw.d_hc_attn_fn, true));
         V41_REQUIRE(f32("hc_attn_base", &lw.d_hc_attn_base, true));
@@ -314,7 +360,7 @@ cudaError_t load_pinned_weights(const std::string &model_path,
         }
         if (meta.is_index_source) {
             V41_REQUIRE(fp8("attn.indexer.wq_b.weight", &lw.d_idx_wq_b,
-                            nullptr, nullptr));
+                            &lw.d_idx_wq_b_scale, nullptr, nullptr));
             V41_REQUIRE(bf16("attn.indexer.weights_proj.weight",
                              &lw.d_idx_weights_proj, true));
             if (meta.is_kv_source) {

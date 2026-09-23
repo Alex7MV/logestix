@@ -25,10 +25,13 @@ cudaError_t LaunchRopeHalf(uint16_t *x, int rows, int row_len, int rope_dim,
 
 // Hyper-Connections: mixes = (hc_fn @ x) * rsqrt(mean(x^2)+eps), then
 // split+Sinkhorn into pre/post/comb. x: [hc*dim] F32.
+// mix_scratch: >= (2+hc)*hc floats; rsqrt_scratch: 1 float. Caller-owned so the
+// decode loop does not cudaMalloc/cudaFree per layer.
 cudaError_t LaunchHcMixes(const float *x, const float *hc_fn,
                           const float *hc_scale, const float *hc_base, int hc,
                           int dim, int sinkhorn_iters, float eps, float *pre,
-                          float *post, float *comb, cudaStream_t stream);
+                          float *post, float *comb, float *mix_scratch,
+                          float *rsqrt_scratch, cudaStream_t stream);
 
 // out[d] = sum_c pre[c] * x[c*dim + d]. x: [hc*dim] F32.
 cudaError_t LaunchHcPre(const float *x, const float *pre_mix, float *out,
@@ -71,6 +74,20 @@ cudaError_t LaunchGemmFp16(cudaStream_t stream,
                            const uint16_t *A, const uint16_t *B, uint16_t *C,
                            int M, int N, int K);
 
+// Vector dense FP8 GEMV: y[M] = alpha * W[M,K] * x[K], W is F8_E4M3 [M,K] with
+// [ceil(M/32), ceil(K/32)] UE8M0 scales (loader layout). The weight is
+// dequantized on the fly and rounded to FP16 before the product, so the result
+// is bit-identical to (dequant-to-FP16 + LaunchGemmFp16) while reading half the
+// weight bytes. x FP16.
+cudaError_t LaunchGemmFp8(cudaStream_t stream, const uint8_t *w,
+                          const uint8_t *scales, const uint16_t *x,
+                          uint16_t *y, int M, int K, float alpha);
+
+// Same, with an F32 output vector (shared-expert gate/up projections).
+cudaError_t LaunchGemvFp8ToF32(cudaStream_t stream, const uint8_t *w,
+                               const uint8_t *scales, const uint16_t *x,
+                               float *y, int M, int K);
+
 // Matrix-vector with F32 output: y[M] = W[M,K] * x[K] (FP16 inputs).
 cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                                 const uint16_t *w, const uint16_t *x, float *y,
@@ -100,6 +117,21 @@ cudaError_t SharedExpertForward(cudaStream_t stream,
                                 const uint16_t *w2, int inter, float limit,
                                 uint16_t *out);
 
+// Byte size of the activation scratch used by SharedExpertForwardScratch.
+std::size_t SharedExpertScratchBytes(int inter);
+
+// Same as SharedExpertForward but reuses a caller-owned scratch buffer. The
+// decode layer loop must not cudaMalloc/cudaFree per layer (cudaFree serializes
+// the device and kills copy/compute overlap): allocate the scratch once via
+// SharedExpertScratchBytes and pass it here.
+cudaError_t SharedExpertForwardScratch(cudaStream_t stream,
+                                       const uint16_t *x, int hidden,
+                                       const uint16_t *w1, const uint16_t *w3,
+                                       const uint16_t *w2, int inter,
+                                       float limit, uint16_t *out,
+                                       void *scratch,
+                                       std::size_t scratch_bytes);
+
 // Head logits (F32): logits[V] = W[V,H] * x[H], FP16 inputs, F32 accumulation.
 cudaError_t LaunchHeadLogits(cudaStream_t stream,
                              const uint16_t *w, const uint16_t *x, float *logits,
@@ -124,6 +156,15 @@ cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const float *bias, int n_routed, int hidden,
                              int topk, float temp, float route_scale, bool norm,
                              int32_t *out_idx, float *out_w);
+
+// Same as LaunchRouterTopK but reuses a caller-owned scores buffer of at least
+// `n_routed` floats (avoids the per-layer cudaMalloc/cudaFree).
+cudaError_t LaunchRouterTopKScratch(cudaStream_t stream,
+                                    const uint16_t *x, const uint16_t *gate_w,
+                                    const float *bias, int n_routed, int hidden,
+                                    int topk, float temp, float route_scale,
+                                    bool norm, int32_t *out_idx, float *out_w,
+                                    float *scores_scratch);
 
 // One routed expert on a single token:
 //   accum[d] += weight * w2( silu(clamp(w1@x)) * clamp(w3@x) ).
@@ -167,14 +208,18 @@ cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
 // quant; window ring + sparse attn + attn_sink; un-RoPE; grouped wo_a -> wo_b.
 // All weights/shapes are explicit so callers can test with synthetic tensors.
 // rope_cos/rope_sin point at the single position's [rope_dim/2] row.
+// The dense projections (wq_a, wq_b, wkv, wo_a, wo_b) are F8_E4M3 with UE8M0
+// per-32x32 scales (loader layout); they are dequantized on the fly by the GEMV.
 cudaError_t AttentionForwardDecode(
     cudaStream_t stream, const uint16_t *x, int hidden,
-    const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
-    const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
-    const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
-    const uint16_t *wo_a, int o_groups, int o_lora_rank, const uint16_t *wo_b,
-    const float *rope_cos, const float *rope_sin, uint16_t *kv_cache,
-    int window, int start_pos, uint16_t *out);
+    const uint8_t *wq_a, const uint8_t *wq_a_scale, int q_lora,
+    const uint16_t *q_norm, const uint8_t *wq_b,
+    const uint8_t *wq_b_scale, int heads, int head_dim, int rope_dim,
+    const uint8_t *wkv, const uint8_t *wkv_scale, const uint16_t *kv_norm,
+    const float *attn_sink, const uint8_t *wo_a, const uint8_t *wo_a_scale,
+    int o_groups, int o_lora_rank, const uint8_t *wo_b,
+    const uint8_t *wo_b_scale, const float *rope_cos, const float *rope_sin,
+    uint16_t *kv_cache, int window, int start_pos, uint16_t *out);
 
 // Indexer top-k over compressed positions (model.py:579): keeps the `topk`
 // best of `n_pos` scores (ties -> lower position), re-sorts ascending, adds
@@ -205,26 +250,32 @@ struct CedLayerParams {
     bool owns_k = false;
     bool uses_candidates = false;
 
-    const uint16_t *wq_a = nullptr;
+    const uint8_t *wq_a = nullptr;
+    const uint8_t *wq_a_scale = nullptr;
     int q_lora = 0;
     const uint16_t *q_norm = nullptr;
-    const uint16_t *wq_b = nullptr;
+    const uint8_t *wq_b = nullptr;
+    const uint8_t *wq_b_scale = nullptr;
     int heads = 0;
     int head_dim = 0;
     int rope_dim = 0;
-    const uint16_t *wkv = nullptr;
+    const uint8_t *wkv = nullptr;
+    const uint8_t *wkv_scale = nullptr;
     const uint16_t *kv_norm = nullptr;
     const float *attn_sink = nullptr;
-    const uint16_t *wo_a = nullptr;
+    const uint8_t *wo_a = nullptr;
+    const uint8_t *wo_a_scale = nullptr;
     int o_groups = 0;
     int o_lora_rank = 0;
-    const uint16_t *wo_b = nullptr;
+    const uint8_t *wo_b = nullptr;
+    const uint8_t *wo_b_scale = nullptr;
 
     const uint16_t *comp_wkv = nullptr;
     const uint16_t *comp_wgate = nullptr;
     const uint16_t *comp_norm = nullptr;
 
-    const uint16_t *idx_wq_b = nullptr;
+    const uint8_t *idx_wq_b = nullptr;
+    const uint8_t *idx_wq_b_scale = nullptr;
     const uint16_t *idx_wk = nullptr;
     const uint16_t *idx_k_norm = nullptr;
     const uint16_t *idx_wproj = nullptr;

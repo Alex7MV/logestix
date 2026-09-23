@@ -40,34 +40,67 @@ __global__ void window_idxs_kernel(int *__restrict__ idxs, int window,
 
 // Keep the `topk` best of `n_pos` scores (ties -> lower position), sorted
 // ascending and shifted by `offset`; the tail up to `n_pad` is -1.
+//
+// Block-parallel selection: every round each thread scans its strided
+// elements for the local best (max score, lower position on ties) and the
+// block reduces to the winner. `topk` rounds of
+// O(n_pos/blockDim + log blockDim) replace the former single-thread
+// O(topk*n_pos) scan.
 __global__ void indexer_topk_kernel(const float *__restrict__ score, int n_pos,
                                     int topk, int offset,
                                     int *__restrict__ out, int n_pad)
 {
     extern __shared__ unsigned char smem[];
-    int *sel = reinterpret_cast<int *>(smem);
-    unsigned char *used = smem + static_cast<size_t>(topk) * sizeof(int);
-    for (int i = threadIdx.x; i < n_pos; i += blockDim.x) used[i] = 0;
+    int *r_idx = reinterpret_cast<int *>(smem);
+    float *r_val = reinterpret_cast<float *>(r_idx + blockDim.x);
+    float *sc = r_val + blockDim.x;
+    unsigned char *used =
+        reinterpret_cast<unsigned char *>(sc + static_cast<size_t>(n_pos));
+    const int t = threadIdx.x;
+    for (int i = t; i < n_pos; i += blockDim.x) {
+        sc[i] = score[i];
+        used[i] = 0;
+    }
     __syncthreads();
-    if (threadIdx.x != 0) return;
-    for (int k = 0; k < topk; ++k) {
-        int best = -1;
-        float bestv = 0.0f;
-        for (int i = 0; i < n_pos; ++i) {
+
+    const int k = topk < n_pos ? topk : n_pos;
+    for (int kk = 0; kk < k; ++kk) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int i = t; i < n_pos; i += blockDim.x) {
             if (used[i]) continue;
-            const float v = score[i];
-            if (best < 0 || v > bestv) { bestv = v; best = i; }
+            const float v = sc[i];
+            if (lbest < 0 || v > lbv || (v == lbv && i < lbest)) {
+                lbv = v;
+                lbest = i;
+            }
         }
-        used[best] = 1;
-        sel[k] = best;
+        r_idx[t] = lbest;
+        r_val[t] = lbv;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const int i2 = r_idx[t + off];
+                const float v2 = r_val[t + off];
+                const int i1 = r_idx[t];
+                const float v1 = r_val[t];
+                if (i2 >= 0 && (i1 < 0 || v2 > v1 || (v2 == v1 && i2 < i1))) {
+                    r_idx[t] = i2;
+                    r_val[t] = v2;
+                }
+            }
+            __syncthreads();
+        }
+        if (t == 0 && r_idx[0] >= 0) used[r_idx[0]] = 1;
+        __syncthreads();
     }
-    for (int a = 1; a < topk; ++a) {
-        const int key = sel[a];
-        int b = a - 1;
-        while (b >= 0 && sel[b] > key) { sel[b + 1] = sel[b]; --b; }
-        sel[b + 1] = key;
+    // Emit the selected positions in ascending order (no explicit sort).
+    if (t == 0) {
+        int c = 0;
+        for (int i = 0; i < n_pos; ++i)
+            if (used[i]) out[c++] = i + offset;
+        for (int i = c; i < n_pad; ++i) out[i] = -1;
     }
-    for (int i = 0; i < n_pad; ++i) out[i] = (i < topk) ? sel[i] + offset : -1;
 }
 
 // Level-one candidate mask: block score = max over the block; the block
@@ -79,9 +112,16 @@ __global__ void select_candidate_blocks_kernel(
 {
     extern __shared__ unsigned char smem[];
     const int nblocks = (n_pos + block_size - 1) / block_size;
+    const size_t used_off = static_cast<size_t>(nblocks) * sizeof(float);
+    const size_t r_off =
+        (used_off + static_cast<size_t>(nblocks) + 3) &
+        ~static_cast<size_t>(3);
     float *bs = reinterpret_cast<float *>(smem);
-    unsigned char *used = smem + static_cast<size_t>(nblocks) * sizeof(float);
-    for (int b = threadIdx.x; b < nblocks; b += blockDim.x) {
+    unsigned char *used = smem + used_off;
+    float *r_val = reinterpret_cast<float *>(smem + r_off);
+    int *r_idx = reinterpret_cast<int *>(r_val + blockDim.x);
+    const int t = threadIdx.x;
+    for (int b = t; b < nblocks; b += blockDim.x) {
         float m = -INFINITY;
         for (int j = 0; j < block_size; ++j) {
             const int p = b * block_size + j;
@@ -90,26 +130,52 @@ __global__ void select_candidate_blocks_kernel(
         bs[b] = m;
         used[b] = 0;
     }
-    for (int i = threadIdx.x; i < n_pos; i += blockDim.x) mask[i] = 0;
+    for (int i = t; i < n_pos; i += blockDim.x) mask[i] = 0;
     __syncthreads();
-    if (threadIdx.x != 0) return;
     const int last = (num_valid - 1) / block_size;
-    if (last >= 0 && last < nblocks) bs[last] = INFINITY;
+    if (t == 0 && last >= 0 && last < nblocks) bs[last] = INFINITY;
+    __syncthreads();
     const int keep = topk_blocks < nblocks ? topk_blocks : nblocks;
+    // Block-parallel selection of the `keep` best blocks (ties -> lower block
+    // index), replacing the former single-thread O(keep*nblocks) scan.
     for (int k = 0; k < keep; ++k) {
-        int best = -1;
-        float bestv = 0.0f;
-        for (int b = 0; b < nblocks; ++b) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int b = t; b < nblocks; b += blockDim.x) {
             if (used[b]) continue;
             const float v = bs[b];
-            if (best < 0 || v > bestv) { bestv = v; best = b; }
+            if (lbest < 0 || v > lbv || (v == lbv && b < lbest)) {
+                lbv = v;
+                lbest = b;
+            }
         }
-        used[best] = 1;
-        if (bs[best] == -INFINITY) continue;
-        for (int j = 0; j < block_size; ++j) {
-            const int p = best * block_size + j;
-            if (p < n_pos) mask[p] = 1;
+        r_val[t] = lbv;
+        r_idx[t] = lbest;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const float v2 = r_val[t + off];
+                const int b2 = r_idx[t + off];
+                const float v1 = r_val[t];
+                const int b1 = r_idx[t];
+                if (b2 >= 0 && (b1 < 0 || v2 > v1 || (v2 == v1 && b2 < b1))) {
+                    r_val[t] = v2;
+                    r_idx[t] = b2;
+                }
+            }
+            __syncthreads();
         }
+        if (t == 0 && r_idx[0] >= 0) {
+            const int best = r_idx[0];
+            used[best] = 1;
+            if (bs[best] != -INFINITY) {
+                for (int j = 0; j < block_size; ++j) {
+                    const int p = best * block_size + j;
+                    if (p < n_pos) mask[p] = 1;
+                }
+            }
+        }
+        __syncthreads();
     }
 }
 
@@ -183,9 +249,12 @@ cudaError_t LaunchIndexerTopk(const float *score, int n_pos, int topk,
                               cudaStream_t stream)
 {
     if (topk <= 0 || n_pos <= 0) return cudaSuccess;
-    const size_t sh = static_cast<size_t>(topk) * sizeof(int) +
+    const int threads = 512;
+    const size_t sh = static_cast<size_t>(threads) * sizeof(int) +
+                      static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(n_pos) * sizeof(float) +
                       static_cast<size_t>(n_pos);
-    indexer_topk_kernel<<<1, 256, sh, stream>>>(
+    indexer_topk_kernel<<<1, threads, sh, stream>>>(
         score, n_pos, topk, offset, reinterpret_cast<int *>(out_idx), n_pos_pad);
     return cudaGetLastError();
 }
@@ -197,9 +266,13 @@ cudaError_t LaunchSelectCandidateBlocks(const float *score, int n_pos,
 {
     if (n_pos <= 0 || block_size <= 0) return cudaSuccess;
     const int nblocks = (n_pos + block_size - 1) / block_size;
-    const size_t sh = static_cast<size_t>(nblocks) * sizeof(float) +
-                      static_cast<size_t>(nblocks);
-    select_candidate_blocks_kernel<<<1, 256, sh, stream>>>(
+    const int threads = 512;
+    const size_t used_off = static_cast<size_t>(nblocks) * sizeof(float);
+    const size_t r_off =
+        (used_off + static_cast<size_t>(nblocks) + 3) & ~static_cast<size_t>(3);
+    const size_t sh = r_off + static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(int);
+    select_candidate_blocks_kernel<<<1, threads, sh, stream>>>(
         score, n_pos, num_valid, topk_blocks, block_size,
         reinterpret_cast<unsigned char *>(mask));
     return cudaGetLastError();
@@ -216,10 +289,12 @@ cudaError_t LaunchMaskIndexerScores(float *score, int n_pos, const uint8_t *mask
 
 cudaError_t AttentionForwardDecode(
     cudaStream_t stream, const uint16_t *x, int hidden,
-    const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
-    const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
-    const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
-    const uint16_t *wo_a, int o_groups, int o_lora_rank, const uint16_t *wo_b,
+    const uint8_t *wq_a, const uint8_t *wq_a_scale, int q_lora,
+    const uint16_t *q_norm, const uint8_t *wq_b, const uint8_t *wq_b_scale,
+    int heads, int head_dim, int rope_dim, const uint8_t *wkv,
+    const uint8_t *wkv_scale, const uint16_t *kv_norm, const float *attn_sink,
+    const uint8_t *wo_a, const uint8_t *wo_a_scale, int o_groups,
+    int o_lora_rank, const uint8_t *wo_b, const uint8_t *wo_b_scale,
     const float *rope_cos, const float *rope_sin, uint16_t *kv_cache,
     int window, int start_pos, uint16_t *out)
 {
@@ -231,20 +306,20 @@ cudaError_t AttentionForwardDecode(
 
     cudaError_t e = cudaSuccess;
     do {
-        if ((e = LaunchGemmFp16(stream, wq_a, x, sc.qr, q_lora, 1,
-                                hidden)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wq_a, wq_a_scale, x, sc.qr, q_lora,
+                               hidden, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.qr, q_norm, sc.qr, q_lora, 1e-20f,
                                    stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(stream, wq_b, sc.qr, sc.q, q_dim, 1,
-                                q_lora)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wq_b, wq_b_scale, sc.qr, sc.q, q_dim,
+                               q_lora, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRopeHalf(sc.q, heads, head_dim, rope_dim, rope_cos,
                                 rope_sin, false, stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(stream, wkv, x, sc.kv, head_dim, 1,
-                                hidden)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wkv, wkv_scale, x, sc.kv, head_dim,
+                               hidden, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.kv, kv_norm, sc.kv, head_dim, 1e-20f,
                                    stream)) != cudaSuccess)
@@ -276,20 +351,24 @@ cudaError_t AttentionForwardDecode(
             break;
 
         const int per_group = head_dim * (heads / o_groups);
+        const int g_scols = (per_group + 31) / 32;
         for (int g = 0; g < o_groups; ++g) {
-            const uint16_t *w_g = wo_a +
-                static_cast<size_t>(g) * o_lora_rank * per_group;
+            const uint8_t *w_g =
+                wo_a + static_cast<size_t>(g) * o_lora_rank * per_group;
+            const uint8_t *s_g =
+                wo_a_scale + static_cast<size_t>(g * o_lora_rank / 32) * g_scols;
             const uint16_t *x_g = sc.o + static_cast<size_t>(g) * per_group;
             uint16_t *y_g = sc.olora +
                 static_cast<size_t>(g) * o_lora_rank;
-            if ((e = LaunchGemmFp16(stream, w_g, x_g, y_g, o_lora_rank,
-                                    1, per_group)) != cudaSuccess)
+            if ((e = LaunchGemmFp8(stream, w_g, s_g, x_g, y_g, o_lora_rank,
+                                   per_group, 1.0f)) != cudaSuccess)
                 break;
         }
         if (e != cudaSuccess) break;
 
-        if ((e = LaunchGemmFp16(stream, wo_b, sc.olora, out, hidden, 1,
-                                o_groups * o_lora_rank)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wo_b, wo_b_scale, sc.olora, out,
+                               hidden, o_groups * o_lora_rank,
+                               1.0f)) != cudaSuccess)
             break;
     } while (false);
 
@@ -328,16 +407,17 @@ cudaError_t CedAttentionForwardDecode(
     } while (false)
 
     // q path.
-    V41_TRY(LaunchGemmFp16(stream, p.wq_a, x, b.qr, p.q_lora, 1,
-                           hidden));
+    V41_TRY(LaunchGemmFp8(stream, p.wq_a, p.wq_a_scale, x, b.qr, p.q_lora,
+                          hidden, 1.0f));
     V41_TRY(LaunchRmsNormHalf(b.qr, p.q_norm, b.qr, p.q_lora, 1e-20f, stream));
-    V41_TRY(LaunchGemmFp16(stream, p.wq_b, b.qr, b.q, p.heads * hd, 1,
-                           p.q_lora));
+    V41_TRY(LaunchGemmFp8(stream, p.wq_b, p.wq_b_scale, b.qr, b.q, p.heads * hd,
+                          p.q_lora, 1.0f));
     V41_TRY(LaunchRopeHalf(b.q, p.heads, hd, rd, cos_tok, sin_tok, false,
                            stream));
 
     // Window KV: norm -> rope -> fp8 act-quant -> ring write.
-    V41_TRY(LaunchGemmFp16(stream, p.wkv, x, b.kv, hd, 1, hidden));
+    V41_TRY(LaunchGemmFp8(stream, p.wkv, p.wkv_scale, x, b.kv, hd, hidden,
+                          1.0f));
     V41_TRY(LaunchRmsNormHalf(b.kv, p.kv_norm, b.kv, hd, 1e-20f, stream));
     V41_TRY(LaunchRopeHalf(b.kv, 1, hd, rd, cos_tok, sin_tok, false, stream));
     V41_TRY(LaunchFp8ActQuantInplace(b.kv, 1, hd, 32, stream));
@@ -420,8 +500,8 @@ cudaError_t CedAttentionForwardDecode(
     int ctopk = 0;
     if (p.is_index_source) {
         const int id = p.idx_head_dim;
-        V41_TRY(LaunchGemmFp16(stream, p.idx_wq_b, b.qr, b.idx_q,
-                               p.idx_n_heads * id, 1, p.q_lora));
+        V41_TRY(LaunchGemmFp8(stream, p.idx_wq_b, p.idx_wq_b_scale, b.qr,
+                              b.idx_q, p.idx_n_heads * id, p.q_lora, 1.0f));
         V41_TRY(LaunchRopeHalf(b.idx_q, p.idx_n_heads, id, rd, cos_tok,
                                sin_tok, false, stream));
         V41_TRY(LaunchFp4ActQuantInplace(b.idx_q, p.idx_n_heads, id, 32, true,
@@ -484,16 +564,20 @@ cudaError_t CedAttentionForwardDecode(
                            stream));
 
     const int per_group = hd * (p.heads / p.o_groups);
+    const int g_scols = (per_group + 31) / 32;
     for (int g = 0; g < p.o_groups; ++g) {
-        const uint16_t *w_g = p.wo_a +
-            static_cast<size_t>(g) * p.o_lora_rank * per_group;
+        const uint8_t *w_g =
+            p.wo_a + static_cast<size_t>(g) * p.o_lora_rank * per_group;
+        const uint8_t *s_g =
+            p.wo_a_scale +
+            static_cast<size_t>(g * p.o_lora_rank / 32) * g_scols;
         const uint16_t *x_g = b.o + static_cast<size_t>(g) * per_group;
         uint16_t *y_g = b.olora + static_cast<size_t>(g) * p.o_lora_rank;
-        V41_TRY(LaunchGemmFp16(stream, w_g, x_g, y_g, p.o_lora_rank, 1,
-                               per_group));
+        V41_TRY(LaunchGemmFp8(stream, w_g, s_g, x_g, y_g, p.o_lora_rank,
+                              per_group, 1.0f));
     }
-    V41_TRY(LaunchGemmFp16(stream, p.wo_b, b.olora, out, hidden, 1,
-                           p.o_groups * p.o_lora_rank));
+    V41_TRY(LaunchGemmFp8(stream, p.wo_b, p.wo_b_scale, b.olora, out, hidden,
+                          p.o_groups * p.o_lora_rank, 1.0f));
 #undef V41_TRY
     return cudaSuccess;
 }

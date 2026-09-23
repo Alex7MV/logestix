@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include "deepseek_moe_v41_dequant.h"
 #include "deepseek_moe_v41_device_math.h"
 #include "deepseek_moe_v41_inference.h"
 #include "deepseek_moe_v41_inference_csa.h"
@@ -28,6 +29,26 @@ namespace {
 
 uint16_t H(float v) { return __half_as_ushort(__float2half_rn(v)); }
 float F(uint16_t b) { return __half2float(__ushort_as_half(b)); }
+
+// Nearest E4M3 byte (magnitudes only, RNE-ish); 0x7F is NaN and skipped.
+uint8_t E4m3Byte(float v)
+{
+    const bool neg = std::signbit(v);
+    const float a = std::fabs(v);
+    float bd = 1e30f;
+    int best = 0;
+    for (int code = 0; code < 128; ++code) {
+        if (code == 0x7F) continue;
+        const float c = lsxcommon::deepseek_v41::E4m3ByteToFloatRef(
+            static_cast<uint8_t>(code));
+        const float d = std::fabs(a - c);
+        if (d < bd) {
+            bd = d;
+            best = code;
+        }
+    }
+    return static_cast<uint8_t>(best | (neg ? 0x80 : 0));
+}
 
 std::vector<uint16_t> ToHalf(const std::vector<float> &f)
 {
@@ -126,6 +147,7 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
     for (int i = 0; i < mix_hc; ++i) hbase[i] = 0.01f * static_cast<float>(i);
 
     float *dx, *dfn, *dscale, *dbase, *dpre, *dpost, *dcomb;
+    float *dmix = nullptr, *drsqrt = nullptr;
     REQUIRE(cudaMalloc(&dx, total * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dfn, fn.size() * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dscale, sizeof(scale)) == cudaSuccess);
@@ -133,6 +155,8 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
     REQUIRE(cudaMalloc(&dpre, hc * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dpost, hc * 4) == cudaSuccess);
     REQUIRE(cudaMalloc(&dcomb, hc * hc * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dmix, mix_hc * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&drsqrt, 4) == cudaSuccess);
     REQUIRE(cudaMemcpy(dx, x.data(), total * 4, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dfn, fn.data(), fn.size() * 4, cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(dscale, scale, sizeof(scale), cudaMemcpyHostToDevice) == cudaSuccess);
@@ -140,7 +164,7 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
 
     REQUIRE(lsxcommon::deepseek_v41::LaunchHcMixes(
                 dx, dfn, dscale, dbase, hc, dim, iters, eps, dpre, dpost, dcomb,
-                nullptr) == cudaSuccess);
+                dmix, drsqrt, nullptr) == cudaSuccess);
 
     std::vector<float> pre(hc), post(hc), comb(hc * hc);
     REQUIRE(cudaMemcpy(pre.data(), dpre, hc * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
@@ -198,7 +222,8 @@ TEST_CASE("deepseek-v41 hyper-connection kernels match the host reference",
         CHECK(post_out[i] == Catch::Approx(ref_post[i]).margin(1e-6f));
 
     cudaFree(dx); cudaFree(dfn); cudaFree(dscale); cudaFree(dbase);
-    cudaFree(dpre); cudaFree(dpost); cudaFree(dcomb);
+    cudaFree(dpre); cudaFree(dpost); cudaFree(dcomb); cudaFree(dmix);
+    cudaFree(drsqrt);
     cudaFree(dpre_out); cudaFree(dpost_out); cudaFree(dsub);
 }
 
@@ -654,25 +679,39 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     const int q_dim = heads * head_dim;
     const int per_group = head_dim * (heads / o_groups);
 
-    auto pat = [](int i) {
-        return H(0.05f * static_cast<float>((i % 13) - 6));
-    };
     auto mk = [&](int n) {
         std::vector<uint16_t> h(static_cast<size_t>(n));
-        for (int i = 0; i < n; ++i) h[i] = pat(i);
+        for (int i = 0; i < n; ++i) h[i] = H(0.05f * ((i % 13) - 6));
         uint16_t *d = nullptr;
         REQUIRE(cudaMalloc(&d, static_cast<size_t>(n) * 2) == cudaSuccess);
         REQUIRE(cudaMemcpy(d, h.data(), static_cast<size_t>(n) * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
         return d;
     };
-    uint16_t *wq_a = mk(q_lora * hidden);
+    auto mkq = [&](int n) {  // FP8 weight bytes
+        std::vector<uint8_t> b(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) b[i] = E4m3Byte(0.05f * ((i % 13) - 6));
+        uint8_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, static_cast<size_t>(n)) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, b.data(), static_cast<size_t>(n),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        return d;
+    };
+    auto mksc = [&](int n) {  // UE8M0 scales = 2^0
+        uint8_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, static_cast<size_t>(n)) == cudaSuccess);
+        std::vector<uint8_t> b(static_cast<size_t>(n), 0x7F);
+        REQUIRE(cudaMemcpy(d, b.data(), static_cast<size_t>(n),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        return d;
+    };
+    uint8_t *wq_a = mkq(q_lora * hidden), *wq_a_s = mksc(1);
+    uint8_t *wq_b = mkq(q_dim * q_lora), *wq_b_s = mksc(2);
+    uint8_t *wkv = mkq(head_dim * hidden), *wkv_s = mksc(1);
+    uint8_t *wo_a = mkq(o_groups * o_lora * per_group), *wo_a_s = mksc(2);
+    uint8_t *wo_b = mkq(hidden * o_groups * o_lora), *wo_b_s = mksc(2);
     uint16_t *q_norm = mk(q_lora);
-    uint16_t *wq_b = mk(q_dim * q_lora);
-    uint16_t *wkv = mk(head_dim * hidden);
     uint16_t *kv_norm = mk(head_dim);
-    uint16_t *wo_a = mk(o_groups * o_lora * per_group);
-    uint16_t *wo_b = mk(hidden * o_groups * o_lora);
     uint16_t *x = mk(hidden);
     uint16_t *out = mk(hidden);
     uint16_t *kv_cache = nullptr;
@@ -698,10 +737,10 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
 
     for (int pos = 1; pos <= 2; ++pos) {
         REQUIRE(lsxcommon::deepseek_v41::AttentionForwardDecode(
-                    nullptr, x, hidden, wq_a, q_lora, q_norm, wq_b, heads,
-                    head_dim, rope_dim, wkv, kv_norm, sink, wo_a, o_groups,
-                    o_lora, wo_b, cos_t, sin_t, kv_cache, window, pos,
-                    out) == cudaSuccess);
+                    nullptr, x, hidden, wq_a, wq_a_s, q_lora, q_norm, wq_b,
+                    wq_b_s, heads, head_dim, rope_dim, wkv, wkv_s, kv_norm,
+                    sink, wo_a, wo_a_s, o_groups, o_lora, wo_b, wo_b_s, cos_t,
+                    sin_t, kv_cache, window, pos, out) == cudaSuccess);
     }
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
     std::vector<uint16_t> out_h(hidden);
@@ -710,10 +749,11 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     for (int i = 0; i < hidden; ++i)
         CHECK(std::isfinite(F(out_h[i])));
 
-    cudaFree(wq_a); cudaFree(q_norm); cudaFree(wq_b); cudaFree(wkv);
-    cudaFree(kv_norm); cudaFree(wo_a); cudaFree(wo_b); cudaFree(x);
-    cudaFree(out);     cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
-    cudaFree(sin_t);
+    cudaFree(wq_a); cudaFree(wq_a_s); cudaFree(wq_b); cudaFree(wq_b_s);
+    cudaFree(wkv); cudaFree(wkv_s); cudaFree(wo_a); cudaFree(wo_a_s);
+    cudaFree(wo_b); cudaFree(wo_b_s); cudaFree(q_norm); cudaFree(kv_norm);
+    cudaFree(x); cudaFree(out); cudaFree(kv_cache); cudaFree(sink);
+    cudaFree(cos_t); cudaFree(sin_t);
 }
 
 TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
@@ -781,6 +821,52 @@ TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",
     }
 
     cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 shared expert scratch variant matches the allocating one",
+          "[deepseek-v41][kernels]")
+{
+    const int hidden = 8, inter = 8;
+    std::vector<uint16_t> xh(hidden), w1h(inter * hidden), w3h(inter * hidden),
+        w2h(hidden * inter);
+    for (int i = 0; i < hidden; ++i) xh[i] = H(0.2f * static_cast<float>(i - 2));
+    for (int i = 0; i < inter * hidden; ++i) {
+        w1h[i] = H(0.15f * static_cast<float>((i % 11) - 5));
+        w3h[i] = H(0.12f * static_cast<float>((i % 7) - 3));
+        w2h[i] = H(0.1f * static_cast<float>((i % 9) - 4));
+    }
+    auto to_dev = [](const std::vector<uint16_t> &h) {
+        uint16_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, h.size() * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, h.data(), h.size() * 2, cudaMemcpyHostToDevice) ==
+                cudaSuccess);
+        return d;
+    };
+    uint16_t *dx = to_dev(xh), *dw1 = to_dev(w1h), *dw3 = to_dev(w3h),
+             *dw2 = to_dev(w2h);
+    uint16_t *dout_a = nullptr, *dout_s = nullptr;
+    REQUIRE(cudaMalloc(&dout_a, hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout_s, hidden * 2) == cudaSuccess);
+    const std::size_t scratch_bytes =
+        lsxcommon::deepseek_v41::SharedExpertScratchBytes(inter);
+    void *scratch = nullptr;
+    REQUIRE(cudaMalloc(&scratch, scratch_bytes) == cudaSuccess);
+
+    REQUIRE(lsxcommon::deepseek_v41::SharedExpertForward(
+                nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout_a) ==
+            cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::SharedExpertForwardScratch(
+                nullptr, dx, hidden, dw1, dw3, dw2, inter, 10.0f, dout_s,
+                scratch, scratch_bytes) == cudaSuccess);
+    std::vector<uint16_t> got_a(hidden), got_s(hidden);
+    REQUIRE(cudaMemcpy(got_a.data(), dout_a, hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(got_s.data(), dout_s, hidden * 2,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    for (int i = 0; i < hidden; ++i) CHECK(got_s[i] == got_a[i]);
+
+    cudaFree(dx); cudaFree(dw1); cudaFree(dw3); cudaFree(dw2);
+    cudaFree(dout_a); cudaFree(dout_s); cudaFree(scratch);
 }
 
 namespace {
@@ -872,6 +958,97 @@ TEST_CASE("deepseek-v41 router top-k matches the gate reference",
         scores[i] = acc;
     }
     int ref_idx[32];
+    float ref_w[32];
+    lsxcommon::deepseek_v41::GateRouteRef(scores.data(), bias.data(), n, topk,
+                                          1.0f, 1.5f, true, ref_idx, ref_w);
+    for (int k = 0; k < topk; ++k) {
+        CHECK(got_idx[k] == ref_idx[k]);
+        CHECK(got_w[k] == Catch::Approx(ref_w[k]).margin(1e-5f));
+    }
+
+    cudaFree(dw); cudaFree(dx);
+}
+
+TEST_CASE("deepseek-v41 router top-k scratch variant matches the allocating one",
+          "[deepseek-v41][kernels]")
+{
+    const int n = 6, hidden = 8, topk = 2;
+    std::vector<float> bias(n);
+    std::vector<uint16_t> wh(n * hidden), xh(hidden);
+    for (int i = 0; i < n * hidden; ++i)
+        wh[i] = H(0.1f * static_cast<float>((i % 13) - 6));
+    for (int j = 0; j < hidden; ++j) xh[j] = H(0.25f * static_cast<float>(j - 4));
+    for (int i = 0; i < n; ++i) bias[i] = 0.05f * static_cast<float>(i - 3);
+
+    uint16_t *dw = nullptr, *dx = nullptr;
+    REQUIRE(cudaMalloc(&dw, n * hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, wh.data(), n * hidden * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    float *dscores = nullptr;
+    REQUIRE(cudaMalloc(&dscores, n * 4) == cudaSuccess);
+
+    int32_t a_idx[32]; float a_w[32];
+    int32_t s_idx[32]; float s_w[32];
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                a_idx, a_w) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopKScratch(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                s_idx, s_w, dscores) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+    for (int k = 0; k < topk; ++k) {
+        CHECK(s_idx[k] == a_idx[k]);
+        CHECK(s_w[k] == Catch::Approx(a_w[k]).margin(1e-6f));
+    }
+
+    cudaFree(dw); cudaFree(dx); cudaFree(dscores);
+}
+
+TEST_CASE("deepseek-v41 router top-k large tie set matches the gate reference",
+          "[deepseek-v41][kernels]")
+{
+    // 24 groups of 16 identical gate rows -> exact score ties; ties must
+    // resolve to the lowest expert index.
+    const int n = 384, hidden = 8, topk = 6;
+    std::vector<float> wf(static_cast<size_t>(n) * hidden), xf(hidden),
+        bias(n, 0.0f);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < hidden; ++j)
+            wf[static_cast<size_t>(i) * hidden + j] =
+                0.1f * static_cast<float>(((i / 16) * 3 + j) % 13 - 6);
+    for (int j = 0; j < hidden; ++j) xf[j] = 0.25f * static_cast<float>(j - 4);
+
+    uint16_t *dw = nullptr, *dx = nullptr;
+    REQUIRE(cudaMalloc(&dw, wf.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    std::vector<uint16_t> wh(wf.size()), xh(hidden);
+    for (size_t i = 0; i < wf.size(); ++i) wh[i] = H(wf[i]);
+    for (int j = 0; j < hidden; ++j) xh[j] = H(xf[j]);
+    REQUIRE(cudaMemcpy(dw, wh.data(), wh.size() * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    int32_t got_idx[32];
+    float got_w[32];
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                got_idx, got_w) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+
+    std::vector<float> wff(wh.size()), xff(xh.size());
+    for (size_t i = 0; i < wh.size(); ++i) wff[i] = F(wh[i]);
+    for (size_t i = 0; i < xh.size(); ++i) xff[i] = F(xh[i]);
+    std::vector<float> scores(n);
+    for (int i = 0; i < n; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < hidden; ++j) acc += wff[i * hidden + j] * xff[j];
+        scores[i] = acc;
+    }
+    int32_t ref_idx[32];
     float ref_w[32];
     lsxcommon::deepseek_v41::GateRouteRef(scores.data(), bias.data(), n, topk,
                                           1.0f, 1.5f, true, ref_idx, ref_w);
@@ -980,6 +1157,58 @@ TEST_CASE("deepseek-v41 indexer top-k matches the host reference",
     cudaFree(ds); cudaFree(dout);
 }
 
+TEST_CASE("deepseek-v41 indexer top-k large tie-heavy set matches the reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 1024, topk = 512, offset = 128;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = static_cast<float>((i * 37) % 7) - 3.0f;  // many ties
+    for (int i = 200; i < 260; ++i) score[i] = -INFINITY;    // masked candidates
+
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    int32_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, topk * 4) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerTopk(ds, n_pos, topk, offset,
+                                                       dout, topk, nullptr) ==
+            cudaSuccess);
+    std::vector<int32_t> got(topk);
+    REQUIRE(cudaMemcpy(got.data(), dout, topk * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    std::vector<int> ref(topk);
+    lsxcommon::deepseek_v41::IndexTopkRef(score.data(), n_pos, n_pos, topk,
+                                          offset, ref.data());
+    for (int i = 0; i < topk; ++i) CHECK(got[i] == ref[i]);
+
+    cudaFree(ds); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 indexer top-k all-equal picks the lowest indices",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 1024, topk = 16, offset = 128;
+    std::vector<float> score(n_pos, 0.0f);
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    int32_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, topk * 4) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerTopk(ds, n_pos, topk, offset,
+                                                       dout, topk, nullptr) ==
+            cudaSuccess);
+    std::vector<int32_t> got(topk);
+    REQUIRE(cudaMemcpy(got.data(), dout, topk * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < topk; ++i) CHECK(got[i] == i + offset);
+
+    cudaFree(ds); cudaFree(dout);
+}
+
 TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
           "[deepseek-v41][kernels]")
 {
@@ -1019,6 +1248,107 @@ TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
     }
 
     cudaFree(ds); cudaFree(dm);
+}
+
+TEST_CASE("deepseek-v41 candidate block mask large matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 512, block_size = 8, topk_blocks = 64, num_valid = 500;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = static_cast<float>((i * 13) % 9) - 4.0f;
+    for (int i = 300; i < 340; ++i) score[i] = -INFINITY;
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    uint8_t *dm = nullptr;
+    REQUIRE(cudaMalloc(&dm, n_pos) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchSelectCandidateBlocks(
+                ds, n_pos, num_valid, topk_blocks, block_size, dm, nullptr) ==
+            cudaSuccess);
+    std::vector<uint8_t> got(n_pos);
+    REQUIRE(cudaMemcpy(got.data(), dm, n_pos, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    std::vector<uint8_t> ref(n_pos);
+    lsxcommon::deepseek_v41::SelectCandidateBlocksRef(
+        score.data(), n_pos, num_valid, topk_blocks, block_size, ref.data());
+    for (int i = 0; i < n_pos; ++i) CHECK(got[i] == ref[i]);
+
+    cudaFree(ds); cudaFree(dm);
+}
+
+TEST_CASE("deepseek-v41 fp8 gemv matches the dequant-to-fp16 path bit-exactly",
+          "[deepseek-v41][kernels]")
+{
+    const int M = 96, K = 128;
+    std::vector<uint8_t> w(static_cast<size_t>(M) * K);
+    std::vector<uint8_t> scales(
+        static_cast<size_t>((M + 31) / 32) * ((K + 31) / 32));
+    uint64_t s = 0x12345678ull;
+    auto rnd = [&]() {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(s >> 33);
+    };
+    for (auto &b : w) {
+        uint8_t v = static_cast<uint8_t>(rnd() & 0xFF);
+        if ((v & 0x7F) == 0x7F) v ^= 0x01;  // avoid E4M3 NaN payloads
+        b = v;
+    }
+    for (auto &b : scales) b = static_cast<uint8_t>(122 + (rnd() % 12));
+    std::vector<uint16_t> xh(K);
+    for (int k = 0; k < K; ++k)
+        xh[k] = H(0.01f * static_cast<float>(k % 17) - 0.08f);
+
+    uint8_t *dw = nullptr, *ds = nullptr;
+    uint16_t *dx = nullptr, *dh = nullptr, *dy16 = nullptr, *dy16b = nullptr;
+    float *dyf = nullptr, *dyfb = nullptr;
+    REQUIRE(cudaMalloc(&dw, w.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, scales.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dh, static_cast<size_t>(M) * K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy16, M * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy16b, M * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dyf, M * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dyfb, M * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, scales.data(), scales.size(),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), K * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    // Reference: loader dequant to FP16, then the existing FP16 GEMV.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchFp8BlockDequantToHalf(
+                dw, ds, dh, M, K, nullptr) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(nullptr, dh, dx, dy16, M, 1,
+                                                    K) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemvFp16ToF32(nullptr, dh, dx, dyf, M,
+                                                         K) == cudaSuccess);
+    // New: on-the-fly dequant in the GEMV.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp8(nullptr, dw, ds, dx, dy16b, M,
+                                                   K, 1.0f) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemvFp8ToF32(nullptr, dw, ds, dx, dyfb,
+                                                        M, K) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+
+    std::vector<uint16_t> a16(M), b16(M);
+    std::vector<float> af(M), bf(M);
+    REQUIRE(cudaMemcpy(a16.data(), dy16, M * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(b16.data(), dy16b, M * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(af.data(), dyf, M * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(bf.data(), dyfb, M * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < M; ++i) {
+        CHECK(a16[i] == b16[i]);
+        CHECK(af[i] == bf[i]);
+    }
+
+    cudaFree(dw); cudaFree(ds); cudaFree(dx); cudaFree(dh);
+    cudaFree(dy16); cudaFree(dy16b); cudaFree(dyf); cudaFree(dyfb);
 }
 
 TEST_CASE("v41 cast f32->half saturates instead of overflowing to inf",
