@@ -110,7 +110,8 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
 | P1' | exp2f-free FP8 decode | 14.3 | 11.7 | bit-exact, reproduced twice |
 | P1'' | 4x unroll of the FP8 GEMV | 14.3 | 11.8 | bit-exact, preserves per-lane k order |
 | — | vectorized uchar4 FP8 GEMV | — | 11.6 | **rejected**: slower + reorders accumulation |
-| P2 | split-KV sparse attention (8 warps/head) | **16.5** | **15.2** | +28.9%; golden + hash unchanged, reproduced ×2 |
+| P2 | split-KV sparse attention (8 warps/head) | 16.5 | 15.2 | +28.9%; golden + hash unchanged, reproduced ×2 |
+| P3 | parallel HC mixes (multi-block dots + Sinkhorn) | **17.9** | **16.4** | bit-identical, hash unchanged, reproduced ×2 |
 
 Post-P2 kernel ranking at 1024 tokens (65.3 s, was 88.9 s): `hc_mixes` 24.0%,
 `gemm_fp8_vec` 23.6%, `nvfp4_gemv` 17.7%, `sparse_attn<8>` 10.2% (was 39.1%),
@@ -163,16 +164,23 @@ half activation loads per lane are strided and the tail guard costs more than
 the wider weight transaction saves. Also reorders the fp32 accumulation (hash
 changed, golden still Paris). Reverted to the 4x-unrolled byte loop.
 
-### Remaining levers (numeric-class — require operator opt-in, §3.5)
+### Done: split-KV sparse attention (P2) and parallel HC mixes (P3)
 
-- `sparse_attn_half_kernel` 39%: grid `(1, heads=64)` x 32 threads = 64 warps
-  total (~0.8% occupancy). Any fix (split-KV over `topk`, multi-warp combine)
-  changes the online-softmax reduction order -> deterministic but a new bit
-  reference; validate golden + 3-cycle determinism.
-- `hc_mixes_kernel` 15.7%: single block, Sinkhorn-20 on thread 0; parallelizing
-  the double-precision stream sum / Sinkhorn changes summation order.
+- `sparse_attn_half_kernel`: 8 warps per (row,head), partial online softmax
+  merged in a fixed order. 39.1% -> 10.2%, +28.9% E2E. The changed reduction
+  order is absorbed by the FP16 output round, so the logits hash is unchanged.
+- `hc_mixes`: split into a per-output-row dots kernel (mix_hc blocks) plus a
+  Sinkhorn kernel parallel over rows/columns. Every reduction keeps its
+  original order -> bit-identical. +7.9% E2E.
+
+### Remaining levers
+
+- `gemm_fp8_vec` (~24% of kernel time): the MLA/indexer dense FP8 GEMV; the
+  numeric-neutral 4x unroll helped ~1%, vectorization regressed (above).
+- `indexer_topk` (~6.5%): still 512 rounds of the block-parallel selection.
 - Shared experts (`shared_w1/w2/w3`, ~1.4 GB FP16) are the last dense tensor
   dequantized at load; converting them is numeric-neutral but only ~+1%.
+- `perf_baselines.json` still records the pre-P0 6.64 t/s.
 
 ## Numeric-class note
 
