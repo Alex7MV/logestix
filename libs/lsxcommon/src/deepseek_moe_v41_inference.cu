@@ -448,7 +448,7 @@ __global__ void gemm_fp8_vec_kernel(const uint8_t *__restrict__ w,
     float acc = 0.0f;
     for (int k = lane; k < K; k += 32) {
         const float wv = __half2float(__float2half_rn(
-            Fp8E4m3ToFloat(wr[k]) * Fp8E8m0ToFloat(sr[k / 32])));
+            Fp8E4m3ToFloatFast(wr[k]) * Fp8E8m0ToFloatFast(sr[k / 32])));
         acc += wv * __half2float(x[k]);
     }
 #pragma unroll
