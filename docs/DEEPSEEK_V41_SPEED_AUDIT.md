@@ -107,7 +107,13 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
 | P0b | parallel indexer top-k | 12.7 | 10.6 | +55.9% at 2048, reproduced twice; selfcheck bit-exact |
 | P0b' | parallel router + candidate selection | 13.0 | 10.9 | numeric-neutral, +2.8% at 2048, reproduced twice |
 | P1 | dense MLA/indexer FP8 residency, cache 698 -> 952 | 14.1 | 11.5 | bit-exact, reproduced twice |
-| P1' | exp2f-free FP8 decode | **14.3** | **11.7** | bit-exact, reproduced twice |
+| P1' | exp2f-free FP8 decode | 14.3 | 11.7 | bit-exact, reproduced twice |
+| P1'' | 4x unroll of the FP8 GEMV | 14.3 | **11.8** | bit-exact, preserves per-lane k order |
+| — | vectorized uchar4 FP8 GEMV | — | 11.6 | **rejected**: slower + reorders accumulation |
+
+Post-P0/P1 kernel ranking at 1024 tokens: `sparse_attn` 39.1%, `gemm_fp8_vec`
+17.6%, `hc_mixes` 15.7%, `nvfp4_gemv` 11.5%, `indexer_topk` 4.3%,
+`router_topk` 0.5%, `rmsnorm` 2.1%. Expert cache 952 slots (was 698).
 
 Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
 
@@ -148,8 +154,24 @@ rate 58 -> ~74%) and halves dense HBM reads (currently 20% of kernel time).
 - Remaining: shared experts (`shared_w1/w2/w3`, ~1.4 GB FP16) still dequantize
   at load via `UploadFp8ToHalf`.
 
-Remaining non-dense levers: `sparse_attn` (39%, changes reduction order —
-numeric-class, `docs/numeric-contract.md` §3.5), `hc_mixes` (15.6%).
+### Rejected: vectorized FP8 GEMV (2026-09-23)
+
+Loading 4 weight bytes per lane (128 B/warp coalesced instead of 32 B) instead
+of the byte-per-lane loop regressed 2048 from 11.8 to 11.6 t/s: the 4 separate
+half activation loads per lane are strided and the tail guard costs more than
+the wider weight transaction saves. Also reorders the fp32 accumulation (hash
+changed, golden still Paris). Reverted to the 4x-unrolled byte loop.
+
+### Remaining levers (numeric-class — require operator opt-in, §3.5)
+
+- `sparse_attn_half_kernel` 39%: grid `(1, heads=64)` x 32 threads = 64 warps
+  total (~0.8% occupancy). Any fix (split-KV over `topk`, multi-warp combine)
+  changes the online-softmax reduction order -> deterministic but a new bit
+  reference; validate golden + 3-cycle determinism.
+- `hc_mixes_kernel` 15.7%: single block, Sinkhorn-20 on thread 0; parallelizing
+  the double-precision stream sum / Sinkhorn changes summation order.
+- Shared experts (`shared_w1/w2/w3`, ~1.4 GB FP16) are the last dense tensor
+  dequantized at load; converting them is numeric-neutral but only ~+1%.
 
 ## Numeric-class note
 
