@@ -30,6 +30,26 @@ namespace {
 uint16_t H(float v) { return __half_as_ushort(__float2half_rn(v)); }
 float F(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 
+// Nearest E4M3 byte (magnitudes only, RNE-ish); 0x7F is NaN and skipped.
+uint8_t E4m3Byte(float v)
+{
+    const bool neg = std::signbit(v);
+    const float a = std::fabs(v);
+    float bd = 1e30f;
+    int best = 0;
+    for (int code = 0; code < 128; ++code) {
+        if (code == 0x7F) continue;
+        const float c = lsxcommon::deepseek_v41::E4m3ByteToFloatRef(
+            static_cast<uint8_t>(code));
+        const float d = std::fabs(a - c);
+        if (d < bd) {
+            bd = d;
+            best = code;
+        }
+    }
+    return static_cast<uint8_t>(best | (neg ? 0x80 : 0));
+}
+
 std::vector<uint16_t> ToHalf(const std::vector<float> &f)
 {
     std::vector<uint16_t> out(f.size());
@@ -655,25 +675,39 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     const int q_dim = heads * head_dim;
     const int per_group = head_dim * (heads / o_groups);
 
-    auto pat = [](int i) {
-        return H(0.05f * static_cast<float>((i % 13) - 6));
-    };
     auto mk = [&](int n) {
         std::vector<uint16_t> h(static_cast<size_t>(n));
-        for (int i = 0; i < n; ++i) h[i] = pat(i);
+        for (int i = 0; i < n; ++i) h[i] = H(0.05f * ((i % 13) - 6));
         uint16_t *d = nullptr;
         REQUIRE(cudaMalloc(&d, static_cast<size_t>(n) * 2) == cudaSuccess);
         REQUIRE(cudaMemcpy(d, h.data(), static_cast<size_t>(n) * 2,
                            cudaMemcpyHostToDevice) == cudaSuccess);
         return d;
     };
-    uint16_t *wq_a = mk(q_lora * hidden);
+    auto mkq = [&](int n) {  // FP8 weight bytes
+        std::vector<uint8_t> b(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) b[i] = E4m3Byte(0.05f * ((i % 13) - 6));
+        uint8_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, static_cast<size_t>(n)) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d, b.data(), static_cast<size_t>(n),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        return d;
+    };
+    auto mksc = [&](int n) {  // UE8M0 scales = 2^0
+        uint8_t *d = nullptr;
+        REQUIRE(cudaMalloc(&d, static_cast<size_t>(n)) == cudaSuccess);
+        std::vector<uint8_t> b(static_cast<size_t>(n), 0x7F);
+        REQUIRE(cudaMemcpy(d, b.data(), static_cast<size_t>(n),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        return d;
+    };
+    uint8_t *wq_a = mkq(q_lora * hidden), *wq_a_s = mksc(1);
+    uint8_t *wq_b = mkq(q_dim * q_lora), *wq_b_s = mksc(2);
+    uint8_t *wkv = mkq(head_dim * hidden), *wkv_s = mksc(1);
+    uint8_t *wo_a = mkq(o_groups * o_lora * per_group), *wo_a_s = mksc(2);
+    uint8_t *wo_b = mkq(hidden * o_groups * o_lora), *wo_b_s = mksc(2);
     uint16_t *q_norm = mk(q_lora);
-    uint16_t *wq_b = mk(q_dim * q_lora);
-    uint16_t *wkv = mk(head_dim * hidden);
     uint16_t *kv_norm = mk(head_dim);
-    uint16_t *wo_a = mk(o_groups * o_lora * per_group);
-    uint16_t *wo_b = mk(hidden * o_groups * o_lora);
     uint16_t *x = mk(hidden);
     uint16_t *out = mk(hidden);
     uint16_t *kv_cache = nullptr;
@@ -699,10 +733,10 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
 
     for (int pos = 1; pos <= 2; ++pos) {
         REQUIRE(lsxcommon::deepseek_v41::AttentionForwardDecode(
-                    nullptr, x, hidden, wq_a, q_lora, q_norm, wq_b, heads,
-                    head_dim, rope_dim, wkv, kv_norm, sink, wo_a, o_groups,
-                    o_lora, wo_b, cos_t, sin_t, kv_cache, window, pos,
-                    out) == cudaSuccess);
+                    nullptr, x, hidden, wq_a, wq_a_s, q_lora, q_norm, wq_b,
+                    wq_b_s, heads, head_dim, rope_dim, wkv, wkv_s, kv_norm,
+                    sink, wo_a, wo_a_s, o_groups, o_lora, wo_b, wo_b_s, cos_t,
+                    sin_t, kv_cache, window, pos, out) == cudaSuccess);
     }
     REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
     std::vector<uint16_t> out_h(hidden);
@@ -711,10 +745,11 @@ TEST_CASE("deepseek-v41 attention decode plumbing runs",
     for (int i = 0; i < hidden; ++i)
         CHECK(std::isfinite(F(out_h[i])));
 
-    cudaFree(wq_a); cudaFree(q_norm); cudaFree(wq_b); cudaFree(wkv);
-    cudaFree(kv_norm); cudaFree(wo_a); cudaFree(wo_b); cudaFree(x);
-    cudaFree(out);     cudaFree(kv_cache); cudaFree(sink); cudaFree(cos_t);
-    cudaFree(sin_t);
+    cudaFree(wq_a); cudaFree(wq_a_s); cudaFree(wq_b); cudaFree(wq_b_s);
+    cudaFree(wkv); cudaFree(wkv_s); cudaFree(wo_a); cudaFree(wo_a_s);
+    cudaFree(wo_b); cudaFree(wo_b_s); cudaFree(q_norm); cudaFree(kv_norm);
+    cudaFree(x); cudaFree(out); cudaFree(kv_cache); cudaFree(sink);
+    cudaFree(cos_t); cudaFree(sin_t);
 }
 
 TEST_CASE("deepseek-v41 shared expert ffn matches a float reference",

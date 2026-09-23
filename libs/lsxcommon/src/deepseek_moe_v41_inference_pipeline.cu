@@ -484,10 +484,11 @@ gpu::InferenceResult RunDeepSeekV41Inference(
             cudaError_t ae;
             if (meta.compress_ratio == 0) {
                 ae = dv41::AttentionForwardDecode(
-                    stream, d_xh, kHidden, U(lw.d_wq_a), kQLora,
-                    U(lw.d_q_norm), U(lw.d_wq_b), kHeads, kHeadDim, kRopeDim,
-                    U(lw.d_wkv), U(lw.d_kv_norm), lw.d_attn_sink, U(lw.d_wo_a), kOGroups,
-                    kOLora, U(lw.d_wo_b), d_cos0, d_sin0,
+                    stream, d_xh, kHidden, lw.d_wq_a, lw.d_wq_a_scale, kQLora,
+                    U(lw.d_q_norm), lw.d_wq_b, lw.d_wq_b_scale, kHeads, kHeadDim,
+                    kRopeDim, lw.d_wkv, lw.d_wkv_scale, U(lw.d_kv_norm),
+                    lw.d_attn_sink, lw.d_wo_a, lw.d_wo_a_scale, kOGroups, kOLora,
+                    lw.d_wo_b, lw.d_wo_b_scale, d_cos0, d_sin0,
                     d_window_kv + static_cast<size_t>(lay) * kWindow * kHeadDim,
                     kWindow, step, d_attn_h);
             } else {
@@ -498,24 +499,30 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                 p.is_candidate_source = meta.is_candidate_source;
                 p.owns_k = meta.is_kv_source;
                 p.uses_candidates = dv41::UsesCandidates(lay);
-                p.wq_a = U(lw.d_wq_a);
+                p.wq_a = lw.d_wq_a;
+                p.wq_a_scale = lw.d_wq_a_scale;
                 p.q_lora = kQLora;
                 p.q_norm = U(lw.d_q_norm);
-                p.wq_b = U(lw.d_wq_b);
+                p.wq_b = lw.d_wq_b;
+                p.wq_b_scale = lw.d_wq_b_scale;
                 p.heads = kHeads;
                 p.head_dim = kHeadDim;
                 p.rope_dim = kRopeDim;
-                p.wkv = U(lw.d_wkv);
+                p.wkv = lw.d_wkv;
+                p.wkv_scale = lw.d_wkv_scale;
                 p.kv_norm = U(lw.d_kv_norm);
                 p.attn_sink = lw.d_attn_sink;
-                p.wo_a = U(lw.d_wo_a);
+                p.wo_a = lw.d_wo_a;
+                p.wo_a_scale = lw.d_wo_a_scale;
                 p.o_groups = kOGroups;
                 p.o_lora_rank = kOLora;
-                p.wo_b = U(lw.d_wo_b);
+                p.wo_b = lw.d_wo_b;
+                p.wo_b_scale = lw.d_wo_b_scale;
                 p.comp_wkv = U(lw.d_comp_wkv);
                 p.comp_wgate = U(lw.d_comp_wgate);
                 p.comp_norm = U(lw.d_comp_norm);
-                p.idx_wq_b = U(lw.d_idx_wq_b);
+                p.idx_wq_b = lw.d_idx_wq_b;
+                p.idx_wq_b_scale = lw.d_idx_wq_b_scale;
                 p.idx_wk = U(lw.d_idx_wk);
                 p.idx_k_norm = U(lw.d_idx_k_norm);
                 p.idx_wproj = U(lw.d_idx_weights_proj);

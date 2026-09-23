@@ -205,14 +205,18 @@ cudaError_t LaunchHcExpand(const uint16_t *x, int dim, int hc, float *out,
 // quant; window ring + sparse attn + attn_sink; un-RoPE; grouped wo_a -> wo_b.
 // All weights/shapes are explicit so callers can test with synthetic tensors.
 // rope_cos/rope_sin point at the single position's [rope_dim/2] row.
+// The dense projections (wq_a, wq_b, wkv, wo_a, wo_b) are F8_E4M3 with UE8M0
+// per-32x32 scales (loader layout); they are dequantized on the fly by the GEMV.
 cudaError_t AttentionForwardDecode(
     cudaStream_t stream, const uint16_t *x, int hidden,
-    const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
-    const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
-    const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
-    const uint16_t *wo_a, int o_groups, int o_lora_rank, const uint16_t *wo_b,
-    const float *rope_cos, const float *rope_sin, uint16_t *kv_cache,
-    int window, int start_pos, uint16_t *out);
+    const uint8_t *wq_a, const uint8_t *wq_a_scale, int q_lora,
+    const uint16_t *q_norm, const uint8_t *wq_b,
+    const uint8_t *wq_b_scale, int heads, int head_dim, int rope_dim,
+    const uint8_t *wkv, const uint8_t *wkv_scale, const uint16_t *kv_norm,
+    const float *attn_sink, const uint8_t *wo_a, const uint8_t *wo_a_scale,
+    int o_groups, int o_lora_rank, const uint8_t *wo_b,
+    const uint8_t *wo_b_scale, const float *rope_cos, const float *rope_sin,
+    uint16_t *kv_cache, int window, int start_pos, uint16_t *out);
 
 // Indexer top-k over compressed positions (model.py:579): keeps the `topk`
 // best of `n_pos` scores (ties -> lower position), re-sorts ascending, adds
@@ -243,26 +247,32 @@ struct CedLayerParams {
     bool owns_k = false;
     bool uses_candidates = false;
 
-    const uint16_t *wq_a = nullptr;
+    const uint8_t *wq_a = nullptr;
+    const uint8_t *wq_a_scale = nullptr;
     int q_lora = 0;
     const uint16_t *q_norm = nullptr;
-    const uint16_t *wq_b = nullptr;
+    const uint8_t *wq_b = nullptr;
+    const uint8_t *wq_b_scale = nullptr;
     int heads = 0;
     int head_dim = 0;
     int rope_dim = 0;
-    const uint16_t *wkv = nullptr;
+    const uint8_t *wkv = nullptr;
+    const uint8_t *wkv_scale = nullptr;
     const uint16_t *kv_norm = nullptr;
     const float *attn_sink = nullptr;
-    const uint16_t *wo_a = nullptr;
+    const uint8_t *wo_a = nullptr;
+    const uint8_t *wo_a_scale = nullptr;
     int o_groups = 0;
     int o_lora_rank = 0;
-    const uint16_t *wo_b = nullptr;
+    const uint8_t *wo_b = nullptr;
+    const uint8_t *wo_b_scale = nullptr;
 
     const uint16_t *comp_wkv = nullptr;
     const uint16_t *comp_wgate = nullptr;
     const uint16_t *comp_norm = nullptr;
 
-    const uint16_t *idx_wq_b = nullptr;
+    const uint8_t *idx_wq_b = nullptr;
+    const uint8_t *idx_wq_b_scale = nullptr;
     const uint16_t *idx_wk = nullptr;
     const uint16_t *idx_k_norm = nullptr;
     const uint16_t *idx_wproj = nullptr;

@@ -289,10 +289,12 @@ cudaError_t LaunchMaskIndexerScores(float *score, int n_pos, const uint8_t *mask
 
 cudaError_t AttentionForwardDecode(
     cudaStream_t stream, const uint16_t *x, int hidden,
-    const uint16_t *wq_a, int q_lora, const uint16_t *q_norm,
-    const uint16_t *wq_b, int heads, int head_dim, int rope_dim,
-    const uint16_t *wkv, const uint16_t *kv_norm, const float *attn_sink,
-    const uint16_t *wo_a, int o_groups, int o_lora_rank, const uint16_t *wo_b,
+    const uint8_t *wq_a, const uint8_t *wq_a_scale, int q_lora,
+    const uint16_t *q_norm, const uint8_t *wq_b, const uint8_t *wq_b_scale,
+    int heads, int head_dim, int rope_dim, const uint8_t *wkv,
+    const uint8_t *wkv_scale, const uint16_t *kv_norm, const float *attn_sink,
+    const uint8_t *wo_a, const uint8_t *wo_a_scale, int o_groups,
+    int o_lora_rank, const uint8_t *wo_b, const uint8_t *wo_b_scale,
     const float *rope_cos, const float *rope_sin, uint16_t *kv_cache,
     int window, int start_pos, uint16_t *out)
 {
@@ -304,20 +306,20 @@ cudaError_t AttentionForwardDecode(
 
     cudaError_t e = cudaSuccess;
     do {
-        if ((e = LaunchGemmFp16(stream, wq_a, x, sc.qr, q_lora, 1,
-                                hidden)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wq_a, wq_a_scale, x, sc.qr, q_lora,
+                               hidden, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.qr, q_norm, sc.qr, q_lora, 1e-20f,
                                    stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(stream, wq_b, sc.qr, sc.q, q_dim, 1,
-                                q_lora)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wq_b, wq_b_scale, sc.qr, sc.q, q_dim,
+                               q_lora, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRopeHalf(sc.q, heads, head_dim, rope_dim, rope_cos,
                                 rope_sin, false, stream)) != cudaSuccess)
             break;
-        if ((e = LaunchGemmFp16(stream, wkv, x, sc.kv, head_dim, 1,
-                                hidden)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wkv, wkv_scale, x, sc.kv, head_dim,
+                               hidden, 1.0f)) != cudaSuccess)
             break;
         if ((e = LaunchRmsNormHalf(sc.kv, kv_norm, sc.kv, head_dim, 1e-20f,
                                    stream)) != cudaSuccess)
@@ -349,20 +351,24 @@ cudaError_t AttentionForwardDecode(
             break;
 
         const int per_group = head_dim * (heads / o_groups);
+        const int g_scols = (per_group + 31) / 32;
         for (int g = 0; g < o_groups; ++g) {
-            const uint16_t *w_g = wo_a +
-                static_cast<size_t>(g) * o_lora_rank * per_group;
+            const uint8_t *w_g =
+                wo_a + static_cast<size_t>(g) * o_lora_rank * per_group;
+            const uint8_t *s_g =
+                wo_a_scale + static_cast<size_t>(g * o_lora_rank / 32) * g_scols;
             const uint16_t *x_g = sc.o + static_cast<size_t>(g) * per_group;
             uint16_t *y_g = sc.olora +
                 static_cast<size_t>(g) * o_lora_rank;
-            if ((e = LaunchGemmFp16(stream, w_g, x_g, y_g, o_lora_rank,
-                                    1, per_group)) != cudaSuccess)
+            if ((e = LaunchGemmFp8(stream, w_g, s_g, x_g, y_g, o_lora_rank,
+                                   per_group, 1.0f)) != cudaSuccess)
                 break;
         }
         if (e != cudaSuccess) break;
 
-        if ((e = LaunchGemmFp16(stream, wo_b, sc.olora, out, hidden, 1,
-                                o_groups * o_lora_rank)) != cudaSuccess)
+        if ((e = LaunchGemmFp8(stream, wo_b, wo_b_scale, sc.olora, out,
+                               hidden, o_groups * o_lora_rank,
+                               1.0f)) != cudaSuccess)
             break;
     } while (false);
 
@@ -401,16 +407,17 @@ cudaError_t CedAttentionForwardDecode(
     } while (false)
 
     // q path.
-    V41_TRY(LaunchGemmFp16(stream, p.wq_a, x, b.qr, p.q_lora, 1,
-                           hidden));
+    V41_TRY(LaunchGemmFp8(stream, p.wq_a, p.wq_a_scale, x, b.qr, p.q_lora,
+                          hidden, 1.0f));
     V41_TRY(LaunchRmsNormHalf(b.qr, p.q_norm, b.qr, p.q_lora, 1e-20f, stream));
-    V41_TRY(LaunchGemmFp16(stream, p.wq_b, b.qr, b.q, p.heads * hd, 1,
-                           p.q_lora));
+    V41_TRY(LaunchGemmFp8(stream, p.wq_b, p.wq_b_scale, b.qr, b.q, p.heads * hd,
+                          p.q_lora, 1.0f));
     V41_TRY(LaunchRopeHalf(b.q, p.heads, hd, rd, cos_tok, sin_tok, false,
                            stream));
 
     // Window KV: norm -> rope -> fp8 act-quant -> ring write.
-    V41_TRY(LaunchGemmFp16(stream, p.wkv, x, b.kv, hd, 1, hidden));
+    V41_TRY(LaunchGemmFp8(stream, p.wkv, p.wkv_scale, x, b.kv, hd, hidden,
+                          1.0f));
     V41_TRY(LaunchRmsNormHalf(b.kv, p.kv_norm, b.kv, hd, 1e-20f, stream));
     V41_TRY(LaunchRopeHalf(b.kv, 1, hd, rd, cos_tok, sin_tok, false, stream));
     V41_TRY(LaunchFp8ActQuantInplace(b.kv, 1, hd, 32, stream));
@@ -493,8 +500,8 @@ cudaError_t CedAttentionForwardDecode(
     int ctopk = 0;
     if (p.is_index_source) {
         const int id = p.idx_head_dim;
-        V41_TRY(LaunchGemmFp16(stream, p.idx_wq_b, b.qr, b.idx_q,
-                               p.idx_n_heads * id, 1, p.q_lora));
+        V41_TRY(LaunchGemmFp8(stream, p.idx_wq_b, p.idx_wq_b_scale, b.qr,
+                              b.idx_q, p.idx_n_heads * id, p.q_lora, 1.0f));
         V41_TRY(LaunchRopeHalf(b.idx_q, p.idx_n_heads, id, rd, cos_tok,
                                sin_tok, false, stream));
         V41_TRY(LaunchFp4ActQuantInplace(b.idx_q, p.idx_n_heads, id, 32, true,
@@ -557,16 +564,20 @@ cudaError_t CedAttentionForwardDecode(
                            stream));
 
     const int per_group = hd * (p.heads / p.o_groups);
+    const int g_scols = (per_group + 31) / 32;
     for (int g = 0; g < p.o_groups; ++g) {
-        const uint16_t *w_g = p.wo_a +
-            static_cast<size_t>(g) * p.o_lora_rank * per_group;
+        const uint8_t *w_g =
+            p.wo_a + static_cast<size_t>(g) * p.o_lora_rank * per_group;
+        const uint8_t *s_g =
+            p.wo_a_scale +
+            static_cast<size_t>(g * p.o_lora_rank / 32) * g_scols;
         const uint16_t *x_g = b.o + static_cast<size_t>(g) * per_group;
         uint16_t *y_g = b.olora + static_cast<size_t>(g) * p.o_lora_rank;
-        V41_TRY(LaunchGemmFp16(stream, w_g, x_g, y_g, p.o_lora_rank, 1,
-                               per_group));
+        V41_TRY(LaunchGemmFp8(stream, w_g, s_g, x_g, y_g, p.o_lora_rank,
+                              per_group, 1.0f));
     }
-    V41_TRY(LaunchGemmFp16(stream, p.wo_b, b.olora, out, hidden, 1,
-                           p.o_groups * p.o_lora_rank));
+    V41_TRY(LaunchGemmFp8(stream, p.wo_b, p.wo_b_scale, b.olora, out, hidden,
+                          p.o_groups * p.o_lora_rank, 1.0f));
 #undef V41_TRY
     return cudaSuccess;
 }
