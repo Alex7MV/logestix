@@ -108,12 +108,13 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
 | P0b' | parallel router + candidate selection | 13.0 | 10.9 | numeric-neutral, +2.8% at 2048, reproduced twice |
 | P1 | dense MLA/indexer FP8 residency, cache 698 -> 952 | 14.1 | 11.5 | bit-exact, reproduced twice |
 | P1' | exp2f-free FP8 decode | 14.3 | 11.7 | bit-exact, reproduced twice |
-| P1'' | 4x unroll of the FP8 GEMV | 14.3 | **11.8** | bit-exact, preserves per-lane k order |
+| P1'' | 4x unroll of the FP8 GEMV | 14.3 | 11.8 | bit-exact, preserves per-lane k order |
 | — | vectorized uchar4 FP8 GEMV | — | 11.6 | **rejected**: slower + reorders accumulation |
+| P2 | split-KV sparse attention (8 warps/head) | **16.5** | **15.2** | +28.9%; golden + hash unchanged, reproduced ×2 |
 
-Post-P0/P1 kernel ranking at 1024 tokens: `sparse_attn` 39.1%, `gemm_fp8_vec`
-17.6%, `hc_mixes` 15.7%, `nvfp4_gemv` 11.5%, `indexer_topk` 4.3%,
-`router_topk` 0.5%, `rmsnorm` 2.1%. Expert cache 952 slots (was 698).
+Post-P2 kernel ranking at 1024 tokens (65.3 s, was 88.9 s): `hc_mixes` 24.0%,
+`gemm_fp8_vec` 23.6%, `nvfp4_gemv` 17.7%, `sparse_attn<8>` 10.2% (was 39.1%),
+`gemv<half,2>` 7.3%, `indexer_topk` 6.5%, `rmsnorm` 3.3%. Expert cache 952 slots.
 
 Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
 
