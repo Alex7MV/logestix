@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include "deepseek_moe_v41_dequant.h"
 #include "deepseek_moe_v41_device_math.h"
 #include "deepseek_moe_v41_inference.h"
 #include "deepseek_moe_v41_inference_csa.h"
@@ -1236,6 +1237,79 @@ TEST_CASE("deepseek-v41 candidate block mask large matches the host reference",
     for (int i = 0; i < n_pos; ++i) CHECK(got[i] == ref[i]);
 
     cudaFree(ds); cudaFree(dm);
+}
+
+TEST_CASE("deepseek-v41 fp8 gemv matches the dequant-to-fp16 path bit-exactly",
+          "[deepseek-v41][kernels]")
+{
+    const int M = 96, K = 128;
+    std::vector<uint8_t> w(static_cast<size_t>(M) * K);
+    std::vector<uint8_t> scales(
+        static_cast<size_t>((M + 31) / 32) * ((K + 31) / 32));
+    uint64_t s = 0x12345678ull;
+    auto rnd = [&]() {
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<uint32_t>(s >> 33);
+    };
+    for (auto &b : w) {
+        uint8_t v = static_cast<uint8_t>(rnd() & 0xFF);
+        if ((v & 0x7F) == 0x7F) v ^= 0x01;  // avoid E4M3 NaN payloads
+        b = v;
+    }
+    for (auto &b : scales) b = static_cast<uint8_t>(122 + (rnd() % 12));
+    std::vector<uint16_t> xh(K);
+    for (int k = 0; k < K; ++k)
+        xh[k] = H(0.01f * static_cast<float>(k % 17) - 0.08f);
+
+    uint8_t *dw = nullptr, *ds = nullptr;
+    uint16_t *dx = nullptr, *dh = nullptr, *dy16 = nullptr, *dy16b = nullptr;
+    float *dyf = nullptr, *dyfb = nullptr;
+    REQUIRE(cudaMalloc(&dw, w.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&ds, scales.size()) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dh, static_cast<size_t>(M) * K * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy16, M * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dy16b, M * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dyf, M * 4) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dyfb, M * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, scales.data(), scales.size(),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), K * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    // Reference: loader dequant to FP16, then the existing FP16 GEMV.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchFp8BlockDequantToHalf(
+                dw, ds, dh, M, K, nullptr) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp16(nullptr, dh, dx, dy16, M, 1,
+                                                    K) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemvFp16ToF32(nullptr, dh, dx, dyf, M,
+                                                         K) == cudaSuccess);
+    // New: on-the-fly dequant in the GEMV.
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemmFp8(nullptr, dw, ds, dx, dy16b, M,
+                                                   K, 1.0f) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchGemvFp8ToF32(nullptr, dw, ds, dx, dyfb,
+                                                        M, K) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+
+    std::vector<uint16_t> a16(M), b16(M);
+    std::vector<float> af(M), bf(M);
+    REQUIRE(cudaMemcpy(a16.data(), dy16, M * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(b16.data(), dy16b, M * 2, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(af.data(), dyf, M * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(bf.data(), dyfb, M * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < M; ++i) {
+        CHECK(a16[i] == b16[i]);
+        CHECK(af[i] == bf[i]);
+    }
+
+    cudaFree(dw); cudaFree(ds); cudaFree(dx); cudaFree(dh);
+    cudaFree(dy16); cudaFree(dy16b); cudaFree(dyf); cudaFree(dyfb);
 }
 
 TEST_CASE("v41 cast f32->half saturates instead of overflowing to inf",

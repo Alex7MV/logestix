@@ -71,6 +71,20 @@ cudaError_t LaunchGemmFp16(cudaStream_t stream,
                            const uint16_t *A, const uint16_t *B, uint16_t *C,
                            int M, int N, int K);
 
+// Vector dense FP8 GEMV: y[M] = alpha * W[M,K] * x[K], W is F8_E4M3 [M,K] with
+// [ceil(M/32), ceil(K/32)] UE8M0 scales (loader layout). The weight is
+// dequantized on the fly and rounded to FP16 before the product, so the result
+// is bit-identical to (dequant-to-FP16 + LaunchGemmFp16) while reading half the
+// weight bytes. x FP16.
+cudaError_t LaunchGemmFp8(cudaStream_t stream, const uint8_t *w,
+                          const uint8_t *scales, const uint16_t *x,
+                          uint16_t *y, int M, int K, float alpha);
+
+// Same, with an F32 output vector (shared-expert gate/up projections).
+cudaError_t LaunchGemvFp8ToF32(cudaStream_t stream, const uint8_t *w,
+                               const uint8_t *scales, const uint16_t *x,
+                               float *y, int M, int K);
+
 // Matrix-vector with F32 output: y[M] = W[M,K] * x[K] (FP16 inputs).
 cudaError_t LaunchGemvFp16ToF32(cudaStream_t stream,
                                 const uint16_t *w, const uint16_t *x, float *y,

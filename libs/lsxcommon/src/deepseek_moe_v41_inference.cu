@@ -3,6 +3,7 @@
 
 #include <cuda_fp16.h>
 
+#include "deepseek_moe_v41_fp8_codec.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {
@@ -426,6 +427,41 @@ __global__ void router_topk_kernel(const float *__restrict__ scores,
     }
 }
 
+// Dense FP8 GEMV: y[row] = alpha * sum_k W[row,k]*x[k], W F8_E4M3 [M,K] with
+// [ceil(M/32), ceil(K/32)] UE8M0 scales. The weight is dequantized on the fly
+// and rounded to FP16 before the product, exactly like the loader's
+// fp8_block_dequant_kernel, so the result is bit-identical to
+// (dequant-to-FP16 + LaunchGemmFp16) while halving the weight bytes read.
+// One warp per row, lane-strided K, fixed shuffle reduce (device-independent).
+__global__ void gemm_fp8_vec_kernel(const uint8_t *__restrict__ w,
+                                    const uint8_t *__restrict__ scales,
+                                    const __half *__restrict__ x,
+                                    void *__restrict__ y, int M, int K,
+                                    int out_f32, float alpha)
+{
+    const int row = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (row >= M) return;
+    const int scols = (K + 31) / 32;
+    const uint8_t *wr = w + static_cast<size_t>(row) * K;
+    const uint8_t *sr = scales + static_cast<size_t>(row / 32) * scols;
+    float acc = 0.0f;
+    for (int k = lane; k < K; k += 32) {
+        const float wv = __half2float(__float2half_rn(
+            Fp8E4m3ToFloat(wr[k]) * Fp8E8m0ToFloat(sr[k / 32])));
+        acc += wv * __half2float(x[k]);
+    }
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xFFFFFFFFu, acc, off);
+    if (lane == 0) {
+        if (out_f32)
+            static_cast<float *>(y)[row] = alpha * acc;
+        else
+            static_cast<__half *>(y)[row] = __float2half_rn(alpha * acc);
+    }
+}
+
 } // namespace
 
 cudaError_t LaunchRmsNormHalf(const uint16_t *x, const uint16_t *gamma,
@@ -561,6 +597,32 @@ cudaError_t LaunchGemmFp16(cudaStream_t stream,
         if (e != cudaSuccess) return e;
     }
     return cudaSuccess;
+}
+
+cudaError_t LaunchGemmFp8(cudaStream_t stream, const uint8_t *w,
+                          const uint8_t *scales, const uint16_t *x,
+                          uint16_t *y, int M, int K, float alpha)
+{
+    if (M <= 0 || K <= 0) return cudaSuccess;
+    constexpr int kThreads = 256;
+    const int rows_per = kThreads / 32;
+    const dim3 grid((M + rows_per - 1) / rows_per);
+    gemm_fp8_vec_kernel<<<grid, kThreads, 0, stream>>>(
+        w, scales, reinterpret_cast<const __half *>(x), y, M, K, 0, alpha);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchGemvFp8ToF32(cudaStream_t stream, const uint8_t *w,
+                               const uint8_t *scales, const uint16_t *x,
+                               float *y, int M, int K)
+{
+    if (M <= 0 || K <= 0) return cudaSuccess;
+    constexpr int kThreads = 256;
+    const int rows_per = kThreads / 32;
+    const dim3 grid((M + rows_per - 1) / rows_per);
+    gemm_fp8_vec_kernel<<<grid, kThreads, 0, stream>>>(
+        w, scales, reinterpret_cast<const __half *>(x), y, M, K, 1, 1.0f);
+    return cudaGetLastError();
 }
 
 cudaError_t LaunchHeadLogits(cudaStream_t stream,
