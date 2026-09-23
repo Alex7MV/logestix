@@ -3,7 +3,7 @@
 
 #include <cuda_fp16.h>
 
-#include "deepseek_moe_v41_fp8_codec.h"
+#include "deepseek_moe_v41_fp8.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 
 namespace lsxcommon {

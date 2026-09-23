@@ -1,4 +1,4 @@
-// deepseek_moe_v41_fp8_codec.h — device-side FP8/E8M0 decode for
+// deepseek_moe_v41_fp8.h — device-side FP8/E8M0 decode for
 // DeepSeek-V4.1-Flash dense weights. Single source of the exact semantics the
 // loader's fp8_block_dequant_kernel materialized (sign, exp4 bias 7, mant4/8;
 // E8M0 = 2^(b-127) with b=0 -> 2^-127, NOT the clamped-flavor 0). The on-the-fly
