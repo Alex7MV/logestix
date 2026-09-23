@@ -446,7 +446,20 @@ __global__ void gemm_fp8_vec_kernel(const uint8_t *__restrict__ w,
     const uint8_t *wr = w + static_cast<size_t>(row) * K;
     const uint8_t *sr = scales + static_cast<size_t>(row / 32) * scols;
     float acc = 0.0f;
-    for (int k = lane; k < K; k += 32) {
+    // Unrolled 4x (same lane -> k mapping and per-lane k order as the scalar
+    // loop, so the result is bit-identical): each lane keeps 4 independent
+    // byte loads in flight, which hides the 32-byte-per-instruction latency.
+    int k = lane;
+    for (; k + 96 < K; k += 128) {
+#pragma unroll
+        for (int u = 0; u < 4; ++u) {
+            const int kk = k + u * 32;
+            const float wv = __half2float(__float2half_rn(
+                Fp8E4m3ToFloatFast(wr[kk]) * Fp8E8m0ToFloatFast(sr[kk / 32])));
+            acc += wv * __half2float(x[kk]);
+        }
+    }
+    for (; k < K; k += 32) {
         const float wv = __half2float(__float2half_rn(
             Fp8E4m3ToFloatFast(wr[k]) * Fp8E8m0ToFloatFast(sr[k / 32])));
         acc += wv * __half2float(x[k]);
