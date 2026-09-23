@@ -105,7 +105,9 @@ is E8M0/32; storing per-32 UE8M0 (`kind::mxf4`, SF UE8M0 vec32,
 | audit | — | 11.3 | 6.8 | baseline |
 | P0a | preallocate shared-expert/router scratch | 11.4 | 6.8 | numeric-neutral; ~0 wall (host API overlapped the GPU) |
 | P0b | parallel indexer top-k | 12.7 | 10.6 | +55.9% at 2048, reproduced twice; selfcheck bit-exact |
-| P0b' | parallel router + candidate selection | **13.0** | **10.9** | numeric-neutral, +2.8% at 2048, reproduced twice |
+| P0b' | parallel router + candidate selection | 13.0 | 10.9 | numeric-neutral, +2.8% at 2048, reproduced twice |
+| P1 | dense MLA/indexer FP8 residency, cache 698 -> 952 | 14.1 | 11.5 | bit-exact, reproduced twice |
+| P1' | exp2f-free FP8 decode | **14.3** | **11.7** | bit-exact, reproduced twice |
 
 Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
 
@@ -130,7 +132,7 @@ exactly the experts not recently used, which an LRU cache already holds for
 ~7 tokens. **The expert H2D is on the critical path and cannot be hidden by
 scheduling** — the lever is fewer bytes.
 
-### In progress: dense FP8 residency
+### Dense FP8 residency (done for MLA/indexer)
 
 `LSX_V41_RLOC` LRU probe (512 tok): 700 slots = 58.1% hit / 102 miss/tok,
 1050 = 74.2% / 63, 1400 = 83.8% / 39. The device cache (698 slots, 13.9 GB) is
@@ -138,13 +140,13 @@ already VRAM-maxed: dense FP16 (14.9 GB) + cache + workspace ~= 30/32.6 GB.
 Keeping dense as FP8 (7.5 GB) frees ~7.5 GB for the cache (~+50% slots, hit
 rate 58 -> ~74%) and halves dense HBM reads (currently 20% of kernel time).
 
-- Foundation (committed): v41-local `LaunchGemmFp8` / `LaunchGemvFp8ToF32`,
-  bit-identical to (dequant-to-FP16 + `LaunchGemmFp16`); see
-  `deepseek_moe_v41_fp8_codec.h`.
-- Remaining: loader stores FP8+scales (not FP16) for `wq_a/wq_b/wkv/wo_a/wo_b`,
-  `idx_wq_b`, `shared_w1/w2/w3`; `CedLayerParams`/`LayerWeights` carry the
-  scale pointers; attention + shared-expert call sites switch to the FP8 GEMV.
-  Then selfcheck bit-exact + 2048 measurement.
+- Done: `wq_a/wq_b/wkv/wo_a/wo_b` + `idx_wq_b` are stored as raw FP8+scales and
+  dequantized on the fly (bit-identical to the loader dequant). Cache grew
+  698 -> 952 slots. Selfcheck bit-exact. Effect 2048: 10.9 -> 11.5 -> 11.7 t/s
+  with the exp2f-free decode; below the cache-only projection because the GEMV
+  is one-warp-per-row/low-occupancy.
+- Remaining: shared experts (`shared_w1/w2/w3`, ~1.4 GB FP16) still dequantize
+  at load via `UploadFp8ToHalf`.
 
 Remaining non-dense levers: `sparse_attn` (39%, changes reduction order —
 numeric-class, `docs/numeric-contract.md` §3.5), `hc_mixes` (15.6%).
