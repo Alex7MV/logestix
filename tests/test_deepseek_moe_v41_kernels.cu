@@ -1064,6 +1064,58 @@ TEST_CASE("deepseek-v41 indexer top-k matches the host reference",
     cudaFree(ds); cudaFree(dout);
 }
 
+TEST_CASE("deepseek-v41 indexer top-k large tie-heavy set matches the reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 1024, topk = 512, offset = 128;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = static_cast<float>((i * 37) % 7) - 3.0f;  // many ties
+    for (int i = 200; i < 260; ++i) score[i] = -INFINITY;    // masked candidates
+
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    int32_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, topk * 4) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerTopk(ds, n_pos, topk, offset,
+                                                       dout, topk, nullptr) ==
+            cudaSuccess);
+    std::vector<int32_t> got(topk);
+    REQUIRE(cudaMemcpy(got.data(), dout, topk * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+
+    std::vector<int> ref(topk);
+    lsxcommon::deepseek_v41::IndexTopkRef(score.data(), n_pos, n_pos, topk,
+                                          offset, ref.data());
+    for (int i = 0; i < topk; ++i) CHECK(got[i] == ref[i]);
+
+    cudaFree(ds); cudaFree(dout);
+}
+
+TEST_CASE("deepseek-v41 indexer top-k all-equal picks the lowest indices",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 1024, topk = 16, offset = 128;
+    std::vector<float> score(n_pos, 0.0f);
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    int32_t *dout = nullptr;
+    REQUIRE(cudaMalloc(&dout, topk * 4) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchIndexerTopk(ds, n_pos, topk, offset,
+                                                       dout, topk, nullptr) ==
+            cudaSuccess);
+    std::vector<int32_t> got(topk);
+    REQUIRE(cudaMemcpy(got.data(), dout, topk * 4, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    for (int i = 0; i < topk; ++i) CHECK(got[i] == i + offset);
+
+    cudaFree(ds); cudaFree(dout);
+}
+
 TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
           "[deepseek-v41][kernels]")
 {

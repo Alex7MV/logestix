@@ -40,34 +40,67 @@ __global__ void window_idxs_kernel(int *__restrict__ idxs, int window,
 
 // Keep the `topk` best of `n_pos` scores (ties -> lower position), sorted
 // ascending and shifted by `offset`; the tail up to `n_pad` is -1.
+//
+// Block-parallel selection: every round each thread scans its strided
+// elements for the local best (max score, lower position on ties) and the
+// block reduces to the winner. `topk` rounds of
+// O(n_pos/blockDim + log blockDim) replace the former single-thread
+// O(topk*n_pos) scan.
 __global__ void indexer_topk_kernel(const float *__restrict__ score, int n_pos,
                                     int topk, int offset,
                                     int *__restrict__ out, int n_pad)
 {
     extern __shared__ unsigned char smem[];
-    int *sel = reinterpret_cast<int *>(smem);
-    unsigned char *used = smem + static_cast<size_t>(topk) * sizeof(int);
-    for (int i = threadIdx.x; i < n_pos; i += blockDim.x) used[i] = 0;
+    int *r_idx = reinterpret_cast<int *>(smem);
+    float *r_val = reinterpret_cast<float *>(r_idx + blockDim.x);
+    float *sc = r_val + blockDim.x;
+    unsigned char *used =
+        reinterpret_cast<unsigned char *>(sc + static_cast<size_t>(n_pos));
+    const int t = threadIdx.x;
+    for (int i = t; i < n_pos; i += blockDim.x) {
+        sc[i] = score[i];
+        used[i] = 0;
+    }
     __syncthreads();
-    if (threadIdx.x != 0) return;
-    for (int k = 0; k < topk; ++k) {
-        int best = -1;
-        float bestv = 0.0f;
-        for (int i = 0; i < n_pos; ++i) {
+
+    const int k = topk < n_pos ? topk : n_pos;
+    for (int kk = 0; kk < k; ++kk) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int i = t; i < n_pos; i += blockDim.x) {
             if (used[i]) continue;
-            const float v = score[i];
-            if (best < 0 || v > bestv) { bestv = v; best = i; }
+            const float v = sc[i];
+            if (lbest < 0 || v > lbv || (v == lbv && i < lbest)) {
+                lbv = v;
+                lbest = i;
+            }
         }
-        used[best] = 1;
-        sel[k] = best;
+        r_idx[t] = lbest;
+        r_val[t] = lbv;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const int i2 = r_idx[t + off];
+                const float v2 = r_val[t + off];
+                const int i1 = r_idx[t];
+                const float v1 = r_val[t];
+                if (i2 >= 0 && (i1 < 0 || v2 > v1 || (v2 == v1 && i2 < i1))) {
+                    r_idx[t] = i2;
+                    r_val[t] = v2;
+                }
+            }
+            __syncthreads();
+        }
+        if (t == 0 && r_idx[0] >= 0) used[r_idx[0]] = 1;
+        __syncthreads();
     }
-    for (int a = 1; a < topk; ++a) {
-        const int key = sel[a];
-        int b = a - 1;
-        while (b >= 0 && sel[b] > key) { sel[b + 1] = sel[b]; --b; }
-        sel[b + 1] = key;
+    // Emit the selected positions in ascending order (no explicit sort).
+    if (t == 0) {
+        int c = 0;
+        for (int i = 0; i < n_pos; ++i)
+            if (used[i]) out[c++] = i + offset;
+        for (int i = c; i < n_pad; ++i) out[i] = -1;
     }
-    for (int i = 0; i < n_pad; ++i) out[i] = (i < topk) ? sel[i] + offset : -1;
 }
 
 // Level-one candidate mask: block score = max over the block; the block
@@ -183,9 +216,12 @@ cudaError_t LaunchIndexerTopk(const float *score, int n_pos, int topk,
                               cudaStream_t stream)
 {
     if (topk <= 0 || n_pos <= 0) return cudaSuccess;
-    const size_t sh = static_cast<size_t>(topk) * sizeof(int) +
+    const int threads = 512;
+    const size_t sh = static_cast<size_t>(threads) * sizeof(int) +
+                      static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(n_pos) * sizeof(float) +
                       static_cast<size_t>(n_pos);
-    indexer_topk_kernel<<<1, 256, sh, stream>>>(
+    indexer_topk_kernel<<<1, threads, sh, stream>>>(
         score, n_pos, topk, offset, reinterpret_cast<int *>(out_idx), n_pos_pad);
     return cudaGetLastError();
 }
