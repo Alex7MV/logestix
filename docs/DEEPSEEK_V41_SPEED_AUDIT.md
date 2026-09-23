@@ -119,10 +119,35 @@ Post-P0 kernel ranking at 1024 tokens (88.9 s window, was 113.6 s):
 | `indexer_topk_kernel` | 4.3% | now block-parallel (was 35.7%) |
 | expert H2D (copy stream) | ~41% of wall | still zero overlap |
 
-Remaining levers require operator direction: `sparse_attn` speedups change the
-attention reduction order (numeric-class decision, `docs/numeric-contract.md`
-§3.5); the H2D overlap change (device-side expert ids / speculative prefetch)
-is architectural. Both are tracked in the audit root-cause list.
+### Rejected: scheduling-level H2D overlap (2026-09-23)
+
+Measured post-P0 at 1024 tokens: GPU busy union 86.6/88.9 s (2.6% idle) and
+compute-stream idle 34.6 s ~= H2D 36.9 s. The per-layer graph is strictly
+sequential (attention -> router -> expert copies -> FFN -> next attention), so
+there is no independent compute to fill the copy windows; a dedicated copy
+stream already exists. Cross-token speculative prefetch is weak: the misses are
+exactly the experts not recently used, which an LRU cache already holds for
+~7 tokens. **The expert H2D is on the critical path and cannot be hidden by
+scheduling** — the lever is fewer bytes.
+
+### In progress: dense FP8 residency
+
+`LSX_V41_RLOC` LRU probe (512 tok): 700 slots = 58.1% hit / 102 miss/tok,
+1050 = 74.2% / 63, 1400 = 83.8% / 39. The device cache (698 slots, 13.9 GB) is
+already VRAM-maxed: dense FP16 (14.9 GB) + cache + workspace ~= 30/32.6 GB.
+Keeping dense as FP8 (7.5 GB) frees ~7.5 GB for the cache (~+50% slots, hit
+rate 58 -> ~74%) and halves dense HBM reads (currently 20% of kernel time).
+
+- Foundation (committed): v41-local `LaunchGemmFp8` / `LaunchGemvFp8ToF32`,
+  bit-identical to (dequant-to-FP16 + `LaunchGemmFp16`); see
+  `deepseek_moe_v41_fp8_codec.h`.
+- Remaining: loader stores FP8+scales (not FP16) for `wq_a/wq_b/wkv/wo_a/wo_b`,
+  `idx_wq_b`, `shared_w1/w2/w3`; `CedLayerParams`/`LayerWeights` carry the
+  scale pointers; attention + shared-expert call sites switch to the FP8 GEMV.
+  Then selfcheck bit-exact + 2048 measurement.
+
+Remaining non-dense levers: `sparse_attn` (39%, changes reduction order —
+numeric-class, `docs/numeric-contract.md` §3.5), `hc_mixes` (15.6%).
 
 ## Numeric-class note
 
