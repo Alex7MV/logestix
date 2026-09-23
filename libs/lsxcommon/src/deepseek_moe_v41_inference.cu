@@ -364,36 +364,65 @@ __global__ void router_topk_kernel(const float *__restrict__ scores,
                                    float *__restrict__ out_w)
 {
     extern __shared__ float sc[];   // n softplus-sqrt scores
+    float *r_val = sc + n;          // blockDim reductions
+    int *r_idx = reinterpret_cast<int *>(r_val + blockDim.x);
     __shared__ int s_used[1024];
     __shared__ int s_idx[32];
     __shared__ float s_w[32];
     const int t = threadIdx.x;
-    if (t < n) {
-        const float v = scores[t] / temp;
-        sc[t] = sqrtf(Softplus(v));
-        s_used[t] = 0;
+    for (int i = t; i < n; i += blockDim.x) {
+        const float v = scores[i] / temp;
+        sc[i] = sqrtf(Softplus(v));
+        s_used[i] = 0;
     }
     __syncthreads();
-    if (t != 0) return;
+    // Block-parallel selection: `topk` rounds of O(n/blockDim + log blockDim)
+    // replace the former single-thread O(topk*n) scan. Selection key is
+    // (softplus-sqrt score + bias), ties -> lower index; the stored weight is
+    // the unbiased score (matches GateRouteRef).
     for (int k = 0; k < topk; ++k) {
-        int best = -1;
-        float bestval = 0.0f;
-        for (int i = 0; i < n; ++i) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int i = t; i < n; i += blockDim.x) {
             if (s_used[i]) continue;
             const float v = sc[i] + (bias ? bias[i] : 0.0f);
-            if (best < 0 || v > bestval) { bestval = v; best = i; }
+            if (lbest < 0 || v > lbv || (v == lbv && i < lbest)) {
+                lbv = v;
+                lbest = i;
+            }
         }
-        s_used[best] = 1;
-        s_idx[k] = best;
-        s_w[k] = sc[best];
+        r_val[t] = lbv;
+        r_idx[t] = lbest;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const float v2 = r_val[t + off];
+                const int i2 = r_idx[t + off];
+                const float v1 = r_val[t];
+                const int i1 = r_idx[t];
+                if (i2 >= 0 && (i1 < 0 || v2 > v1 || (v2 == v1 && i2 < i1))) {
+                    r_val[t] = v2;
+                    r_idx[t] = i2;
+                }
+            }
+            __syncthreads();
+        }
+        if (t == 0 && r_idx[0] >= 0) {
+            s_used[r_idx[0]] = 1;
+            s_idx[k] = r_idx[0];
+            s_w[k] = sc[r_idx[0]];
+        }
+        __syncthreads();
     }
-    float sum = 0.0f;
-    for (int k = 0; k < topk; ++k) sum += s_w[k];
-    for (int k = 0; k < topk; ++k) {
-        float w = s_w[k];
-        if (norm && topk > 1) w /= (sum + 1e-20f);
-        out_idx[k] = s_idx[k];
-        out_w[k] = w * route_scale;
+    if (t == 0) {
+        float sum = 0.0f;
+        for (int k = 0; k < topk; ++k) sum += s_w[k];
+        for (int k = 0; k < topk; ++k) {
+            float w = s_w[k];
+            if (norm && topk > 1) w /= (sum + 1e-20f);
+            out_idx[k] = s_idx[k];
+            out_w[k] = w * route_scale;
+        }
     }
 }
 
@@ -688,10 +717,14 @@ cudaError_t LaunchRouterTopKScratch(cudaStream_t stream,
     if (!scores_scratch) return cudaErrorInvalidValue;
     if (topk > n_routed) topk = n_routed;
     if (topk > 32) topk = 32;
+    const int threads = 512;
+    const size_t sh = static_cast<size_t>(n_routed) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(int);
     cudaError_t e = LaunchGemvFp16ToF32(stream, gate_w, x, scores_scratch,
                                         n_routed, hidden);
     if (e == cudaSuccess) {
-        router_topk_kernel<<<1, n_routed, sizeof(float) * n_routed, stream>>>(
+        router_topk_kernel<<<1, threads, sh, stream>>>(
             scores_scratch, bias, n_routed, topk, temp, route_scale, norm,
             reinterpret_cast<int *>(out_idx), out_w);
         e = cudaGetLastError();

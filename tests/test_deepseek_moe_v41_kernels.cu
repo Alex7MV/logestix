@@ -967,6 +967,59 @@ TEST_CASE("deepseek-v41 router top-k scratch variant matches the allocating one"
     cudaFree(dw); cudaFree(dx); cudaFree(dscores);
 }
 
+TEST_CASE("deepseek-v41 router top-k large tie set matches the gate reference",
+          "[deepseek-v41][kernels]")
+{
+    // 24 groups of 16 identical gate rows -> exact score ties; ties must
+    // resolve to the lowest expert index.
+    const int n = 384, hidden = 8, topk = 6;
+    std::vector<float> wf(static_cast<size_t>(n) * hidden), xf(hidden),
+        bias(n, 0.0f);
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < hidden; ++j)
+            wf[static_cast<size_t>(i) * hidden + j] =
+                0.1f * static_cast<float>(((i / 16) * 3 + j) % 13 - 6);
+    for (int j = 0; j < hidden; ++j) xf[j] = 0.25f * static_cast<float>(j - 4);
+
+    uint16_t *dw = nullptr, *dx = nullptr;
+    REQUIRE(cudaMalloc(&dw, wf.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hidden * 2) == cudaSuccess);
+    std::vector<uint16_t> wh(wf.size()), xh(hidden);
+    for (size_t i = 0; i < wf.size(); ++i) wh[i] = H(wf[i]);
+    for (int j = 0; j < hidden; ++j) xh[j] = H(xf[j]);
+    REQUIRE(cudaMemcpy(dw, wh.data(), wh.size() * 2,
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, xh.data(), hidden * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    int32_t got_idx[32];
+    float got_w[32];
+    REQUIRE(lsxcommon::deepseek_v41::LaunchRouterTopK(
+                nullptr, dx, dw, bias.data(), n, hidden, topk, 1.0f, 1.5f, true,
+                got_idx, got_w) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(nullptr) == cudaSuccess);
+
+    std::vector<float> wff(wh.size()), xff(xh.size());
+    for (size_t i = 0; i < wh.size(); ++i) wff[i] = F(wh[i]);
+    for (size_t i = 0; i < xh.size(); ++i) xff[i] = F(xh[i]);
+    std::vector<float> scores(n);
+    for (int i = 0; i < n; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < hidden; ++j) acc += wff[i * hidden + j] * xff[j];
+        scores[i] = acc;
+    }
+    int32_t ref_idx[32];
+    float ref_w[32];
+    lsxcommon::deepseek_v41::GateRouteRef(scores.data(), bias.data(), n, topk,
+                                          1.0f, 1.5f, true, ref_idx, ref_w);
+    for (int k = 0; k < topk; ++k) {
+        CHECK(got_idx[k] == ref_idx[k]);
+        CHECK(got_w[k] == Catch::Approx(ref_w[k]).margin(1e-5f));
+    }
+
+    cudaFree(dw); cudaFree(dx);
+}
+
 TEST_CASE("deepseek-v41 routed expert ffn matches a float reference",
           "[deepseek-v41][kernels]")
 {
@@ -1153,6 +1206,34 @@ TEST_CASE("deepseek-v41 candidate block mask matches the host reference",
         if (ref[i]) CHECK(masked[i] == score[i]);
         else CHECK(masked[i] == -INFINITY);
     }
+
+    cudaFree(ds); cudaFree(dm);
+}
+
+TEST_CASE("deepseek-v41 candidate block mask large matches the host reference",
+          "[deepseek-v41][kernels]")
+{
+    const int n_pos = 512, block_size = 8, topk_blocks = 64, num_valid = 500;
+    std::vector<float> score(n_pos);
+    for (int i = 0; i < n_pos; ++i)
+        score[i] = static_cast<float>((i * 13) % 9) - 4.0f;
+    for (int i = 300; i < 340; ++i) score[i] = -INFINITY;
+    float *ds = nullptr;
+    REQUIRE(cudaMalloc(&ds, n_pos * 4) == cudaSuccess);
+    REQUIRE(cudaMemcpy(ds, score.data(), n_pos * 4, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    uint8_t *dm = nullptr;
+    REQUIRE(cudaMalloc(&dm, n_pos) == cudaSuccess);
+    REQUIRE(lsxcommon::deepseek_v41::LaunchSelectCandidateBlocks(
+                ds, n_pos, num_valid, topk_blocks, block_size, dm, nullptr) ==
+            cudaSuccess);
+    std::vector<uint8_t> got(n_pos);
+    REQUIRE(cudaMemcpy(got.data(), dm, n_pos, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    std::vector<uint8_t> ref(n_pos);
+    lsxcommon::deepseek_v41::SelectCandidateBlocksRef(
+        score.data(), n_pos, num_valid, topk_blocks, block_size, ref.data());
+    for (int i = 0; i < n_pos; ++i) CHECK(got[i] == ref[i]);
 
     cudaFree(ds); cudaFree(dm);
 }

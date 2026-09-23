@@ -112,9 +112,16 @@ __global__ void select_candidate_blocks_kernel(
 {
     extern __shared__ unsigned char smem[];
     const int nblocks = (n_pos + block_size - 1) / block_size;
+    const size_t used_off = static_cast<size_t>(nblocks) * sizeof(float);
+    const size_t r_off =
+        (used_off + static_cast<size_t>(nblocks) + 3) &
+        ~static_cast<size_t>(3);
     float *bs = reinterpret_cast<float *>(smem);
-    unsigned char *used = smem + static_cast<size_t>(nblocks) * sizeof(float);
-    for (int b = threadIdx.x; b < nblocks; b += blockDim.x) {
+    unsigned char *used = smem + used_off;
+    float *r_val = reinterpret_cast<float *>(smem + r_off);
+    int *r_idx = reinterpret_cast<int *>(r_val + blockDim.x);
+    const int t = threadIdx.x;
+    for (int b = t; b < nblocks; b += blockDim.x) {
         float m = -INFINITY;
         for (int j = 0; j < block_size; ++j) {
             const int p = b * block_size + j;
@@ -123,26 +130,52 @@ __global__ void select_candidate_blocks_kernel(
         bs[b] = m;
         used[b] = 0;
     }
-    for (int i = threadIdx.x; i < n_pos; i += blockDim.x) mask[i] = 0;
+    for (int i = t; i < n_pos; i += blockDim.x) mask[i] = 0;
     __syncthreads();
-    if (threadIdx.x != 0) return;
     const int last = (num_valid - 1) / block_size;
-    if (last >= 0 && last < nblocks) bs[last] = INFINITY;
+    if (t == 0 && last >= 0 && last < nblocks) bs[last] = INFINITY;
+    __syncthreads();
     const int keep = topk_blocks < nblocks ? topk_blocks : nblocks;
+    // Block-parallel selection of the `keep` best blocks (ties -> lower block
+    // index), replacing the former single-thread O(keep*nblocks) scan.
     for (int k = 0; k < keep; ++k) {
-        int best = -1;
-        float bestv = 0.0f;
-        for (int b = 0; b < nblocks; ++b) {
+        int lbest = -1;
+        float lbv = -1e30f;
+        for (int b = t; b < nblocks; b += blockDim.x) {
             if (used[b]) continue;
             const float v = bs[b];
-            if (best < 0 || v > bestv) { bestv = v; best = b; }
+            if (lbest < 0 || v > lbv || (v == lbv && b < lbest)) {
+                lbv = v;
+                lbest = b;
+            }
         }
-        used[best] = 1;
-        if (bs[best] == -INFINITY) continue;
-        for (int j = 0; j < block_size; ++j) {
-            const int p = best * block_size + j;
-            if (p < n_pos) mask[p] = 1;
+        r_val[t] = lbv;
+        r_idx[t] = lbest;
+        __syncthreads();
+        for (int off = blockDim.x >> 1; off > 0; off >>= 1) {
+            if (t < off) {
+                const float v2 = r_val[t + off];
+                const int b2 = r_idx[t + off];
+                const float v1 = r_val[t];
+                const int b1 = r_idx[t];
+                if (b2 >= 0 && (b1 < 0 || v2 > v1 || (v2 == v1 && b2 < b1))) {
+                    r_val[t] = v2;
+                    r_idx[t] = b2;
+                }
+            }
+            __syncthreads();
         }
+        if (t == 0 && r_idx[0] >= 0) {
+            const int best = r_idx[0];
+            used[best] = 1;
+            if (bs[best] != -INFINITY) {
+                for (int j = 0; j < block_size; ++j) {
+                    const int p = best * block_size + j;
+                    if (p < n_pos) mask[p] = 1;
+                }
+            }
+        }
+        __syncthreads();
     }
 }
 
@@ -233,9 +266,13 @@ cudaError_t LaunchSelectCandidateBlocks(const float *score, int n_pos,
 {
     if (n_pos <= 0 || block_size <= 0) return cudaSuccess;
     const int nblocks = (n_pos + block_size - 1) / block_size;
-    const size_t sh = static_cast<size_t>(nblocks) * sizeof(float) +
-                      static_cast<size_t>(nblocks);
-    select_candidate_blocks_kernel<<<1, 256, sh, stream>>>(
+    const int threads = 512;
+    const size_t used_off = static_cast<size_t>(nblocks) * sizeof(float);
+    const size_t r_off =
+        (used_off + static_cast<size_t>(nblocks) + 3) & ~static_cast<size_t>(3);
+    const size_t sh = r_off + static_cast<size_t>(threads) * sizeof(float) +
+                      static_cast<size_t>(threads) * sizeof(int);
+    select_candidate_blocks_kernel<<<1, threads, sh, stream>>>(
         score, n_pos, num_valid, topk_blocks, block_size,
         reinterpret_cast<unsigned char *>(mask));
     return cudaGetLastError();
