@@ -179,6 +179,11 @@ __global__ void hc_post_kernel(const float *__restrict__ x,
     out[idx] = acc;
 }
 
+// Split-KV sparse attention: kWarps warps per (row, head) each run the online
+// softmax over a contiguous slice of `topk`, then the partial (m, s, acc) are
+// merged. Fixes the 0.8%-occupancy single-warp decode (64 warps total) at the
+// cost of a changed (but deterministic, fixed-geometry) reduction order.
+template <int kWarps>
 __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
                                         const __half *__restrict__ kv,
                                         const float *__restrict__ sink,
@@ -188,15 +193,20 @@ __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
 {
     const int row = blockIdx.x;
     const int head = blockIdx.y;
-    const int lane = threadIdx.x;      // one warp per (row, head)
+    const int warp = threadIdx.x >> 5;
+    const int lane = threadIdx.x & 31;
     const int per = d / 32;
+    const int chunk = (topk + kWarps - 1) / kWarps;
+    const int t0 = warp * chunk;
+    const int t1 = (t0 + chunk < topk) ? t0 + chunk : topk;
+
     float acc[32];
     for (int k = 0; k < per; ++k) acc[k] = 0.0f;
     float m = -1e30f, s = 0.0f;
 
     const __half *qh = q + (static_cast<size_t>(row) * heads + head) * d;
     const int *ridx = idxs + static_cast<size_t>(row) * topk;
-    for (int t = 0; t < topk; ++t) {
+    for (int t = t0; t < t1; ++t) {
         const int idx = ridx[t];
         float dot = 0.0f;
         const __half *kh = nullptr;
@@ -225,12 +235,41 @@ __global__ void sparse_attn_half_kernel(const __half *__restrict__ q,
         }
         m = m_new;
     }
-    const float sinkv = sink ? sink[head] : -INFINITY;
-    s += expf(sinkv - m);
-    const float inv = (s > 0.0f) ? (1.0f / s) : 0.0f;
-    __half *oh = o + (static_cast<size_t>(row) * heads + head) * d;
+
+    // Merge the kWarps partials (deterministic order over warp index).
+    extern __shared__ float smem[];
+    float *sm_m = smem;                    // [kWarps] partial max
+    float *sm_s = smem + kWarps;           // [kWarps] partial sum
+    float *sm_sc = smem + 2 * kWarps;      // [kWarps] exp(m_w - m_all)
+    float *sm_inv = smem + 3 * kWarps;     // [1] 1 / total sum
+    float *sm_acc = smem + 3 * kWarps + 1; // [kWarps][d]
+    if (lane == 0) {
+        sm_m[warp] = m;
+        sm_s[warp] = s;
+    }
     for (int k = 0; k < per; ++k)
-        oh[lane + k * 32] = __float2half_rn(acc[k] * inv);
+        sm_acc[warp * d + lane + k * 32] = acc[k];
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        float m_all = -1e30f;
+        for (int w = 0; w < kWarps; ++w) m_all = fmaxf(m_all, sm_m[w]);
+        float st = 0.0f;
+        for (int w = 0; w < kWarps; ++w) {
+            const float sc = expf(sm_m[w] - m_all);
+            sm_sc[w] = sc;
+            st += sm_s[w] * sc;
+        }
+        const float sinkv = sink ? sink[head] : -INFINITY;
+        st += expf(sinkv - m_all);
+        sm_inv[0] = (st > 0.0f) ? (1.0f / st) : 0.0f;
+    }
+    __syncthreads();
+    __half *oh = o + (static_cast<size_t>(row) * heads + head) * d;
+    for (int dd = threadIdx.x; dd < d; dd += blockDim.x) {
+        float a = 0.0f;
+        for (int w = 0; w < kWarps; ++w) a += sm_acc[w * d + dd] * sm_sc[w];
+        oh[dd] = __float2half_rn(a * sm_inv[0]);
+    }
 }
 
 __global__ void compressor_pool_kernel(const float *__restrict__ kv,
@@ -544,8 +583,12 @@ cudaError_t LaunchSparseAttnHalf(const uint16_t *q, int q_rows, int heads,
     if (q_rows <= 0 || heads <= 0 || d <= 0 || topk <= 0)
         return cudaSuccess;
     if (d % 32 != 0) return cudaErrorInvalidValue;
+    constexpr int kWarps = 8;
+    const int threads = 32 * kWarps;
     const dim3 grid(q_rows, heads);
-    sparse_attn_half_kernel<<<grid, 32, 0, stream>>>(
+    const size_t sh = static_cast<size_t>(3 * kWarps + 1 + kWarps * d) *
+                      sizeof(float);
+    sparse_attn_half_kernel<kWarps><<<grid, threads, sh, stream>>>(
         reinterpret_cast<const __half *>(q),
         reinterpret_cast<const __half *>(kv),
         sink, reinterpret_cast<const int *>(idxs),
