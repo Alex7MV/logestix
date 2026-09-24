@@ -20,8 +20,10 @@ namespace {
 
 struct DeviceBuffer {
     void *p = nullptr;
-    explicit DeviceBuffer(size_t bytes) { cudaMalloc(&p, bytes); }
+    size_t bytes = 0;
+    explicit DeviceBuffer(size_t n) : bytes(n) { cudaMalloc(&p, n); }
     ~DeviceBuffer() { if (p) cudaFree(p); }
+    size_t size() const { return bytes; }
     template <typename T> T *as() { return static_cast<T *>(p); }
 };
 
@@ -169,6 +171,113 @@ TEST_CASE("gigachat swiglu-limit and sigmoid gate parity", "[gigachat][inference
     for (int i = 0; i < n; ++i)
         CHECK(yy[i] ==
               Catch::Approx(dev::SigmoidGateElement(y[i], g[i])).margin(1e-5f));
+}
+
+// Decode runs 161 gated norms and 37 routers per token; both launch as
+// single-block kernels and are the top two terms of the decode wall
+// (docs/GIGACHAT_SPEED_AUDIT.md). Pin the real-shape per-launch latency. The
+// norm weights (~470 KB) and router weight (3.6 MB) are L2-warm in production
+// (reused every layer/token), so a back-to-back loop measures the same thing.
+TEST_CASE("gigachat gated norm decode latency budget",
+          "[gigachat][inference][budget]")
+{
+#if defined(NDEBUG)
+    constexpr int dim = 7168, rank = 16, kIters = 300;
+    std::vector<float> x(dim);
+    for (int i = 0; i < dim; ++i) x[i] = 0.01f * (i % 97) - 0.5f;
+    std::vector<uint8_t> wb(static_cast<size_t>(dim) * 2),
+        upb(static_cast<size_t>(rank) * dim * 2),
+        dnb(static_cast<size_t>(dim) * rank * 2);
+    for (int i = 0; i < dim; ++i) {
+        __nv_bfloat16 h = __float2bfloat16(0.001f * (i % 13));
+        std::memcpy(wb.data() + i * 2, &h, 2);
+    }
+    for (int i = 0; i < rank * dim; ++i) {
+        __nv_bfloat16 h = __float2bfloat16(0.002f * (i % 11) - 0.01f);
+        std::memcpy(upb.data() + i * 2, &h, 2);
+    }
+    for (int i = 0; i < dim * rank; ++i) {
+        __nv_bfloat16 h = __float2bfloat16(0.003f * (i % 7) - 0.01f);
+        std::memcpy(dnb.data() + i * 2, &h, 2);
+    }
+    DeviceBuffer dx(static_cast<size_t>(dim) * 4), dw(wb.size()),
+        dup(upb.size()), ddn(dnb.size()), dout(static_cast<size_t>(dim) * 4);
+    REQUIRE(cudaMemcpy(dx.p, x.data(), dx.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dw.p, wb.data(), wb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dup.p, upb.data(), upb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(ddn.p, dnb.data(), dnb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    auto run = [&] {
+        return RunZeroCenteredGatedNorm(dx.as<float>(), 1, dim,
+                                        dw.as<uint8_t>(), dup.as<uint8_t>(),
+                                        ddn.as<uint8_t>(), 1e-6f,
+                                        dout.as<float>(), nullptr);
+    };
+    for (int i = 0; i < 50; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1000.0 / kIters;
+    INFO("gated norm dim=7168 latency = " << us << " us");
+    CHECK(us < 40.0);
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+#endif
+}
+
+TEST_CASE("gigachat router decode latency budget",
+          "[gigachat][inference][budget]")
+{
+#if defined(NDEBUG)
+    constexpr int E = 256, H = 7168, top_k = 8, kIters = 300;
+    std::vector<float> x(H), bias(E, 0.0f);
+    for (int i = 0; i < H; ++i) x[i] = 0.02f * (i % 23) - 0.2f;
+    std::vector<uint8_t> wb(static_cast<size_t>(E) * H * 2);
+    for (size_t i = 0; i < static_cast<size_t>(E) * H; ++i) {
+        __nv_bfloat16 h = __float2bfloat16(0.005f * (i % 19) - 0.05f);
+        std::memcpy(wb.data() + i * 2, &h, 2);
+    }
+    DeviceBuffer dx(static_cast<size_t>(H) * 4), dw(wb.size()),
+        db(static_cast<size_t>(E) * 4), didx(static_cast<size_t>(top_k) * 4),
+        dwt(static_cast<size_t>(top_k) * 4);
+    REQUIRE(cudaMemcpy(dx.p, x.data(), dx.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dw.p, wb.data(), wb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(db.p, bias.data(), db.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    auto run = [&] {
+        return RunGigaChatRouterTopK(dx.as<float>(), dw.as<uint8_t>(),
+                                     db.as<float>(), E, H, top_k, 2.5f,
+                                     didx.as<int>(), dwt.as<float>(), nullptr);
+    };
+    for (int i = 0; i < 50; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+    for (int i = 0; i < kIters; ++i) REQUIRE(run() == cudaSuccess);
+    REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+    const double us = static_cast<double>(ms) * 1000.0 / kIters;
+    INFO("router E=256 H=7168 latency = " << us << " us");
+    CHECK(us < 60.0);
+    cudaEventDestroy(e0);
+    cudaEventDestroy(e1);
+#endif
 }
 
 TEST_CASE("gigachat sigmoid router top-k parity", "[gigachat][inference]")

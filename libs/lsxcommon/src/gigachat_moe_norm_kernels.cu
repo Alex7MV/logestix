@@ -17,6 +17,19 @@ namespace {
 
 constexpr int kGateRank = 16;
 
+__device__ __forceinline__ float WarpSum(float v)
+{
+#pragma unroll
+    for (int off = 16; off > 0; off >>= 1)
+        v += __shfl_down_sync(0xffffffffu, v, off);
+    return v;
+}
+
+// Parallel ZeroCenteredGatedNorm. Fixed geometry: one block per row, blockDim
+// a multiple of 32 (<=1024), the RMS reduction a warp/block tree and the
+// `w_up` dot split warp-per-row, so the result is deterministic and
+// device-independent (numeric-contract 1.1). The accumulation order differs
+// from the former thread-0 sequential scan; verified by the selfcheck/parity.
 __global__ void zero_centered_gated_norm_kernel(
     const float *__restrict__ x, int dim,
     const __nv_bfloat16 *__restrict__ w,
@@ -25,30 +38,45 @@ __global__ void zero_centered_gated_norm_kernel(
     float *__restrict__ out)
 {
     const int r = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int nt = blockDim.x;
+    const int lane = tid & 31;
+    const int warp = tid >> 5;
+    const int nwarps = (nt + 31) >> 5;
     const float *xr = x + static_cast<size_t>(r) * dim;
     float *orow = out + static_cast<size_t>(r) * dim;
     extern __shared__ float smem[];  // [dim] xn + [kGateRank] gate
+    __shared__ float red[32];
 
-    if (threadIdx.x == 0)
+    float ss = 0.0f;
+    for (int i = tid; i < dim; i += nt) ss += xr[i] * xr[i];
+    ss = WarpSum(ss);
+    if (lane == 0) red[warp] = ss;
+    __syncthreads();
+    if (warp == 0)
     {
-        float ss = 0.0f;
-        for (int i = 0; i < dim; ++i) ss += xr[i] * xr[i];
-        const float inv = rsqrtf(ss / static_cast<float>(dim) + eps);
-        for (int i = 0; i < dim; ++i) smem[i] = xr[i] * inv;
+        ss = (lane < nwarps) ? red[lane] : 0.0f;
+        ss = WarpSum(ss);
+        if (lane == 0) red[0] = ss;
     }
     __syncthreads();
+    const float inv = rsqrtf(red[0] / static_cast<float>(dim) + eps);
 
-    if (threadIdx.x < kGateRank)
+    for (int i = tid; i < dim; i += nt) smem[i] = xr[i] * inv;
+    __syncthreads();
+
+    for (int k = warp; k < kGateRank; k += nwarps)
     {
-        const __nv_bfloat16 *up = w_up + static_cast<size_t>(threadIdx.x) * dim;
+        const __nv_bfloat16 *up = w_up + static_cast<size_t>(k) * dim;
         float a = 0.0f;
-        for (int i = 0; i < dim; ++i)
+        for (int i = lane; i < dim; i += 32)
             a += __bfloat162float(up[i]) * smem[i];
-        smem[dim + threadIdx.x] = dev::Silu(a);
+        a = WarpSum(a);
+        if (lane == 0) smem[dim + k] = dev::Silu(a);
     }
     __syncthreads();
 
-    for (int i = threadIdx.x; i < dim; i += blockDim.x)
+    for (int i = tid; i < dim; i += nt)
     {
         float g = 0.0f;
         for (int k = 0; k < kGateRank; ++k)
@@ -109,6 +137,9 @@ cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
         return cudaErrorInvalidValue;
     int threads = dim < 256 ? dim : 256;
     if (threads < kGateRank) threads = kGateRank;
+    // Full warps only (the block reduction uses __shfl with a full mask).
+    threads = (threads + 31) & ~31;
+    if (threads > 1024) threads = 1024;
     const size_t smem = (static_cast<size_t>(dim) + kGateRank) * sizeof(float);
     zero_centered_gated_norm_kernel<<<rows, threads, smem, stream>>>(
         x, dim, reinterpret_cast<const __nv_bfloat16 *>(w),
