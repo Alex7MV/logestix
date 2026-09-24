@@ -248,3 +248,65 @@ TEST_CASE("validator: ValidatePinnedTensors skips tokenizer and shared experts",
     REQUIRE(r.warnings == 0);
     fs::remove_all(dir);
 }
+
+namespace {
+
+struct ModelDir {
+    fs::path root;
+    explicit ModelDir(const std::string &name)
+        : root(fs::temp_directory_path() / name) {
+        fs::remove_all(root);
+        fs::create_directories(root / "logestix" / "pinned");
+    }
+    ~ModelDir() { fs::remove_all(root); }
+    void index(const std::string &json) const {
+        std::ofstream(root / "logestix" / "model.index.json") << json;
+    }
+    std::string str() const { return root.string(); }
+};
+
+} // namespace
+
+TEST_CASE("validator: RunValidator errors when the index is missing",
+          "[validator]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_rv_noindex");
+    fs::remove_all(md.root / "logestix");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.errors >= 1);
+}
+
+TEST_CASE("validator: RunValidator warns on an unknown format and continues",
+          "[validator]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_rv_unknown");
+    md.index(R"({"format":"logestix-granite","model":"g","num_layers":1,
+                 "experts_per_layer":0,"total_pinned_tensors":0,"total_experts":0})");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE(r.ok);
+    REQUIRE(r.warnings > 0);
+}
+
+TEST_CASE("validator: RunValidator warns, not errors, on missing experts",
+          "[validator]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_rv_moe_noexperts");
+    md.index(R"({"format":"logestix-v1","model":"m","num_layers":1,
+                 "experts_per_layer":64,"total_pinned_tensors":0,"total_experts":64})");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE(r.ok);
+    REQUIRE(r.errors == 0);
+    REQUIRE(r.warnings >= 1);
+}
+
+TEST_CASE("validator: RunValidator warns when pinned/ is absent", "[validator]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_rv_nopinned");
+    fs::remove_all(md.root / "logestix" / "pinned");
+    md.index(R"({"format":"logestix-qwen","model":"q","num_layers":0,
+                 "experts_per_layer":0,"total_pinned_tensors":0,"total_experts":0})");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE(r.ok);
+    REQUIRE(r.warnings >= 1);
+}
