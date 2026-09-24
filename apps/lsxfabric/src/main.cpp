@@ -32,6 +32,10 @@ int main(int argc, char *argv[]) {
         } else if (cli.validate) {
             lsxcommon::log::info("Running validation...");
             rc = lsxfabric::RunModelValidation(cli.model_path) ? 0 : 1;
+        } else {
+            lsxcommon::log::error(
+                "No run mode selected: pass --validate or --testprompt");
+            rc = 1;
         }
     }
     lsxcommon::Core::Shutdown();
