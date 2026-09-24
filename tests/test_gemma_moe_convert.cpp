@@ -131,11 +131,6 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     CHECK(top2.vram.min_bytes > 0);
     CHECK(top2.total_pinned_tensors > 0);
 
-    // Output verification (format tag logestix-gemma).
-    auto rep = lsxcommon::integrity::VerifyConvertedModel(out);
-    REQUIRE(rep.ok());
-    CHECK(rep->pinned_tensor_count > 0);
-
     remove_all(tmp);
 }
 

@@ -5,7 +5,6 @@
 #include "lsxcommon/generation_cli.h"
 #include "lsxcommon/model.h"
 #include "lsxcommon/model_factory.h"
-#include "lsxcommon/model_integrity.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/path_registry.h"
 #include "lsxcommon/prompt_framing.h"
@@ -40,7 +39,6 @@
 
 ABSL_FLAG(std::string, input, "", "input model directory");
 ABSL_FLAG(std::string, output, "converted_model", "output directory");
-ABSL_FLAG(bool, verify, false, "verify a converted model");
 ABSL_FLAG(bool, repack_shared, false, "re-pack shared experts into shared_experts.arrow");
 ABSL_FLAG(bool, repack_experts, false, "re-pack routed experts (fp4 passthrough)");
 ABSL_FLAG(std::string, tokenizer, "", "build tokenizer Arrow files from tokenizer.json");
@@ -102,7 +100,6 @@ int main(int argc, char* argv[]) {
         tokenizer_only = true;
         input_path = absl::GetFlag(FLAGS_tokenizer);
     }
-    bool verify_only = absl::GetFlag(FLAGS_verify);
     bool glm = absl::GetFlag(FLAGS_glm);
     bool kimi = absl::GetFlag(FLAGS_kimi);
     bool qwen = absl::GetFlag(FLAGS_qwen);
@@ -140,20 +137,6 @@ int main(int argc, char* argv[]) {
         int rc = lsxcommon::runtime::RunCliGeneration(args);
         lsxcommon::Core::Shutdown();
         return rc;
-    }
-
-    if (verify_only) {
-        lsxcommon::log::info(absl::StrFormat("Verifying converted model: %s", input_path));
-        auto vres = lsxcommon::integrity::VerifyConvertedModel(input_path);
-        if (!vres.ok()) {
-            lsxcommon::log::error(absl::StrFormat("Verify failed: %s", vres.status().ToString()));
-            lsxcommon::Core::Shutdown();
-            return 1;
-        }
-        lsxcommon::log::info(absl::StrFormat("Verify OK — %d model tensors across %u arrow files",
-                     vres->pinned_tensor_count, vres->arrow_files_checked));
-        lsxcommon::Core::Shutdown();
-        return 0;
     }
 
     if (absl::GetFlag(FLAGS_vram_recompute)) {

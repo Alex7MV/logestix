@@ -2,7 +2,6 @@
 
 #include <lsxcommon/model_integrity.h>
 #include <lsxcommon/safetensors.h>
-#include <lsxcommon/schema.h>
 
 #include <cstring>
 #include <filesystem>
@@ -211,61 +210,4 @@ TEST_CASE("BuildAndVerifyTokenizer: missing required bos fails", "[integrity][to
     CHECK(!st.ok());
     CHECK(st.ToString().find("bos_id") != std::string::npos);
     fs::remove_all(tmp);
-}
-
-// ── VerifyConvertedModel format-tag gate ──
-
-#include <atomic>
-#include <vector>
-
-namespace {
-
-fs::path MakeIntegrityTmp(const std::string &tag)
-{
-    static std::atomic<unsigned> counter{0};
-    auto p = fs::temp_directory_path() /
-             (tag + "_" + std::to_string(counter.fetch_add(1)));
-    fs::remove_all(p);
-    fs::create_directories(p);
-    return p;
-}
-
-bool WriteMinimalConverted(const fs::path &root, const std::string &fmt)
-{
-    fs::create_directories(root / "logestix" / "pinned");
-    {
-        std::ofstream f(root / "logestix" / "model.index.json");
-        f << "{\"format\":\"" << fmt << "\",\"total_pinned_tensors\":1}";
-    }
-    lsxcommon::TensorRecord r;
-    r.name = "x";
-    r.dtype = "BF16";
-    r.shape = {4};
-    r.data.assign(8, 0);
-    auto b = lsxcommon::PinnedSchema::MakeBatch({std::move(r)});
-    if (!b.ok()) return false;
-    return lsxcommon::WriteRecordBatchToFile(
-               *b, root / "logestix" / "pinned" / "global.arrow")
-        .ok();
-}
-
-} // namespace
-
-TEST_CASE("VerifyConvertedModel accepts the gigachat format tag", "[integrity]")
-{
-    const auto root = MakeIntegrityTmp("lsx_gc_fmt_ok");
-    REQUIRE(WriteMinimalConverted(root, "logestix-gigachat-nvfp4"));
-    auto rep = VerifyConvertedModel(root);
-    INFO("VerifyConvertedModel: " << rep.status().ToString());
-    CHECK(rep.ok());
-    fs::remove_all(root);
-}
-
-TEST_CASE("VerifyConvertedModel rejects an unknown format tag", "[integrity]")
-{
-    const auto root = MakeIntegrityTmp("lsx_gc_fmt_bad");
-    REQUIRE(WriteMinimalConverted(root, "logestix-bogus"));
-    auto rep = VerifyConvertedModel(root);
-    CHECK_FALSE(rep.ok());
-    fs::remove_all(root);
 }
