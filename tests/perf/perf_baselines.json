@@ -262,16 +262,16 @@
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 4.84,
+      "tokens_per_sec": 10.61,
       "max_gen": 2048,
       "prompt": "The capital of France is",
-      "date": "2026-09-21",
+      "date": "2026-09-24",
       "commit": "-",
       "gen_tokens": 2048,
-      "ttft_ms": 8674.76,
-      "avg_power_w": 176.23,
-      "peak_power_w": 184.94,
-      "power_samples": 21100
+      "ttft_ms": 4178.52,
+      "avg_power_w": 192.80,
+      "peak_power_w": 211.20,
+      "power_samples": 9615
     },
     {
       "model_type": "gigachat3.5-432b-a28b-reasoning",
