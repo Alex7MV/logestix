@@ -31,8 +31,7 @@ int main(int argc, char *argv[]) {
             rc = lsxcommon::runtime::RunCliGeneration(args);
         } else if (cli.validate) {
             lsxcommon::log::info("Running validation...");
-            auto result = lsxfabric::RunValidator(cli.model_path);
-            rc = result.ok ? 0 : 1;
+            rc = lsxfabric::RunModelValidation(cli.model_path) ? 0 : 1;
         }
     }
     lsxcommon::Core::Shutdown();
