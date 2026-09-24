@@ -32,6 +32,15 @@ __global__ void embed_gather_kernel(const __nv_bfloat16 *__restrict__ e,
         h[i] = __bfloat162float(e[static_cast<size_t>(token) * hidden + i]);
 }
 
+// Variant for the host-resident embedding table: the selected row is staged
+// H2D into a scratch row, then converted here.
+__global__ void embed_row_f32_kernel(const __nv_bfloat16 *__restrict__ row,
+                                     int hidden, float *__restrict__ h)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < hidden) h[i] = __bfloat162float(row[i]);
+}
+
 __global__ void f32_to_f16_kernel(const float *__restrict__ x,
                                   __half *__restrict__ y, int n)
 {
@@ -180,6 +189,7 @@ struct GcPipeline::Impl {
            *sdown_h = nullptr;
     float *sdown_f = nullptr;
     __nv_bfloat16 *xb = nullptr;
+    __nv_bfloat16 *d_embed_row = nullptr;
 
     void FreeAll();
 };
@@ -210,6 +220,7 @@ void GcPipeline::Impl::FreeAll()
     sgate_h = sup_h = smid_h = sdown_h = nullptr;
     sdown_f = nullptr;
     xb = nullptr;
+    d_embed_row = nullptr;
 }
 
 GcPipeline::GcPipeline() : impl_(new Impl()) {}
@@ -328,6 +339,7 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     need(static_cast<int64_t>(hidden) * 2);                 // sdown
     need(static_cast<int64_t>(hidden) * 4);                 // sdown_f
     need(static_cast<int64_t>(hidden) * 2);                 // xb
+    need(static_cast<int64_t>(hidden) * 2);                 // d_embed_row
     void *base = nullptr;
     if (cudaMalloc(&base, static_cast<size_t>(total)) != cudaSuccess)
     {
@@ -360,6 +372,8 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     p.sdown_h = static_cast<__half *>(carve(static_cast<int64_t>(hidden) * 2));
     p.sdown_f = static_cast<float *>(carve(static_cast<int64_t>(hidden) * 4));
     p.xb = static_cast<__nv_bfloat16 *>(carve(static_cast<int64_t>(hidden) * 2));
+    p.d_embed_row =
+        static_cast<__nv_bfloat16 *>(carve(static_cast<int64_t>(hidden) * 2));
 
     p.h_idx.assign(static_cast<size_t>(dims.top_k), 0);
     p.h_w.assign(static_cast<size_t>(dims.top_k), 0.0f);
@@ -430,9 +444,21 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         if (_e != cudaSuccess) return _e; \
     } while (false)
 
-    embed_gather_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
-        reinterpret_cast<const __nv_bfloat16 *>(w.d_embed), token_id, hidden,
-        p.h);
+    if (w.h_embed)
+    {
+        GC_TRY(cudaMemcpyAsync(
+            p.d_embed_row,
+            w.h_embed + static_cast<size_t>(token_id) * hidden * 2,
+            static_cast<size_t>(hidden) * 2, cudaMemcpyHostToDevice, stream));
+        embed_row_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
+            p.d_embed_row, hidden, p.h);
+    }
+    else
+    {
+        embed_gather_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(
+            reinterpret_cast<const __nv_bfloat16 *>(w.d_embed), token_id, hidden,
+            p.h);
+    }
     GC_TRY(cudaGetLastError());
 
     for (int l = 0; l < num_layers; ++l)

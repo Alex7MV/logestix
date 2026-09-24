@@ -152,6 +152,44 @@ floor dominates and must be overlapped or reduced.
   additive. **The expert H2D is now the dominant term** and P1 is the next
   lever.
 
+## Ceiling (2026-09-24)
+
+Cache-slot sweep (`LSX_GIGACHAT_EXPERT_CACHE_SLOTS`, LRU, 2048-token runs):
+
+| device cache slots | t/s | decode ms/tok | effective hit |
+|---|---|---|---|
+| 200 | 6.1 | 159.7 | ~0% |
+| 400 | 9.1 | 107.2 | ~38% |
+| 714 (auto) | 10.6 | 94.4 | ~48% |
+| 788 (auto, after P1) | 10.9 | 89.8 | ~51% |
+
+Two hard facts bound the model on this card:
+
+1. **The wall is exactly kernel + H2D at every cache size.** There is no
+   independent compute to hide the copy under: the per-layer graph is serial
+   (attention → router → fetch → FFN → next layer), the routed FFN computes
+   only ~0.1 ms against a ~1.7 ms/layer copy, and the only copy-independent
+   work (the shared expert) is ~1.5 ms/token. Moving the copies to a separate
+   stream cannot overlap anything, so overlap headroom is ~0.
+2. **Bytes/token are bounded by VRAM.** The device cache is auto-sized to
+   free VRAM minus the session reserve; the curve is still rising at the
+   auto size, so every free GiB converts to slots and t/s.
+
+**P1 — move `embed` to pinned host.** Decode reads exactly one row
+(`hidden·2` B) per token; keeping the BF16 `[vocab,hidden]` table (1.84 GiB)
+device-resident was pure waste. `LoadGigaChatWeights` now copies it into a
+pinned host buffer and `Step` stages the row H2D (numeric-neutral — same BF16
+bits). The freed VRAM goes to the expert cache: **10.6 → 10.9 t/s**, decode
+94.4 → 89.8 ms/token, TTFT 4.07 s. `resident` stays ~26783 MiB (the 1.84 GiB
+moved from weights to cache). Selfcheck bit-identical.
+
+**Remaining headroom is <5%.** `lm_head` (1.84 GiB) must stay device-resident
+(read every token; streaming it over PCIe would cost ~32 ms). All other dense
+weights are already NVFP4, and every extra GiB is already going to the cache.
+The C-exact ceiling on a 32 GB / PCIe Gen5 ×16 card is therefore **~11 t/s**;
+more requires C-fast moves (embed/lm_head quantization, FP8 KV, per-32 expert
+scales — all forbidden as R3 default by `numeric-contract.md`).
+
 ## Numeric-class note
 
 The default GigaChat path is `kAuto` and is C-exact (R3) by the numeric
@@ -170,3 +208,4 @@ stays C-exact and golden-token-correct.
 |---|---|---|---|
 | audit | 2048 | 5.5 | baseline; committed entry 4.84 |
 | P0a+P0b | 2048 | **10.6** | norm + router parallel; bit-exact selfcheck, reproduced ×2 |
+| P1 | 2048 | **10.9** | embed pinned host -> +1.84 GiB expert cache; bit-exact, reproduced ×2 |

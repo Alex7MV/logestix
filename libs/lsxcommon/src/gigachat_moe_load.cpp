@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -258,6 +259,12 @@ void GcWeights::Free()
 {
     cudaFree(const_cast<uint8_t *>(d_embed));
     d_embed = nullptr;
+    if (h_embed_pinned)
+    {
+        cudaFreeHost(h_embed_pinned);
+        h_embed_pinned = nullptr;
+    }
+    h_embed = nullptr;
     cudaFree(const_cast<uint8_t *>(d_lm_head));
     d_lm_head = nullptr;
     final_norm.Free();
@@ -387,10 +394,32 @@ bool LoadGigaChatWeights(const std::string &model_path, const GigaChatIndex &idx
                 global.status().ToString();
         return false;
     }
-    if (!UploadRaw(FindTensorSuffix(*global, "model.embed_tokens.weight"),
-                   CvKind::kBf16Raw, &w.d_embed, "model.embed_tokens.weight",
-                   stream, ring, acc, error) ||
-        !UploadRaw(FindTensorSuffix(*global, "lm_head.weight"),
+    // Embed stays in pinned host memory (one row read per token); the ~1.8 GiB
+    // of device VRAM it would occupy goes to the expert cache instead.
+    {
+        const TensorView *emb =
+            FindTensorSuffix(*global, "model.embed_tokens.weight");
+        const size_t emb_bytes =
+            static_cast<size_t>(w.vocab) * static_cast<size_t>(w.hidden) * 2;
+        if (!emb || static_cast<size_t>(emb->bytes) != emb_bytes)
+        {
+            error = "missing/malformed tensor: model.embed_tokens.weight";
+            w.Free();
+            return false;
+        }
+        void *pinned = nullptr;
+        if (cudaHostAlloc(&pinned, emb_bytes, cudaHostAllocDefault) !=
+            cudaSuccess)
+        {
+            error = "embed pinned host allocation failed";
+            w.Free();
+            return false;
+        }
+        std::memcpy(pinned, emb->data, emb_bytes);
+        w.h_embed = static_cast<const uint8_t *>(pinned);
+        w.h_embed_pinned = pinned;
+    }
+    if (!UploadRaw(FindTensorSuffix(*global, "lm_head.weight"),
                    CvKind::kBf16Raw, &w.d_lm_head, "lm_head.weight", stream,
                    ring, acc, error) ||
         !UploadNormTriple(*global, "model.norm", w.final_norm, stream, ring, acc,

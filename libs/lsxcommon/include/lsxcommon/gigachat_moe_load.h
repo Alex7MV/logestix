@@ -109,9 +109,15 @@ struct GcLayerWeights {
 // Resident (dense) device graph. Routed experts are NOT part of it: they
 // stream through GcExpertCache (gigachat_moe_expert_cache.h).
 struct GcWeights {
-    const uint8_t *d_embed = nullptr;    // BF16 [vocab, hidden]
-    const uint8_t *d_lm_head = nullptr;  // BF16 [vocab, hidden]
-    GcGatedNorm final_norm;              // model.norm triple
+    // The embedding table stays in pinned host memory: decode reads exactly one
+    // row per token (hidden*2 bytes), so keeping the 2*[vocab,hidden] BF16 table
+    // device-resident wastes ~1.8 GiB that the expert cache (the decode wall)
+    // can use. Step stages the selected row H2D. `d_embed` is always null.
+    const uint8_t *d_embed = nullptr;        // unused (host-resident)
+    const uint8_t *h_embed = nullptr;        // pinned host BF16 [vocab, hidden]
+    void *h_embed_pinned = nullptr;          // cudaHostAlloc owner
+    const uint8_t *d_lm_head = nullptr;      // BF16 [vocab, hidden]
+    GcGatedNorm final_norm;                  // model.norm triple
     int hidden = 0;
     int vocab = 0;
     std::vector<GcLayerWeights> layers;  // [num_layers]

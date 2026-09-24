@@ -68,7 +68,7 @@ TEST_CASE("gigachat device weight graph loads the converted layout",
     CHECK(w.vocab == gigachattest::kTVocab);
     CHECK(w.layers.size() == 2);
     CHECK(w.resident_bytes > 0);
-    REQUIRE(w.d_embed != nullptr);
+    REQUIRE(w.h_embed != nullptr);
     REQUIRE(w.d_lm_head != nullptr);
     CHECK(w.final_norm.dim == gigachattest::kTH);
     CHECK(w.final_norm.rank == gigachattest::kTGateRank);
@@ -120,7 +120,7 @@ TEST_CASE("gigachat device weight graph loads the converted layout",
     CHECK(l1.shared_down.rows == gigachattest::kTH);
     CHECK(l1.shared_down.cols == gigachattest::kTMoeI);
 
-    // Byte identity: the resident BF16 embed must equal the arrow payload.
+    // Byte identity: the pinned host embed must equal the arrow payload.
     auto views = lsxcommon::LoadTensorBatchViews(
         root / "logestix" / "pinned" / "global.arrow");
     REQUIRE(views.ok());
@@ -132,11 +132,7 @@ TEST_CASE("gigachat device weight graph loads the converted layout",
                            kEmbed) == 0)
             emb = &t;
     REQUIRE(emb != nullptr);
-    std::vector<uint8_t> host(static_cast<size_t>(emb->bytes));
-    REQUIRE(cudaMemcpyAsync(host.data(), w.d_embed, emb->bytes,
-                            cudaMemcpyDeviceToHost, stream) == cudaSuccess);
-    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
-    CHECK(std::memcmp(host.data(), emb->data, static_cast<size_t>(emb->bytes)) ==
+    CHECK(std::memcmp(w.h_embed, emb->data, static_cast<size_t>(emb->bytes)) ==
           0);
 
     w.Free();
