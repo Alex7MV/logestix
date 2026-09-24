@@ -22,10 +22,7 @@ lsxfabric::FabricCliArgs Parse(const std::vector<std::string> &args) {
 
 } // namespace
 
-// Current behaviour (green characterisation). See docs/LSXFABRIC_AUDIT.md.
-
-TEST_CASE("fabric cli: flag without a value is silently ignored",
-          "[lsxfabric][cli]") {
+TEST_CASE("fabric cli: flag without a value is ignored", "[lsxfabric][cli]") {
     REQUIRE(Parse({"lsxfabric", "--localmodel"}).model_path.find(
                 "DeepSeek-V4-Flash") != std::string::npos);
     REQUIRE(Parse({"lsxfabric", "--max-gen"}).max_gen == 64);
@@ -33,21 +30,31 @@ TEST_CASE("fabric cli: flag without a value is silently ignored",
             "The capital of France is");
 }
 
-TEST_CASE("fabric cli: --prompt consumes the following flag token",
+TEST_CASE("fabric cli: a value flag does not swallow a known flag",
           "[lsxfabric][cli]") {
-    const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--prompt", "--validate"});
-    REQUIRE(a.prompt == "--validate");
-    REQUIRE_FALSE(a.validate);
+    const lsxfabric::FabricCliArgs p = Parse({"lsxfabric", "--prompt", "--validate"});
+    REQUIRE(p.prompt == "The capital of France is");
+    REQUIRE(p.validate);
+
+    const lsxfabric::FabricCliArgs m =
+        Parse({"lsxfabric", "--localmodel", "--validate", "/tmp/x"});
+    REQUIRE(m.model_path.find("DeepSeek-V4-Flash") != std::string::npos);
+    REQUIRE(m.validate);
 }
 
-TEST_CASE("fabric cli: non-numeric --max-gen becomes 0", "[lsxfabric][cli]") {
-    REQUIRE(Parse({"lsxfabric", "--max-gen", "abc"}).max_gen == 0);
-    REQUIRE(Parse({"lsxfabric", "--max-gen", "12x"}).max_gen == 12);
+TEST_CASE("fabric cli: non-numeric or non-positive --max-gen keeps the default",
+          "[lsxfabric][cli]") {
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "abc"}).max_gen == 64);
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "0"}).max_gen == 64);
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "-5"}).max_gen == 64);
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "12x"}).max_gen == 64);
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "12"}).max_gen == 12);
 }
 
-TEST_CASE("fabric cli: negative --max-gen is accepted verbatim",
-          "[lsxfabric][cli]") {
-    REQUIRE(Parse({"lsxfabric", "--max-gen", "-5"}).max_gen == -5);
+TEST_CASE("fabric cli: a non-flag value is still consumed", "[lsxfabric][cli]") {
+    REQUIRE(Parse({"lsxfabric", "--prompt", "hello world"}).prompt == "hello world");
+    REQUIRE(Parse({"lsxfabric", "--localmodel", "/tmp/model_x"}).model_path ==
+            "/tmp/model_x");
 }
 
 TEST_CASE("fabric cli: repeated flags, last one wins", "[lsxfabric][cli]") {
@@ -58,42 +65,9 @@ TEST_CASE("fabric cli: repeated flags, last one wins", "[lsxfabric][cli]") {
     REQUIRE(a.model_path == "/b");
 }
 
-TEST_CASE("fabric cli: a flag-looking value is taken literally",
-          "[lsxfabric][cli]") {
-    const lsxfabric::FabricCliArgs a =
-        Parse({"lsxfabric", "--localmodel", "--validate", "/tmp/x"});
-    REQUIRE(a.model_path == "--validate");
-    REQUIRE_FALSE(a.validate);
-    REQUIRE(a.max_gen == 64);
-}
-
 TEST_CASE("fabric cli: help flags are unknown and ignored", "[lsxfabric][cli]") {
     const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--help", "-h"});
     REQUIRE(a.model_path.find("DeepSeek-V4-Flash") != std::string::npos);
     REQUIRE_FALSE(a.validate);
     REQUIRE_FALSE(a.testprompt);
-}
-
-// RED spec tests: the expected contract where current behaviour diverges.
-// Hidden (a tag starting with '.'), so the default ctest run stays green.
-// Run explicitly: ./build/linux-debug/apps/lsxfabric/tests/test_fabric_cli "[.audit-spec]"
-
-// FINDING F5: --max-gen must not turn a non-numeric value into 0.
-TEST_CASE("fabric cli [spec]: --max-gen rejects a non-numeric value",
-          "[.audit-spec]") {
-    REQUIRE(Parse({"lsxfabric", "--max-gen", "abc"}).max_gen == 64);
-}
-
-// FINDING F5: --max-gen must be positive.
-TEST_CASE("fabric cli [spec]: --max-gen is bounded to a positive value",
-          "[.audit-spec]") {
-    REQUIRE(Parse({"lsxfabric", "--max-gen", "-5"}).max_gen >= 1);
-}
-
-// FINDING F4: --prompt must not swallow a following known flag.
-TEST_CASE("fabric cli [spec]: --prompt does not swallow a known flag",
-          "[.audit-spec]") {
-    const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--prompt", "--validate"});
-    REQUIRE(a.prompt == "The capital of France is");
-    REQUIRE(a.validate);
 }
