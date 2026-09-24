@@ -58,10 +58,9 @@ cmake --build build/linux-release-znver4-aocc                               # pe
 | `lsxbenchmark` | Paris self-check | `lsxbenchmark --model <root> --selfcheck` |
 | `lsxbenchmark` | bit-exact measurement | `lsxbenchmark --model <root> --bench --bit-exact` |
 | `lsxfabric` | generate exactly as the engine does | `lsxfabric --localmodel <root> --testprompt --prompt "<p>" --max-gen 64` |
-| `lsxfabric` | structural integrity of a converted model | `lsxfabric --localmodel <root> --validate` |
+| `lsxfabric` | load-validate a converted model through the engine | `lsxfabric --localmodel <root> --validate` |
 | `lsxforge` | convert a source checkpoint | `lsxforge --input <src> --output <root> --<family>` |
 | `lsxforge` | one-shot generation path | `lsxforge --input <root> --run "<prompt>"` (or `-r`) |
-| `lsxforge` | verify a converted model | `lsxforge --input <root> --verify` |
 | `lsxcli` | inspect a converted model | `lsxcli --model <root> --info` / `--infofull` |
 | `taskmosaic` | orchestrator stub (init + GPU log) | `taskmosaic` (no flags) |
 
@@ -78,7 +77,7 @@ Flag details (verified against `apps/*/src/cli.*`):
 - **lsxforge** — `--input` / `--output` (default `converted_model`), plus one
   family pipeline: `--glm`, `--kimi`, `--qwen`, `--qwen35moe`, `--qwen36moe`,
   `--qwen38flashnext`, `--gemma4`, `--glmflash`, `--deepseek_nvfp4`,
-  `--deepseek_v41`; utilities `--verify`, `--tokenizer <tokenizer.json>`,
+  `--deepseek_v41`; utilities `--tokenizer <tokenizer.json>`,
   `--vram_recompute`, `--repack_shared`, `--repack_experts`.
 - **lsxcli** — `--info` prints the model summary; `--infofull` also prints every
   shard. Both route to `runtime::RunCliInspect` and add the conversion-time VRAM

@@ -1,16 +1,11 @@
 #include "lsxcommon/model_integrity.h"
 #include "lsxcommon/converter.h"
-#include "lsxcommon/schema.h"
 #include "lsxcommon/log.h"
 #include <arrow/api.h>
-#include <arrow/io/file.h>
-#include <arrow/ipc/reader.h>
-#include <simdjson.h>
 #include <absl/strings/str_cat.h>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <string>
 
 namespace lsxcommon::integrity {
@@ -209,132 +204,6 @@ arrow::Status CheckGeometryFields(
     if (count > 0)
         return arrow::Status::Invalid("geometry mismatch: ", msg);
     return arrow::Status::OK();
-}
-
-arrow::Result<VerificationReport> VerifyConvertedModel(
-    const std::filesystem::path &output_root)
-{
-    namespace fs = std::filesystem;
-    VerificationReport r;
-    std::string error;
-
-    // Resolve index location (mandatory logestix/ subdirectory).
-    fs::path index_path;
-    fs::path pinned_dir;
-    fs::path logestix_dir = output_root / "logestix";
-    if (fs::exists(logestix_dir / "model.index.json")) {
-        index_path = logestix_dir / "model.index.json";
-        pinned_dir = logestix_dir / "pinned";
-    } else {
-        return arrow::Status::Invalid(
-            "model.index.json not found in ", output_root.string());
-    }
-
-    if (!fs::exists(pinned_dir))
-        return arrow::Status::Invalid("pinned dir not found: ",
-                                      pinned_dir.string());
-
-    std::ifstream f(index_path, std::ios::binary);
-    if (!f)
-        return arrow::Status::IOError("cannot open ", index_path.string());
-    std::string json((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
-    if (json.empty())
-        return arrow::Status::Invalid("index file is empty");
-
-    simdjson::padded_string pad(json.data(), json.size());
-    simdjson::ondemand::parser parser;
-    simdjson::ondemand::document doc;
-    simdjson::ondemand::object root;
-    if (simdjson::error_code serr = parser.iterate(pad).get(doc);
-        serr != simdjson::SUCCESS)
-        return arrow::Status::Invalid("cannot parse index JSON");
-    if (auto rroot = doc.get_object(); rroot.error() != simdjson::SUCCESS)
-        return arrow::Status::Invalid("index root not an object");
-    else
-        root = rroot.value();
-
-    // Format tag must be one of the known layouts.
-    std::string_view fmt;
-    if (root["format"].get_string().get(fmt) != simdjson::SUCCESS)
-        return arrow::Status::Invalid("index missing 'format' tag");
-    static const std::string_view kKnownFmts[] = {
-        "logestix-qwen", "logestix-glm", "logestix-kimi",
-        "logestix-kimi-r2", "logestix-v1", "logestix-v1-nvfp4",
-        "logestix-gemma", "logestix-nemotron-nvfp4",
-        "logestix-gigachat-nvfp4", "logestix-granite"};
-    bool known = false;
-    for (auto kf : kKnownFmts)
-        if (fmt == kf) { known = true; break; }
-    if (!known)
-        return arrow::Status::Invalid("unknown format tag: ",
-                                      std::string(fmt));
-
-    int64_t expected_pinned = 0;
-    if (auto p = root["total_pinned_tensors"].get_int64(); p.error() == simdjson::SUCCESS)
-        expected_pinned = p.value();
-
-    int64_t expected_experts = -1;
-    if (auto e = root["total_experts"].get_int64(); e.error() == simdjson::SUCCESS)
-        expected_experts = e.value();
-
-    // Walk pinned dir, reopen + ValidateFull(). Tokenizer arrows and the
-    // shared_experts.arrow must reopen (corruption is caught), but are excluded
-    // from the model-tensor record count.
-    int64_t actual_pinned = 0;
-    size_t checked = 0;
-    for (auto &entry : fs::recursive_directory_iterator(pinned_dir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() != ".arrow") continue;
-
-        auto batch_res = ReadRecordBatchFromFile(entry.path());
-        if (!batch_res.ok())
-            return arrow::Status::Invalid(
-                entry.path().filename().string(), ": ",
-                batch_res.status().ToString());
-
-        auto st = (*batch_res)->ValidateFull();
-        if (!st.ok())
-            return arrow::Status::Invalid(
-                entry.path().filename().string(),
-                " ValidateFull: ", st.ToString());
-
-        auto fname = entry.path().filename().string();
-        if (fname.rfind("tokenizer_", 0) == 0)
-            continue;
-        if (fname == "shared_experts.arrow")
-            continue;  // validated, but not counted in total_pinned_tensors
-
-        actual_pinned += (*batch_res)->num_rows();
-        ++checked;
-    }
-
-    if (expected_pinned != actual_pinned)
-        return arrow::Status::Invalid(
-            "pinned tensor count mismatch: index says ",
-            expected_pinned, " but actual is ", actual_pinned,
-            " across ", checked, " arrow files");
-
-    // Expert arrows (GLM/DeepSeek layouts) must total total_experts.
-    if (expected_experts > 0) {
-        auto experts_dir = logestix_dir / "experts";
-        if (!fs::exists(experts_dir))
-            return arrow::Status::Invalid(
-                "experts dir missing: ", experts_dir.string());
-        int64_t actual_experts = 0;
-        for (auto &entry : fs::recursive_directory_iterator(experts_dir))
-            if (entry.is_regular_file() &&
-                entry.path().extension() == ".arrow")
-                ++actual_experts;
-        if (actual_experts != expected_experts)
-            return arrow::Status::Invalid(
-                "expert count mismatch: index says ", expected_experts,
-                " but actual is ", actual_experts);
-    }
-
-    r.pinned_tensor_count = actual_pinned;
-    r.arrow_files_checked = checked;
-    return r;
 }
 
 } // namespace lsxcommon::integrity

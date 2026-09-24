@@ -1433,12 +1433,6 @@ arrow::Status Converter::Run()
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true}));
 
-    // (9) The converted output must be a loadable, verified model.
-    auto vres = integrity::VerifyConvertedModel(impl_->output_path);
-    if (!vres.ok())
-        return arrow::Status::Invalid(
-            "output verification failed: ", vres.status().ToString());
-
     lsxcommon::log::info(absl::StrFormat(
         "Done — %d pinned tensors, %d experts processed, incomplete %u",
         pinned_processed, experts_processed, partial.size()));

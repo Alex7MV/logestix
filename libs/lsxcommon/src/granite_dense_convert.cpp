@@ -641,11 +641,6 @@ arrow::Status ConvertGraniteModel(const std::string &input_path,
                                        .eos_required = true,
                                        .pad_required = false}));
 
-    auto vres = integrity::VerifyConvertedModel(output_root);
-    if (!vres.ok())
-        return arrow::Status::Invalid(
-            "output verification failed: ", vres.status().ToString());
-
     return arrow::Status::OK();
 }
 

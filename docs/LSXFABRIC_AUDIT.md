@@ -56,12 +56,16 @@ was deleted; `cli.cpp` gained a strict parser.
 | F2 F9 F10 F13 | Moot | the code that carried them was deleted |
 | F11 | Deferred | the silent no-op mode in `main` is out of scope |
 
-Related observation (out of scope): `lsxcommon::integrity::VerifyConvertedModel`
-(used by `lsxforge --verify` and by converters' post-conversion check) has its
-own stale format list and counts only `pinned/`; it rejects `logestix-ornithmoe`,
-`logestix-qwen38flashnext`, `logestix-glm5next` and `logestix-v41-nvfp4`, and
-would mis-count `shared/`/`router/`. Not fixed here because the work was scoped
-to `lsxfabric`.
+Follow-up (done after the audit): `lsxcommon::integrity::VerifyConvertedModel` —
+the separate host-only converted-model verifier used by `lsxforge --verify` and
+by the converters' post-conversion check — was itself stale (its format list
+rejected `logestix-ornithmoe`, `logestix-qwen38flashnext`, `logestix-glm5next`,
+`logestix-v41-nvfp4`, and it counted only `pinned/`). It was therefore removed,
+together with its callers (`lsxforge --verify` and the final `vres` checks in
+the converters). `--validate` (engine load) is now the single converted-model
+validation path. The source-check helpers (`VerifyAllTensorReads`,
+`CheckTensorCoverage`, `CheckLayerContiguity`, `CheckGeometryFields`) and
+`BuildAndVerifyTokenizer` remain — they belong to conversion, not validation.
 
 ### Remediated integration evidence
 

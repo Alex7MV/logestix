@@ -55,21 +55,4 @@ arrow::Status CheckLayerContiguity(
 arrow::Status CheckGeometryFields(
     const std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>> &fields);
 
-// ── Output verification ──
-
-struct VerificationReport {
-    int64_t pinned_tensor_count = 0;
-    size_t arrow_files_checked = 0;
-};
-
-// Verifies a converted model directory: index parseable, format tag known,
-// every *model-tensor* arrow file reopens + ValidateFull(), record counts
-// match the index total_pinned_tensors. Tokenizer arrows are reopened for
-// validate but excluded from the count. Reads index at
-// output_root/logestix/model.index.json only. On any failure the returned
-// Result carries a non-OK Status with a message naming the cause; on success
-// the report holds the verified record totals.
-arrow::Result<VerificationReport> VerifyConvertedModel(
-    const std::filesystem::path &output_root);
-
 } // namespace lsxcommon::integrity

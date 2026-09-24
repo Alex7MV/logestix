@@ -821,16 +821,6 @@ arrow::Status ConvertGlmModel(
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true}));
 
-    // (9) The converted output must be a loadable, verified model.
-    auto vres = integrity::VerifyConvertedModel(output_root);
-    if (!vres.ok())
-    {
-        lsxcommon::log::error(absl::StrCat(
-            "GLM output verification failed: ", vres.status().ToString()));
-        return arrow::Status::Invalid(
-            "output verification failed: ", vres.status().ToString());
-    }
-
     lsxcommon::log::info(absl::StrCat(
         "Done — ", pinned_processed, " pinned tensors, ", experts_processed,
         " experts processed, incomplete ", partial.size()));

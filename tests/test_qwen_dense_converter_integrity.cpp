@@ -1,9 +1,7 @@
 #include <catch2/catch_all.hpp>
 
-#include <lsxcommon/model_integrity.h>
 #include <lsxcommon/qwen_dense_convert.h>
 #include <lsxcommon/safetensors.h>
-#include <lsxcommon/schema.h>
 
 #include <spdlog/spdlog.h>
 
@@ -69,7 +67,7 @@ static std::string read_file(const fs::path &p)
     return s;
 }
 
-TEST_CASE("Qwen: happy path converts and verifies", "[qwen][integrity]")
+TEST_CASE("Qwen: happy path converts", "[qwen][integrity]")
 {
     QwenIntegrityFixture f;
     f.build(true);
@@ -77,11 +75,6 @@ TEST_CASE("Qwen: happy path converts and verifies", "[qwen][integrity]")
     auto st = lsxcommon::qwen::ConvertQwenModel(f.tmp.string(), f.tmp.string());
     INFO("ConvertQwenModel error: " << st.ToString());
     REQUIRE(st.ok());
-
-    auto vres = lsxcommon::integrity::VerifyConvertedModel(f.tmp);
-    REQUIRE(vres.ok());
-    CHECK(vres->pinned_tensor_count > 0);
-    CHECK(vres->arrow_files_checked > 0);
 }
 
 TEST_CASE("Qwen: missing config.json aborts", "[qwen][integrity]")
@@ -204,49 +197,4 @@ TEST_CASE("Qwen: truncated safetensors aborts", "[qwen][integrity]")
     auto st = lsxcommon::qwen::ConvertQwenModel(f.tmp.string(), f.tmp.string());
     INFO("ConvertQwenModel error: " << st.ToString());
     CHECK(!st.ok());
-}
-
-TEST_CASE("Qwen: verify on truncated arrow fails", "[qwen][integrity]")
-{
-    QwenIntegrityFixture f;
-    f.build(true);
-    REQUIRE(lsxcommon::qwen::ConvertQwenModel(f.tmp.string(), f.tmp.string()).ok());
-
-    // Truncate an arrow file.
-    auto pinned = f.tmp / "logestix" / "pinned";
-    for (auto &entry : fs::directory_iterator(pinned)) {
-        if (entry.path().extension() == ".arrow") {
-            auto sz = fs::file_size(entry.path());
-            fs::resize_file(entry.path(), sz / 4);
-            break;
-        }
-    }
-    auto vres = lsxcommon::integrity::VerifyConvertedModel(f.tmp);
-    CHECK(!vres.ok());
-}
-
-TEST_CASE("Qwen: total_pinned_tensors mismatch fails", "[qwen][integrity]")
-{
-    QwenIntegrityFixture f;
-    f.build(true);
-    REQUIRE(lsxcommon::qwen::ConvertQwenModel(f.tmp.string(), f.tmp.string()).ok());
-
-    // Tamper model.index.json total_pinned_tensors.
-    auto index = f.tmp / "logestix" / "model.index.json";
-    std::string content = read_file(index);
-    auto pos = content.find("\"total_pinned_tensors\"");
-    REQUIRE(pos != std::string::npos);
-    auto colon = content.find(':', pos);
-    auto endp = content.find(',', colon);
-    if (endp == std::string::npos)
-        endp = content.find('}', colon);  // total_pinned_tensors is last key
-    REQUIRE(endp != std::string::npos);
-    content.replace(colon + 1, endp - colon - 1, " 0");
-    {
-        std::ofstream out(index);
-        out << content;
-    }
-    auto vres = lsxcommon::integrity::VerifyConvertedModel(f.tmp);
-    CHECK(!vres.ok());
-    CHECK(vres.status().ToString().find("mismatch") != std::string::npos);
 }

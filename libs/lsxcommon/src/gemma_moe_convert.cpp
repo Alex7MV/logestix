@@ -729,11 +729,6 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
         integrity::TokenizerSpecialIds{.bos_required = true,
                                        .eos_required = true}));
 
-    auto vres = integrity::VerifyConvertedModel(output_root);
-    if (!vres.ok())
-        return arrow::Status::Invalid("output verification failed: ",
-                                      vres.status().ToString());
-
     return arrow::Status::OK();
 }
 
