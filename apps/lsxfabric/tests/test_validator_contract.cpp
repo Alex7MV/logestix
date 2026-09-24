@@ -100,3 +100,58 @@ TEST_CASE("validator: ValidateGlobalScale requires finite positive",
     REQUIRE_FALSE(ValidateGlobalScale(NAN));
     REQUIRE_FALSE(ValidateGlobalScale(INFINITY));
 }
+
+TEST_CASE("validator: LoadModelIndex parses a full index", "[validator]") {
+    const fs::path p = fs::temp_directory_path() / "lsxfabric_idx_full.json";
+    std::ofstream(p) << R"({
+        "format": "logestix-v1-nvfp4",
+        "model": "ds",
+        "num_layers": 43,
+        "experts_per_layer": 256,
+        "total_pinned_tensors": 2881,
+        "total_experts": 11008
+    })";
+    const ModelInfo info = LoadModelIndex(p.string());
+    REQUIRE(info.format == "logestix-v1-nvfp4");
+    REQUIRE(info.model_name == "ds");
+    REQUIRE(info.num_layers == 43);
+    REQUIRE(info.experts_per_layer == 256);
+    REQUIRE(info.total_pinned == 2881);
+    REQUIRE(info.total_experts == 11008);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: LoadModelIndex defaults absent fields", "[validator]") {
+    CoreScope scope;
+    const fs::path p = fs::temp_directory_path() / "lsxfabric_idx_sparse.json";
+    std::ofstream(p) << R"({"format": "logestix-granite"})";
+    const ModelInfo info = LoadModelIndex(p.string());
+    REQUIRE(info.format == "logestix-granite");
+    REQUIRE(info.model_name.empty());
+    REQUIRE(info.num_layers == 0);
+    REQUIRE(info.experts_per_layer == 0);
+    REQUIRE(info.total_pinned == 0);
+    REQUIRE(info.total_experts == 0);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: LoadModelIndex defaults on malformed input",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path bad = fs::temp_directory_path() / "lsxfabric_idx_bad.json";
+    std::ofstream(bad) << "{ not json";
+    REQUIRE(LoadModelIndex(bad.string()).num_layers == 0);
+
+    const fs::path arr = fs::temp_directory_path() / "lsxfabric_idx_arr.json";
+    std::ofstream(arr) << R"([1, 2, 3])";
+    REQUIRE(LoadModelIndex(arr.string()).num_layers == 0);
+
+    const fs::path typed = fs::temp_directory_path() / "lsxfabric_idx_typed.json";
+    std::ofstream(typed) << R"({"num_layers": "43"})";
+    REQUIRE(LoadModelIndex(typed.string()).num_layers == 0);
+
+    REQUIRE(LoadModelIndex("lsxfabric_no_such_index.json").num_layers == 0);
+    fs::remove(bad);
+    fs::remove(arr);
+    fs::remove(typed);
+}
