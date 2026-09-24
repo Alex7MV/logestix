@@ -54,7 +54,7 @@ was deleted; `cli.cpp` gained a strict parser.
 | F1 F6 F7 F8 F12 F14 | Fixed | delegated to the engine load path: no format allow-list, no fabricated expert loop, no pinned accounting |
 | F4 F5 | Fixed | `cli.cpp`: a value flag never swallows a known flag; `--max-gen` is parsed strictly (`abc`/`0`/`-5` keep the default 64) |
 | F2 F9 F10 F13 | Moot | the code that carried them was deleted |
-| F11 | Deferred | the silent no-op mode in `main` is out of scope |
+| F11 | Fixed | an inactive launch mode now logs `No run mode selected: pass --validate or --testprompt` and exits non-zero |
 
 Follow-up (done after the audit): `lsxcommon::integrity::VerifyConvertedModel` —
 the separate host-only converted-model verifier used by `lsxforge --verify` and
@@ -80,14 +80,36 @@ lsxfabric --validate --localmodel /nonexistent/model   →   rc=1
   Validation failed: cannot create a model for /nonexistent/model
 ```
 
-Positive sweep (one representative per shape; a full 10-model sweep is
-resource-bound because each load pins host stores):
+Old validator vs new `--validate`, three representative models:
 
 | model | old validator | new `--validate` |
 |---|---|---|
 | DeepSeek-V4-Flash (MoE, default) | unknown format warning, PASS | `rc=0` — `pinned weights: 13534 MiB in 901 ms` |
 | granite-4.2-30b (dense) | 65 spurious warnings, PASS | `rc=0` — `pinned weights: 15706 MiB in 1610 ms`, 64 layers loaded |
 | Ornith-1.5-35B-A3B-MLX (MoE, previously unknown format) | warnings, PASS | `rc=0` — `layer_39: 256 experts`, `loaded: resident=1409135616 bytes` |
+
+Full sweep — all ten vault models load through the engine (`rc=0`), run
+sequentially:
+
+| model | evidence |
+|---|---|
+| DeepSeek-V4-Flash | `pinned weights: 13534 MiB` |
+| DeepSeek-V4.1-Flash | `[v41-load] pinned dense: 40 layers` |
+| gemma-4-26B-A4B-it | `30 layers` + `3840 experts, 1 x 16 GiB chunks` |
+| GigaChat3.5-432B-A28B-Reasoning | `9472 experts, 14 x 16 GiB chunks in 115309 ms` |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 | `52 layers, 128 experts` |
+| GLM-5.3-Flash | `loaded: resident=7426815736 layers=45` |
+| Ornith-1.5-35B-A3B-MLX | `resident=1409135616 bytes` |
+| Qwen3.6-35B-A3B | `layer_39: 256 experts`, `resident=1409135616 bytes` |
+| Qwen3.8-Flash-Next | `5350/24576 experts resident`, `resident 3615 MiB` |
+| granite-4.2-30b | `64 layers (16468942848 bytes resident)` |
+
+Inactive-mode case (F11):
+
+```
+lsxfabric --max-gen 1   →   rc=1
+  No run mode selected: pass --validate or --testprompt
+```
 
 Generation smoke (unchanged path):
 
