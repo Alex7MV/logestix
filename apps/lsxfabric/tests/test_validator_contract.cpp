@@ -310,3 +310,45 @@ TEST_CASE("validator: RunValidator warns when pinned/ is absent", "[validator]")
     REQUIRE(r.ok);
     REQUIRE(r.warnings >= 1);
 }
+
+// RED spec tests. Hidden (tag starts with '.') so the default run stays green.
+// Run explicitly: ./build/linux-debug/apps/lsxfabric/tests/test_lsxfabric "[.audit-spec]"
+
+// FINDING F1: the current model format (logestix-v1-nvfp4) must be recognised.
+TEST_CASE("validator [spec]: recognises logestix-v1-nvfp4", "[.audit-spec]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_spec_v1nvfp4");
+    md.index(R"({"format":"logestix-v1-nvfp4","model":"ds","num_layers":1,
+                 "experts_per_layer":1,"total_pinned_tensors":0,"total_experts":1})");
+    fs::create_directories(md.root / "logestix" / "experts" / "layer_0");
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(
+                MakeExpertBatch(),
+                md.root / "logestix" / "experts" / "layer_0" / "exp_0.arrow").ok());
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE(r.ok);
+    REQUIRE(r.errors == 0);
+    REQUIRE(r.warnings == 0);
+}
+
+// FINDING F6: a dense format (granite) must not expect per-layer expert files.
+TEST_CASE("validator [spec]: dense formats need no expert files", "[.audit-spec]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_spec_granite");
+    md.index(R"({"format":"logestix-granite","model":"g","num_layers":1,
+                 "experts_per_layer":0,"total_pinned_tensors":0,"total_experts":0})");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE(r.ok);
+    REQUIRE(r.errors == 0);
+    REQUIRE(r.warnings == 0);
+}
+
+// FINDING F8: a declared expert missing on disk must be an error, not a warning.
+TEST_CASE("validator [spec]: a missing declared expert is an error",
+          "[.audit-spec]") {
+    CoreScope scope;
+    ModelDir md("lsxfabric_spec_missing_expert");
+    md.index(R"({"format":"logestix-v1","model":"m","num_layers":1,
+                 "experts_per_layer":64,"total_pinned_tensors":0,"total_experts":64})");
+    const ValidationResult r = RunValidator(md.str());
+    REQUIRE_FALSE(r.ok);
+}
