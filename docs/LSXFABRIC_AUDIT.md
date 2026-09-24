@@ -10,19 +10,13 @@ Non-goals: applying fixes, shared `RunCliGeneration` internals, performance.
 
 ## Method
 
-Contract-first TDD. Green characterisation tests pin current behaviour; hidden
-Catch2 tests (tag `[.audit-spec]`) encode the expected contract where it
-diverges. The production code was not modified.
+Contract-first TDD at the audit commit `1902de3` (production code frozen). Green
+characterisation tests pinned current behaviour; hidden Catch2 tests (tag
+`[.audit-spec]`) encoded the expected contract where it diverged. CLI 3/3 and
+validator 3/3 hidden specs failed as intended; the default suite stayed green.
 
-Run the hidden (red) spec set explicitly:
-
-```bash
-./build/linux-debug/apps/lsxfabric/tests/test_fabric_cli "[.audit-spec]"
-./build/linux-debug/apps/lsxfabric/tests/test_lsxfabric "[.audit-spec]"
-```
-
-Result at this commit: CLI 3/3 fail; validator 3/3 fail (8 assertions, 5 pass,
-3 fail). The default suite stays green.
+The findings below were subsequently remediated — see **Remediation**. The
+hidden `[.audit-spec]` tests no longer exist after remediation.
 
 ## Findings
 
@@ -43,36 +37,84 @@ Result at this commit: CLI 3/3 fail; validator 3/3 fail (8 assertions, 5 pass,
 | F13 | Info | `LoadModelIndex` | strict parsing | absent/mistyped fields silently default to 0/empty | `validator: LoadModelIndex defaults …` | a malformed index degrades instead of failing |
 | F14 | Medium | `ValidatePinnedTensors` count | loaded == declared pinned count | 3 vault models mismatch (warning only) | `Ornith`/`Qwen3.6` 613 vs 413; `Qwen3.8` 1067 vs 821 | the declared count and the validator's accounting disagree, silently tolerated |
 
+## Remediation
+
+Root cause: `validator.cpp` reimplemented model knowledge (format tags,
+expert/pinned/`shared`/`router`/`ple` layouts, schemas) that the inference
+engine already owns in its registry and per-family loaders. The fix removes the
+duplication rather than extending the lists.
+
+`--validate` is now a thin wrapper over the engine load path:
+`InferenceEngine::CreateModel` → `IModel::Load` → `Unload` (`RunModelValidation`
+in `apps/lsxfabric/src/validator.cpp`). `validator.cpp`'s duplicated model logic
+was deleted; `cli.cpp` gained a strict parser.
+
+| id | status | note |
+|---|---|---|
+| F1 F6 F7 F8 F12 F14 | Fixed | delegated to the engine load path: no format allow-list, no fabricated expert loop, no pinned accounting |
+| F4 F5 | Fixed | `cli.cpp`: a value flag never swallows a known flag; `--max-gen` is parsed strictly (`abc`/`0`/`-5` keep the default 64) |
+| F2 F9 F10 F13 | Moot | the code that carried them was deleted |
+| F11 | Deferred | the silent no-op mode in `main` is out of scope |
+
+Related observation (out of scope): `lsxcommon::integrity::VerifyConvertedModel`
+(used by `lsxforge --verify` and by converters' post-conversion check) has its
+own stale format list and counts only `pinned/`; it rejects `logestix-ornithmoe`,
+`logestix-qwen38flashnext`, `logestix-glm5next` and `logestix-v41-nvfp4`, and
+would mis-count `shared/`/`router/`. Not fixed here because the work was scoped
+to `lsxfabric`.
+
+### Remediated integration evidence
+
+Environment: RTX 5090 (32.6 GB), CUDA 13.4, `linux-debug`. Every `--validate`
+run is a real model load, GPU-exclusive, run sequentially.
+
+Negative case:
+
+```
+lsxfabric --validate --localmodel /nonexistent/model   →   rc=1
+  Running validation...
+  Validation failed: cannot create a model for /nonexistent/model
+```
+
+Positive sweep (one representative per shape; a full 10-model sweep is
+resource-bound because each load pins host stores):
+
+| model | old validator | new `--validate` |
+|---|---|---|
+| DeepSeek-V4-Flash (MoE, default) | unknown format warning, PASS | `rc=0` — `pinned weights: 13534 MiB in 901 ms` |
+| granite-4.2-30b (dense) | 65 spurious warnings, PASS | `rc=0` — `pinned weights: 15706 MiB in 1610 ms`, 64 layers loaded |
+| Ornith-1.5-35B-A3B-MLX (MoE, previously unknown format) | warnings, PASS | `rc=0` — `layer_39: 256 experts`, `loaded: resident=1409135616 bytes` |
+
+Generation smoke (unchanged path):
+
+```
+lsxfabric --localmodel .../gemma-4-26B-A4B-it --testprompt --max-gen 32
+  → rc=0, "The capital of France is **Paris**."  (32 tokens @ 127.1 t/s)
+```
+
 ## Test inventory
 
-| file | test | tag | kind | surface |
-|---|---|---|---|---|
-| test_fabric_cli_edges.cpp | flag without value ignored | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | `--prompt` consumes flag token | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | non-numeric `--max-gen` → 0 | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | negative `--max-gen` verbatim | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | repeated flags last wins | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | flag-looking value literal | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | help flags ignored | `[lsxfabric][cli]` | green | S1 |
-| test_fabric_cli_edges.cpp | `--max-gen` rejects non-numeric | `[.audit-spec]` | red | F5 |
-| test_fabric_cli_edges.cpp | `--max-gen` positive | `[.audit-spec]` | red | F5 |
-| test_fabric_cli_edges.cpp | `--prompt` no swallow | `[.audit-spec]` | red | F4 |
-| test_validator_contract.cpp | `ValidateNVFP4Data` all bytes | `[validator]` | green | S3 |
-| test_validator_contract.cpp | `ValidateE4M3Scales` P2 | `[validator]` | green | S3 |
-| test_validator_contract.cpp | `ValidateGlobalScale` finite>0 | `[validator]` | green | S3 |
-| test_validator_contract.cpp | `LoadModelIndex` full/sparse/malformed | `[validator]` | green | S4 |
-| test_validator_contract.cpp | `ValidateExpert` (ok/cols/rows/global/missing) | `[validator]` | green | S5 |
-| test_validator_contract.cpp | `ValidateDenseNvfp4Schema` | `[validator]` | green | S5 |
-| test_validator_contract.cpp | `ValidatePinnedTensors` skip | `[validator]` | green | S5 |
-| test_validator_contract.cpp | `RunValidator` index/unknown/experts/pinned | `[validator]` | green | S6 |
-| test_validator_contract.cpp | recognises `logestix-v1-nvfp4` | `[.audit-spec]` | red | F1 |
-| test_validator_contract.cpp | dense formats need no experts | `[.audit-spec]` | red | F6 |
-| test_validator_contract.cpp | missing expert is an error | `[.audit-spec]` | red | F8 |
+| file | test | tag | status |
+|---|---|---|---|
+| test_fabric_cli_edges.cpp | flag without a value is ignored | `[lsxfabric][cli]` | green |
+| test_fabric_cli_edges.cpp | a value flag does not swallow a known flag | `[lsxfabric][cli]` | green (F4) |
+| test_fabric_cli_edges.cpp | non-numeric/non-positive `--max-gen` keeps the default | `[lsxfabric][cli]` | green (F5) |
+| test_fabric_cli_edges.cpp | a non-flag value is still consumed | `[lsxfabric][cli]` | green |
+| test_fabric_cli_edges.cpp | repeated flags, last one wins | `[lsxfabric][cli]` | green |
+| test_fabric_cli_edges.cpp | help flags are unknown and ignored | `[lsxfabric][cli]` | green |
+| test_fabric_cli.cpp | defaults / unknown measurement flags / kept flags | `[lsxfabric][cli]` | green |
+| test_lsxfabric.cpp | Core init lifecycle | `[lsxfabric]` | green |
+| test_validator.cpp | `RunModelValidation` rejects an undetectable path | `[lsxfabric][validate]` | green |
 
-## Integration evidence
+The audit-time green/red unit inventory (validator primitives, schemas,
+`RunValidator` accounting, hidden `[.audit-spec]` specs) was removed by the
+remediation: the functions it exercised no longer exist.
 
-Environment: RTX 5090 (32.6 GB), CUDA 13.4, `linux-debug`. `--validate` is
-host-only; the two generation runs were executed sequentially (GPU-exclusive).
+## Integration evidence (audit-time, pre-remediation)
+
+Environment: RTX 5090 (32.6 GB), CUDA 13.4, `linux-debug`. This section records
+the original host-only `--validate` behaviour of `validator.cpp`; the remediated
+evidence is in **Remediation** above.
 
 ### `--validate` over every converted vault model
 
@@ -130,8 +172,12 @@ banner and `Model path:` line are logged.
   (F1) and its model of expert layout is too shallow (F6, F7), so **every**
   real model reports `PASS` regardless of content (F1, F6, F8, F14). The
   primitives themselves are internally consistent (F3 refuted).
-- Recommended follow-ups (not applied here): update the format allow-list from
-  the `logestix-*` format tags and classify dense vs MoE from the manifest;
-  validate `ValidateDenseNvfp4Schema` for all dense `*_nvfp4.arrow` files;
-  validate the full declared expert set; promote missing declared artifacts to
-  errors; fix the CLI value handling (F4/F5).
+- Recommended follow-ups (not applied at audit time): update the format
+  allow-list from the `logestix-*` format tags and classify dense vs MoE from
+  the manifest; validate `ValidateDenseNvfp4Schema` for all dense
+  `*_nvfp4.arrow` files; validate the full declared expert set; promote missing
+  declared artifacts to errors; fix the CLI value handling (F4/F5).
+- Resolved differently (see **Remediation**): rather than extending the
+  duplicated lists in `validator.cpp`, validation was delegated to the engine's
+  load path, and the CLI was fixed. F2/F9/F10/F13 became moot; F11 remains
+  deferred; `VerifyConvertedModel` remains stale and out of scope.
