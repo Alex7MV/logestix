@@ -155,3 +155,96 @@ TEST_CASE("validator: LoadModelIndex defaults on malformed input",
     fs::remove(arr);
     fs::remove(typed);
 }
+
+namespace lsxfabric {
+// Declared in validator.cpp only; redeclared here to test it directly.
+ValidationResult ValidateDenseNvfp4Schema(const std::string &arrow_path);
+} // namespace lsxfabric
+
+TEST_CASE("validator: ValidateExpert accepts a valid 9-column batch",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path p = WriteTemp("lsxfabric_expert_ok.arrow", MakeExpertBatch());
+    const ValidationResult r = ValidateExpert(p.string());
+    REQUIRE(r.ok);
+    REQUIRE(r.errors == 0);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidateExpert rejects a wrong column count",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path p = WriteTemp("lsxfabric_expert_6col.arrow", MakeDenseBatch());
+    const ValidationResult r = ValidateExpert(p.string());
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.errors >= 1);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidateExpert checks every row", "[validator]") {
+    CoreScope scope;
+    auto bad = MakeExpertBatch(1.0f, 0x09); // mantissa != 0 -> invalid scale
+    auto batch = ConcatRows(MakeExpertBatch(), bad);
+    const fs::path p = WriteTemp("lsxfabric_expert_2row.arrow", batch);
+    const ValidationResult r = ValidateExpert(p.string());
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.errors >= 1);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidateExpert rejects an invalid global scale",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path p = WriteTemp("lsxfabric_expert_gs.arrow", MakeExpertBatch(0.0f));
+    const ValidationResult r = ValidateExpert(p.string());
+    REQUIRE_FALSE(r.ok);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidateExpert errors on an unreadable file",
+          "[validator]") {
+    CoreScope scope;
+    const ValidationResult r = ValidateExpert("lsxfabric_missing_expert.arrow");
+    REQUIRE_FALSE(r.ok);
+    REQUIRE(r.errors >= 1);
+}
+
+TEST_CASE("validator: ValidateDenseNvfp4Schema accepts 6 columns",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path p = WriteTemp("lsxfabric_dense_ok.arrow", MakeDenseBatch());
+    const ValidationResult r = ValidateDenseNvfp4Schema(p.string());
+    REQUIRE(r.ok);
+    REQUIRE(r.errors == 0);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidateDenseNvfp4Schema rejects a wrong column count",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path p = WriteTemp("lsxfabric_dense_9col.arrow", MakeExpertBatch());
+    const ValidationResult r = ValidateDenseNvfp4Schema(p.string());
+    REQUIRE_FALSE(r.ok);
+    fs::remove(p);
+}
+
+TEST_CASE("validator: ValidatePinnedTensors skips tokenizer and shared experts",
+          "[validator]") {
+    CoreScope scope;
+    const fs::path dir = fs::temp_directory_path() / "lsxfabric_pinned_skip";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(MakeExpertBatch(),
+              dir / "global.arrow").ok());
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(MakeExpertBatch(),
+              dir / "layer_0.arrow").ok());
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(MakeExpertBatch(),
+              dir / "tokenizer_vocab.arrow").ok());
+    REQUIRE(lsxcommon::WriteRecordBatchToFile(MakeExpertBatch(),
+              dir / "shared_experts.arrow").ok());
+    // Only global.arrow + layer_0.arrow are counted => 2 rows.
+    const ValidationResult r = ValidatePinnedTensors(dir.string(), 2);
+    REQUIRE(r.ok);
+    REQUIRE(r.warnings == 0);
+    fs::remove_all(dir);
+}
