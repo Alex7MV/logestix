@@ -73,3 +73,27 @@ TEST_CASE("fabric cli: help flags are unknown and ignored", "[lsxfabric][cli]") 
     REQUIRE_FALSE(a.validate);
     REQUIRE_FALSE(a.testprompt);
 }
+
+// RED spec tests: the expected contract where current behaviour diverges.
+// Hidden (a tag starting with '.'), so the default ctest run stays green.
+// Run explicitly: ./build/linux-debug/apps/lsxfabric/tests/test_fabric_cli "[.audit-spec]"
+
+// FINDING F5: --max-gen must not turn a non-numeric value into 0.
+TEST_CASE("fabric cli [spec]: --max-gen rejects a non-numeric value",
+          "[.audit-spec]") {
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "abc"}).max_gen == 64);
+}
+
+// FINDING F5: --max-gen must be positive.
+TEST_CASE("fabric cli [spec]: --max-gen is bounded to a positive value",
+          "[.audit-spec]") {
+    REQUIRE(Parse({"lsxfabric", "--max-gen", "-5"}).max_gen >= 1);
+}
+
+// FINDING F4: --prompt must not swallow a following known flag.
+TEST_CASE("fabric cli [spec]: --prompt does not swallow a known flag",
+          "[.audit-spec]") {
+    const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--prompt", "--validate"});
+    REQUIRE(a.prompt == "The capital of France is");
+    REQUIRE(a.validate);
+}
