@@ -1,6 +1,9 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
 #include "qwen_moe_exp_constants.h"
+#include "lsxcommon/lsx_tc_gemm.h"
+#include "lsxcommon/qwen_inference.h"
+#include "lsxcommon/qwen_moe_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/shared_experts.h"
 
@@ -1603,11 +1606,31 @@ cudaError_t RunExpGeneration(
     float_elems += 1024;                           // gate/argmax scratch
     float_elems += (size_t)max_seq * V;            // fp32 logits
     float_elems += (size_t)max_seq * V;            // fp32 logits
+    // Batched TC routed-expert chain scratch (streaming decode): pre-built
+    // device slot table + one-shot layer activation quant + per-slot swiglu
+    // quant outputs + w13 split-K partials. Mirrors RunQwenMoeGeneration.
+    const size_t xq_bytes = ((static_cast<size_t>(H) / 2 + 63) / 64) * 64;
+    const size_t xqs_bytes =
+        (((static_cast<size_t>(H) + 15) / 16) + 63) / 64 * 64;
+    const size_t qpack_b_bytes = ((static_cast<size_t>(K) * I / 2) + 63) / 64 * 64;
+    const size_t qscales_b_bytes =
+        ((static_cast<size_t>(K) * ((I + 15) / 16)) + 63) / 64 * 64;
+    const size_t gemv_tbl_bytes =
+        ((sizeof(qwen_moe::QwenMoeGvSlotDev) * static_cast<size_t>(K)) + 63) /
+        64 * 64;
+    const int tc_splitk = lsx_tc::LsxTcBatchSplitK(H, 2 * I);
+    const size_t tc_splitk_bytes =
+        tc_splitk > 1
+            ? ((static_cast<size_t>(tc_splitk) * K * 2 * I * 4 + 63) / 64) * 64
+            : 64;
+    const size_t extra_bytes = xq_bytes + xqs_bytes + qpack_b_bytes +
+                               qscales_b_bytes + gemv_tbl_bytes +
+                               tc_splitk_bytes;
     const size_t half_bytes =
         ((half_elems * sizeof(__half)) + 255) & ~static_cast<size_t>(255);
     const size_t float_bytes =
         (float_elems * sizeof(float) + 255) & ~static_cast<size_t>(255);
-    const size_t need = half_bytes + float_bytes + 4096;
+    const size_t need = half_bytes + float_bytes + extra_bytes + 4096;
     if (arena_cap < need) {
         if (arena) cudaFree(arena);
         if (cudaMalloc(&arena, need) != cudaSuccess) {
@@ -1666,6 +1689,16 @@ cudaError_t RunExpGeneration(
     // and the sampler between the gather and the PLE kernel at layer 1).
     float *d_emb_rows = d_maxv_scratch + 16;
     float *d_logits_f32 = d_emb_rows + (size_t)V;
+    uint8_t *extra = reinterpret_cast<uint8_t *>(base) + half_bytes + float_bytes;
+    uint8_t *d_xq = extra;
+    uint8_t *d_xqs = d_xq + xq_bytes;
+    uint8_t *d_qpack_b = d_xqs + xqs_bytes;
+    uint8_t *d_qscales_b = d_qpack_b + qpack_b_bytes;
+    qwen_moe::QwenMoeGvSlotDev *d_gemv_tbl =
+        reinterpret_cast<qwen_moe::QwenMoeGvSlotDev *>(d_qscales_b +
+                                                       qscales_b_bytes);
+    float *d_tc_splitk = reinterpret_cast<float *>(
+        reinterpret_cast<uint8_t *>(d_gemv_tbl) + gemv_tbl_bytes);
 
     int32_t *d_ids = nullptr, *d_pos = nullptr, *d_argmax = nullptr,
             *d_tokens = nullptr;
@@ -1972,16 +2005,21 @@ cudaError_t RunExpGeneration(
             e = RunExpRouterTop10(stream, lw.d_router, d_mixed, 1, H, E, K,
                                   d_slots);
             if (e != cudaSuccess) { result.error_msg = "router"; break; }
-            // Host readback of the selected slots; the TC batch chain composes
-            // its table from d_slots. Residency staging uses the fused-store
-            // fast path (2 contiguous blobs per miss) rather than the base
-            // segmented path: decode is GPU-bound here (cache hit rate ~86%),
-            // so overlap buys nothing while the 6-vs-2 copies do cost.
+            // Host readback of the selected slots. Busy-poll the completion
+            // event instead of the blocking cudaEventSynchronize: at 48
+            // handshakes per token the host wake latency is pure GPU idle
+            // time (qwen_moe driver rule). Residency staging uses the
+            // fused-store fast path (2 contiguous blobs per miss).
             qwen_moe::QwenMoeRoutedSlot h_slots[16];
+            int dev_slots[16] = {0};
             cudaMemcpyAsync(h_slots, d_slots, sizeof(qwen_moe::QwenMoeRoutedSlot) * K,
                             cudaMemcpyDeviceToHost, stream);
             cudaEventRecord(tok_ready_ev, stream);
-            cudaEventSynchronize(tok_ready_ev);
+            {
+                cudaError_t q;
+                while ((q = cudaEventQuery(tok_ready_ev)) ==
+                       cudaErrorNotReady) {}
+            }
             for (int k = 0; k < K && k < 16; ++k) {
                 if (h_slots[k].eid < 0 || h_slots[k].eid >= E) {
                     result.error_msg = "router returned out-of-range expert";
@@ -2000,28 +2038,85 @@ cudaError_t RunExpGeneration(
                     if (e == cudaSuccess) e = cudaErrorUnknown;
                     break;
                 }
+                dev_slots[k] = slot;
             }
             if (e != cudaSuccess) break;
             std::string ffn_err;
             // Routed accumulation runs acc += coeff * y2 per expert; the fp32
             // accumulator must be zeroed per layer (the arena is persistent).
             cudaMemsetAsync(d_moe_acc, 0, sizeof(float) * H, stream);
-            e = qwen_moe::RunQwenMoeRoutedFFN(
-                stream, store, cache,
-                l, h_slots, K, d_mixed, H, I, d_moe_acc, d_yg, d_yu,
-                d_y2, ffn_err, copy_stream,
-                copy_stream ? ev_uploads : nullptr, ev_front);
-            if (e != cudaSuccess) {
-                result.error_msg = "experts l" + std::to_string(l) +
-                                   " kb" + std::to_string(kv_base) + " mt" +
-                                   std::to_string(kv->max_total) + " lin" +
-                                   std::to_string(lin_idx) + ": " + ffn_err;
-                break;
+            const uint8_t *shared_xq = nullptr, *shared_xqs = nullptr;
+            static const bool no_ffn_sbatch =
+                std::getenv("LSX_EXP_FFN_NOSBATCH") != nullptr;
+            const bool tc_batch_ok =
+                qwen::QwenTcFastMath() && (I % 16) == 0 && !no_ffn_sbatch;
+            if (tc_batch_ok) {
+                // Batched TC routed chain (streaming handshake): the host
+                // already holds dev_slot + segment scales, so upload the slot
+                // table directly and replace ~4 launches per expert with 4
+                // batch kernels + one layer activation quant.
+                qwen_moe::QwenMoeGvSlotDev tbl[16];
+                for (int k = 0; k < K; ++k) {
+                    const auto &rec =
+                        store.records[static_cast<size_t>(l)]
+                                     [static_cast<size_t>(h_slots[k].eid)];
+                    tbl[k].dev_slot = dev_slots[k];
+                    tbl[k].gs1 = rec.gs1;
+                    tbl[k].gs3 = rec.gs3;
+                    tbl[k].gs2 = rec.gs2;
+                    tbl[k].coeff = h_slots[k].coeff;
+                }
+                const auto &rec0 = store.records[static_cast<size_t>(l)][0];
+                const int64_t w13_b =
+                    static_cast<int64_t>(rec0.w1_bytes + rec0.w3_bytes);
+                const int64_t s13_b =
+                    static_cast<int64_t>(rec0.s1_bytes + rec0.s3_bytes);
+                cudaMemcpyAsync(d_gemv_tbl, tbl,
+                                sizeof(qwen_moe::QwenMoeGvSlotDev) * K,
+                                cudaMemcpyHostToDevice, stream);
+                e = lsx_tc::LsxTcQuantizeActsNvfp4(stream, d_mixed, 1, H, d_xq,
+                                                   d_xqs);
+                if (e == cudaSuccess) {
+                    shared_xq = d_xq;
+                    shared_xqs = d_xqs;
+                    e = qwen_moe::RunQwenMoeRoutedTcBatchTbl(
+                        stream, cache, d_gemv_tbl, d_xq, d_xqs, K, H, I, w13_b,
+                        s13_b, d_moe_acc, d_ygu_batch, d_h_batch, d_yp_batch,
+                        d_qpack_b, d_qscales_b,
+                        tc_splitk > 1 ? d_tc_splitk : nullptr);
+                    if (e != cudaSuccess) {
+                        result.error_msg =
+                            "tc-batch experts l" + std::to_string(l);
+                        break;
+                    }
+                } else {
+                    e = qwen_moe::RunQwenMoeRoutedFFN(
+                        stream, store, cache, l, h_slots, K, d_mixed, H, I,
+                        d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
+                        copy_stream ? ev_uploads : nullptr, ev_front);
+                    if (e != cudaSuccess) {
+                        result.error_msg =
+                            "experts l" + std::to_string(l) + ": " + ffn_err;
+                        break;
+                    }
+                }
+            } else {
+                e = qwen_moe::RunQwenMoeRoutedFFN(
+                    stream, store, cache, l, h_slots, K, d_mixed, H, I,
+                    d_moe_acc, d_yg, d_yu, d_y2, ffn_err, copy_stream,
+                    copy_stream ? ev_uploads : nullptr, ev_front);
+                if (e != cudaSuccess) {
+                    result.error_msg = "experts l" + std::to_string(l) +
+                                       " kb" + std::to_string(kv_base) + " mt" +
+                                       std::to_string(kv->max_total) + " lin" +
+                                       std::to_string(lin_idx) + ": " + ffn_err;
+                    break;
+                }
             }
             e = qwen_moe::RunQwenMoeSharedCombine(
                 stream, lw.shared_w1, lw.shared_w2, lw.shared_w3,
                 lw.d_shared_gate, d_mixed, 1, H, SI, d_moe_acc,
-                d_si, d_sh, d_gate_val, d_act, nullptr, nullptr);
+                d_si, d_sh, d_gate_val, d_act, shared_xq, shared_xqs);
             if (e != cudaSuccess) { result.error_msg = "shared"; break; }
             // scatter MoE output back into the streams.
             e = RunExpHcInjectScatter(stream, d_hyper2, d_act, d_inj_f, 1, H,
@@ -2067,7 +2162,11 @@ cudaError_t RunExpGeneration(
                 cudaMemcpyAsync(&h_tok, d_argmax, sizeof(int32_t),
                                 cudaMemcpyDeviceToHost, stream);
                 cudaEventRecord(tok_ready_ev, stream);
-                cudaEventSynchronize(tok_ready_ev);
+                {
+                    cudaError_t q;
+                    while ((q = cudaEventQuery(tok_ready_ev)) ==
+                           cudaErrorNotReady) {}
+                }
                 token_history.push_back(h_tok);
                 if (token_history.size() > 64)
                     token_history.erase(token_history.begin());

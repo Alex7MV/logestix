@@ -864,6 +864,48 @@ cudaError_t RunQwenMoeSwigluQuantBatch(cudaStream_t stream, const __half *ygu,
     return cudaGetLastError();
 }
 
+namespace {
+
+// Chain shared by the router-gather and device-table batched TC entry points.
+// Preserves the w13 -> swiglu-quant -> w2 -> ascending reduce op order of the
+// legacy per-slot path (bit-exact per slot). The ev2..ev5 handles, when
+// non-null, mark stage boundaries for the LSX_PROBE_FFN diagnostic.
+cudaError_t RunQwenMoeRoutedTcChain(
+    cudaStream_t stream, const QwenMoeExpertDeviceCache &cache,
+    const QwenMoeGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
+    int K, int H, int I, int64_t w13_bytes, int64_t s13_bytes, float *d_acc,
+    __half *ygu_batch, __half *h_batch, __half *yp_batch,
+    uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
+    cudaEvent_t ev2, cudaEvent_t ev3, cudaEvent_t ev4, cudaEvent_t ev5)
+{
+    const auto *tbl =
+        reinterpret_cast<const lsx_tc::LsxTcBatchSlot *>(d_tbl);
+    cudaError_t e = lsx_tc::RunLsxTcGemmBatch13(
+        stream, xq, xqs, cache.d_pack, cache.d_scale, cache.pack_stride,
+        cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
+    if (e != cudaSuccess) return e;
+    if (ev2) cudaEventRecord(ev2, stream);
+    e = RunQwenMoeSwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
+                                   qpack_batch, qscales_batch);
+    if (e != cudaSuccess) return e;
+    if (ev3) cudaEventRecord(ev3, stream);
+    e = lsx_tc::RunLsxTcGemmBatchDown(
+        stream, qpack_batch, qscales_batch, cache.d_pack, cache.d_scale,
+        cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
+        I, H, yp_batch, nullptr);
+    if (e != cudaSuccess) return e;
+    if (ev4) cudaEventRecord(ev4, stream);
+    // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1);
+    // acc already seeded by the caller (qwen_moe_init_acc_kernel upstream or
+    // a zero memset).
+    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+        yp_batch, d_tbl, K, H, d_acc);
+    if (ev5) cudaEventRecord(ev5, stream);
+    return cudaGetLastError();
+}
+
+} // namespace
+
 cudaError_t RunQwenMoeRoutedTcBatch(
     cudaStream_t stream, QwenMoeExpertStore &store,
     const QwenMoeExpertDeviceCache &cache, int layer,
@@ -899,29 +941,12 @@ cudaError_t RunQwenMoeRoutedTcBatch(
         store.d_gemv_meta + static_cast<int64_t>(layer) * E, d_tbl);
     if (e != cudaSuccess) return e;
     if (kProbe) cudaEventRecord(ev1, stream);
-    const auto *tbl =
-        reinterpret_cast<const lsx_tc::LsxTcBatchSlot *>(d_tbl);
-    e = lsx_tc::RunLsxTcGemmBatch13(
-        stream, xq, xqs, cache.d_pack, cache.d_scale, cache.pack_stride,
-        cache.scale_stride, tbl, K, H, 2 * I, ygu_batch, splitk13);
+    e = RunQwenMoeRoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
+                                w13_bytes, s13_bytes, d_acc, ygu_batch,
+                                h_batch, yp_batch, qpack_batch, qscales_batch,
+                                splitk13, ev2, ev3, ev4, ev5);
     if (e != cudaSuccess) return e;
-    if (kProbe) cudaEventRecord(ev2, stream);
-    e = RunQwenMoeSwigluQuantBatch(stream, ygu_batch, K, I, h_batch,
-                                   qpack_batch, qscales_batch);
-    if (e != cudaSuccess) return e;
-    if (kProbe) cudaEventRecord(ev3, stream);
-    e = lsx_tc::RunLsxTcGemmBatchDown(
-        stream, qpack_batch, qscales_batch, cache.d_pack, cache.d_scale,
-        cache.pack_stride, cache.scale_stride, tbl, K, w13_bytes, s13_bytes,
-        I, H, yp_batch, nullptr);
-    if (e != cudaSuccess) return e;
-    if (kProbe) cudaEventRecord(ev4, stream);
-    // Ascending-slot fp32 reduce -- the legacy coeff_add order (k=0..K-1);
-    // acc already seeded by qwen_moe_init_acc_kernel upstream.
-    moe_gemv_reduce_batch_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
-        yp_batch, d_tbl, K, H, d_acc);
     if (kProbe) {
-        cudaEventRecord(ev5, stream);
         cudaEventSynchronize(ev5);
         float t[5];
         cudaEventElapsedTime(&t[0], ev0, ev1);
@@ -937,6 +962,25 @@ cudaError_t RunQwenMoeRoutedTcBatch(
             cudaEventDestroy(*ev);
     }
     return cudaGetLastError();
+}
+
+cudaError_t RunQwenMoeRoutedTcBatchTbl(
+    cudaStream_t stream, const QwenMoeExpertDeviceCache &cache,
+    const QwenMoeGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
+    int K, int H, int I, int64_t w13_bytes, int64_t s13_bytes,
+    float *d_acc, __half *ygu_batch, __half *h_batch, __half *yp_batch,
+    uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13)
+{
+    if (!d_tbl || !xq || !xqs || !d_acc || !ygu_batch || !h_batch ||
+        !yp_batch || !qpack_batch || !qscales_batch || K <= 0 ||
+        K > kMaxTopK || H <= 0 || I <= 0 || (I & 15) != 0 ||
+        w13_bytes <= 0 || s13_bytes <= 0)
+        return cudaErrorInvalidValue;
+    return RunQwenMoeRoutedTcChain(stream, cache, d_tbl, xq, xqs, K, H, I,
+                                   w13_bytes, s13_bytes, d_acc, ygu_batch,
+                                   h_batch, yp_batch, qpack_batch,
+                                   qscales_batch, splitk13, nullptr, nullptr,
+                                   nullptr, nullptr);
 }
 
 // Device-table variant consumed by the no-handshake decode path. Requires

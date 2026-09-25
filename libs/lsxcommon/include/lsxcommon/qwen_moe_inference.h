@@ -169,6 +169,21 @@ cudaError_t RunQwenMoeRoutedTcBatch(
     uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13,
     QwenMoeGvSlotDev *d_tbl);
 
+// Device-table variant of the batched TC routed chain for streaming
+// (partial-residency) models whose router-readback handshake already knows
+// the per-slot dev_slot and per-segment global scales on the host: skips the
+// device gather and runs w13 batch TC GEMM -> batched swiglu-quant -> w2
+// batch TC GEMM -> ascending coeff reduce against a caller-supplied table
+// (layout-identical to lsx_tc::LsxTcBatchSlot). Same numerics as
+// RunQwenMoeRoutedTcBatch (bit-exact per slot). The caller must have staged
+// every routed slot and zero-seeded d_acc.
+cudaError_t RunQwenMoeRoutedTcBatchTbl(
+    cudaStream_t stream, const QwenMoeExpertDeviceCache &cache,
+    const QwenMoeGvSlotDev *d_tbl, const uint8_t *xq, const uint8_t *xqs,
+    int K, int H, int I, int64_t w13_bytes, int64_t s13_bytes,
+    float *d_acc, __half *ygu_batch, __half *h_batch, __half *yp_batch,
+    uint8_t *qpack_batch, uint8_t *qscales_batch, float *splitk13);
+
 // Host-side EOS truncation (decode loop runs to max_new without per-step
 // EOS readback). Keeps the EOS token (legacy break semantics), returns
 // true when a cut happened. eos_id < 0 disables.
