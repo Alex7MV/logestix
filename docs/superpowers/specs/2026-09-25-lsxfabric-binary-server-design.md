@@ -216,3 +216,21 @@ fabric_client -> `test:` red server tests -> `feat:` FabricServer + CLI ->
 - Server-side tokenization / detokenization endpoints.
 - TLS, authentication, compression.
 - Persistent request ids / cancellation beyond the `stop` abort flag.
+
+## As-built deltas (2026-09-25)
+
+- `FabricServer::Run` additionally takes optional `std::atomic<bool>* ready`
+  and `std::string* resolved_endpoint` out-params: the former lets tests
+  synchronize on a successful bind, the latter resolves a
+  `tcp://127.0.0.1:*` wildcard (via `ZMQ_LAST_ENDPOINT`) so tests can use an
+  ephemeral port without hardcoding one.
+- The host-only lsxcommon bridge is split into
+  `tokenizer_arrows.{h,cpp}` (`LoadTokenizerArrows`) and
+  `prompt_bridge.{h,cpp}` (`FramePromptForModel`); `ModelBase::LoadTokenizerDb`
+  now delegates to `LoadTokenizerArrows` (behavior-preserving refactor,
+  regression-checked by `test_tokenizer` / `test_model_factory`).
+- `lsxnetwork` owns `fabric_wire.{h,cpp}` and `fabric_client.{h,cpp}`;
+  `FabricClient` receives via `zmq_msg` (arbitrary-size frames).
+- taskmosaic CLI parsing lives in `apps/taskmosaic/src/cli.{h,cpp}` with a
+  `fast`-labeled `test_taskmosaic_cli` target.
+
