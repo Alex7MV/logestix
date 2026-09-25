@@ -40,3 +40,24 @@ endif()
 add_test(NAME test_fabric_cli COMMAND test_fabric_cli)
 set_tests_properties(test_fabric_cli PROPERTIES LABELS fast)
 set_tests_properties(test_fabric_cli PROPERTIES TIMEOUT 120)
+
+add_executable(test_fabric_server test_fabric_server.cpp ../src/fabric_server.cpp)
+target_include_directories(test_fabric_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(test_fabric_server PRIVATE lsxcommon lsxnetwork arrow_shared arrow_cuda_shared Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_fabric_server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_fabric_server>"
+    )
+    add_custom_command(TARGET test_fabric_server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_fabric_server>"
+    )
+endif()
+
+add_test(NAME test_fabric_server COMMAND test_fabric_server)
+set_tests_properties(test_fabric_server PROPERTIES LABELS fast)
+set_tests_properties(test_fabric_server PROPERTIES TIMEOUT 120)

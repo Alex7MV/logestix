@@ -71,3 +71,19 @@ TEST_CASE("fabric cli: help flags are unknown and ignored", "[lsxfabric][cli]") 
     REQUIRE_FALSE(a.validate);
     REQUIRE_FALSE(a.testprompt);
 }
+
+TEST_CASE("fabric cli: --serve and --listen parse", "[lsxfabric][cli]") {
+    const lsxfabric::FabricCliArgs a =
+        Parse({"lsxfabric", "--serve", "--listen", "tcp://127.0.0.1:6000"});
+    REQUIRE(a.serve);
+    REQUIRE(a.listen == "tcp://127.0.0.1:6000");
+    REQUIRE_FALSE(a.validate);
+    REQUIRE_FALSE(a.testprompt);
+}
+
+TEST_CASE("fabric cli: --serve default endpoint", "[lsxfabric][cli]") {
+    const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--serve"});
+    REQUIRE(a.serve);
+    REQUIRE(a.listen == "tcp://*:5555");
+}
+
