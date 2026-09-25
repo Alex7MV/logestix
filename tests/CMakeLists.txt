@@ -1999,6 +1999,11 @@ endif()
 
 add_test(NAME test_integrated_pipeline COMMAND test_integrated_pipeline)
 
+# ── lsxfabric binary-token wire codec ────────────────────────────────────────
+add_executable(test_fabric_wire test_fabric_wire.cpp)
+target_link_libraries(test_fabric_wire PRIVATE lsxnetwork Catch2::Catch2WithMain)
+add_test(NAME test_fabric_wire COMMAND test_fabric_wire)
+
 # ── CUDA inference kernels test ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
@@ -3936,6 +3941,7 @@ set_tests_properties(
     test_token_translator
     test_network_translator_weld
     test_integrated_pipeline
+    test_fabric_wire
     test_path_registry
     test_vram_estimate
     test_resource_governor
