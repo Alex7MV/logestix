@@ -61,6 +61,7 @@ unset(_hdr)
 
 add_library(lsxnetwork STATIC
     src/affinity.cpp
+    src/fabric_client.cpp
     src/fabric_wire.cpp
     src/frame_queue.cpp
     src/http_router.cpp

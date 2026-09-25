@@ -2004,6 +2004,11 @@ add_executable(test_fabric_wire test_fabric_wire.cpp)
 target_link_libraries(test_fabric_wire PRIVATE lsxnetwork Catch2::Catch2WithMain)
 add_test(NAME test_fabric_wire COMMAND test_fabric_wire)
 
+# ── lsxfabric binary-token client ────────────────────────────────────────────
+add_executable(test_fabric_client test_fabric_client.cpp)
+target_link_libraries(test_fabric_client PRIVATE lsxnetwork Catch2::Catch2WithMain)
+add_test(NAME test_fabric_client COMMAND test_fabric_client)
+
 # ── CUDA inference kernels test ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
@@ -3942,6 +3947,7 @@ set_tests_properties(
     test_network_translator_weld
     test_integrated_pipeline
     test_fabric_wire
+    test_fabric_client
     test_path_registry
     test_vram_estimate
     test_resource_governor
