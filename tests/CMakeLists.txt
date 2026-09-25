@@ -22,7 +22,7 @@ add_test(NAME test_core COMMAND test_core)
 add_executable(test_fast_load test_fast_load.cpp)
 target_link_libraries(test_fast_load PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_fast_load PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_fast_load COMMAND test_fast_load)
 
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
@@ -74,7 +74,7 @@ add_test(NAME test_schema_views COMMAND test_schema_views)
 add_executable(test_deepseek_moe_loader test_deepseek_moe_loader.cpp)
 target_link_libraries(test_deepseek_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_loader PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 if(WIN32)
     add_custom_command(TARGET test_deepseek_moe_loader POST_BUILD
@@ -98,7 +98,7 @@ add_test(NAME test_deepseek_moe_loader COMMAND test_deepseek_moe_loader)
 add_executable(test_deepseek_moe_model test_deepseek_moe_model.cpp)
 target_link_libraries(test_deepseek_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 if(WIN32)
     add_custom_command(TARGET test_deepseek_moe_model POST_BUILD
@@ -119,7 +119,7 @@ add_test(NAME test_deepseek_moe_model COMMAND test_deepseek_moe_model)
 add_executable(test_deepseek_moe_v41_model test_deepseek_moe_v41_model.cpp)
 target_link_libraries(test_deepseek_moe_v41_model PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_v41_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 if(WIN32)
     add_custom_command(TARGET test_deepseek_moe_v41_model POST_BUILD
@@ -140,7 +140,7 @@ add_test(NAME test_deepseek_moe_v41_model COMMAND test_deepseek_moe_v41_model)
 add_executable(test_deepseek_moe_v41_loader test_deepseek_moe_v41_loader.cpp)
 target_link_libraries(test_deepseek_moe_v41_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_v41_loader PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 
 if(WIN32)
     add_custom_command(TARGET test_deepseek_moe_v41_loader POST_BUILD
@@ -163,7 +163,7 @@ target_compile_definitions(test_deepseek_moe_v41_convert PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_deepseek_moe_v41_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_deepseek_moe_v41_convert PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_deepseek_moe_v41_convert COMMAND test_deepseek_moe_v41_convert)
 set_tests_properties(test_deepseek_moe_v41_convert PROPERTIES
     TIMEOUT 120
@@ -183,12 +183,12 @@ target_compile_options(test_deepseek_moe_v41_dequant_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_dequant_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -234,12 +234,12 @@ target_compile_options(test_deepseek_moe_v41_load_fast_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_load_fast_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -285,12 +285,12 @@ target_compile_options(test_deepseek_moe_v41_kernels_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_kernels_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -336,12 +336,12 @@ target_compile_options(test_deepseek_moe_v41_pipeline_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_pipeline_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -387,12 +387,12 @@ target_compile_options(test_deepseek_moe_v41_actquant_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_v41_actquant_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -546,8 +546,8 @@ target_compile_options(test_granite_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_granite_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_granite_cu PRIVATE Catch2::Catch2WithMain)
 
 add_executable(test_granite_dense_kernels)
@@ -662,8 +662,8 @@ target_compile_options(test_blackwell_tc_cu PRIVATE
     --generate-code=arch=compute_121a,code=sm_121a;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_blackwell_tc_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
@@ -702,8 +702,8 @@ target_compile_options(test_lsx_kernels_cu PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_lsx_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_lsx_kernels_cu PRIVATE Catch2::Catch2WithMain)
 
 foreach(qt test_lsx_kernels)
@@ -768,12 +768,12 @@ target_compile_options(test_qwen_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_qwen_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
 )
@@ -984,7 +984,7 @@ target_compile_definitions(test_glm_moe_flash_convert PRIVATE
 target_link_libraries(test_glm_moe_flash_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_convert PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_glm_moe_flash_convert POST_BUILD
@@ -1449,7 +1449,7 @@ add_test(NAME test_gemma_moe_loader COMMAND test_gemma_moe_loader)
 # ── Gemma-4 model test (factory + Load + Infer, synthetic geometry) ────
 add_executable(test_gemma_moe_model test_gemma_moe_model.cpp)
 target_include_directories(test_gemma_moe_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_gemma_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -1523,7 +1523,7 @@ target_compile_definitions(test_model_runtime PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_include_directories(test_model_runtime PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 target_link_libraries(test_model_runtime PRIVATE lsxcommon Catch2::Catch2WithMain)
 
 # ── InferenceEngine singleton + TokenChunk streaming/abort test (host-only) ──
@@ -1561,7 +1561,7 @@ endif()
 add_test(NAME test_model_runtime COMMAND test_model_runtime)
 
 # ── Perf baseline guard (real weights, label perf — manual command) ──────
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_PERF)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_PERF)
 add_executable(test_perf_baseline test_perf_baseline.cpp)
 target_compile_definitions(test_perf_baseline PRIVATE
     LSX_SOURCE_DIR="${LSX_SRC_DIR_FWD_PERF}")
@@ -1711,7 +1711,7 @@ set_tests_properties(test_perf_baseline_granite_4_2_30b
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_deepseek_nvfp4_repack PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
 # Scale-primitive contract (fast) and the repack-tool e2e (convert, [tool]
@@ -2025,11 +2025,11 @@ target_compile_options(test_deepseek_moe_inference_kernels_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_inference_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -2076,12 +2076,12 @@ target_compile_options(test_deepseek_moe_moe_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_moe_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -2128,12 +2128,12 @@ target_compile_options(test_deepseek_moe_arena_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_arena_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -2180,11 +2180,11 @@ target_compile_options(test_sampling_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_sampling_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
@@ -2228,8 +2228,8 @@ target_compile_options(test_glm_moe_load_fast_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_glm_moe_load_fast_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2275,8 +2275,8 @@ target_compile_options(test_glm_moe_model_lifecycle_cu PRIVATE
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_glm_moe_model_lifecycle_cu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2323,8 +2323,8 @@ target_compile_options(test_deepseek_moe_load_fast_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_deepseek_moe_load_fast_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2479,8 +2479,8 @@ target_compile_options(test_kimi_moe_int4_dequant_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_int4_dequant_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2554,8 +2554,8 @@ target_compile_options(test_kimi_moe_router_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_router_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2592,8 +2592,8 @@ target_compile_options(test_kimi_moe_attention_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_attention_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2630,8 +2630,8 @@ target_compile_options(test_kimi_moe_experts_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_experts_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2673,8 +2673,8 @@ target_compile_options(test_kimi_moe_tc_batch_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_tc_batch_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2714,8 +2714,8 @@ target_compile_options(test_kimi_moe_tc_diag_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_tc_diag_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
@@ -2810,7 +2810,7 @@ target_compile_definitions(test_kimi_moe_inference PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 target_include_directories(test_kimi_moe_inference PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
 )
 target_link_libraries(test_kimi_moe_inference PRIVATE lsxcommon Catch2::Catch2WithMain)
 
@@ -2837,14 +2837,14 @@ target_compile_options(test_kimi_moe_int4_real_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_kimi_moe_int4_real_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_kimi_moe_int4_real_cu PRIVATE LOGESTIX_HAS_CUDA)
 target_link_libraries(test_kimi_moe_int4_real_cu PRIVATE Catch2::Catch2WithMain)
@@ -2964,7 +2964,7 @@ set_tests_properties(test_ornith_moe_loader PROPERTIES
 
 add_executable(test_ornith_moe_model test_ornith_moe_model.cpp)
 target_include_directories(test_ornith_moe_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_ornith_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_ornith_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -2981,7 +2981,7 @@ set_tests_properties(test_ornith_moe_model PROPERTIES
 
 add_executable(test_ornith_moe_selfcheck test_ornith_moe_selfcheck.cpp)
 target_include_directories(test_ornith_moe_selfcheck PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_ornith_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3016,21 +3016,21 @@ target_compile_options(test_qwen_moe_kernels_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_qwen_moe_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3074,21 +3074,21 @@ target_compile_options(test_ornith_moe_kernels_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_ornith_moe_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_ornith_moe_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3145,7 +3145,7 @@ set_tests_properties(test_qwen_moe_loader PROPERTIES
 
 add_executable(test_qwen_moe_model test_qwen_moe_model.cpp)
 target_include_directories(test_qwen_moe_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_qwen_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -3162,7 +3162,7 @@ set_tests_properties(test_qwen_moe_model PROPERTIES
 
 add_executable(test_qwen_moe_36_model test_qwen_moe_36_model.cpp)
 target_include_directories(test_qwen_moe_36_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_36_model PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 target_link_libraries(test_qwen_moe_36_model PRIVATE lsxcommon Catch2::Catch2WithMain)
@@ -3179,7 +3179,7 @@ set_tests_properties(test_qwen_moe_36_model PROPERTIES
 
 add_executable(test_qwen_moe_36_selfcheck test_qwen_moe_36_selfcheck.cpp)
 target_include_directories(test_qwen_moe_36_selfcheck PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_36_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3196,7 +3196,7 @@ set_tests_properties(test_qwen_moe_36_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
 target_include_directories(test_qwen_moe_selfcheck PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_compile_definitions(test_qwen_moe_selfcheck PRIVATE
     TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
@@ -3229,7 +3229,7 @@ set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD)
 target_compile_definitions(test_code_naming_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD}\"")
 add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
@@ -3239,7 +3239,7 @@ add_test(NAME test_code_naming_guard COMMAND test_code_naming_guard)
 add_executable(test_absl_format_guard test_absl_format_guard.cpp)
 target_link_libraries(test_absl_format_guard PRIVATE Catch2::Catch2WithMain
     absl::str_format)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_FMT)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_FMT)
 target_compile_definitions(test_absl_format_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_FMT}\"")
 add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
@@ -3249,7 +3249,7 @@ add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
 # Host-only static scan of libs/, apps/, tests/ and tools/.
 add_executable(test_license_guard test_license_guard.cpp)
 target_link_libraries(test_license_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_LIC)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LIC)
 target_compile_definitions(test_license_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LIC}\"")
 add_test(NAME test_license_guard COMMAND test_license_guard)
@@ -3258,21 +3258,21 @@ add_test(NAME test_license_guard COMMAND test_license_guard)
 add_executable(test_kimi_moe_expert_cache test_kimi_moe_expert_cache.cpp)
 target_link_libraries(test_kimi_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_kimi_moe_expert_cache PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include")
 add_test(NAME test_kimi_moe_expert_cache COMMAND test_kimi_moe_expert_cache)
 
 # ── Nemotron-3.5 host reference math (header-only, no CUDA) ───────────────
 add_executable(test_nemotron_moe_math test_nemotron_moe_math.cpp)
 target_link_libraries(test_nemotron_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_math PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_nemotron_moe_math COMMAND test_nemotron_moe_math)
 
 # ── GigaChat3.5 host reference math (header-only, no CUDA) ────────────────
 add_executable(test_gigachat_moe_math test_gigachat_moe_math.cpp)
 target_link_libraries(test_gigachat_moe_math PRIVATE Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_math PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_math COMMAND test_gigachat_moe_math)
 
 # ── GigaChat3.5-432B-A28B-Reasoning tests (hybrid MLA+GDN+MoE) ────────────
@@ -3282,7 +3282,7 @@ target_compile_definitions(test_gigachat_moe_convert PRIVATE
 target_link_libraries(test_gigachat_moe_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_convert PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_gigachat_moe_convert POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3299,21 +3299,21 @@ add_executable(test_gigachat_moe_kernels test_gigachat_moe_kernels.cpp)
 target_link_libraries(test_gigachat_moe_kernels PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_kernels PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_kernels COMMAND test_gigachat_moe_kernels)
 
 add_executable(test_gigachat_moe_loader test_gigachat_moe_loader.cpp)
 target_link_libraries(test_gigachat_moe_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_loader PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_loader COMMAND test_gigachat_moe_loader)
 
 add_executable(test_gigachat_moe_model test_gigachat_moe_model.cpp)
 target_link_libraries(test_gigachat_moe_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_model PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_model COMMAND test_gigachat_moe_model)
 set_tests_properties(test_gigachat_moe_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
@@ -3322,7 +3322,7 @@ add_executable(test_gigachat_moe_selfcheck test_gigachat_moe_selfcheck.cpp)
 target_link_libraries(test_gigachat_moe_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_selfcheck PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_selfcheck COMMAND test_gigachat_moe_selfcheck)
 set_tests_properties(test_gigachat_moe_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4)
@@ -3331,14 +3331,14 @@ add_executable(test_gigachat_moe_expert_cache test_gigachat_moe_expert_cache.cpp
 target_link_libraries(test_gigachat_moe_expert_cache PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_expert_cache PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 add_test(NAME test_gigachat_moe_expert_cache COMMAND test_gigachat_moe_expert_cache)
 
 add_executable(test_gigachat_moe_load_fast test_gigachat_moe_load_fast.cpp)
 target_link_libraries(test_gigachat_moe_load_fast PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_gigachat_moe_load_fast PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src")
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 if(WIN32)
     add_custom_command(TARGET test_gigachat_moe_load_fast POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3363,22 +3363,22 @@ target_compile_options(test_gigachat_moe_devkernels_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_devkernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_gigachat_moe_devkernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3420,22 +3420,22 @@ target_compile_options(test_gigachat_moe_attn_cu PRIVATE
     -fmad=false;-Xcompiler=-ffp-contract=off;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_attn_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_gigachat_moe_attn_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3474,22 +3474,22 @@ target_compile_options(test_gigachat_moe_parity_cu PRIVATE
     -fmad=false;-Xcompiler=-ffp-contract=off;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_gigachat_moe_parity_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_gigachat_moe_parity_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3521,7 +3521,7 @@ target_compile_definitions(test_nemotron_moe_convert PRIVATE
 target_link_libraries(test_nemotron_moe_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_convert PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_nemotron_moe_convert POST_BUILD
@@ -3545,7 +3545,7 @@ add_executable(test_nemotron_moe_loader test_nemotron_moe_loader.cpp)
 target_link_libraries(test_nemotron_moe_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_loader PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_loader COMMAND test_nemotron_moe_loader)
 
 # test_nemotron_moe_expert_cache — routed-expert host store + device LRU
@@ -3555,7 +3555,7 @@ add_executable(test_nemotron_moe_expert_cache
 target_link_libraries(test_nemotron_moe_expert_cache PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_expert_cache PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_expert_cache
          COMMAND test_nemotron_moe_expert_cache)
 
@@ -3565,7 +3565,7 @@ target_compile_definitions(test_nemotron_moe_model PRIVATE
 target_link_libraries(test_nemotron_moe_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_model PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_model COMMAND test_nemotron_moe_model)
 
 # test_nemotron_moe_kernels — Mamba-2 mixer kernels. Same OBJECT-lib pattern as
@@ -3581,22 +3581,22 @@ target_compile_options(test_nemotron_moe_kernels_cu PRIVATE
     --generate-code=arch=compute_121,code=sm_121;
     $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
 target_include_directories(test_nemotron_moe_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/flatbuffers/include"
-    "${CMAKE_SOURCE_DIR}/third_party/libzmq/include"
+    "${PROJECT_SOURCE_DIR}/third_party/flatbuffers/include"
+    "${PROJECT_SOURCE_DIR}/third_party/libzmq/include"
     "${CMAKE_BINARY_DIR}/third_party/libzmq"
-    "${CMAKE_SOURCE_DIR}/libs/lsxnetwork/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxnetwork/include"
     "${CMAKE_BINARY_DIR}/libs/lsxnetwork/generated"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_compile_definitions(test_nemotron_moe_kernels_cu PRIVATE
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -3632,7 +3632,7 @@ add_executable(test_nemotron_moe_selfcheck test_nemotron_moe_selfcheck.cpp)
 target_link_libraries(test_nemotron_moe_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_selfcheck PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_nemotron_moe_selfcheck COMMAND test_nemotron_moe_selfcheck)
 set_tests_properties(test_nemotron_moe_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4
@@ -3645,7 +3645,7 @@ target_compile_definitions(test_qwen_moe_exp_convert PRIVATE
 target_link_libraries(test_qwen_moe_exp_convert PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_convert PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_convert POST_BUILD
@@ -3671,7 +3671,7 @@ target_compile_definitions(test_qwen_moe_exp_loader PRIVATE
 target_link_libraries(test_qwen_moe_exp_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_loader PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_loader POST_BUILD
@@ -3703,16 +3703,16 @@ target_compile_options(test_qwen_moe_exp_kernels_cu PRIVATE
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(test_qwen_moe_exp_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_link_libraries(test_qwen_moe_exp_kernels_cu PRIVATE
     Catch2::Catch2WithMain)
@@ -3722,7 +3722,7 @@ set_target_properties(test_qwen_moe_exp_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_qwen_moe_exp_kernels PRIVATE
     test_qwen_moe_exp_kernels_cu lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_kernels PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3745,16 +3745,16 @@ target_compile_options(test_glm_moe_flash_kernels_cu PRIVATE
     $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
 )
 target_include_directories(test_glm_moe_flash_kernels_cu PRIVATE
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/include"
-    "${CMAKE_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/abseil-cpp-src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/include"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
 target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE
     Catch2::Catch2WithMain)
@@ -3764,7 +3764,7 @@ set_target_properties(test_glm_moe_flash_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_glm_moe_flash_kernels PRIVATE
     test_glm_moe_flash_kernels_cu lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_kernels PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_glm_moe_flash_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3780,7 +3780,7 @@ target_compile_definitions(test_glm_moe_flash_loader PRIVATE
 target_link_libraries(test_glm_moe_flash_loader PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_loader PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_glm_moe_flash_loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3800,7 +3800,7 @@ target_compile_definitions(test_glm_moe_flash_model PRIVATE
 target_link_libraries(test_glm_moe_flash_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_model PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_glm_moe_flash_model POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3817,7 +3817,7 @@ add_executable(test_glm_moe_flash_selfcheck test_glm_moe_flash_selfcheck.cpp)
 target_link_libraries(test_glm_moe_flash_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_glm_moe_flash_selfcheck PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_glm_moe_flash_selfcheck POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3834,7 +3834,7 @@ target_compile_definitions(test_qwen_moe_exp_model PRIVATE
 target_link_libraries(test_qwen_moe_exp_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_model PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_model POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3855,7 +3855,7 @@ add_executable(test_qwen_moe_exp_selfcheck test_qwen_moe_exp_selfcheck.cpp)
 target_link_libraries(test_qwen_moe_exp_selfcheck PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_qwen_moe_exp_selfcheck PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/lsxcommon/src)
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 if(WIN32)
     add_custom_command(TARGET test_qwen_moe_exp_selfcheck POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3876,7 +3876,7 @@ set_tests_properties(test_qwen_moe_exp_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_model_independence_guard test_model_independence_guard.cpp)
 target_link_libraries(test_model_independence_guard PRIVATE Catch2::Catch2WithMain
     absl::btree)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD2)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD2)
 target_compile_definitions(test_model_independence_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD2}\"")
 add_test(NAME test_model_independence_guard COMMAND test_model_independence_guard)
@@ -3885,7 +3885,7 @@ add_test(NAME test_model_independence_guard COMMAND test_model_independence_guar
 # Host-only static scan of tests/CMakeLists.txt (see spec 2026-09-10).
 add_executable(test_ctest_labels_guard test_ctest_labels_guard.cpp)
 target_link_libraries(test_ctest_labels_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_LABELS)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_LABELS)
 target_compile_definitions(test_ctest_labels_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_LABELS}\"")
 add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
@@ -3896,7 +3896,7 @@ add_test(NAME test_ctest_labels_guard COMMAND test_ctest_labels_guard)
 # fixture-borrowing ban (test-side mirror of model independence).
 add_executable(test_model_suite_guard test_model_suite_guard.cpp)
 target_link_libraries(test_model_suite_guard PRIVATE Catch2::Catch2WithMain)
-file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" LSX_SRC_DIR_FWD_SUITE)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_SUITE)
 target_compile_definitions(test_model_suite_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_SUITE}\"")
 add_test(NAME test_model_suite_guard COMMAND test_model_suite_guard)

@@ -101,13 +101,13 @@ set(LSXCOMMON_CU_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CUDA_INCLUDE_DIR}"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/thrust"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/cub"
-    "${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
     "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
     "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
-    "${CMAKE_SOURCE_DIR}/third_party/simdjson/singleheader"
+    "${PROJECT_SOURCE_DIR}/third_party/simdjson/singleheader"
 )
 set(LSXCOMMON_CU_DEFS
     THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
@@ -461,9 +461,9 @@ target_include_directories(lsxcommon
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
         "$<BUILD_INTERFACE:${CUDA_INCLUDE_DIR}>"
-        "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/thrust>"
-        "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/cub>"
-        "$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/cccl/libcudacxx/include>"
+        "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cccl/thrust>"
+        "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cccl/cub>"
+        "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include>"
         "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src>"
         "$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/_deps/arrow-build/src>"
 )
