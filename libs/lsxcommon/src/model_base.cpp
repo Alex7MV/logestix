@@ -4,11 +4,10 @@
 #include "lsxcommon/perf_calibration.h"
 
 #include <absl/strings/str_format.h>
-#include <arrow/io/file.h>
 #include <cstdlib>
-#include <filesystem>
 
 #include "lsxcommon/log.h"
+#include "lsxcommon/tokenizer_arrows.h"
 
 namespace lsxcommon {
 
@@ -70,43 +69,15 @@ bool ModelBase::LoadTokenizerDb(const std::string &model_path)
 {
     if (tok_db_) return true;
     tok_db_ = std::make_unique<ArrowTokenizerDb>();
-    auto pinned = std::filesystem::path(model_path) / "logestix" / "pinned";
-    // MoE layouts keep their own root (e.g. logestix-qwen35moe/pinned).
-    if (!std::filesystem::exists(pinned)) {
-        for (const char *alt : {"logestix-qwen35moe", "logestix-glm",
-                                "logestix-kimi", "logestix-gemma"}) {
-            auto cand = std::filesystem::path(model_path) / alt / "pinned";
-            if (std::filesystem::exists(cand)) {
-                pinned = cand;
-                break;
-            }
-        }
-    }
-    auto v = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_vocab.arrow").string(), arrow::io::FileMode::READ);
-    auto m = arrow::io::MemoryMappedFile::Open(
-        (pinned / "tokenizer_merges.arrow").string(), arrow::io::FileMode::READ);
-    if (!v.ok() || !m.ok()) {
+    if (!LoadTokenizerArrows(model_path, *tok_db_)) {
         if (tokenizer_optional_) {
-            log::warn("[model] tokenizer arrows not found (OK for synthetic test)");
+            log::warn(
+                "[model] tokenizer arrows unavailable (OK for synthetic test)");
             return true;
         }
-        log::error(
-            absl::StrFormat("[model] cannot open tokenizer arrows in %s",
-                            pinned.string()));
-        tok_db_.reset();
-        return false;
-    }
-    auto st = load_tokenizer_metadata(*v, *m, *tok_db_);
-    if (!st.ok()) {
-        if (tokenizer_optional_) {
-            log::warn(absl::StrFormat("[model] tokenizer load failed: %s",
-                                      st.ToString()));
-            return true;
-        }
-        log::error(
-            absl::StrFormat("[model] load_tokenizer_metadata: %s",
-                            st.ToString()));
+        log::error(absl::StrFormat(
+            "[model] cannot load tokenizer arrows for %s: %s", model_path,
+            tok_db_->error_msg));
         tok_db_.reset();
         return false;
     }

@@ -1,11 +1,38 @@
 #include "lsxcommon/core.h"
 #include <absl/strings/str_format.h>
 #include "lsxcommon/common.h"
-#include "lsxcommon/model_engine.h"
-#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/log.h"
+#include "lsxcommon/model_engine.h"
+#include "lsxcommon/model_factory.h"
+#include "lsxcommon/model_runtime.h"
 #include "cli.h"
+#include "fabric_server.h"
 #include "validator.h"
+
+#include <atomic>
+#include <csignal>
+#include <memory>
+#include <string>
+
+namespace {
+
+std::atomic<bool>* g_serve_stop = nullptr;
+
+void OnServeSignal(int) {
+    if (g_serve_stop != nullptr) g_serve_stop->store(true);
+}
+
+std::unique_ptr<lsxcommon::IModel> LoadServeModel(const std::string& path) {
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = path;
+    cfg.fast_math = false;
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kAuto;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    if (!model || !model->Load()) return nullptr;
+    return model;
+}
+
+}  // namespace
 
 int main(int argc, char *argv[]) {
     const lsxfabric::FabricCliArgs cli =
@@ -22,7 +49,23 @@ int main(int argc, char *argv[]) {
     {
         lsxcommon::InferenceEngine::Session engine_session;
         lsxcommon::log::info(absl::StrFormat("Model path: %s", cli.model_path));
-        if (cli.testprompt) {
+        if (cli.serve) {
+            auto model = LoadServeModel(cli.model_path);
+            if (!model) {
+                lsxcommon::log::error("Failed to load model for --serve");
+                rc = 1;
+            } else {
+                std::atomic<bool> stop{false};
+                g_serve_stop = &stop;
+                std::signal(SIGINT, OnServeSignal);
+                std::signal(SIGTERM, OnServeSignal);
+                lsxfabric::FabricServer server(
+                    *model, static_cast<std::uint32_t>(cli.max_gen));
+                rc = server.Run(cli.listen, stop);
+                g_serve_stop = nullptr;
+                model->Unload();
+            }
+        } else if (cli.testprompt) {
             lsxcommon::runtime::GenerationCliArgs args;
             args.model_path = cli.model_path;
             args.prompt = cli.prompt;
@@ -34,7 +77,7 @@ int main(int argc, char *argv[]) {
             rc = lsxfabric::RunModelValidation(cli.model_path) ? 0 : 1;
         } else {
             lsxcommon::log::error(
-                "No run mode selected: pass --validate or --testprompt");
+                "No run mode selected: pass --serve, --validate or --testprompt");
             rc = 1;
         }
     }

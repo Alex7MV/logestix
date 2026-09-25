@@ -1,5 +1,5 @@
-add_executable(taskmosaic src/main.cpp)
-target_link_libraries(taskmosaic PRIVATE lsxcommon arrow_shared arrow_cuda_shared ${CMAKE_DL_LIBS})
+add_executable(taskmosaic src/main.cpp src/cli.cpp)
+target_link_libraries(taskmosaic PRIVATE lsxcommon lsxnetwork arrow_shared arrow_cuda_shared ${CMAKE_DL_LIBS})
 
 lsx_copy_third_party_notices(taskmosaic)
 

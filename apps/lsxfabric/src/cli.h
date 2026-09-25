@@ -13,6 +13,8 @@ struct FabricCliArgs {
     int max_gen = 64;
     bool validate = false;
     bool testprompt = false;
+    bool serve = false;
+    std::string listen = "tcp://*:5555";
 };
 
 // Parses argv (argv[0] is skipped). Unknown tokens — including the
