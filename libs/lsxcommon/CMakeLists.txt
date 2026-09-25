@@ -70,6 +70,8 @@ add_library(lsxcommon STATIC
     src/runtime_tuner.cpp
     src/schema.cpp
     src/tokenizer.cpp
+    src/tokenizer_arrows.cpp
+    src/prompt_bridge.cpp
     src/tokenizer_convert.cpp
     src/unicode.cpp
     src/vram_estimate.cpp
