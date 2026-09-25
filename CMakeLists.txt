@@ -313,7 +313,7 @@ add_subdirectory(third_party/libzmq)
 # next to every application binary (see lsx_copy_third_party_notices) and into
 # install/bin. Debug builds are unaffected. The tree is unmodified, so the
 # archive is the exact upstream libzmq source (see DEPENDENCIES.md).
-file(READ "${CMAKE_SOURCE_DIR}/third_party/libzmq/include/zmq.h" _lsx_zmq_h)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libzmq/include/zmq.h" _lsx_zmq_h)
 string(REGEX MATCH "#define ZMQ_VERSION_MAJOR ([0-9]+)" _ "${_lsx_zmq_h}")
 set(_lsx_zmq_major "${CMAKE_MATCH_1}")
 string(REGEX MATCH "#define ZMQ_VERSION_MINOR ([0-9]+)" _ "${_lsx_zmq_h}")
@@ -347,7 +347,7 @@ if(_lsx_is_release)
                 --prefix=libzmq-${LSX_ZMQ_VERSION}/
                 -o "${LSX_ZMQ_SOURCE_ARCHIVE}"
                 HEAD
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/third_party/libzmq"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libzmq"
         COMMENT "Packaging libzmq ${LSX_ZMQ_VERSION} source for redistribution (MPL-2.0 §3.2)"
         VERBATIM
     )
@@ -369,7 +369,7 @@ endif()
 function(lsx_copy_third_party_notices target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES"
+            "${PROJECT_SOURCE_DIR}/THIRD_PARTY_NOTICES"
             "$<TARGET_FILE_DIR:${target}>/THIRD_PARTY_NOTICES"
         COMMENT "Copy THIRD_PARTY_NOTICES next to ${target}"
     )
@@ -381,14 +381,14 @@ function(lsx_copy_third_party_notices target)
                 "-DLSX_CONFIG=$<CONFIG>"
                 "-DLSX_ZMQ_ARCHIVE=${LSX_ZMQ_SOURCE_ARCHIVE}"
                 "-DLSX_DEST=$<TARGET_FILE_DIR:${target}>"
-                -P "${CMAKE_SOURCE_DIR}/cmake/copy_mpl_sources.cmake"
+                -P "${PROJECT_SOURCE_DIR}/cmake/copy_mpl_sources.cmake"
             COMMENT "Ship the libzmq source archive next to ${target} (MPL-2.0 §3.2)"
             VERBATIM
         )
     endif()
 endfunction()
 
-install(FILES "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES" DESTINATION bin)
 
 # ── Consumer switches ─────────────────────────────────────────────────────────
 # When logestix is consumed as a dependency (via FetchContent or
