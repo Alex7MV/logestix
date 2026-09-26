@@ -81,6 +81,13 @@ procedure — `perf-tuning-a-model`.
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`.
+  FSISelfCheck (`fsi_selfcheck.{h,cpp}`, host-only, model-neutral; capture
+  `tools/fsi_capture.py` + `tools/fsi_prompts.json`; per-family goldens
+  `tests/fixtures/fsi/<type>.json`; separate from SelfCheck — compares the
+  converted model's canonicalized answer at `kOff` to a golden captured from the
+  source safetensors; `lsxbenchmark --fsi-selfcheck`; per-family
+  `test_<family>_fsi_selfcheck.cpp`, label `inference`, SKIP 4; findings
+  `docs/FSI_SELFCHECK_FINDINGS.md`).
   Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
