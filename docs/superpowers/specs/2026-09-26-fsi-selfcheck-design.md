@@ -9,9 +9,17 @@
 
 ## 1. Purpose
 
-Add a deterministic, model-parity gate to the Model Ingestion Protocol,
-analogous to `SelfCheck` ("The capital of France is" -> "Paris") but keyed to a
-fixed financial-services prompt set.
+Add a deterministic, model-parity gate to the Model Ingestion Protocol keyed to
+a fixed financial-services prompt set.
+
+**FSISelfCheck is a separate functionality from `SelfCheck`, not an extension of
+it.** It is analogous only in role (a model-parity gate). It shares no API,
+state, golden, environment variable, result type or ctest target with
+`SelfCheck`: it depends solely on the model-neutral `IModel`
+(`Load`/`Infer`/`Unload`/`Type`/`Tokenizer`) surface, and never calls
+`IModel::SelfCheck`, `RunParisSelfCheck`, or reads `selfcheck_passed` /
+`LSX_SELFCHECK_EXPECT_HASH`. The decoupling invariants are enumerated in
+section 3.5.
 
 The gate is:
 
@@ -36,8 +44,10 @@ In scope:
 - A host-only, model-neutral capture/verify contract in `lsxcommon`.
 - A Python capture script (HF transformers, generic + per-model overrides).
 - Committed per-model golden JSON under `tests/fixtures/fsi/`.
-- Host-only unit tests (fake model, no GPU) and per-family real-model tests.
-- `lsxbenchmark --fsi-selfcheck` CLI parity with `--selfcheck`.
+- Host-only unit tests (fake model, no GPU) and separate per-family real-model
+  tests.
+- A separate `lsxbenchmark --fsi-selfcheck` entry point (not a `--selfcheck`
+  variant).
 
 Out of scope:
 
@@ -148,6 +158,30 @@ Expected Template: Drawdown>Threshold
   `--fsi-selfcheck` regardless of flags.
 - The extraction/normalization function and the harness are host-only and
   unit-tested without a GPU (fake `IModel`).
+
+## 3.5 Decoupling invariants (FSISelfCheck independent of SelfCheck)
+
+These are invariants, not guidelines. A change that violates any of them is a
+design regression.
+
+| Dimension | SelfCheck | FSISelfCheck |
+|---|---|---|
+| Entry point | `IModel::SelfCheck`, `runtime::RunParisSelfCheck` | `fsi::RunFsiSelfCheck` (never calls the former) |
+| Input | hardcoded `"The capital of France is"` | golden `input_ids` captured from the safetensors model |
+| Reference | in-test literal `"Paris"` | committed per-model golden JSON |
+| Criterion | top-1 / short-prefix text, plus optional logits-hash env gate | normalized/extracted answer `==` golden `expected` |
+| Result type | `gpu::InferenceResult.selfcheck_passed` | `fsi::FsiResult.all_passed` (separate struct) |
+| Numeric mode | `kAuto` | `kOff` |
+| Env gates | `LSX_SELFCHECK_EXPECT_HASH` | `LSX_FSI_GOLDEN_DIR` only |
+| CLI | `--selfcheck` | `--fsi-selfcheck` |
+| Host unit test | `tests/test_model_runtime.cpp` | `tests/test_fsi_selfcheck.cpp` |
+| Real-model test | `tests/test_<family>_selfcheck.cpp` | `tests/test_<family>_fsi_selfcheck.cpp` |
+| ctest target | `test_<family>_selfcheck` | `test_<family>_fsi_selfcheck` |
+
+Shared, intentionally: the neutral `IModel` inference surface
+(`Load`/`Infer`/`Unload`), `ArrowTokenizerDb`, and
+`runtime::DecodeGeneratedText` (all model-neutral infrastructure, not
+SelfCheck-specific). Nothing else is shared.
 
 ## 4. Extraction / normalization contract
 
@@ -321,14 +355,18 @@ New `tests/test_fsi_selfcheck.cpp`, model-neutral, label `fast`:
 - `RunFsiSelfCheck` against a fake `IModel` returning canned generated token
   ids: all-pass, one mismatch, inference error propagation, short answer.
 
-### 8.2 Per-family real-model tests
+### 8.2 Per-family real-model tests (separate target, no SelfCheck coupling)
 
-Add one `TEST_CASE("... FSI SelfCheck ...")` to each existing
-`tests/test_<family>_selfcheck.cpp` (same binary/target, so label `inference`
-and `SKIP_RETURN_CODE 4` already hold, and `test_model_suite_guard` needs no
-stage change):
+Each family gets its **own** FSI test file and ctest target; the existing
+`test_<family>_selfcheck.cpp` file and `test_<family>_selfcheck` target are
+neither modified nor reused:
 
-- Reuse the file's existing vault-path helper.
+- New `tests/test_<family>_fsi_selfcheck.cpp` ->
+  `add_test(NAME test_<family>_fsi_selfcheck ...)`, label `inference`,
+  `SKIP_RETURN_CODE 4`.
+- The file copies the family's existing vault-path-helper *pattern* (self
+  contained, not `#include`d from the selfcheck test) and calls only the
+  model-neutral `fsi::` harness.
 - `SKIP` when the converted model is absent **or** the golden JSON is absent.
 - Create the model with `fast_math_mode = kOff`.
 - `REQUIRE(result.all_passed)` and, on failure, `INFO` the per-case
@@ -336,6 +374,14 @@ stage change):
 - Golden path via a forwarded `LSX_FSI_GOLDEN_DIR` compile definition
   (same CMake pattern as `LSX_SOURCE_DIR` / `TOKENIZER_TEST_DATA_DIR`), with an
   env override for ad-hoc runs.
+
+### 8.2.1 Suite-guard registration
+
+`test_model_suite_guard.cpp::Suites()` gains an `"fsi"` stage per model (in the
+same commit as each test), so the FSI gate is a first-class lifecycle stage
+tracked independently of `"selfcheck"`. The guard's skip check is extended to
+require `SKIP_RETURN_CODE 4` on `"fsi"`-stage targets exactly as it does for
+`"selfcheck"`-stage targets.
 
 Families: glm-5.2, glm-5.3-flash, deepseek-v4-flash, deepseek-v4.1-flash,
 qwen3.5-9b, qwen3.8-27b, qwen3.5-35b-a3b, qwen3.6-35b-a3b, ornith-1.5-35b-a3b,
@@ -350,19 +396,23 @@ granite-4.2-30b.
 3. Failing JSON parse tests; implement; green.
 4. Failing fake-model `RunFsiSelfCheck` tests; implement; green.
 5. `tools/fsi_capture.py --selftest` (formula checks) implemented and run.
-6. Pilot: capture the Qwen3.6-35B-A3B golden; add its per-family TEST_CASE;
+6. Pilot: capture the Qwen3.6-35B-A3B golden; add the separate
+   `tests/test_qwen_moe_36_fsi_selfcheck.cpp` target + suite-guard `fsi` stage;
    run green on the real converted model.
-7. Roll the per-family TEST_CASE + golden out to the remaining families.
+7. Roll the separate per-family FSI test target + golden out to the remaining
+   families.
 8. CLI `--fsi-selfcheck` + `RunCliFsiSelfCheck`.
 
 ### 8.4 Guards / docs
 
-- No new family/variant/role token -> `test_code_naming_guard` untouched.
+- No new family/variant/role token -> `test_code_naming_guard` untouched
+  (`fsi_selfcheck.h`/`.cpp` have no family stem and are not scanned; test file
+  names are not scanned at all).
 - No new ctest label -> `test_ctest_labels_guard` untouched.
-- `test_model_suite_guard` untouched (FSI lives in the existing selfcheck
-  target).
-- `AGENTS.md` Structure section gains `fsi_selfcheck` and `tools/fsi_capture.py`
-  / `tests/fixtures/fsi/` on landing.
+- `test_model_suite_guard` gains an `fsi` stage per model and the extended skip
+  check (section 8.2.1) in the same commit as each FSI target.
+- `AGENTS.md` Structure section gains `fsi_selfcheck`, `tools/fsi_capture.py`,
+  `tests/fixtures/fsi/` and the FSI test files on landing.
 
 ## 9. Risks
 
@@ -398,7 +448,11 @@ granite-4.2-30b.
 - [ ] `ExtractFsiFormula` + golden parse + fake-model harness unit-tested
       (label `fast`), green.
 - [ ] `tools/fsi_prompts.json`, `tools/fsi_capture.py` with `--selftest` pass.
-- [ ] Pilot golden + per-family TEST_CASE green on the real converted model.
-- [ ] Per-family TEST_CASE + golden present for every ingested family.
+- [ ] Pilot golden + separate `test_qwen_moe_36_fsi_selfcheck` green on the real
+      converted model.
+- [ ] Separate `test_<family>_fsi_selfcheck` target + golden present for every
+      ingested family; suite guard `fsi` stage registered.
 - [ ] `lsxbenchmark --fsi-selfcheck` runs and returns 0 on a passing model.
-- [ ] All four guard tests green; `AGENTS.md` updated.
+- [ ] `test_<family>_selfcheck` and `IModel::SelfCheck` are byte-for-byte
+      unchanged (decoupling invariants, section 3.5); guards green; `AGENTS.md`
+      updated.
