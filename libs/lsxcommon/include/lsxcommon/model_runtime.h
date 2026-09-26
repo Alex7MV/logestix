@@ -85,6 +85,10 @@ struct GenerationCliArgs {
 // process exit code. The caller owns Core::Initialize/Shutdown.
 int RunCliGeneration(const GenerationCliArgs &args);
 int RunCliSelfCheck(const GenerationCliArgs &args);
+// FSI golden-parity gate (separate from SelfCheck): resolves
+// <LSX_FSI_GOLDEN_DIR>/<model Type()>.json, runs the captured input_ids at
+// FastMathMode::kOff, and compares the extracted answer to the golden.
+int RunCliFsiSelfCheck(const GenerationCliArgs &args);
 // Speed-measurement lifecycle (lsxbenchmark --bench): Create -> Load ->
 // frame/encode -> Infer -> print -> Unload. Runs at args.fast_math_mode
 // (kAuto = maximum-speed auto policy; kOff = bit-exact measurement).

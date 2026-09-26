@@ -21,6 +21,9 @@ BenchmarkCliArgs ParseBenchmarkCliArgs(int argc, char *argv[]) {
         else if (std::strcmp(argv[i], "--selfcheck") == 0) {
             a.selfcheck = true;
             a.bench = false;
+        } else if (std::strcmp(argv[i], "--fsi-selfcheck") == 0) {
+            a.fsi_selfcheck = true;
+            a.bench = false;
         } else if (std::strcmp(argv[i], "--bit-exact") == 0)
             a.bit_exact = true;
         else if (std::strcmp(argv[i], "--max-gen") == 0 && i + 1 < argc)

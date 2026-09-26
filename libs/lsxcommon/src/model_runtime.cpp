@@ -15,6 +15,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/safetensors.h"
+#include "lsxcommon/fsi_selfcheck.h"
 
 namespace lsxcommon {
 namespace runtime {
@@ -288,6 +289,40 @@ int RunCliSelfCheck(const GenerationCliArgs &args)
     lsxcommon::log::info(absl::StrFormat(
         "passed      : %s", result.selfcheck_passed ? "yes" : "no"));
     return result.selfcheck_passed ? 0 : 1;
+}
+
+int RunCliFsiSelfCheck(const GenerationCliArgs &args)
+{
+    lsxcommon::log::info("Running FSI self-check (golden parity)...");
+    const char *dir = std::getenv("LSX_FSI_GOLDEN_DIR");
+    if (!dir || !*dir) {
+        lsxcommon::log::error(
+            "LSX_FSI_GOLDEN_DIR is not set (directory with <model_type>.json)");
+        return 1;
+    }
+    CliModel m = CreateCliModel(args.model_path, FastMathMode::kOff);
+    if (!m.ok) return 1;
+    const std::string golden_path =
+        std::string(dir) + "/" + m.model->Type() + ".json";
+    fsi::FsiGolden golden;
+    std::string err;
+    if (!fsi::LoadFsiGoldenFile(golden_path, golden, &err)) {
+        lsxcommon::log::error(
+            absl::StrFormat("FSI golden load failed: %s", err.c_str()));
+        m.model->Unload();
+        return 1;
+    }
+    const fsi::FsiResult result = fsi::RunFsiSelfCheck(*m.model, golden);
+    lsxcommon::log::info("=== lsxbenchmark: fsi-selfcheck ===");
+    for (const fsi::FsiCaseResult &c : result.cases)
+        lsxcommon::log::info(absl::StrFormat(
+            "%s  expected='%s'  extracted='%s'  %s", c.id.c_str(),
+            c.expected.c_str(), c.extracted.c_str(),
+            c.passed ? "PASS" : "FAIL"));
+    lsxcommon::log::info(
+        absl::StrFormat("result   : %s", result.all_passed ? "PASS" : "FAIL"));
+    m.model->Unload();
+    return result.all_passed ? 0 : 1;
 }
 
 int RunCliBenchmark(const GenerationCliArgs &args)
