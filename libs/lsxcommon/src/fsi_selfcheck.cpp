@@ -1,7 +1,10 @@
 #include "lsxcommon/fsi_selfcheck.h"
 
 #include <absl/strings/ascii.h>
+#include <simdjson.h>
 #include <cctype>
+#include <fstream>
+#include <sstream>
 
 namespace lsxcommon {
 namespace fsi {
@@ -118,6 +121,123 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
         break;
     }
     return Normalize(std::string_view(line).substr(a, i - a));
+}
+
+bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error)
+{
+    out = {};
+    simdjson::ondemand::parser parser;
+    simdjson::padded_string pad(json.data(), json.size());
+    simdjson::ondemand::document doc;
+    if (parser.iterate(pad).get(doc) != simdjson::SUCCESS) {
+        if (error) *error = "invalid JSON";
+        return false;
+    }
+    simdjson::ondemand::object root;
+    if (doc.get_object().get(root) != simdjson::SUCCESS) {
+        if (error) *error = "root is not an object";
+        return false;
+    }
+    std::string_view tag;
+    if (root["format"].get_string().get(tag) != simdjson::SUCCESS ||
+        tag != "logestix-fsi-golden") {
+        if (error) *error = "missing/unknown format tag";
+        return false;
+    }
+    std::string_view model_type;
+    if (root["model_type"].get_string().get(model_type) != simdjson::SUCCESS ||
+        model_type.empty()) {
+        if (error) *error = "missing model_type";
+        return false;
+    }
+    out.model_type = std::string(model_type);
+    simdjson::ondemand::array prompts;
+    if (root["prompts"].get_array().get(prompts) != simdjson::SUCCESS) {
+        if (error) *error = "missing prompts array";
+        return false;
+    }
+    for (auto element : prompts) {
+        simdjson::ondemand::object o;
+        if (element.get_object().get(o) != simdjson::SUCCESS) {
+            if (error) *error = "prompt entry is not an object";
+            return false;
+        }
+        FsiGoldenCase c;
+        std::string_view sv;
+        if (o["id"].get_string().get(sv) != simdjson::SUCCESS || sv.empty()) {
+            if (error) *error = "prompt missing id";
+            return false;
+        }
+        c.id = std::string(sv);
+        if (o["kind"].get_string().get(sv) != simdjson::SUCCESS) {
+            if (error) *error = c.id + ": missing kind";
+            return false;
+        }
+        if (sv == "arithmetic") c.kind = FsiKind::kArithmetic;
+        else if (sv == "comparison") c.kind = FsiKind::kComparison;
+        else { if (error) *error = c.id + ": unknown kind"; return false; }
+        if (o["anchor"].get_string().get(sv) != simdjson::SUCCESS ||
+            sv.empty()) {
+            if (error) *error = c.id + ": missing anchor";
+            return false;
+        }
+        c.anchor = std::string(sv);
+        simdjson::ondemand::array ids;
+        if (o["input_ids"].get_array().get(ids) != simdjson::SUCCESS) {
+            if (error) *error = c.id + ": missing input_ids";
+            return false;
+        }
+        for (auto v : ids) {
+            int64_t id = 0;
+            if (v.get_int64().get(id) != simdjson::SUCCESS) {
+                if (error) *error = c.id + ": non-integer input id";
+                return false;
+            }
+            c.input_ids.push_back(static_cast<int32_t>(id));
+        }
+        if (c.input_ids.empty()) {
+            if (error) *error = c.id + ": empty input_ids";
+            return false;
+        }
+        int64_t mnt = 0;
+        if (o["max_new_tokens"].get_int64().get(mnt) == simdjson::SUCCESS &&
+            mnt > 0)
+            c.max_new_tokens = static_cast<int>(mnt);
+        if (o["expected"].get_string().get(sv) != simdjson::SUCCESS ||
+            sv.empty()) {
+            if (error) *error = c.id + ": missing expected";
+            return false;
+        }
+        c.expected = std::string(sv);
+        std::string_view raw;
+        if (o["raw"].get_string().get(raw) == simdjson::SUCCESS)
+            c.raw = std::string(raw);
+        out.cases.push_back(std::move(c));
+    }
+    if (out.cases.empty()) {
+        if (error) *error = "no prompts in golden";
+        return false;
+    }
+    return true;
+}
+
+bool LoadFsiGoldenFile(const std::string &path, FsiGolden &out,
+                       std::string *error)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) {
+        if (error) *error = "cannot open " + path;
+        return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    const std::string text = ss.str();
+    std::string local;
+    if (!ParseFsiGolden(text, out, &local)) {
+        if (error) *error = path + ": " + local;
+        return false;
+    }
+    return true;
 }
 
 }  // namespace fsi
