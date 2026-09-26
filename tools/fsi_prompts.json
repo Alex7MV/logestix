@@ -1,0 +1,30 @@
+{
+  "format": "logestix-fsi-prompts",
+  "version": 1,
+  "prompts": [
+    {
+      "id": "FSI-TEST-01",
+      "title": "CONTINUOUS-COMPOUNDING-STRUCT",
+      "kind": "arithmetic",
+      "anchor": "PV",
+      "expected": "PV=CF*((1-exp(-r*n))/(1-exp(-r)))",
+      "body": "[CONTEXT]: FSI-Validation-Core-01 // Financial Structure\nDefine the mathematical execution block for the Present Value (PV) of an annuity-due asset under continuous compounding.\nParameters: CF = 2500000; n = 7; r = 0.0835.\nTask: Format the target PV calculation strictly as a single-line Python-compatible expression using exp() and the exact variable names provided.\nOutput Specification: Output ONLY the raw formula string. Do not use markdown blocks, do not include spaces inside the formula, and do not emit explanatory text.\nExpected Template: PV=CF*((1-exp(-r*n))/(1-exp(-r)))"
+    },
+    {
+      "id": "FSI-TEST-02",
+      "title": "ARBITRAGE-ALGORITHMIC-PATH",
+      "kind": "arithmetic",
+      "anchor": "Balance_Alpha",
+      "expected": "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C",
+      "body": "[CONTEXT]: FSI-Validation-Core-02 // Deterministic Routing Loop\nMap the structural sequence for a 3-leg currency clearing loop with fixed slippage mitigation.\nInitial_State: Balance_Alpha = 100000000.\nLegs: Rate_A=1.083541; Slip_A=0.0005; Rate_B=83.152402; Slip_B=0.0005; Rate_C=0.011104; Slip_C=0.0005.\nTask: Formulate the continuous multi-leg balance mutation sequence in a single line of standard arithmetic operators without spaces.\nOutput Specification: Output ONLY the final math equation string solving for the terminal state of Balance_Alpha using the provided variable names. No text, no markdown blocks.\nExpected Template: Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C"
+    },
+    {
+      "id": "FSI-TEST-03",
+      "title": "BASEL-THRESHOLD-LOGIC",
+      "kind": "comparison",
+      "anchor": "Drawdown",
+      "expected": "Drawdown>Threshold",
+      "body": "[CONTEXT]: FSI-Validation-Core-03 // Boundary Decision Check\nConstruct the evaluation logic for a Basel-compliant threshold boundary breach.\nVariables: Drawdown = 14.999991; Threshold = 15.000000.\nTask: Formulate the exact conditional logical statement that checks if Drawdown strictly exceeds Threshold.\nOutput Specification: Output strictly the standard boolean comparison string without spaces. Do not evaluate numerically, do not include code blocks or text.\nExpected Template: Drawdown>Threshold"
+    }
+  ]
+}
