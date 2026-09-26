@@ -55,6 +55,36 @@ The existing "The capital of France is" -> "Paris" selfcheck passes on this
 converted model, so the divergence only appears on the longer/complex FSI
 prompts. This is a real converted-model finding, not a gate artifact.
 
+#### Nemotron conversion / acceleration investigation (2026-09-26)
+
+Checked whether the divergence is a bug introduced by the perf/"acceleration"
+commits. Evidence (all negative for an acceleration bug):
+
+| Check | Result |
+|---|---|
+| Routed-expert device LRU (`3fb1dbb`) | **Not the cause** — cache loads fully resident (`2944/2944` slots, only the prewarm misses) and the model still diverges. |
+| Batched routed-expert GEMV (`1164799`) | **Not the cause** — at `kOff` it falls back to the pre-acceleration per-expert `RunLsxNvfp4Gemm`; `kAuto` and `kOff` fail identically. |
+| Parallel router top-k (`242463f`) | Reviewed: same max/tie-break (lowest index) as the old serial scan; unit-tested (`test_nemotron_moe_kernels`). |
+| FP16 relu2 / weighted-sum refactor | Numerically identical (relu^2 and the weighted sum are still computed in FP32; accumulation order unchanged). |
+| Recurrent state leak across `Infer` | **No** — `ResetNemotronSession` zeroes mamba/conv/KV state at the start of every `Infer`. |
+| KV/context overflow | **No** — session allocated for `kMaxSeq = 4096`. |
+| Chat framing / special tokens | **Fine** — chat-framed "The capital of France is" answers correctly; high-id BPE tokens (` markdown` = 121468, ` Boundary` = 130036) match HF exactly. |
+| Conversion/kernel/loader integrity | `test_nemotron_moe_{convert,kernels,loader,model,math}` all pass. |
+
+Length sweep vs HF (greedy): exact match at 5 / 68 / 215 prompt tokens; at 425
+tokens the converted model emits `"In"` where HF emits `"The"` (a near-tie
+flip). On raw prompts the converted model matches HF token-for-token, including
+the high-id tokens.
+
+**Conclusion:** no evidence of an acceleration bug. The converted NVFP4 model
+matches BF16 on short/medium and many long prompts, but greedy decoding
+occasionally diverges when the state has accumulated quantization error, and on
+some long/ambiguous FSI prompts that first flip cascades into a different
+answer. This is a quantization-sensitivity limitation of the 4-bit conversion,
+not the LRU/batched/router optimizations. A definitive proof would require a
+higher-precision reference (BF16/FP16 resident) or per-layer hidden-state
+parity against HF; the FSI gate correctly surfaces the divergence.
+
 ## Normalization contract implemented here
 
 - Preferred answer line: the first line where the anchor is immediately
