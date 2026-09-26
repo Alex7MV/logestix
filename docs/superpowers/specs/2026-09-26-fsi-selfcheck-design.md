@@ -299,7 +299,13 @@ std::string LoadFsiGoldenFile(const std::string &path, FsiGolden &out,
                               std::string *error);
 
 // Feeds golden input_ids to the model, decodes, extracts, compares.
+// The 3-arg overload injects the id->text decoder (host unit tests use it to
+// stay tokenizer/GPU-free); the 2-arg overload uses
+// runtime::DecodeGeneratedText(model.Tokenizer(), ids).
+using FsiDecodeFn = std::function<std::string(const std::vector<int32_t> &)>;
 FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden);
+FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden,
+                          const FsiDecodeFn &decode);
 
 }  // namespace fsi
 }  // namespace lsxcommon
