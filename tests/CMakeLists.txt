@@ -3223,6 +3223,244 @@ endif()
 add_test(NAME test_qwen_moe_36_fsi_selfcheck COMMAND test_qwen_moe_36_fsi_selfcheck)
 set_tests_properties(test_qwen_moe_36_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+add_executable(test_glm_moe_fsi_selfcheck test_glm_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_glm_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_glm_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_glm_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_glm_moe_fsi_selfcheck COMMAND test_glm_moe_fsi_selfcheck)
+set_tests_properties(test_glm_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_glm_moe_flash_fsi_selfcheck test_glm_moe_flash_fsi_selfcheck.cpp)
+target_compile_definitions(test_glm_moe_flash_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_glm_moe_flash_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_fsi_selfcheck>")
+    add_custom_command(TARGET test_glm_moe_flash_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_fsi_selfcheck>")
+endif()
+add_test(NAME test_glm_moe_flash_fsi_selfcheck COMMAND test_glm_moe_flash_fsi_selfcheck)
+set_tests_properties(test_glm_moe_flash_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_deepseek_moe_fsi_selfcheck test_deepseek_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_deepseek_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_deepseek_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_deepseek_moe_fsi_selfcheck COMMAND test_deepseek_moe_fsi_selfcheck)
+set_tests_properties(test_deepseek_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_deepseek_moe_v41_fsi_selfcheck test_deepseek_moe_v41_fsi_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_v41_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_deepseek_moe_v41_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_fsi_selfcheck>")
+    add_custom_command(TARGET test_deepseek_moe_v41_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_fsi_selfcheck>")
+endif()
+add_test(NAME test_deepseek_moe_v41_fsi_selfcheck COMMAND test_deepseek_moe_v41_fsi_selfcheck)
+set_tests_properties(test_deepseek_moe_v41_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_qwen_dense_fsi_selfcheck test_qwen_dense_fsi_selfcheck.cpp)
+target_compile_definitions(test_qwen_dense_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_fsi_selfcheck>")
+    add_custom_command(TARGET test_qwen_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_fsi_selfcheck>")
+endif()
+add_test(NAME test_qwen_dense_fsi_selfcheck COMMAND test_qwen_dense_fsi_selfcheck)
+set_tests_properties(test_qwen_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_qwen_dense_27b_fsi_selfcheck test_qwen_dense_27b_fsi_selfcheck.cpp)
+target_compile_definitions(test_qwen_dense_27b_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_dense_27b_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_dense_27b_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_27b_fsi_selfcheck>")
+    add_custom_command(TARGET test_qwen_dense_27b_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_27b_fsi_selfcheck>")
+endif()
+add_test(NAME test_qwen_dense_27b_fsi_selfcheck COMMAND test_qwen_dense_27b_fsi_selfcheck)
+set_tests_properties(test_qwen_dense_27b_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_qwen_moe_fsi_selfcheck test_qwen_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_qwen_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_qwen_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_qwen_moe_fsi_selfcheck COMMAND test_qwen_moe_fsi_selfcheck)
+set_tests_properties(test_qwen_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_qwen_moe_exp_fsi_selfcheck test_qwen_moe_exp_fsi_selfcheck.cpp)
+target_compile_definitions(test_qwen_moe_exp_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_moe_exp_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_exp_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_fsi_selfcheck>")
+    add_custom_command(TARGET test_qwen_moe_exp_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_fsi_selfcheck>")
+endif()
+add_test(NAME test_qwen_moe_exp_fsi_selfcheck COMMAND test_qwen_moe_exp_fsi_selfcheck)
+set_tests_properties(test_qwen_moe_exp_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_gemma_moe_fsi_selfcheck test_gemma_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_gemma_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_gemma_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_gemma_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_gemma_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_gemma_moe_fsi_selfcheck COMMAND test_gemma_moe_fsi_selfcheck)
+set_tests_properties(test_gemma_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_kimi_moe_fsi_selfcheck test_kimi_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_kimi_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_kimi_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_kimi_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_kimi_moe_fsi_selfcheck COMMAND test_kimi_moe_fsi_selfcheck)
+set_tests_properties(test_kimi_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_nemotron_moe_fsi_selfcheck test_nemotron_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_nemotron_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_nemotron_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_nemotron_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_nemotron_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_nemotron_moe_fsi_selfcheck COMMAND test_nemotron_moe_fsi_selfcheck)
+set_tests_properties(test_nemotron_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_gigachat_moe_fsi_selfcheck test_gigachat_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_gigachat_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_gigachat_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_gigachat_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_gigachat_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_gigachat_moe_fsi_selfcheck COMMAND test_gigachat_moe_fsi_selfcheck)
+set_tests_properties(test_gigachat_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_ornith_moe_fsi_selfcheck test_ornith_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_ornith_moe_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_ornith_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_ornith_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_fsi_selfcheck>")
+    add_custom_command(TARGET test_ornith_moe_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_fsi_selfcheck>")
+endif()
+add_test(NAME test_ornith_moe_fsi_selfcheck COMMAND test_ornith_moe_fsi_selfcheck)
+set_tests_properties(test_ornith_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_granite_dense_fsi_selfcheck test_granite_dense_fsi_selfcheck.cpp)
+target_compile_definitions(test_granite_dense_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_granite_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_fsi_selfcheck>")
+    add_custom_command(TARGET test_granite_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_fsi_selfcheck>")
+endif()
+add_test(NAME test_granite_dense_fsi_selfcheck COMMAND test_granite_dense_fsi_selfcheck)
+set_tests_properties(test_granite_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
 target_include_directories(test_qwen_moe_selfcheck PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
@@ -4078,6 +4316,20 @@ set_tests_properties(
     test_qwen_moe_36_model
     test_qwen_moe_36_selfcheck
     test_qwen_moe_36_fsi_selfcheck
+    test_glm_moe_fsi_selfcheck
+    test_glm_moe_flash_fsi_selfcheck
+    test_deepseek_moe_fsi_selfcheck
+    test_deepseek_moe_v41_fsi_selfcheck
+    test_qwen_dense_fsi_selfcheck
+    test_qwen_dense_27b_fsi_selfcheck
+    test_qwen_moe_fsi_selfcheck
+    test_qwen_moe_exp_fsi_selfcheck
+    test_gemma_moe_fsi_selfcheck
+    test_kimi_moe_fsi_selfcheck
+    test_nemotron_moe_fsi_selfcheck
+    test_gigachat_moe_fsi_selfcheck
+    test_ornith_moe_fsi_selfcheck
+    test_granite_dense_fsi_selfcheck
     test_qwen_moe_exp_loader
     test_qwen_moe_exp_model
     test_qwen_moe_exp_selfcheck
