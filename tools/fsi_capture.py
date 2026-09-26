@@ -20,10 +20,11 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
-    # "ornith-1.5-35b-a3b": {"trust_remote_code": True},
+    # Per-type overrides (e.g. {"device_map": "auto"} for a big-VRAM host).
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
-           "device": None, "dtype": None, "enable_thinking": False}
+           "device": None, "dtype": None, "enable_thinking": False,
+           "device_map": None}
 
 
 def load_prompts():
@@ -150,7 +151,7 @@ def selftest():
     print("fsi selftest OK: pv=%.6f arb=%.6f" % (v1, v2))
 
 
-def capture(model, model_type, out, max_new_tokens):
+def capture(model, model_type, out, max_new_tokens, device_map=None):
     import torch
     import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -158,6 +159,8 @@ def capture(model, model_type, out, max_new_tokens):
     opts = dict(GENERIC)
     opts.update(OVERRIDES.get(model_type, {}))
     opts["max_new_tokens"] = max_new_tokens
+    if device_map:
+        opts["device_map"] = device_map
     prompts = load_prompts()
 
     tok = AutoTokenizer.from_pretrained(
@@ -165,11 +168,13 @@ def capture(model, model_type, out, max_new_tokens):
     load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
     if opts.get("dtype"):
         load_kwargs["dtype"] = opts["dtype"]
+    if opts.get("device_map"):
+        load_kwargs["device_map"] = opts["device_map"]
     lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
     lm.eval()
 
     device = opts.get("device")
-    if device is None and torch.cuda.is_available():
+    if device is None and not opts.get("device_map") and torch.cuda.is_available():
         nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
         free, _total = torch.cuda.mem_get_info()
         if nbytes < int(free * 0.9):
@@ -236,13 +241,17 @@ def main():
     ap.add_argument("--type")
     ap.add_argument("--out")
     ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--device-map", default=None,
+                    help="transformers device_map (requires accelerate); use "
+                         "'auto' for FP8/large models on a big-VRAM host")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
     if not (args.model and args.type and args.out):
         ap.error("--model, --type and --out are required unless --selftest")
-    capture(args.model, args.type, args.out, args.max_new_tokens)
+    capture(args.model, args.type, args.out, args.max_new_tokens,
+            args.device_map)
 
 
 if __name__ == "__main__":

@@ -19,10 +19,10 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
 | granite-4.2-30b | rejected — FSI-02 extracted answer has unbalanced parentheses |
-| ornith-1.5-35B-A3B | not capturable — MLX export, all HF params MISSING |
-| DeepSeek-V4-Flash | not capturable — FP8 checkpoint, loading needs `accelerate` |
-| GigaChat3.5-432B | not capturable — FP8 + 432B; needs `accelerate` / RAM |
-| DeepSeek-V4.1-Flash | not capturable — `deepseek_v41` unknown to transformers 5.15.1 |
+| ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
+| DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
+| GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
+| DeepSeek-V4.1-Flash | not capturable — `deepseek_v41` unknown to transformers 5.15.1 (`accelerate` does not add arch support) |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
 | Qwen3.8-Flash-Next | not capturable — `qwen4_exp` unknown to transformers 5.15.1 |
 | GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
@@ -72,6 +72,9 @@ were added after observing real model outputs.
 
 ## Next steps
 
+0. FP8 capture requires `accelerate` and `kernels` (`kernels==0.16.0`) installed
+   and a host whose VRAM can hold the FP8 layers; pass `--device-map auto` on
+   such a host. This session installed `accelerate 1.15.0` and `kernels 0.16.0`.
 1. Wire each remaining family into CI by capturing its golden once the source
    is available/framework-loadable, and resolving any genuine divergence.
 2. Nemotron: investigate the converted model on the FSI prompts (long-input
