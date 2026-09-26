@@ -5,6 +5,7 @@
 #include <simdjson.h>
 #include <cctype>
 #include <fstream>
+#include <memory>
 #include <sstream>
 
 #include "lsxcommon/log.h"
@@ -42,18 +43,29 @@ std::string Unfence(std::string_view raw)
     return std::string(absl::StripAsciiWhitespace(inner));
 }
 
-std::string FirstLineWith(const std::string &s, std::string_view anchor)
+std::string SelectAnswerLine(const std::string &s, std::string_view anchor,
+                             FsiKind kind)
 {
+    std::vector<std::string> lines;
     std::size_t pos = 0;
     while (pos <= s.size()) {
         const std::size_t nl = s.find('\n', pos);
-        const std::string line =
-            (nl == std::string::npos) ? s.substr(pos)
-                                      : s.substr(pos, nl - pos);
-        if (line.find(anchor) != std::string::npos) return line;
+        lines.push_back((nl == std::string::npos) ? s.substr(pos)
+                                                  : s.substr(pos, nl - pos));
         if (nl == std::string::npos) break;
         pos = nl + 1;
     }
+    for (const std::string &line : lines) {
+        const std::size_t a = line.find(anchor);
+        if (a == std::string::npos) continue;
+        std::size_t i = a + anchor.size();
+        while (i < line.size() && std::isspace((unsigned char)line[i])) ++i;
+        if (i >= line.size()) continue;
+        if (kind == FsiKind::kArithmetic && line[i] == '=') return line;
+        if (kind == FsiKind::kComparison && IsComparisonOp(line[i])) return line;
+    }
+    for (const std::string &line : lines)
+        if (line.find(anchor) != std::string::npos) return line;
     return s;
 }
 
@@ -69,12 +81,158 @@ std::string Normalize(std::string_view s)
     return out;
 }
 
+struct ExprNode {
+    enum Kind { kLeaf, kCall, kUnary, kBin } kind = kLeaf;
+    std::string text;
+    std::unique_ptr<ExprNode> left;
+    std::unique_ptr<ExprNode> right;
+};
+
+int BinPrec(char op) { return (op == '+' || op == '-') ? 1 : 2; }
+
+class ExprParser {
+public:
+    explicit ExprParser(std::string_view s) : s_(s) {}
+
+    std::unique_ptr<ExprNode> Parse()
+    {
+        pos_ = 0;
+        auto e = ParseExpr(0);
+        if (!e || pos_ != s_.size()) return nullptr;
+        return e;
+    }
+
+private:
+    std::unique_ptr<ExprNode> ParseExpr(int min_prec)
+    {
+        auto left = ParseUnary();
+        if (!left) return nullptr;
+        while (pos_ < s_.size()) {
+            const char c = s_[pos_];
+            if (c != '+' && c != '-' && c != '*' && c != '/') break;
+            const int prec = BinPrec(c);
+            if (prec < min_prec) break;
+            ++pos_;
+            auto right = ParseExpr(prec + 1);
+            if (!right) return nullptr;
+            auto n = std::make_unique<ExprNode>();
+            n->kind = ExprNode::kBin;
+            n->text = std::string(1, c);
+            n->left = std::move(left);
+            n->right = std::move(right);
+            left = std::move(n);
+        }
+        return left;
+    }
+
+    std::unique_ptr<ExprNode> ParseUnary()
+    {
+        if (pos_ < s_.size() && (s_[pos_] == '-' || s_[pos_] == '+')) {
+            const char c = s_[pos_++];
+            auto v = ParseUnary();
+            if (!v) return nullptr;
+            if (c == '+') return v;
+            auto n = std::make_unique<ExprNode>();
+            n->kind = ExprNode::kUnary;
+            n->text = "-";
+            n->left = std::move(v);
+            return n;
+        }
+        return ParsePrimary();
+    }
+
+    std::unique_ptr<ExprNode> ParsePrimary()
+    {
+        if (pos_ >= s_.size()) return nullptr;
+        const char c = s_[pos_];
+        if (c == '(') {
+            ++pos_;
+            auto e = ParseExpr(0);
+            if (!e || pos_ >= s_.size() || s_[pos_] != ')') return nullptr;
+            ++pos_;
+            return e;
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            const std::size_t b = pos_;
+            while (pos_ < s_.size() &&
+                   (std::isalnum(static_cast<unsigned char>(s_[pos_])) ||
+                    s_[pos_] == '_'))
+                ++pos_;
+            const std::string name(s_.substr(b, pos_ - b));
+            if (pos_ < s_.size() && s_[pos_] == '(') {
+                ++pos_;
+                auto arg = ParseExpr(0);
+                if (!arg || pos_ >= s_.size() || s_[pos_] != ')')
+                    return nullptr;
+                ++pos_;
+                auto n = std::make_unique<ExprNode>();
+                n->kind = ExprNode::kCall;
+                n->text = name;
+                n->left = std::move(arg);
+                return n;
+            }
+            auto n = std::make_unique<ExprNode>();
+            n->text = name;
+            return n;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') {
+            const std::size_t b = pos_;
+            while (pos_ < s_.size() &&
+                   (std::isdigit(static_cast<unsigned char>(s_[pos_])) ||
+                    s_[pos_] == '.'))
+                ++pos_;
+            auto n = std::make_unique<ExprNode>();
+            n->text = std::string(s_.substr(b, pos_ - b));
+            return n;
+        }
+        return nullptr;
+    }
+
+    std::string_view s_;
+    std::size_t pos_ = 0;
+};
+
+std::string PrintExpr(const ExprNode *n, int min_prec)
+{
+    if (!n) return {};
+    if (n->kind == ExprNode::kLeaf) return n->text;
+    if (n->kind == ExprNode::kCall)
+        return n->text + "(" + PrintExpr(n->left.get(), 0) + ")";
+    if (n->kind == ExprNode::kUnary) {
+        const std::string body = "-" + PrintExpr(n->left.get(), 3);
+        return (min_prec > 3) ? "(" + body + ")" : body;
+    }
+    const int prec = BinPrec(n->text[0]);
+    const std::string body = PrintExpr(n->left.get(), prec) + n->text +
+                             PrintExpr(n->right.get(), prec + 1);
+    return (min_prec > prec) ? "(" + body + ")" : body;
+}
+
+std::string CanonicalizeArithmetic(std::string_view rhs)
+{
+    ExprParser p(rhs);
+    auto root = p.Parse();
+    if (!root) return std::string(rhs);
+    return PrintExpr(root.get(), 0);
+}
+
+std::string CanonicalizeFsiAnswer(FsiKind kind, std::string_view anchor,
+                                  std::string_view normalized)
+{
+    if (kind != FsiKind::kArithmetic) return std::string(normalized);
+    const std::size_t eq = normalized.find('=');
+    if (eq == std::string_view::npos) return std::string(normalized);
+    (void)anchor;
+    return std::string(normalized.substr(0, eq + 1)) +
+           CanonicalizeArithmetic(normalized.substr(eq + 1));
+}
+
 } // namespace
 
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
                               std::string_view raw)
 {
-    const std::string line = FirstLineWith(Unfence(raw), anchor);
+    const std::string line = SelectAnswerLine(Unfence(raw), anchor, kind);
     if (kind == FsiKind::kComparison) {
         const std::size_t a = line.find(anchor);
         if (a == std::string::npos) return {};
@@ -124,7 +282,8 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
         }
         break;
     }
-    return Normalize(std::string_view(line).substr(a, i - a));
+    return CanonicalizeFsiAnswer(
+        kind, anchor, Normalize(std::string_view(line).substr(a, i - a)));
 }
 
 bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error)
@@ -261,8 +420,10 @@ FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
         return r;
     }
     const std::string text = decode(ir.gen_tokens);
+    r.raw = text;
     r.extracted = ExtractFsiFormula(c.kind, c.anchor, text);
-    r.passed = (r.extracted == c.expected);
+    r.passed =
+        (r.extracted == CanonicalizeFsiAnswer(c.kind, c.anchor, c.expected));
     return r;
 }
 
@@ -277,9 +438,9 @@ FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden,
     res.all_passed = !res.cases.empty();
     for (const FsiCaseResult &c : res.cases) {
         lsxcommon::log::info(absl::StrFormat(
-            "[fsi] %s expected='%s' extracted='%s' passed=%s",
+            "[fsi] %s expected='%s' extracted='%s' passed=%s raw='%s'",
             c.id.c_str(), c.expected.c_str(), c.extracted.c_str(),
-            c.passed ? "true" : "false"));
+            c.passed ? "true" : "false", c.raw.c_str()));
         if (!c.passed) res.all_passed = false;
     }
     return res;

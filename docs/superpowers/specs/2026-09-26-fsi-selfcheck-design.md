@@ -130,9 +130,14 @@ Expected Template: Drawdown>Threshold
   eos-terminated, single sequence (batch 1), deterministic seed irrelevant.
 - Decode only the generated continuation and run the **same** extraction as
   C++ (Python mirror of `ExtractFsiFormula`).
-- Validate before writing: the extracted answer must equal the prompt's
-  `expected` after normalization. A mismatch aborts capture (the reference is
-  not accepted) and prints the raw output for review.
+- The golden answer is **model-defined**: the extracted source answer is
+  recorded as the case `expected`. The prompt template is a hint, not a
+  contract; when the source answer differs, capture logs a warning and still
+  records it (the reference is the source model's own result).
+- Structural sanity is required before writing: the extracted answer must be
+  non-empty and have balanced parentheses; otherwise capture aborts and prints
+  the raw output (an unusable reference is never recorded, and that family's
+  test SKIPs).
 - Write the golden JSON (schema below) with `input_ids` captured **after**
   framing, so the C++ verify path re-uses them verbatim and no chat-template /
   tokenizer parity is assumed between HF and logestix. The captured ids include

@@ -54,11 +54,30 @@ def _unfence(raw):
 
 def extract(kind, anchor, raw):
     text = _unfence(raw)
-    line = text
-    for candidate in text.splitlines():
-        if anchor in candidate:
-            line = candidate
+    lines = text.splitlines() or [text]
+    line = None
+    for cand in lines:
+        a = cand.find(anchor)
+        if a == -1:
+            continue
+        i = a + len(anchor)
+        while i < len(cand) and cand[i].isspace():
+            i += 1
+        if i >= len(cand):
+            continue
+        if kind == "arithmetic" and cand[i] == "=":
+            line = cand
             break
+        if kind == "comparison" and cand[i] in "<>=!":
+            line = cand
+            break
+    if line is None:
+        for cand in lines:
+            if anchor in cand:
+                line = cand
+                break
+    if line is None:
+        line = text
     if kind == "comparison":
         pat = re.compile(re.escape(anchor) + r"\s*[<>=!]+\s*[A-Za-z_]\w*")
         hit = pat.search(line)
@@ -184,14 +203,19 @@ def capture(model, model_type, out, max_new_tokens):
         gen = out_ids[0][ids.shape[1]:].tolist()
         raw = tok.decode(gen, skip_special_tokens=True)
         got = extract(p["kind"], p["anchor"], raw)
-        if got != p["expected"]:
+        if not got:
+            raise SystemExit("%s: empty extraction (raw=%r)" % (p["id"], raw))
+        if got.count("(") != got.count(")"):
             raise SystemExit(
-                "%s: extracted %r != expected %r (raw=%r)"
-                % (p["id"], got, p["expected"], raw))
+                "%s: unbalanced parentheses in extracted answer %r (raw=%r)"
+                % (p["id"], got, raw))
+        if got != p["expected"]:
+            print("WARNING %s: model answer differs from the prompt template: "
+                  "%r != %r" % (p["id"], got, p["expected"]), file=sys.stderr)
         cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
                       "input_ids": ids[0].tolist(),
                       "max_new_tokens": max_new_tokens,
-                      "expected": p["expected"], "raw": raw})
+                      "expected": got, "raw": raw})
 
     golden = {"format": "logestix-fsi-golden", "version": 1,
               "model_type": model_type, "source": model,

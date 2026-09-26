@@ -32,6 +32,7 @@ struct FsiCaseResult {
     std::string id;
     std::string expected;
     std::string extracted;
+    std::string raw;   // decoded generated text (diagnostic)
     bool passed = false;
     std::string error;
 };

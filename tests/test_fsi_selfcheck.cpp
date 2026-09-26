@@ -27,7 +27,7 @@ TEST_CASE("fsi: arithmetic extraction normalizes to a bare formula",
           "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "Balance_Alpha",
           "Balance_Alpha = (((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C") ==
-          "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
+          "Balance_Alpha=((100000000*Rate_A-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV", "").empty());
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV",
           "no formula here").empty());
@@ -207,4 +207,28 @@ TEST_CASE("fsi: harness propagates inference errors per case", "[fsi][unit]")
     CHECK_FALSE(r.all_passed);
     REQUIRE(r.cases.size() == 1);
     CHECK(r.cases[0].error == "boom");
+}
+
+TEST_CASE("fsi: arithmetic canonicalization removes redundant parentheses",
+          "[fsi][unit]")
+{
+    const std::string a = fsi::ExtractFsiFormula(
+        fsi::FsiKind::kArithmetic, "Balance_Alpha",
+        "Balance_Alpha=((((100000000*Rate_A)-Slip_A)*Rate_B)-Slip_B)*Rate_C-Slip_C");
+    const std::string b = fsi::ExtractFsiFormula(
+        fsi::FsiKind::kArithmetic, "Balance_Alpha",
+        "Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
+    CHECK(a == b);
+    CHECK(a ==
+          "Balance_Alpha=((100000000*Rate_A-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
+}
+
+TEST_CASE("fsi: multi-line answer selects the anchor+operator line",
+          "[fsi][unit]")
+{
+    CHECK(fsi::ExtractFsiFormula(
+              fsi::FsiKind::kArithmetic, "PV",
+              "The correct formula for the present value (PV) is:\n"
+              "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
+          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
 }

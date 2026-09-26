@@ -69,8 +69,8 @@ TEST_CASE("Qwen3.6-35B-A3B FSI SelfCheck: golden answers match the converted "
         lsxcommon::fsi::RunFsiSelfCheck(*model, golden);
     for (const lsxcommon::fsi::FsiCaseResult &c : result.cases)
         INFO("case " << c.id << " expected='" << c.expected
-                     << "' extracted='" << c.extracted << "' error='"
-                     << c.error << "'");
+                     << "' extracted='" << c.extracted << "' raw='" << c.raw
+                     << "' error='" << c.error << "'");
     REQUIRE(result.all_passed);
 
     model->Unload();
