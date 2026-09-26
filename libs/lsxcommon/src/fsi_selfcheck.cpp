@@ -1,10 +1,14 @@
 #include "lsxcommon/fsi_selfcheck.h"
 
 #include <absl/strings/ascii.h>
+#include <absl/strings/str_format.h>
 #include <simdjson.h>
 #include <cctype>
 #include <fstream>
 #include <sstream>
+
+#include "lsxcommon/log.h"
+#include "lsxcommon/model_runtime.h"
 
 namespace lsxcommon {
 namespace fsi {
@@ -238,6 +242,56 @@ bool LoadFsiGoldenFile(const std::string &path, FsiGolden &out,
         return false;
     }
     return true;
+}
+
+namespace {
+
+FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
+                         const FsiDecodeFn &decode)
+{
+    FsiCaseResult r;
+    r.id = c.id;
+    r.expected = c.expected;
+    ModelRequest req;
+    req.input_ids = c.input_ids;
+    req.max_gen_tokens = c.max_new_tokens;
+    const gpu::InferenceResult ir = model.Infer(req);
+    if (!ir.ok) {
+        r.error = ir.error_msg.empty() ? "inference failed" : ir.error_msg;
+        return r;
+    }
+    const std::string text = decode(ir.gen_tokens);
+    r.extracted = ExtractFsiFormula(c.kind, c.anchor, text);
+    r.passed = (r.extracted == c.expected);
+    return r;
+}
+
+} // namespace
+
+FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden,
+                          const FsiDecodeFn &decode)
+{
+    FsiResult res;
+    for (const FsiGoldenCase &c : golden.cases)
+        res.cases.push_back(RunFsiCase(model, c, decode));
+    res.all_passed = !res.cases.empty();
+    for (const FsiCaseResult &c : res.cases) {
+        lsxcommon::log::info(absl::StrFormat(
+            "[fsi] %s expected='%s' extracted='%s' passed=%s",
+            c.id.c_str(), c.expected.c_str(), c.extracted.c_str(),
+            c.passed ? "true" : "false"));
+        if (!c.passed) res.all_passed = false;
+    }
+    return res;
+}
+
+FsiResult RunFsiSelfCheck(IModel &model, const FsiGolden &golden)
+{
+    return RunFsiSelfCheck(
+        model, golden,
+        [&model](const std::vector<int32_t> &ids) {
+            return runtime::DecodeGeneratedText(model.Tokenizer(), ids);
+        });
 }
 
 }  // namespace fsi

@@ -1,10 +1,15 @@
 // FSISelfCheck host-only unit tests (extraction/golden/harness). No GPU.
 #include <catch2/catch_test_macros.hpp>
 
+#include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <lsxcommon/fsi_selfcheck.h>
+#include <lsxcommon/inference_gpu.h>
+#include <lsxcommon/safetensors.h>
+#include <lsxcommon/tokenizer.h>
 
 namespace fsi = lsxcommon::fsi;
 
@@ -99,4 +104,107 @@ TEST_CASE("fsi: malformed golden is rejected with an error", "[fsi][unit]")
     CHECK_FALSE(fsi::ParseFsiGolden(
         R"({"format":"logestix-fsi-golden","model_type":"m","prompts":[]})",
         g, &err));
+}
+
+namespace {
+
+class FakeFsiModel : public lsxcommon::IModel {
+public:
+    bool Load() override { return true; }
+    void Unload() override {}
+    lsxcommon::SafetensorsModel Inspect() override { return {}; }
+    lsxcommon::gpu::InferenceResult Infer(
+        const lsxcommon::ModelRequest &req) override
+    {
+        last_ = req;
+        if (fail) {
+            lsxcommon::gpu::InferenceResult r;
+            r.ok = false;
+            r.error_msg = "boom";
+            return r;
+        }
+        lsxcommon::gpu::InferenceResult r;
+        r.ok = true;
+        r.gen_tokens = gen;
+        return r;
+    }
+    lsxcommon::gpu::InferenceResult SelfCheck(
+        const lsxcommon::ModelRequest &) override
+    {
+        throw std::runtime_error("FSI must not call SelfCheck");
+    }
+    const std::string &Type() const override
+    {
+        static const std::string t = "fake-model";
+        return t;
+    }
+    lsxcommon::ArrowTokenizerDb &Tokenizer() override
+    {
+        static lsxcommon::ArrowTokenizerDb db{};
+        return db;
+    }
+    std::shared_mutex &ResidencyMutex() override { return m_; }
+
+    std::vector<int32_t> gen = {7};
+    bool fail = false;
+    lsxcommon::ModelRequest last_;
+private:
+    std::shared_mutex m_;
+};
+
+fsi::FsiGolden OneCaseGolden()
+{
+    fsi::FsiGolden g;
+    fsi::FsiGoldenCase c;
+    c.id = "FSI-TEST-01";
+    c.kind = fsi::FsiKind::kArithmetic;
+    c.anchor = "PV";
+    c.input_ids = {1, 2};
+    c.max_new_tokens = 8;
+    c.expected = "PV=CF*((1-exp(-r*n))/(1-exp(-r)))";
+    g.cases.push_back(std::move(c));
+    return g;
+}
+
+} // namespace
+
+TEST_CASE("fsi: harness passes on a matching answer and forwards the request",
+          "[fsi][unit]")
+{
+    FakeFsiModel m;
+    const fsi::FsiGolden g = OneCaseGolden();
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string("PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+    };
+    const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    REQUIRE(r.cases.size() == 1);
+    CHECK(r.cases[0].extracted == "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+    CHECK(m.last_.input_ids == std::vector<int32_t>{1, 2});
+    CHECK(m.last_.max_gen_tokens == 8);
+}
+
+TEST_CASE("fsi: harness fails on a mismatching answer", "[fsi][unit]")
+{
+    FakeFsiModel m;
+    const fsi::FsiGolden g = OneCaseGolden();
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string("PV=wrong");
+    };
+    const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
+    CHECK_FALSE(r.all_passed);
+    REQUIRE(r.cases.size() == 1);
+    CHECK(r.cases[0].extracted == "PV=wrong");
+}
+
+TEST_CASE("fsi: harness propagates inference errors per case", "[fsi][unit]")
+{
+    FakeFsiModel m;
+    m.fail = true;
+    const fsi::FsiGolden g = OneCaseGolden();
+    const auto decode = [](const std::vector<int32_t> &) { return std::string(); };
+    const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
+    CHECK_FALSE(r.all_passed);
+    REQUIRE(r.cases.size() == 1);
+    CHECK(r.cases[0].error == "boom");
 }
