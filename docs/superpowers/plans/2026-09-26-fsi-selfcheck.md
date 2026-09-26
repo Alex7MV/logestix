@@ -1,6 +1,6 @@
 # FSISelfCheck Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task, inline in the main session. **NO SUBAGENTS** — `AGENTS.md` (Autonomous Mode) forbids Task subagents; do NOT use subagent-driven-development.
 
 **Goal:** Add a deterministic, GPU-independent model-parity gate (`FSISelfCheck`) that captures golden answers for a fixed 3-prompt financial set from the original safetensors model and verifies the converted NVFP4 model reproduces them.
 
