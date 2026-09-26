@@ -3911,6 +3911,11 @@ target_compile_definitions(test_model_suite_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_SUITE}\"")
 add_test(NAME test_model_suite_guard COMMAND test_model_suite_guard)
 
+# ── FSISelfCheck: host-only extraction/golden/harness unit tests (no GPU) ──
+add_executable(test_fsi_selfcheck test_fsi_selfcheck.cpp)
+target_link_libraries(test_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_fsi_selfcheck COMMAND test_fsi_selfcheck)
+
 # ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
 # convert  — model-converter tests: run when a converter changes
@@ -3939,6 +3944,7 @@ set_tests_properties(
     test_glm_moe_prompt_framing
     test_gemma_prompt_framing
     test_model_runtime
+    test_fsi_selfcheck
     test_model_engine
     test_tokenizer
     test_mosaic_network
