@@ -3,9 +3,9 @@
 - **Date**: 2026-09-26
 - **Scope**: pilot + rollout of FSISelfCheck
   (`docs/superpowers/specs/2026-09-26-fsi-selfcheck-design.md`)
-- **Status**: mechanism complete; a single family (Qwen3.6-35B-A3B) is wired
-  into CI. The remaining families' tests SKIP until their goldens are captured
-  and their divergences are resolved.
+- **Status**: mechanism complete; two families (Qwen3.6-35B-A3B and
+  Qwen3.8-Flash-Next) are wired into CI. The remaining families' tests SKIP
+  until their goldens are captured and their divergences are resolved.
 
 The FSI gate is **model-defined**: the golden is the original safetensors
 model's own extracted answer (not the prompt template). The converted model is
@@ -16,6 +16,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | Family | Result |
 |---|---|
 | Qwen3.6-35B-A3B | captured (all 3 exact) |
+| Qwen3.8-Flash-Next | captured (all 3 exact; experimental `qwen4_exp` arch loaded with patches, see below) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
 | granite-4.2-30b | rejected — FSI-02 extracted answer has unbalanced parentheses |
@@ -24,14 +25,31 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
 | DeepSeek-V4.1-Flash | not capturable — `deepseek_v41` unknown to transformers 5.15.1 (`accelerate` does not add arch support) |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
-| Qwen3.8-Flash-Next | not capturable — `qwen4_exp` unknown to transformers 5.15.1 |
 | GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+
+### Qwen3.8-Flash-Next (`qwen4_exp`) capture recipe
+
+The installed transformers 5.15.1 ships `Qwen4Exp*` classes, but the checkpoint
+declares `model_type = qwen4_exp` and uses a layer type (`qwen_sparse_attention`)
+that this build does not accept/route. Capture works after (documented in
+`tools/fsi_capture.py`, override `loader = "qwen4_exp"`):
+
+1. Extend `transformers.configuration_utils.ALLOWED_ATTN_LAYER_TYPES` with
+   `qwen_sparse_attention`.
+2. Register `qwen_sparse_attention` in `cache_utils.DYNAMIC_LAYER_TYPE_MAPPING`
+   / `STATIC_LAYER_TYPE_MAPPING` (→ `Dynamic/StaticIndexedLayer`).
+3. Build `Qwen4ExpForCausalLM(text_config)` in BF16 and load the checkpoint
+   directly (source prefix `model.language_model.*` → `model.*`; skip the
+   absent-from-text `model.visual.*` tower).
+4. Fuse the PLE n-gram embedding: 128 `ngram_embedding.shard_N.weight` shards
+   ([2500012, 160]) fill `ngram_embedding.weight` ([320001536, 160]) in order.
 
 ## Converted-model parity (source golden vs converted, `kOff`)
 
 | Family | Result |
 |---|---|
 | Qwen3.6-35B-A3B | **PASS 3/3** (wired into CI) |
+| Qwen3.8-Flash-Next | **PASS 3/3** (wired into CI) |
 | gemma-4-26B-A4B-it | FSI-02 PASS after algebraic canonicalization; FSI-01 and FSI-03 diverge |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | FAIL 3/3 — converted model emits incoherent text |
 

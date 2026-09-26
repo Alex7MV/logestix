@@ -20,11 +20,70 @@ PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 # `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
 # free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
-    # Per-type overrides (e.g. {"device_map": "auto"} for a big-VRAM host).
+    # qwen3.8-flash-next is an experimental "qwen4_exp" arch: the installed
+    # transformers ships Qwen4Exp* but its layer-type allowlist and KV-cache
+    # mapping predate "qwen_sparse_attention", and the PLE n-gram embedding is
+    # shipped as 128 shards. The custom loader patches both.
+    "qwen3.8-flash-next": {"loader": "qwen4_exp"},
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
-           "device_map": None}
+           "device_map": None, "loader": None}
+
+_QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
+
+
+def _load_qwen4_exp(model_path):
+    """Load an experimental qwen4_exp checkpoint with the installed
+    transformers (config allowlist + cache mapping patched, PLE shards fused)."""
+    import glob
+    import re
+
+    import torch
+    from safetensors.torch import load_file
+    import transformers.configuration_utils as cu
+    from transformers import Qwen4ExpForCausalLM, Qwen4ExpTextConfig
+    from transformers import cache_utils as cu_cache
+
+    cu.ALLOWED_ATTN_LAYER_TYPES = tuple(cu.ALLOWED_ATTN_LAYER_TYPES) + (
+        "qwen_sparse_attention",)
+    cu_cache.DYNAMIC_LAYER_TYPE_MAPPING.setdefault(
+        "qwen_sparse_attention", cu_cache.DynamicIndexedLayer)
+    cu_cache.STATIC_LAYER_TYPE_MAPPING.setdefault(
+        "qwen_sparse_attention", cu_cache.StaticIndexedLayer)
+
+    prev_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    raw = json.load(open(os.path.join(model_path, "config.json"),
+                        encoding="utf-8"))["text_config"]
+    raw["mtp_num_hidden_layers"] = 0
+    tc = Qwen4ExpTextConfig(**raw)
+    lm = Qwen4ExpForCausalLM(tc)
+    lm.eval()
+    params = dict(lm.named_parameters())
+    bufs = dict(lm.named_buffers())
+    ngram = params.get(
+        "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
+    for shard in sorted(glob.glob(os.path.join(model_path, "*.safetensors"))):
+        for key, tensor in load_file(shard).items():
+            if key.startswith("model.visual."):
+                continue
+            if "ngram_embedding.shard_" in key and ngram is not None:
+                idx = int(re.search(r"shard_(\d+)\.weight", key).group(1))
+                off = idx * _QWEN4_NGRAM_ROWS
+                with torch.no_grad():
+                    ngram.data[off:off + tensor.shape[0]].copy_(tensor)
+                continue
+            name = key.replace("model.language_model.", "model.")
+            if name in params:
+                with torch.no_grad():
+                    params[name].data.copy_(tensor)
+            elif name in bufs:
+                with torch.no_grad():
+                    bufs[name].copy_(tensor)
+    torch.set_default_dtype(prev_dtype)
+    return lm
+
 
 
 def load_prompts():
@@ -165,23 +224,27 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
 
     tok = AutoTokenizer.from_pretrained(
         model, trust_remote_code=opts["trust_remote_code"])
-    load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
-    if opts.get("dtype"):
-        load_kwargs["dtype"] = opts["dtype"]
-    if opts.get("device_map"):
-        load_kwargs["device_map"] = opts["device_map"]
-    lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
-    lm.eval()
+    if opts.get("loader") == "qwen4_exp":
+        lm = _load_qwen4_exp(model)
+        print("device:", next(lm.parameters()).device)
+    else:
+        load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
+        if opts.get("dtype"):
+            load_kwargs["dtype"] = opts["dtype"]
+        if opts.get("device_map"):
+            load_kwargs["device_map"] = opts["device_map"]
+        lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
+        lm.eval()
 
-    device = opts.get("device")
-    if device is None and not opts.get("device_map") and torch.cuda.is_available():
-        nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
-        free, _total = torch.cuda.mem_get_info()
-        if nbytes < int(free * 0.9):
-            device = "cuda"
-    if device:
-        lm = lm.to(device)
-    print("device:", next(lm.parameters()).device)
+        device = opts.get("device")
+        if device is None and not opts.get("device_map") and torch.cuda.is_available():
+            nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
+            free, _total = torch.cuda.mem_get_info()
+            if nbytes < int(free * 0.9):
+                device = "cuda"
+        if device:
+            lm = lm.to(device)
+        print("device:", next(lm.parameters()).device)
 
     cases = []
     for p in prompts:
