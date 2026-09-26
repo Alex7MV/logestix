@@ -143,7 +143,8 @@ const std::vector<SuiteSpec> &Suites()
           {"load", {"test_qwen_moe_loader"}},
           {"model", {"test_qwen_moe_36_model"}},
           {"kernels", {"test_qwen_moe_kernels"}},
-          {"selfcheck", {"test_qwen_moe_36_selfcheck"}}}},
+          {"selfcheck", {"test_qwen_moe_36_selfcheck"}},
+          {"fsi", {"test_qwen_moe_36_fsi_selfcheck"}}}},
         {"ornith-1.5-35b-a3b",
          {{"convert", {"test_ornith_moe_convert"}},
           {"load", {"test_ornith_moe_loader"}},
@@ -265,7 +266,8 @@ std::vector<std::string> CheckSelfcheckSkip(const std::string &cmake_text)
     for (const auto &s : Suites())
         for (const auto &st : s.stages)
         {
-            if (std::string(st.stage) != "selfcheck") continue;
+            const std::string stage = st.stage;
+            if (stage != "selfcheck" && stage != "fsi") continue;
             for (const auto *t : st.targets)
                 if (!HasSkipReturnCode4(cmake_text, t))
                     v.push_back(std::string("selfcheck target without "
@@ -473,7 +475,7 @@ TEST_CASE("suite guard: every model suite covers the full lifecycle",
     REQUIRE(v.empty());
 }
 
-TEST_CASE("suite guard: selfcheck targets declare SKIP_RETURN_CODE 4",
+TEST_CASE("suite guard: selfcheck and fsi targets declare SKIP_RETURN_CODE 4",
           "[suite][guard]")
 {
     const fs::path root(LSX_SOURCE_DIR);
@@ -482,7 +484,7 @@ TEST_CASE("suite guard: selfcheck targets declare SKIP_RETURN_CODE 4",
     auto v = CheckSelfcheckSkip(cmake_text);
     std::string joined;
     for (const auto &s : v) joined += s + "\n";
-    INFO("selfcheck skip violations:\n" << joined);
+    INFO("stage skip violations:\n" << joined);
     REQUIRE(v.empty());
 }
 

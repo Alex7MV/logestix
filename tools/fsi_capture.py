@@ -17,11 +17,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROMPTS = os.path.join(HERE, "fsi_prompts.json")
 
 # Per-model capture overrides keyed by model type. Absent -> generic defaults.
+# `device`: "cuda" / "cpu" / None (auto: cuda when the full checkpoint fits in
+# free VRAM, else cpu). `dtype`: torch dtype name or None (checkpoint default).
 OVERRIDES = {
     # "ornith-1.5-35b-a3b": {"trust_remote_code": True},
 }
-GENERIC = {"trust_remote_code": True, "max_new_tokens": 128,
-           "torch_dtype": "auto", "device_map": "auto"}
+GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
+           "device": None, "dtype": None, "enable_thinking": False}
 
 
 def load_prompts():
@@ -141,22 +143,40 @@ def capture(model, model_type, out, max_new_tokens):
 
     tok = AutoTokenizer.from_pretrained(
         model, trust_remote_code=opts["trust_remote_code"])
-    lm = AutoModelForCausalLM.from_pretrained(
-        model, trust_remote_code=opts["trust_remote_code"],
-        torch_dtype=opts["torch_dtype"], device_map=opts["device_map"])
+    load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
+    if opts.get("dtype"):
+        load_kwargs["dtype"] = opts["dtype"]
+    lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
     lm.eval()
+
+    device = opts.get("device")
+    if device is None and torch.cuda.is_available():
+        nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
+        free, _total = torch.cuda.mem_get_info()
+        if nbytes < int(free * 0.9):
+            device = "cuda"
+    if device:
+        lm = lm.to(device)
+    print("device:", next(lm.parameters()).device)
 
     cases = []
     for p in prompts:
         prompt_text = p["body"]
         if getattr(tok, "chat_template", None):
+            template_kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if opts.get("enable_thinking") is not None:
+                template_kwargs["enable_thinking"] = opts["enable_thinking"]
             try:
                 prompt_text = tok.apply_chat_template(
-                    [{"role": "user", "content": p["body"]}],
-                    tokenize=False, add_generation_prompt=True)
+                    [{"role": "user", "content": p["body"]}], **template_kwargs)
+            except TypeError:
+                template_kwargs.pop("enable_thinking", None)
+                prompt_text = tok.apply_chat_template(
+                    [{"role": "user", "content": p["body"]}], **template_kwargs)
             except Exception as exc:  # noqa: BLE001
                 print("chat_template failed, using raw prompt:", exc,
                       file=sys.stderr)
+                prompt_text = p["body"]
         ids = tok(prompt_text, return_tensors="pt").input_ids.to(lm.device)
         with torch.no_grad():
             out_ids = lm.generate(ids, do_sample=False,
@@ -191,7 +211,7 @@ def main():
     ap.add_argument("--model")
     ap.add_argument("--type")
     ap.add_argument("--out")
-    ap.add_argument("--max-new-tokens", type=int, default=128)
+    ap.add_argument("--max-new-tokens", type=int, default=512)
     args = ap.parse_args()
     if args.selftest:
         selftest()
