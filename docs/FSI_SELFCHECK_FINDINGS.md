@@ -118,6 +118,12 @@ variable names" and substituted the numeric legs, additionally dropping zeros
 `EncodeRawPrompt`, the default `BuildPromptInputIds`) was worse (garbage/empty),
 so the divergence is model/runtime-level, not framing.
 
+A framing sweep (one load, four encodings: chat / thinking / raw BPE / chat +
+system) confirmed it: no framing matched. FSI-01 is consistently one `)` short
+(chat and chat+system), FSI-02 consistently evaluates the legs numerically with
+the same lost zeros, thinking mode emits a long CoT that does not finish in the
+budget, and raw BPE degrades to garbage/empty.
+
 The golden was not committed, so `test_deepseek_moe_v41_fsi_selfcheck` SKIPs.
 DeepSeek-V4-Flash is the same situation (its vault copy is a flat FP8+FP4
 pre-quantized layout consumed by the repo's own loader, not an HF checkpoint).
