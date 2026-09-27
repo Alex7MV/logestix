@@ -44,6 +44,7 @@ add_library(lsxcommon STATIC
     src/model_registry.cpp
     src/model_runtime.cpp
     src/fsi_selfcheck.cpp
+    src/code_selfcheck.cpp
     src/path_registry.cpp
     src/prompt_framing.cpp
     src/models/lsx_orchestrator.cpp

@@ -29,13 +29,17 @@ int main(int argc, char *argv[]) {
         // 1->2-token minimum internally, legacy lsxfabric --selfcheck parity);
         // bench honors --max-gen (default 2048).
         args.max_gen_tokens =
-            (cli.selfcheck || cli.fsi_selfcheck) ? 1 : cli.max_gen;
+            (cli.selfcheck || cli.fsi_selfcheck || cli.code_selfcheck)
+                ? 1
+                : cli.max_gen;
         // Numeric policy: kAuto = per-GPU maximum-speed perf policy;
         // kOff = bit-exact deterministic scalar path (--bit-exact).
         args.fast_math_mode = cli.bit_exact ? lsxcommon::FastMathMode::kOff
                                             : lsxcommon::FastMathMode::kAuto;
 
-        if (cli.fsi_selfcheck)
+        if (cli.code_selfcheck)
+            rc = lsxcommon::runtime::RunCliCodeSelfCheck(args);
+        else if (cli.fsi_selfcheck)
             rc = lsxcommon::runtime::RunCliFsiSelfCheck(args);
         else if (cli.selfcheck)
             rc = lsxcommon::runtime::RunCliSelfCheck(args);

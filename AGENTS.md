@@ -90,6 +90,15 @@ procedure — `perf-tuning-a-model`.
   `docs/FSI_SELFCHECK_FINDINGS.md`). Capture/verify workflow, golden schema and
   per-model quirks — skill **`fsi-selfcheck`**
   (`.opencode/skills/fsi-selfcheck/SKILL.md`).
+  CODESelfCheck (`code_selfcheck.{h,cpp}`, host-only, model-neutral — the
+  compiler-syntactic-strictness analogue of FSI, comparing the converted model's
+  *exactly* normalized answer at `kOff` to a golden captured from the source
+  safetensors; capture `tools/code_capture.py` + `tools/code_prompts.json`;
+  per-family goldens `tests/fixtures/code/<type>.json`; `lsxbenchmark
+  --code-selfcheck`; per-family `test_<family>_code_selfcheck.cpp`, label
+  `inference`, SKIP 4; suite-guard `code` stage; findings
+  `docs/CODE_SELFCHECK_FINDINGS.md`; design
+  `docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`).
   Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),

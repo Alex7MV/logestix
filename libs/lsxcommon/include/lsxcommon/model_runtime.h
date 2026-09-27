@@ -89,6 +89,10 @@ int RunCliSelfCheck(const GenerationCliArgs &args);
 // <LSX_FSI_GOLDEN_DIR>/<model Type()>.json, runs the captured input_ids at
 // FastMathMode::kOff, and compares the extracted answer to the golden.
 int RunCliFsiSelfCheck(const GenerationCliArgs &args);
+// CODE golden-parity gate (separate from SelfCheck and FSI): resolves
+// <LSX_CODE_GOLDEN_DIR>/<model Type()>.json, runs the captured input_ids at
+// FastMathMode::kOff, and compares the extracted answer to the golden.
+int RunCliCodeSelfCheck(const GenerationCliArgs &args);
 // Speed-measurement lifecycle (lsxbenchmark --bench): Create -> Load ->
 // frame/encode -> Infer -> print -> Unload. Runs at args.fast_math_mode
 // (kAuto = maximum-speed auto policy; kOff = bit-exact measurement).

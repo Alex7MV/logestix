@@ -16,6 +16,7 @@
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/fsi_selfcheck.h"
+#include "lsxcommon/code_selfcheck.h"
 
 namespace lsxcommon {
 namespace runtime {
@@ -315,6 +316,40 @@ int RunCliFsiSelfCheck(const GenerationCliArgs &args)
     const fsi::FsiResult result = fsi::RunFsiSelfCheck(*m.model, golden);
     lsxcommon::log::info("=== lsxbenchmark: fsi-selfcheck ===");
     for (const fsi::FsiCaseResult &c : result.cases)
+        lsxcommon::log::info(absl::StrFormat(
+            "%s  expected='%s'  extracted='%s'  %s", c.id.c_str(),
+            c.expected.c_str(), c.extracted.c_str(),
+            c.passed ? "PASS" : "FAIL"));
+    lsxcommon::log::info(
+        absl::StrFormat("result   : %s", result.all_passed ? "PASS" : "FAIL"));
+    m.model->Unload();
+    return result.all_passed ? 0 : 1;
+}
+
+int RunCliCodeSelfCheck(const GenerationCliArgs &args)
+{
+    lsxcommon::log::info("Running CODE self-check (syntactic golden parity)...");
+    const char *dir = std::getenv("LSX_CODE_GOLDEN_DIR");
+    if (!dir || !*dir) {
+        lsxcommon::log::error(
+            "LSX_CODE_GOLDEN_DIR is not set (directory with <model_type>.json)");
+        return 1;
+    }
+    CliModel m = CreateCliModel(args.model_path, FastMathMode::kOff);
+    if (!m.ok) return 1;
+    const std::string golden_path =
+        std::string(dir) + "/" + m.model->Type() + ".json";
+    code::CodeGolden golden;
+    std::string err;
+    if (!code::LoadCodeGoldenFile(golden_path, golden, &err)) {
+        lsxcommon::log::error(
+            absl::StrFormat("CODE golden load failed: %s", err.c_str()));
+        m.model->Unload();
+        return 1;
+    }
+    const code::CodeResult result = code::RunCodeSelfCheck(*m.model, golden);
+    lsxcommon::log::info("=== lsxbenchmark: code-selfcheck ===");
+    for (const code::CodeCaseResult &c : result.cases)
         lsxcommon::log::info(absl::StrFormat(
             "%s  expected='%s'  extracted='%s'  %s", c.id.c_str(),
             c.expected.c_str(), c.extracted.c_str(),

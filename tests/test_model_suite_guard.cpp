@@ -5,7 +5,7 @@
 // production code (test_model_independence_guard.cpp) — and every suite must
 // cover the FULL model lifecycle (Model Ingestion Protocol):
 //
-//     convert -> load -> model -> kernels -> selfcheck
+//     convert -> load -> model -> kernels -> selfcheck -> fsi -> code
 //
 // This guard enforces the structural side of that directive:
 //   1. Every model suite declares every lifecycle stage in its registry row
@@ -13,8 +13,9 @@
 //      Stages shared between sibling variants (e.g. the dense converter reused
 //      by qwen3.8-27b) point at the SAME target on purpose — the sharing is
 //      explicit, never silent.
-//   2. Every selfcheck-stage target declares ctest SKIP_RETURN_CODE 4 (real
-//      weights are optional; absence must skip, not fail).
+//   2. Every selfcheck / fsi / code-stage target declares ctest
+//      SKIP_RETURN_CODE 4 (real weights and golden are optional; absence must
+//      skip, not fail).
 //   3. No test file includes another model FAMILY's fixture/header. Family is
 //      derived from the first path segment after the test_ prefix (glm, qwen,
 //      deepseek, gemma, kimi); family-neutral headers (no family stem, e.g.
@@ -89,14 +90,16 @@ const std::vector<SuiteSpec> &Suites()
            {"test_glm_moe_moe_compute", "test_glm_moe_attention",
             "test_glm_moe_experts"}},
           {"selfcheck", {"test_glm_moe_selfcheck"}},
-          {"fsi", {"test_glm_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_glm_moe_fsi_selfcheck"}},
+          {"code", {"test_glm_moe_code_selfcheck"}}}},
         {"glm-5.3-flash",
          {{"convert", {"test_glm_moe_flash_convert"}},
           {"load", {"test_glm_moe_flash_loader"}},
           {"model", {"test_glm_moe_flash_model"}},
           {"kernels", {"test_glm_moe_flash_kernels"}},
           {"selfcheck", {"test_glm_moe_flash_selfcheck"}},
-          {"fsi", {"test_glm_moe_flash_fsi_selfcheck"}}}},
+          {"fsi", {"test_glm_moe_flash_fsi_selfcheck"}},
+          {"code", {"test_glm_moe_flash_code_selfcheck"}}}},
         // No convert stage by design: DeepSeek-V4-Flash ingests a
         // pre-converted logestix layout (no converter exists in the repo);
         // classification/topology of that layout is the model stage.
@@ -106,7 +109,8 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_deepseek_moe_model"}},
           {"kernels", {"test_deepseek_moe_inference_kernels"}},
           {"selfcheck", {"test_deepseek_moe_selfcheck"}},
-          {"fsi", {"test_deepseek_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_deepseek_moe_fsi_selfcheck"}},
+          {"code", {"test_deepseek_moe_code_selfcheck"}}}},
         {"deepseek-v4.1-flash",
          {{"convert", {"test_deepseek_moe_v41_convert"}},
           {"load",
@@ -117,7 +121,8 @@ const std::vector<SuiteSpec> &Suites()
             "test_deepseek_moe_v41_actquant",
             "test_deepseek_moe_v41_pipeline"}},
           {"selfcheck", {"test_deepseek_moe_v41_selfcheck"}},
-          {"fsi", {"test_deepseek_moe_v41_fsi_selfcheck"}}}},
+          {"fsi", {"test_deepseek_moe_v41_fsi_selfcheck"}},
+          {"code", {"test_deepseek_moe_v41_code_selfcheck"}}}},
         {"qwen3.5-9b",
          {{"convert",
            {"test_qwen_dense_convert", "test_qwen_dense_converter_integrity"}},
@@ -127,7 +132,8 @@ const std::vector<SuiteSpec> &Suites()
            {"test_qwen_dense_mlp", "test_qwen_dense_full_attn",
             "test_qwen_dense_nvfp4"}},
           {"selfcheck", {"test_qwen_dense_selfcheck"}},
-          {"fsi", {"test_qwen_dense_fsi_selfcheck"}}}},
+          {"fsi", {"test_qwen_dense_fsi_selfcheck"}},
+          {"code", {"test_qwen_dense_code_selfcheck"}}}},
         // qwen3.8-27b shares the dense convert/load/kernels pipeline with
         // qwen3.5-9b (QwenBaseModel); its own stages are model+selfcheck.
         {"qwen3.8-27b",
@@ -136,14 +142,16 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_qwen_dense_27b_model"}},
           {"kernels", {"test_qwen_dense_nvfp4"}},
           {"selfcheck", {"test_qwen_dense_27b_selfcheck"}},
-          {"fsi", {"test_qwen_dense_27b_fsi_selfcheck"}}}},
+          {"fsi", {"test_qwen_dense_27b_fsi_selfcheck"}},
+          {"code", {"test_qwen_dense_27b_code_selfcheck"}}}},
         {"qwen3.5-35b-a3b",
          {{"convert", {"test_qwen_moe_convert"}},
           {"load", {"test_qwen_moe_loader"}},
           {"model", {"test_qwen_moe_model"}},
           {"kernels", {"test_qwen_moe_kernels"}},
           {"selfcheck", {"test_qwen_moe_selfcheck"}},
-          {"fsi", {"test_qwen_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_qwen_moe_fsi_selfcheck"}},
+          {"code", {"test_qwen_moe_code_selfcheck"}}}},
         // qwen3.6 shares loader + kernels with qwen3.5-35b (QwenMoeModelBase).
         {"qwen3.6-35b-a3b",
          {{"convert", {"test_qwen_moe_36_convert"}},
@@ -151,21 +159,24 @@ const std::vector<SuiteSpec> &Suites()
           {"model", {"test_qwen_moe_36_model"}},
           {"kernels", {"test_qwen_moe_kernels"}},
           {"selfcheck", {"test_qwen_moe_36_selfcheck"}},
-          {"fsi", {"test_qwen_moe_36_fsi_selfcheck"}}}},
+          {"fsi", {"test_qwen_moe_36_fsi_selfcheck"}},
+          {"code", {"test_qwen_moe_36_code_selfcheck"}}}},
         {"ornith-1.5-35b-a3b",
          {{"convert", {"test_ornith_moe_convert"}},
           {"load", {"test_ornith_moe_loader"}},
           {"model", {"test_ornith_moe_model"}},
           {"kernels", {"test_ornith_moe_kernels"}},
           {"selfcheck", {"test_ornith_moe_selfcheck"}},
-          {"fsi", {"test_ornith_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_ornith_moe_fsi_selfcheck"}},
+          {"code", {"test_ornith_moe_code_selfcheck"}}}},
         {"qwen3.8-flash-next",
          {{"convert", {"test_qwen_moe_exp_convert"}},
           {"load", {"test_qwen_moe_exp_loader"}},
           {"model", {"test_qwen_moe_exp_model"}},
           {"kernels", {"test_qwen_moe_exp_kernels"}},
           {"selfcheck", {"test_qwen_moe_exp_selfcheck"}},
-          {"fsi", {"test_qwen_moe_exp_fsi_selfcheck"}}}},
+          {"fsi", {"test_qwen_moe_exp_fsi_selfcheck"}},
+          {"code", {"test_qwen_moe_exp_code_selfcheck"}}}},
         {"gemma-4-26b-a4b-it",
          {{"convert", {"test_gemma_moe_convert"}},
           {"load", {"test_gemma_moe_loader"}},
@@ -174,7 +185,8 @@ const std::vector<SuiteSpec> &Suites()
            {"test_gemma_moe_norm", "test_gemma_moe_rotary",
             "test_gemma_moe_attn", "test_gemma_moe_moe"}},
           {"selfcheck", {"test_gemma_moe_selfcheck"}},
-          {"fsi", {"test_gemma_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_gemma_moe_fsi_selfcheck"}},
+          {"code", {"test_gemma_moe_code_selfcheck"}}}},
         {"kimi-k2.7-code",
          {{"convert", {"test_kimi_moe_convert"}},
           {"load", {"test_kimi_moe_loader"}},
@@ -183,28 +195,32 @@ const std::vector<SuiteSpec> &Suites()
            {"test_kimi_moe_router", "test_kimi_moe_attention",
             "test_kimi_moe_experts", "test_kimi_moe_int4_dequant"}},
           {"selfcheck", {"test_kimi_moe_selfcheck"}},
-          {"fsi", {"test_kimi_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_kimi_moe_fsi_selfcheck"}},
+          {"code", {"test_kimi_moe_code_selfcheck"}}}},
         {"nemotron-3.5-lightning-30b-a3b",
          {{"convert", {"test_nemotron_moe_convert"}},
           {"load", {"test_nemotron_moe_loader"}},
           {"model", {"test_nemotron_moe_model"}},
           {"kernels", {"test_nemotron_moe_kernels"}},
           {"selfcheck", {"test_nemotron_moe_selfcheck"}},
-          {"fsi", {"test_nemotron_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_nemotron_moe_fsi_selfcheck"}},
+          {"code", {"test_nemotron_moe_code_selfcheck"}}}},
         {"gigachat3.5-432b-a28b-reasoning",
          {{"convert", {"test_gigachat_moe_convert"}},
           {"load", {"test_gigachat_moe_loader"}},
           {"model", {"test_gigachat_moe_model"}},
           {"kernels", {"test_gigachat_moe_kernels"}},
           {"selfcheck", {"test_gigachat_moe_selfcheck"}},
-          {"fsi", {"test_gigachat_moe_fsi_selfcheck"}}}},
+          {"fsi", {"test_gigachat_moe_fsi_selfcheck"}},
+          {"code", {"test_gigachat_moe_code_selfcheck"}}}},
         {"granite-4.2-30b",
          {{"convert", {"test_granite_dense_convert"}},
           {"load", {"test_granite_dense_loader"}},
           {"model", {"test_granite_dense_model"}},
           {"kernels", {"test_granite_dense_kernels"}},
           {"selfcheck", {"test_granite_dense_selfcheck"}},
-          {"fsi", {"test_granite_dense_fsi_selfcheck"}}}},
+          {"fsi", {"test_granite_dense_fsi_selfcheck"}},
+          {"code", {"test_granite_dense_code_selfcheck"}}}},
     };
     return v;
 }
@@ -281,7 +297,8 @@ std::vector<std::string> CheckSelfcheckSkip(const std::string &cmake_text)
         for (const auto &st : s.stages)
         {
             const std::string stage = st.stage;
-            if (stage != "selfcheck" && stage != "fsi") continue;
+            if (stage != "selfcheck" && stage != "fsi" &&
+                stage != "code") continue;
             for (const auto *t : st.targets)
                 if (!HasSkipReturnCode4(cmake_text, t))
                     v.push_back(std::string("selfcheck target without "
@@ -489,7 +506,8 @@ TEST_CASE("suite guard: every model suite covers the full lifecycle",
     REQUIRE(v.empty());
 }
 
-TEST_CASE("suite guard: selfcheck and fsi targets declare SKIP_RETURN_CODE 4",
+TEST_CASE("suite guard: selfcheck, fsi and code targets declare "
+          "SKIP_RETURN_CODE 4",
           "[suite][guard]")
 {
     const fs::path root(LSX_SOURCE_DIR);
