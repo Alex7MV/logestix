@@ -65,10 +65,12 @@ void FreeNemotronSession(NmSession &s);
 void ResetNemotronSession(NmSession &s, cudaStream_t stream);
 
 // Runs ONE token through all layers; writes [vocab] F32 logits into
-// s.head_logits. `pos` is the token's position in the sequence. Routed
-// experts are made resident in `experts` on demand (device slot LRU).
+// s.head_logits. `pos` is the token's position in the sequence. `prefill` is
+// true while consuming the prompt (chunk-scan dt clamp) and false for greedy
+// decode steps (no dt clamp), matching the reference. Routed experts are made
+// resident in `experts` on demand (device slot LRU).
 cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
                                  NmSession &s, NmExpertCache &experts, int token,
-                                 int pos, cudaStream_t stream);
+                                 int pos, bool prefill, cudaStream_t stream);
 
 } // namespace lsxcommon::nemotron_moe

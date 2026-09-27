@@ -46,7 +46,7 @@ __global__ void ssm_step_kernel(const float *__restrict__ state_in,
                                 const float *__restrict__ dt_bias,
                                 const float *__restrict__ A_log, int heads,
                                 int head_dim, int groups, int state_size,
-                                float *__restrict__ state_out,
+                                int clamp_dt, float *__restrict__ state_out,
                                 float *__restrict__ out)
 {
     const int h = blockIdx.x;
@@ -56,7 +56,9 @@ __global__ void ssm_step_kernel(const float *__restrict__ state_in,
     float dth = dt[h] + dt_bias[h];
     // softplus, numerically stable
     dth = dth > 20.0f ? dth : log1pf(expf(dth));
-    if (dth < frozen::kDtMin) dth = frozen::kDtMin;
+    // Reference split: the chunk scan (prefill) clamps dt, the single-token
+    // selective update (decode) does not.
+    if (clamp_dt && dth < frozen::kDtMin) dth = frozen::kDtMin;
     const float A = -expf(A_log[h]);
     const float dA = expf(dth * A);
     const int hpg = heads / groups;
@@ -253,12 +255,12 @@ void RunNemotronSelectiveStateStep(const float *state_in, const float *xs,
                                    const float *D, const float *dt,
                                    const float *dt_bias, const float *A_log,
                                    int heads, int head_dim, int groups,
-                                   int state_size, float *state_out, float *out,
-                                   cudaStream_t stream)
+                                   int state_size, int clamp_dt, float *state_out,
+                                   float *out, cudaStream_t stream)
 {
     ssm_step_kernel<<<heads, head_dim, 0, stream>>>(
         state_in, xs, B, C, D, dt, dt_bias, A_log, heads, head_dim, groups,
-        state_size, state_out, out);
+        state_size, clamp_dt, state_out, out);
 }
 
 void RunNemotronGatedRmsNorm(const float *x, const float *gate,

@@ -242,7 +242,7 @@ void ResetNemotronSession(NmSession &s, cudaStream_t stream)
 
 cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
                                  NmSession &s, NmExpertCache &experts, int token,
-                                 int pos, cudaStream_t stream)
+                                 int pos, bool prefill, cudaStream_t stream)
 {
     using namespace lsx_nvfp4;
     const int H = s.H;
@@ -286,8 +286,8 @@ cudaError_t NemotronForwardToken(const NemotronIndex &idx, const NmWeights &w,
             float *C = s.xbc + d_inner + groups * ss;
             RunNemotronSelectiveStateStep(
                 s.mamba_state[mi], xs, B, C, lw.d_D, s.dt, lw.d_dt_bias,
-                lw.d_A_log, heads, head_dim, groups, ss, s.mamba_state[mi],
-                s.ssm_out, stream);
+                lw.d_A_log, heads, head_dim, groups, ss, prefill ? 1 : 0,
+                s.mamba_state[mi], s.ssm_out, stream);
             RunNemotronGatedRmsNorm(s.ssm_out, s.gate, lw.d_mamba_norm, d_inner,
                                     d_inner / groups, eps, s.gn_out, stream);
             FloatToHalf(s.gn_out, d_inner, s.proj16, stream);

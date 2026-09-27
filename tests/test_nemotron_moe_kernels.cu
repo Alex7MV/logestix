@@ -92,7 +92,8 @@ TEST_CASE("selective state update matches the host reference", "[nemotron][kerne
     ref::SelectiveStateUpdate(state0.data(), xs.data(), B.data(), Cc.data(),
                               D.data(), dt.data(), dt_bias.data(),
                               A_log.data(), heads, head_dim, groups, state_size,
-                              ref_state.data(), ref_out.data());
+                              /*clamp_dt=*/true, ref_state.data(),
+                              ref_out.data());
 
     float *d_s0 = ToDevice(state0), *d_xs = ToDevice(xs), *d_B = ToDevice(B);
     float *d_C = ToDevice(Cc), *d_D = ToDevice(D), *d_dt = ToDevice(dt);
@@ -102,8 +103,8 @@ TEST_CASE("selective state update matches the host reference", "[nemotron][kerne
     cudaMalloc(&d_o, ref_out.size() * sizeof(float));
 
     RunNemotronSelectiveStateStep(d_s0, d_xs, d_B, d_C, d_D, d_dt, d_db, d_Al,
-                                  heads, head_dim, groups, state_size, d_s1, d_o,
-                                  0);
+                                  heads, head_dim, groups, state_size, /*clamp_dt=*/1,
+                                  d_s1, d_o, 0);
     cudaDeviceSynchronize();
 
     auto got_state = FromDevice(d_s1, ref_state.size());
@@ -112,6 +113,40 @@ TEST_CASE("selective state update matches the host reference", "[nemotron][kerne
         CHECK(got_state[i] == Catch::Approx(ref_state[i]).margin(1e-5f));
     for (size_t i = 0; i < ref_out.size(); ++i)
         CHECK(got_out[i] == Catch::Approx(ref_out[i]).margin(1e-5f));
+
+    cudaFree(d_s0); cudaFree(d_xs); cudaFree(d_B); cudaFree(d_C); cudaFree(d_D);
+    cudaFree(d_dt); cudaFree(d_db); cudaFree(d_Al); cudaFree(d_s1); cudaFree(d_o);
+}
+
+TEST_CASE("selective state update honors the dt clamp flag", "[nemotron][kernels]")
+{
+    // Prefill (chunk) clamps dt to kDtMin; decode (selective update) does not.
+    // softplus(-30) ~ 9.4e-14 << kDtMin, so the two forms must differ.
+    const int heads = 1, head_dim = 1, groups = 1, state_size = 1;
+    const std::vector<float> state0 = {0.0f};
+    const std::vector<float> xs = {1.0f};
+    const std::vector<float> B = {1.0f}, Cc = {1.0f};
+    const std::vector<float> D = {0.0f};
+    const std::vector<float> dt = {-30.0f};
+    const std::vector<float> dt_bias = {0.0f};
+    const std::vector<float> A_log = {0.0f};
+
+    float *d_s0 = ToDevice(state0), *d_xs = ToDevice(xs), *d_B = ToDevice(B);
+    float *d_C = ToDevice(Cc), *d_D = ToDevice(D), *d_dt = ToDevice(dt);
+    float *d_db = ToDevice(dt_bias), *d_Al = ToDevice(A_log);
+    float *d_s1 = nullptr, *d_o = nullptr;
+    cudaMalloc(&d_s1, state0.size() * sizeof(float));
+    cudaMalloc(&d_o, xs.size() * sizeof(float));
+
+    for (int clamp_dt = 0; clamp_dt <= 1; ++clamp_dt) {
+        RunNemotronSelectiveStateStep(d_s0, d_xs, d_B, d_C, d_D, d_dt, d_db,
+                                      d_Al, heads, head_dim, groups, state_size,
+                                      clamp_dt, d_s1, d_o, 0);
+        cudaDeviceSynchronize();
+        const auto got = FromDevice(d_s1, 1);
+        const float expect = clamp_dt ? frozen::kDtMin : std::exp(-30.0f);
+        CHECK(got[0] == Catch::Approx(expect).margin(1e-6f));
+    }
 
     cudaFree(d_s0); cudaFree(d_xs); cudaFree(d_B); cudaFree(d_C); cudaFree(d_D);
     cudaFree(d_dt); cudaFree(d_db); cudaFree(d_Al); cudaFree(d_s1); cudaFree(d_o);

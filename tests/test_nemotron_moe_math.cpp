@@ -68,12 +68,45 @@ TEST_CASE("selective state update matches the recurrent Mamba-2 form",
 
     ref::SelectiveStateUpdate(state_in, xs, Bv, Cv, Dv, dt, dt_bias, A_log,
                               /*heads=*/1, /*head_dim=*/1, /*groups=*/1,
-                              /*state_size=*/2, state_out, out);
+                              /*state_size=*/2, /*clamp_dt=*/true, state_out,
+                              out);
 
     const float d = std::log(2.0f); // softplus(0)
     CHECK(state_out[0] == Catch::Approx(d * 2.0f).margin(1e-5f)); // exp(-d)*0 term
     CHECK(state_out[1] == Catch::Approx(d * 2.0f).margin(1e-5f));
     CHECK(out[0] == Catch::Approx(state_out[0] + state_out[1]).margin(1e-5f));
+}
+
+TEST_CASE("selective state update clamps dt in the prefill form only",
+          "[nemotron][math]")
+{
+    // HF clamps dt to time_step_min inside the chunk/prefill scan
+    // (mamba2_chunk_scan) but not in the single-token decode path
+    // (mamba2_selective_state_update). softplus(-30) ~ 9.4e-14 << kDtMin.
+    const float state_in[1] = {0.0f};
+    const float xs[1] = {1.0f};
+    const float Bv[1] = {1.0f};
+    const float Cv[1] = {1.0f};
+    const float Dv[1] = {0.0f};
+    const float dt[1] = {-30.0f};
+    const float dt_bias[1] = {0.0f};
+    const float A_log[1] = {0.0f};
+    float s_pre[1] = {0.0f}, o_pre[1] = {0.0f};
+    float s_dec[1] = {0.0f}, o_dec[1] = {0.0f};
+
+    ref::SelectiveStateUpdate(state_in, xs, Bv, Cv, Dv, dt, dt_bias, A_log,
+                              /*heads=*/1, /*head_dim=*/1, /*groups=*/1,
+                              /*state_size=*/1, /*clamp_dt=*/true, s_pre, o_pre);
+    ref::SelectiveStateUpdate(state_in, xs, Bv, Cv, Dv, dt, dt_bias, A_log,
+                              /*heads=*/1, /*head_dim=*/1, /*groups=*/1,
+                              /*state_size=*/1, /*clamp_dt=*/false, s_dec, o_dec);
+
+    // state = state_in*dA + dth*B*xs = dth (state_in is zero); out = state.
+    CHECK(s_pre[0] == Catch::Approx(frozen::kDtMin).margin(1e-7f));
+    CHECK(s_dec[0] == Catch::Approx(std::exp(-30.0f)).margin(1e-12f));
+    CHECK(s_dec[0] < s_pre[0]);
+    CHECK(o_pre[0] == Catch::Approx(s_pre[0]).margin(1e-7f));
+    CHECK(o_dec[0] == Catch::Approx(s_dec[0]).margin(1e-12f));
 }
 
 TEST_CASE("router: sigmoid top-k, bias selects, normalized then scaled",

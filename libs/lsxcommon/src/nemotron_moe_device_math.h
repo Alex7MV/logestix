@@ -61,17 +61,21 @@ inline void GatedRmsNorm(const float *x, const float *gate, const float *weight,
 //   dt_bias[heads], A_log[heads]
 //   state  [heads, head_dim, state_size] (in/out carried across steps)
 //   out    [heads, head_dim]
+//
+// clamp_dt mirrors the reference split: the chunk scan (prefill) clamps dt to
+// time_step_min, the single-token selective update (decode) does not.
 inline void SelectiveStateUpdate(const float *state_in, const float *xs,
                                  const float *B, const float *C,
                                  const float *D, const float *dt,
                                  const float *dt_bias, const float *A_log,
                                  int heads, int head_dim, int groups,
-                                 int state_size, float *state_out, float *out)
+                                 int state_size, bool clamp_dt, float *state_out,
+                                 float *out)
 {
     const int heads_per_group = heads / groups;
     for (int h = 0; h < heads; ++h) {
         float dth = Softplus(dt[h] + dt_bias[h]);
-        if (dth < frozen::kDtMin) dth = frozen::kDtMin;
+        if (clamp_dt && dth < frozen::kDtMin) dth = frozen::kDtMin;
         const float A = -std::exp(A_log[h]);
         const float dA = std::exp(dth * A);
         const int g = h / heads_per_group;

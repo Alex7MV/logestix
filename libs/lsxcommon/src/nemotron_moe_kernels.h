@@ -24,13 +24,15 @@ void RunNemotronConvStep(const float *xBC, const float *w, const float *bias,
 
 // One decode step of the Mamba-2 selective state-space recurrence.
 // Layouts as in ref::SelectiveStateUpdate (state [heads, head_dim, state_size]).
+// `clamp_dt` = 1 in the prefill (chunk-scan) form, 0 in the decode
+// (selective-update) form, matching the reference dt_limit split.
 void RunNemotronSelectiveStateStep(const float *state_in, const float *xs,
                                    const float *B, const float *C,
                                    const float *D, const float *dt,
                                    const float *dt_bias, const float *A_log,
                                    int heads, int head_dim, int groups,
-                                   int state_size, float *state_out, float *out,
-                                   cudaStream_t stream);
+                                   int state_size, int clamp_dt, float *state_out,
+                                   float *out, cudaStream_t stream);
 
 // Gated RMSNorm: h = x * silu(gate); per-group rmsnorm; * weight.
 void RunNemotronGatedRmsNorm(const float *x, const float *gate,

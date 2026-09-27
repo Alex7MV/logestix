@@ -158,7 +158,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         int pos = 0;
         for (int32_t id : req.input_ids) {
             cudaError_t e = nemotron_moe::NemotronForwardToken(
-                idx_, weights_, session_, expert_cache_, id, pos, stream());
+                idx_, weights_, session_, expert_cache_, id, pos, true, stream());
             if (e != cudaSuccess) {
                 r.error_msg = std::string("forward failed: ") +
                               cudaGetErrorString(e);
@@ -194,7 +194,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
             }
             if (step + 1 < req.max_gen_tokens) {
                 cudaError_t e = nemotron_moe::NemotronForwardToken(
-                    idx_, weights_, session_, expert_cache_, next, pos,
+                    idx_, weights_, session_, expert_cache_, next, pos, false,
                     stream());
                 if (e != cudaSuccess) {
                     r.error_msg = std::string("forward failed: ") +
