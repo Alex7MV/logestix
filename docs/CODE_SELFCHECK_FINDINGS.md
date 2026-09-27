@@ -138,6 +138,11 @@ failure. This is the intended "syntactic strictness" behaviour; if a future
 decision relaxes the assignment kind to algebraic canonicalization, this case
 would pass.
 
+Re-run 2026-09-27 after `CutPromptEcho`: the converted raw is exactly
+`m=(l+(h-l)/2)` and the source raw is `m=l+((h-l)/2)` — the divergence is the
+answer itself, not a prompt echo, so the cut does not apply and the golden stays
+uncommitted.
+
 ### GLM-5.3-Flash — resolved (resolved by budget + prompt-echo cut)
 
 The source cannot run locally, so the golden is template-derived (`--template-
