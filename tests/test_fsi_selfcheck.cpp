@@ -18,13 +18,13 @@ TEST_CASE("fsi: arithmetic extraction normalizes to a bare formula",
 {
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV",
           "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
-          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV",
           "```python\nPV = CF*((1-exp(-r*n))/(1-exp(-r)))\n```") ==
-          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV",
           "PV=CF*((1-exp(-r*n))/(1-exp(-r))) This is the formula.") ==
-          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "Balance_Alpha",
           "Balance_Alpha = (((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C") ==
           "Balance_Alpha=((100000000*Rate_A-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
@@ -179,7 +179,7 @@ TEST_CASE("fsi: harness passes on a matching answer and forwards the request",
     const fsi::FsiResult r = fsi::RunFsiSelfCheck(m, g, decode);
     REQUIRE(r.all_passed);
     REQUIRE(r.cases.size() == 1);
-    CHECK(r.cases[0].extracted == "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+    CHECK(r.cases[0].extracted == "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
     CHECK(m.last_.input_ids == std::vector<int32_t>{1, 2});
     CHECK(m.last_.max_gen_tokens == 8);
 }
@@ -223,6 +223,30 @@ TEST_CASE("fsi: arithmetic canonicalization removes redundant parentheses",
           "Balance_Alpha=((100000000*Rate_A-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C");
 }
 
+TEST_CASE("fsi: arithmetic canonicalization is associativity-normalized",
+          "[fsi][unit]")
+{
+    const auto canon = [](std::string rhs) {
+        return fsi::ExtractFsiFormula(fsi::FsiKind::kArithmetic, "PV",
+                                      "PV=" + rhs);
+    };
+    // Multiplicative chains: a*(b/c) == (a*b)/c == a*b/c, a/(b*c) == a/b/c.
+    CHECK(canon("CF*((1-exp(-r*n))/(1-exp(-r)))") ==
+          canon("CF*(1-exp(-r*n))/(1-exp(-r))"));
+    CHECK(canon("a*(b/c)") == canon("(a*b)/c"));
+    CHECK(canon("a*(b*c)") == canon("(a*b)*c"));
+    CHECK(canon("a/(b*c)") == canon("a/b/c"));
+    // a/(b/c) == a*c/b == (a/b)*c, but is NOT a/b/c.
+    CHECK(canon("a/(b/c)") == canon("(a/b)*c"));
+    CHECK(canon("a/(b/c)") != canon("a/b/c"));
+    // Additive chains.
+    CHECK(canon("a-(b-c)") == canon("a-b+c"));
+    CHECK(canon("a+(b+c)") == canon("a+b+c"));
+    CHECK(canon("a-(b+c)") == canon("a-b-c"));
+    // Commutativity is deliberately not applied.
+    CHECK(canon("a+b") != canon("b+a"));
+}
+
 TEST_CASE("fsi: multi-line answer selects the anchor+operator line",
           "[fsi][unit]")
 {
@@ -230,7 +254,7 @@ TEST_CASE("fsi: multi-line answer selects the anchor+operator line",
               fsi::FsiKind::kArithmetic, "PV",
               "The correct formula for the present value (PV) is:\n"
               "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
-          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
 }
 
 TEST_CASE("fsi: extraction ignores chain-of-thought before </think>",
@@ -240,7 +264,7 @@ TEST_CASE("fsi: extraction ignores chain-of-thought before </think>",
               fsi::FsiKind::kArithmetic, "PV",
               "We need output. Compute PV=wrong*2.\n</think>\n"
               "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
-          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+          "PV=CF*(1-exp(-r*n))/(1-exp(-r))");
     CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
               "think: Drawdown<Threshold maybe\n</think>\nDrawdown>Threshold") ==
           "Drawdown>Threshold");

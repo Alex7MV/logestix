@@ -208,11 +208,43 @@ std::string PrintExpr(const ExprNode *n, int min_prec)
     return (min_prec > prec) ? "(" + body + ")" : body;
 }
 
+// Left-associate equal-precedence chains so forms that differ only by
+// associativity canonicalize identically: a*(b/c) == (a*b)/c, a-(b-c) ==
+// a-b+c. Each rewrite is an exact algebraic identity, so genuinely different
+// expressions are never equated; commutativity is deliberately not applied.
+std::unique_ptr<ExprNode> Reassociate(std::unique_ptr<ExprNode> n)
+{
+    if (!n || n->kind != ExprNode::kBin) return n;
+    n->left = Reassociate(std::move(n->left));
+    n->right = Reassociate(std::move(n->right));
+    while (n->right && n->right->kind == ExprNode::kBin) {
+        const char op = n->text[0];
+        const char ro = n->right->text[0];
+        char outer = 0;
+        if ((op == '+' || op == '-') && (ro == '+' || ro == '-'))
+            outer = (op == '+') ? ro : (ro == '+' ? '-' : '+');
+        else if ((op == '*' || op == '/') && (ro == '*' || ro == '/'))
+            outer = (op == '*') ? ro : (ro == '*' ? '/' : '*');
+        if (outer == 0) break;
+        std::unique_ptr<ExprNode> r = std::move(n->right);
+        auto newLeft = std::make_unique<ExprNode>();
+        newLeft->kind = ExprNode::kBin;
+        newLeft->text = std::string(1, op);
+        newLeft->left = std::move(n->left);
+        newLeft->right = std::move(r->left);
+        n->text = std::string(1, outer);
+        n->left = Reassociate(std::move(newLeft));
+        n->right = std::move(r->right);
+    }
+    return n;
+}
+
 std::string CanonicalizeArithmetic(std::string_view rhs)
 {
     ExprParser p(rhs);
     auto root = p.Parse();
     if (!root) return std::string(rhs);
+    root = Reassociate(std::move(root));
     return PrintExpr(root.get(), 0);
 }
 
