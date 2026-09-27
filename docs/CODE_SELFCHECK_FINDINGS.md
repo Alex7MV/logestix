@@ -64,7 +64,7 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 | granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) |
 | gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
 | GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **PASS 3/3** (512 + prompt-echo cut) |
-| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source present and capturable (FSI captured it); not captured — the converted model emits incoherent text under FSI |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (source 3/3 exact); converted **FAIL 3/3** (incoherent; same profile as FSI) |
 | ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
 | DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown) |
@@ -184,6 +184,23 @@ EOS tokens (`[154820 <|endoftext|>, 154827 <|user|>, 154829 <|observation|>]`,
 correctly stored and checked as a set in `RunFlashDsaDecode`) and degenerates
 into prompt repetition after the answer. `CutPromptEcho` contains it; a
 terminating model would not need it.
+
+### NVIDIA-Nemotron-3.5-Lightning-30B-A3B — FAIL 3/3 (incoherent converted output)
+
+The source answers all three prompts verbatim, but the converted model is
+severely degenerate; CODESelfCheck reproduces exactly what FSISelfCheck found
+(`FSI_SELFCHECK_FINDINGS.md`, nemotron quantization verdict / dt-clamp fix):
+
+- CODE-01: emits `{"data":"C019"}` and scrambled token-soup
+  (`C01C19191001`, unpacked single characters, `0101`, ...) — never the
+  requested nested object; the first balanced `{...}` lacks the `root` anchor.
+- CODE-02: emits a *different* formula `m = (l + h) / 2` plus prose and a broken
+  code example (`(b + c) / 2`, undefined `x_u`), not `m=l+((h-l)/2)`.
+- CODE-03: emits `[Cc][Oo][Rr][E]-[C-M-0-3]` / `F3C3-C0r3`, not the requested
+  hex pattern.
+
+All three extractions are empty, so the target fails; the golden is not
+committed and `test_nemotron_moe_code_selfcheck` SKIPs.
 
 ### Qwen3.8-Flash-Next capture recipe (`qwen4_exp`)
 
