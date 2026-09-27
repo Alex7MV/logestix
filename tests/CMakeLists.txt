@@ -3718,6 +3718,249 @@ endif()
 add_test(NAME test_granite_dense_code_selfcheck COMMAND test_granite_dense_code_selfcheck)
 set_tests_properties(test_granite_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# ── DETSelfCheck (separate from SelfCheck/FSI/CODE): determinism golden parity per family ──
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det" LSX_DET_GOLDEN_DIR_FWD)
+add_executable(test_glm_moe_det_selfcheck test_glm_moe_det_selfcheck.cpp)
+target_compile_definitions(test_glm_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_glm_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_det_selfcheck>")
+    add_custom_command(TARGET test_glm_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_det_selfcheck>")
+endif()
+add_test(NAME test_glm_moe_det_selfcheck COMMAND test_glm_moe_det_selfcheck)
+set_tests_properties(test_glm_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_glm_moe_flash_det_selfcheck test_glm_moe_flash_det_selfcheck.cpp)
+target_compile_definitions(test_glm_moe_flash_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_glm_moe_flash_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_glm_moe_flash_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_det_selfcheck>")
+    add_custom_command(TARGET test_glm_moe_flash_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_glm_moe_flash_det_selfcheck>")
+endif()
+add_test(NAME test_glm_moe_flash_det_selfcheck COMMAND test_glm_moe_flash_det_selfcheck)
+set_tests_properties(test_glm_moe_flash_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_deepseek_moe_det_selfcheck test_deepseek_moe_det_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_deepseek_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_det_selfcheck>")
+    add_custom_command(TARGET test_deepseek_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_det_selfcheck>")
+endif()
+add_test(NAME test_deepseek_moe_det_selfcheck COMMAND test_deepseek_moe_det_selfcheck)
+set_tests_properties(test_deepseek_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_deepseek_moe_v41_det_selfcheck test_deepseek_moe_v41_det_selfcheck.cpp)
+target_compile_definitions(test_deepseek_moe_v41_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_deepseek_moe_v41_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_deepseek_moe_v41_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_det_selfcheck>")
+    add_custom_command(TARGET test_deepseek_moe_v41_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_deepseek_moe_v41_det_selfcheck>")
+endif()
+add_test(NAME test_deepseek_moe_v41_det_selfcheck COMMAND test_deepseek_moe_v41_det_selfcheck)
+set_tests_properties(test_deepseek_moe_v41_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_qwen_dense_det_selfcheck test_qwen_dense_det_selfcheck.cpp)
+target_compile_definitions(test_qwen_dense_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_det_selfcheck>")
+    add_custom_command(TARGET test_qwen_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_det_selfcheck>")
+endif()
+add_test(NAME test_qwen_dense_det_selfcheck COMMAND test_qwen_dense_det_selfcheck)
+set_tests_properties(test_qwen_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_qwen_dense_27b_det_selfcheck test_qwen_dense_27b_det_selfcheck.cpp)
+target_compile_definitions(test_qwen_dense_27b_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_dense_27b_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_dense_27b_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_27b_det_selfcheck>")
+    add_custom_command(TARGET test_qwen_dense_27b_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_dense_27b_det_selfcheck>")
+endif()
+add_test(NAME test_qwen_dense_27b_det_selfcheck COMMAND test_qwen_dense_27b_det_selfcheck)
+set_tests_properties(test_qwen_dense_27b_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_qwen_moe_det_selfcheck test_qwen_moe_det_selfcheck.cpp)
+target_compile_definitions(test_qwen_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_det_selfcheck>")
+    add_custom_command(TARGET test_qwen_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_det_selfcheck>")
+endif()
+add_test(NAME test_qwen_moe_det_selfcheck COMMAND test_qwen_moe_det_selfcheck)
+set_tests_properties(test_qwen_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_qwen_moe_36_det_selfcheck test_qwen_moe_36_det_selfcheck.cpp)
+target_compile_definitions(test_qwen_moe_36_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_moe_36_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_36_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_36_det_selfcheck>")
+    add_custom_command(TARGET test_qwen_moe_36_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_36_det_selfcheck>")
+endif()
+add_test(NAME test_qwen_moe_36_det_selfcheck COMMAND test_qwen_moe_36_det_selfcheck)
+set_tests_properties(test_qwen_moe_36_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_ornith_moe_det_selfcheck test_ornith_moe_det_selfcheck.cpp)
+target_compile_definitions(test_ornith_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_ornith_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_ornith_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_det_selfcheck>")
+    add_custom_command(TARGET test_ornith_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_ornith_moe_det_selfcheck>")
+endif()
+add_test(NAME test_ornith_moe_det_selfcheck COMMAND test_ornith_moe_det_selfcheck)
+set_tests_properties(test_ornith_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_qwen_moe_exp_det_selfcheck test_qwen_moe_exp_det_selfcheck.cpp)
+target_compile_definitions(test_qwen_moe_exp_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_qwen_moe_exp_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_qwen_moe_exp_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_det_selfcheck>")
+    add_custom_command(TARGET test_qwen_moe_exp_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_qwen_moe_exp_det_selfcheck>")
+endif()
+add_test(NAME test_qwen_moe_exp_det_selfcheck COMMAND test_qwen_moe_exp_det_selfcheck)
+set_tests_properties(test_qwen_moe_exp_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_gemma_moe_det_selfcheck test_gemma_moe_det_selfcheck.cpp)
+target_compile_definitions(test_gemma_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_gemma_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_gemma_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_moe_det_selfcheck>")
+    add_custom_command(TARGET test_gemma_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gemma_moe_det_selfcheck>")
+endif()
+add_test(NAME test_gemma_moe_det_selfcheck COMMAND test_gemma_moe_det_selfcheck)
+set_tests_properties(test_gemma_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_kimi_moe_det_selfcheck test_kimi_moe_det_selfcheck.cpp)
+target_compile_definitions(test_kimi_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_kimi_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_kimi_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_det_selfcheck>")
+    add_custom_command(TARGET test_kimi_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_kimi_moe_det_selfcheck>")
+endif()
+add_test(NAME test_kimi_moe_det_selfcheck COMMAND test_kimi_moe_det_selfcheck)
+set_tests_properties(test_kimi_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_nemotron_moe_det_selfcheck test_nemotron_moe_det_selfcheck.cpp)
+target_compile_definitions(test_nemotron_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_nemotron_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_nemotron_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_det_selfcheck>")
+    add_custom_command(TARGET test_nemotron_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_det_selfcheck>")
+endif()
+add_test(NAME test_nemotron_moe_det_selfcheck COMMAND test_nemotron_moe_det_selfcheck)
+set_tests_properties(test_nemotron_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_gigachat_moe_det_selfcheck test_gigachat_moe_det_selfcheck.cpp)
+target_compile_definitions(test_gigachat_moe_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_gigachat_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_gigachat_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_det_selfcheck>")
+    add_custom_command(TARGET test_gigachat_moe_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_gigachat_moe_det_selfcheck>")
+endif()
+add_test(NAME test_gigachat_moe_det_selfcheck COMMAND test_gigachat_moe_det_selfcheck)
+set_tests_properties(test_gigachat_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+add_executable(test_granite_dense_det_selfcheck test_granite_dense_det_selfcheck.cpp)
+target_compile_definitions(test_granite_dense_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_granite_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_granite_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_det_selfcheck>")
+    add_custom_command(TARGET test_granite_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_granite_dense_det_selfcheck>")
+endif()
+add_test(NAME test_granite_dense_det_selfcheck COMMAND test_granite_dense_det_selfcheck)
+set_tests_properties(test_granite_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
 target_include_directories(test_qwen_moe_selfcheck PRIVATE
@@ -4436,6 +4679,11 @@ add_executable(test_code_selfcheck test_code_selfcheck.cpp)
 target_link_libraries(test_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_code_selfcheck COMMAND test_code_selfcheck)
 
+# ── DETSelfCheck: host-only extraction/golden/harness unit tests (no GPU) ──
+add_executable(test_det_selfcheck test_det_selfcheck.cpp)
+target_link_libraries(test_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_det_selfcheck COMMAND test_det_selfcheck)
+
 # ── Test category labels (fast | convert | inference | perf) ──────────────
 # fast     — host-only: runs on every default ctest invocation.
 # convert  — model-converter tests: run when a converter changes
@@ -4466,6 +4714,7 @@ set_tests_properties(
     test_model_runtime
     test_fsi_selfcheck
     test_code_selfcheck
+    test_det_selfcheck
     test_model_engine
     test_tokenizer
     test_mosaic_network
@@ -4609,6 +4858,21 @@ set_tests_properties(
     test_nemotron_moe_code_selfcheck
     test_gigachat_moe_code_selfcheck
     test_granite_dense_code_selfcheck
+    test_glm_moe_det_selfcheck
+    test_glm_moe_flash_det_selfcheck
+    test_deepseek_moe_det_selfcheck
+    test_deepseek_moe_v41_det_selfcheck
+    test_qwen_dense_det_selfcheck
+    test_qwen_dense_27b_det_selfcheck
+    test_qwen_moe_det_selfcheck
+    test_qwen_moe_36_det_selfcheck
+    test_ornith_moe_det_selfcheck
+    test_qwen_moe_exp_det_selfcheck
+    test_gemma_moe_det_selfcheck
+    test_kimi_moe_det_selfcheck
+    test_nemotron_moe_det_selfcheck
+    test_gigachat_moe_det_selfcheck
+    test_granite_dense_det_selfcheck
     test_qwen_moe_exp_loader
     test_qwen_moe_exp_model
     test_qwen_moe_exp_selfcheck

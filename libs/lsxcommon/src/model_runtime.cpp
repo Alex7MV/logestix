@@ -17,6 +17,7 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/fsi_selfcheck.h"
 #include "lsxcommon/code_selfcheck.h"
+#include "lsxcommon/det_selfcheck.h"
 
 namespace lsxcommon {
 namespace runtime {
@@ -352,6 +353,52 @@ int RunCliCodeSelfCheck(const GenerationCliArgs &args)
     for (const code::CodeCaseResult &c : result.cases)
         lsxcommon::log::info(absl::StrFormat(
             "%s  expected='%s'  extracted='%s'  %s", c.id.c_str(),
+            c.expected.c_str(), c.extracted.c_str(),
+            c.passed ? "PASS" : "FAIL"));
+    lsxcommon::log::info(
+        absl::StrFormat("result   : %s", result.all_passed ? "PASS" : "FAIL"));
+    m.model->Unload();
+    return result.all_passed ? 0 : 1;
+}
+
+int RunCliDetSelfCheck(const GenerationCliArgs &args)
+{
+    lsxcommon::log::info(
+        "Running DET self-check (determinism + near-tie golden parity)...");
+    const char *dir = std::getenv("LSX_DET_GOLDEN_DIR");
+    if (!dir || !*dir) {
+        lsxcommon::log::error(
+            "LSX_DET_GOLDEN_DIR is not set (directory with <model_type>.json)");
+        return 1;
+    }
+    CliModel m = CreateCliModel(args.model_path, FastMathMode::kOff);
+    if (!m.ok) return 1;
+    const std::string golden_path =
+        std::string(dir) + "/" + m.model->Type() + ".json";
+    det::DetGolden golden;
+    std::string err;
+    if (!det::LoadDetGoldenFile(golden_path, golden, &err)) {
+        lsxcommon::log::error(
+            absl::StrFormat("DET golden load failed: %s", err.c_str()));
+        m.model->Unload();
+        return 1;
+    }
+    int override = 0;
+    if (const char *sr = std::getenv("LSX_DET_STRESS_RUNS")) {
+        const int v = std::atoi(sr);
+        if (v > 0) override = v;
+    }
+    const det::DetResult result = det::RunDetSelfCheck(
+        *m.model, golden,
+        [&m](const std::vector<int32_t> &ids) {
+            return DecodeGeneratedText(m.model->Tokenizer(), ids);
+        },
+        override);
+    lsxcommon::log::info("=== lsxbenchmark: det-selfcheck ===");
+    for (const det::DetCaseResult &c : result.cases)
+        lsxcommon::log::info(absl::StrFormat(
+            "%s  runs=%d  deterministic=%s  expected='%s'  extracted='%s'  %s",
+            c.id.c_str(), c.runs, c.deterministic ? "yes" : "no",
             c.expected.c_str(), c.extracted.c_str(),
             c.passed ? "PASS" : "FAIL"));
     lsxcommon::log::info(

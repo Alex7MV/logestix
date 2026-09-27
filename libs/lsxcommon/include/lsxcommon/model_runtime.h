@@ -93,6 +93,12 @@ int RunCliFsiSelfCheck(const GenerationCliArgs &args);
 // <LSX_CODE_GOLDEN_DIR>/<model Type()>.json, runs the captured input_ids at
 // FastMathMode::kOff, and compares the extracted answer to the golden.
 int RunCliCodeSelfCheck(const GenerationCliArgs &args);
+// DET determinism gate (separate from SelfCheck, FSI and CODE): resolves
+// <LSX_DET_GOLDEN_DIR>/<model Type()>.json, runs the captured input_ids R
+// times at FastMathMode::kOff, requires byte-identical token streams across
+// runs, and compares the extracted canonical token to the golden.
+// LSX_DET_STRESS_RUNS overrides R (floored at 3).
+int RunCliDetSelfCheck(const GenerationCliArgs &args);
 // Speed-measurement lifecycle (lsxbenchmark --bench): Create -> Load ->
 // frame/encode -> Infer -> print -> Unload. Runs at args.fast_math_mode
 // (kAuto = maximum-speed auto policy; kOff = bit-exact measurement).

@@ -1,0 +1,27 @@
+{
+  "format": "logestix-det-prompts",
+  "version": 1,
+  "prompts": [
+    {
+      "id": "DET-TEST-01",
+      "title": "PARADOXICAL-LOGIC-ANCHOR",
+      "kind": "token",
+      "expected": "PARADOX_ANTINOMY",
+      "body": "[CONTEXT]: DET-Validation-Core-01 // Self-Referential Resolution\nResolve the standard Epimenides boundary paradox under absolute zero-variance constraints.\nStatement: \"This explicit statement is completely false.\"\nTask: Determine the structural truth-value behavior condition of the statement above.\nOutput Specification: Output strictly one capitalized token: PARADOX_ANTINOMY. Do not evaluate textually, do not include whitespace or formatting tags.\nExpected Template: PARADOX_ANTINOMY"
+    },
+    {
+      "id": "DET-TEST-02",
+      "title": "SYNONYM-COLLAPSE-PRESSURE",
+      "kind": "token",
+      "expected": "CATASTROPHIC",
+      "body": "[CONTEXT]: DET-Validation-Core-02 // Lexical Near-Tie Compression\nSelect the absolute premier, immutable system-level classification noun to describe an unrecoverable hardware state.\nCandidates: [FATAL, CRITICAL, TERMINAL, CATASTROPHIC]\nTask: Isolate the final vocabulary token strictly according to the highest alphabetical sort priority to suppress semantic drift.\nOutput Specification: Output ONLY the single chosen word from the candidates array without spaces, punctuation, or code gates.\nExpected Template: CATASTROPHIC"
+    },
+    {
+      "id": "DET-TEST-03",
+      "title": "QUANTUM-STATE-DETERMINISM",
+      "kind": "token",
+      "expected": "BIT_ZERO",
+      "body": "[CONTEXT]: DET-Validation-Core-03 // Superposition Token Clamp\nEvaluate a simulated quantum superposition register state where Probability(State_0) perfectly equals Probability(State_1).\nConstraint: Internal random seed initialization is blocked; system execution mode is hard-max greedy.\nTask: Force the output sampler to resolve the symmetrical tie by emitting the strict primary hardware default register bit identifier.\nOutput Specification: Output exactly one uppercase character token string. Stop generation immediately.\nExpected Template: BIT_ZERO"
+    }
+  ]
+}

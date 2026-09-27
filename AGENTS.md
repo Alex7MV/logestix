@@ -102,6 +102,18 @@ procedure — `perf-tuning-a-model`.
   workflow, golden schema (incl. the prompt-echo `body` cut), extraction
   (json/assignment/regex) and per-model quirks — skill **`code-selfcheck`**
   (`.opencode/skills/code-selfcheck/SKILL.md`).
+  DETSelfCheck (`det_selfcheck.{h,cpp}`, host-only, model-neutral — the
+  determinism + near-tie analogue of FSI/CODE: runs each prompt R times
+  (`stress_runs`, default 3, floored at 3, `LSX_DET_STRESS_RUNS` override),
+  requires byte-identical `gen_tokens` across runs and the extracted canonical
+  token at `kOff` to match a golden captured from the source safetensors;
+  capture `tools/det_capture.py` + `tools/det_prompts.json`; per-family goldens
+  `tests/fixtures/det/<type>.json`; `lsxbenchmark --det-selfcheck`; per-family
+  `test_<family>_det_selfcheck.cpp`, label `inference`, SKIP 4; suite-guard
+  `det` stage; findings `docs/DET_SELFCHECK_FINDINGS.md`; design
+  `docs/superpowers/specs/2026-09-27-det-selfcheck-design.md`). Capture/verify
+  workflow, golden schema, extraction (`token`) and per-model quirks — skill
+  **`det-selfcheck`** (`.opencode/skills/det-selfcheck/SKILL.md`).
   Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),

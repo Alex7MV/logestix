@@ -29,7 +29,8 @@ int main(int argc, char *argv[]) {
         // 1->2-token minimum internally, legacy lsxfabric --selfcheck parity);
         // bench honors --max-gen (default 2048).
         args.max_gen_tokens =
-            (cli.selfcheck || cli.fsi_selfcheck || cli.code_selfcheck)
+            (cli.selfcheck || cli.fsi_selfcheck || cli.code_selfcheck ||
+             cli.det_selfcheck)
                 ? 1
                 : cli.max_gen;
         // Numeric policy: kAuto = per-GPU maximum-speed perf policy;
@@ -37,7 +38,9 @@ int main(int argc, char *argv[]) {
         args.fast_math_mode = cli.bit_exact ? lsxcommon::FastMathMode::kOff
                                             : lsxcommon::FastMathMode::kAuto;
 
-        if (cli.code_selfcheck)
+        if (cli.det_selfcheck)
+            rc = lsxcommon::runtime::RunCliDetSelfCheck(args);
+        else if (cli.code_selfcheck)
             rc = lsxcommon::runtime::RunCliCodeSelfCheck(args);
         else if (cli.fsi_selfcheck)
             rc = lsxcommon::runtime::RunCliFsiSelfCheck(args);

@@ -64,6 +64,17 @@ TEST_CASE("lsxbenchmark cli: bench options parse", "[lsxbenchmark][cli]") {
     REQUIRE(a.max_gen == 7);
 }
 
+TEST_CASE("lsxbenchmark cli: --det-selfcheck selects verification mode",
+          "[lsxbenchmark][cli]") {
+    const lsxbenchmark::BenchmarkCliArgs a =
+        Parse({"lsxbenchmark", "--det-selfcheck"});
+    REQUIRE(a.det_selfcheck);
+    REQUIRE_FALSE(a.bench);
+    REQUIRE_FALSE(a.selfcheck);
+    REQUIRE_FALSE(a.fsi_selfcheck);
+    REQUIRE_FALSE(a.code_selfcheck);
+}
+
 TEST_CASE("lsxbenchmark cli: unknown flags are silently ignored",
           "[lsxbenchmark][cli]") {
     const lsxbenchmark::BenchmarkCliArgs a = Parse(
