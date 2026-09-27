@@ -126,6 +126,46 @@ not the LRU/batched/router optimizations. A definitive proof would require a
 higher-precision reference (BF16/FP16 resident) or per-layer hidden-state
 parity against HF; the FSI gate correctly surfaces the divergence.
 
+#### Nemotron divergence is quantization — confirmed (2026-09-27)
+
+Ran the GLM-style check (audit the decode path against HF, then measure the
+actual divergence) to decide whether a second runtime bug hides here.
+
+- **Audit vs HF `modeling_nemotron_h.py`:** the full-attention path uses
+  `total = pos + 1` (`nemotron_moe_inference_pipeline.cu`), i.e. real causal
+  attention — the GLM DSA bug (current-token-only) does **not** exist here.
+  GQA head mapping, full-dim RoPE (`rotate_half`), the sigmoid top-k router
+  (`e_score_correction_bias` selects only, `norm_topk_prob`, `routed_scaling_factor`;
+  group routing is a no-op with `n_group == 1`), the gated RMSNorm, the Mamba-2
+  recurrence and the residual/shared-expert structure all match the reference.
+- **Decisive measurement — teacher-forced top-1 agreement:** feed HF's exact
+  greedy prefix back as the prompt and ask the converted model for the next
+  token. On a raw 268-token passage it agrees with BF16 on **17/32** positions;
+  every miss is a high-probability synonym (`clear`→`certain`,
+  `essential`→`foundation`, `bridge`→`engine`, `machine`→`executable`) while
+  function words and most content words match exactly. A structurally broken
+  attention/Mamba would not track BF16 like this; a distribution that is close
+  but not identical does.
+- **Output sensitivity:** the FSI text changes chaotically under a tiny numeric
+  perturbation (the `dt` clamp below), i.e. greedy is landing on near-ties.
+
+**Verdict:** the Nemotron FSI divergence is 4-bit NVFP4 precision sensitivity on
+reasoning prompts, not a runtime defect. No further digging is warranted absent
+a BF16/FP16 converted reference.
+
+##### Reference-fidelity fix found along the way: decode `dt` clamp
+
+HF clamps the Mamba-2 `dt` to `time_step_min` (0.001) only inside the
+chunk/prefill scan (`mamba2_chunk_scan`); its single-token decode path
+(`mamba2_selective_state_update`) does **not** clamp. The runtime clamped both
+(the checkpoint has `softplus(dt_bias)` heads down to ~1.1e-6, so this is a
+×1000 difference where it triggers). Fixed by threading a `prefill` flag:
+`clamp_dt = 1` while consuming the prompt, `0` for greedy decode
+(`nemotron_moe_kernels.{h,cu}`, `nemotron_moe_device_math.h`,
+`nemotron_moe_inference{,_pipeline}.cu`, `nemotron_moe_model.cpp`), pinned by
+`tests/test_nemotron_moe_{math,kernels}`. The FSI outcome is unchanged — the fix
+is reference fidelity, not the divergence cause.
+
 ## DeepSeek-V4.1-Flash: API-derived golden experiment (2026-09-26)
 
 The source cannot be run locally (own FP8/FP4 tilelang tensor-parallel stack).
