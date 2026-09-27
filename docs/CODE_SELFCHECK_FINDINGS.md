@@ -29,12 +29,13 @@ mathematically equivalent answer is a failure by design.
 | granite-4.2-30b | captured (all 3 exact); converted model **FAIL 1/3** (CODE-01) |
 | gemma-4-26B-A4B-it | captured (all 3 exact); converted model **FAIL 1/3** (CODE-02) |
 | qwen3.8-flash-next | capturable with the `qwen4_exp` custom loader (same patches as the FSI capture); not captured yet |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source present and capturable (FSI captured it); not captured for CODE — the converted model emits incoherent text under FSI, so a golden would fail |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
 | ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
 | DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown to transformers) |
 | GigaChat3.5-432B | not capturable locally — FP8 416 G, same VRAM blocker |
-| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code, NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source absent from the vault |
+| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
 
 Capture command used for the pilot (granite needs low-effort thinking):
 
