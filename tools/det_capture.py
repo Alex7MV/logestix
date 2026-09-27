@@ -19,6 +19,10 @@ PROMPTS = os.path.join(HERE, "det_prompts.json")
 OVERRIDES = {
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     "qwen3.8-flash-next": {"loader": "qwen4_exp"},
+    # deepseek-v4.1-flash ships no HF chat template; frame with the release's
+    # own encoding/encoding.py, in the reasoning model's default thinking mode.
+    "deepseek-v4.1-flash": {"framing": "deepseek_v41",
+                            "thinking_mode": "thinking"},
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
@@ -180,6 +184,28 @@ def frame_prompt(tok, body, opts):
     return prompt_text
 
 
+def _frame_deepseek_v41(model_dir, body, thinking_mode):
+    """Frame a prompt with the DeepSeek-V4.1 release's own encoding stack
+    (encoding/encoding.py); this model ships no HF chat template."""
+    import importlib.util
+
+    enc_path = os.path.join(model_dir, "encoding", "encoding.py")
+    spec = importlib.util.spec_from_file_location("dsv41_encoding", enc_path)
+    enc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(enc)
+    return enc.encode_messages([{"role": "user", "content": body}],
+                               thinking_mode=thinking_mode)
+
+
+def frame(model, tok, body, opts):
+    """Frame a prompt: per-model custom framing when configured, else the
+    tokenizer's chat template / raw body."""
+    if opts.get("framing") == "deepseek_v41":
+        return _frame_deepseek_v41(model, body,
+                                   opts.get("thinking_mode", "thinking"))
+    return frame_prompt(tok, body, opts)
+
+
 def _load_tokenizer(model, opts):
     from transformers import AutoTokenizer
 
@@ -207,7 +233,7 @@ def template_golden(model, model_type, out, max_new_tokens):
 
     cases = []
     for p in load_prompts():
-        prompt_text = frame_prompt(tok, p["body"], opts)
+        prompt_text = frame(model, tok, p["body"], opts)
         ids = tok(prompt_text).input_ids
         got = extract(p["kind"], p["expected"])
         assert got == p["expected"], (p["id"], got, p["expected"])
@@ -219,10 +245,18 @@ def template_golden(model, model_type, out, max_new_tokens):
 
     golden = {"format": "logestix-det-golden", "version": 1,
               "model_type": model_type,
-              "source": "prompt-template (tokenizer.json + chat_template.jinja; "
-                        "template-defined canonical expected)",
-              "runtime": "tokenizer.json + chat_template.jinja "
-                         "(transformers %s)" % transformers.__version__,
+              "source": ("prompt-template (encoding/encoding.py %s framing; "
+                         "template-defined canonical expected)"
+                         % opts.get("thinking_mode", "thinking")
+                         if opts.get("framing") == "deepseek_v41"
+                         else "prompt-template (tokenizer.json + "
+                              "chat_template.jinja; template-defined "
+                              "canonical expected)"),
+              "runtime": ("encoding/encoding.py + tokenizer.json "
+                          "(transformers %s)" % transformers.__version__
+                          if opts.get("framing") == "deepseek_v41"
+                          else "tokenizer.json + chat_template.jinja "
+                               "(transformers %s)" % transformers.__version__),
               "prompts": cases}
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
@@ -267,7 +301,7 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
 
     cases = []
     for p in load_prompts():
-        prompt_text = frame_prompt(tok, p["body"], opts)
+        prompt_text = frame(model, tok, p["body"], opts)
         ids = tok(prompt_text, return_tensors="pt").input_ids.to(lm.device)
         with torch.no_grad():
             out_ids = lm.generate(ids, do_sample=False,

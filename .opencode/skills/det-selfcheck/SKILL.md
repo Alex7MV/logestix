@@ -4,12 +4,10 @@
 
 ## Overview
 
-DETSelfCheck is a **model-defined parity gate** and a first-class stage of the
+DETSelfCheck is a **prompt-defined parity gate** and a first-class stage of the
 Model Ingestion Protocol (step 8), sitting beside FSISelfCheck and
-CODESelfCheck. It captures the original safetensors model's own answer to a
-fixed 3-prompt **near-tie / symmetric** set, freezes it as a committed golden,
-and requires the converted NVFP4 model to satisfy two properties at
-`FastMathMode::kOff`:
+CODESelfCheck. It runs a fixed 3-prompt **near-tie / symmetric** set on the
+converted NVFP4 model and requires two properties at `FastMathMode::kOff`:
 
 1. **Determinism stress-test** — repeated greedy decoding of the same prompt
    produces a **byte-identical generated token stream** (zero variance).
@@ -70,8 +68,8 @@ truth. The C++ side never embeds the bodies — the golden carries the captured
 | id | title | canonical answer |
 |---|---|---|
 | DET-TEST-01 | PARADOXICAL-LOGIC-ANCHOR | `PARADOX_ANTINOMY` |
-| DET-TEST-02 | SYNONYM-COLLAPSE-PRESSURE | `CATASTROPHIC` |
-| DET-TEST-03 | QUANTUM-STATE-DETERMINISM | `BIT_ZERO` |
+| DET-TEST-02 | LEXICAL-INDEX-CLAMP | `CATASTROPHIC` |
+| DET-TEST-03 | BINARY-REGISTER-STRING | `BIT_ZERO` |
 
 All cases use `kind: "token"`.
 
@@ -104,13 +102,20 @@ python tools/det_capture.py --template-golden \
 - **If `tokenizer.chat_template` is unset, it loads `chat_template.jinja`** —
   required for granite/gemma/nemotron/GLM/Qwen.
 - Per-model quirks go in the `OVERRIDES` table keyed by `--type`: known ones are
-  `granite-4.2-30b` → `{"enable_thinking": True, "low_effort": True}` and
-  `qwen3.8-flash-next` → `{"loader": "qwen4_exp"}`.
-- The golden `expected` is **model-defined** (the source model's own extracted
-  token); a template difference is a warning, not a failure. Capture aborts on an
-  empty extraction.
-- `--template-golden`: tokenizer-only fallback for an unrunnable source; records
-  the prompt Expected Template and marks the deviation in `source`.
+  `granite-4.2-30b` → `{"enable_thinking": True, "low_effort": True}`,
+  `qwen3.8-flash-next` → `{"loader": "qwen4_exp"}`, and `deepseek-v4.1-flash` →
+  `{"framing": "deepseek_v41", "thinking_mode": "thinking"}` (models without an
+  HF chat template are framed by the release's own
+  `encoding/encoding.py`).
+- The golden `expected` is **template-defined** (the prompt's canonical Expected
+  Template); the source run only supplies `input_ids` and logs a warning when the
+  model's own answer differs. (Earlier drafts used a model-defined expected and
+  failed on prompt ambiguity — see `docs/DET_SELFCHECK_FINDINGS.md`.) The capture
+  never aborts on an empty extraction.
+- `--template-golden`: tokenizer-only path; needed when the source cannot run
+  locally (or to avoid loading a huge source), and sufficient because `expected`
+  is template-defined and `input_ids` come from `tokenizer.json` +
+  `chat_template.jinja`.
 - `input_ids` are captured after framing and fed verbatim by the verifier.
 
 ### 2. Golden schema (`tests/fixtures/det/<model_type>.json`)

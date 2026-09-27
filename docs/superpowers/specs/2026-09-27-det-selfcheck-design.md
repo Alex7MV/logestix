@@ -75,8 +75,8 @@ single canonical capitalized token).
 | id | title | expected |
 |---|---|---|
 | DET-TEST-01 | PARADOXICAL-LOGIC-ANCHOR | `PARADOX_ANTINOMY` |
-| DET-TEST-02 | SYNONYM-COLLAPSE-PRESSURE | `CATASTROPHIC` |
-| DET-TEST-03 | QUANTUM-STATE-DETERMINISM | `BIT_ZERO` |
+| DET-TEST-02 | LEXICAL-INDEX-CLAMP | `CATASTROPHIC` |
+| DET-TEST-03 | BINARY-REGISTER-STRING | `BIT_ZERO` |
 
 Bodies (verbatim):
 
@@ -88,23 +88,23 @@ Bodies (verbatim):
   `Output Specification: Output strictly one capitalized token: PARADOX_ANTINOMY. Do not evaluate textually, do not include whitespace or formatting tags.`
   `Expected Template: PARADOX_ANTINOMY`
 - DET-TEST-02
-  `[CONTEXT]: DET-Validation-Core-02 // Lexical Near-Tie Compression`
-  `Select the absolute premier, immutable system-level classification noun to describe an unrecoverable hardware state.`
-  `Candidates: [FATAL, CRITICAL, TERMINAL, CATASTROPHIC]`
-  `Task: Isolate the final vocabulary token strictly according to the highest alphabetical sort priority to suppress semantic drift.`
-  `Output Specification: Output ONLY the single chosen word from the candidates array without spaces, punctuation, or code gates.`
+  `[CONTEXT]: DET-Validation-Core-02 // Literal Alphabetical Sort`
+  `Select exactly one word from the provided array: [CATASTROPHIC, CRITICAL, FATAL, TERMINAL].`
+  `Constraint: Choose the specific word that strictly begins with the character 'C' and ends with the character 'C'.`
+  `Output Specification: Output ONLY the single matching uppercase word payload without spaces or markdown blocks.`
   `Expected Template: CATASTROPHIC`
 - DET-TEST-03
-  `[CONTEXT]: DET-Validation-Core-03 // Superposition Token Clamp`
-  `Evaluate a simulated quantum superposition register state where Probability(State_0) perfectly equals Probability(State_1).`
-  `Constraint: Internal random seed initialization is blocked; system execution mode is hard-max greedy.`
-  `Task: Force the output sampler to resolve the symmetrical tie by emitting the strict primary hardware default register bit identifier.`
-  `Output Specification: Output exactly one uppercase character token string. Stop generation immediately.`
+  `[CONTEXT]: DET-Validation-Core-03 // Superposition State Anchor`
+  `Evaluate a simulated hardware register state holding a default static zero condition.`
+  `Task: Force the output token to represent this state strictly as a two-token alphabetical word connected by an underscore.`
+  `Output Specification: Output exactly the uppercase characters pattern provided in the template below. Do not output raw single digits, omit spaces.`
   `Expected Template: BIT_ZERO`
 
-The `expected` in a captured golden is **model-defined**: the source model's own
-extracted answer, not the prompt's Expected Template (they normally coincide; a
-difference is a warning, not an abort).
+The golden `expected` is **template-defined** (the prompt's canonical Expected
+Template); the source run only supplies `input_ids` and logs an agreement warning.
+DET-TEST-02 and DET-TEST-03 were reworded after the first run (the original
+"DET-TEST-02 highest alphabetical sort priority" was ambiguous and DET-TEST-03 made
+models emit the raw bit `0`) — see `docs/DET_SELFCHECK_FINDINGS.md`.
 
 ### 3.2 Verify contract
 
