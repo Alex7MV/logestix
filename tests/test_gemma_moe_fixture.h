@@ -277,6 +277,11 @@ inline void WriteConfig(const std::filesystem::path &dir)
         "}}";
     std::ofstream f(dir / "config.json");
     f << json;
+
+    // The real checkpoint ends a turn on 106; generation_config carries the
+    // full eos set (config.json's text_config only keeps the first element).
+    std::ofstream g(dir / "generation_config.json");
+    g << "{\"eos_token_id\":[1,106,50]}";
 }
 
 } // namespace gemmatest

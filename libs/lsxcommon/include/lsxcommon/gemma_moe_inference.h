@@ -322,8 +322,9 @@ cudaError_t RunGemmaLogitsArgmaxNvfp4(
 
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db, const std::vector<int32_t> &input_ids,
-                               int max_gen_tokens, int eos_id, float softcap,
-                               GemmaGenerationResult &out, GemmaKvCache &kv,
+                               int max_gen_tokens, const std::vector<int> &eos_ids,
+                               float softcap, GemmaGenerationResult &out,
+                               GemmaKvCache &kv,
                                GemmaGenContext *ctx = nullptr);
 
 } // namespace gemma

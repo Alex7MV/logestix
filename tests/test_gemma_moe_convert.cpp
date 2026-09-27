@@ -102,7 +102,9 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     CHECK(top.global_head_dim == 32);
     CHECK(top.sliding_window == 8);
     CHECK(top.bos_id == 2);
-    CHECK(top.eos_id == 1); // first element of eos array [1, 106]
+    // Full eos set from the top-level config array [1, 106] plus the sibling
+    // generation_config's [1, 106, 50] (the model ends a turn on 106).
+    CHECK(top.eos_ids == std::vector<int>({1, 106, 50}));
     CHECK(top.layer_types.size() == 4);
 
     auto out = tmp / "out";
@@ -128,6 +130,7 @@ TEST_CASE("gemma topology parse + convert happy path", "[gemma][convert]") {
     CHECK(top2.error_msg.empty());
     CHECK(top2.num_layers == 4);
     CHECK(top2.num_experts == 8);
+    CHECK(top2.eos_ids == std::vector<int>({1, 106, 50}));
     CHECK(top2.vram.min_bytes > 0);
     CHECK(top2.total_pinned_tensors > 0);
 

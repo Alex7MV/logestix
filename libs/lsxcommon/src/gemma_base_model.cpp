@@ -180,9 +180,15 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
     gemma::GemmaGenerationResult gen;
     if (!gen_ctx_) gen_ctx_ = gemma::CreateGemmaGenContext();
     e = RunUnderResidencyLock([&] {
+        std::vector<int> eos_ids;
+        if (req.ignore_eos || !tok_db_)
+            eos_ids = {lsxcommon::kIgnoreEosTokenId};
+        else if (!pw_.top.eos_ids.empty())
+            eos_ids = pw_.top.eos_ids;
+        else
+            eos_ids = {tok_db_->eos_id};
         return gemma::RunGemmaGeneration(
-            st, pw_, expert_db, gen_input, req.max_gen_tokens,
-            (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id,
+            st, pw_, expert_db, gen_input, req.max_gen_tokens, eos_ids,
             pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
             gen, *kv_, gen_ctx_);
     });

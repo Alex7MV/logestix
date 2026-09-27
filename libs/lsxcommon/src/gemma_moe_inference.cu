@@ -2524,9 +2524,9 @@ cudaError_t ForwardLayer(cudaStream_t stream,
 cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw,
                                GemmaExpertDb &db,
                                const std::vector<int32_t> &input_ids,
-                               int max_gen_tokens, int eos_id, float softcap,
-                               GemmaGenerationResult &out, GemmaKvCache &kv,
-                               GemmaGenContext *ctx)
+                               int max_gen_tokens, const std::vector<int> &eos_ids,
+                               float softcap, GemmaGenerationResult &out,
+                               GemmaKvCache &kv, GemmaGenContext *ctx)
 {
     out = GemmaGenerationResult{};
     // Clear any sticky context error from prior async work so per-call
@@ -2670,7 +2670,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 
     // ── Decode ──────────────────────────────────────────────────────────────
     for (int step = 1; step < max_gen_tokens; ++step) {
-        if (tok == eos_id) {
+        bool eos_hit = false;
+        for (int id : eos_ids)
+            if (tok == id) eos_hit = true;
+        if (eos_hit) {
             out.eos_terminated = true;
             break;
         }

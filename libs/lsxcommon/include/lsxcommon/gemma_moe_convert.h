@@ -68,7 +68,7 @@ struct GemmaTopology {
     int vocab_size = 262144;
     float final_logit_softcapping = 30.0f;
     int bos_id = 2;
-    int eos_id = 1;
+    std::vector<int> eos_ids;
     int pad_id = 0;
     int total_pinned_tensors = 0;
     VramProfile vram;

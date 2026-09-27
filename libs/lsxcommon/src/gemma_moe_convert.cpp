@@ -8,7 +8,9 @@
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <regex>
@@ -188,27 +190,49 @@ bool parse_text_config(const std::string &json, GemmaTopology &t)
         }
     }
 
-    // Tokenizer special ids (ints; eos may be an array -> first element).
+    // Special ids. The top-level config carries the full eos array (text_config
+    // keeps only the first element); the converted index stores `eos_ids`.
+    // Legacy scalar `eos_id` is accepted so old converted trees still load.
     {
         int64_t v;
-        if (src["bos_token_id"].get_int64().get(v) == simdjson::SUCCESS)
+        if (root["bos_token_id"].get_int64().get(v) == simdjson::SUCCESS)
             t.bos_id = static_cast<int>(v);
-        if (src["pad_token_id"].get_int64().get(v) == simdjson::SUCCESS)
+        else if (src["bos_token_id"].get_int64().get(v) == simdjson::SUCCESS)
+            t.bos_id = static_cast<int>(v);
+        if (root["pad_token_id"].get_int64().get(v) == simdjson::SUCCESS)
             t.pad_id = static_cast<int>(v);
-        if (auto e = src["eos_token_id"]; e.error() == simdjson::SUCCESS) {
-            int64_t one;
-            if (e.get_int64().get(one) == simdjson::SUCCESS) {
-                t.eos_id = static_cast<int>(one);
-            } else if (auto arr = e.get_array(); arr.error() == simdjson::SUCCESS) {
+        else if (src["pad_token_id"].get_int64().get(v) == simdjson::SUCCESS)
+            t.pad_id = static_cast<int>(v);
+
+        t.eos_ids.clear();
+        auto collect = [&](simdjson::ondemand::object &o) {
+            if (auto arr = o["eos_token_id"].get_array();
+                arr.error() == simdjson::SUCCESS) {
                 for (auto x : arr.value()) {
-                    int64_t ev;
-                    if (x.get_int64().get(ev) == simdjson::SUCCESS) {
-                        t.eos_id = static_cast<int>(ev);
-                        break;
-                    }
+                    int64_t e;
+                    if (x.get_int64().get(e) == simdjson::SUCCESS)
+                        t.eos_ids.push_back(static_cast<int>(e));
                 }
+                return !t.eos_ids.empty();
+            }
+            if (o["eos_token_id"].get_int64().get(v) == simdjson::SUCCESS) {
+                t.eos_ids.push_back(static_cast<int>(v));
+                return true;
+            }
+            return false;
+        };
+        if (auto arr = root["eos_ids"].get_array();
+            arr.error() == simdjson::SUCCESS) {
+            for (auto x : arr.value()) {
+                int64_t e;
+                if (x.get_int64().get(e) == simdjson::SUCCESS)
+                    t.eos_ids.push_back(static_cast<int>(e));
             }
         }
+        if (t.eos_ids.empty() && !collect(root)) collect(src);
+        if (t.eos_ids.empty() &&
+            root["eos_id"].get_int64().get(v) == simdjson::SUCCESS)
+            t.eos_ids.push_back(static_cast<int>(v));
     }
     return true;
 }
@@ -275,6 +299,32 @@ std::vector<uint8_t> read_tensor_data(
     return buf;
 }
 
+// HF uses generation_config's eos_token_id for stopping; add any ids beyond
+// the config array (the real checkpoint ends a turn on 106).
+void MergeGenerationConfigEos(const std::string &dir, GemmaTopology &top)
+{
+    std::ifstream gf(std::filesystem::path(dir) / "generation_config.json");
+    if (!gf) return;
+    std::string gjson((std::istreambuf_iterator<char>(gf)),
+                      std::istreambuf_iterator<char>());
+    simdjson::ondemand::parser gp;
+    simdjson::padded_string gpad(gjson.data(), gjson.size());
+    simdjson::ondemand::document gdoc;
+    if (gp.iterate(gpad).get(gdoc) != simdjson::SUCCESS) return;
+    simdjson::ondemand::object go;
+    if (gdoc.get_object().get(go) != simdjson::SUCCESS) return;
+    if (auto arr = go["eos_token_id"].get_array(); arr.error() == simdjson::SUCCESS) {
+        for (auto x : arr.value()) {
+            int64_t e;
+            if (x.get_int64().get(e) != simdjson::SUCCESS) continue;
+            const int id = static_cast<int>(e);
+            if (std::find(top.eos_ids.begin(), top.eos_ids.end(), id) ==
+                top.eos_ids.end())
+                top.eos_ids.push_back(id);
+        }
+    }
+}
+
 } // namespace
 
 GemmaTopology load_gemma_topology(const std::string &config_path)
@@ -292,6 +342,8 @@ GemmaTopology load_gemma_topology(const std::string &config_path)
         failed.error_msg = "failed to parse config JSON: " + config_path;
         return failed;
     }
+
+    MergeGenerationConfigEos(std::filesystem::path(config_path).parent_path().string(), top);
 
     std::string verr;
     if (!ParseVramBlock(json, top.vram, verr)) {
@@ -346,7 +398,12 @@ arrow::Status WriteGemmaModelIndex(const std::string &output_root,
       << ",\n  \"rope_theta_sliding\": " << top.rope_theta_sliding
       << ",\n  \"final_logit_softcapping\": " << top.final_logit_softcapping
       << ",\n  \"bos_id\": " << top.bos_id
-      << ",\n  \"eos_id\": " << top.eos_id
+      << ",\n  \"eos_ids\": [";
+    for (size_t i = 0; i < top.eos_ids.size(); ++i) {
+        if (i) j << ",";
+        j << top.eos_ids[i];
+    }
+    j << "]"
       << ",\n  \"pad_id\": " << top.pad_id
       << ",\n  \"total_pinned_tensors\": " << top.total_pinned_tensors
       << ",\n" << FormatVramJson(top.vram)
@@ -407,6 +464,7 @@ arrow::Status ConvertGemmaModel(const std::string &input_path,
         if (!parse_text_config(cjson, top))
             return arrow::Status::Invalid("failed to parse ",
                                           cfg_path.string());
+        MergeGenerationConfigEos(input_path, top);
     }
 
     int cfg_num_layers = top.num_layers;
