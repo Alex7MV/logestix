@@ -124,24 +124,34 @@ artifact. (A secondary CoT drift drops " No whitespace" in the converted
 reasoning, reinforcing the quantization signature.) The gate is left strict and
 no golden is committed.
 
-### gemma-4-26B-A4B-it — CODE-TEST-02 (assignment)
+### gemma-4-26B-A4B-it — CODE-TEST-02 (assignment): the extra parentheses
 
-The converted model emits an equivalent but differently-parenthesized
-expression:
+The source answers `m=l+((h-l)/2)`; the converted model answers
+`m=(l+(h-l)/2)` — the same formula with the whole RHS additionally
+parenthesized.
 
-- expected: `m=l+((h-l)/2)`
-- converted: `m=(l+(h-l)/2)`
+**Root cause (2026-09-27): a quantization argmax flip onto operator-plus-paren
+composite tokens, not a launch nuance.** The token streams are identical up to
+the first `m`; the divergence is the next token, and there is a second at the
+`+`:
+
+| step | source (BF16) top-1 | source top-2 | converted (NVFP4) picks |
+|---|---|---|---|
+| 1 (after `m`) | `=` id 236784, logit 23.0 | `=(` id 9036, logit 13.4 | **`=(`** |
+| 3 | `+` id 236862, logit 23.1 | `+(` id 24064, logit 22.1 | **`+(`** |
+
+Gemma's tokenizer has composite tokens that fuse the operator with an opening
+paren (`=(`, `+(`); the converted logits demote the plain `=`/`+` below them, so
+the model opens a parenthesis the source does not and closes it at the end. Step
+1 flips a clear 9.6-logit margin to the source's #2; step 3 is already a near
+tie (1.0). The raw is exactly `m=(l+(h-l)/2)` — the model's answer, no prompt
+echo and no truncation, so `CutPromptEcho` does not apply.
 
 CODE-TEST-01 and CODE-TEST-03 pass. Because CODESelfCheck compares exactly (no
-associativity rewriting, unlike FSISelfCheck), the extra outer parentheses are a
-failure. This is the intended "syntactic strictness" behaviour; if a future
-decision relaxes the assignment kind to algebraic canonicalization, this case
-would pass.
-
-Re-run 2026-09-27 after `CutPromptEcho`: the converted raw is exactly
-`m=(l+(h-l)/2)` and the source raw is `m=l+((h-l)/2)` — the divergence is the
-answer itself, not a prompt echo, so the cut does not apply and the golden stays
-uncommitted.
+associativity/parenthesis rewriting, unlike FSISelfCheck), the extra outer
+parentheses are a failure by design; the golden stays uncommitted. Relaxing the
+assignment kind to algebraic canonicalization would make it pass, but that
+reverses the syntactic-strictness policy (see 2026-09-27 decision).
 
 ### GLM-5.3-Flash — resolved (resolved by budget + prompt-echo cut)
 
