@@ -98,7 +98,10 @@ procedure — `perf-tuning-a-model`.
   --code-selfcheck`; per-family `test_<family>_code_selfcheck.cpp`, label
   `inference`, SKIP 4; suite-guard `code` stage; findings
   `docs/CODE_SELFCHECK_FINDINGS.md`; design
-  `docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`).
+  `docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`). Capture/verify
+  workflow, golden schema (incl. the prompt-echo `body` cut), extraction
+  (json/assignment/regex) and per-model quirks — skill **`code-selfcheck`**
+  (`.opencode/skills/code-selfcheck/SKILL.md`).
   Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),

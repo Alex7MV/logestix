@@ -137,7 +137,7 @@ Then per kind:
   associativity rewriting). Whitespace is stripped.
 - **`regex`**: select the first line containing `anchor`; start at the anchor and
   expand left and right over the regex-token alphabet
-  `[A-Za-z0-9\\\[\]{}()|.*+?^$/–-]` (left expansion stops at whitespace or a
+  `[A-Za-z0-9\\\[\]{}()|.*+?^$/-]` (left expansion stops at whitespace or a
   non-token char), then strip whitespace. This captures the leading `\b` when
   the anchor is the inner `[0-9A-F]`.
 
