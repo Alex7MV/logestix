@@ -137,23 +137,41 @@ failure. This is the intended "syntactic strictness" behaviour; if a future
 decision relaxes the assignment kind to algebraic canonicalization, this case
 would pass.
 
-### GLM-5.3-Flash — CODE-TEST-02/03 (degenerate repetition)
+### GLM-5.3-Flash — CODE-TEST-02/03 (mostly harness nuances)
 
 The source cannot run locally, so the golden is template-derived (`--template-
 golden`: input_ids from the official `chat_template.jinja` + tokenizer, the
-prompt's Expected Template as `expected`), matching the FSI stopgap. Unlike the
-FSI prompts, the longer CODE prompts drive the converted DSA model into
-degenerate repetition; the failure flips with the token budget:
+prompt's Expected Template as `expected`), matching the FSI stopgap.
 
-- `max_new_tokens=256`: CODE-02 hits the budget mid-reasoning (empty
-  extraction); CODE-01/03 pass.
-- `max_new_tokens=512`: CODE-02 passes, but CODE-03 degenerates into repeating
-  the prompt immediately after the answer, so the regex token expansion eats
-  `[CONTEXT]` → `\b[0-9A-F]{4}\b[CONTEXT]`.
+The failures split into **harness nuances** and one real model behaviour; the
+budget choice dominates:
 
-This is a real converted-model defect (prompt-repetition degeneration on longer
-inputs), not a golden artifact; the gate is left strict and no golden is
-committed.
+- **`max_new_tokens=256` — pure budget truncation.** CODE-02 is still reasoning
+  when the loop hits 256 (`... Is this a legitimate request? It seems like some
+  kind of formatting`), so nothing is extracted. This is a golden/launch nuance,
+  not a wrong answer: at 512 the model emits `</think>m=l+((h-l)/2)` exactly and
+  PASSes. (At 256 CODE-03 "passed" only because the unbounded extractor found
+  the template echo `\b[0-9A-F]{4}\b` inside the reasoning — a false pass.)
+- **`max_new_tokens=512` — extraction over-consumption.** CODE-01/02 PASS. For
+  CODE-03 the model emits the correct answer and then, with **no separator**,
+  the degenerate prompt repeat:
+  `Output: \`\b[0-9A-F]{4}\b\`</think>\b[0-9A-F]{4}\b[CONTEXT]: CODE-Validation-Core-03 ...`.
+  The regex extractor's right-expansion then legitimately consumes `[CONTEXT]`
+  (all regex-token chars) → `\b[0-9A-F]{4}\b[CONTEXT]`. The **answer itself is
+  correct**; the failure is the unbounded regex extraction colliding with the
+  model's trailing degeneration.
+
+**Real behaviour behind it:** the converted model never emits a turn-end token.
+Its EOS set is `[154820 <|endoftext|>, 154827 <|user|>, 154829 <|observation|>]`
+(correctly stored in `model.index.json` and checked as a set in
+`RunFlashDsaDecode`), yet after the answer it reproduces the user prompt up to
+`max_new_tokens` instead of stopping. FSISelfCheck tolerates this because its
+extraction is bounded (first anchor line / balanced parens) and its golden uses
+`ignore_eos=True` + 128 tokens; CODESelfCheck's stricter, unbounded regex
+extractor exposes it. GLM-5.3-Flash is therefore a weak CODE candidate; the
+gate is left strict and no golden is committed (its template-derived golden
+would otherwise be the only one whose budget is not source-defined). A bounded
+regex extraction or a terminating model would make it 3/3 at 512.
 
 ### Qwen3.8-Flash-Next capture recipe (`qwen4_exp`)
 
