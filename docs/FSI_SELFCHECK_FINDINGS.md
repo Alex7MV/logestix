@@ -82,6 +82,33 @@ exactly, but the converted model still diverges.
   `Drawdown>Thresholdthought` — the converted model appended a continuation
   token inside the identifier.
 
+#### GLM-style check (2026-09-27): multi-valued EOS bug found + fixed
+
+Fresh source capture (`tools/fsi_capture.py`, `chat_template.jinja` fix): FSI-01
+annuity-due, FSI-02 canonical, FSI-03 exact. Converted model was 1/3.
+
+**Root cause:** gemma-4's `eos_token_id` is a list (`[1, 106, 50]`); the
+converter kept only the first element (`1`). A turn actually ends on **106**
+(`<turn|>`) — confirmed by replaying the source, whose FSI-03 stream is
+`Draw... down > Threshold <turn|>`. The decode loop stopped only on `1`, so it
+ran past the turn end and emitted `thought`.
+
+**Fix (GLM-5.3-Flash pattern):** `GemmaTopology.eos_ids` (`std::vector<int>`)
+populated from the top-level config array plus the sibling
+`generation_config.json`, written as `eos_ids` in `model.index.json`, read back
+on load, and checked as a set in `RunGemmaGeneration`. Pinned by a converter
+test asserting `eos_ids == {1, 106, 50}` on the synthetic fixture. The converted
+model was re-generated so its index carries the full set.
+
+**Result:** FSI-03 → **PASS** (`Drawdown>Threshold`); gemma **1/3 → 2/3**.
+
+**Remaining FSI-01** is not a runtime defect: a teacher-forced top-1 agreement
+check (source HF prefix fed back) is **21/22** — the converted model tracks the
+source including the trailing `*exp(r)`, diverging on a single parenthesis
+near-tie that greedy decoding then cascades. This is the same
+quantization-sensitivity profile as Nemotron. gemma stays SKIP (2/3); the golden
+is not committed.
+
 ### NVIDIA-Nemotron-3.5-Lightning-30B-A3B
 
 Recheck (2026-09-27) with the same `chat_template.jinja` fix: the source now
