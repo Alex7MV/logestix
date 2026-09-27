@@ -1,11 +1,11 @@
 # CODESelfCheck — capture and parity findings
 
 - **Date**: 2026-09-27
-- **Scope**: pilot of CODESelfCheck
+- **Scope**: CODESelfCheck
   (`docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`)
-- **Status**: mechanism complete; Qwen3.6-35B-A3B is wired into CI. The
-  remaining families' tests SKIP until their goldens are captured and their
-  divergences are resolved.
+- **Status**: mechanism complete; Qwen3.6-35B-A3B and Qwen3.8-Flash-Next are
+  wired into CI. The remaining families' tests SKIP until their goldens are
+  captured and their divergences are resolved.
 
 The CODE gate is **model-defined**: the golden is the original safetensors
 model's own extracted answer (not the prompt template). The converted model is
@@ -21,35 +21,54 @@ mathematically equivalent answer is a failure by design.
 | CODE-TEST-02 | assignment | `m` | `m=l+((h-l)/2)` |
 | CODE-TEST-03 | regex | `[0-9A-F]` | `\b[0-9A-F]{4}\b` |
 
-## Capture feasibility (original safetensors, HF transformers 5.15.1)
+## Runs on the FSI-passing families
 
-| Family | Result |
-|---|---|
-| Qwen3.6-35B-A3B | captured (all 3 exact); converted model PASS 3/3 |
-| granite-4.2-30b | captured (all 3 exact); converted model **FAIL 1/3** (CODE-01) |
-| gemma-4-26B-A4B-it | captured (all 3 exact); converted model **FAIL 1/3** (CODE-02) |
-| qwen3.8-flash-next | capturable with the `qwen4_exp` custom loader (same patches as the FSI capture); not captured yet |
-| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source present and capturable (FSI captured it); not captured for CODE — the converted model emits incoherent text under FSI, so a golden would fail |
-| GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
-| ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
-| DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
-| DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown to transformers) |
-| GigaChat3.5-432B | not capturable locally — FP8 416 G, same VRAM blocker |
-| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+`test_<family>_fsi_selfcheck` currently passes for four families; CODESelfCheck
+was run for each of them. Results on the converted model at `kOff`:
 
-Capture command used for the pilot (granite needs low-effort thinking):
+| Family | FSI | CODE golden | CODESelfCheck |
+|---|---|---|---|
+| Qwen3.6-35B-A3B | PASS | source-captured, committed | **PASS 3/3** |
+| Qwen3.8-Flash-Next | PASS | source-captured (`qwen4_exp`), committed | **PASS 3/3** |
+| granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
+| GLM-5.3-Flash | PASS | template-derived (not committed) | **FAIL 1/3** (CODE-02/03) |
+
+Committed goldens:
+`tests/fixtures/code/qwen3.6-35b-a3b.json`,
+`tests/fixtures/code/qwen3.8-flash-next.json`.
+
+Capture commands:
 
 ```bash
 python tools/code_capture.py --model /mnt/llm_models/models/Qwen3.6-35B-A3B \
     --type qwen3.6-35b-a3b --out tests/fixtures/code/qwen3.6-35b-a3b.json \
     --device-map auto --max-new-tokens 256
+
+python tools/code_capture.py --model /mnt/llm_models/models/Qwen3.8-Flash-Next \
+    --type qwen3.8-flash-next --out tests/fixtures/code/qwen3.8-flash-next.json \
+    --max-new-tokens 256            # qwen4_exp loader is in OVERRIDES
+
+# unrunnable source -> template golden (GLM-5.3-Flash only)
+python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
+    --type glm-5.3-flash --out tests/fixtures/code/glm-5.3-flash.json \
+    --template-golden --max-new-tokens 512
 ```
 
-## Pilot result — Qwen3.6-35B-A3B (committed golden)
+## Capture feasibility (original safetensors, HF transformers 5.15.1)
 
-Source and converted both answer all three prompts verbatim; the converted model
-reproduces the golden at `kOff`. Golden:
-`tests/fixtures/code/qwen3.6-35b-a3b.json`.
+| Family | Result |
+|---|---|
+| Qwen3.6-35B-A3B | captured (all 3 exact); converted PASS 3/3 |
+| Qwen3.8-Flash-Next | captured with the `qwen4_exp` loader (all 3 exact); converted PASS 3/3 |
+| granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) |
+| gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
+| GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **FAIL 1/3** |
+| NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source present and capturable (FSI captured it); not captured — the converted model emits incoherent text under FSI |
+| ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
+| DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
+| DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown) |
+| GigaChat3.5-432B | not capturable locally — FP8 416 G, same VRAM blocker |
+| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
 
 ## Findings (divergences; goldens deliberately not committed)
 
@@ -83,6 +102,33 @@ associativity rewriting, unlike FSISelfCheck), the extra outer parentheses are a
 failure. This is the intended "syntactic strictness" behaviour; if a future
 decision relaxes the assignment kind to algebraic canonicalization, this case
 would pass.
+
+### GLM-5.3-Flash — CODE-TEST-02/03 (degenerate repetition)
+
+The source cannot run locally, so the golden is template-derived (`--template-
+golden`: input_ids from the official `chat_template.jinja` + tokenizer, the
+prompt's Expected Template as `expected`), matching the FSI stopgap. Unlike the
+FSI prompts, the longer CODE prompts drive the converted DSA model into
+degenerate repetition; the failure flips with the token budget:
+
+- `max_new_tokens=256`: CODE-02 hits the budget mid-reasoning (empty
+  extraction); CODE-01/03 pass.
+- `max_new_tokens=512`: CODE-02 passes, but CODE-03 degenerates into repeating
+  the prompt immediately after the answer, so the regex token expansion eats
+  `[CONTEXT]` → `\b[0-9A-F]{4}\b[CONTEXT]`.
+
+This is a real converted-model defect (prompt-repetition degeneration on longer
+inputs), not a golden artifact; the gate is left strict and no golden is
+committed.
+
+### Qwen3.8-Flash-Next capture recipe (`qwen4_exp`)
+
+The installed transformers 5.15.1 ships `Qwen4Exp*`, but the checkpoint declares
+`model_type = qwen4_exp` and uses `qwen_sparse_attention`, and ships the PLE
+n-gram embedding as 128 shards. `tools/code_capture.py` mirrors the FSI loader
+(`OVERRIDES["qwen3.8-flash-next"] = {"loader": "qwen4_exp"}`): patch
+`ALLOWED_ATTN_LAYER_TYPES` + the dynamic/static cache mappings, then fuse the
+shards. Capture runs on CPU (~22 min) and the converted model passes 3/3.
 
 ### Other families
 

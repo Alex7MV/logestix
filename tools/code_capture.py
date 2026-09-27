@@ -22,10 +22,66 @@ OVERRIDES = {
     # mode for short exact-token answers. Its chat template lives in
     # chat_template.jinja (not tokenizer_config).
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
+    # qwen3.8-flash-next is an experimental "qwen4_exp" arch (same patches as
+    # the FSI capture): layer-type allowlist + KV-cache mapping + PLE shards.
+    "qwen3.8-flash-next": {"loader": "qwen4_exp"},
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
-           "device_map": None}
+           "device_map": None, "loader": None}
+
+_QWEN4_NGRAM_ROWS = 2500012  # rows per PLE n-gram shard (128 shards)
+
+
+def _load_qwen4_exp(model_path):
+    """Load an experimental qwen4_exp checkpoint with the installed
+    transformers (config allowlist + cache mapping patched, PLE shards fused)."""
+    import glob
+
+    import torch
+    from safetensors.torch import load_file
+    import transformers.configuration_utils as cu
+    from transformers import Qwen4ExpForCausalLM, Qwen4ExpTextConfig
+    from transformers import cache_utils as cu_cache
+
+    cu.ALLOWED_ATTN_LAYER_TYPES = tuple(cu.ALLOWED_ATTN_LAYER_TYPES) + (
+        "qwen_sparse_attention",)
+    cu_cache.DYNAMIC_LAYER_TYPE_MAPPING.setdefault(
+        "qwen_sparse_attention", cu_cache.DynamicIndexedLayer)
+    cu_cache.STATIC_LAYER_TYPE_MAPPING.setdefault(
+        "qwen_sparse_attention", cu_cache.StaticIndexedLayer)
+
+    prev_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    raw = json.load(open(os.path.join(model_path, "config.json"),
+                        encoding="utf-8"))["text_config"]
+    raw["mtp_num_hidden_layers"] = 0
+    tc = Qwen4ExpTextConfig(**raw)
+    lm = Qwen4ExpForCausalLM(tc)
+    lm.eval()
+    params = dict(lm.named_parameters())
+    bufs = dict(lm.named_buffers())
+    ngram = params.get(
+        "model.layers.1.ple.ple_embedding.ngram_embedding.weight")
+    for shard in sorted(glob.glob(os.path.join(model_path, "*.safetensors"))):
+        for key, tensor in load_file(shard).items():
+            if key.startswith("model.visual."):
+                continue
+            if "ngram_embedding.shard_" in key and ngram is not None:
+                idx = int(re.search(r"shard_(\d+)\.weight", key).group(1))
+                off = idx * _QWEN4_NGRAM_ROWS
+                with torch.no_grad():
+                    ngram.data[off:off + tensor.shape[0]].copy_(tensor)
+                continue
+            name = key.replace("model.language_model.", "model.")
+            if name in params:
+                with torch.no_grad():
+                    params[name].data.copy_(tensor)
+            elif name in bufs:
+                with torch.no_grad():
+                    bufs[name].copy_(tensor)
+    torch.set_default_dtype(prev_dtype)
+    return lm
 
 
 def load_prompts():
@@ -240,6 +296,74 @@ def selftest():
     print("code selftest OK: json/assignment/regex templates valid")
 
 
+def frame_prompt(tok, body, opts):
+    """Apply the model's chat template when present, else the raw body."""
+    prompt_text = body
+    if getattr(tok, "chat_template", None):
+        template_kwargs = {"tokenize": False, "add_generation_prompt": True}
+        if opts.get("enable_thinking") is not None:
+            template_kwargs["enable_thinking"] = opts["enable_thinking"]
+        if opts.get("low_effort"):
+            template_kwargs["low_effort"] = True
+        try:
+            prompt_text = tok.apply_chat_template(
+                [{"role": "user", "content": body}], **template_kwargs)
+        except TypeError:
+            template_kwargs.pop("enable_thinking", None)
+            prompt_text = tok.apply_chat_template(
+                [{"role": "user", "content": body}], **template_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            print("chat_template failed, using raw prompt:", exc,
+                  file=sys.stderr)
+            prompt_text = body
+    return prompt_text
+
+
+def template_golden(model, model_type, out, max_new_tokens):
+    """Template/API-derived golden for a source that cannot run locally: frame
+    each prompt with the model's own chat template + tokenizer and record the
+    prompt's Expected Template as `expected` (same stopgap as the FSI
+    GLM-5.3-Flash golden). The `source` field marks the deviation."""
+    import transformers
+    from transformers import AutoTokenizer
+
+    opts = dict(GENERIC)
+    opts.update(OVERRIDES.get(model_type, {}))
+    opts["max_new_tokens"] = max_new_tokens
+    prompts = load_prompts()
+
+    tok = AutoTokenizer.from_pretrained(
+        model, trust_remote_code=opts["trust_remote_code"])
+    if not getattr(tok, "chat_template", None):
+        jinja = os.path.join(model, "chat_template.jinja")
+        if os.path.exists(jinja):
+            with open(jinja, encoding="utf-8") as fh:
+                tok.chat_template = fh.read()
+
+    cases = []
+    for p in prompts:
+        prompt_text = frame_prompt(tok, p["body"], opts)
+        ids = tok(prompt_text).input_ids
+        got = extract(p["kind"], p["anchor"], p["expected"])
+        assert got == p["expected"], (p["id"], got, p["expected"])
+        cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
+                      "input_ids": list(ids), "max_new_tokens": max_new_tokens,
+                      "expected": p["expected"], "raw": ""})
+
+    golden = {"format": "logestix-code-golden", "version": 1,
+              "model_type": model_type,
+              "source": "prompt-template (%s source not runnable locally)"
+                        % model_type,
+              "runtime": "tokenizer.json + chat_template.jinja "
+                         "(transformers %s)" % transformers.__version__,
+              "prompts": cases}
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(golden, fh, indent=2)
+        fh.write("\n")
+    print("wrote", out)
+
+
 def capture(model, model_type, out, max_new_tokens, device_map=None):
     import torch
     import transformers
@@ -260,44 +384,31 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
             with open(jinja, encoding="utf-8") as fh:
                 tok.chat_template = fh.read()
 
-    load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
-    if opts.get("dtype"):
-        load_kwargs["dtype"] = opts["dtype"]
-    if opts.get("device_map"):
-        load_kwargs["device_map"] = opts["device_map"]
-    lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
-    lm.eval()
+    if opts.get("loader") == "qwen4_exp":
+        lm = _load_qwen4_exp(model)
+    else:
+        load_kwargs = {"trust_remote_code": opts["trust_remote_code"]}
+        if opts.get("dtype"):
+            load_kwargs["dtype"] = opts["dtype"]
+        if opts.get("device_map"):
+            load_kwargs["device_map"] = opts["device_map"]
+        lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
+        lm.eval()
 
-    device = opts.get("device")
-    if device is None and not opts.get("device_map") and torch.cuda.is_available():
-        nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
-        free, _total = torch.cuda.mem_get_info()
-        if nbytes < int(free * 0.9):
-            device = "cuda"
-    if device:
-        lm = lm.to(device)
+        device = opts.get("device")
+        if (device is None and not opts.get("device_map")
+                and torch.cuda.is_available()):
+            nbytes = sum(p.numel() * p.element_size() for p in lm.parameters())
+            free, _total = torch.cuda.mem_get_info()
+            if nbytes < int(free * 0.9):
+                device = "cuda"
+        if device:
+            lm = lm.to(device)
     print("device:", next(lm.parameters()).device)
 
     cases = []
     for p in prompts:
-        prompt_text = p["body"]
-        if getattr(tok, "chat_template", None):
-            template_kwargs = {"tokenize": False, "add_generation_prompt": True}
-            if opts.get("enable_thinking") is not None:
-                template_kwargs["enable_thinking"] = opts["enable_thinking"]
-            if opts.get("low_effort"):
-                template_kwargs["low_effort"] = True
-            try:
-                prompt_text = tok.apply_chat_template(
-                    [{"role": "user", "content": p["body"]}], **template_kwargs)
-            except TypeError:
-                template_kwargs.pop("enable_thinking", None)
-                prompt_text = tok.apply_chat_template(
-                    [{"role": "user", "content": p["body"]}], **template_kwargs)
-            except Exception as exc:  # noqa: BLE001
-                print("chat_template failed, using raw prompt:", exc,
-                      file=sys.stderr)
-                prompt_text = p["body"]
+        prompt_text = frame_prompt(tok, p["body"], opts)
         ids = tok(prompt_text, return_tensors="pt").input_ids.to(lm.device)
         with torch.no_grad():
             out_ids = lm.generate(ids, do_sample=False,
@@ -343,14 +454,21 @@ def main():
     ap.add_argument("--device-map", default=None,
                     help="transformers device_map (requires accelerate); use "
                          "'auto' for large models on a big-VRAM host")
+    ap.add_argument("--template-golden", action="store_true",
+                    help="stopgap for an unrunnable source: frame with the "
+                         "tokenizer's chat template and record the prompt "
+                         "Expected Template as expected (no model run)")
     args = ap.parse_args()
     if args.selftest:
         selftest()
         return
     if not (args.model and args.type and args.out):
         ap.error("--model, --type and --out are required unless --selftest")
-    capture(args.model, args.type, args.out, args.max_new_tokens,
-            args.device_map)
+    if args.template_golden:
+        template_golden(args.model, args.type, args.out, args.max_new_tokens)
+    else:
+        capture(args.model, args.type, args.out, args.max_new_tokens,
+                args.device_map)
 
 
 if __name__ == "__main__":
