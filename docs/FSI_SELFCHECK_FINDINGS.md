@@ -168,6 +168,27 @@ The golden was not committed, so `test_deepseek_moe_v41_fsi_selfcheck` SKIPs.
 DeepSeek-V4-Flash is the same situation (its vault copy is a flat FP8+FP4
 pre-quantized layout consumed by the repo's own loader, not an HF checkpoint).
 
+## GLM-5.3-Flash: API-derived golden experiment (2026-09-27)
+
+GLM-5.3-Flash cannot be run locally either (`glm5_next` is absent from
+transformers 5.15.1 and the checkpoint is FP8). As a stopgap the assistant
+(switched to GLM-5.3-Flash) answered the three FSI prompts and those answers
+were used as the golden; `input_ids` came from the model's `chat_template.jinja`
++ `tokenizer.json` (the template always opens `<|assistant|><think>`).
+
+Result on the converted model (`kOff`): **fails all three, degenerating under
+every framing tested** (open `<think>` / immediately closed `<think></think>` /
+raw BPE):
+
+- FSI-01: long off-task reasoning trace (wrong annuity formula).
+- FSI-02: pathological repetition of `</think>` (4097 chars).
+- FSI-03: reasoning trace; the raw framing repeats `True` / `Expected: True`.
+
+The short `"The capital of France is" -> "Paris"` selfcheck still passes
+(168 s), so the converted model is fine on short prompts and degenerates only on
+the longer FSI inputs — the same long-prompt class of issue as Nemotron. The
+golden was not committed, so `test_glm_moe_flash_fsi_selfcheck` SKIPs.
+
 ## Normalization contract implemented here
 
 - Preferred answer line: the first line where the anchor is immediately
