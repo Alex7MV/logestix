@@ -366,6 +366,9 @@ bool ParseFsiGolden(std::string_view json, FsiGolden &out, std::string *error)
         if (o["max_new_tokens"].get_int64().get(mnt) == simdjson::SUCCESS &&
             mnt > 0)
             c.max_new_tokens = static_cast<int>(mnt);
+        bool ign = false;
+        if (o["ignore_eos"].get_bool().get(ign) == simdjson::SUCCESS)
+            c.ignore_eos = ign;
         if (o["expected"].get_string().get(sv) != simdjson::SUCCESS ||
             sv.empty()) {
             if (error) *error = c.id + ": missing expected";
@@ -414,6 +417,7 @@ FsiCaseResult RunFsiCase(IModel &model, const FsiGoldenCase &c,
     ModelRequest req;
     req.input_ids = c.input_ids;
     req.max_gen_tokens = c.max_new_tokens;
+    req.ignore_eos = c.ignore_eos;
     const gpu::InferenceResult ir = model.Infer(req);
     if (!ir.ok) {
         r.error = ir.error_msg.empty() ? "inference failed" : ir.error_msg;

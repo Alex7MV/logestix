@@ -124,6 +124,23 @@ system) confirmed it: no framing matched. FSI-01 is consistently one `)` short
 the same lost zeros, thinking mode emits a long CoT that does not finish in the
 budget, and raw BPE degrades to garbage/empty.
 
+An exhaustive follow-up sweep (framings × `ignore_eos` × prompt variants, plus a
+1k-token thinking budget and a digit-echo probe) found no configuration that
+reproduces the API-derived golden:
+
+- FSI-01: with `ignore_eos` the model continues and explicitly calls the prompt's
+  template unbalanced, then emits its own "corrected" formula.
+- FSI-02: even a strict "do not evaluate, echo the variable names" prompt still
+  yields `100000` instead of `100000000`.
+- Thinking mode never terminates its CoT within 1024 tokens.
+- Digit-echo probe (`100000000`, `123456789`, `0.00000001`, ...) reproduces the
+  numbers correctly in isolation, so the FSI-02 digit loss is model behavior,
+  not a runtime decode bug.
+
+Conclusion: DeepSeek-V4.1 cannot be certified against the API-derived golden on
+this runtime; it stays a finding (test SKIPs). A real reference needs the
+model's own FP8/FP4 stack on the intended hardware.
+
 The golden was not committed, so `test_deepseek_moe_v41_fsi_selfcheck` SKIPs.
 DeepSeek-V4-Flash is the same situation (its vault copy is a flat FP8+FP4
 pre-quantized layout consumed by the repo's own loader, not an HF checkpoint).

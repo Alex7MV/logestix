@@ -19,6 +19,7 @@ struct FsiGoldenCase {
     std::string anchor;
     std::vector<int32_t> input_ids;
     int max_new_tokens = 128;
+    bool ignore_eos = false;   // run the full token budget (no EOS stop)
     std::string expected;
     std::string raw;
 };
