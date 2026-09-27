@@ -185,9 +185,39 @@ raw BPE):
 - FSI-03: reasoning trace; the raw framing repeats `True` / `Expected: True`.
 
 The short `"The capital of France is" -> "Paris"` selfcheck still passes
-(168 s), so the converted model is fine on short prompts and degenerates only on
-the longer FSI inputs — the same long-prompt class of issue as Nemotron. The
-golden was not committed, so `test_glm_moe_flash_fsi_selfcheck` SKIPs.
+(168 s), so the converted model was fine on short prompts and degenerated only
+on the longer FSI inputs.
+
+### Root cause + fix (2026-09-27): DSA layers attended only the current token
+
+This was **not** a quantization limit and not a shared length bug — it was a
+real runtime defect in the GLM-5.3-Flash DSA decode path. `RunFlashDsaDecode`
+(`glm_moe_flash_inference.cu`) called the MLA attention kernel with the K/V
+pointer already offset to the current slot *and* `total = 1`, so the 11 DSA
+layers attended only to the current token, discarding all causal history (the
+code comment promised "causal over slots 0..slot"; the working GLM-5.2 MLA path
+uses `pos + 1`). The KDA layers alone carried context, which is enough for
+local recall (Paris) but not for reasoning/retrieval tasks (FSI).
+
+Fix: pass the cache base and `total = slot + 1` (full causal over `0..slot`);
+the kernel's score scratch is now sized by `cap` instead of a hardcoded 4096
+(the old `total = 1` never reached that bound). With the fix, the converted
+model answers FSI-02/FSI-03 exactly and FSI-01 algebraically-equal to the
+golden; `test_glm_moe_flash_selfcheck` (Paris) and
+`test_glm_moe_flash_{convert,kernels,loader,model}` stay green. Real causal
+attention costs throughput, so the reference was re-baselined
+(`tests/perf/perf_baselines.json`: perf 33.93 → 14.88 t/s, r3 18.48 → 12.50 t/s;
+the old numbers were measured with the broken no-attention path) — details and
+the rejected warp-per-head optimization in the GLM ingestion plan, Session 6.
+
+Because the source cannot be run locally, the committed golden
+(`tests/fixtures/fsi/glm-5.3-flash.json`) is **template-derived** — `input_ids`
+come from the official `chat_template.jinja` + `tokenizer.json`, and `expected`
+is the prompt's `Expected Template` formula (recorded in the `source` field).
+This is a deliberate deviation from the "golden = source model's own answer"
+rule, forced by the unrunnable source; it still guards the converted DSA path
+(it was 0/3 before the fix, 3/3 after). `test_glm_moe_flash_fsi_selfcheck` now
+runs green (~283 s) instead of SKIPping.
 
 ## Normalization contract implemented here
 
@@ -195,10 +225,15 @@ golden was not committed, so `test_glm_moe_flash_fsi_selfcheck` SKIPs.
   followed (spaces allowed) by `=` (arithmetic) or a comparison operator;
   fall back to the first line containing the anchor.
 - Arithmetic answers are canonicalized by parsing the RHS (numbers,
-  identifiers, `exp(...)` calls, `+ - * /`, parentheses, unary minus) and
-  re-printing with minimal parentheses. Redundant parentheses therefore compare
-  equal. Comparison answers are whitespace-normalized and bounded to the
-  anchor, operator and one identifier.
+  identifiers, `exp(...)` calls, `+ - * /`, parentheses, unary minus), then
+  left-associating equal-precedence chains and re-printing with minimal
+  parentheses. Redundant parentheses therefore compare equal, and forms that
+  differ only by associativity also compare equal
+  (`CF*((1-exp(-r*n))/(1-exp(-r)))` == `CF*(1-exp(-r*n))/(1-exp(-r))`,
+  `a*(b/c)` == `(a*b)/c`, `a-(b-c)` == `a-b+c`). Each rewrite is an exact
+  algebraic identity, so genuinely different expressions are never equated;
+  commutativity is deliberately not applied. Comparison answers are
+  whitespace-normalized and bounded to the anchor, operator and one identifier.
 
 As-built delta vs the spec: the golden `expected` is model-defined (spec
 §3.2 updated); arithmetic canonicalization and operator-aware line selection

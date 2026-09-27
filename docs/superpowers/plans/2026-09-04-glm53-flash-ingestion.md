@@ -1827,3 +1827,43 @@ Deferred (documented for follow-up tasks): cross-layer expert prefetch
 driver error-path event leak (pre-existing pattern), 21 lsxforge
 StrFormat sites under the abseil patch guard, dead ~64 KB scratch in
 the generation driver.
+
+## Session 6 (2026-09-27): DSA attention bug fix + perf re-baseline
+
+Root cause found via FSISelfCheck (see `docs/FSI_SELFCHECK_FINDINGS.md`):
+`RunFlashDsaDecode` called `flash_mla_attn_kernel` with the K/V cache pointer
+already offset to the current slot **and** `total = 1`, so all 11 DSA layers
+attended only the current token and discarded causal history. The code comment
+said "causal over slots 0..slot"; the working GLM-5.2 MLA path uses `pos + 1`.
+Fix: pass the cache base and `total = slot + 1`; the score scratch is now sized
+by `cap` instead of a hardcoded 4096 (the old `total = 1` never reached it).
+`mla_use_nope=True` / `qk_rope_head_dim=0`, so no RoPE is needed and, with
+`index_topk=2048`, the indexer is a no-op below 2048 tokens — full causal is
+exact there.
+
+Verification: `test_glm_moe_flash_fsi_selfcheck` 0/3 → 3/3
+(`tests/fixtures/fsi/glm-5.3-flash.json`, template-derived golden); Paris
+selfcheck and convert/kernels/loader/model suites unaffected.
+
+Perf cost: the old 33.93 t/s baseline was measured with the broken `total = 1`
+path doing no attention. Real causal decode attention is O(context) per step,
+so the re-baselined reference is lower:
+
+| mode | old ref | new ref | notes |
+|---|---|---|---|
+| perf (kAuto) | 33.93 t/s | **14.88 t/s** | 2048 tok, reproduced 14.8823/14.8843/14.88 |
+| r3 (kOff) | 18.48 t/s | **12.50 t/s** | same protocol |
+
+`tests/perf/perf_baselines.json` updated through the test's `kUpdate` path
+(fresh TTFT/power evidence recorded).
+
+Rejected experiment — warp-per-head attention: rewrote
+`flash_mla_attn_kernel` as one warp per head with an online (streaming) softmax
+(no per-key block barriers). It restored FSI-01/FSI-03 exactly but flipped
+FSI-02's greedy path (the model echoed `Balance_Alpha = 100000000`, which the
+line extractor then selected) — i.e. the change was **not numeric-neutral**
+(different accumulation order), which the perf skill forbids for a scheduling
+change. Reverted to the verified block-per-head causal kernel. Follow-up lever:
+a bit-exact barrier-reduction (batch several keys per barrier while keeping the
+exact reduction tree) and/or a proper FlashAttention-style kernel validated by
+a multi-key parity test.
