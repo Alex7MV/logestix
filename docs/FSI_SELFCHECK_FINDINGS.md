@@ -69,14 +69,23 @@ contain competing formulas), in both C++ and the Python mirror.
 
 ### gemma-4-26B-A4B-it
 
-- FSI-01: source `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)` (annuity-due) vs
-  converted `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` (ordinary annuity) — genuinely
-  different expression; greedy decoding diverged.
+Recheck (2026-09-27) with the `chat_template.jinja` capture fix (gemma's chat
+template is not in `tokenizer_config.json`, so the earlier capture used the raw
+prompt): the *source* now answers FSI-02 canonically-equivalently and FSI-03
+exactly, but the converted model still diverges.
+
+- FSI-01: source `PV=CF*(1-exp(-r*n))/(1-exp(-r))*exp(r)` (annuity-due, which
+  the prompt actually asks for) vs converted
+  `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` (ordinary annuity) — genuinely different
+  expression; greedy decoding diverged.
 - FSI-03: source `Drawdown>Threshold` vs converted
   `Drawdown>Thresholdthought` — the converted model appended a continuation
   token inside the identifier.
 
 ### NVIDIA-Nemotron-3.5-Lightning-30B-A3B
+
+Recheck (2026-09-27) with the same `chat_template.jinja` fix: the source now
+answers all three exactly, but the converted model is unchanged — still FAIL 3/3.
 
 - FSI-01 raw starts `The correct formula for the present value (PV)
   calculation is:` and the answer line does not match.
