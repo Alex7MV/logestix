@@ -157,6 +157,10 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
   an env var (e.g. `LSX_TEST_<MODEL>_SELFCHECK_CYCLES`).
 - The selfcheck ctest target MUST set `SKIP_RETURN_CODE 4` (real weights are
   optional; absence skips, never fails).
+- Add the **FSI parity gate** — a separate stage from SelfCheck (capture from
+  the source safetensors, committed golden, separate
+  `test_<family>_fsi_selfcheck` target, suite-guard `fsi` row):
+  **REQUIRED SUB-SKILL** `fsi-selfcheck`.
 - Add the perf baseline: an entry in `tests/perf/perf_baselines.json` plus a
   `test_perf_baseline_<model>` target (label `perf`), and record the measured
   t/s. Add **both** — a JSON entry without a target is an unguarded baseline.

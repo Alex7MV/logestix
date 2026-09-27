@@ -87,7 +87,9 @@ procedure — `perf-tuning-a-model`.
   converted model's canonicalized answer at `kOff` to a golden captured from the
   source safetensors; `lsxbenchmark --fsi-selfcheck`; per-family
   `test_<family>_fsi_selfcheck.cpp`, label `inference`, SKIP 4; findings
-  `docs/FSI_SELFCHECK_FINDINGS.md`).
+  `docs/FSI_SELFCHECK_FINDINGS.md`). Capture/verify workflow, golden schema and
+  per-model quirks — skill **`fsi-selfcheck`**
+  (`.opencode/skills/fsi-selfcheck/SKILL.md`).
   Models: glm / qwen / deepseek / gemma / kimi / nemotron / ornith (NemotronH hybrid
   Mamba-2 + MoE + full attention: `nemotron_moe_constants.h` (frozen passport),
   `nemotron_moe_convert.cpp`, `nemotron_moe_load.cpp` (dense-only resident graph),
