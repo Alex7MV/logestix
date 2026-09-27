@@ -863,10 +863,10 @@ __global__ void flash_mla_attn_kernel(const __half *__restrict__ q,
 {
     const int h = blockIdx.x;
     const int D = 256;
-    extern __shared__ float smem[];  // [D] q + [4096] scores + red[256]
+    extern __shared__ float smem[];  // [D] q + [cap] scores + red[blockDim]
     float *s_q = smem;               // [D]
-    float *s_score = smem + D;       // [total] (cap <= 4096)
-    float *s_red = smem + D + 4096;  // [blockDim]
+    float *s_score = smem + D;       // [cap]
+    float *s_red = smem + D + cap;   // [blockDim]
     if (threadIdx.x < D)
         s_q[threadIdx.x] = __half2float(q[h * D + threadIdx.x]);
     __syncthreads();
@@ -1023,10 +1023,11 @@ cudaError_t RunFlashDsaDecode(cudaStream_t stream,
     // 4. Attention (causal over slots 0..slot).
     {
         const float scale = 1.0f / sqrtf(static_cast<float>(D));
-        const size_t smem = (2 * D + 1 + 4096) * sizeof(float);
+        const size_t smem =
+            (static_cast<size_t>(D) + cap + 256) * sizeof(float);
         flash_mla_attn_kernel<<<heads, 256, smem, stream>>>(
-            d_q, d_kv_cache_k + slot * heads * D,
-            d_kv_cache_v + slot * heads * D, d_attn, cap, 1, heads, scale);
+            d_q, d_kv_cache_k, d_kv_cache_v, d_attn, cap,
+            static_cast<int>(slot) + 1, heads, scale);
         if ((e = cudaGetLastError()) != cudaSuccess) return e;
     }
     // 5. o_proj (NVFP4).
