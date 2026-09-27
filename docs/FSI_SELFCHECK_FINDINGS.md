@@ -23,7 +23,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
-| DeepSeek-V4.1-Flash | not capturable — `deepseek_v41` unknown to transformers 5.15.1 (`accelerate` does not add arch support) |
+| DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
 | GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
 
@@ -102,6 +102,25 @@ answer. This is a quantization-sensitivity limitation of the 4-bit conversion,
 not the LRU/batched/router optimizations. A definitive proof would require a
 higher-precision reference (BF16/FP16 resident) or per-layer hidden-state
 parity against HF; the FSI gate correctly surfaces the divergence.
+
+## DeepSeek-V4.1-Flash: API-derived golden experiment (2026-09-26)
+
+The source cannot be run locally (own FP8/FP4 tilelang tensor-parallel stack).
+As a stopgap the assistant (itself DeepSeek-V4.1-Flash) answered the three FSI
+prompts and those answers were used as the golden, with `input_ids` produced by
+the release's official `encoding/encoding.py` (`thinking_mode="chat"`) plus
+`tokenizer.json`.
+
+Result on the converted model (`kOff`): FSI-03 matched `Drawdown>Threshold`;
+FSI-01 was one `)` short of the golden; FSI-02 ignored "use the provided
+variable names" and substituted the numeric legs, additionally dropping zeros
+(`100000` instead of `100000000`). Using the runtime's own framing (raw BPE via
+`EncodeRawPrompt`, the default `BuildPromptInputIds`) was worse (garbage/empty),
+so the divergence is model/runtime-level, not framing.
+
+The golden was not committed, so `test_deepseek_moe_v41_fsi_selfcheck` SKIPs.
+DeepSeek-V4-Flash is the same situation (its vault copy is a flat FP8+FP4
+pre-quantized layout consumed by the repo's own loader, not an HF checkpoint).
 
 ## Normalization contract implemented here
 
