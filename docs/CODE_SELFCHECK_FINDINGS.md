@@ -84,10 +84,44 @@ closing brace:
 - source raw tail: `...</think>\n{"root":{"nodes":{"leaf":true}}}`
 - converted raw tail: `...</think>\n{"root":{"nodes":{"leaf":true}}`
 
-CODE-TEST-02 and CODE-TEST-03 pass. The missing `}` is a genuine converted-model
-divergence (the extraction sees an unbalanced object and returns empty); it is
-the class of failure the gate exists to catch. Investigate the granite decode /
-EOS path before committing a golden.
+**Root cause (2026-09-27): a single-step argmax flip on a rare composite token,
+not a launch nuance.** Ruled out one by one:
+
+- **Not a token-budget truncation.** Re-running with `max_new_tokens=1024`
+  reproduces the exact same 27-token output (the model stops on EOS far below
+  the budget).
+- **Not EOS/stop configuration.** Granite has a single `eos_id = 100257`
+  (`<|im_end|>`), not the gemma-style multi-EOS list; `test_granite_dense_fsi_selfcheck`
+  passes, and CODE-02/03 keep their final characters.
+- **Not the sampler.** `DefaultSampler()` is `GreedySampler` (argmax), matching
+  the source capture's `do_sample=False`.
+- **Not framing/tokenization.** The golden `input_ids` are the source's
+  HF-framed ids fed verbatim; the converted answer prefix is **token-identical**
+  to the source up to the final brace.
+- **Not decode/off-by-one.** The EOS token is appended before the loop stops and
+  is dropped only by `skip_special_tokens`; FSI and CODE-02/03 keep their last
+  tokens.
+
+Converted token stream (27): `... 794(":") 1904("true") 3500("}}")
+100257("<|im_end|>")`. Source token stream: `... 1904("true") 76642("}}}")
+100257("<|im_end|>")`. The tokenizer maps the whole `}}}` to one token (76642)
+and `}}` to 3500.
+
+Source (BF16) per-step top-5 at the step after `true`:
+
+| rank | token | text | logit |
+|---|---|---|---|
+| 1 | 76642 | `}}}` | 31.375 |
+| 2 | 3500 | `}}` | 25.125 |
+| 4 | 100257 | `<|im_end|>` | 17.625 |
+
+The converted (NVFP4) model picks the source's **#2** (`}}`) and then EOS. So
+the converted logits shifted enough to demote the rare `}}}` token below its
+sub-token `}}` — a genuine quantization-sensitivity divergence (the same profile
+as gemma/nemotron in `FSI_SELFCHECK_FINDINGS.md`), not an engine/budget/EOS
+artifact. (A secondary CoT drift drops " No whitespace" in the converted
+reasoning, reinforcing the quantization signature.) The gate is left strict and
+no golden is committed.
 
 ### gemma-4-26B-A4B-it — CODE-TEST-02 (assignment)
 
