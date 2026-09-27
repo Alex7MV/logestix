@@ -71,6 +71,10 @@ captured `input_ids`.
 - For each golden case: `model.Infer(ModelRequest{input_ids, max_gen_tokens})`
   with `input_ids`/`max_gen_tokens` from the golden (greedy, eos-terminated).
 - Decode with `runtime::DecodeGeneratedText`.
+- If the golden carries the prompt `body`, cut the decoded text at the body's
+  first 32 characters (after the `</think>` cut) — a fragile reasoning model can
+  fail to emit a turn-end token and echo the prompt after its answer; the cut
+  stops that echo from bleeding into the extracted answer. No `body` -> no cut.
 - Extract with `ExtractCodeAnswer(kind, anchor, decoded)`.
 - Pass iff the extracted string equals the golden `expected` **exactly**.
 
@@ -113,6 +117,11 @@ Common preprocessing (identical to FSI):
 2. If a fenced block exists, keep the first block's content; drop a leading
    language-tag line matching `^[A-Za-z0-9_+-]+$`.
 3. Discard everything up to and including the last `</think>`.
+
+The harness additionally applies `CutPromptEcho` before extraction when the
+golden carries `body` (see 3.2): after step 3, if the body's first 32 characters
+occur in the text, the text is truncated there. This is not part of
+`ExtractCodeAnswer` (a pure function of `kind`/`anchor`/`raw`).
 
 Then per kind:
 
@@ -157,6 +166,7 @@ so a correctly-trained model reproduces it verbatim):
       "anchor": "root",
       "input_ids": [151644, 872],
       "max_new_tokens": 512,
+      "body": "[CONTEXT]: CODE-Validation-Core-01 // ...",
       "expected": "{\"root\":{\"nodes\":{\"leaf\":true}}}",
       "raw": "..."
     }
@@ -167,7 +177,8 @@ so a correctly-trained model reproduces it verbatim):
 Rules: one file per `IModel::Type()`, filename `<model_type>.json` verbatim;
 `input_ids` non-empty, `expected` non-empty, `kind` ∈ {json, assignment, regex},
 `anchor` non-empty; malformed file is a parse error (never a silent skip).
-`ignore_eos` (optional) forces the full token budget for reasoning models.
+`body` (optional) is the prompt body used by `CutPromptEcho`; `ignore_eos`
+(optional) forces the full token budget for reasoning models.
 
 ## 6. C++ API
 

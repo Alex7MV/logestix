@@ -3,9 +3,9 @@
 - **Date**: 2026-09-27
 - **Scope**: CODESelfCheck
   (`docs/superpowers/specs/2026-09-27-code-selfcheck-design.md`)
-- **Status**: mechanism complete; Qwen3.6-35B-A3B and Qwen3.8-Flash-Next are
-  wired into CI. The remaining families' tests SKIP until their goldens are
-  captured and their divergences are resolved.
+- **Status**: mechanism complete; Qwen3.6-35B-A3B, Qwen3.8-Flash-Next and
+  GLM-5.3-Flash are wired into CI. The remaining families' tests SKIP until
+  their goldens are captured and their divergences are resolved.
 
 The CODE gate is **model-defined**: the golden is the original safetensors
 model's own extracted answer (not the prompt template). The converted model is
@@ -30,12 +30,13 @@ was run for each of them. Results on the converted model at `kOff`:
 |---|---|---|---|
 | Qwen3.6-35B-A3B | PASS | source-captured, committed | **PASS 3/3** |
 | Qwen3.8-Flash-Next | PASS | source-captured (`qwen4_exp`), committed | **PASS 3/3** |
+| GLM-5.3-Flash | PASS | template-derived (`--template-golden`, 512), committed | **PASS 3/3** |
 | granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
-| GLM-5.3-Flash | PASS | template-derived (not committed) | **FAIL 1/3** (CODE-02/03) |
 
 Committed goldens:
 `tests/fixtures/code/qwen3.6-35b-a3b.json`,
-`tests/fixtures/code/qwen3.8-flash-next.json`.
+`tests/fixtures/code/qwen3.8-flash-next.json`,
+`tests/fixtures/code/glm-5.3-flash.json`.
 
 Capture commands:
 
@@ -62,7 +63,7 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 | Qwen3.8-Flash-Next | captured with the `qwen4_exp` loader (all 3 exact); converted PASS 3/3 |
 | granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) |
 | gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
-| GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **FAIL 1/3** |
+| GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **PASS 3/3** (512 + prompt-echo cut) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | source present and capturable (FSI captured it); not captured — the converted model emits incoherent text under FSI |
 | ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
@@ -137,41 +138,37 @@ failure. This is the intended "syntactic strictness" behaviour; if a future
 decision relaxes the assignment kind to algebraic canonicalization, this case
 would pass.
 
-### GLM-5.3-Flash — CODE-TEST-02/03 (mostly harness nuances)
+### GLM-5.3-Flash — resolved (resolved by budget + prompt-echo cut)
 
 The source cannot run locally, so the golden is template-derived (`--template-
 golden`: input_ids from the official `chat_template.jinja` + tokenizer, the
 prompt's Expected Template as `expected`), matching the FSI stopgap.
 
-The failures split into **harness nuances** and one real model behaviour; the
-budget choice dominates:
+The original failures were **mostly harness nuances**, now fixed:
 
-- **`max_new_tokens=256` — pure budget truncation.** CODE-02 is still reasoning
-  when the loop hits 256 (`... Is this a legitimate request? It seems like some
-  kind of formatting`), so nothing is extracted. This is a golden/launch nuance,
-  not a wrong answer: at 512 the model emits `</think>m=l+((h-l)/2)` exactly and
-  PASSes. (At 256 CODE-03 "passed" only because the unbounded extractor found
-  the template echo `\b[0-9A-F]{4}\b` inside the reasoning — a false pass.)
-- **`max_new_tokens=512` — extraction over-consumption.** CODE-01/02 PASS. For
-  CODE-03 the model emits the correct answer and then, with **no separator**,
-  the degenerate prompt repeat:
+- **Budget.** At `max_new_tokens=256` CODE-02 is still reasoning when the loop
+  hits the cap, so nothing is extracted. The committed golden uses **512**; the
+  model then emits `</think>m=l+((h-l)/2)` exactly. (At 256 CODE-03 "passed"
+  only because the extractor found the template echo inside the reasoning — a
+  false pass.)
+- **Prompt-echo cut.** The converted model does not emit a turn-end token; after
+  its answer it reproduces the prompt, with no separator. For CODE-03:
   `Output: \`\b[0-9A-F]{4}\b\`</think>\b[0-9A-F]{4}\b[CONTEXT]: CODE-Validation-Core-03 ...`.
-  The regex extractor's right-expansion then legitimately consumes `[CONTEXT]`
-  (all regex-token chars) → `\b[0-9A-F]{4}\b[CONTEXT]`. The **answer itself is
-  correct**; the failure is the unbounded regex extraction colliding with the
-  model's trailing degeneration.
+  The regex extractor legitimately consumed `[CONTEXT]` (all regex-token chars).
+  The answer itself was correct.
 
-**Real behaviour behind it:** the converted model never emits a turn-end token.
-Its EOS set is `[154820 <|endoftext|>, 154827 <|user|>, 154829 <|observation|>]`
-(correctly stored in `model.index.json` and checked as a set in
-`RunFlashDsaDecode`), yet after the answer it reproduces the user prompt up to
-`max_new_tokens` instead of stopping. FSISelfCheck tolerates this because its
-extraction is bounded (first anchor line / balanced parens) and its golden uses
-`ignore_eos=True` + 128 tokens; CODESelfCheck's stricter, unbounded regex
-extractor exposes it. GLM-5.3-Flash is therefore a weak CODE candidate; the
-gate is left strict and no golden is committed (its template-derived golden
-would otherwise be the only one whose budget is not source-defined). A bounded
-regex extraction or a terminating model would make it 3/3 at 512.
+**Fix:** the golden now carries the prompt `body`, and the harness runs
+`CutPromptEcho` (after the `</think>` cut) — if the body's first 32 chars occur
+in the decoded text it truncates there. This is a harness bound, not a
+relaxation of the exact comparison: the extracted answer is still compared
+byte-for-byte. With 512 + the cut, GLM-5.3-Flash PASSes 3/3; the golden is
+committed.
+
+Underlying real behaviour to watch: the converted model never emits any of its
+EOS tokens (`[154820 <|endoftext|>, 154827 <|user|>, 154829 <|observation|>]`,
+correctly stored and checked as a set in `RunFlashDsaDecode`) and degenerates
+into prompt repetition after the answer. `CutPromptEcho` contains it; a
+terminating model would not need it.
 
 ### Qwen3.8-Flash-Next capture recipe (`qwen4_exp`)
 

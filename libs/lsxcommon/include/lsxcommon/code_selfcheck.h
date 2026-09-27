@@ -22,6 +22,10 @@ struct CodeGoldenCase {
     bool ignore_eos = false;   // run the full token budget (no EOS stop)
     std::string expected;
     std::string raw;
+    // Optional prompt body: if the model echoes the prompt after its answer
+    // (degeneration), the harness cuts the echo at the body's prefix before
+    // extraction. Empty -> no cut.
+    std::string body;
 };
 
 struct CodeGolden {

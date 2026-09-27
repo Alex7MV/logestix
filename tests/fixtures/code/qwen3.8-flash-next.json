@@ -156,7 +156,8 @@
       ],
       "max_new_tokens": 256,
       "expected": "{\"root\":{\"nodes\":{\"leaf\":true}}}",
-      "raw": "{\"root\":{\"nodes\":{\"leaf\":true}}}\n"
+      "raw": "{\"root\":{\"nodes\":{\"leaf\":true}}}\n",
+      "body": "[CONTEXT]: CODE-Validation-Core-01 // Compiler Syntactic Strictness\nConstruct a raw, valid, single-line JSON schema definition layout that nests exactly three layers of conditional key-value constraints without whitespace padding.\nVariables: Layer_1 = \"root\"; Layer_2 = \"nodes\"; Layer_3 = \"leaf\".\nTask: Emit strictly the structured JSON data string mapping these properties sequentially.\nOutput Specification: Output ONLY the unspaced JSON minified string. Do not use code blocks, do not include tracking indices, and completely emit zero conversational text.\nExpected Template: {\"root\":{\"nodes\":{\"leaf\":true}}}"
     },
     {
       "id": "CODE-TEST-02",
@@ -283,7 +284,8 @@
       ],
       "max_new_tokens": 256,
       "expected": "m=l+((h-l)/2)",
-      "raw": "m=l+((h-l)/2)\n"
+      "raw": "m=l+((h-l)/2)\n",
+      "body": "[CONTEXT]: CODE-Validation-Core-02 // Structural Control Flow\nDefine the execution block for a standard recursive binary search boundary split.\nVariables: Low = l; High = h; Mid = m.\nTask: Format the explicit mid-point evaluation assignment string strictly for a C-compatible environment without internal syntax spaces.\nOutput Specification: Output ONLY the raw mathematical assignment statement expression. Do not include semicolons, text, or markdown code gates.\nExpected Template: m=l+((h-l)/2)"
     },
     {
       "id": "CODE-TEST-03",
@@ -420,7 +422,8 @@
       ],
       "max_new_tokens": 256,
       "expected": "\\b[0-9A-F]{4}\\b",
-      "raw": "\\b[0-9A-F]{4}\\b\n"
+      "raw": "\\b[0-9A-F]{4}\\b\n",
+      "body": "[CONTEXT]: CODE-Validation-Core-03 // Compiler Token Escaping\nFormulate a raw regular expression character-class match validation path that isolates hexadecimal arrays.\nConstraints: Must strictly match exactly 4 characters bounded by word boundaries, uppercase alpha-numeric range only.\nTask: Emit the compressed, unspaced standard PCRE-compliant regex pattern string.\nOutput Specification: Output strictly the pattern string payload. Do not wrap in slash delimiters, code fences, or explanations.\nExpected Template: \\b[0-9A-F]{4}\\b"
     }
   ]
 }

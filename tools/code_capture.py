@@ -348,7 +348,7 @@ def template_golden(model, model_type, out, max_new_tokens):
         assert got == p["expected"], (p["id"], got, p["expected"])
         cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
                       "input_ids": list(ids), "max_new_tokens": max_new_tokens,
-                      "expected": p["expected"], "raw": ""})
+                      "body": p["body"], "expected": p["expected"], "raw": ""})
 
     golden = {"format": "logestix-code-golden", "version": 1,
               "model_type": model_type,
@@ -430,7 +430,7 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         cases.append({"id": p["id"], "kind": p["kind"], "anchor": p["anchor"],
                       "input_ids": ids[0].tolist(),
                       "max_new_tokens": max_new_tokens,
-                      "expected": got, "raw": raw})
+                      "body": p["body"], "expected": got, "raw": raw})
 
     golden = {"format": "logestix-code-golden", "version": 1,
               "model_type": model_type, "source": model,

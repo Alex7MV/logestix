@@ -103,6 +103,7 @@ const char *kGoldenJson = R"JSON({
       "anchor": "root",
       "input_ids": [1, 2, 3],
       "max_new_tokens": 16,
+      "body": "[CONTEXT]: CODE-Validation-Core-01",
       "expected": "{\"root\":{\"nodes\":{\"leaf\":true}}}",
       "raw": "{\"root\":{\"nodes\":{\"leaf\":true}}}"
     },
@@ -133,7 +134,9 @@ TEST_CASE("code: golden JSON parses all fields", "[code][unit]")
     CHECK(g.cases[0].anchor == "root");
     CHECK(g.cases[0].input_ids == std::vector<int32_t>{1, 2, 3});
     CHECK(g.cases[0].max_new_tokens == 16);
+    CHECK(g.cases[0].body == "[CONTEXT]: CODE-Validation-Core-01");
     CHECK(g.cases[1].kind == code::CodeKind::kRegex);
+    CHECK(g.cases[1].body.empty());
 }
 
 TEST_CASE("code: malformed golden is rejected with an error", "[code][unit]")
@@ -252,6 +255,47 @@ TEST_CASE("code: harness propagates inference errors per case", "[code][unit]")
     CHECK_FALSE(r.all_passed);
     REQUIRE(r.cases.size() == 1);
     CHECK(r.cases[0].error == "boom");
+}
+
+TEST_CASE("code: harness cuts an echoed prompt after the answer",
+          "[code][unit]")
+{
+    FakeCodeModel m;
+    code::CodeGolden g;
+    code::CodeGoldenCase c;
+    c.id = "CODE-TEST-03";
+    c.kind = code::CodeKind::kRegex;
+    c.anchor = "[0-9A-F]";
+    c.input_ids = {1};
+    c.max_new_tokens = 8;
+    c.body = "[CONTEXT]: CODE-Validation-Core-03 // Compiler Token Escaping";
+    c.expected = "\\b[0-9A-F]{4}\\b";
+    g.cases.push_back(std::move(c));
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "\\b[0-9A-F]{4}\\b[CONTEXT]: CODE-Validation-Core-03 // Compiler "
+            "Token Escaping\n... repeated prompt");
+    };
+    const code::CodeResult r = code::RunCodeSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "\\b[0-9A-F]{4}\\b");
+}
+
+TEST_CASE("code: prompt echo in reasoning is stripped before the cut",
+          "[code][unit]")
+{
+    FakeCodeModel m;
+    code::CodeGolden g = OneCaseGolden();
+    g.cases[0].body =
+        "[CONTEXT]: CODE-Validation-Core-02 // Structural Control Flow";
+    const auto decode = [](const std::vector<int32_t> &) {
+        return std::string(
+            "Let me read [CONTEXT]: CODE-Validation-Core-02 // Structural "
+            "Control Flow first.\n</think>\nm=l+((h-l)/2)");
+    };
+    const code::CodeResult r = code::RunCodeSelfCheck(m, g, decode);
+    REQUIRE(r.all_passed);
+    CHECK(r.cases[0].extracted == "m=l+((h-l)/2)");
 }
 
 TEST_CASE("code: golden expected values are self-consistent", "[code][unit]")

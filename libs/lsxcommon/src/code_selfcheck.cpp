@@ -3,6 +3,7 @@
 #include <absl/strings/ascii.h>
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <fstream>
@@ -295,6 +296,9 @@ bool ParseCodeGolden(std::string_view json, CodeGolden &out, std::string *error)
         std::string_view raw;
         if (o["raw"].get_string().get(raw) == simdjson::SUCCESS)
             c.raw = std::string(raw);
+        std::string_view body;
+        if (o["body"].get_string().get(body) == simdjson::SUCCESS)
+            c.body = std::string(body);
         out.cases.push_back(std::move(c));
     }
     if (out.cases.empty()) {
@@ -325,6 +329,22 @@ bool LoadCodeGoldenFile(const std::string &path, CodeGolden &out,
 
 namespace {
 
+// A fragile reasoning model can fail to emit a turn-end token and echo the
+// prompt after its answer. When the golden carries the prompt body, cut the
+// decoded text at the body's prefix (after the reasoning close) so the echo
+// does not bleed into the extracted answer.
+std::string CutPromptEcho(std::string_view text, std::string_view body)
+{
+    if (body.empty()) return std::string(text);
+    std::string s(text);
+    const std::size_t close = s.rfind("</think>");
+    if (close != std::string::npos) s = s.substr(close + 8);
+    const std::size_t n = std::min<std::size_t>(32, body.size());
+    const std::size_t pos = s.find(std::string_view(body).substr(0, n));
+    if (pos != std::string::npos) s = s.substr(0, pos);
+    return s;
+}
+
 CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
                            const CodeDecodeFn &decode)
 {
@@ -342,7 +362,8 @@ CodeCaseResult RunCodeCase(IModel &model, const CodeGoldenCase &c,
     }
     const std::string text = decode(ir.gen_tokens);
     r.raw = text;
-    r.extracted = ExtractCodeAnswer(c.kind, c.anchor, text);
+    r.extracted =
+        ExtractCodeAnswer(c.kind, c.anchor, CutPromptEcho(text, c.body));
     r.passed = (r.extracted == c.expected);
     return r;
 }
