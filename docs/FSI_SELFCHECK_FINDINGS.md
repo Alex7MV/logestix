@@ -208,6 +208,41 @@ The golden was not committed, so `test_deepseek_moe_v41_fsi_selfcheck` SKIPs.
 DeepSeek-V4-Flash is the same situation (its vault copy is a flat FP8+FP4
 pre-quantized layout consumed by the repo's own loader, not an HF checkpoint).
 
+### GLM-style recheck (2026-09-27)
+
+Redid the comparison the way GLM-5.3-Flash was handled.
+
+- **Fresh API capture:** the assistant (deepseek-v4.1-flash) answered the three
+  prompts; the answers equal the Expected Templates
+  (`PV=CF*((1-exp(-r*n))/(1-exp(-r)))`, the `Balance_Alpha` retrace,
+  `Drawdown>Threshold`). The golden is therefore the template and is **valid** —
+  the earlier "no framing matched" was not a bad golden.
+- **Runtime audit vs the release's own `inference/model.py`:** the sliding-window
+  ring (`get_window_topk_idxs`), `Compressor`, `Indexer`, the two-level
+  `select_candidate_blocks`, the sparse attention + inverse RoPE, the Gate
+  (`sqrtsoftplus`, bias selects only, `norm_topk_prob`, `route_scale`), the
+  Hyper-Connections mix/pre/post order and the YaRN schedule all match. No
+  discrete defect of the GLM (`total = 1`) or Nemotron (`dt` clamp) kind was
+  found.
+- **Converted model (`kOff`), official `encoding/encoding.py` framing:**
+
+  | Case | chat | thinking |
+  |---|---|---|
+  | FSI-01 | `PV=CF*((1-exp(-r*n))/(1-exp(-r))` (one `)` short) — FAIL | CoT does not finish — FAIL |
+  | FSI-02 | numeric substitution, zeros lost (`100000`) — FAIL | CoT — FAIL |
+  | FSI-03 | `Drawdown>Threshold` — **PASS** | **PASS** |
+  | | **1/3** | **1/3** |
+
+  GLM went 0/3 → 3/3 after its fix; DeepSeek-V4.1 is 1/3 in both modes, so it is
+  not wireable as passing — it stays SKIP (Gemma/Nemotron class).
+
+**Interpretation:** since the fresh source capture matches the templates, the
+divergence is real on the converted side. With no discrete defect in the audited
+path, it is the precision level of the requantization (native FP8 + FP4 experts →
+neutral NVFP4), not a rewrite bug; the digit-echo probe and the FSI-03 pass show
+the decode is functional. A definitive reference still requires running the
+release's own `inference/` stack on the intended 2x80GB hardware.
+
 ## GLM-5.3-Flash: API-derived golden experiment (2026-09-27)
 
 GLM-5.3-Flash cannot be run locally either (`glm5_next` is absent from
