@@ -232,3 +232,16 @@ TEST_CASE("fsi: multi-line answer selects the anchor+operator line",
               "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
           "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
 }
+
+TEST_CASE("fsi: extraction ignores chain-of-thought before </think>",
+          "[fsi][unit]")
+{
+    CHECK(fsi::ExtractFsiFormula(
+              fsi::FsiKind::kArithmetic, "PV",
+              "We need output. Compute PV=wrong*2.\n</think>\n"
+              "PV=CF*((1-exp(-r*n))/(1-exp(-r)))") ==
+          "PV=CF*((1-exp(-r*n))/(1-exp(-r)))");
+    CHECK(fsi::ExtractFsiFormula(fsi::FsiKind::kComparison, "Drawdown",
+              "think: Drawdown<Threshold maybe\n</think>\nDrawdown>Threshold") ==
+          "Drawdown>Threshold");
+}

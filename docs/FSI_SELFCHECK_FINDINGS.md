@@ -3,9 +3,10 @@
 - **Date**: 2026-09-26
 - **Scope**: pilot + rollout of FSISelfCheck
   (`docs/superpowers/specs/2026-09-26-fsi-selfcheck-design.md`)
-- **Status**: mechanism complete; two families (Qwen3.6-35B-A3B and
-  Qwen3.8-Flash-Next) are wired into CI. The remaining families' tests SKIP
-  until their goldens are captured and their divergences are resolved.
+- **Status**: mechanism complete; three families (Qwen3.6-35B-A3B,
+  Qwen3.8-Flash-Next and Granite-4.2-30B) are wired into CI. The remaining
+  families' tests SKIP until their goldens are captured and their divergences
+  are resolved.
 
 The FSI gate is **model-defined**: the golden is the original safetensors
 model's own extracted answer (not the prompt template). The converted model is
@@ -19,7 +20,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | Qwen3.8-Flash-Next | captured (all 3 exact; experimental `qwen4_exp` arch loaded with patches, see below) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
-| granite-4.2-30b | rejected — FSI-02 extracted answer has unbalanced parentheses |
+| granite-4.2-30b | captured with the chat template + low-effort thinking (see below); all 3 exact |
 | ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
@@ -50,8 +51,21 @@ that this build does not accept/route. Capture works after (documented in
 |---|---|
 | Qwen3.6-35B-A3B | **PASS 3/3** (wired into CI) |
 | Qwen3.8-Flash-Next | **PASS 3/3** (wired into CI) |
+| Granite-4.2-30B | **PASS 3/3** (wired into CI) |
 | gemma-4-26B-A4B-it | FSI-02 PASS after algebraic canonicalization; FSI-01 and FSI-03 diverge |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | FAIL 3/3 — converted model emits incoherent text |
+
+### Granite-4.2-30B capture recipe
+
+The capture initially failed because granite's chat template lives in a
+standalone `chat_template.jinja` (absent from `tokenizer_config.json`), so the
+generic path silently encoded the raw prompt and the model produced a malformed
+FSI-02. The fix (in `tools/fsi_capture.py`): if `tokenizer.chat_template` is
+unset, load `chat_template.jinja`; then frame with the template. Granite is a
+reasoning model: its non-thinking mode still gets FSI-02 wrong, but
+`enable_thinking=True, low_effort=True` answers all three exactly. Extraction
+now takes the answer segment after the last `</think>` (reasoning CoT can
+contain competing formulas), in both C++ and the Python mirror.
 
 ### gemma-4-26B-A4B-it
 

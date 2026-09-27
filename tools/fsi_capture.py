@@ -25,6 +25,10 @@ OVERRIDES = {
     # mapping predate "qwen_sparse_attention", and the PLE n-gram embedding is
     # shipped as 128 shards. The custom loader patches both.
     "qwen3.8-flash-next": {"loader": "qwen4_exp"},
+    # granite-4.2 is a reasoning model whose non-thinking mode gets FSI-02
+    # wrong; low-effort thinking answers all three correctly. Its chat template
+    # lives in chat_template.jinja (not tokenizer_config).
+    "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
 }
 GENERIC = {"trust_remote_code": True, "max_new_tokens": 512,
            "device": None, "dtype": None, "enable_thinking": False,
@@ -114,6 +118,8 @@ def _unfence(raw):
 
 def extract(kind, anchor, raw):
     text = _unfence(raw)
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
     lines = text.splitlines() or [text]
     line = None
     for cand in lines:
@@ -224,6 +230,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
 
     tok = AutoTokenizer.from_pretrained(
         model, trust_remote_code=opts["trust_remote_code"])
+    if not getattr(tok, "chat_template", None):
+        jinja = os.path.join(model, "chat_template.jinja")
+        if os.path.exists(jinja):
+            with open(jinja, encoding="utf-8") as fh:
+                tok.chat_template = fh.read()
     if opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
         print("device:", next(lm.parameters()).device)
@@ -253,6 +264,8 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
             template_kwargs = {"tokenize": False, "add_generation_prompt": True}
             if opts.get("enable_thinking") is not None:
                 template_kwargs["enable_thinking"] = opts["enable_thinking"]
+            if opts.get("low_effort"):
+                template_kwargs["low_effort"] = True
             try:
                 prompt_text = tok.apply_chat_template(
                     [{"role": "user", "content": p["body"]}], **template_kwargs)

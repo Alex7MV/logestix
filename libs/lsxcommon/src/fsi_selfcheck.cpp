@@ -232,7 +232,12 @@ std::string CanonicalizeFsiAnswer(FsiKind kind, std::string_view anchor,
 std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
                               std::string_view raw)
 {
-    const std::string line = SelectAnswerLine(Unfence(raw), anchor, kind);
+    std::string text = Unfence(raw);
+    // Reasoning models emit a chain-of-thought that can contain competing
+    // formulas; the final answer is the segment after the last </think>.
+    const std::size_t close = text.rfind("</think>");
+    if (close != std::string::npos) text = text.substr(close + 8);
+    const std::string line = SelectAnswerLine(text, anchor, kind);
     if (kind == FsiKind::kComparison) {
         const std::size_t a = line.find(anchor);
         if (a == std::string::npos) return {};
