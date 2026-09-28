@@ -276,3 +276,55 @@ TEST_CASE("bridge: streaming tool calling", "[taskmosaic][bridge][tools]") {
     CHECK(res->body.find("[DONE]") != std::string::npos);
     fx.Stop();
 }
+
+TEST_CASE("bridge: anthropic messages non-stream and count_tokens",
+          "[taskmosaic][bridge][anthropic]") {
+    BridgeFixture fx;
+    REQUIRE(fx.Start());
+    httplib::Client cli("127.0.0.1", fx.bridge->BoundPort());
+    auto msg = cli.Post(
+        "/v1/messages",
+        R"({"model":"m1","max_tokens":16,"messages":[{"role":"user","content":"hi"}]})",
+        "application/json");
+    REQUIRE(msg);
+    CHECK(msg->status == 200);
+    CHECK(msg->body.find("\"type\":\"message\"") != std::string::npos);
+    CHECK(msg->body.find("hello") != std::string::npos);
+    CHECK(msg->body.find("\"stop_reason\":\"end_turn\"") != std::string::npos);
+
+    auto ct = cli.Post(
+        "/v1/messages/count_tokens",
+        R"({"model":"m1","messages":[{"role":"user","content":"hi"}]})",
+        "application/json");
+    REQUIRE(ct);
+    CHECK(ct->status == 200);
+    CHECK(ct->body.find("\"input_tokens\":2") != std::string::npos);
+
+    auto hello = cli.Get("/api/hello");
+    REQUIRE(hello);
+    CHECK(hello->status == 200);
+
+    auto models = cli.Get("/v1/models",
+                          httplib::Headers{{"anthropic-version", "2023-06-01"}});
+    REQUIRE(models);
+    CHECK(models->body.find("\"display_name\":\"m1\"") != std::string::npos);
+    fx.Stop();
+}
+
+TEST_CASE("bridge: anthropic messages streaming event sequence",
+          "[taskmosaic][bridge][anthropic]") {
+    BridgeFixture fx;
+    REQUIRE(fx.Start());
+    httplib::Client cli("127.0.0.1", fx.bridge->BoundPort());
+    auto res = cli.Post(
+        "/v1/messages",
+        R"({"model":"m1","stream":true,"max_tokens":16,
+            "messages":[{"role":"user","content":"hi"}]})",
+        "application/json");
+    REQUIRE(res);
+    CHECK(res->status == 200);
+    CHECK(res->body.find("event: message_start") != std::string::npos);
+    CHECK(res->body.find("content_block_delta") != std::string::npos);
+    CHECK(res->body.find("event: message_stop") != std::string::npos);
+    fx.Stop();
+}

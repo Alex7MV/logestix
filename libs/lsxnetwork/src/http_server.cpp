@@ -26,12 +26,21 @@ void WriteReply(const HttpResponse& rr, httplib::Response& res) {
     res.set_content(rr.body, rr.content_type.c_str());
     for (const auto& [k, v] : rr.headers) res.set_header(k, v);
 }
+
+HttpRequest ToRequest(const httplib::Request& req) {
+    HttpRequest rq;
+    rq.method = req.method;
+    rq.path = req.path;
+    rq.body = req.body;
+    for (const auto& [k, v] : req.headers) rq.headers[k] = v;
+    return rq;
+}
 }  // namespace
 
 void HttpServer::Get(const std::string& path, Handler handler) {
     impl_->server.Get(path, [handler](const httplib::Request& req,
                                       httplib::Response& res) {
-        HttpRequest rq{req.method, req.path, req.body};
+        HttpRequest rq = ToRequest(req);
         HttpResponse rr;
         handler(rq, rr);
         WriteReply(rr, res);
@@ -41,7 +50,7 @@ void HttpServer::Get(const std::string& path, Handler handler) {
 void HttpServer::Post(const std::string& path, Handler handler) {
     impl_->server.Post(path, [handler](const httplib::Request& req,
                                        httplib::Response& res) {
-        HttpRequest rq{req.method, req.path, req.body};
+        HttpRequest rq = ToRequest(req);
         HttpResponse rr;
         handler(rq, rr);
         WriteReply(rr, res);
@@ -51,7 +60,7 @@ void HttpServer::Post(const std::string& path, Handler handler) {
 void HttpServer::PostStream(const std::string& path, StreamFactory factory) {
     impl_->server.Post(path, [factory](const httplib::Request& req,
                                        httplib::Response& res) {
-        HttpRequest rq{req.method, req.path, req.body};
+        HttpRequest rq = ToRequest(req);
         HttpResponse head;
         std::unique_ptr<StreamSource> source = factory(rq, head);
         if (!source) {

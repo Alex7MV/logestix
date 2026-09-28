@@ -12,6 +12,7 @@ struct HttpRequest {
     std::string method;
     std::string path;
     std::string body;
+    std::map<std::string, std::string> headers;  // lower-cased keys
 };
 
 struct HttpResponse {
