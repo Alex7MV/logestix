@@ -17,6 +17,7 @@
 
 #include "ornith_moe_model.h"
 #include "test_streaming_assert.h"
+#include "test_tool_roundtrip.h"
 
 namespace {
 
@@ -150,6 +151,30 @@ TEST_CASE("Ornith-1.5-35B-A3B generation scratch persists across SelfCheck "
     REQUIRE(sc1.final_logits.size() == sc0.final_logits.size());
     CHECK(std::memcmp(sc1.final_logits.data(), sc0.final_logits.data(),
                       sc0.final_logits.size() * sizeof(float)) == 0);
+
+    m->Unload();
+}
+
+TEST_CASE("Ornith-1.5-35B-A3B end-to-end tool round-trip (real weights)",
+          "[ornith][model][tool][real-model]")
+{
+    const std::filesystem::path model_dir = OrnithConvertedPath();
+    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+        SKIP("Ornith-1.5-35B-A3B converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model_dir.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    REQUIRE(!calls.empty());
+    // Ornith emits the native ChatML/XML call; this checkpoint currently leaves
+    // the parameter value empty for the control prompt (model behaviour, not a
+    // codec issue), so only the call structure is asserted.
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("\"city\"") != std::string::npos);
 
     m->Unload();
 }

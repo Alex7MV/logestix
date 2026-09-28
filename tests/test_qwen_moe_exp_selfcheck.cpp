@@ -17,6 +17,7 @@
 
 #include "qwen_moe_exp_model.h"
 #include "test_streaming_assert.h"
+#include "test_tool_roundtrip.h"
 
 namespace {
 
@@ -106,6 +107,28 @@ TEST_CASE("Qwen3.8-Flash-Next SelfCheck: 'The capital of France is' -> 'Paris', 
 
     // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
     ExpectStreamMatchesTokens(*m, req);
+
+    m->Unload();
+}
+
+TEST_CASE("Qwen3.8-Flash-Next end-to-end tool round-trip (real weights)",
+          "[qwen38][model][tool][real-model]")
+{
+    const std::filesystem::path model_dir = Qwen38ConvertedPath();
+    if (!std::filesystem::exists(model_dir / "logestix" / "pinned"))
+        SKIP("Qwen3.8-Flash-Next converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model_dir.string();
+    cfg.model_type = lsxcommon::Qwen38FlashNextModel::kType;
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }

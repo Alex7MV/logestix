@@ -14,6 +14,7 @@
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gpu_perf.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/qwen_tool_format.h"
 
 namespace lsxcommon {
 
@@ -342,6 +343,24 @@ gpu::InferenceResult OrnithMoeModel::Infer(const ModelRequest &req)
 gpu::InferenceResult OrnithMoeModelBase::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+bool OrnithMoeModelBase::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderQwenConversation(conv, text)) return false;
+    if (!AppendQwenChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    return true;
+}
+
+bool OrnithMoeModelBase::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseQwenTokenCalls(tok, gen_tokens, out_calls);
 }
 
 // ── Ornith chat framing (reasoning model) ─────────────────────────────────

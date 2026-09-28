@@ -7,7 +7,9 @@
 // (model independence invariant).
 
 #include <memory>
+#include <vector>
 
+#include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_inference_load.h"
@@ -27,6 +29,15 @@ public:
 
     bool Load() override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+
+    // Tool/function-calling bridge (step 4b): Ornith is a Qwen3.5-MoE fine-tune
+    // and uses the shared Qwen ChatML/XML codec (qwen_tool_format.h).
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
 
 protected:
     explicit OrnithMoeModelBase(ModelInitConfig cfg);
