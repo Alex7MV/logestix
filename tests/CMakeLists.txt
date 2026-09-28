@@ -1,6 +1,6 @@
 # ── Repository test executable ─────────────────────────────────
 add_executable(test_core test_core.cpp)
-target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson Catch2::Catch2WithMain)
+target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson httplib::httplib Catch2::Catch2WithMain)
 
 # Copy arrow.dll and arrow_cuda.dll into the test executable directory
 if(WIN32)

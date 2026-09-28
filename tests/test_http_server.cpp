@@ -10,17 +10,10 @@
 
 #include <httplib.h>
 
-#include <string_view>
-
 using lsxnetwork::HttpRequest;
 using lsxnetwork::HttpResponse;
 using lsxnetwork::HttpServer;
 using lsxnetwork::StreamSource;
-
-TEST_CASE("http_server: pinned cpp-httplib version",
-          "[http][dependencies][versions]") {
-    STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.58.0");
-}
 
 namespace {
 struct Fixture {

@@ -24,9 +24,10 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; minimum 13.2+), full native C++23 support in N
 | cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
 
 Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
-versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
-the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will not build); there is
-no guard for `flatbuffers`/`libzmq`. The dependency bump procedure
+versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, cpp-httplib,
+CCCL, abseil — the latter via `ABSL_LTS_RELEASE_VERSION`, so a non-LTS pin will
+not build); there is no guard for `flatbuffers`/`libzmq`. The dependency bump
+procedure
 (pin the submodule/FetchContent `GIT_TAG` + guard + AGENTS/README tables
 + re-check after-fetch patches) — skill `cuda-cmake-build-gotchas`.
 

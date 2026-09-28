@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <string_view>
 #include <catch2/catch_version_macros.hpp>
 #include <spdlog/version.h>
 #include <absl/base/config.h>
@@ -29,6 +30,7 @@
 
 // simdjson Fast JSON Parser
 #include <simdjson.h>
+#include <httplib.h>
 
 // NVIDIA CCCL High-Performance Primitives
 #include <thrust/host_vector.h>
@@ -427,6 +429,9 @@ TEST_CASE("pinned dependency versions", "[dependencies][versions]") {
     STATIC_REQUIRE(CATCH_VERSION_MAJOR == 3);
     STATIC_REQUIRE(CATCH_VERSION_MINOR == 16);
     STATIC_REQUIRE(CATCH_VERSION_PATCH == 0);
+
+    // cpp-httplib (FetchContent, host-only HTTP). Pin enforced here.
+    STATIC_REQUIRE(std::string_view(CPPHTTPLIB_VERSION) == "0.58.0");
 
     // NVIDIA CCCL (submodule)
     STATIC_REQUIRE(CCCL_VERSION == 3 * 1000000 + 4 * 1000 + 2);
