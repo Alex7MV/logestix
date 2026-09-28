@@ -36,3 +36,23 @@ endif()
 
 add_test(NAME test_taskmosaic_cli COMMAND test_taskmosaic_cli)
 set_tests_properties(test_taskmosaic_cli PROPERTIES LABELS fast)
+
+add_executable(test_taskmosaic_config test_taskmosaic_config.cpp ../src/config.cpp)
+target_include_directories(test_taskmosaic_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(test_taskmosaic_config PRIVATE lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_taskmosaic_config POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_taskmosaic_config>"
+    )
+    add_custom_command(TARGET test_taskmosaic_config POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_taskmosaic_config>"
+    )
+endif()
+
+add_test(NAME test_taskmosaic_config COMMAND test_taskmosaic_config)
+set_tests_properties(test_taskmosaic_config PROPERTIES LABELS fast)
