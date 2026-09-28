@@ -43,6 +43,7 @@ add_library(lsxcommon STATIC
     src/model_integrity.cpp
     src/model_registry.cpp
     src/model_runtime.cpp
+    src/incremental_detokenizer.cpp
     src/fsi_selfcheck.cpp
     src/code_selfcheck.cpp
     src/det_selfcheck.cpp

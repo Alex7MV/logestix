@@ -2009,6 +2009,11 @@ add_executable(test_fabric_client test_fabric_client.cpp)
 target_link_libraries(test_fabric_client PRIVATE lsxnetwork Catch2::Catch2WithMain)
 add_test(NAME test_fabric_client COMMAND test_fabric_client)
 
+# ── incremental UTF-8-safe detokenizer ───────────────────────────────────────
+add_executable(test_incremental_detokenizer test_incremental_detokenizer.cpp)
+target_link_libraries(test_incremental_detokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_incremental_detokenizer COMMAND test_incremental_detokenizer)
+
 # ── CUDA inference kernels test ─────────────────────────────────────────
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
@@ -4746,6 +4751,7 @@ set_tests_properties(
     test_gigachat_moe_loader
     test_gigachat_moe_model
     test_gigachat_moe_expert_cache
+    test_incremental_detokenizer
     PROPERTIES LABELS fast)
 
 set_tests_properties(
