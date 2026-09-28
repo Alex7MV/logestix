@@ -47,6 +47,20 @@ TEST_CASE("tool_format: no marker yields no calls", "[tools][fast]") {
     CHECK(tools::ParseToolCallsText("plain answer").empty());
 }
 
+TEST_CASE("tool_format: bare hermes object is parsed as a fallback",
+          "[tools][fast]") {
+    // Some checkpoints emit the call object with no <tool_call> wrapper, after
+    // a reasoning block; ParseBareToolCallJson is the last-resort fallback.
+    const std::string text =
+        "<think>reasoning</think>\n\n"
+        "{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}2";
+    const std::vector<ToolCall> calls = tools::ParseBareToolCallJson(text);
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json == R"({"city":"Paris"})");
+    CHECK(tools::ParseBareToolCallJson("no json here").empty());
+}
+
 TEST_CASE("tool_format: renders conversation roles and assistant calls",
           "[tools][fast]") {
     ChatConversation conv;

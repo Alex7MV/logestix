@@ -167,6 +167,63 @@ std::vector<ToolCall> ParseToolCallsText(std::string_view text) {
     return calls;
 }
 
+std::vector<ToolCall> ParseBareToolCallJson(std::string_view text)
+{
+    std::vector<ToolCall> calls;
+    for (size_t i = 0; i < text.size();) {
+        if (text[i] != '{') {
+            ++i;
+            continue;
+        }
+        // Brace-match, honoring strings/escapes, to isolate one candidate object.
+        int depth = 0;
+        bool in_str = false, esc = false;
+        size_t j = i;
+        for (; j < text.size(); ++j) {
+            const char c = text[j];
+            if (in_str) {
+                if (esc) esc = false;
+                else if (c == '\\') esc = true;
+                else if (c == '"') in_str = false;
+            } else if (c == '"') {
+                in_str = true;
+            } else if (c == '{') {
+                ++depth;
+            } else if (c == '}') {
+                if (--depth == 0) break;
+            }
+        }
+        if (j >= text.size()) break;  // unterminated
+        const std::string_view cand = text.substr(i, j - i + 1);
+        i = j + 1;
+
+        simdjson::dom::parser parser;
+        simdjson::dom::element obj;
+        simdjson::padded_string padded(cand);
+        if (parser.parse(padded).get(obj) != simdjson::SUCCESS) continue;
+        if (obj.type() != simdjson::dom::element_type::OBJECT) continue;
+
+        std::string_view name;
+        if (obj["name"].get_string().get(name) != simdjson::SUCCESS ||
+            name.empty())
+            continue;
+
+        ToolCall call;
+        call.name.assign(name);
+        simdjson::dom::element args;
+        if (obj["arguments"].get(args) == simdjson::SUCCESS) {
+            if (args.type() == simdjson::dom::element_type::STRING)
+                call.arguments_json.assign(args.get_string().value_unsafe());
+            else
+                call.arguments_json = Serialize(args);
+        }
+        if (call.arguments_json.empty()) call.arguments_json = "{}";
+        call.id = "call_" + std::to_string(calls.size());
+        calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
 std::string NeutralizeControlMarkers(
     std::string_view text, const std::vector<std::string_view> &markers)
 {

@@ -564,6 +564,7 @@ bool Glm5NextFlashModel::ParseToolCalls(
     if (!decoded) return false;
     out_calls = ParseGlmFlashToolCallText(text);
     if (out_calls.empty()) out_calls = tools::ParseToolCallsText(text);
+    if (out_calls.empty()) out_calls = tools::ParseBareToolCallJson(text);
     return true;
 }
 

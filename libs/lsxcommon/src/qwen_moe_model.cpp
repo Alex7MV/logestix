@@ -12,6 +12,7 @@
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/resource_governor.h"
 #include "lsxcommon/gpu_perf.h"
+#include "lsxcommon/qwen_tool_format.h"
 
 namespace lsxcommon {
 
@@ -340,6 +341,24 @@ gpu::InferenceResult Qwen35MoeModel::Infer(const ModelRequest &req)
 gpu::InferenceResult QwenMoeModelBase::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+bool QwenMoeModelBase::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderQwenConversation(conv, text)) return false;
+    if (!AppendQwenChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    return true;
+}
+
+bool QwenMoeModelBase::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseQwenTokenCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon

@@ -24,6 +24,11 @@ std::string RenderConversation(const ChatConversation& conv, bool include_tools)
 /// already-encoded string (kept verbatim). Ids are assigned `call_0`, `call_1`, …
 std::vector<ToolCall> ParseToolCallsText(std::string_view text);
 
+/// Last-resort parser for a bare (unwrapped) Hermes-style call object found in
+/// decoded text, e.g. {"name":"f","arguments":{…}} with no <tool_call> wrapper.
+/// Some checkpoints emit the object directly after a reasoning block.
+std::vector<ToolCall> ParseBareToolCallJson(std::string_view text);
+
 /// Inserts a zero-width space (U+200B) after the first byte of every occurrence
 /// of each control marker in @p text, so untrusted message content can never
 /// forge a chat template's control tokens when the transcript is assembled.

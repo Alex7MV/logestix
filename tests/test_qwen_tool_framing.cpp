@@ -1,7 +1,7 @@
 // Qwen ChatML + native XML tool framing (host-only; synthetic tokenizer, no
-// CUDA, no real model). Verifies QwenBaseModel::RenderQwenConversation,
-// ParseQwenToolCallText and the tokenizer-backed conversation/parse bridges
-// against the checked-in synthetic Qwen tokenizer fixture.
+// CUDA, no real model). Verifies the shared qwen_tool_format codec and the
+// QwenBaseModel conversation/parse bridges against the checked-in synthetic
+// Qwen tokenizer fixture.
 #include <catch2/catch_test_macros.hpp>
 
 #include <arrow/io/file.h>
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <lsxcommon/converter.h>
+#include <lsxcommon/qwen_tool_format.h>
 #include <lsxcommon/tokenizer.h>
 
 #include "qwen_dense_model.h"
@@ -100,7 +101,7 @@ TEST_CASE("qwen tool framing: render places tools, calls and responses",
     conv.messages.push_back({"tool", "sunny, 20C", "call_0", {}});
 
     std::string out;
-    REQUIRE(Qwen3_5_9BModel::RenderQwenConversation(conv, out));
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out));
 
     // System preamble carries the "# Tools" block before the user turn.
     REQUIRE(out.rfind("<|im_start|>system\n# Tools\n", 0) == 0);
@@ -132,7 +133,7 @@ TEST_CASE("qwen tool framing: render rejects unknown roles", "[qwen][tool_framin
     ChatConversation conv;
     conv.messages.push_back({"developer", "nope", "", {}});
     std::string out;
-    CHECK_FALSE(Qwen3_5_9BModel::RenderQwenConversation(conv, out));
+    CHECK_FALSE(lsxcommon::RenderQwenConversation(conv, out));
 }
 
 TEST_CASE("qwen tool framing: parse native XML calls", "[qwen][tool_framing]")
@@ -146,7 +147,7 @@ TEST_CASE("qwen tool framing: parse native XML calls", "[qwen][tool_framing]")
         "</parameter>\n</function>\n</tool_call>";
 
     const std::vector<ToolCall> calls =
-        Qwen3_5_9BModel::ParseQwenToolCallText(text);
+        lsxcommon::ParseQwenToolCallText(text);
     REQUIRE(calls.size() == 2);
     CHECK(calls[0].name == "get_weather");
     CHECK(calls[0].arguments_json == R"({"city":"Paris","days":3})");
@@ -201,7 +202,7 @@ TEST_CASE("qwen tool framing: consecutive tool results share one turn",
     conv.messages.push_back({"tool", "r1", "c0", {}});
     conv.messages.push_back({"tool", "r2", "c1", {}});
     std::string out;
-    REQUIRE(Qwen3_5_9BModel::RenderQwenConversation(conv, out));
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, out));
     CHECK(Contains(out, "<|im_start|>user\nhi<|im_end|>\n"));
     CHECK(Contains(out,
                    "<|im_start|>user\n<tool_response>\nr1\n</tool_response>\n"
@@ -216,7 +217,7 @@ TEST_CASE("qwen tool framing: rejects a mid-conversation system message",
     conv.messages.push_back({"system", "late system", "", {}});
     conv.messages.push_back({"user", "again", "", {}});
     std::string out;
-    CHECK_FALSE(Qwen3_5_9BModel::RenderQwenConversation(conv, out));
+    CHECK_FALSE(lsxcommon::RenderQwenConversation(conv, out));
 }
 
 TEST_CASE("qwen tool framing: content control markers are neutralized",

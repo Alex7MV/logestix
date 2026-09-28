@@ -28,23 +28,14 @@ public:
 
     // Tool/function-calling bridge (Model Ingestion Protocol step 4b). Qwen3.5/
     // 3.6 use the ChatML template with a native XML tool syntax (verified
-    // against the checkpoint chat_template.jinja):
-    //   tools  : a "# Tools" system block embedding <tools>…</tools>
-    //   call   : <tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>
-    //   result : a user turn carrying <tool_response>…</tool_response>
+    // against the checkpoint chat_template.jinja); the codec lives in
+    // qwen_tool_format.h and is shared with the MoE QwenMoeModelBase.
     bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
                                    const ChatConversation &conv,
                                    std::vector<int32_t> &out_ids) const override;
     bool ParseToolCalls(const ArrowTokenizerDb &tok,
                         const std::vector<int32_t> &gen_tokens,
                         std::vector<ToolCall> &out_calls) const override;
-
-    // Host-only testable primitives (no tokenizer, no CUDA): render a
-    // conversation to the ChatML/XML transcript, and parse the inner text of
-    // one or more <tool_call> regions into native tool calls.
-    static bool RenderQwenConversation(const ChatConversation &conv,
-                                       std::string &out);
-    static std::vector<ToolCall> ParseQwenToolCallText(std::string_view text);
 
 protected:
     // Hard geometry gate (Model Ingestion Protocol step 3): returns false when

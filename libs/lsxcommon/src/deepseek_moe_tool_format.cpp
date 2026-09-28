@@ -440,6 +440,7 @@ bool ParseDeepSeekToolCalls(const ArrowTokenizerDb &tok,
     if (!decoded) return false;
     out_calls = ParseDsmlToolCalls(text, tags);
     if (out_calls.empty()) out_calls = tools::ParseToolCallsText(text);
+    if (out_calls.empty()) out_calls = tools::ParseBareToolCallJson(text);
     return true;
 }
 

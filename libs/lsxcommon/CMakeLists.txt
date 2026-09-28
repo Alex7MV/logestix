@@ -45,6 +45,7 @@ add_library(lsxcommon STATIC
     src/model_runtime.cpp
     src/incremental_detokenizer.cpp
     src/tool_format.cpp
+    src/qwen_tool_format.cpp
     src/deepseek_moe_tool_format.cpp
     src/fsi_selfcheck.cpp
     src/code_selfcheck.cpp
