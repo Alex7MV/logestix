@@ -44,14 +44,30 @@ struct CompletionResponse {
 };
 
 /// Request-side message (content flattened to a string).
+struct ChatToolCall {
+    std::string id;
+    std::string name;
+    std::string arguments_json;  // JSON string
+};
+
 struct ChatInputMessage {
     std::string role;
     std::string content;
+    std::string tool_call_id;
+    std::vector<ChatToolCall> tool_calls;
+};
+
+struct ChatToolDef {
+    std::string name;
+    std::string description;
+    std::string parameters_json;
 };
 
 struct ChatRequest {
     std::string model;
     std::vector<ChatInputMessage> messages;
+    std::vector<ChatToolDef> tools;
+    std::string tool_choice;
     bool stream = false;
     int max_tokens = 0;
     std::vector<std::string> stop;
@@ -118,6 +134,23 @@ std::string BuildChatChunk(const std::string& id, const std::string& model,
                            const std::string& delta_content, bool first_delta,
                            const std::string& finish_reason, int prompt_tokens,
                            int completion_tokens, bool include_usage);
+
+/// Renders tool calls as a compact OpenAI `tool_calls` JSON array (each
+/// `function.arguments` is a JSON string).
+std::string ToolCallsToJson(const std::vector<ChatToolCall>& calls);
+
+/// Completion whose assistant message carries `tool_calls` and
+/// `finish_reason:"tool_calls"`.
+std::string BuildChatCompletionTools(const std::string& id,
+                                     const std::string& model,
+                                     const std::string& tool_calls_json,
+                                     int prompt_tokens, int completion_tokens);
+
+/// Streaming chunk carrying a `tool_calls` delta.
+std::string BuildChatChunkTools(const std::string& id, const std::string& model,
+                                const std::string& tool_calls_json,
+                                bool first_delta, int prompt_tokens,
+                                int completion_tokens, bool include_usage);
 std::string BuildTextCompletion(const std::string& id, const std::string& model,
                                 const std::string& text,
                                 const std::string& finish_reason,

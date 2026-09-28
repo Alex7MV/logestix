@@ -15,6 +15,7 @@
 #include <fstream>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace std::string_view_literals;
 
@@ -405,4 +406,53 @@ TEST_CASE("openai endpoint: builds completion and error JSON",
 
     CHECK(lsxnetwork::JsonEscape("a\"b\n") == "a\\\"b\\n");
     CHECK(lsxnetwork::SseFrame("data") == "data: data\n\n");
+}
+
+TEST_CASE("openai endpoint: parses tools and assistant tool_calls",
+          "[mosaic][openai][tools]") {
+    const std::string body = R"({
+      "model":"m1",
+      "tools":[{"type":"function","function":{"name":"get_weather",
+                "description":"d","parameters":{"type":"object"}}}],
+      "tool_choice":"auto",
+      "messages":[
+        {"role":"user","content":"weather?"},
+        {"role":"assistant","content":null,"tool_calls":[
+          {"id":"call_1","type":"function","function":{
+            "name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},
+        {"role":"tool","tool_call_id":"call_1","content":"sunny"}]})";
+    lsxnetwork::ChatRequest req;
+    simdjson::padded_string padded(body);
+    REQUIRE(lsxnetwork::OpenAiEndpoint().ParseChatRequest(
+                padded.data(), padded.size(),
+                padded.size() + simdjson::SIMDJSON_PADDING, req) ==
+            simdjson::SUCCESS);
+    REQUIRE(req.tools.size() == 1u);
+    CHECK(req.tools[0].name == "get_weather");
+    CHECK(req.tools[0].parameters_json == R"({"type":"object"})");
+    CHECK(req.tool_choice == "auto");
+    REQUIRE(req.messages.size() == 3u);
+    REQUIRE(req.messages[1].tool_calls.size() == 1u);
+    CHECK(req.messages[1].tool_calls[0].name == "get_weather");
+    CHECK(req.messages[1].tool_calls[0].arguments_json == R"({"city":"Paris"})");
+    CHECK(req.messages[2].tool_call_id == "call_1");
+}
+
+TEST_CASE("openai endpoint: builds tool completion and chunk",
+          "[mosaic][openai][tools]") {
+    const std::vector<lsxnetwork::ChatToolCall> calls{
+        {"call_0", "get_weather", R"({"city":"Paris"})"}};
+    const std::string json = lsxnetwork::ToolCallsToJson(calls);
+    CHECK(json.find("get_weather") != std::string::npos);
+    CHECK(json.find("\\\"city\\\"") != std::string::npos);  // arguments is a string
+
+    const std::string done =
+        lsxnetwork::BuildChatCompletionTools("chatcmpl-1", "m1", json, 3, 1);
+    CHECK(done.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    CHECK(done.find("\"tool_calls\"") != std::string::npos);
+
+    const std::string chunk =
+        lsxnetwork::BuildChatChunkTools("chatcmpl-1", "m1", json, true, 0, 0, false);
+    CHECK(chunk.find("chat.completion.chunk") != std::string::npos);
+    CHECK(chunk.find("\"tool_calls\"") != std::string::npos);
 }

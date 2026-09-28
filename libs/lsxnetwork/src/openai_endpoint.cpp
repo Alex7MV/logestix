@@ -181,8 +181,63 @@ simdjson::error_code OpenAiEndpoint::ParseChatRequest(const char* data,
         if (auto e = mo["role"].get_string().get(sv); !e) msg.role.assign(sv);
         if (auto c = mo["content"].get_string(); c.error() == simdjson::SUCCESS)
             msg.content.assign(c.value_unsafe());
+        if (auto e = mo["tool_call_id"].get_string().get(sv); !e)
+            msg.tool_call_id.assign(sv);
+        simdjson::ondemand::array tcs;
+        if (mo["tool_calls"].get_array().get(tcs) == simdjson::SUCCESS) {
+            for (auto tv : tcs) {
+                simdjson::ondemand::object to;
+                if (tv.get_object().get(to)) continue;
+                ChatToolCall call;
+                if (auto e = to["id"].get_string().get(sv); !e)
+                    call.id.assign(sv);
+                simdjson::ondemand::object fn;
+                if (to["function"].get_object().get(fn) == simdjson::SUCCESS) {
+                    if (auto e = fn["name"].get_string().get(sv); !e)
+                        call.name.assign(sv);
+                    simdjson::ondemand::value av;
+                    if (fn["arguments"].get(av) == simdjson::SUCCESS) {
+                        const auto is = av.is_string();
+                        if (is.error() == simdjson::SUCCESS && is.value_unsafe()) {
+                            std::string_view as;
+                            if (av.get_string().get(as) == simdjson::SUCCESS)
+                                call.arguments_json.assign(as);
+                        } else if (auto rj = av.raw_json();
+                                   rj.error() == simdjson::SUCCESS) {
+                            call.arguments_json.assign(rj.value_unsafe());
+                        }
+                    }
+                }
+                msg.tool_calls.push_back(std::move(call));
+            }
+        }
         out.messages.push_back(std::move(msg));
     }
+
+    simdjson::ondemand::array tools;
+    if (root["tools"].get_array().get(tools) == simdjson::SUCCESS) {
+        for (auto tv : tools) {
+            simdjson::ondemand::object to;
+            if (tv.get_object().get(to)) continue;
+            simdjson::ondemand::object fn;
+            if (to["function"].get_object().get(fn)) continue;
+            ChatToolDef def;
+            std::string_view sv;
+            if (auto e = fn["name"].get_string().get(sv); !e) def.name.assign(sv);
+            if (auto e = fn["description"].get_string().get(sv); !e)
+                def.description.assign(sv);
+            simdjson::ondemand::value pv;
+            if (fn["parameters"].get(pv) == simdjson::SUCCESS) {
+                if (auto rj = pv.raw_json(); rj.error() == simdjson::SUCCESS)
+                    def.parameters_json.assign(rj.value_unsafe());
+            }
+            if (def.parameters_json.empty()) def.parameters_json = "{}";
+            out.tools.push_back(std::move(def));
+        }
+    }
+    if (auto tc = root["tool_choice"].get_string();
+        tc.error() == simdjson::SUCCESS)
+        out.tool_choice.assign(tc.value_unsafe());
     return simdjson::SUCCESS;
 }
 
@@ -353,6 +408,48 @@ std::string BuildModelsList(const std::vector<std::string>& ids) {
 std::string BuildError(const std::string& message, const std::string& type) {
     return "{\"error\":{\"message\":\"" + JsonEscape(message) + "\",\"type\":\"" +
            JsonEscape(type) + "\",\"param\":null,\"code\":null}}";
+}
+
+std::string ToolCallsToJson(const std::vector<ChatToolCall>& calls) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < calls.size(); ++i) {
+        if (i) out += ",";
+        out += "{\"id\":\"" + JsonEscape(calls[i].id) +
+               "\",\"type\":\"function\",\"function\":{\"name\":\"" +
+               JsonEscape(calls[i].name) + "\",\"arguments\":\"" +
+               JsonEscape(calls[i].arguments_json.empty() ? "{}"
+                                                          : calls[i].arguments_json) +
+               "\"}}";
+    }
+    out += "]";
+    return out;
+}
+
+std::string BuildChatCompletionTools(const std::string& id,
+                                     const std::string& model,
+                                     const std::string& tool_calls_json,
+                                     int prompt_tokens, int completion_tokens) {
+    return "{\"id\":\"" + id + "\",\"object\":\"chat.completion\",\"model\":\"" +
+           model +
+           "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+           "\"content\":null,\"tool_calls\":" +
+           tool_calls_json + "},\"finish_reason\":\"tool_calls\"}]," +
+           Usage(prompt_tokens, completion_tokens) + "}";
+}
+
+std::string BuildChatChunkTools(const std::string& id, const std::string& model,
+                                const std::string& tool_calls_json,
+                                bool first_delta, int prompt_tokens,
+                                int completion_tokens, bool include_usage) {
+    std::string out =
+        "{\"id\":\"" + id + "\",\"object\":\"chat.completion.chunk\",\"model\":\"" +
+        model + "\",\"choices\":[{\"index\":0,\"delta\":{";
+    if (first_delta) out += "\"role\":\"assistant\",";
+    out += "\"tool_calls\":" + tool_calls_json +
+           "},\"finish_reason\":\"tool_calls\"}]";
+    if (include_usage) out += "," + Usage(prompt_tokens, completion_tokens);
+    out += "}";
+    return out;
 }
 
 }  // namespace lsxnetwork
