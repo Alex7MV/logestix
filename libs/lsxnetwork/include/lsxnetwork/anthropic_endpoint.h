@@ -21,6 +21,7 @@ struct AnthropicRequest {
     std::vector<ChatInputMessage> messages;  // roles user/assistant/tool
     std::vector<ChatToolDef> tools;
     std::string tool_choice;
+    std::vector<std::string> stop_sequences;
 };
 
 simdjson::error_code ParseAnthropicRequest(const char* data, std::size_t size,

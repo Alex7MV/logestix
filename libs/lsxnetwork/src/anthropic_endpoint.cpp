@@ -148,6 +148,17 @@ simdjson::error_code ParseAnthropicRequest(const char* data, std::size_t size,
     }
 
     {
+        simdjson::ondemand::array stops;
+        if (root["stop_sequences"].get_array().get(stops) == simdjson::SUCCESS) {
+            for (auto s : stops) {
+                std::string_view sv;
+                if (s.get_string().get(sv) == simdjson::SUCCESS)
+                    out.stop_sequences.emplace_back(sv);
+            }
+        }
+    }
+
+    {
         simdjson::ondemand::object tc;
         if (root["tool_choice"].get_object().get(tc) == simdjson::SUCCESS) {
             std::string_view type;

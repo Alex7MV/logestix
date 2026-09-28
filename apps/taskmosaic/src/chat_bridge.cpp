@@ -99,6 +99,24 @@ std::string ToolCallsWire(const std::vector<lsxcommon::ToolCall>& calls) {
     return lsxnetwork::ToolCallsToJson(wire);
 }
 
+// If any stop sequence occurs, returns the text truncated before the earliest
+// occurrence and sets @p hit; otherwise returns @p text unchanged.
+std::string TruncateAtStop(std::string text, const std::vector<std::string>& stops,
+                           bool& hit) {
+    hit = false;
+    std::size_t best = std::string::npos;
+    for (const auto& s : stops) {
+        if (s.empty()) continue;
+        const std::size_t p = text.find(s);
+        if (p != std::string::npos && p < best) best = p;
+    }
+    if (best != std::string::npos) {
+        hit = true;
+        text.resize(best);
+    }
+    return text;
+}
+
 /// SSE source for one streaming chat completion. Holds the backend lock and
 /// admission slot for its lifetime.
 class ChatStreamSource : public lsxnetwork::StreamSource {
@@ -106,7 +124,8 @@ public:
     ChatStreamSource(Backend& backend, PromptFramer& framer,
                      std::string model_path, std::string id, std::string model,
                      std::vector<std::int32_t> input_ids, int max_tokens,
-                     int timeout_ms, bool include_usage, bool buffer_tools)
+                     int timeout_ms, bool include_usage, bool buffer_tools,
+                     std::vector<std::string> stops)
         : backend_(backend),
           framer_(framer),
           model_path_(std::move(model_path)),
@@ -116,7 +135,9 @@ public:
           max_tokens_(max_tokens),
           timeout_ms_(timeout_ms),
           include_usage_(include_usage),
-          buffer_tools_(buffer_tools) {}
+          buffer_tools_(buffer_tools),
+          buffered_(buffer_tools || !stops.empty()),
+          stops_(std::move(stops)) {}
 
     ~ChatStreamSource() override { backend_.Release(); }
 
@@ -125,7 +146,7 @@ public:
             lock_ = std::make_unique<std::unique_lock<std::mutex>>(backend_.Mutex());
 
         if (!submitted_) {
-            if (!buffer_tools_) decoder_ = framer_.MakeDecoder(model_path_);
+            if (!buffered_) decoder_ = framer_.MakeDecoder(model_path_);
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
                                           static_cast<std::uint32_t>(max_tokens_))) {
@@ -162,7 +183,7 @@ public:
             out.clear();
             for (const auto tok : f.tokens) {
                 out_ids_.push_back(tok);
-                if (!buffer_tools_ && decoder_) {
+                if (!buffered_ && decoder_) {
                     const std::string delta = decoder_->Push(tok);
                     if (!delta.empty())
                         out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
@@ -175,19 +196,22 @@ public:
         out.clear();
         const int pt = static_cast<int>(input_ids_.size());
         const int ct = static_cast<int>(out_ids_.size());
-        if (buffer_tools_) {
+        if (buffered_) {
             std::vector<lsxcommon::ToolCall> calls;
-            framer_.ParseToolCalls(model_path_, out_ids_, calls);
+            if (buffer_tools_) framer_.ParseToolCalls(model_path_, out_ids_, calls);
             if (!calls.empty()) {
                 out = lsxnetwork::SseFrame(lsxnetwork::BuildChatChunkTools(
                     id_, model_, ToolCallsWire(calls), true, pt, ct,
                     include_usage_));
             } else {
+                bool stop_hit = false;
                 const std::string text =
-                    framer_.Decode(model_path_, out_ids_);
+                    TruncateAtStop(framer_.Decode(model_path_, out_ids_), stops_,
+                                   stop_hit);
+                const std::string fin = stop_hit ? "stop"
+                                       : (f.eos_terminated ? "stop" : "length");
                 out = lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
-                    id_, model_, text, true, f.eos_terminated ? "stop" : "length",
-                    pt, ct, include_usage_));
+                    id_, model_, text, true, fin, pt, ct, include_usage_));
             }
         } else {
             if (decoder_) {
@@ -229,6 +253,8 @@ private:
     int timeout_ms_;
     bool include_usage_;
     bool buffer_tools_;
+    bool buffered_ = false;
+    std::vector<std::string> stops_;
     std::unique_ptr<std::unique_lock<std::mutex>> lock_;
     std::unique_ptr<StreamingDecoder> decoder_;
     std::vector<std::int32_t> out_ids_;
@@ -246,7 +272,8 @@ public:
                           std::string model_path, std::string id,
                           std::string model,
                           std::vector<std::int32_t> input_ids, int max_tokens,
-                          int timeout_ms, bool buffer_tools)
+                          int timeout_ms, bool buffer_tools,
+                          std::vector<std::string> stops)
         : backend_(backend),
           framer_(framer),
           model_path_(std::move(model_path)),
@@ -255,7 +282,9 @@ public:
           input_ids_(std::move(input_ids)),
           max_tokens_(max_tokens),
           timeout_ms_(timeout_ms),
-          buffer_tools_(buffer_tools) {}
+          buffer_tools_(buffer_tools),
+          buffered_(buffer_tools || !stops.empty()),
+          stops_(std::move(stops)) {}
 
     ~AnthropicStreamSource() override { backend_.Release(); }
 
@@ -263,7 +292,7 @@ public:
         if (!lock_)
             lock_ = std::make_unique<std::unique_lock<std::mutex>>(backend_.Mutex());
         if (!submitted_) {
-            if (!buffer_tools_) decoder_ = framer_.MakeDecoder(model_path_);
+            if (!buffered_) decoder_ = framer_.MakeDecoder(model_path_);
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
                                           static_cast<std::uint32_t>(max_tokens_))) {
@@ -300,7 +329,7 @@ public:
             out.clear();
             for (const auto tok : f.tokens) {
                 out_ids_.push_back(tok);
-                if (buffer_tools_ || !decoder_) continue;
+                if (buffered_ || !decoder_) continue;
                 const std::string delta = decoder_->Push(tok);
                 if (delta.empty()) continue;
                 if (!text_block_open_) {
@@ -314,9 +343,9 @@ public:
         // kDone
         out.clear();
         const int ct = static_cast<int>(out_ids_.size());
-        if (buffer_tools_) {
+        if (buffered_) {
             std::vector<lsxcommon::ToolCall> calls;
-            framer_.ParseToolCalls(model_path_, out_ids_, calls);
+            if (buffer_tools_) framer_.ParseToolCalls(model_path_, out_ids_, calls);
             if (!calls.empty()) {
                 for (std::size_t i = 0; i < calls.size(); ++i) {
                     out += lsxnetwork::AnthropicToolUseBlockStart(
@@ -330,12 +359,16 @@ public:
                 }
                 out += lsxnetwork::AnthropicMessageDelta("tool_use", ct);
             } else {
+                bool stop_hit = false;
+                const std::string text = TruncateAtStop(
+                    framer_.Decode(model_path_, out_ids_), stops_, stop_hit);
                 out += lsxnetwork::AnthropicContentBlockStartText(0);
-                out += lsxnetwork::AnthropicContentBlockDeltaText(
-                    0, framer_.Decode(model_path_, out_ids_));
+                out += lsxnetwork::AnthropicContentBlockDeltaText(0, text);
                 out += lsxnetwork::AnthropicContentBlockStop(0);
                 out += lsxnetwork::AnthropicMessageDelta(
-                    f.eos_terminated ? "end_turn" : "max_tokens", ct);
+                    stop_hit ? "stop_sequence"
+                             : (f.eos_terminated ? "end_turn" : "max_tokens"),
+                    ct);
             }
         } else {
             if (decoder_) {
@@ -381,6 +414,8 @@ private:
     int max_tokens_;
     int timeout_ms_;
     bool buffer_tools_;
+    bool buffered_ = false;
+    std::vector<std::string> stops_;
     std::unique_ptr<std::unique_lock<std::mutex>> lock_;
     std::unique_ptr<StreamingDecoder> decoder_;
     std::vector<std::int32_t> out_ids_;
@@ -536,7 +571,7 @@ void ChatBridge::RegisterRoutes() {
                     *rt->backend, framer_, rt->cfg.model_path, "chatcmpl-bridge",
                     rt->cfg.id, std::move(input_ids), max_tokens,
                     cfg_.request_timeout_ms, req.include_usage,
-                    ToolsRequested(req));
+                    ToolsRequested(req), req.stop);
             }
             Admission admission{*rt->backend, true};
             std::vector<std::int32_t> out_ids;
@@ -559,9 +594,12 @@ void ChatBridge::RegisterRoutes() {
                     static_cast<int>(input_ids.size()),
                     static_cast<int>(out_ids.size()));
             } else {
-                const std::string text = framer_.Decode(rt->cfg.model_path, out_ids);
+                bool stop_hit = false;
+                const std::string text = TruncateAtStop(
+                    framer_.Decode(rt->cfg.model_path, out_ids), req.stop, stop_hit);
                 head.body = lsxnetwork::BuildChatCompletion(
-                    "chatcmpl-bridge", rt->cfg.id, text, eos ? "stop" : "length",
+                    "chatcmpl-bridge", rt->cfg.id, text,
+                    (stop_hit || eos) ? "stop" : "length",
                     static_cast<int>(input_ids.size()),
                     static_cast<int>(out_ids.size()));
             }
@@ -655,7 +693,7 @@ void ChatBridge::RegisterRoutes() {
                 return std::make_unique<AnthropicStreamSource>(
                     *rt->backend, framer_, rt->cfg.model_path, "msg-bridge",
                     rt->cfg.id, std::move(input_ids), max_tokens,
-                    cfg_.request_timeout_ms, buffer_tools);
+                    cfg_.request_timeout_ms, buffer_tools, req.stop_sequences);
             }
             Admission admission{*rt->backend, true};
             std::vector<std::int32_t> out_ids;
@@ -681,10 +719,14 @@ void ChatBridge::RegisterRoutes() {
                     static_cast<int>(input_ids.size()),
                     static_cast<int>(out_ids.size()));
             } else {
-                const std::string text = framer_.Decode(rt->cfg.model_path, out_ids);
+                bool stop_hit = false;
+                const std::string text = TruncateAtStop(
+                    framer_.Decode(rt->cfg.model_path, out_ids),
+                    req.stop_sequences, stop_hit);
                 head.body = lsxnetwork::BuildAnthropicMessage(
                     "msg-bridge", rt->cfg.id, text,
-                    eos ? "end_turn" : "max_tokens",
+                    stop_hit ? "stop_sequence"
+                             : (eos ? "end_turn" : "max_tokens"),
                     static_cast<int>(input_ids.size()),
                     static_cast<int>(out_ids.size()));
             }

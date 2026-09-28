@@ -328,3 +328,29 @@ TEST_CASE("bridge: anthropic messages streaming event sequence",
     CHECK(res->body.find("event: message_stop") != std::string::npos);
     fx.Stop();
 }
+
+TEST_CASE("bridge: stop sequence truncates output", "[taskmosaic][bridge][stop]") {
+    BridgeFixture fx;
+    REQUIRE(fx.Start());
+    httplib::Client cli("127.0.0.1", fx.bridge->BoundPort());
+
+    auto openai = cli.Post(
+        "/v1/chat/completions",
+        R"({"model":"m1","stop":["ll"],"messages":[{"role":"user","content":"hi"}]})",
+        "application/json");
+    REQUIRE(openai);
+    CHECK(openai->status == 200);
+    CHECK(openai->body.find("\"content\":\"he\"") != std::string::npos);
+    CHECK(openai->body.find("\"finish_reason\":\"stop\"") != std::string::npos);
+
+    auto anth = cli.Post(
+        "/v1/messages",
+        R"({"model":"m1","max_tokens":16,"stop_sequences":["ll"],
+            "messages":[{"role":"user","content":"hi"}]})",
+        "application/json");
+    REQUIRE(anth);
+    CHECK(anth->status == 200);
+    CHECK(anth->body.find("\"text\":\"he\"") != std::string::npos);
+    CHECK(anth->body.find("\"stop_reason\":\"stop_sequence\"") != std::string::npos);
+    fx.Stop();
+}
