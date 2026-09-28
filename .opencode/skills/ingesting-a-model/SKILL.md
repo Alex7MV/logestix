@@ -143,9 +143,9 @@ An ingested model is **not done** without it.
 - Shared codecs live in model-neutral `tools::` (`tool_format.{h,cpp}`) or a
   guard-allowlisted family file (e.g. `deepseek_moe_tool_format.{h,cpp}` — add
   the stem to `AllowedCommon()` in the same commit).
-- Reference implementations: Qwen3.5/3.6 ChatML XML (`qwen_base_model.cpp`),
+- Reference implementations: Qwen3.5/3.6 ChatML XML (`qwen_tool_format.{h,cpp}`),
   GLM-5.3-Flash (`glm_moe_flash_model.cpp`), DeepSeek-V4/V4.1 DSML
-  (`deepseek_moe_tool_format.{h,cpp}`).
+  (`deepseek_moe_tool_format.{h,cpp}`), Gemma-4 (`gemma_tool_format.{h,cpp}`).
 - Test (host-only, label `fast`): render structure, parse, and a tokenizer
   round-trip on a **synthetic tokenizer fixture** in `tests/data/` (add the
   sentinels to its `added_tokens`); reference `tests/test_qwen_tool_framing.cpp`,
