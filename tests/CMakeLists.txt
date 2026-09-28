@@ -2019,6 +2019,11 @@ add_executable(test_generation_stream test_generation_stream.cpp)
 target_link_libraries(test_generation_stream PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_generation_stream COMMAND test_generation_stream)
 
+# ── generic Hermes tool format ───────────────────────────────────────────────
+add_executable(test_tool_format test_tool_format.cpp)
+target_link_libraries(test_tool_format PRIVATE lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_tool_format COMMAND test_tool_format)
+
 # ── generic HTTP server wrapper (cpp-httplib) ────────────────────────────────
 add_executable(test_http_server test_http_server.cpp)
 target_link_libraries(test_http_server PRIVATE lsxnetwork httplib::httplib Catch2::Catch2WithMain)
@@ -4763,6 +4768,7 @@ set_tests_properties(
     test_gigachat_moe_expert_cache
     test_incremental_detokenizer
     test_generation_stream
+    test_tool_format
     test_http_server
     PROPERTIES LABELS fast)
 

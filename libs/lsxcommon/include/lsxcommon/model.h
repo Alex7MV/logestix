@@ -15,6 +15,8 @@
 #include "lsxcommon/prompt_framing.h"  // prompt framing utilities
 #include "lsxcommon/fast_math_mode.h"  // FastMathMode
 #include "lsxcommon/token_stream.h"    // TokenChunk / TokenCallback / GenerationStream
+#include "lsxcommon/chat_conversation.h"  // ChatConversation / ToolCall
+#include "lsxcommon/tool_format.h"     // generic Hermes render/parse
 
 namespace lsxcommon {
 
@@ -94,6 +96,49 @@ public:
                                      std::vector<int32_t> &out_ids) const
     {
         return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    }
+
+    // Tool/function-calling bridge (Model Ingestion Protocol step 4b). Renders
+    // a full conversation (optionally with tool schemas) into model input ids.
+    // The default flattens the transcript with role markers and delegates to
+    // the single-string BuildPromptInputIds; families with a native tool
+    // format override this next to their model code.
+    virtual bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                           const ChatConversation &conv,
+                                           std::vector<int32_t> &out_ids) const
+    {
+        return BuildPromptInputIds(tok, tools::RenderConversation(conv, false),
+                                   out_ids);
+    }
+
+    // Parses generated tokens into tool calls. Default: decode the ids (with
+    // capacity retry — arrow_tokenizer_decode drops special tokens) and run the
+    // generic Hermes parser. Families whose tool syntax uses special tokens
+    // override this to scan token ids.
+    virtual bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                                const std::vector<int32_t> &gen_tokens,
+                                std::vector<ToolCall> &out_calls) const
+    {
+        out_calls.clear();
+        if (gen_tokens.empty()) return true;
+        std::size_t cap = 4096;
+        std::string text(cap, '\0');
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            const int rc = arrow_tokenizer_decode(tok, gen_tokens.data(),
+                                                  gen_tokens.size(), text.data(),
+                                                  &cap);
+            if (rc == 0) {
+                text.resize(cap);
+                out_calls = tools::ParseToolCallsText(text);
+                return true;
+            }
+            if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
+                text.resize(cap);
+                continue;
+            }
+            break;
+        }
+        return false;
     }
 
     // Concurrency groundwork (spec: leases and residency locks). Infer()
