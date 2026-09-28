@@ -13,7 +13,9 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/gigachat_moe_expert_cache.h"
 #include "lsxcommon/gigachat_moe_inference_pipeline.h"
 #include "lsxcommon/gigachat_moe_load.h"
@@ -37,6 +39,15 @@ public:
                              std::vector<int32_t> &out_ids) const override;
 
     const std::string &Type() const override { return kType; }
+
+    // Tool/function-calling bridge (step 4b): GigaChat chatml-v5 GCML calls
+    // (gigachat_tool_format.h).
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
 
     // Test/diagnostics access to the parsed passport.
     const gigachat::GigaChatIndex &IndexForTest() const { return idx_; }

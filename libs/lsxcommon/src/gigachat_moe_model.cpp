@@ -7,6 +7,7 @@
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/tokenizer.h"
+#include "lsxcommon/gigachat_tool_format.h"
 
 #include <absl/strings/str_format.h>
 
@@ -333,6 +334,26 @@ bool GigaChat35Model::BuildPromptInputIds(const ArrowTokenizerDb &tok,
     out_ids.push_back(think);
     out_ids.push_back(think_end);
     return true;
+}
+
+bool GigaChat35Model::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderGigaChatConversation(conv, text)) return false;
+    out_ids.clear();
+    if (!AppendGigaChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    if (tok.bos_id >= 0) out_ids.insert(out_ids.begin(), tok.bos_id);
+    return true;
+}
+
+bool GigaChat35Model::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseGigaChatTokenCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon
