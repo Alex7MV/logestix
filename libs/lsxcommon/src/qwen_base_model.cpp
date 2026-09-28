@@ -332,6 +332,16 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
     const bool has_tools = !conv.tools.empty();
     const bool first_system =
         !conv.messages.empty() && conv.messages[0].role == "system";
+    // Untrusted content must never forge a control marker (prompt injection):
+    // break any marker occurrence with a zero-width space before assembly.
+    static const std::vector<std::string_view> kMarkers = [] {
+        std::vector<std::string_view> m;
+        for (const char *s : kQwenSentinels) m.emplace_back(s);
+        return m;
+    }();
+    const auto esc = [](std::string_view s) {
+        return tools::NeutralizeControlMarkers(s, kMarkers);
+    };
 
     if (has_tools) {
         out += "<|im_start|>system\n";
@@ -340,12 +350,12 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
             "<tools>";
         for (const ToolSpec &t : conv.tools) {
             out += "\n{\"type\":\"function\",\"function\":{\"name\":\"";
-            out += QwenJsonEscape(t.name);
+            out += QwenJsonEscape(esc(t.name));
             out += "\",\"description\":\"";
-            out += QwenJsonEscape(t.description);
+            out += QwenJsonEscape(esc(t.description));
             out += "\",\"parameters\":";
             out += t.parameters_json.empty() ? std::string("{}")
-                                             : t.parameters_json;
+                                             : esc(t.parameters_json);
             out += "}}";
         }
         out +=
@@ -367,20 +377,30 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
             "like normal with your current knowledge and do not tell the user "
             "about function calls\n</IMPORTANT>";
         if (first_system && !conv.messages[0].content.empty())
-            out += "\n\n" + conv.messages[0].content;
+            out += "\n\n" + esc(conv.messages[0].content);
         out += "<|im_end|>\n";
     } else if (first_system) {
-        out += "<|im_start|>system\n" + conv.messages[0].content +
-               "<|im_end|>\n";
+        out +=
+            "<|im_start|>system\n" + esc(conv.messages[0].content) +
+            "<|im_end|>\n";
     }
 
+    simdjson::dom::parser parser;
+    bool in_tool_turn = false;
     for (size_t mi = 0; mi < conv.messages.size(); ++mi) {
         const ChatMessage &m = conv.messages[mi];
-        if (m.role == "system") continue;  // emitted in the preamble
+        if (m.role == "system") {
+            // The Qwen template only permits a leading system message.
+            if (mi != 0) return false;
+            continue;
+        }
         if (m.role == "user") {
-            out += "<|im_start|>user\n" + m.content + "<|im_end|>\n";
+            in_tool_turn = false;
+            out +=
+                "<|im_start|>user\n" + esc(m.content) + "<|im_end|>\n";
         } else if (m.role == "assistant") {
-            out += "<|im_start|>assistant\n" + m.content;
+            in_tool_turn = false;
+            out += "<|im_start|>assistant\n" + esc(m.content);
             bool first = true;
             for (const ToolCall &c : m.tool_calls) {
                 if (first) {
@@ -391,9 +411,8 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
                 } else {
                     out += "\n<tool_call>\n<function=";
                 }
-                out += c.name + ">\n";
+                out += esc(c.name) + ">\n";
                 if (!c.arguments_json.empty()) {
-                    simdjson::dom::parser parser;
                     simdjson::dom::element args;
                     simdjson::padded_string padded(c.arguments_json);
                     if (parser.parse(padded).get(args) == simdjson::SUCCESS &&
@@ -401,12 +420,11 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
                             simdjson::dom::element_type::OBJECT) {
                         for (auto [k, v] : args.get_object()) {
                             out += "<parameter=";
-                            out += std::string(k);
+                            out += esc(k);
                             out += ">\n";
                             if (v.type() ==
                                 simdjson::dom::element_type::STRING)
-                                out += std::string(
-                                    v.get_string().value_unsafe());
+                                out += esc(v.get_string().value_unsafe());
                             else
                                 out += QwenSerialize(v);
                             out += "\n</parameter>\n";
@@ -417,8 +435,21 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
             }
             out += "<|im_end|>\n";
         } else if (m.role == "tool") {
-            out += "<|im_start|>user\n<tool_response>\n" + m.content +
-                   "\n</tool_response><|im_end|>\n";
+            // A run of consecutive tool messages shares one user turn; only the
+            // first opens <|im_start|>user and only the last closes <|im_end|>.
+            if (!in_tool_turn) {
+                out += "<|im_start|>user";
+                in_tool_turn = true;
+            }
+            out += "\n<tool_response>\n" + esc(m.content) +
+                   "\n</tool_response>";
+            const bool next_is_tool =
+                mi + 1 < conv.messages.size() &&
+                conv.messages[mi + 1].role == "tool";
+            if (!next_is_tool) {
+                out += "<|im_end|>\n";
+                in_tool_turn = false;
+            }
         } else {
             return false;
         }
@@ -431,6 +462,7 @@ bool QwenBaseModel::RenderQwenConversation(const ChatConversation &conv,
 std::vector<ToolCall> QwenBaseModel::ParseQwenToolCallText(std::string_view text)
 {
     std::vector<ToolCall> calls;
+    simdjson::dom::parser parser;
     constexpr std::string_view kOpen = "<tool_call>";
     constexpr std::string_view kClose = "</tool_call>";
     constexpr std::string_view kFn = "<function=";
@@ -482,7 +514,9 @@ std::vector<ToolCall> QwenBaseModel::ParseQwenToolCallText(std::string_view text
             first = false;
             args += "\"" + QwenJsonEscape(key) + "\":";
             // Preserve JSON types (numbers/objects); otherwise a string.
-            simdjson::dom::parser parser;
+            // The Qwen XML format carries no string flag, so a string value
+            // that is itself valid JSON (e.g. "42") is inherently ambiguous and
+            // round-trips as that JSON type.
             simdjson::dom::element ev;
             simdjson::padded_string padded(raw);
             if (parser.parse(padded).get(ev) == simdjson::SUCCESS)

@@ -59,3 +59,26 @@ TEST_CASE("tool_format: renders conversation roles and assistant calls",
     CHECK(text.find("<tool_call>") != std::string::npos);
     CHECK(text.find("tool: 42") != std::string::npos);
 }
+
+TEST_CASE("tool_format: generic fallback renders the tools block",
+          "[tools][fast]") {
+    // IModel::BuildConversationInputIds' default passes !tools.empty() as
+    // include_tools, so the generic Hermes fallback emits <tools> when specs
+    // are present and omits it otherwise.
+    ChatConversation conv;
+    conv.messages.push_back({"user", "hi", "", {}});
+    ToolSpec t;
+    t.name = "f";
+    t.description = "d";
+    t.parameters_json = R"({"type":"object"})";
+    conv.tools.push_back(t);
+    const std::string text = tools::RenderConversation(conv, !conv.tools.empty());
+    CHECK(text.find("<tools>") != std::string::npos);
+    CHECK(text.find("\"name\":\"f\"") != std::string::npos);
+    CHECK(text.find("</tools>") != std::string::npos);
+
+    ChatConversation plain;
+    plain.messages.push_back({"user", "hi", "", {}});
+    CHECK(tools::RenderConversation(plain, !plain.tools.empty())
+              .find("<tools>") == std::string::npos);
+}

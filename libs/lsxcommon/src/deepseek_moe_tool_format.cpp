@@ -92,14 +92,29 @@ std::string SerializeJson(simdjson::dom::element e)
     }
 }
 
+std::string DsmlEsc(std::string_view s);
+
 std::string ToolJson(const ToolSpec &t)
 {
     return "{\"type\":\"function\",\"function\":{\"name\":\"" +
-           JsonEscape(t.name) + "\",\"description\":\"" +
-           JsonEscape(t.description) + "\",\"parameters\":" +
+           JsonEscape(DsmlEsc(t.name)) + "\",\"description\":\"" +
+           JsonEscape(DsmlEsc(t.description)) + "\",\"parameters\":" +
            (t.parameters_json.empty() ? std::string("{}")
-                                      : t.parameters_json) +
+                                      : DsmlEsc(t.parameters_json)) +
            "}}";
+}
+
+const std::vector<std::string_view> &DeepSeekMarkers()
+{
+    static const std::vector<std::string_view> m = {
+        kBos, kEos, kSystem, kUser, kAssistant, kThink, kThinkEnd, kDsml,
+    };
+    return m;
+}
+
+std::string DsmlEsc(std::string_view s)
+{
+    return tools::NeutralizeControlMarkers(s, DeepSeekMarkers());
 }
 
 std::string RenderToolsBlock(const std::vector<ToolSpec> &tools,
@@ -144,11 +159,11 @@ std::string RenderToolCalls(const std::vector<ToolCall> &calls,
 {
     const std::string d(kDsml);
     std::string body;
+    simdjson::dom::parser parser;
     for (const ToolCall &c : calls) {
-        body += "<" + d + std::string(tags.call) + " name=\"" + c.name +
-                "\">\n";
+        body += "<" + d + std::string(tags.call) + " name=\"" +
+                DsmlEsc(c.name) + "\">\n";
         if (!c.arguments_json.empty()) {
-            simdjson::dom::parser parser;
             simdjson::dom::element args;
             simdjson::padded_string padded(c.arguments_json);
             if (parser.parse(padded).get(args) == simdjson::SUCCESS &&
@@ -157,10 +172,11 @@ std::string RenderToolCalls(const std::vector<ToolCall> &calls,
                     const bool is_str =
                         v.type() == simdjson::dom::element_type::STRING;
                     body += "<" + d + std::string(tags.param) + " name=\"" +
-                            std::string(k) + "\" string=\"" +
+                            DsmlEsc(k) + "\" string=\"" +
                             (is_str ? "true" : "false") + "\">";
-                    body += is_str ? std::string(v.get_string().value_unsafe())
-                                   : SerializeJson(v);
+                    body += is_str
+                                ? DsmlEsc(v.get_string().value_unsafe())
+                                : SerializeJson(v);
                     body += "</" + d + std::string(tags.param) + ">\n";
                 }
             }
@@ -182,44 +198,79 @@ bool RenderDsmlConversation(const ChatConversation &conv, const DsmlTags &tags,
         !conv.messages.empty() && conv.messages[0].role == "system";
     if (first_system) {
         out += kSystem;
-        out += conv.messages[0].content;
+        out += DsmlEsc(conv.messages[0].content);
         if (!conv.tools.empty())
             out += "\n\n" + RenderToolsBlock(conv.tools, tags);
     }
 
-    const auto is_last_turn = [&](size_t i) {
-        return i + 1 >= conv.messages.size();
+    // Canonical merge (merge_tool_messages): consecutive user/tool messages
+    // coalesce into one <｜User｜> turn whose parts are joined by "\n\n".
+    enum class Kind { kUser, kSystem, kAssistant };
+    struct Item {
+        Kind kind;
+        std::string content;             // system / assistant
+        std::vector<ToolCall> calls;     // assistant
+        std::vector<std::string> parts;  // user
     };
-
+    std::vector<Item> items;
     for (size_t i = 0; i < conv.messages.size(); ++i) {
         const ChatMessage &m = conv.messages[i];
         if (m.role == "system") {
             if (i == 0) continue;  // rendered above
-            out += kSystem;
-            out += m.content;
-            if (is_last_turn(i)) { out += kAssistant; out += kThinkEnd; }
-        } else if (m.role == "user") {
-            out += kUser;
-            out += m.content;
-            if (is_last_turn(i)) { out += kAssistant; out += kThinkEnd; }
+            Item it;
+            it.kind = Kind::kSystem;
+            it.content = DsmlEsc(m.content);
+            items.push_back(std::move(it));
         } else if (m.role == "assistant") {
-            out += kAssistant;
-            out += kThinkEnd;
-            out += m.content;
-            if (!m.tool_calls.empty())
-                out += RenderToolCalls(m.tool_calls, tags);
-            out += kEos;
-        } else if (m.role == "tool") {
-            // Tool results ride a <｜User｜> turn with <tool_result> blocks;
-            // consecutive tool messages share one turn.
-            bool starts_group = i == 0 || conv.messages[i - 1].role != "tool";
-            if (starts_group) out += kUser;
-            else out += "\n\n";
-            out += "<tool_result>" + m.content + "</tool_result>";
-            if (is_last_turn(i)) { out += kAssistant; out += kThinkEnd; }
+            Item it;
+            it.kind = Kind::kAssistant;
+            it.content = DsmlEsc(m.content);
+            it.calls = m.tool_calls;
+            items.push_back(std::move(it));
+        } else if (m.role == "user" || m.role == "tool") {
+            std::string part = m.role == "tool"
+                                   ? "<tool_result>" + DsmlEsc(m.content) +
+                                         "</tool_result>"
+                                   : DsmlEsc(m.content);
+            if (!items.empty() && items.back().kind == Kind::kUser) {
+                items.back().parts.push_back(std::move(part));
+            } else {
+                Item it;
+                it.kind = Kind::kUser;
+                it.parts.push_back(std::move(part));
+                items.push_back(std::move(it));
+            }
         } else {
             return false;
         }
+    }
+
+    for (const Item &it : items) {
+        if (it.kind == Kind::kSystem) {
+            out += kSystem;
+            out += it.content;
+        } else if (it.kind == Kind::kUser) {
+            out += kUser;
+            for (size_t p = 0; p < it.parts.size(); ++p) {
+                if (p) out += "\n\n";
+                out += it.parts[p];
+            }
+        } else {
+            out += kAssistant;
+            out += kThinkEnd;
+            out += it.content;
+            if (!it.calls.empty()) out += RenderToolCalls(it.calls, tags);
+            out += kEos;
+        }
+    }
+
+    // Generation prompt when the turn ends on a user observation (or a
+    // mid-conversation system message, which counts as a user turn).
+    if (!items.empty() &&
+        (items.back().kind == Kind::kUser ||
+         items.back().kind == Kind::kSystem)) {
+        out += kAssistant;
+        out += kThinkEnd;
     }
     return true;
 }
@@ -228,6 +279,7 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
                                          const DsmlTags &tags)
 {
     std::vector<ToolCall> calls;
+    simdjson::dom::parser parser;
     const std::string d(kDsml);
     const std::string block_open = "<" + d + std::string(tags.block) + ">";
     const std::string block_close = "</" + d + std::string(tags.block) + ">";
@@ -294,7 +346,6 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
                     args += "\"" + JsonEscape(raw) + "\"";
                     continue;
                 }
-                simdjson::dom::parser parser;
                 simdjson::dom::element ev;
                 simdjson::padded_string padded(raw);
                 if (parser.parse(padded).get(ev) == simdjson::SUCCESS)

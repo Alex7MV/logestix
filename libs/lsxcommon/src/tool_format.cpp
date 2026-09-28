@@ -167,5 +167,33 @@ std::vector<ToolCall> ParseToolCallsText(std::string_view text) {
     return calls;
 }
 
+std::string NeutralizeControlMarkers(
+    std::string_view text, const std::vector<std::string_view> &markers)
+{
+    // U+200B ZERO WIDTH SPACE, inserted after the first byte of a matched
+    // marker so the marker no longer matches verbatim.
+    static constexpr std::string_view kZwsp = "\xe2\x80\x8b";
+    std::string out;
+    out.reserve(text.size() + 16);
+    size_t i = 0;
+    while (i < text.size()) {
+        bool matched = false;
+        for (std::string_view m : markers) {
+            if (m.size() >= 2 && text.compare(i, m.size(), m) == 0) {
+                out += text[i];
+                out += kZwsp;
+                ++i;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            out += text[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
 }  // namespace tools
 }  // namespace lsxcommon

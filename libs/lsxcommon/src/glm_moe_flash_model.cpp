@@ -373,6 +373,15 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
                                                     std::string &out)
 {
     out.clear();
+    // Break control markers inside untrusted content (prompt injection).
+    static const std::vector<std::string_view> kMarkers = [] {
+        std::vector<std::string_view> m;
+        for (const char *s : kGlmFlashSentinels) m.emplace_back(s);
+        return m;
+    }();
+    const auto esc = [](std::string_view s) {
+        return tools::NeutralizeControlMarkers(s, kMarkers);
+    };
     out += "[gMASK]<sop>";
     out += "<|system|>Reasoning Effort: Max";
     if (!conv.tools.empty()) {
@@ -383,12 +392,12 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
                "<tools></tools> XML tags:\n<tools>";
         for (const ToolSpec &t : conv.tools) {
             out += "\n{\"name\":\"";
-            out += GlmJsonEscape(t.name);
+            out += GlmJsonEscape(esc(t.name));
             out += "\",\"description\":\"";
-            out += GlmJsonEscape(t.description);
+            out += GlmJsonEscape(esc(t.description));
             out += "\",\"parameters\":";
             out += t.parameters_json.empty() ? std::string("{}")
-                                             : t.parameters_json;
+                                             : esc(t.parameters_json);
             out += "}";
         }
         out += "\n</tools>\n\n"
@@ -399,30 +408,29 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
     }
 
     bool in_observation = false;
+    simdjson::dom::parser parser;
     for (const ChatMessage &m : conv.messages) {
         if (m.role == "system") {
-            out += "<|system|>" + m.content + "\n";
+            out += "<|system|>" + esc(m.content) + "\n";
             in_observation = false;
         } else if (m.role == "user") {
-            out += "<|user|>" + m.content + "\n";
+            out += "<|user|>" + esc(m.content) + "\n";
             in_observation = false;
         } else if (m.role == "assistant") {
             out += "<|assistant|>\n<think></think>";
-            if (!m.content.empty()) out += m.content;
+            if (!m.content.empty()) out += esc(m.content);
             for (const ToolCall &c : m.tool_calls) {
-                out += "<tool_call>" + c.name;
+                out += "<tool_call>" + esc(c.name);
                 if (!c.arguments_json.empty()) {
-                    simdjson::dom::parser parser;
                     simdjson::dom::element args;
                     simdjson::padded_string padded(c.arguments_json);
                     if (parser.parse(padded).get(args) == simdjson::SUCCESS &&
                         args.type() == simdjson::dom::element_type::OBJECT) {
                         for (auto [k, v] : args.get_object()) {
-                            out += "<arg_key>" + std::string(k) + "</arg_key>";
+                            out += "<arg_key>" + esc(k) + "</arg_key>";
                             out += "<arg_value>";
                             if (v.type() == simdjson::dom::element_type::STRING)
-                                out += std::string(
-                                    v.get_string().value_unsafe());
+                                out += esc(v.get_string().value_unsafe());
                             else
                                 out += GlmSerialize(v);
                             out += "</arg_value>";
@@ -438,7 +446,7 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
                 out += "<|observation|>";
                 in_observation = true;
             }
-            out += "<tool_response>" + m.content + "</tool_response>";
+            out += "<tool_response>" + esc(m.content) + "</tool_response>";
         } else {
             return false;
         }
@@ -451,6 +459,7 @@ std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
     std::string_view text)
 {
     std::vector<ToolCall> calls;
+    simdjson::dom::parser parser;
     constexpr std::string_view kOpen = "<tool_call>";
     constexpr std::string_view kClose = "</tool_call>";
     constexpr std::string_view kArgKey = "<arg_key>";
@@ -489,7 +498,9 @@ std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
             if (!first) args += ",";
             first = false;
             args += "\"" + GlmJsonEscape(key) + "\":";
-            simdjson::dom::parser parser;
+            // The GLM XML format carries no string flag, so a string value that
+            // is itself valid JSON (e.g. "42") is inherently ambiguous and
+            // round-trips as that JSON type.
             simdjson::dom::element ev;
             simdjson::padded_string padded(raw);
             if (parser.parse(padded).get(ev) == simdjson::SUCCESS)
