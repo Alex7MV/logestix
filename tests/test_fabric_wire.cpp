@@ -1,134 +1,102 @@
-// Binary wire codec tests: pure functions, no ZMQ, no CUDA, no Arrow.
 #include <catch2/catch_test_macros.hpp>
 
-#include "lsxnetwork/fabric_wire.h"
+#include <lsxnetwork/fabric_wire.h>
 
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 using namespace lsxnetwork;
 
 namespace {
-
-void PatchU16(std::vector<std::byte>& f, std::size_t off, std::uint16_t v) {
-    f[off] = static_cast<std::byte>(v & 0xFFu);
-    f[off + 1] = static_cast<std::byte>((v >> 8) & 0xFFu);
+std::span<const std::byte> AsBytes(const std::vector<std::byte>& v) {
+    return std::span<const std::byte>(v.data(), v.size());
 }
-void PatchU32(std::vector<std::byte>& f, std::size_t off, std::uint32_t v) {
-    for (int i = 0; i < 4; ++i)
-        f[off + i] = static_cast<std::byte>((v >> (8 * i)) & 0xFFu);
-}
-
 }  // namespace
 
-TEST_CASE("fabric_wire: request round-trip", "[fabric][wire]") {
-    const std::vector<std::int32_t> ids{1, -2, 300000, 0};
-    const std::vector<std::byte> frame = EncodeFabricRequest(ids, 16u);
-
-    REQUIRE(frame.size() == kFabricRequestHeaderBytes + 4u * ids.size());
-    FabricRequestView v;
-    REQUIRE(DecodeFabricRequest(frame, v) == WireStatus::kOk);
-    CHECK(v.max_gen == 16u);
-    REQUIRE(v.tokens.size() == ids.size());
-    CHECK(v.tokens[0] == 1);
-    CHECK(v.tokens[1] == -2);
-    CHECK(v.tokens[2] == 300000);
-    CHECK(v.tokens[3] == 0);
+TEST_CASE("fabric_wire v2: request round-trip", "[fabric][wire][v2]") {
+    const std::vector<std::int32_t> ids{7, 8, 9, 10};
+    const auto enc = EncodeFabricRequest(42u, ids, 16u);
+    CHECK(enc.size() == kFabricRequestHeaderBytes + 16u);
+    FabricRequestView view;
+    REQUIRE(DecodeFabricRequest(AsBytes(enc), view) == WireStatus::kOk);
+    CHECK(view.request_id == 42u);
+    CHECK(view.max_gen == 16u);
+    REQUIRE(view.tokens.size() == 4u);
+    CHECK(view.tokens[3] == 10);
 }
 
-TEST_CASE("fabric_wire: empty request round-trip", "[fabric][wire]") {
-    const std::vector<std::int32_t> ids;
-    const std::vector<std::byte> frame = EncodeFabricRequest(ids, 0u);
-    FabricRequestView v;
-    REQUIRE(DecodeFabricRequest(frame, v) == WireStatus::kOk);
-    CHECK(v.max_gen == 0u);
-    CHECK(v.tokens.empty());
+TEST_CASE("fabric_wire v2: request rejects bad magic/version/trailing",
+          "[fabric][wire][v2]") {
+    auto enc = EncodeFabricRequest(1u, std::vector<std::int32_t>{1}, 0u);
+    FabricRequestView view;
+    auto bad = enc;
+    bad[0] = std::byte{0};
+    CHECK(DecodeFabricRequest(AsBytes(bad), view) == WireStatus::kBadMagic);
+
+    bad = enc;
+    bad[4] = std::byte{9};
+    CHECK(DecodeFabricRequest(AsBytes(bad), view) == WireStatus::kBadVersion);
+
+    bad = enc;
+    bad.push_back(std::byte{0});
+    CHECK(DecodeFabricRequest(AsBytes(bad), view) == WireStatus::kTrailing);
+
+    std::vector<std::byte> trunc(enc.begin(), enc.begin() + 10);
+    CHECK(DecodeFabricRequest(AsBytes(trunc), view) == WireStatus::kTruncated);
 }
 
-TEST_CASE("fabric_wire: malformed request rejected", "[fabric][wire]") {
-    const std::vector<std::int32_t> ids{5, 6};
-    const std::vector<std::byte> good = EncodeFabricRequest(ids, 1u);
-
-    SECTION("bad magic") {
-        std::vector<std::byte> f = good;
-        PatchU32(f, 0, 0xDEADBEEFu);
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kBadMagic);
-    }
-    SECTION("bad version") {
-        std::vector<std::byte> f = good;
-        PatchU16(f, 4, 99u);
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kBadVersion);
-    }
-    SECTION("truncated header") {
-        std::vector<std::byte> f(good.begin(), good.begin() + 10);
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kTruncated);
-    }
-    SECTION("truncated body") {
-        std::vector<std::byte> f(good.begin(), good.end() - 1);
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kTruncated);
-    }
-    SECTION("trailing garbage") {
-        std::vector<std::byte> f = good;
-        f.push_back(std::byte{0});
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kTrailing);
-    }
-    SECTION("num_tokens overflow") {
-        std::vector<std::byte> f = good;
-        PatchU32(f, 12, 0xFFFFFFFFu);
-        FabricRequestView v;
-        CHECK(DecodeFabricRequest(f, v) == WireStatus::kTruncated);
-    }
+TEST_CASE("fabric_wire v2: token batch round-trip", "[fabric][wire][v2]") {
+    const std::vector<std::int32_t> t{1000, 1001, 1002};
+    FabricStreamFrame f;
+    REQUIRE(DecodeFabricStreamFrame(AsBytes(EncodeFabricTokenBatch(5u, t)), f) ==
+            WireStatus::kOk);
+    CHECK(f.type == FabricFrameType::kTokenBatch);
+    CHECK(f.request_id == 5u);
+    CHECK(f.tokens == t);
 }
 
-TEST_CASE("fabric_wire: response round-trip carries timings and eos",
-          "[fabric][wire]") {
-    FabricResponse r;
-    r.status = static_cast<std::int32_t>(FabricStatus::kOk);
-    r.eos_terminated = true;
-    r.ttft_ms = 12.5;
-    r.total_ms = 34.25;
-    r.tokens_per_sec = 78.75;
-    r.tokens = {11, 22, 33};
-
-    const std::vector<std::byte> frame = EncodeFabricResponse(r);
-    REQUIRE(frame.size() == kFabricResponseHeaderBytes + 12u);
-    FabricResponse d;
-    REQUIRE(DecodeFabricResponse(frame, d) == WireStatus::kOk);
-    CHECK(d.status == r.status);
-    CHECK(d.eos_terminated);
-    CHECK(d.ttft_ms == 12.5);
-    CHECK(d.total_ms == 34.25);
-    CHECK(d.tokens_per_sec == 78.75);
-    REQUIRE(d.tokens.size() == 3);
-    CHECK(d.tokens[2] == 33);
-    CHECK(d.error.empty());
+TEST_CASE("fabric_wire v2: done round-trip", "[fabric][wire][v2]") {
+    FabricStreamFrame f;
+    REQUIRE(DecodeFabricStreamFrame(
+                AsBytes(EncodeFabricDone(9u, true, 12u, 1.5, 2.5, 3.5)), f) ==
+            WireStatus::kOk);
+    CHECK(f.type == FabricFrameType::kDone);
+    CHECK(f.request_id == 9u);
+    CHECK(f.eos_terminated);
+    CHECK(f.total_tokens == 12u);
+    CHECK(f.ttft_ms == 1.5);
+    CHECK(f.total_ms == 2.5);
+    CHECK(f.tokens_per_sec == 3.5);
 }
 
-TEST_CASE("fabric_wire: error response carries message and no tokens",
-          "[fabric][wire]") {
-    FabricResponse r;
-    r.status = static_cast<std::int32_t>(FabricStatus::kInferFailed);
-    r.error = "boom";
-    const std::vector<std::byte> frame = EncodeFabricResponse(r);
-    FabricResponse d;
-    REQUIRE(DecodeFabricResponse(frame, d) == WireStatus::kOk);
-    CHECK(d.status == static_cast<std::int32_t>(FabricStatus::kInferFailed));
-    CHECK(d.tokens.empty());
-    CHECK(d.error == "boom");
+TEST_CASE("fabric_wire v2: error frame carries UTF-8", "[fabric][wire][v2]") {
+    FabricStreamFrame f;
+    REQUIRE(DecodeFabricStreamFrame(
+                AsBytes(EncodeFabricError(3u, "boom")), f) == WireStatus::kOk);
+    CHECK(f.type == FabricFrameType::kError);
+    CHECK(f.request_id == 3u);
+    CHECK(f.error == "boom");
 }
 
-TEST_CASE("fabric_wire: empty error message round-trips", "[fabric][wire]") {
-    FabricResponse r;
-    r.status = static_cast<std::int32_t>(FabricStatus::kBadRequest);
-    const std::vector<std::byte> frame = EncodeFabricResponse(r);
-    FabricResponse d;
-    REQUIRE(DecodeFabricResponse(frame, d) == WireStatus::kOk);
-    CHECK(d.status == static_cast<std::int32_t>(FabricStatus::kBadRequest));
-    CHECK(d.error.empty());
+TEST_CASE("fabric_wire v2: unknown frame type rejected", "[fabric][wire][v2]") {
+    FabricStreamFrame f;
+    auto enc = EncodeFabricTokenBatch(1u, std::vector<std::int32_t>{1});
+    enc[6] = std::byte{0x7f};  // type lo byte
+    CHECK(DecodeFabricStreamFrame(AsBytes(enc), f) == WireStatus::kBadType);
+}
+
+TEST_CASE("fabric_wire v2: cancel round-trip", "[fabric][wire][v2]") {
+    std::uint32_t id = 0;
+    REQUIRE(DecodeFabricCancel(AsBytes(EncodeFabricCancel(77u)), id) ==
+            WireStatus::kOk);
+    CHECK(id == 77u);
+}
+
+TEST_CASE("fabric_wire v2: empty token batch is valid", "[fabric][wire][v2]") {
+    FabricStreamFrame f;
+    REQUIRE(DecodeFabricStreamFrame(
+                AsBytes(EncodeFabricTokenBatch(1u, {})), f) == WireStatus::kOk);
+    CHECK(f.tokens.empty());
 }

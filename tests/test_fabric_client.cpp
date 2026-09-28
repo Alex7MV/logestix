@@ -1,16 +1,17 @@
-// FabricClient round-trip against an in-process fake REP server. Host-only.
+// FabricStreamClient <-> a minimal inproc ROUTER/PULL fake server.
 #include <catch2/catch_test_macros.hpp>
 
-#include "lsxnetwork/fabric_client.h"
-#include "lsxnetwork/fabric_wire.h"
-#include "lsxnetwork/zmq_context.h"
+#include <lsxnetwork/fabric_stream_client.h>
+#include <lsxnetwork/fabric_wire.h>
+#include <lsxnetwork/zmq_context.h>
 
 #include <zmq.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <future>
+#include <cstring>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -19,117 +20,144 @@ using namespace lsxnetwork;
 
 namespace {
 
-// Minimal REP server: binds tcp://127.0.0.1:* and replies with a fixed payload.
-class FakeRepServer {
-public:
-    // `mode`: 0 = OK with tokens {7,8,9}; 1 = infer-failed "boom"; 2 = no reply.
-    void Start(int mode) {
-        std::promise<std::string> ready;
-        std::future<std::string> fut = ready.get_future();
-        thread_ = std::thread([this, mode, ready = std::move(ready)]() mutable {
-            ZmqContext ctx;
-            ZmqSocket sock(ctx, ZMQ_REP);
-            if (sock.Bind("tcp://127.0.0.1:*") != 0) {
-                ready.set_value(std::string{});
-                return;
-            }
-            char ep[256];
-            std::size_t len = sizeof(ep);
-            sock.GetSockOpt(ZMQ_LAST_ENDPOINT, ep, &len);
-            ready.set_value(std::string(ep));
+// A tiny server: ROUTER streams a token batch + done per request; PULL records
+// received cancel ids.
+struct FakeServer {
+    ZmqContext ctx;
+    ZmqSocket router{ctx, ZMQ_ROUTER};
+    ZmqSocket pull{ctx, ZMQ_PULL};
+    std::string endpoint;
+    std::string cancel_endpoint;
+    std::atomic<bool> stop{false};
+    std::thread thread;
+    std::atomic<std::uint32_t> last_cancel{0};
 
-            const int rcvtimeo = 100;
-            sock.SetSockOpt(ZMQ_RCVTIMEO, &rcvtimeo, sizeof(rcvtimeo));
-            while (!stop_.load(std::memory_order_acquire)) {
-                zmq_msg_t msg;
-                zmq_msg_init(&msg);
-                const int n = zmq_msg_recv(&msg, sock.Get(), 0);
-                if (n < 0) {
-                    zmq_msg_close(&msg);
-                    if (zmq_errno() == EAGAIN) continue;
-                    break;
+    bool Start() {
+        if (!router.Valid() || !pull.Valid()) return false;
+        if (router.Bind("tcp://127.0.0.1:*") != 0) return false;
+        if (pull.Bind("tcp://127.0.0.1:*") != 0) return false;
+        char ep[256];
+        std::size_t len = sizeof(ep);
+        router.GetSockOpt(ZMQ_LAST_ENDPOINT, ep, &len);
+        endpoint = ep;
+        len = sizeof(ep);
+        pull.GetSockOpt(ZMQ_LAST_ENDPOINT, ep, &len);
+        cancel_endpoint = ep;
+        thread = std::thread([this] { Loop(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return true;
+    }
+
+    void Loop() {
+        while (!stop.load()) {
+            zmq_pollitem_t items[2] = {
+                {router.Get(), 0, ZMQ_POLLIN, 0},
+                {pull.Get(), 0, ZMQ_POLLIN, 0},
+            };
+            const int n = zmq_poll(items, 2, 20);
+            if (n <= 0) continue;
+            if (items[1].revents & ZMQ_POLLIN) {
+                zmq_msg_t m;
+                zmq_msg_init(&m);
+                if (zmq_msg_recv(&m, pull.Get(), 0) >= 0) {
+                    std::uint32_t id = 0;
+                    const std::span<const std::byte> f(
+                        static_cast<const std::byte*>(zmq_msg_data(&m)),
+                        zmq_msg_size(&m));
+                    if (DecodeFabricCancel(f, id) == WireStatus::kOk)
+                        last_cancel.store(id);
                 }
-                if (mode == 2) {  // swallow, never reply
-                    zmq_msg_close(&msg);
+                zmq_msg_close(&m);
+            }
+            if (items[0].revents & ZMQ_POLLIN) {
+                zmq_msg_t ident;
+                zmq_msg_init(&ident);
+                if (zmq_msg_recv(&ident, router.Get(), 0) < 0) {
+                    zmq_msg_close(&ident);
                     continue;
                 }
-                FabricResponse r;
-                if (mode == 0) {
-                    r.status = static_cast<std::int32_t>(FabricStatus::kOk);
-                    r.eos_terminated = true;
-                    r.ttft_ms = 1.0;
-                    r.total_ms = 2.0;
-                    r.tokens_per_sec = 3.0;
-                    r.tokens = {7, 8, 9};
-                } else {
-                    r.status =
-                        static_cast<std::int32_t>(FabricStatus::kInferFailed);
-                    r.error = "boom";
+                zmq_msg_t payload;
+                zmq_msg_init(&payload);
+                zmq_msg_recv(&payload, router.Get(), 0);
+                std::uint32_t rid = 0;
+                {
+                    const std::span<const std::byte> f(
+                        static_cast<const std::byte*>(zmq_msg_data(&payload)),
+                        zmq_msg_size(&payload));
+                    FabricRequestView v;
+                    if (DecodeFabricRequest(f, v) == WireStatus::kOk)
+                        rid = v.request_id;
                 }
-                const std::vector<std::byte> out = EncodeFabricResponse(r);
-                sock.Send(out.data(), out.size(), 0);
-                zmq_msg_close(&msg);
+                zmq_msg_close(&payload);
+                Send(ident, EncodeFabricTokenBatch(
+                                rid, std::vector<std::int32_t>{5, 6}));
+                Send(ident, EncodeFabricDone(rid, true, 2u, 1.0, 2.0, 3.0));
+                zmq_msg_close(&ident);
             }
-        });
-        endpoint_ = fut.get();
+        }
+    }
+
+    void Send(zmq_msg_t& ident, const std::vector<std::byte>& body) {
+        zmq_msg_t part;
+        zmq_msg_init_size(&part, zmq_msg_size(&ident));
+        std::memcpy(zmq_msg_data(&part), zmq_msg_data(&ident), zmq_msg_size(&ident));
+        zmq_msg_send(&part, router.Get(), ZMQ_SNDMORE);
+        zmq_msg_t b;
+        zmq_msg_init_size(&b, body.size());
+        std::memcpy(zmq_msg_data(&b), body.data(), body.size());
+        zmq_msg_send(&b, router.Get(), 0);
     }
 
     void Stop() {
-        stop_.store(true, std::memory_order_release);
-        if (thread_.joinable()) thread_.join();
+        stop.store(true);
+        if (thread.joinable()) thread.join();
     }
-
-    const std::string& Endpoint() const { return endpoint_; }
-
-private:
-    std::thread thread_;
-    std::atomic<bool> stop_{false};
-    std::string endpoint_;
 };
 
 }  // namespace
 
-TEST_CASE("fabric_client: OK round-trip", "[fabric][client]") {
-    FakeRepServer server;
-    server.Start(0);
-    REQUIRE_FALSE(server.Endpoint().empty());
+TEST_CASE("fabric_stream_client: streams batch then done",
+          "[fabric][client][stream]") {
+    FakeServer srv;
+    REQUIRE(srv.Start());
+    FabricStreamClient client;
+    REQUIRE(client.Connect(srv.endpoint.c_str(), srv.cancel_endpoint.c_str()) == 0);
+    REQUIRE(client.Submit(11u, std::vector<std::int32_t>{1, 2, 3}, 0u));
 
-    FabricClient client;
-    REQUIRE(client.Connect(server.Endpoint().c_str()) == 0);
-    FabricResponse resp;
-    const std::vector<std::int32_t> ids{1, 2, 3};
-    REQUIRE(client.Infer(ids, 4u, resp, 2000));
-    CHECK(resp.status == static_cast<std::int32_t>(FabricStatus::kOk));
-    CHECK(resp.eos_terminated);
-    CHECK(resp.ttft_ms == 1.0);
-    REQUIRE(resp.tokens.size() == 3);
-    CHECK(resp.tokens[2] == 9);
-    server.Stop();
+    FabricStreamFrame f;
+    REQUIRE(client.Recv(f, 2000) == FabricStreamClient::RecvStatus::kOk);
+    CHECK(f.type == FabricFrameType::kTokenBatch);
+    CHECK(f.request_id == 11u);
+    REQUIRE(f.tokens.size() == 2u);
+    CHECK(f.tokens[1] == 6);
+
+    REQUIRE(client.Recv(f, 2000) == FabricStreamClient::RecvStatus::kOk);
+    CHECK(f.type == FabricFrameType::kDone);
+    CHECK(f.eos_terminated);
+    CHECK(f.total_tokens == 2u);
+    srv.Stop();
 }
 
-TEST_CASE("fabric_client: infer-failed response surfaces error",
-          "[fabric][client]") {
-    FakeRepServer server;
-    server.Start(1);
-    FabricClient client;
-    REQUIRE(client.Connect(server.Endpoint().c_str()) == 0);
-    FabricResponse resp;
-    const std::vector<std::int32_t> ids{1};
-    REQUIRE(client.Infer(ids, 1u, resp, 2000));
-    CHECK(resp.status == static_cast<std::int32_t>(FabricStatus::kInferFailed));
-    CHECK(resp.error == "boom");
-    server.Stop();
+TEST_CASE("fabric_stream_client: cancel reaches the PULL channel",
+          "[fabric][client][cancel]") {
+    FakeServer srv;
+    REQUIRE(srv.Start());
+    FabricStreamClient client;
+    REQUIRE(client.Connect(srv.endpoint.c_str(), srv.cancel_endpoint.c_str()) == 0);
+    client.Cancel(99u);
+    for (int i = 0; i < 200 && srv.last_cancel.load() != 99u; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    CHECK(srv.last_cancel.load() == 99u);
+    srv.Stop();
 }
 
-TEST_CASE("fabric_client: timeout reports transport failure",
-          "[fabric][client]") {
-    FakeRepServer server;
-    server.Start(2);
-    FabricClient client;
-    REQUIRE(client.Connect(server.Endpoint().c_str()) == 0);
-    FabricResponse resp;
-    const std::vector<std::int32_t> ids{1};
-    REQUIRE_FALSE(client.Infer(ids, 1u, resp, 150));
-    CHECK(resp.status == -1);
-    server.Stop();
+TEST_CASE("fabric_stream_client: recv times out when idle",
+          "[fabric][client][timeout]") {
+    FakeServer srv;
+    REQUIRE(srv.Start());
+    FabricStreamClient client;
+    REQUIRE(client.Connect(srv.endpoint.c_str(), srv.cancel_endpoint.c_str()) == 0);
+    FabricStreamFrame f;
+    CHECK(client.Recv(f, 50) == FabricStreamClient::RecvStatus::kTimeout);
+    srv.Stop();
 }
