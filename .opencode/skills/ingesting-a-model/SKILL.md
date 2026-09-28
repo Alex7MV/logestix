@@ -7,8 +7,9 @@ description: Use when adding, adapting or ingesting a new model architecture int
 
 ## Overview
 
-**MODEL INGEST INVARIANT**: adding a model is a fixed 8-stage sequence. Every
-agent MUST follow the order; skipping or reordering a stage is a broken build.
+**MODEL INGEST INVARIANT**: adding a model is a fixed 8-stage sequence, plus the
+mandatory **stage 4b tool-calling bridge**. Every agent MUST follow the order;
+skipping or reordering a stage is a broken build.
 Reference implementations (real code anchors, not placeholders): GLM-5.2,
 DeepSeek-V4-Flash, GLM-5.3-Flash, Qwen3.5-9B, Kimi-K2.7-Code.
 
@@ -115,6 +116,43 @@ fixtures may re-export them, e.g. `qwentest::` in `test_qwen_dense_fixture.h`).
   original tokenizer does. `bos_id >= 0` → a real begin-of-sentence id, else
   `bos_id = -1`.
 
+### 4b. Tool-calling bridge (conversation + tool calls) — MANDATORY
+
+A model served through the `taskmosaic` OpenAI/Anthropic bridge must answer the
+tool-calling surface, not only single prompts. This is a sub-step of stage 4
+(host-only token bridge; cited in code as "Model Ingestion Protocol step 4b").
+An ingested model is **not done** without it.
+
+- Implement the two `IModel` virtuals next to the model class:
+  `BuildConversationInputIds(tok, ChatConversation, out_ids)` and
+  `ParseToolCalls(tok, gen_tokens, out_calls)` (types in
+  `libs/lsxcommon/include/lsxcommon/chat_conversation.h`). The `model.h`
+  defaults are the **generic Hermes fallback** (`<tools>` block +
+  `<tool_call>{json}</tool_call>`); they are a floor, not a pass.
+- **Verify the native format before coding — do not guess.** Read the
+  checkpoint's own `chat_template.jinja` (or the vendor encoder, e.g. DeepSeek's
+  `encoding/encoding.py`) and inspect `tokenizer.json` `added_tokens` (which
+  markers are `special`). Reproduce the verified format; a guessed template
+  silently breaks tool calling.
+- Inject control markers as their own vocab ids via `arrow_tokenizer_lookup` and
+  BPE-encode only free text: `arrow_tokenizer_encode` is pure BPE and never
+  resolves `added_tokens`. Drop the auto-prepended `bos_id` inside a ChatML frame.
+- Parse from decoded text when the markers are `special:false` (they survive
+  `arrow_tokenizer_decode`); scan token ids when a marker is `special:true`.
+  Fall back to `tools::ParseToolCallsText` when the native markers are absent.
+- Shared codecs live in model-neutral `tools::` (`tool_format.{h,cpp}`) or a
+  guard-allowlisted family file (e.g. `deepseek_moe_tool_format.{h,cpp}` — add
+  the stem to `AllowedCommon()` in the same commit).
+- Reference implementations: Qwen3.5/3.6 ChatML XML (`qwen_base_model.cpp`),
+  GLM-5.3-Flash (`glm_moe_flash_model.cpp`), DeepSeek-V4/V4.1 DSML
+  (`deepseek_moe_tool_format.{h,cpp}`).
+- Test (host-only, label `fast`): render structure, parse, and a tokenizer
+  round-trip on a **synthetic tokenizer fixture** in `tests/data/` (add the
+  sentinels to its `added_tokens`); reference `tests/test_qwen_tool_framing.cpp`,
+  `tests/test_glm_flash_tool_framing.cpp`, `tests/test_deepseek_tool_framing.cpp`.
+  Do NOT round-trip `ParseToolCalls` from the full rendered prompt — its
+  instructions embed an example tool call that the parser would match.
+
 ### 5. Low-level CUDA kernels (inference.cu)
 
 - Write/extend the inference kernels for the model's attention specifics
@@ -189,7 +227,8 @@ token sets below are what it currently accepts.
   expert_kernels, expert_cache, device_math, dequant, norm_kernels, fp8, constants}
 - Family-prefixed files that intentionally carry NO type marker (allowlist in
   `AllowedCommon()`): `qwen_inference`, `qwen_base_model`,
-  `qwen_inference_load`, `qwen_device_math`, `qwen_reduce`, `gemma_base_model`.
+  `qwen_inference_load`, `qwen_device_math`, `qwen_reduce`, `gemma_base_model`,
+  `deepseek_moe_tool_format`.
 - The legacy glued prefix `gemma4` is recognised.
 - Model versions are NOT in file names; they live in class names and `kType`.
 - Files without a family stem are model-neutral infrastructure and are not
@@ -216,6 +255,9 @@ without updating them fails CI.
 - [ ] `kType` registered; `Load` forbids a frozen-geometry mismatch.
 - [ ] Converter test (label `convert`, bounded TIMEOUT, synthetic checkpoint).
 - [ ] Loader/model/kernels tests present and labelled.
+- [ ] Tool-calling bridge implemented (stage 4b): native
+      `BuildConversationInputIds`/`ParseToolCalls` verified against the
+      checkpoint template, plus a host `fast` test on a synthetic tokenizer.
 - [ ] `test_<model>_selfcheck.cpp` ≥3 cycles, bit-exact, `SKIP_RETURN_CODE 4`.
 - [ ] perf entry in `tests/perf/perf_baselines.json` + `test_perf_baseline_<model>`.
 - [ ] All four guard registries above updated.
@@ -244,6 +286,12 @@ ingested.
   race, an `atomicAdd` feeding `final_logits`).
 - Forgetting a ctest label, or a selfcheck target without `SKIP_RETURN_CODE 4`
   (a skip then reports as a failure).
+- Shipping a model without the stage 4b tool-calling bridge, relying on the
+  generic Hermes default when the checkpoint has its own tool format.
+- Guessing the native tool format instead of reading `chat_template.jinja` /
+  the vendor encoder and the tokenizer's `added_tokens`.
+- Round-tripping `ParseToolCalls` from the full framed prompt — the instructions
+  embed an example tool call that the parser then matches.
 - Loading the real model vault inside a loader/model-stage test (forbidden —
   vault integration belongs to selfcheck/perf suites; loader/model stages use
   synthetic converted fixtures).
