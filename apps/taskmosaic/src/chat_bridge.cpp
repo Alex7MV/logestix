@@ -89,6 +89,20 @@ bool RunBlocking(Backend& backend, const std::vector<std::int32_t>& input_ids,
         return true;
     }
     error = "backend timeout";
+    backend.Client().Cancel(rid);
+    int drain = 0;
+    while (drain < 3000) {
+        lsxnetwork::FabricStreamFrame f;
+        const auto st = backend.Client().Recv(f, kPollMs);
+        if (st == lsxnetwork::FabricStreamClient::RecvStatus::kTimeout) {
+            drain += kPollMs;
+            continue;
+        }
+        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) break;
+        if (f.type == lsxnetwork::FabricFrameType::kDone ||
+            f.type == lsxnetwork::FabricFrameType::kError)
+            break;
+    }
     return false;
 }
 
@@ -117,6 +131,26 @@ std::string TruncateAtStop(std::string text, const std::vector<std::string>& sto
     return text;
 }
 
+// After an early-terminated request the shared DEALER may still hold unread
+// token/done frames from the backend; cancel the request and drain them so the
+// NEXT request on this backend does not read stale frames.
+void DrainToTerminal(Backend& backend, std::uint32_t request_id, int grace_ms) {
+    if (request_id != 0) backend.Client().Cancel(request_id);
+    int waited = 0;
+    while (waited < grace_ms) {
+        lsxnetwork::FabricStreamFrame f;
+        const auto st = backend.Client().Recv(f, kPollMs);
+        if (st == lsxnetwork::FabricStreamClient::RecvStatus::kTimeout) {
+            waited += kPollMs;
+            continue;
+        }
+        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) return;
+        if (f.type == lsxnetwork::FabricFrameType::kDone ||
+            f.type == lsxnetwork::FabricFrameType::kError)
+            return;
+    }
+}
+
 /// SSE source for one streaming chat completion. Holds the backend lock and
 /// admission slot for its lifetime.
 class ChatStreamSource : public lsxnetwork::StreamSource {
@@ -139,7 +173,11 @@ public:
           buffered_(buffer_tools || !stops.empty()),
           stops_(std::move(stops)) {}
 
-    ~ChatStreamSource() override { backend_.Release(); }
+    ~ChatStreamSource() override {
+        if (submitted_ && !terminal_)
+            DrainToTerminal(backend_, request_id_, 3000);
+        backend_.Release();
+    }
 
     bool Next(std::string& out) override {
         if (!lock_)
@@ -177,6 +215,7 @@ public:
         }
         if (f.type == lsxnetwork::FabricFrameType::kError) {
             out = Finish(f.error.empty() ? "inference failed" : f.error);
+            terminal_ = true;
             return true;
         }
         if (f.type == lsxnetwork::FabricFrameType::kTokenBatch) {
@@ -226,6 +265,7 @@ public:
         }
         out += lsxnetwork::SseFrame("[DONE]");
         done_ = true;
+        terminal_ = true;
         return true;
     }
 
@@ -262,6 +302,7 @@ private:
     int elapsed_ = 0;
     bool submitted_ = false;
     bool done_ = false;
+    bool terminal_ = false;
     bool cancelled_ = false;
 };
 
@@ -286,7 +327,11 @@ public:
           buffered_(buffer_tools || !stops.empty()),
           stops_(std::move(stops)) {}
 
-    ~AnthropicStreamSource() override { backend_.Release(); }
+    ~AnthropicStreamSource() override {
+        if (submitted_ && !terminal_)
+            DrainToTerminal(backend_, request_id_, 3000);
+        backend_.Release();
+    }
 
     bool Next(std::string& out) override {
         if (!lock_)
@@ -323,6 +368,7 @@ public:
         }
         if (f.type == lsxnetwork::FabricFrameType::kError) {
             out = FinishError(f.error.empty() ? "inference failed" : f.error);
+            terminal_ = true;
             return true;
         }
         if (f.type == lsxnetwork::FabricFrameType::kTokenBatch) {
@@ -388,6 +434,7 @@ public:
         }
         out += lsxnetwork::AnthropicMessageStop();
         done_ = true;
+        terminal_ = true;
         return true;
     }
 
@@ -423,6 +470,7 @@ private:
     int elapsed_ = 0;
     bool submitted_ = false;
     bool done_ = false;
+    bool terminal_ = false;
     bool text_block_open_ = false;
     bool cancelled_ = false;
 };

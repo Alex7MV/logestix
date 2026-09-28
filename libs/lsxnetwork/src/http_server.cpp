@@ -4,7 +4,9 @@
 
 #include <httplib.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <memory>
 #include <string>
 #include <utility>
@@ -32,7 +34,12 @@ HttpRequest ToRequest(const httplib::Request& req) {
     rq.method = req.method;
     rq.path = req.path;
     rq.body = req.body;
-    for (const auto& [k, v] : req.headers) rq.headers[k] = v;
+    for (const auto& [k, v] : req.headers) {
+        std::string key = k;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        rq.headers[key] = v;
+    }
     return rq;
 }
 }  // namespace
