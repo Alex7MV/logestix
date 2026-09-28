@@ -106,6 +106,17 @@ std::vector<std::byte> EncodeFabricTokenBatch(
     return out;
 }
 
+void EncodeFabricTokenBatch(std::vector<std::byte>& out,
+                            std::uint32_t request_id,
+                            std::span<const std::int32_t> tokens) {
+    out.resize(kFabricStreamHeaderBytes + tokens.size() * 4u);
+    std::byte* p = out.data();
+    PutStreamHeader(p, FabricFrameType::kTokenBatch, request_id);
+    PutU32(p + 12, static_cast<std::uint32_t>(tokens.size()));
+    for (std::size_t i = 0; i < tokens.size(); ++i)
+        PutI32(p + kFabricStreamHeaderBytes + i * 4u, tokens[i]);
+}
+
 std::vector<std::byte> EncodeFabricDone(std::uint32_t request_id,
                                         bool eos_terminated,
                                         std::uint32_t total_tokens,
@@ -193,6 +204,46 @@ WireStatus DecodeFabricCancel(std::span<const std::byte> frame,
     if (GetU16(p + 4) != kFabricVersion) return WireStatus::kBadVersion;
     request_id = GetU32(p + 8);
     return WireStatus::kOk;
+}
+
+namespace {
+
+std::vector<std::byte> EncodeProbe(std::uint32_t magic, std::uint32_t nonce) {
+    std::vector<std::byte> out(kFabricPingBytes);
+    std::byte* p = out.data();
+    PutU32(p + 0, magic);
+    PutU16(p + 4, kFabricVersion);
+    PutU16(p + 6, 0);
+    PutU32(p + 8, nonce);
+    return out;
+}
+
+WireStatus DecodeProbe(std::span<const std::byte> frame, std::uint32_t magic,
+                       std::uint32_t& nonce) {
+    if (frame.size() < kFabricPingBytes) return WireStatus::kTruncated;
+    if (frame.size() != kFabricPingBytes) return WireStatus::kTrailing;
+    const std::byte* p = frame.data();
+    if (GetU32(p) != magic) return WireStatus::kBadMagic;
+    if (GetU16(p + 4) != kFabricVersion) return WireStatus::kBadVersion;
+    nonce = GetU32(p + 8);
+    return WireStatus::kOk;
+}
+
+}  // namespace
+
+std::vector<std::byte> EncodeFabricPing(std::uint32_t nonce) {
+    return EncodeProbe(kFabricPingMagic, nonce);
+}
+std::vector<std::byte> EncodeFabricPong(std::uint32_t nonce) {
+    return EncodeProbe(kFabricPongMagic, nonce);
+}
+WireStatus DecodeFabricPing(std::span<const std::byte> frame,
+                            std::uint32_t& nonce) {
+    return DecodeProbe(frame, kFabricPingMagic, nonce);
+}
+WireStatus DecodeFabricPong(std::span<const std::byte> frame,
+                            std::uint32_t& nonce) {
+    return DecodeProbe(frame, kFabricPongMagic, nonce);
 }
 
 }  // namespace lsxnetwork

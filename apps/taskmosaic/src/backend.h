@@ -22,6 +22,11 @@ public:
     bool Ready() const noexcept { return ready_.load(std::memory_order_acquire); }
     void MarkDown() noexcept { ready_.store(false, std::memory_order_release); }
 
+    /// Active health check (ping/pong). Updates the cached ready flag and
+    /// returns whether the backend answered. Safe to call while a request is in
+    /// flight (uses the dedicated probe channel).
+    bool Probe(int timeout_ms);
+
     bool TryAdmit() noexcept;
     void Release() noexcept;
 

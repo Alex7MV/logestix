@@ -18,12 +18,15 @@ namespace lsxnetwork {
 ///   cancel     = 12 bytes (client -> server, separate PUSH/PULL channel)
 inline constexpr std::uint32_t kFabricMagic = 0x4246584Cu;        // "LXFB" LE
 inline constexpr std::uint32_t kFabricCancelMagic = 0x4346584Cu;  // "LXFC" LE
+inline constexpr std::uint32_t kFabricPingMagic = 0x5046584Cu;    // "LXFP" LE
+inline constexpr std::uint32_t kFabricPongMagic = 0x5146584Cu;    // "LXFQ" LE
 inline constexpr std::uint16_t kFabricVersion = 2;
 
 inline constexpr std::size_t kFabricRequestHeaderBytes = 24;
 inline constexpr std::size_t kFabricStreamHeaderBytes = 16;
 inline constexpr std::size_t kFabricDoneTailBytes = 32;  // flags4+total4+3*f64
 inline constexpr std::size_t kFabricCancelBytes = 12;
+inline constexpr std::size_t kFabricPingBytes = 12;
 
 enum class WireStatus {
     kOk,
@@ -69,6 +72,11 @@ WireStatus DecodeFabricRequest(std::span<const std::byte> frame,
 
 std::vector<std::byte> EncodeFabricTokenBatch(
     std::uint32_t request_id, std::span<const std::int32_t> tokens);
+/// Same, writing into a caller-owned buffer (no per-call allocation): the
+/// server's per-request token flush path reuses one buffer.
+void EncodeFabricTokenBatch(std::vector<std::byte>& out,
+                            std::uint32_t request_id,
+                            std::span<const std::int32_t> tokens);
 std::vector<std::byte> EncodeFabricDone(std::uint32_t request_id,
                                         bool eos_terminated,
                                         std::uint32_t total_tokens,
@@ -82,5 +90,15 @@ WireStatus DecodeFabricStreamFrame(std::span<const std::byte> frame,
 std::vector<std::byte> EncodeFabricCancel(std::uint32_t request_id);
 WireStatus DecodeFabricCancel(std::span<const std::byte> frame,
                               std::uint32_t& request_id);
+
+/// Health-probe frames (12 bytes: magic, version, pad, nonce). The server
+/// answers a ping with a pong carrying the same nonce on the same route, so a
+/// client can verify a live backend without occupying the inference path.
+std::vector<std::byte> EncodeFabricPing(std::uint32_t nonce);
+std::vector<std::byte> EncodeFabricPong(std::uint32_t nonce);
+WireStatus DecodeFabricPing(std::span<const std::byte> frame,
+                            std::uint32_t& nonce);
+WireStatus DecodeFabricPong(std::span<const std::byte> frame,
+                            std::uint32_t& nonce);
 
 }  // namespace lsxnetwork

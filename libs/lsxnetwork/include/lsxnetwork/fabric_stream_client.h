@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 
 #include "lsxnetwork/fabric_wire.h"
@@ -40,10 +41,19 @@ public:
     /// Best-effort cancel of @p request_id on the PUSH channel.
     void Cancel(std::uint32_t request_id);
 
+    /// Health probe: sends a ping on a dedicated DEALER and waits up to
+    /// @p timeout_ms for the matching pong. Never interleaves with the request
+    /// channel, so it may be called while a request is in flight (one caller at
+    /// a time). Returns false when the backend is unreachable.
+    bool Probe(int timeout_ms);
+
 private:
     ZmqContext ctx_;
     std::unique_ptr<ZmqSocket> dealer_;
     std::unique_ptr<ZmqSocket> cancel_;
+    std::unique_ptr<ZmqSocket> probe_;
+    std::mutex probe_mtx_;
+    std::uint32_t probe_nonce_ = 0;
 };
 
 }  // namespace lsxnetwork

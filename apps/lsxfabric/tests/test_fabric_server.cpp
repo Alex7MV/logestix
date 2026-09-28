@@ -201,6 +201,17 @@ TEST_CASE("fabric_server v2: cancel aborts an in-flight generation",
     fx.Stop();
 }
 
+TEST_CASE("fabric_server v2: answers health probes off the inference path",
+          "[fabric][server][v2][probe]") {
+    Fixture fx;
+    fx.Start();
+    lsxnetwork::FabricStreamClient client;
+    REQUIRE(client.Connect(fx.router_ep.c_str(), fx.cancel_ep.c_str()) == 0);
+    CHECK(client.Probe(2000));
+    CHECK(fx.model.calls == 0);  // a probe must never invoke inference
+    fx.Stop();
+}
+
 TEST_CASE("fabric_server v2: malformed request yields an error frame",
           "[fabric][server][v2]") {
     Fixture fx;

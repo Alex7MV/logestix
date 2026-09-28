@@ -62,6 +62,7 @@ bool RunBlocking(Backend& backend, const std::vector<std::int32_t>& input_ids,
     const std::uint32_t rid = backend.NextRequestId();
     if (!backend.Client().Submit(rid, input_ids,
                                  static_cast<std::uint32_t>(max_tokens))) {
+        backend.MarkDown();
         error = "backend submit failed";
         return false;
     }
@@ -73,8 +74,13 @@ bool RunBlocking(Backend& backend, const std::vector<std::int32_t>& input_ids,
             elapsed += kPollMs;
             continue;
         }
-        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) {
+        if (st == lsxnetwork::FabricStreamClient::RecvStatus::kTransport) {
+            backend.MarkDown();
             error = "backend transport error";
+            return false;
+        }
+        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) {
+            error = "backend protocol error";
             return false;
         }
         if (f.type == lsxnetwork::FabricFrameType::kError) {
@@ -188,6 +194,7 @@ public:
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
                                           static_cast<std::uint32_t>(max_tokens_))) {
+                backend_.MarkDown();
                 out = Finish("backend submit failed");
                 return true;
             }
@@ -209,8 +216,13 @@ public:
             out.clear();
             return true;
         }
-        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) {
+        if (st == lsxnetwork::FabricStreamClient::RecvStatus::kTransport) {
+            backend_.MarkDown();
             out = Finish("backend transport error");
+            return true;
+        }
+        if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) {
+            out = Finish("backend protocol error");
             return true;
         }
         if (f.type == lsxnetwork::FabricFrameType::kError) {
@@ -530,9 +542,12 @@ void ChatBridge::RegisterRoutes() {
 
     server_.Get("/ready", [this](const HttpRequest&, HttpResponse& r) {
         for (const auto& m : models_) {
-            if (!m.backend->Ready()) {
+            // Cheap when already healthy; actively re-probes after a failure or
+            // before the first request, so a down backend reports 503 instead
+            // of a sticky optimistic 200.
+            if (!m.backend->Ready() && !m.backend->Probe(250)) {
                 r.status = 503;
-                r.body = "{\"status\":\"starting\"}";
+                r.body = "{\"status\":\"not_ready\"}";
                 return;
             }
         }

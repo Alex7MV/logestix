@@ -100,3 +100,35 @@ TEST_CASE("fabric_wire v2: empty token batch is valid", "[fabric][wire][v2]") {
                 AsBytes(EncodeFabricTokenBatch(1u, {})), f) == WireStatus::kOk);
     CHECK(f.tokens.empty());
 }
+
+TEST_CASE("fabric_wire v2: out-param token batch matches the owning encoder",
+          "[fabric][wire][v2]") {
+    const std::vector<std::int32_t> t{4, 5, 6};
+    std::vector<std::byte> out;
+    // Reused across calls: stale longer content must be overwritten exactly.
+    EncodeFabricTokenBatch(out, 1u, std::vector<std::int32_t>{1, 2, 3, 4, 5});
+    EncodeFabricTokenBatch(out, 8u, t);
+    CHECK(out == EncodeFabricTokenBatch(8u, t));
+}
+
+TEST_CASE("fabric_wire v2: ping/pong round-trip and separation",
+          "[fabric][wire][v2]") {
+    std::uint32_t nonce = 0;
+    REQUIRE(DecodeFabricPing(AsBytes(EncodeFabricPing(123u)), nonce) ==
+            WireStatus::kOk);
+    CHECK(nonce == 123u);
+    REQUIRE(DecodeFabricPong(AsBytes(EncodeFabricPong(456u)), nonce) ==
+            WireStatus::kOk);
+    CHECK(nonce == 456u);
+
+    // A ping must not decode as a pong (distinct magic).
+    CHECK(DecodeFabricPong(AsBytes(EncodeFabricPing(1u)), nonce) ==
+          WireStatus::kBadMagic);
+    // Nor as a request (too short for the 24-byte request header) or a cancel.
+    FabricRequestView rv;
+    CHECK(DecodeFabricRequest(AsBytes(EncodeFabricPing(1u)), rv) ==
+          WireStatus::kTruncated);
+    std::uint32_t cid = 0;
+    CHECK(DecodeFabricCancel(AsBytes(EncodeFabricPing(1u)), cid) ==
+          WireStatus::kBadMagic);
+}

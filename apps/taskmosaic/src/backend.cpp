@@ -13,6 +13,16 @@ int Backend::Connect() {
     return rc;
 }
 
+bool Backend::Probe(int timeout_ms) {
+    if (!client_.Connected()) {
+        ready_.store(false, std::memory_order_release);
+        return false;
+    }
+    const bool ok = client_.Probe(timeout_ms);
+    ready_.store(ok, std::memory_order_release);
+    return ok;
+}
+
 bool Backend::TryAdmit() noexcept {
     int cur = admitted_.load(std::memory_order_relaxed);
     while (cur < queue_depth_) {

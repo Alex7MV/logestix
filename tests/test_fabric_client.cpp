@@ -84,6 +84,13 @@ struct FakeServer {
                     const std::span<const std::byte> f(
                         static_cast<const std::byte*>(zmq_msg_data(&payload)),
                         zmq_msg_size(&payload));
+                    std::uint32_t nonce = 0;
+                    if (DecodeFabricPing(f, nonce) == WireStatus::kOk) {
+                        Send(ident, EncodeFabricPong(nonce));
+                        zmq_msg_close(&payload);
+                        zmq_msg_close(&ident);
+                        continue;
+                    }
                     FabricRequestView v;
                     if (DecodeFabricRequest(f, v) == WireStatus::kOk)
                         rid = v.request_id;
@@ -159,5 +166,19 @@ TEST_CASE("fabric_stream_client: recv times out when idle",
     REQUIRE(client.Connect(srv.endpoint.c_str(), srv.cancel_endpoint.c_str()) == 0);
     FabricStreamFrame f;
     CHECK(client.Recv(f, 50) == FabricStreamClient::RecvStatus::kTimeout);
+    srv.Stop();
+}
+
+TEST_CASE("fabric_stream_client: probe pings a live backend",
+          "[fabric][client][probe]") {
+    // Unconnected / no probe channel -> false.
+    FabricStreamClient dead;
+    CHECK_FALSE(dead.Probe(50));
+
+    FakeServer srv;
+    REQUIRE(srv.Start());
+    FabricStreamClient client;
+    REQUIRE(client.Connect(srv.endpoint.c_str(), srv.cancel_endpoint.c_str()) == 0);
+    CHECK(client.Probe(2000));
     srv.Stop();
 }

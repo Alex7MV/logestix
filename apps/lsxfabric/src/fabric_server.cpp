@@ -54,6 +54,16 @@ void SendRouted(void* sock, const std::vector<std::byte>& ident,
     zmq_send(sock, body.data(), body.size(), 0);
 }
 
+// Returns false when either part could not be handed to libzmq (e.g. the peer
+// stalled past ZMQ_SNDTIMEO); callers then drop the stream instead of blocking
+// inference on a slow consumer.
+bool TrySendRouted(void* sock, const std::vector<std::byte>& ident,
+                   const std::vector<std::byte>& body) {
+    if (zmq_send(sock, ident.data(), ident.size(), ZMQ_SNDMORE) < 0)
+        return false;
+    return zmq_send(sock, body.data(), body.size(), 0) >= 0;
+}
+
 }  // namespace
 
 FabricServer::FabricServer(lsxcommon::IModel& model,
@@ -78,6 +88,13 @@ int FabricServer::Run(const std::string& endpoint,
         if (s.GetSockOpt(ZMQ_LAST_ENDPOINT, ep, &len) == 0) *out = std::string(ep);
     };
     resolve(router, resolved_endpoint);
+
+    // Bound the outbound queue and fail fast instead of blocking the inference
+    // callback (which holds the residency lock) on a stalled consumer.
+    const int sndhwm = 1024;
+    const int sndtimeo = 2000;
+    router.SetSockOpt(ZMQ_SNDHWM, &sndhwm, sizeof(sndhwm));
+    router.SetSockOpt(ZMQ_SNDTIMEO, &sndtimeo, sizeof(sndtimeo));
 
     const int rcvtimeo = 200;
 
@@ -142,6 +159,14 @@ int FabricServer::Run(const std::string& endpoint,
         lsxnetwork::FabricRequestView req;
         if (lsxnetwork::DecodeFabricRequest(payload, req) !=
             lsxnetwork::WireStatus::kOk) {
+            // A health probe is answered here, off the inference path.
+            std::uint32_t nonce = 0;
+            if (lsxnetwork::DecodeFabricPing(payload, nonce) ==
+                lsxnetwork::WireStatus::kOk) {
+                SendRouted(router.Get(), ident,
+                           lsxnetwork::EncodeFabricPong(nonce));
+                continue;
+            }
             SendRouted(router.Get(), ident,
                        lsxnetwork::EncodeFabricError(0u, "malformed request"));
             continue;
@@ -160,12 +185,19 @@ int FabricServer::Run(const std::string& endpoint,
                                   ? static_cast<int>(req.max_gen)
                                   : static_cast<int>(default_max_gen_);
         mreq.abort_flag = &abort;
+        // Reuse one frame buffer across tokens (no per-token allocation) and
+        // drop the stream if the consumer stalls.
+        std::vector<std::byte> frame;
+        bool send_failed = false;
         mreq.token_callback = [&](const lsxcommon::TokenChunk& chunk) {
+            if (send_failed) return;
             const std::int32_t tok = static_cast<std::int32_t>(chunk.token_id);
-            const std::vector<std::byte> frame =
-                lsxnetwork::EncodeFabricTokenBatch(
-                    req.request_id, std::span<const std::int32_t>(&tok, 1));
-            SendRouted(router.Get(), ident, frame);
+            lsxnetwork::EncodeFabricTokenBatch(
+                frame, req.request_id, std::span<const std::int32_t>(&tok, 1));
+            if (!TrySendRouted(router.Get(), ident, frame)) {
+                send_failed = true;
+                abort.store(true, std::memory_order_release);
+            }
         };
 
         lsxcommon::gpu::InferenceResult res;
@@ -180,15 +212,19 @@ int FabricServer::Run(const std::string& endpoint,
             continue;
         }
 
-        if (!res.ok) {
-            SendRouted(router.Get(), ident,
-                       lsxnetwork::EncodeFabricError(req.request_id, res.error_msg));
-        } else {
-            SendRouted(router.Get(), ident,
-                       lsxnetwork::EncodeFabricDone(
-                           req.request_id, res.eos_terminated,
-                           static_cast<std::uint32_t>(res.gen_tokens.size()),
-                           res.ttft_ms, res.total_time_ms, res.tokens_per_sec));
+        if (!send_failed) {
+            if (!res.ok) {
+                TrySendRouted(
+                    router.Get(), ident,
+                    lsxnetwork::EncodeFabricError(req.request_id, res.error_msg));
+            } else {
+                TrySendRouted(
+                    router.Get(), ident,
+                    lsxnetwork::EncodeFabricDone(
+                        req.request_id, res.eos_terminated,
+                        static_cast<std::uint32_t>(res.gen_tokens.size()),
+                        res.ttft_ms, res.total_time_ms, res.tokens_per_sec));
+            }
         }
         std::lock_guard<std::mutex> lock(cancel_mtx_);
         current_abort_ = nullptr;
