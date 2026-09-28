@@ -145,6 +145,22 @@ TEST_CASE("deepseek tool framing: parse extracts both DSML dialects",
     CHECK(c4[0].arguments_json == R"({"host":"a.b"})");
 }
 
+TEST_CASE("deepseek tool framing: string flag overrides JSON-looking values",
+          "[deepseek][tool_framing]")
+{
+    const std::string text =
+        "<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n"
+        "<｜DSML｜ parameter name=\"zip\" string=\"true\">01234</｜DSML｜ parameter>\n"
+        "<｜DSML｜ parameter name=\"count\" string=\"false\">3</｜DSML｜ parameter>\n"
+        "<｜DSML｜ parameter name=\"flag\" string=\"true\">true</｜DSML｜ parameter>\n"
+        "</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+    const std::vector<ToolCall> calls = lsxcommon::ParseDsmlToolCalls(text, kV41);
+    REQUIRE(calls.size() == 1);
+    // string="true" must stay a string even when it looks like a number/bool.
+    CHECK(calls[0].arguments_json ==
+          R"({"zip":"01234","count":3,"flag":"true"})");
+}
+
 TEST_CASE("deepseek tool framing: model overrides round-trip through the tokenizer",
           "[deepseek][tool_framing]")
 {

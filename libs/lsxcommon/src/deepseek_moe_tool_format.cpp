@@ -275,6 +275,10 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
                 // ... string="true|false">VALUE</... parameter>
                 const size_t gt = args_region.find('>', kq);
                 if (gt == std::string_view::npos) break;
+                const std::string_view attrs =
+                    args_region.substr(kq + 1, gt - (kq + 1));
+                const bool is_string =
+                    attrs.find("string=\"true\"") != std::string_view::npos;
                 const size_t vend = args_region.find(param_close, gt + 1);
                 if (vend == std::string_view::npos) break;
                 const std::string_view raw =
@@ -284,6 +288,12 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
                 if (!first) args += ",";
                 first = false;
                 args += "\"" + JsonEscape(key) + "\":";
+                if (is_string) {
+                    // The DSML `string` flag is authoritative: a string that
+                    // happens to look like JSON must stay a string.
+                    args += "\"" + JsonEscape(raw) + "\"";
+                    continue;
+                }
                 simdjson::dom::parser parser;
                 simdjson::dom::element ev;
                 simdjson::padded_string padded(raw);
