@@ -3,7 +3,9 @@
 #include <cuda_runtime.h>
 
 #include <string>
+#include <vector>
 
+#include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
 
 #include "deepseek_moe_v41_load_internal.h"
@@ -24,6 +26,15 @@ public:
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
 
     const std::string &Type() const override { return kType; }
+
+    // Tool/function-calling bridge (Model Ingestion Protocol step 4b).
+    // DeepSeek-V4.1 native DSML template (encoding.py, leading-space tags).
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
 
 private:
     void TeardownWeights() override;

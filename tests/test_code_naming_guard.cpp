@@ -65,6 +65,7 @@ bool AllowedCommon(const std::string& stem)
         "qwen_device_math",
         "qwen_reduce",
         "gemma_base_model",
+        "deepseek_moe_tool_format",  // V4/V4.1 DSML codec shared by both
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }

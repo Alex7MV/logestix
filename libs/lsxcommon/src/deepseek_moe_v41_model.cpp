@@ -6,6 +6,10 @@
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/tokenizer.h"
+#include "lsxcommon/deepseek_moe_tool_format.h"
+
+#include <cstring>
 
 #include "deepseek_moe_v41_constants.h"
 #include "deepseek_moe_v41_load.h"
@@ -110,6 +114,32 @@ gpu::InferenceResult DeepSeekV41FlashModel::Infer(const ModelRequest &req)
 gpu::InferenceResult DeepSeekV41FlashModel::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+// ── DeepSeek-V4.1 native DSML tool format (encoding.py) ────────────────────
+namespace {
+constexpr DsmlTags kV41DsmlTags{" calls", " invoke", " parameter"};
+constexpr const char *kDsmlUserToken = "<｜User｜>";
+} // namespace
+
+bool DeepSeekV41FlashModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderDsmlConversation(conv, kV41DsmlTags, text)) return false;
+    out_ids.clear();
+    if (arrow_tokenizer_lookup(tok, kDsmlUserToken,
+                               std::strlen(kDsmlUserToken)) < 0)
+        return BuildPromptInputIds(tok, text, out_ids);
+    return AppendDeepSeekIds(tok, text, out_ids);
+}
+
+bool DeepSeekV41FlashModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseDeepSeekToolCalls(tok, gen_tokens, kV41DsmlTags, out_calls);
 }
 
 } // namespace lsxcommon
