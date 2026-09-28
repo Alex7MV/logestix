@@ -4,10 +4,15 @@
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/prompt_framing.h"
+#include "lsxcommon/qwen_tool_format.h"
+#include "lsxcommon/tool_format.h"
 
 #include <absl/strings/str_format.h>
+#include <simdjson.h>
 
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace lsxcommon {
 
@@ -276,6 +281,239 @@ bool NemotronHModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
                                          std::vector<int32_t> &out_ids) const
 {
     return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+}
+
+// ── Nemotron-3.5 ChatML/XML tool format ─────────────────────────────────────
+// Verified against chat_template.jinja: a Qwen-style `<|im_start|>` ChatML with
+// an XML tool declaration block and `<tool_call><function=NAME><parameter=K>V`
+// calls; the call/parse syntax is shared with the Qwen codec.
+
+namespace {
+
+constexpr const char *kNemotronToolInstructions =
+    "\n\nIf you choose to call a function ONLY reply in the following format "
+    "with NO suffix:\n\n"
+    "<tool_call>\n<function=example_function_name>\n"
+    "<parameter=example_parameter_1>\nvalue_1\n</parameter>\n"
+    "<parameter=example_parameter_2>\nThis is the value for the second "
+    "parameter\nthat can span\nmultiple lines\n</parameter>\n"
+    "</function>\n</tool_call>\n\n"
+    "<IMPORTANT>\nReminder:\n"
+    "- Function calls MUST follow the specified format: an inner "
+    "<function=...></function> block must be nested within "
+    "<tool_call></tool_call> XML tags\n"
+    "- Required parameters MUST be specified\n"
+    "- You may provide optional reasoning for your function call in natural "
+    "language BEFORE the function call, but NOT after\n"
+    "- If there is no function call available, answer the question like normal "
+    "with your current knowledge and do not tell the user about function "
+    "calls\n</IMPORTANT>";
+
+std::string JsonSerialize(simdjson::dom::element e)
+{
+    using simdjson::dom::element_type;
+    switch (e.type()) {
+        case element_type::OBJECT: {
+            std::string out = "{";
+            bool first = true;
+            for (auto [k, v] : e.get_object()) {
+                if (!first) out += ",";
+                first = false;
+                out += "\"" + std::string(k) + "\":" + JsonSerialize(v);
+            }
+            out += "}";
+            return out;
+        }
+        case element_type::ARRAY: {
+            std::string out = "[";
+            bool first = true;
+            for (auto v : e.get_array()) {
+                if (!first) out += ",";
+                first = false;
+                out += JsonSerialize(v);
+            }
+            out += "]";
+            return out;
+        }
+        case element_type::STRING: {
+            std::string out = "\"";
+            for (char c : std::string(e.get_string().value_unsafe())) {
+                if (c == '"' || c == '\\') out += '\\';
+                out += c;
+            }
+            return out + "\"";
+        }
+        case element_type::INT64:
+            return std::to_string(e.get_int64().value_unsafe());
+        case element_type::UINT64:
+            return std::to_string(e.get_uint64().value_unsafe());
+        case element_type::DOUBLE: {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.17g",
+                          e.get_double().value_unsafe());
+            return std::string(buf);
+        }
+        case element_type::BOOL:
+            return e.get_bool().value_unsafe() ? "true" : "false";
+        default:
+            return "null";
+    }
+}
+
+std::string RenderToolDeclaration(const ToolSpec &t)
+{
+    std::string o = "\n<function>\n<name>" + t.name + "</name>";
+    if (!t.description.empty())
+        o += "\n<description>" + t.description + "</description>";
+    o += "\n<parameters>";
+    simdjson::dom::parser parser;
+    simdjson::dom::element params;
+    simdjson::padded_string padded(t.parameters_json);
+    if (!t.parameters_json.empty() &&
+        parser.parse(padded).get(params) == simdjson::SUCCESS &&
+        params.type() == simdjson::dom::element_type::OBJECT) {
+        simdjson::dom::element props;
+        if (params["properties"].get(props) == simdjson::SUCCESS &&
+            props.type() == simdjson::dom::element_type::OBJECT) {
+            for (auto [k, v] : props.get_object()) {
+                o += "\n<parameter>\n<name>";
+                o += std::string(k);
+                o += "</name>";
+                std::string_view type;
+                if (v["type"].get_string().get(type) == simdjson::SUCCESS) {
+                    o += "\n<type>";
+                    o += std::string(type);
+                    o += "</type>";
+                }
+                std::string_view desc;
+                if (v["description"].get_string().get(desc) == simdjson::SUCCESS) {
+                    o += "\n<description>";
+                    o += std::string(desc);
+                    o += "</description>";
+                }
+                simdjson::dom::element en;
+                if (v["enum"].get(en) == simdjson::SUCCESS)
+                    o += "\n<enum>" + JsonSerialize(en) + "</enum>";
+                o += "\n</parameter>";
+            }
+        }
+        simdjson::dom::element req;
+        if (params["required"].get(req) == simdjson::SUCCESS)
+            o += "\n<required>" + JsonSerialize(req) + "</required>";
+    }
+    o += "\n</parameters>\n</function>";
+    return o;
+}
+
+} // namespace
+
+bool NemotronHModel::RenderNemotronConversation(const ChatConversation &conv,
+                                                std::string &out)
+{
+    out.clear();
+    static const std::vector<std::string_view> kMarkers = {
+        "<|im_start|>",   "<|im_end|>",     "<tool_call>",
+        "</tool_call>",   "<tool_response>", "</tool_response>",
+        "<think>",        "</think>",
+    };
+    const auto esc = [](std::string_view s) {
+        return tools::NeutralizeControlMarkers(s, kMarkers);
+    };
+
+    const bool first_system =
+        !conv.messages.empty() && conv.messages[0].role == "system";
+    const bool has_tools = !conv.tools.empty();
+    if (first_system || has_tools) {
+        out += "<|im_start|>system\n";
+        if (first_system) out += esc(conv.messages[0].content);
+        if (has_tools) {
+            if (first_system && !conv.messages[0].content.empty())
+                out += "\n\n";
+            out +=
+                "# Tools\n\nYou have access to the following functions:\n\n"
+                "<tools>";
+            for (const ToolSpec &t : conv.tools)
+                out += RenderToolDeclaration(t);
+            out += "\n</tools>";
+            out += kNemotronToolInstructions;
+        }
+        out += "<|im_end|>\n";
+    }
+
+    simdjson::dom::parser parser;
+    bool in_tool_turn = false;
+    for (size_t i = first_system ? 1 : 0; i < conv.messages.size(); ++i) {
+        const ChatMessage &m = conv.messages[i];
+        if (m.role == "system") {
+            out += "<|im_start|>system\n" + esc(m.content) + "<|im_end|>\n";
+        } else if (m.role == "user") {
+            out += "<|im_start|>user\n" + esc(m.content) + "<|im_end|>\n";
+        } else if (m.role == "assistant") {
+            out += "<|im_start|>assistant\n";
+            out += m.content.empty() ? std::string("<think></think>")
+                                     : esc(m.content) + "\n";
+            for (const ToolCall &c : m.tool_calls) {
+                out += "<tool_call>\n<function=" + esc(c.name) + ">\n";
+                if (!c.arguments_json.empty()) {
+                    simdjson::dom::element args;
+                    simdjson::padded_string padded(c.arguments_json);
+                    if (parser.parse(padded).get(args) == simdjson::SUCCESS &&
+                        args.type() ==
+                            simdjson::dom::element_type::OBJECT) {
+                        for (auto [k, v] : args.get_object()) {
+                            out += "<parameter=" + std::string(k) + ">\n";
+                            if (v.type() ==
+                                simdjson::dom::element_type::STRING)
+                                out += esc(v.get_string().value_unsafe());
+                            else
+                                out += JsonSerialize(v);
+                            out += "\n</parameter>\n";
+                        }
+                    }
+                }
+                out += "</function>\n</tool_call>\n";
+            }
+            out += "<|im_end|>\n";
+        } else if (m.role == "tool") {
+            if (!in_tool_turn) {
+                out += "<|im_start|>user\n";
+                in_tool_turn = true;
+            }
+            out += "<tool_response>\n" + esc(m.content) + "\n</tool_response>\n";
+            const bool next_is_tool =
+                i + 1 < conv.messages.size() &&
+                conv.messages[i + 1].role == "tool";
+            if (!next_is_tool) {
+                out += "<|im_end|>\n";
+                in_tool_turn = false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // enable_thinking is on by default (README): the model reasons inside
+    // <think>…</think> and then emits the call.
+    out += "<|im_start|>assistant\n<think>\n";
+    return true;
+}
+
+bool NemotronHModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderNemotronConversation(conv, text)) return false;
+    if (!AppendQwenChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    return true;
+}
+
+bool NemotronHModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return ParseQwenTokenCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon

@@ -12,7 +12,9 @@
 // pipeline driver once it exists.
 
 #include <string>
+#include <vector>
 
+#include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/model_base.h"
 #include "lsxcommon/nemotron_moe_expert_cache.h"
 #include "lsxcommon/nemotron_moe_inference.h"
@@ -36,6 +38,19 @@ public:
                              std::vector<int32_t> &out_ids) const override;
 
     const std::string &Type() const override { return kType; }
+
+    // Tool/function-calling bridge (step 4b): Nemotron-3.5 uses the Qwen-style
+    // ChatML XML call syntax (`<tool_call><function=…>`), but its own tool
+    // declaration block; parse is shared with the Qwen codec.
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
+
+    static bool RenderNemotronConversation(const ChatConversation &conv,
+                                           std::string &out);
 
     // Test/diagnostics access to the parsed passport.
     const nemotron_moe::NemotronIndex &IndexForTest() const { return idx_; }

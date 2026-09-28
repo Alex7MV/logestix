@@ -8,6 +8,8 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 
+#include <spdlog/spdlog.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -158,4 +160,23 @@ TEST_CASE("nemotron expert LRU stays bit-identical under slot eviction",
     REQUIRE(tight.logits.size() == full.logits.size());
     CHECK(std::memcmp(tight.logits.data(), full.logits.data(),
                       full.logits.size() * sizeof(float)) == 0);
+}
+
+TEST_CASE("nemotron tool framing renders the XML declaration block",
+          "[nemotron][tool_framing]")
+{
+    ChatConversation conv;
+    conv.messages.push_back({"system", "sys", "", {}});
+    conv.messages.push_back({"user", "What's the weather in Paris?", "", {}});
+    ToolSpec t;
+    t.name = "get_weather";
+    t.description = "Get the current weather for a city";
+    t.parameters_json =
+        R"({"type":"object","properties":{"city":{"type":"string","description":"City name"}},"required":["city"]})";
+    conv.tools.push_back(t);
+    std::string out;
+    REQUIRE(NemotronHModel::RenderNemotronConversation(conv, out));
+    spdlog::info("[nemotron-render]\n{}", out);
+    CHECK(out.find("<name>get_weather</name>") != std::string::npos);
+    CHECK(out.find("</tools>") != std::string::npos);
 }
