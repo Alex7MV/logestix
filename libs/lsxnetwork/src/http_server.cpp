@@ -73,6 +73,7 @@ void HttpServer::PostStream(const std::string& path, StreamFactory factory) {
                     sink.done();  // graceful end of the chunked body
                     return true;
                 }
+                if (out.empty()) return true;  // nothing ready yet; keep polling
                 return sink.write(out.data(), out.size());
             });
     });

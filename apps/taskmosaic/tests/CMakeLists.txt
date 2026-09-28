@@ -76,3 +76,26 @@ endif()
 
 add_test(NAME test_taskmosaic_backend COMMAND test_taskmosaic_backend)
 set_tests_properties(test_taskmosaic_backend PROPERTIES LABELS fast)
+
+add_executable(test_taskmosaic_bridge
+    test_taskmosaic_bridge.cpp
+    ../src/config.cpp ../src/backend.cpp ../src/chat_bridge.cpp)
+target_include_directories(test_taskmosaic_bridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(test_taskmosaic_bridge PRIVATE lsxcommon lsxnetwork simdjson::simdjson httplib::httplib Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_taskmosaic_bridge POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_taskmosaic_bridge>"
+    )
+    add_custom_command(TARGET test_taskmosaic_bridge POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_taskmosaic_bridge>"
+    )
+endif()
+
+add_test(NAME test_taskmosaic_bridge COMMAND test_taskmosaic_bridge)
+set_tests_properties(test_taskmosaic_bridge PROPERTIES LABELS fast)
+set_tests_properties(test_taskmosaic_bridge PROPERTIES TIMEOUT 120)
