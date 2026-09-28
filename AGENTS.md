@@ -21,6 +21,7 @@ CUDA Toolkit 13.4 (nvcc V13.4.59; minimum 13.2+), full native C++23 support in N
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (`20260817.0`, LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
+| cpp-httplib | v0.18.3 | FetchContent (host-only HTTP) | Header-only |
 
 Versions are enforced by code: `tests/test_core.cpp` → `TEST_CASE("pinned dependency
 versions")` (`STATIC_REQUIRE` for Arrow, spdlog, simdjson, Catch2, CCCL, abseil —
@@ -161,7 +162,9 @@ procedure — `perf-tuning-a-model`.
   (`--localmodel`, `--validate`, `--testprompt`); speed measurement and bit-exactness
   moved to lsxbenchmark. `apps/lsxforge/` — data preprocessing utility
   (`--glm`/GLM-5.2 pipeline, `--tokenizer`, repack flags). `apps/taskmosaic/` —
-  CLI wrapper over `lsxcommon::LsxOrchestrator`. `apps/lsxcli/` — CLI client
+  OpenAI-compatible HTTP/SSE bridge to a running `lsxfabric --serve` over the v2
+  streaming fabric protocol (`--config`; `/v1/chat/completions`,
+  `/v1/completions`, `/v1/models`, `/health`, `/ready`). `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`

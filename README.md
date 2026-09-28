@@ -35,6 +35,7 @@ Each of us took a step in the right direction, and together we reached a goal th
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
+| cpp-httplib | v0.18.3 | FetchContent (host-only HTTP) | Header-only |
 
 ## Prerequisites
 
@@ -136,7 +137,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`)
   - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
-- `apps/taskmosaic/` — task orchestrator (CLI wrapper over `lsxcommon::LsxOrchestrator`)
+- `apps/taskmosaic/` — OpenAI-compatible HTTP/SSE bridge to a running `lsxfabric --serve`
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
 - `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
   - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
@@ -149,6 +150,26 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `third_party/flatbuffers/` — Google FlatBuffers v25.12.19
 - `third_party/libzmq/` — ZeroMQ libzmq v4.3.5
 - `third_party/simdjson/` — simdjson v4.6.11
+
+## TaskMosaic OpenAI bridge
+
+`taskmosaic` is an OpenAI-compatible HTTP/SSE bridge to a running `lsxfabric`.
+Start one GPU backend per model, point a bridge config at it, then use any
+OpenAI client:
+
+```bash
+# 1) GPU engine (one model per process)
+lsxfabric --serve --localmodel /vault/models/<model> \
+  --listen tcp://*:5555 --listen-cancel tcp://*:5556
+
+# 2) bridge (JSON lists id -> model_path + backend endpoints; see the design doc)
+taskmosaic --config bridge.json
+
+# 3) use it
+curl http://127.0.0.1:8080/v1/models
+curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -d '{"model":"<id>","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+```
 
 ## Licensing
 
