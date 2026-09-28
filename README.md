@@ -35,7 +35,7 @@ Each of us took a step in the right direction, and together we reached a goal th
 | NVIDIA CCCL | 3.4.2 | submodule (`third_party/cccl`) | Header-only |
 | abseil-cpp | 20260817.0 | FetchContent (LTS August 2026) | Header-only + static libs |
 | Catch2 | v3.16.0 | FetchContent (test only) | Header-only |
-| cpp-httplib | v0.18.3 | FetchContent (host-only HTTP) | Header-only |
+| cpp-httplib | v0.58.0 | FetchContent (host-only HTTP) | Header-only |
 
 ## Prerequisites
 

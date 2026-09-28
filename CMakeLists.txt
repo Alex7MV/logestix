@@ -295,7 +295,7 @@ set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE INTERNAL "")
 FetchContent_Declare(
     httplib
     GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
-    GIT_TAG        "v0.18.3"
+    GIT_TAG        "v0.58.0"
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(httplib)
