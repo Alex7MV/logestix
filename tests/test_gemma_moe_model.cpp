@@ -12,6 +12,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include "gemma_base_model.h"
+#include "test_streaming_assert.h"
 
 namespace fs = std::filesystem;
 
@@ -75,6 +76,8 @@ TEST_CASE("factory creates registered gemma model on synthetic fixture",
     REQUIRE(r.final_logits.size() == r2.final_logits.size());
     CHECK(std::memcmp(r.final_logits.data(), r2.final_logits.data(),
                       r.final_logits.size() * sizeof(float)) == 0);
+
+    ExpectStreamMatchesTokens(*model, req);
 
     model->Unload();
     fs::remove_all(out.parent_path());

@@ -7,6 +7,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "test_streaming_assert.h"
 #include "test_qwen_dense_fixture.h"
 
 #include <filesystem>
@@ -64,6 +65,8 @@ TEST_CASE("Qwen V5 model factory registration and generation")
     auto sc = model->SelfCheck(req);
     CHECK(sc.ok);
     CHECK(sc.error_msg.empty());
+
+    ExpectStreamMatchesTokens(*model, req);
 
     model->Unload();
     remove_all(tmp);

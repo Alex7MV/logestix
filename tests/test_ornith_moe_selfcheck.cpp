@@ -16,6 +16,7 @@
 #include <lsxcommon/tokenizer.h>
 
 #include "ornith_moe_model.h"
+#include "test_streaming_assert.h"
 
 namespace {
 
@@ -101,6 +102,9 @@ TEST_CASE("Ornith-1.5-35B-A3B SelfCheck: 'The capital of France is' -> "
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
+    ExpectStreamMatchesTokens(*m, req);
 
     m->Unload();
 }

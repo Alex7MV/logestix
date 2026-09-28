@@ -4,6 +4,7 @@
 #include <lsxcommon/model_factory.h>
 
 #include "test_granite_dense_fixture.h"
+#include "test_streaming_assert.h"
 
 #include <filesystem>
 #include <memory>
@@ -72,6 +73,8 @@ TEST_CASE("granite model loads, infers and is deterministic",
     REQUIRE(r1.final_logits.size() == r2.final_logits.size());
     for (size_t i = 0; i < r1.final_logits.size(); ++i)
         REQUIRE(r1.final_logits[i] == r2.final_logits[i]);
+
+    ExpectStreamMatchesTokens(*model, req);
 
     model2->Unload();
     model->Unload();

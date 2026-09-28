@@ -16,6 +16,7 @@
 #include <lsxcommon/tokenizer.h>
 
 #include "qwen_moe_exp_model.h"
+#include "test_streaming_assert.h"
 
 namespace {
 
@@ -102,6 +103,9 @@ TEST_CASE("Qwen3.8-Flash-Next SelfCheck: 'The capital of France is' -> 'Paris', 
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
+    ExpectStreamMatchesTokens(*m, req);
 
     m->Unload();
 }

@@ -16,6 +16,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include "test_streaming_assert.h"
+
 #include <chrono>
 namespace {
 
@@ -97,6 +99,9 @@ TEST_CASE("DeepSeek-V4-Flash SelfCheck: 'The capital of France is' -> 'Paris', "
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
+    ExpectStreamMatchesTokens(*m, req);
 
     m->Unload();
 }

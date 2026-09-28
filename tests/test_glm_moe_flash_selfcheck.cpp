@@ -10,6 +10,7 @@
 
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
+#include "test_streaming_assert.h"
 
 using namespace lsxcommon;
 
@@ -57,5 +58,15 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
         if (c == 0) first_logits = r.final_logits;
         else REQUIRE(r.final_logits == first_logits);
     }
+
+    // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
+    std::vector<int32_t> sids;
+    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                       "The capital of France is", sids));
+    ModelRequest sreq;
+    sreq.input_ids = sids;
+    sreq.max_gen_tokens = 2;
+    ExpectStreamMatchesTokens(*model, sreq);
+
     model->Unload();
 }

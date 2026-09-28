@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_gigachat_moe_fixture.h"
+#include "test_streaming_assert.h"
 
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/gigachat_moe_model.h"
@@ -45,6 +46,7 @@ TEST_CASE("gigachat model loads a synthetic converted fixture",
     auto r2 = m.Infer(req);
     REQUIRE(r2.ok);
     CHECK(r2.gen_tokens == r.gen_tokens);
+    ExpectStreamMatchesTokens(m, req);
     m.Unload();
 }
 

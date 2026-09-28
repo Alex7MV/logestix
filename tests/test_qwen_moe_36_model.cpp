@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_qwen_moe_fixture.h"
+#include "test_streaming_assert.h"
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/qwen_moe_convert.h"
@@ -139,6 +140,7 @@ TEST_CASE("device-fed decode run-to-run determinism (qwen3.6)",
     CHECK(std::memcmp(r1.final_logits.data(), r2.final_logits.data(),
                       r1.final_logits.size() * sizeof(float)) == 0);
     CHECK(r1.gen_tokens == r2.gen_tokens);
+    ExpectStreamMatchesTokens(*m, req);
     m->Unload();
     qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
 }

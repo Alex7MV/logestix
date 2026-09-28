@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_nemotron_moe_fixture.h"
+#include "test_streaming_assert.h"
 
 #include "nemotron_moe_model.h"
 #include "lsxcommon/model_factory.h"
@@ -82,6 +83,7 @@ TEST_CASE("nemotron Infer runs the hybrid pipeline end-to-end on a tiny model",
     CHECK(r.num_tokens == 2);
     CHECK(r.gen_tokens.size() == 2);
     CHECK(r.final_logits.size() == 32);
+    ExpectStreamMatchesTokens(*model, req);
     model->Unload();
 }
 
