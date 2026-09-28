@@ -8,11 +8,15 @@
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/qwen_inference.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/tokenizer.h"
+#include "lsxcommon/tool_format.h"
 
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
+#include <simdjson.h>
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include <cuda_runtime.h>
 
@@ -212,6 +216,344 @@ void Glm5NextFlashModel::TeardownWeights()
     pw_.Free();
     experts_.Free();
     qwen_moe::FreeQwenMoeExpertCache(cache_);
+}
+
+// ── GLM-5.3-Flash native tool format ────────────────────────────────────────
+// Verified against chat_template.jinja:
+//   [gMASK]<sop><|system|>Reasoning Effort: Max<|system|>\n# Tools …<tools>…
+//   <|user|>{content}\n
+//   <|assistant|>\n<think></think>{content}<tool_call>NAME<arg_key>K</arg_key>
+//       <arg_value>V</arg_value></tool_call>\n
+//   <|observation|><tool_response>{content}</tool_response>
+//   generation prompt: <|assistant|><think>
+
+namespace {
+
+bool AppendGlmEncoded(const ArrowTokenizerDb &tok, std::string_view text,
+                      std::vector<int32_t> &ids)
+{
+    for (size_t cap = 256; cap <= 65536; cap *= 2) {
+        std::vector<int32_t> buf(cap, 0);
+        size_t enc_cap = cap;
+        const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
+                                                 buf.data(), &enc_cap);
+        if (n == -2) continue;
+        if (n < 0) return false;
+        const size_t begin = (tok.bos_id >= 0 && n > 0) ? 1 : 0;
+        ids.insert(ids.end(), buf.begin() + begin, buf.begin() + n);
+        return true;
+    }
+    return false;
+}
+
+constexpr const char *kGlmFlashSentinels[] = {
+    "[gMASK]",  "<sop>",         "<|system|>",
+    "<|user|>", "<|assistant|>", "<|observation|>",
+};
+
+bool AppendGlmIds(const ArrowTokenizerDb &tok, const std::string &text,
+                  std::vector<int32_t> &ids)
+{
+    size_t i = 0;
+    size_t run = 0;
+    auto flush = [&](size_t end) -> bool {
+        if (end > run &&
+            !AppendGlmEncoded(tok,
+                              std::string_view(text).substr(run, end - run),
+                              ids))
+            return false;
+        return true;
+    };
+    while (i < text.size()) {
+        bool matched = false;
+        for (const char *s : kGlmFlashSentinels) {
+            const size_t n = std::strlen(s);
+            if (text.compare(i, n, s) == 0) {
+                if (!flush(i)) return false;
+                const int32_t id = arrow_tokenizer_lookup(tok, s, n);
+                if (id < 0) return false;
+                ids.push_back(id);
+                i += n;
+                run = i;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) ++i;
+    }
+    return flush(text.size());
+}
+
+std::string_view GlmTrim(std::string_view s)
+{
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
+                          s.front() == '\r' || s.front() == '\n'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
+                          s.back() == '\r' || s.back() == '\n'))
+        s.remove_suffix(1);
+    return s;
+}
+
+std::string GlmJsonEscape(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    static const char *kHex = "0123456789abcdef";
+    for (char c : in) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += kHex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+std::string GlmSerialize(simdjson::dom::element e);
+
+std::string GlmSerialize(simdjson::dom::element e)
+{
+    using simdjson::dom::element_type;
+    switch (e.type()) {
+        case element_type::OBJECT: {
+            std::string out = "{";
+            bool first = true;
+            for (auto [k, v] : e.get_object()) {
+                if (!first) out += ",";
+                first = false;
+                out += "\"" + GlmJsonEscape(k) + "\":" + GlmSerialize(v);
+            }
+            out += "}";
+            return out;
+        }
+        case element_type::ARRAY: {
+            std::string out = "[";
+            bool first = true;
+            for (auto v : e.get_array()) {
+                if (!first) out += ",";
+                first = false;
+                out += GlmSerialize(v);
+            }
+            out += "]";
+            return out;
+        }
+        case element_type::STRING:
+            return "\"" + GlmJsonEscape(e.get_string().value_unsafe()) + "\"";
+        case element_type::INT64:
+            return std::to_string(e.get_int64().value_unsafe());
+        case element_type::UINT64:
+            return std::to_string(e.get_uint64().value_unsafe());
+        case element_type::DOUBLE: {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.17g",
+                          e.get_double().value_unsafe());
+            return std::string(buf);
+        }
+        case element_type::BOOL:
+            return e.get_bool().value_unsafe() ? "true" : "false";
+        default:
+            return "null";
+    }
+}
+
+} // namespace
+
+bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv,
+                                                    std::string &out)
+{
+    out.clear();
+    out += "[gMASK]<sop>";
+    out += "<|system|>Reasoning Effort: Max";
+    if (!conv.tools.empty()) {
+        out += "<|system|>\n# Tools\n\n"
+               "You may call one or more functions to assist with the user "
+               "query.\n\n"
+               "You are provided with function signatures within "
+               "<tools></tools> XML tags:\n<tools>";
+        for (const ToolSpec &t : conv.tools) {
+            out += "\n{\"name\":\"";
+            out += GlmJsonEscape(t.name);
+            out += "\",\"description\":\"";
+            out += GlmJsonEscape(t.description);
+            out += "\",\"parameters\":";
+            out += t.parameters_json.empty() ? std::string("{}")
+                                             : t.parameters_json;
+            out += "}";
+        }
+        out += "\n</tools>\n\n"
+               "For each function call, output the function name and arguments "
+               "within the following XML format:\n"
+               "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key>"
+               "<arg_value>{arg-value-1}</arg_value>...</tool_call>";
+    }
+
+    bool in_observation = false;
+    for (const ChatMessage &m : conv.messages) {
+        if (m.role == "system") {
+            out += "<|system|>" + m.content + "\n";
+            in_observation = false;
+        } else if (m.role == "user") {
+            out += "<|user|>" + m.content + "\n";
+            in_observation = false;
+        } else if (m.role == "assistant") {
+            out += "<|assistant|>\n<think></think>";
+            if (!m.content.empty()) out += m.content;
+            for (const ToolCall &c : m.tool_calls) {
+                out += "<tool_call>" + c.name;
+                if (!c.arguments_json.empty()) {
+                    simdjson::dom::parser parser;
+                    simdjson::dom::element args;
+                    simdjson::padded_string padded(c.arguments_json);
+                    if (parser.parse(padded).get(args) == simdjson::SUCCESS &&
+                        args.type() == simdjson::dom::element_type::OBJECT) {
+                        for (auto [k, v] : args.get_object()) {
+                            out += "<arg_key>" + std::string(k) + "</arg_key>";
+                            out += "<arg_value>";
+                            if (v.type() == simdjson::dom::element_type::STRING)
+                                out += std::string(
+                                    v.get_string().value_unsafe());
+                            else
+                                out += GlmSerialize(v);
+                            out += "</arg_value>";
+                        }
+                    }
+                }
+                out += "</tool_call>";
+            }
+            out += "\n";
+            in_observation = false;
+        } else if (m.role == "tool") {
+            if (!in_observation) {
+                out += "<|observation|>";
+                in_observation = true;
+            }
+            out += "<tool_response>" + m.content + "</tool_response>";
+        } else {
+            return false;
+        }
+    }
+    out += "<|assistant|><think>";
+    return true;
+}
+
+std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
+    std::string_view text)
+{
+    std::vector<ToolCall> calls;
+    constexpr std::string_view kOpen = "<tool_call>";
+    constexpr std::string_view kClose = "</tool_call>";
+    constexpr std::string_view kArgKey = "<arg_key>";
+    constexpr std::string_view kArgKeyEnd = "</arg_key>";
+    constexpr std::string_view kArgVal = "<arg_value>";
+    constexpr std::string_view kArgValEnd = "</arg_value>";
+    size_t pos = 0;
+    while (true) {
+        const size_t b = text.find(kOpen, pos);
+        if (b == std::string_view::npos) break;
+        const size_t e = text.find(kClose, b + kOpen.size());
+        if (e == std::string_view::npos) break;
+        const std::string_view body =
+            text.substr(b + kOpen.size(), e - (b + kOpen.size()));
+        pos = e + kClose.size();
+
+        std::string args = "{";
+        bool first = true;
+        size_t kp = 0;
+        while (true) {
+            const size_t kb = body.find(kArgKey, kp);
+            if (kb == std::string_view::npos) break;
+            const size_t kstart = kb + kArgKey.size();
+            const size_t kend = body.find(kArgKeyEnd, kstart);
+            if (kend == std::string_view::npos) break;
+            const std::string key(
+                GlmTrim(body.substr(kstart, kend - kstart)));
+            const size_t vb = body.find(kArgVal, kend + kArgKeyEnd.size());
+            if (vb == std::string_view::npos) break;
+            const size_t vstart = vb + kArgVal.size();
+            const size_t vend = body.find(kArgValEnd, vstart);
+            if (vend == std::string_view::npos) break;
+            const std::string_view raw =
+                GlmTrim(body.substr(vstart, vend - vstart));
+            kp = vend + kArgValEnd.size();
+            if (!first) args += ",";
+            first = false;
+            args += "\"" + GlmJsonEscape(key) + "\":";
+            simdjson::dom::parser parser;
+            simdjson::dom::element ev;
+            simdjson::padded_string padded(raw);
+            if (parser.parse(padded).get(ev) == simdjson::SUCCESS)
+                args += GlmSerialize(ev);
+            else
+                args += "\"" + GlmJsonEscape(raw) + "\"";
+        }
+        args += "}";
+
+        // Name is everything before the first argument or the close tag.
+        const size_t name_end = body.find(kArgKey);
+        const std::string name(GlmTrim(
+            name_end == std::string_view::npos ? body : body.substr(0, name_end)));
+
+        ToolCall call;
+        call.name = name;
+        call.arguments_json = std::move(args);
+        call.id = "call_" + std::to_string(calls.size());
+        calls.push_back(std::move(call));
+    }
+    return calls;
+}
+
+bool Glm5NextFlashModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderGlmFlashConversation(conv, text)) return false;
+    out_ids.clear();
+    if (arrow_tokenizer_lookup(tok, "<|system|>", 10) < 0 ||
+        arrow_tokenizer_lookup(tok, "<|user|>", 8) < 0)
+        return BuildPromptInputIds(tok, text, out_ids);
+    return AppendGlmIds(tok, text, out_ids);
+}
+
+bool Glm5NextFlashModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    out_calls.clear();
+    if (gen_tokens.empty()) return true;
+    std::size_t cap = 4096;
+    std::string text(cap, '\0');
+    bool decoded = false;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const int rc = arrow_tokenizer_decode(tok, gen_tokens.data(),
+                                              gen_tokens.size(), text.data(),
+                                              &cap);
+        if (rc == 0) {
+            text.resize(cap);
+            decoded = true;
+            break;
+        }
+        if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {
+            text.resize(cap);
+            continue;
+        }
+        break;
+    }
+    if (!decoded) return false;
+    out_calls = ParseGlmFlashToolCallText(text);
+    if (out_calls.empty()) out_calls = tools::ParseToolCallsText(text);
+    return true;
 }
 
 } // namespace lsxcommon

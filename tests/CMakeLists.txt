@@ -1419,6 +1419,25 @@ endif()
 
 add_test(NAME test_qwen_tool_framing COMMAND test_qwen_tool_framing)
 
+# ── GLM-5.3-Flash native tool framing test (host-only, synthetic tokenizer) ──
+add_executable(test_glm_flash_tool_framing test_glm_flash_tool_framing.cpp)
+target_include_directories(test_glm_flash_tool_framing PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_glm_flash_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_glm_flash_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_glm_flash_tool_framing POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_glm_flash_tool_framing>"
+    )
+endif()
+
+add_test(NAME test_glm_flash_tool_framing COMMAND test_glm_flash_tool_framing)
+
 # ── Gemma-4 converter test (name classifier + NVFP4 policy) ──────────
 add_executable(test_gemma_moe_convert test_gemma_moe_convert.cpp)
 target_compile_definitions(test_gemma_moe_convert PRIVATE
@@ -4756,6 +4775,7 @@ set_tests_properties(
     test_glm_moe_prompt_framing
     test_gemma_prompt_framing
     test_qwen_tool_framing
+    test_glm_flash_tool_framing
     test_model_runtime
     test_fsi_selfcheck
     test_code_selfcheck
