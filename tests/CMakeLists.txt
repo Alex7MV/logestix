@@ -2024,6 +2024,11 @@ add_executable(test_tool_format test_tool_format.cpp)
 target_link_libraries(test_tool_format PRIVATE lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
 add_test(NAME test_tool_format COMMAND test_tool_format)
 
+# ── Anthropic Messages codec ─────────────────────────────────────────────────
+add_executable(test_anthropic_endpoint test_anthropic_endpoint.cpp)
+target_link_libraries(test_anthropic_endpoint PRIVATE lsxnetwork simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_anthropic_endpoint COMMAND test_anthropic_endpoint)
+
 # ── generic HTTP server wrapper (cpp-httplib) ────────────────────────────────
 add_executable(test_http_server test_http_server.cpp)
 target_link_libraries(test_http_server PRIVATE lsxnetwork httplib::httplib Catch2::Catch2WithMain)
@@ -4769,6 +4774,7 @@ set_tests_properties(
     test_incremental_detokenizer
     test_generation_stream
     test_tool_format
+    test_anthropic_endpoint
     test_http_server
     PROPERTIES LABELS fast)
 
