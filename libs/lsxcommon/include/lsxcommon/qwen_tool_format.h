@@ -20,8 +20,12 @@
 
 namespace lsxcommon {
 
-// Renders a conversation as the Qwen ChatML/XML transcript text.
-bool RenderQwenConversation(const ChatConversation &conv, std::string &out);
+// Renders a conversation as the Qwen ChatML/XML transcript text. The
+// generation prompt is the checkpoint's enable_thinking=false prefill
+// (pre-closed empty think block) unless @p enable_thinking is true, in which
+// case the model is left to reason inside an open <think>.
+bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
+                            bool enable_thinking = false);
 
 // Parses every `<tool_call>…<function=NAME>…<parameter=K>V</parameter>…`
 // (and `<parameter=K>V</parameter>`) XML call in @p text.

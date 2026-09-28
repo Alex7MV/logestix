@@ -168,13 +168,11 @@ TEST_CASE("Ornith-1.5-35B-A3B end-to-end tool round-trip (real weights)",
     REQUIRE(m != nullptr);
     REQUIRE(m->Load());
 
-    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    const std::vector<lsxcommon::ToolCall> calls =
+        RunToolRoundTrip(*m, 512);
     REQUIRE(!calls.empty());
-    // Ornith emits the native ChatML/XML call; this checkpoint currently leaves
-    // the parameter value empty for the control prompt (model behaviour, not a
-    // codec issue), so only the call structure is asserted.
     CHECK(calls[0].name == "get_weather");
-    CHECK(calls[0].arguments_json.find("\"city\"") != std::string::npos);
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }

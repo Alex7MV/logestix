@@ -350,7 +350,9 @@ bool OrnithMoeModelBase::BuildConversationInputIds(
     std::vector<int32_t> &out_ids) const
 {
     std::string text;
-    if (!RenderQwenConversation(conv, text)) return false;
+    // Ornith is a reasoning fine-tune: let it think before the tool call.
+    if (!RenderQwenConversation(conv, text, /*enable_thinking=*/true))
+        return false;
     if (!AppendQwenChatIds(tok, text, out_ids))
         return BuildPromptInputIds(tok, text, out_ids);
     return true;

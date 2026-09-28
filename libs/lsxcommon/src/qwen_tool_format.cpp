@@ -122,7 +122,8 @@ std::string QwenSerialize(simdjson::dom::element e)
 
 } // namespace
 
-bool RenderQwenConversation(const ChatConversation &conv, std::string &out)
+bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
+                            bool enable_thinking)
 {
     out.clear();
     const bool has_tools = !conv.tools.empty();
@@ -250,7 +251,8 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out)
         }
     }
 
-    out += "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+    out += "<|im_start|>assistant\n<think>";
+    out += enable_thinking ? "\n" : "\n\n</think>\n\n";
     return true;
 }
 
@@ -274,10 +276,20 @@ std::vector<ToolCall> ParseQwenToolCallText(std::string_view text)
             text.substr(b + kOpen.size(), e - (b + kOpen.size()));
         pos = e + kClose.size();
 
+        // Canonical `<function=NAME>`; some checkpoints drop the `function=`
+        // prefix and emit a bare `<NAME>` tag.
+        size_t name_start, name_end;
         const size_t fb = body.find(kFn);
-        if (fb == std::string_view::npos) continue;
-        const size_t name_start = fb + kFn.size();
-        const size_t name_end = body.find('>', name_start);
+        if (fb != std::string_view::npos) {
+            name_start = fb + kFn.size();
+            name_end = body.find('>', name_start);
+        } else {
+            const size_t lt = body.find('<');
+            if (lt == std::string_view::npos) continue;
+            if (lt + 1 < body.size() && body[lt + 1] == '/') continue;
+            name_start = lt + 1;
+            name_end = body.find('>', name_start);
+        }
         if (name_end == std::string_view::npos) continue;
         const std::string name(
             TrimAscii(body.substr(name_start, name_end - name_start)));
