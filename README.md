@@ -175,6 +175,33 @@ curl -N -X POST http://127.0.0.1:8080/v1/messages \
   -d '{"model":"<id>","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Tool calling
+
+The bridge accepts OpenAI `tools`/`tool_choice` and returns `tool_calls`
+(non-streaming) or `delta.tool_calls` (streaming, buffered until the turn
+completes). Per-family native render/parse is implemented where the checkpoint's
+own template is known and verified against its tokenizer/card:
+
+| family | native tool format |
+|---|---|
+| Qwen3.5/3.6 | ChatML `# Tools` block; `<tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>` |
+| GLM-5.3-Flash | `<\|system\|>` tools block; `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>` |
+| DeepSeek-V4 | `## Tools`; `<｜DSML｜tool_calls>` / `<｜DSML｜invoke>` / `<｜DSML｜parameter>` |
+| DeepSeek-V4.1 | `## Tools`; `<｜DSML｜ calls>` / `<｜DSML｜ invoke>` / `<｜DSML｜ parameter>` |
+| Gemma / Granite / Nemotron / GigaChat | generic Hermes `<tools>` block + `<tool_call>{json}</tool_call>` fallback |
+
+Kimi and GLM-5.2 (non-Flash) have no converted checkpoint in the vault, so their
+native formats are not yet implemented.
+
+### Streaming
+
+Every family emits `ModelRequest::token_callback` per decoded token (the
+qwen-MoE/Ornith bulk drivers emit at the existing every-8-token EOS fence, and
+qwen3.8-flash-next drains at turn end). Per-family order parity against
+`gen_results.gen_tokens` is asserted by `tests/test_streaming_assert.h`, wired
+into the model/selfcheck tests and verified on the RTX 5090.
+
+
 ## Licensing
 
 This project is dual-licensed to accommodate both open-source development and commercial production environments.

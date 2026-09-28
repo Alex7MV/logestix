@@ -173,7 +173,11 @@ procedure — `perf-tuning-a-model`.
   `/v1/chat/completions` (+ `tools`/`tool_calls`, `stop`), `/v1/completions`,
   `/v1/models`, `/health`, `/ready`, and the Anthropic Messages API
   (`/v1/messages`, `/v1/messages/count_tokens`, `HEAD /api/hello`,
-  `stop_sequences`). `apps/lsxcli/` — CLI client
+  `stop_sequences`). Tool calling has verified native render/parse for
+  Qwen3.5/3.6 (ChatML XML), GLM-5.3-Flash (`<|system|>` + `<arg_key>`) and
+  DeepSeek-V4/V4.1 (DSML; `deepseek_moe_tool_format.{h,cpp}`), with a generic
+  Hermes fallback elsewhere; `tools::ParseToolCallsText` + the per-family
+  `BuildConversationInputIds`/`ParseToolCalls` virtuals. `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
