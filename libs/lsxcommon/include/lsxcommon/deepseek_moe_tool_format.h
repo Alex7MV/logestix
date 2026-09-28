@@ -26,9 +26,10 @@
 namespace lsxcommon {
 
 struct DsmlTags {
-    std::string_view block;  // "tool_calls" (V4) / " calls" (V4.1)
-    std::string_view call;   // "invoke" (V4) / " invoke" (V4.1)
-    std::string_view param;  // "parameter" (V4) / " parameter" (V4.1)
+    std::string_view block;   // "tool_calls" (V4) / " calls" (V4.1)
+    std::string_view call;    // "invoke" (V4) / " invoke" (V4.1)
+    std::string_view param;   // "parameter" (V4) / " parameter" (V4.1)
+    std::string_view system;  // "" (V4) / "<｜System｜>" (V4.1)
 };
 
 // Renders a conversation as the DeepSeek ChatML/DSML transcript text.
@@ -41,9 +42,10 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
 
 // Appends @p text to @p out_ids, injecting the DeepSeek control sentinels
 // (bos/eos/role/think/DSML) via arrow_tokenizer_lookup and BPE-encoding the
-// rest. Returns false when a sentinel is missing or the encoder fails.
+// rest. The system sentinel is @p tags.system (empty for V4). Returns false
+// when a sentinel is missing or the encoder fails.
 bool AppendDeepSeekIds(const ArrowTokenizerDb &tok, std::string_view text,
-                       std::vector<int32_t> &out_ids);
+                       const DsmlTags &tags, std::vector<int32_t> &out_ids);
 
 // Shared override body: decode generated ids and parse DSML, falling back to
 // the generic Hermes text parser when no DSML block is present.

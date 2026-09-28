@@ -134,7 +134,7 @@ gpu::InferenceResult DeepSeekV4FlashModel::SelfCheck(const ModelRequest &req)
 
 // ── DeepSeek-V4 native DSML tool format (encoding_dsv4.py) ─────────────────
 namespace {
-constexpr DsmlTags kV4DsmlTags{"tool_calls", "invoke", "parameter"};
+constexpr DsmlTags kV4DsmlTags{"tool_calls", "invoke", "parameter", ""};
 constexpr const char *kDsmlUserToken = "<｜User｜>";
 } // namespace
 
@@ -148,7 +148,7 @@ bool DeepSeekV4FlashModel::BuildConversationInputIds(
     if (arrow_tokenizer_lookup(tok, kDsmlUserToken,
                                std::strlen(kDsmlUserToken)) < 0)
         return BuildPromptInputIds(tok, text, out_ids);
-    return AppendDeepSeekIds(tok, text, out_ids);
+    return AppendDeepSeekIds(tok, text, kV4DsmlTags, out_ids);
 }
 
 bool DeepSeekV4FlashModel::ParseToolCalls(

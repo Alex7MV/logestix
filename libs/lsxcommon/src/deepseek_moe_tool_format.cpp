@@ -197,7 +197,7 @@ bool RenderDsmlConversation(const ChatConversation &conv, const DsmlTags &tags,
     const bool first_system =
         !conv.messages.empty() && conv.messages[0].role == "system";
     if (first_system) {
-        out += kSystem;
+        out += tags.system;  // empty for V4 (no <｜System｜> token)
         out += DsmlEsc(conv.messages[0].content);
         if (!conv.tools.empty())
             out += "\n\n" + RenderToolsBlock(conv.tools, tags);
@@ -247,7 +247,7 @@ bool RenderDsmlConversation(const ChatConversation &conv, const DsmlTags &tags,
 
     for (const Item &it : items) {
         if (it.kind == Kind::kSystem) {
-            out += kSystem;
+            out += tags.system;  // empty for V4
             out += it.content;
         } else if (it.kind == Kind::kUser) {
             out += kUser;
@@ -281,12 +281,17 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
     std::vector<ToolCall> calls;
     simdjson::dom::parser parser;
     const std::string d(kDsml);
-    const std::string block_open = "<" + d + std::string(tags.block) + ">";
+    // Key on the DSML token + tag name, not the surrounding angle brackets:
+    // some checkpoints emit the opening tag as `｜DSML｜tool_calls` without the
+    // leading `<` (closings keep `</…>`), while the template form is
+    // `<｜DSML｜tool_calls>`. Searching after the bracket matches both.
+    const std::string block_open = d + std::string(tags.block);
     const std::string block_close = "</" + d + std::string(tags.block) + ">";
-    const std::string call_prefix = "<" + d + std::string(tags.call) + " name=\"";
+    const std::string call_prefix =
+        d + std::string(tags.call) + " name=\"";
     const std::string call_close = "</" + d + std::string(tags.call) + ">";
     const std::string param_prefix =
-        "<" + d + std::string(tags.param) + " name=\"";
+        d + std::string(tags.param) + " name=\"";
     const std::string param_close = "</" + d + std::string(tags.param) + ">";
 
     size_t pos = 0;
@@ -366,11 +371,12 @@ std::vector<ToolCall> ParseDsmlToolCalls(std::string_view text,
 }
 
 bool AppendDeepSeekIds(const ArrowTokenizerDb &tok, std::string_view text,
-                       std::vector<int32_t> &out_ids)
+                       const DsmlTags &tags, std::vector<int32_t> &out_ids)
 {
-    const std::string_view sentinels[] = {
-        kBos, kEos, kSystem, kUser, kAssistant, kThink, kThinkEnd, kDsml,
+    std::vector<std::string_view> sentinels = {
+        kBos, kEos, kUser, kAssistant, kThink, kThinkEnd, kDsml,
     };
+    if (!tags.system.empty()) sentinels.push_back(tags.system);
     size_t i = 0;
     size_t run = 0;
     auto append_text = [&](std::string_view piece) -> bool {

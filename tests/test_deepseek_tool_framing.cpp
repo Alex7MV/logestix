@@ -31,8 +31,9 @@ using lsxcommon::ToolSpec;
 
 namespace {
 
-constexpr DsmlTags kV4{"tool_calls", "invoke", "parameter"};
-constexpr DsmlTags kV41{" calls", " invoke", " parameter"};
+constexpr DsmlTags kV4{"tool_calls", "invoke", "parameter", ""};
+constexpr DsmlTags kV41{" calls", " invoke", " parameter",
+                        "<｜System｜>"};
 
 struct DbFiles {
     fs::path pinned;
@@ -194,7 +195,7 @@ TEST_CASE("deepseek tool framing: model overrides round-trip through the tokeniz
             "</｜DSML｜parameter>\n"
             "</｜DSML｜invoke>\n</｜DSML｜tool_calls>";
         std::vector<int32_t> gen;
-        REQUIRE(lsxcommon::AppendDeepSeekIds(db, answer, gen));
+        REQUIRE(lsxcommon::AppendDeepSeekIds(db, answer, kV4, gen));
         std::vector<ToolCall> calls;
         REQUIRE(model.ParseToolCalls(db, gen, calls));
         REQUIRE(calls.size() == 1);
