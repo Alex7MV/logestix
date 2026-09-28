@@ -100,15 +100,16 @@ public:
 
     // Tool/function-calling bridge (Model Ingestion Protocol step 4b). Renders
     // a full conversation (optionally with tool schemas) into model input ids.
-    // The default flattens the transcript with role markers and delegates to
-    // the single-string BuildPromptInputIds; families with a native tool
-    // format override this next to their model code.
+    // The default flattens the transcript with role markers — including the
+    // <tools> block when tool schemas are present (the generic Hermes
+    // fallback) — and delegates to the single-string BuildPromptInputIds;
+    // families with a native tool format override this next to their model code.
     virtual bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
                                            const ChatConversation &conv,
                                            std::vector<int32_t> &out_ids) const
     {
-        return BuildPromptInputIds(tok, tools::RenderConversation(conv, false),
-                                   out_ids);
+        return BuildPromptInputIds(
+            tok, tools::RenderConversation(conv, !conv.tools.empty()), out_ids);
     }
 
     // Parses generated tokens into tool calls. Default: decode the ids (with
