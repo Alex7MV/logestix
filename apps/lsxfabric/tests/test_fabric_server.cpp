@@ -1,11 +1,10 @@
-// FabricServer <-> FabricClient integration over TCP, with a fake IModel.
-// No CUDA, no real weights: label fast.
+// FabricServer (v2 ROUTER/cancel) <-> FabricStreamClient with a fake IModel.
 #include <catch2/catch_test_macros.hpp>
 
 #include "fabric_server.h"
 
 #include "lsxcommon/model.h"
-#include "lsxnetwork/fabric_client.h"
+#include "lsxnetwork/fabric_stream_client.h"
 #include "lsxnetwork/fabric_wire.h"
 #include "lsxnetwork/zmq_context.h"
 
@@ -40,10 +39,20 @@ public:
             return r;
         }
         r.ok = true;
-        for (int i = 0; i < req.max_gen_tokens; ++i)
+        for (int i = 0; i < req.max_gen_tokens; ++i) {
+            if (req.abort_flag && req.abort_flag->load()) break;
             r.gen_tokens.push_back(1000 + i);
+            if (req.token_callback) {
+                lsxcommon::TokenChunk c;
+                c.token_id = static_cast<std::uint32_t>(1000 + i);
+                c.step_t = static_cast<std::uint32_t>(i);
+                req.token_callback(c);
+            }
+            if (delay_ms > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
         r.num_tokens = static_cast<int>(r.gen_tokens.size());
-        r.eos_terminated = req.max_gen_tokens >= 3;
+        r.eos_terminated = !r.gen_tokens.empty();
         r.ttft_ms = 1.5;
         r.total_time_ms = 2.5;
         r.tokens_per_sec = 3.5;
@@ -65,6 +74,7 @@ public:
     std::vector<std::int32_t> last_input;
     int last_max_gen = -1;
     int calls = 0;
+    int delay_ms = 0;
     bool fail = false;
 
 private:
@@ -72,17 +82,19 @@ private:
     std::shared_mutex mtx_;
 };
 
-struct ServerFixture {
+struct Fixture {
     FakeModel model;
     std::atomic<bool> stop{false};
     std::atomic<bool> ready{false};
-    std::string endpoint;
+    std::string router_ep;
+    std::string cancel_ep;
     lsxfabric::FabricServer server{model, 4u};
     std::thread thread;
 
     void Start() {
         thread = std::thread([this] {
-            server.Run("tcp://127.0.0.1:*", stop, &ready, &endpoint);
+            server.Run("tcp://127.0.0.1:*", "tcp://127.0.0.1:*", stop, &ready,
+                       &router_ep, &cancel_ep);
         });
         while (!ready.load())
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -95,82 +107,120 @@ struct ServerFixture {
 
 }  // namespace
 
-TEST_CASE("fabric_server: serves a request and returns stats",
-          "[fabric][server]") {
-    ServerFixture fx;
+TEST_CASE("fabric_server v2: streams batches then done", "[fabric][server][v2]") {
+    Fixture fx;
     fx.Start();
-    REQUIRE_FALSE(fx.endpoint.empty());
+    REQUIRE_FALSE(fx.router_ep.empty());
+    lsxnetwork::FabricStreamClient client;
+    REQUIRE(client.Connect(fx.router_ep.c_str(), fx.cancel_ep.c_str()) == 0);
+    REQUIRE(client.Submit(7u, std::vector<std::int32_t>{1, 2, 3}, 0u));
 
-    lsxnetwork::FabricClient client;
-    REQUIRE(client.Connect(fx.endpoint.c_str()) == 0);
-    lsxnetwork::FabricResponse resp;
-    const std::vector<std::int32_t> ids{4, 5, 6};
-    REQUIRE(client.Infer(ids, 0u, resp, 2000));
-    CHECK(resp.status ==
-          static_cast<std::int32_t>(lsxnetwork::FabricStatus::kOk));
-    CHECK(fx.model.last_input == ids);
-    CHECK(fx.model.last_max_gen == 4);  // 0 => server default
-    REQUIRE(resp.tokens.size() == 4);
-    CHECK(resp.tokens[0] == 1000);
-    CHECK(resp.eos_terminated);
-    CHECK(resp.ttft_ms == 1.5);
+    std::vector<std::int32_t> all;
+    lsxnetwork::FabricStreamFrame f;
+    bool done = false;
+    for (int i = 0; i < 100 && !done; ++i) {
+        REQUIRE(client.Recv(f, 2000) ==
+                lsxnetwork::FabricStreamClient::RecvStatus::kOk);
+        CHECK(f.request_id == 7u);
+        if (f.type == lsxnetwork::FabricFrameType::kTokenBatch)
+            all.insert(all.end(), f.tokens.begin(), f.tokens.end());
+        else if (f.type == lsxnetwork::FabricFrameType::kDone)
+            done = true;
+    }
+    CHECK(done);
+    REQUIRE(all.size() == 4u);  // server default max_gen
+    CHECK(all[0] == 1000);
+    CHECK(fx.model.last_input == std::vector<std::int32_t>{1, 2, 3});
+    CHECK(fx.model.last_max_gen == 4);
+    CHECK(f.total_tokens == 4u);
+    CHECK(f.ttft_ms == 1.5);
     fx.Stop();
 }
 
-TEST_CASE("fabric_server: per-request max_gen overrides default",
-          "[fabric][server]") {
-    ServerFixture fx;
+TEST_CASE("fabric_server v2: per-request max_gen overrides default",
+          "[fabric][server][v2]") {
+    Fixture fx;
     fx.Start();
-    lsxnetwork::FabricClient client;
-    REQUIRE(client.Connect(fx.endpoint.c_str()) == 0);
-    lsxnetwork::FabricResponse resp;
-    const std::vector<std::int32_t> ids{1};
-    REQUIRE(client.Infer(ids, 7u, resp, 2000));
+    lsxnetwork::FabricStreamClient client;
+    REQUIRE(client.Connect(fx.router_ep.c_str(), fx.cancel_ep.c_str()) == 0);
+    REQUIRE(client.Submit(1u, std::vector<std::int32_t>{1}, 7u));
+    lsxnetwork::FabricStreamFrame f;
+    std::size_t count = 0;
+    for (;;) {
+        REQUIRE(client.Recv(f, 2000) ==
+                lsxnetwork::FabricStreamClient::RecvStatus::kOk);
+        if (f.type == lsxnetwork::FabricFrameType::kDone) break;
+        if (f.type == lsxnetwork::FabricFrameType::kTokenBatch)
+            count += f.tokens.size();
+    }
     CHECK(fx.model.last_max_gen == 7);
-    REQUIRE(resp.tokens.size() == 7);
+    CHECK(count == 7u);
     fx.Stop();
 }
 
-TEST_CASE("fabric_server: infer failure maps to kInferFailed",
-          "[fabric][server]") {
-    ServerFixture fx;
+TEST_CASE("fabric_server v2: infer failure maps to an error frame",
+          "[fabric][server][v2]") {
+    Fixture fx;
     fx.model.fail = true;
     fx.Start();
-    lsxnetwork::FabricClient client;
-    REQUIRE(client.Connect(fx.endpoint.c_str()) == 0);
-    lsxnetwork::FabricResponse resp;
-    const std::vector<std::int32_t> ids{1};
-    REQUIRE(client.Infer(ids, 2u, resp, 2000));
-    CHECK(resp.status ==
-          static_cast<std::int32_t>(lsxnetwork::FabricStatus::kInferFailed));
-    CHECK(resp.error == "boom");
+    lsxnetwork::FabricStreamClient client;
+    REQUIRE(client.Connect(fx.router_ep.c_str(), fx.cancel_ep.c_str()) == 0);
+    REQUIRE(client.Submit(1u, std::vector<std::int32_t>{1}, 2u));
+    lsxnetwork::FabricStreamFrame f;
+    REQUIRE(client.Recv(f, 2000) ==
+            lsxnetwork::FabricStreamClient::RecvStatus::kOk);
+    CHECK(f.type == lsxnetwork::FabricFrameType::kError);
+    CHECK(f.error == "boom");
     fx.Stop();
 }
 
-TEST_CASE("fabric_server: malformed frame maps to kBadRequest",
-          "[fabric][server]") {
-    ServerFixture fx;
+TEST_CASE("fabric_server v2: cancel aborts an in-flight generation",
+          "[fabric][server][v2][cancel]") {
+    Fixture fx;
+    fx.model.delay_ms = 5;
     fx.Start();
+    lsxnetwork::FabricStreamClient client;
+    REQUIRE(client.Connect(fx.router_ep.c_str(), fx.cancel_ep.c_str()) == 0);
+    REQUIRE(client.Submit(55u, std::vector<std::int32_t>{1}, 1000u));
 
+    lsxnetwork::FabricStreamFrame f;
+    REQUIRE(client.Recv(f, 2000) ==
+            lsxnetwork::FabricStreamClient::RecvStatus::kOk);
+    REQUIRE(f.type == lsxnetwork::FabricFrameType::kTokenBatch);
+    client.Cancel(55u);
+
+    std::size_t count = f.tokens.size();
+    for (;;) {
+        REQUIRE(client.Recv(f, 5000) ==
+                lsxnetwork::FabricStreamClient::RecvStatus::kOk);
+        if (f.type == lsxnetwork::FabricFrameType::kDone) break;
+        if (f.type == lsxnetwork::FabricFrameType::kError) break;
+        count += f.tokens.size();
+    }
+    CHECK(count < 1000u);  // aborted well before max_gen
+    fx.Stop();
+}
+
+TEST_CASE("fabric_server v2: malformed request yields an error frame",
+          "[fabric][server][v2]") {
+    Fixture fx;
+    fx.Start();
     lsxnetwork::ZmqContext ctx;
-    lsxnetwork::ZmqSocket sock(ctx, ZMQ_REQ);
-    REQUIRE(sock.Valid());
-    REQUIRE(sock.Connect(fx.endpoint.c_str()) == 0);
-    const char garbage[] = "not-a-fabric-frame";
-    REQUIRE(sock.Send(garbage, sizeof(garbage) - 1, 0) >= 0);
-
+    lsxnetwork::ZmqSocket dealer(ctx, ZMQ_DEALER);
+    REQUIRE(dealer.Valid());
+    REQUIRE(dealer.Connect(fx.router_ep.c_str()) == 0);
+    const char garbage[] = "nope";
+    REQUIRE(dealer.Send(garbage, sizeof(garbage) - 1, 0) >= 0);
     zmq_msg_t msg;
     zmq_msg_init(&msg);
-    REQUIRE(zmq_msg_recv(&msg, sock.Get(), 0) >= 0);
-    const std::span<const std::byte> reply(
-        static_cast<const std::byte*>(zmq_msg_data(&msg)),
-        static_cast<std::size_t>(zmq_msg_size(&msg)));
-    lsxnetwork::FabricResponse resp;
-    REQUIRE(lsxnetwork::DecodeFabricResponse(reply, resp) ==
+    REQUIRE(zmq_msg_recv(&msg, dealer.Get(), 0) >= 0);
+    const std::span<const std::byte> f(
+        static_cast<const std::byte*>(zmq_msg_data(&msg)), zmq_msg_size(&msg));
+    lsxnetwork::FabricStreamFrame frame;
+    REQUIRE(lsxnetwork::DecodeFabricStreamFrame(f, frame) ==
             lsxnetwork::WireStatus::kOk);
-    CHECK(resp.status ==
-          static_cast<std::int32_t>(lsxnetwork::FabricStatus::kBadRequest));
-    zmq_msg_close(&msg);
+    CHECK(frame.type == lsxnetwork::FabricFrameType::kError);
     CHECK(fx.model.calls == 0);
+    zmq_msg_close(&msg);
     fx.Stop();
 }

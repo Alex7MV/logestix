@@ -85,5 +85,14 @@ TEST_CASE("fabric cli: --serve default endpoint", "[lsxfabric][cli]") {
     const lsxfabric::FabricCliArgs a = Parse({"lsxfabric", "--serve"});
     REQUIRE(a.serve);
     REQUIRE(a.listen == "tcp://*:5555");
+    REQUIRE(a.listen_cancel == "tcp://*:5556");
+}
+
+TEST_CASE("fabric cli: --listen-cancel parses", "[lsxfabric][cli]") {
+    const lsxfabric::FabricCliArgs a =
+        Parse({"lsxfabric", "--serve", "--listen", "tcp://*:6001",
+               "--listen-cancel", "tcp://*:6002"});
+    REQUIRE(a.listen == "tcp://*:6001");
+    REQUIRE(a.listen_cancel == "tcp://*:6002");
 }
 

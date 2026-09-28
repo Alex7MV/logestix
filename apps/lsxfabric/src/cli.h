@@ -15,6 +15,7 @@ struct FabricCliArgs {
     bool testprompt = false;
     bool serve = false;
     std::string listen = "tcp://*:5555";
+    std::string listen_cancel = "tcp://*:5556";
 };
 
 // Parses argv (argv[0] is skipped). Unknown tokens — including the

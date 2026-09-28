@@ -61,7 +61,7 @@ int main(int argc, char *argv[]) {
                 std::signal(SIGTERM, OnServeSignal);
                 lsxfabric::FabricServer server(
                     *model, static_cast<std::uint32_t>(cli.max_gen));
-                rc = server.Run(cli.listen, stop);
+                rc = server.Run(cli.listen, cli.listen_cancel, stop);
                 g_serve_stop = nullptr;
                 model->Unload();
             }
