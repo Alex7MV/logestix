@@ -137,7 +137,7 @@ Real-model tests SKIP gracefully when the checkpoint is absent
 - `apps/lsxfabric/` — B2B inference engine (`--localmodel`, `--validate`, `--benchmark`, `--testprompt`, `--selfcheck`, `--bit-exact`)
   - `apps/lsxfabric/src/validator.cpp` — NVFP4/E4M3/global-scale validator
 - `apps/lsxforge/` — data preprocessing utility; `--glm` for the GLM-5.2 pipeline, `--tokenizer`, repack flags
-- `apps/taskmosaic/` — OpenAI-compatible HTTP/SSE bridge to a running `lsxfabric --serve`
+- `apps/taskmosaic/` — OpenAI- and Anthropic-compatible HTTP/SSE bridge to a running `lsxfabric --serve`
 - `apps/lsxcli/` — CLI client (`--model`, `--info`, `--infofull`)
 - `tests/` — Catch2 suite; GLM (`test_glm_*.cpp`) and DeepSeek (`test_deepseek_*.cpp`) test sets are autonomous
   - `test_core` — integration tests (Arrow, CCCL, CUDA, FlatBuffers, ZeroMQ, simdjson, lsxcommon)
@@ -165,10 +165,14 @@ lsxfabric --serve --localmodel /vault/models/<model> \
 # 2) bridge (JSON lists id -> model_path + backend endpoints; see the design doc)
 taskmosaic --config bridge.json
 
-# 3) use it
+# 3) use it (OpenAI-compatible)
 curl http://127.0.0.1:8080/v1/models
 curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"<id>","stream":true,"messages":[{"role":"user","content":"hi"}]}'
+
+# Anthropic Messages (Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:8080)
+curl -N -X POST http://127.0.0.1:8080/v1/messages \
+  -d '{"model":"<id>","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 ## Licensing

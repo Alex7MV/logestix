@@ -80,7 +80,10 @@ procedure — `perf-tuning-a-model`.
   `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
   `converter.cpp` (GPU NVFP4 quantization), `loader.cpp`, `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
-  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, the model-neutral
+  `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, `token_stream.h`
+  (`GenerationStream`: CUDA-safe per-token callback + abort, threaded into every
+  family generation loop), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
+  calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`.
   FSISelfCheck (`fsi_selfcheck.{h,cpp}`, host-only, model-neutral; capture
@@ -160,12 +163,17 @@ procedure — `perf-tuning-a-model`.
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
 - `apps/lsxfabric/` — B2B inference engine, always maximum speed
-  (`--localmodel`, `--validate`, `--testprompt`); speed measurement and bit-exactness
+  (`--localmodel`, `--validate`, `--testprompt`); `--serve` runs the v2 streaming
+  ZeroMQ bus (`--listen` ROUTER + `--listen-cancel` PULL, DEALER/ROUTER token
+  frames, per-request cancel); speed measurement and bit-exactness
   moved to lsxbenchmark. `apps/lsxforge/` — data preprocessing utility
   (`--glm`/GLM-5.2 pipeline, `--tokenizer`, repack flags). `apps/taskmosaic/` —
-  OpenAI-compatible HTTP/SSE bridge to a running `lsxfabric --serve` over the v2
-  streaming fabric protocol (`--config`; `/v1/chat/completions`,
-  `/v1/completions`, `/v1/models`, `/health`, `/ready`). `apps/lsxcli/` — CLI client
+  OpenAI- and Anthropic-compatible HTTP/SSE bridge to a running
+  `lsxfabric --serve` over the v2 streaming fabric protocol (`--config`):
+  `/v1/chat/completions` (+ `tools`/`tool_calls`, `stop`), `/v1/completions`,
+  `/v1/models`, `/health`, `/ready`, and the Anthropic Messages API
+  (`/v1/messages`, `/v1/messages/count_tokens`, `HEAD /api/hello`,
+  `stop_sequences`). `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`
   (real generation via `IModel::Infer`), `--selfcheck` (Paris), `--bit-exact`
