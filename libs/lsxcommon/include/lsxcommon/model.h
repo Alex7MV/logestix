@@ -131,6 +131,8 @@ public:
             if (rc == 0) {
                 text.resize(cap);
                 out_calls = tools::ParseToolCallsText(text);
+                if (out_calls.empty())
+                    out_calls = tools::ParseBareToolCallJson(text);
                 return true;
             }
             if (rc == -2 && cap > text.size() && cap <= (1u << 20)) {

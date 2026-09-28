@@ -13,6 +13,7 @@
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/tokenizer.h>
+#include "test_tool_roundtrip.h"
 
 namespace {
 
@@ -91,6 +92,27 @@ TEST_CASE("Granite-4.2-30B SelfCheck: 'The capital of France is' -> 'Paris', "
         CHECK(std::memcmp(sc.final_logits.data(), ref_logits.data(),
                           ref_logits.size() * sizeof(float)) == 0);
     }
+
+    m->Unload();
+}
+
+TEST_CASE("Granite-4.2-30B end-to-end tool round-trip (real weights)",
+          "[granite][model][tool][real-model]")
+{
+    const std::filesystem::path model = GraniteModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("Granite converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }
