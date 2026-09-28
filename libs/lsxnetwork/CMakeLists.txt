@@ -65,6 +65,7 @@ add_library(lsxnetwork STATIC
     src/fabric_wire.cpp
     src/frame_queue.cpp
     src/http_router.cpp
+    src/http_server.cpp
     src/io_worker.cpp
     src/lsx_token_translator.cpp
     src/openai_endpoint.cpp
@@ -93,6 +94,7 @@ target_link_libraries(lsxnetwork PUBLIC
 # PRIVATE keeps its include dirs out of the public interface.
 target_link_libraries(lsxnetwork PRIVATE
     spdlog::spdlog
+    httplib::httplib
 )
 
 # Static libzmq on Windows depends on Winsock/IP helper libraries.

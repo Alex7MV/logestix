@@ -285,6 +285,21 @@ if(BUILD_TESTING)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
+# ── DEPENDENCIES: cpp-httplib via FetchContent (host-only HTTP server) ────────
+# Header-only. OpenSSL/Zlib/Brotli integrations are OFF so no extra system deps
+# leak in (the bridge is plaintext HTTP + SSE).
+set(HTTPLIB_REQUIRE_OPENSSL OFF CACHE INTERNAL "")
+set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE INTERNAL "")
+set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF CACHE INTERNAL "")
+set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE INTERNAL "")
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY "https://github.com/yhirose/cpp-httplib.git"
+    GIT_TAG        "v0.18.3"
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(httplib)
+
 # ── DEPENDENCIES: FlatBuffers via submodule (static build) ────────────
 
 set(FLATBUFFERS_BUILD_FLATLIB ON CACHE INTERNAL "")
