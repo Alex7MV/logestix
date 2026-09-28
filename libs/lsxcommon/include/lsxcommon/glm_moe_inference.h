@@ -9,6 +9,7 @@
 #include "lsxcommon/glm_moe_expert_cache.h"
 #include "lsxcommon/glm_moe_load.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/token_stream.h"
 
 namespace lsxcommon {
 namespace glm {
@@ -443,7 +444,8 @@ cudaError_t RunGlmGeneration(
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler());
+        lsxcommon::sample::DefaultSampler(),
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 // VRAM-budgeted generation pass over the same frozen 79-layer GLM-5.2 loop,
 // driven by a memory-mapped expert index (GlmExpertDb) instead of a fully
@@ -459,7 +461,8 @@ cudaError_t RunGlmGeneration(
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler());
+        lsxcommon::sample::DefaultSampler(),
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 // ── Faithful GLM-5.2 generation (real forward pass) ─────────────────────────
 // Greedy multi-token generation over the REAL GlmMoeDsaForCausalLM forward:
@@ -488,7 +491,8 @@ cudaError_t RunGlmRealGeneration(
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler());
+        lsxcommon::sample::DefaultSampler(),
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace glm
 } // namespace lsxcommon

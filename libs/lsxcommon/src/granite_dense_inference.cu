@@ -828,7 +828,8 @@ cudaError_t RunGraniteGeneration(cudaStream_t stream,
                                  const std::vector<int32_t> &prompt, int max_new,
                                  int eos_id, GraniteGenerationResult &result,
                                  lsxcommon::sample::ISampler &sampler,
-                                 GraniteKvCache *kv)
+                                 GraniteKvCache *kv,
+                                 const lsxcommon::GenerationStream *gs)
 {
     const auto t_start = std::chrono::steady_clock::now();
     result = GraniteGenerationResult{};
@@ -915,6 +916,7 @@ cudaError_t RunGraniteGeneration(cudaStream_t stream,
                     cache->last_tok = tok;
                     result.first_token = tok;
                     result.tokens.push_back(tok);
+                    if (gs) gs->Emit(static_cast<std::uint32_t>(tok), 0u);
                     result.resident_bytes = pw.resident_bytes;
                 }
             }
@@ -966,7 +968,11 @@ cudaError_t RunGraniteGeneration(cudaStream_t stream,
         cache->last_tok = tok;
         cache->kv_rows += 1;
         result.tokens.push_back(tok);
+        if (gs)
+            gs->Emit(static_cast<std::uint32_t>(tok),
+                     static_cast<std::uint32_t>(result.tokens.size() - 1));
         if (tok == eos_id) result.eos_terminated = true;
+        if (gs && gs->Aborted()) break;
     }
 
     // Capture the final logits row (determinism evidence for SelfCheck). The

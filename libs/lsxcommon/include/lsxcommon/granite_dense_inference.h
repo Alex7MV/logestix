@@ -10,6 +10,7 @@
 #include "lsxcommon/granite_dense_constants.h"
 #include "lsxcommon/granite_dense_load.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/token_stream.h"
 
 namespace lsxcommon {
 namespace granite {
@@ -81,7 +82,8 @@ cudaError_t RunGraniteGeneration(
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     GraniteGenerationResult &result,
     lsxcommon::sample::ISampler &sampler = lsxcommon::sample::DefaultSampler(),
-    GraniteKvCache *kv = nullptr);
+    GraniteKvCache *kv = nullptr,
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace granite
 } // namespace lsxcommon

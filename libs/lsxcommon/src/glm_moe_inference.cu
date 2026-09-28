@@ -449,7 +449,8 @@ static cudaError_t RunGlmGenerationImpl(
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
-        lsxcommon::sample::DefaultSampler())
+        lsxcommon::sample::DefaultSampler(),
+    const lsxcommon::GenerationStream *gs = nullptr)
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -703,10 +704,13 @@ if (on_demand) {
         if (e != cudaSuccess) return fail(e);
         const int best = arena.h_argmax->best;
         result.tokens.push_back(best);
+        if (gs) gs->Emit(static_cast<std::uint32_t>(best),
+                         static_cast<std::uint32_t>(result.tokens.size() - 1));
         if (step == 0) result.first_maxv = arena.h_argmax->maxv;
         if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
             best == kGlmEosIds[2])
             break;
+        if (gs && gs->Aborted()) break;
 
         int32_t id = best;
         e = cudaMemcpyAsync(arena.d_ids, &id, sizeof(int32_t),
@@ -763,12 +767,13 @@ cudaError_t RunGlmGeneration(
     const GlmPinnedWeights &pw, const GlmExpertTables &experts,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
-    lsxcommon::sample::ISampler &sampler)
+    lsxcommon::sample::ISampler &sampler,
+    const lsxcommon::GenerationStream *gs)
 {
     return RunGlmGenerationImpl(stream, pw, &experts, nullptr,
                                 nullptr, nullptr, nullptr, nullptr,
                                 nullptr, nullptr, nullptr,
-                                prompt, max_new, result, sampler);
+                                prompt, max_new, result, sampler, gs);
 }
 
 cudaError_t RunGlmGeneration(
@@ -776,7 +781,8 @@ cudaError_t RunGlmGeneration(
     const GlmPinnedWeights &pw, GlmExpertDb &expert_db,
     const std::vector<int32_t> &prompt, int max_new,
     GlmGenerationResult &result,
-    lsxcommon::sample::ISampler &sampler)
+    lsxcommon::sample::ISampler &sampler,
+    const lsxcommon::GenerationStream *gs)
 {
     // Two reusable per-call staging buffers, one expert at a time: the packed
     // E2M1 payloads (w1+w2+w3) and the per-block E4M3 scales. Freed on every
@@ -853,7 +859,7 @@ cudaError_t RunGlmGeneration(
     e = RunGlmGenerationImpl(stream, pw, nullptr, &expert_db,
                              d_pack, d_scale, d_pack_b, d_scale_b,
                              stream_copy, ev_h2d, ev_gemm,
-                             prompt, max_new, result, sampler);
+                             prompt, max_new, result, sampler, gs);
     for (int i = 0; i < 2; ++i) { cudaEventDestroy(ev_h2d[i]); cudaEventDestroy(ev_gemm[i]); }
     cudaStreamDestroy(stream_copy);
     cudaFree(d_scale_b); cudaFree(d_pack_b); cudaFree(d_scale); cudaFree(d_pack);
@@ -1473,7 +1479,8 @@ cudaError_t RunGlmRealGeneration(cudaStream_t stream,
                                  GlmExpertDb &expert_db,
                                  const std::vector<int32_t> &prompt,
                                  int max_new, GlmGenerationResult &result,
-                                 lsxcommon::sample::ISampler &sampler)
+                                 lsxcommon::sample::ISampler &sampler,
+                                 const lsxcommon::GenerationStream *gs)
 {
     result = GlmGenerationResult{};
     const char *g_stage = "validate";
@@ -1616,6 +1623,8 @@ cudaError_t RunGlmRealGeneration(cudaStream_t stream,
         if (e != cudaSuccess) return fail(e);
         const int best = c.h_argmax->best;
         result.tokens.push_back(best);
+        if (gs) gs->Emit(static_cast<std::uint32_t>(best),
+                         static_cast<std::uint32_t>(result.tokens.size() - 1));
         if (step == 0) result.first_maxv = c.h_argmax->maxv;
         if (step == 0) cudaEventRecord(t_ttft, stream);
         if (best == kGlmEosIds[0] || best == kGlmEosIds[1] ||
@@ -1623,6 +1632,7 @@ cudaError_t RunGlmRealGeneration(cudaStream_t stream,
             result.eos_terminated = true;
             break;
         }
+        if (gs && gs->Aborted()) break;
 
         g_stage = "decode";
         const int pos = last_idx + 1;

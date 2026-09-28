@@ -1419,7 +1419,8 @@ cudaError_t RunQwenMoeGeneration(
     QwenMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
-    qwen::QwenKvCache *kv)
+    qwen::QwenKvCache *kv,
+    const lsxcommon::GenerationStream *gs)
 {
     if (!kv)
         return cudaErrorInvalidValue;  // MoE path is incremental-only.
@@ -1723,6 +1724,8 @@ cudaError_t RunQwenMoeGeneration(
     int32_t cur = prompt[0];
     int32_t tok = -1;
     int generated = 0;
+    int emitted = 0;
+    bool abort_stream = false;
 
     for (int step = 0; step < total_steps; ++step) {
         const int seq = 1;
@@ -1990,9 +1993,20 @@ cudaError_t RunQwenMoeGeneration(
                 cudaEventRecord(tok_ready, stream);
                 cudaEventSynchronize(tok_ready);
                 bool hit = false;
-                for (int32_t t : eos_win)
-                    if (t == eos_id) { hit = true; break; }
+                if (gs) {
+                    for (int b = 0; b < kEosFenceBatch; ++b) {
+                        const int32_t t = eos_win[b];
+                        if (t == eos_id) { hit = true; break; }
+                        gs->Emit(static_cast<std::uint32_t>(t),
+                                 static_cast<std::uint32_t>(emitted + b));
+                    }
+                    emitted = generated;
+                } else {
+                    for (int32_t t : eos_win)
+                        if (t == eos_id) { hit = true; break; }
+                }
                 if (hit) break;
+                if (gs && gs->Aborted()) { abort_stream = true; break; }
             }
         } else {
             // Prefill: feed the next prompt token from host staging.
@@ -2020,9 +2034,17 @@ cudaError_t RunQwenMoeGeneration(
             cudaEventSynchronize(tok_ready);
         }
         result.tokens.assign(hgen.begin(), hgen.end());
+        if (gs) {
+            for (int i = emitted; i < generated; ++i) {
+                if (hgen[i] == eos_id) break;
+                gs->Emit(static_cast<std::uint32_t>(hgen[i]),
+                         static_cast<std::uint32_t>(i));
+            }
+        }
         result.eos_terminated = TruncateTokensAtEos(result.tokens, eos_id);
         if (!result.tokens.empty()) tok = result.tokens.back();
     }
+    (void)abort_stream;
     kv->last_tok = tok;
 
     // ── Stage replay audit (LSX_AUDIT_STAGES=1, stderr diagnostics only) ────

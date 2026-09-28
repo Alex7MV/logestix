@@ -147,10 +147,15 @@ gpu::InferenceResult GlmV5Model::Infer(const ModelRequest &req)
     }
 
     glm::GlmGenerationResult gen;
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
     const cudaError_t err = RunUnderResidencyLock([&] {
         return glm::RunGlmRealGeneration(stream(), pw_, experts_,
                                          req.input_ids, req.max_gen_tokens,
-                                         gen);
+                                         gen,
+                                         lsxcommon::sample::DefaultSampler(),
+                                         &gs);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);
