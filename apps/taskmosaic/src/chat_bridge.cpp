@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace taskmosaic {
 namespace {
@@ -16,15 +17,24 @@ namespace {
 constexpr int kPollMs = 100;
 constexpr const char* kJson = "application/json; charset=utf-8";
 
-std::string FlattenMessages(const std::vector<lsxnetwork::ChatInputMessage>& msgs) {
-    std::string out;
-    for (const auto& m : msgs) {
-        if (!out.empty()) out += "\n";
-        out += m.role;
-        out += ": ";
-        out += m.content;
+lsxcommon::ChatConversation BuildConversation(const lsxnetwork::ChatRequest& req) {
+    lsxcommon::ChatConversation conv;
+    for (const auto& m : req.messages) {
+        lsxcommon::ChatMessage cm;
+        cm.role = m.role;
+        cm.content = m.content;
+        cm.tool_call_id = m.tool_call_id;
+        for (const auto& tc : m.tool_calls)
+            cm.tool_calls.push_back({tc.id, tc.name, tc.arguments_json});
+        conv.messages.push_back(std::move(cm));
     }
-    return out;
+    for (const auto& t : req.tools)
+        conv.tools.push_back({t.name, t.description, t.parameters_json});
+    return conv;
+}
+
+bool ToolsRequested(const lsxnetwork::ChatRequest& req) {
+    return !req.tools.empty() && req.tool_choice != "none";
 }
 
 // RAII admission slot: releases the backend counter on scope exit.
@@ -75,17 +85,12 @@ bool RunBlocking(Backend& backend, const std::vector<std::int32_t>& input_ids,
     return false;
 }
 
-// Shared body of the chat request path (parse + resolve + frame + admit).
-struct PreparedChat {
-    bool ok = false;
-    std::string error;
-    std::string model_id;
-    std::string model_path;
-    std::vector<std::int32_t> input_ids;
-    int max_tokens = 0;
-    bool stream = false;
-    bool include_usage = false;
-};
+std::string ToolCallsWire(const std::vector<lsxcommon::ToolCall>& calls) {
+    std::vector<lsxnetwork::ChatToolCall> wire;
+    wire.reserve(calls.size());
+    for (const auto& c : calls) wire.push_back({c.id, c.name, c.arguments_json});
+    return lsxnetwork::ToolCallsToJson(wire);
+}
 
 /// SSE source for one streaming chat completion. Holds the backend lock and
 /// admission slot for its lifetime.
@@ -94,7 +99,7 @@ public:
     ChatStreamSource(Backend& backend, PromptFramer& framer,
                      std::string model_path, std::string id, std::string model,
                      std::vector<std::int32_t> input_ids, int max_tokens,
-                     int timeout_ms, bool include_usage)
+                     int timeout_ms, bool include_usage, bool buffer_tools)
         : backend_(backend),
           framer_(framer),
           model_path_(std::move(model_path)),
@@ -103,7 +108,8 @@ public:
           input_ids_(std::move(input_ids)),
           max_tokens_(max_tokens),
           timeout_ms_(timeout_ms),
-          include_usage_(include_usage) {}
+          include_usage_(include_usage),
+          buffer_tools_(buffer_tools) {}
 
     ~ChatStreamSource() override { backend_.Release(); }
 
@@ -112,7 +118,7 @@ public:
             lock_ = std::make_unique<std::unique_lock<std::mutex>>(backend_.Mutex());
 
         if (!submitted_) {
-            decoder_ = framer_.MakeDecoder(model_path_);
+            if (!buffer_tools_) decoder_ = framer_.MakeDecoder(model_path_);
             request_id_ = backend_.NextRequestId();
             if (!backend_.Client().Submit(request_id_, input_ids_,
                                           static_cast<std::uint32_t>(max_tokens_))) {
@@ -134,7 +140,7 @@ public:
                 out = Finish("backend timeout");
                 return true;
             }
-            out.clear();  // nothing yet
+            out.clear();
             return true;
         }
         if (st != lsxnetwork::FabricStreamClient::RecvStatus::kOk) {
@@ -146,32 +152,47 @@ public:
             return true;
         }
         if (f.type == lsxnetwork::FabricFrameType::kTokenBatch) {
-            std::string delta;
+            out.clear();
             for (const auto tok : f.tokens) {
                 out_ids_.push_back(tok);
-                if (decoder_) delta += decoder_->Push(tok);
+                if (!buffer_tools_ && decoder_) {
+                    const std::string delta = decoder_->Push(tok);
+                    if (!delta.empty())
+                        out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
+                            id_, model_, delta, false, "", 0, 0, false));
+                }
             }
-            if (delta.empty()) {
-                out.clear();
-                return true;
-            }
-            out = lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
-                id_, model_, delta, false, "", 0, 0, false));
             return true;
         }
         // kDone
         out.clear();
-        if (decoder_) {
-            const std::string tail = decoder_->Flush();
-            if (!tail.empty())
-                out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
-                    id_, model_, tail, false, "", 0, 0, false));
+        const int pt = static_cast<int>(input_ids_.size());
+        const int ct = static_cast<int>(out_ids_.size());
+        if (buffer_tools_) {
+            std::vector<lsxcommon::ToolCall> calls;
+            framer_.ParseToolCalls(model_path_, out_ids_, calls);
+            if (!calls.empty()) {
+                out = lsxnetwork::SseFrame(lsxnetwork::BuildChatChunkTools(
+                    id_, model_, ToolCallsWire(calls), true, pt, ct,
+                    include_usage_));
+            } else {
+                const std::string text =
+                    framer_.Decode(model_path_, out_ids_);
+                out = lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
+                    id_, model_, text, true, f.eos_terminated ? "stop" : "length",
+                    pt, ct, include_usage_));
+            }
+        } else {
+            if (decoder_) {
+                const std::string tail = decoder_->Flush();
+                if (!tail.empty())
+                    out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
+                        id_, model_, tail, false, "", 0, 0, false));
+            }
+            out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
+                id_, model_, "", false, f.eos_terminated ? "stop" : "length",
+                pt, ct, include_usage_));
         }
-        const std::string finish = f.eos_terminated ? "stop" : "length";
-        out += lsxnetwork::SseFrame(lsxnetwork::BuildChatChunk(
-            id_, model_, "", false, finish,
-            static_cast<int>(input_ids_.size()),
-            static_cast<int>(out_ids_.size()), include_usage_));
         out += lsxnetwork::SseFrame("[DONE]");
         done_ = true;
         return true;
@@ -200,6 +221,7 @@ private:
     int max_tokens_;
     int timeout_ms_;
     bool include_usage_;
+    bool buffer_tools_;
     std::unique_ptr<std::unique_lock<std::mutex>> lock_;
     std::unique_ptr<StreamingDecoder> decoder_;
     std::vector<std::int32_t> out_ids_;
@@ -285,9 +307,9 @@ void ChatBridge::RegisterRoutes() {
 
     server_.Get("/v1/models/.*", [this](const HttpRequest& rq, HttpResponse& r) {
         const std::string prefix = "/v1/models/";
-        const std::string id = rq.path.size() > prefix.size()
-                                   ? rq.path.substr(prefix.size())
-                                   : std::string{};
+        const std::string id =
+            rq.path.size() > prefix.size() ? rq.path.substr(prefix.size())
+                                           : std::string{};
         if (Find(id) == nullptr) {
             r.status = 404;
             r.body = lsxnetwork::BuildError("model '" + id + "' not found",
@@ -298,9 +320,6 @@ void ChatBridge::RegisterRoutes() {
         r.body = lsxnetwork::BuildModel(id);
     });
 
-    // One handler for chat completions: non-stream runs blocking and writes a
-    // JSON body; stream returns a StreamSource (SSE). httplib allows only one
-    // handler per method+path, so both modes live in this factory.
     server_.PostStream(
         "/v1/chat/completions",
         [this](const HttpRequest& rq,
@@ -326,9 +345,9 @@ void ChatBridge::RegisterRoutes() {
                 head.body = err.body;
                 return nullptr;
             }
+            const lsxcommon::ChatConversation conv = BuildConversation(req);
             std::vector<std::int32_t> input_ids;
-            if (!framer_.Encode(rt->cfg.model_path, FlattenMessages(req.messages),
-                                input_ids)) {
+            if (!framer_.EncodeConversation(rt->cfg.model_path, conv, input_ids)) {
                 head.status = 500;
                 head.content_type = kJson;
                 head.body = lsxnetwork::BuildError("prompt framing failed",
@@ -348,9 +367,9 @@ void ChatBridge::RegisterRoutes() {
                 return std::make_unique<ChatStreamSource>(
                     *rt->backend, framer_, rt->cfg.model_path, "chatcmpl-bridge",
                     rt->cfg.id, std::move(input_ids), max_tokens,
-                    cfg_.request_timeout_ms, req.include_usage);
+                    cfg_.request_timeout_ms, req.include_usage,
+                    ToolsRequested(req));
             }
-            // Non-streaming: run here, then release the admission slot.
             Admission admission{*rt->backend, true};
             std::vector<std::int32_t> out_ids;
             bool eos = false;
@@ -362,17 +381,25 @@ void ChatBridge::RegisterRoutes() {
                 head.body = lsxnetwork::BuildError(error, "server_error");
                 return nullptr;
             }
-            const std::string text = framer_.Decode(rt->cfg.model_path, out_ids);
+            std::vector<lsxcommon::ToolCall> calls;
+            framer_.ParseToolCalls(rt->cfg.model_path, out_ids, calls);
             head.status = 200;
             head.content_type = kJson;
-            head.body = lsxnetwork::BuildChatCompletion(
-                "chatcmpl-bridge", rt->cfg.id, text, eos ? "stop" : "length",
-                static_cast<int>(input_ids.size()),
-                static_cast<int>(out_ids.size()));
+            if (!calls.empty()) {
+                head.body = lsxnetwork::BuildChatCompletionTools(
+                    "chatcmpl-bridge", rt->cfg.id, ToolCallsWire(calls),
+                    static_cast<int>(input_ids.size()),
+                    static_cast<int>(out_ids.size()));
+            } else {
+                const std::string text = framer_.Decode(rt->cfg.model_path, out_ids);
+                head.body = lsxnetwork::BuildChatCompletion(
+                    "chatcmpl-bridge", rt->cfg.id, text, eos ? "stop" : "length",
+                    static_cast<int>(input_ids.size()),
+                    static_cast<int>(out_ids.size()));
+            }
             return nullptr;
         });
 
-    // Legacy text completion (non-streaming only for now).
     server_.Post("/v1/completions", [this](const HttpRequest& rq,
                                            HttpResponse& r) {
         lsxnetwork::LegacyCompletionRequest req;

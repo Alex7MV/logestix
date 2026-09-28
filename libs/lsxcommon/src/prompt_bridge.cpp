@@ -19,4 +19,26 @@ bool FramePromptForModel(const std::string& model_path,
     return model->BuildPromptInputIds(tok, raw_prompt, out_ids);
 }
 
+bool FrameConversationForModel(const std::string& model_path,
+                               const ArrowTokenizerDb& tok,
+                               const ChatConversation& conv,
+                               std::vector<std::int32_t>& out_ids) {
+    ModelInitConfig cfg;
+    cfg.model_path = model_path;
+    auto model = LsxModelFactory::Create(cfg);
+    if (!model) return false;
+    return model->BuildConversationInputIds(tok, conv, out_ids);
+}
+
+bool ParseToolCallsForModel(const std::string& model_path,
+                            const ArrowTokenizerDb& tok,
+                            const std::vector<std::int32_t>& gen_tokens,
+                            std::vector<ToolCall>& out_calls) {
+    ModelInitConfig cfg;
+    cfg.model_path = model_path;
+    auto model = LsxModelFactory::Create(cfg);
+    if (!model) return false;
+    return model->ParseToolCalls(tok, gen_tokens, out_calls);
+}
+
 }  // namespace lsxcommon

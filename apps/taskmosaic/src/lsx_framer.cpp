@@ -61,4 +61,22 @@ std::unique_ptr<StreamingDecoder> LsxPromptFramer::MakeDecoder(
             lsxcommon::IncrementalDetokenizer::ArrowDecoder(*db)));
 }
 
+bool LsxPromptFramer::EncodeConversation(std::string_view model_path,
+                                         const lsxcommon::ChatConversation& conv,
+                                         std::vector<std::int32_t>& out_ids) {
+    lsxcommon::ArrowTokenizerDb* db = TokenizerFor(model_path);
+    if (db == nullptr) return false;
+    return lsxcommon::FrameConversationForModel(std::string(model_path), *db,
+                                                conv, out_ids);
+}
+
+bool LsxPromptFramer::ParseToolCalls(std::string_view model_path,
+                                     const std::vector<std::int32_t>& ids,
+                                     std::vector<lsxcommon::ToolCall>& out) {
+    lsxcommon::ArrowTokenizerDb* db = TokenizerFor(model_path);
+    if (db == nullptr) return false;
+    return lsxcommon::ParseToolCallsForModel(std::string(model_path), *db, ids,
+                                             out);
+}
+
 }  // namespace taskmosaic

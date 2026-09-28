@@ -112,6 +112,20 @@ public:
         ids = {1, 2};
         return true;
     }
+    bool EncodeConversation(std::string_view,
+                            const lsxcommon::ChatConversation& conv,
+                            std::vector<std::int32_t>& ids) override {
+        has_tools = !conv.tools.empty();
+        ids = {1, 2};
+        return true;
+    }
+    bool ParseToolCalls(std::string_view, const std::vector<std::int32_t>&,
+                        std::vector<lsxcommon::ToolCall>& out) override {
+        out.clear();
+        if (has_tools)
+            out.push_back({"call_0", "get_weather", R"({"city":"Paris"})"});
+        return true;
+    }
     std::string Decode(std::string_view,
                        const std::vector<std::int32_t>&) override {
         return "hello";
@@ -128,6 +142,7 @@ public:
         return std::make_unique<D>();
     }
     std::vector<std::string> prompts;
+    bool has_tools = false;
 };
 
 struct BridgeFixture {
@@ -227,5 +242,37 @@ TEST_CASE("bridge: health and ready", "[taskmosaic][bridge][http]") {
     auto r = cli.Get("/ready");
     REQUIRE(r);
     CHECK(r->status == 200);
+    fx.Stop();
+}
+
+TEST_CASE("bridge: tool calling returns tool_calls", "[taskmosaic][bridge][tools]") {
+    BridgeFixture fx;
+    REQUIRE(fx.Start());
+    httplib::Client cli("127.0.0.1", fx.bridge->BoundPort());
+    auto res = cli.Post(
+        "/v1/chat/completions",
+        R"({"model":"m1","messages":[{"role":"user","content":"weather?"}],
+            "tools":[{"type":"function","function":{"name":"get_weather","parameters":{}}}]})",
+        "application/json");
+    REQUIRE(res);
+    CHECK(res->status == 200);
+    CHECK(res->body.find("\"tool_calls\"") != std::string::npos);
+    CHECK(res->body.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+    fx.Stop();
+}
+
+TEST_CASE("bridge: streaming tool calling", "[taskmosaic][bridge][tools]") {
+    BridgeFixture fx;
+    REQUIRE(fx.Start());
+    httplib::Client cli("127.0.0.1", fx.bridge->BoundPort());
+    auto res = cli.Post(
+        "/v1/chat/completions",
+        R"({"model":"m1","stream":true,"messages":[{"role":"user","content":"weather?"}],
+            "tools":[{"type":"function","function":{"name":"get_weather","parameters":{}}}]})",
+        "application/json");
+    REQUIRE(res);
+    CHECK(res->status == 200);
+    CHECK(res->body.find("\"tool_calls\"") != std::string::npos);
+    CHECK(res->body.find("[DONE]") != std::string::npos);
     fx.Stop();
 }

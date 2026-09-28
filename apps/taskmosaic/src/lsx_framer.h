@@ -22,6 +22,12 @@ public:
                        const std::vector<std::int32_t>& ids) override;
     std::unique_ptr<StreamingDecoder> MakeDecoder(
         std::string_view model_path) override;
+    bool EncodeConversation(std::string_view model_path,
+                            const lsxcommon::ChatConversation& conv,
+                            std::vector<std::int32_t>& out_ids) override;
+    bool ParseToolCalls(std::string_view model_path,
+                        const std::vector<std::int32_t>& ids,
+                        std::vector<lsxcommon::ToolCall>& out) override;
 
 private:
     lsxcommon::ArrowTokenizerDb* TokenizerFor(std::string_view model_path);
