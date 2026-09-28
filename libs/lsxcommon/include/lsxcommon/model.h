@@ -14,21 +14,9 @@
 #include "lsxcommon/vram_estimate.h"   // VramProfile
 #include "lsxcommon/prompt_framing.h"  // prompt framing utilities
 #include "lsxcommon/fast_math_mode.h"  // FastMathMode
+#include "lsxcommon/token_stream.h"    // TokenChunk / TokenCallback / GenerationStream
 
 namespace lsxcommon {
-
-// Flat, host-only streaming token packet. Transmitted by const reference so no
-// allocation or copy occurs on the model->caller hot path. Consumed by
-// lsxcommon::InferenceEngine::Run between decode steps.
-struct TokenChunk {
-    uint32_t token_id = 0;      // generated token id
-    uint32_t step_t = 0;        // decode step index (0-based)
-    float    logit_maxv = 0.0f; // argmax logit of this step, pre-softmax
-    bool     is_special = false; // true when the tokenizer flags the token special
-};
-
-// Zero-allocation streaming callback (no heap pressure per invocation).
-using TokenCallback = std::function<void(const TokenChunk &)>;
 
 struct ModelInitConfig {
     std::string model_path;   // required
