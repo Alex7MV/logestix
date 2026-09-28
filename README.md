@@ -189,8 +189,9 @@ own template is known and verified against its tokenizer/card:
 | DeepSeek-V4 | `## Tools`; `<｜DSML｜tool_calls>` / `<｜DSML｜invoke>` / `<｜DSML｜parameter>` |
 | DeepSeek-V4.1 | `## Tools`; `<｜DSML｜ calls>` / `<｜DSML｜ invoke>` / `<｜DSML｜ parameter>` |
 | Gemma-4 | `<\|tool>declaration:…<tool\|>`; `<\|tool_call>call:NAME{k:v}<tool_call\|>` |
+| Nemotron-3.5 | ChatML XML call syntax (Qwen-style); own declaration block — codec verified, real-weight call not obtained under greedy sampling |
+| GigaChat-3.5 | chatml-v5 `｜GCML｜tool_calls` / `｜GCML｜invoke` / `｜GCML｜parameter` + TypeScript tool namespace |
 | Granite-4.2 | generic Hermes `<tools>` + `<tool_call>{json}</tool_call>` fallback |
-| Nemotron / GigaChat | generic Hermes fallback (not yet verified) |
 
 Kimi and GLM-5.2 (non-Flash) have no converted checkpoint in the vault, so their
 native formats are not yet implemented.
