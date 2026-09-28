@@ -4,12 +4,11 @@
 
 namespace taskmosaic {
 
-/// taskmosaic is a client-only CLI: it talks to a running lsxfabric server.
+/// taskmosaic is the OpenAI-compatible HTTP bridge to a running lsxfabric.
 struct TaskMosaicCliArgs {
-    std::string server;  // ZMQ endpoint, required
-    std::string model;   // converted model path (tokenizer + framing), required
-    std::string prompt;  // empty => read stdin
-    int max_gen = 64;    // sent verbatim
+    std::string config;  // required: bridge JSON config path
+    std::string host;    // optional override of listen.host
+    int port = 0;        // optional override of listen.port (0 = keep config)
 };
 
 TaskMosaicCliArgs ParseTaskMosaicCliArgs(int argc, char** argv);

@@ -1,27 +1,24 @@
 #include "lsxcommon/common.h"
 #include "lsxcommon/core.h"
 #include "lsxcommon/log.h"
-#include "lsxcommon/model_runtime.h"
-#include "lsxcommon/prompt_bridge.h"
-#include "lsxcommon/tokenizer.h"
-#include "lsxcommon/tokenizer_arrows.h"
-#include "lsxnetwork/fabric_client.h"
 
 #include <absl/strings/str_format.h>
 
-#include <cstdint>
-#include <iostream>
-#include <iterator>
+#include <atomic>
+#include <csignal>
 #include <string>
-#include <vector>
 
+#include "chat_bridge.h"
 #include "cli.h"
+#include "config.h"
+#include "lsx_framer.h"
 
 namespace {
 
-std::string ReadAllStdin() {
-    return std::string(std::istreambuf_iterator<char>(std::cin),
-                       std::istreambuf_iterator<char>());
+std::atomic<bool>* g_stop = nullptr;
+
+void OnSignal(int) {
+    if (g_stop != nullptr) g_stop->store(true);
 }
 
 }  // namespace
@@ -35,58 +32,35 @@ int main(int argc, char* argv[]) {
 
     int rc = 0;
     {
-        if (cli.server.empty() || cli.model.empty()) {
-            lsxcommon::log::error(
-                "taskmosaic is a client: pass --server <endpoint> and "
-                "--model <converted-model-path> [--prompt <text>|stdin]");
+        if (cli.config.empty()) {
+            lsxcommon::log::error("taskmosaic: pass --config <bridge.json>");
             rc = 2;
         } else {
-            const std::string prompt =
-                cli.prompt.empty() ? ReadAllStdin() : cli.prompt;
-
-            lsxcommon::ArrowTokenizerDb tok;
-            if (!lsxcommon::LoadTokenizerArrows(cli.model, tok)) {
-                lsxcommon::log::error("cannot load tokenizer for " + cli.model);
-                rc = 1;
+            taskmosaic::BridgeConfig cfg;
+            std::string err;
+            if (!taskmosaic::LoadBridgeConfigFile(cli.config, cfg, err)) {
+                lsxcommon::log::error("config error: " + err);
+                rc = 2;
             } else {
-                std::vector<std::int32_t> ids;
-                if (!lsxcommon::FramePromptForModel(cli.model, prompt, ids)) {
-                    lsxcommon::log::error("prompt framing failed");
+                if (!cli.host.empty()) cfg.host = cli.host;
+                if (cli.port > 0) cfg.port = cli.port;
+
+                taskmosaic::LsxPromptFramer framer;
+                taskmosaic::ChatBridge bridge(cfg, framer);
+                if (!bridge.Initialize(err)) {
+                    lsxcommon::log::error("bridge init failed: " + err);
                     rc = 1;
                 } else {
-                    lsxnetwork::FabricClient client;
-                    if (client.Connect(cli.server.c_str()) != 0) {
-                        lsxcommon::log::error("cannot connect to " + cli.server);
-                        rc = 1;
-                    } else {
-                        lsxnetwork::FabricResponse resp;
-                        if (!client.Infer(
-                                ids, static_cast<std::uint32_t>(cli.max_gen),
-                                resp)) {
-                            lsxcommon::log::error(
-                                absl::StrFormat("inference transport failed "
-                                                "on %s",
-                                                cli.server));
-                            rc = 1;
-                        } else if (resp.status !=
-                                   static_cast<std::int32_t>(
-                                       lsxnetwork::FabricStatus::kOk)) {
-                            lsxcommon::log::error(
-                                absl::StrFormat("server error (status %d): %s",
-                                                resp.status, resp.error));
-                            rc = 1;
-                        } else {
-                            const std::string text =
-                                lsxcommon::runtime::DecodeGeneratedText(
-                                    tok, resp.tokens);
-                            lsxcommon::log::info(text);
-                            lsxcommon::log::info(absl::StrFormat(
-                                "tokens=%u ttft=%.1fms total=%.1fms %.1f t/s",
-                                static_cast<unsigned>(resp.tokens.size()),
-                                resp.ttft_ms, resp.total_ms,
-                                resp.tokens_per_sec));
-                        }
-                    }
+                    std::atomic<bool> stop{false};
+                    g_stop = &stop;
+                    std::signal(SIGINT, OnSignal);
+                    std::signal(SIGTERM, OnSignal);
+                    lsxcommon::log::info(absl::StrFormat(
+                        "taskmosaic bridge on %s:%d (%u models)", cfg.host,
+                        cfg.port, static_cast<unsigned>(cfg.models.size())));
+                    bridge.SetStopFlag(&stop);
+                    bridge.Listen();  // blocks until Stop / signal
+                    g_stop = nullptr;
                 }
             }
         }

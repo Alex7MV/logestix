@@ -27,16 +27,14 @@ bool ParsePositiveInt(const char* s, int& out) {
 TaskMosaicCliArgs ParseTaskMosaicCliArgs(int argc, char** argv) {
     TaskMosaicCliArgs a;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--server") == 0) {
-            if (HasValue(argc, argv, i)) a.server = argv[++i];
-        } else if (std::strcmp(argv[i], "--model") == 0) {
-            if (HasValue(argc, argv, i)) a.model = argv[++i];
-        } else if (std::strcmp(argv[i], "--prompt") == 0) {
-            if (HasValue(argc, argv, i)) a.prompt = argv[++i];
-        } else if (std::strcmp(argv[i], "--max-gen") == 0) {
+        if (std::strcmp(argv[i], "--config") == 0) {
+            if (HasValue(argc, argv, i)) a.config = argv[++i];
+        } else if (std::strcmp(argv[i], "--host") == 0) {
+            if (HasValue(argc, argv, i)) a.host = argv[++i];
+        } else if (std::strcmp(argv[i], "--port") == 0) {
             int v = 0;
             if (HasValue(argc, argv, i) && ParsePositiveInt(argv[i + 1], v)) {
-                a.max_gen = v;
+                a.port = v;
                 ++i;
             }
         }
