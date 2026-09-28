@@ -350,3 +350,59 @@ TEST_CASE("lsxnetwork: bind is idempotent across a stale ipc:// socket file",
     std::filesystem::remove(path);
 }
 #endif
+
+TEST_CASE("openai endpoint: parses chat request",
+          "[mosaic][openai][parse]") {
+    const std::string body = R"({
+      "model":"m1","stream":true,"max_tokens":32,
+      "stop":["<|end|>"],
+      "stream_options":{"include_usage":true},
+      "messages":[{"role":"system","content":"sys"},
+                  {"role":"user","content":"hi"}]})";
+    lsxnetwork::ChatRequest req;
+    simdjson::padded_string padded(body);
+    REQUIRE(lsxnetwork::OpenAiEndpoint().ParseChatRequest(
+                padded.data(), padded.size(), padded.size() + simdjson::SIMDJSON_PADDING, req) ==
+            simdjson::SUCCESS);
+    CHECK(req.model == "m1");
+    CHECK(req.stream);
+    CHECK(req.max_tokens == 32);
+    CHECK(req.include_usage);
+    REQUIRE(req.stop.size() == 1);
+    CHECK(req.stop[0] == "<|end|>");
+    REQUIRE(req.messages.size() == 2);
+    CHECK(req.messages[0].role == "system");
+    CHECK(req.messages[1].content == "hi");
+}
+
+TEST_CASE("openai endpoint: parses legacy completion prompt",
+          "[mosaic][openai][parse]") {
+    const std::string body = R"({"model":"m1","prompt":"hello"})";
+    lsxnetwork::LegacyCompletionRequest req;
+    simdjson::padded_string padded(body);
+    REQUIRE(lsxnetwork::OpenAiEndpoint().ParseLegacyCompletionRequest(
+                padded.data(), padded.size(), padded.size() + simdjson::SIMDJSON_PADDING, req) ==
+            simdjson::SUCCESS);
+    CHECK(req.prompt == "hello");
+}
+
+TEST_CASE("openai endpoint: builds completion and error JSON",
+          "[mosaic][openai][build]") {
+    const std::string done = lsxnetwork::BuildChatCompletion(
+        "chatcmpl-1", "m1", "hello", "stop", 3, 5);
+    CHECK(done.find("\"object\":\"chat.completion\"") != std::string::npos);
+    CHECK(done.find("\"content\":\"hello\"") != std::string::npos);
+    CHECK(done.find("\"completion_tokens\":5") != std::string::npos);
+
+    const std::string chunk = lsxnetwork::BuildChatChunk(
+        "chatcmpl-1", "m1", "he", true, "", 0, 0, false);
+    CHECK(chunk.find("chat.completion.chunk") != std::string::npos);
+    CHECK(chunk.find("\"role\":\"assistant\"") != std::string::npos);
+
+    const std::string err =
+        lsxnetwork::BuildError("nope", "invalid_request_error");
+    CHECK(err.find("\"type\":\"invalid_request_error\"") != std::string::npos);
+
+    CHECK(lsxnetwork::JsonEscape("a\"b\n") == "a\\\"b\\n");
+    CHECK(lsxnetwork::SseFrame("data") == "data: data\n\n");
+}

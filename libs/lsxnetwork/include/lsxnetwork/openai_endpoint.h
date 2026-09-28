@@ -43,6 +43,30 @@ struct CompletionResponse {
     double tokens_per_sec = 0.0;
 };
 
+/// Request-side message (content flattened to a string).
+struct ChatInputMessage {
+    std::string role;
+    std::string content;
+};
+
+struct ChatRequest {
+    std::string model;
+    std::vector<ChatInputMessage> messages;
+    bool stream = false;
+    int max_tokens = 0;
+    std::vector<std::string> stop;
+    bool include_usage = false;
+};
+
+struct LegacyCompletionRequest {
+    std::string model;
+    std::string prompt;
+    bool stream = false;
+    int max_tokens = 0;
+    std::vector<std::string> stop;
+    bool include_usage = false;
+};
+
 /// Maps raw incoming OpenAI chat-completion JSON onto a `ChatCompletion`.
 ///
 /// Zero-copy at the queue boundary (no middleman buffer; simdjson reads the
@@ -67,6 +91,42 @@ public:
     bool WriteCompletion(const ChatCompletion& req,
                          const CompletionResponse& res,
                          std::string& out) const;
+
+    /// Parses a `POST /v1/chat/completions` request body. String members are
+    /// owned. Unknown fields (tools, temperature, ...) are ignored.
+    simdjson::error_code ParseChatRequest(const char* data, std::size_t size,
+                                          std::size_t capacity,
+                                          ChatRequest& out) const;
+
+    /// Parses a legacy `POST /v1/completions` request body.
+    simdjson::error_code ParseLegacyCompletionRequest(
+        const char* data, std::size_t size, std::size_t capacity,
+        LegacyCompletionRequest& out) const;
 };
+
+/// Minimal JSON string escaping for response bodies.
+std::string JsonEscape(const std::string& in);
+
+/// Frames a payload as an SSE event (`data: <payload>\n\n`).
+std::string SseFrame(const std::string& data);
+
+std::string BuildChatCompletion(const std::string& id, const std::string& model,
+                                const std::string& text,
+                                const std::string& finish_reason,
+                                int prompt_tokens, int completion_tokens);
+std::string BuildChatChunk(const std::string& id, const std::string& model,
+                           const std::string& delta_content, bool first_delta,
+                           const std::string& finish_reason, int prompt_tokens,
+                           int completion_tokens, bool include_usage);
+std::string BuildTextCompletion(const std::string& id, const std::string& model,
+                                const std::string& text,
+                                const std::string& finish_reason,
+                                int prompt_tokens, int completion_tokens);
+std::string BuildTextChunk(const std::string& id, const std::string& model,
+                           const std::string& delta_text,
+                           const std::string& finish_reason);
+std::string BuildModelsList(const std::vector<std::string>& ids);
+std::string BuildModel(const std::string& id);
+std::string BuildError(const std::string& message, const std::string& type);
 
 }  // namespace lsxnetwork

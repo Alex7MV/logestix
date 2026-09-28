@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <sstream>
+#include <utility>
 
 #include <simdjson.h>
 
@@ -121,6 +122,237 @@ bool OpenAiEndpoint::WriteCompletion(const ChatCompletion& req,
         << ",\"tokens_per_sec\":" << res.tokens_per_sec << "}}";
     out = oss.str();
     return true;
+}
+
+simdjson::error_code OpenAiEndpoint::ParseChatRequest(const char* data,
+                                                      std::size_t size,
+                                                      std::size_t capacity,
+                                                      ChatRequest& out) const {
+    simdjson::ondemand::parser parser;
+    simdjson::ondemand::document doc;
+    simdjson::padded_string_view v(std::string_view(data, size), capacity);
+    if (auto e = parser.iterate(v).get(doc)) return e;
+    simdjson::ondemand::object root;
+    if (auto e = doc.get_object().get(root)) return e;
+
+    if (auto e = root["model"].get_string(out.model)) {
+        if (e != simdjson::NO_SUCH_FIELD) return e;
+    }
+    if (auto s = root["stream"].get_bool(); s.error() == simdjson::SUCCESS)
+        out.stream = s.value_unsafe();
+    else if (s.error() != simdjson::NO_SUCH_FIELD)
+        return s.error();
+
+    if (auto mt = root["max_tokens"].get_int64();
+        mt.error() == simdjson::SUCCESS)
+        out.max_tokens = static_cast<int>(mt.value_unsafe());
+    else if (mt.error() != simdjson::NO_SUCH_FIELD)
+        return mt.error();
+
+    simdjson::ondemand::object so;
+    if (auto e = root["stream_options"].get_object().get(so)) {
+        if (e != simdjson::NO_SUCH_FIELD) return e;
+    } else if (auto iu = so["include_usage"].get_bool();
+               iu.error() == simdjson::SUCCESS) {
+        out.include_usage = iu.value_unsafe();
+    }
+
+    if (auto arr = root["stop"].get_array(); arr.error() == simdjson::SUCCESS) {
+        for (auto s : arr.value_unsafe()) {
+            std::string_view sv;
+            if (auto e = s.get_string().get(sv); e) return e;
+            out.stop.emplace_back(sv);
+        }
+    } else if (arr.error() != simdjson::NO_SUCH_FIELD) {
+        if (auto sv = root["stop"].get_string();
+            sv.error() == simdjson::SUCCESS)
+            out.stop.emplace_back(sv.value_unsafe());
+        else if (sv.error() != simdjson::NO_SUCH_FIELD)
+            return sv.error();
+    }
+
+    simdjson::ondemand::array messages;
+    if (auto e = root["messages"].get_array().get(messages)) return e;
+    for (auto m : messages) {
+        simdjson::ondemand::object mo;
+        if (auto e = m.get_object().get(mo)) return e;
+        ChatInputMessage msg;
+        std::string_view sv;
+        if (auto e = mo["role"].get_string().get(sv); !e) msg.role.assign(sv);
+        if (auto c = mo["content"].get_string(); c.error() == simdjson::SUCCESS)
+            msg.content.assign(c.value_unsafe());
+        out.messages.push_back(std::move(msg));
+    }
+    return simdjson::SUCCESS;
+}
+
+simdjson::error_code OpenAiEndpoint::ParseLegacyCompletionRequest(
+    const char* data, std::size_t size, std::size_t capacity,
+    LegacyCompletionRequest& out) const {
+    simdjson::ondemand::parser parser;
+    simdjson::ondemand::document doc;
+    simdjson::padded_string_view v(std::string_view(data, size), capacity);
+    if (auto e = parser.iterate(v).get(doc)) return e;
+    simdjson::ondemand::object root;
+    if (auto e = doc.get_object().get(root)) return e;
+
+    if (auto e = root["model"].get_string(out.model)) {
+        if (e != simdjson::NO_SUCH_FIELD) return e;
+    }
+    if (auto s = root["stream"].get_bool(); s.error() == simdjson::SUCCESS)
+        out.stream = s.value_unsafe();
+    else if (s.error() != simdjson::NO_SUCH_FIELD)
+        return s.error();
+    if (auto mt = root["max_tokens"].get_int64();
+        mt.error() == simdjson::SUCCESS)
+        out.max_tokens = static_cast<int>(mt.value_unsafe());
+    else if (mt.error() != simdjson::NO_SUCH_FIELD)
+        return mt.error();
+
+    simdjson::ondemand::object so;
+    if (auto e = root["stream_options"].get_object().get(so)) {
+        if (e != simdjson::NO_SUCH_FIELD) return e;
+    } else if (auto iu = so["include_usage"].get_bool();
+               iu.error() == simdjson::SUCCESS) {
+        out.include_usage = iu.value_unsafe();
+    }
+
+    if (auto arr = root["stop"].get_array(); arr.error() == simdjson::SUCCESS) {
+        for (auto s : arr.value_unsafe()) {
+            std::string_view sv;
+            if (auto e = s.get_string().get(sv); e) return e;
+            out.stop.emplace_back(sv);
+        }
+    } else if (arr.error() != simdjson::NO_SUCH_FIELD) {
+        if (auto sv = root["stop"].get_string();
+            sv.error() == simdjson::SUCCESS)
+            out.stop.emplace_back(sv.value_unsafe());
+        else if (sv.error() != simdjson::NO_SUCH_FIELD)
+            return sv.error();
+    }
+
+    if (auto ps = root["prompt"].get_string();
+        ps.error() == simdjson::SUCCESS) {
+        out.prompt.assign(ps.value_unsafe());
+    } else if (ps.error() == simdjson::INCORRECT_TYPE) {
+        simdjson::ondemand::array pa;
+        if (auto e = root["prompt"].get_array().get(pa)) return e;
+        for (auto s : pa) {
+            std::string_view sv;
+            if (auto e = s.get_string().get(sv); e) return e;
+            out.prompt.append(sv);
+        }
+    } else if (ps.error() != simdjson::NO_SUCH_FIELD) {
+        return ps.error();
+    }
+    return simdjson::SUCCESS;
+}
+
+std::string JsonEscape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    static const char* kHex = "0123456789abcdef";
+    for (char c : in) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += kHex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+std::string SseFrame(const std::string& data) {
+    return "data: " + data + "\n\n";
+}
+
+namespace {
+std::string Usage(int prompt_tokens, int completion_tokens) {
+    return "\"usage\":{\"prompt_tokens\":" + std::to_string(prompt_tokens) +
+           ",\"completion_tokens\":" + std::to_string(completion_tokens) +
+           ",\"total_tokens\":" + std::to_string(prompt_tokens + completion_tokens) +
+           "}";
+}
+}  // namespace
+
+std::string BuildChatCompletion(const std::string& id, const std::string& model,
+                                const std::string& text,
+                                const std::string& finish_reason,
+                                int prompt_tokens, int completion_tokens) {
+    return "{\"id\":\"" + id + "\",\"object\":\"chat.completion\",\"model\":\"" +
+           model +
+           "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
+           "\"content\":\"" +
+           JsonEscape(text) + "\"},\"finish_reason\":\"" + finish_reason +
+           "\"}]," + Usage(prompt_tokens, completion_tokens) + "}";
+}
+
+std::string BuildChatChunk(const std::string& id, const std::string& model,
+                           const std::string& delta_content, bool first_delta,
+                           const std::string& finish_reason, int prompt_tokens,
+                           int completion_tokens, bool include_usage) {
+    std::string out =
+        "{\"id\":\"" + id + "\",\"object\":\"chat.completion.chunk\",\"model\":\"" +
+        model + "\",\"choices\":[{\"index\":0,\"delta\":{";
+    if (first_delta) out += "\"role\":\"assistant\",";
+    out += "\"content\":\"" + JsonEscape(delta_content) + "\"},\"finish_reason\":";
+    out += finish_reason.empty() ? "null" : ("\"" + finish_reason + "\"");
+    out += "}]";
+    if (include_usage && !finish_reason.empty())
+        out += "," + Usage(prompt_tokens, completion_tokens);
+    out += "}";
+    return out;
+}
+
+std::string BuildTextCompletion(const std::string& id, const std::string& model,
+                                const std::string& text,
+                                const std::string& finish_reason,
+                                int prompt_tokens, int completion_tokens) {
+    return "{\"id\":\"" + id + "\",\"object\":\"text_completion\",\"model\":\"" +
+           model + "\",\"choices\":[{\"index\":0,\"text\":\"" + JsonEscape(text) +
+           "\",\"finish_reason\":\"" + finish_reason + "\"}]," +
+           Usage(prompt_tokens, completion_tokens) + "}";
+}
+
+std::string BuildTextChunk(const std::string& id, const std::string& model,
+                           const std::string& delta_text,
+                           const std::string& finish_reason) {
+    std::string out = "{\"id\":\"" + id + "\",\"object\":\"text_completion\",\"model\":\"" +
+                      model + "\",\"choices\":[{\"index\":0,\"text\":\"" +
+                      JsonEscape(delta_text) + "\",\"finish_reason\":";
+    out += finish_reason.empty() ? "null" : ("\"" + finish_reason + "\"");
+    out += "}]}";
+    return out;
+}
+
+std::string BuildModel(const std::string& id) {
+    return "{\"id\":\"" + JsonEscape(id) +
+           "\",\"object\":\"model\",\"created\":0,\"owned_by\":\"logestix\"}";
+}
+
+std::string BuildModelsList(const std::vector<std::string>& ids) {
+    std::string data = "[";
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        if (i) data += ",";
+        data += BuildModel(ids[i]);
+    }
+    data += "]";
+    return "{\"object\":\"list\",\"data\":" + data + "}";
+}
+
+std::string BuildError(const std::string& message, const std::string& type) {
+    return "{\"error\":{\"message\":\"" + JsonEscape(message) + "\",\"type\":\"" +
+           JsonEscape(type) + "\",\"param\":null,\"code\":null}}";
 }
 
 }  // namespace lsxnetwork
