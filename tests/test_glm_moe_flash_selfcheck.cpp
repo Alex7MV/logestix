@@ -11,6 +11,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "test_streaming_assert.h"
+#include "test_tool_roundtrip.h"
 
 using namespace lsxcommon;
 
@@ -67,6 +68,28 @@ TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
     sreq.input_ids = sids;
     sreq.max_gen_tokens = 2;
     ExpectStreamMatchesTokens(*model, sreq);
+
+    model->Unload();
+}
+
+TEST_CASE("GLM-5.3-Flash end-to-end tool round-trip (real weights)",
+          "[glm-flash][model][tool][real-model]")
+{
+    const std::string root = ModelRoot();
+    if (!fs::exists(root + "/logestix/model.index.json"))
+        SKIP("converted GLM-5.3-Flash not present");
+
+    ModelInitConfig cfg;
+    cfg.model_path = root;
+    cfg.model_type = "glm-5.3-flash";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    const std::vector<ToolCall> calls = RunToolRoundTrip(*model);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     model->Unload();
 }

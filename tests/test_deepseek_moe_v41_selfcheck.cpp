@@ -11,6 +11,7 @@
 #include "lsxcommon/model_factory.h"
 #include "lsxcommon/model_runtime.h"
 #include "test_streaming_assert.h"
+#include "test_tool_roundtrip.h"
 
 using namespace lsxcommon;
 
@@ -63,6 +64,28 @@ TEST_CASE("deepseek-v41 flash selfcheck: Paris, 3 bit-exact cycles")
     sreq.input_ids = sids;
     sreq.max_gen_tokens = 2;
     ExpectStreamMatchesTokens(*model, sreq);
+
+    model->Unload();
+}
+
+TEST_CASE("DeepSeek-V4.1-Flash end-to-end tool round-trip (real weights)",
+          "[deepseek-v41][model][tool][real-model]")
+{
+    const std::string root = ModelRoot();
+    if (!fs::exists(root + "/logestix/model.index.json"))
+        SKIP("converted DeepSeek-V4.1-Flash not present");
+
+    ModelInitConfig cfg;
+    cfg.model_path = root;
+    cfg.model_type = "deepseek-v4.1-flash";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    const std::vector<ToolCall> calls = RunToolRoundTrip(*model);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     model->Unload();
 }

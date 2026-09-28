@@ -17,6 +17,7 @@
 #include <spdlog/spdlog.h>
 
 #include "test_streaming_assert.h"
+#include "test_tool_roundtrip.h"
 
 #include <chrono>
 namespace {
@@ -102,6 +103,28 @@ TEST_CASE("DeepSeek-V4-Flash SelfCheck: 'The capital of France is' -> 'Paris', "
 
     // Plan 2 Task 12: the streamed callback must reproduce gen_tokens exactly.
     ExpectStreamMatchesTokens(*m, req);
+
+    m->Unload();
+}
+
+TEST_CASE("DeepSeek-V4-Flash end-to-end tool round-trip (real weights)",
+          "[deepseek][model][tool][real-model]")
+{
+    const std::filesystem::path model = DeepSeekModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("DeepSeek real model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Type() == "deepseek-v4-flash");
+    REQUIRE(m->Load());
+
+    const std::vector<lsxcommon::ToolCall> calls = RunToolRoundTrip(*m);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
 
     m->Unload();
 }
