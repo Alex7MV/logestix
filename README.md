@@ -188,7 +188,9 @@ own template is known and verified against its tokenizer/card:
 | GLM-5.3-Flash | `<\|system\|>` tools block; `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value></tool_call>` |
 | DeepSeek-V4 | `## Tools`; `<｜DSML｜tool_calls>` / `<｜DSML｜invoke>` / `<｜DSML｜parameter>` |
 | DeepSeek-V4.1 | `## Tools`; `<｜DSML｜ calls>` / `<｜DSML｜ invoke>` / `<｜DSML｜ parameter>` |
-| Gemma / Granite / Nemotron / GigaChat | generic Hermes `<tools>` block + `<tool_call>{json}</tool_call>` fallback |
+| Gemma-4 | `<\|tool>declaration:…<tool\|>`; `<\|tool_call>call:NAME{k:v}<tool_call\|>` |
+| Granite-4.2 | generic Hermes `<tools>` + `<tool_call>{json}</tool_call>` fallback |
+| Nemotron / GigaChat | generic Hermes fallback (not yet verified) |
 
 Kimi and GLM-5.2 (non-Flash) have no converted checkpoint in the vault, so their
 native formats are not yet implemented.

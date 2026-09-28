@@ -13,6 +13,7 @@
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
+#include "lsxcommon/gemma_tool_format.h"
 #include "fast_load_internal.h"
 
 namespace lsxcommon {
@@ -244,6 +245,24 @@ gpu::InferenceResult GemmaBaseModel::SelfCheck(const ModelRequest &req)
     opts.answer_window = 12;
     opts.substring_match = true;
     return runtime::RunParisSelfCheck(*this, req, opts);
+}
+
+bool GemmaBaseModel::BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                               const ChatConversation &conv,
+                                               std::vector<int32_t> &out_ids) const
+{
+    std::string text;
+    if (!RenderGemmaConversation(conv, text)) return false;
+    if (!AppendGemmaChatIds(tok, text, out_ids))
+        return BuildPromptInputIds(tok, text, out_ids);
+    return true;
+}
+
+bool GemmaBaseModel::ParseToolCalls(const ArrowTokenizerDb &tok,
+                                    const std::vector<int32_t> &gen_tokens,
+                                    std::vector<ToolCall> &out_calls) const
+{
+    return ParseGemmaTokenCalls(tok, gen_tokens, out_calls);
 }
 
 } // namespace lsxcommon

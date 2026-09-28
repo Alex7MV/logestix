@@ -38,6 +38,15 @@ public:
         return gemma::BuildPromptInputIds(tok, raw_prompt, out_ids);
     }
 
+    // Tool/function-calling bridge (step 4b): Gemma-4 native
+    // `<|tool_call>call:NAME{…}<tool_call|>` (gemma_tool_format.h).
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
+
 protected:
     // Hard geometry gate (protocol step 3): false when the loaded topology
     // does not match the frozen compile-time constants.
