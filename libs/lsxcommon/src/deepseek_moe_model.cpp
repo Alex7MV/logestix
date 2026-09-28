@@ -25,7 +25,8 @@ InferenceResult RunInferenceModel(
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
     cudaStream_t ext_stream = nullptr,
-    bool ignore_eos = false);
+    bool ignore_eos = false,
+    const lsxcommon::GenerationStream *gs = nullptr);
 } // namespace gpu
 
 DeepSeekV4FlashModel::DeepSeekV4FlashModel(ModelInitConfig cfg)
@@ -109,11 +110,14 @@ gpu::InferenceResult DeepSeekV4FlashModel::Infer(const ModelRequest &req)
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
     if (!loaded_) { r.error_msg = "model not loaded"; return r; }
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
     return RunUnderResidencyLock([&] {
         return gpu::RunInferenceModel(
             cfg_.model_path, req.input_ids, req.max_gen_tokens, *tok_db_, pw_,
             lsxcommon::sample::DefaultSampler(), stream(),
-            req.ignore_eos);
+            req.ignore_eos, &gs);
     });
 }
 

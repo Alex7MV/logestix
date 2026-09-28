@@ -16,6 +16,7 @@
 #include "lsxcommon/qwen_inference.h"     // QwenNvfp4Weight, QwenGenerationResult
 #include "lsxcommon/qwen_moe_inference.h"  // QwenMoeRoutedSlot
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/token_stream.h"
 
 #ifndef LSXCOMMON_GLM_FLASH_INFERENCE_H
 #define LSXCOMMON_GLM_FLASH_INFERENCE_H
@@ -155,7 +156,8 @@ cudaError_t RunGlmFlashGeneration(
     qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
     const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
-    sample::ISampler &sampler);
+    sample::ISampler &sampler,
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace glm_moe_flash
 } // namespace lsxcommon

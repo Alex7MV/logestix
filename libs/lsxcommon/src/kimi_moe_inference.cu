@@ -1596,7 +1596,8 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
                               const std::vector<int> &prompt_ids,
                               int max_gen_tokens, KimiGenerationResult &gen,
                               KimiExpertCacheState *cache, int eos_id,
-                              bool fast_math)
+                              bool fast_math,
+                              const lsxcommon::GenerationStream *gs)
 {
     gen = {};
     if (!pw.d_embed || !pw.d_head ||
@@ -1921,10 +1922,13 @@ cudaError_t RunKimiGeneration(cudaStream_t stream,
             return cudaErrorUnknown;
         }
         gen.tokens.push_back(next_id);
+        if (gs) gs->Emit(static_cast<std::uint32_t>(next_id),
+                         static_cast<std::uint32_t>(gen.tokens.size() - 1));
         ++generated;
         if (generated == 1) gen.first_maxv = next_maxv;
         cudaMemcpyAsync(d_ids + prefill_seq + step, &next_id,
                         sizeof(int), cudaMemcpyHostToDevice, stream);
+        if (gs && gs->Aborted()) break;
         if (generated >= max_gen_tokens) break;
     }
 

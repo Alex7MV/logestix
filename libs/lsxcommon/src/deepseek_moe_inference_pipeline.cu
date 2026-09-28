@@ -149,7 +149,8 @@ InferenceResult RunInferenceModel(
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
     cudaStream_t ext_stream = nullptr,
-    bool ignore_eos = false)
+    bool ignore_eos = false,
+    const lsxcommon::GenerationStream *gs = nullptr)
 {
     InferenceResult result;
     auto mp = model_path;
@@ -823,6 +824,14 @@ INFER_CHECK(run_hc_post(stream, d_attn_out, d_hidden,
 
         // Store generated token (always — gen_ids[0] used as first gen-step input)
         gen_ids.push_back(next_tok);
+        if (gs) {
+            const int idx = static_cast<int>(gen_ids.size()) - 1;
+            const int first_gen = static_cast<int>(input_ids.size()) - 1;
+            if (idx >= first_gen)
+                gs->Emit(static_cast<std::uint32_t>(next_tok),
+                         static_cast<std::uint32_t>(idx - first_gen));
+            if (gs->Aborted()) break;
+        }
 
         std::ostringstream step_oss;
         step_oss << "[inference] step=" << step << " tok=" << next_tok;

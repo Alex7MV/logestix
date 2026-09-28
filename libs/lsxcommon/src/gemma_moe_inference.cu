@@ -2526,7 +2526,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                const std::vector<int32_t> &input_ids,
                                int max_gen_tokens, const std::vector<int> &eos_ids,
                                float softcap, GemmaGenerationResult &out,
-                               GemmaKvCache &kv, GemmaGenContext *ctx)
+                               GemmaKvCache &kv, GemmaGenContext *ctx,
+                               const lsxcommon::GenerationStream *gs)
 {
     out = GemmaGenerationResult{};
     // Clear any sticky context error from prior async work so per-call
@@ -2667,6 +2668,7 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
 
     int32_t tok = ws.h_arg[0];
     out.tokens.push_back(tok);
+    if (gs) gs->Emit(static_cast<std::uint32_t>(tok), 0u);
 
     // ── Decode ──────────────────────────────────────────────────────────────
     for (int step = 1; step < max_gen_tokens; ++step) {
@@ -2732,6 +2734,10 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
         if (e != cudaSuccess) break;
         tok = ws.h_arg[0];
         out.tokens.push_back(tok);
+        if (gs)
+            gs->Emit(static_cast<std::uint32_t>(tok),
+                     static_cast<std::uint32_t>(out.tokens.size() - 1));
+        if (gs && gs->Aborted()) break;
     }
 
     // Capture the last-step logits (D2H).

@@ -100,6 +100,9 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
         // tri-state below is the routing source. kAuto follows the per-GPU
         // perf policy resolved at engine init (tc_fast_math_default).
         const FastMathMode eff = EffectiveFastMathMode(cfg_);
+        lsxcommon::GenerationStream gs;
+        gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+        gs.abort_flag = req.abort_flag;
         const bool fast_math =
             eff == FastMathMode::kOn
                 || (eff == FastMathMode::kAuto
@@ -107,7 +110,8 @@ gpu::InferenceResult KimiK27CodeModel::Infer(const ModelRequest &req)
         return kimi::RunKimiGeneration(stream(), pw_, experts_,
                                        req.input_ids, req.max_gen_tokens,
                                        gen, &expert_cache_,
-                                       req.ignore_eos ? lsxcommon::kIgnoreEosTokenId : Tokenizer().eos_id, fast_math);
+                                       req.ignore_eos ? lsxcommon::kIgnoreEosTokenId : Tokenizer().eos_id, fast_math,
+                                       &gs);
     });
     if (err != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(err, gen.error_msg);

@@ -1501,7 +1501,8 @@ cudaError_t RunExpGeneration(
     const std::vector<qwen_moe_exp::ExpPleShardView> &ple_shards,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     qwen::QwenGenerationResult &result, lsxcommon::sample::ISampler &sampler,
-    qwen::QwenKvCache *kv)
+    qwen::QwenKvCache *kv,
+    const lsxcommon::GenerationStream *gs)
 {
     using namespace lsxcommon::qwen_moe_exp;
     if (!kv) return cudaErrorInvalidValue;
@@ -2219,6 +2220,13 @@ cudaError_t RunExpGeneration(
         cudaMemcpy(hgen.data(), d_tokens, sizeof(int32_t) * (size_t)generated,
                    cudaMemcpyDeviceToHost);
         result.tokens.assign(hgen.begin(), hgen.end());
+        if (gs) {
+            for (int i = 0; i < generated; ++i) {
+                if (hgen[i] == eos_id) break;
+                gs->Emit(static_cast<std::uint32_t>(hgen[i]),
+                         static_cast<std::uint32_t>(i));
+            }
+        }
         result.eos_terminated = qwen_moe::TruncateTokensAtEos(result.tokens, eos_id);
         // Publish the last step's fp32 logits row for parity harnesses.
         std::vector<float> hlast(static_cast<size_t>(V));

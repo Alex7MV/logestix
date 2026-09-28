@@ -325,7 +325,8 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
                                int max_gen_tokens, const std::vector<int> &eos_ids,
                                float softcap, GemmaGenerationResult &out,
                                GemmaKvCache &kv,
-                               GemmaGenContext *ctx = nullptr);
+                               GemmaGenContext *ctx = nullptr,
+                               const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace gemma
 } // namespace lsxcommon

@@ -1488,7 +1488,8 @@ cudaError_t RunGlmFlashGeneration(
     qwen_moe::QwenMoeExpertStore &store, gpu::ExpertDeviceCache &cache,
     const std::vector<int32_t> &prompt, int max_new,
     const std::vector<int> &eos_ids, qwen::QwenGenerationResult &result,
-    sample::ISampler &sampler)
+    sample::ISampler &sampler,
+    const lsxcommon::GenerationStream *gs)
 {
     result = qwen::QwenGenerationResult{};
     using namespace frozen;
@@ -2045,6 +2046,9 @@ cudaError_t RunGlmFlashGeneration(
             if (cudaStreamSynchronize(stream) != cudaSuccess)
                 { result.error_msg = "sample sync"; break; }
             result.tokens.push_back(h_tok);
+            if (gs) gs->Emit(static_cast<std::uint32_t>(h_tok),
+                             static_cast<std::uint32_t>(result.tokens.size() - 1));
+            if (gs && gs->Aborted()) break;
             // TTFT: first generated token's forward is complete (the stream
             // was just synchronized on the argmax readback).
             if (generated == 0 && t_ttft) cudaEventRecord(t_ttft, stream);

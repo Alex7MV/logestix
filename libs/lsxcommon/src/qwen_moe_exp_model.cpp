@@ -255,12 +255,15 @@ gpu::InferenceResult Qwen38FlashNextModel::Infer(const ModelRequest &req)
         session_tail_.clear();
     }
     qwen::QwenGenerationResult gen;
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
     const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
     cudaError_t e = RunUnderResidencyLock([&] {
         return qwen_moe_exp::RunExpGeneration(
             stream(), pw_, experts_, cache_, ple_state_, qsa_, ple_shards_,
             session.gen_input, req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get());
+            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
     });
     if (e != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(e, gen.error_msg);

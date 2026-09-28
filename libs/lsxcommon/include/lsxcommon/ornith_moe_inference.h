@@ -214,6 +214,7 @@ cudaError_t RunOrnithMoeGeneration(
     OrnithMoeGenScratch &scratch,
     const std::vector<int32_t> &prompt, int max_new, int eos_id,
     lsxcommon::qwen::QwenGenerationResult &result,
-    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv);
+    lsxcommon::sample::ISampler &sampler, lsxcommon::qwen::QwenKvCache *kv,
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace lsxcommon::ornith

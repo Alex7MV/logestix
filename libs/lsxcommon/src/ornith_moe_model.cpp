@@ -285,12 +285,15 @@ gpu::InferenceResult OrnithMoeModelBase::RunInferShared(const ModelRequest &req)
     const std::vector<int32_t> &gen_input = session.gen_input;
 
     qwen::QwenGenerationResult gen;
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
     const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
     cudaError_t e = RunUnderResidencyLock([&] {
         return ornith::RunOrnithMoeGeneration(
             stream(), pw_, experts_, cache_, scratch_, gen_input,
             req.max_gen_tokens, eos_id, gen,
-            lsxcommon::sample::DefaultSampler(), kv_.get());
+            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
     });
     // Uniform failure contract (GLM/Kimi parity): both a CUDA error and a
     // family-level generation failure abort the request and drop the session.

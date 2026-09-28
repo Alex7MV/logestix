@@ -146,7 +146,8 @@ gpu::InferenceResult RunDeepSeekV41Inference(
     int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
     const V41PinnedWeights &pw, V41ExpertDb &expert_db,
     lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
-    bool ignore_eos)
+    bool ignore_eos,
+    const lsxcommon::GenerationStream *gs)
 {
     (void)model_path;
     gpu::InferenceResult result;
@@ -864,6 +865,14 @@ gpu::InferenceResult RunDeepSeekV41Inference(
                       " maxv=" + std::to_string(maxv));
         }
         gen.push_back(next_tok);
+        if (gs) {
+            const int idx = static_cast<int>(gen.size()) - 1;
+            const int first_gen = prompt_len - 1;
+            if (idx >= first_gen)
+                gs->Emit(static_cast<std::uint32_t>(next_tok),
+                         static_cast<std::uint32_t>(idx - first_gen));
+            if (gs->Aborted()) break;
+        }
         if (!first_gen_captured && step == prompt_len - 1) {
             result.first_gen_tok_id = next_tok;
             result.first_gen_maxv = maxv;
