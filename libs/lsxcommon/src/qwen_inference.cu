@@ -1812,7 +1812,8 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                               int eos_id,
                               QwenGenerationResult &result,
                               lsxcommon::sample::ISampler &sampler,
-                              QwenKvCache *kv)
+                              QwenKvCache *kv,
+                              const lsxcommon::GenerationStream *gs)
 {
     const QwenTopology &top = pw.top;
     const int H = top.hidden_size, I = top.intermediate_size;
@@ -2061,8 +2062,14 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
             cudaEventSynchronize(tok_ready);
             if (step == 0) cudaEventRecord(t_ttft, stream);
             result.tokens.push_back(tok);
+            if (gs) gs->Emit(static_cast<std::uint32_t>(tok),
+                             static_cast<std::uint32_t>(result.tokens.size() - 1));
             if (tok == eos_id) {
                 result.eos_terminated = true;
+                break;
+            }
+            if (gs && gs->Aborted()) {
+                result.eos_terminated = false;
                 break;
             }
             ids.push_back(tok);
@@ -2200,8 +2207,14 @@ cudaError_t RunQwenGeneration(cudaStream_t stream,
                 if (generated == 0) cudaEventRecord(t_ttft, stream);
                 result.tokens.push_back(tok);
                 ++generated;
+                if (gs) gs->Emit(static_cast<std::uint32_t>(tok),
+                                 static_cast<std::uint32_t>(result.tokens.size() - 1));
                 if (tok == eos_id) {
                     result.eos_terminated = true;
+                    break;
+                }
+                if (gs && gs->Aborted()) {
+                    result.eos_terminated = false;
                     break;
                 }
                 cur = tok;

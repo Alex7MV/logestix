@@ -9,6 +9,7 @@
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/qwen_inference_load.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/token_stream.h"
 
 namespace lsxcommon {
 namespace qwen {
@@ -284,7 +285,8 @@ cudaError_t RunQwenGeneration(
     QwenGenerationResult &result,
     lsxcommon::sample::ISampler &sampler =
         lsxcommon::sample::DefaultSampler(),
-    QwenKvCache *kv = nullptr);
+    QwenKvCache *kv = nullptr,
+    const lsxcommon::GenerationStream *gs = nullptr);
 
 } // namespace qwen
 } // namespace lsxcommon
