@@ -1208,8 +1208,8 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank,
     // mixed[H] then inj[hc] in one allocation; x32_floats == H*hc >= H covers
     // the mixed part and kHcCount floats size the inject tail. Both are plain
     // float buffers (scalar access in hc_epilogue_kernel), so no alignment
-    // padding is needed between them.
-    static_assert(frozen::kHcCount >= 1, "mixer scratch layout");
+    // padding is needed between them. The `hc` passed by the mixer entry is
+    // checked against frozen::kHcCount there, so the two stay equal.
     const size_t need_mixer =
         (static_cast<size_t>(x32_floats) + frozen::kHcCount) * sizeof(float);
     if (s.mixer_bytes < need_mixer) {
@@ -1469,6 +1469,12 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
                                 int hc, int lowrank, __half *d_out)
 {
     if (seq != 1) return cudaErrorInvalidValue;
+    // EnsureScratchScratchOnly sizes the mixer's inject tail from the frozen
+    // passport (frozen::kHcCount), so a runtime `hc` that disagrees with it
+    // would run against a mismatched scratch. hc_count is cross-checked
+    // against the passport at model load; assert the same contract here so the
+    // entry is safe on its own.
+    if (hc != frozen::kHcCount) return cudaErrorInvalidValue;
     // Mixer output rides persistent scratch (per-call cudaMalloc/cudaFree
     // showed up as measurable host stalls in the decode loop); no inject.
     HcScratch &s = HcScratchInstance();

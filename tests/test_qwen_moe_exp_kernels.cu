@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "qwen_moe_exp_device_math.h"
+#include "qwen_moe_exp_constants.h"
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
 #include <algorithm>
@@ -777,4 +778,45 @@ TEST_CASE("hc cached scratch is isolated across host threads",
     ta.join();
     tb.join();
     CHECK(wrong.load() == 0);
+}
+
+TEST_CASE("hc mixer rejects a gate count that disagrees with the frozen passport",
+          "[qwen-exp-kernels]")
+{
+    // EnsureScratchScratchOnly sizes the mixer's inject tail from
+    // frozen::kHcCount, while RunExpHcMixerCached receives `hc` at runtime. A
+    // checkpoint whose hc_count differs from the passport would otherwise be
+    // accepted with a mismatched scratch, and the equality would rest on a
+    // cross-file validation that this entry does not state. The entry must
+    // reject it up front instead.
+    constexpr int H = 64, lowrank = 32;
+    using frozen = lsxcommon::qwen_moe_exp::frozen;
+
+    auto run_with_hc = [&](int hc) {
+        const int n = H * hc;
+        CudaBuf down(static_cast<size_t>(lowrank) * n * 2);
+        CudaBuf up(static_cast<size_t>(n) * lowrank * 2);
+        CudaBuf norm(static_cast<size_t>(n));
+        CudaBuf hyper(static_cast<size_t>(n) * 2);
+        CudaBuf out(static_cast<size_t>(H) * 2);
+        lsxcommon::qwen_moe_exp::ExpHcDequantCache w;
+        w.down = down.as<__half>();
+        w.up = up.as<__half>();
+        w.down_elems = static_cast<int64_t>(lowrank) * n;
+        w.up_elems = static_cast<int64_t>(n) * lowrank;
+        // inject stays null: the mixer path never writes the inject tail, so
+        // this exercises the entry contract, not the scratch.
+        return lsxcommon::qwen_moe_exp::RunExpHcMixerCached(
+            nullptr, hyper.as<__half>(), w, norm.as<uint8_t>(), /*seq=*/1, H, hc,
+            lowrank, out.as<__half>());
+    };
+
+    // Positive control: the passport value is accepted.
+    CHECK(run_with_hc(frozen::kHcCount) == cudaSuccess);
+    CHECK(cudaGetLastError() == cudaSuccess);
+
+    // Anything else is rejected before any device work.
+    CHECK(run_with_hc(frozen::kHcCount + 1) == cudaErrorInvalidValue);
+    CHECK(run_with_hc(frozen::kHcCount - 1) == cudaErrorInvalidValue);
+    CHECK(cudaGetLastError() == cudaSuccess);
 }
