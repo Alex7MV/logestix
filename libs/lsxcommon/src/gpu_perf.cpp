@@ -1,5 +1,6 @@
 #include "lsxcommon/gpu_perf.h"
 
+#include "json_escape.h"
 #include <cuda_runtime.h>
 
 #include <absl/container/flat_hash_map.h>
@@ -245,30 +246,7 @@ namespace {
 
 // JSON-escape a string for the hand-rolled perf-cache writer (the GPU name is
 // device-provided and must not be able to break the document).
-std::string JsonEscape(const std::string &in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
+using lsxcommon::json::JsonEscape;
 
 } // namespace
 

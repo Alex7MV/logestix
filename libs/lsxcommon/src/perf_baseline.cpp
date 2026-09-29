@@ -1,5 +1,6 @@
 #include "lsxcommon/perf_baseline.h"
 
+#include "json_escape.h"
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 
@@ -12,30 +13,7 @@ namespace {
 
 // JSON-escape a string for the hand-rolled writer: quotes, backslashes and
 // control chars must not break the document (a prompt can contain any of them).
-std::string JsonEscape(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
+using lsxcommon::json::JsonEscape;
 
 } // namespace
 

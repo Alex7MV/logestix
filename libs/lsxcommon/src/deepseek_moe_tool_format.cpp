@@ -1,5 +1,6 @@
 #include "lsxcommon/deepseek_moe_tool_format.h"
 
+#include "json_escape.h"
 #include <simdjson.h>
 
 #include <cstdio>
@@ -20,30 +21,7 @@ constexpr std::string_view kThink = "<think>";
 constexpr std::string_view kThinkEnd = "</think>";
 constexpr std::string_view kDsml = "｜DSML｜";
 
-std::string JsonEscape(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
+using lsxcommon::json::JsonEscape;
 
 std::string SerializeJson(simdjson::dom::element e);
 

@@ -303,6 +303,13 @@ simdjson::error_code OpenAiEndpoint::ParseLegacyCompletionRequest(
     return simdjson::SUCCESS;
 }
 
+// NOTE: lsxcommon/src/json_escape.h holds the canonical implementation of this
+// function (JSON RFC 8259: control chars as \u00XX). It is byte-identical to the
+// copy below but cannot be shared as-is: lsxnetwork does not link lsxcommon.
+// If lsxnetwork ever starts linking it, delete this function and include that
+// header instead. Do NOT switch to absl::CEscape -- it is a C escape, not a
+// JSON one (octal \001 for control bytes, \' for the apostrophe); neither is a
+// valid JSON string escape.
 std::string JsonEscape(const std::string& in) {
     std::string out;
     out.reserve(in.size() + 8);
