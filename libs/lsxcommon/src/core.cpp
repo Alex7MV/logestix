@@ -1,6 +1,8 @@
 #include "lsxcommon/core.h"
 #include "lsxcommon/log.h"
 
+#include <cuda_runtime.h>
+
 #include <spdlog/spdlog.h>
 #include <spdlog/async.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -13,6 +15,17 @@
 #include <vector>
 
 namespace lsxcommon {
+
+void cudaFreeIgnoreShutdown(void* ptr) {
+    if (ptr == nullptr) return;
+    const cudaError_t e = cudaFree(ptr);
+    if (e == cudaSuccess || e == cudaErrorCudartUnloading) return;
+    // Do NOT log through the async spdlog logger here: this runs from static /
+    // thread-local destructors, possibly after Core::Shutdown() has torn the
+    // logger down.
+    std::fprintf(stderr, "[core] cudaFreeIgnoreShutdown: %s\n",
+                 cudaGetErrorString(e));
+}
 
 void Core::Initialize(const std::string& log_file_path) {
     try {

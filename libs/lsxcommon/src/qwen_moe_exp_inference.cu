@@ -1,5 +1,7 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
+#include "lsxcommon/core.h"
+
 #include "qwen_moe_exp_constants.h"
 #include "lsxcommon/lsx_tc_gemm.h"
 #include "lsxcommon/qwen_inference.h"
@@ -979,7 +981,7 @@ struct PLEConvScratch {
     size_t bytes = 0;
     ~PLEConvScratch()
     {
-        if (d_w) cudaFree(d_w);
+        cudaFreeIgnoreShutdown(d_w);
     }
 };
 
@@ -1087,17 +1089,19 @@ struct HcScratch {
            inject_bytes = 0, normed_bytes = 0, dn_bytes = 0, mixer_bytes = 0;
     ~HcScratch()
     {
-        if (h_down) cudaFree(h_down);
-        if (h_up) cudaFree(h_up);
-        if (h_inject) cudaFree(h_inject);
-        if (d_down) cudaFree(d_down);
-        if (d_up) cudaFree(d_up);
-        if (d_inject) cudaFree(d_inject);
-        if (d_x32) cudaFree(d_x32);
-        if (d_upout) cudaFree(d_upout);
-        if (d_normed) cudaFree(d_normed);
-        if (d_dn) cudaFree(d_dn);
-        if (d_mixer_mixed) cudaFree(d_mixer_mixed);
+        // Tolerates cudaErrorCudartUnloading at process exit (see
+        // cudaFreeIgnoreShutdown).
+        cudaFreeIgnoreShutdown(h_down);
+        cudaFreeIgnoreShutdown(h_up);
+        cudaFreeIgnoreShutdown(h_inject);
+        cudaFreeIgnoreShutdown(d_down);
+        cudaFreeIgnoreShutdown(d_up);
+        cudaFreeIgnoreShutdown(d_inject);
+        cudaFreeIgnoreShutdown(d_x32);
+        cudaFreeIgnoreShutdown(d_upout);
+        cudaFreeIgnoreShutdown(d_normed);
+        cudaFreeIgnoreShutdown(d_dn);
+        cudaFreeIgnoreShutdown(d_mixer_mixed);
         // d_mixer_inj aliases d_mixer_mixed + offset (no separate allocation);
         // freeing it would pass an interior pointer to cudaFree.
     }
@@ -1112,14 +1116,24 @@ HcScratch &HcScratchInstance() {
     return s;
 }
 
+// Grow-only scratch allocators. A reallocation frees the previous buffers,
+// which a prior call's kernels on `stream` may still be consuming; the caller
+// passes its generation stream and the reclaim path syncs it before the free
+// (steady state never reallocates, so the hot path is unaffected). Clearing the
+// alias before the realloc keeps a failed cudaMalloc from leaving a dangling
+// interior pointer.
 cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
-                          const qwen::QwenNvfp4Weight &up, int x32_floats)
+                          const qwen::QwenNvfp4Weight &up, int x32_floats,
+                          cudaStream_t stream)
 {
-
     HcScratch &s = HcScratchInstance();
+    const auto reclaim = [stream] {
+        if (stream) (void)cudaStreamSynchronize(stream);
+    };
     const size_t db = static_cast<size_t>(down.rows) * down.cols;
     const size_t ub = static_cast<size_t>(up.rows) * up.cols;
     if (s.down_bytes < db * sizeof(__half)) {
+        reclaim();
         if (s.h_down) cudaFree(s.h_down);
         if (cudaMalloc(&s.h_down, db * sizeof(__half)) != cudaSuccess)
             return cudaGetLastError();
@@ -1128,6 +1142,7 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
         s.down_bytes = db * sizeof(__half);
     }
     if (s.up_bytes < ub * sizeof(__half)) {
+        reclaim();
         if (s.h_up) cudaFree(s.h_up);
         if (cudaMalloc(&s.h_up, ub * sizeof(__half)) != cudaSuccess)
             return cudaGetLastError();
@@ -1137,12 +1152,14 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
     }
     const size_t need_x = static_cast<size_t>(x32_floats) * sizeof(float);
     if (s.x_bytes < need_x) {
+        reclaim();
         if (s.d_x32) cudaFree(s.d_x32);
         if (cudaMalloc(&s.d_x32, need_x) != cudaSuccess)
             return cudaGetLastError();
         s.x_bytes = need_x;
     }
     if (s.upout_bytes < need_x) {
+        reclaim();
         if (s.d_upout) cudaFree(s.d_upout);
         if (cudaMalloc(&s.d_upout, need_x) != cudaSuccess)
             return cudaGetLastError();
@@ -1151,23 +1168,30 @@ cudaError_t EnsureScratch(const qwen::QwenNvfp4Weight &down,
     return cudaSuccess;
 }
 
-cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
+cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank,
+                                     cudaStream_t stream)
 {
     HcScratch &s = HcScratchInstance();
+    const auto reclaim = [stream] {
+        if (stream) (void)cudaStreamSynchronize(stream);
+    };
     const size_t need_x = static_cast<size_t>(x32_floats) * sizeof(float);
     if (s.x_bytes < need_x) {
+        reclaim();
         if (s.d_x32) cudaFree(s.d_x32);
         if (cudaMalloc(&s.d_x32, need_x) != cudaSuccess)
             return cudaGetLastError();
         s.x_bytes = need_x;
     }
     if (s.upout_bytes < need_x) {
+        reclaim();
         if (s.d_upout) cudaFree(s.d_upout);
         if (cudaMalloc(&s.d_upout, need_x) != cudaSuccess)
             return cudaGetLastError();
         s.upout_bytes = need_x;
     }
     if (s.normed_bytes < need_x) {
+        reclaim();
         if (s.d_normed) cudaFree(s.d_normed);
         if (cudaMalloc(&s.d_normed, need_x) != cudaSuccess)
             return cudaGetLastError();
@@ -1175,21 +1199,28 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
     }
     const size_t need_dn = static_cast<size_t>(lowrank) * sizeof(float);
     if (s.dn_bytes < need_dn) {
+        reclaim();
         if (s.d_dn) cudaFree(s.d_dn);
         if (cudaMalloc(&s.d_dn, need_dn) != cudaSuccess)
             return cudaGetLastError();
         s.dn_bytes = need_dn;
     }
+    // mixed[H] then inj[hc] in one allocation; x32_floats == H*hc >= H covers
+    // the mixed part, the (x32_floats&1) slot keeps inj 4-byte aligned, and
+    // kHcCount floats size the inject tail.
+    static_assert(frozen::kHcCount >= 1, "mixer scratch layout");
     const size_t need_mixer =
-        (static_cast<size_t>(x32_floats) + 8) * sizeof(float);
+        (static_cast<size_t>(x32_floats) + (x32_floats & 1) +
+         frozen::kHcCount) *
+        sizeof(float);
     if (s.mixer_bytes < need_mixer) {
+        reclaim();
         // d_mixer_inj aliases d_mixer_mixed + offset: free only the real
         // allocation, and clear the alias so a failed realloc below cannot
         // leave a dangling interior pointer for the destructor to free.
         if (s.d_mixer_mixed) cudaFree(s.d_mixer_mixed);
         s.d_mixer_mixed = nullptr;
         s.d_mixer_inj = nullptr;
-        // mixed[H] followed by inj[hc] in one allocation.
         if (cudaMalloc(&s.d_mixer_mixed, need_mixer) != cudaSuccess)
             return cudaGetLastError();
         s.d_mixer_inj =
@@ -1199,12 +1230,14 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
     return cudaSuccess;
 }
 
-cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w)
+cudaError_t EnsureInjectScratch(const qwen::QwenNvfp4Weight &inject_w,
+                                cudaStream_t stream)
 {
     HcScratch &s = HcScratchInstance();
     const size_t ib =
         static_cast<size_t>(inject_w.rows) * inject_w.cols * sizeof(__half);
     if (s.inject_bytes < ib) {
+        if (stream) (void)cudaStreamSynchronize(stream);
         if (s.h_inject) cudaFree(s.h_inject);
         if (cudaMalloc(&s.h_inject, ib) != cudaSuccess)
             return cudaGetLastError();
@@ -1321,9 +1354,9 @@ cudaError_t RunExpHcGatedResidual(
     if (smem_floats * sizeof(float) > 227 * 1024)
         return cudaErrorInvalidValue;
     HcScratch &s = HcScratchInstance();
-    cudaError_t e = EnsureScratch(down, up, n);
+    cudaError_t e = EnsureScratch(down, up, n, stream);
     if (e != cudaSuccess) return e;
-    e = EnsureInjectScratch(inject_w);
+    e = EnsureInjectScratch(inject_w, stream);
     if (e != cudaSuccess) return e;
     if (gpu::dequant_shared_nvfp4(stream, down.d_packed, down.packed_bytes,
                                   down.d_scales, down.scale_bytes,
@@ -1385,7 +1418,7 @@ cudaError_t RunExpHcGatedResidualCached(
     // (the single-block kernel is bandwidth-bound to one SM). Bit-exact
     // reduction orders are preserved in each kernel.
     HcScratch &s = HcScratchInstance();
-    cudaError_t e = EnsureScratchScratchOnly(n, lowrank);
+    cudaError_t e = EnsureScratchScratchOnly(n, lowrank, stream);
     if (e != cudaSuccess) return e;
     half_to_float_rows_kernel<<<(n + 255) / 256, 256, 0, stream>>>(
         d_hyper_input, s.d_x32, n);
@@ -1441,7 +1474,7 @@ cudaError_t RunExpHcMixerCached(cudaStream_t stream, const __half *d_hidden,
     // Mixer output rides persistent scratch (per-call cudaMalloc/cudaFree
     // showed up as measurable host stalls in the decode loop); no inject.
     HcScratch &s = HcScratchInstance();
-    cudaError_t e = EnsureScratchScratchOnly(H * hc, lowrank);
+    cudaError_t e = EnsureScratchScratchOnly(H * hc, lowrank, stream);
     if (e != cudaSuccess) return e;
     float *d_mixed = s.d_mixer_mixed, *d_inj = s.d_mixer_inj;
     if (!d_mixed || !d_inj) return cudaErrorInvalidValue;

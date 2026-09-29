@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "lsxcommon/core.h"
 #include "lsxcommon/sampling.h"
 
 using lsxcommon::sample::GreedySampler;
@@ -177,6 +178,16 @@ TEST_CASE("GreedySampler is safe across concurrent streams", "[sampling]") {
 
     cudaFree(d_b);
     cudaFree(d_a);
+}
+
+TEST_CASE("cudaFreeIgnoreShutdown tolerates null and frees real memory",
+          "[sampling][core]")
+{
+    lsxcommon::cudaFreeIgnoreShutdown(nullptr);  // no-op
+    void *p = nullptr;
+    REQUIRE(cudaMalloc(&p, 64) == cudaSuccess);
+    lsxcommon::cudaFreeIgnoreShutdown(p);
+    CHECK(cudaGetLastError() == cudaSuccess);
 }
 
 TEST_CASE("DefaultSampler is a stable singleton", "[sampling]") {

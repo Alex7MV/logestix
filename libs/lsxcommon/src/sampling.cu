@@ -1,5 +1,7 @@
 #include "lsxcommon/sampling.h"
 
+#include "lsxcommon/core.h"
+
 namespace lsxcommon {
 namespace sample {
 
@@ -21,8 +23,8 @@ struct GreedyScratch {
     float *val = nullptr;
     int32_t *idx = nullptr;
     ~GreedyScratch() {
-        if (val) cudaFree(val);
-        if (idx) cudaFree(idx);
+        cudaFreeIgnoreShutdown(val);
+        cudaFreeIgnoreShutdown(idx);
     }
 };
 
