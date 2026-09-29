@@ -423,6 +423,9 @@ void LayerWeights::Free()
     if (d_idx_comp_wgate)   cudaFree(d_idx_comp_wgate);
     if (d_idx_comp_ape)     cudaFree(d_idx_comp_ape);
     if (d_idx_comp_norm)    cudaFree(d_idx_comp_norm);
+    // Null every field so a second Free() is a no-op (load_pinned_weights
+    // releases its partial allocation on error paths, then the caller frees).
+    *this = LayerWeights{};
 }
 
 void PinnedWeights::Free()
@@ -433,6 +436,14 @@ void PinnedWeights::Free()
     if (d_hc_head_fn)   cudaFree(d_hc_head_fn);
     if (d_hc_head_base) cudaFree(d_hc_head_base);
     if (d_hc_head_scale)cudaFree(d_hc_head_scale);
+    // Idempotent: idempotent reload (Free at load_pinned_weights entry) and
+    // caller cleanup after an error-path release must not double free.
+    d_embed = nullptr;
+    d_head = nullptr;
+    d_final_norm = nullptr;
+    d_hc_head_fn = nullptr;
+    d_hc_head_base = nullptr;
+    d_hc_head_scale = nullptr;
     for (auto &l : layers) l.Free();
     resident_bytes = 0;
 }
