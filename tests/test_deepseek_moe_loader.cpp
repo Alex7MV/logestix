@@ -242,6 +242,9 @@ TEST_CASE("DeepSeek loader errors on missing layer file",
     lsxcommon::gpu::PinnedWeights pw;
     CHECK(lsxcommon::gpu::load_pinned_weights(model.string(), pw, stream)
           == cudaErrorInvalidValue);
+    // Drop any sticky error the failed load may have left so the Free() checks
+    // below reflect Free() alone (independent of load's internal cleanup).
+    (void)cudaGetLastError();
     // load_pinned_weights already releases its partial allocation on the error
     // path; the caller's Free() must be a no-op, not a double free. A leaked
     // device error here means the pointers were not nulled after the first

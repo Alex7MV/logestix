@@ -445,6 +445,8 @@ void PinnedWeights::Free()
     d_hc_head_base = nullptr;
     d_hc_head_scale = nullptr;
     for (auto &l : layers) l.Free();
+    layers.clear();
+    vocab_size = 0;
     resident_bytes = 0;
 }
 
