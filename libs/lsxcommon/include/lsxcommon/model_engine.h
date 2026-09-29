@@ -60,7 +60,10 @@ private:
 
     // Session lifetime counter: InitializeEngine on 0->1, ShutdownEngine on
     // 1->0. Kept separate from initialized_ so direct Initialize/Shutdown
-    // calls keep their unconditional toggle semantics.
+    // calls keep their unconditional toggle semantics. Do NOT mix a direct
+    // InitializeEngine()/ShutdownEngine() with Session guards: the Session
+    // counter would not account for the direct call (an unbalanced release is
+    // clamped, never shuts down on underflow).
     void AcquireSession();
     void ReleaseSession();
 

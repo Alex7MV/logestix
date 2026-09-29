@@ -32,8 +32,15 @@ void InferenceEngine::AcquireSession()
 
 void InferenceEngine::ReleaseSession()
 {
-    if (session_depth_.fetch_sub(1, std::memory_order_acq_rel) == 1)
-        ShutdownEngine();
+    const int prev = session_depth_.fetch_sub(1, std::memory_order_acq_rel);
+    if (prev <= 0) {
+        // Unbalanced release (e.g. a direct InitializeEngine() paired with a
+        // Session): clamp instead of wrapping the counter below zero, which
+        // would make a later 1->0 shutdown unreachable.
+        session_depth_.store(0, std::memory_order_release);
+        return;
+    }
+    if (prev == 1) ShutdownEngine();
 }
 
 void InferenceEngine::ShutdownEngine()
