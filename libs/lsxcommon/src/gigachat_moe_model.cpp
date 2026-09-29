@@ -257,7 +257,8 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
                 TokenChunk c;
                 c.token_id = static_cast<uint32_t>(next);
                 c.step_t = static_cast<uint32_t>(step);
-                c.logit_maxv = r.first_gen_maxv;
+                // Current step's max logit, not the step-0 value.
+                c.logit_maxv = logits[static_cast<size_t>(next)];
                 req.token_callback(c);
             }
             if (req.abort_flag && req.abort_flag->load()) break;
