@@ -93,6 +93,11 @@ TEST_CASE("Loader round-trip with synthetic PackedExpert", "[deepseek][loader]")
     CHECK(loaded.w1_global_scale == expert.w1_global_scale);
     CHECK(loaded.w2_global_scale == expert.w2_global_scale);
     CHECK(loaded.w3_global_scale == expert.w3_global_scale);
+    // `loaded` is a view into the mapping, so the mapping may only be dropped
+    // after the last read. On Windows an open mapping holds a file lock that
+    // makes remove() fail; on Linux unlinking an open mmap is legal, which is
+    // why this only surfaces here.
+    mmap_res.ValueOrDie().reset();
     fs::remove(path);
 }
 
@@ -298,6 +303,7 @@ TEST_CASE("Load expert with empty w1 fields", "[deepseek][loader][edge]")
     CHECK(loaded.w1_global_scale == expert.w1_global_scale);
     CHECK(loaded.w2_global_scale == expert.w2_global_scale);
     CHECK(loaded.w3_global_scale == expert.w3_global_scale);
+    mmap_res.ValueOrDie().reset();   // see the round-trip case above
     fs::remove(path);
 }
 
