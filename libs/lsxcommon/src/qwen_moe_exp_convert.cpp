@@ -154,10 +154,11 @@ int parse_ple_shard_index(const std::string &body)
     const size_t end = body.find('.', start);
     if (end == std::string::npos) return -1;
     if (body.substr(end) != ".weight") return -1;
-    if (end <= start) return -1;
-    for (size_t i = start; i < end; ++i)
-        if (body[i] < '0' || body[i] > '9') return -1;
-    return std::stoi(body.substr(start, end - start));
+    int shard = 0;
+    if (!detail::ParseTensorIndex(
+            std::string_view(body).substr(start, end - start), shard))
+        return -1;  // malformed / implausible index -> not a PLE shard
+    return shard;
 }
 
 bool is_ple_meta_body(const std::string &body)

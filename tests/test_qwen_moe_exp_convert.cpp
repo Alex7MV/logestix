@@ -149,6 +149,14 @@ TEST_CASE("qwen4_exp classifier tolerates malformed layer indices",
     CHECK(classify_qwen4_exp_tensor(
               "model.language_model.layers.self_attn.q_proj.weight").kind ==
           ExpTensorKind::Unknown);
+
+    // A PLE n-gram shard index with an implausible magnitude must classify as
+    // Unknown, not overflow/throw std::out_of_range out of parse_ple_shard_index.
+    const std::string huge_shard =
+        "model.language_model.layers.1.ple.ple_embedding.ngram_embedding."
+        "shard_99999999999999999999.weight";
+    CHECK_NOTHROW(classify_qwen4_exp_tensor(huge_shard));
+    CHECK(classify_qwen4_exp_tensor(huge_shard).kind == ExpTensorKind::Unknown);
 }
 
 TEST_CASE("qwen4_exp NVFP4 policy", "[qwen-exp-convert]")
