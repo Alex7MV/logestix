@@ -129,6 +129,17 @@ struct Bufs {
     }
 };
 
+// Device copy of `hx` placed at a 2-half offset, so the returned pointer is
+// 4-byte but not 16-byte aligned. The caller owns `raw`.
+__half *MisalignedXDevice(const std::vector<__half> &hx, __half *&raw)
+{
+    const size_t n = hx.size();
+    REQUIRE(cudaMalloc(&raw, (n + 2) * sizeof(__half)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(raw + 2, hx.data(), n * sizeof(__half),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    return raw + 2;
+}
+
 }  // namespace
 
 TEST_CASE("RunLsxNvfp4Gemm rejects invalid arguments", "[lsxnvfp4][dispatch]")
@@ -542,4 +553,57 @@ TEST_CASE("GEMV KP grain is bit-stable across launch configs (qwen3.8-27B shapes
         }
         d.Free();
     }
+}
+
+TEST_CASE("Sliced GEMV activation guard tests uint4 (16B) alignment",
+          "[lsxnvfp4][gemv][alignment]")
+{
+    // x_vec guards the uint4 load at `x + xb`, so it must reject any pointer
+    // that is not 16-byte aligned. A (& 3u) mask (the __half2 alignment)
+    // admitted a 4-byte-only pointer into the vector branch and faulted with
+    // cudaErrorMisalignedAddress. K=512/N=64 routes through the sliced kernel.
+    Bufs b;
+    b.Init(1, 512, 64);
+    const float gs = 0.5f;
+    std::vector<float> ref((size_t)b.N);
+    HostRefPlain(b.hx.data(), b.hp.data(), b.hs.data(), gs, ref.data(), 1,
+                 b.K, b.N, false);
+    __half *raw = nullptr;
+    const __half *xmis = MisalignedXDevice(b.hx, raw);
+    REQUIRE((reinterpret_cast<uintptr_t>(xmis) & 3u) == 0u);
+    REQUIRE((reinterpret_cast<uintptr_t>(xmis) & 15u) != 0u);
+
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, xmis, b.dp, b.ds, gs,
+                                                b.dy, b.K, b.N) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto hy = b.Read(b.dy);
+    for (int n = 0; n < b.N; ++n) {
+        INFO("n=" << n << " ref=" << ref[n] << " got=" << __half2float(hy[n]));
+        CHECK(std::abs(__half2float(hy[n]) - ref[n]) <
+              2e-3f * std::abs(ref[n]) + 2e-4f);
+    }
+    cudaFree(raw);
+    b.Free();
+}
+
+TEST_CASE("Warp-per-row GEMV activation guard tests uint4 (16B) alignment",
+          "[lsxnvfp4][gemv][alignment]")
+{
+    // Second x_vec site (lsx_nvfp4_gemv_warprow_kernel): K>=4096, N>=8192 and
+    // fast math on route here. Only absence of a misaligned-address fault is
+    // checked -- a full host reference over N*K == 33M elements adds nothing
+    // to the guard contract.
+    Bufs b;
+    b.Init(1, 4096, 8192);
+    const float gs = 0.5f;
+    __half *raw = nullptr;
+    const __half *xmis = MisalignedXDevice(b.hx, raw);
+    lsx_nvfp4::SetLsxTcFastMath(true);
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, xmis, b.dp, b.ds, gs,
+                                                b.dy, b.K, b.N) == cudaSuccess);
+    const cudaError_t ce = cudaDeviceSynchronize();
+    lsx_nvfp4::SetLsxTcFastMath(false);
+    REQUIRE(ce == cudaSuccess);
+    cudaFree(raw);
+    b.Free();
 }

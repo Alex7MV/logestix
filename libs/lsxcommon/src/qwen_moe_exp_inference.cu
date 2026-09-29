@@ -1206,13 +1206,12 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank,
         s.dn_bytes = need_dn;
     }
     // mixed[H] then inj[hc] in one allocation; x32_floats == H*hc >= H covers
-    // the mixed part, the (x32_floats&1) slot keeps inj 4-byte aligned, and
-    // kHcCount floats size the inject tail.
+    // the mixed part and kHcCount floats size the inject tail. Both are plain
+    // float buffers (scalar access in hc_epilogue_kernel), so no alignment
+    // padding is needed between them.
     static_assert(frozen::kHcCount >= 1, "mixer scratch layout");
     const size_t need_mixer =
-        (static_cast<size_t>(x32_floats) + (x32_floats & 1) +
-         frozen::kHcCount) *
-        sizeof(float);
+        (static_cast<size_t>(x32_floats) + frozen::kHcCount) * sizeof(float);
     if (s.mixer_bytes < need_mixer) {
         reclaim();
         // d_mixer_inj aliases d_mixer_mixed + offset: free only the real
@@ -1223,8 +1222,7 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank,
         s.d_mixer_inj = nullptr;
         if (cudaMalloc(&s.d_mixer_mixed, need_mixer) != cudaSuccess)
             return cudaGetLastError();
-        s.d_mixer_inj =
-            s.d_mixer_mixed + x32_floats + (x32_floats & 1 ? 1 : 0);
+        s.d_mixer_inj = s.d_mixer_mixed + x32_floats;
         s.mixer_bytes = need_mixer;
     }
     return cudaSuccess;

@@ -318,8 +318,11 @@ __global__ void lsx_nvfp4_gemv_kernel(
         // costs more than the ILP buys. Large deep-K dense shapes use the
         // dedicated warp-per-row kernel instead (K >= 4096 gate).
         float acc0 = 0.0f, acc1 = 0.0f;
+        // Guards the uint4 loads below: 16-byte alignment (uint4), not the
+        // 4-byte __half2 alignment. xb is a multiple of 32 halves (64 bytes),
+        // so 16-byte alignment of x transfers to x + xb.
         const bool x_vec =
-            (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
+            (reinterpret_cast<uintptr_t>(x) & 15u) == 0;
         for (int c = lane; c < chunks; c += 32) {
             const uint4 pw = wv[c];
             const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
@@ -499,7 +502,10 @@ lsx_nvfp4_gemv_warprow_kernel(
     const int chunks = K >> 5;               // 32-element 16B units per row
     const int half_chunks = chunks >> 1;     // per-lane stratum (chunks/2)
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-    const bool x_vec = (reinterpret_cast<uintptr_t>(x) & 3u) == 0;
+    // Guards the uint4 loads below: 16-byte alignment (uint4), not the
+    // 4-byte __half2 alignment. xb is a multiple of 32 halves (64 bytes),
+    // so 16-byte alignment of x transfers to x + xb.
+    const bool x_vec = (reinterpret_cast<uintptr_t>(x) & 15u) == 0;
     // Lane stratum: lane covers chunk strata [lane, lane+32) of the first
     // half and the mirrored strata of the second half. Fixed merge order.
     const int lim0 = half_chunks;
