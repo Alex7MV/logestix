@@ -466,7 +466,8 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         const GcLayerWeights &lw = w.layers[static_cast<size_t>(l)];
         GC_TRY(cudaMemcpyAsync(p.res, p.h, static_cast<size_t>(hidden) * 4,
                                cudaMemcpyDeviceToDevice, stream));
-        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.input_norm.d_weight,
+        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.input_norm.rank,
+                                        lw.input_norm.d_weight,
                                         lw.input_norm.d_gate_up,
                                         lw.input_norm.d_gate_down, p.d.rms_eps,
                                         p.buf, stream));
@@ -482,7 +483,8 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
                                         p.conv[l], p.rec[l], p.gdn, p.attn,
                                         stream));
         GC_TRY(RunZeroCenteredGatedNorm(
-            p.attn, 1, hidden, lw.post_self_attn_norm.d_weight,
+            p.attn, 1, hidden, lw.post_self_attn_norm.rank,
+            lw.post_self_attn_norm.d_weight,
             lw.post_self_attn_norm.d_gate_up,
             lw.post_self_attn_norm.d_gate_down, p.d.rms_eps, p.buf, stream));
         add_f32_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.res, p.buf,
@@ -491,7 +493,8 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
 
         GC_TRY(cudaMemcpyAsync(p.res, p.h, static_cast<size_t>(hidden) * 4,
                                cudaMemcpyDeviceToDevice, stream));
-        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.post_attn_norm.d_weight,
+        GC_TRY(RunZeroCenteredGatedNorm(p.h, 1, hidden, lw.post_attn_norm.rank,
+                                        lw.post_attn_norm.d_weight,
                                         lw.post_attn_norm.d_gate_up,
                                         lw.post_attn_norm.d_gate_down,
                                         p.d.rms_eps, p.buf, stream));
@@ -564,7 +567,7 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
             GC_TRY(PToF32(p.ff0_h, p.mlp, hidden, stream));
         }
 
-        GC_TRY(RunZeroCenteredGatedNorm(p.mlp, 1, hidden,
+        GC_TRY(RunZeroCenteredGatedNorm(p.mlp, 1, hidden, lw.post_ffw_norm.rank,
                                         lw.post_ffw_norm.d_weight,
                                         lw.post_ffw_norm.d_gate_up,
                                         lw.post_ffw_norm.d_gate_down,
@@ -575,7 +578,8 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
     }
 
     GC_TRY(RunZeroCenteredGatedNorm(
-        p.h, 1, hidden, w.final_norm.d_weight, w.final_norm.d_gate_up,
+        p.h, 1, hidden, w.final_norm.rank, w.final_norm.d_weight,
+        w.final_norm.d_gate_up,
         w.final_norm.d_gate_down, p.d.rms_eps, p.buf, stream));
     f32_to_bf16_kernel<<<(hidden + 255) / 256, 256, 0, stream>>>(p.buf, p.xb,
                                                                 hidden);

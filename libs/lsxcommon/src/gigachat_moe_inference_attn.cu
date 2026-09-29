@@ -352,7 +352,8 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     // Query latent path.
     GC_TRY(LaunchGemm(lw.q_a, x_h, q_a_h, stream));
     GC_TRY(LaunchF16ToF32(q_a_h, q_a_f, d.q_lora, stream));
-    GC_TRY(RunZeroCenteredGatedNorm(q_a_f, 1, d.q_lora, lw.q_a_norm.d_weight,
+    GC_TRY(RunZeroCenteredGatedNorm(q_a_f, 1, d.q_lora, lw.q_a_norm.rank,
+                                    lw.q_a_norm.d_weight,
                                     lw.q_a_norm.d_gate_up,
                                     lw.q_a_norm.d_gate_down, norm_eps, q_a_n,
                                     stream));
@@ -363,7 +364,8 @@ cudaError_t RunGigaChatMlaDecode(const float *x, const GcLayerWeights &lw,
     // Compressed KV path.
     GC_TRY(LaunchGemm(lw.kv_a, x_h, kv_h, stream));
     GC_TRY(LaunchF16ToF32(kv_h, kv_f, kvw, stream));
-    GC_TRY(RunZeroCenteredGatedNorm(kv_f, 1, d.kv_lora, lw.kv_a_norm.d_weight,
+    GC_TRY(RunZeroCenteredGatedNorm(kv_f, 1, d.kv_lora, lw.kv_a_norm.rank,
+                                    lw.kv_a_norm.d_weight,
                                     lw.kv_a_norm.d_gate_up,
                                     lw.kv_a_norm.d_gate_down, norm_eps, kpass_n,
                                     stream));

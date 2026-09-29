@@ -58,7 +58,7 @@ TEST_CASE("gigachat zero-centered gated norm parity", "[gigachat][inference]")
     cudaMemcpy(ddn.p, dnb.data(), dnb.size(), cudaMemcpyHostToDevice);
 
     auto st = RunZeroCenteredGatedNorm(
-        dx.as<float>(), rows, dim, dw.as<uint8_t>(), dup.as<uint8_t>(),
+        dx.as<float>(), rows, dim, rank, dw.as<uint8_t>(), dup.as<uint8_t>(),
         ddn.as<uint8_t>(), 1e-6f, dout.as<float>(), nullptr);
     REQUIRE(st == cudaSuccess);
 
@@ -90,6 +90,86 @@ TEST_CASE("gigachat zero-centered gated norm parity", "[gigachat][inference]")
     }
     for (int i = 0; i < rows * dim; ++i)
         CHECK(out[i] == Catch::Approx(ref[i]).margin(2e-4f));
+}
+
+TEST_CASE("gigachat zero-centered gated norm honors rank < frozen 16",
+          "[gigachat][inference]")
+{
+    // The gate rank is data (GcGatedNorm::rank), not the frozen constant. A
+    // kernel that falls back to 16 reads the (here deliberately large) tail of
+    // the full-size gate buffers and diverges deterministically from the
+    // rank-only reference; this pins the rank argument without relying on an
+    // out-of-bounds access being observed.
+    constexpr int dim = 8, rank = 3, full = 16;
+    std::vector<float> x(dim), wf(dim);
+    for (int i = 0; i < dim; ++i) {
+        x[i] = 0.05f * static_cast<float>(i - 3);
+        wf[i] = 0.01f * static_cast<float>(i);
+    }
+
+    auto to_bf16 = [](const std::vector<float> &v) {
+        std::vector<uint8_t> b(v.size() * 2);
+        for (size_t i = 0; i < v.size(); ++i) {
+            __nv_bfloat16 h = __float2bfloat16(v[i]);
+            std::memcpy(b.data() + i * 2, &h, 2);
+        }
+        return b;
+    };
+    // w_up [full, dim]: rows [0,rank) meaningful, [rank,full) large.
+    std::vector<float> upf(static_cast<size_t>(full) * dim, 7.0f);
+    for (int k = 0; k < rank; ++k)
+        for (int i = 0; i < dim; ++i)
+            upf[static_cast<size_t>(k) * dim + i] =
+                0.02f * static_cast<float>((k * dim + i) % 11) - 0.05f;
+    // w_down: [dim, rank] prefix meaningful, the rest large.
+    std::vector<float> dnf(static_cast<size_t>(full) * dim, 7.0f);
+    for (int i = 0; i < dim; ++i)
+        for (int k = 0; k < rank; ++k)
+            dnf[static_cast<size_t>(i) * rank + k] =
+                0.03f * static_cast<float>((i * rank + k) % 7) - 0.05f;
+
+    const auto wb = to_bf16(wf), upb = to_bf16(upf), dnb = to_bf16(dnf);
+    DeviceBuffer dx(dim * 4), dw(wb.size()), dup(upb.size()), ddn(dnb.size()),
+        dout(dim * 4);
+    REQUIRE(cudaMemcpy(dx.p, x.data(), dx.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dw.p, wb.data(), wb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dup.p, upb.data(), upb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(ddn.p, dnb.data(), dnb.size(), cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    REQUIRE(RunZeroCenteredGatedNorm(
+                dx.as<float>(), 1, dim, rank, dw.as<uint8_t>(),
+                dup.as<uint8_t>(), ddn.as<uint8_t>(), 1e-6f,
+                dout.as<float>(), nullptr) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<float> out(dim, 0.0f);
+    REQUIRE(cudaMemcpy(out.data(), dout.p, out.size() * 4,
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    float ss = 0.0f;
+    for (int i = 0; i < dim; ++i) ss += x[i] * x[i];
+    const float inv = 1.0f / std::sqrt(ss / dim + 1e-6f);
+    std::vector<float> xn(dim);
+    for (int i = 0; i < dim; ++i) xn[i] = x[i] * inv;
+    std::vector<float> h(rank, 0.0f);
+    for (int k = 0; k < rank; ++k) {
+        float a = 0.0f;
+        for (int i = 0; i < dim; ++i)
+            a += upf[static_cast<size_t>(k) * dim + i] * xn[i];
+        h[k] = dev::Silu(a);
+    }
+    for (int i = 0; i < dim; ++i) {
+        float g = 0.0f;
+        for (int k = 0; k < rank; ++k)
+            g += dnf[static_cast<size_t>(i) * rank + k] * h[k];
+        const float ref = dev::ZeroCenteredGatedNormElement(xn[i], wf[i], g);
+        INFO("i=" << i << " ref=" << ref << " got=" << out[i]);
+        CHECK(out[i] == Catch::Approx(ref).margin(1e-3f));
+    }
 }
 
 TEST_CASE("gigachat gdn output norm parity", "[gigachat][inference]")
@@ -211,7 +291,7 @@ TEST_CASE("gigachat gated norm decode latency budget",
     REQUIRE(cudaMemcpy(ddn.p, dnb.data(), dnb.size(), cudaMemcpyHostToDevice) ==
             cudaSuccess);
     auto run = [&] {
-        return RunZeroCenteredGatedNorm(dx.as<float>(), 1, dim,
+        return RunZeroCenteredGatedNorm(dx.as<float>(), 1, dim, rank,
                                         dw.as<uint8_t>(), dup.as<uint8_t>(),
                                         ddn.as<uint8_t>(), 1e-6f,
                                         dout.as<float>(), nullptr);

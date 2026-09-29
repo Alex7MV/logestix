@@ -13,9 +13,13 @@ namespace lsxcommon::gigachat {
 //   xn[r]     = x[r] * rsqrt(mean(x[r]^2) + eps)
 //   gate(r)   = Wdown @ silu(Wup @ xn[r])
 //   out[r][i] = ZeroCenteredGatedNormElement(xn[r][i], w[i], gate(r)[i])
-// `w` BF16 [dim]; `w_up` BF16 [16, dim]; `w_down` BF16 [dim, 16]; F32 compute.
+// `w` BF16 [dim]; `w_up` BF16 [rank, dim]; `w_down` BF16 [dim, rank]; F32
+// compute. `rank` is the checkpoint's gate rank (GcGatedNorm::rank), not the
+// frozen constant: the kernel must index by the actual rank or it reads past
+// the gate_up/gate_down buffers.
 cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
-                                     const uint8_t *w, const uint8_t *w_up,
+                                     int rank, const uint8_t *w,
+                                     const uint8_t *w_up,
                                      const uint8_t *w_down, float eps,
                                      float *out, cudaStream_t stream);
 

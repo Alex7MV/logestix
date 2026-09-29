@@ -15,8 +15,6 @@
 namespace lsxcommon::gigachat {
 namespace {
 
-constexpr int kGateRank = 16;
-
 __device__ __forceinline__ float WarpSum(float v)
 {
 #pragma unroll
@@ -31,7 +29,7 @@ __device__ __forceinline__ float WarpSum(float v)
 // device-independent (numeric-contract 1.1). The accumulation order differs
 // from the former thread-0 sequential scan; verified by the selfcheck/parity.
 __global__ void zero_centered_gated_norm_kernel(
-    const float *__restrict__ x, int dim,
+    const float *__restrict__ x, int dim, int rank,
     const __nv_bfloat16 *__restrict__ w,
     const __nv_bfloat16 *__restrict__ w_up,
     const __nv_bfloat16 *__restrict__ w_down, float eps,
@@ -65,7 +63,7 @@ __global__ void zero_centered_gated_norm_kernel(
     for (int i = tid; i < dim; i += nt) smem[i] = xr[i] * inv;
     __syncthreads();
 
-    for (int k = warp; k < kGateRank; k += nwarps)
+    for (int k = warp; k < rank; k += nwarps)
     {
         const __nv_bfloat16 *up = w_up + static_cast<size_t>(k) * dim;
         float a = 0.0f;
@@ -79,8 +77,9 @@ __global__ void zero_centered_gated_norm_kernel(
     for (int i = tid; i < dim; i += nt)
     {
         float g = 0.0f;
-        for (int k = 0; k < kGateRank; ++k)
-            g += __bfloat162float(w_down[i * kGateRank + k]) * smem[dim + k];
+        for (int k = 0; k < rank; ++k)
+            g += __bfloat162float(w_down[static_cast<size_t>(i) * rank + k]) *
+                 smem[dim + k];
         orow[i] = dev::ZeroCenteredGatedNormElement(
             smem[i], __bfloat162float(w[i]), g);
     }
@@ -129,20 +128,22 @@ cudaError_t RunGdnOutputNorm(const float *o, const float *z, const uint8_t *w,
 }
 
 cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
-                                     const uint8_t *w, const uint8_t *w_up,
+                                     int rank, const uint8_t *w,
+                                     const uint8_t *w_up,
                                      const uint8_t *w_down, float eps,
                                      float *out, cudaStream_t stream)
 {
-    if (!x || !w || !w_up || !w_down || !out || rows <= 0 || dim <= 0)
+    if (!x || !w || !w_up || !w_down || !out || rows <= 0 || dim <= 0 ||
+        rank <= 0)
         return cudaErrorInvalidValue;
     int threads = dim < 256 ? dim : 256;
-    if (threads < kGateRank) threads = kGateRank;
+    if (threads < rank) threads = rank;
     // Full warps only (the block reduction uses __shfl with a full mask).
     threads = (threads + 31) & ~31;
     if (threads > 1024) threads = 1024;
-    const size_t smem = (static_cast<size_t>(dim) + kGateRank) * sizeof(float);
+    const size_t smem = (static_cast<size_t>(dim) + rank) * sizeof(float);
     zero_centered_gated_norm_kernel<<<rows, threads, smem, stream>>>(
-        x, dim, reinterpret_cast<const __nv_bfloat16 *>(w),
+        x, dim, rank, reinterpret_cast<const __nv_bfloat16 *>(w),
         reinterpret_cast<const __nv_bfloat16 *>(w_up),
         reinterpret_cast<const __nv_bfloat16 *>(w_down), eps, out);
     return cudaGetLastError();
