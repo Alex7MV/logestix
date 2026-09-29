@@ -128,6 +128,34 @@ TEST_CASE("relaxed mode grants required leases despite shortage", "[governor][le
     gov.Shutdown();
 }
 
+TEST_CASE("lease released after Shutdown does not underflow the counters",
+          "[governor][lease]")
+{
+    // Engine teardown order is not guaranteed: InferenceEngine::ShutdownEngine()
+    // resets the governor while a model object may still own a Lease whose
+    // destructor runs later. ReleaseLeaseBytes must clamp, not wrap the
+    // unsigned committed counter to ~2^64.
+    auto &gov = lsxcommon::ResourceGovernor::Instance();
+    gov.Shutdown();
+    lsxcommon::GovernorOptions opts;
+    opts.override_hw = true;
+    opts.hw_override = FakeHw();
+    opts.vram_keep_out_bytes = 0;
+    REQUIRE(gov.Initialize(opts));
+
+    {
+        auto lease = gov.Acquire(lsxcommon::LeaseKind::kPermanentWeights,
+                                 1ull << 30, lsxcommon::LeasePolicy{});
+        REQUIRE(lease.Valid());
+        REQUIRE(gov.CommittedVramBytes() == (1ull << 30));
+        gov.Shutdown();  // resets accounting with the lease still outstanding
+        REQUIRE(gov.CommittedVramBytes() == 0);
+    }  // lease destructor -> ReleaseLeaseBytes after the reset
+
+    REQUIRE(gov.CommittedVramBytes() == 0);
+    REQUIRE(gov.CommittedRamBytes() == 0);
+}
+
 TEST_CASE("acquire before initialize fails", "[governor][lease]")
 {
     auto &gov = lsxcommon::ResourceGovernor::Instance();

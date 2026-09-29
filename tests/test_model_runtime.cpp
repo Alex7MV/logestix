@@ -5,9 +5,12 @@
 using Catch::Approx;
 
 #include <arrow/io/file.h>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <lsxcommon/converter.h>
@@ -347,6 +350,45 @@ TEST_CASE("RunUnderResidencyLock executes and releases", "[model_base]")
     std::unique_lock<std::shared_mutex> ul(m.ResidencyMutex());
 }
 
+TEST_CASE("ModelBase Unload serializes against an in-flight Infer (residency lock)",
+          "[model_base][lifecycle][concurrency]")
+{
+    // IModel::Infer runs under a shared residency lock (RunUnderResidencyLock),
+    // so Unload -- which tears down GPU state -- MUST take the unique lock or a
+    // concurrent unload-during-inference races the teardown. This drives the
+    // contract directly: while the shared lock is held, Unload must block.
+    ContextProbe m{lsxcommon::ModelInitConfig{}};
+
+    std::atomic<bool> infer_entered{false};
+    std::atomic<bool> release_infer{false};
+    std::atomic<bool> unload_returned{false};
+
+    std::thread infer([&] {
+        m.RunUnderResidencyLock([&] {
+            infer_entered.store(true, std::memory_order_release);
+            while (!release_infer.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            return 0;
+        });
+    });
+    while (!infer_entered.load(std::memory_order_acquire))
+        std::this_thread::yield();
+
+    std::thread unloader([&] {
+        m.Unload();
+        unload_returned.store(true, std::memory_order_release);
+    });
+
+    // Unload must stay blocked while Infer holds the shared lock.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK_FALSE(unload_returned.load(std::memory_order_acquire));
+
+    release_infer.store(true, std::memory_order_release);
+    infer.join();
+    unloader.join();
+    CHECK(unload_returned.load(std::memory_order_acquire));
+}
+
 // ── Canonical lifecycle contract (lifecycle-unification 2026-08) ────────────
 //
 // ModelBase owns the Unload template method (final): TeardownWeights() ->
@@ -623,5 +665,44 @@ TEST_CASE("RunParisSelfCheck default options preserve legacy behavior",
     auto r = lsxcommon::runtime::RunParisSelfCheck(m, req, defaults);
     REQUIRE(r.ok);
     CHECK(r.selfcheck_passed);
+    m.Unload();
+}
+
+TEST_CASE("RunParisSelfCheck decodes an answer window larger than 4 KiB",
+          "[selfcheck]")
+{
+    // The substring window must be decoded with capacity retry, not a fixed
+    // 4096-byte buffer: a long generated answer containing "Paris" beyond that
+    // boundary must still pass. The byte-level fixture yields one token per
+    // byte, so a 6000-char answer exercises the growth path.
+    const std::string root = BuildPinnedTokenizerDir("synthetic_tok.json");
+    FakeModel m("glm-5.2");
+    m.cfg_.model_path = root;
+    REQUIRE(m.Load());
+
+    // Short words only (the pretokenizer rejects a >kMaxWordBytes run); the
+    // decoded text still spans well past the legacy 4096-byte decode cap.
+    std::string text;
+    while (text.size() < 6000) text += "ab ";
+    text += "Paris";  // canonical answer beyond the cap
+    std::vector<int32_t> ids(8000, 0);
+    size_t cap = ids.size();
+    const int32_t n = lsxcommon::arrow_tokenizer_encode(
+        m.Tokenizer(), text.c_str(), text.size(), ids.data(), &cap);
+    REQUIRE(n > 0);
+    ids.resize(static_cast<size_t>(n));
+
+    m.scripted_.ok = true;
+    m.scripted_.gen_tokens = ids;
+    m.scripted_.first_gen_tok_id = ids.front();
+
+    lsxcommon::ModelRequest req{{1, 2}, 1};
+    lsxcommon::runtime::ParisSelfCheckOptions opts;
+    opts.substring_match = true;
+    opts.answer_window = 1000000;
+    auto r = lsxcommon::runtime::RunParisSelfCheck(m, req, opts);
+    REQUIRE(r.ok);
+    CHECK(r.selfcheck_passed);
+
     m.Unload();
 }

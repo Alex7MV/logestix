@@ -125,6 +125,34 @@ TEST_CASE("Perf baselines: JSON round-trip", "[perf_baseline]")
     REQUIRE(parsed->entries[1].power_samples == 0);
 }
 
+TEST_CASE("Perf baselines: serializer escapes strings so output stays valid "
+          "JSON",
+          "[perf_baseline]")
+{
+    // The writer is hand-rolled; quotes/backslashes/control chars in any string
+    // field (e.g. a user --prompt) must not corrupt the document.
+    PerfBaselineTable t;
+    PerfBaselineEntry e;
+    e.model_type = "model\"x";
+    e.gpu_key = "rtx\\5090";
+    e.os = "linux";
+    e.mode = "perf";
+    e.tokens_per_sec = 1.0;
+    e.max_gen = 16;
+    e.prompt = "say \"hi\"\nand\\back\ttab";
+    e.date = "2026-01-01";
+    e.commit = "a\"b\\c";
+    t.entries.push_back(e);
+
+    const auto parsed = ParsePerfBaselines(SerializePerfBaselines(t));
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->entries.size() == 1);
+    REQUIRE(parsed->entries[0].model_type == e.model_type);
+    REQUIRE(parsed->entries[0].gpu_key == e.gpu_key);
+    REQUIRE(parsed->entries[0].prompt == e.prompt);
+    REQUIRE(parsed->entries[0].commit == e.commit);
+}
+
 TEST_CASE("Perf baselines: v2 file without TTFT/power still parses",
           "[perf_baseline]")
 {

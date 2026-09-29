@@ -77,6 +77,23 @@ TEST_CASE("ornith MLX classifier maps every tensor kind",
           OrnithMoeTensorKind::Unknown);
 }
 
+TEST_CASE("ornith classifier tolerates malformed layer indices",
+          "[ornith][convert]")
+{
+    using lsxcommon::ornith::OrnithMoeTensorKind;
+    using lsxcommon::ornith::classify_ornith_moe_tensor;
+    CHECK_NOTHROW(classify_ornith_moe_tensor(
+        "language_model.model.layers..mlp.switch_mlp.gate_proj.weight"));
+    CHECK_NOTHROW(classify_ornith_moe_tensor(
+        "language_model.model.layers.self_attn.q_proj.weight"));
+    CHECK(classify_ornith_moe_tensor(
+              "language_model.model.layers..mlp.switch_mlp.gate_proj.weight")
+              .kind == OrnithMoeTensorKind::Unknown);
+    CHECK(classify_ornith_moe_tensor(
+              "language_model.model.layers.self_attn.q_proj.weight")
+              .kind == OrnithMoeTensorKind::Unknown);
+}
+
 TEST_CASE("ornith converter synthetic roundtrip", "[ornith][convert]")
 {
     TempDir src("src"), out("out");

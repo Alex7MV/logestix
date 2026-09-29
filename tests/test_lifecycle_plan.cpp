@@ -142,6 +142,46 @@ TEST_CASE("glm-5.2 resolves the Glm52 strategy via the registry", "[lifecycle]")
     gov.Shutdown();
 }
 
+TEST_CASE("plan cache keeps returned references stable across inserts",
+          "[lifecycle]")
+{
+    // GetOrBuildPlan returns a reference into the process-global plan cache.
+    // Those references must survive later inserts of OTHER model types: a
+    // flat_hash_map relocates elements on rehash (no pointer stability), which
+    // would dangle a previously handed-out plan. The cache must use a
+    // node-based map (stable addresses).
+    auto &gov = ResourceGovernor::Instance();
+    gov.Shutdown();
+    GovernorOptions gopts;
+    gopts.override_hw = true;
+    gopts.hw_override = FakeHw(10);
+    gopts.vram_keep_out_bytes = 0;
+    REQUIRE(gov.Initialize(gopts));
+
+    ResetPlanCache();
+    LifecycleInput in;
+    in.model_type = "stable-model";
+    in.archetype = Archetype::MoE;
+    in.vram = FakeVram(4, 4, 6);
+    in.expert_mean_bytes = 512ull << 20;
+    const LifecyclePlan &first = GetOrBuildPlan(in);
+
+    // Force enough inserts to rehash a flat map several times.
+    for (int i = 0; i < 1000; ++i) {
+        LifecycleInput filler = in;
+        filler.model_type = "filler-" + std::to_string(i);
+        (void)GetOrBuildPlan(filler);
+    }
+
+    const LifecyclePlan &again = GetOrBuildPlan(in);
+    REQUIRE(&first == &again);  // same object: no relocation/dangling
+    REQUIRE(again.expert_prefetch_batch == first.expert_prefetch_batch);
+    REQUIRE(again.pin_dense_layers);
+
+    ResetPlanCache();
+    gov.Shutdown();
+}
+
 TEST_CASE("plan building is deterministic", "[lifecycle]")
 {
     MoEStrategy s;

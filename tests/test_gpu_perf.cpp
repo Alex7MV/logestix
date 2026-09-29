@@ -167,6 +167,17 @@ TEST_CASE("Perf cache: JSON round-trip", "[gpu_perf]")
     REQUIRE(parsed->knobs.tc_fast_math_default == true);
 }
 
+TEST_CASE("Perf cache: serializer escapes the gpu name", "[gpu_perf]")
+{
+    PerfCacheEntry e;
+    e.gpu = Rtx5090();
+    e.gpu.name = "GPU \"X\"\\Y";
+    const std::string j = SerializePerfCache(e);
+    const auto parsed = ParsePerfCache(j);
+    REQUIRE(parsed.has_value());
+    REQUIRE(parsed->gpu.name == e.gpu.name);
+}
+
 TEST_CASE("Perf cache: format-version invalidation", "[gpu_perf]")
 {
     auto poisoned = absl::StrReplaceAll(

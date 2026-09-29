@@ -48,6 +48,19 @@ TEST_CASE("nemotron converter emits the logestix-nemotron-nvfp4 layout",
     CHECK(fs::exists(dst / "logestix" / "pinned" / "layer_2_nvfp4.arrow"));
 }
 
+TEST_CASE("nemotron classifier tolerates malformed layer/expert indices",
+          "[nemotron][convert]")
+{
+    CHECK_NOTHROW(classify_nemotron_tensor("backbone.layers..mixer.norm.weight"));
+    CHECK_NOTHROW(classify_nemotron_tensor(
+        "backbone.layers.0.mixer.experts..up_proj.weight"));
+    CHECK(classify_nemotron_tensor("backbone.layers..mixer.norm.weight").kind ==
+          NemotronTensorKind::Unknown);
+    CHECK(classify_nemotron_tensor(
+              "backbone.layers.0.mixer.experts..up_proj.weight").kind ==
+          NemotronTensorKind::Unknown);
+}
+
 TEST_CASE("nemotron converter rejects an unrecognized tensor",
           "[nemotron][convert]")
 {

@@ -80,7 +80,8 @@ void WriteCfg(const fs::path &dir)
          "}\n";
 }
 
-fs::path BuildSource(const fs::path &in)
+fs::path BuildSource(const fs::path &in,
+                     const std::vector<FakeTensor> &extra = {})
 {
     fs::create_directories(in);
     std::vector<FakeTensor> t;
@@ -136,6 +137,7 @@ fs::path BuildSource(const fs::path &in)
                  synthtest::MakeBf16(64)});
     t.push_back({"layers.0.engram.q_weight", "BF16", {4, 64},
                  synthtest::MakeBf16(256)});
+    for (const auto &x : extra) t.push_back(x);
     synthtest::WriteSafetensors(in, "model-00001-of-00001.safetensors", t);
     WriteCfg(in);
     fs::copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
@@ -211,6 +213,28 @@ TEST_CASE("deepseek-v41 converter emits the logestix-v41-nvfp4 layout",
         CHECK(pe->w3_global_scale == 0.25f);
         CHECK(pe->w1_packed[0] == 0xB0);
     }
+
+    fs::remove_all(base);
+}
+
+TEST_CASE("deepseek-v41 converter rejects a malformed layer index without "
+          "throwing",
+          "[deepseek-v41][convert]")
+{
+    const auto base = fs::temp_directory_path() / "lsx_v41_badidx";
+    fs::remove_all(base);
+    // A corrupt expert name whose \d+ layer/expert fields exceed int range
+    // must be rejected as unclassified, not raise std::out_of_range.
+    const auto in = BuildSource(
+        base / "model",
+        {{"layers.99999999999999999999.ffn.experts.0.w1.weight", "I8", {8, 32},
+          std::vector<uint8_t>(8 * 32, 0xB0)}});
+    const auto out = base / "converted";
+
+    arrow::Status st;
+    CHECK_NOTHROW(st = lsxcommon::deepseek_v41::ConvertDeepSeekV41Model(
+                      in.string(), out.string()));
+    CHECK_FALSE(st.ok());
 
     fs::remove_all(base);
 }

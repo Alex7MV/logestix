@@ -4,7 +4,6 @@
 #include <spdlog/spdlog.h>
 #include <exception>
 #include <cstring>
-#include <shared_mutex>
 #include <thread>
 
 #include "lsxnetwork/openai_endpoint.h"
@@ -212,7 +211,9 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
                         glm_->Tokenizer(), cc.content, req.input_ids)) {
                     spdlog::warn("[orchestrator] glm-5.2 prompt tokenization failed");
                 }
-                std::shared_lock<std::shared_mutex> res_lock(glm_->ResidencyMutex());
+                // Infer() takes the shared residency lock internally; a second
+                // shared_lock here would be a recursive read-lock (UB, can
+                // deadlock against Unload()'s unique lock).
                 auto res = glm_->Infer(req);
                 if (!res.ok) {
                     ++stats.infer_failures;
@@ -235,7 +236,7 @@ void LsxOrchestrator::DispatchOne(const lsxnetwork::FrameQueue::Frame& frame,
                     spdlog::warn("[orchestrator] deepseek-v4-flash prompt tokenization failed");
                 }
                 // DeepSeek-V4-Flash execution branch -> gpu::RunInferenceModel.
-                std::shared_lock<std::shared_mutex> res_lock(deepseek_->ResidencyMutex());
+                // Infer() takes the shared residency lock internally.
                 auto res = deepseek_->Infer(req);
                 if (!res.ok) {
                     ++stats.infer_failures;

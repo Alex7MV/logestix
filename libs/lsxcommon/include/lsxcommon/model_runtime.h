@@ -25,6 +25,10 @@ std::string CombineGenError(cudaError_t err, const std::string &gen_error);
 // Host-only: safe to call from .cu TUs.
 std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
                                 const std::vector<int32_t> &ids);
+// Same contract for a non-owning id range (prefix/window decode without a
+// vector copy). n_ids == 0 decodes to "".
+std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
+                                const int32_t *ids, size_t n_ids);
 
 // Options for the unified Paris SelfCheck harness (model-unification
 // 2026-08). Defaults reproduce the original strict contract exactly:

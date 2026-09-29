@@ -3,6 +3,7 @@
 #include "glm_moe_flash_constants.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
 #include "glm_moe_flash_fp8.h"
+#include "tensor_index_parse.h"
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_integrity.h"
@@ -51,7 +52,11 @@ bool SplitLayer(const std::string &name, int &layer, std::string &rest)
         size_t i = ds;
         while (i < name.size() && name[i] >= '0' && name[i] <= '9') ++i;
         if (i == ds || i >= name.size() || name[i] != '.') continue;
-        layer = std::atoi(name.c_str() + ds);
+        // Bounded parse: an over-range digit run must reject the name, not
+        // invoke atoi's undefined overflow behavior.
+        if (!detail::ParseTensorIndex(std::string_view(name).substr(ds, i - ds),
+                                      layer))
+            continue;
         rest = name.substr(i + 1);
         return true;
     }
@@ -68,7 +73,10 @@ bool SplitExpert(const std::string &rest, int &expert, std::string &suffix)
     size_t i = ds;
     while (i < rest.size() && rest[i] >= '0' && rest[i] <= '9') ++i;
     if (i == ds || i >= rest.size() || rest[i] != '.') return false;
-    expert = std::atoi(rest.c_str() + ds);
+    // Bounded parse: see SplitLayer.
+    if (!detail::ParseTensorIndex(std::string_view(rest).substr(ds, i - ds),
+                                  expert))
+        return false;
     suffix = rest.substr(i + 1);
     return true;
 }

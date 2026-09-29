@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include <absl/container/flat_hash_map.h>
+#include <absl/container/node_hash_map.h>
 #include <spdlog/spdlog.h>
 
 namespace lsxcommon {
@@ -10,7 +10,10 @@ namespace lifecycle {
 
 namespace {
 std::mutex g_cache_mu;
-absl::flat_hash_map<std::string, LifecyclePlan> g_plan_cache;
+// node_hash_map (not flat_hash_map): GetOrBuildPlan hands callers a reference
+// into this cache, so element addresses must stay stable across inserts of
+// other model types. flat_hash_map relocates on rehash and would dangle.
+absl::node_hash_map<std::string, LifecyclePlan> g_plan_cache;
 } // namespace
 
 LifecyclePlan GeneralStrategy::BuildPlan(const LifecycleInput &in,

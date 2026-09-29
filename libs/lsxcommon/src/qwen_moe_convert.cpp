@@ -7,6 +7,7 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
+#include "tensor_index_parse.h"
 
 #include <simdjson.h>
 #include <absl/container/btree_map.h>
@@ -251,8 +252,13 @@ ParsedMoeTensor classify_qwen_moe_tensor(const std::string &name)
         const auto digits_end = rest.find('.', digits_start);
         if (digits_end == std::string::npos)
             return r;
-        r.layer =
-            std::stoi(rest.substr(digits_start, digits_end - digits_start));
+        int layer = 0;
+        if (!detail::ParseTensorIndex(
+                std::string_view(rest).substr(digits_start,
+                                              digits_end - digits_start),
+                layer))
+            return r;  // malformed index -> Unknown, never throw
+        r.layer = layer;
         body = rest.substr(digits_end + 1);
     }
 

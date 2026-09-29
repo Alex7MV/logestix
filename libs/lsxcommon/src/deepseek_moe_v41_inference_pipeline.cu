@@ -7,6 +7,7 @@
 // is a seqlen==1 forward and the CED state (window ring, compressor partials,
 // compressed/index caches) simply advances with start_pos.
 #include "deepseek_moe_v41_load_internal.h"
+#include "deepseek_moe_v41_inference_pipeline.h"
 
 #include <algorithm>
 #include <cmath>

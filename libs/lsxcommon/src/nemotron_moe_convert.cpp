@@ -8,6 +8,7 @@
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/safetensors_gpu.h"
 #include "lsxcommon/schema.h"
+#include "tensor_index_parse.h"
 
 #include <simdjson.h>
 #include <absl/container/btree_map.h>
@@ -174,7 +175,11 @@ ParsedNemotronTensor classify_nemotron_tensor(const std::string &name)
     const std::string rest = name.substr(kPre.size());
     const auto dend = rest.find('.');
     if (dend == std::string::npos) return r;
-    r.layer = std::stoi(rest.substr(0, dend));
+    int layer = 0;
+    if (!detail::ParseTensorIndex(std::string_view(rest).substr(0, dend),
+                                  layer))
+        return r;  // malformed index -> Unknown, never throw
+    r.layer = layer;
     std::string body = rest.substr(dend + 1);
     if (body == "norm.weight") {
         r.kind = K::LayerNorm;
@@ -190,7 +195,11 @@ ParsedNemotronTensor classify_nemotron_tensor(const std::string &name)
         const std::string e = m.substr(kExperts.size());
         const auto ed = e.find('.');
         if (ed == std::string::npos) return r;
-        r.expert = std::stoi(e.substr(0, ed));
+        int expert = 0;
+        if (!detail::ParseTensorIndex(std::string_view(e).substr(0, ed),
+                                      expert))
+            return r;  // malformed index -> Unknown, never throw
+        r.expert = expert;
         const std::string eb = e.substr(ed + 1);
         if (eb == "up_proj.weight") r.kind = K::ExpertUpProj;
         else if (eb == "down_proj.weight") r.kind = K::ExpertDownProj;

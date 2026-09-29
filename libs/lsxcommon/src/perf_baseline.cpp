@@ -8,6 +8,37 @@
 namespace lsxcommon {
 namespace perf_baseline {
 
+namespace {
+
+// JSON-escape a string for the hand-rolled writer: quotes, backslashes and
+// control chars must not break the document (a prompt can contain any of them).
+std::string JsonEscape(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    static const char *kHex = "0123456789abcdef";
+    for (char c : in) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += kHex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 std::optional<PerfBaselineTable> ParsePerfBaselines(std::string_view json_view)
 {
     // simdjson's DOM parser borrows the input buffer: copy into stable
@@ -82,17 +113,20 @@ std::string SerializePerfBaselines(const PerfBaselineTable &t)
     for (size_t i = 0; i < t.entries.size(); ++i) {
         const PerfBaselineEntry &e = t.entries[i];
         absl::StrAppend(&s, i == 0 ? "\n" : ",\n", "    {\n");
-        absl::StrAppend(&s, "      \"model_type\": \"", e.model_type,
+        absl::StrAppend(&s, "      \"model_type\": \"", JsonEscape(e.model_type),
                         "\",\n");
-        absl::StrAppend(&s, "      \"gpu_key\": \"", e.gpu_key, "\",\n");
-        absl::StrAppend(&s, "      \"os\": \"", e.os, "\",\n");
-        absl::StrAppend(&s, "      \"mode\": \"", e.mode, "\",\n");
+        absl::StrAppend(&s, "      \"gpu_key\": \"", JsonEscape(e.gpu_key),
+                        "\",\n");
+        absl::StrAppend(&s, "      \"os\": \"", JsonEscape(e.os), "\",\n");
+        absl::StrAppend(&s, "      \"mode\": \"", JsonEscape(e.mode), "\",\n");
         absl::StrAppendFormat(&s, "      \"tokens_per_sec\": %.2f,\n",
                               e.tokens_per_sec);
         absl::StrAppend(&s, "      \"max_gen\": ", e.max_gen, ",\n");
-        absl::StrAppend(&s, "      \"prompt\": \"", e.prompt, "\",\n");
-        absl::StrAppend(&s, "      \"date\": \"", e.date, "\",\n");
-        absl::StrAppend(&s, "      \"commit\": \"", e.commit, "\",\n");
+        absl::StrAppend(&s, "      \"prompt\": \"", JsonEscape(e.prompt),
+                        "\",\n");
+        absl::StrAppend(&s, "      \"date\": \"", JsonEscape(e.date), "\",\n");
+        absl::StrAppend(&s, "      \"commit\": \"", JsonEscape(e.commit),
+                        "\",\n");
         absl::StrAppend(&s, "      \"gen_tokens\": ", e.gen_tokens, ",\n");
         absl::StrAppendFormat(&s, "      \"ttft_ms\": %.2f,\n", e.ttft_ms);
         absl::StrAppendFormat(&s, "      \"avg_power_w\": %.2f,\n",

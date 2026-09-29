@@ -241,11 +241,42 @@ void EnsurePerfPolicyApplied()
 
 // ── Calibration cache ───────────────────────────────────────────────────────
 
+namespace {
+
+// JSON-escape a string for the hand-rolled perf-cache writer (the GPU name is
+// device-provided and must not be able to break the document).
+std::string JsonEscape(const std::string &in)
+{
+    std::string out;
+    out.reserve(in.size() + 8);
+    static const char *kHex = "0123456789abcdef";
+    for (char c : in) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += kHex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 std::string SerializePerfCache(const PerfCacheEntry &e)
 {
     std::string s;
     absl::StrAppend(&s, "{\n  \"format_version\": ", kPerfCacheFormatVersion,
-                    ",\n  \"gpu\": {\"name\": \"", e.gpu.name,
+                    ",\n  \"gpu\": {\"name\": \"", JsonEscape(e.gpu.name),
                     "\", \"sm_count\": ", e.gpu.sm_count,
                     ", \"bus_width_bits\": ", e.gpu.bus_width_bits,
                     ", \"memory_clock_khz\": ", e.gpu.memory_clock_khz,

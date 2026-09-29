@@ -13,20 +13,9 @@
 
 #include "deepseek_moe_v41_constants.h"
 #include "deepseek_moe_v41_load.h"
+#include "deepseek_moe_v41_inference_pipeline.h"
 
 namespace lsxcommon {
-
-namespace gpu {
-// Internal engine entry point (deepseek_moe_v41_inference_pipeline.cu).
-gpu::InferenceResult RunDeepSeekV41Inference(
-    const std::string &model_path, const std::vector<int32_t> &input_ids,
-    int max_gen_tokens, ::lsxcommon::ArrowTokenizerDb *tok_db,
-    const deepseek_v41::gpu::PinnedWeights &pw,
-    deepseek_v41::gpu::ExpertDb &expert_db,
-    lsxcommon::sample::ISampler &sampler, cudaStream_t stream,
-    bool ignore_eos = false,
-    const lsxcommon::GenerationStream *gs = nullptr);
-} // namespace gpu
 
 const std::string DeepSeekV41FlashModel::kType = "deepseek-v4.1-flash";
 

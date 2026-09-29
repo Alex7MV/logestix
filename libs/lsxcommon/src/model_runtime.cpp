@@ -42,14 +42,14 @@ std::string CombineGenError(cudaError_t err, const std::string &gen_error)
 }
 
 std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
-                                const std::vector<int32_t> &ids)
+                                const int32_t *ids, size_t n_ids)
 {
-    if (ids.empty()) return {};
+    if (ids == nullptr || n_ids == 0) return {};
     size_t cap = kInitialDecodeCap;
     std::string out(cap, '\0');
     for (int attempt = 0; attempt < kMaxDecodeAttempts; ++attempt) {
-        const int dr = arrow_tokenizer_decode(tok_db, ids.data(), ids.size(),
-                                              out.data(), &cap);
+        const int dr = arrow_tokenizer_decode(tok_db, ids, n_ids, out.data(),
+                                              &cap);
         if (dr == 0) {
             out.resize(cap);
             return out;
@@ -62,8 +62,14 @@ std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
     }
     lsxcommon::log::warn(
         absl::StrFormat("[model_runtime] tokenizer decode failed (%u ids)",
-                        ids.size()));
+                        n_ids));
     return {};
+}
+
+std::string DecodeGeneratedText(const ArrowTokenizerDb &tok_db,
+                                const std::vector<int32_t> &ids)
+{
+    return DecodeGeneratedText(tok_db, ids.data(), ids.size());
 }
 
 gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
@@ -89,33 +95,23 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
     if (!r.gen_tokens.empty()) {
         if (opts.substring_match) {
             // Window semantics (Gemma parity): the canonical answer must
-            // appear within the first `answer_window` generated tokens.
+            // appear within the first `answer_window` generated tokens. Decode
+            // with capacity retry (a long window can exceed any fixed buffer).
             const size_t n = std::min(r.gen_tokens.size(),
                                       static_cast<size_t>(opts.answer_window));
-            size_t cap = 4096;
-            std::string out(cap, '\0');
-            if (arrow_tokenizer_decode(model.Tokenizer(),
-                                       r.gen_tokens.data(), n, out.data(),
-                                       &cap) == 0) {
-                out.resize(cap);
-                r.first_gen_text = out;
-                r.selfcheck_passed =
-                    r.first_gen_text.find(kNeedle) != std::string::npos;
-            }
+            r.first_gen_text =
+                DecodeGeneratedText(model.Tokenizer(), r.gen_tokens.data(), n);
+            r.selfcheck_passed =
+                r.first_gen_text.find(kNeedle) != std::string::npos;
         } else {
             // Legacy strict contract: stripped equality on short prefixes.
-            char buf[512];
-            const int window =
-                std::min(opts.answer_window, 2);
+            const int window = std::min(opts.answer_window, 2);
             for (int ntok = 1; ntok <= window; ++ntok) {
                 if (ntok > static_cast<int>(r.gen_tokens.size())) break;
-                size_t cap = sizeof(buf);
-                if (arrow_tokenizer_decode(model.Tokenizer(),
-                                           r.gen_tokens.data(),
-                                           static_cast<size_t>(ntok), buf,
-                                           &cap) != 0)
-                    continue;
-                std::string t(buf, cap);
+                std::string t =
+                    DecodeGeneratedText(model.Tokenizer(), r.gen_tokens.data(),
+                                        static_cast<size_t>(ntok));
+                if (t.empty()) continue;
                 absl::StripAsciiWhitespace(&t);
                 r.first_gen_text = t;
                 if (r.first_gen_text == kNeedle) {
@@ -124,14 +120,9 @@ gpu::InferenceResult RunParisSelfCheck(IModel &model, const ModelRequest &req,
                 }
             }
             if (!r.selfcheck_passed && r.first_gen_text.empty()) {
-                size_t cap = sizeof(buf);
-                if (arrow_tokenizer_decode(model.Tokenizer(),
-                                           r.gen_tokens.data(),
-                                           std::min(static_cast<int>(
-                                                        r.gen_tokens.size()),
-                                                    8),
-                                           buf, &cap) == 0)
-                    r.first_gen_text = std::string(buf, cap);
+                const size_t m = std::min<size_t>(r.gen_tokens.size(), 8);
+                r.first_gen_text = DecodeGeneratedText(
+                    model.Tokenizer(), r.gen_tokens.data(), m);
             }
         }
     }

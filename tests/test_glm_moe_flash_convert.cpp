@@ -71,6 +71,20 @@ TEST_CASE("classify_flash_tensor: KDA layer tensors")
     REQUIRE(p.kind == FlashTensorKind::KdaB);
 }
 
+TEST_CASE("classify_flash_tensor: malformed indices are Unknown")
+{
+    // Digit runs are unbounded in the name; a corrupt (over-range) index must
+    // not be read by atoi (UB on overflow) but rejected as Unknown.
+    CHECK(classify_flash_tensor(
+              "model.language_model.layers.99999999999999999999."
+              "self_attn.q_proj.weight")
+              .kind == FlashTensorKind::Unknown);
+    CHECK(classify_flash_tensor(
+              "model.language_model.layers.5.mlp.experts.99999999999999999999."
+              "gate_proj.weight")
+              .kind == FlashTensorKind::Unknown);
+}
+
 TEST_CASE("classify_flash_tensor: DSA layer tensors")
 {
     auto p = classify_flash_tensor(

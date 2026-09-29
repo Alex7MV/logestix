@@ -11,23 +11,13 @@
 
 #include <cuda_runtime.h>
 
+#include "deepseek_moe_v41_inference_pipeline.h"
 #include "deepseek_moe_v41_load_internal.h"
 #include "lsxcommon/inference_gpu.h"
 #include "lsxcommon/sampling.h"
 #include "lsxcommon/tokenizer.h"
 
 #include "test_deepseek_moe_v41_fixture.h"
-
-namespace lsxcommon {
-namespace gpu {
-InferenceResult RunDeepSeekV41Inference(
-    const std::string &model_path, const std::vector<int32_t> &input_ids,
-    int max_gen_tokens, ArrowTokenizerDb *tok_db,
-    const deepseek_v41::gpu::PinnedWeights &pw,
-    deepseek_v41::gpu::ExpertDb &expert_db, sample::ISampler &sampler,
-    cudaStream_t stream, bool ignore_eos = false);
-} // namespace gpu
-} // namespace lsxcommon
 
 namespace fs = std::filesystem;
 

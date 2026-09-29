@@ -134,6 +134,23 @@ TEST_CASE("qwen4_exp tensor classification", "[qwen-exp-convert]")
     CHECK(cl("totally.unknown").kind == K::Unknown);
 }
 
+TEST_CASE("qwen4_exp classifier tolerates malformed layer indices",
+          "[qwen-exp-convert]")
+{
+    // A malformed tensor name (empty/non-numeric layer index) must classify as
+    // Unknown, never throw std::invalid_argument out of the converter.
+    CHECK_NOTHROW(classify_qwen4_exp_tensor(
+        "model.language_model.layers..self_attn.q_proj.weight"));
+    CHECK_NOTHROW(classify_qwen4_exp_tensor(
+        "model.language_model.layers.self_attn.q_proj.weight"));
+    CHECK(classify_qwen4_exp_tensor(
+              "model.language_model.layers..self_attn.q_proj.weight").kind ==
+          ExpTensorKind::Unknown);
+    CHECK(classify_qwen4_exp_tensor(
+              "model.language_model.layers.self_attn.q_proj.weight").kind ==
+          ExpTensorKind::Unknown);
+}
+
 TEST_CASE("qwen4_exp NVFP4 policy", "[qwen-exp-convert]")
 {
     CHECK(qwen4_exp_tensor_is_nvfp4(ExpTensorKind::QsaQ));

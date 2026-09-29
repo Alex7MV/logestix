@@ -36,6 +36,16 @@ public:
         r.ok = true;
         r.num_tokens = 2;
         r.gen_tokens = {101, 202};
+        // Every production model streams its tokens through the request's
+        // GenerationStream as they are decoded (see IModel::Infer); mirror that
+        // here so the engine's own streaming behavior is exercised faithfully.
+        for (std::size_t i = 0; i < r.gen_tokens.size(); ++i) {
+            if (!req.token_callback) break;
+            lsxcommon::TokenChunk c;
+            c.token_id = static_cast<std::uint32_t>(r.gen_tokens[i]);
+            c.step_t = static_cast<std::uint32_t>(i);
+            req.token_callback(c);
+        }
         return r;
     }
     lsxcommon::gpu::InferenceResult SelfCheck(const lsxcommon::ModelRequest &req) override
@@ -207,7 +217,54 @@ TEST_CASE("model_engine: Run forwards request + streams when abort is clear", "[
     REQUIRE(chunks_seen == 2);
 }
 
+TEST_CASE("model_engine: Run does not duplicate tokens already streamed by the "
+          "model",
+          "[model_engine]")
+{
+    // IModel::Infer owns the streaming contract: it emits one TokenChunk per
+    // decoded token through req.token_callback (every family wires a
+    // GenerationStream). The engine facade must therefore forward the callback,
+    // never replay the stream a second time after Infer returns.
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    REQUIRE(eng.InitializeEngine());
+
+    FakeEngineModel m;
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 2};
+    std::vector<std::uint32_t> seen;
+    req.token_callback = [&](const lsxcommon::TokenChunk &c) {
+        seen.push_back(c.token_id);
+    };
+
+    lsxcommon::gpu::InferenceResult r = eng.Run(m, req);
+    REQUIRE(r.ok);
+    REQUIRE(m.infer_calls == 1);
+    REQUIRE(seen.size() == r.gen_tokens.size());
+    REQUIRE(seen == std::vector<std::uint32_t>{101u, 202u});
+}
+
 // ── RAII Session guard ────────────────────────────────────────────────────
+TEST_CASE("model_engine: nested Session guards keep the engine alive until the "
+          "outermost exits",
+          "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    {
+        lsxcommon::InferenceEngine::Session outer;
+        REQUIRE(eng.IsInitialized());
+        {
+            lsxcommon::InferenceEngine::Session inner;
+            REQUIRE(eng.IsInitialized());
+        }
+        // The inner guard must not tear the engine down under the outer one.
+        REQUIRE(eng.IsInitialized());
+    }
+    REQUIRE_FALSE(eng.IsInitialized());
+}
+
 TEST_CASE("model_engine: Session guard initializes and shutdowns on scope exit", "[model_engine]")
 {
     auto &eng = lsxcommon::InferenceEngine::Instance();

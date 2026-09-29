@@ -61,6 +61,22 @@ TEST_CASE("Qwen3.6 MTP fused-expert tensor names classify as Mtp",
               "model.visual.blocks.0.attn.qkv.weight").kind == K::Visual);
 }
 
+TEST_CASE("qwen MoE classifier tolerates malformed layer indices",
+          "[qwen36-convert]")
+{
+    using K = MoeTensorKind;
+    CHECK_NOTHROW(classify_qwen_moe_tensor(
+        "model.language_model.layers..mlp.experts.gate_up_proj"));
+    CHECK_NOTHROW(classify_qwen_moe_tensor(
+        "model.language_model.layers.self_attn.q_proj.weight"));
+    CHECK(classify_qwen_moe_tensor(
+              "model.language_model.layers..mlp.experts.gate_up_proj").kind ==
+          K::Unknown);
+    CHECK(classify_qwen_moe_tensor(
+              "model.language_model.layers.self_attn.q_proj.weight").kind ==
+          K::Unknown);
+}
+
 TEST_CASE("ParseQwenMoeConfig reads explicit bos_token_id", "[qwen36-convert]")
 {
     fs::path dir = fs::temp_directory_path() / "lsx_qwen36_cfg";

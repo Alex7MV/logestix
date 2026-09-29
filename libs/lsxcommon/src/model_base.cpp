@@ -5,6 +5,7 @@
 
 #include <absl/strings/str_format.h>
 #include <cstdlib>
+#include <mutex>
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/tokenizer_arrows.h"
@@ -15,6 +16,11 @@ namespace lsxcommon {
 
 void ModelBase::Unload()
 {
+    // Serialize teardown against in-flight inference. Infer runs under a shared
+    // residency lock (RunUnderResidencyLock); taking the unique lock here is
+    // what makes "unload during inference" safe instead of a teardown racing
+    // the decode (freed weights / destroyed stream).
+    std::unique_lock<std::shared_mutex> lock(residency_mutex_);
     TeardownWeights();
     permanent_lease_ = {};
     expert_cache_lease_ = {};
@@ -25,6 +31,9 @@ void ModelBase::Unload()
 
 bool ModelBase::AbortLoad()
 {
+    // The canonical Load-failure tail tears down subclass state; serialize it
+    // with any residency reader exactly like Unload().
+    std::unique_lock<std::shared_mutex> lock(residency_mutex_);
     TeardownWeights();
     permanent_lease_ = {};
     expert_cache_lease_ = {};

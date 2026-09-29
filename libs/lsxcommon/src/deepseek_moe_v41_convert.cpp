@@ -19,6 +19,7 @@
 
 #include "deepseek_moe_v41_constants.h"
 #include "deepseek_moe_v41_load.h"
+#include "tensor_index_parse.h"
 #include "lsxcommon/converter.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/safetensors.h"
@@ -70,9 +71,12 @@ std::optional<ParsedExpert> ParseExpertName(const std::string &name)
     std::smatch m;
     if (!std::regex_match(name, m, re)) return std::nullopt;
     ParsedExpert p;
-    p.layer = std::stoi(m[1].str());
-    p.expert = std::stoi(m[2].str());
-    p.weight_id = std::stoi(m[3].str());
+    // Bounded parse: \d+ can match an arbitrarily long (corrupt) number;
+    // std::stoi would throw out_of_range instead of rejecting the name.
+    if (!detail::ParseTensorIndex(m[1].str(), p.layer) ||
+        !detail::ParseTensorIndex(m[2].str(), p.expert) ||
+        !detail::ParseTensorIndex(m[3].str(), p.weight_id))
+        return std::nullopt;
     p.is_scale = (m[4] == "scale");
     return p;
 }
@@ -98,7 +102,9 @@ std::optional<int> LayerOf(const std::string &name)
     static const std::regex re(R"(layers\.(\d+)\.)");
     std::smatch m;
     if (!std::regex_search(name, m, re)) return std::nullopt;
-    return std::stoi(m[1].str());
+    int layer = 0;
+    if (!detail::ParseTensorIndex(m[1].str(), layer)) return std::nullopt;
+    return layer;
 }
 
 bool IsGlobalTensor(const std::string &name)

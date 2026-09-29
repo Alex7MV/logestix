@@ -5,20 +5,39 @@ namespace sample {
 
 namespace {
 
-// Fixed device-side partial buffers for the two-phase greedy argmax.
+// Partial buffers for the two-phase greedy argmax.
 // Phase 1: up to kMaxPartials blocks each produce a (value, index) partial;
 // Phase 2: one block combines them in ascending block order. The tie-break
 // ("smaller index wins") composes correctly with strict-> partial maxima and
 // keeps results bit-identical to the old single-block kernel.
+//
+// The scratch is per-thread (lazily cudaMalloc'd once), NOT a process-global
+// __device__ array: two concurrent Sample() calls on independent streams would
+// otherwise overwrite each other's partials and return the wrong argmax
+// (regression test: "GreedySampler is safe across concurrent streams").
 constexpr int kMaxPartials = 512;
-__device__ float g_greedy_val[kMaxPartials];
-__device__ int32_t g_greedy_idx[kMaxPartials];
 
-// Phase-1 kernel: one partial (value, index) per block into the fixed
-// device buffers (indexed by blockIdx.x — no atomics, fully deterministic).
+struct GreedyScratch {
+    float *val = nullptr;
+    int32_t *idx = nullptr;
+    ~GreedyScratch() {
+        if (val) cudaFree(val);
+        if (idx) cudaFree(idx);
+    }
+};
+
+GreedyScratch &ScratchForThisThread()
+{
+    static thread_local GreedyScratch scratch;
+    return scratch;
+}
+
+// Phase-1 kernel: one partial (value, index) per block into the caller's
+// per-thread scratch (indexed by blockIdx.x — no atomics, fully deterministic).
 template <typename T>
 __global__ void kGreedyPartial(const T* __restrict__ logits, int vocab,
-                               int items_per_thread) {
+                               int items_per_thread, float* __restrict__ pval,
+                               int32_t* __restrict__ pidx) {
     __shared__ float s_best[256];
     __shared__ int32_t s_idx[256];
 
@@ -50,21 +69,22 @@ __global__ void kGreedyPartial(const T* __restrict__ logits, int vocab,
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        g_greedy_val[blockIdx.x] = s_best[0];
-        g_greedy_idx[blockIdx.x] = s_idx[0];
+        pval[blockIdx.x] = s_best[0];
+        pidx[blockIdx.x] = s_idx[0];
     }
 }
 
-__global__ void kGreedyFinalize(int num_partials, int32_t* out_tok,
-                                float* out_maxv) {
+__global__ void kGreedyFinalize(int num_partials, const float* __restrict__ pval,
+                                const int32_t* __restrict__ pidx,
+                                int32_t* out_tok, float* out_maxv) {
     __shared__ float s_best[256];
     __shared__ int32_t s_idx[256];
 
     float best = -1e30f;
     int32_t best_i = -1;
     for (int i = threadIdx.x; i < num_partials; i += blockDim.x) {
-        const float v = g_greedy_val[i];
-        const int32_t vi = g_greedy_idx[i];
+        const float v = pval[i];
+        const int32_t vi = pidx[i];
         if (v > best || (v == best && vi < best_i)) { best = v; best_i = vi; }
     }
     s_best[threadIdx.x] = best;
@@ -94,7 +114,9 @@ __global__ void kGreedyFinalize(int num_partials, int32_t* out_tok,
 // comparing — a bit-exact mirror of the host baseline's FP16-stored lm_head row.
 // maxv stores the rounded value, exactly as GlmArgmaxKernel does.
 __global__ void kGreedyPartialRounded16(const float* __restrict__ logits,
-                                        int vocab, int items_per_thread) {
+                                        int vocab, int items_per_thread,
+                                        float* __restrict__ pval,
+                                        int32_t* __restrict__ pidx) {
     __shared__ float s_best[256];
     __shared__ int32_t s_idx[256];
 
@@ -126,8 +148,8 @@ __global__ void kGreedyPartialRounded16(const float* __restrict__ logits,
         __syncthreads();
     }
     if (threadIdx.x == 0) {
-        g_greedy_val[blockIdx.x] = s_best[0];
-        g_greedy_idx[blockIdx.x] = s_idx[0];
+        pval[blockIdx.x] = s_best[0];
+        pidx[blockIdx.x] = s_idx[0];
     }
 }
 
@@ -148,23 +170,39 @@ cudaError_t GreedySampler::Sample(cudaStream_t stream, const void* d_logits,
         / (kThreads * kItemsPerThread));
     if (blocks > kMaxPartials) return cudaErrorInvalidValue;
 
+    GreedyScratch &scr = ScratchForThisThread();
+    if (scr.val == nullptr &&
+        cudaMalloc(&scr.val, sizeof(float) * kMaxPartials) != cudaSuccess) {
+        scr.val = nullptr;
+        return cudaGetLastError();
+    }
+    if (scr.idx == nullptr &&
+        cudaMalloc(&scr.idx, sizeof(int32_t) * kMaxPartials) != cudaSuccess) {
+        scr.idx = nullptr;
+        return cudaGetLastError();
+    }
+
     if (dtype == LogitType::kF32) {
         kGreedyPartial<float><<<blocks, kThreads, 0, stream>>>(
-            static_cast<const float*>(d_logits), vocab, kItemsPerThread);
+            static_cast<const float*>(d_logits), vocab, kItemsPerThread,
+            scr.val, scr.idx);
     } else if (dtype == LogitType::kF16) {
         kGreedyPartial<__half><<<blocks, kThreads, 0, stream>>>(
-            static_cast<const __half*>(d_logits), vocab, kItemsPerThread);
+            static_cast<const __half*>(d_logits), vocab, kItemsPerThread,
+            scr.val, scr.idx);
     } else if (dtype == LogitType::kF32Rounded16) {
         // GLM's fused argmax semantics: each FP32 logit is rounded to FP16
         // (RNE) before comparing — a bit-exact mirror of the host baseline's
         // FP16-stored lm_head row. maxv stores the rounded value, exactly as
         // GlmArgmaxKernel does.
         kGreedyPartialRounded16<<<blocks, kThreads, 0, stream>>>(
-            static_cast<const float*>(d_logits), vocab, kItemsPerThread);
+            static_cast<const float*>(d_logits), vocab, kItemsPerThread,
+            scr.val, scr.idx);
     } else {
         return cudaErrorInvalidValue;
     }
-    kGreedyFinalize<<<1, kThreads, 0, stream>>>(blocks, d_out_token, d_out_maxv);
+    kGreedyFinalize<<<1, kThreads, 0, stream>>>(blocks, scr.val, scr.idx,
+                                                d_out_token, d_out_maxv);
     return cudaGetLastError();
 }
 

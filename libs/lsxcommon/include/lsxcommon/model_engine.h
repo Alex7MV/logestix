@@ -28,10 +28,12 @@ public:
 
     // RAII lifecycle guard: InitializeEngine() on entry, ShutdownEngine() on
     // scope exit. Mirrors Core::Initialize/Core::Shutdown for embedded use.
+    // Sessions are reference-counted: nested guards share one engine lifetime,
+    // and the engine shuts down only when the outermost guard exits.
     class Session {
     public:
-        Session() { InferenceEngine::Instance().InitializeEngine(); }
-        ~Session() { InferenceEngine::Instance().ShutdownEngine(); }
+        Session() { InferenceEngine::Instance().AcquireSession(); }
+        ~Session() { InferenceEngine::Instance().ReleaseSession(); }
         Session(const Session &) = delete;
         Session &operator=(const Session &) = delete;
     };
@@ -45,17 +47,25 @@ public:
     std::unique_ptr<IModel> CreateModel(const ModelInitConfig &cfg);
 
     // Unified inference boundary. Validates the engine lifecycle, checks the
-    // request's abort_flag before dispatch, performs the decode through
-    // model.Infer, and streams the generated tokens out via
-    // req.token_callback as TokenChunk events. Abort and the caller's
-    // callback are read/called on the calling thread (no internal threads).
+    // request's abort_flag before dispatch, then delegates to model.Infer.
+    // The model owns streaming: it invokes req.token_callback once per decoded
+    // token (and honors req.abort_flag between steps) on the calling thread.
+    // The engine does not replay gen_tokens, so a token is never published
+    // twice.
     gpu::InferenceResult Run(IModel &model, ModelRequest &req);
 
 private:
     InferenceEngine() = default;
     ~InferenceEngine() = default;
 
+    // Session lifetime counter: InitializeEngine on 0->1, ShutdownEngine on
+    // 1->0. Kept separate from initialized_ so direct Initialize/Shutdown
+    // calls keep their unconditional toggle semantics.
+    void AcquireSession();
+    void ReleaseSession();
+
     std::atomic<bool> initialized_{false};
+    std::atomic<int> session_depth_{0};
 };
 
 } // namespace lsxcommon

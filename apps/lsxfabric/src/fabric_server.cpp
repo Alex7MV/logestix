@@ -10,7 +10,6 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
-#include <shared_mutex>
 #include <span>
 #include <thread>
 #include <utility>
@@ -200,9 +199,12 @@ int FabricServer::Run(const std::string& endpoint,
             }
         };
 
+        // Infer() acquires the shared residency lock itself (via
+        // ModelBase::RunUnderResidencyLock); taking it here as well would be a
+        // recursive read-lock on a std::shared_mutex -- undefined behavior that
+        // can deadlock against a concurrent Unload()'s unique lock.
         lsxcommon::gpu::InferenceResult res;
         try {
-            std::shared_lock<std::shared_mutex> lock(model_.ResidencyMutex());
             res = model_.Infer(mreq);
         } catch (const std::exception& e) {
             SendRouted(router.Get(), ident,

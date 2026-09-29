@@ -219,7 +219,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(abseil-cpp)
 
 # Patch abseil CRC for MSVC + project-wide /arch:AVX512 (idempotent, same
-# patch-after-fetch pattern as Boost/spdlog/imnodes above). The global
+# patch-after-fetch pattern as Boost/spdlog above). The global
 # /arch:AVX512 (root CMAKE_CXX_FLAGS) defines __AVX__ on MSVC, which activates
 # abseil's GCC/Clang-only VPCLMULQDQ inline-asm path (crc_x86_arm_combined.cc's
 # `__asm__`), and MSVC cannot parse those statements. Disabling the MSVC SIMD

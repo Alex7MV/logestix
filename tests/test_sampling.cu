@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
+#include <atomic>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 #include "lsxcommon/sampling.h"
@@ -117,6 +119,64 @@ TEST_CASE("GreedySampler rejects invalid arguments", "[sampling]") {
     REQUIRE(g.Sample(stream, &d_stub, 10, static_cast<LogitType>(7),
                      &d_tok, &d_stub) == cudaErrorInvalidValue);
     cudaStreamDestroy(stream);
+}
+
+// Two concurrent Sample() calls on independent streams must not corrupt each
+// other through shared sampler scratch. Large vocab => many partial blocks =>
+// a real overlap window; each stream's argmax is distinct, so any cross-talk
+// yields the wrong token.
+TEST_CASE("GreedySampler is safe across concurrent streams", "[sampling]") {
+    const int vocab = 1 << 20;
+    std::vector<float> row_a(vocab, -10.0f);
+    std::vector<float> row_b(vocab, -10.0f);
+    row_a[7] = 5.0f;
+    row_b[vocab - 3] = 6.0f;
+
+    float* d_a = nullptr;
+    float* d_b = nullptr;
+    REQUIRE(cudaMalloc(&d_a, vocab * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_b, vocab * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_a, row_a.data(), vocab * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_b, row_b.data(), vocab * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    std::atomic<int> wrong_a{0};
+    std::atomic<int> wrong_b{0};
+    auto worker = [&](float* d_row, int32_t expect, std::atomic<int>& wrong) {
+        cudaStream_t s = nullptr;
+        if (cudaStreamCreate(&s) != cudaSuccess) { wrong += 1000; return; }
+        int32_t* d_tok = nullptr;
+        float* d_maxv = nullptr;
+        cudaMalloc(&d_tok, sizeof(int32_t));
+        cudaMalloc(&d_maxv, sizeof(float));
+        GreedySampler g;
+        for (int it = 0; it < 300; ++it) {
+            if (g.Sample(s, d_row, vocab, LogitType::kF32, d_tok, d_maxv) !=
+                cudaSuccess) {
+                ++wrong;
+                break;
+            }
+            cudaStreamSynchronize(s);
+            int32_t tok = -1;
+            cudaMemcpy(&tok, d_tok, sizeof(int32_t), cudaMemcpyDeviceToHost);
+            if (tok != expect) ++wrong;
+        }
+        cudaFree(d_maxv);
+        cudaFree(d_tok);
+        cudaStreamDestroy(s);
+    };
+
+    std::thread ta(worker, d_a, /*expect=*/7, std::ref(wrong_a));
+    std::thread tb(worker, d_b, /*expect=*/vocab - 3, std::ref(wrong_b));
+    ta.join();
+    tb.join();
+
+    REQUIRE(wrong_a.load() == 0);
+    REQUIRE(wrong_b.load() == 0);
+
+    cudaFree(d_b);
+    cudaFree(d_a);
 }
 
 TEST_CASE("DefaultSampler is a stable singleton", "[sampling]") {

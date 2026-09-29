@@ -24,6 +24,18 @@ bool InferenceEngine::InitializeEngine()
     return true;
 }
 
+void InferenceEngine::AcquireSession()
+{
+    session_depth_.fetch_add(1, std::memory_order_acq_rel);
+    InitializeEngine();
+}
+
+void InferenceEngine::ReleaseSession()
+{
+    if (session_depth_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        ShutdownEngine();
+}
+
 void InferenceEngine::ShutdownEngine()
 {
     initialized_.store(false, std::memory_order_release);
@@ -49,28 +61,12 @@ gpu::InferenceResult InferenceEngine::Run(IModel &model, ModelRequest &req)
         return r;
     }
 
-    r = model.Infer(req);
-    if (!r.ok) return r;
-
-    // Replay the generated token stream into the caller's callback as
-    // TokenChunk events (step-fanout is synchronous, on the calling thread).
-    // The cooperative interruption intercept is honored between chunks so an
-    // abort mid-decode truncates the published stream cleanly.
-    TokenCallback &cb = req.token_callback;
-    if (cb && !r.gen_tokens.empty()) {
-        TokenChunk chunk;
-        for (chunk.step_t = 0; chunk.step_t < r.gen_tokens.size(); ++chunk.step_t) {
-            if (req.abort_flag &&
-                req.abort_flag->load(std::memory_order_acquire))
-                break;
-            chunk.token_id = static_cast<uint32_t>(r.gen_tokens[chunk.step_t]);
-            chunk.logit_maxv = 0.0f;  // per-step argmax is published by the
-                                      // model's own streaming hooks when present
-            chunk.is_special = false;
-            cb(chunk);
-        }
-    }
-    return r;
+    // IModel::Infer owns the streaming contract: every family threads a
+    // GenerationStream through its decode loop and invokes req.token_callback
+    // once per decoded token (and honors req.abort_flag between steps). The
+    // facade must forward the request untouched and must NOT replay the
+    // returned gen_tokens, or each token would be published twice.
+    return model.Infer(req);
 }
 
 } // namespace lsxcommon

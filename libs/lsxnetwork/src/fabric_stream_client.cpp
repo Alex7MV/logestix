@@ -111,7 +111,9 @@ bool FabricStreamClient::Probe(int timeout_ms) {
         const bool ok = DecodeFabricPong(frame, got) == WireStatus::kOk &&
                         got == nonce;
         zmq_msg_close(&msg);
-        if (ok) return true;  // stale pong: keep waiting
+        if (ok) return true;
+        // Nonce mismatch: a stale pong from an earlier probe. Keep waiting
+        // for the matching one until the deadline.
     }
 }
 

@@ -221,7 +221,18 @@ Lease ResourceGovernor::Acquire(LeaseKind kind, std::uint64_t bytes,
 void ResourceGovernor::ReleaseLeaseBytes(LeaseKind kind, std::uint64_t bytes)
 {
     std::lock_guard<std::mutex> lk(mu_);
-    (IsVramLease(kind) ? vram_committed_ : ram_committed_) -= bytes;
+    std::uint64_t &committed = IsVramLease(kind) ? vram_committed_ : ram_committed_;
+    // A lease may outlive Shutdown() (which resets the counters) or a relaxed
+    // over-commit; releasing more than is booked must clamp to zero instead of
+    // wrapping the unsigned counter to ~2^64.
+    if (bytes > committed) {
+        spdlog::warn("[governor] release of {} MiB exceeds booked {} MiB; "
+                     "clamping to 0",
+                     bytes >> 20, committed >> 20);
+        committed = 0;
+        return;
+    }
+    committed -= bytes;
 }
 
 // ── Hardware probing ────────────────────────────────────────────────────────
