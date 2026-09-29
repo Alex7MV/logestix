@@ -170,6 +170,10 @@ struct GcPipeline::Impl {
     GcMlaScratch mla;
     GcGdnScratch gdn;
     std::vector<float> rc, rs;
+    // Device copies of rc/rs. The YaRN tables are built on the host but read
+    // by rope_qk_kernel, so a raw rc.data() would hand a kernel a host
+    // pointer; carves out of d_base like every other pipeline buffer.
+    float *d_rc = nullptr, *d_rs = nullptr;
     std::vector<float *> kcache, vcache, conv, rec;
 
     void *d_base = nullptr;
@@ -340,6 +344,10 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     need(static_cast<int64_t>(hidden) * 4);                 // sdown_f
     need(static_cast<int64_t>(hidden) * 2);                 // xb
     need(static_cast<int64_t>(hidden) * 2);                 // d_embed_row
+    const int64_t rope_bytes =
+        static_cast<int64_t>(capacity) * (dims.mla.rope / 2) * 4;
+    need(rope_bytes);  // d_rc
+    need(rope_bytes);  // d_rs
     void *base = nullptr;
     if (cudaMalloc(&base, static_cast<size_t>(total)) != cudaSuccess)
     {
@@ -374,6 +382,16 @@ bool GcPipeline::Init(const GcWeights &w, const GcPipelineDims &dims,
     p.xb = static_cast<__nv_bfloat16 *>(carve(static_cast<int64_t>(hidden) * 2));
     p.d_embed_row =
         static_cast<__nv_bfloat16 *>(carve(static_cast<int64_t>(hidden) * 2));
+    p.d_rc = static_cast<float *>(carve(rope_bytes));
+    p.d_rs = static_cast<float *>(carve(rope_bytes));
+    if (cudaMemcpy(p.d_rc, p.rc.data(), static_cast<size_t>(rope_bytes),
+                   cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(p.d_rs, p.rs.data(), static_cast<size_t>(rope_bytes),
+                   cudaMemcpyHostToDevice) != cudaSuccess)
+    {
+        error = "gigachat pipeline: rope table upload failed";
+        return false;
+    }
 
     p.h_idx.assign(static_cast<size_t>(dims.top_k), 0);
     p.h_w.assign(static_cast<size_t>(dims.top_k), 0.0f);
@@ -474,7 +492,7 @@ cudaError_t GcPipeline::Step(const GcWeights &w, GcExpertCache &ec,
         GC_TRY(PToF16(p.buf, p.n_h, hidden, stream));
         if (lw.full_attention)
             GC_TRY(RunGigaChatMlaDecode(p.buf, lw, p.d.mla, p.d.rms_eps,
-                                        p.attn_scale, p.rc.data(), p.rs.data(),
+                                        p.attn_scale, p.d_rc, p.d_rs,
                                         pos, p.capacity, p.kcache[l],
                                         p.vcache[l], p.mla, p.attn, stream));
         else
