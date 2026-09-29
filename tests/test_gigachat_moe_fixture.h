@@ -111,18 +111,20 @@ inline void AddBf16(std::vector<FakeTensor> &ts, const std::string &name,
 
 // ZeroCenteredGatedNorm triple (weight + gate_up + gate_down).
 inline void AddGatedNorm(std::vector<FakeTensor> &ts, const std::string &base,
-                         int64_t dim, bool verified = false)
+                         int64_t dim, bool verified = false,
+                         int64_t gate_rank = kTGateRank)
 {
     AddBf16(ts, base + ".weight", {dim}, verified);
-    AddBf16(ts, base + ".gate_up_projection.weight", {kTGateRank, dim},
+    AddBf16(ts, base + ".gate_up_projection.weight", {gate_rank, dim},
             verified);
-    AddBf16(ts, base + ".gate_down_projection.weight", {dim, kTGateRank},
+    AddBf16(ts, base + ".gate_down_projection.weight", {dim, gate_rank},
             verified);
 }
 
 inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
                                     bool verified = false,
-                                    bool corrupt_gate_down = false)
+                                    bool corrupt_gate_down = false,
+                                    int64_t gate_rank = kTGateRank)
 {
     {
         std::ofstream f(dir / "config.json");
@@ -160,13 +162,14 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
     // Globals.
     AddBf16(ts, "model.embed_tokens.weight", {kTVocab, kTH}, verified);
     AddBf16(ts, "lm_head.weight", {kTVocab, kTH}, verified);
-    AddGatedNorm(ts, "model.norm", kTH, verified);
+    AddGatedNorm(ts, "model.norm", kTH, verified, gate_rank);
 
     // Layer 0: GatedDeltaNet + dense MLP.
     for (const char *n : {"input_layernorm", "post_attention_layernorm",
                           "post_self_attn_layernorm",
                           "post_feedforward_layernorm"})
-        AddGatedNorm(ts, std::string("model.layers.0.") + n, kTH, verified);
+        AddGatedNorm(ts, std::string("model.layers.0.") + n, kTH, verified,
+                     gate_rank);
     AddFp8(ts, "model.layers.0.self_attn.in_proj_qkvz", kTGdnQkvz, kTH);
     AddFp8(ts, "model.layers.0.self_attn.out_proj", kTH, kTGdnValue);
     AddBf16(ts, "model.layers.0.self_attn.conv1d.weight", {kTGdnConv, 1, 4},
@@ -184,12 +187,15 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
     for (const char *n : {"input_layernorm", "post_attention_layernorm",
                           "post_self_attn_layernorm",
                           "post_feedforward_layernorm"})
-        AddGatedNorm(ts, std::string("model.layers.1.") + n, kTH, verified);
+        AddGatedNorm(ts, std::string("model.layers.1.") + n, kTH, verified,
+                     gate_rank);
     AddFp8(ts, "model.layers.1.self_attn.q_a_proj", 128, kTH);
-    AddGatedNorm(ts, "model.layers.1.self_attn.q_a_layernorm", 128);
+    AddGatedNorm(ts, "model.layers.1.self_attn.q_a_layernorm", 128, false,
+                 gate_rank);
     AddFp8(ts, "model.layers.1.self_attn.q_b_proj", kTQkOut, 128);
     AddFp8(ts, "model.layers.1.self_attn.kv_a_proj_with_mqa", kTKvA, kTH);
-    AddGatedNorm(ts, "model.layers.1.self_attn.kv_a_layernorm", 128);
+    AddGatedNorm(ts, "model.layers.1.self_attn.kv_a_layernorm", 128, false,
+                 gate_rank);
     AddFp8(ts, "model.layers.1.self_attn.kv_b_proj", kTKvB, 128);
     AddFp8(ts, "model.layers.1.self_attn.o_proj", kTH, kVOut);
     AddFp8(ts, "model.layers.1.self_attn.gate_proj", kVOut, kTH);

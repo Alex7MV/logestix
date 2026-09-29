@@ -142,6 +142,9 @@ cudaError_t RunZeroCenteredGatedNorm(const float *x, int rows, int dim,
     threads = (threads + 31) & ~31;
     if (threads > 1024) threads = 1024;
     const size_t smem = (static_cast<size_t>(dim) + rank) * sizeof(float);
+    // No cudaFuncSetAttribute opt-in, so dynamic smem is capped at the default
+    // 48 KiB (mirrors RunExpHcGatedResidualF32). Real geometry is 28.7 KiB.
+    if (smem > 48 * 1024) return cudaErrorInvalidValue;
     zero_centered_gated_norm_kernel<<<rows, threads, smem, stream>>>(
         x, dim, rank, reinterpret_cast<const __nv_bfloat16 *>(w),
         reinterpret_cast<const __nv_bfloat16 *>(w_up),

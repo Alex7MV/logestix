@@ -24,14 +24,15 @@ using namespace lsxcommon::gigachat;
 
 namespace {
 
-void ForceSyntheticGeometry()
+void SetSyntheticGeometry(bool on)
 {
 #ifdef _WIN32
-    _putenv_s("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    _putenv_s("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", on ? "1" : "0");
 #else
-    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1", 1);
+    setenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", on ? "1" : "0", 1);
 #endif
 }
+void ForceSyntheticGeometry() { SetSyntheticGeometry(true); }
 
 std::filesystem::path BuildConverted()
 {
@@ -69,6 +70,35 @@ TEST_CASE("gigachat loader rejects a transposed gated-norm gate projection",
     GcWeights w;
     CHECK_FALSE(LoadGigaChatWeights(dst.string(), idx, w, stream, err));
     CHECK(err.find("gated norm") != std::string::npos);
+    cudaStreamDestroy(stream);
+    w.Free();
+}
+
+TEST_CASE("gigachat loader enforces the frozen gate rank",
+          "[gigachat][load][strict]")
+{
+    if (cudaFree(0) != cudaSuccess) SKIP("no CUDA device");
+    ForceSyntheticGeometry();  // convert stage accepts the synthetic geometry
+    const auto src = gigachattest::MakeTempDir("gc_badrank_src");
+    const auto dst = gigachattest::MakeTempDir("gc_badrank_dst");
+    gigachattest::WriteGigaChatCheckpoint(src, /*verified=*/false,
+                                          /*corrupt_gate_down=*/false,
+                                          /*gate_rank=*/8);
+    const auto st = ConvertGigaChatModel(src.string(), dst.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    // Enable the frozen gate: the rank branch (not the shape branch) must fire.
+    SetSyntheticGeometry(false);
+    GigaChatIndex idx;
+    std::string err;
+    REQUIRE(LoadGigaChatIndex(dst.string(), idx, err));
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    GcWeights w;
+    CHECK_FALSE(LoadGigaChatWeights(dst.string(), idx, w, stream, err));
+    CHECK(err.find("gate rank") != std::string::npos);
     cudaStreamDestroy(stream);
     w.Free();
 }
