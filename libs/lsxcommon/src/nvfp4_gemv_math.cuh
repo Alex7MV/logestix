@@ -31,7 +31,8 @@ __device__ __forceinline__ float GemvDotRow(
         const uint8_t *pb = reinterpret_cast<const uint8_t *>(&pw);
         const int sb = (kb >> 4) + 2 * c;
         const float sc0 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb]);
-        const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb + 1]);        const int xb = kb + c * 32;
+        const float sc1 = gpu::nvfp4::E4M3ScaleToFloat(srow[sb + 1]);
+        const int xb = kb + c * 32;
         const __half2 *xh =
             x_vec ? reinterpret_cast<const __half2 *>(x + xb) : nullptr;
 #pragma unroll
