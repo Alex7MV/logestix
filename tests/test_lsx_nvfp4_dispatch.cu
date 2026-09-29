@@ -334,6 +334,87 @@ TEST_CASE("seq==1 direct GEMV entry minimal shape parity",
     b.Free();
 }
 
+TEST_CASE("GEMV KP heuristic never drops the K tail (K multiple of 32, not 256)",
+          "[lsxnvfp4][gemv][shape]")
+{
+    // K = 2080 = 32*65: satisfies the entry contract (K % 32 == 0) but not
+    // K % 256. The kp floor test (K/2 >= 1024 && N*2 >= 1024) would select
+    // KP=2; the kernel then walks chunks = (K/KP)>>5 = 32 per 1040-element
+    // slice, covering only 1024 elements and silently dropping the 16-element
+    // tail of every slice. The heuristic must pick a KP that divides K into
+    // whole 32-element chunks (or fall back to KP=1).
+    Bufs b;
+    b.Init(1, 2080, 512);
+    const float gs = 0.25f;
+    std::vector<float> ref((size_t)b.N);
+    HostRefPlain(b.hx.data(), b.hp.data(), b.hs.data(), gs, ref.data(), 1,
+                 b.K, b.N, false);
+    REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, b.dx, b.dp, b.ds, gs,
+                                                b.dy, b.K, b.N) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    const auto hy = b.Read(b.dy);
+    for (int n = 0; n < b.N; ++n) {
+        INFO("n=" << n << " ref=" << ref[n] << " got=" << __half2float(hy[n]));
+        CHECK(std::abs(__half2float(hy[n]) - ref[n]) <
+              2e-3f * std::abs(ref[n]) + 2e-4f);
+    }
+    b.Free();
+}
+
+TEST_CASE("Pair and expert-batch GEMV keep K/KP chunk-aligned (K=2080)",
+          "[lsxnvfp4][gemv][shape]")
+{
+    // Same tail-alignment hazard as the plain entry, on the two other
+    // streaming-GEMV launch helpers. A KP that leaves K/KP % 32 != 0 makes
+    // the packed-row uint4 load fault.
+    constexpr int K = 2080, NH = 512;
+    const float gs_gate = 0.125f, gs_up = 0.03125f;
+    const int64_t pack_half = (int64_t)K * NH / 2;
+    const int64_t scale_half = (int64_t)K * NH / 16;
+    {
+        Bufs b;
+        b.Init(1, K, 2 * NH);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmGateUpPair(
+                    nullptr, b.dx, b.dp, b.ds, gs_gate, gs_up, b.dy, K, NH) ==
+                cudaSuccess);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, b.dx, b.dp, b.ds,
+                                                    gs_gate, b.dy2, K, NH) ==
+                cudaSuccess);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                    nullptr, b.dx, b.dp + pack_half, b.ds + scale_half, gs_up,
+                    b.dy2 + NH, K, NH) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        const auto hy = b.Read(b.dy);
+        const auto href = b.Read(b.dy2);
+        CHECK(std::memcmp(hy.data(), href.data(), hy.size() * sizeof(__half)) ==
+              0);
+        b.Free();
+    }
+    {
+        Bufs b;
+        b.Init(1, K, NH);
+        lsx_nvfp4::SetLsxTcFastMath(true);
+        lsx_nvfp4::SetLsxSeq1Gemv(true);
+        const uint8_t *packed[1] = {b.dp};
+        const uint8_t *scales[1] = {b.ds};
+        const float gs[1] = {gs_gate};
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                    nullptr, b.dx, packed, scales, gs, 1, /*x_stride=*/0, b.dy,
+                    K, NH, /*acc=*/false) == cudaSuccess);
+        REQUIRE(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(nullptr, b.dx, b.dp, b.ds,
+                                                    gs_gate, b.dy2, K, NH) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        const auto hy = b.Read(b.dy);
+        const auto href = b.Read(b.dy2);
+        CHECK(std::memcmp(hy.data(), href.data(), hy.size() * sizeof(__half)) ==
+              0);
+        lsx_nvfp4::SetLsxTcFastMath(false);
+        lsx_nvfp4::SetLsxSeq1Gemv(false);
+        b.Free();
+    }
+}
+
 TEST_CASE("Gate/up pair GEMV is bit-exact vs two single GEMVs",
           "[lsxnvfp4][gemv][pair]")
 {

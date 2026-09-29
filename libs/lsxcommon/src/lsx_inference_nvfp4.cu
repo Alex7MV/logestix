@@ -591,6 +591,25 @@ lsx_nvfp4_gemv_warprow_kernel(
     }
 }
 
+// Pick the K-slice count for the streaming GEMV kernels. A candidate KP is
+// usable only when it splits K into whole 32-element chunks: the kernels
+// cover a slice [kb, kb + K/KP) by walking `chunks = (K/KP) >> 5` uint4
+// chunks from `wrow + (kb>>1)`, so K/KP % 32 != 0 both drops the slice tail
+// and leaves the row pointer misaligned for the uint4 load (observed on
+// RTX 5090 as cudaErrorMisalignedAddress). KP=1 is always valid for the
+// K % 32 == 0 entry contract. `rows` is the row count used by the occupancy
+// floor (N or n_half, depending on the entry).
+inline int PickGemvKp(int K, int rows)
+{
+    for (int cand : {8, 4, 2}) {
+        if ((K % cand) == 0 && ((K / cand) % 32) == 0 &&
+            (K / cand) >= 1024 &&
+            (static_cast<int64_t>(rows) * cand) >= 1024)
+            return cand;
+    }
+    return 1;
+}
+
 cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
@@ -641,12 +660,9 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     // are DRAM-bound and saturate below 24% of HBM peak at kp=1. Deeper
     // per-lane ILP (2 chains x 2 unrolled chunk strata) lifts the streaming
     // rate; kp=4 is safe for any (K,N) passing the floor check because the
-    // chain merge stays a fixed in-slice order.
-    int kp = 1;
-    for (int cand : {8, 4, 2}) {
-        if ((K / cand) >= 1024 &&
-            (static_cast<int64_t>(N) * cand) >= 1024) { kp = cand; break; }
-    }
+    // chain merge stays a fixed in-slice order. The candidate must also keep
+    // K/KP a multiple of 32 (see PickGemvKp).
+    const int kp = PickGemvKp(K, N);
     constexpr int WARPS = 8;
     auto launch = [&](auto kp_tag) -> cudaError_t {
         constexpr int KPc = decltype(kp_tag)::value;
@@ -677,11 +693,7 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GateUpPair(
     if (!x || !packed || !scales || !y || K <= 0 || n_half <= 0)
         return cudaErrorInvalidValue;
     if ((K & 31) != 0) return cudaErrorInvalidValue;
-    int kp = 1;
-    for (int cand : {8, 4, 2}) {
-        if ((K / cand) >= 1024 &&
-            (static_cast<int64_t>(n_half) * cand) >= 1024) { kp = cand; break; }
-    }
+    const int kp = PickGemvKp(K, n_half);
     constexpr int WARPS = 8;
     auto launch = [&](auto kp_tag) -> cudaError_t {
         constexpr int KPc = decltype(kp_tag)::value;
@@ -731,11 +743,7 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatch(
         ptrs.scales[e] = scales[e];
         ptrs.gs[e] = gs[e];
     }
-    int kp = 1;
-    for (int cand : {8, 4, 2}) {
-        if ((K / cand) >= 1024 &&
-            (static_cast<int64_t>(N) * cand) >= 1024) { kp = cand; break; }
-    }
+    const int kp = PickGemvKp(K, N);
     constexpr int WARPS = 8;
     auto launch = [&](auto kp_tag) -> cudaError_t {
         constexpr int KPc = decltype(kp_tag)::value;

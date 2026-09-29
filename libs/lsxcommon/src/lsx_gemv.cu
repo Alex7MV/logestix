@@ -114,7 +114,17 @@ __global__ void GemvTWKernel(const WT *__restrict__ w, const XT *__restrict__ x,
         acc += __shfl_down_sync(0xFFFFFFFFu, acc, off);
     if (lane == 0) {
         const int64_t o = static_cast<int64_t>(s) * N + n;
-        StoreOut<kOutKind>(y, o, alpha * acc);
+        float v = alpha * acc;
+        if (beta != 0.0f) {
+            if constexpr (kOutKind == 0)
+                v += beta * __half2float(static_cast<__half *>(y)[o]);
+            else if constexpr (kOutKind == 1)
+                v += beta * __bfloat162float(
+                                static_cast<__nv_bfloat16 *>(y)[o]);
+            else
+                v += beta * static_cast<float *>(y)[o];
+        }
+        StoreOut<kOutKind>(y, o, v);
     }
 }
 

@@ -637,6 +637,7 @@ add_library(test_qwen_cu OBJECT
     test_qwen_nvfp4_tile_gemm.cu
     test_qwen_nvfp4_gemv.cu
     test_lsx_nvfp4_dispatch.cu
+    test_lsx_gemv.cu
     test_perf_knobs_apply.cu
     test_qwen_dense_full_attn.cu
     test_qwen_dense_full_attn_parallel.cu
@@ -784,7 +785,7 @@ target_compile_definitions(test_qwen_cu PRIVATE
 )
 target_link_libraries(test_qwen_cu PRIVATE Catch2::Catch2WithMain)
 
-foreach(qt test_qwen_dense_shuffle_reduce test_qwen_dense_mlp test_qwen_dense_nvfp4 test_qwen_nvfp4_tile_gemm test_qwen_nvfp4_gemv test_lsx_nvfp4_dispatch test_perf_knobs_apply test_qwen_dense_full_attn test_qwen_dense_full_attn_parallel test_qwen_dense_linear_attn test_qwen_dense_fused_mlp test_qwen_dense_fused_linear_attn test_blackwell_micro_gemm)
+foreach(qt test_qwen_dense_shuffle_reduce test_qwen_dense_mlp test_qwen_dense_nvfp4 test_qwen_nvfp4_tile_gemm test_qwen_nvfp4_gemv test_lsx_nvfp4_dispatch test_lsx_gemv test_perf_knobs_apply test_qwen_dense_full_attn test_qwen_dense_full_attn_parallel test_qwen_dense_linear_attn test_qwen_dense_fused_mlp test_qwen_dense_fused_linear_attn test_blackwell_micro_gemm)
     add_executable(${qt})
     set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
     target_link_libraries(${qt} PRIVATE test_qwen_cu lsxcommon Catch2::Catch2WithMain)
@@ -4857,6 +4858,7 @@ set_tests_properties(
 set_tests_properties(
     test_sampling
     test_lsx_nvfp4_dispatch
+    test_lsx_gemv
     test_perf_knobs_apply
     test_blackwell_tc_mma
     test_lsx_kernels
