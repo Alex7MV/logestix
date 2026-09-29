@@ -598,12 +598,13 @@ lsx_nvfp4_gemv_warprow_kernel(
 // and leaves the row pointer misaligned for the uint4 load (observed on
 // RTX 5090 as cudaErrorMisalignedAddress). KP=1 is always valid for the
 // K % 32 == 0 entry contract. `rows` is the row count used by the occupancy
-// floor (N or n_half, depending on the entry).
+// floor (N or n_half, depending on the entry). K % cand == 0 is implied by the
+// K % 32 == 0 contract (32 is a multiple of 8/4/2), so only the chunk check is
+// needed here.
 inline int PickGemvKp(int K, int rows)
 {
     for (int cand : {8, 4, 2}) {
-        if ((K % cand) == 0 && ((K / cand) % 32) == 0 &&
-            (K / cand) >= 1024 &&
+        if (((K / cand) % 32) == 0 && (K / cand) >= 1024 &&
             (static_cast<int64_t>(rows) * cand) >= 1024)
             return cand;
     }

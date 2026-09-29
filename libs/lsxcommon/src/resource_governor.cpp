@@ -226,9 +226,18 @@ void ResourceGovernor::ReleaseLeaseBytes(LeaseKind kind, std::uint64_t bytes)
     // over-commit; releasing more than is booked must clamp to zero instead of
     // wrapping the unsigned counter to ~2^64.
     if (bytes > committed) {
-        spdlog::warn("[governor] release of {} MiB exceeds booked {} MiB; "
-                     "clamping to 0",
-                     bytes >> 20, committed >> 20);
+        // Double-release detections are worth surfacing, but a caller stuck in
+        // an error loop must not flood the log; warn once, debug afterwards.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            spdlog::warn("[governor] release of {} MiB exceeds booked {} MiB; "
+                         "clamping to 0 (further occurrences at debug level)",
+                         bytes >> 20, committed >> 20);
+        } else {
+            spdlog::debug("[governor] release of {} MiB exceeds booked {} MiB",
+                          bytes >> 20, committed >> 20);
+        }
         committed = 0;
         return;
     }
