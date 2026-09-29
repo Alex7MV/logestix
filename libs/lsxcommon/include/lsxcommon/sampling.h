@@ -32,8 +32,10 @@ public:
 
 // Greedy argmax sampler. Matches the engines' fused-argmax semantics: on ties
 // the FIRST (lowest index) maximum wins. Single block, <= 256 threads.
-// Thread-safe: the two-phase partial scratch is per-thread (lazily allocated),
-// so concurrent Sample() calls on independent streams do not interfere.
+// Thread-safe ACROSS HOST THREADS: the two-phase partial scratch is
+// thread_local (lazily allocated), so two host threads (each on its own
+// stream) do not interfere. The scratch is NOT keyed by CUDA stream, so a
+// single host thread must not call Sample() concurrently on two streams.
 class GreedySampler : public ISampler {
 public:
     cudaError_t Sample(cudaStream_t stream, const void* d_logits, int vocab,
