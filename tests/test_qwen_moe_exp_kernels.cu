@@ -6,9 +6,11 @@
 #include "lsxcommon/qwen_moe_exp_inference.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -649,4 +651,130 @@ TEST_CASE("hc cached GatedResidual real-scale decode latency budget",
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
     cudaStreamDestroy(s);
+}
+
+TEST_CASE("hc cached scratch reallocation does not free the mixer alias",
+          "[qwen-exp-kernels]")
+{
+    // Growing H forces EnsureScratchScratchOnly to reallocate the persistent
+    // mixer scratch. HcScratch::d_mixer_inj aliases d_mixer_mixed + offset, so
+    // the grow path must free only the real allocation: an interior-pointer
+    // cudaFree returns cudaErrorInvalidValue (compute-sanitizer flags it, and
+    // the sticky error is returned by the cached entry).
+    constexpr int hc = 4, lowrank = 32;
+    const int H1 = 64, H2 = 256;   // H2 > H1 -> need_mixer grows
+    const int n2 = H2 * hc;
+    CudaBuf d_down(static_cast<size_t>(lowrank) * n2 * 2),
+        d_up(static_cast<size_t>(n2) * lowrank * 2);
+    CudaBuf d_norm(static_cast<size_t>(n2) * 2),
+        d_hyper(static_cast<size_t>(n2) * 2);
+    CudaBuf d_mixed(H2 * 4), d_inj(hc * 4), d_mixed_h(H2 * 2);
+
+    lsxcommon::qwen_moe_exp::ExpHcDequantCache w;
+    w.down = d_down.as<__half>();
+    w.up = d_up.as<__half>();
+    w.down_elems = static_cast<int64_t>(lowrank) * n2;
+    w.up_elems = static_cast<int64_t>(n2) * lowrank;
+
+    cudaStream_t s = nullptr;
+    REQUIRE(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) ==
+            cudaSuccess);
+    auto run = [&](int H) {
+        return lsxcommon::qwen_moe_exp::RunExpHcGatedResidualCached(
+            s, d_hyper.as<__half>(), w, d_norm.as<uint8_t>(), /*seq=*/1, H, hc,
+            lowrank, d_mixed.as<float>(), d_inj.as<float>(),
+            d_mixed_h.as<__half>());
+    };
+    REQUIRE(run(H1) == cudaSuccess);           // first allocation
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    REQUIRE(run(H2) == cudaSuccess);           // grow -> mixer reallocation
+    REQUIRE(cudaStreamSynchronize(s) == cudaSuccess);
+    CHECK(cudaGetLastError() == cudaSuccess);
+    cudaStreamDestroy(s);
+}
+
+TEST_CASE("hc cached scratch is isolated across host threads",
+          "[qwen-exp-kernels][threads]")
+{
+    // Two host threads drive the cached hc path concurrently with DISTINCT
+    // data. The persistent HcScratch (d_x32/d_normed/d_dn/d_upout) must be
+    // per-thread: a process-global scratch would be clobbered by the other
+    // thread's in-flight kernels and the per-thread output would drift from
+    // its single-threaded reference (mirrors the GreedySampler concurrency
+    // test). Same H and lowrank for both so no reallocation is involved.
+    constexpr int H = 64, hc = 4, lowrank = 32;
+    const int n = H * hc;
+
+    struct Ctx {
+        CudaBuf down{static_cast<size_t>(lowrank) * n * 2};
+        CudaBuf up{static_cast<size_t>(n) * lowrank * 2};
+        CudaBuf norm{static_cast<size_t>(n) * 2};
+        CudaBuf hyper{static_cast<size_t>(n) * 2};
+        CudaBuf mixed{static_cast<size_t>(H) * 4};
+        CudaBuf inj{static_cast<size_t>(hc) * 4};
+        CudaBuf mixed_h{static_cast<size_t>(H) * 2};
+        lsxcommon::qwen_moe_exp::ExpHcDequantCache w;
+        cudaStream_t s = nullptr;
+        std::vector<float> ref;
+
+        explicit Ctx(int seed) {
+            auto f = [seed](int i, int m) {
+                return __float2half(0.01f * static_cast<float>((i + seed) % m) -
+                                    0.05f);
+            };
+            std::vector<__half> dn(static_cast<size_t>(lowrank) * n),
+                upv(static_cast<size_t>(n) * lowrank),
+                hv(static_cast<size_t>(n)), nw(static_cast<size_t>(n));
+            for (size_t i = 0; i < dn.size(); ++i) dn[i] = f((int)i, 13);
+            for (size_t i = 0; i < upv.size(); ++i) upv[i] = f((int)i, 11);
+            for (size_t i = 0; i < hv.size(); ++i) hv[i] = f((int)i, 7);
+            for (size_t i = 0; i < nw.size(); ++i) nw[i] = f((int)i, 5);
+            cudaMemcpy(down.p, dn.data(), dn.size() * 2, cudaMemcpyHostToDevice);
+            cudaMemcpy(up.p, upv.data(), upv.size() * 2, cudaMemcpyHostToDevice);
+            cudaMemcpy(hyper.p, hv.data(), hv.size() * 2, cudaMemcpyHostToDevice);
+            cudaMemcpy(norm.p, nw.data(), nw.size() * 2, cudaMemcpyHostToDevice);
+            w.down = down.as<__half>();
+            w.up = up.as<__half>();
+            w.down_elems = static_cast<int64_t>(lowrank) * n;
+            w.up_elems = static_cast<int64_t>(n) * lowrank;
+            cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking);
+        }
+        cudaError_t run() {
+            return lsxcommon::qwen_moe_exp::RunExpHcGatedResidualCached(
+                s, hyper.as<__half>(), w, norm.as<uint8_t>(), /*seq=*/1, H, hc,
+                lowrank, mixed.as<float>(), inj.as<float>(),
+                mixed_h.as<__half>());
+        }
+        void read() {
+            cudaStreamSynchronize(s);
+            ref.assign(static_cast<size_t>(H), 0.0f);
+            cudaMemcpy(ref.data(), mixed.p, static_cast<size_t>(H) * 4,
+                       cudaMemcpyDeviceToHost);
+        }
+        ~Ctx() { cudaStreamDestroy(s); }
+    };
+
+    Ctx a(0), b(3);
+    REQUIRE(a.run() == cudaSuccess);
+    a.read();
+    REQUIRE(b.run() == cudaSuccess);
+    b.read();
+    const std::vector<float> ref_a = a.ref, ref_b = b.ref;
+    REQUIRE(ref_a != ref_b);  // distinct inputs -> distinct references
+
+    std::atomic<int> wrong{0};
+    auto worker = [&](Ctx *c, const std::vector<float> *ref) {
+        std::vector<float> got(static_cast<size_t>(H));
+        for (int it = 0; it < 200; ++it) {
+            if (c->run() != cudaSuccess) { wrong += 1000; break; }
+            cudaStreamSynchronize(c->s);
+            cudaMemcpy(got.data(), c->mixed.p, static_cast<size_t>(H) * 4,
+                       cudaMemcpyDeviceToHost);
+            if (got != *ref) { ++wrong; break; }
+        }
+    };
+    std::thread ta(worker, &a, &ref_a), tb(worker, &b, &ref_b);
+    ta.join();
+    tb.join();
+    CHECK(wrong.load() == 0);
 }

@@ -985,7 +985,11 @@ struct PLEConvScratch {
 
 PLEConvScratch &PLEConvScratchInstance()
 {
-    static PLEConvScratch s;
+    // Per-host-thread: two model instances live in one process (the engine
+    // allows several models; the residency lock is per-model), so a
+    // process-global scratch would let one decode's Ensure/free race another
+    // thread's in-flight kernels. Same contract as GreedyScratch (sampling.cu).
+    static thread_local PLEConvScratch s;
     return s;
 }
 
@@ -1100,7 +1104,11 @@ struct HcScratch {
 };
 
 HcScratch &HcScratchInstance() {
-    static HcScratch s;
+    // Per-host-thread (see PLEConvScratchInstance): a process-global scratch
+    // would be shared by concurrent same-model instances, so one thread's
+    // EnsureScratchScratchOnly could cudaFree a buffer another thread's decode
+    // loop is still reading.
+    static thread_local HcScratch s;
     return s;
 }
 
