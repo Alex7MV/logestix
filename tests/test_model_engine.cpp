@@ -277,3 +277,88 @@ TEST_CASE("model_engine: Session guard initializes and shutdowns on scope exit",
     }
     REQUIRE_FALSE(eng.IsInitialized());
 }
+
+// A direct InitializeEngine() is a claim the Session counter does not know
+// about. When a Session is built on top of that live engine, its release must
+// not tear the engine down under the direct caller: the direct owner still
+// expects IsInitialized() == true until it calls ShutdownEngine() itself.
+TEST_CASE("model_engine: a Session over a live direct-init engine does not shut "
+          "it down on release",
+          "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    REQUIRE(eng.InitializeEngine());   // direct, no Session guard
+    REQUIRE(eng.IsInitialized());
+    {
+        lsxcommon::InferenceEngine::Session session;
+        REQUIRE(eng.IsInitialized());
+    }
+    // The direct caller still owns the engine.
+    REQUIRE(eng.IsInitialized());
+
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+}
+
+// Same contract with nesting: no Session level may shut down an engine that a
+// direct InitializeEngine() brought up.
+TEST_CASE("model_engine: nested Sessions over a live direct-init engine do not "
+          "shut it down",
+          "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    REQUIRE(eng.InitializeEngine());
+    {
+        lsxcommon::InferenceEngine::Session outer;
+        {
+            lsxcommon::InferenceEngine::Session inner;
+            REQUIRE(eng.IsInitialized());
+        }
+        REQUIRE(eng.IsInitialized());
+    }
+    REQUIRE(eng.IsInitialized());
+
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+}
+
+// The direct-owner exemption must not leak into the pure-Session path: a
+// Session that itself brought the engine up still shuts it down when it is the
+// last holder. (Regression anchor for the two cases above.)
+TEST_CASE("model_engine: a Session that owns the engine still shuts it down", "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    {
+        lsxcommon::InferenceEngine::Session session;
+        REQUIRE(eng.IsInitialized());
+    }
+    REQUIRE_FALSE(eng.IsInitialized());
+}
+
+// A direct ShutdownEngine() clears the direct claim unconditionally, so a
+// later Session must not inherit a stale exemption.
+TEST_CASE("model_engine: a direct ShutdownEngine clears the direct claim", "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE(eng.InitializeEngine());
+    REQUIRE(eng.IsInitialized());
+
+    eng.ShutdownEngine();               // direct owner releases
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    {
+        lsxcommon::InferenceEngine::Session session;
+        REQUIRE(eng.IsInitialized());
+    }
+    REQUIRE_FALSE(eng.IsInitialized());
+}

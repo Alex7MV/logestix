@@ -58,16 +58,25 @@ private:
     InferenceEngine() = default;
     ~InferenceEngine() = default;
 
-    // Session lifetime counter: InitializeEngine on 0->1, ShutdownEngine on
-    // 1->0. Kept separate from initialized_ so direct Initialize/Shutdown
-    // calls keep their unconditional toggle semantics. Do NOT mix a direct
-    // InitializeEngine()/ShutdownEngine() with Session guards: the Session
-    // counter would not account for the direct call (an unbalanced release is
-    // clamped, never shuts down on underflow).
+    // Session lifetime counter: a Session increments on entry, decrements on
+    // exit, and the engine shuts down on the last decrement. Kept separate
+    // from initialized_ so a direct InitializeEngine()/ShutdownEngine() pair
+    // keeps its unconditional toggle semantics.
+    //
+    // Mixing the two entry points is safe: a direct InitializeEngine() that
+    // actually brings the engine up sets direct_owned_, and a Session release
+    // then skips the shutdown so it cannot tear the engine down under the
+    // direct caller. A repeated InitializeEngine() is a no-op and takes no
+    // second claim, and ShutdownEngine() clears the claim unconditionally.
     void AcquireSession();
     void ReleaseSession();
+    // Idempotent bring-up shared by InitializeEngine() and AcquireSession()
+    // (governor init + perf policy + the ready flag). Deliberately does NOT
+    // touch direct_owned_: only the public InitializeEngine() records a claim.
+    void EnsureEngineUp();
 
     std::atomic<bool> initialized_{false};
+    std::atomic<bool> direct_owned_{false};
     std::atomic<int> session_depth_{0};
 };
 
