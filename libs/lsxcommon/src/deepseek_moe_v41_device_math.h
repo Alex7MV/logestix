@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 namespace lsxcommon {
@@ -32,11 +33,14 @@ inline void YarnFreqsRef(int rope_dim, int seqlen, int original_seq_len,
     for (int j = 0; j < half; ++j)
         freqs[j] = 1.0f / std::pow(base, static_cast<float>(2 * j) / rope_dim);
     if (original_seq_len > 0) {
+        // M_PI is a POSIX extension: MSVC only exposes it behind
+        // _USE_MATH_DEFINES, and nvcc compiling this header for device
+        // TUs does not define it. std::numbers::pi is the C++20 spelling.
         const double ln_base = std::log(static_cast<double>(base));
         auto corrected_dim = [&](double rotations) {
             return rope_dim *
                    std::log(static_cast<double>(original_seq_len) /
-                            (rotations * 2.0 * M_PI)) /
+                            (rotations * 2.0 * std::numbers::pi)) /
                    (2.0 * ln_base);
         };
         const int low = std::max(

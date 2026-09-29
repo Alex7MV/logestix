@@ -323,7 +323,9 @@ static float e4m3p2_dec(uint8_t b)
     uint32_t e4 = (b >> 3) & 0x0Fu;
     if (!e4) return 0.0f;
     uint32_t bits = (e4 + 120u) << 23;
-    float v; __builtin_memcpy(&v, &bits, sizeof(v)); return v;
+    // std::memcpy, not __builtin_memcpy: the latter is a GCC/Clang builtin and
+    // does not exist under MSVC, which is what nvcc's host pass uses here.
+    float v; std::memcpy(&v, &bits, sizeof(v)); return v;
 }
 
 static float e2m1_dec(uint8_t nib)

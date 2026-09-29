@@ -1382,7 +1382,12 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                             std::fwrite(h_w, sizeof(float), kKimiTopK, f);
                             std::fwrite(hx.data(), 2, kKimiHidden, f);
                             std::fclose(f);
+                            // setenv is POSIX; MSVC exposes _putenv_s.
+#ifdef _WIN32
+                            _putenv_s("LSX_KIMI_DUMP_DONE", "1");
+#else
                             setenv("LSX_KIMI_DUMP_DONE", "1", 1);
+#endif
                             fprintf(stderr,
                                     "[DIAG] dumped l=%d ids=%d,%d...\n",
                                     l, h_ids[0], h_ids[1]);

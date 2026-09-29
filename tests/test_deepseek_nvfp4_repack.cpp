@@ -14,11 +14,11 @@
 #include "nvfp4_scale.h"
 
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <fstream>
 #include <iterator>
 #include <filesystem>
-#include <unistd.h>
 
 namespace {
 
@@ -31,7 +31,7 @@ float Pow2E4m3Decode(uint8_t b)
     if (e4 == 0) return 0.0f;
     const uint32_t bits = (e4 + 120u) << 23;
     float v;
-    __builtin_memcpy(&v, &bits, sizeof(v));
+    std::memcpy(&v, &bits, sizeof(v));
     return v;
 }
 
@@ -42,7 +42,7 @@ float E8m0Decode(uint8_t b)
     if (b == 0) return 0.0f;
     const uint32_t bits = static_cast<uint32_t>(b) << 23;
     float v;
-    __builtin_memcpy(&v, &bits, sizeof(v));
+    std::memcpy(&v, &bits, sizeof(v));
     return v;
 }
 
@@ -77,8 +77,8 @@ TEST_CASE("e8m0 scale byte -> pow2 e4m3 per-16 pair (exact with shift)",
                 const float got = Pow2E4m3Decode(pair[0]) * GsFromShift(m);
                 const float want = E8m0Decode(src);
                 uint32_t g, w;
-                __builtin_memcpy(&g, &got, sizeof(g));
-                __builtin_memcpy(&w, &want, sizeof(w));
+                std::memcpy(&g, &got, sizeof(g));
+                std::memcpy(&w, &want, sizeof(w));
                 INFO("b=" << b << " m=" << m);
                 CHECK(g == w);
             } else {
@@ -102,8 +102,8 @@ TEST_CASE("e8m0 scale byte -> pow2 e4m3 per-16 pair (exact with shift)",
             const float got = Pow2E4m3Decode(p[0]) * GsFromShift(m);
             const float want = E8m0Decode(b);
             uint32_t g, w;
-            __builtin_memcpy(&g, &got, sizeof(g));
-            __builtin_memcpy(&w, &want, sizeof(w));
+            std::memcpy(&g, &got, sizeof(g));
+            std::memcpy(&w, &want, sizeof(w));
             CHECK(g == w);
         }
     }
@@ -134,8 +134,8 @@ TEST_CASE("e8m0 scale byte -> pow2 e4m3 per-16 pair (exact with shift)",
         const float got = Pow2E4m3Decode(p[0]) * GsFromShift(m);
         const float want = E8m0Decode(200);
         uint32_t g, w;
-        __builtin_memcpy(&g, &got, sizeof(g));
-        __builtin_memcpy(&w, &want, sizeof(w));
+        std::memcpy(&g, &got, sizeof(g));
+        std::memcpy(&w, &want, sizeof(w));
         CHECK(g == w);
     }
 }

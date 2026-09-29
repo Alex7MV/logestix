@@ -335,9 +335,17 @@ struct ExpertStore {
             const size_t bytes = ci < pinned_chunk_sizes.size()
                                      ? pinned_chunk_sizes[ci] : 0;
             // PinChunked chunks are anonymous mmap + cudaHostRegister;
-            // registered or not, release is munmap.
+            // registered or not, release is munmap. PinChunked is compiled
+            // only on Unix, so on Windows pinned_pools stays empty and this
+            // loop body never runs -- but munmap is undeclared there, so the
+            // call has to be guarded or the header fails to compile under
+            // nvcc/MSVC.
             if (reg) cudaHostUnregister(p);
+#if defined(__unix__) || defined(__APPLE__)
             if (bytes > 0) munmap(p, bytes);
+#else
+            (void)bytes;
+#endif
         }
         pinned_pools.clear();
         pinned_registered.clear();

@@ -13,6 +13,18 @@
 
 #include <cstdlib>
 
+// The knob-resolution tests below drive LSX_* through the same environment the
+// runtime reads, and must restore it afterwards so test order cannot leak a
+// knob into a later case. POSIX setenv/unsetenv have no MSVC equivalent: the
+// CRT spellings are _putenv_s, and clearing a variable is _putenv_s(n, "").
+#ifdef _WIN32
+inline void SetEnv(const char* name, const char* value) { _putenv_s(name, value); }
+inline void UnsetEnv(const char* name) { _putenv_s(name, ""); }
+#else
+inline void SetEnv(const char* name, const char* value) { ::setenv(name, value, 1); }
+inline void UnsetEnv(const char* name) { ::unsetenv(name); }
+#endif
+
 using lsxcommon::perf::GpuPerfProfile;
 using lsxcommon::perf::GpuProfileKey;
 using lsxcommon::perf::PeakBandwidthGbs;
@@ -117,16 +129,16 @@ TEST_CASE("ResolvePerfKnobs: precedence env > CLI > base/heuristic",
     REQUIRE(rh.knobs.tc_fast_math_default == true);
 
     // Env wins over everything.
-    ::setenv("LSX_GEMV_MAX_MIB", "16", 1);
+    SetEnv("LSX_GEMV_MAX_MIB", "16");
     auto re = lsxcommon::perf::ResolvePerfKnobs(Rtx5090());
     REQUIRE(re.source == lsxcommon::perf::PerfSource::kEnvOverride);
     REQUIRE(re.knobs.gemv_max_mib == 16);
-    ::unsetenv("LSX_GEMV_MAX_MIB");
+    UnsetEnv("LSX_GEMV_MAX_MIB");
 }
 
 TEST_CASE("ResolvePerfKnobs: LSX_PERF_AUTO=0 legacy escape hatch", "[gpu_perf]")
 {
-    ::setenv("LSX_PERF_AUTO", "0", 1);
+    SetEnv("LSX_PERF_AUTO", "0");
     auto r = lsxcommon::perf::ResolvePerfKnobs(Rtx5090());
     REQUIRE(r.source == lsxcommon::perf::PerfSource::kLegacy);
     REQUIRE(r.knobs.tc_fast_math_default == false);
@@ -134,7 +146,7 @@ TEST_CASE("ResolvePerfKnobs: LSX_PERF_AUTO=0 legacy escape hatch", "[gpu_perf]")
     REQUIRE(r.knobs.gemv_max_mib == 32);
     REQUIRE(r.knobs.splitk_grid_min == 96);
     REQUIRE(r.knobs.dual_stream_staging == true);
-    ::unsetenv("LSX_PERF_AUTO");
+    UnsetEnv("LSX_PERF_AUTO");
 }
 
 // ── Task 3: calibration cache (JSON round-trip, invalidation, vault path) ──
@@ -299,8 +311,8 @@ TEST_CASE("EnsurePerfPolicyApplied: applies policy, call-once, "
           "overrides preserved",
           "[gpu_perf]")
 {
-    ::unsetenv("LSX_PERF_AUTO");
-    ::unsetenv("LSX_GEMV_MAX_MIB");
+    UnsetEnv("LSX_PERF_AUTO");
+    UnsetEnv("LSX_GEMV_MAX_MIB");
     const GpuPerfProfile gpu = lsxcommon::perf::ProbeGpuPerfProfile();
     if (gpu.name.empty()) SKIP();
     EnsurePerfPolicyApplied();

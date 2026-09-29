@@ -94,7 +94,12 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
     REQUIRE(row.x.size() == static_cast<size_t>(H));
 
     // Legacy staging path reads the expert blobs from mmap views.
+    // setenv is POSIX; MSVC exposes _putenv_s.
+#ifdef _WIN32
+    _putenv_s("LSX_EXPERT_PIN", "0");
+#else
     ::setenv("LSX_EXPERT_PIN", "0", 1);
+#endif
     KimiExpertDb db = load_kimi_expert_index(model_env, kKimiNumLayers,
                                              kKimiNumRouted);
     REQUIRE(db.num_layers == kKimiNumLayers);
