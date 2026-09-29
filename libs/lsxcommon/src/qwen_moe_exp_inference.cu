@@ -1094,7 +1094,8 @@ struct HcScratch {
         if (d_normed) cudaFree(d_normed);
         if (d_dn) cudaFree(d_dn);
         if (d_mixer_mixed) cudaFree(d_mixer_mixed);
-        if (d_mixer_inj) cudaFree(d_mixer_inj);
+        // d_mixer_inj aliases d_mixer_mixed + offset (no separate allocation);
+        // freeing it would pass an interior pointer to cudaFree.
     }
 };
 
@@ -1174,8 +1175,12 @@ cudaError_t EnsureScratchScratchOnly(int x32_floats, int lowrank)
     const size_t need_mixer =
         (static_cast<size_t>(x32_floats) + 8) * sizeof(float);
     if (s.mixer_bytes < need_mixer) {
+        // d_mixer_inj aliases d_mixer_mixed + offset: free only the real
+        // allocation, and clear the alias so a failed realloc below cannot
+        // leave a dangling interior pointer for the destructor to free.
         if (s.d_mixer_mixed) cudaFree(s.d_mixer_mixed);
-        if (s.d_mixer_inj) cudaFree(s.d_mixer_inj);
+        s.d_mixer_mixed = nullptr;
+        s.d_mixer_inj = nullptr;
         // mixed[H] followed by inj[hc] in one allocation.
         if (cudaMalloc(&s.d_mixer_mixed, need_mixer) != cudaSuccess)
             return cudaGetLastError();
