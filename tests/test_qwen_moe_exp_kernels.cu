@@ -790,7 +790,9 @@ TEST_CASE("hc mixer rejects a gate count that disagrees with the frozen passport
     // cross-file validation that this entry does not state. The entry must
     // reject it up front instead.
     constexpr int H = 64, lowrank = 32;
-    using frozen = lsxcommon::qwen_moe_exp::frozen;
+    // NB: the alias must not be spelled `frozen` -- that would shadow the
+    // namespace name inside its own declaration.
+    namespace fp = lsxcommon::qwen_moe_exp::frozen;
 
     auto run_with_hc = [&](int hc) {
         const int n = H * hc;
@@ -812,11 +814,11 @@ TEST_CASE("hc mixer rejects a gate count that disagrees with the frozen passport
     };
 
     // Positive control: the passport value is accepted.
-    CHECK(run_with_hc(frozen::kHcCount) == cudaSuccess);
+    CHECK(run_with_hc(fp::kHcCount) == cudaSuccess);
     CHECK(cudaGetLastError() == cudaSuccess);
 
     // Anything else is rejected before any device work.
-    CHECK(run_with_hc(frozen::kHcCount + 1) == cudaErrorInvalidValue);
-    CHECK(run_with_hc(frozen::kHcCount - 1) == cudaErrorInvalidValue);
+    CHECK(run_with_hc(fp::kHcCount + 1) == cudaErrorInvalidValue);
+    CHECK(run_with_hc(fp::kHcCount - 1) == cudaErrorInvalidValue);
     CHECK(cudaGetLastError() == cudaSuccess);
 }
