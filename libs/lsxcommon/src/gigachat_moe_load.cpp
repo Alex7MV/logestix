@@ -343,6 +343,36 @@ bool UploadNormTriple(const TensorBatchViews &raw, const std::string &prefix,
         error = "missing gated norm: " + prefix;
         return false;
     }
+    // Shape contract zero_centered_gated_norm_kernel relies on: weight [dim];
+    // gate_up [rank, dim]; gate_down [dim, rank]. Without it a transposed or
+    // truncated gate projection lets the kernel index past its buffer
+    // (w_up + k*dim, w_down[i*rank + k]).
+    if (w->rank != 1 || gu->rank != 2 || gd->rank != 2)
+    {
+        error = "gated norm tensor rank mismatch: " + prefix;
+        return false;
+    }
+    const int64_t dim = w->shape[0];
+    const int64_t rank = gu->shape[0];
+    if (gu->shape[1] != dim || gd->shape[0] != dim || gd->shape[1] != rank)
+    {
+        error = absl::StrFormat(
+            "gated norm shape mismatch for %s: weight[%lld] "
+            "gate_up[%lld,%lld] gate_down[%lld,%lld]",
+            prefix, dim, gu->shape[0], gu->shape[1], gd->shape[0],
+            gd->shape[1]);
+        return false;
+    }
+    // Frozen passport: the checkpoint gate rank is fixed (synthetic fixtures
+    // may differ and bypass the frozen gate).
+    if (!SyntheticGeometryAllowed() &&
+        rank != lsxcommon::gigachat::frozen::kGateRank)
+    {
+        error = absl::StrFormat(
+            "gated norm gate rank %lld != frozen %d for %s", rank,
+            lsxcommon::gigachat::frozen::kGateRank, prefix);
+        return false;
+    }
     if (!UploadRaw(w, CvKind::kBf16Raw, &n.d_weight, prefix + ".weight", stream,
                    ring, acc, error) ||
         !UploadRaw(gu, CvKind::kBf16Raw, &n.d_gate_up,
@@ -352,8 +382,8 @@ bool UploadNormTriple(const TensorBatchViews &raw, const std::string &prefix,
                    prefix + ".gate_down_projection.weight", stream, ring, acc,
                    error))
         return false;
-    n.dim = static_cast<int>(w->shape[0]);
-    n.rank = static_cast<int>(gu->shape[0]);
+    n.dim = static_cast<int>(dim);
+    n.rank = static_cast<int>(rank);
     return true;
 }
 

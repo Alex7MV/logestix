@@ -121,7 +121,8 @@ inline void AddGatedNorm(std::vector<FakeTensor> &ts, const std::string &base,
 }
 
 inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
-                                    bool verified = false)
+                                    bool verified = false,
+                                    bool corrupt_gate_down = false)
 {
     {
         std::ofstream f(dir / "config.json");
@@ -209,6 +210,21 @@ inline void WriteGigaChatCheckpoint(const std::filesystem::path &dir,
 
     // MTP layer 40: stored, never applied.
     AddBf16(ts, "model.layers.40.eh_proj.weight", {kTH, 2 * kTH}, verified);
+
+    if (corrupt_gate_down)
+    {
+        // Store the final norm's gate_down_projection transposed ([rank, dim]
+        // instead of [dim, rank]); numel is unchanged so only the shape
+        // metadata is wrong. Pins the loader's gated-norm shape validation.
+        for (auto &t : ts)
+            if (t.name == "model.norm.gate_down_projection.weight" &&
+                t.shape.size() == 2)
+            {
+                const int64_t d0 = t.shape[0];
+                t.shape[0] = t.shape[1];
+                t.shape[1] = d0;
+            }
+    }
 
     WriteSafetensors(dir, "model.safetensors", ts);
 }

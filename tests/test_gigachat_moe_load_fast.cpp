@@ -47,6 +47,32 @@ std::filesystem::path BuildConverted()
 
 } // namespace
 
+TEST_CASE("gigachat loader rejects a transposed gated-norm gate projection",
+          "[gigachat][load][strict]")
+{
+    if (cudaFree(0) != cudaSuccess) SKIP("no CUDA device");
+    ForceSyntheticGeometry();
+    const auto src = gigachattest::MakeTempDir("gc_badnorm_src");
+    const auto dst = gigachattest::MakeTempDir("gc_badnorm_dst");
+    gigachattest::WriteGigaChatCheckpoint(src, /*verified=*/false,
+                                          /*corrupt_gate_down=*/true);
+    const auto st = ConvertGigaChatModel(src.string(), dst.string());
+    INFO("convert status: " << st.ToString());
+    REQUIRE(st.ok());
+
+    GigaChatIndex idx;
+    std::string err;
+    REQUIRE(LoadGigaChatIndex(dst.string(), idx, err));
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    GcWeights w;
+    CHECK_FALSE(LoadGigaChatWeights(dst.string(), idx, w, stream, err));
+    CHECK(err.find("gated norm") != std::string::npos);
+    cudaStreamDestroy(stream);
+    w.Free();
+}
+
 TEST_CASE("gigachat device weight graph loads the converted layout",
           "[gigachat][load][inference]")
 {
