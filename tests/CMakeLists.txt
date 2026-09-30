@@ -4232,18 +4232,23 @@ set_tests_properties(test_mimo_moe_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_mimo_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # MiMo FSI / CODE / DET golden-parity gates (real weights + golden; SKIP).
-foreach(_mimo_gate fsi code det)
-    add_executable(test_mimo_moe_${_mimo_gate}_selfcheck
-        test_mimo_moe_${_mimo_gate}_selfcheck.cpp)
-    target_link_libraries(test_mimo_moe_${_mimo_gate}_selfcheck PRIVATE
-        lsxcommon Catch2::Catch2WithMain)
-    add_test(NAME test_mimo_moe_${_mimo_gate}_selfcheck
-             COMMAND test_mimo_moe_${_mimo_gate}_selfcheck)
-    set_tests_properties(test_mimo_moe_${_mimo_gate}_selfcheck PROPERTIES
-        LABELS inference)
-    set_tests_properties(test_mimo_moe_${_mimo_gate}_selfcheck PROPERTIES
-        SKIP_RETURN_CODE 4)
-endforeach()
+add_executable(test_mimo_moe_fsi_selfcheck test_mimo_moe_fsi_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_fsi_selfcheck COMMAND test_mimo_moe_fsi_selfcheck)
+set_tests_properties(test_mimo_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mimo_moe_code_selfcheck test_mimo_moe_code_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_code_selfcheck COMMAND test_mimo_moe_code_selfcheck)
+set_tests_properties(test_mimo_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mimo_moe_det_selfcheck test_mimo_moe_det_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_det_selfcheck COMMAND test_mimo_moe_det_selfcheck)
+set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
