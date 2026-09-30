@@ -12,7 +12,7 @@
 
 #include "lsxcommon/gemma_moe_inference.h"
 #include "lsxcommon/qwen_moe_inference.h"
-#include "qwen_reduce.cuh"
+#include "lsx_reduce.cuh"
 #include "lsxcommon/gemma_moe_load.h"
 #include "lsxcommon/expert_device_cache.h"
 #include "lsxcommon/log.h"
@@ -466,7 +466,7 @@ __global__ void gemma_split_kv_partials_kernel(
     float m = -1e30f;
     for (int j = threadIdx.x; j < rows; j += threads)
         m = fmaxf(m, slogits[j]);
-    m = qwen_block_max_shfl(m);
+    m = lsxcommon::kernels::BlockMaxShfl(m);
     __syncthreads();
 
     // 3. Chunk denominator (one exp per score).
@@ -515,7 +515,7 @@ __global__ void gemma_split_kv_combine_kernel(
     float m = -1e30f;
     for (int c = d; c < nchunks; c += blockDim.x)
         m = fmaxf(m, d_st[(base + c) * 2 + 0]);
-    m = qwen_block_max_shfl(m);
+    m = lsxcommon::kernels::BlockMaxShfl(m);
     __syncthreads();
 
     // Denominator over rescaled chunk sums (fixed chunk-strided order).

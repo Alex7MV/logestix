@@ -16,6 +16,7 @@
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_act.cuh"
 #include "lsx_kernels_norm.cuh"
+#include "glm_moe_device_math.h"
 
 namespace {
 
