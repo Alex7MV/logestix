@@ -4123,6 +4123,26 @@ set_tests_properties(test_mimo_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_mimo_moe_convert PROPERTIES LABELS convert)
 
+# MiMo-V2.6-Flash-RL layout loader (synthetic converted fixture).
+add_executable(test_mimo_moe_loader test_mimo_moe_loader.cpp)
+target_include_directories(test_mimo_moe_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_mimo_moe_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
+    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
+endif()
+add_test(NAME test_mimo_moe_loader COMMAND test_mimo_moe_loader)
+set_tests_properties(test_mimo_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mimo_moe_loader PROPERTIES LABELS inference)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
