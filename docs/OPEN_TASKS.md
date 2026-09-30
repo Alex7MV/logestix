@@ -228,6 +228,12 @@ those models are not in the vault; the target seeds the entry once converted
 
 ## Closed in this session, for reference
 
+- `test_deepseek_moe_v41_load_fast`: stale expectation after `e4954d3` — it
+  read `d_wq_a` as FP16 `1.0`, but the MLA/indexer dense weights now stay raw
+  FP8 on device (`0x38 0x38` reinterprets as FP16 `0.52734375`). The test now
+  asserts the raw E4M3 byte (`0x38`) and the UE8M0 scale byte (`127`). Caught by
+  the first full `-L inference` sweep (that label was never run end-to-end on
+  this host before; the 3 h run otherwise passed/skipped everything).
 - Inference review findings: `x_vec` uint4 alignment mask, `hc_count` vs
   frozen passport, `session_depth_` direct-owner exemption, `JsonEscape`
   duplication, GigaChat smem comment, glued lines in `nvfp4_gemv_math.cuh`.
