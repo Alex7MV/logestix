@@ -37,6 +37,42 @@ constexpr int kMaxRouterExperts = 1024;
 __device__ float g_router_score[kMaxRouterExperts];
 __device__ float g_router_choice[kMaxRouterExperts];
 
+// Device addresses of the two scratch arrays.
+//
+// Taking the address of a __device__ variable in host code does NOT give its
+// device address on this toolchain (MSVC host compiler + nvcc 13.4): the
+// expression evaluates to a HOST pointer, 0x7ff6... on Windows, and the
+// kernel then faults on its first write. Verified directly -- the address
+// compute-sanitizer reported as the fault target matched what host code saw,
+// while cudaGetSymbolAddress returned the real 0x1307... device address.
+// Verified too that this is independent of the variable's linkage: the same
+// happens with the arrays at namespace scope rather than in an anonymous
+// namespace.
+//
+// So resolve the device address explicitly, once, and reuse it. This is also
+// what the runtime requires before the symbol can be used in a launch.
+namespace {
+
+cudaError_t RouterScratchDev(float **score, float **choice)
+{
+    static float *cached_score = nullptr;
+    static float *cached_choice = nullptr;
+    if (!cached_score || !cached_choice) {
+        void *s = nullptr, *c = nullptr;
+        const cudaError_t e1 = cudaGetSymbolAddress(&s, g_router_score);
+        const cudaError_t e2 = cudaGetSymbolAddress(&c, g_router_choice);
+        if (e1 != cudaSuccess) return e1;
+        if (e2 != cudaSuccess) return e2;
+        cached_score = static_cast<float *>(s);
+        cached_choice = static_cast<float *>(c);
+    }
+    *score = cached_score;
+    *choice = cached_choice;
+    return cudaSuccess;
+}
+
+} // namespace
+
 // Multi-SM router gate: one block per expert, block-strided dot over hidden,
 // fixed warp/block reduction tree. score = sigmoid(dot); choice = score+bias.
 __global__ void router_score_kernel(const float *__restrict__ x,
@@ -270,18 +306,21 @@ cudaError_t RunGigaChatRouterTopK(const float *x, const uint8_t *w,
         top_k <= 0 || top_k > kMaxTopK)
         return cudaErrorInvalidValue;
     const __nv_bfloat16 *wb = reinterpret_cast<const __nv_bfloat16 *>(w);
+    float *dev_score = nullptr, *dev_choice = nullptr;
+    const cudaError_t sym = RouterScratchDev(&dev_score, &dev_choice);
+    if (sym != cudaSuccess) return sym;
     if (num_experts <= kMaxRouterExperts)
     {
         // Multi-SM gate + block-parallel selection (was a single-SM scan).
         constexpr int kBlock = 256;
         router_score_kernel<<<num_experts, kBlock, 0, stream>>>(
-            x, wb, bias, num_experts, hidden, g_router_score, g_router_choice);
+            x, wb, bias, num_experts, hidden, dev_score, dev_choice);
         cudaError_t e = cudaGetLastError();
         if (e != cudaSuccess) return e;
         const size_t smem =
             (static_cast<size_t>(2) * num_experts + 2 * kBlock) * sizeof(float);
         router_select_kernel<<<1, kBlock, smem, stream>>>(
-            g_router_score, g_router_choice, num_experts, top_k,
+            dev_score, dev_choice, num_experts, top_k,
             routed_scaling_factor, out_idx, out_weights);
         return cudaGetLastError();
     }
