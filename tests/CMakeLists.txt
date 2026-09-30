@@ -4143,6 +4143,17 @@ set_tests_properties(test_mimo_moe_loader PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_mimo_moe_loader PROPERTIES LABELS inference)
 
+# MiMo routed-expert host store + device slot LRU (host logic + device staging).
+add_executable(test_mimo_moe_expert_cache test_mimo_moe_expert_cache.cpp)
+target_link_libraries(test_mimo_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_expert_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_expert_cache>")
+endif()
+add_test(NAME test_mimo_moe_expert_cache COMMAND test_mimo_moe_expert_cache)
+set_tests_properties(test_mimo_moe_expert_cache PROPERTIES LABELS inference)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
