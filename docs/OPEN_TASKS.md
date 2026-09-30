@@ -228,6 +228,19 @@ those models are not in the vault; the target seeds the entry once converted
 
 ## Closed in this session, for reference
 
+- Removed gemma dead code: `RunGemmaMoECombine` + `gemma_moe_combine_kernel`
+  (no caller anywhere).
+- `RunGemmaRouterTopK` now rejects `num_experts` above the launch block
+  (`kGemmaRouterTopKThreads = 128`); it previously guarded only `<= 0` while the
+  per-expert kernel indexes one thread per expert.
+- Removed a leftover `fflush(stdout)` from the gemma decode loop (per-token
+  syscall on the hot path).
+- Family `.cu` debug/error `printf`/`fprintf` routed through the `lsxcommon::log`
+  bridge (gemma error diagnostics, glm-flash `LSX_TRACE_FLASH` host probes);
+  device-side kernel `printf` stays.
+- `apps/lsxfabric` `TrySendRouted` closes the routed multipart with an empty
+  terminal frame when the body send fails, so a stalled peer cannot leave the
+  socket desynced for later streams.
 - `test_deepseek_moe_v41_load_fast`: stale expectation after `e4954d3` — it
   read `d_wq_a` as FP16 `1.0`, but the MLA/indexer dense weights now stay raw
   FP8 on device (`0x38 0x38` reinterprets as FP16 `0.52734375`). The test now
