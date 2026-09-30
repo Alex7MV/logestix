@@ -174,10 +174,10 @@ MiMoV26FlashModel::~MiMoV26FlashModel() { Unload(); }
 
 void MiMoV26FlashModel::FreeLayer(MimoLayerWeights &l)
 {
-    l.qkv.Free();
-    l.dense_gate.Free();
-    l.dense_up.Free();
-    l.dense_down.Free();
+    cudaFree(l.qkv.d_w);
+    cudaFree(l.dense_gate.d_w);
+    cudaFree(l.dense_up.d_w);
+    cudaFree(l.dense_down.d_w);
     cudaFree(l.d_input_norm);
     cudaFree(l.d_post_norm);
     cudaFree(l.d_o_proj);
@@ -217,17 +217,24 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
     L.is_swa = !Contains(topo_.full_attn_layers, layer);
     L.is_moe = Contains(topo_.moe_layers, layer);
 
-    auto nv = LoadDenseNvfp4BatchViews(files_.layer_nvfp4[layer]);
     auto raw = LoadTensorBatchViews(files_.layer_raw[layer]);
-    if (!nv.ok() || !raw.ok())
+    if (!raw.ok())
     {
-        lsxcommon::log::error("[mimo-model] cannot open layer files");
+        lsxcommon::log::error("[mimo-model] cannot open layer raw file");
         return false;
     }
     std::string err;
 
-    const DenseNvfp4View *qkv = FindDense(*nv, "self_attn.qkv_proj.weight");
-    if (!qkv || !UploadNvfp4(*qkv, L.qkv, stream(), err))
+    const TensorView *qkv = FindTensor(*raw, "self_attn.qkv_proj.weight");
+    if (!qkv || qkv->rank < 2)
+    {
+        lsxcommon::log::error("[mimo-model] missing qkv_proj");
+        return false;
+    }
+    L.qkv.rows = static_cast<int>(qkv->shape[0]);
+    L.qkv.cols = static_cast<int>(qkv->shape[1]);
+    if (!UploadHalf(*qkv, &L.qkv.d_w,
+                    static_cast<int64_t>(L.qkv.rows) * L.qkv.cols, stream(), err))
     {
         lsxcommon::log::error(absl::StrCat("[mimo-model] qkv upload: ", err));
         return false;
@@ -269,15 +276,25 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
     }
     else
     {
-        const DenseNvfp4View *dgate = FindDense(*nv, "mlp.gate_proj.weight");
-        const DenseNvfp4View *dup = FindDense(*nv, "mlp.up_proj.weight");
-        const DenseNvfp4View *ddown = FindDense(*nv, "mlp.down_proj.weight");
-        if (!dgate || !dup || !ddown ||
-            !UploadNvfp4(*dgate, L.dense_gate, stream(), err) ||
-            !UploadNvfp4(*dup, L.dense_up, stream(), err) ||
-            !UploadNvfp4(*ddown, L.dense_down, stream(), err))
+        const TensorView *dgate = FindTensor(*raw, "mlp.gate_proj.weight");
+        const TensorView *dup = FindTensor(*raw, "mlp.up_proj.weight");
+        const TensorView *ddown = FindTensor(*raw, "mlp.down_proj.weight");
+        if (!dgate || !dup || !ddown)
         {
-            lsxcommon::log::error("[mimo-model] dense MLP upload");
+            lsxcommon::log::error("[mimo-model] missing dense MLP tensors");
+            return false;
+        }
+        auto up1 = [&](const TensorView *t, MimoLinearF16 &w) {
+            w.rows = static_cast<int>(t->shape[0]);
+            w.cols = static_cast<int>(t->shape[1]);
+            return UploadHalf(*t, &w.d_w,
+                              static_cast<int64_t>(w.rows) * w.cols, stream(),
+                              err);
+        };
+        if (!up1(dgate, L.dense_gate) || !up1(dup, L.dense_up) ||
+            !up1(ddown, L.dense_down))
+        {
+            lsxcommon::log::error(absl::StrCat("[mimo-model] dense MLP upload: ", err));
             return false;
         }
     }
@@ -466,9 +483,9 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
             if (f) { std::fwrite(b.data(), 2, static_cast<size_t>(n), f); std::fclose(f); }
         };
         dbg("innorm", d_xn, hidden);
-        if (lsx_nvfp4::RunLsxNvfp4Gemm(st, d_xn, L.qkv.d_packed, L.qkv.d_scales,
-                                       L.qkv.global_scale, d_qkv, 1, L.qkv.cols,
-                                       L.qkv.rows) != cudaSuccess)
+        if (gemv::RunLxGemmVec(st, L.qkv.d_w, d_xn, 1, L.qkv.rows, L.qkv.cols,
+                               gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
+                               d_qkv, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
             return false;
         dbg("qkv", d_qkv, L.qkv.rows);
         if (mimo::RunMimoAttentionDecode(st, d_qkv, pos, L.d_sink, ap, kv_k_[l],
@@ -490,22 +507,22 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
 
         if (!L.is_moe)
         {
-            if (lsx_nvfp4::RunLsxNvfp4Gemm(st, d_xn, L.dense_gate.d_packed,
-                                           L.dense_gate.d_scales,
-                                           L.dense_gate.global_scale, d_gate, 1,
-                                           L.dense_gate.cols, L.dense_gate.rows) != cudaSuccess)
+            if (gemv::RunLxGemmVec(st, L.dense_gate.d_w, d_xn, 1,
+                                   L.dense_gate.rows, L.dense_gate.cols,
+                                   gemv::LxDtype::kF16, gemv::LxDtype::kF16,
+                                   1.0f, d_gate, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
                 return false;
-            if (lsx_nvfp4::RunLsxNvfp4Gemm(st, d_xn, L.dense_up.d_packed,
-                                           L.dense_up.d_scales,
-                                           L.dense_up.global_scale, d_up, 1,
-                                           L.dense_up.cols, L.dense_up.rows) != cudaSuccess)
+            if (gemv::RunLxGemmVec(st, L.dense_up.d_w, d_xn, 1,
+                                   L.dense_up.rows, L.dense_up.cols,
+                                   gemv::LxDtype::kF16, gemv::LxDtype::kF16,
+                                   1.0f, d_up, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
                 return false;
             if (mimo::RunMimoSwiGLU(st, d_gate, d_up, L.dense_up.rows, d_act) != cudaSuccess)
                 return false;
-            if (lsx_nvfp4::RunLsxNvfp4Gemm(st, d_act, L.dense_down.d_packed,
-                                           L.dense_down.d_scales,
-                                           L.dense_down.global_scale, d_mlp, 1,
-                                           L.dense_down.cols, L.dense_down.rows) != cudaSuccess)
+            if (gemv::RunLxGemmVec(st, L.dense_down.d_w, d_act, 1,
+                                   L.dense_down.rows, L.dense_down.cols,
+                                   gemv::LxDtype::kF16, gemv::LxDtype::kF16,
+                                   1.0f, d_mlp, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
                 return false;
             dbg("dgate", d_gate, L.dense_up.rows);
             dbg("dup", d_up, L.dense_up.rows);

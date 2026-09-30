@@ -136,11 +136,8 @@ arrow::Result<MiMoModelFiles> LoadMiMoLayout(const std::string &root)
         if (!fs::exists(raw))
             return arrow::Status::IOError("missing layer pinned file: ",
                                           raw.string());
-        if (!fs::exists(nv))
-            return arrow::Status::IOError("missing layer NVFP4 file: ",
-                                          nv.string());
         files.layer_raw.push_back(raw.string());
-        files.layer_nvfp4.push_back(nv.string());
+        files.layer_nvfp4.push_back(fs::exists(nv) ? nv.string() : "");
     }
     return files;
 }

@@ -23,17 +23,23 @@
 
 namespace lsxcommon {
 
+struct MimoLinearF16 {
+    __half *d_w = nullptr;  // [rows, cols] FP16
+    int rows = 0;
+    int cols = 0;
+};
+
 struct MimoLayerWeights {
     bool is_swa = false;
     bool is_moe = false;
     __half *d_input_norm = nullptr;
     __half *d_post_norm = nullptr;
-    lsx_nvfp4::LsxNvfp4Weight qkv;
+    MimoLinearF16 qkv;            // [qkv_rows, hidden] FP16 (high precision)
     __half *d_o_proj = nullptr;   // [hidden, o_size] FP16
     __half *d_sink = nullptr;     // [heads] FP16 or nullptr
     __nv_bfloat16 *d_router_gate = nullptr;  // [num_experts, hidden] BF16
     float *d_router_bias = nullptr;          // [num_experts] F32
-    lsx_nvfp4::LsxNvfp4Weight dense_gate, dense_up, dense_down;  // layer 0
+    MimoLinearF16 dense_gate, dense_up, dense_down;  // layer 0
 };
 
 class MiMoV26FlashModel final : public ModelBase {

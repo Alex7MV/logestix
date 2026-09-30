@@ -308,6 +308,28 @@ arrow::Status QuantizeFp8(const std::string &input_dir, const TensorRef &w,
     return arrow::Status::OK();
 }
 
+// FP8 -> dequantized BF16 raw record (the dense high-precision path: MiMo's
+// FP8 dense weights are too sensitive to an 8-bit -> 4-bit requantization to
+// survive 48 layers, so they stay BF16).
+arrow::Status DequantFp8Record(const std::string &input_dir, const TensorRef &w,
+                               const TensorRef &s, TensorRecord &out)
+{
+    auto fp8 = ReadTensorData(input_dir, *w.shard, *w.info);
+    auto sc = ReadTensorData(input_dir, *s.shard, *s.info);
+    if (fp8.empty() ||
+        static_cast<int64_t>(fp8.size()) != w.info->byte_size())
+        return arrow::Status::IOError("failed to read tensor data: ",
+                                      w.info->name);
+    std::vector<uint8_t> bf16;
+    ARROW_RETURN_NOT_OK(DequantFp8Block128ToBf16Gpu(
+        fp8, w.info->shape, sc, s.info->shape, bf16));
+    out.name = w.info->name;
+    out.dtype = "BF16";
+    out.shape = w.info->shape;
+    out.data = std::move(bf16);
+    return arrow::Status::OK();
+}
+
 struct RawProjection {
     std::vector<uint8_t> data;
     std::vector<int64_t> shape;
@@ -470,9 +492,10 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
                 if (it == refs.end())
                     return arrow::Status::Invalid("missing weight_scale_inv for ",
                                                   t.name);
-                DenseNvfp4Record r;
-                ARROW_RETURN_NOT_OK(QuantizeFp8(input_dir, refs[t.name], it->second, r));
-                nvfp4_by_layer[p.layer].push_back(std::move(r));
+                TensorRecord r;
+                ARROW_RETURN_NOT_OK(
+                    DequantFp8Record(input_dir, refs[t.name], it->second, r));
+                raw_by_layer[p.layer].push_back(std::move(r));
                 ++total_pinned;
                 continue;
             }
