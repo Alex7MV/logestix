@@ -150,6 +150,36 @@ TEST_CASE("router top-k deterministic with lower-index tie-break",
     cudaFree(dp); cudaFree(dx); cudaFree(dsel); cudaFree(dw);
 }
 
+TEST_CASE("router top-k rejects more experts than the launch block covers",
+          "[gemma][moe]") {
+    // The phase-2 softmax/top-k kernel launches with one thread per expert
+    // (blockDim.x) and indexes the per-expert shared scratch by expert id;
+    // num_experts above that block size would read past the covered range.
+    constexpr int E = 129, H = 8, K = 1;
+    std::vector<float> pf(E * H, 0.f);
+    std::vector<float> xf(H, 1.0f);
+    auto hp = ToHalf(pf);
+    auto hx = ToHalf(xf);
+
+    __nv_bfloat16 *dp, *dx;
+    int32_t *dsel;
+    float *dw;
+    REQUIRE(cudaMalloc(&dp, hp.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dx, hx.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dsel, sizeof(int32_t) * K) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dw, sizeof(float) * K) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dp, hp.data(), hp.size() * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(dx, hx.data(), hx.size() * 2, cudaMemcpyHostToDevice) ==
+            cudaSuccess);
+
+    CHECK(lsxcommon::gemma::RunGemmaRouterTopK(dp, nullptr, dx, E, H, K, dsel,
+                                               dw, 1, nullptr) ==
+          cudaErrorInvalidValue);
+
+    cudaFree(dp); cudaFree(dx); cudaFree(dsel); cudaFree(dw);
+}
+
 
 
 // Batched gather-dequant must be BIT-IDENTICAL to sequential per-expert

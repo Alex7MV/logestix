@@ -757,6 +757,10 @@ __global__ void gemma_router_logits_kernel(
         logits[static_cast<int64_t>(t) * E + e] = part;
 }
 
+// One thread per expert: the per-expert softmax/top-k kernel covers exactly
+// this many experts, so num_experts must not exceed it.
+constexpr int kGemmaRouterTopKThreads = 128;
+
 __global__ void gemma_router_softmax_topk_kernel(
     const float *__restrict__ logits,   // [seq][E]
     const float *__restrict__ per_expert_scale,
@@ -841,8 +845,8 @@ cudaError_t RunGemmaRouterTopK(const __nv_bfloat16 *d_router_proj,
                                cudaStream_t stream)
 {
     if (!d_router_proj || !d_x || !d_sel_experts || !d_sel_weights ||
-        num_experts <= 0 || hidden <= 0 || top_k <= 0 || top_k > 16 ||
-        seq <= 0)
+        num_experts <= 0 || num_experts > kGemmaRouterTopKThreads ||
+        hidden <= 0 || top_k <= 0 || top_k > 16 || seq <= 0)
         return cudaErrorInvalidValue;
     // Phase 1: warp-per-expert logits (E/8 blocks x seq), phase 2: one
     // block per token softmax/top-k. Tiny [seq][E] fp32 scratch from the
@@ -859,45 +863,15 @@ cudaError_t RunGemmaRouterTopK(const __nv_bfloat16 *d_router_proj,
         d_router_proj, d_x, d_logits, num_experts, hidden);
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
-        gemma_router_softmax_topk_kernel<<<static_cast<unsigned>(seq), 128,
-                                           0, stream>>>(
+        gemma_router_softmax_topk_kernel<<<static_cast<unsigned>(seq),
+                                           kGemmaRouterTopKThreads, 0,
+                                           stream>>>(
             d_logits, d_per_expert_scale, num_experts, top_k, d_sel_experts,
             d_sel_weights);
     if (e == cudaSuccess)
         e = cudaGetLastError();
     cudaFreeAsync(d_logits, stream);
     return e == cudaSuccess ? cudaGetLastError() : e;
-}
-
-// out[t,h] = router_scale[h] * sum_k w_tk * expert_outs[k][t,h]
-__global__ void gemma_moe_combine_kernel(__nv_bfloat16 *__restrict__ out,
-                                         const __nv_bfloat16 *const *__restrict__ eos,
-                                         const float *__restrict__ w,
-                                         const float *__restrict__ rscale,
-                                         int H, int K)
-{
-    const int t = blockIdx.x;
-    for (int h = threadIdx.x; h < H; h += blockDim.x) {
-        float acc = 0.f;
-        for (int k = 0; k < K; ++k)
-            acc += w[static_cast<int64_t>(t) * K + k] *
-                   __bfloat162float(eos[k][static_cast<int64_t>(t) * H + h]);
-        if (rscale) acc *= rscale[h];
-        out[static_cast<int64_t>(t) * H + h] = __float2bfloat16(acc);
-    }
-}
-
-cudaError_t RunGemmaMoECombine(const __nv_bfloat16 *const *d_expert_outs,
-                               const float *d_weights,
-                               const float *d_router_scale, __nv_bfloat16 *d_out,
-                               int hidden, int k, cudaStream_t stream)
-{
-    if (!d_expert_outs || !d_weights || !d_out || hidden <= 0 || k <= 0)
-        return cudaErrorInvalidValue;
-    constexpr int kBlock = 256;
-    gemma_moe_combine_kernel<<<1, kBlock, 0, stream>>>(
-        d_out, d_expert_outs, d_weights, d_router_scale, hidden, k);
-    return cudaGetLastError();
 }
 
 // ── Generation building blocks ──────────────────────────────────────────────
@@ -1387,9 +1361,9 @@ bool GemmaDebugSync(cudaStream_t stream, const char *stage, int layer,
     if (!on) return false;
     e = cudaStreamSynchronize(stream);
     if (e != cudaSuccess) {
-        printf("[gemma-dbg] fault after stage='%s' layer=%d: %s\n", stage,
-               layer, cudaGetErrorString(e));
-        fflush(stdout);
+        log::error(std::string("[gemma-dbg] fault after stage='") + stage +
+                   "' layer=" + std::to_string(layer) + ": " +
+                   cudaGetErrorString(e));
         return true;
     }
     return false;
@@ -1723,16 +1697,16 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         cudaError_t e = cudaMemcpyAsync(&layer_scalar, lw.d_layer_scalar,
                                         sizeof(float), cudaMemcpyDeviceToHost,
                                         stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L788: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L788: ") + cudaGetErrorString(e)); return e; }
         e = cudaStreamSynchronize(stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L790: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L790: ") + cudaGetErrorString(e)); return e; }
     }
 
     // 1) input RMSNorm.
     cudaError_t e = RunGemmaRMSNorm(ws.d_x, lw.d_input_norm, ws.d_normed, seq,
                                     static_cast<int>(H), top.rms_norm_eps,
                                     stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L797: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L797: ") + cudaGetErrorString(e)); return e; }
 
     // 2) q/k/v projections. Full-attention layers tie V to K
     //    (attention_k_eq_v): no v_proj weights exist, so v := raw k proj.
@@ -1753,62 +1727,62 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                     256, 0, stream>>>(
             ws.d_normed, ws.d_xh, static_cast<int>(seq * H));
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L802nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L802nv: ") + cudaGetErrorString(e)); return e; }
         for (int t = 0; t < seq; ++t) {
             const __half *xt = ws.d_xh + static_cast<int64_t>(t) * H;
             e = RunGemmaNvfp4Gemm(
                 stream, xt, lw.attn_q.d_packed, lw.attn_q.d_scales,
                 lw.attn_q.global_scale, ws.d_gemv_q, static_cast<int>(H),
                 q_rows, false);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L804nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L804nv: ") + cudaGetErrorString(e)); return e; }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_q,
                                   ws.d_qr + static_cast<int64_t>(t) * q_rows,
                                   q_rows);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L805nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L805nv: ") + cudaGetErrorString(e)); return e; }
             e = RunGemmaNvfp4Gemm(
                 stream, xt, lw.attn_k.d_packed, lw.attn_k.d_scales,
                 lw.attn_k.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                 kv_heads * head_dim, false);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L807nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L807nv: ") + cudaGetErrorString(e)); return e; }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                   ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                   kv_heads * head_dim);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L808nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L808nv: ") + cudaGetErrorString(e)); return e; }
             if (!v_tied_to_k) {
                 e = RunGemmaNvfp4Gemm(
                     stream, xt, lw.attn_v.d_packed, lw.attn_v.d_scales,
                     lw.attn_v.global_scale, ws.d_gemv_kv, static_cast<int>(H),
                     kv_heads * head_dim, false);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L811nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L811nv: ") + cudaGetErrorString(e)); return e; }
                 e = RunGemmaF16ToBf16(stream, ws.d_gemv_kv,
                                       ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                       kv_heads * head_dim);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L812nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L812nv: ") + cudaGetErrorString(e)); return e; }
             } else {
                 e = cudaMemcpyAsync(ws.d_vr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                     ws.d_kr + static_cast<int64_t>(t) * kv_heads * head_dim,
                                     static_cast<size_t>(kv_heads * head_dim) * 2,
                                     cudaMemcpyDeviceToDevice, stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L817: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L817: ") + cudaGetErrorString(e)); return e; }
             }
         }
     } else {
     e = Matmul(lw.d_q, ws.d_normed, ws.d_qr, q_rows,
                static_cast<int>(H), seq, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L804: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L804: ") + cudaGetErrorString(e)); return e; }
     e = Matmul(lw.d_k, ws.d_normed, ws.d_kr, kv_heads * head_dim,
                static_cast<int>(H), seq, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L807: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L807: ") + cudaGetErrorString(e)); return e; }
     if (!v_tied_to_k) {
         e = Matmul(lw.d_v, ws.d_normed, ws.d_vr, kv_heads * head_dim,
                    static_cast<int>(H), seq, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L811: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L811: ") + cudaGetErrorString(e)); return e; }
     } else {
         // v := raw k_proj output (before k_norm) — value = v_norm(raw k).
         e = cudaMemcpyAsync(ws.d_vr, ws.d_kr,
                             static_cast<size_t>(kv_heads * head_dim) * seq * 2,
                             cudaMemcpyDeviceToDevice, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L817: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L817: ") + cudaGetErrorString(e)); return e; }
     }
     } // attn_nv else (legacy BF16 projections)
     if (GemmaDebugSync(stream, "qkv", layer_idx, e)) return e;
@@ -1820,20 +1794,20 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             ws.d_qr, lw.d_q_norm, ws.d_qr, seq, heads, head_dim,
             top.rms_norm_eps);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L828: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L828: ") + cudaGetErrorString(e)); return e; }
         dim3 grid2(static_cast<unsigned>(seq),
                    static_cast<unsigned>(kv_heads));
         gemma_head_norm_kernel<<<grid2, 128, 128 * sizeof(float), stream>>>(
             ws.d_kr, lw.d_k_norm, ws.d_kr, seq, kv_heads, head_dim,
             top.rms_norm_eps);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L835: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L835: ") + cudaGetErrorString(e)); return e; }
         // v_norm: plain RMSNorm (with_scale=False, no weights) on values.
         gemma_head_norm_kernel<<<grid2, 128, 128 * sizeof(float), stream>>>(
             ws.d_vr, nullptr, ws.d_vr, seq, kv_heads, head_dim,
             top.rms_norm_eps);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L841: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L841: ") + cudaGetErrorString(e)); return e; }
     }
     if (GemmaDebugSync(stream, "qknorm-vnorm", layer_idx, e)) return e;
 
@@ -1845,16 +1819,16 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             pos[static_cast<size_t>(i)] = pos_base + i;
         e = cudaMemcpyAsync(ws.d_pos, pos.data(), sizeof(int32_t) * seq,
                             cudaMemcpyHostToDevice, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L853: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L853: ") + cudaGetErrorString(e)); return e; }
         e = RunGemmaRopeCosSin(ws.d_pos, ws.d_cos, ws.d_sin, seq, rotary_dim,
                                theta, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L856: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L856: ") + cudaGetErrorString(e)); return e; }
         e = RunGemmaPartialRope(ws.d_qr, ws.d_cos, ws.d_sin, ws.d_qr, seq,
                                 heads, head_dim, rotary_dim, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L859: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L859: ") + cudaGetErrorString(e)); return e; }
         e = RunGemmaPartialRope(ws.d_kr, ws.d_cos, ws.d_sin, ws.d_kr, seq,
                                 kv_heads, head_dim, rotary_dim, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L862: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L862: ") + cudaGetErrorString(e)); return e; }
     }
 
     // 5) Append k/v rows to the cache (D2D, stream-ordered). For tied-V
@@ -1863,11 +1837,11 @@ cudaError_t ForwardLayer(cudaStream_t stream,
     e = cudaMemcpyAsync(dk + static_cast<int64_t>(pos_base) * kv_stride,
                         ws.d_kr, row_bytes * seq, cudaMemcpyDeviceToDevice,
                         stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L871: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L871: ") + cudaGetErrorString(e)); return e; }
     e = cudaMemcpyAsync(dv + static_cast<int64_t>(pos_base) * kv_stride,
                         ws.d_vr, row_bytes * seq, cudaMemcpyDeviceToDevice,
                         stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L875: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L875: ") + cudaGetErrorString(e)); return e; }
 
     // 6) Attention over the cache (band mask for sliding layers).
     if (!GemmaSkipBranch("attn")) {
@@ -1893,11 +1867,11 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                   heads, kv_heads, head_dim, window,
                                   1.0f, stream);
         }
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L887: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L887: ") + cudaGetErrorString(e)); return e; }
     } else {
         e = cudaMemcpyAsync(ws.d_tmp, ws.d_qr, sizeof(__nv_bfloat16) * seq * q_rows,
                             cudaMemcpyDeviceToDevice, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L891: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L891: ") + cudaGetErrorString(e)); return e; }
     }
     if (GemmaDebugSync(stream, "attn", layer_idx, e)) return e;
 
@@ -1908,38 +1882,38 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                     256, 0, stream>>>(
             ws.d_tmp, ws.d_tmpf, static_cast<int>(seq * q_rows));
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L897nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L897nv: ") + cudaGetErrorString(e)); return e; }
         for (int t = 0; t < seq; ++t) {
             e = RunGemmaNvfp4Gemm(
                 stream, ws.d_tmpf + static_cast<int64_t>(t) * q_rows,
                 lw.attn_o.d_packed, lw.attn_o.d_scales,
                 lw.attn_o.global_scale, ws.d_gemv_o, q_rows,
                 static_cast<int>(H), false);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L898nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L898nv: ") + cudaGetErrorString(e)); return e; }
             e = RunGemmaF16ToBf16(stream, ws.d_gemv_o,
                                   ws.d_qr + static_cast<int64_t>(t) * H, H);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L899nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L899nv: ") + cudaGetErrorString(e)); return e; }
         }
     } else {
     e = Matmul(lw.d_o, ws.d_tmp, ws.d_qr, static_cast<int>(H), q_rows,
                seq, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L898: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L898: ") + cudaGetErrorString(e)); return e; }
     }
     e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_norm, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L901: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L901: ") + cudaGetErrorString(e)); return e; }
     {
         const int64_t numel = static_cast<int64_t>(seq) * H;
         gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
                             stream>>>(ws.d_x, ws.d_normed, 1.0f, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L907: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L907: ") + cudaGetErrorString(e)); return e; }
     }
 
     // 8) Dense MLP branch: n = rms(x, pre_ffn); d = mlp(n); d1 = rms(d, post_ffn_1).
     e = RunGemmaRMSNorm(ws.d_x, lw.d_pre_ffn, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L913: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L913: ") + cudaGetErrorString(e)); return e; }
     {
         const int64_t I = top.intermediate_size;
         static const bool mlp_bf16 =
@@ -1953,7 +1927,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                         256, 0, stream>>>(
                 ws.d_normed, ws.d_xh, static_cast<int>(seq * H));
             e = cudaGetLastError();
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L916nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L916nv: ") + cudaGetErrorString(e)); return e; }
             // Row-by-row weight-streaming chain (seq==1 decode is the hot
             // path; prefill reuses the same cores per row for correctness).
             for (int t = 0; t < seq; ++t) {
@@ -1966,32 +1940,32 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                     ws.d_mlp_g, ws.d_mlp_u, ws.d_mlp_h,
                     ws.d_mlp_y + static_cast<int64_t>(t) * H,
                     static_cast<int>(H), static_cast<int>(I));
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L918nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L918nv: ") + cudaGetErrorString(e)); return e; }
             }
             e = RunGemmaF16ToBf16(stream, ws.d_mlp_y, ws.d_qr,
                                   static_cast<int64_t>(seq) * H);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L920nv: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L920nv: ") + cudaGetErrorString(e)); return e; }
         } else {
         const int64_t numel = static_cast<int64_t>(seq) * I;
         e = Matmul(lw.d_mlp_gate, ws.d_normed, ws.d_gg,
                    static_cast<int>(I), static_cast<int>(H), seq, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L919: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L919: ") + cudaGetErrorString(e)); return e; }
         e = Matmul(lw.d_mlp_up, ws.d_normed, ws.d_gu,
                    static_cast<int>(I), static_cast<int>(H), seq, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L922: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L922: ") + cudaGetErrorString(e)); return e; }
         gemma_geglu_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
                              stream>>>(ws.d_gg, ws.d_gu, ws.d_gg, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L926: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L926: ") + cudaGetErrorString(e)); return e; }
         e = Matmul(lw.d_mlp_down, ws.d_gg, ws.d_qr, static_cast<int>(H),
                    static_cast<int>(I), seq, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L929: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L929: ") + cudaGetErrorString(e)); return e; }
         }
     }
     // d1 = post_ffn_1(mlp_out)  -> keeps ws.d_qr
     e = RunGemmaRMSNorm(ws.d_qr, lw.d_post_ffn1, ws.d_qr, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L934: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L934: ") + cudaGetErrorString(e)); return e; }
 
     // 9) Router: rn = rms_plain(x) * router_scale * H^-0.5; proj; softmax-all;
     //    top-k on probs; renorm; scale by per_expert_scale.
@@ -2000,18 +1974,18 @@ cudaError_t ForwardLayer(cudaStream_t stream,
     const int64_t MI = top.moe_intermediate_size;
     e = RunGemmaRmsNormPlain(ws.d_x, ws.d_tmp2, seq, static_cast<int>(H),
                              top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L943: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L943: ") + cudaGetErrorString(e)); return e; }
     {
         const float root = 1.0f / std::sqrt(static_cast<float>(H));
         gemma_scale_vec_kernel<<<static_cast<unsigned>(seq), 256, 0, stream>>>(
             ws.d_tmp2, lw.d_router_scale, root, static_cast<int>(H), seq);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L949: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L949: ") + cudaGetErrorString(e)); return e; }
     }
     e = RunGemmaRouterTopK(lw.d_router_proj, lw.d_per_expert_scale, ws.d_tmp2,
                            E, static_cast<int>(H), K, ws.d_sel, ws.d_selw,
                            seq, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L954: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L954: ") + cudaGetErrorString(e)); return e; }
     // No-handshake decode (seq==1, fully-resident cache): the GEMV chain
     // composes its slot table straight from d_sel/d_selw + the device meta
     // mirror — no host readback, no busy-poll stall.
@@ -2020,10 +1994,10 @@ cudaError_t ForwardLayer(cudaStream_t stream,
     if (!no_hs) {
         e = cudaMemcpyAsync(ws.h_sel, ws.d_sel, sizeof(int32_t) * seq * K,
                             cudaMemcpyDeviceToHost, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L957: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L957: ") + cudaGetErrorString(e)); return e; }
         e = cudaMemcpyAsync(ws.h_selw, ws.d_selw, sizeof(float) * seq * K,
                             cudaMemcpyDeviceToHost, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L960: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L960: ") + cudaGetErrorString(e)); return e; }
         // Router handoff: busy-poll a dedicated event instead of draining the
         // whole stream — with 30 layers × steps handshakes per generation, host
         // wake latency after full sync is pure GPU idle time (qwen parity).
@@ -2031,16 +2005,16 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         {
             cudaError_t q;
             while ((q = cudaEventQuery(g_gen_ctx->ev_router)) == cudaErrorNotReady) {}
-            if (q != cudaSuccess) { std::printf("[gemma-chk] L962: %s\n", cudaGetErrorString(q)); std::fflush(stdout); return q; }
+            if (q != cudaSuccess) { log::error(std::string("[gemma] L962: ") + cudaGetErrorString(q)); return q; }
         }
     }
 
     // MoE: h2 = rms(x, pre_ffn2); moe(h2, sel, w); d2 = rms(moe, post_ffn2).
     e = RunGemmaRMSNorm(ws.d_x, lw.d_pre_ffn2, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L967: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L967: ") + cudaGetErrorString(e)); return e; }
     e = cudaMemsetAsync(ws.d_acc, 0, sizeof(__nv_bfloat16) * seq * H, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L969: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L969: ") + cudaGetErrorString(e)); return e; }
 
     gpu::ExpertDeviceCache &ec = g_gen_ctx->ec;
     static const bool inline_uploads =
@@ -2077,27 +2051,27 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             ws.d_sel, ws.d_selw, g_gen_ctx->d_flat_meta,
             layer_idx * E, K, g_gen_ctx->d_tbl);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] nohs1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] nohs1: ") + cudaGetErrorString(e)); return e; }
         const auto &ent0 =
             g_expert_db->entries[static_cast<size_t>(layer_idx) *
                                  static_cast<size_t>(E)];
         __half *xh2 = nullptr, *ygu2 = nullptr, *hbuf2 = nullptr;
         float *accf2 = nullptr;
         e = cudaMallocAsync(&xh2, sizeof(__half) * H, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] nohs2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] nohs2: ") + cudaGetErrorString(e)); return e; }
         e = cudaMallocAsync(&ygu2, sizeof(__half) * K * 2 * MI, stream);
-        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); std::printf("[gemma-chk] nohs2b: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); log::error(std::string("[gemma] nohs2b: ") + cudaGetErrorString(e)); return e; }
         e = cudaMallocAsync(&hbuf2, sizeof(__half) * K * MI, stream);
-        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); cudaFreeAsync(ygu2, stream); std::printf("[gemma-chk] nohs2c: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); cudaFreeAsync(ygu2, stream); log::error(std::string("[gemma] nohs2c: ") + cudaGetErrorString(e)); return e; }
         e = cudaMallocAsync(&accf2, sizeof(float) * H, stream);
-        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); cudaFreeAsync(ygu2, stream); cudaFreeAsync(hbuf2, stream); std::printf("[gemma-chk] nohs2d: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { cudaFreeAsync(xh2, stream); cudaFreeAsync(ygu2, stream); cudaFreeAsync(hbuf2, stream); log::error(std::string("[gemma] nohs2d: ") + cudaGetErrorString(e)); return e; }
         gemma_bf16_to_half_kernel<<<(unsigned)((H + 255) / 256), 256, 0,
                                     stream>>>(ws.d_normed, xh2,
                                               static_cast<int>(H));
         gemma_gemv_zero_f32_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
             accf2, H);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] nohs2e: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] nohs2e: ") + cudaGetErrorString(e)); return e; }
         e = RunRoutedGemvBatchSeg(
             stream, ec.d_pack, ec.d_scale, g_gen_ctx->pack_stride,
             g_gen_ctx->scale_stride, g_gen_ctx->d_tbl, K,
@@ -2116,7 +2090,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         cudaFreeAsync(ygu2, stream);
         cudaFreeAsync(hbuf2, stream);
         cudaFreeAsync(accf2, stream);
-        if (e != cudaSuccess) { std::printf("[gemma-chk] nohs3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] nohs3: ") + cudaGetErrorString(e)); return e; }
     } else if (batched_path) {
         // ── Batched decode fast-path: one gathered dequant + three batched
         // GEMMs + one geGLU + one combine instead of the per-expert launch
@@ -2171,11 +2145,10 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                               static_cast<size_t>(E) +
                                           static_cast<size_t>(expert)];
                         if (!ent.host_w1 || !ent.host_w2) {
-                            std::printf(
-                                "[gemma-chk] missing routed expert "
-                                "t=%d k=%d\n",
-                                t, k);
-                            std::fflush(stdout);
+                            log::error(std::string("[gemma] missing routed "
+                                                   "expert t=") +
+                                       std::to_string(t) +
+                                       " k=" + std::to_string(k));
                             cudaFreeAsync(d_tbl, stream);
                             cudaFreeAsync(xh, stream);
                             cudaFreeAsync(ygu, stream);
@@ -2204,9 +2177,8 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                 stream, nullptr, slot_pack, slot_scale,
                                 ent);
                             if (e != cudaSuccess) {
-                                std::printf("[gemma-chk] L1002: %s\n",
-                                            cudaGetErrorString(e));
-                                std::fflush(stdout);
+                                log::error(std::string("[gemma] L1002: ") +
+                                           cudaGetErrorString(e));
                                 cudaFreeAsync(d_tbl, stream);
                                 cudaFreeAsync(xh, stream);
                                 cudaFreeAsync(ygu, stream);
@@ -2257,9 +2229,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                             static_cast<int>(H));
                     static int gv_hits = 0;
                     if (++gv_hits == 1 && std::getenv("LSX_GEMV_TRACE"))
-                        std::fprintf(stderr,
-                                     "[GEMMA-GEMV] chain engaged (layers"
-                                     " x steps)\n");
+                        log::info("[gemma] GEMV chain engaged (layers x steps)");
                     if (e != cudaSuccess) {
                         cudaFreeAsync(d_tbl, stream);
                         cudaFreeAsync(xh, stream);
@@ -2295,8 +2265,8 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                          static_cast<size_t>(E) +
                                      static_cast<size_t>(expert)];
             if (!ent.host_w1 || !ent.host_w2) {
-                std::printf("[gemma-chk] missing routed expert k=%d\n", k);
-                std::fflush(stdout);
+                log::error(std::string("[gemma] missing routed expert k=") +
+                           std::to_string(k));
                 return cudaErrorInvalidValue;
             }
             const int flat = layer_idx * E + expert;
@@ -2317,7 +2287,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 // dominant — keep the pipeline single-stream & deterministic.
                 e = UploadGemmaExpertIntoSlot(stream, nullptr, slot_pack,
                                               slot_scale, ent);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1002: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L1002: ") + cudaGetErrorString(e)); return e; }
             }
 
             // Slot layout mirrors pack strides: w1|w2|w3 packed blocks,
@@ -2340,20 +2310,20 @@ cudaError_t ForwardLayer(cudaStream_t stream,
         const int64_t MIH = MI * H;
         e = RunGemmaBatchedDequant(stream, g1, MIH, filled,
                                    ws.d_bw1);                      // [K][MI*H]
-        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] gdq1: ") + cudaGetErrorString(e)); return e; }
         e = RunGemmaBatchedDequant(stream, g3, MIH, filled,
                                    ws.d_bw3);                      // [K][MI*H]
-        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] gdq3: ") + cudaGetErrorString(e)); return e; }
         e = RunGemmaBatchedDequant(stream, g2, H * MI, filled,
                                    ws.d_bw2);                      // [K][H*MI]
-        if (e != cudaSuccess) { std::printf("[gemma-chk] gdq2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] gdq2: ") + cudaGetErrorString(e)); return e; }
 
         {
             // (Re)publish selected weights every step: tiny pinned H2D.
             e = cudaMemcpyAsync(ws.d_bselw, w_compact,
                                 sizeof(float) * static_cast<size_t>(filled),
                                 cudaMemcpyHostToDevice, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] wcp: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] wcp: ") + cudaGetErrorString(e)); return e; }
         }
 
         // gate/up projections over all experts sharing the same token x.
@@ -2361,11 +2331,11 @@ cudaError_t ForwardLayer(cudaStream_t stream,
             e = MatmulBatched(ws.d_bw1, MIH, ws.d_normed, 0,
                               ws.d_beg, MI, static_cast<int>(MI),
                               static_cast<int>(H), filled, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] bgem1: ") + cudaGetErrorString(e)); return e; }
             e = MatmulBatched(ws.d_bw3, MIH, ws.d_normed, 0,
                               ws.d_beu, MI, static_cast<int>(MI),
                               static_cast<int>(H), filled, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] bgem3: ") + cudaGetErrorString(e)); return e; }
         } else {
             for (int r = 0; r < filled; ++r) {
                 e = Matmul(ws.d_bw1 + static_cast<int64_t>(r) * MIH,
@@ -2373,13 +2343,13 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                            ws.d_beg + static_cast<int64_t>(r) * MI,
                            static_cast<int>(MI), static_cast<int>(H), 1,
                            stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem1: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] sgem1: ") + cudaGetErrorString(e)); return e; }
                 e = Matmul(ws.d_bw3 + static_cast<int64_t>(r) * MIH,
                            ws.d_normed,
                            ws.d_beu + static_cast<int64_t>(r) * MI,
                            static_cast<int>(MI), static_cast<int>(H), 1,
                            stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem3: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] sgem3: ") + cudaGetErrorString(e)); return e; }
             }
         }
         {
@@ -2388,14 +2358,14 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                          0, stream>>>(ws.d_beg, ws.d_beu,
                                                       ws.d_beg, numel);
             e = cudaGetLastError();
-            if (e != cudaSuccess) { std::printf("[gemma-chk] bgeglu: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] bgeglu: ") + cudaGetErrorString(e)); return e; }
         }
         // Down projection: [K][H] outputs.
         if (batch_gemms) {
             e = MatmulBatched(ws.d_bw2, H * MI, ws.d_beg, MI,
                               ws.d_beo, H, static_cast<int>(H),
                               static_cast<int>(MI), filled, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] bgem2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] bgem2: ") + cudaGetErrorString(e)); return e; }
         } else {
             for (int r = 0; r < filled; ++r) {
                 e = Matmul(ws.d_bw2 + static_cast<int64_t>(r) * MI * H,
@@ -2403,7 +2373,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                            ws.d_beo + static_cast<int64_t>(r) * H,
                            static_cast<int>(H), static_cast<int>(MI), 1,
                            stream);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] sgem2: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] sgem2: ") + cudaGetErrorString(e)); return e; }
             }
         }
         // Weighted accumulate in ascending-k order (axpy parity).
@@ -2411,7 +2381,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                        256, 0, stream>>>(
             ws.d_acc, ws.d_beo, ws.d_bselw, filled, H);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] bcomb: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] bcomb: ") + cudaGetErrorString(e)); return e; }
         gemv_done = true;
         }
     } else if (!gemv_done) {
@@ -2440,18 +2410,18 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 // see the legacy-path note above re: copy-channel removal).
                 e = UploadGemmaExpertIntoSlot(stream, nullptr, slot_pack,
                                               slot_scale, ent);
-                if (e != cudaSuccess) { std::printf("[gemma-chk] L1002: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+                if (e != cudaSuccess) { log::error(std::string("[gemma] L1002: ") + cudaGetErrorString(e)); return e; }
             }
 
             e = DequantNvfp4(stream, slot_pack, ent.w1_bytes, slot_scale,
                              ent.w1_scales_bytes, ent.w1_global_scale,
                              ws.d_w1, MI * H);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1032: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1032: ") + cudaGetErrorString(e)); return e; }
             e = DequantNvfp4(stream, slot_pack + ent.w1_bytes, ent.w2_bytes,
                              slot_scale + ent.w1_scales_bytes,
                              ent.w2_scales_bytes, ent.w2_global_scale,
                              ws.d_w2, H * MI);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1037: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1037: ") + cudaGetErrorString(e)); return e; }
             e = DequantNvfp4(stream,
                              slot_pack + ent.w1_bytes + ent.w2_bytes,
                              ent.w3_bytes,
@@ -2459,7 +2429,7 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                                  ent.w2_scales_bytes,
                              ent.w3_scales_bytes, ent.w3_global_scale,
                              ws.d_w3, MI * H);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1045: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1045: ") + cudaGetErrorString(e)); return e; }
 
             // Expert FFN: out_e[t] = w2 @ (gelu(w1 @ x) * (w3 @ x)) —
             // GEMV projections + elementwise GeGLU.
@@ -2467,23 +2437,23 @@ cudaError_t ForwardLayer(cudaStream_t stream,
                 ws.d_normed + static_cast<int64_t>(t) * H;
             e = Matmul(ws.d_w1, x_t, ws.d_eg, static_cast<int>(MI),
                        static_cast<int>(H), 1, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1053: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1053: ") + cudaGetErrorString(e)); return e; }
             e = Matmul(ws.d_w3, x_t, ws.d_eu, static_cast<int>(MI),
                        static_cast<int>(H), 1, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1056: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1056: ") + cudaGetErrorString(e)); return e; }
             gemma_geglu_kernel<<<static_cast<unsigned>((MI + 255) / 256), 256,
                                  0, stream>>>(ws.d_eg, ws.d_eu, ws.d_eg, MI);
             e = cudaGetLastError();
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1060: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1060: ") + cudaGetErrorString(e)); return e; }
             e = Matmul(ws.d_w2, ws.d_eg, ws.d_eout, static_cast<int>(H),
                        static_cast<int>(MI), 1, stream);
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1063: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1063: ") + cudaGetErrorString(e)); return e; }
 
             gemma_axpy_kernel<<<static_cast<unsigned>((H + 255) / 256), 256, 0,
                                 stream>>>(
                 ws.d_acc + static_cast<int64_t>(t) * H, ws.d_eout, weight, H);
             e = cudaGetLastError();
-            if (e != cudaSuccess) { std::printf("[gemma-chk] L1069: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+            if (e != cudaSuccess) { log::error(std::string("[gemma] L1069: ") + cudaGetErrorString(e)); return e; }
             if (GemmaDebugSync(stream, "moe-expert", layer_idx, e)) return e;
         }
     }
@@ -2493,29 +2463,29 @@ cudaError_t ForwardLayer(cudaStream_t stream,
     // hidden += ff; hidden *= layer_scalar.
     e = RunGemmaRMSNorm(ws.d_acc, lw.d_post_ffn2, ws.d_tmp2, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L1078: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L1078: ") + cudaGetErrorString(e)); return e; }
     {
         const int64_t numel = static_cast<int64_t>(seq) * H;
         gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
                             stream>>>(ws.d_tmp2, ws.d_qr, 1.0f, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L1084: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L1084: ") + cudaGetErrorString(e)); return e; }
     }
     e = RunGemmaRMSNorm(ws.d_tmp2, lw.d_post_ffn, ws.d_normed, seq,
                         static_cast<int>(H), top.rms_norm_eps, stream);
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L1088: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L1088: ") + cudaGetErrorString(e)); return e; }
     {
         const int64_t numel = static_cast<int64_t>(seq) * H;
         gemma_axpy_kernel<<<static_cast<unsigned>((numel + 255) / 256), 256, 0,
                             stream>>>(ws.d_x, ws.d_normed, 1.0f, numel);
         e = cudaGetLastError();
-        if (e != cudaSuccess) { std::printf("[gemma-chk] L1094: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+        if (e != cudaSuccess) { log::error(std::string("[gemma] L1094: ") + cudaGetErrorString(e)); return e; }
     }
     gemma_scale_kernel<<<static_cast<unsigned>((seq * H + 255) / 256), 256, 0,
                          stream>>>(ws.d_x, layer_scalar,
                                    static_cast<int64_t>(seq) * H);
     e = cudaGetLastError();
-    if (e != cudaSuccess) { std::printf("[gemma-chk] L1100: %s\n", cudaGetErrorString(e)); std::fflush(stdout); return e; }
+    if (e != cudaSuccess) { log::error(std::string("[gemma] L1100: ") + cudaGetErrorString(e)); return e; }
     return cudaSuccess;
 }
 
@@ -2680,7 +2650,6 @@ cudaError_t RunGemmaGeneration(cudaStream_t stream, const GemmaPinnedWeights &pw
             break;
         }
         const int pos = P + step - 1;
-        fflush(stdout);
         e = cudaMemcpyAsync(ws.d_pos, &tok, 4, cudaMemcpyHostToDevice, stream);
         if (e != cudaSuccess) break;
         if (pw.embed_nvfp4.d_packed != nullptr)

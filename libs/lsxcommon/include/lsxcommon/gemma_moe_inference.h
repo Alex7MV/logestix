@@ -111,12 +111,6 @@ cudaError_t RunRoutedGemvBatchSeg(
     __half *hbuf,      // [k_slots * n_gate_up]
     float *acc_f32);   // [n_down] fp32 accumulator
 
-// Weighted expert-output combine: out[h] = router_scale[h] *
-// sum_k w_k * expert_out_k[h]. Null d_router_scale skips the channel scale.
-cudaError_t RunGemmaMoECombine(const __nv_bfloat16 *const *d_expert_outs,
-                               const float *d_weights, const float *d_router_scale,
-                               __nv_bfloat16 *d_out, int hidden, int k, cudaStream_t stream);
-
 // ── Generation ──────────────────────────────────────────────────────────────
 struct GemmaGenerationResult {
     bool ok = false;
