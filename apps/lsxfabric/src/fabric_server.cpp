@@ -60,7 +60,15 @@ bool TrySendRouted(void* sock, const std::vector<std::byte>& ident,
                    const std::vector<std::byte>& body) {
     if (zmq_send(sock, ident.data(), ident.size(), ZMQ_SNDMORE) < 0)
         return false;
-    return zmq_send(sock, body.data(), body.size(), 0) >= 0;
+    if (zmq_send(sock, body.data(), body.size(), 0) >= 0)
+        return true;
+    // A multipart cannot be abandoned half-sent: the identity frame is already
+    // queued, and the next TrySendRouted would append its identity to this same
+    // (incomplete) message and corrupt every later stream. Close the message
+    // with an empty terminal frame (best effort) so the peer decodes a
+    // droppable truncated frame instead of a desynced socket.
+    (void)zmq_send(sock, "", 0, 0);
+    return false;
 }
 
 }  // namespace
