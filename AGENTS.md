@@ -282,10 +282,11 @@ crc32 and format-checker patches) — skill **`absl-in-cuda-cpp`**
 
 - Headers reachable from `.cu`/`.cuh` must NOT include `<absl/container/*>`
   (NVCC fails in raw_hash_map: `C2794`/`C2938`); in `.cu`/`.cuh` containers and
-  streams stay `std::`. Currently only `lsx_orchestrator.h` and
-  `model_integrity.h` (host-only) include a container header; there are no
-  violations from `.cu`; the transitive-graph check is in the skill (the guard does NOT
-  automate it).
+  streams stay `std::`. The headers that do include a container header are
+  `lsx_orchestrator.h`, `model_integrity.h` and taskmosaic's `lsx_framer.h` (all
+  host-only, not reachable from `.cu`); the transitive include closure is
+  machine-checked by `test_absl_container_guard.cpp` (host-only static scan,
+  label `fast`).
 - `absl::StrFormat`/`StrAppendFormat`/`Format` — printf style (`%s/%d/%u/%f`);
   `{}` is printed literally (guard `test_absl_format_guard`).
 - These stay `std::`: `string_view`/`optional`/`variant`/`function`/`unique_ptr`,

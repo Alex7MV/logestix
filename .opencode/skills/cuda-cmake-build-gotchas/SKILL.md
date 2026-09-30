@@ -110,7 +110,7 @@ two of them are machine-enforced.
 
 1. **The pin.**
    - FetchContent (root `CMakeLists.txt`) `GIT_TAG`: Arrow
-     (`apache-arrow-25.0.1`), spdlog (`v1.17.0`), abseil (`20260526.0`), Catch2
+     (`apache-arrow-25.0.1`), spdlog (`v1.17.0`), abseil (`20260817.0`), Catch2
      (`v3.16.0`).
    - Submodules under `third_party/`: flatbuffers, libzmq, simdjson, cccl — move
      the gitlink (`git -C third_party/<dep> checkout <tag>`) and commit the

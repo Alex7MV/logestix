@@ -49,14 +49,16 @@ iff its whole include closure is free of absl container headers.
   OBJECT libraries (`lsxcommon_cu` / `lsxcommon_glm_cu` / `lsxcommon_qwen_moe_cu`
   / the kimi TC lib) grants include paths **without** pulling container headers
   into `.cu`.
-- **No guard automates this yet** — verify by hand when you add includes.
-  Verified state (2026-09-14): exactly two headers include
-  `<absl/container/...>` — `include/lsxcommon/lsx_orchestrator.h` and
-  `include/lsxcommon/model_integrity.h` (both host-only) — and **zero**
-  `.cu`/`.cuh` units reach them; all other including units are `.cpp`.
+- Machine-checked by `tests/test_absl_container_guard.cpp` (host-only static
+  scan of the transitive include graph over `libs/`/`apps/`/`tests/`, label
+  `fast`). Direct `<absl/container/...>` includers are `.cpp` units plus three
+  headers (2026-09-30): `include/lsxcommon/lsx_orchestrator.h`,
+  `include/lsxcommon/model_integrity.h` and taskmosaic's `src/lsx_framer.h` —
+  all host-only, with **zero** `.cu`/`.cuh` units reaching any of them.
 
-Verification recipe (transitive include closure over `libs/`, `apps/`, `tests/`;
-resolves includes by basename, so it over-approximates — 0 hits is sound):
+Verification recipe (the same closure `test_absl_container_guard.cpp` runs; the
+standalone form below is for spot checks. Resolves includes by basename, so it
+over-approximates — 0 hits is sound):
 
 ```bash
 python3 - <<'PY'
@@ -83,10 +85,8 @@ for p in files:
 PY
 ```
 `rg 'include "[^"]+"' libs/lsxcommon/src/*.cu` is the quick eyeball version of
-the same check.
-
-Consider automating this as a guard next to `test_absl_format_guard.cpp` if it
-ever regresses (host-only static scan; label `fast`).
+the same check. Automated as `test_absl_container_guard.cpp` (next to
+`test_absl_format_guard.cpp`).
 
 ## 3. Format strings: printf-style, never `{}`
 
@@ -106,7 +106,8 @@ ever regresses (host-only static scan; label `fast`).
 
 ## 4. CMake wiring (root `CMakeLists.txt`)
 
-- FetchContent, pinned LTS tag **`20260526.0`**; `ABSL_BUILD_TESTING` /
+- FetchContent, pinned LTS tag **`20260817.0`** (Abseil LTS, August 2026,
+  commit `2065f4d`); `ABSL_BUILD_TESTING` /
   `_TEST_HELPERS` / `_EXAMPLES` off; **`ABSL_PROPAGATE_CXX_STD ON`** (CACHE BOOL
   FORCE) so every abseil target inherits the project's C++20.
   `CMAKE_CXX_STANDARD`/`CMAKE_CXX_FLAGS` are forced to CACHE because abseil's
@@ -124,7 +125,8 @@ ever regresses (host-only static scan; label `fast`).
   behaviour for Clang/AOCC. **Do not remove it** — an AOCC build treats a stray
   `{}` as a hard compile error without it.
 - Links: `absl::flat_hash_map` + `absl::span` + `absl::strings` are PUBLIC on
-  `lsxcommon`; `absl::flat_hash_map` is PUBLIC on `lsxnetwork`; each CUDA OBJECT
+  `lsxcommon`; `absl::flat_hash_map` + `absl::btree` are PUBLIC on `lsxnetwork`
+  (the `btree` target provides `btree_map.h`/`btree_set.h`); each CUDA OBJECT
   library links `absl::strings`.
 
 ## Migration recipe
