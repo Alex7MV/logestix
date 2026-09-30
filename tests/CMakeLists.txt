@@ -4096,6 +4096,14 @@ target_link_libraries(test_mimo_moe_geometry PRIVATE Catch2::Catch2WithMain)
 add_test(NAME test_mimo_moe_geometry COMMAND test_mimo_moe_geometry)
 set_tests_properties(test_mimo_moe_geometry PROPERTIES LABELS fast)
 
+# MiMo-V2.6-Flash-RL ChatML token bridge + tool codec (host-only).
+add_executable(test_mimo_tool_framing test_mimo_tool_framing.cpp)
+target_compile_definitions(test_mimo_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_tool_framing COMMAND test_mimo_tool_framing)
+set_tests_properties(test_mimo_tool_framing PROPERTIES LABELS fast)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)

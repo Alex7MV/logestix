@@ -49,6 +49,7 @@ add_library(lsxcommon STATIC
     src/deepseek_moe_tool_format.cpp
     src/gemma_tool_format.cpp
     src/gigachat_tool_format.cpp
+    src/mimo_tool_format.cpp
     src/fsi_selfcheck.cpp
     src/code_selfcheck.cpp
     src/det_selfcheck.cpp
