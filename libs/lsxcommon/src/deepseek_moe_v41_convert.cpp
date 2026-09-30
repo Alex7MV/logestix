@@ -1,4 +1,5 @@
 #include "lsxcommon/deepseek_moe_v41_convert.h"
+#include "lsxcommon/synthetic_geometry.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -32,12 +33,6 @@ namespace deepseek_v41 {
 namespace fs = std::filesystem;
 
 namespace {
-
-bool SyntheticGeometryAllowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
 
 // ── Name classification ─────────────────────────────────────────────────────
 

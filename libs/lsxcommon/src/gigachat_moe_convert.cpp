@@ -2,6 +2,7 @@
 // See gigachat_moe_constants.h for the frozen geometry and the ingestion design
 // docs/superpowers/specs/2026-09-20-gigachat35-432b-a28b-reasoning-ingestion-design.md.
 #include "lsxcommon/gigachat_moe_convert.h"
+#include "lsxcommon/synthetic_geometry.h"
 
 #include "gigachat_moe_constants.h"
 #include "lsxcommon/converter.h"
@@ -303,12 +304,6 @@ GigaChatTopology ParseGigaChatConfig(const std::string &config_json_text)
 }
 
 namespace {
-
-bool SyntheticGeometryAllowed()
-{
-    const char *v = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return v && v[0] == '1';
-}
 
 std::vector<uint8_t> ReadTensorData(const std::string &input_dir,
                                     const SafetensorsModel::Shard &shard,

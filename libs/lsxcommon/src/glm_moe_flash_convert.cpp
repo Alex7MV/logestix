@@ -2,6 +2,7 @@
 // FP8->NVFP4 requant host reference (Task 2), conversion pipeline (Task 3).
 #include "glm_moe_flash_constants.h"
 #include "lsxcommon/glm_moe_flash_convert.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "glm_moe_flash_fp8.h"
 #include "tensor_index_parse.h"
 
@@ -475,12 +476,7 @@ arrow::Status FillPackedExpert(int proj_id, DenseNvfp4Record r,
 }
 
 // Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
-// gates against the frozen constants. Same escape hatch as Qwen35MoeModel.
-bool synthetic_geometry_allowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
+// gates against the frozen constants.
 
 } // namespace
 
@@ -573,7 +569,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
             return false;
         };
         using namespace frozen;
-        if (!synthetic_geometry_allowed())
+        if (!SyntheticGeometryAllowed())
         {
             if (top.hidden != kHidden) { bad("hidden_size", top.hidden, kHidden); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
             if (top.layers != kLayers) { bad("num_hidden_layers", top.layers, kLayers); return arrow::Status::Invalid("frozen geometry mismatch: ", why); }
@@ -848,7 +844,7 @@ arrow::Status ConvertGlm5NextModel(const std::string &input_dir,
                                                integrity::TokenizerSpecialIds{
                                                    .bos_required = false,
                                                    .eos_required = true}));
-    } else if (!synthetic_geometry_allowed()) {
+    } else if (!SyntheticGeometryAllowed()) {
         return arrow::Status::Invalid("tokenizer.json not found in ",
                                       input_dir);
     }

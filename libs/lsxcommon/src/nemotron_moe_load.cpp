@@ -1,4 +1,5 @@
 #include "lsxcommon/nemotron_moe_load.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "nemotron_moe_constants.h"
 #include "fast_load_internal.h"
 
@@ -23,12 +24,6 @@ namespace lsxcommon::nemotron_moe {
 namespace {
 
 constexpr const char *kFormatTag = "logestix-nemotron-nvfp4";
-
-bool synthetic_geometry_allowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
 
 bool get_i(simdjson::ondemand::object &o, const char *k, int &out)
 {
@@ -163,7 +158,7 @@ bool ValidateNemotronGeometry(const NemotronIndex &idx, std::string &error)
         error = absl::StrFormat("%s: got %lld, want %lld", field, got, want);
         return false;
     };
-    if (synthetic_geometry_allowed()) return true;
+    if (SyntheticGeometryAllowed()) return true;
 
     if (idx.num_layers != kLayers)
         return bad("num_layers", idx.num_layers, kLayers);

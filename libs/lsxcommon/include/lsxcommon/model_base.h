@@ -9,6 +9,7 @@
 
 #include "lsxcommon/model.h"
 #include "lsxcommon/resource_governor.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "lsxcommon/tokenizer.h"
 
 namespace lsxcommon {
@@ -112,8 +113,8 @@ protected:
     VramProfile vram_;
 
     // ── Shared geometry validation (model-unification 2026-08) ─────────────
-    // LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY env gate (was triplicated per family).
-    static bool SyntheticGeometryAllowed();
+    // (The LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY gate is SyntheticGeometryAllowed()
+    // in lsxcommon/synthetic_geometry.h.)
 
     // Logs one uniform error line per mismatch and returns false at the first
     // mismatch; true when every field matches. Synthetic bypass remains the

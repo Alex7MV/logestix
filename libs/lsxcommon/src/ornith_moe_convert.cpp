@@ -1,4 +1,5 @@
 #include "lsxcommon/ornith_moe_convert.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "ornith_moe_constants.h"
 
 #include "lsxcommon/converter.h"
@@ -41,12 +42,7 @@ auto get_d = [](simdjson::ondemand::object &o, const char *k, double dflt) {
 };
 
 // Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
-// gates against the frozen constants. Same escape hatch as QwenBaseModel.
-bool synthetic_geometry_allowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
+// gates against the frozen constants.
 
 std::vector<uint8_t> read_tensor_data(
     const std::filesystem::path &input_path,
@@ -383,7 +379,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
     if (top.num_experts_per_tok > top.num_experts)
         return arrow::Status::Invalid("num_experts_per_tok > num_experts");
 
-    if (!synthetic_geometry_allowed()) {
+    if (!SyntheticGeometryAllowed()) {
         std::string why;
         if (!CheckOrnithFrozenGeometry(top, why))
             return arrow::Status::Invalid("Ornith-MoE frozen geometry mismatch: ",
@@ -698,7 +694,7 @@ arrow::Status ConvertOrnithMoeModel(const std::string &input_dir,
             integrity::TokenizerSpecialIds{.bos_required = false,
                                            .eos_required = true}));
         tokenizer_ok = true;
-    } else if (!synthetic_geometry_allowed()) {
+    } else if (!SyntheticGeometryAllowed()) {
         return arrow::Status::Invalid("tokenizer.json not found in ", input_dir);
     }
 

@@ -1,4 +1,5 @@
 #include "lsxcommon/nemotron_moe_convert.h"
+#include "lsxcommon/synthetic_geometry.h"
 #include "nemotron_moe_constants.h"
 
 #include "lsxcommon/converter.h"
@@ -47,12 +48,6 @@ std::string normalize_block_type(std::string_view tag)
     if (tag == "full_attention" || tag == "attention") return "attention";
     if (tag == "moe" || tag == "mlp") return "moe";
     return std::string(tag);
-}
-
-bool synthetic_geometry_allowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
 }
 
 bool check_frozen_geometry(const NemotronTopology &top, std::string &why)
@@ -338,7 +333,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
     if (top.num_experts_per_tok > top.num_experts)
         return arrow::Status::Invalid("num_experts_per_tok > n_routed_experts");
 
-    if (!synthetic_geometry_allowed()) {
+    if (!SyntheticGeometryAllowed()) {
         std::string why;
         if (!check_frozen_geometry(top, why))
             return arrow::Status::Invalid("Nemotron frozen geometry mismatch: ",
@@ -520,7 +515,7 @@ arrow::Status ConvertNemotronModel(const std::string &input_dir,
             integrity::TokenizerSpecialIds{.bos_required = false,
                                            .eos_required = true}));
         tokenizer_ok = true;
-    } else if (!synthetic_geometry_allowed()) {
+    } else if (!SyntheticGeometryAllowed()) {
         return arrow::Status::Invalid("tokenizer.json not found in ", input_dir);
     }
 

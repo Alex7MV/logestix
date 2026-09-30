@@ -2,6 +2,7 @@
 // (host-only; no CUDA, no model weights).
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,6 @@ class GeoProbe final : public lsxcommon::ModelBase {
 public:
     using ModelBase::ModelBase;
     using ModelBase::CheckGeometryFields;
-    using ModelBase::SyntheticGeometryAllowed;
 
     bool Load() override { return false; }
     lsxcommon::gpu::InferenceResult Infer(const lsxcommon::ModelRequest &)
@@ -57,11 +57,32 @@ TEST_CASE("CheckGeometryFields fails on first mismatch with uniform text",
     CHECK_FALSE(p.CheckGeometryFields("probe-model", fields, 2));
 }
 
-TEST_CASE("SyntheticGeometryAllowed reads the env gate once", "[geometry]")
+TEST_CASE("SyntheticGeometryAllowed enables only on "
+          "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1",
+          "[geometry]")
 {
-    // Contract: callable from any model without re-implementing the getenv
-    // probe; value depends on LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY.
-    GeoProbe p{lsxcommon::ModelInitConfig{}};
-    (void)p.SyntheticGeometryAllowed();  // must not throw / crash
-    SUCCEED();
+    // Shared gate (lsxcommon/synthetic_geometry.h), used by every converter,
+    // loader and ModelBase: only the canonical value "1" enables synthetic
+    // geometry. Empty/other values stay off.
+    const char *k = "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY";
+    auto set_env = [](const char *key, const char *value) {
+#ifdef _WIN32
+        _putenv_s(key, value ? value : "");
+#else
+        if (value)
+            ::setenv(key, value, 1);
+        else
+            ::unsetenv(key);
+#endif
+    };
+
+    set_env(k, nullptr);
+    CHECK_FALSE(lsxcommon::SyntheticGeometryAllowed());
+    set_env(k, "0");
+    CHECK_FALSE(lsxcommon::SyntheticGeometryAllowed());
+    set_env(k, "true");
+    CHECK_FALSE(lsxcommon::SyntheticGeometryAllowed());
+    set_env(k, "1");
+    CHECK(lsxcommon::SyntheticGeometryAllowed());
+    set_env(k, nullptr);
 }

@@ -1,6 +1,7 @@
 // GigaChat3.5 loader-stage passport (index parse + frozen-geometry gate) and
 // the resident device weight graph.
 #include "lsxcommon/gigachat_moe_load.h"
+#include "lsxcommon/synthetic_geometry.h"
 
 #include "fast_load_internal.h"
 #include "gigachat_moe_constants.h"
@@ -21,12 +22,6 @@
 
 namespace lsxcommon::gigachat {
 namespace {
-
-bool SyntheticGeometryAllowed()
-{
-    const char *v = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return v && v[0] == '1';
-}
 
 } // namespace
 

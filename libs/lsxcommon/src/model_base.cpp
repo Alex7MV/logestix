@@ -148,12 +148,6 @@ void ModelBase::TeardownContext()
 
 // ── Shared geometry validation (model-unification 2026-08) ──────────────────
 
-bool ModelBase::SyntheticGeometryAllowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
-
 bool ModelBase::CheckGeometryFields(const char *tag,
                                     const GeoFieldCheck *fields,
                                     size_t n) const

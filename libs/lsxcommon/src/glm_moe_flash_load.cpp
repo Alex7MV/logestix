@@ -2,6 +2,7 @@
 // + routed-expert pinned slabs. Mirrors the qwen_moe loader mechanics
 // (fastload helpers reused by reference) against the glm5next index format.
 #include "lsxcommon/glm_moe_flash_load.h"
+#include "lsxcommon/synthetic_geometry.h"
 
 #include "fast_load_internal.h"
 #include "glm_moe_flash_constants.h"
@@ -29,15 +30,6 @@ using fastload::PinnedStagingRing;
 using fastload::UploadNvfp4Weight;
 
 namespace {
-
-// Synthetic fixtures (tests) may use tiny geometry; the real pipeline hard
-// gates against the frozen constants. Same escape hatch as the converter
-// (glm_moe_flash_convert.cpp) — never set in production runs.
-bool SyntheticGeometryAllowed()
-{
-    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return env && env[0] == '1';
-}
 
 bool ReadIndexJson(const fs::path &idx_path, FlashTopology &top,
                    std::string &error)
