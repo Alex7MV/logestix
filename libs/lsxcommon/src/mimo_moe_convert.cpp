@@ -315,48 +315,56 @@ struct RawProjection {
     std::vector<int64_t> scale_shape;
 };
 
-// MXFP4 raw projection -> NVFP4 PackedExpert slot; exact repack first, then a
-// dequant + requantize fallback when the E8M0 window cannot be folded.
-arrow::Status PackMxfp4Projection(const RawProjection &p, int64_t logical_cols,
-                                  const std::vector<int64_t> &packed_shape,
-                                  std::vector<uint8_t> &out_packed,
-                                  std::vector<uint8_t> &out_scales,
-                                  std::vector<int64_t> &out_shape,
-                                  float &out_gs)
-{
-    ExpertData ed;
-    ed.w1_raw = p.data;
-    ed.w1_dtype = "U8";
-    ed.w1_shape = p.shape;
-    ed.w1_scale_raw = p.scale;
-    ed.w1_scale_shape = p.scale_shape;
-    auto pe = PackExpertNVFP4(ed);
-    if (pe.ok() && !pe->w1_packed.empty())
-    {
-        out_packed = std::move(pe->w1_packed);
-        out_scales = std::move(pe->w1_scales);
-        out_shape = packed_shape;
-        out_gs = pe->w1_global_scale;
-        return arrow::Status::OK();
-    }
-    // Fallback: decode MXFP4 to BF16, requantize to NVFP4.
-    std::vector<uint8_t> bf16;
-    ARROW_RETURN_NOT_OK(
-        DequantMxfp4ToBf16Gpu(p.data, p.shape, p.scale, p.scale_shape, bf16));
-    std::vector<int64_t> logical_shape = {p.shape[0], logical_cols};
-    if (!gpu::quantize_tensor_gpu(bf16.data(), p.shape[0] * logical_cols, "BF16",
-                                  nullptr, logical_shape, {}, out_packed,
-                                  out_scales, out_gs))
-        return arrow::Status::IOError("fallback quantization failed");
-    out_shape = packed_shape;
-    (void)out_shape;
-    return arrow::Status::OK();
-}
-
 struct ExpertParts {
     RawProjection gate, up, down;
     bool has_gate = false, has_up = false, has_down = false;
 };
+
+// One projection -> slot, via dequant + requantize (the E8M0 repack fallback).
+arrow::Status FallbackProjection(const RawProjection &p,
+                                 std::vector<uint8_t> &out_packed,
+                                 std::vector<uint8_t> &out_scales,
+                                 std::vector<int64_t> &out_shape, float &out_gs)
+{
+    std::vector<uint8_t> bf16;
+    ARROW_RETURN_NOT_OK(
+        DequantMxfp4ToBf16Gpu(p.data, p.shape, p.scale, p.scale_shape, bf16));
+    std::vector<int64_t> logical_shape = {p.shape[0], p.shape[1] * 2};
+    if (!gpu::quantize_tensor_gpu(bf16.data(), p.shape[0] * p.shape[1] * 2,
+                                  "BF16", nullptr, logical_shape, {}, out_packed,
+                                  out_scales, out_gs))
+        return arrow::Status::IOError("fallback quantization failed");
+    out_shape = p.shape;  // packed shape (ExpertStore sizes by bytes)
+    return arrow::Status::OK();
+}
+
+// Pack a full expert (gate=w1, up=w3, down=w2). The neutral PackExpertNVFP4
+// performs an exact power-of-two E8M0 -> NVFP4 repack; when the per-tensor
+// scale spread cannot be folded it fails, and every projection falls back to
+// dequant + requantize.
+arrow::Status PackExpertParts(const ExpertParts &e, PackedExpert &pe)
+{
+    ExpertData ed;
+    ed.w1_raw = e.gate.data; ed.w1_dtype = "U8"; ed.w1_shape = e.gate.shape;
+    ed.w1_scale_raw = e.gate.scale; ed.w1_scale_shape = e.gate.scale_shape;
+    ed.w3_raw = e.up.data; ed.w3_dtype = "U8"; ed.w3_shape = e.up.shape;
+    ed.w3_scale_raw = e.up.scale; ed.w3_scale_shape = e.up.scale_shape;
+    ed.w2_raw = e.down.data; ed.w2_dtype = "U8"; ed.w2_shape = e.down.shape;
+    ed.w2_scale_raw = e.down.scale; ed.w2_scale_shape = e.down.scale_shape;
+    auto packed = PackExpertNVFP4(ed);
+    if (packed.ok())
+    {
+        pe = std::move(*packed);
+        return arrow::Status::OK();
+    }
+    ARROW_RETURN_NOT_OK(FallbackProjection(e.gate, pe.w1_packed, pe.w1_scales,
+                                           pe.w1_shape, pe.w1_global_scale));
+    ARROW_RETURN_NOT_OK(FallbackProjection(e.up, pe.w3_packed, pe.w3_scales,
+                                           pe.w3_shape, pe.w3_global_scale));
+    ARROW_RETURN_NOT_OK(FallbackProjection(e.down, pe.w2_packed, pe.w2_scales,
+                                           pe.w2_shape, pe.w2_global_scale));
+    return arrow::Status::OK();
+}
 
 } // namespace
 
@@ -528,18 +536,7 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
             return arrow::Status::Invalid("incomplete expert: layer ", layer, " expert ",
                                           expert);
         PackedExpert pe;
-        const int64_t gate_logical_cols = e.gate.shape[1] * 2;
-        const int64_t up_logical_cols = e.up.shape[1] * 2;
-        const int64_t down_logical_cols = e.down.shape[1] * 2;
-        ARROW_RETURN_NOT_OK(PackMxfp4Projection(e.gate, gate_logical_cols, e.gate.shape,
-                                                pe.w1_packed, pe.w1_scales,
-                                                pe.w1_shape, pe.w1_global_scale));
-        ARROW_RETURN_NOT_OK(PackMxfp4Projection(e.up, up_logical_cols, e.up.shape,
-                                                pe.w3_packed, pe.w3_scales,
-                                                pe.w3_shape, pe.w3_global_scale));
-        ARROW_RETURN_NOT_OK(PackMxfp4Projection(e.down, down_logical_cols, e.down.shape,
-                                                pe.w2_packed, pe.w2_scales,
-                                                pe.w2_shape, pe.w2_global_scale));
+        ARROW_RETURN_NOT_OK(PackExpertParts(e, pe));
         const fs::path dir = base / "experts" / absl::StrCat("layer_", layer);
         std::error_code ec;
         fs::create_directories(dir, ec);
