@@ -9,9 +9,11 @@
 #include <string>
 #include <vector>
 
+#include <lsxcommon/log.h>
 #include <lsxcommon/model.h>
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/path_registry.h>
+#include <lsxcommon/tokenizer.h>
 
 namespace {
 
@@ -77,5 +79,52 @@ TEST_CASE("MiMo-V2.6-Flash-RL SelfCheck: 'The capital of France is' -> "
                               ref_logits.size() * sizeof(float)) == 0);
     }
 
+    m->Unload();
+}
+
+TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
+          "[mimo][model][selfcheck][real-model][diagnostic]")
+{
+    const std::filesystem::path model = MiMoModelPath();
+    if (!std::filesystem::exists(model / "logestix" / "pinned"))
+        SKIP("MiMo converted model directory not present");
+
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = model.string();
+    auto m = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+
+    auto run = [&](const std::vector<int32_t> &ids) {
+        lsxcommon::ModelRequest req;
+        req.input_ids = ids;
+        req.max_gen_tokens = 24;
+        auto r = m->Infer(req);
+        REQUIRE(r.ok);
+        return r.output_text;
+    };
+
+    // Raw BPE (no chat frame).
+    {
+        std::vector<int32_t> ids(256, 0);
+        size_t cap = ids.size();
+        const char *p = "The capital of France is";
+        const int32_t n = lsxcommon::arrow_tokenizer_encode(
+            m->Tokenizer(), p, std::strlen(p), ids.data(), &cap);
+        REQUIRE(n > 0);
+        ids.resize(static_cast<size_t>(n));
+        const std::string out = run(ids);
+        lsxcommon::log::info("[diag] raw prompt output: " + out);
+        INFO("raw: " << out);
+    }
+    // ChatML frame.
+    {
+        std::vector<int32_t> ids;
+        REQUIRE(m->BuildPromptInputIds(m->Tokenizer(),
+                                       "The capital of France is", ids));
+        const std::string out = run(ids);
+        lsxcommon::log::info("[diag] framed prompt output: " + out);
+        INFO("framed: " << out);
+    }
     m->Unload();
 }

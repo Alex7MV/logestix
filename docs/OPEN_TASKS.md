@@ -49,13 +49,31 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
 - **Defect:** `test_mimo_moe_selfcheck` fails the Paris gate. Measured
   `top1_tok=108402 text='高原小康' passed=false`, `logits_hash=ab9d9bd20d824cfb`
   (the forward pass runs; the logits are wrong).
-- **Next step:** bisect the layer pipeline against the shipped
-  `modeling_mimo_v2.py` on a short prompt — pin per-layer hidden states /
-  attn / router / expert outputs against a host reference for one GA and one
-  SWA layer. Prime suspects: partial rotate-half RoPE layout, fused-QKV
-  split order, sink-bias softmax, and the MXFP4 nibble order in the exact
-  E8M0 → NVFP4 repack (`converter.cpp` pack order vs the gemv decode order).
-  Add a real-weight FSI/CODE/DET capture once parity is green.
+- **Localization (2026-09-30, deep trace):** the defect is in the **routed
+  expert weights**, not framing/attention/dense/router:
+  - Raw-encoded and ChatML-framed prompts both produce incoherent repetition
+    (English and Chinese respectively) → not the token bridge.
+  - With `LSX_MIMO_NO_MOE=1` the residual stream grows healthily
+    (|x| = 11 → 124 across 48 layers); with MoE it explodes
+    (11 → 17 → 42 → 108 → 450 by layer 4) → the MoE term injects wrong values.
+  - The router is **bit-exact** vs a host reference (`[mimo-moe-host]` trace:
+    identical idx/weight on every layer) → `RunMimoRouter` and `gate.weight`
+    are correct.
+  - Swapping the nibble order of the exact-repack experts at staging
+    (`LSX_MIMO_EXPERT_SWAP=1`) changes the output but does **not** fix it, so it
+    is not a simple pairwise nibble swap.
+- **Next step:** pin the authoritative MiMo MXFP4 expert layout. The neutral
+  `PackExpertNVFP4` exact E8M0 → NVFP4 repack (built for DeepSeek I8/U8 +
+  F8_E8M0 per-32) is the prime suspect: verify the on-disk U8 nibble order, the
+  E8M0 per-32 **scale alignment to the contraction dim**, and whether the
+  `gate/up/down` packed layout is `[N, K/2]` as assumed. Bisect one expert
+  (layer 1, expert 0) against a host decode computed from the source
+  safetensors, then compare `down(silu(gate)·up)` for a fixed `x` against the
+  device `[mimo-moe]` trace. Debug hooks are env-gated and inert by default:
+  `LSX_MIMO_TRACE`, `LSX_MIMO_TRACE_MOE`, `LSX_MIMO_NO_MOE`,
+  `LSX_MIMO_EXPERT_SWAP`.
+  Once parity is green, add real-weight FSI/CODE/DET captures and the perf
+  baseline entry.
 
 ## B. Windows platform gaps
 

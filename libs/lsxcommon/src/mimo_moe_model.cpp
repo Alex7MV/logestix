@@ -21,6 +21,7 @@
 #include <absl/strings/str_cat.h>
 
 #include "mimo_moe_constants.h"
+#include "mimo_moe_device_math.h"
 
 namespace lsxcommon {
 namespace {
@@ -77,10 +78,12 @@ bool UploadNvfp4(const DenseNvfp4View &v, lsx_nvfp4::LsxNvfp4Weight &w,
     }
     w.d_packed = static_cast<const uint8_t *>(p);
     w.d_scales = static_cast<const uint8_t *>(s);
-    if (cudaMemcpyAsync(p, v.packed, v.packed_bytes, cudaMemcpyHostToDevice,
-                        st) != cudaSuccess ||
-        cudaMemcpyAsync(s, v.scales, v.scale_bytes, cudaMemcpyHostToDevice,
-                        st) != cudaSuccess)
+    // Synchronous: the Arrow view (mmap) is destroyed when this call returns.
+    (void)st;
+    if (cudaMemcpy(p, v.packed, v.packed_bytes, cudaMemcpyHostToDevice) !=
+            cudaSuccess ||
+        cudaMemcpy(s, v.scales, v.scale_bytes, cudaMemcpyHostToDevice) !=
+            cudaSuccess)
     {
         err = "NVFP4 H2D failed";
         return false;
@@ -107,8 +110,9 @@ bool UploadHalf(const TensorView &t, __half **out, int64_t expect,
         return false;
     }
     *out = static_cast<__half *>(p);
-    return cudaMemcpyAsync(p, h.data(), static_cast<size_t>(expect) * 2,
-                           cudaMemcpyHostToDevice, st) == cudaSuccess;
+    (void)st;
+    return cudaMemcpy(p, h.data(), static_cast<size_t>(expect) * 2,
+                      cudaMemcpyHostToDevice) == cudaSuccess;
 }
 
 bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
@@ -126,8 +130,9 @@ bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
         return false;
     }
     *out = static_cast<__nv_bfloat16 *>(p);
-    return cudaMemcpyAsync(p, t.data, static_cast<size_t>(expect) * 2,
-                           cudaMemcpyHostToDevice, st) == cudaSuccess;
+    (void)st;
+    return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 2,
+                      cudaMemcpyHostToDevice) == cudaSuccess;
 }
 
 bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st,
@@ -145,8 +150,9 @@ bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st
         return false;
     }
     *out = static_cast<float *>(p);
-    return cudaMemcpyAsync(p, t.data, static_cast<size_t>(expect) * 4,
-                           cudaMemcpyHostToDevice, st) == cudaSuccess;
+    (void)st;
+    return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 4,
+                      cudaMemcpyHostToDevice) == cudaSuccess;
 }
 
 bool Contains(const std::vector<int> &v, int x)
@@ -476,6 +482,9 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
         }
         else
         {
+            cudaMemsetAsync(d_mlp, 0, static_cast<size_t>(hidden) * 2, st);
+            if (std::getenv("LSX_MIMO_NO_MOE") == nullptr)
+            {
             if (mimo::RunMimoRouter(st, d_xn, L.d_router_gate, L.d_router_bias, 1,
                               hidden, topo_.num_experts, topo_.top_k,
                               d_router_idx, d_router_w) != cudaSuccess)
@@ -511,10 +520,82 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
                     return false;
                 if (mimo::RunMimoScaleAdd(st, d_expert_out, w[e], hidden, d_mlp) != cudaSuccess)
                     return false;
+                if (e == 0 && std::getenv("LSX_MIMO_TRACE_MOE"))
+                {
+                    auto hnorm = [&](const __half *p, int n) {
+                        std::vector<__half> b(static_cast<size_t>(n));
+                        cudaMemcpy(b.data(), p, static_cast<size_t>(n) * 2,
+                                   cudaMemcpyDeviceToHost);
+                        double ss = 0.0;
+                        for (int i = 0; i < n; ++i)
+                        {
+                            const float v = __half2float(b[static_cast<size_t>(i)]);
+                            ss += static_cast<double>(v) * v;
+                        }
+                        return std::sqrt(ss);
+                    };
+                    lsxcommon::log::info(absl::StrCat(
+                        "[mimo-moe] layer ", l, " w0=", w[0], " idx0=", idx[0],
+                        " gs_gate=", v.gate_global_scale,
+                        " |xn|=", hnorm(d_xn, hidden),
+                        " |gate|=", hnorm(d_gate, moe_I),
+                        " |up|=", hnorm(d_up, moe_I),
+                        " |act|=", hnorm(d_act, moe_I),
+                        " |down|=", hnorm(d_expert_out, hidden)));
+                    // Host router reference.
+                    std::vector<__half> xh(static_cast<size_t>(hidden));
+                    std::vector<__nv_bfloat16> gh(
+                        static_cast<size_t>(topo_.num_experts) * hidden);
+                    cudaMemcpy(xh.data(), d_xn,
+                               static_cast<size_t>(hidden) * 2,
+                               cudaMemcpyDeviceToHost);
+                    cudaMemcpy(gh.data(), L.d_router_gate,
+                               gh.size() * 2, cudaMemcpyDeviceToHost);
+                    std::vector<int> hidx; std::vector<float> hw;
+                    {
+                        std::vector<float> xf(static_cast<size_t>(hidden));
+                        for (int i = 0; i < hidden; ++i)
+                            xf[static_cast<size_t>(i)] =
+                                __half2float(xh[static_cast<size_t>(i)]);
+                        std::vector<float> gwf(gh.size());
+                        for (size_t i = 0; i < gh.size(); ++i)
+                            gwf[i] = __bfloat162float(gh[i]);
+                        std::vector<float> bias(topo_.num_experts);
+                        cudaMemcpy(bias.data(), L.d_router_bias,
+                                   bias.size() * 4, cudaMemcpyDeviceToHost);
+                        lsxcommon::mimo::ref::RouterTopK(
+                            xf.data(), gwf.data(), bias.data(), hidden,
+                            topo_.num_experts, topo_.top_k, hidx, hw);
+                    }
+                    for (int t = 0; t < topo_.top_k && t < 3; ++t)
+                        lsxcommon::log::info(absl::StrCat(
+                            "[mimo-moe-host] layer ", l, " t=", t,
+                            " host_idx=", hidx[t], " host_w=", hw[t],
+                            " dev_idx=", idx[t], " dev_w=", w[t]));
+                }
             }
+            }  // LSX_MIMO_NO_MOE
         }
         if (mimo::RunMimoAddInPlace(st, d_mlp, hidden, d_x) != cudaSuccess)
             return false;
+
+        if (const char *tr = std::getenv("LSX_MIMO_TRACE"))
+        {
+            (void)tr;
+            std::vector<__half> hbuf(static_cast<size_t>(hidden));
+            cudaMemcpy(hbuf.data(), d_x, static_cast<size_t>(hidden) * 2,
+                       cudaMemcpyDeviceToHost);
+            double ss = 0.0;
+            for (int i = 0; i < hidden; ++i)
+            {
+                const float v = __half2float(hbuf[static_cast<size_t>(i)]);
+                ss += static_cast<double>(v) * v;
+            }
+            lsxcommon::log::info(absl::StrCat("[mimo-trace] layer ", l, " pos ",
+                                              pos, " |x|=", std::sqrt(ss),
+                                              " x0=",
+                                              __half2float(hbuf[0])));
+        }
     }
 
     if (mimo::RunMimoRmsNorm(st, d_x, d_final_norm, 1, hidden,
