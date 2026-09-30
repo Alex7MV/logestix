@@ -79,3 +79,41 @@ void RunCase(bool swa, bool with_sink)
 
 TEST_CASE("mimo attention GA parity", "[mimo][attn]") { RunCase(false, false); }
 TEST_CASE("mimo attention SWA parity with sink bias", "[mimo][attn]") { RunCase(true, true); }
+
+TEST_CASE("mimo attention decode matches prefill", "[mimo][attn]")
+{
+    const int seq = 6;
+    const MimoAttnShape p = SmallShape(true);  // SWA + sink exercises the window
+    const int rows = p.q_size + 2 * p.k_size;
+    std::vector<__half> qkv(seq * rows);
+    for (size_t i = 0; i < qkv.size(); ++i)
+        qkv[i] = __float2half(std::sin(static_cast<float>(i) * 0.19f));
+    std::vector<__half> sink(p.heads);
+    for (int h = 0; h < p.heads; ++h) sink[h] = __float2half(0.1f * (h + 1));
+
+    __half *d_qkv, *d_sink, *d_pref, *d_kc, *d_vc, *d_out;
+    REQUIRE(cudaMalloc(&d_qkv, qkv.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_sink, sink.size() * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_pref, seq * p.heads * p.v_head_dim * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_kc, static_cast<size_t>(seq) * p.kv_heads * p.head_dim * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_vc, static_cast<size_t>(seq) * p.kv_heads * p.v_head_dim * 2) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_out, p.heads * p.v_head_dim * 2) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_qkv, qkv.data(), qkv.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_sink, sink.data(), sink.size() * 2, cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(RunMimoAttentionPrefill(nullptr, d_qkv, d_sink, seq, p, d_pref) == cudaSuccess);
+
+    for (int t = 0; t < seq; ++t)
+        REQUIRE(RunMimoAttentionDecode(nullptr, d_qkv + static_cast<int64_t>(t) * rows,
+                                       t, d_sink, p, d_kc, d_vc, d_out) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+
+    std::vector<__half> pref(seq * p.heads * p.v_head_dim), dec(p.heads * p.v_head_dim);
+    REQUIRE(cudaMemcpy(pref.data(), d_pref, pref.size() * 2, cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(dec.data(), d_out, dec.size() * 2, cudaMemcpyDeviceToHost) == cudaSuccess);
+    const int last = seq - 1;
+    for (int i = 0; i < p.heads * p.v_head_dim; ++i)
+        REQUIRE(std::fabs(__half2float(dec[i]) -
+                          __half2float(pref[last * p.heads * p.v_head_dim + i])) < 5e-3f);
+    cudaFree(d_qkv); cudaFree(d_sink); cudaFree(d_pref);
+    cudaFree(d_kc); cudaFree(d_vc); cudaFree(d_out);
+}

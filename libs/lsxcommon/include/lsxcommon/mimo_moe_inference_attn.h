@@ -32,5 +32,15 @@ cudaError_t RunMimoAttentionPrefill(cudaStream_t stream, const __half *qkv,
                                     const __half *sink, int seq,
                                     const MimoAttnShape &shape, __half *out);
 
+// Decode step with a KV cache. qkv_token: [q_size + 2*k_size] FP16 for the new
+// token at position `pos`. k_cache: [cap, kv_heads, head_dim] FP16 (roped),
+// v_cache: [cap, kv_heads, v_head_dim] FP16 (value-scaled). Appends the new k/v
+// at index `pos`, then attends over [j0..pos] (j0 = pos-window+1 for SWA).
+// out: [heads * v_head_dim] FP16.
+cudaError_t RunMimoAttentionDecode(cudaStream_t stream, const __half *qkv_token,
+                                   int pos, const __half *sink,
+                                   const MimoAttnShape &shape, __half *k_cache,
+                                   __half *v_cache, __half *out);
+
 } // namespace mimo
 } // namespace lsxcommon
