@@ -4106,6 +4106,17 @@ target_compile_definitions(test_absl_format_guard
     PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_FMT}\"")
 add_test(NAME test_absl_format_guard COMMAND test_absl_format_guard)
 
+# Guard: abseil containers do not compile under NVCC, so no .cu/.cuh may
+# transitively include <absl/container/...> (raw_hash_map C2794/C2938).
+# Host-only transitive-closure scan; the machine check for absl-in-cuda-cpp §2.
+add_executable(test_absl_container_guard test_absl_container_guard.cpp)
+target_link_libraries(test_absl_container_guard PRIVATE Catch2::Catch2WithMain
+    absl::flat_hash_map)
+file(TO_CMAKE_PATH "${PROJECT_SOURCE_DIR}" LSX_SRC_DIR_FWD_ABSC)
+target_compile_definitions(test_absl_container_guard
+    PRIVATE "LSX_SOURCE_DIR=\"${LSX_SRC_DIR_FWD_ABSC}\"")
+add_test(NAME test_absl_container_guard COMMAND test_absl_container_guard)
+
 # Guard: license compliance — no GPL/LGPL/AGPL/copyleft headers or SPDX license
 # tags in first-party source (would block the commercial Enterprise license).
 # Host-only static scan of libs/, apps/, tests/ and tools/.
@@ -4830,6 +4841,7 @@ set_tests_properties(
     test_kimi_moe_tokenizer
     test_code_naming_guard
     test_absl_format_guard
+    test_absl_container_guard
     test_license_guard
     test_kimi_moe_expert_cache
     test_model_independence_guard
