@@ -592,7 +592,7 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult MiMoV26FlashModel::SelfCheck(const ModelRequest &req)
 {
-    return runtime::RunParisSelfCheck(*this, req);
+    return runtime::RunParisSelfCheck(*this, req, {.frame_prompt = true});
 }
 
 bool MiMoV26FlashModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
