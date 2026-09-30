@@ -1,0 +1,154 @@
+# Open tasks — CUDA review & Windows bring-up
+
+Written 2026-09-30, after the inference review of `24bf180~1..bed5d9f` and the
+Windows build repair that followed.
+
+**Current state:** `fast` label is **72/72 green** on this machine
+(RTX 5060 Ti, CC 12.0, 16 GiB, CUDA Toolkit V13.4.92, Windows 11 / VS 2026).
+`inference` label is red; every item below is triaged. Nothing here is
+speculative — each entry carries the measured value or error code that
+produced it.
+
+Reproduce the inventory with:
+
+```powershell
+$ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
+& $ctest --test-dir build -C Release -L fast      --timeout 900
+& $ctest --test-dir build -C Release -L inference --timeout 900
+```
+
+---
+
+## A. Real defects — GPU faults
+
+### A1. `test_qwen_moe_kernels` + `test_ornith_moe_kernels`: `cudaErrorIllegalAddress`
+- `cudaErrorIllegalAddress` (700). It is **not** the first thing that goes
+  wrong: once a kernel faults, the context is poisoned and every later CUDA
+  call in the process returns 700, so the bulk of the failure list is cascade.
+  Triage from the *first* failing `REQUIRE`, not the last.
+- Also carries a latency budget failure at `tests/test_qwen_moe_kernels.cu:388`
+  (`us < 20.0`, measured 31.24) — that part belongs to section C.
+- **Next step:** same workflow that resolved the GigaChat router.
+  ```
+  compute-sanitizer --tool memcheck --launch-timeout 120 <test>.exe
+  ```
+  Add `-lineinfo` to the owning object library to get `file:line`, otherwise
+  the report only gives `kernel+0xNNN`. Note `TcGemmDispatch`
+  (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
+  GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
+
+## B. Windows platform gaps
+
+### B1. Expert pinning is not implemented on Windows
+- `ExpertStore::PinChunked` is compiled only on Unix — the `#else` at
+  `libs/lsxcommon/include/lsxcommon/expert_store.h:560` is
+  `(void)n_threads; return false;`.
+- Consequence: `pinned_pools` is never populated, and
+  `tests/test_kimi_moe_loader.cpp:119` (`REQUIRE(!db.pinned_pools.empty())`)
+  fails. The test is reporting the truth; do not silence it.
+- Degradation is **correctness-neutral**: callers such as
+  `deepseek_moe_v41_load.cu:405` log a warning and fall back to
+  `arrow::io::MemoryMappedFile` views, which are cross-platform. The cost is
+  pageable (unpinned) host memory, so H2D for expert residency is slower.
+- **Choose one:** implement the Windows path (replace anonymous `mmap` chunks
+  with `VirtualAlloc(MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE)` +
+  `cudaHostRegister`, and free with `VirtualFree` — note `MAP_NORESERVE`
+  semantics differ from `VirtualAlloc`, so the choice must be deliberate), or
+  platform-gate the test and document the degradation.
+- Blast radius: every family using it — kimi, glm, gemma, gigachat, deepseek
+  v41. The expert stores are hundreds of GiB, so this only bites on real
+  models; the synthetic fixtures never exercise it.
+
+## C. Hardware-dependent budgets — expected red off-target, **not** defects
+
+Measured on RTX 5060 Ti (GDDR7, ~179 GB/s peak). Every one of these is a
+wall-clock or bandwidth number calibrated on the HBM target, so they cannot
+pass on consumer Blackwell. They are correctly filed under `inference`, not
+`fast` — the label discipline is right, and `fast` stays green because of it.
+
+| Test | Assertion | Measured here |
+|---|---|---|
+| `test_qwen_nvfp4_gemv` (+13 siblings, see E1) | `test_qwen_nvfp4_gemv.cu:296` `gbps > 260.0` | 119.8 / 178.5 / 180.4 GB/s |
+| `test_qwen_moe_exp_kernels` | `test_qwen_moe_exp_kernels.cu:648` `median < 0.045` | 0.052–0.082 ms |
+| `test_gemma_moe_norm` | `test_gemma_moe_norm.cpp:149` `us < 3.4` | 9.24 |
+| `test_qwen_moe_kernels` | `test_qwen_moe_kernels.cu:388` `us < 20.0` | 31.24 |
+| `test_gemma_moe_moe` | `us < 700.0` | — |
+| `test_nemotron_moe_kernels` | `batch_us < single_us * 0.6f` | — |
+| `test_glm_moe_flash_kernels` | `us < 155.0` | — |
+
+**Open question, needs a decision:** should these `SKIP` on non-target GPUs so
+`inference` can go green on dev hardware, or is a per-arch budget table
+wanted? The perf-baseline path (`docs/*_SPEED_AUDIT.md`,
+`test_perf_baseline_*`) already assumes measured reference hardware, so a
+precedent exists. Right now nothing distinguishes "too slow for the target" from
+"regressed", which is the part that actually costs debugging time.
+
+## D. Missing coverage
+
+### D1. No test drives `RunGlmFlashGeneration`
+- The glm-flash host-read fix (`flash_dbg_on_host`, commit `6108ecf`) has **no
+  regression test**: `tests/` covers individual glm-flash kernels and
+  `Load`/`Unload`, never generation, so the debug branch cannot be reached.
+- Needs a generation path for glm-flash (converted fixture + `Infer`), which is
+  a larger piece of work than the fix itself.
+
+### D2. Hardcoded POSIX paths make tests unreachable on Windows
+- `tests/test_kimi_moe_tc_diag.cu:88,92` — `/tmp/kimi_diag_l1.bin`, guarded by
+  `if (!std::filesystem::exists(...)) SKIP`, so it **silently skips** on
+  Windows. It compiles now but can never run there.
+- Same pattern in `tests/test_mosaic_network.cpp` and
+  `tests/test_path_registry.cpp`.
+- Fix: `std::filesystem::temp_directory_path()`.
+
+## E. Diagnosability
+
+### E1. Fourteen test executables are the same binary
+- `tests/CMakeLists.txt:635-648` compiles 14 `.cu` files into a single object
+  library `test_qwen_cu`, and the `foreach` at `tests/CMakeLists.txt:788`
+  links **all of it** into each of the 14 executables.
+- Effects: every binary runs the same ~187k assertions; all 14 have byte-
+  identical size; and a single failing assertion in one file marks **14 ctest
+  targets failed**. That is what made the first `inference` run look
+  catastrophic when it was really one DRAM-bandwidth budget.
+- The bandwidth failure in C is the concrete example:
+  `test_lsx_nvfp4_dispatch.exe` reports failures located in
+  `test_qwen_nvfp4_gemv.cu`.
+- Fix: per-binary object libraries, or one combined target registered with
+  ctest once. Worth doing before the next round, because it currently
+  multiplies every failure by 14.
+
+## F. Intermittent
+
+### F1. `test_gigachat_moe_devkernels` flaked once
+- Failed in one `-L inference` sweep; passes standalone (2155 assertions, 7
+  cases) and passes under `ctest -R ^test_gigachat_moe_devkernels$`.
+- Not yet triaged. Suspect GPU contention or ordering rather than a logic
+  defect, but that is a guess — needs a repeat sweep to see if it recurs.
+
+## G. Build environment
+
+### G1. Toolkit changes need a manual reconfigure
+- Upgrading CUDA left `build/` pinned to the previous toolkit
+  (`CUDAToolkit_*` cache entries are valid, so a new `CUDAToolkit_ROOT` does
+  not re-derive them). Symptom: headers 13.3 against runtime 13.4, caught only
+  by `test_cuda_toolkit_guard` as `CUDART_VERSION=13030 runtime=13040`.
+- Procedure is written up in `.opencode/skills/building-the-project/SKILL.md`.
+- **Open:** worth a configure-time check (fail at `find_package(CUDAToolkit)`
+  if header and runtime versions disagree) so this is caught before a build
+  rather than by a test after it.
+
+---
+
+## Closed in this session, for reference
+
+- Inference review findings: `x_vec` uint4 alignment mask, `hc_count` vs
+  frozen passport, `session_depth_` direct-owner exemption, `JsonEscape`
+  duplication, GigaChat smem comment, glued lines in `nvfp4_gemv_math.cuh`.
+- Windows build: seven POSIX-only constructs that stopped the tree compiling
+  at all (`munmap`, `M_PI`, `setenv`×2, `__builtin_memcpy`×2, `unistd.h`).
+- GigaChat YaRN rope tables were host pointers passed to a CUDA kernel.
+- GigaChat router scratch device address (`cudaGetSymbolAddress`).
+- glm-flash host read of a `__device__` debug flag.
+- `test_deepseek_moe_loader`: Arrow mapping held a Windows file lock during
+  cleanup.
+- CUDA Toolkit tracked to V13.4.92.
