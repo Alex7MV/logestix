@@ -35,6 +35,7 @@ add_library(lsxcommon STATIC
     src/gigachat_moe_load.cpp
     src/gigachat_moe_model.cpp
     src/gigachat_moe_expert_cache.cpp
+    src/mimo_moe_convert.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp
@@ -358,6 +359,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_deepseek_v41_cu
     lsxcommon_nemotron_cu
     lsxcommon_gigachat_cu
+    lsxcommon_mimo_cu
     lsxcommon_ornith_cu
     lsxcommon_granite_cu
     lsx_tune)
@@ -406,6 +408,27 @@ target_compile_options(lsxcommon_gigachat_cu PRIVATE
 target_include_directories(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
 target_compile_definitions(lsxcommon_gigachat_cu PRIVATE ${LSXCOMMON_CU_DEFS})
 target_link_libraries(lsxcommon_gigachat_cu
+    "${CUDA_CUDART_LIBRARY}"
+    absl::strings
+)
+
+# MiMo-V2.6-Flash-RL: family-local FP8/MXFP4 -> BF16 dequant (converter). The
+# inference kernels land in later commits of the ingestion plan.
+add_library(lsxcommon_mimo_cu OBJECT
+    src/mimo_moe_dequant.cu
+)
+set_target_properties(lsxcommon_mimo_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_mimo_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_mimo_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_mimo_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_mimo_cu
     "${CUDA_CUDART_LIBRARY}"
     absl::strings
 )

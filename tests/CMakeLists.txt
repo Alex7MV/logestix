@@ -4104,6 +4104,25 @@ target_link_libraries(test_mimo_tool_framing PRIVATE lsxcommon Catch2::Catch2Wit
 add_test(NAME test_mimo_tool_framing COMMAND test_mimo_tool_framing)
 set_tests_properties(test_mimo_tool_framing PROPERTIES LABELS fast)
 
+# MiMo-V2.6-Flash-RL converter (synthetic E2E, label convert, bounded timeout).
+add_executable(test_mimo_moe_convert test_mimo_moe_convert.cpp)
+target_compile_definitions(test_mimo_moe_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
+    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
+endif()
+add_test(NAME test_mimo_moe_convert COMMAND test_mimo_moe_convert)
+set_tests_properties(test_mimo_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_mimo_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mimo_moe_convert PROPERTIES LABELS convert)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
