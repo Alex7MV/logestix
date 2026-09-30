@@ -89,6 +89,7 @@ target_link_libraries(lsxnetwork PUBLIC
     libzmq-static
     Threads::Threads
     absl::flat_hash_map
+    absl::btree
 )
 
 # spdlog is header-only (FetchContent default), so it cannot leak link symbols;

@@ -1,8 +1,9 @@
 #pragma once
 
+#include <absl/container/btree_map.h>
+
 #include <cstddef>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 
@@ -12,14 +13,14 @@ struct HttpRequest {
     std::string method;
     std::string path;
     std::string body;
-    std::map<std::string, std::string> headers;  // lower-cased keys
+    absl::btree_map<std::string, std::string> headers;  // lower-cased keys
 };
 
 struct HttpResponse {
     int status = 200;
     std::string content_type = "application/json; charset=utf-8";
     std::string body;
-    std::map<std::string, std::string> headers;
+    absl::btree_map<std::string, std::string> headers;
 };
 
 /// Pull-based SSE body producer. `Next` blocks until the next chunk is ready
