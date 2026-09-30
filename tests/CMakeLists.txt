@@ -4184,6 +4184,20 @@ endif()
 add_test(NAME test_mimo_moe_kernels COMMAND test_mimo_moe_kernels)
 set_tests_properties(test_mimo_moe_kernels PROPERTIES LABELS inference)
 
+# MiMo FP8/MXFP4 dequant parity (host scalar reference).
+add_executable(test_mimo_moe_dequant test_mimo_moe_dequant.cpp)
+target_link_libraries(test_mimo_moe_dequant PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
+    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
+endif()
+add_test(NAME test_mimo_moe_dequant COMMAND test_mimo_moe_dequant)
+set_tests_properties(test_mimo_moe_dequant PROPERTIES LABELS inference)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
