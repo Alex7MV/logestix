@@ -189,6 +189,7 @@ MiMoTopology ParseMiMoConfig(const std::string &config_json_text)
     };
 
     bool have_hidden = false, have_layers = false, have_vocab = false;
+    double prf = -1.0;
     for (auto field : root)
     {
         std::string_view key;
@@ -233,7 +234,9 @@ MiMoTopology ParseMiMoConfig(const std::string &config_json_text)
         else if (key == "rope_theta") t.rope_theta_ga = d;
         else if (key == "swa_rope_theta") t.rope_theta_swa = d;
         else if (key == "attention_value_scale") t.value_scale = d;
+        else if (key == "partial_rotary_factor") prf = d;
     }
+    if (prf > 0.0) t.rope_dim = static_cast<int>(t.head_dim * prf);
     if (t.full_attn_layers.empty())
         for (int i = 0; i < t.layers; ++i) t.full_attn_layers.push_back(i);
     if (t.moe_layers.empty())
@@ -608,6 +611,7 @@ arrow::Status ConvertMiMoModel(const std::string &input_dir,
           << ",\n  \"num_key_value_heads_swa\": " << top.kv_heads_swa
           << ",\n  \"head_dim\": " << top.head_dim
           << ",\n  \"v_head_dim\": " << top.v_head_dim
+          << ",\n  \"rope_dim\": " << top.rope_dim
           << ",\n  \"sliding_window\": " << top.sliding_window
           << ",\n  \"num_experts\": " << top.num_experts
           << ",\n  \"num_experts_per_tok\": " << top.top_k

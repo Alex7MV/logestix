@@ -102,5 +102,43 @@ cudaError_t RunMimoSwiGLU(cudaStream_t stream, const __half *gate,
     return cudaGetLastError();
 }
 
+__global__ void mimo_add_inplace_kernel(const __half *__restrict__ src,
+                                        int64_t n, __half *__restrict__ dst)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(__fadd_rn(__half2float(dst[i]), __half2float(src[i])));
+}
+
+__global__ void mimo_scale_add_kernel(const __half *__restrict__ src,
+                                      float scale, int64_t n,
+                                      __half *__restrict__ dst)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = __float2half(__fadd_rn(
+        __half2float(dst[i]), __fmul_rn(scale, __half2float(src[i]))));
+}
+
+cudaError_t RunMimoAddInPlace(cudaStream_t stream, const __half *src, int64_t n,
+                              __half *dst)
+{
+    if (n <= 0) return cudaSuccess;
+    const int threads = 256;
+    mimo_add_inplace_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+        src, n, dst);
+    return cudaGetLastError();
+}
+
+cudaError_t RunMimoScaleAdd(cudaStream_t stream, const __half *src, float scale,
+                            int64_t n, __half *dst)
+{
+    if (n <= 0) return cudaSuccess;
+    const int threads = 256;
+    mimo_scale_add_kernel<<<(n + threads - 1) / threads, threads, 0, stream>>>(
+        src, scale, n, dst);
+    return cudaGetLastError();
+}
+
 } // namespace mimo
 } // namespace lsxcommon

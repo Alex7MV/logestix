@@ -33,6 +33,8 @@ arrow::Status ValidateMiMoGeometry(const MiMoTopology &t)
     if (t.head_dim != frozen::kQkHeadDim) return bad("head_dim", t.head_dim, frozen::kQkHeadDim);
     if (t.v_head_dim != frozen::kVHeadDim)
         return bad("v_head_dim", t.v_head_dim, frozen::kVHeadDim);
+    if (t.rope_dim != frozen::kRopeDim)
+        return bad("rope_dim", t.rope_dim, frozen::kRopeDim);
     if (t.num_experts != frozen::kNumRouted)
         return bad("num_experts", t.num_experts, frozen::kNumRouted);
     if (t.top_k != frozen::kTopK) return bad("num_experts_per_tok", t.top_k, frozen::kTopK);
@@ -95,6 +97,7 @@ arrow::Result<MiMoModelFiles> LoadMiMoLayout(const std::string &root)
     geti("num_key_value_heads_swa", t.kv_heads_swa);
     geti("head_dim", t.head_dim);
     geti("v_head_dim", t.v_head_dim);
+    geti("rope_dim", t.rope_dim);
     geti("num_experts", t.num_experts);
     geti("num_experts_per_tok", t.top_k);
     geti("moe_intermediate_size", t.moe_intermediate);

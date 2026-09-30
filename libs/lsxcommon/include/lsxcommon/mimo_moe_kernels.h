@@ -28,5 +28,13 @@ cudaError_t RunMimoRouter(cudaStream_t stream, const __half *x,
 cudaError_t RunMimoSwiGLU(cudaStream_t stream, const __half *gate,
                           const __half *up, int64_t n, __half *out);
 
+// dst[i] += src[i]
+cudaError_t RunMimoAddInPlace(cudaStream_t stream, const __half *src, int64_t n,
+                              __half *dst);
+
+// dst[i] += scale * src[i]
+cudaError_t RunMimoScaleAdd(cudaStream_t stream, const __half *src, float scale,
+                            int64_t n, __half *dst);
+
 } // namespace mimo
 } // namespace lsxcommon

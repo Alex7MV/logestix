@@ -58,6 +58,7 @@ struct MiMoTopology {
     int kv_heads_swa = 8;
     int head_dim = 192;
     int v_head_dim = 128;
+    int rope_dim = 64;
     double rms_eps = 1e-6;
     double rope_theta_ga = 1e7;
     double rope_theta_swa = 1e4;
