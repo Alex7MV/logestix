@@ -37,6 +37,26 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
+### A2. MiMo-V2.6-Flash-RL real-weight SelfCheck: wrong top-1 (parity defect)
+
+- The full ingestion (converter → NVFP4 experts → kernels → `IModel`) is
+  committed on `feat/model-MiMo-V2.6-Flash-RL`; the synthetic suites
+  (convert/loader/model/kernels/dequant) are green.
+- The real 172 GB checkpoint converts cleanly in place
+  (`/mnt/llm_models/models/MiMo-V2.6-Flash-RL/logestix`, 12032 experts,
+  `logestix-mimo-nvfp4`, 167 GB) and the model **loads and generates** on the
+  RTX 5090.
+- **Defect:** `test_mimo_moe_selfcheck` fails the Paris gate. Measured
+  `top1_tok=108402 text='高原小康' passed=false`, `logits_hash=ab9d9bd20d824cfb`
+  (the forward pass runs; the logits are wrong).
+- **Next step:** bisect the layer pipeline against the shipped
+  `modeling_mimo_v2.py` on a short prompt — pin per-layer hidden states /
+  attn / router / expert outputs against a host reference for one GA and one
+  SWA layer. Prime suspects: partial rotate-half RoPE layout, fused-QKV
+  split order, sink-bias softmax, and the MXFP4 nibble order in the exact
+  E8M0 → NVFP4 repack (`converter.cpp` pack order vs the gemv decode order).
+  Add a real-weight FSI/CODE/DET capture once parity is green.
+
 ## B. Windows platform gaps
 
 ### B1. Expert pinning is not implemented on Windows
