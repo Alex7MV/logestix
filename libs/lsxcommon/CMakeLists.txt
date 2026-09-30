@@ -418,6 +418,7 @@ target_link_libraries(lsxcommon_gigachat_cu
 # inference kernels land in later commits of the ingestion plan.
 add_library(lsxcommon_mimo_cu OBJECT
     src/mimo_moe_dequant.cu
+    src/mimo_moe_kernels.cu
 )
 set_target_properties(lsxcommon_mimo_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

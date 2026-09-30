@@ -4154,6 +4154,35 @@ endif()
 add_test(NAME test_mimo_moe_expert_cache COMMAND test_mimo_moe_expert_cache)
 set_tests_properties(test_mimo_moe_expert_cache PROPERTIES LABELS inference)
 
+# MiMo non-GEMM kernel parity (RMSNorm / router / SwiGLU) — CUDA OBJECT lib.
+add_library(test_mimo_cu OBJECT
+    test_mimo_moe_kernels.cu
+)
+set_target_properties(test_mimo_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_mimo_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_mimo_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_mimo_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_mimo_moe_kernels)
+set_target_properties(test_mimo_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_mimo_moe_kernels PRIVATE test_mimo_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
+    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
+endif()
+add_test(NAME test_mimo_moe_kernels COMMAND test_mimo_moe_kernels)
+set_tests_properties(test_mimo_moe_kernels PROPERTIES LABELS inference)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
