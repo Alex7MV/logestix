@@ -278,6 +278,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "nemotron_moe_model.cpp",      // nemotron-3.5-lightning-30b-a3b
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
         "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
+        "granite_dense_model.cpp",     // granite-4.2-30b
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
