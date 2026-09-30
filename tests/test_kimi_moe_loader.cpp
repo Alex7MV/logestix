@@ -116,6 +116,7 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     // fails a single >300 GiB cudaHostAlloc); pointers stay valid for async
     // H2D without the file-backed VMA penalty. Block layout
     // [w1|w3][s1|s3][w2][s2] enables the split-fence upload.
+#if defined(__unix__) || defined(__APPLE__)
     REQUIRE(!db.pinned_pools.empty());
     const auto *chunk0 = static_cast<const uint8_t *>(db.pinned_pools.front());
     constexpr int64_t kChunk = int64_t{16} << 30;
@@ -130,6 +131,14 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     // upload source pointers were re-pointed INTO the pinned chunks
     REQUIRE(e.host_w1 >= chunk0);
     REQUIRE(e.host_w1 < chunk0 + kChunk);
+#else
+    // Expert pinning is not implemented on Windows (docs/OPEN_TASKS.md B1):
+    // PinChunked returns false, pinned_pools stays empty, and the loader falls
+    // back to pageable MemoryMappedFile views — correctness-neutral, just a
+    // slower H2D path. The pointers above are the file-backed fallback views.
+    WARN("expert pinning unavailable on this platform; using pageable views");
+    CHECK(db.pinned_pools.empty());
+#endif
     free_kimi_expert_index(db);
     cudaStreamDestroy(stream);
 }
