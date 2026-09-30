@@ -93,7 +93,9 @@ procedure — `perf-tuning-a-model`.
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
   `lsx_device_math.h` (model-neutral glibc-replica `ExpfGlibc`/`RsqrtfGlibc`;
   `glm_moe_device_math.h` aliases it) and `lsx_reduce.cuh` (model-neutral
-  `BlockMaxShfl`; `qwen_reduce.cuh` aliases it).
+  `BlockMaxShfl`; `qwen_reduce.cuh` aliases it); `synthetic_geometry.h`
+  (`SyntheticGeometryAllowed()`, the single `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY`
+  gate shared by every converter, loader and `ModelBase`).
   FSISelfCheck (`fsi_selfcheck.{h,cpp}`, host-only, model-neutral; capture
   `tools/fsi_capture.py` + `tools/fsi_prompts.json`; per-family goldens
   `tests/fixtures/fsi/<type>.json`; separate from SelfCheck — compares the

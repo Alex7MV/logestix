@@ -84,6 +84,7 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
   - `libs/lsxcommon/src/qwen_device_math.h`, `libs/lsxcommon/src/qwen_reduce.cuh` — Qwen device math / reductions; both are thin views over the model-neutral `lsx_device_math.h` (`lsxcommon::device::ExpfGlibc`/`RsqrtfGlibc`) and `lsx_reduce.cuh` (`lsxcommon::kernels::BlockMaxShfl`), which `glm_moe_device_math.h` / `lsx_kernels_common.cuh` also use
   - `libs/lsxcommon/src/lsx_device_math.h` — model-neutral glibc-replica device math (`ExpfGlibc`, `RsqrtfGlibc`); `glm_moe_device_math.h` aliases it into `lsxcommon::glm::device`
   - `libs/lsxcommon/src/lsx_reduce.cuh` — model-neutral warp-shuffle block max reduction (`lsxcommon::kernels::BlockMaxShfl`); `qwen_reduce.cuh` aliases it
+  - `libs/lsxcommon/include/lsxcommon/synthetic_geometry.h` — `lsxcommon::SyntheticGeometryAllowed()`: the single test-only `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` gate, shared by every converter, loader and `ModelBase` (`env && env[0] == '1'`)
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-accelerated quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
   - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): real generation via IModel::Infer on args.fast_math_mode, report tokens/t/s/ttft/resident
