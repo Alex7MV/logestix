@@ -23,6 +23,28 @@ std::string ModelRoot()
     if (const char *env = std::getenv("LSX_TEST_GLM_FLASH_ROOT")) return env;
     return "/mnt/llm_models/models/GLM-5.3-Flash";
 }
+
+// Sets an env var for the enclosing scope and restores it on destruction (so a
+// failing REQUIRE cannot leak LSX_TRACE_FLASH into sibling test cases).
+struct ScopedEnv {
+    std::string name;
+    ScopedEnv(const char *n, const char *v) : name(n)
+    {
+#ifdef _WIN32
+        _putenv_s(n, v);
+#else
+        setenv(n, v, 1);
+#endif
+    }
+    ~ScopedEnv()
+    {
+#ifdef _WIN32
+        _putenv_s(name.c_str(), "");
+#else
+        unsetenv(name.c_str());
+#endif
+    }
+};
 } // namespace
 
 TEST_CASE("glm5next flash selfcheck: Paris, 3 bit-exact cycles")
@@ -90,6 +112,51 @@ TEST_CASE("GLM-5.3-Flash end-to-end tool round-trip (real weights)",
     REQUIRE(!calls.empty());
     CHECK(calls[0].name == "get_weather");
     CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
+
+    model->Unload();
+}
+
+// D1 (docs/OPEN_TASKS.md): no test drove RunGlmFlashGeneration, so the
+// LSX_TRACE_FLASH host-decision branch fixed in 6108ecf was never executed.
+// The Paris selfcheck above reaches generation but with the debug flag unset;
+// this case sets it so RunGlmFlashGeneration must launch the probe kernels via
+// the HOST mirror (`flash_dbg_on_host`) instead of evaluating the __device__
+// symbol from host code (undefined behaviour: reads a host address).
+TEST_CASE("GLM-5.3-Flash generation with LSX_TRACE_FLASH set "
+          "(RunGlmFlashGeneration debug branch)",
+          "[glm-flash][model][generation][real-model]")
+{
+    const std::string root = ModelRoot();
+    if (!fs::exists(root + "/logestix/model.index.json"))
+        SKIP("converted GLM-5.3-Flash not present");
+
+    const ScopedEnv trace("LSX_TRACE_FLASH", "1");
+
+    ModelInitConfig cfg;
+    cfg.model_path = root;
+    cfg.model_type = "glm-5.3-flash";
+    auto model = LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    std::vector<int32_t> ids;
+    REQUIRE(model->BuildPromptInputIds(model->Tokenizer(),
+                                       "The capital of France is", ids));
+
+    ModelRequest req;
+    req.input_ids = ids;
+    req.max_gen_tokens = 4;
+    std::vector<int32_t> streamed;
+    req.token_callback = [&](const TokenChunk &c) {
+        streamed.push_back(static_cast<int32_t>(c.token_id));
+    };
+
+    const auto r = model->Infer(req);
+    INFO("error: " << r.error_msg << " tokens=" << r.gen_tokens.size());
+    REQUIRE(r.ok);
+    REQUIRE(!r.gen_tokens.empty());
+    REQUIRE(streamed == r.gen_tokens);
+    REQUIRE(r.output_text.find("Paris") != std::string::npos);
 
     model->Unload();
 }
