@@ -67,14 +67,14 @@ specifics (`-flto=thin` fallback, the abseil format-checker patch) are in
 ## Windows — VS 2026 toolchain
 
 `cmake`/`ctest`/`ninja` are **not in PATH**; Visual Studio 2026 provides them,
-and CUDA Toolkit 13.3 sits separately. The `build\` cache is pre-configured with
+and CUDA Toolkit 13.4 sits separately. The `build\` cache is pre-configured with
 the `windows-debug` preset (WIN32 generator).
 
 - CMake 4.3: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"`
 - CTest: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"`
 - Ninja: `"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"`
 - MSVC `cl.exe` (Hostx64): `"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\cl.exe"`
-- NVCC 13.3: `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe"` (already in PATH; CMake finds it via `find_package(CUDAToolkit)`)
+- NVCC 13.4 (V13.4.92): `"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4\bin\nvcc.exe"` (already in PATH; CMake finds it via `find_package(CUDAToolkit)`)
 
 PowerShell without touching PATH:
 
@@ -88,11 +88,40 @@ When VS updates, re-check the MSVC directory number with
 `Get-ChildItem "$vs\VC\Tools\MSVC"`. `arrow.dll` / `arrow_cuda.dll` are copied to
 the executable directory by a `POST_BUILD` step on Win32.
 
+## Configuring from scratch on Windows (PowerShell)
+
+Two traps, both hit while re-pointing an existing `build\` tree at a new CUDA
+Toolkit:
+
+1. **Quote every `-D`.** An unquoted `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` is
+   mangled by PowerShell and reaches CMake as `3`, which 4.3 rejects with
+   "Invalid CMAKE_POLICY_VERSION_MINIMUM value" against every nested
+   `cmake_minimum_required`. Use `"–DCMAKE_POLICY_VERSION_MINIMUM=3.5"`.
+2. **Do not hand-edit `CMakeCache.txt`.** Removing a toolkit-path entry leaves
+   its `//Path to a …` header orphaned, and CMake then fails with a parse
+   error. Pin the toolkit properly instead and re-configure:
+   ```powershell
+   & $cmake -S . -B build -G "Visual Studio 18 2026" `
+       "-DBUILD_TESTING=ON" "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
+       "-DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.4"
+   ```
+   A cache written while an older Toolkit was installed keeps its old
+   `CUDAToolkit_*` paths (they are valid cache entries, so a new
+   `CUDAToolkit_ROOT` does not re-derive them). The symptom is silent and
+   nasty: headers from the old Toolkit against the new runtime, caught by
+   `test_cuda_toolkit_guard` as `CUDART_VERSION=13030 runtime=13040`. If the
+   cache is already inconsistent, deleting `build/` is cheaper than repairing
+   it — it is gitignored, and the full re-configure takes ~4 min.
+
+Do not pass `-A x64`: the VS generator picks the platform itself, and setting
+it makes CMake fail with a bare "Error: generator platform: x64".
+
 ## Toolchain minimums
 
 Tested versions; newer also work: CMake 3.25+ (tree used 4.2.3), GCC 15.2
-(Ubuntu 26.04), NVCC 13.4.59 (Linux, `/usr/local/cuda`) / 13.3 (Windows), CUDA
-Toolkit ≥13.2 (guard `test_cuda_toolkit_guard`). The project is deliberately
+(Ubuntu 26.04), NVCC 13.4.92 (Linux, `/usr/local/cuda`) / 13.4.92 (Windows), CUDA
+Toolkit ≥13.2 (guard `test_cuda_toolkit_guard`, which pins only the 13.2 floor
+and the 13.x major -- patch levels pass through it). The project is deliberately
 pinned to C++20 (NVCC also ships full C++23).
 
 ## Output
