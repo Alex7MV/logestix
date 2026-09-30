@@ -24,6 +24,20 @@ namespace glm_moe_flash {
 namespace {
 __device__ int flash_dbg_on = 0;
 
+// Host-side mirror of flash_dbg_on, assigned right next to the symbol upload.
+//
+// The kernels branch on the device symbol, but host code must not evaluate it:
+// on this toolchain a __device__ variable read from host code resolves to a
+// HOST address (0x7ff6...), not a device one -- the same trap that made the
+// GigaChat router fault on its first store.
+//
+// Deliberately not flash_router_debug (below), which is also derived from
+// LSX_TRACE_FLASH but is a static initialised at load time. That would let the
+// host decision and the device flag disagree whenever the env is set after
+// process start. Writing both from one `dbg` value keeps them equal by
+// construction.
+bool flash_dbg_on_host = false;
+
 // Device-side buffer probe (bit of first N elems + NaN count) — temporary
 // debugging aid, env-gated via a device flag set by the driver.
 __global__ void flash_dbg_probe_kernel(const void *buf, int kind,
@@ -1702,6 +1716,7 @@ cudaError_t RunGlmFlashGeneration(
 
     {
         const int dbg = std::getenv("LSX_TRACE_FLASH") ? 1 : 0;
+        flash_dbg_on_host = dbg != 0;
         cudaMemcpyToSymbolAsync(flash_dbg_on, &dbg, 4, 0,
                                 cudaMemcpyHostToDevice, stream);
         cudaStreamSynchronize(stream);
@@ -1838,7 +1853,7 @@ cudaError_t RunGlmFlashGeneration(
                         d_state);
             if ((e = cudaGetLastError()) != cudaSuccess)
                 { result.error_msg = "hc_post"; break; }
-            if (flash_dbg_on) {
+            if (flash_dbg_on_host) {
                 flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_state, 1, 2,
                                                             HCH);
                 flash_dbg_probe_kernel<<<1, 1, 0, stream>>>(d_act2, 0, 2, H);

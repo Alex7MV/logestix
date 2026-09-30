@@ -93,6 +93,33 @@ avoid redistributing NVIDIA copyrighted material. The pointer is
 4. Never diverge silently: a codec semantics change must update the matching
    in-code invariant and its regression test.
 
+## `__device__` variables in host code
+
+Evaluating a `__device__` variable from **host** code does not give you a device
+address on this toolchain (MSVC host compiler + nvcc 13.4). The expression
+resolves to a *host* pointer — `0x7ff6…` on Windows — and the kernel it was
+handed writes straight into the process's address space:
+
+```
+Invalid __global__ write of size 4 bytes
+  at ...::router_score_kernel(...) in gigachat_moe_kernels.cu:70   // score[e] = s
+  Access to 0x7ff67766b220 is out of bounds
+  (host_score=0x7FF60ABEB220, sym_score=0x1307600000)              // cudaGetSymbolAddress
+```
+
+- Never pass a `__device__` symbol as a kernel argument or dereference one in
+  host code. Resolve the address with `cudaGetSymbolAddress`, cache it, and
+  pass that. This is also what the runtime requires before the symbol can be
+  used in a launch.
+- For a device flag that host code must branch on (a debug switch, a mode
+  selector), keep a plain host mirror and write it from the same value used for
+  the symbol upload, so the two cannot diverge. A `static` initialised from
+  `getenv` at load time is *not* equivalent if the env can be set later.
+- The trap is independent of linkage: the same fault occurs with the variable
+  at namespace scope. "It's in an anonymous namespace" is not the explanation.
+- Precedent, both fixed: `gigachat_moe_kernels.cu` (`RouterScratchDev`) and
+  `glm_moe_flash_inference.cu` (`flash_dbg_on_host`).
+
 ## Common mistakes
 
 - A second stream for convenience, then a `cudaDeviceSynchronize` to "make it
@@ -102,3 +129,5 @@ avoid redistributing NVIDIA copyrighted material. The pointer is
 - Quantizing norms/biases "for consistency".
 - Changing codec rounding and updating only the code, not the mirror + test.
 - Assuming CUB works identically under MSVC.
+- Passing a `__device__` symbol to a kernel launch, or branching on one from
+  host code — see the section above.
