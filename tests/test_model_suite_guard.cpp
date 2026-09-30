@@ -221,6 +221,14 @@ const std::vector<SuiteSpec> &Suites()
           {"selfcheck", {"test_granite_dense_selfcheck"}},
           {"fsi", {"test_granite_dense_fsi_selfcheck"}},
           {"code", {"test_granite_dense_code_selfcheck"}}, {"det", {"test_granite_dense_det_selfcheck"}}}},
+        {"mimo-v2.6-flash-rl",
+         {{"convert", {"test_mimo_moe_convert"}},
+          {"load", {"test_mimo_moe_loader"}},
+          {"model", {"test_mimo_moe_model"}},
+          {"kernels", {"test_mimo_moe_kernels", "test_mimo_moe_dequant"}},
+          {"selfcheck", {"test_mimo_moe_selfcheck"}},
+          {"fsi", {"test_mimo_moe_fsi_selfcheck"}},
+          {"code", {"test_mimo_moe_code_selfcheck"}}, {"det", {"test_mimo_moe_det_selfcheck"}}}},
     };
     return v;
 }

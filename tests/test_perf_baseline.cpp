@@ -94,6 +94,9 @@ const PerfModel kOrnith = {
     2048};
 const PerfModel kGranite = {
     "granite-4.2-30b", "granite-4.2-30b", "The capital of France is", 2048};
+const PerfModel kMiMo = {
+    "mimo-v2.6-flash-rl", "MiMo-V2.6-Flash-RL", "The capital of France is",
+    2048};
 
 std::string BaselinePath()
 {
@@ -382,4 +385,9 @@ TEST_CASE("perf baseline: ornith-1.5-35b-a3b", "[perf]")
 TEST_CASE("perf baseline: granite-4.2-30b", "[perf]")
 {
     RunPerfModel(kGranite);
+}
+
+TEST_CASE("perf baseline: mimo-v2.6-flash-rl", "[perf]")
+{
+    RunPerfModel(kMiMo);
 }
