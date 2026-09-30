@@ -62,18 +62,33 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   - Swapping the nibble order of the exact-repack experts at staging
     (`LSX_MIMO_EXPERT_SWAP=1`) changes the output but does **not** fix it, so it
     is not a simple pairwise nibble swap.
-- **Next step:** pin the authoritative MiMo MXFP4 expert layout. The neutral
-  `PackExpertNVFP4` exact E8M0 → NVFP4 repack (built for DeepSeek I8/U8 +
-  F8_E8M0 per-32) is the prime suspect: verify the on-disk U8 nibble order, the
-  E8M0 per-32 **scale alignment to the contraction dim**, and whether the
-  `gate/up/down` packed layout is `[N, K/2]` as assumed. Bisect one expert
-  (layer 1, expert 0) against a host decode computed from the source
-  safetensors, then compare `down(silu(gate)·up)` for a fixed `x` against the
-  device `[mimo-moe]` trace. Debug hooks are env-gated and inert by default:
-  `LSX_MIMO_TRACE`, `LSX_MIMO_TRACE_MOE`, `LSX_MIMO_NO_MOE`,
-  `LSX_MIMO_EXPERT_SWAP`.
-  Once parity is green, add real-weight FSI/CODE/DET captures and the perf
-  baseline entry.
+- **Update (2026-09-30, Python ground truth from the source safetensors):**
+  every per-layer component now matches a NumPy decode of the ORIGINAL
+  checkpoint within NVFP4 quantization error, so the earlier "expert weights
+  are wrong" conclusion was too strong:
+  - Embedding: bit-exact. qkv projection: a=0.987, corr=0.999. Attention core
+    (with `value_scale` applied exactly once) and `o_proj`: match.
+  - Dense MLP (gate/up/act/down): a=0.97-0.99, corr≥0.98, **when fed the
+    device's own intermediate**, so the layer math is correct.
+  - Router: host top-8 == device top-8 on real weights. Expert FFN: device
+    `gate/up/act/down` norms equal the NumPy MXFP4 decode to 4 decimals for
+    layer 1 / expert 137 (`|gate| 83.0769` vs `83.0771`, element-wise match).
+  - A NumPy full-forward on the source weights ALSO produces large residuals
+    (|x| ~14 at layer 0, ~100+ by layer 1), i.e. large residual norms are
+    inherent to this checkpoint, not a device bug.
+  - **Remaining gap:** the device's layer-0 output is ~12% low (|x|=12.55 vs
+    NumPy 14.23) from accumulated ~1-3%/component NVFP4 error, and the model
+    (an RL reasoning checkpoint) amplifies it across 48 layers until the
+    residual stream diverges and generation degenerates into repetition.
+  - **Best next hypotheses:** (a) the dense FP8→NVFP4 requant is too lossy for
+    this checkpoint's dynamic range — try keeping the FP8 dense weights in FP8
+    (the repo has a finegrained-FP8 path) or a higher-precision dense path;
+    (b) FP16 vs BF16 activation storage; (c) verify RoPE at pos>0 (the only
+    path not yet validated, since pos 0 makes it the identity).
+  - Debug hooks (env-gated, inert by default): `LSX_MIMO_TRACE`,
+    `LSX_MIMO_TRACE_MOE`, `LSX_MIMO_NO_MOE`, `LSX_MIMO_EXPERT_SWAP`,
+    `LSX_MIMO_DUMP_DIR` (dumps per-layer/per-component FP16 tensors for the
+    NumPy comparison).
 
 ## B. Windows platform gaps
 

@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -122,6 +123,14 @@ TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
         std::vector<int32_t> ids;
         REQUIRE(m->BuildPromptInputIds(m->Tokenizer(),
                                        "The capital of France is", ids));
+        if (const char *dd = std::getenv("LSX_MIMO_DUMP_DIR"))
+        {
+            FILE *f = std::fopen((std::string(dd) + "/ids.bin").c_str(), "wb");
+            if (f) { std::fwrite(ids.data(), 4, ids.size(), f); std::fclose(f); }
+            std::string txt;
+            for (int32_t id : ids) txt += std::to_string(id) + " ";
+            lsxcommon::log::info("[diag] framed ids: " + txt);
+        }
         const std::string out = run(ids);
         lsxcommon::log::info("[diag] framed prompt output: " + out);
         INFO("framed: " << out);

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -420,6 +421,18 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
 
     cudaMemcpyAsync(d_x, d_embed + static_cast<int64_t>(token) * hidden,
                     static_cast<size_t>(hidden) * 2, cudaMemcpyDeviceToDevice, st);
+    if (std::getenv("LSX_MIMO_TRACE") && pos == 0)
+    {
+        if (const char *dd = std::getenv("LSX_MIMO_DUMP_DIR"))
+        {
+            std::vector<__half> hb(static_cast<size_t>(hidden));
+            cudaStreamSynchronize(st);
+            cudaMemcpy(hb.data(), d_x, static_cast<size_t>(hidden) * 2,
+                       cudaMemcpyDeviceToHost);
+            FILE *f = std::fopen((std::string(dd) + "/emb.bin").c_str(), "wb");
+            if (f) { std::fwrite(hb.data(), 2, static_cast<size_t>(hidden), f); std::fclose(f); }
+        }
+    }
 
     for (int l = 0; l < topo_.layers; ++l)
     {
@@ -442,23 +455,38 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
         if (mimo::RunMimoRmsNorm(st, d_x, L.d_input_norm, 1, hidden,
                            static_cast<float>(topo_.rms_eps), d_xn) != cudaSuccess)
             return false;
+        auto dbg = [&](const char *nm, const __half *p, int n) {
+            if (!std::getenv("LSX_MIMO_TRACE") || pos > 1) return;
+            const char *dd = std::getenv("LSX_MIMO_DUMP_DIR");
+            if (!dd) return;
+            std::vector<__half> b(static_cast<size_t>(n));
+            cudaStreamSynchronize(st);
+            cudaMemcpy(b.data(), p, static_cast<size_t>(n) * 2, cudaMemcpyDeviceToHost);
+            FILE *f = std::fopen((std::string(dd) + "/p" + std::to_string(pos) + "_l" + std::to_string(l) + "_" + nm + ".bin").c_str(), "wb");
+            if (f) { std::fwrite(b.data(), 2, static_cast<size_t>(n), f); std::fclose(f); }
+        };
+        dbg("innorm", d_xn, hidden);
         if (lsx_nvfp4::RunLsxNvfp4Gemm(st, d_xn, L.qkv.d_packed, L.qkv.d_scales,
                                        L.qkv.global_scale, d_qkv, 1, L.qkv.cols,
                                        L.qkv.rows) != cudaSuccess)
             return false;
+        dbg("qkv", d_qkv, L.qkv.rows);
         if (mimo::RunMimoAttentionDecode(st, d_qkv, pos, L.d_sink, ap, kv_k_[l],
                                    kv_v_[l], d_attn) != cudaSuccess)
             return false;
+        dbg("attn", d_attn, topo_.heads * topo_.v_head_dim);
         if (gemv::RunLxGemmVec(st, L.d_o_proj, d_attn, 1, hidden, o_size,
                                gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
                                d_oproj, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
             return false;
         if (mimo::RunMimoAddInPlace(st, d_oproj, hidden, d_x) != cudaSuccess)
             return false;
+        dbg("postattn", d_x, hidden);
 
         if (mimo::RunMimoRmsNorm(st, d_x, L.d_post_norm, 1, hidden,
                            static_cast<float>(topo_.rms_eps), d_xn) != cudaSuccess)
             return false;
+        dbg("postnorm", d_xn, hidden);
 
         if (!L.is_moe)
         {
@@ -479,6 +507,10 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
                                            L.dense_down.global_scale, d_mlp, 1,
                                            L.dense_down.cols, L.dense_down.rows) != cudaSuccess)
                 return false;
+            dbg("dgate", d_gate, L.dense_up.rows);
+            dbg("dup", d_up, L.dense_up.rows);
+            dbg("act", d_act, L.dense_up.rows);
+            dbg("mlp", d_mlp, hidden);
         }
         else
         {
@@ -522,8 +554,42 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
                     return false;
                 if (e == 0 && std::getenv("LSX_MIMO_TRACE_MOE"))
                 {
+                    auto dump = [&](const std::string &suffix, const __half *p, int n) {
+                        const char *dir = std::getenv("LSX_MIMO_DUMP_DIR");
+                        if (!dir) return;
+                        std::vector<__half> b(static_cast<size_t>(n));
+                        cudaStreamSynchronize(st);
+                        cudaMemcpy(b.data(), p, static_cast<size_t>(n) * 2,
+                                   cudaMemcpyDeviceToHost);
+                        FILE *f = std::fopen(
+                            (std::string(dir) + "/" + suffix).c_str(), "wb");
+                        if (f)
+                        {
+                            std::fwrite(b.data(), 2, static_cast<size_t>(n), f);
+                            std::fclose(f);
+                        }
+                    };
+                    dump(absl::StrCat("layer", l, "_xn.bin"), d_xn, hidden);
+                    dump(absl::StrCat("layer", l, "_gate.bin"), d_gate, moe_I);
+                    dump(absl::StrCat("layer", l, "_up.bin"), d_up, moe_I);
+                    dump(absl::StrCat("layer", l, "_act.bin"), d_act, moe_I);
+                    dump(absl::StrCat("layer", l, "_down.bin"), d_expert_out, hidden);
+                    FILE *f = std::fopen(
+                        (std::string(std::getenv("LSX_MIMO_DUMP_DIR")) +
+                         "/layer" + std::to_string(l) + "_meta.txt")
+                            .c_str(),
+                        "w");
+                    if (f)
+                    {
+                        std::fprintf(f, "expert %d w0 %a\n", idx[0], w[0]);
+                        std::fclose(f);
+                    }
+                }
+                if (e == 0 && std::getenv("LSX_MIMO_TRACE_MOE"))
+                {
                     auto hnorm = [&](const __half *p, int n) {
                         std::vector<__half> b(static_cast<size_t>(n));
+                        cudaStreamSynchronize(st);
                         cudaMemcpy(b.data(), p, static_cast<size_t>(n) * 2,
                                    cudaMemcpyDeviceToHost);
                         double ss = 0.0;
@@ -582,7 +648,25 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
         if (const char *tr = std::getenv("LSX_MIMO_TRACE"))
         {
             (void)tr;
+            if (const char *dd = std::getenv("LSX_MIMO_DUMP_DIR"))
+            {
+                std::vector<__half> hb(static_cast<size_t>(hidden));
+                cudaStreamSynchronize(st);
+                cudaMemcpy(hb.data(), d_x, static_cast<size_t>(hidden) * 2,
+                           cudaMemcpyDeviceToHost);
+                FILE *f = std::fopen(
+                    (std::string(dd) + "/dx_p" + std::to_string(pos) + "_l" +
+                     std::to_string(l) + ".bin")
+                        .c_str(),
+                    "wb");
+                if (f)
+                {
+                    std::fwrite(hb.data(), 2, static_cast<size_t>(hidden), f);
+                    std::fclose(f);
+                }
+            }
             std::vector<__half> hbuf(static_cast<size_t>(hidden));
+            cudaStreamSynchronize(st);
             cudaMemcpy(hbuf.data(), d_x, static_cast<size_t>(hidden) * 2,
                        cudaMemcpyDeviceToHost);
             double ss = 0.0;
