@@ -17,7 +17,7 @@
 
 #include <absl/strings/str_cat.h>
 
-#include "glm_moe_load_internal.h"
+#include "fast_load_internal.h"
 
 namespace lsxcommon {
 namespace gemma {
@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-using glm::PinnedStagingRing;
+using fastload::PinnedStagingRing;
 
 const TensorRecord *FindTensor(const std::vector<TensorRecord> &tensors,
                                const std::string &suffix)
