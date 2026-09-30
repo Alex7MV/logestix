@@ -189,6 +189,43 @@ Verification on the follow-up host: full build clean; `fast` 72/72;
 
 ---
 
+## Inference-conformance review (2026-09-30, same host)
+
+A second pass checked every family against the Model Ingestion Protocol and
+whether inference is unified. The shared contracts hold: all 15 registered
+models open a per-call `LsxFastMathScope(EffectiveFastMathMode(cfg_))`, route
+NVFP4 only through the neutral `lsx_nvfp4`, run one stream (no
+`cudaDeviceSynchronize` in code), and no cuBLAS is linked;
+`kPassports` = `Suites()` = `model_registry.cpp`. Deviations found, all fixed
+(a `refactor:`/`test:` commit each):
+
+- `gemma_moe_load.cpp` reached the neutral `fastload::PinnedStagingRing`
+  through the GLM alias header `glm_moe_load_internal.h` — now includes
+  `fast_load_internal.h` directly, like qwen/kimi/ornith.
+- `lsx_kernels_common.cuh` (model-neutral) included `glm_moe_device_math.h`.
+  The glibc-replica exp/rsqrt moved to the new `lsx_device_math.h` and the
+  block-max reduce to the new `lsx_reduce.cuh`; `glm_moe_device_math.h` /
+  `qwen_reduce.cuh` stay as thin aliases.
+- `granite_dense_model.cpp` was absent from `test_model_independence_guard`
+  `consumers`, so its fast-math policy was unguarded (step 3).
+- `glm_moe_flash_constants.h` was the only passport without `static_assert`s.
+
+**Tool bridges (stage 4b) — retracted, do not "fix" again.** GLM-5.2 and
+Kimi-K2.7-Code are absent from this host's vault and are the documented
+generic-Hermes fallback. Granite-4.2 was verified on real weights through that
+fallback in `8702fa2` (`test_granite_dense_selfcheck` round-trip, bare
+`{"name":…,"arguments":…}` object). A native `granite_dense_tool_format` was
+attempted and **regressed** the round-trip — reverted. Adding a native renderer
+for a fallback family requires re-verifying the real-weight round-trip (recorded
+in AGENTS.md).
+
+**Perf-baseline pairing — false positive.** `test_perf_baseline_glm_5_2` and
+`test_perf_baseline_qwen3_5_9b` have no `perf_baselines.json` entry because
+those models are not in the vault; the target seeds the entry once converted
+(CMake comment) — intentional, not a gap.
+
+---
+
 ## Closed in this session, for reference
 
 - Inference review findings: `x_vec` uint4 alignment mask, `hc_count` vs

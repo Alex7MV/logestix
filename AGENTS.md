@@ -90,7 +90,10 @@ procedure — `perf-tuning-a-model`.
   family generation loop), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
   calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
-  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`.
+  (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
+  `lsx_device_math.h` (model-neutral glibc-replica `ExpfGlibc`/`RsqrtfGlibc`;
+  `glm_moe_device_math.h` aliases it) and `lsx_reduce.cuh` (model-neutral
+  `BlockMaxShfl`; `qwen_reduce.cuh` aliases it).
   FSISelfCheck (`fsi_selfcheck.{h,cpp}`, host-only, model-neutral; capture
   `tools/fsi_capture.py` + `tools/fsi_prompts.json`; per-family goldens
   `tests/fixtures/fsi/<type>.json`; separate from SelfCheck — compares the
@@ -183,8 +186,12 @@ procedure — `perf-tuning-a-model`.
   DeepSeek-V4/V4.1 (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
   (`<|tool_call>call:…`; `gemma_tool_format.{h,cpp}`), GigaChat-3.5
   (chatml-v5 GCML; `gigachat_tool_format.{h,cpp}`) and Nemotron-3.5
-  (Qwen-style XML), with a generic Hermes fallback elsewhere;
-  `tools::ParseToolCallsText` + the per-family
+  (Qwen-style XML), with a generic Hermes fallback elsewhere. The fallback
+  families emit a bare `{"name":…,"arguments":…}` object (Granite-4.2 is
+  verified on real weights — `test_granite_dense_selfcheck`), so the generic
+  parser tries `tools::ParseBareToolCallJson` after `tools::ParseToolCallsText`;
+  do NOT add a "native" renderer for a fallback family without re-verifying that
+  round-trip. Entry points: the per-family
   `BuildConversationInputIds`/`ParseToolCalls` virtuals. `apps/lsxcli/` — CLI client
   (`--model`, `--info`, `--infofull`).
 - `apps/lsxbenchmark/` — generation-speed measurement + bit-exactness: `--bench`

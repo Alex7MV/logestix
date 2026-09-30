@@ -81,7 +81,9 @@ env knobs) is `running-a-model`; throughput work is `perf-tuning-a-model`.
   - `libs/lsxcommon/src/qwen_dense_27b_model.{h,cpp}` — `Qwen3_8_27BModel` (registry `qwen3.8-27b`); same base
   - `libs/lsxcommon/src/qwen_inference.cu` + `include/lsxcommon/qwen_inference.h` — Qwen dense CUDA kernels (full-attn + GatedDeltaNet hybrid, fused decode-attn/MLP, NVFP4 tile GEMM, `LSX_PERF_PHASES` hook)
   - `libs/lsxcommon/src/qwen_inference_load.cpp` + `include/lsxcommon/qwen_inference_load.h` — Qwen dense loader (pinned dense upload, shared ring machinery)
-  - `libs/lsxcommon/src/qwen_device_math.h`, `libs/lsxcommon/src/qwen_reduce.cuh` — device math / Qwen reductions
+  - `libs/lsxcommon/src/qwen_device_math.h`, `libs/lsxcommon/src/qwen_reduce.cuh` — Qwen device math / reductions; both are thin views over the model-neutral `lsx_device_math.h` (`lsxcommon::device::ExpfGlibc`/`RsqrtfGlibc`) and `lsx_reduce.cuh` (`lsxcommon::kernels::BlockMaxShfl`), which `glm_moe_device_math.h` / `lsx_kernels_common.cuh` also use
+  - `libs/lsxcommon/src/lsx_device_math.h` — model-neutral glibc-replica device math (`ExpfGlibc`, `RsqrtfGlibc`); `glm_moe_device_math.h` aliases it into `lsxcommon::glm::device`
+  - `libs/lsxcommon/src/lsx_reduce.cuh` — model-neutral warp-shuffle block max reduction (`lsxcommon::kernels::BlockMaxShfl`); `qwen_reduce.cuh` aliases it
   - `libs/lsxcommon/src/shared_experts.cu` — NVFP4 decode tables (E2M1/E8M0), routed-expert FFN
   - `libs/lsxcommon/src/safetensors_gpu.cu` — GPU-accelerated quantization (3 CUDA kernels: convert, block_maxabs, quantize_pack_perblock; CCCL thrust for global max)
   - `libs/lsxcommon/src/model_runtime.cpp` — `runtime::RunCliBenchmark` (lsxbenchmark --bench): real generation via IModel::Infer on args.fast_math_mode, report tokens/t/s/ttft/resident
