@@ -34,8 +34,9 @@ TEST_CASE("path_registry platform root base", "[path_registry]")
 
 TEST_CASE("path_registry LSX_MODEL_ROOT overrides the compile-time base", "[path_registry]")
 {
-    const char *override_root = "/tmp/lsx-vault";
-    set_model_root(override_root);
+    const std::string override_root =
+        (std::filesystem::temp_directory_path() / "lsx-vault").string();
+    set_model_root(override_root.c_str());
     CHECK(lsxcommon::lsx_model_models_dir() == override_root);
     const std::filesystem::path meta(lsxcommon::lsx_model_metadata_root());
     CHECK(meta.parent_path().string() == override_root);

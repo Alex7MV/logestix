@@ -336,7 +336,9 @@ TEST_CASE("lsxnetwork: bind is idempotent across a stale ipc:// socket file",
     using lsxnetwork::ZmqContext;
     using lsxnetwork::ZmqSocket;
 
-    const std::string path = "/tmp/lsx_mosaic_test.ipc";
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "lsx_mosaic_test.ipc")
+            .string();
     const std::string endpoint = "ipc://" + path;
 
     // Simulate a stale socket file left behind by an aborted/crashed process.

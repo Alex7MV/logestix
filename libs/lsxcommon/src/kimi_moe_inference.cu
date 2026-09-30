@@ -12,6 +12,9 @@
 
 #include <cuda_bf16.h>
 
+#include <filesystem>
+#include <system_error>
+
 namespace lsxcommon {
 namespace kimi {
 
@@ -1370,7 +1373,16 @@ cudaError_t KimiLayerStack(cudaStream_t stream,
                         getenv("LSX_KIMI_DUMP_L1")
                             ? atoi(getenv("LSX_KIMI_DUMP_L1")) : -1;
                     if (l == dump_l1 && !getenv("LSX_KIMI_DUMP_DONE")) {
-                        FILE *f = std::fopen("/tmp/kimi_diag_l1.bin", "wb");
+                        // Cross-platform capture location (the tc_diag test
+                        // reads it back from the same temp dir). The ec
+                        // overload avoids throwing out of the decode loop.
+                        std::error_code tec;
+                        const std::filesystem::path dump_path =
+                            std::filesystem::temp_directory_path(tec) /
+                            "kimi_diag_l1.bin";
+                        FILE *f =
+                            tec ? nullptr
+                                : std::fopen(dump_path.string().c_str(), "wb");
                         if (f) {
                             const __nv_bfloat16 *row_in =
                                 d_scratch_b + (size_t)base * kKimiHidden;

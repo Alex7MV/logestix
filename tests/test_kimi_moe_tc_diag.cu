@@ -8,8 +8,9 @@
 //   rel-L2 ~ 0.02-0.08  -> act-quant noise (tolerance fundamental)
 //   rel-L2 > 0.2        -> code bug in the TC chain (segment/gs/scale)
 //
-// Requires: LSX_TEST_KIMI_MODEL_PATH (real vault) + /tmp/kimi_diag_l1.bin
-// (captured via: LSX_KIMI_DUMP_L1=<layer> lsxfabric --testprompt ...).
+// Requires: LSX_TEST_KIMI_MODEL_PATH (real vault) + kimi_diag_l1.bin in the
+// system temp directory (captured via:
+// LSX_KIMI_DUMP_L1=<layer> lsxfabric --testprompt ...).
 #include <catch2/catch_test_macros.hpp>
 
 #include "kimi_moe_kernels.h"
@@ -85,11 +86,15 @@ TEST_CASE("kimi TC chain: real-input FFN-sum differential", "[kimi][tc-diag]")
     const char *model_env = std::getenv("LSX_TEST_KIMI_MODEL_PATH");
     if (!model_env || !std::filesystem::exists(model_env))
         SKIP("LSX_TEST_KIMI_MODEL_PATH not set");
-    if (!std::filesystem::exists("/tmp/kimi_diag_l1.bin"))
+    // Same location the LSX_KIMI_DUMP_L1 hook writes (temp_directory_path),
+    // so the capture is reachable on Windows too.
+    const std::filesystem::path diag_path =
+        std::filesystem::temp_directory_path() / "kimi_diag_l1.bin";
+    if (!std::filesystem::exists(diag_path))
         SKIP("capture a real input row first: "
              "LSX_KIMI_DUMP_L1=1 lsxfabric --testprompt ...");
 
-    const DiagRow row = LoadDiagRow("/tmp/kimi_diag_l1.bin");
+    const DiagRow row = LoadDiagRow(diag_path.string().c_str());
     REQUIRE(row.layer >= 0);
     REQUIRE(row.x.size() == static_cast<size_t>(H));
 
