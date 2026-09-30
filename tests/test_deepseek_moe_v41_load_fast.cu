@@ -51,13 +51,15 @@ TEST_CASE("deepseek-v41 pinned dense load uploads the synthetic layer",
     CHECK(lw.wq_a_rows == 64);
     CHECK(lw.wq_a_cols == 64);
 
-    // FP8 0x38 = E4M3 1.0 with scale byte 127 = 2^0 -> FP16 1.0.
-    uint16_t bits = 0;
-    REQUIRE(cudaMemcpy(&bits, lw.d_wq_a, 2, cudaMemcpyDeviceToHost) ==
+    // MLA dense q_a stays FP8 on device (e4954d3): raw E4M3 0x38 (1.0) plus the
+    // UE8M0 2^0 scale byte 127; the GEMV dequantizes on the fly.
+    uint8_t f8 = 0, scale = 0;
+    REQUIRE(cudaMemcpy(&f8, lw.d_wq_a, 1, cudaMemcpyDeviceToHost) ==
             cudaSuccess);
-    __half h;
-    std::memcpy(&h, &bits, 2);
-    CHECK(__half2float(h) == 1.0f);
+    REQUIRE(cudaMemcpy(&scale, lw.d_wq_a_scale, 1, cudaMemcpyDeviceToHost) ==
+            cudaSuccess);
+    CHECK(f8 == 0x38);
+    CHECK(scale == 127);
 
     // Idempotent reload frees the previous set (no leak).
     REQUIRE(lsxcommon::deepseek_v41::gpu::load_pinned_weights(
