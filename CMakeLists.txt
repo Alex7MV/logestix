@@ -8,6 +8,28 @@ project(logestix
 
 find_package(CUDAToolkit REQUIRED)
 
+# ── Toolkit consistency guard (OPEN_TASKS G1) ────────────────────────────────
+# Upgrading CUDA leaves an existing build/ pinned to the previous toolkit: the
+# cached `CUDAToolkit_*` entries stay valid, so a new CUDAToolkit_ROOT is not
+# re-derived and the header version can disagree with the runtime the compiler
+# targets. `test_cuda_toolkit_guard` only catches that after a full build; fail
+# here instead, before compiling. Re-run configure with `-U CUDAToolkit_*` (or
+# wipe the build directory) after a toolkit upgrade.
+if(DEFINED CUDAToolkit_VERSION AND DEFINED CMAKE_CUDA_COMPILER_VERSION)
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _lsx_toolkit_mm
+           "${CUDAToolkit_VERSION}")
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _lsx_nvcc_mm
+           "${CMAKE_CUDA_COMPILER_VERSION}")
+    if(NOT _lsx_toolkit_mm STREQUAL _lsx_nvcc_mm)
+        message(FATAL_ERROR
+            "CUDA toolkit/compiler version mismatch: find_package(CUDAToolkit) "
+            "resolved ${CUDAToolkit_VERSION} but the CUDA compiler is "
+            "${CMAKE_CUDA_COMPILER_VERSION}. This usually means a stale build/ "
+            "cache after a toolkit upgrade (OPEN_TASKS G1). Reconfigure with "
+            "`cmake -U CUDAToolkit_* ...` or wipe the build directory.")
+    endif()
+endif()
+
 # ── Standards ────────────────────────────────────────────────────────────────
 
 # C++20 is the baseline for all code (including CUDA via
