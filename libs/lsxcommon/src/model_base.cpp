@@ -150,9 +150,8 @@ void ModelBase::TeardownContext()
 
 bool ModelBase::SyntheticGeometryAllowed()
 {
-    static const bool allowed =
-        std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
-    return allowed;
+    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    return env && env[0] == '1';
 }
 
 bool ModelBase::CheckGeometryFields(const char *tag,

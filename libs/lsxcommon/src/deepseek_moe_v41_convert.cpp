@@ -35,7 +35,8 @@ namespace {
 
 bool SyntheticGeometryAllowed()
 {
-    return std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr;
+    const char *env = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+    return env && env[0] == '1';
 }
 
 // ── Name classification ─────────────────────────────────────────────────────

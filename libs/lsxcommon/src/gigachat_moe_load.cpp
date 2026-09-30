@@ -25,7 +25,7 @@ namespace {
 bool SyntheticGeometryAllowed()
 {
     const char *v = std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
-    return v && *v && v[0] != '0';
+    return v && v[0] == '1';
 }
 
 } // namespace
