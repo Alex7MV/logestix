@@ -168,6 +168,7 @@ __global__ void mimo_attn_decode_kernel(const __half *__restrict__ qkv_token,
     float *k_s = q_s + head_dim;     // head_dim
     float *v_s = k_s + head_dim;     // v_head_dim
     float *scratch = v_s + v_head_dim;  // blockDim.x
+    float *score = scratch + blockDim.x;  // nk
 
     for (int d = threadIdx.x; d < head_dim; d += blockDim.x)
         q_s[d] = __half2float(qkv_token[h * head_dim + d]);
@@ -193,13 +194,8 @@ __global__ void mimo_attn_decode_kernel(const __half *__restrict__ qkv_token,
 
     const int j0 = is_swa ? max(0, pos - window + 1) : 0;
     const int nk = pos - j0 + 1;
-    __shared__ float s_m, s_l, s_score;
-    if (threadIdx.x == 0) { s_m = -INFINITY; s_l = 0.0f; }
-    __syncthreads();
-    // Online softmax over cached keys (shared m/l broadcast to the block).
-    float *acc = v_s;
-    for (int d = threadIdx.x; d < v_head_dim; d += blockDim.x) acc[d] = 0.0f;
-    __syncthreads();
+
+    // Pass 1: QK scores into shared.
     for (int j = j0; j <= pos; ++j)
     {
         const __half *kj =
@@ -216,41 +212,39 @@ __global__ void mimo_attn_decode_kernel(const __half *__restrict__ qkv_token,
                     __fadd_rn(scratch[threadIdx.x], scratch[threadIdx.x + s]);
             __syncthreads();
         }
-        if (threadIdx.x == 0) s_score = __fmul_rn(scratch[0], scale);
+        if (threadIdx.x == 0) score[j - j0] = __fmul_rn(scratch[0], scale);
         __syncthreads();
-        const float new_m = fmaxf(s_m, s_score);
-        const float corr = isinf(s_m) ? 0.0f : __expf(s_m - new_m);
-        const float pj = __expf(s_score - new_m);
+    }
+
+    // Pass 2: softmax (sink as an extra column) then mix V.
+    __shared__ float s_m, s_l;
+    if (threadIdx.x == 0)
+    {
+        float m = (sink != nullptr) ? __half2float(sink[h]) : -3.4e38f;
+        for (int t = 0; t < nk; ++t) m = fmaxf(m, score[t]);
+        float sum = 0.0f;
+        for (int t = 0; t < nk; ++t) sum += __expf(score[t] - m);
+        if (sink != nullptr) sum += __expf(__half2float(sink[h]) - m);
+        s_m = m;
+        s_l = 1.0f / sum;
+    }
+    __syncthreads();
+    const float m = s_m, inv = s_l;
+    float *acc = v_s;
+    for (int d = threadIdx.x; d < v_head_dim; d += blockDim.x) acc[d] = 0.0f;
+    __syncthreads();
+    for (int j = j0; j <= pos; ++j)
+    {
+        const float pj = __expf(score[j - j0] - m) * inv;
         const __half *vj =
             v_cache + (static_cast<int64_t>(j) * kv_heads + kh) * v_head_dim;
         for (int d = threadIdx.x; d < v_head_dim; d += blockDim.x)
-            acc[d] = __fadd_rn(__fmul_rn(acc[d], corr),
-                               __fmul_rn(pj, __half2float(vj[d])));
-        __syncthreads();
-        if (threadIdx.x == 0) { s_l = __fadd_rn(__fmul_rn(s_l, corr), pj); s_m = new_m; }
+            acc[d] = __fadd_rn(acc[d], __fmul_rn(pj, __half2float(vj[d])));
         __syncthreads();
     }
-    if (sink != nullptr)
-    {
-        if (threadIdx.x == 0)
-        {
-            const float sv = __half2float(sink[h]);
-            const float new_m = fmaxf(s_m, sv);
-            const float corr = isinf(s_m) ? 0.0f : __expf(s_m - new_m);
-            s_l = __fadd_rn(__fmul_rn(s_l, corr), __expf(sv - new_m));
-            s_m = new_m;
-            s_score = corr;
-        }
-        __syncthreads();
-        const float corr = s_score;
-        for (int d = threadIdx.x; d < v_head_dim; d += blockDim.x)
-            acc[d] = __fmul_rn(acc[d], corr);
-        __syncthreads();
-    }
-    const float inv = 1.0f / s_l;
     __half *orow = out + h * v_head_dim;
     for (int d = threadIdx.x; d < v_head_dim; d += blockDim.x)
-        orow[d] = __float2half(__fmul_rn(acc[d], inv));
+        orow[d] = __float2half(acc[d]);
 }
 
 cudaError_t RunMimoAttentionDecode(cudaStream_t stream, const __half *qkv_token,
@@ -260,10 +254,9 @@ cudaError_t RunMimoAttentionDecode(cudaStream_t stream, const __half *qkv_token,
 {
     if (pos < 0) return cudaErrorInvalidValue;
     const int threads = 256;
-    const int rows = p.q_size + 2 * p.k_size;
-    (void)rows;
-    const size_t smem =
-        (2 * p.head_dim + p.v_head_dim + threads) * sizeof(float);
+    const int nk = p.is_swa ? std::min(pos + 1, p.window) : pos + 1;
+    const size_t smem = (2 * p.head_dim + p.v_head_dim + threads + nk) *
+                        sizeof(float);
     mimo_attn_decode_kernel<<<p.heads, threads, smem, stream>>>(
         qkv_token, pos, sink, p.heads, p.kv_heads, p.head_dim, p.v_head_dim,
         p.rope_dim, p.window, p.is_swa, p.value_scale, p.scale, p.rope_theta,

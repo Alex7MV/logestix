@@ -85,10 +85,27 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
     (the repo has a finegrained-FP8 path) or a higher-precision dense path;
     (b) FP16 vs BF16 activation storage; (c) verify RoPE at pos>0 (the only
     path not yet validated, since pos 0 makes it the identity).
-  - Debug hooks (env-gated, inert by default): `LSX_MIMO_TRACE`,
-    `LSX_MIMO_TRACE_MOE`, `LSX_MIMO_NO_MOE`, `LSX_MIMO_EXPERT_SWAP`,
-    `LSX_MIMO_DUMP_DIR` (dumps per-layer/per-component FP16 tensors for the
-    NumPy comparison).
+- **Update 2 (2026-09-30, framing + multi-position attention):**
+  - The prompt frame was wrong: the reference
+    `apply_chat_template(add_generation_prompt=True)` ends at
+    `[..., 151644, 77091, 198]` (`<|im_start|>assistant\n`, **no**
+    `<think></think>` prefill), because the template's `enable_thinking is false`
+    check is false when the variable is undefined. `BuildPromptInputIds` now
+    matches the reference exactly (`enable_thinking=true`).
+  - A full **48-layer Python forward** (source FP8 + MXFP4 decoded) matches the
+    device's single-token logits **exactly** (top-5 token ids and values), so the
+    entire model math at pos 0 is correct.
+  - **The bug is in the decode attention for positions ≥ 2.** Building the
+    attention reference from the device's own per-position `qkv` dumps:
+    pos 0/1 match (corr ≈ 1.0), pos 2 diverges (corr 0.64). The projections
+    themselves match exactly (corr 1.0), so the fault is in
+    `mimo_attn_decode_kernel`'s online-softmax / KV-cache path (the prefill
+    kernel's two-pass form passed its parity test; the decode kernel's streaming
+    softmax is the suspect).
+  - **Next step:** rewrite `mimo_attn_decode_kernel`'s per-key online softmax as
+    the prefill kernel's two-pass form (collect scores, one softmax, then mix),
+    or bisect the streaming rescale with a 3-key unit test. Then re-run the
+    single-token and multi-token Python logits comparisons.
 
 ## B. Windows platform gaps
 

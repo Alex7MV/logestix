@@ -3,6 +3,7 @@
 // (CTest SKIP_RETURN_CODE 4).
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -99,7 +100,7 @@ TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
     auto run = [&](const std::vector<int32_t> &ids) {
         lsxcommon::ModelRequest req;
         req.input_ids = ids;
-        req.max_gen_tokens = 24;
+        req.max_gen_tokens = 200;
         auto r = m->Infer(req);
         REQUIRE(r.ok);
         return r.output_text;
@@ -134,6 +135,27 @@ TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
         const std::string out = run(ids);
         lsxcommon::log::info("[diag] framed prompt output: " + out);
         INFO("framed: " << out);
+    }
+    // Single-token full-model logits diagnostic (pos 0; rope identity).
+    {
+        lsxcommon::ModelRequest rq;
+        rq.input_ids = {785};
+        rq.max_gen_tokens = 1;
+        auto r = m->Infer(rq);
+        REQUIRE(r.ok);
+        std::vector<int> idx(r.final_logits.size());
+        for (size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
+        if (idx.size() >= 5) {
+            std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
+                              [&](int a, int b) {
+                                  return r.final_logits[a] > r.final_logits[b];
+                              });
+            std::string s;
+            for (int i = 0; i < 5; ++i)
+                s += std::to_string(idx[i]) + "(" +
+                     std::to_string(r.final_logits[idx[i]]) + ") ";
+            lsxcommon::log::info("[diag] single-token top5: " + s);
+        }
     }
     m->Unload();
 }

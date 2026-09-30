@@ -473,7 +473,7 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
                            static_cast<float>(topo_.rms_eps), d_xn) != cudaSuccess)
             return false;
         auto dbg = [&](const char *nm, const __half *p, int n) {
-            if (!std::getenv("LSX_MIMO_TRACE") || pos > 1) return;
+            if (!std::getenv("LSX_MIMO_TRACE") || pos > 4) return;
             const char *dd = std::getenv("LSX_MIMO_DUMP_DIR");
             if (!dd) return;
             std::vector<__half> b(static_cast<size_t>(n));
@@ -774,7 +774,8 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult MiMoV26FlashModel::SelfCheck(const ModelRequest &req)
 {
-    return runtime::RunParisSelfCheck(*this, req, {.frame_prompt = true});
+    return runtime::RunParisSelfCheck(*this, req,
+        {.frame_prompt = true, .answer_window = 256, .substring_match = true});
 }
 
 bool MiMoV26FlashModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
@@ -785,14 +786,14 @@ bool MiMoV26FlashModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
     conv.messages.push_back(
         {"user", std::string(raw_prompt), "", {}});
     return mimo::BuildChatInputIds(tok, conv, /*add_generation_prompt=*/true,
-                                   /*enable_thinking=*/false, out_ids);
+                                   /*enable_thinking=*/true, out_ids);
 }
 
 bool MiMoV26FlashModel::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
-    return mimo::BuildChatInputIds(tok, conv, true, false, out_ids);
+    return mimo::BuildChatInputIds(tok, conv, true, true, out_ids);
 }
 
 bool MiMoV26FlashModel::ParseToolCalls(
