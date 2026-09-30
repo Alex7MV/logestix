@@ -629,23 +629,9 @@ foreach(qt test_qwen_dense_norm test_qwen_dense_rotary)
     add_test(NAME ${qt} COMMAND ${qt})
 endforeach()
 
-# ── Qwen CUDA kernel test executables (.cu files, stand-alone OBJECT lib) ──
-add_library(test_qwen_cu OBJECT
-    test_qwen_dense_shuffle_reduce.cu
-    test_qwen_dense_mlp.cu
-    test_qwen_dense_nvfp4.cu
-    test_qwen_nvfp4_tile_gemm.cu
-    test_qwen_nvfp4_gemv.cu
-    test_lsx_nvfp4_dispatch.cu
-    test_lsx_gemv.cu
-    test_perf_knobs_apply.cu
-    test_qwen_dense_full_attn.cu
-    test_qwen_dense_full_attn_parallel.cu
-    test_qwen_dense_linear_attn.cu
-    test_qwen_dense_fused_mlp.cu
-    test_qwen_dense_fused_linear_attn.cu
-    test_blackwell_micro_gemm.cu
-)
+# ── Qwen CUDA kernel test executables (.cu files) ─────────────────────────
+# One object library per test file, defined by lsx_add_qwen_cu_test() below
+# (just before the foreach that calls it).
 
 # ── Blackwell tensor-core probe tests: kind::mxf4nvf4 assembles ONLY on the
 #    arch-'a' targets (sm_120a/sm_121a), so this OBJECT lib carries its own
@@ -759,49 +745,74 @@ foreach(qt test_cuda_toolkit_guard)
     set_tests_properties(${qt} PROPERTIES SKIP_RETURN_CODE 4)
 endforeach()
 
-set_target_properties(test_qwen_cu PROPERTIES
-    CUDA_SEPARABLE_COMPILATION OFF
-    CUDA_ARCHITECTURES OFF
-)
-target_compile_options(test_qwen_cu PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
-    --generate-code=arch=compute_120,code=sm_120;
-    --generate-code=arch=compute_121,code=sm_121;
-    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
-target_include_directories(test_qwen_cu PRIVATE
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
-    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
-    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
-    "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
-    "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
-    "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
-    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
-)
-target_compile_definitions(test_qwen_cu PRIVATE
-    THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
-    CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
-    LOGESTIX_HAS_CUDA
-)
-target_link_libraries(test_qwen_cu PRIVATE Catch2::Catch2WithMain)
+# One OBJECT lib + executable per .cu test file. The previous shared
+# `test_qwen_cu` object library linked ALL 14 files into EVERY executable:
+# the binaries were byte-identical, each ran the full ~187k assertions, and a
+# single failing assertion marked all 14 ctest targets failed (OPEN_TASKS E1).
+# Per-file objects keep the target names/labels but run only their own cases.
+function(lsx_add_qwen_cu_test name)
+    add_library(${name}_cu OBJECT ${name}.cu)
+    set_target_properties(${name}_cu PROPERTIES
+        CUDA_SEPARABLE_COMPILATION OFF
+        CUDA_ARCHITECTURES OFF
+    )
+    target_compile_options(${name}_cu PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;
+        --generate-code=arch=compute_120,code=sm_120;
+        --generate-code=arch=compute_121,code=sm_121;
+        $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+    target_include_directories(${name}_cu PRIVATE
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+        "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+        "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+        "${PROJECT_SOURCE_DIR}/third_party/cccl/thrust"
+        "${PROJECT_SOURCE_DIR}/third_party/cccl/cub"
+        "${PROJECT_SOURCE_DIR}/third_party/cccl/libcudacxx/include"
+        "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+        "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    )
+    target_compile_definitions(${name}_cu PRIVATE
+        THRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP
+        CCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING
+        LOGESTIX_HAS_CUDA
+    )
+    target_link_libraries(${name}_cu PRIVATE Catch2::Catch2WithMain)
 
-foreach(qt test_qwen_dense_shuffle_reduce test_qwen_dense_mlp test_qwen_dense_nvfp4 test_qwen_nvfp4_tile_gemm test_qwen_nvfp4_gemv test_lsx_nvfp4_dispatch test_lsx_gemv test_perf_knobs_apply test_qwen_dense_full_attn test_qwen_dense_full_attn_parallel test_qwen_dense_linear_attn test_qwen_dense_fused_mlp test_qwen_dense_fused_linear_attn test_blackwell_micro_gemm)
-    add_executable(${qt})
-    set_target_properties(${qt} PROPERTIES LINKER_LANGUAGE CXX)
-    target_link_libraries(${qt} PRIVATE test_qwen_cu lsxcommon Catch2::Catch2WithMain)
+    add_executable(${name})
+    set_target_properties(${name} PROPERTIES LINKER_LANGUAGE CXX)
+    target_link_libraries(${name} PRIVATE ${name}_cu lsxcommon Catch2::Catch2WithMain)
     if(WIN32)
-        add_custom_command(TARGET ${qt} POST_BUILD
+        add_custom_command(TARGET ${name} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:arrow_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
+                "$<TARGET_FILE_DIR:${name}>"
         )
-        add_custom_command(TARGET ${qt} POST_BUILD
+        add_custom_command(TARGET ${name} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:arrow_cuda_shared>"
-                "$<TARGET_FILE_DIR:${qt}>"
+                "$<TARGET_FILE_DIR:${name}>"
         )
     endif()
-    add_test(NAME ${qt} COMMAND ${qt})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+foreach(qt
+    test_qwen_dense_shuffle_reduce
+    test_qwen_dense_mlp
+    test_qwen_dense_nvfp4
+    test_qwen_nvfp4_tile_gemm
+    test_qwen_nvfp4_gemv
+    test_lsx_nvfp4_dispatch
+    test_lsx_gemv
+    test_perf_knobs_apply
+    test_qwen_dense_full_attn
+    test_qwen_dense_full_attn_parallel
+    test_qwen_dense_linear_attn
+    test_qwen_dense_fused_mlp
+    test_qwen_dense_fused_linear_attn
+    test_blackwell_micro_gemm
+)
+    lsx_add_qwen_cu_test(${qt})
 endforeach()
 
 # ── Qwen3.5-9B model test (factory + IModel + generation) ──────────────
