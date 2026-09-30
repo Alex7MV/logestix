@@ -8,6 +8,7 @@
 #include "lsx_kernels_quant.cuh"
 #include "glm_moe_flash_constants.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/log.h"
 #include "deepseek_moe_load.cuh"  // run_hc_pre/post/head, run_expand_hc (lsxcommon_cu)
 #include "lsx_kernels_act.cuh"
 #include "lsxcommon/qwen_moe_exp_inference.h"  // RunExpQsaAttention reuse
@@ -23,6 +24,16 @@ namespace lsxcommon {
 namespace glm_moe_flash {
 namespace {
 __device__ int flash_dbg_on = 0;
+
+// Debug-only trace sink (gated by flash_dbg_on / LSX_TRACE_FLASH). Formats
+// through snprintf into the shared spdlog bridge instead of stdio directly.
+template <typename... Args>
+void FlashDbg(const char *fmt, Args... args)
+{
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), fmt, args...);
+    log::info(buf);
+}
 
 // Host-side mirror of flash_dbg_on, assigned right next to the symbol upload.
 //
@@ -269,7 +280,7 @@ cudaError_t FlashGemmV16(cudaStream_t stream, const __half *w,
 {
     static const bool dbg = std::getenv("LSX_FLASH_GEMV_DEBUG") != nullptr;
     if (dbg)
-        std::fprintf(stderr, "[gemv] w=%p x=%p y=%p k=%d n=%d\n", (const void *)w,
+        FlashDbg("[gemv] w=%p x=%p y=%p k=%d n=%d\n", (const void *)w,
                      (const void *)x, (void *)y, k_dim, n_dim);
     const int warps = 8;
     const int blocks = (n_dim + warps - 1) / warps;
@@ -1299,7 +1310,7 @@ cudaError_t RunFlashRouterTop8F16(cudaStream_t stream, const uint8_t *d_gate,
     if (std::getenv("LSX_TRACE_FLASH")) {
         __half hx[4];
         cudaMemcpy(hx, d_x, sizeof(hx), cudaMemcpyDeviceToHost);
-        std::fprintf(stderr, "[pre-rk] x0=%.6f x1=%.6f\n",
+        FlashDbg("[pre-rk] x0=%.6f x1=%.6f\n",
                      __half2float(hx[0]), __half2float(hx[1]));
     }
     const size_t scratch = static_cast<size_t>(experts) * 2 * sizeof(float);
@@ -1759,7 +1770,7 @@ cudaError_t RunGlmFlashGeneration(
         const int kv_pos = step;  // 1 token/step for both KDA and DSA
         h_ids_pinned[0] = cur;
         if (std::getenv("LSX_TRACE_FLASH"))
-            std::fprintf(stderr, "[step] step=%d cur=%d\n", step, cur);
+            FlashDbg("[step] step=%d cur=%d\n", step, cur);
         cudaMemcpyAsync(d_ids, h_ids_pinned, 4, cudaMemcpyHostToDevice,
                         stream);
         // Decode-loop contract: the token id feeds the very first kernel of
@@ -1794,8 +1805,7 @@ cudaError_t RunGlmFlashGeneration(
                     if (std::isnan(v)) ++nan;
                     sm += v;
                 }
-                std::fprintf(stderr,
-                             "[stage] pre-l=%d moe=%d kda=%d s0=%.6f "
+                FlashDbg("[stage] pre-l=%d moe=%d kda=%d s0=%.6f "
                              "mean=%.6f nan=%d\n",
                              l, (int) lw.is_moe, (int) lw.is_kda, s0,
                              sm / HCH, nan);
@@ -1831,7 +1841,7 @@ cudaError_t RunGlmFlashGeneration(
                 if (e != cudaSuccess) { result.error_msg = "dsa"; break; }
             }
             if (std::getenv("LSX_TRACE_FLASH")) {
-                std::fprintf(stderr, "[attn] post-l=%d\n", l);
+                FlashDbg("[attn] post-l=%d\n", l);
             }
             if (std::getenv("LSX_TRACE_FLASH")) {
                 std::vector<float> ha(H);
@@ -1843,7 +1853,7 @@ cudaError_t RunGlmFlashGeneration(
                     if (std::isnan(v)) ++nan;
                     hmean += v;
                 }
-                std::fprintf(stderr, "[attn-out] l=%d mean=%.6f nan=%d\n",
+                FlashDbg("[attn-out] l=%d mean=%.6f nan=%d\n",
                              l, hmean / H, nan);
             }
             // ── attn hc_post (module out FP32) ──
@@ -1868,8 +1878,7 @@ cudaError_t RunGlmFlashGeneration(
                     if (std::isnan(v)) ++nan;
                     hmean += v;
                 }
-                std::fprintf(stderr,
-                             "[state2] l=%d mean=%.6f nan=%d\n", l,
+                FlashDbg("[state2] l=%d mean=%.6f nan=%d\n", l,
                              hmean / HCH, nan);
             }
             // ── ffn hc_pre ──
@@ -1895,8 +1904,7 @@ cudaError_t RunGlmFlashGeneration(
                         if (std::isnan(v)) ++nan;
                         hmean += v;
                     }
-                    std::fprintf(stderr,
-                                 "[router-in] l=%d mean=%.6f nan=%d\n", l,
+                    FlashDbg("[router-in] l=%d mean=%.6f nan=%d\n", l,
                                  hmean / H, nan);
                 }
                 // Router (FP16 activations, BF16 gate bits).
@@ -1973,8 +1981,7 @@ cudaError_t RunGlmFlashGeneration(
                     if (std::isnan(v)) ++nan;
                     hmean += v;
                 }
-                std::fprintf(stderr,
-                             "[ffn] post-l=%d mean=%.6f nan=%d\n", l,
+                FlashDbg("[ffn] post-l=%d mean=%.6f nan=%d\n", l,
                              hmean / H, nan);
             }
             // ── ffn hc_post ──
@@ -1986,7 +1993,7 @@ cudaError_t RunGlmFlashGeneration(
                 { result.error_msg = "hc_post2"; break; }
         }
         if (std::getenv("LSX_TRACE_FLASH"))
-            std::fprintf(stderr, "[loopend] e=%d err='%s'\n", (int) e,
+            FlashDbg("[loopend] e=%d err='%s'\n", (int) e,
                          result.error_msg.c_str());
         if (e != cudaSuccess) {
             step_err = e;
@@ -2044,8 +2051,7 @@ cudaError_t RunGlmFlashGeneration(
                         break;
                     }
             }
-            std::fprintf(stderr,
-                         "[trace] step=%d mean=%.4f min=%.3f max=%.3f "
+            FlashDbg("[trace] step=%d mean=%.4f min=%.3f max=%.3f "
                          "top: %d:%.3f %d:%.3f %d:%.3f %d:%.3f\n",
                          step, hmean / V, hmin, hmax, idx[0], val[0],
                          idx[1], val[1], idx[2], val[2], idx[3], val[3]);
