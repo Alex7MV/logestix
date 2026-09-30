@@ -4157,6 +4157,7 @@ set_tests_properties(test_mimo_moe_expert_cache PROPERTIES LABELS inference)
 # MiMo non-GEMM kernel parity (RMSNorm / router / SwiGLU) — CUDA OBJECT lib.
 add_library(test_mimo_cu OBJECT
     test_mimo_moe_kernels.cu
+    test_mimo_moe_attn.cu
 )
 set_target_properties(test_mimo_cu PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF
