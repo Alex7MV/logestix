@@ -50,11 +50,12 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   `deepseek_moe_v41_load.cu:405` log a warning and fall back to
   `arrow::io::MemoryMappedFile` views, which are cross-platform. The cost is
   pageable (unpinned) host memory, so H2D for expert residency is slower.
-- **Choose one:** implement the Windows path (replace anonymous `mmap` chunks
-  with `VirtualAlloc(MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE)` +
-  `cudaHostRegister`, and free with `VirtualFree` — note `MAP_NORESERVE`
-  semantics differ from `VirtualAlloc`, so the choice must be deliberate), or
-  platform-gate the test and document the degradation.
+- **Resolved (platform-gate):** the pinning assertions in
+  `tests/test_kimi_moe_loader.cpp` now compile only on Unix
+  (`__unix__ || __APPLE__`); on Windows they are replaced by a `WARN` plus a
+  check that `pinned_pools` is empty, so the pageable fallback is explicit
+  rather than a red test. Implementing the `VirtualAlloc` path stays a future
+  option; it cannot be compiled or tested from the Linux host.
 - Blast radius: every family using it — kimi, glm, gemma, gigachat, deepseek
   v41. The expert stores are hundreds of GiB, so this only bites on real
   models; the synthetic fixtures never exercise it.
@@ -91,6 +92,15 @@ precedent exists. Right now nothing distinguishes "too slow for the target" from
   `Load`/`Unload`, never generation, so the debug branch cannot be reached.
 - Needs a generation path for glm-flash (converted fixture + `Infer`), which is
   a larger piece of work than the fix itself.
+- **Resolved:** `tests/test_glm_moe_flash_selfcheck.cpp` now carries a
+  `[glm-flash][model][generation][real-model]` case that loads the real
+  converted model, sets `LSX_TRACE_FLASH=1` (RAII-guarded), and calls
+  `Infer` directly. `RunGlmFlashGeneration` is now driven end-to-end and the
+  branch `6108ecf` fixed (host mirror `flash_dbg_on_host` -> launch
+  `flash_dbg_probe_kernel`) is executed — the probe output is observed. The
+  case is real-vault-gated (SKIP without the model), matching the
+  selfcheck/perf-suite rule that vault integration never lands in the
+  loader/model stages.
 
 ### D2. Hardcoded POSIX paths make tests unreachable on Windows
 - `tests/test_kimi_moe_tc_diag.cu:88,92` — `/tmp/kimi_diag_l1.bin`, guarded by
@@ -136,6 +146,46 @@ precedent exists. Right now nothing distinguishes "too slow for the target" from
 - **Open:** worth a configure-time check (fail at `find_package(CUDAToolkit)`
   if header and runtime versions disagree) so this is caught before a build
   rather than by a test after it.
+
+---
+
+## Follow-up (2026-09-30, Linux / RTX 5090 host)
+
+A separate machine (Linux, RTX 5090, GDDR7 ~1.8 TB/s, CUDA 13.4) worked the
+list above. Status per item:
+
+- **A1 — not reproducible here.** `test_qwen_moe_kernels` and
+  `test_ornith_moe_kernels` both pass (865 assertions / 13 cases each) and
+  `compute-sanitizer --tool memcheck` reports 0 errors for each. Either a
+  Windows/5060 Ti-specific fault or one already removed by the Windows build
+  repair; it still needs a repro on that box before any kernel change.
+- **B1 — resolved** by platform-gating the test (see the decision above).
+- **C — passes on this host.** All bandwidth/latency budgets attributed to the
+  5060 Ti are green on the 5090 (they are calibrated to the HBM target, and the
+  5090 is close enough). No policy change made; the open question remains for
+  the 5060 Ti dev box.
+- **D1 — fixed.** A real-model generation case now drives
+  `RunGlmFlashGeneration` with the `LSX_TRACE_FLASH` debug branch set (see the
+  D1 section above).
+- **D2 — fixed.** The three hardcoded POSIX temp paths now use
+  `std::filesystem::temp_directory_path()`: `test_kimi_moe_tc_diag.cu`,
+  `test_mosaic_network.cpp`, `test_path_registry.cpp`. The Kimi dump producer
+  (`kimi_moe_inference.cu`) writes to the same temp path so the capture is
+  reachable on Windows.
+- **E1 — fixed.** `test_qwen_cu` (one OBJECT lib linked into 14 executables) is
+  replaced by `lsx_add_qwen_cu_test()`, one OBJECT lib per `.cu` file. The 14
+  executables now have distinct sizes and run only their own cases
+  (`test_lsx_gemv`: 2 vs the previous 58). Target names and labels unchanged.
+- **F1 — not reproduced.** 10 consecutive standalone runs of
+  `test_gigachat_moe_devkernels` all pass; suspect the original one-off was GPU
+  contention, but keep watching.
+- **G1 — fixed.** `CMakeLists.txt` now fails configure when
+  `CUDAToolkit_VERSION` and `CMAKE_CUDA_COMPILER_VERSION` disagree (major.minor),
+  with a message pointing at the stale-cache remedy, so the mismatch is caught
+  before a build instead of by `test_cuda_toolkit_guard` afterwards.
+
+Verification on the follow-up host: full build clean; `fast` 72/72;
+`convert` 17/17; the 14 split `inference` targets 14/14.
 
 ---
 
