@@ -57,6 +57,11 @@ struct ExpertStore {
     size_t max_open = 65536;
     int num_layers = 0;
     int experts_per_layer = 0;
+    // Layers [0, first_moe_layer) are dense (no routed experts, no files on
+    // disk) and are skipped when enumerating/opening the store. The flat index
+    // math stays full-layer (layer*experts_per_layer+eid) so callers need no
+    // remap; the dense slots just stay empty.
+    int first_moe_layer = 0;
     std::string error_msg;
 
     // Diagnostics: ParseFile invocation / success counters (tests, loaders).
@@ -99,6 +104,7 @@ struct ExpertStore {
             exp_dir = fs::path(model_path) / "experts";
 
         for (int layer = 0; layer < num_layers; ++layer) {
+            if (layer < first_moe_layer) continue;  // dense prefix, no files
             for (int exp = 0; exp < experts_per_layer; ++exp) {
                 size_t idx = static_cast<size_t>(layer) *
                                  static_cast<size_t>(experts_per_layer) +
@@ -110,6 +116,7 @@ struct ExpertStore {
 
         // Warm the cache up to max_open (matches the per-model loop order).
         for (size_t idx = 0; idx < paths.size() && lru.size() < max_open; ++idx) {
+            if (paths[idx].empty()) continue;  // dense-prefix slot
             if (ParseFile(idx)) lru.push_back(idx);
         }
         return true;
@@ -138,6 +145,7 @@ struct ExpertStore {
             for (;;) {
                 const size_t idx = next.fetch_add(1);
                 if (idx >= total) return;
+                if (paths[idx].empty()) continue;  // dense-prefix slot
                 if (ParseFile(idx)) ok_cnt.fetch_add(1);
             }
         };

@@ -164,7 +164,8 @@ inline int GcExpertCacheSlots(std::size_t free_bytes,
 
 // ── Device surface (src/gigachat_moe_expert_cache.cpp) ─────────────────────
 void LoadGcExpertStore(const std::string &model_path, int num_layers,
-                       int experts_per_layer, GcExpertStore &store);
+                       int first_moe_layer, int experts_per_layer,
+                       GcExpertStore &store);
 
 GcExpertSlotLayout PlanGcExpertSlotFromStore(const GcExpertStore &store);
 

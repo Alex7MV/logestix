@@ -235,3 +235,38 @@ TEST_CASE("gigachat expert cache brings up the routed store",
     FreeGcExpertCache(cache);
     cudaStreamDestroy(stream);
 }
+
+TEST_CASE("gigachat expert store never enumerates the dense prefix",
+          "[gigachat][load][inference]")
+{
+    if (cudaFree(0) != cudaSuccess) SKIP("no CUDA device");
+    const auto root = BuildConverted();
+
+    GigaChatIndex idx;
+    std::string err;
+    REQUIRE(LoadGigaChatIndex(root.string(), idx, err));
+    REQUIRE(idx.first_k_dense_replace > 0);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    GcExpertCache cache;
+    REQUIRE(InitGigaChatExpertCache(root.string(), idx.num_layers,
+                                    idx.first_k_dense_replace, idx.num_experts,
+                                    idx.num_experts_per_tok, /*slots_override=*/2,
+                                    stream, cache, err));
+
+    // The first_k_dense_replace layers are dense: they have no expert files, so
+    // the store must not build paths for them or attempt to open them.
+    const int epl = idx.num_experts;
+    for (int l = 0; l < idx.first_k_dense_replace; ++l)
+        for (int e = 0; e < epl; ++e)
+            CHECK(cache.store.paths[static_cast<std::size_t>(l) * epl + e]
+                      .empty());
+    CHECK(cache.store.parse_calls ==
+          static_cast<std::int64_t>(idx.num_layers - idx.first_k_dense_replace) *
+              epl);
+
+    FreeGcExpertCache(cache);
+    cudaStreamDestroy(stream);
+}

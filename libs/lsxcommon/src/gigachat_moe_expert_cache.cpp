@@ -9,12 +9,14 @@
 namespace lsxcommon::gigachat {
 
 void LoadGcExpertStore(const std::string &model_path, int num_layers,
-                       int experts_per_layer, GcExpertStore &store)
+                       int first_moe_layer, int experts_per_layer,
+                       GcExpertStore &store)
 {
     store.log_prefix = "[gigachat_load] ";
     store.mmap_fail_verb = "gigachat expert mmap fail ";
     store.num_layers = num_layers;
     store.experts_per_layer = experts_per_layer;
+    store.first_moe_layer = first_moe_layer;
     // 9472 files fit under the 65536 mmap cap: the store stays fully resident
     // and a slot miss is a pure H2D copy.
     store.Load(model_path, /*fallback=*/true);
@@ -66,7 +68,8 @@ bool InitGigaChatExpertCache(const std::string &model_path, int num_layers,
         cache.moe_index_of_layer[static_cast<std::size_t>(l)] =
             l - first_k_dense;
 
-    LoadGcExpertStore(model_path, num_layers, experts_per_layer, cache.store);
+    LoadGcExpertStore(model_path, num_layers, first_k_dense, experts_per_layer,
+                      cache.store);
     if (cache.store.entries.empty())
     {
         error = "gigachat expert store is empty";
