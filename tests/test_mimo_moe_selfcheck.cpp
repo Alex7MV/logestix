@@ -106,19 +106,7 @@ TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
         return r.output_text;
     };
 
-    // Raw BPE (no chat frame).
-    {
-        std::vector<int32_t> ids(256, 0);
-        size_t cap = ids.size();
-        const char *p = "The capital of France is";
-        const int32_t n = lsxcommon::arrow_tokenizer_encode(
-            m->Tokenizer(), p, std::strlen(p), ids.data(), &cap);
-        REQUIRE(n > 0);
-        ids.resize(static_cast<size_t>(n));
-        const std::string out = run(ids);
-        lsxcommon::log::info("[diag] raw prompt output: " + out);
-        INFO("raw: " << out);
-    }
+    // (raw run removed for a clean framed-only dump)
     // ChatML frame.
     {
         std::vector<int32_t> ids;
@@ -136,26 +124,20 @@ TEST_CASE("MiMo diagnostic: raw vs ChatML-framed prompt output",
         lsxcommon::log::info("[diag] framed prompt output: " + out);
         INFO("framed: " << out);
     }
-    // Single-token full-model logits diagnostic (pos 0; rope identity).
+    {
+        lsxcommon::ModelRequest rq; rq.input_ids = {151644,872,198,785,6722,315,9625,374,151645,151644,77091,198}; rq.max_gen_tokens = 1;
+        auto r = m->Infer(rq);
+        std::vector<int> idx(r.final_logits.size()); for (size_t i=0;i<idx.size();++i) idx[i]=(int)i;
+        std::partial_sort(idx.begin(), idx.begin()+8, idx.end(), [&](int a,int b){return r.final_logits[a]>r.final_logits[b];});
+        std::string s; for (int i=0;i<8;++i) s += std::to_string(idx[i])+"("+std::to_string(r.final_logits[idx[i]])+") ";
+        lsxcommon::log::info("[diag] framed top8: " + s);
+    }
     {
         lsxcommon::ModelRequest rq;
-        rq.input_ids = {785};
-        rq.max_gen_tokens = 1;
+        rq.input_ids = {151644,8948,198,2610,525,264,10950,17847,13,151645,151644,872,198,785,6722,315,9625,374,151645,151644,77091,198};
+        rq.max_gen_tokens = 200;
         auto r = m->Infer(rq);
-        REQUIRE(r.ok);
-        std::vector<int> idx(r.final_logits.size());
-        for (size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
-        if (idx.size() >= 5) {
-            std::partial_sort(idx.begin(), idx.begin() + 5, idx.end(),
-                              [&](int a, int b) {
-                                  return r.final_logits[a] > r.final_logits[b];
-                              });
-            std::string s;
-            for (int i = 0; i < 5; ++i)
-                s += std::to_string(idx[i]) + "(" +
-                     std::to_string(r.final_logits[idx[i]]) + ") ";
-            lsxcommon::log::info("[diag] single-token top5: " + s);
-        }
+        lsxcommon::log::info("[diag] system-prompt output: " + r.output_text);
     }
     m->Unload();
 }

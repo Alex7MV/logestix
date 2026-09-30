@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <random>
 #include <cstring>
 #include <vector>
 
@@ -492,6 +493,13 @@ bool MiMoV26FlashModel::ForwardOne(int token, int pos, float *logits)
                                    kv_v_[l], d_attn) != cudaSuccess)
             return false;
         dbg("attn", d_attn, topo_.heads * topo_.v_head_dim);
+        if (l == 0 && std::getenv("LSX_MIMO_DUMP_DIR") && std::getenv("LSX_MIMO_TRACE"))
+        {
+            const int kh = L.is_swa ? topo_.kv_heads_swa : topo_.kv_heads_ga;
+            const int64_t n = static_cast<int64_t>(pos + 1) * kh * topo_.head_dim;
+            FILE *f = std::fopen((std::string(std::getenv("LSX_MIMO_DUMP_DIR")) + "/k_cache_p" + std::to_string(pos) + ".bin").c_str(), "wb");
+            if (f) { cudaStreamSynchronize(st); std::vector<__half> hb(static_cast<size_t>(n)); cudaMemcpy(hb.data(), kv_k_[0], static_cast<size_t>(n) * 2, cudaMemcpyDeviceToHost); std::fwrite(hb.data(), 2, static_cast<size_t>(n), f); std::fclose(f); }
+        }
         if (gemv::RunLxGemmVec(st, L.d_o_proj, d_attn, 1, hidden, o_size,
                                gemv::LxDtype::kF16, gemv::LxDtype::kF16, 1.0f,
                                d_oproj, gemv::LxDtype::kF16, 0.0f) != cudaSuccess)
@@ -732,12 +740,43 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
         if (!ForwardOne(t, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
         ++pos;
     }
+    std::mt19937 rng(1234);
     auto argmax = [&]() {
         if (cudaMemcpyAsync(host_logits.data(), d_logits,
                             static_cast<size_t>(topo_.vocab) * 4,
                             cudaMemcpyDeviceToHost, st) != cudaSuccess)
             return -1;
         cudaStreamSynchronize(st);
+        if (std::getenv("LSX_MIMO_SAMPLE") != nullptr) {
+            const float temp = 1.0f, top_p = 0.95f;
+            int best = 0;
+            for (int i = 1; i < topo_.vocab; ++i)
+                if (host_logits[i] > host_logits[best]) best = i;
+            std::vector<float> p(host_logits.size());
+            float mx = host_logits[best];
+            double sum = 0.0;
+            for (size_t i = 0; i < p.size(); ++i) {
+                p[i] = std::exp((host_logits[i] - mx) / temp);
+                sum += p[i];
+            }
+            std::vector<int> order(p.size());
+            for (size_t i = 0; i < order.size(); ++i) order[i] = int(i);
+            std::partial_sort(order.begin(), order.end(), order.end(),
+                              [&](int a, int b) { return p[a] > p[b]; });
+            double cum = 0.0;
+            int cut = (int)order.size();
+            for (size_t i = 0; i < order.size(); ++i) {
+                cum += p[order[i]] / sum;
+                if (cum >= top_p) { cut = int(i) + 1; break; }
+            }
+            double r = std::uniform_real_distribution<double>(0.0, cum)(rng);
+            double acc = 0.0;
+            for (int i = 0; i < cut; ++i) {
+                acc += p[order[i]] / sum;
+                if (acc >= r) return order[i];
+            }
+            return order[0];
+        }
         int best = 0;
         for (int i = 1; i < topo_.vocab; ++i)
             if (host_logits[i] > host_logits[best]) best = i;
