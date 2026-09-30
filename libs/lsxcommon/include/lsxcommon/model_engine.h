@@ -63,11 +63,11 @@ private:
     // from initialized_ so a direct InitializeEngine()/ShutdownEngine() pair
     // keeps its unconditional toggle semantics.
     //
-    // Mixing the two entry points is safe: a direct InitializeEngine() that
-    // actually brings the engine up sets direct_owned_, and a Session release
-    // then skips the shutdown so it cannot tear the engine down under the
-    // direct caller. A repeated InitializeEngine() is a no-op and takes no
-    // second claim, and ShutdownEngine() clears the claim unconditionally.
+    // Mixing the two entry points is safe in both directions: every direct
+    // InitializeEngine() sets direct_owned_ (even on top of a live Session), and
+    // a Session release then skips the shutdown so it cannot tear the engine
+    // down under the direct caller. ShutdownEngine() clears the claim
+    // unconditionally.
     void AcquireSession();
     void ReleaseSession();
     // Idempotent bring-up shared by InitializeEngine() and AcquireSession()

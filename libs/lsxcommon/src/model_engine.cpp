@@ -25,13 +25,11 @@ void InferenceEngine::EnsureEngineUp()
 
 bool InferenceEngine::InitializeEngine()
 {
-    const bool was_up = IsInitialized();
     EnsureEngineUp();
-    if (!was_up) {
-        // A direct init is a claim the Session counter does not track. Record
-        // it so a later Session release leaves this caller's engine running.
-        direct_owned_.store(true, std::memory_order_release);
-    }
+    // Every direct init is an explicit ownership claim, even when a Session
+    // already holds the engine up: a later Session release must not tear the
+    // engine down under the direct caller. ShutdownEngine() clears it.
+    direct_owned_.store(true, std::memory_order_release);
     return true;
 }
 

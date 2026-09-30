@@ -362,3 +362,27 @@ TEST_CASE("model_engine: a direct ShutdownEngine clears the direct claim", "[mod
     }
     REQUIRE_FALSE(eng.IsInitialized());
 }
+
+// The mirror direction: a Session brings the engine up, then a direct
+// InitializeEngine() joins. That direct call is an ownership claim, so the
+// Session release must not tear the engine down under it.
+TEST_CASE("model_engine: a direct InitializeEngine over a live Session keeps the "
+          "engine up after the Session releases",
+          "[model_engine]")
+{
+    auto &eng = lsxcommon::InferenceEngine::Instance();
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+
+    {
+        lsxcommon::InferenceEngine::Session session;
+        REQUIRE(eng.IsInitialized());
+        REQUIRE(eng.InitializeEngine());   // direct caller joins mid-Session
+        REQUIRE(eng.IsInitialized());
+    }
+    // The Session released, but the direct caller still owns the engine.
+    REQUIRE(eng.IsInitialized());
+
+    eng.ShutdownEngine();
+    REQUIRE_FALSE(eng.IsInitialized());
+}
