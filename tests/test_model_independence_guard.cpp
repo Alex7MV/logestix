@@ -82,6 +82,7 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::ornith::frozen"},
     {"granite-4.2-30b", "../include/lsxcommon/granite_dense_constants.h",
      "lsxcommon::granite::frozen"},
+    {"mimo-v2.6-flash-rl", "mimo_moe_constants.h", "lsxcommon::mimo::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -169,6 +170,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"qwen_dense_model.h", "static constexpr int kHiddenSize"},
         {"qwen_dense_27b_model.h", "static constexpr int kHiddenSize"},
         {"../include/lsxcommon/granite_dense_constants.h", "namespace frozen {"},
+        {"mimo_moe_constants.h", "namespace frozen {"},
     };
     for (const auto &kv : owner) {
         const std::string text = ReadFile(PassportPath(kv.first.c_str()));
@@ -279,6 +281,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
         "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
         "granite_dense_model.cpp",     // granite-4.2-30b
+        // mimo_moe_model.cpp row is added with the model class (Task 9).
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
