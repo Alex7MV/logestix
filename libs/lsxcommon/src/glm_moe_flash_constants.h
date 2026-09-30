@@ -53,6 +53,22 @@ inline constexpr int kDsaLayerIds[11] = {
 inline constexpr int kKdaLayerCount = 34;
 inline constexpr int kDsaLayerCount = 11;
 
+// Frozen-geometry passport invariants (MODEL INGEST INVARIANT step 3).
+static_assert(kKdaLayerCount + kDsaLayerCount == kLayers,
+              "KDA + DSA layer tables must cover all main layers");
+static_assert(kKdaLayerCount == sizeof(kKdaLayerIds) / sizeof(kKdaLayerIds[0]),
+              "KDA layer table length mismatch");
+static_assert(kDsaLayerCount == sizeof(kDsaLayerIds) / sizeof(kDsaLayerIds[0]),
+              "DSA layer table length mismatch");
+static_assert(kMtpLayer == kLayers, "MTP layer follows the last main layer");
+static_assert(kMoeFirstLayer == kFirstKDense,
+              "MoE starts where the dense MLP prefix ends");
+static_assert(kTopK <= kNumExperts, "top-k exceeds expert count");
+static_assert(kMoeIntermediate > 0 && kDenseIntermediate > 0,
+              "bad MoE/MLP geometry");
+static_assert(kRoutedScalingDen != 0, "routed scaling denominator");
+static_assert(kHidden % 128 == 0, "hidden must tile by 128");
+
 inline constexpr bool IsKdaLayer(int l)
 {
     for (int i = 0; i < kKdaLayerCount; ++i)
