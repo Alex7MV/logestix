@@ -98,11 +98,14 @@ TEST_CASE("alice synthetic convert emits logestix-alice-nvfp4", "[alice][convert
     REQUIRE(PinnedHasName(base / "pinned" / "layer_1.arrow",
                           "model.layers.1.attn_res_proj.weight"));
 
-    // Full-attention layer 3: q_proj NVFP4, q_norm BF16.
-    REQUIRE(DenseNvfp4HasName(base / "pinned" / "layer_3_nvfp4.arrow",
-                              "model.layers.3.self_attn.q_proj.weight"));
+    // Full-attention layer 3: q_proj/q_norm stay FP16 (precision policy),
+    // the shared expert stays NVFP4.
+    REQUIRE(PinnedHasName(base / "pinned" / "layer_3.arrow",
+                          "model.layers.3.self_attn.q_proj.weight"));
     REQUIRE(PinnedHasName(base / "pinned" / "layer_3.arrow",
                           "model.layers.3.self_attn.q_norm.weight"));
+    REQUIRE(DenseNvfp4HasName(base / "pinned" / "layer_3_nvfp4.arrow",
+                              "model.layers.3.mlp.shared_expert.gate_proj.weight"));
 
     // Embedding stays high precision.
     REQUIRE(PinnedHasName(base / "pinned" / "global.arrow",

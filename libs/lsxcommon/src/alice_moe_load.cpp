@@ -202,14 +202,13 @@ void FreeAlicePinnedWeights(AlicePinnedWeights &pw)
         auto free_h = [](__half *p) { if (p) cudaFree(p); };
         free_h(lw.input_norm); free_h(lw.post_norm); free_h(lw.attn_res_norm);
         free_h(lw.mlp_res_norm); free_h(lw.attn_res_proj); free_h(lw.mlp_res_proj);
-        free_h(lw.kda_fa); free_h(lw.kda_ga); free_h(lw.kda_b);
+        free_h(lw.kda_q); free_h(lw.kda_k); free_h(lw.kda_v); free_h(lw.kda_o);
+        free_h(lw.kda_fa); free_h(lw.kda_fb); free_h(lw.kda_ga); free_h(lw.kda_gb); free_h(lw.kda_b);
+        free_h(lw.fa_q); free_h(lw.fa_k); free_h(lw.fa_v); free_h(lw.fa_o);
         free_h(lw.kda_qconv); free_h(lw.kda_kconv); free_h(lw.kda_vconv);
         free_h(lw.kda_alog); free_h(lw.kda_dt); free_h(lw.kda_onorm);
         free_h(lw.fa_qnorm); free_h(lw.fa_knorm);
         free_h(lw.router_gate); free_h(lw.router_bias); free_h(lw.shared_gate);
-        lw.kda_q.Free(); lw.kda_k.Free(); lw.kda_v.Free(); lw.kda_o.Free();
-        lw.kda_fb.Free(); lw.kda_gb.Free();
-        lw.fa_q.Free(); lw.fa_k.Free(); lw.fa_v.Free(); lw.fa_o.Free();
         lw.shared_gate_proj.Free(); lw.shared_up_proj.Free();
         lw.shared_down_proj.Free();
     }
@@ -296,19 +295,19 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
             lw.attn_res_proj = H("attn_res_proj.weight");
         }
         if (lw.full) {
-            if (!W("self_attn.q_proj.weight", lw.fa_q)) return false;
-            if (!W("self_attn.k_proj.weight", lw.fa_k)) return false;
-            if (!W("self_attn.v_proj.weight", lw.fa_v)) return false;
-            if (!W("self_attn.o_proj.weight", lw.fa_o)) return false;
+            lw.fa_q = H("self_attn.q_proj.weight");
+            lw.fa_k = H("self_attn.k_proj.weight");
+            lw.fa_v = H("self_attn.v_proj.weight");
+            lw.fa_o = H("self_attn.o_proj.weight");
             lw.fa_qnorm = H("self_attn.q_norm.weight");
             lw.fa_knorm = H("self_attn.k_norm.weight");
         } else {
-            if (!W("linear_attn.q_proj.weight", lw.kda_q)) return false;
-            if (!W("linear_attn.k_proj.weight", lw.kda_k)) return false;
-            if (!W("linear_attn.v_proj.weight", lw.kda_v)) return false;
-            if (!W("linear_attn.o_proj.weight", lw.kda_o)) return false;
-            if (!W("linear_attn.f_b_proj.weight", lw.kda_fb)) return false;
-            if (!W("linear_attn.g_b_proj.weight", lw.kda_gb)) return false;
+            lw.kda_q = H("linear_attn.q_proj.weight");
+            lw.kda_k = H("linear_attn.k_proj.weight");
+            lw.kda_v = H("linear_attn.v_proj.weight");
+            lw.kda_o = H("linear_attn.o_proj.weight");
+            lw.kda_fb = H("linear_attn.f_b_proj.weight");
+            lw.kda_gb = H("linear_attn.g_b_proj.weight");
             lw.kda_fa = H("linear_attn.f_a_proj.weight");
             lw.kda_ga = H("linear_attn.g_a_proj.weight");
             lw.kda_b = H("linear_attn.b_proj.weight");
@@ -342,9 +341,7 @@ bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
         2ull;  // embed + head FP16
     pw.resident_bytes += static_cast<std::uint64_t>(pw.top.hidden_size) * 2 * 8;
     for (const auto &lw : pw.layers) {
-        add_nv(lw.kda_q); add_nv(lw.kda_k); add_nv(lw.kda_v); add_nv(lw.kda_o);
-        add_nv(lw.kda_fb); add_nv(lw.kda_gb);
-        add_nv(lw.fa_q); add_nv(lw.fa_k); add_nv(lw.fa_v); add_nv(lw.fa_o);
+
         add_nv(lw.shared_gate_proj); add_nv(lw.shared_up_proj);
         add_nv(lw.shared_down_proj);
         // small FP16 tensors (~hidden + gates)

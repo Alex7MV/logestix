@@ -225,17 +225,10 @@ ParsedAliceTensor classify_alice_tensor(const std::string &name)
 
 bool alice_tensor_is_nvfp4(AliceTensorKind kind)
 {
+    // Correctness-first precision policy: keep the KDA + attention projections
+    // in FP16 (their quantization is amplified by the KDA recurrence and the
+    // gated attention), quantize only the MoE matrices (the memory bulk).
     switch (kind) {
-    case AliceTensorKind::KdaQ:
-    case AliceTensorKind::KdaK:
-    case AliceTensorKind::KdaV:
-    case AliceTensorKind::KdaO:
-    case AliceTensorKind::KdaFB:
-    case AliceTensorKind::KdaGB:
-    case AliceTensorKind::FaQ:
-    case AliceTensorKind::FaK:
-    case AliceTensorKind::FaV:
-    case AliceTensorKind::FaO:
     case AliceTensorKind::SharedGateProj:
     case AliceTensorKind::SharedUpProj:
     case AliceTensorKind::SharedDownProj:
@@ -428,8 +421,18 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
             case AliceTensorKind::MlpResNorm:
             case AliceTensorKind::AttnResProj:
             case AliceTensorKind::AttnResNorm:
+            case AliceTensorKind::KdaQ:
+            case AliceTensorKind::KdaK:
+            case AliceTensorKind::KdaV:
+            case AliceTensorKind::KdaO:
+            case AliceTensorKind::FaQ:
+            case AliceTensorKind::FaK:
+            case AliceTensorKind::FaV:
+            case AliceTensorKind::FaO:
             case AliceTensorKind::KdaFA:
+            case AliceTensorKind::KdaFB:
             case AliceTensorKind::KdaGA:
+            case AliceTensorKind::KdaGB:
             case AliceTensorKind::KdaB:
             case AliceTensorKind::KdaQConv:
             case AliceTensorKind::KdaKConv:
@@ -449,16 +452,6 @@ arrow::Status ConvertAliceModel(const std::string &input_dir,
                 ++total_pinned;
                 break;
             }
-            case AliceTensorKind::KdaQ:
-            case AliceTensorKind::KdaK:
-            case AliceTensorKind::KdaV:
-            case AliceTensorKind::KdaO:
-            case AliceTensorKind::KdaFB:
-            case AliceTensorKind::KdaGB:
-            case AliceTensorKind::FaQ:
-            case AliceTensorKind::FaK:
-            case AliceTensorKind::FaV:
-            case AliceTensorKind::FaO:
             case AliceTensorKind::SharedGateProj:
             case AliceTensorKind::SharedUpProj:
             case AliceTensorKind::SharedDownProj: {

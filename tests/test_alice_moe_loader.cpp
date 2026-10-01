@@ -90,8 +90,8 @@ TEST_CASE("alice real converted index matches the frozen passport", "[alice][loa
     REQUIRE(pw.head != nullptr);
     REQUIRE(pw.layers.size() == 48);
     REQUIRE(pw.layers[0].input_norm != nullptr);
-    REQUIRE(pw.layers[3].fa_q.rows > 0);
-    REQUIRE(pw.layers[4].kda_q.rows > 0);
+    REQUIRE(pw.layers[3].fa_q != nullptr);
+    REQUIRE(pw.layers[4].kda_q != nullptr);
     REQUIRE(pw.resident_bytes > 0);
     lsxcommon::alice::FreeAlicePinnedWeights(pw);
 }

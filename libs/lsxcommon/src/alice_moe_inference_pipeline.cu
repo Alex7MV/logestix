@@ -207,13 +207,13 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
 
             if (lw.full) {
                 stage="fa_q";
-                e = Proj(stream, lw.fa_q, mixed, qg); if (e) return e;
+                e = ProjRaw(stream, lw.fa_q, mixed, qg, 2 * attn_len, HID); if (e) return e;
                 __half *kc = kcache + (size_t)full_idx * max_total * KVH * HD;
                 __half *vc = vcache + (size_t)full_idx * max_total * KVH * HD;
                 __half *krow = kc + (size_t)pos * KVH * HD;
                 __half *vrow = vc + (size_t)pos * KVH * HD;
-                stage="fa_k"; e = Proj(stream, lw.fa_k, mixed, krow); if (e) return e;
-                e = Proj(stream, lw.fa_v, mixed, vrow); if (e) return e;
+                stage="fa_k"; e = ProjRaw(stream, lw.fa_k, mixed, krow, KVH * HD, HID); if (e) return e;
+                e = ProjRaw(stream, lw.fa_v, mixed, vrow, KVH * HD, HID); if (e) return e;
                 cudaMemcpyAsync(posb, &pos, sizeof(int32_t),
                                 cudaMemcpyHostToDevice, stream);
                 e = qwen::RunQwenRopeCosSin(stream, posb, 1, ROT,
@@ -223,16 +223,16 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                     stream, qg, kc, vc, lw.fa_qnorm, lw.fa_knorm, cosb,
                     sinb, attn, 1, NH, KVH, HD, ROT, attn_scale, pos, nullptr);
                 if (e) return e;
-                stage="fa_o"; e = Proj(stream, lw.fa_o, attn, attn_out); if (e) return e;
+                stage="fa_o"; e = ProjRaw(stream, lw.fa_o, attn, attn_out, HID, attn_len); if (e) return e;
                 ++full_idx;
             } else {
-                stage="kda_proj"; e = Proj(stream, lw.kda_q, mixed, kq); if (e) return e;
-                e = Proj(stream, lw.kda_k, mixed, kk); if (e) return e;
-                e = Proj(stream, lw.kda_v, mixed, kv); if (e) return e;
+                stage="kda_proj"; e = ProjRaw(stream, lw.kda_q, mixed, kq, kdim, HID); if (e) return e;
+                e = ProjRaw(stream, lw.kda_k, mixed, kk, kdim, HID); if (e) return e;
+                e = ProjRaw(stream, lw.kda_v, mixed, kv, vdim, HID); if (e) return e;
                 e = ProjRaw(stream, lw.kda_fa, mixed, kfa, VD, HID); if (e) return e;
-                e = Proj(stream, lw.kda_fb, kfa, alpha); if (e) return e;
+                e = ProjRaw(stream, lw.kda_fb, kfa, alpha, kdim, VD); if (e) return e;
                 e = ProjRaw(stream, lw.kda_ga, mixed, kga, VD, HID); if (e) return e;
-                e = Proj(stream, lw.kda_gb, kga, gate); if (e) return e;
+                e = ProjRaw(stream, lw.kda_gb, kga, gate, vdim, VD); if (e) return e;
                 e = ProjRaw(stream, lw.kda_b, mixed, kb, KDAH, HID); if (e) return e;
                 const size_t stride = (size_t)3 * (2 * kdim + vdim);
                 float *hq = hist + (size_t)l * stride;
@@ -258,7 +258,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                 mul_sigmoid_kernel<<<(vdim + kBlock - 1) / kBlock, kBlock, 0,
                                      stream>>>(kout, gate, vdim);
                 e = cudaGetLastError(); if (e) return e;
-                e = Proj(stream, lw.kda_o, kout, attn_out); if (e) return e;
+                e = ProjRaw(stream, lw.kda_o, kout, attn_out, HID, vdim); if (e) return e;
             }
 
             if (!has_partial) {

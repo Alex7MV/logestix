@@ -70,9 +70,14 @@ struct AliceLayerWeights {
     __half *mlp_res_proj = nullptr;
 
     // KDA (linear_attention)
-    lsx_nvfp4::LsxNvfp4Weight kda_q, kda_k, kda_v, kda_o, kda_fb, kda_gb;
+    __half *kda_q = nullptr;  // FP16 (precision policy)
+    __half *kda_k = nullptr;
+    __half *kda_v = nullptr;
+    __half *kda_o = nullptr;
     __half *kda_fa = nullptr;
+    __half *kda_fb = nullptr;  // gate decay projection, kept FP16 (sensitive)
     __half *kda_ga = nullptr;
+    __half *kda_gb = nullptr;  // output gate projection, kept FP16
     __half *kda_b = nullptr;
     __half *kda_qconv = nullptr;
     __half *kda_kconv = nullptr;
@@ -82,7 +87,10 @@ struct AliceLayerWeights {
     __half *kda_onorm = nullptr;
 
     // Gated full attention
-    lsx_nvfp4::LsxNvfp4Weight fa_q, fa_k, fa_v, fa_o;
+    __half *fa_q = nullptr;  // FP16 (precision policy)
+    __half *fa_k = nullptr;
+    __half *fa_v = nullptr;
+    __half *fa_o = nullptr;
     __half *fa_qnorm = nullptr;
     __half *fa_knorm = nullptr;
 
