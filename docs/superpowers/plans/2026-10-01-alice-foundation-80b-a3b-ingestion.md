@@ -1,5 +1,17 @@
 # AliceAI-Foundation-80B-A3B-Base Ingestion Implementation Plan
 
+**Status: COMPLETE (2026-10-01).** All 18 tasks executed inline on
+`feat/alice-foundation-80b-a3b` (29 commits). Real checkpoint converted
+(152 GiB BF16 source → 46 GiB `logestix-alice-nvfp4`, 2745 pinned tensors +
+24 576 routed experts); SelfCheck answers Paris over 3 bit-exact cycles; perf
+baseline **37.81 t/s** perf / **10.14 t/s** bit-exact (2048 tokens, RTX 5090,
+AOCC znver4 release) — **4.1×** over the 9.19 t/s correctness baseline
+(block-parallel router top-k, then the device expert slot-LRU cache). Debug
+`fast` **78/78**, `convert` green, Alice `inference` **10/10** on real weights
+(Paris selfcheck 51 s, FSI 728 s, CODE 711 s, DET 325 s), all structural guards
+green. Deviations from this plan, and the deferred items, are listed in
+**Final status** at the end of this document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **Repository override (AGENTS.md, highest priority):** subagents are FORBIDDEN
@@ -69,7 +81,7 @@
   - vocab metadata keys added: `tokenizer_kind="sp-bpe"`, `byte_fallback` (`0|1`), `add_dummy_prefix` (`0|1`), `escape_whitespaces` (`0|1`); `byte_to_token_id` for sp-bpe maps byte `b` to the id of piece `<0xXX>`.
   - `ArrowTokenizerDb` gains `int32_t tokenizer_kind = 0;` (`0` = `gpt2-byte-bpe`, `1` = `sp-bpe`).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `tests/test_alice_tokenizer.cpp`:
 ```cpp
@@ -116,12 +128,12 @@ TEST_CASE("sp-bpe builder parses the real tokenizer.model", "[tokenizer][fast]")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cmake --preset linux-debug && cmake --build --preset linux-debug --target test_alice_tokenizer`
 Expected: link error / FAIL — `BuildTokenizerArrowFilesSentencePiece` and `tokenizer_kind` do not exist.
 
-- [ ] **Step 3: Add the `tokenizer_kind` field**
+- [x] **Step 3: Add the `tokenizer_kind` field**
 
 In `libs/lsxcommon/include/lsxcommon/tokenizer.h`, inside `struct ArrowTokenizerDb` after `int32_t bos_id = -1, eos_id = -1, pad_id = -1;` add:
 ```cpp
@@ -137,7 +149,7 @@ In `load_tokenizer_metadata` (`tokenizer.cpp`) add, next to the other metadata r
 ```
 Add to `valid()`: nothing (kind 0 default preserves every existing model).
 
-- [ ] **Step 4: Implement the protobuf parser + artifact writer**
+- [x] **Step 4: Implement the protobuf parser + artifact writer**
 
 In `libs/lsxcommon/src/tokenizer_convert.cpp` add (declare in `tokenizer_convert.h`):
 
@@ -180,12 +192,12 @@ arrow::Status BuildTokenizerArrowFilesSentencePiece(
 ```
 Follow the write pattern of `BuildTokenizerArrowFiles` in the same file (schema `MakeBatch` + `WriteRecordBatchToFile`). Parse the real checkpoint's header to confirm trainer field numbers before finalizing (already audited: `model_type`=field 3, value 2; `byte_fallback` field 21 value 1; normalizer name field 1 = `identity`, add_dummy_prefix field 3 value 1).
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `LSX_TEST_ALICE_ROOT=/mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base ctest --preset linux-debug -R test_alice_tokenizer --output-on-failure`
 Expected: PASS (or SKIP if root unset).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/tokenizer.h libs/lsxcommon/src/tokenizer_convert.cpp libs/lsxcommon/src/tokenizer.cpp tests/test_alice_tokenizer.cpp tests/CMakeLists.txt
@@ -204,7 +216,7 @@ git commit -m "feat: model-neutral sentencepiece-bpe tokenizer artifact builder"
 - Consumes: `ArrowTokenizerDb.tokenizer_kind == 1`, `token_offsets`/`token_bytes`, the derived merge table, `byte_to_token_id`.
 - Produces: `arrow_tokenizer_encode` / `arrow_tokenizer_decode` transparently handle SP-BPE when `tokenizer_kind == 1`.
 
-- [ ] **Step 1: Write the golden capture tool**
+- [x] **Step 1: Write the golden capture tool**
 
 `tools/alice_tokenize_golden.py`:
 ```python
@@ -301,12 +313,12 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 2: Generate the goldens**
+- [x] **Step 2: Generate the goldens**
 
 Run: `python3 tools/alice_tokenize_golden.py /mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base --out tests/fixtures/tokenizer/alice.json`
 Expected: `wrote tests/fixtures/tokenizer/alice.json: 5 cases`. If `tokenizers` import fails, stop and report — do not fabricate goldens.
 
-- [ ] **Step 3: Write the failing encode/decode test**
+- [x] **Step 3: Write the failing encode/decode test**
 
 Append to `tests/test_alice_tokenizer.cpp`:
 ```cpp
@@ -327,12 +339,12 @@ TEST_CASE("sp-bpe encode matches committed goldens", "[tokenizer][fast]")
 ```
 Use the existing JSON parsing convention in this repo (`simdjson`) rather than adding a dependency.
 
-- [ ] **Step 4: Run test to verify it fails**
+- [x] **Step 4: Run test to verify it fails**
 
 Run: `LSX_TEST_ALICE_ROOT=/mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base ctest --preset linux-debug -R test_alice_tokenizer --output-on-failure`
 Expected: FAIL — encode still uses the GPT-2 byte path.
 
-- [ ] **Step 5: Implement `sp_bpe_encode` / `sp_bpe_decode`**
+- [x] **Step 5: Implement `sp_bpe_encode` / `sp_bpe_decode`**
 
 In `tokenizer.cpp` add a dispatch at the top of both public paths:
 ```cpp
@@ -346,17 +358,17 @@ In `tokenizer.cpp` add a dispatch at the top of both public paths:
 ```
 Mirror the two-pass structure of `arrow_tokenizer_encode` (count then emit) and reuse `arrow_tokenizer_lookup` for specials. `byte_to_token_id` already maps bytes to `<0xXX>` ids.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `LSX_TEST_ALICE_ROOT=/mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base ctest --preset linux-debug -R test_alice_tokenizer --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 7: Verify existing tokenizers are unaffected**
+- [x] **Step 7: Verify existing tokenizers are unaffected**
 
 Run: `ctest --preset linux-debug -R "token|qwen_moe_convert|phi_dense_convert" --output-on-failure`
 Expected: PASS — kind 0 default preserves GPT-2 byte-level behaviour.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add libs/lsxcommon/src/tokenizer.cpp tools/alice_tokenize_golden.py tests/fixtures/tokenizer/alice.json tests/test_alice_tokenizer.cpp
@@ -379,7 +391,7 @@ git commit -m "feat: sentencepiece-bpe encode/decode runtime with goldens"
 **Interfaces:**
 - Produces: namespace `lsxcommon::alice::frozen` constants (see below); `kType` string lives in the model class (Task D1).
 
-- [ ] **Step 1: Write the failing passport test**
+- [x] **Step 1: Write the failing passport test**
 
 `tests/test_alice_moe_model.cpp`:
 ```cpp
@@ -413,12 +425,12 @@ TEST_CASE("alice passport matches the audited checkpoint", "[alice][fast]")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cmake --preset linux-debug && cmake --build --preset linux-debug --target test_alice_moe_model`
 Expected: FAIL — header not found.
 
-- [ ] **Step 3: Write the passport header**
+- [x] **Step 3: Write the passport header**
 
 `libs/lsxcommon/src/alice_moe_constants.h`:
 ```cpp
@@ -479,12 +491,12 @@ static_assert(kTopK > 0 && kTopK <= kNumExperts, "bad top-k");
 } // namespace lsxcommon::alice
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cmake --build --preset linux-debug --target test_alice_moe_model && ctest --preset linux-debug -R test_alice_moe_model --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Extend the naming guard**
+- [x] **Step 5: Extend the naming guard**
 
 In `tests/test_code_naming_guard.cpp`:
 - `SchemeRegex()`: change `fam` to
@@ -492,7 +504,7 @@ In `tests/test_code_naming_guard.cpp`:
 - `FamilyStems()`: add `"alice"`.
 - `AllowedCommon()`: add `"alice_tool_format"`.
 
-- [ ] **Step 6: Extend the independence guard**
+- [x] **Step 6: Extend the independence guard**
 
 In `tests/test_model_independence_guard.cpp`:
 - `kPassports`: add
@@ -501,12 +513,12 @@ In `tests/test_model_independence_guard.cpp`:
 - `consumers` list: add `"alice_moe_model.cpp",  // alice-foundation-80b-a3b` (the file is created in Task D1; if the guard runs before D1 it fails — schedule this edit in the D1 commit instead if executing strictly, but keep it here when the file already exists).
 - Add an Alice borrowing test mirroring the ornith block: `alice_moe_constants.h`, `alice_moe_model.h`, `alice_moe_model.cpp`, `alice_moe_load.cpp`, `../include/lsxcommon/alice_moe_load.h`, `../include/lsxcommon/alice_moe_inference_attn.h` must not contain any of `qwen_moe_constants.h`, `qwen_moe_36_constants.h`, `qwen_moe_exp_constants.h`, `glm_moe_load.h`, `deepseek_moe_load.cuh`, `gemma_moe_load.h`, `kimi_moe_load.h`.
 
-- [ ] **Step 7: Run the guards**
+- [x] **Step 7: Run the guards**
 
 Run: `ctest --preset linux-debug -R "test_code_naming_guard|test_model_independence_guard" --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_constants.h tests/test_alice_moe_model.cpp tests/test_code_naming_guard.cpp tests/test_model_independence_guard.cpp tests/CMakeLists.txt
@@ -530,11 +542,11 @@ git commit -m "feat: alice frozen passport + guard registry rows"
   - `arrow::Status lsxcommon::alice::ConvertAliceModel(const std::string &input_dir, const std::string &output_dir);`
   - Index JSON (`logestix/model.index.json`) with `format = "logestix-alice-nvfp4"` and the schema in the design doc.
 
-- [ ] **Step 1: Write the fixture header**
+- [x] **Step 1: Write the fixture header**
 
 `tests/test_alice_moe_fixture.h` re-exports the neutral primitives and defines a tiny `AliceGeom` (hidden 64, layers 8 with `i%4==3` full-attn, KDA heads 2/2 hd 8, gated 4Q/2KV hd 16 rotary 4, experts 4 top-2 I 16, shared 16, vocab 256, AttnRes block 4). Provide `WriteAliceConfigJson(dir)` and `WriteAliceShard(dir, geom)` that writes layer 0 (full-attn via the pattern) plus KDA/full/MoE tensors with the audited names. Reuse `synthtest::WriteSafetensors` / `MakeBf16`.
 
-- [ ] **Step 2: Write the failing synthetic E2E converter test**
+- [x] **Step 2: Write the failing synthetic E2E converter test**
 
 `tests/test_alice_moe_convert.cpp`:
 ```cpp
@@ -570,12 +582,12 @@ TEST_CASE("alice synthetic convert emits logestix-alice-nvfp4", "[alice][convert
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_alice_moe_convert`
 Expected: FAIL — `ConvertAliceModel` undefined.
 
-- [ ] **Step 4: Implement the converter**
+- [x] **Step 4: Implement the converter**
 
 `src/alice_moe_convert.cpp` must:
 1. Parse `config.json` (simdjson) and validate the frozen geometry — relaxed only when `SyntheticGeometryAllowed()`; read `layer_types`, `block_attn_res_block_size`, `linear_*`, MoE fields; reject unknown `layer_types`.
@@ -590,7 +602,7 @@ Expected: FAIL — `ConvertAliceModel` undefined.
 
 Use `qwen_moe_convert.cpp` / `mimo_moe_convert.cpp` as the structural reference for index writing + safetensors streaming (do not include their headers).
 
-- [ ] **Step 5: Wire the `lsxforge --alice` flag**
+- [x] **Step 5: Wire the `lsxforge --alice` flag**
 
 In `apps/lsxforge/src/main.cpp`: add the `alice` bool parse (mirror `mimo`) and, before the gemma branch, add:
 ```cpp
@@ -610,12 +622,12 @@ In `apps/lsxforge/src/main.cpp`: add the `alice` bool parse (mirror `mimo`) and,
 ```
 Include `lsxcommon/alice_moe_convert.h`.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `ctest --preset linux-debug-convert -R test_alice_moe_convert --output-on-failure`
 Expected: PASS within 120 s.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_convert.cpp libs/lsxcommon/include/lsxcommon/alice_moe_convert.h tests/test_alice_moe_fixture.h tests/test_alice_moe_convert.cpp apps/lsxforge/src/main.cpp libs/lsxcommon/CMakeLists.txt tests/CMakeLists.txt
@@ -641,7 +653,7 @@ git commit -m "feat: alice converter (bf16 -> nvfp4) with synthetic e2e"
   - `arrow::Status LoadAliceTopology(const std::string &model_path, AliceMoeTopology &out);`
   - `bool AliceTopologyMatchesFrozen(const AliceMoeTopology &t);`
 
-- [ ] **Step 1: Write the failing loader test**
+- [x] **Step 1: Write the failing loader test**
 
 `tests/test_alice_moe_loader.cpp`: run the synthetic converter into a temp dir, then
 ```cpp
@@ -659,21 +671,21 @@ TEST_CASE("alice loader gates the format and frozen geometry", "[alice][fast]")
 ```
 Plus a `Load` test that a geometry mismatch under `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` still fails `AliceTopologyMatchesFrozen` when a field is perturbed.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_alice_moe_loader`
 Expected: FAIL — undefined.
 
-- [ ] **Step 3: Implement the loader**
+- [x] **Step 3: Implement the loader**
 
 `alice_moe_load.cpp`: read `logestix/model.index.json`; reject non-`logestix-alice-nvfp4`; populate `AliceMoeTopology`; `AliceTopologyMatchesFrozen` compares every field against `alice::frozen`, layer-by-layer `layer_types` (`linear_attention` when `i%4!=3`), and accepts only under semantic equality. Mirror `mimo_moe_load.cpp` structure.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_loader --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/alice_moe_load.h libs/lsxcommon/src/alice_moe_load.cpp tests/test_alice_moe_loader.cpp tests/CMakeLists.txt
@@ -697,7 +709,7 @@ git commit -m "feat: alice loader topology + format/geometry gates"
 - Consumes: `ModelBase`, `IModel` (`Load/Infer/Unload/Inspect/SelfCheck/Tokenizer`), `BuildConversationInputIds`, `ParseToolCalls`.
 - Produces: `class AliceFoundation80BModel final : public ModelBase` with `static const std::string kType; // "alice-foundation-80b-a3b"`, `Infer` opening `LsxFastMathScope(EffectiveFastMathMode(cfg_))`.
 
-- [ ] **Step 1: Write the failing registration test**
+- [x] **Step 1: Write the failing registration test**
 
 Add to `tests/test_alice_moe_model.cpp`:
 ```cpp
@@ -712,12 +724,12 @@ TEST_CASE("alice kType resolves in the factory", "[alice][fast]")
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_alice_moe_model && ctest --preset linux-debug -R test_alice_moe_model --output-on-failure`
 Expected: FAIL — factory returns null.
 
-- [ ] **Step 3: Implement the model class**
+- [x] **Step 3: Implement the model class**
 
 `alice_moe_model.h/.cpp`: `final` `ModelBase` subclass; `kType = "alice-foundation-80b-a3b"`; `Infer` opens the fast-math scope and delegates to the pipeline (Task F1; until then return a diagnostic `InferenceResult` only on the synthetic fixture path); `Load` calls `BeginLoad`, `LoadAliceTopology`, `AliceTopologyMatchesFrozen`, `LoadTokenizerDb`, `FinishLoad`; `TeardownWeights`; `Inspect`; `SelfCheck` (Task F2); `BuildConversationInputIds`/`ParseToolCalls` delegate to `alice_tool_format` (Task D2). Register in `model_registry.cpp`:
 ```cpp
@@ -726,16 +738,16 @@ Expected: FAIL — factory returns null.
         LsxModelFactory::Register<AliceFoundation80BModel>();
 ```
 
-- [ ] **Step 4: Add the guard consumer row**
+- [x] **Step 4: Add the guard consumer row**
 
 In `tests/test_model_independence_guard.cpp` `consumers` add `"alice_moe_model.cpp",`.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `ctest --preset linux-debug -R "test_alice_moe_model|test_model_independence_guard" --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/alice_moe_model.h libs/lsxcommon/src/alice_moe_model.cpp libs/lsxcommon/src/model_registry.cpp tests/test_alice_moe_model.cpp tests/test_model_independence_guard.cpp
@@ -756,29 +768,29 @@ git commit -m "feat: alice model registration + lifecycle shell"
   - `bool lsxcommon::alice::RenderConversation(const ArrowTokenizerDb &tok, const ChatConversation &conv, bool add_generation_prompt, std::vector<int32_t> &out_ids);`
   - `bool lsxcommon::alice::ParseToolCallsAlice(const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens, std::vector<ToolCall> &out_calls);`
 
-- [ ] **Step 1: Verify the format against the checkpoint template**
+- [x] **Step 1: Verify the format against the checkpoint template**
 
 Read `/mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base/chat_template.jinja` and the tokenizer pieces. Record in the test comments the exact strings: roles `system:`/`user:`/`assistant:`/`meta:`; separators `"\n\n "`; generation prompt `"\n\n assistant:"`; tools header `Тебе доступны следующие функции:` with `function {"name":…,"description":…,"parameters":…}` lines; tool call `"\n[TOOL_CALL_START]" + name + "\n" + json`; reasoning `[COT_START]…[COT_END]`; tool result `Tool {name}: {content}`. Confirm which markers are `special` pieces (`<s>`, `</s>`, `<0x..>`, `[SPEC_TOKEN_*]`); the `[TOOL_CALL_START]`/`[COT_*]` strings are plain text and survive `arrow_tokenizer_decode`.
 
-- [ ] **Step 2: Write the failing framing test**
+- [x] **Step 2: Write the failing framing test**
 
 `tests/test_alice_tool_framing.cpp` (host, `fast`) on a synthetic SP-BPE tokenizer fixture: render a system+user+assistant-with-tool-call conversation and assert the decoded text contains `user: …`, `assistant: …[TOOL_CALL_START]NAME`, and the tools header; then `ParseToolCallsAlice` recovers the call; then a tokenizer round-trip on the body (not the full prompt). Use the repo's existing tool-framing test shape (`tests/test_phi_tool_framing.cpp`).
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_alice_tool_framing`
 Expected: FAIL — undefined.
 
-- [ ] **Step 4: Implement the codec**
+- [x] **Step 4: Implement the codec**
 
 `alice_tool_format.cpp`: build the frame string exactly per the template, inject control markers as ids via `arrow_tokenizer_lookup` (drop the auto-prepended bos inside the frame), BPE-encode free text via `arrow_tokenizer_encode`; handle the `meta` role and `reasoning_content`; parse from decoded text, falling back to `tools::ParseToolCallsText` then `tools::ParseBareToolCallJson`.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `ctest --preset linux-debug -R test_alice_tool_framing --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/alice_tool_format.h libs/lsxcommon/src/alice_tool_format.cpp tests/test_alice_tool_framing.cpp tests/CMakeLists.txt
@@ -796,25 +808,25 @@ git commit -m "feat: native alice chat/tool codec (stage 4b)"
 - Consumes: `lsxnetwork::BuildPassport` / `WritePassport`, `LsxTokenTranslator`.
 - Produces: `passport/passport.bin` for `alice-foundation-80b-a3b`.
 
-- [ ] **Step 1: Write the failing passport test**
+- [x] **Step 1: Write the failing passport test**
 
 Add a `fast` host test that builds the passport from the converted fixture and asserts the payload carries `alice-foundation-80b-a3b` and vocab 129024.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_loader --output-on-failure` (the passport is exercised via the loader fixture)
 Expected: FAIL — no passport builder.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Call `BuildPassport`/`WritePassport` during conversion into `lsx_model_metadata("passport/passport.bin")`; integrate `LsxTokenTranslator` as a private `alignas(64)` member of `IoWorker`, `Load()` strictly AFTER `CpuAffinity::PinToCores0To3` and BEFORE the readiness `set_value()`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `ctest --preset linux-debug -R "test_alice_moe_loader|test_lsxnetwork" --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_convert.cpp libs/lsxnetwork/include/lsxnetwork/io_worker.h libs/lsxnetwork/src/io_worker.cpp tests/test_alice_moe_loader.cpp
@@ -842,25 +854,25 @@ git commit -m "feat: alice passport translation + io worker wiring"
   - `void AliceGatedAttentionHostRef(...)`
   - `void AliceRouterTopKHostRef(...)`
 
-- [ ] **Step 1: Write the failing reference tests**
+- [x] **Step 1: Write the failing reference tests**
 
 `tests/test_alice_moe_kernels.cu` (host-only cases guard with `#if !defined(__CUDA_ARCH__)`): ZC RMSNorm vs hand-computed; AttnRes mix produces softmax-weighted sum and equals the exact `_depth_softmax_mix` for a small case; KDA single-token recurrence matches the Python loop for 2 steps; router top-10 with correction bias renormalizes; gated attention applies `sigmoid(gate)` and partial RoPE on the first 64/256 dims.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cmake --build --preset linux-debug --target test_alice_moe_kernels`
 Expected: FAIL — header missing.
 
-- [ ] **Step 3: Implement the reference math**
+- [x] **Step 3: Implement the reference math**
 
 Translate each formula from the design doc verbatim. Use `lscommon::math` (`lsx_device_math.h`) `ExpfGlibc`/`RsqrtfGlibc` where the model-neutral layer does; keep KDA in F32 accumulation.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_kernels --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_device_math.h tests/test_alice_moe_kernels.cu tests/CMakeLists.txt
@@ -878,25 +890,25 @@ git commit -m "feat: alice reference math (kda/attnres/router) + host tests"
 **Interfaces:**
 - Produces CUDA entry points (host launchers): `RunAliceZcRmsNorm`, `RunAliceDepthMix`, `RunAliceRouterTopK`, `RunAliceSwiGLU`.
 
-- [ ] **Step 1: Write device-vs-reference parity tests**
+- [x] **Step 1: Write device-vs-reference parity tests**
 
 Add device `TEST_CASE`s that allocate, launch each kernel, and compare against `alice_moe_device_math.h` within the bit-exact class (`FastMathMode::kOff`).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_kernels --output-on-failure`
 Expected: FAIL — launchers missing.
 
-- [ ] **Step 3: Implement the kernels**
+- [x] **Step 3: Implement the kernels**
 
 Shared-memory sandbox: thread-0-only RMW behind `__syncthreads()`; no `atomicAdd` feeding logits; one stream. Reuse neutral primitives from `lsx_kernels_norm.cuh` / `lsx_kernels_act.cuh` where they are model-neutral (do not copy qwen-family headers).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_kernels --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_kernels.h libs/lsxcommon/src/alice_moe_kernels.cu libs/lsxcommon/CMakeLists.txt tests/test_alice_moe_kernels.cu
@@ -912,25 +924,25 @@ git commit -m "feat: alice zc-rmsnorm/attnres/router/swiglu kernels"
 **Interfaces:**
 - Produces: `RunAliceKdaPrefill(...)` (chunked/sequential over L) and `RunAliceKdaDecode(...)` (single token, recurrent state in/out).
 
-- [ ] **Step 1: Write the failing KDA parity test**
+- [x] **Step 1: Write the failing KDA parity test**
 
 Single-token recurrence (state update + output) for a handful of steps matches `AliceKdaForward` host reference; prefill (L=8) matches the same reference; depthwise conv-4 with causal padding matches.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_kernels --output-on-failure`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Per-channel decay `exp(-exp(a_log_bias[h]) * softplus(alpha + dt_bias))`; L2 normalize q/k; query scale `128^-0.5`; delta rule; state `[32,128,128]` F32; conv state `[4096,3]`. Prefill and decode share the same recurrence math.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `ctest --preset linux-debug -R test_alice_moe_kernels --output-on-failure`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_inference_attn.h libs/lsxcommon/src/alice_moe_inference_attn.cu tests/test_alice_moe_kernels.cu
@@ -946,14 +958,14 @@ git commit -m "feat: alice kda linear attention kernels"
 **Interfaces:**
 - Produces: `RunAliceGatedAttention(...)` with `q_proj` split into query/output-gate, ZC q/k norm, rotate-half RoPE on the first 64 dims, GQA repeat 8, causal mask, `sigmoid(gate)`.
 
-- [ ] **Step 1: Write the failing attention parity test**
+- [x] **Step 1: Write the failing attention parity test**
 
 Compare against `AliceGatedAttentionHostRef` for prefill L=8 and decode L=1 with a KV cache; assert partial RoPE leaves dims 64..255 unchanged.
 
-- [ ] **Step 2: Run test to verify it fails** — expected FAIL.
-- [ ] **Step 3: Implement** per the pinned formula.
-- [ ] **Step 4: Run test to verify it passes** — expected PASS.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run test to verify it fails** — expected FAIL.
+- [x] **Step 3: Implement** per the pinned formula.
+- [x] **Step 4: Run test to verify it passes** — expected PASS.
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/src/alice_moe_inference_attn.h libs/lsxcommon/src/alice_moe_inference_attn.cu tests/test_alice_moe_kernels.cu
@@ -972,11 +984,11 @@ git commit -m "feat: alice gated full attention with partial rope"
 - Consumes: `gpu::expert_store::ExpertStore<AliceExpertEntry>`.
 - Produces: `AliceExpertEntry` (15-member aggregate: `gate_up.nvfp4`, `gate_up.scale`, `gate_up.global_scale`, `down.*`), `LoadAliceExpertStore(...)`, `PlanAliceExpertSlotFromStore(...)`, knob `LSX_ALICE_EXPERT_CACHE_SLOTS`. Mirror `mimo_moe_expert_cache.h` exactly.
 
-- [ ] **Step 1: Write the failing LRU test** — synthetic converted fixture; insert > slots experts; assert eviction order and that a decode with top-10 never errors on a miss.
-- [ ] **Step 2: Run test to verify it fails** — expected FAIL.
-- [ ] **Step 3: Implement** using the neutral `ExpertStore`.
-- [ ] **Step 4: Run test to verify it passes** — expected PASS.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Write the failing LRU test** — synthetic converted fixture; insert > slots experts; assert eviction order and that a decode with top-10 never errors on a miss.
+- [x] **Step 2: Run test to verify it fails** — expected FAIL.
+- [x] **Step 3: Implement** using the neutral `ExpertStore`.
+- [x] **Step 4: Run test to verify it passes** — expected PASS.
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/alice_moe_expert_cache.h libs/lsxcommon/src/alice_moe_expert_cache.cpp tests/test_alice_moe_loader.cpp libs/lsxcommon/CMakeLists.txt
@@ -998,14 +1010,14 @@ git commit -m "feat: alice expert host store + device slot lru"
 **Interfaces:**
 - Produces: `AliceRunInfer(const AliceModel &, const ModelRequest &, gpu::InferenceResult &)`.
 
-- [ ] **Step 1: Write the failing synthetic model test**
+- [x] **Step 1: Write the failing synthetic model test**
 
 Load the synthetic converted fixture, run a 2-token prompt through `Infer`, assert deterministic `final_logits` across 3 runs and that gen output equals a host-reference pipeline in `alice_moe_device_math.h`.
 
-- [ ] **Step 2: Run test to verify it fails** — expected FAIL.
-- [ ] **Step 3: Implement** the exact layer graph from the design doc (AttnRes blocking every 4 layers; KDA|full attention; MoE routed+shared; final AttnRes → ZC norm → lm_head F32). Single stream; no per-token sync.
-- [ ] **Step 4: Run test to verify it passes** — expected PASS.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run test to verify it fails** — expected FAIL.
+- [x] **Step 3: Implement** the exact layer graph from the design doc (AttnRes blocking every 4 layers; KDA|full attention; MoE routed+shared; final AttnRes → ZC norm → lm_head F32). Single stream; no per-token sync.
+- [x] **Step 4: Run test to verify it passes** — expected PASS.
+- [x] **Step 5: Commit**
 
 ```bash
 git add libs/lsxcommon/include/lsxcommon/alice_moe_inference_pipeline.h libs/lsxcommon/src/alice_moe_inference_pipeline.cu libs/lsxcommon/src/alice_moe_model.cpp tests/test_alice_moe_model.cpp
@@ -1018,11 +1030,11 @@ git commit -m "feat: alice layer pipeline (attnres + kda + moe)"
 - Create: `tests/test_alice_moe_selfcheck.cpp`
 - Modify: `tests/CMakeLists.txt` (target label `inference`, `SKIP_RETURN_CODE 4`)
 
-- [ ] **Step 1: Write the failing test** — 1→2-token incremental selfcheck over ≥3 cycles (`LSX_TEST_ALICE_SELFCHECK_CYCLES`), bit-exact `final_logits`, real model via `LSX_TEST_ALICE_ROOT`, `SKIP()` when absent; control prompt `"The capital of France is"` expects `"Paris"`; record a Base-model deviation (top-1/substring fallback) rather than failing.
-- [ ] **Step 2: Run** `ctest --preset linux-debug-inference -R test_alice_moe_selfcheck` — expected FAIL/skip.
-- [ ] **Step 3: Implement** `AliceFoundation80BModel::SelfCheck`.
-- [ ] **Step 4: Run test to verify it passes or SKIPs** — expected PASS or SKIP 4.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Write the failing test** — 1→2-token incremental selfcheck over ≥3 cycles (`LSX_TEST_ALICE_SELFCHECK_CYCLES`), bit-exact `final_logits`, real model via `LSX_TEST_ALICE_ROOT`, `SKIP()` when absent; control prompt `"The capital of France is"` expects `"Paris"`; record a Base-model deviation (top-1/substring fallback) rather than failing.
+- [x] **Step 2: Run** `ctest --preset linux-debug-inference -R test_alice_moe_selfcheck` — expected FAIL/skip.
+- [x] **Step 3: Implement** `AliceFoundation80BModel::SelfCheck`.
+- [x] **Step 4: Run test to verify it passes or SKIPs** — expected PASS or SKIP 4.
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_alice_moe_selfcheck.cpp tests/CMakeLists.txt libs/lsxcommon/src/alice_moe_model.cpp
@@ -1036,7 +1048,7 @@ git commit -m "test: alice selfcheck (paris parity)"
 - Create goldens: `tests/fixtures/fsi/alice.json`, `tests/fixtures/code/alice.json`, `tests/fixtures/det/alice.json`
 - Modify: `tests/CMakeLists.txt` (3 targets, label `inference`, `SKIP_RETURN_CODE 4`)
 
-- [ ] **Step 1–5:** Follow the `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` skills: capture from the source safetensors with `tools/fsi_capture.py` / `tools/code_capture.py` / `tools/det_capture.py` (once the model is converted and runnable), commit the goldens, wire the per-family tests exactly like `test_phi_dense_*_selfcheck.cpp`. Each target `SKIP_RETURN_CODE 4`. Commit each stage separately with `test:` prefix.
+- [x] **Step 1–5:** Follow the `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` skills: capture from the source safetensors with `tools/fsi_capture.py` / `tools/code_capture.py` / `tools/det_capture.py` (once the model is converted and runnable), commit the goldens, wire the per-family tests exactly like `test_phi_dense_*_selfcheck.cpp`. Each target `SKIP_RETURN_CODE 4`. Commit each stage separately with `test:` prefix.
 
 ### Task F4: Perf baseline
 
@@ -1044,7 +1056,7 @@ git commit -m "test: alice selfcheck (paris parity)"
 - Modify: `tests/perf/perf_baselines.json`
 - Modify: `tests/test_perf_baseline.cpp`
 
-- [ ] **Step 1: Add the model entry**
+- [x] **Step 1: Add the model entry**
 
 Add to `tests/perf/perf_baselines.json` `entries`:
 ```json
@@ -1055,7 +1067,7 @@ Add to `tests/perf/perf_baselines.json` `entries`:
   "commit": "-", "gen_tokens": 2048 }
 ```
 
-- [ ] **Step 2: Add the harness case**
+- [x] **Step 2: Add the harness case**
 
 In `tests/test_perf_baseline.cpp`:
 ```cpp
@@ -1069,12 +1081,12 @@ TEST_CASE("perf baseline: alice-foundation-80b-a3b", "[perf]")
 }
 ```
 
-- [ ] **Step 3: Measure and record** (after correctness, strict GPU exclusivity, perf last per `running-a-model`).
+- [x] **Step 3: Measure and record** (after correctness, strict GPU exclusivity, perf last per `running-a-model`).
 
 Run: `./build/linux-debug/bin/lsxbenchmark --bench --model <vault>/AliceAI-Foundation-80B-A3B-Base`
 Then update `tokens_per_sec`/`ttft_ms` with the measured values and commit.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/perf/perf_baselines.json tests/test_perf_baseline.cpp
@@ -1092,7 +1104,7 @@ git commit -m "test: alice perf baseline"
 - Modify: `AGENTS.md`
 - Modify: `.opencode/skills/logestix-repo-map/SKILL.md`
 
-- [ ] **Step 1: Extend the suite guard**
+- [x] **Step 1: Extend the suite guard**
 
 In `tests/test_model_suite_guard.cpp` add `alice` to `FamilyStems()` and add:
 ```cpp
@@ -1108,16 +1120,16 @@ In `tests/test_model_suite_guard.cpp` add `alice` to `FamilyStems()` and add:
 ```
 Extend the model-stage regex to recognise `alice`.
 
-- [ ] **Step 2: Run the four guards**
+- [x] **Step 2: Run the four guards**
 
 Run: `ctest --preset linux-debug -R "test_code_naming_guard|test_model_independence_guard|test_model_suite_guard|test_ctest_labels_guard" --output-on-failure`
 Expected: all PASS.
 
-- [ ] **Step 3: Update docs**
+- [x] **Step 3: Update docs**
 
 Add the `alice` family files to `AGENTS.md` Structure and to the repo-map skill's per-file inventory (converter/loader/kernels/expert cache/tool format paths, format tag `logestix-alice-nvfp4`, knob `LSX_ALICE_EXPERT_CACHE_SLOTS`).
 
-- [ ] **Step 4: Full fast sweep + commit**
+- [x] **Step 4: Full fast sweep + commit**
 
 Run: `ctest --preset linux-debug`
 Expected: all `fast` green.
@@ -1138,3 +1150,73 @@ git commit -m "test: alice suite guard + docs"
 **Type consistency:** `AliceMoeTopology` fields, `ConvertAliceModel`, `LoadAliceTopology`, `AliceTopologyMatchesFrozen`, `RenderConversation`, `ParseToolCallsAlice`, `RunAlice*` launchers, `AliceExpertEntry` names are used consistently across tasks.
 
 **Known execution ordering:** Task B1 mutates the independence guard's `consumers` list before `alice_moe_model.cpp` exists; move that single row into the D1 commit if the guard is run between B1 and D1.
+
+---
+
+## Final status
+
+### Deviations from the plan
+
+1. **Quantization scope (B2).** The plan's NVFP4 policy was widened: the
+   converter quantizes **only the routed + shared MoE** and keeps the
+   KDA/attention projections in FP16 (commit `8de6579`). The exponential KDA
+   gate amplifies their quantization error; this is recorded in AGENTS.md
+   Structure as the family's precision note.
+2. **Expert cache is free-VRAM-derived, not knob-controlled.** Task G1 Step 3
+   specified a `LSX_ALICE_EXPERT_CACHE_SLOTS` knob. It was **not implemented**:
+   `alice_moe_inference_pipeline.cu` sizes the slot pool from
+   `cudaMemGetInfo` free VRAM / 2 / stride (capped), unlike the
+   glm/kimi/qwen families which take an explicit override. The repo-map entry
+   states this explicitly so the knob is not searched for. Adding the knob is
+   a follow-up (needs TDD per the ingestion protocol).
+3. **Tokenizer backend location (A1).** `BuildTokenizerArrowFilesSentencePiece`
+   landed in `tokenizer_convert.cpp` next to its sibling builder rather than in
+   `tokenizer.cpp`; `tokenizer_kind="sp-bpe"` (1) discriminates the two BPE
+   flavours in `ArrowTokenizerDb`.
+4. **Extra regression fixes during F1.** Four `fix:` commits preceded the perf
+   work: per-layer KV cache + q/gate split, KDA/conv state carried across
+   tokens within a step, async-to-host copies moved onto the model stream, and
+   router weights loaded.
+
+### Verification at finalization
+
+| Gate | Result |
+|---|---|
+| `cmake --build --preset linux-debug` | 466/466 linked |
+| `ctest --preset linux-debug` (fast) | **78/78 passed**, 0 failed |
+| `ctest -R alice` (all labels) | **10/10** with `LSX_TEST_ALICE_ROOT` set |
+| Real-weight Paris SelfCheck | passed, 51 s, 3 bit-exact cycles |
+| FSI / CODE / DET gates | passed (728 s / 711 s / 325 s) |
+| SP-BPE tokenizer goldens | 136 assertions |
+| Tool-framing goldens | 12 assertions |
+| `test_model_suite_guard`, `test_model_independence_guard`, `test_code_naming_guard`, `test_ctest_labels_guard` | green |
+
+Note: `test_alice_moe_selfcheck`, `test_alice_tokenizer` and
+`test_alice_tool_framing` SKIP unless `LSX_TEST_ALICE_ROOT` is exported — the
+ctest presets do not set it, so a bare `ctest --preset linux-debug` reports
+them as skipped. They were run manually against
+`/mnt/llm_models/models/AliceAI-Foundation-80B-A3B-Base` and pass.
+
+### Performance ledger (RTX 5090, linux, Release, `--max-gen 2048`)
+
+| Stage | perf t/s | bit-exact t/s |
+|---|---|---|
+| correctness baseline | 9.19 | 5.84 |
+| + block-parallel router top-k (`c9f00c4`) | 14.75 | 7.73 |
+| + device expert slot-LRU (`0a9effe`) | **37.81** | **10.09** |
+| re-measured (`1e5feb3`) | **37.81** | **10.14** |
+
+Total **4.1×**. Remaining per-token cost is spread across ~3000 kernel
+launches: FP16 `gemv::GemvKernel` ~3.4 ms, expert NVFP4 GEMV ~3 ms,
+`kda_recur_kernel` ~2.2 ms, `depth_mix_kernel` ~2.1 ms, ~5 ms H2D on cold
+cache misses. Next levers (not started): CUDA-graph capture of steady-state
+decode, KDA/depth-mix fusion, a tiered/larger expert pool.
+
+### Deferred (follow-ups, not started)
+
+- MTP speculative decoding (1 MTP layer is stored, never applied).
+- 262k-context prefill optimization.
+- Optional NVFP4 quantization of `o_proj` / small projections to cut resident
+  VRAM.
+- `LSX_ALICE_EXPERT_CACHE_SLOTS` knob (deviation 2 above).
+- Unigram support in the SP-BPE backend (not needed for this checkpoint).
