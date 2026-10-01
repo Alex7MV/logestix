@@ -98,6 +98,11 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
     r.first_gen_text = "";
     r.final_logits = gen.final_logits;
     r.eos_terminated = gen.eos_terminated;
+    r.ttft_ms = gen.ttft_ms;
+    r.total_time_ms = gen.total_ms;
+    if (gen.total_ms > 0.0)
+        r.tokens_per_sec =
+            static_cast<double>(gen.tokens.size()) / (gen.total_ms / 1000.0);
     if (tok_db_ && !gen.tokens.empty()) {
         std::size_t cap = gen.tokens.size() * 16 + 64;
         std::string text(cap, '\0');

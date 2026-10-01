@@ -9,6 +9,7 @@
 #include "lsxcommon/qwen_inference.h"
 
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -355,6 +356,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         return e;
     };
 
+    const auto t_start = std::chrono::steady_clock::now();
     // Recurrent state (KDA + conv history) is reset once and then carried
     // across the whole prefill + decode (one forward per token, not a full
     // recompute per step): prefill the prompt, then decode one token per step.
@@ -373,6 +375,8 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         }
     }
 
+    result.ttft_ms = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - t_start).count();
     for (int step = 0; step < max_new; ++step) {
         std::vector<__half> hlog(VOCAB);
         cudaMemcpyAsync(hlog.data(), logits, VOCAB * sizeof(__half),
@@ -402,6 +406,8 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             return e;
         }
     }
+    result.total_ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t_start).count();
     result.ok = true;
 
 #define F(p) if (p) cudaFree(p)

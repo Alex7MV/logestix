@@ -99,6 +99,9 @@ const PerfModel kMiMo = {
     2048};
 const PerfModel kPhi = {
     "phi-4", "phi-4", "The capital of France is", 2048};
+const PerfModel kAlice = {
+    "alice-foundation-80b-a3b", "AliceAI-Foundation-80B-A3B-Base",
+    "The capital of France is", 2048};
 
 std::string BaselinePath()
 {
@@ -397,4 +400,9 @@ TEST_CASE("perf baseline: mimo-v2.6-flash-rl", "[perf]")
 TEST_CASE("perf baseline: phi-4", "[perf]")
 {
     RunPerfModel(kPhi);
+}
+
+TEST_CASE("perf baseline: alice-foundation-80b-a3b", "[perf]")
+{
+    RunPerfModel(kAlice);
 }

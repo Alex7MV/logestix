@@ -448,6 +448,38 @@
       "avg_power_w": 370.48,
       "peak_power_w": 382.37,
       "power_samples": 920
+    },
+    {
+      "model_type": "alice-foundation-80b-a3b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "perf",
+      "tokens_per_sec": 9.19,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-10-01",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 2186.06,
+      "avg_power_w": 134.34,
+      "peak_power_w": 139.58,
+      "power_samples": 11104
+    },
+    {
+      "model_type": "alice-foundation-80b-a3b",
+      "gpu_key": "rtx 5090",
+      "os": "linux",
+      "mode": "r3",
+      "tokens_per_sec": 5.84,
+      "max_gen": 2048,
+      "prompt": "The capital of France is",
+      "date": "2026-10-01",
+      "commit": "-",
+      "gen_tokens": 2048,
+      "ttft_ms": 1165.80,
+      "avg_power_w": 143.15,
+      "peak_power_w": 149.38,
+      "power_samples": 17486
     }
   ]
 }

@@ -19,6 +19,8 @@ struct AliceGenerationResult {
     int32_t first_token = -1;
     std::vector<float> final_logits;
     bool eos_terminated = false;
+    double ttft_ms = 0.0;   // prefill duration (time to the first token)
+    double total_ms = 0.0;  // prefill + decode
 };
 
 // Correctness-first greedy generation: each step recomputes the whole sequence
