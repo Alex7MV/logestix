@@ -22,6 +22,7 @@ only supplies `input_ids` and logs agreement.
 | gemma-4-26b-a4b-it | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | deepseek-v4.1-flash | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | phi-4 | **wired** | PASS | PASS | PASS | `deterministic=true` all |
+| qwen3.8-27b | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 
 **The determinism stress-test passed in every case** (18 prompt×family
 combinations, byte-identical `gen_tokens` across 3 runs), and the extracted
@@ -119,7 +120,7 @@ known fragility.
 | deepseek-v4-flash | pending | — | — | source not in vault; test SKIPs |
 | deepseek-v4.1-flash | **wired** | `encoding/encoding.py` (thinking) | `deterministic=true` | **PASS 3/3**; golden committed |
 | qwen3.5-9b | pending | — | — | source not in vault; test SKIPs |
-| qwen3.8-27b | pending | — | — | source not in vault; test SKIPs |
+| qwen3.8-27b | **wired** | source (`qwen3_5` loader, GPU+CPU) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 | qwen3.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
 | qwen3.6-35b-a3b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
 | ornith-1.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
@@ -148,7 +149,9 @@ python3 tools/det_capture.py --template-golden \
 
 Known overrides (in `tools/det_capture.py`): `granite-4.2-30b` uses
 `enable_thinking=True, low_effort=True`; `qwen3.8-flash-next` uses the
-`qwen4_exp` loader.
+`qwen4_exp` loader; `qwen3.8-27b` uses the `qwen3_5` loader (text-only
+`Qwen3_5ForCausalLM` built from `config.text_config`, `model.language_model.`
+-> `model.` remap, sharded GPU+CPU with `accelerate`).
 
 ## Verify
 
