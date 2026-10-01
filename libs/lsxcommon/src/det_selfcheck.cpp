@@ -43,8 +43,13 @@ std::string Unfence(std::string_view raw)
 std::string Preprocess(std::string_view raw)
 {
     std::string text = Unfence(raw);
-    const std::size_t close = text.rfind("</think>");
-    if (close != std::string::npos) text = text.substr(close + 8);
+    std::size_t after = std::string::npos;
+    if (const std::size_t c = text.rfind("</think>"); c != std::string::npos)
+        after = c + 8;
+    if (const std::size_t c = text.rfind("[COT_END]");
+        c != std::string::npos && (after == std::string::npos || c + 9 > after))
+        after = c + 9;
+    if (after != std::string::npos) text = text.substr(after);
     return text;
 }
 
@@ -221,8 +226,13 @@ std::string CutPromptEcho(std::string_view text, std::string_view body)
 {
     if (body.empty()) return std::string(text);
     std::string s(text);
-    const std::size_t close = s.rfind("</think>");
-    if (close != std::string::npos) s = s.substr(close + 8);
+    std::size_t after = std::string::npos;
+    if (const std::size_t c = s.rfind("</think>"); c != std::string::npos)
+        after = c + 8;
+    if (const std::size_t c = s.rfind("[COT_END]");
+        c != std::string::npos && (after == std::string::npos || c + 9 > after))
+        after = c + 9;
+    if (after != std::string::npos) s = s.substr(after);
     const std::size_t n = std::min<std::size_t>(32, body.size());
     const std::size_t pos = s.find(std::string_view(body).substr(0, n));
     if (pos != std::string::npos) s = s.substr(0, pos);

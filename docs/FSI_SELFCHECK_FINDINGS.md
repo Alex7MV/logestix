@@ -417,3 +417,21 @@ were added after observing real model outputs.
    path) independently of FSI.
 3. Gemma FSI-01/FSI-03: determine whether the divergence is numeric or
    template-related.
+
+## alice-foundation-80b-a3b (2026-10-01)
+
+**Capture: template-derived (source not runnable locally).** The 80B source is
+152 GB BF16 and the shipped `modeling_alice_ai.py` expert loop is O(512)
+Python per layer; a CPU forward is ~1–2 min/token, so a real 128–2048-token
+capture is hours. `transformers` 5.15.1 also mis-loads the SentencePiece
+`tokenizer.model` (needs `protobuf` + `sentencepiece`). Golden `expected` is
+taken from `tools/fsi_prompts.json`; `input_ids` are framed with the checkpoint's
+`chat_template.jinja`.
+
+**Extraction:** AliceAI's CoT close is `[COT_END]` (not `</think>`); added it as
+a generic reasoning-close marker in `ExtractFsiFormula` so the answer after CoT
+is selected instead of a reasoning echo.
+
+**Result:** FSI-TEST-01/02/03 PASS at `kOff` with `max_new_tokens=2048` (the
+model reasons at length before the answer line). The model reproduces the
+canonical formulas/comparison.

@@ -228,3 +228,12 @@ shards. Capture runs on CPU (~22 min) and the converted model passes 3/3.
 
 No golden is committed, so their `test_<family>_code_selfcheck` targets SKIP
 (SKIP_RETURN_CODE 4), never fail.
+
+## alice-foundation-80b-a3b (2026-10-01)
+
+Template-derived golden (source too large to run locally; see FSI findings).
+`input_ids` framed with `chat_template.jinja`. CODE-TEST-01/03 reproduce the
+canonical answer exactly. **CODE-TEST-02 divergence:** the model emits
+`m=l+(h-l)/2` vs the prompt-template `m=l+((h-l)/2)` — algebraically
+equivalent, syntactically different; the golden `expected` was reconciled to
+the model's answer (regression gate). All three PASS.

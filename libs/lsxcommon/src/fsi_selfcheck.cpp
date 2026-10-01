@@ -266,9 +266,15 @@ std::string ExtractFsiFormula(FsiKind kind, std::string_view anchor,
 {
     std::string text = Unfence(raw);
     // Reasoning models emit a chain-of-thought that can contain competing
-    // formulas; the final answer is the segment after the last </think>.
-    const std::size_t close = text.rfind("</think>");
-    if (close != std::string::npos) text = text.substr(close + 8);
+    // formulas; the final answer is the segment after the last reasoning-close
+    // marker (`</think>`, or the AliceAI `[COT_END]`).
+    std::size_t after = std::string::npos;
+    if (const std::size_t c = text.rfind("</think>"); c != std::string::npos)
+        after = c + 8;
+    if (const std::size_t c = text.rfind("[COT_END]");
+        c != std::string::npos && (after == std::string::npos || c + 9 > after))
+        after = c + 9;
+    if (after != std::string::npos) text = text.substr(after);
     const std::string line = SelectAnswerLine(text, anchor, kind);
     if (kind == FsiKind::kComparison) {
         const std::size_t a = line.find(anchor);

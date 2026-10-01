@@ -165,3 +165,10 @@ LSX_DET_GOLDEN_DIR=tests/fixtures/det \
 A `deterministic=no` result or an extraction mismatch is a **real finding**
 about the converted runtime — record it here and investigate; do not loosen the
 gate.
+
+## alice-foundation-80b-a3b (2026-10-01)
+
+Template-derived golden (source too large to run locally; see FSI findings).
+DET requires byte-identical `gen_tokens` across R=3 runs: **deterministic=true**
+on all three cases. Extraction added the AliceAI `[COT_END]` reasoning-close
+marker (as in FSI/CODE) so the token after CoT is selected. All three PASS.
