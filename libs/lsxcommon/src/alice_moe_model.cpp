@@ -1,6 +1,7 @@
 #include "alice_moe_model.h"
 
 #include "lsxcommon/alice_tool_format.h"
+#include "lsxcommon/model_runtime.h"
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
@@ -115,10 +116,14 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult AliceFoundation80BModel::SelfCheck(const ModelRequest &req)
 {
-    gpu::InferenceResult r = Infer(req);
-    r.selfcheck_passed =
-        r.ok && r.first_gen_tok_id >= 0 && !r.gen_tokens.empty();
-    return r;
+    // Base model: it answers the control prompt with a short MCQ-style prefix,
+    // so accept "Paris" anywhere in a 32-token window (substring contract).
+    runtime::ParisSelfCheckOptions opts;
+    opts.frame_prompt = true;
+    opts.min_tokens = 32;
+    opts.answer_window = 32;
+    opts.substring_match = true;
+    return runtime::RunParisSelfCheck(*this, req, opts);
 }
 
 bool AliceFoundation80BModel::BuildConversationInputIds(

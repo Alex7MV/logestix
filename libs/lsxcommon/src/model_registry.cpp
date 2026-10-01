@@ -1,3 +1,4 @@
+#include <memory>
 #include "lsxcommon/model_factory.h"
 
 #include "alice_moe_model.h"
@@ -42,6 +43,14 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Phi4Model>();
         LsxModelFactory::Register<MiMoV26FlashModel>();
         LsxModelFactory::Register<AliceFoundation80BModel>();
+        // Alias for the vault-normalized index "model" name
+        // ("AliceAI-Foundation-80B-A3B-Base" -> "aliceai-foundation-80b-a3b-base"),
+        // so path auto-detection (lsxbenchmark/lsxfabric) resolves the model.
+        LsxModelFactory::Register(
+            "aliceai-foundation-80b-a3b-base",
+            [](const ModelInitConfig &c) {
+                return std::make_unique<AliceFoundation80BModel>(c);
+            });
         return true;
     }();
     (void)init;
