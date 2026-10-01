@@ -118,29 +118,53 @@ __global__ void router_score_kernel(const __half *__restrict__ x,
     }
 }
 
+// Block-parallel top-k over one block (E <= 1024): the selection scores are
+// staged in shared memory and each of the K winners is found with a tree
+// reduction, instead of a single thread scanning global memory K times.
 __global__ void router_topk_kernel(const float *__restrict__ logits,
                                    const float *__restrict__ sel,
                                    const float *__restrict__ raw, int n_exp,
                                    int top_k, int32_t *__restrict__ out_idx,
                                    float *__restrict__ out_w)
 {
-    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    extern __shared__ float smem[];
+    float *ssel = smem;                    // [n_exp]
+    float *sval = smem + n_exp;            // [blockDim.x]
+    int *sidx = reinterpret_cast<int *>(sval + blockDim.x);  // [blockDim.x]
+    for (int e = threadIdx.x; e < n_exp; e += blockDim.x) ssel[e] = sel[e];
+    __syncthreads();
     float wsum = 0.0f;
     for (int k = 0; k < top_k; ++k) {
-        int best = -1;
-        float best_v = -INFINITY;
-        for (int e = 0; e < n_exp; ++e) {
-            bool used = false;
-            for (int j = 0; j < k; ++j)
-                if (out_idx[j] == e) { used = true; break; }
-            if (used) continue;
-            if (sel[e] > best_v) { best_v = sel[e]; best = e; }
+        float lmax = -INFINITY;
+        int lidx = -1;
+        for (int e = threadIdx.x; e < n_exp; e += blockDim.x)
+            if (ssel[e] > lmax) { lmax = ssel[e]; lidx = e; }
+        sval[threadIdx.x] = lmax;
+        sidx[threadIdx.x] = lidx;
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) {
+                // Greater value wins; ties keep the smaller index (matches the
+                // legacy single-thread first-max scan).
+                if (sval[threadIdx.x + s] > sval[threadIdx.x] ||
+                    (sval[threadIdx.x + s] == sval[threadIdx.x] &&
+                     sidx[threadIdx.x + s] < sidx[threadIdx.x])) {
+                    sval[threadIdx.x] = sval[threadIdx.x + s];
+                    sidx[threadIdx.x] = sidx[threadIdx.x + s];
+                }
+            }
+            __syncthreads();
         }
-        out_idx[k] = best;
-        out_w[k] = raw[best];  // un-biased score (HF gathers `scores`)
-        wsum += out_w[k];
+        if (threadIdx.x == 0) {
+            const int best = sidx[0];
+            out_idx[k] = best;
+            out_w[k] = raw[best];  // un-biased score (HF gathers `scores`)
+            wsum += raw[best];
+            ssel[best] = -INFINITY;  // exclude from later passes
+        }
+        __syncthreads();
     }
-    if (wsum > 0.0f)
+    if (threadIdx.x == 0 && wsum > 0.0f)
         for (int k = 0; k < top_k; ++k) out_w[k] /= wsum;
     (void)logits;
 }
@@ -196,8 +220,12 @@ cudaError_t RunAliceRouterTopK(cudaStream_t stream, const __half *x,
         cudaFreeAsync(scratch, stream);
         return e1;
     }
-    router_topk_kernel<<<1, 1, 0, stream>>>(scratch, sel, raw, n_experts, top_k,
-                                            out_idx, out_w);
+    const int tb = 256;
+    const size_t topk_smem =
+        static_cast<size_t>(n_experts) * sizeof(float) +
+        static_cast<size_t>(tb) * (sizeof(float) + sizeof(int));
+    router_topk_kernel<<<1, tb, topk_smem, stream>>>(scratch, sel, raw, n_experts,
+                                                     top_k, out_idx, out_w);
     cudaError_t e2 = cudaGetLastError();
     if (out_logits && e2 == cudaSuccess)
         cudaMemcpyAsync(out_logits, scratch, sizeof(float) * n_experts,
