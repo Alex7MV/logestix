@@ -383,9 +383,18 @@ index, never loaded resident and never applied.
 Norm rules: all norms, `q_norm`/`k_norm`/`o_norm`, router `gate.weight`,
 `e_score_correction_bias`, AttnRes projections and norm weights, `a_log_bias`,
 `dt_bias`, `b_proj`, small `*_a_proj` (out dim 128), conv1d, shared expert gate,
-embedding and `lm_head` are **never quantized** (MODEL INGEST step 2). Quantized
-matrices are the large linear projections (`q/k/v/o_proj`, `f_b_proj`, `g_b_proj`,
-shared expert gate/up/down) and the per-expert `gate_up_proj`/`down_proj`.
+embedding and `lm_head` are **never quantized** (MODEL INGEST step 2).
+
+**Precision policy (updated after real-weight validation).** The KDA and gated
+attention projections (`q/k/v/o_proj`, `f_b_proj`, `g_b_proj`) are kept in
+**FP16**, not NVFP4. Quantizing them amplified a ~0.6% weight error to ~18% at
+the layer-0 output through the exponential KDA gate
+(`exp(-exp(a_log)·softplus(α+dt))`) and the recurrence, degrading the real 80B
+model to degenerate output. The **only** matrices quantized to NVFP4 are the
+routed experts (`gate_up_proj`/`down_proj`) and the shared expert
+(`gate/up/down_proj`) — the memory bulk. With this policy the real model answers
+the control prompt correctly. This deviates from the earlier draft policy and is
+the validated choice.
 
 ## Numeric conversion pipeline
 

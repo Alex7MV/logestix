@@ -194,6 +194,24 @@ procedure — `perf-tuning-a-model`.
   (ChatML + `<tool_call>` codec); format tag `logestix-mimo-nvfp4`; converted
   with `lsxforge --mimo`; correctness-first token-by-token prefill/decode over
   the neutral `lsx_nvfp4` layer).
+  AliceAI-Foundation-80B-A3B-Base (independent family `alice`: hybrid KDA
+  (Kimi Delta Attention) + gated-attention sparse MoE with a **block
+  attention-residual (AttnRes)** depth mixer, 48L / 12×(3×KDA→MoE … 1×gated
+  attn→MoE) / 2048H / 16Q·2KV·256HD (partial RoPE 64, output gate) / KDA
+  32K·32V·128HD conv-4 / 512 experts top-10 I=512 + shared I=512 / block=4;
+  `alice_moe_constants.h` (frozen passport), `alice_moe_convert.{h,cpp}` (BF16 →
+  NVFP4 **only the routed + shared MoE**; KDA/attention projections kept FP16
+  because the exponential KDA gate amplifies their quantization), the
+  model-neutral **SentencePiece-BPE** tokenizer bridge
+  (`BuildTokenizerArrowFilesSentencePiece` + `tokenizer_kind="sp-bpe"`),
+  `alice_moe_load.{h,cpp}` (pinned graph + `AliceExpertHost` lazy host store),
+  `alice_moe_kernels.{h,cu}` (ZC-RMSNorm / AttnRes depth-softmax / sigmoid
+  top-k router / SwiGLU / KDA conv+delta recurrence), `alice_moe_inference.{h,cu}`
+  (gated full attention: per-head q/gate split + ZC q/k norm + partial RoPE +
+  GQA + output gate), `alice_moe_inference_pipeline.{h,cu}` (AttnRes-blocked
+  layer graph + generation), `alice_moe_model.{h,cpp}`; format tag
+  `logestix-alice-nvfp4`; converted with `lsxforge --alice`; real-weight
+  selfcheck passes).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
