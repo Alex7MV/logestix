@@ -10,18 +10,23 @@
 namespace lsxcommon::alice {
 namespace {
 
+// q_proj emits [H, 2*D] per token: query[head h] = qg[h*2D : h*2D+D], gate =
+// qg[h*2D+D : (h+1)*2D] (chunk along the last dim), NOT two contiguous halves.
 __global__ void split_qg_kernel(const __half *__restrict__ qg,
                                 __half *__restrict__ q,
                                 __half *__restrict__ gate, int64_t total,
-                                int hd)
+                                int h, int d)
 {
     const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= total) return;
+    const int64_t hd = static_cast<int64_t>(h) * d;
     const int64_t row = i / hd;
     const int64_t rem = i % hd;
+    const int64_t hh = rem / d;
+    const int64_t dd = rem % d;
     const __half *base = qg + row * 2 * hd;
-    q[i] = base[rem];
-    gate[i] = base[hd + rem];
+    q[i] = base[hh * 2 * d + dd];
+    gate[i] = base[hh * 2 * d + d + dd];
 }
 
 __global__ void gate_mul_kernel(__half *__restrict__ o,
@@ -65,7 +70,7 @@ cudaError_t RunAliceGatedAttentionCore(
 
     const int block = 256;
     split_qg_kernel<<<(qn + block - 1) / block, block, 0, stream>>>(
-        qg, d_q, d_gate, qn, H * D);
+        qg, d_q, d_gate, qn, H, D);
     cudaError_t e = cudaGetLastError();
     if (e == cudaSuccess)
         e = RunAliceZcRmsNorm(stream, d_q, q_norm_w, d_q, seq * H, D, 1e-6f,

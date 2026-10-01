@@ -149,7 +149,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         A(kout,vdim)||A(mgate,MI)||A(mup,MI)||A(mact,MI)||A(mdown,HID)||
         A(sgate,SI)||A(sup,SI)||A(sact,SI)||A(sdown,HID)||A(acc,HID)||
         A(cosb,ROT)||A(sinb,ROT)||A(logits,VOCAB)||
-        A(kcache,(size_t)max_total*KVH*HD)||A(vcache,(size_t)max_total*KVH*HD)||
+        A(kcache,(size_t)(L/4)*max_total*KVH*HD)||A(vcache,(size_t)(L/4)*max_total*KVH*HD)||
         A(state,(size_t)L*KDAH*KD*VD)||A(hist,(size_t)L*3*(2*kdim+vdim))||
         A(router_logits,E)||A(wts,TOPK)||A(idx,TOPK)||A(posb,1)||
         A(stage_p,(size_t)MI*HID/2+16)||A(stage_s,(size_t)MI*HID/16+16)) {
@@ -172,6 +172,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         cudaMemcpyAsync(completed, x, HID * sizeof(__half),
                         cudaMemcpyDeviceToDevice, stream);
         int nblocks = 1;
+        int full_idx = 0;
         bool has_partial = false;
 
         for (int l = 0; l < L; ++l) {
@@ -207,8 +208,10 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             if (lw.full) {
                 stage="fa_q";
                 e = Proj(stream, lw.fa_q, mixed, qg); if (e) return e;
-                __half *krow = kcache + (size_t)pos * KVH * HD;
-                __half *vrow = vcache + (size_t)pos * KVH * HD;
+                __half *kc = kcache + (size_t)full_idx * max_total * KVH * HD;
+                __half *vc = vcache + (size_t)full_idx * max_total * KVH * HD;
+                __half *krow = kc + (size_t)pos * KVH * HD;
+                __half *vrow = vc + (size_t)pos * KVH * HD;
                 stage="fa_k"; e = Proj(stream, lw.fa_k, mixed, krow); if (e) return e;
                 e = Proj(stream, lw.fa_v, mixed, vrow); if (e) return e;
                 cudaMemcpyAsync(posb, &pos, sizeof(int32_t),
@@ -217,10 +220,11 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                                             pw.top.rope_theta, cosb, sinb);
                 if (e) return e;
                 stage="fa_core"; e = RunAliceGatedAttentionCore(
-                    stream, qg, kcache, vcache, lw.fa_qnorm, lw.fa_knorm, cosb,
+                    stream, qg, kc, vc, lw.fa_qnorm, lw.fa_knorm, cosb,
                     sinb, attn, 1, NH, KVH, HD, ROT, attn_scale, pos, nullptr);
                 if (e) return e;
                 stage="fa_o"; e = Proj(stream, lw.fa_o, attn, attn_out); if (e) return e;
+                ++full_idx;
             } else {
                 stage="kda_proj"; e = Proj(stream, lw.kda_q, mixed, kq); if (e) return e;
                 e = Proj(stream, lw.kda_k, mixed, kk); if (e) return e;

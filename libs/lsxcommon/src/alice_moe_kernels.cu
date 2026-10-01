@@ -94,12 +94,14 @@ __global__ void depth_mix_kernel(const __half *__restrict__ sources, int n_src,
     }
 }
 
-// One block per expert: logits[e] = dot(x, gate[e]); scores[e] = sigmoid + bias.
+// One block per expert: logits[e] = dot(x, gate[e]); sel[e] = sigmoid + bias
+// (top-k selection); raw[e] = sigmoid (the un-biased weight HF gathers).
 __global__ void router_score_kernel(const __half *__restrict__ x,
                                     const __half *__restrict__ gate,
                                     const __half *__restrict__ bias,
                                     int hidden, float *__restrict__ logits,
-                                    float *__restrict__ scores)
+                                    float *__restrict__ sel,
+                                    float *__restrict__ raw)
 {
     const int e = blockIdx.x;
     const __half *gr = gate + static_cast<size_t>(e) * hidden;
@@ -109,13 +111,16 @@ __global__ void router_score_kernel(const __half *__restrict__ x,
         dot += __half2float(x[i]) * __half2float(gr[i]);
     const float d = block_sum(dot, scratch);
     if (threadIdx.x == 0) {
+        const float s = 1.0f / (1.0f + __expf(-d));
         logits[e] = d;
-        scores[e] = 1.0f / (1.0f + __expf(-d)) + __half2float(bias[e]);
+        sel[e] = s + __half2float(bias[e]);
+        raw[e] = s;
     }
 }
 
 __global__ void router_topk_kernel(const float *__restrict__ logits,
-                                   const float *__restrict__ scores, int n_exp,
+                                   const float *__restrict__ sel,
+                                   const float *__restrict__ raw, int n_exp,
                                    int top_k, int32_t *__restrict__ out_idx,
                                    float *__restrict__ out_w)
 {
@@ -129,11 +134,11 @@ __global__ void router_topk_kernel(const float *__restrict__ logits,
             for (int j = 0; j < k; ++j)
                 if (out_idx[j] == e) { used = true; break; }
             if (used) continue;
-            if (scores[e] > best_v) { best_v = scores[e]; best = e; }
+            if (sel[e] > best_v) { best_v = sel[e]; best = e; }
         }
         out_idx[k] = best;
-        out_w[k] = best_v;
-        wsum += best_v;
+        out_w[k] = raw[best];  // un-biased score (HF gathers `scores`)
+        wsum += out_w[k];
     }
     if (wsum > 0.0f)
         for (int k = 0; k < top_k; ++k) out_w[k] /= wsum;
@@ -179,18 +184,19 @@ cudaError_t RunAliceRouterTopK(cudaStream_t stream, const __half *x,
     // Scratch: logits + scores (2*n_experts floats). Caller-visible pointers
     // are the outputs; scratch is allocated per call (prompt/decode-internal).
     float *scratch = nullptr;
-    if (cudaMallocAsync(&scratch, sizeof(float) * 2 * n_experts, stream) !=
+    if (cudaMallocAsync(&scratch, sizeof(float) * 3 * n_experts, stream) !=
         cudaSuccess)
         return cudaErrorMemoryAllocation;
-    float *scores = scratch + n_experts;
+    float *sel = scratch + n_experts;
+    float *raw = scratch + 2 * n_experts;
     router_score_kernel<<<n_experts, kBlock, 0, stream>>>(
-        x, gate, bias, hidden, scratch, scores);
+        x, gate, bias, hidden, scratch, sel, raw);
     cudaError_t e1 = cudaGetLastError();
     if (e1 != cudaSuccess) {
         cudaFreeAsync(scratch, stream);
         return e1;
     }
-    router_topk_kernel<<<1, 1, 0, stream>>>(scratch, scores, n_experts, top_k,
+    router_topk_kernel<<<1, 1, 0, stream>>>(scratch, sel, raw, n_experts, top_k,
                                             out_idx, out_w);
     cudaError_t e2 = cudaGetLastError();
     if (out_logits && e2 == cudaSuccess)

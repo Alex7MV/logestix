@@ -335,9 +335,9 @@ TEST_CASE("alice gated attention core matches the host reference", "[alice][kern
         for (int h = 0; h < H; ++h)
             for (int d = 0; d < D; ++d) {
                 q[(t * H + h) * D + d] =
-                    F(qgh[t * 2 * H * D + h * D + d]);
+                    F(qgh[t * 2 * H * D + h * 2 * D + d]);
                 gate[(t * H + h) * D + d] =
-                    F(qgh[t * 2 * H * D + H * D + h * D + d]);
+                    F(qgh[t * 2 * H * D + h * 2 * D + D + d]);
             }
     for (int t = 0; t < seq; ++t)
         for (int kv = 0; kv < KVH; ++kv)
