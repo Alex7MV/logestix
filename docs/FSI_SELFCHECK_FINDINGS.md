@@ -54,6 +54,7 @@ that this build does not accept/route. Capture works after (documented in
 | Qwen3.8-Flash-Next | **PASS 3/3** (wired into CI) |
 | Granite-4.2-30B | **PASS 3/3** (wired into CI) |
 | phi-4 | **PASS 3/3** (wired into CI; 2026-10-01) |
+| Qwen3.8-27B | **PASS 3/3** (wired into CI; 2026-10-01) |
 | gemma-4-26B-A4B-it | FSI-02 PASS after algebraic canonicalization; FSI-01 and FSI-03 diverge |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | FAIL 3/3 — converted model emits incoherent text |
 ### Granite-4.2-30B capture recipe
@@ -75,6 +76,23 @@ transformers 5.15.1, its chat template is embedded in `tokenizer_config.json`
 (`<|im_start|>role<|im_sep|>content<|im_end|>`), and greedy decoding answers all
 three FSI prompts. No `OVERRIDES` entry is needed. Golden:
 `tests/fixtures/fsi/phi-4.json`.
+
+### Qwen3.8-27B (`qwen3_5` VLM) capture recipe
+
+The checkpoint is `Qwen3_5ForConditionalGeneration` (a VLM) with the text
+weights under `model.language_model.*` and a 333-tensor `model.visual.*` tower
+plus 15 `mtp.*` tensors. A plain `AutoModelForCausalLM.from_pretrained` is
+silently wrong: `qwen3_5` maps to `Qwen3_5ForCausalLM`, whose weights are
+prefixed `model.`, so every language weight is dropped and the model is random.
+The `OVERRIDES` entry `"qwen3.8-27b": {"loader": "qwen3_5", "device_map":
+"auto"}` (all three capture tools) builds a `Qwen3_5TextConfig` from
+`config.text_config`, instantiates `Qwen3_5ForCausalLM`, and copies each shard
+with `model.language_model.` -> `model.` (`model.visual.*` / `mtp.*` skipped).
+27B bf16 (54 GiB) does not fit 32 GiB VRAM, so the model is sharded GPU+CPU with
+`accelerate` (`_dispatch_auto`); capture takes ~7 min. The source answers all
+three prompts exactly (FSI-01/02 with numeric substitution). Golden:
+`tests/fixtures/fsi/qwen3.8-27b.json`; the converted NVFP4 model reproduces all
+three at `kOff` (~17 s).
 
 ### gemma-4-26B-A4B-it
 
