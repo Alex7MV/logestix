@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "alice_moe_constants.h"
+#include "lsxcommon/model_factory.h"
 
 using namespace lsxcommon::alice::frozen;
 
@@ -30,4 +31,14 @@ TEST_CASE("alice passport matches the audited checkpoint", "[alice][fast]")
     STATIC_REQUIRE(kBosId == 1);
     STATIC_REQUIRE(kEosId == 2);
     STATIC_REQUIRE(kMtpLayers == 1);
+}
+
+TEST_CASE("alice kType resolves in the factory", "[alice][fast]")
+{
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_type = "alice-foundation-80b-a3b";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Type() == "alice-foundation-80b-a3b");
 }

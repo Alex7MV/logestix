@@ -1,5 +1,6 @@
 #include "lsxcommon/model_factory.h"
 
+#include "alice_moe_model.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_v41_model.h"
@@ -40,6 +41,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Granite42_30BModel>();
         LsxModelFactory::Register<Phi4Model>();
         LsxModelFactory::Register<MiMoV26FlashModel>();
+        LsxModelFactory::Register<AliceFoundation80BModel>();
         return true;
     }();
     (void)init;

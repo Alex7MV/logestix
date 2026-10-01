@@ -289,6 +289,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "granite_dense_model.cpp",     // granite-4.2-30b
         "phi_dense_model.cpp",         // phi-4
         "mimo_moe_model.cpp",          // mimo-v2.6-flash-rl
+        "alice_moe_model.cpp",         // alice-foundation-80b-a3b
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
