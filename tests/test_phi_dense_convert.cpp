@@ -1,0 +1,121 @@
+#include <catch2/catch_all.hpp>
+
+#include <lsxcommon/phi_dense_convert.h>
+#include <lsxcommon/schema.h>
+
+#include "test_phi_dense_fixture.h"
+
+#include <arrow/io/file.h>
+#include <cstdint>
+#include <filesystem>
+
+using namespace lsxcommon::phi;
+
+namespace {
+
+std::vector<std::string> DenseNvfp4NamesIn(const std::filesystem::path &p)
+{
+    auto batch = lsxcommon::ReadRecordBatchFromFile(p);
+    if (!batch.ok()) return {};
+    auto recs = lsxcommon::DenseNvfp4Schema::UnpackBatch(*batch);
+    if (!recs.ok()) return {};
+    std::vector<std::string> names;
+    for (auto &r : *recs) names.push_back(r.name);
+    return names;
+}
+
+bool Contains(const std::vector<std::string> &v, const std::string &s)
+{
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+} // namespace
+
+TEST_CASE("phi tensor name classifier", "[phi][convert]")
+{
+    auto check = [](const std::string &name, TensorKind expected,
+                    int layer = -1) {
+        auto p = classify_phi_tensor(name);
+        CHECK(p.kind == expected);
+        if (layer >= 0) CHECK(p.layer == layer);
+    };
+    check("model.embed_tokens.weight", TensorKind::Embed);
+    check("lm_head.weight", TensorKind::LmHead);
+    check("model.norm.weight", TensorKind::FinalNorm);
+    check("model.layers.0.input_layernorm.weight", TensorKind::InputNorm, 0);
+    check("model.layers.7.post_attention_layernorm.weight",
+          TensorKind::PostNorm, 7);
+    check("model.layers.3.self_attn.qkv_proj.weight", TensorKind::AttnQKV, 3);
+    check("model.layers.3.self_attn.o_proj.weight", TensorKind::AttnO, 3);
+    check("model.layers.1.mlp.gate_up_proj.weight", TensorKind::MlpGateUp, 1);
+    check("model.layers.1.mlp.down_proj.weight", TensorKind::MlpDown, 1);
+    check("model.layers.0.self_attn.q_norm.weight", TensorKind::Unknown);
+    check("unknown_tensor", TensorKind::Unknown);
+
+    CHECK(phi_tensor_is_nvfp4(TensorKind::AttnQKV));
+    CHECK(phi_tensor_is_nvfp4(TensorKind::MlpDown));
+    CHECK(phi_tensor_is_nvfp4(TensorKind::Embed));
+    CHECK_FALSE(phi_tensor_is_nvfp4(TensorKind::InputNorm));
+    CHECK_FALSE(phi_tensor_is_nvfp4(TensorKind::FinalNorm));
+}
+
+TEST_CASE("phi converter builds logestix-phi index and arrow layout",
+          "[phi][convert]")
+{
+    using namespace std::filesystem;
+    auto tmp = temp_directory_path() / "phi_conv_test";
+    remove_all(tmp);
+    create_directories(tmp);
+
+    auto tensors = phitest::BuildSyntheticPhiModel();
+    phitest::WriteSafetensors(tmp, "model.safetensors", tensors);
+    phitest::WriteConfig(tmp);
+    copy_file(TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+              tmp / "tokenizer.json");
+
+    auto st = ConvertPhiModel(tmp.string(), tmp.string());
+    REQUIRE(st.ok());
+
+    auto top = load_phi_topology(
+        (tmp / "logestix" / "model.index.json").string());
+    CHECK(top.error_msg.empty());
+    CHECK(top.num_layers == 2);
+    CHECK(top.hidden_size == 64);
+    CHECK(top.intermediate_size == 128);
+    CHECK(top.vocab_size == 64);
+    CHECK(top.num_attention_heads == 4);
+    CHECK(top.num_key_value_heads == 2);
+    CHECK(top.head_dim == 16);
+    CHECK(top.bos_id == 0);
+    CHECK(top.eos_id == 1);
+    CHECK(top.attention_scale > 0.0);
+
+    CHECK(top.vram.min_bytes > 0);
+    CHECK(top.vram.optimal_bytes >= top.vram.min_bytes);
+    CHECK(top.vram.max_bytes >= top.vram.optimal_bytes);
+    CHECK(top.vram.context_tokens > 0);
+
+    CHECK(exists(tmp / "logestix" / "pinned" / "global.arrow"));
+    CHECK(exists(tmp / "logestix" / "pinned" / "global_nvfp4.arrow"));
+    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0.arrow"));
+    CHECK(exists(tmp / "logestix" / "pinned" / "layer_0_nvfp4.arrow"));
+    CHECK(exists(tmp / "logestix" / "pinned" / "layer_1_nvfp4.arrow"));
+
+    auto names = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+                                   "layer_0_nvfp4.arrow");
+    CHECK(Contains(names, "model.layers.0.self_attn.qkv_proj.weight"));
+    CHECK(Contains(names, "model.layers.0.self_attn.o_proj.weight"));
+    CHECK(Contains(names, "model.layers.0.mlp.gate_up_proj.weight"));
+    CHECK(Contains(names, "model.layers.0.mlp.down_proj.weight"));
+
+    auto gnames = DenseNvfp4NamesIn(tmp / "logestix" / "pinned" /
+                                    "global_nvfp4.arrow");
+    CHECK(Contains(gnames, "model.embed_tokens.weight"));
+    CHECK(Contains(gnames, "lm_head.weight"));
+
+    auto rnames = synthtest::TensorNamesIn(tmp / "logestix" / "pinned" /
+                                           "global.arrow");
+    CHECK(Contains(rnames, "model.norm.weight"));
+
+    remove_all(tmp);
+}

@@ -486,6 +486,31 @@ set_tests_properties(test_granite_dense_convert PROPERTIES
     TIMEOUT 120)
 set_tests_properties(test_granite_dense_convert PROPERTIES LABELS convert)
 
+# ── phi-4 converter test (classifier + index + arrow layout) ──
+add_executable(test_phi_dense_convert test_phi_dense_convert.cpp)
+target_compile_definitions(test_phi_dense_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_phi_dense_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_convert>"
+    )
+    add_custom_command(TARGET test_phi_dense_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_convert>"
+    )
+endif()
+
+add_test(NAME test_phi_dense_convert COMMAND test_phi_dense_convert)
+set_tests_properties(test_phi_dense_convert PROPERTIES
+    TIMEOUT 120)
+set_tests_properties(test_phi_dense_convert PROPERTIES LABELS convert)
+
 # ── Granite-4.2-30B loader test (pinned upload, topology, fused gate_up) ──
 add_executable(test_granite_dense_loader test_granite_dense_loader.cpp)
 target_compile_definitions(test_granite_dense_loader PRIVATE
