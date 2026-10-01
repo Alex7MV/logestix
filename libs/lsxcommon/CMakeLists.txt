@@ -387,6 +387,30 @@ target_link_libraries(lsxcommon_phi_cu
     absl::strings
 )
 
+# AliceAI runtime: KDA + gated attention + AttnRes + sigmoid router MoE.
+# -fmad=false: bit-exact against the host reference (protocol invariant).
+add_library(lsxcommon_alice_cu OBJECT
+    src/alice_moe_kernels.cu
+)
+set_target_properties(lsxcommon_alice_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_alice_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<BOOL:${LSX_NVCC_RES_USAGE}>>:-res-usage>
+)
+target_include_directories(lsxcommon_alice_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_alice_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_alice_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
@@ -397,6 +421,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_ornith_cu
     lsxcommon_granite_cu
     lsxcommon_phi_cu
+    lsxcommon_alice_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

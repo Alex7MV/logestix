@@ -49,6 +49,27 @@ set_tests_properties(test_alice_moe_loader PROPERTIES
     LABELS inference TIMEOUT 120
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# Alice kernel parity (CUDA OBJECT lib + CXX-linked executable).
+add_library(test_alice_cu OBJECT
+    test_alice_moe_kernels.cu
+)
+set_target_properties(test_alice_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_alice_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_alice_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_alice_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_alice_moe_kernels)
+set_target_properties(test_alice_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_alice_moe_kernels PRIVATE test_alice_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_kernels COMMAND test_alice_moe_kernels)
+set_tests_properties(test_alice_moe_kernels PROPERTIES LABELS inference)
+
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
 target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMain)
