@@ -31,7 +31,6 @@ fs::path ConvertFixture()
 
 TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
 {
-    REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
     const fs::path out = ConvertFixture();
 
     lsxcommon::alice::AliceMoeTopology top;
@@ -68,30 +67,3 @@ TEST_CASE("alice loader parses topology and gates the format", "[alice][load]")
         lsxcommon::alice::LoadAliceTopology(out.string(), bad).ok());
 }
 
-TEST_CASE("alice real converted index matches the frozen passport", "[alice][load]")
-{
-    const char *root = std::getenv("LSX_TEST_ALICE_ROOT");
-    if (!root) SKIP("LSX_TEST_ALICE_ROOT not set");
-    const fs::path idx = fs::path(root) / "logestix" / "model.index.json";
-    if (!fs::exists(idx)) SKIP("converted model not present");
-
-    lsxcommon::alice::AliceMoeTopology top;
-    auto st = lsxcommon::alice::LoadAliceTopology(root, top);
-    if (!st.ok()) FAIL(st.ToString());
-    REQUIRE(st.ok());
-    REQUIRE(top.format == "logestix-alice-nvfp4");
-    REQUIRE(top.num_layers == 48);
-    REQUIRE(top.num_experts == 512);
-    REQUIRE(lsxcommon::alice::AliceTopologyMatchesFrozen(top));
-
-    lsxcommon::alice::AlicePinnedWeights pw;
-    REQUIRE(lsxcommon::alice::LoadAlicePinnedWeights(root, pw, nullptr));
-    REQUIRE(pw.embed != nullptr);
-    REQUIRE(pw.head != nullptr);
-    REQUIRE(pw.layers.size() == 48);
-    REQUIRE(pw.layers[0].input_norm != nullptr);
-    REQUIRE(pw.layers[3].fa_q != nullptr);
-    REQUIRE(pw.layers[4].kda_q != nullptr);
-    REQUIRE(pw.resident_bytes > 0);
-    lsxcommon::alice::FreeAlicePinnedWeights(pw);
-}

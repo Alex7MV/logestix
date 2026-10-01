@@ -31,25 +31,27 @@ target_link_libraries(test_alice_moe_model PRIVATE lsxcommon Catch2::Catch2WithM
 target_include_directories(test_alice_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_alice_moe_model COMMAND test_alice_moe_model)
-set_tests_properties(test_alice_moe_model PROPERTIES
-    LABELS "fast;inference" TIMEOUT 300
-    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_alice_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_model PROPERTIES TIMEOUT 300)
+set_tests_properties(test_alice_moe_model PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_alice_moe_model PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 add_test(NAME test_alice_moe_convert COMMAND test_alice_moe_convert)
-set_tests_properties(test_alice_moe_convert PROPERTIES
-    LABELS convert TIMEOUT 120
-    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_alice_moe_convert PROPERTIES LABELS convert)
+set_tests_properties(test_alice_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_alice_moe_convert PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_alice_moe_loader test_alice_moe_loader.cpp)
 target_link_libraries(test_alice_moe_loader PRIVATE lsxcommon
     simdjson::simdjson Catch2::Catch2WithMain)
 add_test(NAME test_alice_moe_loader COMMAND test_alice_moe_loader)
-set_tests_properties(test_alice_moe_loader PROPERTIES
-    LABELS inference TIMEOUT 120
-    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_alice_moe_loader PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_loader PROPERTIES TIMEOUT 120)
+set_tests_properties(test_alice_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_alice_moe_loader PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 # Alice kernel parity (CUDA OBJECT lib + CXX-linked executable).
 add_library(test_alice_cu OBJECT
@@ -75,14 +77,42 @@ set_tests_properties(test_alice_moe_kernels PROPERTIES LABELS inference)
 add_executable(test_alice_tool_framing test_alice_tool_framing.cpp)
 target_link_libraries(test_alice_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_alice_tool_framing COMMAND test_alice_tool_framing)
-set_tests_properties(test_alice_tool_framing PROPERTIES
-    LABELS fast SKIP_RETURN_CODE 4)
+set_tests_properties(test_alice_tool_framing PROPERTIES LABELS fast)
+set_tests_properties(test_alice_tool_framing PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_alice_moe_selfcheck test_alice_moe_selfcheck.cpp)
 target_link_libraries(test_alice_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_alice_moe_selfcheck COMMAND test_alice_moe_selfcheck)
-set_tests_properties(test_alice_moe_selfcheck PROPERTIES
-    LABELS inference TIMEOUT 1800 SKIP_RETURN_CODE 4)
+set_tests_properties(test_alice_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_alice_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_alice_moe_fsi_selfcheck test_alice_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_alice_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_alice_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_fsi_selfcheck COMMAND test_alice_moe_fsi_selfcheck)
+set_tests_properties(test_alice_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_fsi_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_alice_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_alice_moe_code_selfcheck test_alice_moe_code_selfcheck.cpp)
+target_compile_definitions(test_alice_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_alice_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_code_selfcheck COMMAND test_alice_moe_code_selfcheck)
+set_tests_properties(test_alice_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_code_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_alice_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_alice_moe_det_selfcheck test_alice_moe_det_selfcheck.cpp)
+target_compile_definitions(test_alice_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_alice_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_det_selfcheck COMMAND test_alice_moe_det_selfcheck)
+set_tests_properties(test_alice_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_alice_moe_det_selfcheck PROPERTIES TIMEOUT 1800)
+set_tests_properties(test_alice_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
@@ -2063,8 +2093,8 @@ if(WIN32)
     )
 endif()
 add_test(NAME test_alice_tokenizer COMMAND test_alice_tokenizer)
-set_tests_properties(test_alice_tokenizer PROPERTIES
-    LABELS fast SKIP_RETURN_CODE 4)
+set_tests_properties(test_alice_tokenizer PROPERTIES LABELS fast)
+set_tests_properties(test_alice_tokenizer PROPERTIES SKIP_RETURN_CODE 4)
 
 # ── GLM-5.2 Dense MLP forward test (layers 0-2) ─────────────────────────────
 add_executable(test_glm_moe_layer_compute test_glm_moe_layer_compute.cpp)

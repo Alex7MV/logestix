@@ -45,7 +45,7 @@ const std::set<std::string> &FamilyStems()
 {
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
                                             "kimi", "nemotron", "gigachat",
-                                            "ornith", "granite", "mimo", "phi"};
+                                            "ornith", "granite", "mimo", "phi", "alice"};
     return v;
 }
 
@@ -238,6 +238,15 @@ const std::vector<SuiteSpec> &Suites()
           {"fsi", {"test_phi_dense_fsi_selfcheck"}},
           {"code", {"test_phi_dense_code_selfcheck"}},
           {"det", {"test_phi_dense_det_selfcheck"}}}},
+        {"alice-foundation-80b-a3b",
+         {{"convert", {"test_alice_moe_convert"}},
+          {"load", {"test_alice_moe_loader"}},
+          {"model", {"test_alice_moe_model"}},
+          {"kernels", {"test_alice_moe_kernels"}},
+          {"selfcheck", {"test_alice_moe_selfcheck"}},
+          {"fsi", {"test_alice_moe_fsi_selfcheck"}},
+          {"code", {"test_alice_moe_code_selfcheck"}},
+          {"det", {"test_alice_moe_det_selfcheck"}}}},
     };
     return v;
 }
