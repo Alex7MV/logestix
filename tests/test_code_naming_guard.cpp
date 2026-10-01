@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -50,7 +50,7 @@ const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
-         "ornith", "granite", "mimo"};
+         "ornith", "granite", "mimo", "phi"};
     return v;
 }
 
@@ -202,4 +202,16 @@ TEST_CASE("naming guard accepts ornith_moe_* stems", "[naming][guard]")
     CHECK(m("ornith_moe_model"));
     CHECK(m("ornith_moe_inference"));
     CHECK(m("ornith_moe_expert_cache"));
+}
+
+TEST_CASE("naming guard accepts phi_dense_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("phi_dense_constants"));
+    CHECK(m("phi_dense_convert"));
+    CHECK(m("phi_dense_load"));
+    CHECK(m("phi_dense_model"));
+    CHECK(m("phi_dense_inference"));
 }
