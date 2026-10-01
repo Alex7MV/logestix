@@ -3701,6 +3701,23 @@ endif()
 add_test(NAME test_granite_dense_fsi_selfcheck COMMAND test_granite_dense_fsi_selfcheck)
 set_tests_properties(test_granite_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+add_executable(test_phi_dense_fsi_selfcheck test_phi_dense_fsi_selfcheck.cpp)
+target_compile_definitions(test_phi_dense_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_phi_dense_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_fsi_selfcheck>")
+    add_custom_command(TARGET test_phi_dense_fsi_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_fsi_selfcheck>")
+endif()
+add_test(NAME test_phi_dense_fsi_selfcheck COMMAND test_phi_dense_fsi_selfcheck)
+set_tests_properties(test_phi_dense_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── CODESelfCheck (separate from SelfCheck/FSI): golden parity per family ──
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code" LSX_CODE_GOLDEN_DIR_FWD)
 add_executable(test_glm_moe_code_selfcheck test_glm_moe_code_selfcheck.cpp)
@@ -3958,6 +3975,23 @@ endif()
 add_test(NAME test_granite_dense_code_selfcheck COMMAND test_granite_dense_code_selfcheck)
 set_tests_properties(test_granite_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+add_executable(test_phi_dense_code_selfcheck test_phi_dense_code_selfcheck.cpp)
+target_compile_definitions(test_phi_dense_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
+target_link_libraries(test_phi_dense_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_code_selfcheck>")
+    add_custom_command(TARGET test_phi_dense_code_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_code_selfcheck>")
+endif()
+add_test(NAME test_phi_dense_code_selfcheck COMMAND test_phi_dense_code_selfcheck)
+set_tests_properties(test_phi_dense_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── DETSelfCheck (separate from SelfCheck/FSI/CODE): determinism golden parity per family ──
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det" LSX_DET_GOLDEN_DIR_FWD)
 add_executable(test_glm_moe_det_selfcheck test_glm_moe_det_selfcheck.cpp)
@@ -4200,6 +4234,23 @@ if(WIN32)
 endif()
 add_test(NAME test_granite_dense_det_selfcheck COMMAND test_granite_dense_det_selfcheck)
 set_tests_properties(test_granite_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_phi_dense_det_selfcheck test_phi_dense_det_selfcheck.cpp)
+target_compile_definitions(test_phi_dense_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_phi_dense_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_det_selfcheck>")
+    add_custom_command(TARGET test_phi_dense_det_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_det_selfcheck>")
+endif()
+add_test(NAME test_phi_dense_det_selfcheck COMMAND test_phi_dense_det_selfcheck)
+set_tests_properties(test_phi_dense_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
 
 add_executable(test_qwen_moe_selfcheck test_qwen_moe_selfcheck.cpp)
@@ -5267,6 +5318,7 @@ set_tests_properties(
     test_gigachat_moe_fsi_selfcheck
     test_ornith_moe_fsi_selfcheck
     test_granite_dense_fsi_selfcheck
+    test_phi_dense_fsi_selfcheck
     test_glm_moe_code_selfcheck
     test_glm_moe_flash_code_selfcheck
     test_deepseek_moe_code_selfcheck
@@ -5282,6 +5334,7 @@ set_tests_properties(
     test_nemotron_moe_code_selfcheck
     test_gigachat_moe_code_selfcheck
     test_granite_dense_code_selfcheck
+    test_phi_dense_code_selfcheck
     test_glm_moe_det_selfcheck
     test_glm_moe_flash_det_selfcheck
     test_deepseek_moe_det_selfcheck
@@ -5297,6 +5350,7 @@ set_tests_properties(
     test_nemotron_moe_det_selfcheck
     test_gigachat_moe_det_selfcheck
     test_granite_dense_det_selfcheck
+    test_phi_dense_det_selfcheck
     test_qwen_moe_exp_loader
     test_qwen_moe_exp_model
     test_qwen_moe_exp_selfcheck

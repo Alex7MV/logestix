@@ -45,7 +45,7 @@ const std::set<std::string> &FamilyStems()
 {
     static const std::set<std::string> v = {"glm", "qwen", "deepseek", "gemma",
                                             "kimi", "nemotron", "gigachat",
-                                            "ornith", "granite", "mimo"};
+                                            "ornith", "granite", "mimo", "phi"};
     return v;
 }
 
@@ -229,6 +229,15 @@ const std::vector<SuiteSpec> &Suites()
           {"selfcheck", {"test_mimo_moe_selfcheck"}},
           {"fsi", {"test_mimo_moe_fsi_selfcheck"}},
           {"code", {"test_mimo_moe_code_selfcheck"}}, {"det", {"test_mimo_moe_det_selfcheck"}}}},
+        {"phi-4",
+         {{"convert", {"test_phi_dense_convert"}},
+          {"load", {"test_phi_dense_loader"}},
+          {"model", {"test_phi_dense_model"}},
+          {"kernels", {"test_phi_dense_kernels"}},
+          {"selfcheck", {"test_phi_dense_selfcheck"}},
+          {"fsi", {"test_phi_dense_fsi_selfcheck"}},
+          {"code", {"test_phi_dense_code_selfcheck"}},
+          {"det", {"test_phi_dense_det_selfcheck"}}}},
     };
     return v;
 }
@@ -378,7 +387,7 @@ std::vector<std::string> CheckLoaderSyntheticDiscipline(
     static const std::regex fixture_inc_re(
         R"inc(^\s*#\s*include\s+"(test_[A-Za-z0-9_]+_fixture\.h|test_synth_checkpoint\.h)")inc");
     static const std::regex model_stage_re(
-        R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron|gigachat|ornith|granite|mimo)[A-Za-z0-9_]*_model\.cpp$)");
+        R"(test_(glm|qwen|deepseek|gemma|kimi|nemotron|gigachat|ornith|granite|mimo|phi)[A-Za-z0-9_]*_model\.cpp$)");
     const std::vector<std::string> vault_markers = {
         "mnt/llm_models/models", "huggingface.co"};
     std::error_code ec;
