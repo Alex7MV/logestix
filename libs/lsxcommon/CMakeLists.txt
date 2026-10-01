@@ -26,6 +26,7 @@ add_library(lsxcommon STATIC
     src/granite_dense_load.cpp
     src/granite_dense_model.cpp
     src/phi_dense_convert.cpp
+    src/phi_dense_load.cpp
     src/gemma_base_model.cpp
     src/gemma_moe_model.cpp
     src/nemotron_moe_convert.cpp
