@@ -37,6 +37,93 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
+### A2. MiMo-V2.6-Flash-RL real-weight SelfCheck: wrong top-1 (parity defect)
+
+- The full ingestion (converter → NVFP4 experts → kernels → `IModel`) is
+  committed on `feat/model-MiMo-V2.6-Flash-RL`; the synthetic suites
+  (convert/loader/model/kernels/dequant) are green.
+- The real 172 GB checkpoint converts cleanly in place
+  (`/mnt/llm_models/models/MiMo-V2.6-Flash-RL/logestix`, 12032 experts,
+  `logestix-mimo-nvfp4`, 167 GB) and the model **loads and generates** on the
+  RTX 5090.
+- **Defect:** `test_mimo_moe_selfcheck` fails the Paris gate. Measured
+  `top1_tok=108402 text='高原小康' passed=false`, `logits_hash=ab9d9bd20d824cfb`
+  (the forward pass runs; the logits are wrong).
+- **Localization (2026-09-30, deep trace):** the defect is in the **routed
+  expert weights**, not framing/attention/dense/router:
+  - Raw-encoded and ChatML-framed prompts both produce incoherent repetition
+    (English and Chinese respectively) → not the token bridge.
+  - With `LSX_MIMO_NO_MOE=1` the residual stream grows healthily
+    (|x| = 11 → 124 across 48 layers); with MoE it explodes
+    (11 → 17 → 42 → 108 → 450 by layer 4) → the MoE term injects wrong values.
+  - The router is **bit-exact** vs a host reference (`[mimo-moe-host]` trace:
+    identical idx/weight on every layer) → `RunMimoRouter` and `gate.weight`
+    are correct.
+  - Swapping the nibble order of the exact-repack experts at staging
+    (`LSX_MIMO_EXPERT_SWAP=1`) changes the output but does **not** fix it, so it
+    is not a simple pairwise nibble swap.
+- **Update (2026-09-30, Python ground truth from the source safetensors):**
+  every per-layer component now matches a NumPy decode of the ORIGINAL
+  checkpoint within NVFP4 quantization error, so the earlier "expert weights
+  are wrong" conclusion was too strong:
+  - Embedding: bit-exact. qkv projection: a=0.987, corr=0.999. Attention core
+    (with `value_scale` applied exactly once) and `o_proj`: match.
+  - Dense MLP (gate/up/act/down): a=0.97-0.99, corr≥0.98, **when fed the
+    device's own intermediate**, so the layer math is correct.
+  - Router: host top-8 == device top-8 on real weights. Expert FFN: device
+    `gate/up/act/down` norms equal the NumPy MXFP4 decode to 4 decimals for
+    layer 1 / expert 137 (`|gate| 83.0769` vs `83.0771`, element-wise match).
+  - A NumPy full-forward on the source weights ALSO produces large residuals
+    (|x| ~14 at layer 0, ~100+ by layer 1), i.e. large residual norms are
+    inherent to this checkpoint, not a device bug.
+  - **Remaining gap:** the device's layer-0 output is ~12% low (|x|=12.55 vs
+    NumPy 14.23) from accumulated ~1-3%/component NVFP4 error, and the model
+    (an RL reasoning checkpoint) amplifies it across 48 layers until the
+    residual stream diverges and generation degenerates into repetition.
+  - **Best next hypotheses:** (a) the dense FP8→NVFP4 requant is too lossy for
+    this checkpoint's dynamic range — try keeping the FP8 dense weights in FP8
+    (the repo has a finegrained-FP8 path) or a higher-precision dense path;
+    (b) FP16 vs BF16 activation storage; (c) verify RoPE at pos>0 (the only
+    path not yet validated, since pos 0 makes it the identity).
+- **Update 2 (2026-09-30, framing + multi-position attention):**
+  - The prompt frame was wrong: the reference
+    `apply_chat_template(add_generation_prompt=True)` ends at
+    `[..., 151644, 77091, 198]` (`<|im_start|>assistant\n`, **no**
+    `<think></think>` prefill), because the template's `enable_thinking is false`
+    check is false when the variable is undefined. `BuildPromptInputIds` now
+    matches the reference exactly (`enable_thinking=true`).
+  - A full **48-layer Python forward** (source FP8 + MXFP4 decoded) matches the
+    device's single-token logits **exactly** (top-5 token ids and values), so the
+    entire model math at pos 0 is correct.
+  - **The bug is in the decode attention for positions ≥ 2.** Building the
+    attention reference from the device's own per-position `qkv` dumps:
+    pos 0/1 match (corr ≈ 1.0), pos 2 diverges (corr 0.64). The projections
+    themselves match exactly (corr 1.0), so the fault is in
+    `mimo_attn_decode_kernel`'s online-softmax / KV-cache path (the prefill
+    kernel's two-pass form passed its parity test; the decode kernel's streaming
+    softmax is the suspect).
+  - **Next step:** rewrite `mimo_attn_decode_kernel`'s per-key online softmax as
+    the prefill kernel's two-pass form (collect scores, one softmax, then mix),
+    or bisect the streaming rescale with a 3-key unit test. Then re-run the
+    single-token and multi-token Python logits comparisons.
+- **Update 3 (2026-10-01, vendor oracle — conclusive):** the implementation is
+  **bit-exact with the vendor `modeling_mimo_v2.py`**, and the checkpoint itself
+  is the problem:
+  - A manual 48-layer forward built from the **vendor** `MiMoV2DecoderLayer`
+    (weights dequantized from the source, selected experts loaded per the
+    router) produces `top5 = [2181, 110015, 113764, 11853, 1268]`; the device
+    produces `top1 = 2181` — identical.
+  - The vendor oracle also fails on a plain question ("What is the capital of
+    France?") with the same repetitive garbage.
+  - The earlier "pos ≥ 2 attention" divergence was a **dump-filename collision
+    artifact** across the diagnostic's runs; with clean single-run dumps the
+    attention matches exactly at pos 0/1/2 (GA and SWA).
+  - So there is **no bug in the logestix implementation**. `selfcheck` stays red
+    because `MiMo-V2.6-Flash-RL` does not answer the standard prompts in this
+    environment. Finalization: merge the (correct) implementation; the converted
+    model is removed. If revisited, verify the checkpoint shards/checksums or
+    obtain the exact transformers build the checkpoint was produced with.
+
 ## B. Windows platform gaps
 
 ### B1. Expert pinning is not implemented on Windows

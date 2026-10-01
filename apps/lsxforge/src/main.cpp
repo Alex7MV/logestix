@@ -11,6 +11,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
+#include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "lsxcommon/qwen_moe_36_convert.h"
@@ -59,6 +60,8 @@ ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, granite, false,
           "Granite-4.2-30B (dense) conversion pipeline");
+ABSL_FLAG(bool, mimo, false,
+          "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -112,6 +115,7 @@ int main(int argc, char* argv[]) {
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
+    bool mimo = absl::GetFlag(FLAGS_mimo);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
@@ -319,6 +323,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("GigaChat conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (mimo) {
+        lsxcommon::log::info(
+            "MiMo-V2.6-Flash-RL pipeline (logestix-mimo-nvfp4 layout)");
+        auto st = lsxcommon::mimo::ConvertMiMoModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("MiMo conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("MiMo conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

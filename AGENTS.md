@@ -169,6 +169,21 @@ procedure — `perf-tuning-a-model`.
   primitives), `granite_dense_model.{h,cpp}`; converted in place with
   `lsxforge --granite`; full 2048-token pipeline is correct-first
   (KV-cache decode, non-incremental prefill)).
+  MiMo-V2.6-Flash-RL (independent family `mimo`: hybrid SWA + full-attention
+  sparse MoE, 48L / 4096H / 64Q / 4KV(GA)·8KV(SWA) / 192QK·128V head, 256 routed
+  experts / top-8, partial RoPE on 64 dims, learned sink bias on the 39 SWA
+  layers, sigmoid `noaux_tc` router; `mimo_moe_constants.h` (frozen passport),
+  `mimo_moe_convert.{h,cpp}` + `mimo_moe_dequant.cu` (FP8-block-128 dense ->
+  NVFP4, MXFP4 experts via neutral `PackExpertNVFP4` with an E8M0-spread
+  fallback, multimodal stripped, MTP stored+counted), `mimo_moe_load.{h,cpp}`
+  (format/geometry gates), `mimo_moe_kernels.{h,cu}` (RMSNorm / router / SwiGLU),
+  `mimo_moe_inference_attn.{h,cu}` (fused-QKV split, partial RoPE, GQA,
+  causal/sliding-window + sink bias, KV cache), `mimo_moe_expert_cache.{h,cpp}`
+  (host mmap store of 12032 experts + device slot-LRU, knob
+  `LSX_MIMO_EXPERT_CACHE_SLOTS`), `mimo_moe_model.{h,cpp}`, `mimo_tool_format.*`
+  (ChatML + `<tool_call>` codec); format tag `logestix-mimo-nvfp4`; converted
+  with `lsxforge --mimo`; correctness-first token-by-token prefill/decode over
+  the neutral `lsx_nvfp4` layer).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

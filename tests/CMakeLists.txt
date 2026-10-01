@@ -4088,6 +4088,168 @@ endif()
 add_test(NAME test_nvfp4_pack COMMAND test_nvfp4_pack)
 set_tests_properties(test_nvfp4_pack PROPERTIES SKIP_RETURN_CODE 4)
 
+# MiMo-V2.6-Flash-RL frozen geometry passport (host-only).
+add_executable(test_mimo_moe_geometry test_mimo_moe_geometry.cpp)
+target_include_directories(test_mimo_moe_geometry PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_mimo_moe_geometry PRIVATE Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_geometry COMMAND test_mimo_moe_geometry)
+set_tests_properties(test_mimo_moe_geometry PROPERTIES LABELS fast)
+
+# MiMo-V2.6-Flash-RL ChatML token bridge + tool codec (host-only).
+add_executable(test_mimo_tool_framing test_mimo_tool_framing.cpp)
+target_compile_definitions(test_mimo_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_tool_framing COMMAND test_mimo_tool_framing)
+set_tests_properties(test_mimo_tool_framing PROPERTIES LABELS fast)
+
+# MiMo-V2.6-Flash-RL converter (synthetic E2E, label convert, bounded timeout).
+add_executable(test_mimo_moe_convert test_mimo_moe_convert.cpp)
+target_compile_definitions(test_mimo_moe_convert PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_moe_convert PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
+    add_custom_command(TARGET test_mimo_moe_convert POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_convert>")
+endif()
+add_test(NAME test_mimo_moe_convert COMMAND test_mimo_moe_convert)
+set_tests_properties(test_mimo_moe_convert PROPERTIES TIMEOUT 120)
+set_tests_properties(test_mimo_moe_convert PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mimo_moe_convert PROPERTIES LABELS convert)
+
+# MiMo-V2.6-Flash-RL layout loader (synthetic converted fixture).
+add_executable(test_mimo_moe_loader test_mimo_moe_loader.cpp)
+target_include_directories(test_mimo_moe_loader PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_mimo_moe_loader PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_moe_loader PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
+    add_custom_command(TARGET test_mimo_moe_loader POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_loader>")
+endif()
+add_test(NAME test_mimo_moe_loader COMMAND test_mimo_moe_loader)
+set_tests_properties(test_mimo_moe_loader PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mimo_moe_loader PROPERTIES LABELS inference)
+
+# MiMo routed-expert host store + device slot LRU (host logic + device staging).
+add_executable(test_mimo_moe_expert_cache test_mimo_moe_expert_cache.cpp)
+target_link_libraries(test_mimo_moe_expert_cache PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_expert_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_expert_cache>")
+endif()
+add_test(NAME test_mimo_moe_expert_cache COMMAND test_mimo_moe_expert_cache)
+set_tests_properties(test_mimo_moe_expert_cache PROPERTIES LABELS inference)
+
+# MiMo non-GEMM kernel parity (RMSNorm / router / SwiGLU) — CUDA OBJECT lib.
+add_library(test_mimo_cu OBJECT
+    test_mimo_moe_kernels.cu
+    test_mimo_moe_attn.cu
+)
+set_target_properties(test_mimo_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real"
+)
+target_compile_options(test_mimo_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_mimo_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_mimo_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_mimo_moe_kernels)
+set_target_properties(test_mimo_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_mimo_moe_kernels PRIVATE test_mimo_cu lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
+    add_custom_command(TARGET test_mimo_moe_kernels POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_kernels>")
+endif()
+add_test(NAME test_mimo_moe_kernels COMMAND test_mimo_moe_kernels)
+set_tests_properties(test_mimo_moe_kernels PROPERTIES LABELS inference)
+
+# MiMo FP8/MXFP4 dequant parity (host scalar reference).
+add_executable(test_mimo_moe_dequant test_mimo_moe_dequant.cpp)
+target_link_libraries(test_mimo_moe_dequant PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
+    add_custom_command(TARGET test_mimo_moe_dequant POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_dequant>")
+endif()
+add_test(NAME test_mimo_moe_dequant COMMAND test_mimo_moe_dequant)
+set_tests_properties(test_mimo_moe_dequant PROPERTIES LABELS inference)
+
+# MiMo model registration + synthetic Load/Infer.
+add_executable(test_mimo_moe_model test_mimo_moe_model.cpp)
+target_compile_definitions(test_mimo_moe_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_mimo_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_model>")
+    add_custom_command(TARGET test_mimo_moe_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_model>")
+endif()
+add_test(NAME test_mimo_moe_model COMMAND test_mimo_moe_model)
+set_tests_properties(test_mimo_moe_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_mimo_moe_model PROPERTIES LABELS inference)
+
+# MiMo SelfCheck (real weights; SKIP when absent).
+add_executable(test_mimo_moe_selfcheck test_mimo_moe_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_mimo_moe_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_selfcheck>")
+    add_custom_command(TARGET test_mimo_moe_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>" "$<TARGET_FILE_DIR:test_mimo_moe_selfcheck>")
+endif()
+add_test(NAME test_mimo_moe_selfcheck COMMAND test_mimo_moe_selfcheck)
+set_tests_properties(test_mimo_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# MiMo FSI / CODE / DET golden-parity gates (real weights + golden; SKIP).
+add_executable(test_mimo_moe_fsi_selfcheck test_mimo_moe_fsi_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_fsi_selfcheck COMMAND test_mimo_moe_fsi_selfcheck)
+set_tests_properties(test_mimo_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mimo_moe_code_selfcheck test_mimo_moe_code_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_code_selfcheck COMMAND test_mimo_moe_code_selfcheck)
+set_tests_properties(test_mimo_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_mimo_moe_det_selfcheck test_mimo_moe_det_selfcheck.cpp)
+target_link_libraries(test_mimo_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_mimo_moe_det_selfcheck COMMAND test_mimo_moe_det_selfcheck)
+set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_mimo_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # Guard: model code file naming convention (host-only, no lsxcommon deps).
 add_executable(test_code_naming_guard test_code_naming_guard.cpp)
 target_link_libraries(test_code_naming_guard PRIVATE Catch2::Catch2WithMain)
