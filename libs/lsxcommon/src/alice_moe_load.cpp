@@ -4,9 +4,11 @@
 
 #include <simdjson.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 
 namespace lsxcommon::alice {
 namespace {
@@ -109,6 +111,267 @@ arrow::Status LoadAliceTopology(const std::string &model_path,
         return arrow::Status::Invalid(
             "alice index: layer_types size mismatch");
     return arrow::Status::OK();
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+std::vector<__half> Bf16ToHalf(const std::vector<uint8_t> &data)
+{
+    const size_t n = data.size() / 2;
+    std::vector<__half> out(n);
+    for (size_t i = 0; i < n; ++i) {
+        const uint16_t b =
+            static_cast<uint16_t>(data[2 * i] | (data[2 * i + 1] << 8));
+        const uint32_t f = static_cast<uint32_t>(b) << 16;
+        float v;
+        std::memcpy(&v, &f, 4);
+        out[i] = __float2half(v);
+    }
+    return out;
+}
+
+__half *UploadHalf(const std::vector<uint8_t> &data, cudaStream_t s)
+{
+    if (data.empty()) return nullptr;
+    const auto h = Bf16ToHalf(data);
+    __half *d = nullptr;
+    if (cudaMalloc(&d, h.size() * sizeof(__half)) != cudaSuccess) return nullptr;
+    cudaMemcpyAsync(d, h.data(), h.size() * sizeof(__half),
+                    cudaMemcpyHostToDevice, s);
+    return d;
+}
+
+bool UploadNvfp4(const DenseNvfp4Record &r, lsx_nvfp4::LsxNvfp4Weight &w,
+                 cudaStream_t s)
+{
+    w = lsx_nvfp4::LsxNvfp4Weight{};
+    if (r.shape.size() != 2) return false;
+    w.rows = static_cast<int>(r.shape[0]);
+    w.cols = static_cast<int>(r.shape[1]);
+    w.global_scale = r.global_scale;
+    void *p = nullptr, *sc = nullptr;
+    if (cudaMalloc(&p, r.packed.size()) != cudaSuccess) return false;
+    if (cudaMalloc(&sc, r.scales.size()) != cudaSuccess) {
+        cudaFree(p);
+        return false;
+    }
+    cudaMemcpyAsync(p, r.packed.data(), r.packed.size(),
+                    cudaMemcpyHostToDevice, s);
+    cudaMemcpyAsync(sc, r.scales.data(), r.scales.size(),
+                    cudaMemcpyHostToDevice, s);
+    w.d_packed = static_cast<const uint8_t *>(p);
+    w.d_scales = static_cast<const uint8_t *>(sc);
+    w.packed_bytes = static_cast<int64_t>(r.packed.size());
+    w.scale_bytes = static_cast<int64_t>(r.scales.size());
+    return true;
+}
+
+const TensorRecord *FindRaw(const std::vector<TensorRecord> &v,
+                            std::string_view name)
+{
+    for (const auto &r : v)
+        if (r.name == name) return &r;
+    return nullptr;
+}
+
+const DenseNvfp4Record *FindNvfp4(const std::vector<DenseNvfp4Record> &v,
+                                  std::string_view name)
+{
+    for (const auto &r : v)
+        if (r.name == name) return &r;
+    return nullptr;
+}
+
+bool ends_with(std::string_view s, std::string_view suf)
+{
+    return s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf;
+}
+
+} // namespace
+
+void FreeAlicePinnedWeights(AlicePinnedWeights &pw)
+{
+    if (pw.embed) cudaFree(pw.embed);
+    if (pw.head) cudaFree(pw.head);
+    if (pw.final_norm) cudaFree(pw.final_norm);
+    if (pw.attnres_final_proj) cudaFree(pw.attnres_final_proj);
+    if (pw.attnres_final_norm) cudaFree(pw.attnres_final_norm);
+    for (auto &lw : pw.layers) {
+        auto free_h = [](__half *p) { if (p) cudaFree(p); };
+        free_h(lw.input_norm); free_h(lw.post_norm); free_h(lw.attn_res_norm);
+        free_h(lw.mlp_res_norm); free_h(lw.attn_res_proj); free_h(lw.mlp_res_proj);
+        free_h(lw.kda_fa); free_h(lw.kda_ga); free_h(lw.kda_b);
+        free_h(lw.kda_qconv); free_h(lw.kda_kconv); free_h(lw.kda_vconv);
+        free_h(lw.kda_alog); free_h(lw.kda_dt); free_h(lw.kda_onorm);
+        free_h(lw.fa_qnorm); free_h(lw.fa_knorm);
+        free_h(lw.router_gate); free_h(lw.router_bias); free_h(lw.shared_gate);
+        lw.kda_q.Free(); lw.kda_k.Free(); lw.kda_v.Free(); lw.kda_o.Free();
+        lw.kda_fb.Free(); lw.kda_gb.Free();
+        lw.fa_q.Free(); lw.fa_k.Free(); lw.fa_v.Free(); lw.fa_o.Free();
+        lw.shared_gate_proj.Free(); lw.shared_up_proj.Free();
+        lw.shared_down_proj.Free();
+    }
+    pw = AlicePinnedWeights{};
+}
+
+bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
+                            cudaStream_t stream)
+{
+    const fs::path base = fs::path(root) / "logestix";
+    fs::path pinned = base / "pinned";
+    if (!fs::exists(pinned)) pinned = fs::path(root) / "pinned";
+    if (!fs::exists(pinned)) return false;
+
+    auto st = LoadAliceTopology(root, pw.top);
+    if (!st.ok()) return false;
+
+    auto load_raw_file = [&](const fs::path &p, std::vector<TensorRecord> &out) {
+        if (!fs::exists(p)) return true;
+        auto batch = ReadRecordBatchFromFile(p);
+        if (!batch.ok()) return false;
+        auto rows = PinnedSchema::UnpackBatch(*batch);
+        if (!rows.ok()) return false;
+        out = std::move(*rows);
+        return true;
+    };
+    auto load_nvfp4_file = [&](const fs::path &p,
+                               std::vector<DenseNvfp4Record> &out) {
+        if (!fs::exists(p)) return true;
+        auto batch = ReadRecordBatchFromFile(p);
+        if (!batch.ok()) return false;
+        auto rows = DenseNvfp4Schema::UnpackBatch(*batch);
+        if (!rows.ok()) return false;
+        out = std::move(*rows);
+        return true;
+    };
+
+    std::vector<TensorRecord> g_raw;
+    if (!load_raw_file(pinned / "global.arrow", g_raw)) return false;
+    if (const auto *r = FindRaw(g_raw, "model.embed_tokens.weight"))
+        pw.embed = UploadHalf(r->data, stream);
+    if (const auto *r = FindRaw(g_raw, "lm_head.weight"))
+        pw.head = UploadHalf(r->data, stream);
+    if (const auto *r = FindRaw(g_raw, "model.norm.weight"))
+        pw.final_norm = UploadHalf(r->data, stream);
+    if (const auto *r = FindRaw(g_raw, "model.attnres_final.res_proj.weight"))
+        pw.attnres_final_proj = UploadHalf(r->data, stream);
+    if (const auto *r = FindRaw(g_raw, "model.attnres_final.res_norm_weight"))
+        pw.attnres_final_norm = UploadHalf(r->data, stream);
+    if (!pw.embed || !pw.head || !pw.final_norm || !pw.attnres_final_proj ||
+        !pw.attnres_final_norm)
+        return false;
+
+    const int L = pw.top.num_layers;
+    pw.layers.resize(L);
+    for (int l = 0; l < L; ++l) {
+        std::vector<TensorRecord> raw;
+        std::vector<DenseNvfp4Record> nv;
+        const std::string tag = "model.layers." + std::to_string(l) + ".";
+        if (!load_raw_file(pinned / ("layer_" + std::to_string(l) + ".arrow"),
+                           raw))
+            return false;
+        if (!load_nvfp4_file(
+                pinned / ("layer_" + std::to_string(l) + "_nvfp4.arrow"), nv))
+            return false;
+
+        AliceLayerWeights &lw = pw.layers[l];
+        lw.full = (l % 4 == 3);
+        auto H = [&](std::string_view suffix) -> __half * {
+            const auto *r = FindRaw(raw, tag + std::string(suffix));
+            return r ? UploadHalf(r->data, stream) : nullptr;
+        };
+        auto W = [&](std::string_view suffix,
+                     lsx_nvfp4::LsxNvfp4Weight &w) -> bool {
+            const auto *r = FindNvfp4(nv, tag + std::string(suffix));
+            return r ? UploadNvfp4(*r, w, stream) : false;
+        };
+        lw.input_norm = H("input_layernorm.weight");
+        lw.post_norm = H("post_attention_layernorm.weight");
+        lw.mlp_res_norm = H("mlp_res_norm_weight");
+        lw.mlp_res_proj = H("mlp_res_proj.weight");
+        if (l != 0) {
+            lw.attn_res_norm = H("attn_res_norm_weight");
+            lw.attn_res_proj = H("attn_res_proj.weight");
+        }
+        if (lw.full) {
+            if (!W("self_attn.q_proj.weight", lw.fa_q)) return false;
+            if (!W("self_attn.k_proj.weight", lw.fa_k)) return false;
+            if (!W("self_attn.v_proj.weight", lw.fa_v)) return false;
+            if (!W("self_attn.o_proj.weight", lw.fa_o)) return false;
+            lw.fa_qnorm = H("self_attn.q_norm.weight");
+            lw.fa_knorm = H("self_attn.k_norm.weight");
+        } else {
+            if (!W("linear_attn.q_proj.weight", lw.kda_q)) return false;
+            if (!W("linear_attn.k_proj.weight", lw.kda_k)) return false;
+            if (!W("linear_attn.v_proj.weight", lw.kda_v)) return false;
+            if (!W("linear_attn.o_proj.weight", lw.kda_o)) return false;
+            if (!W("linear_attn.f_b_proj.weight", lw.kda_fb)) return false;
+            if (!W("linear_attn.g_b_proj.weight", lw.kda_gb)) return false;
+            lw.kda_fa = H("linear_attn.f_a_proj.weight");
+            lw.kda_ga = H("linear_attn.g_a_proj.weight");
+            lw.kda_b = H("linear_attn.b_proj.weight");
+            lw.kda_qconv = H("linear_attn.q_conv1d.weight");
+            lw.kda_kconv = H("linear_attn.k_conv1d.weight");
+            lw.kda_vconv = H("linear_attn.v_conv1d.weight");
+            lw.kda_alog = H("linear_attn.a_log_bias");
+            lw.kda_dt = H("linear_attn.dt_bias");
+            lw.kda_onorm = H("linear_attn.o_norm.weight");
+        }
+        lw.router_gate = H("mlp.gate.weight");
+        lw.router_bias = H("mlp.gate.e_score_correction_bias");
+        lw.shared_gate = H("mlp.shared_expert_gate.weight");
+        if (!W("mlp.shared_expert.gate_proj.weight", lw.shared_gate_proj))
+            return false;
+        if (!W("mlp.shared_expert.up_proj.weight", lw.shared_up_proj))
+            return false;
+        if (!W("mlp.shared_expert.down_proj.weight", lw.shared_down_proj))
+            return false;
+        lw.loaded = true;
+    }
+
+    // Resident weight estimate (dense NVFP4 + FP16 small tensors + embed/head).
+    pw.resident_bytes = 0;
+    auto add_nv = [&](const lsx_nvfp4::LsxNvfp4Weight &w) {
+        pw.resident_bytes +=
+            static_cast<std::uint64_t>(w.packed_bytes + w.scale_bytes);
+    };
+    pw.resident_bytes +=
+        static_cast<std::uint64_t>(pw.top.vocab_size) * pw.top.hidden_size * 2ull *
+        2ull;  // embed + head FP16
+    pw.resident_bytes += static_cast<std::uint64_t>(pw.top.hidden_size) * 2 * 8;
+    for (const auto &lw : pw.layers) {
+        add_nv(lw.kda_q); add_nv(lw.kda_k); add_nv(lw.kda_v); add_nv(lw.kda_o);
+        add_nv(lw.kda_fb); add_nv(lw.kda_gb);
+        add_nv(lw.fa_q); add_nv(lw.fa_k); add_nv(lw.fa_v); add_nv(lw.fa_o);
+        add_nv(lw.shared_gate_proj); add_nv(lw.shared_up_proj);
+        add_nv(lw.shared_down_proj);
+        // small FP16 tensors (~hidden + gates)
+        pw.resident_bytes +=
+            static_cast<std::uint64_t>(pw.top.hidden_size) * 2 * 12;
+        pw.resident_bytes += static_cast<std::uint64_t>(pw.top.num_experts) *
+                             pw.top.hidden_size * 2;  // router gate
+    }
+    return true;
+}
+
+const PackedExpert *AliceExpertHost::Get(int layer, int expert)
+{
+    const std::int64_t key =
+        static_cast<std::int64_t>(layer) * 100000 + expert;
+    auto it = cache_.find(key);
+    if (it != cache_.end()) return &it->second;
+    const fs::path p = fs::path(root_) / "logestix" / "experts" /
+                       ("layer_" + std::to_string(layer)) /
+                       ("exp_" + std::to_string(expert) + ".arrow");
+    auto batch = ReadRecordBatchFromFile(p);
+    if (!batch.ok()) return nullptr;
+    auto rows = ExpertSchema::UnpackBatch(*batch);
+    if (!rows.ok()) return nullptr;
+    auto [ins, ok] = cache_.emplace(key, std::move(*rows));
+    (void)ok;
+    return &ins->second;
 }
 
 bool AliceTopologyMatchesFrozen(const AliceMoeTopology &top)

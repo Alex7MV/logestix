@@ -83,4 +83,15 @@ TEST_CASE("alice real converted index matches the frozen passport", "[alice][loa
     REQUIRE(top.num_layers == 48);
     REQUIRE(top.num_experts == 512);
     REQUIRE(lsxcommon::alice::AliceTopologyMatchesFrozen(top));
+
+    lsxcommon::alice::AlicePinnedWeights pw;
+    REQUIRE(lsxcommon::alice::LoadAlicePinnedWeights(root, pw, nullptr));
+    REQUIRE(pw.embed != nullptr);
+    REQUIRE(pw.head != nullptr);
+    REQUIRE(pw.layers.size() == 48);
+    REQUIRE(pw.layers[0].input_norm != nullptr);
+    REQUIRE(pw.layers[3].fa_q.rows > 0);
+    REQUIRE(pw.layers[4].kda_q.rows > 0);
+    REQUIRE(pw.resident_bytes > 0);
+    lsxcommon::alice::FreeAlicePinnedWeights(pw);
 }

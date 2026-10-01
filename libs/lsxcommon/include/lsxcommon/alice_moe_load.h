@@ -1,9 +1,16 @@
 #pragma once
 
 #include <arrow/api.h>
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
 
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/schema.h"
 
 namespace lsxcommon::alice {
 
@@ -46,5 +53,72 @@ arrow::Status LoadAliceTopology(const std::string &model_path,
 // Strict comparison against the frozen passport (libs/lsxcommon/src/
 // alice_moe_constants.h): every geometry field and the layer-type pattern.
 bool AliceTopologyMatchesFrozen(const AliceMoeTopology &top);
+
+// ── Pinned device weight graph ──────────────────────────────────────────────
+
+// Per-layer resident weights. Norms/projections/gates are FP16 device buffers;
+// large linear matrices are neutral NVFP4 weights.
+struct AliceLayerWeights {
+    bool loaded = false;
+    bool full = false;
+
+    __half *input_norm = nullptr;
+    __half *post_norm = nullptr;
+    __half *attn_res_norm = nullptr;  // null on layer 0
+    __half *mlp_res_norm = nullptr;
+    __half *attn_res_proj = nullptr;  // null on layer 0
+    __half *mlp_res_proj = nullptr;
+
+    // KDA (linear_attention)
+    lsx_nvfp4::LsxNvfp4Weight kda_q, kda_k, kda_v, kda_o, kda_fb, kda_gb;
+    __half *kda_fa = nullptr;
+    __half *kda_ga = nullptr;
+    __half *kda_b = nullptr;
+    __half *kda_qconv = nullptr;
+    __half *kda_kconv = nullptr;
+    __half *kda_vconv = nullptr;
+    __half *kda_alog = nullptr;
+    __half *kda_dt = nullptr;
+    __half *kda_onorm = nullptr;
+
+    // Gated full attention
+    lsx_nvfp4::LsxNvfp4Weight fa_q, fa_k, fa_v, fa_o;
+    __half *fa_qnorm = nullptr;
+    __half *fa_knorm = nullptr;
+
+    // MoE
+    __half *router_gate = nullptr;  // [E, hidden]
+    __half *router_bias = nullptr;  // [E]
+    __half *shared_gate = nullptr;  // [hidden]
+    lsx_nvfp4::LsxNvfp4Weight shared_gate_proj, shared_up_proj, shared_down_proj;
+};
+
+struct AlicePinnedWeights {
+    AliceMoeTopology top;
+    __half *embed = nullptr;              // [vocab, hidden]
+    __half *head = nullptr;               // [vocab, hidden]
+    __half *final_norm = nullptr;         // [hidden]
+    __half *attnres_final_proj = nullptr; // [hidden]
+    __half *attnres_final_norm = nullptr; // [hidden]
+    std::vector<AliceLayerWeights> layers;
+    std::uint64_t resident_bytes = 0;
+};
+
+// Loads all pinned weights from <root>/logestix/pinned or <root>/pinned.
+bool LoadAlicePinnedWeights(const std::string &root, AlicePinnedWeights &pw,
+                            cudaStream_t stream);
+void FreeAlicePinnedWeights(AlicePinnedWeights &pw);
+
+// Host-resident routed-expert store with lazy per-expert arrow loading.
+class AliceExpertHost {
+public:
+    explicit AliceExpertHost(std::string root) : root_(std::move(root)) {}
+    // Returns nullptr on missing/corrupt file.
+    const PackedExpert *Get(int layer, int expert);
+
+private:
+    std::string root_;
+    std::unordered_map<std::int64_t, PackedExpert> cache_;
+};
 
 } // namespace lsxcommon::alice
