@@ -77,4 +77,13 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
     const std::string &tokenizer_config_path,
     const std::filesystem::path &pinned_dir);
 
+// SentencePiece-BPE bridge (AliceAI). Parses the protobuf `tokenizer.model`
+// (identity normalizer, U+2581 word marker, byte fallback), derives BPE merge
+// rules from the piece set + scores, and writes the same
+// tokenizer_vocab.arrow / tokenizer_merges.arrow pair as BuildTokenizerArrowFiles
+// with `tokenizer_kind="sp-bpe"` metadata.
+arrow::Status BuildTokenizerArrowFilesSentencePiece(
+    const std::string &tokenizer_model_path,
+    const std::filesystem::path &pinned_dir);
+
 } // namespace lsxcommon

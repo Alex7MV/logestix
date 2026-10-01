@@ -7,10 +7,14 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
+#include <utility>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 #include <absl/strings/str_cat.h>
@@ -602,6 +606,336 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
     meta.pad_id = pad_id;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;
+
+    auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
+    if (!vbatch.ok()) return vbatch.status();
+    auto mbatch = TokenizerMergesSchema::MakeBatch(
+        merges, static_cast<int32_t>(merges.size()));
+    if (!mbatch.ok()) return mbatch.status();
+
+    ARROW_RETURN_NOT_OK(
+        WriteRecordBatchToFile(*vbatch, pinned_dir / "tokenizer_vocab.arrow"));
+    ARROW_RETURN_NOT_OK(WriteRecordBatchToFile(
+        *mbatch, pinned_dir / "tokenizer_merges.arrow"));
+    return arrow::Status::OK();
+}
+
+// ── SentencePiece-BPE bridge (AliceAI) ──────────────────────────────────────
+
+namespace {
+
+struct SpPiece {
+    std::string bytes;
+    float score = 0.0f;
+    uint32_t type = 1;  // 1 normal, 2 unknown, 3 control, 4 user-defined, 6 byte
+};
+
+struct PbCursor {
+    const uint8_t *p = nullptr;
+    const uint8_t *end = nullptr;
+};
+
+bool PbVarint(PbCursor &c, uint64_t &v)
+{
+    v = 0;
+    int shift = 0;
+    while (c.p < c.end && shift < 64) {
+        uint8_t b = *c.p++;
+        v |= static_cast<uint64_t>(b & 0x7f) << shift;
+        shift += 7;
+        if (!(b & 0x80)) return true;
+    }
+    return false;
+}
+
+bool PbLen(PbCursor &c, const uint8_t *&data, size_t &len)
+{
+    uint64_t n;
+    if (!PbVarint(c, n)) return false;
+    if (c.p + n > c.end) return false;
+    data = c.p;
+    len = static_cast<size_t>(n);
+    c.p += n;
+    return true;
+}
+
+void PbSkip(PbCursor &c, uint32_t wire)
+{
+    switch (wire) {
+    case 0: { uint64_t v; (void)PbVarint(c, v); break; }
+    case 1: c.p += 8; break;
+    case 2: { const uint8_t *d; size_t l; (void)PbLen(c, d, l); break; }
+    case 5: c.p += 4; break;
+    default: c.p = c.end; break;
+    }
+    if (c.p > c.end) c.p = c.end;
+}
+
+bool ParseSpPiece(const uint8_t *d, size_t n, SpPiece &out)
+{
+    PbCursor c{d, d + n};
+    while (c.p < c.end) {
+        uint64_t tag;
+        if (!PbVarint(c, tag)) return false;
+        uint32_t field = static_cast<uint32_t>(tag >> 3);
+        uint32_t wire = static_cast<uint32_t>(tag & 7);
+        if (field == 1 && wire == 2) {
+            const uint8_t *p;
+            size_t l;
+            if (!PbLen(c, p, l)) return false;
+            out.bytes.assign(reinterpret_cast<const char *>(p), l);
+        } else if (field == 2 && wire == 5) {
+            if (c.p + 4 > c.end) return false;
+            uint32_t bits = static_cast<uint32_t>(c.p[0]) |
+                            (static_cast<uint32_t>(c.p[1]) << 8) |
+                            (static_cast<uint32_t>(c.p[2]) << 16) |
+                            (static_cast<uint32_t>(c.p[3]) << 24);
+            std::memcpy(&out.score, &bits, 4);
+            c.p += 4;
+        } else if (field == 3 && wire == 0) {
+            uint64_t v;
+            if (!PbVarint(c, v)) return false;
+            out.type = static_cast<uint32_t>(v);
+        } else {
+            PbSkip(c, wire);
+        }
+    }
+    return true;
+}
+
+int SpUtf8Count(const std::string &s)
+{
+    int n = 0;
+    for (size_t i = 0; i < s.size();) {
+        uint8_t c = static_cast<uint8_t>(s[i]);
+        size_t l = 1;
+        if ((c >> 5) == 0x6) l = 2;
+        else if ((c >> 4) == 0xE) l = 3;
+        else if ((c >> 3) == 0x1E) l = 4;
+        i += l;
+        ++n;
+    }
+    return n;
+}
+
+} // namespace
+
+arrow::Status BuildTokenizerArrowFilesSentencePiece(
+    const std::string &tokenizer_model_path,
+    const std::filesystem::path &pinned_dir)
+{
+    std::ifstream f(tokenizer_model_path, std::ios::binary | std::ios::ate);
+    if (!f)
+        return arrow::Status::IOError("tokenizer: cannot open ",
+                                      tokenizer_model_path);
+    const auto sz = f.tellg();
+    f.seekg(0);
+    std::vector<uint8_t> data(static_cast<size_t>(sz));
+    f.read(reinterpret_cast<char *>(data.data()), sz);
+
+    std::vector<SpPiece> pieces;
+    uint32_t model_type = 0;
+    bool byte_fallback = false;
+    bool add_dummy_prefix = true;
+    bool escape_whitespaces = true;
+    bool have_byte_fallback = false, have_dummy = false, have_escape = false;
+    std::string norm_name;
+
+    PbCursor top{data.data(), data.data() + data.size()};
+    while (top.p < top.end) {
+        uint64_t tag;
+        if (!PbVarint(top, tag)) break;
+        uint32_t field = static_cast<uint32_t>(tag >> 3);
+        uint32_t wire = static_cast<uint32_t>(tag & 7);
+        if (field == 1 && wire == 2) {
+            const uint8_t *d;
+            size_t l;
+            if (!PbLen(top, d, l)) break;
+            SpPiece p;
+            if (!ParseSpPiece(d, l, p))
+                return arrow::Status::Invalid("tokenizer: bad sentencepiece piece");
+            pieces.push_back(std::move(p));
+        } else if (field == 2 && wire == 2) {
+            const uint8_t *d;
+            size_t l;
+            if (!PbLen(top, d, l)) break;
+            PbCursor t{d, d + l};
+            while (t.p < t.end) {
+                uint64_t tg;
+                if (!PbVarint(t, tg)) break;
+                uint32_t tf = static_cast<uint32_t>(tg >> 3);
+                uint32_t tw = static_cast<uint32_t>(tg & 7);
+                if (tf == 3 && tw == 0) {
+                    uint64_t v;
+                    if (!PbVarint(t, v)) break;
+                    model_type = static_cast<uint32_t>(v);
+                } else if (tf == 35 && tw == 0) {
+                    uint64_t v;
+                    if (!PbVarint(t, v)) break;
+                    byte_fallback = (v != 0);
+                    have_byte_fallback = true;
+                } else {
+                    PbSkip(t, tw);
+                }
+            }
+        } else if (field == 3 && wire == 2) {
+            const uint8_t *d;
+            size_t l;
+            if (!PbLen(top, d, l)) break;
+            PbCursor t{d, d + l};
+            while (t.p < t.end) {
+                uint64_t tg;
+                if (!PbVarint(t, tg)) break;
+                uint32_t tf = static_cast<uint32_t>(tg >> 3);
+                uint32_t tw = static_cast<uint32_t>(tg & 7);
+                if (tf == 1 && tw == 2) {
+                    const uint8_t *p;
+                    size_t pl;
+                    if (!PbLen(t, p, pl)) break;
+                    norm_name.assign(reinterpret_cast<const char *>(p), pl);
+                } else if (tf == 3 && tw == 0) {
+                    uint64_t v;
+                    if (!PbVarint(t, v)) break;
+                    add_dummy_prefix = (v != 0);
+                    have_dummy = true;
+                } else if (tf == 5 && tw == 0) {
+                    uint64_t v;
+                    if (!PbVarint(t, v)) break;
+                    escape_whitespaces = (v != 0);
+                    have_escape = true;
+                } else {
+                    PbSkip(t, tw);
+                }
+            }
+        } else {
+            PbSkip(top, wire);
+        }
+    }
+    (void)have_byte_fallback;
+    (void)have_dummy;
+    (void)have_escape;
+
+    if (pieces.empty())
+        return arrow::Status::Invalid("tokenizer: no sentencepiece pieces parsed");
+    if (model_type != 2)
+        return arrow::Status::Invalid(
+            "tokenizer: only SentencePiece BPE (model_type=2) is supported");
+    if (!norm_name.empty() && norm_name != "identity")
+        return arrow::Status::Invalid(
+            "tokenizer: only the identity normalizer is supported, got ",
+            norm_name);
+
+    const int32_t vocab_size = static_cast<int32_t>(pieces.size());
+    absl::flat_hash_map<std::string, int32_t> piece_to_id;
+    piece_to_id.reserve(static_cast<size_t>(vocab_size) * 2);
+    for (int32_t id = 0; id < vocab_size; ++id) {
+        auto [it, inserted] = piece_to_id.emplace(pieces[id].bytes, id);
+        (void)it;
+        (void)inserted;
+    }
+
+    auto find_piece = [&](const std::string &s) -> int32_t {
+        auto it = piece_to_id.find(s);
+        return it == piece_to_id.end() ? -1 : it->second;
+    };
+
+    std::array<int32_t, 256> byte_to_token_id{};
+    for (int b = 0; b < 256; ++b) {
+        char hex[8];
+        std::snprintf(hex, sizeof(hex), "<0x%02X>", b);
+        int32_t id = find_piece(hex);
+        if (id < 0) {
+            std::snprintf(hex, sizeof(hex), "<0x%02x>", b);
+            id = find_piece(hex);
+        }
+        if (id < 0)
+            return arrow::Status::Invalid(
+                "tokenizer: byte-fallback piece missing for byte ", b);
+        byte_to_token_id[static_cast<size_t>(b)] = id;
+    }
+
+    // Derive BPE merge rules exactly as HF's generate_merges: for every piece
+    // emit every split (a,b) into two existing pieces with the piece's own
+    // score, order splits within a piece by (id(a),id(b)), then stable-sort all
+    // candidates by (score desc, len(a) desc, len(b) desc); the resulting index
+    // is the merge rank.
+    struct Candidate {
+        float score;
+        int32_t len_l;
+        int32_t len_r;
+        int32_t left;
+        int32_t right;
+        int32_t token;
+    };
+    std::vector<Candidate> candidates;
+    for (int32_t id = 0; id < vocab_size; ++id) {
+        const SpPiece &p = pieces[id];
+        if (p.bytes.size() < 2) continue;
+        std::vector<Candidate> local;
+        for (size_t k = 1; k < p.bytes.size(); ++k) {
+            std::string a = p.bytes.substr(0, k);
+            std::string b = p.bytes.substr(k);
+            int32_t ia = find_piece(a);
+            int32_t ib = find_piece(b);
+            if (ia < 0 || ib < 0) continue;
+            local.push_back({p.score, SpUtf8Count(a), SpUtf8Count(b), ia, ib, id});
+        }
+        std::sort(local.begin(), local.end(),
+                  [](const Candidate &x, const Candidate &y) {
+                      if (x.left != y.left) return x.left < y.left;
+                      return x.right < y.right;
+                  });
+        candidates.insert(candidates.end(), local.begin(), local.end());
+    }
+    std::stable_sort(candidates.begin(), candidates.end(),
+                     [](const Candidate &a, const Candidate &b) {
+                         if (a.score != b.score) return a.score > b.score;
+                         if (a.len_l != b.len_l) return a.len_l > b.len_l;
+                         return a.len_r > b.len_r;
+                     });
+
+    std::vector<MergeRow> merges;
+    merges.reserve(candidates.size());
+    for (size_t rank = 0; rank < candidates.size(); ++rank) {
+        const Candidate &c = candidates[rank];
+        MergeRow r;
+        r.merge_left = c.left;
+        r.merge_right = c.right;
+        r.merge_rank = static_cast<int32_t>(rank);
+        r.merge_token_id = c.token;
+        merges.push_back(r);
+    }
+    std::sort(merges.begin(), merges.end(),
+              [](const MergeRow &a, const MergeRow &b) {
+                  if (a.merge_left != b.merge_left)
+                      return a.merge_left < b.merge_left;
+                  return a.merge_right < b.merge_right;
+              });
+
+    std::vector<VocabRow> vocab_rows;
+    vocab_rows.resize(static_cast<size_t>(vocab_size));
+    for (int32_t id = 0; id < vocab_size; ++id) {
+        auto &row = vocab_rows[static_cast<size_t>(id)];
+        row.token_id = id;
+        const SpPiece &p = pieces[id];
+        row.is_special = (p.type == 2 || p.type == 3) ? 1 : 0;
+        row.token_bytes.assign(
+            reinterpret_cast<const uint8_t *>(p.bytes.data()),
+            reinterpret_cast<const uint8_t *>(p.bytes.data()) + p.bytes.size());
+    }
+
+    TokenizerVocabMeta meta;
+    meta.bos_id = find_piece("<s>");
+    meta.eos_id = find_piece("</s>");
+    meta.pad_id = find_piece("<pad>");
+    meta.unk_id = find_piece("<unk>");
+    if (meta.unk_id < 0) meta.unk_id = 0;
+    meta.vocab_size = vocab_size;
+    meta.byte_to_token_id = byte_to_token_id;
+    meta.tokenizer_kind = 1;
+    meta.byte_fallback = byte_fallback ? 1 : 0;
+    meta.add_dummy_prefix = add_dummy_prefix ? 1 : 0;
+    meta.escape_whitespaces = escape_whitespaces ? 1 : 0;
 
     auto vbatch = TokenizerVocabSchema::MakeBatch(vocab_rows, meta);
     if (!vbatch.ok()) return vbatch.status();

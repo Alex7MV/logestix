@@ -31,6 +31,12 @@ struct ArrowTokenizerDb {
 
     int32_t bos_id = -1, eos_id = -1, pad_id = -1;
     int32_t byte_to_token_id[256];
+    // 0 = gpt2 byte-level BPE (default), 1 = sentencepiece BPE.
+    int32_t tokenizer_kind = 0;
+    int32_t unk_id = 0;
+    int32_t byte_fallback = 0;
+    int32_t add_dummy_prefix = 1;
+    int32_t escape_whitespaces = 1;
     std::string error_msg;
 
     bool valid() const;

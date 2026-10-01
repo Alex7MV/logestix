@@ -2,12 +2,16 @@
 #include "lsxcommon/schema.h"
 #include "lsxcommon/pretokenizer.h"
 #include <arrow/ipc/reader.h>
+#include <absl/container/flat_hash_map.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_split.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace lsxcommon {
 
@@ -122,6 +126,22 @@ arrow::Status load_tokenizer_metadata(
                 return arrow::Status::Invalid("tokenizer: bad byte_to_token_id metadata");
         }
 
+        // Optional encoding-family metadata (absent in pre-SP-BPE artifacts →
+        // defaults keep the GPT-2 byte-level behaviour).
+        {
+            auto get_opt_i32 = [&](const char *key, int32_t &out) -> void {
+                auto s = meta->Get(key);
+                if (!s.ok()) return;
+                int32_t v = 0;
+                if (absl::SimpleAtoi(*s, &v)) out = v;
+            };
+            get_opt_i32("tokenizer_kind", db.tokenizer_kind);
+            get_opt_i32("unk_id", db.unk_id);
+            get_opt_i32("byte_fallback", db.byte_fallback);
+            get_opt_i32("add_dummy_prefix", db.add_dummy_prefix);
+            get_opt_i32("escape_whitespaces", db.escape_whitespaces);
+        }
+
         // ---- merges file ----
         ARROW_ASSIGN_OR_RAISE(int64_t m_size, merges_mmap->GetSize());
         ARROW_ASSIGN_OR_RAISE(auto m_base_buf, merges_mmap->ReadAt(0, 1));
@@ -184,22 +204,13 @@ arrow::Status load_tokenizer_metadata(
 
 namespace {
 
-// Returns the number of merged tokens for one word, or:
-//   -1  a byte has no token mapping (db malformed)
-//   -3  word longer than kMaxWordBytes
-// Fills toks[0..n) with the merged token ids.
-int32_t bpe_encode_word(const ArrowTokenizerDb &db, const char *w, size_t wlen,
-                        int32_t *toks)
+// Greedy lowest-rank adjacent-pair merge over an arbitrary symbol-id sequence.
+// Shared by the GPT-2 byte-level BPE seed (bytes -> single-byte ids) and the
+// SentencePiece-BPE seed (codepoints -> piece ids / byte-fallback ids).
+// Returns the number of surviving symbols.
+size_t merge_symbols_in_place(const ArrowTokenizerDb &db, int32_t *toks,
+                              size_t n)
 {
-    if (wlen > kMaxWordBytes) return -3;
-
-    for (size_t i = 0; i < wlen; ++i) {
-        int32_t t = db.byte_to_token_id[static_cast<uint8_t>(w[i])];
-        if (t < 0) return -1;
-        toks[i] = t;
-    }
-    size_t n = wlen;
-
     while (n > 1) {
         int best_i = -1;
         int32_t best_rank = INT32_MAX;
@@ -229,7 +240,185 @@ int32_t bpe_encode_word(const ArrowTokenizerDb &db, const char *w, size_t wlen,
             toks[i] = toks[i + 1];
         --n;
     }
-    return static_cast<int32_t>(n);
+    return n;
+}
+
+// Returns the number of merged tokens for one word, or:
+//   -1  a byte has no token mapping (db malformed)
+//   -3  word longer than kMaxWordBytes
+// Fills toks[0..n) with the merged token ids.
+int32_t bpe_encode_word(const ArrowTokenizerDb &db, const char *w, size_t wlen,
+                        int32_t *toks)
+{
+    if (wlen > kMaxWordBytes) return -3;
+
+    for (size_t i = 0; i < wlen; ++i) {
+        int32_t t = db.byte_to_token_id[static_cast<uint8_t>(w[i])];
+        if (t < 0) return -1;
+        toks[i] = t;
+    }
+    return static_cast<int32_t>(merge_symbols_in_place(db, toks, wlen));
+}
+
+// ── SentencePiece-BPE (tokenizer_kind == 1) ─────────────────────────────────
+//
+// Identity normalizer + U+2581 '▁' word marker. Encoding: prepend '▁' when
+// add_dummy_prefix (non-empty input only), replace each ASCII space with '▁'
+// when escape_whitespaces, seed the symbol sequence with the single-codepoint
+// piece id (byte-fallback ids for uncovered codepoints), then merge greedily by
+// derived rank. Decode: skip specials, map <0xXX> pieces to raw bytes and '▁'
+// to ' '.
+
+constexpr char kSpSpace[] = "\xE2\x96\x81";  // U+2581 ▁ (3 bytes)
+
+size_t Utf8SeqLen(uint8_t c)
+{
+    if (c < 0x80) return 1;
+    if ((c >> 5) == 0x6) return 2;
+    if ((c >> 4) == 0xE) return 3;
+    if ((c >> 3) == 0x1E) return 4;
+    return 1;
+}
+
+// True when piece bytes are exactly the 6-byte "<0xHH>" byte-fallback form;
+// writes the decoded byte to *out.
+bool SpBytePiece(const uint8_t *p, int64_t len, uint8_t *out)
+{
+    if (len != 6) return false;
+    if (p[0] != '<' || p[1] != '0' || p[2] != 'x' || p[5] != '>') return false;
+    auto hex = [](uint8_t c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    int hi = hex(p[3]), lo = hex(p[4]);
+    if (hi < 0 || lo < 0) return false;
+    *out = static_cast<uint8_t>((hi << 4) | lo);
+    return true;
+}
+
+int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
+                      size_t text_len, int32_t *out_tokens, size_t *max_out_len)
+{
+    std::vector<int32_t> ids;
+    if (text_len > 0) {
+        // 1. normalized byte string.
+        std::string norm;
+        norm.reserve(text_len + 3);
+        if (db.add_dummy_prefix) norm.append(kSpSpace, 3);
+        for (size_t i = 0; i < text_len; ++i) {
+            if (text[i] == ' ' && db.escape_whitespaces)
+                norm.append(kSpSpace, 3);
+            else
+                norm += text[i];
+        }
+
+        // 2. single-token byte lookup (skip control/unknown specials).
+        absl::flat_hash_map<std::string_view, int32_t> by_bytes;
+        by_bytes.reserve(static_cast<size_t>(db.vocab_size) * 2);
+        for (int32_t id = 0; id < db.vocab_size; ++id) {
+            if (db.is_special[id]) continue;
+            const int64_t off = db.token_offsets[id];
+            const int64_t len = db.token_offsets[id + 1] - off;
+            by_bytes.emplace(
+                std::string_view(reinterpret_cast<const char *>(db.token_bytes + off),
+                                 static_cast<size_t>(len)),
+                id);
+        }
+
+        // 3. seed symbols codepoint-by-codepoint.
+        ids.reserve(norm.size());
+        size_t i = 0;
+        while (i < norm.size()) {
+            size_t clen = Utf8SeqLen(static_cast<uint8_t>(norm[i]));
+            if (i + clen > norm.size()) clen = 1;
+            std::string_view cp(norm.data() + i, clen);
+            auto it = by_bytes.find(cp);
+            if (it != by_bytes.end()) {
+                ids.push_back(it->second);
+            } else if (db.byte_fallback) {
+                for (size_t b = 0; b < clen; ++b)
+                    ids.push_back(
+                        db.byte_to_token_id[static_cast<uint8_t>(norm[i + b])]);
+            } else {
+                ids.push_back(db.unk_id);
+            }
+            i += clen;
+        }
+
+        // 4. merge.
+        const size_t n = merge_symbols_in_place(db, ids.data(), ids.size());
+        ids.resize(n);
+    }
+
+    // 5. prepend BOS.
+    const size_t bos = (db.bos_id >= 0) ? 1 : 0;
+    const size_t total = bos + ids.size();
+    if (total > *max_out_len) {
+        *max_out_len = total;
+        return -2;
+    }
+    size_t o = 0;
+    if (bos) out_tokens[o++] = db.bos_id;
+    for (int32_t id : ids) out_tokens[o++] = id;
+    *max_out_len = o;
+    return static_cast<int32_t>(o);
+}
+
+int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
+                      size_t n_ids, char *out_text, size_t *max_out_len)
+{
+    // Pass 1: count.
+    size_t total = 0;
+    for (size_t i = 0; i < n_ids; ++i) {
+        int32_t id = ids[i];
+        if (id < 0 || id >= db.vocab_size) return -1;
+        if (db.is_special[id]) continue;
+        const int64_t off = db.token_offsets[id];
+        const int64_t len = db.token_offsets[id + 1] - off;
+        uint8_t byte;
+        if (SpBytePiece(db.token_bytes + off, len, &byte))
+            total += 1;
+        else
+            total += static_cast<size_t>(len);
+    }
+    if (total > *max_out_len) {
+        *max_out_len = total;
+        return -2;
+    }
+
+    // Pass 2: emit, mapping <0xXX> -> raw byte and ▁ -> space.
+    size_t o = 0;
+    for (size_t i = 0; i < n_ids; ++i) {
+        int32_t id = ids[i];
+        if (db.is_special[id]) continue;
+        const int64_t off = db.token_offsets[id];
+        const int64_t len = db.token_offsets[id + 1] - off;
+        uint8_t byte;
+        if (SpBytePiece(db.token_bytes + off, len, &byte)) {
+            out_text[o++] = static_cast<char>(byte);
+            continue;
+        }
+        const uint8_t *p = db.token_bytes + off;
+        for (int64_t k = 0; k < len;) {
+            if (k + 2 < len && p[k] == 0xE2 && p[k + 1] == 0x96 && p[k + 2] == 0x81) {
+                out_text[o++] = ' ';
+                k += 3;
+            } else {
+                out_text[o++] = static_cast<char>(p[k]);
+                ++k;
+            }
+        }
+    }
+    // SentencePiece drops the leading whitespace produced by the dummy-prefix
+    // '▁' (e.g. decode('▁The') == "The", decode('▁▁') == " ").
+    if (o > 0 && out_text[0] == ' ') {
+        std::memmove(out_text, out_text + 1, o - 1);
+        --o;
+    }
+    *max_out_len = o;
+    return 0;
 }
 
 } // anonymous namespace
@@ -240,6 +429,8 @@ int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
 {
     if (!db.valid()) return -1;
     if (text_len == 0) text = "";
+    if (db.tokenizer_kind == 1)
+        return sp_bpe_encode(db, text, text_len, out_tokens, max_out_len);
 
     // Pass 1: count.
     size_t total = (db.bos_id >= 0) ? 1 : 0;
@@ -284,6 +475,8 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
                                size_t n_ids, char *out_text, size_t *max_out_len)
 {
     if (!db.valid()) return -1;
+    if (db.tokenizer_kind == 1)
+        return sp_bpe_decode(db, ids, n_ids, out_text, max_out_len);
 
     // Pass 1: count raw bytes, skipping specials.
     size_t total = 0;

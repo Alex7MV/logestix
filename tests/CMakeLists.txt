@@ -1985,6 +1985,28 @@ endif()
 
 add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
+# ── AliceAI SentencePiece-BPE tokenizer backend (model-neutral) ────────────
+add_executable(test_alice_tokenizer test_alice_tokenizer.cpp)
+target_compile_definitions(test_alice_tokenizer PRIVATE
+    LSX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_link_libraries(test_alice_tokenizer PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_alice_tokenizer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_alice_tokenizer>"
+    )
+    add_custom_command(TARGET test_alice_tokenizer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_alice_tokenizer>"
+    )
+endif()
+add_test(NAME test_alice_tokenizer COMMAND test_alice_tokenizer)
+set_tests_properties(test_alice_tokenizer PROPERTIES
+    LABELS fast SKIP_RETURN_CODE 4)
+
 # ── GLM-5.2 Dense MLP forward test (layers 0-2) ─────────────────────────────
 add_executable(test_glm_moe_layer_compute test_glm_moe_layer_compute.cpp)
 target_link_libraries(test_glm_moe_layer_compute PRIVATE lsxcommon Catch2::Catch2WithMain)

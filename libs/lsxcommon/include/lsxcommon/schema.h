@@ -252,6 +252,14 @@ struct TokenizerVocabMeta {
     int32_t pad_id = -1;
     int32_t vocab_size = 0;
     std::array<int32_t, 256> byte_to_token_id{};
+    // Encoding family discriminator. 0 = GPT-2 byte-level BPE (default,
+    // preserves every existing model); 1 = SentencePiece BPE (identity
+    // normalizer, U+2581 word marker, optional byte fallback).
+    int32_t tokenizer_kind = 0;
+    int32_t unk_id = 0;
+    int32_t byte_fallback = 0;
+    int32_t add_dummy_prefix = 1;
+    int32_t escape_whitespaces = 1;
 };
 
 class TokenizerVocabSchema {

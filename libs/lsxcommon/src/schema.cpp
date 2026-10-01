@@ -596,13 +596,20 @@ std::array<int32_t, 256> DeserializeByteToTokenId(const std::string &s)
 std::shared_ptr<arrow::Schema> TokenizerVocabSchema::Make(const TokenizerVocabMeta &meta)
 {
     auto kv = arrow::KeyValueMetadata::Make({
-        "bos_id", "eos_id", "pad_id", "vocab_size", "byte_to_token_id"
+        "bos_id", "eos_id", "pad_id", "vocab_size", "byte_to_token_id",
+        "tokenizer_kind", "unk_id", "byte_fallback", "add_dummy_prefix",
+        "escape_whitespaces"
     }, {
         absl::StrCat(meta.bos_id),
         absl::StrCat(meta.eos_id),
         absl::StrCat(meta.pad_id),
         absl::StrCat(meta.vocab_size),
-        SerializeByteToTokenId(meta.byte_to_token_id)
+        SerializeByteToTokenId(meta.byte_to_token_id),
+        absl::StrCat(meta.tokenizer_kind),
+        absl::StrCat(meta.unk_id),
+        absl::StrCat(meta.byte_fallback),
+        absl::StrCat(meta.add_dummy_prefix),
+        absl::StrCat(meta.escape_whitespaces)
     });
     return arrow::schema({
         arrow::field("token_id", arrow::int32()),
