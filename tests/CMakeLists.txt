@@ -695,6 +695,26 @@ set_tests_properties(test_granite_dense_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_granite_dense_selfcheck PROPERTIES
     SKIP_RETURN_CODE 4)
 
+# ── phi-4 SelfCheck (real weights; SKIP when absent) ──
+add_executable(test_phi_dense_selfcheck test_phi_dense_selfcheck.cpp)
+target_link_libraries(test_phi_dense_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_selfcheck>"
+    )
+    add_custom_command(TARGET test_phi_dense_selfcheck POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_selfcheck>"
+    )
+endif()
+add_test(NAME test_phi_dense_selfcheck COMMAND test_phi_dense_selfcheck)
+set_tests_properties(test_phi_dense_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_phi_dense_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4)
+
 # ── Qwen3.5-9B loader test (pinned upload, topology, layer dispatch) ────
 add_executable(test_qwen_dense_loader test_qwen_dense_loader.cpp)
 target_compile_definitions(test_qwen_dense_loader PRIVATE
