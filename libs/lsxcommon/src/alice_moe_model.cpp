@@ -2,6 +2,7 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/sampling.h"
 #include "lsxcommon/synthetic_geometry.h"
 
 #include <absl/strings/str_format.h>
@@ -24,6 +25,7 @@ AliceFoundation80BModel::~AliceFoundation80BModel()
 bool AliceFoundation80BModel::Load()
 {
     if (loaded_) return true;
+    tokenizer_optional_ = SyntheticGeometryAllowed();
     if (!BeginLoad(cfg_.model_path)) return AbortLoad();
 
     auto st = alice::LoadAliceTopology(cfg_.model_path, top_);
@@ -37,9 +39,21 @@ bool AliceFoundation80BModel::Load()
         log::error("[alice] frozen geometry mismatch");
         return AbortLoad();
     }
+    tokenizer_optional_ = SyntheticGeometryAllowed();
 
-    // Weight runtime (pinned graph + expert cache) lands with the CUDA
-    // pipeline; until then Load validates the topology and tokenizer only.
+    if (!EnsureContext()) {
+        log::error("[alice] cuda context init failed");
+        return AbortLoad();
+    }
+    cudaStreamSynchronize(stream());
+    if (!alice::LoadAlicePinnedWeights(cfg_.model_path, pw_, stream())) {
+        log::error("[alice] pinned weight load failed");
+        return AbortLoad();
+    }
+    cudaStreamSynchronize(stream());
+    experts_ = std::make_unique<alice::AliceExpertHost>(cfg_.model_path);
+    weights_loaded_ = true;
+    resident_bytes_ = pw_.resident_bytes;
     FinishLoad();
     return true;
 }
@@ -48,13 +62,47 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
 {
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
+    if (!weights_loaded_) {
+        r.error_msg = "alice weights not loaded";
+        return r;
+    }
 
     // Model independence: this model's own kernel-routing policy for the
     // duration of the call.
     const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
 
-    r.ok = false;
-    r.error_msg = "alice CUDA runtime not yet wired";
+    if (!EnsureContext()) {
+        r.error_msg = "cuda init failed";
+        return r;
+    }
+    const int eos_id = (req.ignore_eos || !tok_db_)
+                           ? kIgnoreEosTokenId
+                           : tok_db_->eos_id;
+    alice::AliceGenerationResult gen;
+    auto ec = RunUnderResidencyLock([&]() {
+        return alice::RunAliceGeneration(stream(), pw_, *experts_, req.input_ids,
+                                         req.max_gen_tokens, eos_id, gen,
+                                         sample::DefaultSampler());
+    });
+    if (ec != cudaSuccess || !gen.ok) {
+        r.error_msg = gen.error_msg.empty() ? "alice cuda error" : gen.error_msg;
+        return r;
+    }
+    r.ok = true;
+    r.num_layers = pw_.top.num_layers;
+    r.gen_tokens = gen.tokens;
+    r.num_tokens = static_cast<int>(gen.tokens.size());
+    r.first_gen_tok_id = gen.first_token;
+    r.first_gen_text = "";
+    r.final_logits = gen.final_logits;
+    r.eos_terminated = gen.eos_terminated;
+    if (tok_db_ && !gen.tokens.empty()) {
+        std::size_t cap = gen.tokens.size() * 16 + 64;
+        std::string text(cap, '\0');
+        if (arrow_tokenizer_decode(*tok_db_, gen.tokens.data(),
+                                   gen.tokens.size(), text.data(), &cap) == 0)
+            r.output_text.assign(text.data(), cap);
+    }
     return r;
 }
 
@@ -66,6 +114,14 @@ gpu::InferenceResult AliceFoundation80BModel::SelfCheck(const ModelRequest &req)
     return r;
 }
 
-void AliceFoundation80BModel::TeardownWeights() {}
+void AliceFoundation80BModel::TeardownWeights()
+{
+    experts_.reset();
+    if (weights_loaded_) {
+        alice::FreeAlicePinnedWeights(pw_);
+        weights_loaded_ = false;
+    }
+    TeardownContext();
+}
 
 } // namespace lsxcommon

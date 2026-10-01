@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "lsxcommon/alice_moe_load.h"
+#include "lsxcommon/alice_moe_inference_pipeline.h"
 #include "lsxcommon/model_base.h"
 
 namespace lsxcommon {
@@ -30,6 +31,9 @@ protected:
     void TeardownWeights() override;
 
     alice::AliceMoeTopology top_;
+    alice::AlicePinnedWeights pw_;
+    std::unique_ptr<alice::AliceExpertHost> experts_;
+    bool weights_loaded_ = false;
 };
 
 } // namespace lsxcommon

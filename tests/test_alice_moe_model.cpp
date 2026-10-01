@@ -3,7 +3,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "alice_moe_constants.h"
+#include "lsxcommon/alice_moe_convert.h"
+#include "lsxcommon/alice_moe_load.h"
 #include "lsxcommon/model_factory.h"
+
+#include <cstdlib>
+#include <filesystem>
+
+#include "test_alice_moe_fixture.h"
 
 using namespace lsxcommon::alice::frozen;
 
@@ -41,4 +48,48 @@ TEST_CASE("alice kType resolves in the factory", "[alice][fast]")
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     REQUIRE(model->Type() == "alice-foundation-80b-a3b");
+}
+
+TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
+{
+    REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
+    namespace fs = std::filesystem;
+    const fs::path in = fs::temp_directory_path() / "alice_model_in";
+    const fs::path out = fs::temp_directory_path() / "alice_model_out";
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    alicetest::WriteAliceConfigJson(in);
+    alicetest::WriteAliceShard(in);
+    auto st = lsxcommon::alice::ConvertAliceModel(in.string(), out.string());
+    if (!st.ok()) FAIL(st.ToString());
+    REQUIRE(st.ok());
+
+    {
+        lsxcommon::alice::AliceExpertHost host(out.string());
+        const auto *pe = host.Get(0, 0);
+        REQUIRE(pe != nullptr);
+        REQUIRE(!pe->w1_packed.empty());
+    }
+
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = out.string();
+    cfg.model_type = "alice-foundation-80b-a3b";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    REQUIRE(model->Load());
+
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 5, 7};
+    req.max_gen_tokens = 2;
+    auto r1 = model->Infer(req);
+    if (!r1.ok) FAIL(r1.error_msg);
+    REQUIRE(r1.ok);
+    REQUIRE(r1.gen_tokens.size() == 2);
+
+    auto r2 = model->Infer(req);
+    REQUIRE(r2.ok);
+    REQUIRE(r2.gen_tokens == r1.gen_tokens);
+    REQUIRE(r2.final_logits == r1.final_logits);
 }

@@ -31,7 +31,9 @@ target_link_libraries(test_alice_moe_model PRIVATE lsxcommon Catch2::Catch2WithM
 target_include_directories(test_alice_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_alice_moe_model COMMAND test_alice_moe_model)
-set_tests_properties(test_alice_moe_model PROPERTIES LABELS fast)
+set_tests_properties(test_alice_moe_model PROPERTIES
+    LABELS "fast;inference" TIMEOUT 300
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
 add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
 target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
@@ -69,6 +71,12 @@ set_target_properties(test_alice_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_alice_moe_kernels PRIVATE test_alice_cu lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_alice_moe_kernels COMMAND test_alice_moe_kernels)
 set_tests_properties(test_alice_moe_kernels PROPERTIES LABELS inference)
+
+add_executable(test_alice_moe_selfcheck test_alice_moe_selfcheck.cpp)
+target_link_libraries(test_alice_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_selfcheck COMMAND test_alice_moe_selfcheck)
+set_tests_properties(test_alice_moe_selfcheck PROPERTIES
+    LABELS inference TIMEOUT 1800 SKIP_RETURN_CODE 4)
 
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)

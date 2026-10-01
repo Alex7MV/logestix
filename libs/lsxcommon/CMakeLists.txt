@@ -392,6 +392,7 @@ target_link_libraries(lsxcommon_phi_cu
 add_library(lsxcommon_alice_cu OBJECT
     src/alice_moe_kernels.cu
     src/alice_moe_inference.cu
+    src/alice_moe_inference_pipeline.cu
 )
 set_target_properties(lsxcommon_alice_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"
