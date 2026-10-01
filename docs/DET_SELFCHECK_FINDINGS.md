@@ -21,6 +21,7 @@ only supplies `input_ids` and logs agreement.
 | qwen3.8-flash-next | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | gemma-4-26b-a4b-it | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 | deepseek-v4.1-flash | **wired** | PASS | PASS | PASS | `deterministic=true` all |
+| phi-4 | **wired** | PASS | PASS | PASS | `deterministic=true` all |
 
 **The determinism stress-test passed in every case** (18 prompt×family
 combinations, byte-identical `gen_tokens` across 3 runs), and the extracted
@@ -128,6 +129,7 @@ known fragility.
 | nemotron-3.5-lightning-30b-a3b | pending | — | — | runnable source available; DET not captured |
 | gigachat3.5-432b-a28b-reasoning | pending | — | — | 432B source; template golden only |
 | granite-4.2-30b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3**; golden committed |
+| phi-4 | **wired** | source (Phi3ForCausalLM) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 
 Capture and the converted-model run are performed on the GPU host (one model
 load at a time, per the host resource policy). Fill this table as each family is

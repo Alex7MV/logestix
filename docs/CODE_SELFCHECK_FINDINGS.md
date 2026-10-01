@@ -32,11 +32,13 @@ was run for each of them. Results on the converted model at `kOff`:
 | Qwen3.8-Flash-Next | PASS | source-captured (`qwen4_exp`), committed | **PASS 3/3** |
 | GLM-5.3-Flash | PASS | template-derived (`--template-golden`, 512), committed | **PASS 3/3** |
 | granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
+| phi-4 | PASS | source-captured, committed | **PASS 3/3** |
 
 Committed goldens:
 `tests/fixtures/code/qwen3.6-35b-a3b.json`,
 `tests/fixtures/code/qwen3.8-flash-next.json`,
-`tests/fixtures/code/glm-5.3-flash.json`.
+`tests/fixtures/code/glm-5.3-flash.json`,
+`tests/fixtures/code/phi-4.json`.
 
 Capture commands:
 
@@ -61,8 +63,8 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 |---|---|
 | Qwen3.6-35B-A3B | captured (all 3 exact); converted PASS 3/3 |
 | Qwen3.8-Flash-Next | captured with the `qwen4_exp` loader (all 3 exact); converted PASS 3/3 |
-| granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) |
-| gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
+| granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) || gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
+| phi-4 | captured (all 3 exact); converted **PASS 3/3** |
 | GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **PASS 3/3** (512 + prompt-echo cut) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (source 3/3 exact); converted **FAIL 3/3** (incoherent; same profile as FSI) |
 | ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |

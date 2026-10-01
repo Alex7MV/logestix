@@ -21,6 +21,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
 | granite-4.2-30b | captured with the chat template + low-effort thinking (see below); all 3 exact |
+| phi-4 | captured with the built-in ChatML template (`tokenizer_config.json`); all 3 exact |
 | ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
@@ -52,9 +53,9 @@ that this build does not accept/route. Capture works after (documented in
 | Qwen3.6-35B-A3B | **PASS 3/3** (wired into CI) |
 | Qwen3.8-Flash-Next | **PASS 3/3** (wired into CI) |
 | Granite-4.2-30B | **PASS 3/3** (wired into CI) |
+| phi-4 | **PASS 3/3** (wired into CI; 2026-10-01) |
 | gemma-4-26B-A4B-it | FSI-02 PASS after algebraic canonicalization; FSI-01 and FSI-03 diverge |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | FAIL 3/3 — converted model emits incoherent text |
-
 ### Granite-4.2-30B capture recipe
 
 The capture initially failed because granite's chat template lives in a
@@ -66,6 +67,14 @@ reasoning model: its non-thinking mode still gets FSI-02 wrong, but
 `enable_thinking=True, low_effort=True` answers all three exactly. Extraction
 now takes the answer segment after the last `</think>` (reasoning CoT can
 contain competing formulas), in both C++ and the Python mirror.
+
+### phi-4 capture recipe
+
+Straightforward: `microsoft/phi-4` (`Phi3ForCausalLM`) loads under
+transformers 5.15.1, its chat template is embedded in `tokenizer_config.json`
+(`<|im_start|>role<|im_sep|>content<|im_end|>`), and greedy decoding answers all
+three FSI prompts. No `OVERRIDES` entry is needed. Golden:
+`tests/fixtures/fsi/phi-4.json`.
 
 ### gemma-4-26B-A4B-it
 
