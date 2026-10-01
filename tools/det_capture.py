@@ -19,6 +19,10 @@ PROMPTS = os.path.join(HERE, "det_prompts.json")
 OVERRIDES = {
     "granite-4.2-30b": {"enable_thinking": True, "low_effort": True},
     "qwen3.8-flash-next": {"loader": "qwen4_exp"},
+    # qwen3.8-27b is a Qwen3_5 VLM checkpoint; the text language model is
+    # loaded directly (loader remaps the model.language_model prefix) and
+    # sharded GPU+CPU because 27B bf16 does not fit 32 GiB VRAM.
+    "qwen3.8-27b": {"loader": "qwen3_5", "device_map": "auto"},
     # deepseek-v4.1-flash ships no HF chat template; frame with the release's
     # own encoding/encoding.py, in the reasoning model's default thinking mode.
     "deepseek-v4.1-flash": {"framing": "deepseek_v41",
@@ -83,6 +87,66 @@ def _load_qwen4_exp(model_path):
                     bufs[name].copy_(tensor)
     torch.set_default_dtype(prev_dtype)
     return lm
+
+
+def _remap_qwen3_5_key(key):
+    """Map a Qwen3.8-27B VLM checkpoint key to a text-only
+    Qwen3_5ForCausalLM key. Returns None for vision/MTP tensors the text model
+    does not own."""
+    if key.startswith("model.visual.") or key.startswith("mtp."):
+        return None
+    return key.replace("model.language_model.", "model.")
+
+
+def _load_qwen3_5(model_path):
+    """Load the Qwen3.8-27B VLM checkpoint as a text-only causal LM.
+
+    A plain AutoModelForCausalLM load of this checkpoint is wrong: `qwen3_5`
+    maps to Qwen3_5ForCausalLM, whose weights are prefixed `model.`, while the
+    checkpoint stores them under `model.language_model.`. Without the remap the
+    language weights are silently dropped and the model is random.
+    """
+    import glob
+
+    import torch
+    from safetensors.torch import load_file
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    raw = json.load(open(os.path.join(model_path, "config.json"),
+                         encoding="utf-8"))["text_config"]
+    raw = dict(raw)
+    raw["mtp_num_hidden_layers"] = 0
+    tc = Qwen3_5TextConfig(**raw)
+
+    prev_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.bfloat16)
+    lm = Qwen3_5ForCausalLM(tc)
+    lm.eval()
+    params = dict(lm.named_parameters())
+    bufs = dict(lm.named_buffers())
+    for shard in sorted(glob.glob(os.path.join(model_path, "*.safetensors"))):
+        for key, tensor in load_file(shard).items():
+            name = _remap_qwen3_5_key(key)
+            if name is None:
+                continue
+            if name in params:
+                with torch.no_grad():
+                    params[name].data.copy_(tensor)
+            elif name in bufs:
+                with torch.no_grad():
+                    bufs[name].copy_(tensor)
+    torch.set_default_dtype(prev_dtype)
+    return lm
+
+
+def _dispatch_auto(lm, no_split):
+    """Shard a model too large for VRAM across GPU + CPU (accelerate)."""
+    from accelerate import dispatch_model, infer_auto_device_map
+
+    dm = infer_auto_device_map(
+        lm, max_memory={0: "28GiB", "cpu": "640GiB"},
+        no_split_module_classes=no_split)
+    return dispatch_model(lm, device_map=dm)
 
 
 def load_prompts():
@@ -158,6 +222,12 @@ def selftest():
         assert got == p["expected"], (p["id"], got, p["expected"])
     assert extract("token", "The answer is CATASTROPHIC.") == "CATASTROPHIC"
     assert extract("token", "lowercase only") == ""
+    # qwen3.8-27b: the VLM -> text-only key remap (vision/MTP dropped).
+    assert _remap_qwen3_5_key("model.language_model.embed_tokens.weight") \
+        == "model.embed_tokens.weight", "language prefix remap"
+    assert _remap_qwen3_5_key("lm_head.weight") == "lm_head.weight"
+    assert _remap_qwen3_5_key("model.visual.blocks.0.weight") is None
+    assert _remap_qwen3_5_key("mtp.fc.weight") is None
     print("det selftest OK: token templates valid")
 
 
@@ -282,7 +352,11 @@ def capture(model, model_type, out, max_new_tokens, device_map=None):
         load_kwargs["dtype"] = opts["dtype"]
     if opts.get("device_map"):
         load_kwargs["device_map"] = opts["device_map"]
-    if opts.get("loader") == "qwen4_exp":
+    if opts.get("loader") == "qwen3_5":
+        lm = _load_qwen3_5(model)
+        if opts.get("device_map"):
+            lm = _dispatch_auto(lm, ["Qwen3_5DecoderLayer"])
+    elif opts.get("loader") == "qwen4_exp":
         lm = _load_qwen4_exp(model)
     else:
         lm = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
