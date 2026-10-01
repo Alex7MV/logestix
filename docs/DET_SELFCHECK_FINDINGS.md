@@ -119,7 +119,7 @@ known fragility.
 | glm-5.3-flash | **wired** | tokenizer-only (`glm5_next` unrunnable) | `deterministic=true` | **PASS 3/3** at `max_new_tokens=512`; golden committed |
 | deepseek-v4-flash | pending | — | — | source not in vault; test SKIPs |
 | deepseek-v4.1-flash | **wired** | `encoding/encoding.py` (thinking) | `deterministic=true` | **PASS 3/3**; golden committed |
-| qwen3.5-9b | pending | — | — | source not in vault; test SKIPs |
+| qwen3.5-9b | **wired** | source (`qwen3_5` loader) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 | qwen3.8-27b | **wired** | source (`qwen3_5` loader, GPU+CPU) | `deterministic=true` | **PASS 3/3**; golden committed (2026-10-01) |
 | qwen3.5-35b-a3b | pending | — | — | source not in vault; test SKIPs |
 | qwen3.6-35b-a3b | **wired** | tokenizer-only | `deterministic=true` | **PASS 3/3** (post prompt update); golden committed |
