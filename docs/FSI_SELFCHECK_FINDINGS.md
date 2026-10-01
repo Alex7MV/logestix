@@ -22,12 +22,13 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | gemma-4-26B-A4B-it | captured (FSI-01/02 rephrased; template warnings) |
 | granite-4.2-30b | captured with the chat template + low-effort thinking (see below); all 3 exact |
 | phi-4 | captured with the built-in ChatML template (`tokenizer_config.json`); all 3 exact |
+| Qwen3.5-9B | captured (all 3; FSI-01/02 numeric substitution) — see the `qwen3_5` note below |
 | ornith-1.5-35B-A3B | not capturable — config loads as `qwen3_5_moe`, but the MLX checkpoint uses `language_model.*` key names, so all HF params MISSING (needs a key-prefix remap) |
 | DeepSeek-V4-Flash | recognized (`deepseek_v4`); FP8 loads after installing `accelerate` + `kernels==0.16.0`, but the FP8 linear kernel is CUDA-only and 149 G does not fit the 32 GB GPU (`device_map=auto` OOM) — needs a larger-VRAM host |
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
 | DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
-| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+| GLM-5.2, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
 
 ### Qwen3.8-Flash-Next (`qwen4_exp`) capture recipe
 
@@ -55,6 +56,7 @@ that this build does not accept/route. Capture works after (documented in
 | Granite-4.2-30B | **PASS 3/3** (wired into CI) |
 | phi-4 | **PASS 3/3** (wired into CI; 2026-10-01) |
 | Qwen3.8-27B | **PASS 3/3** (wired into CI; 2026-10-01) |
+| Qwen3.5-9B | FSI-02/FSI-03 **PASS**; FSI-01 diverges on a near-tie (golden **not** committed; SKIP; 2026-10-01) |
 | gemma-4-26B-A4B-it | FSI-02 PASS after algebraic canonicalization; FSI-01 and FSI-03 diverge |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | FAIL 3/3 — converted model emits incoherent text |
 ### Granite-4.2-30B capture recipe
@@ -93,6 +95,42 @@ with `model.language_model.` -> `model.` (`model.visual.*` / `mtp.*` skipped).
 three prompts exactly (FSI-01/02 with numeric substitution). Golden:
 `tests/fixtures/fsi/qwen3.8-27b.json`; the converted NVFP4 model reproduces all
 three at `kOff` (~17 s).
+
+### Qwen3.5-9B (`qwen3_5` VLM) capture recipe + FSI-01 near-tie (2026-10-01)
+
+Same checkpoint shape as the 27B (a `Qwen3_5ForConditionalGeneration` VLM:
+`model.language_model.*` text, 333-tensor `model.visual.*` tower, 15 `mtp.*`).
+The `OVERRIDES` entry `"qwen3.5-9b": {"loader": "qwen3_5", "device_map":
+"auto"}` (all three capture tools) loads it text-only. 9B bf16 (~19 GiB) fits
+32 GiB VRAM, so `_dispatch_auto` keeps every layer on GPU. The source answers
+FSI-01/02 with numeric substitution and FSI-03 exactly; golden
+`tests/fixtures/fsi/qwen3.5-9b.json` was captured but is **not committed**
+(see below), so `test_qwen_dense_fsi_selfcheck` SKIPs.
+
+The converted NVFP4 model reproduces FSI-02 and FSI-03 exactly, but **FSI-01
+diverges**: source `PV=2500000*((1-exp(-0.0835*7))/(1-exp(-0.0835)))` vs
+converted `PV=CF*((1-exp(-r*n))/(1-exp(-r)))` (the prompt's own Expected
+Template). This is a **near-tie**, not a runtime defect:
+
+- At the decision point (`prompt` + `PV=`) the source's top-2 are `'2'`
+  (logit 23.0) and `'CF'` (22.0) — a 1.0 gap (p≈0.73/0.27).
+- The converted model's top-2 collapse to `'2'` 22.09 / `'CF'` 21.86 in
+  `kAuto` (gap 0.23, chooses `'2'`, matching the source) and `'CF'` 22.47 /
+  `'2'` 21.92 in `kOff` (gap 0.55, flips). The gate runs at `kOff`, so it
+  flips.
+- The converted distribution is globally close to the source (Pearson r
+  ≈0.95 over the full 248320-vocab logits; 43/50 top-50 overlap; top-100 MAE
+  0.61). Teacher-forcing the source's `PV=2500000` prefix shows the converted
+  model tracks the source afterward.
+- A reference audit of the qwen dense contour (RMSNorm offset form, partial
+  RoPE / text-only M-RoPE reduction, gated full attention with the
+  `qwen3_5` `attn_output_gate` split, GatedDeltaNet recurrence) found no
+  discrete defect.
+
+This is the same 4-bit precision-sensitivity class as gemma/Nemotron (a
+single near-tie that greedy decoding cascades). Per policy the golden is not
+committed and the gate stays SKIP; a "fix" would mean altering precision
+semantics for a 0.2-logit margin with regression risk.
 
 ### gemma-4-26B-A4B-it
 
