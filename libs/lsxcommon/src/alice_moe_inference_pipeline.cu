@@ -355,21 +355,25 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
         return e;
     };
 
-    for (int step = 0; step < max_new; ++step) {
-        // Per-step state: the recurrent KDA state and conv history must carry
-        // across the tokens of one step (reset once, before the token loop).
-        cudaMemsetAsync(state, 0, state_bytes, stream);
-        cudaMemsetAsync(hist, 0, hist_bytes, stream);
-        for (int t = 0; t < static_cast<int>(ids.size()); ++t) {
-            const bool last = (t == static_cast<int>(ids.size()) - 1);
-            e = forward(ids[(size_t)t], t, last);
-            if (e) {
-                if (result.error_msg.empty())
-                    result.error_msg = std::string("alice forward failed [") +
-                                       stage + "]: " + cudaGetErrorString(e);
-                return e;
-            }
+    // Recurrent state (KDA + conv history) is reset once and then carried
+    // across the whole prefill + decode (one forward per token, not a full
+    // recompute per step): prefill the prompt, then decode one token per step.
+    cudaMemsetAsync(state, 0, state_bytes, stream);
+    cudaMemsetAsync(hist, 0, hist_bytes, stream);
+
+    int pos = 0;
+    for (; pos < static_cast<int>(ids.size()); ++pos) {
+        const bool last = (pos == static_cast<int>(ids.size()) - 1);
+        e = forward(ids[(size_t)pos], pos, last);
+        if (e) {
+            if (result.error_msg.empty())
+                result.error_msg = std::string("alice forward failed [") +
+                                   stage + "]: " + cudaGetErrorString(e);
+            return e;
         }
+    }
+
+    for (int step = 0; step < max_new; ++step) {
         std::vector<__half> hlog(VOCAB);
         cudaMemcpyAsync(hlog.data(), logits, VOCAB * sizeof(__half),
                         cudaMemcpyDeviceToHost, stream);
@@ -387,8 +391,16 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                 result.final_logits[(size_t)i] = __half2float(hlog[(size_t)i]);
         }
         result.tokens.push_back(best);
-        ids.push_back(best);
         if (eos_id >= 0 && best == eos_id) { result.eos_terminated = true; break; }
+        if (step + 1 >= max_new) break;
+        e = forward(best, pos, true);
+        ++pos;
+        if (e) {
+            if (result.error_msg.empty())
+                result.error_msg = std::string("alice forward failed [") +
+                                   stage + "]: " + cudaGetErrorString(e);
+            return e;
+        }
     }
     result.ok = true;
 
