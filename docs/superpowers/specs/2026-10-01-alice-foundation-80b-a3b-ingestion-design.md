@@ -626,6 +626,29 @@ canonical protocol (correctness-first token-by-token, then measured).
   `chat_template.jinja` / `tokenizer.model` are used as read-only references and
   are NOT committed to the repository.
 
+## Performance (RTX 5090, linux, Release, --max-gen 2048)
+
+Baseline after correctness: **9.19 t/s** (perf) / 5.84 t/s (bit-exact).
+
+`nsys` attribution (first profile) put **78% of kernel time** in
+`router_topk_kernel` — a single thread scanning global memory K times per layer
+(~867 µs/layer at E=512) — plus **854 ms/32 tokens of pageable H2D** for the
+routed experts (re-streamed on every use).
+
+| Change | perf t/s | bit-exact t/s |
+|---|---|---|
+| baseline | 9.19 | 5.84 |
+| block-parallel router top-k (shared-memory tree reduction) | 14.75 | 7.73 |
+| device expert slot-LRU (miss streams once, hit reuses) | **37.81** | 10.09 |
+
+Total **4.1×**. Remaining per-token cost is spread: FP16 `gemv::GemvKernel`
+projections (~3.4 ms), expert NVFP4 GEMV (~3 ms), `kda_recur_kernel`
+(~2.2 ms), `depth_mix_kernel` (~2.1 ms), ~5 ms H2D (cold misses when the
+working set exceeds the slot pool), plus launch overhead over ~3000 kernels per
+token. Next levers: CUDA-graph capture of the steady-state decode, KDA/depth-mix
+kernel fusion, and a larger/tiered expert pool. Determinism preserved throughout
+(selfcheck Paris ×3 bit-exact; `final_logits` unchanged).
+
 ## Out of scope (follow-ups)
 
 MTP speculative decoding; extending the native SP-BPE backend to unigram
