@@ -85,6 +85,8 @@ const std::vector<PassportRow> kPassports = {
     {"mimo-v2.6-flash-rl", "mimo_moe_constants.h", "lsxcommon::mimo::frozen"},
     {"phi-4", "../include/lsxcommon/phi_dense_constants.h",
      "lsxcommon::phi::frozen"},
+    {"alice-foundation-80b-a3b", "alice_moe_constants.h",
+     "lsxcommon::alice::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -174,6 +176,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"../include/lsxcommon/granite_dense_constants.h", "namespace frozen {"},
         {"mimo_moe_constants.h", "namespace frozen {"},
         {"../include/lsxcommon/phi_dense_constants.h", "namespace frozen {"},
+        {"alice_moe_constants.h", "namespace frozen {"},
     };
     for (const auto &kv : owner) {
         const std::string text = ReadFile(PassportPath(kv.first.c_str()));

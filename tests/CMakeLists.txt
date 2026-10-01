@@ -25,6 +25,14 @@ target_include_directories(test_fast_load PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
 add_test(NAME test_fast_load COMMAND test_fast_load)
 
+# ── AliceAI-Foundation-80B-A3B family (new family; stages land progressively) ──
+add_executable(test_alice_moe_model test_alice_moe_model.cpp)
+target_link_libraries(test_alice_moe_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_alice_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_alice_moe_model COMMAND test_alice_moe_model)
+set_tests_properties(test_alice_moe_model PROPERTIES LABELS fast)
+
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
 target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMain)
