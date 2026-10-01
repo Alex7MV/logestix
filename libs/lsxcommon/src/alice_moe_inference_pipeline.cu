@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <chrono>
+#include <unordered_map>
 #include <cstring>
 #include <vector>
 
@@ -66,25 +67,110 @@ inline cudaError_t ProjRaw(cudaStream_t s, const __half *w, const __half *x,
                               0.0f);
 }
 
-inline cudaError_t ExpertGemm(cudaStream_t s, const PackedExpert &pe, int which,
-                              const __half *x, __half *y, int rows, int cols,
-                              uint8_t *stage_p, uint8_t *stage_s)
-{
-    const std::vector<uint8_t> *packed;
-    const std::vector<uint8_t> *scales;
-    float gs;
-    if (which == 1) { packed = &pe.w1_packed; scales = &pe.w1_scales; gs = pe.w1_global_scale; }
-    else if (which == 2) { packed = &pe.w2_packed; scales = &pe.w2_scales; gs = pe.w2_global_scale; }
-    else { packed = &pe.w3_packed; scales = &pe.w3_scales; gs = pe.w3_global_scale; }
-    if (packed->empty() || scales->empty()) return cudaErrorInvalidValue;
-    cudaError_t e = cudaMemcpyAsync(stage_p, packed->data(), packed->size(),
-                                    cudaMemcpyHostToDevice, s);
-    if (e != cudaSuccess) return e;
-    e = cudaMemcpyAsync(stage_s, scales->data(), scales->size(),
+// Device-resident expert slot cache (LRU). Each slot holds one expert's
+// w1/w3/w2 packed nibbles + E4M3 scales; a miss streams it from the host store
+// once, a hit reuses the resident copy (no per-token re-upload).
+struct ExpertCache {
+    uint8_t *pool = nullptr;
+    int slots = 0;
+    size_t stride = 0;
+    std::vector<std::pair<int32_t, uint64_t>> tbl;  // (key, last-use stamp)
+    std::unordered_map<int32_t, int> map;
+    uint64_t clk = 0;
+    size_t off_w1p = 0, off_w1s = 0, off_w3p = 0, off_w3s = 0, off_w2p = 0,
+           off_w2s = 0;
+    size_t len_w1p = 0, len_w1s = 0, len_w2p = 0, len_w2s = 0;
+
+    bool Init(cudaStream_t s, const PackedExpert &ex, int want)
+    {
+        len_w1p = ex.w1_packed.size();
+        len_w1s = ex.w1_scales.size();
+        len_w2p = ex.w2_packed.size();
+        len_w2s = ex.w2_scales.size();
+        if (len_w1p == 0 || len_w2p == 0) return false;
+        off_w1p = 0;
+        off_w1s = off_w1p + len_w1p;
+        off_w3p = off_w1s + len_w1s;
+        off_w3s = off_w3p + len_w1p;
+        off_w2p = off_w3s + len_w1s;
+        off_w2s = off_w2p + len_w2p;
+        stride = off_w2s + len_w2s;
+        std::size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        const size_t budget = free_b / 2;  // leave headroom
+        int n = static_cast<int>(budget / stride);
+        if (n > want) n = want;
+        if (n < 1) return false;
+        slots = n;
+        if (cudaMalloc(&pool, static_cast<size_t>(slots) * stride) !=
+            cudaSuccess) {
+            pool = nullptr;
+            slots = 0;
+            return false;
+        }
+        tbl.assign(static_cast<size_t>(slots), {-1, 0});
+        map.reserve(static_cast<size_t>(slots) * 2);
+        return true;
+    }
+
+    // Returns the slot index for (layer, expert), uploading on a miss.
+    int Get(cudaStream_t s, int layer, int expert, const PackedExpert &pe)
+    {
+        const int32_t key = layer * 100000 + expert;
+        auto it = map.find(key);
+        if (it != map.end()) {
+            tbl[static_cast<size_t>(it->second)].second = ++clk;
+            return it->second;
+        }
+        int slot = -1;
+        for (int i = 0; i < slots; ++i)
+            if (tbl[static_cast<size_t>(i)].first < 0) { slot = i; break; }
+        if (slot < 0) {
+            uint64_t best = ~0ull;
+            for (int i = 0; i < slots; ++i)
+                if (tbl[static_cast<size_t>(i)].second < best) {
+                    best = tbl[static_cast<size_t>(i)].second;
+                    slot = i;
+                }
+            map.erase(tbl[static_cast<size_t>(slot)].first);
+        }
+        uint8_t *base = pool + static_cast<size_t>(slot) * stride;
+        cudaMemcpyAsync(base + off_w1p, pe.w1_packed.data(), len_w1p,
                         cudaMemcpyHostToDevice, s);
-    if (e != cudaSuccess) return e;
-    return lsx_nvfp4::RunLsxNvfp4Gemm(s, x, stage_p, stage_s, gs, y, 1, cols,
-                                      rows, false);
+        cudaMemcpyAsync(base + off_w1s, pe.w1_scales.data(), len_w1s,
+                        cudaMemcpyHostToDevice, s);
+        cudaMemcpyAsync(base + off_w3p, pe.w3_packed.data(), len_w1p,
+                        cudaMemcpyHostToDevice, s);
+        cudaMemcpyAsync(base + off_w3s, pe.w3_scales.data(), len_w1s,
+                        cudaMemcpyHostToDevice, s);
+        cudaMemcpyAsync(base + off_w2p, pe.w2_packed.data(), len_w2p,
+                        cudaMemcpyHostToDevice, s);
+        cudaMemcpyAsync(base + off_w2s, pe.w2_scales.data(), len_w2s,
+                        cudaMemcpyHostToDevice, s);
+        tbl[static_cast<size_t>(slot)].first = key;
+        tbl[static_cast<size_t>(slot)].second = ++clk;
+        map[key] = slot;
+        return slot;
+    }
+
+    void Free()
+    {
+        if (pool) cudaFree(pool);
+        pool = nullptr;
+        slots = 0;
+    }
+};
+
+inline cudaError_t ExpertGemmSlot(cudaStream_t s, const ExpertCache &c,
+                                  const uint8_t *base, int which,
+                                  const __half *x, __half *y, int rows,
+                                  int cols, float gs)
+{
+    const uint8_t *p = base + (which == 1 ? c.off_w1p
+                                          : which == 2 ? c.off_w2p : c.off_w3p);
+    const uint8_t *sc = base + (which == 1 ? c.off_w1s
+                                           : which == 2 ? c.off_w2s : c.off_w3s);
+    return lsx_nvfp4::RunLsxNvfp4Gemm(s, x, p, sc, gs, y, 1, cols, rows, false);
 }
 
 inline cudaError_t AddInto(cudaStream_t s, __half *acc, const __half *b, int n)
@@ -159,6 +245,14 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
 #undef A
 
     std::string stage = "start";
+    ExpertCache ec;
+    {
+        const PackedExpert *sample = experts.Get(0, 0);
+        if (!sample || !ec.Init(stream, *sample, E * L)) {
+            result.error_msg = "expert device cache init failed";
+            return cudaErrorMemoryAllocation;
+        }
+    }
     std::vector<int32_t> ids = prompt;
     result.first_token = -1;
     const size_t state_bytes = (size_t)L * KDAH * KD * VD * sizeof(float);
@@ -306,12 +400,19 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                                        std::to_string(hidx[k]);
                     return cudaErrorInvalidValue;
                 }
-                stage="moe_expert_w1"; e = ExpertGemm(stream, *pe, 1, mixed, mgate, MI, HID, stage_p, stage_s);
+                const int slot = ec.Get(stream, l, hidx[k], *pe);
+                if (slot < 0) {
+                    result.error_msg = "expert device cache miss (no slot)";
+                    return cudaErrorMemoryAllocation;
+                }
+                const uint8_t *ebase =
+                    ec.pool + static_cast<size_t>(slot) * ec.stride;
+                stage="moe_expert_w1"; e = ExpertGemmSlot(stream, ec, ebase, 1, mixed, mgate, MI, HID, pe->w1_global_scale);
                 if (e) return e;
-                stage="moe_expert_w3"; e = ExpertGemm(stream, *pe, 3, mixed, mup, MI, HID, stage_p, stage_s);
+                stage="moe_expert_w3"; e = ExpertGemmSlot(stream, ec, ebase, 3, mixed, mup, MI, HID, pe->w3_global_scale);
                 if (e) return e;
                 e = RunAliceSwiGLU(stream, mgate, mup, mact, MI); if (e) return e;
-                stage="moe_expert_w2"; e = ExpertGemm(stream, *pe, 2, mact, mdown, HID, MI, stage_p, stage_s);
+                stage="moe_expert_w2"; e = ExpertGemmSlot(stream, ec, ebase, 2, mact, mdown, HID, MI, pe->w2_global_scale);
                 if (e) return e;
                 axpy_kernel<<<(HID + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
                     acc, mdown, hw[(size_t)k], HID);
@@ -410,6 +511,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                           std::chrono::steady_clock::now() - t_start).count();
     result.ok = true;
 
+    ec.Free();
 #define F(p) if (p) cudaFree(p)
     F(x);F(mixed);F(partial);F(attn);F(attn_out);F(src);F(completed);F(qg);
     F(kq);F(kk);F(kv);F(kfa);F(kga);F(kb);F(alpha);F(gate);F(convq);F(convk);
