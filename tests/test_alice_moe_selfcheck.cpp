@@ -33,6 +33,7 @@ TEST_CASE("alice selfcheck answers Paris", "[alice][inference]")
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = root;
     cfg.model_type = "alice-foundation-80b-a3b";
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
     auto model = lsxcommon::LsxModelFactory::Create(cfg);
     REQUIRE(model != nullptr);
     if (!model->Load()) FAIL("alice Load failed");

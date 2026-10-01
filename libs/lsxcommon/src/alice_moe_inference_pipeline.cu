@@ -8,6 +8,7 @@
 #include "lsxcommon/lsx_gemv.h"
 #include "lsxcommon/qwen_inference.h"
 
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -172,8 +173,6 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                         cudaMemcpyDeviceToDevice, stream);
         int nblocks = 1;
         bool has_partial = false;
-        cudaMemsetAsync(state, 0, state_bytes, stream);
-        cudaMemsetAsync(hist, 0, hist_bytes, stream);
 
         for (int l = 0; l < L; ++l) {
             const AliceLayerWeights &lw = pw.layers[l];
@@ -296,7 +295,12 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             cudaMemsetAsync(acc, 0, HID * sizeof(__half), stream);
             for (int k = 0; k < TOPK; ++k) {
                 const PackedExpert *pe = experts.Get(l, hidx[k]);
-                if (!pe) return fail("missing routed expert");
+                if (!pe) {
+                    result.error_msg = "missing routed expert layer=" +
+                                       std::to_string(l) + " e=" +
+                                       std::to_string(hidx[k]);
+                    return cudaErrorInvalidValue;
+                }
                 stage="moe_expert_w1"; e = ExpertGemm(stream, *pe, 1, mixed, mgate, MI, HID, stage_p, stage_s);
                 if (e) return e;
                 stage="moe_expert_w3"; e = ExpertGemm(stream, *pe, 3, mixed, mup, MI, HID, stage_p, stage_s);
@@ -348,6 +352,10 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
     };
 
     for (int step = 0; step < max_new; ++step) {
+        // Per-step state: the recurrent KDA state and conv history must carry
+        // across the tokens of one step (reset once, before the token loop).
+        cudaMemsetAsync(state, 0, state_bytes, stream);
+        cudaMemsetAsync(hist, 0, hist_bytes, stream);
         for (int t = 0; t < static_cast<int>(ids.size()); ++t) {
             const bool last = (t == static_cast<int>(ids.size()) - 1);
             e = forward(ids[(size_t)t], t, last);

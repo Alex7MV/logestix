@@ -50,6 +50,44 @@ TEST_CASE("alice kType resolves in the factory", "[alice][fast]")
     REQUIRE(model->Type() == "alice-foundation-80b-a3b");
 }
 
+TEST_CASE("alice tiny hf parity", "[alice][model]")
+{
+    const char *hf = std::getenv("LSX_TEST_ALICE_TINY_HF");
+    const char *out = std::getenv("LSX_TEST_ALICE_TINY_OUT");
+    if (!hf || !out) SKIP("LSX_TEST_ALICE_TINY_HF/OUT not set");
+    namespace fs = std::filesystem;
+    fs::remove_all(out);
+    auto st = lsxcommon::alice::ConvertAliceModel(hf, out);
+    if (!st.ok()) FAIL(st.ToString());
+    REQUIRE(st.ok());
+
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = out;
+    cfg.model_type = "alice-foundation-80b-a3b";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("tiny load failed");
+    lsxcommon::ModelRequest req;
+    if (const char *ids_s = std::getenv("LSX_TEST_ALICE_TINY_IDS")) {
+        std::string s(ids_s), cur;
+        for (char c : s) {
+            if (c == ',') { if (!cur.empty()) req.input_ids.push_back(std::stoi(cur)); cur.clear(); }
+            else cur += c;
+        }
+        if (!cur.empty()) req.input_ids.push_back(std::stoi(cur));
+    } else {
+        req.input_ids = {1, 5, 7};
+    }
+    req.max_gen_tokens = 1;
+    auto r = model->Infer(req);
+    if (!r.ok) FAIL(r.error_msg);
+    const char *exp = std::getenv("LSX_TEST_ALICE_TINY_EXPECT");
+    const int expect = exp ? std::atoi(exp) : 23;
+    INFO("our argmax=" << r.first_gen_tok_id << " expect=" << expect);
+    REQUIRE(r.first_gen_tok_id == expect);
+}
+
 TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
 {
     REQUIRE(std::getenv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY") != nullptr);
