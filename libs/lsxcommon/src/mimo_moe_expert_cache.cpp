@@ -271,49 +271,25 @@ cudaError_t StageMimoExpert(MimoExpertCache &cache, int layer, int eid,
                       static_cast<int64_t>(slot) * cache.device.pack_stride;
         uint8_t *ds = cache.device.d_scale +
                       static_cast<int64_t>(slot) * cache.device.scale_stride;
-        // Diagnostic: exact-repack experts (pow2 E4M3 scales) carry the raw
-        // source nibble order; the fallback experts were quantized with our
-        // own order. Swap only the former when LSX_MIMO_EXPERT_SWAP is set.
-        const bool swap_env = std::getenv("LSX_MIMO_EXPERT_SWAP") != nullptr;
-        auto pow2_scales = [](const uint8_t *s, int64_t n) {
-            for (int64_t i = 0; i < n; ++i)
-                if ((s[i] & 0x7) != 0) return false;
-            return true;
-        };
-        const bool exact =
-            swap_env && pow2_scales(e.host_w1_scales, e.w1_scales_bytes);
-        auto stage = [&](const uint8_t *src, int64_t n, uint8_t *dst,
-                         bool allow_swap) {
+        auto stage = [&](const uint8_t *src, int64_t n, uint8_t *dst) {
             if (n <= 0) return cudaSuccess;
-            if (allow_swap && n >= 2 && (n & 1) == 0)
-            {
-                std::vector<uint8_t> tmp(static_cast<size_t>(n));
-                for (int64_t i = 0; i < n; ++i)
-                    tmp[static_cast<size_t>(i)] =
-                        static_cast<uint8_t>((src[i] >> 4) | (src[i] << 4));
-                return cudaMemcpy(dst, tmp.data(), static_cast<size_t>(n),
-                                  cudaMemcpyHostToDevice);
-            }
             return cudaMemcpyAsync(dst, src, static_cast<std::size_t>(n),
                                    cudaMemcpyHostToDevice, stream);
         };
-        cudaError_t ce = stage(e.host_w1, e.w1_bytes,
-                               dp + cache.layout.gate_pack_off, exact);
+        cudaError_t ce = stage(e.host_w1, e.w1_bytes, dp + cache.layout.gate_pack_off);
         if (ce == cudaSuccess)
-            ce = stage(e.host_w3, e.w3_bytes, dp + cache.layout.up_pack_off,
-                       exact);
+            ce = stage(e.host_w3, e.w3_bytes, dp + cache.layout.up_pack_off);
         if (ce == cudaSuccess)
-            ce = stage(e.host_w2, e.w2_bytes, dp + cache.layout.down_pack_off,
-                       exact);
+            ce = stage(e.host_w2, e.w2_bytes, dp + cache.layout.down_pack_off);
         if (ce == cudaSuccess)
             ce = stage(e.host_w1_scales, e.w1_scales_bytes,
-                       ds + cache.layout.gate_scale_off, false);
+                       ds + cache.layout.gate_scale_off);
         if (ce == cudaSuccess)
             ce = stage(e.host_w3_scales, e.w3_scales_bytes,
-                       ds + cache.layout.up_scale_off, false);
+                       ds + cache.layout.up_scale_off);
         if (ce == cudaSuccess)
             ce = stage(e.host_w2_scales, e.w2_scales_bytes,
-                       ds + cache.layout.down_scale_off, false);
+                       ds + cache.layout.down_scale_off);
         if (ce != cudaSuccess)
         {
             error = "mimo expert H2D staging failed";

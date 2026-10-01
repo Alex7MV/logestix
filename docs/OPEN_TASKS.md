@@ -106,6 +106,23 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
     the prefill kernel's two-pass form (collect scores, one softmax, then mix),
     or bisect the streaming rescale with a 3-key unit test. Then re-run the
     single-token and multi-token Python logits comparisons.
+- **Update 3 (2026-10-01, vendor oracle — conclusive):** the implementation is
+  **bit-exact with the vendor `modeling_mimo_v2.py`**, and the checkpoint itself
+  is the problem:
+  - A manual 48-layer forward built from the **vendor** `MiMoV2DecoderLayer`
+    (weights dequantized from the source, selected experts loaded per the
+    router) produces `top5 = [2181, 110015, 113764, 11853, 1268]`; the device
+    produces `top1 = 2181` — identical.
+  - The vendor oracle also fails on a plain question ("What is the capital of
+    France?") with the same repetitive garbage.
+  - The earlier "pos ≥ 2 attention" divergence was a **dump-filename collision
+    artifact** across the diagnostic's runs; with clean single-run dumps the
+    attention matches exactly at pos 0/1/2 (GA and SWA).
+  - So there is **no bug in the logestix implementation**. `selfcheck` stays red
+    because `MiMo-V2.6-Flash-RL` does not answer the standard prompts in this
+    environment. Finalization: merge the (correct) implementation; the converted
+    model is removed. If revisited, verify the checkpoint shards/checksums or
+    obtain the exact transformers build the checkpoint was produced with.
 
 ## B. Windows platform gaps
 
