@@ -3,11 +3,17 @@
 #include <cuda_runtime.h>
 
 #include "fast_load_internal.h"
+#include "lsxcommon/chat_conversation.h"
 #include "lsxcommon/log.h"
 #include "lsxcommon/model_runtime.h"
 #include "lsxcommon/sampling.h"
+#include "lsxcommon/tokenizer.h"
+#include "lsxcommon/tool_format.h"
 
 #include <absl/strings/str_cat.h>
+
+#include <cstring>
+#include <string_view>
 
 namespace lsxcommon {
 
@@ -158,6 +164,95 @@ gpu::InferenceResult Phi4Model::Infer(const ModelRequest &req)
 gpu::InferenceResult Phi4Model::SelfCheck(const ModelRequest &req)
 {
     return runtime::RunParisSelfCheck(*this, req);
+}
+
+// ── phi ChatML token bridge (Model Ingestion Protocol step 4b) ──────────────
+
+namespace {
+
+bool EncodePhiText(const ArrowTokenizerDb &tok, std::string_view text,
+                   std::vector<int32_t> &out)
+{
+    if (text.empty()) return true;
+    std::vector<int32_t> ids(text.size() + 16, 0);
+    size_t cap = ids.size();
+    const int32_t n = arrow_tokenizer_encode(tok, text.data(), text.size(),
+                                             ids.data(), &cap);
+    if (n <= 0) return false;
+    out.insert(out.end(), ids.begin(), ids.begin() + n);
+    return true;
+}
+
+void AppendPhiMarker(const ArrowTokenizerDb &tok, const char *marker,
+                     std::vector<int32_t> &out)
+{
+    const int32_t id = arrow_tokenizer_lookup(
+        tok, marker, static_cast<size_t>(std::strlen(marker)));
+    if (id >= 0) out.push_back(id);
+}
+
+// Appends one phi ChatML turn. Control markers are special added_tokens and
+// are injected as ids; only the content is BPE-encoded. Untrusted content is
+// neutralized so it can never forge a control marker.
+bool AppendPhiTurn(const ArrowTokenizerDb &tok, const char *role,
+                   std::string_view content, std::vector<int32_t> &out)
+{
+    AppendPhiMarker(tok, "<|im_start|>", out);
+    if (!EncodePhiText(tok, role, out)) return false;
+    AppendPhiMarker(tok, "<|im_sep|>", out);
+    const std::string safe = tools::NeutralizeControlMarkers(
+        content, {"<|im_start|>", "<|im_sep|>", "<|im_end|>"});
+    if (!EncodePhiText(tok, safe, out)) return false;
+    AppendPhiMarker(tok, "<|im_end|>", out);
+    return true;
+}
+
+// Open assistant generation prompt: `<|im_start|>assistant<|im_sep|>`.
+void AppendPhiAssistantPrompt(const ArrowTokenizerDb &tok,
+                              std::vector<int32_t> &out)
+{
+    AppendPhiMarker(tok, "<|im_start|>", out);
+    EncodePhiText(tok, "assistant", out);
+    AppendPhiMarker(tok, "<|im_sep|>", out);
+}
+
+} // namespace
+
+bool Phi4Model::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                    std::string_view raw_prompt,
+                                    std::vector<int32_t> &out_ids) const
+{
+    out_ids.clear();
+    if (!AppendPhiTurn(tok, "user", raw_prompt, out_ids)) return false;
+    AppendPhiAssistantPrompt(tok, out_ids);
+    return true;
+}
+
+bool Phi4Model::BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                          const ChatConversation &conv,
+                                          std::vector<int32_t> &out_ids) const
+{
+    out_ids.clear();
+    // phi has no native tool syntax: render the schemas as a system text
+    // block (Hermes JSON) so the transcript stays self-consistent.
+    if (!conv.tools.empty()) {
+        const std::string block = tools::RenderToolsBlock(conv.tools);
+        if (!AppendPhiTurn(tok, "system", block, out_ids)) return false;
+    }
+    for (const auto &m : conv.messages) {
+        std::string content = m.content;
+        if (!m.tool_calls.empty()) {
+            if (!content.empty()) content += '\n';
+            content += "<tool_calls>";
+            for (const auto &c : m.tool_calls)
+                content += "\n" + c.name + " " + c.arguments_json;
+        }
+        // phi's template has no `tool` role; fold tool results into a user turn.
+        const char *role = (m.role == "tool") ? "user" : m.role.c_str();
+        if (!AppendPhiTurn(tok, role, content, out_ids)) return false;
+    }
+    AppendPhiAssistantPrompt(tok, out_ids);
+    return true;
 }
 
 } // namespace lsxcommon

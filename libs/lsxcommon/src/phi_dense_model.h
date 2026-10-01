@@ -40,6 +40,16 @@ public:
     gpu::InferenceResult Infer(const ModelRequest &req) override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
 
+    // Model Ingestion Protocol step 4b: phi ChatML framing
+    // (`<|im_start|>role<|im_sep|>content<|im_end|>`). phi ships no native
+    // tool syntax, so ParseToolCalls stays the generic inherited default.
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+
     const std::string &Type() const override { return kType; }
     static const std::string kType;
 
