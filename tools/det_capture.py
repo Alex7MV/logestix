@@ -23,6 +23,9 @@ OVERRIDES = {
     # loaded directly (loader remaps the model.language_model prefix) and
     # sharded GPU+CPU because 27B bf16 does not fit 32 GiB VRAM.
     "qwen3.8-27b": {"loader": "qwen3_5", "device_map": "auto"},
+    # qwen3.5-9b is a Qwen3_5 VLM checkpoint; bf16 fits in 32 GiB so the
+    # accelerate device map keeps every layer on the GPU.
+    "qwen3.5-9b": {"loader": "qwen3_5", "device_map": "auto"},
     # deepseek-v4.1-flash ships no HF chat template; frame with the release's
     # own encoding/encoding.py, in the reasoning model's default thinking mode.
     "deepseek-v4.1-flash": {"framing": "deepseek_v41",
@@ -228,6 +231,9 @@ def selftest():
     assert _remap_qwen3_5_key("lm_head.weight") == "lm_head.weight"
     assert _remap_qwen3_5_key("model.visual.blocks.0.weight") is None
     assert _remap_qwen3_5_key("mtp.fc.weight") is None
+    # qwen3.5-9b is the same Qwen3_5 VLM checkpoint shape as the 27B.
+    assert OVERRIDES.get("qwen3.5-9b", {}).get("loader") == "qwen3_5", \
+        "qwen3.5-9b must use the qwen3_5 text-only loader"
     print("det selftest OK: token templates valid")
 
 
