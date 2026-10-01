@@ -32,4 +32,26 @@ cudaError_t RunAliceRouterTopK(cudaStream_t stream, const __half *x,
 cudaError_t RunAliceSwiGLU(cudaStream_t stream, const __half *a,
                            const __half *b, __half *out, int64_t n);
 
+// Depthwise causal conv1d (kernel `k`, zero left-pad) + SiLU over each of `C`
+// channels. `history` is [C, k-1] floats holding the previous raw inputs
+// (oldest first); updated in place to the last k-1 inputs of this chunk.
+// x/out: [seq, C] FP16.
+cudaError_t RunAliceKdaConv(cudaStream_t stream, const __half *x,
+                            const __half *conv_w, float *history, __half *out,
+                            int seq, int C, int k);
+
+// KDA gated-delta recurrence (repeat factor 1: one K head per V head).
+//   q/k: [seq, H, KD] FP16 (post-conv, pre-L2norm)
+//   v:   [seq, H, VD] FP16 (post-conv)
+//   alpha: [seq, H, KD] FP16 (f_b output); beta: [seq, H] FP16
+//   a_log: [H] FP16; dt_bias: [H, KD] FP16
+//   state: [H, KD, VD] F32 (persistent; zero-initialized for a fresh session)
+//   out: [seq, H, VD] FP16
+cudaError_t RunAliceKdaRecurrence(cudaStream_t stream, const __half *q,
+                                  const __half *k, const __half *v,
+                                  const __half *alpha, const __half *beta,
+                                  const __half *a_log, const __half *dt_bias,
+                                  float *state, __half *out, int seq, int H,
+                                  int KD, int VD);
+
 } // namespace lsxcommon::alice

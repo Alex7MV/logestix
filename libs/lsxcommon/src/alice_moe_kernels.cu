@@ -209,4 +209,156 @@ cudaError_t RunAliceSwiGLU(cudaStream_t stream, const __half *a,
     return cudaGetLastError();
 }
 
+// ── KDA linear attention ────────────────────────────────────────────────────
+
+__device__ __forceinline__ float softplus_f(float x)
+{
+    return fmaxf(x, 0.0f) + log1pf(__expf(-fabsf(x)));
+}
+
+__global__ void kda_conv_kernel(const __half *__restrict__ x,
+                                const __half *__restrict__ w,
+                                float *__restrict__ hist,
+                                __half *__restrict__ out, int seq, int C, int k)
+{
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    float wv[8];
+    for (int j = 0; j < k; ++j) wv[j] = __half2float(w[c * k + j]);
+    for (int i = 0; i < seq; ++i) {
+        float acc = 0.0f;
+        for (int j = 0; j < k; ++j) {
+            const int pos = i - (k - 1) + j;
+            float xv;
+            if (pos < 0)
+                xv = hist[c * (k - 1) + (pos + (k - 1))];
+            else
+                xv = __half2float(x[pos * C + c]);
+            acc += wv[j] * xv;
+        }
+        out[i * C + c] = __float2half(acc / (1.0f + __expf(-acc)));
+    }
+    for (int j = 0; j < k - 1; ++j) {
+        const int idx = seq - (k - 1) + j;
+        float xv;
+        if (idx < 0)
+            xv = hist[c * (k - 1) + (idx + (k - 1))];
+        else
+            xv = __half2float(x[idx * C + c]);
+        hist[c * (k - 1) + j] = xv;
+    }
+}
+
+// One block per (K==V) head; blockDim threads stride over KD for loads and VD
+// for the state column update.
+__global__ void kda_recur_kernel(const __half *__restrict__ q,
+                                 const __half *__restrict__ k,
+                                 const __half *__restrict__ v,
+                                 const __half *__restrict__ alpha,
+                                 const __half *__restrict__ beta,
+                                 const __half *__restrict__ a_log,
+                                 const __half *__restrict__ dt_bias,
+                                 float *__restrict__ state,
+                                 __half *__restrict__ out, int seq, int H,
+                                 int KD, int VD)
+{
+    extern __shared__ float sh[];
+    float *sq = sh;             // [KD]
+    float *sk = sh + KD;        // [KD]
+    float *sg = sh + 2 * KD;    // [KD]
+    float *red = sh + 3 * KD;   // [blockDim.x]
+    const int h = blockIdx.x;
+    const float alog = __half2float(a_log[h]);
+    const float kdim_scale = rsqrtf(static_cast<float>(KD));
+
+    for (int t = 0; t < seq; ++t) {
+        const __half *qt = q + (static_cast<size_t>(t) * H + h) * KD;
+        const __half *kt = k + (static_cast<size_t>(t) * H + h) * KD;
+        const __half *at = alpha + (static_cast<size_t>(t) * H + h) * KD;
+        float qn = 0.0f, kn = 0.0f;
+        for (int d = threadIdx.x; d < KD; d += blockDim.x) {
+            const float qv = __half2float(qt[d]);
+            const float kv = __half2float(kt[d]);
+            sq[d] = qv;
+            sk[d] = kv;
+            qn += qv * qv;
+            kn += kv * kv;
+        }
+        // block reduction of qn and kn.
+        red[threadIdx.x] = qn;
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+            __syncthreads();
+        }
+        float qsum = red[0];
+        __syncthreads();
+        red[threadIdx.x] = kn;
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) red[threadIdx.x] += red[threadIdx.x + s];
+            __syncthreads();
+        }
+        float ksum = red[0];
+        const float qscale = rsqrtf(qsum + 1e-12f) * kdim_scale;
+        const float kscale = rsqrtf(ksum + 1e-12f);
+        for (int d = threadIdx.x; d < KD; d += blockDim.x) {
+            sq[d] *= qscale;
+            sk[d] *= kscale;
+            const float a = __half2float(at[d]) +
+                            __half2float(dt_bias[h * KD + d]);
+            sg[d] = -__expf(alog) * softplus_f(a);
+        }
+        __syncthreads();
+        const float beta_t =
+            1.0f / (1.0f + __expf(-__half2float(beta[static_cast<size_t>(t) * H + h])));
+        for (int vd = threadIdx.x; vd < VD; vd += blockDim.x) {
+            float *col = state + (static_cast<size_t>(h) * KD) * VD + vd;
+            float pred = 0.0f;
+            for (int d = 0; d < KD; ++d) {
+                const float g = __expf(sg[d]);
+                col[static_cast<size_t>(d) * VD] *= g;
+                pred += sk[d] * col[static_cast<size_t>(d) * VD];
+            }
+            const float delta = (__half2float(v[(static_cast<size_t>(t) * H + h) * VD + vd]) - pred) * beta_t;
+            float o = 0.0f;
+            for (int d = 0; d < KD; ++d) {
+                const size_t idx = static_cast<size_t>(d) * VD;
+                col[idx] += sk[d] * delta;
+                o += sq[d] * col[idx];
+            }
+            out[(static_cast<size_t>(t) * H + h) * VD + vd] = __float2half(o);
+        }
+        __syncthreads();
+    }
+}
+
+cudaError_t RunAliceKdaConv(cudaStream_t stream, const __half *x,
+                            const __half *conv_w, float *history, __half *out,
+                            int seq, int C, int k)
+{
+    const int block = 256;
+    const int grid = (C + block - 1) / block;
+    kda_conv_kernel<<<grid, block, 0, stream>>>(x, conv_w, history, out, seq, C,
+                                                k);
+    return cudaGetLastError();
+}
+
+cudaError_t RunAliceKdaRecurrence(cudaStream_t stream, const __half *q,
+                                  const __half *k, const __half *v,
+                                  const __half *alpha, const __half *beta,
+                                  const __half *a_log, const __half *dt_bias,
+                                  float *state, __half *out, int seq, int H,
+                                  int KD, int VD)
+{
+    const int block = 256;
+    const size_t smem = static_cast<size_t>(3 * KD + block) * sizeof(float);
+    cudaFuncSetAttribute(kda_recur_kernel,
+                         cudaFuncAttributeMaxDynamicSharedMemorySize,
+                         static_cast<int>(smem));
+    kda_recur_kernel<<<H, block, smem, stream>>>(
+        q, k, v, alpha, beta, a_log, dt_bias, state, out, seq, H, KD, VD);
+    return cudaGetLastError();
+}
+
 } // namespace lsxcommon::alice
