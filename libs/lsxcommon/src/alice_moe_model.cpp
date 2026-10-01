@@ -1,5 +1,7 @@
 #include "alice_moe_model.h"
 
+#include "lsxcommon/alice_tool_format.h"
+
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/sampling.h"
@@ -112,6 +114,21 @@ gpu::InferenceResult AliceFoundation80BModel::SelfCheck(const ModelRequest &req)
     r.selfcheck_passed =
         r.ok && r.first_gen_tok_id >= 0 && !r.gen_tokens.empty();
     return r;
+}
+
+bool AliceFoundation80BModel::BuildConversationInputIds(
+    const ArrowTokenizerDb &tok, const ChatConversation &conv,
+    std::vector<int32_t> &out_ids) const
+{
+    return alice::RenderConversation(tok, conv, /*add_generation_prompt=*/true,
+                                     out_ids);
+}
+
+bool AliceFoundation80BModel::ParseToolCalls(
+    const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
+    std::vector<ToolCall> &out_calls) const
+{
+    return alice::ParseToolCallsAlice(tok, gen_tokens, out_calls);
 }
 
 void AliceFoundation80BModel::TeardownWeights()

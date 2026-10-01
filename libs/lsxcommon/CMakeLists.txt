@@ -45,6 +45,7 @@ add_library(lsxcommon STATIC
     src/alice_moe_convert.cpp
     src/alice_moe_load.cpp
     src/alice_moe_model.cpp
+    src/alice_tool_format.cpp
     src/lifecycle_strategy.cpp
     src/log.cpp
     src/model_base.cpp

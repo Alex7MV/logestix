@@ -72,6 +72,12 @@ target_link_libraries(test_alice_moe_kernels PRIVATE test_alice_cu lsxcommon Cat
 add_test(NAME test_alice_moe_kernels COMMAND test_alice_moe_kernels)
 set_tests_properties(test_alice_moe_kernels PROPERTIES LABELS inference)
 
+add_executable(test_alice_tool_framing test_alice_tool_framing.cpp)
+target_link_libraries(test_alice_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_alice_tool_framing COMMAND test_alice_tool_framing)
+set_tests_properties(test_alice_tool_framing PROPERTIES
+    LABELS fast SKIP_RETURN_CODE 4)
+
 add_executable(test_alice_moe_selfcheck test_alice_moe_selfcheck.cpp)
 target_link_libraries(test_alice_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_alice_moe_selfcheck COMMAND test_alice_moe_selfcheck)

@@ -25,6 +25,14 @@ public:
     gpu::InferenceResult Infer(const ModelRequest &req) override;
     gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
 
+    // Model Ingestion Protocol step 4b: native AliceAI conversation/tool codec.
+    bool BuildConversationInputIds(const ArrowTokenizerDb &tok,
+                                   const ChatConversation &conv,
+                                   std::vector<int32_t> &out_ids) const override;
+    bool ParseToolCalls(const ArrowTokenizerDb &tok,
+                        const std::vector<int32_t> &gen_tokens,
+                        std::vector<ToolCall> &out_calls) const override;
+
     const std::string &Type() const override { return kType; }
 
 protected:
