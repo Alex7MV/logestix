@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <lsxcommon/alice_moe_inference.h>
 #include <lsxcommon/alice_moe_kernels.h>
 
 #include <cmath>
@@ -286,6 +287,115 @@ TEST_CASE("alice kda recurrence matches the host delta rule", "[alice][kernels]"
     }
     cudaFree(dq); cudaFree(dk); cudaFree(dv); cudaFree(da); cudaFree(db);
     cudaFree(dal); cudaFree(ddt); cudaFree(dout); cudaFree(dstate);
+}
+
+TEST_CASE("alice gated attention core matches the host reference", "[alice][kernels]")
+{
+    constexpr int H = 2, KVH = 1, D = 4, rot = 2, seq = 3;
+    const int rep = H / KVH;
+    const float scale = 1.0f / std::sqrt((float)D);
+    auto qgh = Pattern(seq * 2 * H * D, 1.0f, 0.05f);
+    auto kh = Pattern(seq * KVH * D, 1.0f, -0.05f);
+    auto vh = Pattern(seq * KVH * D, 1.0f, 0.1f);
+    auto qnh = Pattern(D, 0.5f, 0.1f);
+    auto knh = Pattern(D, 0.5f, -0.1f);
+    auto cosh = Pattern(seq * rot, 0.5f, 0.5f);
+    auto sinh = Pattern(seq * rot, 0.5f, 0.0f);
+
+    void *dqg = nullptr, *dk = nullptr, *dv = nullptr, *dqn = nullptr,
+         *dkn = nullptr, *dc = nullptr, *ds = nullptr, *dout = nullptr;
+    REQUIRE(ToDev(&dqg, qgh) == cudaSuccess);
+    REQUIRE(ToDev(&dk, kh) == cudaSuccess);
+    REQUIRE(ToDev(&dv, vh) == cudaSuccess);
+    REQUIRE(ToDev(&dqn, qnh) == cudaSuccess);
+    REQUIRE(ToDev(&dkn, knh) == cudaSuccess);
+    REQUIRE(ToDev(&dc, cosh) == cudaSuccess);
+    REQUIRE(ToDev(&ds, sinh) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout, seq * H * D * sizeof(__half)) == cudaSuccess);
+
+    REQUIRE(lsxcommon::alice::RunAliceGatedAttentionCore(
+                nullptr, reinterpret_cast<const __half *>(dqg),
+                reinterpret_cast<const __half *>(dk),
+                reinterpret_cast<const __half *>(dv),
+                reinterpret_cast<const __half *>(dqn),
+                reinterpret_cast<const __half *>(dkn),
+                reinterpret_cast<const __half *>(dc),
+                reinterpret_cast<const __half *>(ds),
+                reinterpret_cast<__half *>(dout), seq, H, KVH, D, rot, scale, 0,
+                nullptr) == cudaSuccess);
+    REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+    std::vector<__half> got(seq * H * D);
+    REQUIRE(cudaMemcpy(got.data(), dout, got.size() * sizeof(__half),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    // Host reference.
+    std::vector<float> q(seq * H * D), gate(seq * H * D), kk(seq * KVH * D),
+        vv(seq * KVH * D);
+    for (int t = 0; t < seq; ++t)
+        for (int h = 0; h < H; ++h)
+            for (int d = 0; d < D; ++d) {
+                q[(t * H + h) * D + d] =
+                    F(qgh[t * 2 * H * D + h * D + d]);
+                gate[(t * H + h) * D + d] =
+                    F(qgh[t * 2 * H * D + H * D + h * D + d]);
+            }
+    for (int t = 0; t < seq; ++t)
+        for (int kv = 0; kv < KVH; ++kv)
+            for (int d = 0; d < D; ++d) {
+                kk[(t * KVH + kv) * D + d] = F(kh[(t * KVH + kv) * D + d]);
+                vv[(t * KVH + kv) * D + d] = F(vh[(t * KVH + kv) * D + d]);
+            }
+    auto zcnorm = [&](std::vector<float> &x, int rows, const std::vector<__half> &w) {
+        for (int r = 0; r < rows; ++r) {
+            float ms = 0.0f;
+            for (int d = 0; d < D; ++d) ms += x[r * D + d] * x[r * D + d];
+            float rstd = 1.0f / std::sqrt(ms / D + 1e-6f);
+            for (int d = 0; d < D; ++d)
+                x[r * D + d] = x[r * D + d] * rstd * (1.0f + F(w[d]));
+        }
+    };
+    zcnorm(q, seq * H, qnh);
+    zcnorm(kk, seq * KVH, knh);
+    auto rope = [&](std::vector<float> &x, int base, int rows, int t) {
+        for (int r = 0; r < rows; ++r)
+            for (int j = 0; j < rot / 2; ++j) {
+                float a = x[(base + r) * D + j], b = x[(base + r) * D + j + rot / 2];
+                float c0 = F(cosh[t * rot + j]), s0 = F(sinh[t * rot + j]);
+                float c1 = F(cosh[t * rot + j + rot / 2]),
+                      s1 = F(sinh[t * rot + j + rot / 2]);
+                x[(base + r) * D + j] = a * c0 - b * s0;
+                x[(base + r) * D + j + rot / 2] = b * c1 + a * s1;
+            }
+    };
+    for (int t = 0; t < seq; ++t) rope(q, t * H, H, t);
+    for (int t = 0; t < seq; ++t) rope(kk, t * KVH, KVH, t);
+
+    for (int t = 0; t < seq; ++t)
+        for (int h = 0; h < H; ++h) {
+            int kv = h / rep;
+            std::vector<float> sc(t + 1);
+            float mx = -1e30f;
+            for (int s = 0; s <= t; ++s) {
+                float dot = 0.0f;
+                for (int d = 0; d < D; ++d)
+                    dot += q[(t * H + h) * D + d] * kk[(s * KVH + kv) * D + d];
+                sc[s] = dot * scale;
+                mx = std::max(mx, sc[s]);
+            }
+            float sum = 0.0f;
+            for (int s = 0; s <= t; ++s) { sc[s] = std::exp(sc[s] - mx); sum += sc[s]; }
+            for (int d = 0; d < D; ++d) {
+                float o = 0.0f;
+                for (int s = 0; s <= t; ++s)
+                    o += (sc[s] / sum) * vv[(s * KVH + kv) * D + d];
+                float g = 1.0f / (1.0f + std::exp(-gate[(t * H + h) * D + d]));
+                float want = o * g;
+                INFO("t=" << t << " h=" << h << " d=" << d);
+                REQUIRE(std::fabs(want - F(got[(t * H + h) * D + d])) < 1e-2f);
+            }
+        }
+    cudaFree(dqg); cudaFree(dk); cudaFree(dv); cudaFree(dqn); cudaFree(dkn);
+    cudaFree(dc); cudaFree(ds); cudaFree(dout);
 }
 
 TEST_CASE("alice swiglu kernel matches silu(a)*b", "[alice][kernels]")
