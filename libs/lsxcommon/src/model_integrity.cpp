@@ -47,15 +47,13 @@ arrow::Status round_trip_sample(
 
 } // anonymous namespace
 
-arrow::Status BuildAndVerifyTokenizer(
-    const std::string &tokenizer_json_path,
+namespace {
+
+arrow::Status VerifyTokenizerArtifacts(
     const std::filesystem::path &pinned_dir,
     const TokenizerSpecialIds &required_specials)
 {
     namespace fs = std::filesystem;
-
-    // (1) Build binary Arrow files from tokenizer.json (mandatory).
-    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFiles(tokenizer_json_path, pinned_dir));
 
     auto vocab_path = pinned_dir / "tokenizer_vocab.arrow";
     auto merges_path = pinned_dir / "tokenizer_merges.arrow";
@@ -94,6 +92,29 @@ arrow::Status BuildAndVerifyTokenizer(
     ARROW_RETURN_NOT_OK(round_trip_sample(db, "\xC3\xA9l\xC3\xA8ve"));
 
     return arrow::Status::OK();
+}
+
+} // namespace
+
+arrow::Status BuildAndVerifyTokenizer(
+    const std::string &tokenizer_json_path,
+    const std::filesystem::path &pinned_dir,
+    const TokenizerSpecialIds &required_specials)
+{
+    // (1) Build binary Arrow files from tokenizer.json (mandatory).
+    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFiles(tokenizer_json_path, pinned_dir));
+    return VerifyTokenizerArtifacts(pinned_dir, required_specials);
+}
+
+arrow::Status BuildAndVerifyTokenizerSentencePiece(
+    const std::string &tokenizer_model_path,
+    const std::filesystem::path &pinned_dir,
+    const TokenizerSpecialIds &required_specials)
+{
+    // (1) Build binary Arrow files from tokenizer.model (SentencePiece BPE).
+    ARROW_RETURN_NOT_OK(
+        BuildTokenizerArrowFilesSentencePiece(tokenizer_model_path, pinned_dir));
+    return VerifyTokenizerArtifacts(pinned_dir, required_specials);
 }
 
 arrow::Status VerifyAllTensorReads(

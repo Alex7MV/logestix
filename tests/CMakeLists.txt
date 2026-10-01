@@ -33,6 +33,14 @@ target_include_directories(test_alice_moe_model PRIVATE
 add_test(NAME test_alice_moe_model COMMAND test_alice_moe_model)
 set_tests_properties(test_alice_moe_model PROPERTIES LABELS fast)
 
+add_executable(test_alice_moe_convert test_alice_moe_convert.cpp)
+target_link_libraries(test_alice_moe_convert PRIVATE lsxcommon
+    simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_alice_moe_convert COMMAND test_alice_moe_convert)
+set_tests_properties(test_alice_moe_convert PROPERTIES
+    LABELS convert TIMEOUT 120
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── ModelBase shared geometry-validator test (host-only) ────────────────
 add_executable(test_geometry_guard test_geometry_guard.cpp)
 target_link_libraries(test_geometry_guard PRIVATE lsxcommon Catch2::Catch2WithMain)

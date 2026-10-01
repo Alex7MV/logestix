@@ -29,6 +29,13 @@ arrow::Status BuildAndVerifyTokenizer(
     const std::filesystem::path &pinned_dir,
     const TokenizerSpecialIds &required_specials);
 
+// SentencePiece-BPE variant: builds from tokenizer.model then runs the same
+// artifact/special-id/round-trip verification as BuildAndVerifyTokenizer.
+arrow::Status BuildAndVerifyTokenizerSentencePiece(
+    const std::string &tokenizer_model_path,
+    const std::filesystem::path &pinned_dir,
+    const TokenizerSpecialIds &required_specials);
+
 // ── Source integrity ──
 
 // Raw-read every tensor at its header-claimed offsets; confirm byte size.

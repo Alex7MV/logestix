@@ -11,6 +11,7 @@
 #include "lsxcommon/tokenizer.h"
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
+#include "lsxcommon/alice_moe_convert.h"
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
@@ -64,6 +65,9 @@ ABSL_FLAG(bool, granite, false,
 ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
+ABSL_FLAG(bool, alice, false,
+          "AliceAI-Foundation-80B-A3B-Base (KDA + gated attention sparse MoE) "
+          "conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -119,6 +123,7 @@ int main(int argc, char* argv[]) {
     bool granite = absl::GetFlag(FLAGS_granite);
     bool phi = absl::GetFlag(FLAGS_phi);
     bool mimo = absl::GetFlag(FLAGS_mimo);
+    bool alice = absl::GetFlag(FLAGS_alice);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     if (input_path.empty()) {
@@ -297,6 +302,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("phi conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (alice) {
+        lsxcommon::log::info(
+            "AliceAI-Foundation pipeline (logestix-alice-nvfp4 layout)");
+        auto st = lsxcommon::alice::ConvertAliceModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Alice conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Alice conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }
