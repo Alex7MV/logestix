@@ -21,6 +21,7 @@
 #include "lsxcommon/kimi_moe_convert.h"
 #include "lsxcommon/qwen_dense_convert.h"
 #include "lsxcommon/granite_dense_convert.h"
+#include "lsxcommon/phi_dense_convert.h"
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
 #include "lsxcommon/log.h"
@@ -60,6 +61,7 @@ ABSL_FLAG(bool, glmflash, false,
           "GLM-5.3-Flash (glm5_next) conversion pipeline");
 ABSL_FLAG(bool, granite, false,
           "Granite-4.2-30B (dense) conversion pipeline");
+ABSL_FLAG(bool, phi, false, "phi-4 (dense) conversion pipeline");
 ABSL_FLAG(bool, mimo, false,
           "MiMo-V2.6-Flash-RL (hybrid SWA/full sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
@@ -115,6 +117,7 @@ int main(int argc, char* argv[]) {
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
+    bool phi = absl::GetFlag(FLAGS_phi);
     bool mimo = absl::GetFlag(FLAGS_mimo);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
@@ -161,6 +164,8 @@ int main(int argc, char* argv[]) {
             st = lsxcommon::glm::RecomputeGlmVram(input_path, output_path);
         else if (json.find("logestix-qwen") != std::string::npos)
             st = lsxcommon::qwen::RecomputeQwenVram(input_path, output_path);
+        else if (json.find("logestix-phi") != std::string::npos)
+            st = lsxcommon::phi::RecomputePhiVram(input_path, output_path);
         else
             st = lsxcommon::RecomputeVramBlock(input_path, output_path);
         if (!st.ok()) {
@@ -278,6 +283,20 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Granite conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    if (phi) {
+        lsxcommon::log::info("phi-4 pipeline (logestix-phi layout)");
+        auto st = lsxcommon::phi::ConvertPhiModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("phi conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("phi conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

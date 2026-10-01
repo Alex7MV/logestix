@@ -169,6 +169,16 @@ procedure — `perf-tuning-a-model`.
   primitives), `granite_dense_model.{h,cpp}`; converted in place with
   `lsxforge --granite`; full 2048-token pipeline is correct-first
   (KV-cache decode, non-incremental prefill)).
+  phi-4 (independent family `phi`: dense decoder-only, 40L / 5120H / 40Q / 10KV
+  / 128HD / 17920I, SwiGLU, full-dim RoPE, attention scale `1/sqrt(128)`, source
+  projections pre-fused `qkv_proj`/`gate_up_proj`; `phi_dense_constants.h`
+  (frozen passport), `phi_dense_convert.{h,cpp}` (flat phi3 config ->
+  `logestix-phi`), `phi_dense_load.{h,cpp}` (NVFP4 pinned weights, fused
+  `qkv`/`gate_up` row-slices), `phi_dense_inference.{h,cu}` (causal GQA + full
+  RoPE + SwiGLU dense loop over the neutral `lsx_nvfp4` layer and the shared
+  `lsx_kernels_*.cuh` primitives), `phi_dense_model.{h,cpp}` (native ChatML
+  `<|im_start|>role<|im_sep|>content<|im_end|>` framing; generic tool parser);
+  converted in place with `lsxforge --phi`).
   MiMo-V2.6-Flash-RL (independent family `mimo`: hybrid SWA + full-attention
   sparse MoE, 48L / 4096H / 64Q / 4KV(GA)·8KV(SWA) / 192QK·128V head, 256 routed
   experts / top-8, partial RoPE on 64 dims, learned sink bias on the 39 SWA
