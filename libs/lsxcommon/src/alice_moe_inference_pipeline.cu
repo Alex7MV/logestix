@@ -288,10 +288,11 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             if (e) return e;
             std::vector<int32_t> hidx(TOPK);
             std::vector<float> hw(TOPK);
-            cudaMemcpy(hidx.data(), idx, TOPK * sizeof(int32_t),
-                       cudaMemcpyDeviceToHost);
-            cudaMemcpy(hw.data(), wts, TOPK * sizeof(float),
-                       cudaMemcpyDeviceToHost);
+            cudaMemcpyAsync(hidx.data(), idx, TOPK * sizeof(int32_t),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(hw.data(), wts, TOPK * sizeof(float),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
             cudaMemsetAsync(acc, 0, HID * sizeof(__half), stream);
             for (int k = 0; k < TOPK; ++k) {
                 const PackedExpert *pe = experts.Get(l, hidx[k]);
@@ -313,7 +314,9 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             e = Proj(stream, lw.shared_down_proj, sact, sdown); if (e) return e;
             e = ProjRaw(stream, lw.shared_gate, mixed, sgate, 1, HID); if (e) return e;
             __half hgate = __float2half(0.0f);
-            cudaMemcpy(&hgate, sgate, sizeof(__half), cudaMemcpyDeviceToHost);
+            cudaMemcpyAsync(&hgate, sgate, sizeof(__half),
+                            cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
             const float sg = 1.0f / (1.0f + expf(-__half2float(hgate)));
             scale_kernel<<<(HID + kBlock - 1) / kBlock, kBlock, 0, stream>>>(
                 sdown, sg, HID);
@@ -356,8 +359,9 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
             }
         }
         std::vector<__half> hlog(VOCAB);
-        cudaMemcpy(hlog.data(), logits, VOCAB * sizeof(__half),
-                   cudaMemcpyDeviceToHost);
+        cudaMemcpyAsync(hlog.data(), logits, VOCAB * sizeof(__half),
+                        cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
         int best = 0;
         float bv = -1e30f;
         for (int i = 0; i < VOCAB; ++i) {
