@@ -33,12 +33,14 @@ was run for each of them. Results on the converted model at `kOff`:
 | GLM-5.3-Flash | PASS | template-derived (`--template-golden`, 512), committed | **PASS 3/3** |
 | granite-4.2-30b | PASS | source-captured (not committed) | **FAIL 1/3** (CODE-01) |
 | phi-4 | PASS | source-captured, committed | **PASS 3/3** |
+| Qwen3.8-27B | PASS | source-captured (`qwen3_5`), committed | **PASS 3/3** |
 
 Committed goldens:
 `tests/fixtures/code/qwen3.6-35b-a3b.json`,
 `tests/fixtures/code/qwen3.8-flash-next.json`,
 `tests/fixtures/code/glm-5.3-flash.json`,
-`tests/fixtures/code/phi-4.json`.
+`tests/fixtures/code/phi-4.json`,
+`tests/fixtures/code/qwen3.8-27b.json`.
 
 Capture commands:
 
@@ -65,13 +67,20 @@ python tools/code_capture.py --model /mnt/llm_models/models/GLM-5.3-Flash \
 | Qwen3.8-Flash-Next | captured with the `qwen4_exp` loader (all 3 exact); converted PASS 3/3 |
 | granite-4.2-30b | captured (all 3 exact); converted **FAIL 1/3** (CODE-01) || gemma-4-26B-A4B-it | captured (all 3 exact); converted **FAIL 1/3** (CODE-02) |
 | phi-4 | captured (all 3 exact); converted **PASS 3/3** |
+| Qwen3.8-27B | captured with the `qwen3_5` loader (all 3 exact); converted **PASS 3/3** |
 | GLM-5.3-Flash | not capturable (`glm5_next` unknown); template-derived; converted **PASS 3/3** (512 + prompt-echo cut) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (source 3/3 exact); converted **FAIL 3/3** (incoherent; same profile as FSI) |
 | ornith-1.5-35B-A3B | not capturable — MLX `language_model.*` keys need a prefix remap |
 | DeepSeek-V4-Flash | not capturable locally — FP8 149 G does not fit the 32 GB GPU |
 | DeepSeek-V4.1-Flash | not capturable — ships its own inference stack (`deepseek_v41` unknown) |
 | GigaChat3.5-432B | not capturable locally — FP8 416 G, same VRAM blocker |
-| GLM-5.2, Qwen3.5-9B, Qwen3.8-27B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+| GLM-5.2, Qwen3.5-9B, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+
+Qwen3.8-27B capture recipe: the checkpoint is a `Qwen3_5ForConditionalGeneration`
+VLM; the `qwen3_5` loader builds a text-only `Qwen3_5ForCausalLM` from
+`config.text_config` and remaps `model.language_model.` -> `model.` (vision/MTP
+dropped), sharded GPU+CPU with `accelerate` (27B bf16 does not fit 32 GiB VRAM).
+Greedy decoding answers all three CODE prompts exactly.
 
 ## Findings (divergences; goldens deliberately not committed)
 
