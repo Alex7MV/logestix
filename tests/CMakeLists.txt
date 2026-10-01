@@ -582,6 +582,31 @@ set_tests_properties(test_granite_dense_model PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 set_tests_properties(test_granite_dense_model PROPERTIES LABELS inference)
 
+# ── phi-4 model test (registration + synthetic Load/Infer) ────
+add_executable(test_phi_dense_model test_phi_dense_model.cpp)
+target_compile_definitions(test_phi_dense_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+)
+target_link_libraries(test_phi_dense_model PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_phi_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_model>"
+    )
+    add_custom_command(TARGET test_phi_dense_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_phi_dense_model>"
+    )
+endif()
+
+add_test(NAME test_phi_dense_model COMMAND test_phi_dense_model)
+set_tests_properties(test_phi_dense_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_phi_dense_model PROPERTIES LABELS inference)
+
 # ── Granite kernel parity tests (.cu, stand-alone OBJECT lib) ──
 add_library(test_granite_cu OBJECT
     test_granite_dense_kernels.cu

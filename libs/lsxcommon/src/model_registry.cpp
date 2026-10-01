@@ -6,6 +6,7 @@
 #include "gemma_moe_model.h"
 #include "granite_dense_model.h"
 #include "mimo_moe_model.h"
+#include "phi_dense_model.h"
 #include "glm_moe_flash_model.h"
 #include "glm_moe_model.h"
 #include "kimi_moe_model.h"
@@ -37,6 +38,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<NemotronHModel>();
         LsxModelFactory::Register<GigaChat35Model>();
         LsxModelFactory::Register<Granite42_30BModel>();
+        LsxModelFactory::Register<Phi4Model>();
         LsxModelFactory::Register<MiMoV26FlashModel>();
         return true;
     }();
