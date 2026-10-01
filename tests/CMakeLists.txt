@@ -1923,6 +1923,15 @@ set_tests_properties(test_perf_baseline_granite_4_2_30b PROPERTIES
 set_tests_properties(test_perf_baseline_granite_4_2_30b
     PROPERTIES LABELS perf)
 
+add_test(NAME test_perf_baseline_phi_4
+         COMMAND test_perf_baseline "perf baseline: phi-4")
+set_tests_properties(test_perf_baseline_phi_4 PROPERTIES
+    TIMEOUT 3000
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=phi-4")
+set_tests_properties(test_perf_baseline_phi_4
+    PROPERTIES LABELS perf)
+
 # ── E8M0 -> pow2-E4M3 scale-pair test (DeepSeek NVFP4 repack, Task 1) ─────
 add_executable(test_deepseek_nvfp4_repack test_deepseek_nvfp4_repack.cpp)
 target_include_directories(test_deepseek_nvfp4_repack PRIVATE
