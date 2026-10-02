@@ -59,16 +59,40 @@ question only bites on the consumer dev box.
 
 ## C. Intermittent
 
-### C1. `test_gigachat_moe_devkernels` flaked once — **status: watching**
-- Failed in one `-L inference` sweep; passes standalone (2155 assertions, 7
-  cases) and passes under `ctest -R ^test_gigachat_moe_devkernels$`.
-- 10 consecutive standalone runs all pass. Suspect GPU contention rather than a
-  logic defect, but that is a guess — it has not recurred, so nothing was
-  changed. Keep watching; if it recurs, capture the sweep that produced it
-  (note: a parallel `ctest -j` over several large models reproduces GPU
-  contention by construction — run the `inference` sweep serially).
-
----
+### C1. `test_gigachat_moe_devkernels` flaked once — **status: investigated 2026-10-02**
+- Original report: failed in one `-L inference` sweep on 2026-09-30, passed
+  standalone. The failing assertion was not captured, so the first job was
+  establishing which build it could have been.
+- **Which build: Release, and this host.** The archived note says "2155
+  assertions, 7 cases". A Debug build reports 1432 assertions for the same 7
+  cases — the difference is the two latency-budget cases, whose bodies sit
+  behind `#if defined(NDEBUG)` and are therefore empty in Debug. 2155 matches
+  the Release count exactly, so the flake was the `linux-release-znver4` sweep,
+  not Windows and not Debug.
+- **The only timing-sensitive assertions in the file are the two budgets.**
+  Every other case is a parity check against a host reference and is
+  deterministic. Measured on an idle RTX 5090, 15 consecutive samples:
+  - gated norm, `CHECK(us < 40.0)` (line 312): 26.04–26.13 us, **34% headroom**
+  - router, `CHECK(us < 60.0)` (line 357): 12.72 us, **79% headroom**
+- **"GPU contention" hypothesis: measured and rejected.** With a competing CUDA
+  process resident (638 MiB, verified via `nvidia-smi`), the gated-norm sample
+  moved 26.07 → 26.16 us (+0.3%) — nowhere near the budget. Ordinary contention
+  does not move this measurement, so the original guess (kept in the archive as
+  a guess) does not hold.
+- **Could not reproduce:** 12 Debug runs, 15 Release samples and a contended
+  Release sample are all green. No failing assertion was ever recorded, and the
+  ctest logs that would carry it are gone. So the flake's cause remains
+  unproven — what is now closed is the *concealment* that made it untriageable:
+- **Real defect found and fixed.** Both budget cases compiled to nothing in
+  Debug and reported "passed" with **zero assertions**, so a Debug sweep looked
+  green while checking no latency at all — and `ctest` had no `SKIP_RETURN_CODE`,
+  so there was no honest way to skip. Both now `SKIP` in Debug (mirroring
+  `test_perf_baseline`), and the target declares `SKIP_RETURN_CODE 4`. Debug now
+  reports "5 passed | 2 skipped"; Release is unchanged at 2155/2155.
+- **If it recurs:** capture `--output-on-failure` output. With the SKIP in place
+  and the budgets at 34%/79% headroom, a recorded sample identifies the cause
+  immediately — a sample near 40 us means the kernel regressed; an assertion
+  outside the two budget lines means it was never this test's timing.
 
 ## Archive
 

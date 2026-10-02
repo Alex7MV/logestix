@@ -219,8 +219,16 @@ precedent exists. Right now nothing distinguishes "too slow for the target" from
 ### F1. `test_gigachat_moe_devkernels` flaked once
 - Failed in one `-L inference` sweep; passes standalone (2155 assertions, 7
   cases) and passes under `ctest -R ^test_gigachat_moe_devkernels$`.
-- Not yet triaged. Suspect GPU contention or ordering rather than a logic
-  defect, but that is a guess — needs a repeat sweep to see if it recurs.
+- **Investigated 2026-10-02** — see C1 in the live `docs/OPEN_TASKS.md`. The
+  "2155 assertions" figure identifies the build as Release (Debug reports 1432
+  for the same 7 cases), so this was the `linux-release-znver4` sweep. The
+  contention guess below is **measured and rejected**: with a competing CUDA
+  process resident the gated-norm budget sample moved +0.3% (26.07 → 26.16 us
+  against a 40 us budget). Not reproducible since. A real defect found on the
+  way: both latency-budget cases compiled to nothing in Debug and reported
+  "passed" with zero assertions — they now SKIP, with SKIP_RETURN_CODE 4.
+- Original guess, kept for the record: GPU contention or ordering rather than a
+  logic defect. The measurement does not support it.
 
 ## G. Build environment
 

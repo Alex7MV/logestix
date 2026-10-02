@@ -4821,6 +4821,10 @@ endif()
 
 add_test(NAME test_gigachat_moe_devkernels
          COMMAND test_gigachat_moe_devkernels)
+# The two latency-budget cases SKIP in a Debug build (they need an optimized
+# binary to be judged against the budget), so the target must tolerate exit 4.
+set_tests_properties(test_gigachat_moe_devkernels PROPERTIES
+    SKIP_RETURN_CODE 4)
 
 # test_gigachat_moe_attn — MLA decode parity + bit-exact rope. Same standalone
 # .cu object pattern; -ffp-contract=off keeps the host rope reference aligned
