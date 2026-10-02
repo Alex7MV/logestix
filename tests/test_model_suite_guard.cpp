@@ -28,6 +28,7 @@
 #include <fstream>
 #include <optional>
 #include <regex>
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <string>
@@ -84,18 +85,25 @@ const std::vector<SuiteSpec> &Suites()
     static const std::vector<SuiteSpec> v = {
         {"glm-5.2",
          {{"convert", {"test_glm_moe_convert"}},
-          {"load", {"test_glm_moe_loader", "test_glm_moe_load_fast"}},
-          {"model", {"test_glm_moe_model"}},
+          {"load", {"test_glm_moe_loader", "test_glm_moe_load_fast",
+                    "test_glm_moe_expert_cache"}},
+          {"model",
+           {"test_glm_moe_model", "test_glm_moe_model_lifecycle",
+            "test_glm_moe_prompt_output", "test_glm_moe_prompt_framing"}},
           {"kernels",
            {"test_glm_moe_moe_compute", "test_glm_moe_attention",
-            "test_glm_moe_experts"}},
+            "test_glm_moe_experts", "test_glm_moe_dense_compute",
+            "test_glm_moe_layer_compute", "test_glm_moe_moe_router",
+            "test_glm_moe_full_compute", "test_glm_moe_inference",
+            "test_glm_moe_prefill_seqp"}},
           {"selfcheck", {"test_glm_moe_selfcheck"}},
           {"fsi", {"test_glm_moe_fsi_selfcheck"}},
           {"code", {"test_glm_moe_code_selfcheck"}}, {"det", {"test_glm_moe_det_selfcheck"}}}},
         {"glm-5.3-flash",
          {{"convert", {"test_glm_moe_flash_convert"}},
           {"load", {"test_glm_moe_flash_loader"}},
-          {"model", {"test_glm_moe_flash_model"}},
+          {"model",
+           {"test_glm_moe_flash_model", "test_glm_flash_tool_framing"}},
           {"kernels", {"test_glm_moe_flash_kernels"}},
           {"selfcheck", {"test_glm_moe_flash_selfcheck"}},
           {"fsi", {"test_glm_moe_flash_fsi_selfcheck"}},
@@ -104,10 +112,16 @@ const std::vector<SuiteSpec> &Suites()
         // pre-converted logestix layout (no converter exists in the repo);
         // classification/topology of that layout is the model stage.
         {"deepseek-v4-flash",
-         {{"convert", {"test_deepseek_moe_convert"}},
+         {{"convert",
+           {"test_deepseek_moe_convert", "test_deepseek_nvfp4_repack",
+            "test_deepseek_nvfp4_repack_tool"}},
           {"load", {"test_deepseek_moe_loader", "test_deepseek_moe_load_fast"}},
-          {"model", {"test_deepseek_moe_model"}},
-          {"kernels", {"test_deepseek_moe_inference_kernels"}},
+          {"model",
+           {"test_deepseek_moe_model", "test_deepseek_moe_prompt_output",
+            "test_deepseek_tool_framing"}},
+          {"kernels",
+           {"test_deepseek_moe_inference_kernels", "test_deepseek_moe_arena",
+            "test_deepseek_moe_moe"}},
           {"selfcheck", {"test_deepseek_moe_selfcheck"}},
           {"fsi", {"test_deepseek_moe_fsi_selfcheck"}},
           {"code", {"test_deepseek_moe_code_selfcheck"}}, {"det", {"test_deepseek_moe_det_selfcheck"}}}},
@@ -115,7 +129,8 @@ const std::vector<SuiteSpec> &Suites()
          {{"convert", {"test_deepseek_moe_v41_convert"}},
           {"load",
            {"test_deepseek_moe_v41_loader", "test_deepseek_moe_v41_load_fast"}},
-          {"model", {"test_deepseek_moe_v41_model"}},
+          {"model",
+           {"test_deepseek_moe_v41_model", "test_deepseek_tool_framing"}},
           {"kernels",
            {"test_deepseek_moe_v41_dequant", "test_deepseek_moe_v41_kernels",
             "test_deepseek_moe_v41_actquant",
@@ -127,10 +142,15 @@ const std::vector<SuiteSpec> &Suites()
          {{"convert",
            {"test_qwen_dense_convert", "test_qwen_dense_converter_integrity"}},
           {"load", {"test_qwen_dense_loader"}},
-          {"model", {"test_qwen_dense_model"}},
+          {"model", {"test_qwen_dense_model", "test_qwen_tool_framing"}},
           {"kernels",
            {"test_qwen_dense_mlp", "test_qwen_dense_full_attn",
-            "test_qwen_dense_nvfp4"}},
+            "test_qwen_dense_nvfp4", "test_qwen_dense_norm",
+            "test_qwen_dense_rotary", "test_qwen_dense_shuffle_reduce",
+            "test_qwen_dense_full_attn_parallel",
+            "test_qwen_dense_linear_attn", "test_qwen_dense_fused_mlp",
+            "test_qwen_dense_fused_linear_attn", "test_qwen_dense_kv_cache",
+            "test_qwen_dense_kv_parity"}},
           {"selfcheck", {"test_qwen_dense_selfcheck"}},
           {"fsi", {"test_qwen_dense_fsi_selfcheck"}},
           {"code", {"test_qwen_dense_code_selfcheck"}}, {"det", {"test_qwen_dense_det_selfcheck"}}}},
@@ -139,8 +159,10 @@ const std::vector<SuiteSpec> &Suites()
         {"qwen3.8-27b",
          {{"convert", {"test_qwen_dense_convert"}},
           {"load", {"test_qwen_dense_loader"}},
-          {"model", {"test_qwen_dense_27b_model"}},
-          {"kernels", {"test_qwen_dense_nvfp4"}},
+          {"model", {"test_qwen_dense_27b_model", "test_qwen_tool_framing"}},
+          {"kernels",
+           {"test_qwen_dense_nvfp4", "test_qwen_nvfp4_gemv",
+            "test_qwen_nvfp4_tile_gemm"}},
           {"selfcheck", {"test_qwen_dense_27b_selfcheck"}},
           {"fsi", {"test_qwen_dense_27b_fsi_selfcheck"}},
           {"code", {"test_qwen_dense_27b_code_selfcheck"}}, {"det", {"test_qwen_dense_27b_det_selfcheck"}}}},
@@ -180,7 +202,9 @@ const std::vector<SuiteSpec> &Suites()
         {"gemma-4-26b-a4b-it",
          {{"convert", {"test_gemma_moe_convert"}},
           {"load", {"test_gemma_moe_loader"}},
-          {"model", {"test_gemma_moe_model"}},
+          {"model",
+           {"test_gemma_moe_model", "test_gemma_prompt_framing",
+            "test_gemma_tool_framing"}},
           {"kernels",
            {"test_gemma_moe_norm", "test_gemma_moe_rotary",
             "test_gemma_moe_attn", "test_gemma_moe_moe"}},
@@ -189,27 +213,38 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_gemma_moe_code_selfcheck"}}, {"det", {"test_gemma_moe_det_selfcheck"}}}},
         {"kimi-k2.7-code",
          {{"convert", {"test_kimi_moe_convert"}},
-          {"load", {"test_kimi_moe_loader"}},
+          {"load",
+           {"test_kimi_moe_loader", "test_kimi_moe_expert_cache",
+            "test_kimi_moe_tokenizer"}},
           {"model", {"test_kimi_moe_model"}},
           {"kernels",
            {"test_kimi_moe_router", "test_kimi_moe_attention",
-            "test_kimi_moe_experts", "test_kimi_moe_int4_dequant"}},
+            "test_kimi_moe_experts", "test_kimi_moe_int4_dequant",
+            "test_kimi_moe_inference", "test_kimi_moe_int4_real",
+            "test_kimi_moe_tc_batch", "test_kimi_moe_tc_diag"}},
           {"selfcheck", {"test_kimi_moe_selfcheck"}},
           {"fsi", {"test_kimi_moe_fsi_selfcheck"}},
           {"code", {"test_kimi_moe_code_selfcheck"}}, {"det", {"test_kimi_moe_det_selfcheck"}}}},
         {"nemotron-3.5-lightning-30b-a3b",
          {{"convert", {"test_nemotron_moe_convert"}},
-          {"load", {"test_nemotron_moe_loader"}},
+          {"load",
+           {"test_nemotron_moe_loader", "test_nemotron_moe_expert_cache"}},
           {"model", {"test_nemotron_moe_model"}},
-          {"kernels", {"test_nemotron_moe_kernels"}},
+          {"kernels", {"test_nemotron_moe_kernels", "test_nemotron_moe_math"}},
           {"selfcheck", {"test_nemotron_moe_selfcheck"}},
           {"fsi", {"test_nemotron_moe_fsi_selfcheck"}},
           {"code", {"test_nemotron_moe_code_selfcheck"}}, {"det", {"test_nemotron_moe_det_selfcheck"}}}},
         {"gigachat3.5-432b-a28b-reasoning",
          {{"convert", {"test_gigachat_moe_convert"}},
-          {"load", {"test_gigachat_moe_loader"}},
-          {"model", {"test_gigachat_moe_model"}},
-          {"kernels", {"test_gigachat_moe_kernels"}},
+          {"load",
+           {"test_gigachat_moe_loader", "test_gigachat_moe_expert_cache",
+            "test_gigachat_moe_load_fast"}},
+          {"model",
+           {"test_gigachat_moe_model", "test_gigachat_tool_framing"}},
+          {"kernels",
+           {"test_gigachat_moe_kernels", "test_gigachat_moe_attn",
+            "test_gigachat_moe_devkernels", "test_gigachat_moe_parity",
+            "test_gigachat_moe_math"}},
           {"selfcheck", {"test_gigachat_moe_selfcheck"}},
           {"fsi", {"test_gigachat_moe_fsi_selfcheck"}},
           {"code", {"test_gigachat_moe_code_selfcheck"}}, {"det", {"test_gigachat_moe_det_selfcheck"}}}},
@@ -223,8 +258,10 @@ const std::vector<SuiteSpec> &Suites()
           {"code", {"test_granite_dense_code_selfcheck"}}, {"det", {"test_granite_dense_det_selfcheck"}}}},
         {"mimo-v2.6-flash-rl",
          {{"convert", {"test_mimo_moe_convert"}},
-          {"load", {"test_mimo_moe_loader"}},
-          {"model", {"test_mimo_moe_model"}},
+          {"load",
+           {"test_mimo_moe_loader", "test_mimo_moe_expert_cache",
+            "test_mimo_moe_geometry"}},
+          {"model", {"test_mimo_moe_model", "test_mimo_tool_framing"}},
           {"kernels", {"test_mimo_moe_kernels", "test_mimo_moe_dequant"}},
           {"selfcheck", {"test_mimo_moe_selfcheck"}},
           {"fsi", {"test_mimo_moe_fsi_selfcheck"}},
@@ -232,7 +269,7 @@ const std::vector<SuiteSpec> &Suites()
         {"phi-4",
          {{"convert", {"test_phi_dense_convert"}},
           {"load", {"test_phi_dense_loader"}},
-          {"model", {"test_phi_dense_model"}},
+          {"model", {"test_phi_dense_model", "test_phi_tool_framing"}},
           {"kernels", {"test_phi_dense_kernels"}},
           {"selfcheck", {"test_phi_dense_selfcheck"}},
           {"fsi", {"test_phi_dense_fsi_selfcheck"}},
@@ -240,8 +277,8 @@ const std::vector<SuiteSpec> &Suites()
           {"det", {"test_phi_dense_det_selfcheck"}}}},
         {"alice-foundation-80b-a3b",
          {{"convert", {"test_alice_moe_convert"}},
-          {"load", {"test_alice_moe_loader"}},
-          {"model", {"test_alice_moe_model"}},
+          {"load", {"test_alice_moe_loader", "test_alice_tokenizer"}},
+          {"model", {"test_alice_moe_model", "test_alice_tool_framing"}},
           {"kernels", {"test_alice_moe_kernels"}},
           {"selfcheck", {"test_alice_moe_selfcheck"}},
           {"fsi", {"test_alice_moe_fsi_selfcheck"}},
@@ -579,4 +616,74 @@ TEST_CASE("suite guard: loader tests never load the model vault",
     for (const auto &s : v) joined += s + "\n";
     INFO("loader discipline violations:\n" << joined);
     REQUIRE(v.empty());
+}
+
+// The lifecycle check above only proves that a registered target EXISTS. The
+// reverse direction is what was missing: a family test target that runs on
+// every CI sweep but sits in no Suites() row is invisible to the completeness
+// report, so its breakage never surfaces as "incomplete suite". Every
+// family-prefixed target must be claimed by exactly one model row.
+TEST_CASE("suite guard: every family test target is claimed by a suite row",
+          "[suite][guard]")
+{
+    const fs::path root(LSX_SOURCE_DIR);
+    const std::string cmake_text =
+        ReadFileOrThrow(root / "tests" / "CMakeLists.txt");
+    const auto registered = [&] {
+        std::set<std::string> s;
+        for (const auto &n : RegisteredTestNames(cmake_text)) s.insert(n);
+        return s;
+    }();
+
+    std::set<std::string> claimed;
+    for (const auto &s : Suites())
+        for (const auto &st : s.stages)
+            for (const auto *t : st.targets)
+                claimed.insert(t);
+
+    std::vector<std::string> orphans;
+    for (const auto &name : registered)
+    {
+        if (!FamilyStem(name)) continue;
+        if (claimed.count(name)) continue;
+        orphans.push_back(name);
+    }
+    std::sort(orphans.begin(), orphans.end());
+    std::string joined;
+    for (const auto &s : orphans) joined += s + "\n";
+    INFO("family test targets absent from Suites():\n" << joined);
+    CHECK(orphans.empty());
+}
+
+TEST_CASE("suite guard: every suite row declares the full stage set",
+          "[suite][guard]")
+{
+    // The header invariant promises convert -> load -> model -> kernels ->
+    // selfcheck -> fsi -> code -> det for EVERY row, but nothing enforced the
+    // stage list — only that the named targets exist. A row that quietly
+    // dropped "model" stayed green forever.
+    static const std::vector<const char *> kRequired = {
+        "convert", "load", "model", "kernels",
+        "selfcheck", "fsi", "code", "det"};
+    // DeepSeek-V4-Flash has no converter in the repo by design (it ingests a
+    // pre-converted logestix layout), so "convert" is exempt for that row only.
+    static const std::set<std::string> kConvertExempt = {"deepseek-v4-flash"};
+
+    std::vector<std::string> missing;
+    for (const auto &s : Suites())
+    {
+        std::set<std::string> have;
+        for (const auto &st : s.stages) have.insert(st.stage);
+        for (const auto *r : kRequired)
+        {
+            if (std::string(r) == "convert" && kConvertExempt.count(s.model))
+                continue;
+            if (!have.count(r))
+                missing.push_back(std::string(s.model) + ": missing stage " + r);
+        }
+    }
+    std::string joined;
+    for (const auto &s : missing) joined += s + "\n";
+    INFO("incomplete suite rows:\n" << joined);
+    CHECK(missing.empty());
 }
