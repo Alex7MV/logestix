@@ -230,9 +230,10 @@ precedent exists. Right now nothing distinguishes "too slow for the target" from
   not re-derive them). Symptom: headers 13.3 against runtime 13.4, caught only
   by `test_cuda_toolkit_guard` as `CUDART_VERSION=13030 runtime=13040`.
 - Procedure is written up in `.opencode/skills/building-the-project/SKILL.md`.
-- **Open:** worth a configure-time check (fail at `find_package(CUDAToolkit)`
-  if header and runtime versions disagree) so this is caught before a build
-  rather than by a test after it.
+- **Resolved (2026-09-30):** `CMakeLists.txt` now fails configure when
+  `CUDAToolkit_VERSION` and `CMAKE_CUDA_COMPILER_VERSION` disagree (major.minor),
+  so a stale cache is caught before a build instead of by
+  `test_cuda_toolkit_guard` afterwards. See the follow-up section below.
 
 ---
 
