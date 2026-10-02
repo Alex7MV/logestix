@@ -125,6 +125,29 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   immediately — a sample near 40 us means the kernel regressed; an assertion
   outside the two budget lines means it was never this test's timing.
 
+## D. Performance
+
+### D1. nemotron batched expert GEMV reaches ~1.4x, not the 1.67x expected
+- **Status: measured 2026-10-02, not fixed.** The budget from `1164799`
+  (`batch < single * 0.6`) asks for 1.67x; the kernel delivers **1.34–1.44x**
+  (`tests/perf/kernel_budgets.json`, `nemotron.routed_expert_gemv.batch_speedup`).
+- The shortfall is real, not an artefact of the test's shape. The case measures
+  `K=512, N=64` while Nemotron's actual constants are `hidden=2688` and
+  `moe_intermediate=1856`; re-measuring on the real shapes gives **single=37.17
+  us, batch=26.62 us — 1.40x**, i.e. more work and a *smaller* win.
+- The arithmetic: `6 * (launch + kernel) = 37.17` against
+  `launch + 6 * kernel = 26.62`, so the batched kernel costs about as much per
+  expert as the single-expert one (4.1 vs 4.2 us). The entire win is the six
+  launches collapsing into one, and it is already close to complete. The missing
+  1.67x has to come from the kernel body or the remaining launch overhead.
+- Next step: profile `lsx_nvfp4_gemv_expert_batch_kernel`. Its grid is
+  `(N / ROWS, count)` = 464 x 6 blocks for the real shape, which on a 170-SM part
+  may be short of saturating the machine — that is the concrete thing to check,
+  not a guess.
+- **Blast radius:** this is the neutral `lsx_nvfp4` layer, shared with
+  gigachat (`gigachat_moe_inference_pipeline.cu`). Any change must be validated
+  on both families against real weights, not only on the synthetic case.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
