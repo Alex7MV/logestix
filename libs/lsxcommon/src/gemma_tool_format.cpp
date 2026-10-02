@@ -327,8 +327,10 @@ bool RenderGemmaConversation(const ChatConversation &conv, std::string &out)
             out += "<|turn>model\n" + esc(m.content);
             for (const ToolCall &c : m.tool_calls) {
                 bool ok = true;
-                out += "<|tool_call>call:" + esc(c.name) + "{" +
-                       FormatArguments(c.arguments_json, ok) + "}<tool_call|>";
+                // FormatArguments already returns a brace-delimited body
+                // (`{k:v,…}`, or `{}` when the arguments do not parse).
+                out += "<|tool_call>call:" + esc(c.name) +
+                       FormatArguments(c.arguments_json, ok) + "<tool_call|>";
             }
             // Consecutive tool messages follow this model turn.
             size_t j = i + 1;

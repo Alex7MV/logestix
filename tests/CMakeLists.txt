@@ -1666,6 +1666,25 @@ endif()
 
 add_test(NAME test_phi_tool_framing COMMAND test_phi_tool_framing)
 
+# ── Gemma-4 native tool codec test (host-only; render/parse, no tokenizer) ──
+add_executable(test_gemma_tool_framing test_gemma_tool_framing.cpp)
+target_link_libraries(test_gemma_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_gemma_tool_framing COMMAND test_gemma_tool_framing)
+
+# ── GigaChat-3.5 chatml-v5 GCML tool codec test (host-only) ──
+add_executable(test_gigachat_tool_framing test_gigachat_tool_framing.cpp)
+target_link_libraries(test_gigachat_tool_framing PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_gigachat_tool_framing COMMAND test_gigachat_tool_framing)
+
+# ── JSON escape contract + drift guard over the family-local copies ──
+add_executable(test_json_escape test_json_escape.cpp)
+target_include_directories(test_json_escape PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_compile_definitions(test_json_escape PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+target_link_libraries(test_json_escape PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_json_escape COMMAND test_json_escape)
+
 # ── GLM-5.3-Flash native tool framing test (host-only, synthetic tokenizer) ──
 add_executable(test_glm_flash_tool_framing test_glm_flash_tool_framing.cpp)
 target_include_directories(test_glm_flash_tool_framing PRIVATE
@@ -5297,6 +5316,9 @@ set_tests_properties(
     test_gemma_prompt_framing
     test_qwen_tool_framing
     test_phi_tool_framing
+    test_gemma_tool_framing
+    test_gigachat_tool_framing
+    test_json_escape
     test_glm_flash_tool_framing
     test_deepseek_tool_framing
     test_model_runtime
