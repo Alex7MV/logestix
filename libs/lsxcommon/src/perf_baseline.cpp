@@ -1,6 +1,6 @@
 #include "lsxcommon/perf_baseline.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 
@@ -13,7 +13,7 @@ namespace {
 
 // JSON-escape a string for the hand-rolled writer: quotes, backslashes and
 // control chars must not break the document (a prompt can contain any of them).
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 } // namespace
 

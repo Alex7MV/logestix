@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 
 #ifndef LSX_SOURCE_DIR
 #define LSX_SOURCE_DIR "."
@@ -30,7 +30,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 std::string EscapeOne(unsigned char c)
 {
@@ -100,9 +100,13 @@ struct CopyRow {
 // does not link lsxcommon, and its own comment says so.
 const std::vector<CopyRow> &Copies()
 {
+    // Exactly one implementation, in lsxnetwork: the dependency runs
+    // lsxcommon -> lsxnetwork, so the shared header has to live on the lower
+    // side of it. The qwen / glm-flash / mimo codecs and the OpenAI +
+    // Anthropic SSE serializers all include it.
     static const std::vector<CopyRow> v = {
-        {"reference (json_escape.h)", "libs/lsxcommon/src/json_escape.h", "JsonEscape"},
-        {"lsxnetwork/openai_endpoint.cpp", "libs/lsxnetwork/src/openai_endpoint.cpp", "JsonEscape"},
+        {"reference (lsxnetwork/json_escape.h)",
+         "libs/lsxnetwork/include/lsxnetwork/json_escape.h", "JsonEscape"},
     };
     return v;
 }
@@ -188,10 +192,10 @@ TEST_CASE("json escape: every copy matches the reference arms",
 TEST_CASE("json escape: lsxcommon keeps no family-local copy",
           "[json][escape][guard]")
 {
-    // The qwen / glm-flash / mimo codecs used to each carry a byte-identical
-    // copy of the escape loop (QwenJsonEscape, GlmJsonEscape, MimoJsonEscape).
-    // Reintroducing one is easy and silent — it would compile, pass every other
-    // test and then diverge. The hex digit table is the fingerprint of a copy.
+    // The qwen / glm-flash / mimo codecs and lsxnetwork's openai_endpoint each
+    // used to carry a byte-identical copy of the escape loop. Reintroducing one
+    // is easy and silent — it would compile, pass every other test and then
+    // diverge. The hex digit table is the fingerprint of a copy.
     const fs::path root(LSX_SOURCE_DIR);
     static const std::regex kHexTable(R"(static\s+const\s+char\s*\*?\s*kHex)");
     std::vector<std::string> found;
@@ -212,9 +216,8 @@ TEST_CASE("json escape: lsxcommon keeps no family-local copy",
     std::string joined;
     for (const auto &f : found) joined += f + "\n";
     INFO("files declaring their own hex table:\n" << joined);
-    // Exactly two: the lsxcommon reference and the lsxnetwork copy that cannot
-    // link it. Anything else is a reintroduced duplicate.
-    REQUIRE(found.size() == 2);
-    CHECK(found[0] == "libs/lsxcommon/src/json_escape.h");
-    CHECK(found[1] == "libs/lsxnetwork/src/openai_endpoint.cpp");
+    // Exactly one, in lsxnetwork. A second copy anywhere means someone decided
+    // the dependency direction made it unavoidable.
+    REQUIRE(found.size() == 1);
+    CHECK(found[0] == "libs/lsxnetwork/include/lsxnetwork/json_escape.h");
 }

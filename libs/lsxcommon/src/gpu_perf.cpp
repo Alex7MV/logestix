@@ -1,6 +1,6 @@
 #include "lsxcommon/gpu_perf.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <cuda_runtime.h>
 
 #include <absl/container/flat_hash_map.h>
@@ -246,7 +246,7 @@ namespace {
 
 // JSON-escape a string for the hand-rolled perf-cache writer (the GPU name is
 // device-provided and must not be able to break the document).
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 } // namespace
 

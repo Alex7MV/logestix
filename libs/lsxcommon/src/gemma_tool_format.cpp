@@ -1,6 +1,6 @@
 #include "lsxcommon/gemma_tool_format.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <simdjson.h>
 
 #include <algorithm>
@@ -36,7 +36,7 @@ std::string_view Trim(std::string_view s)
     return s;
 }
 
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 std::string SerializeJson(simdjson::dom::element e);
 

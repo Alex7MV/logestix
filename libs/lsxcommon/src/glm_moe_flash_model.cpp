@@ -1,5 +1,5 @@
 // Glm5NextFlashModel implementation (Kimi/Qwen38 ModelBase pattern).
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include "lsxcommon/gpu_perf.h"
 #include "glm_moe_flash_model.h"
 
@@ -22,7 +22,7 @@
 #include <cuda_runtime.h>
 
 namespace lsxcommon {
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 const std::string Glm5NextFlashModel::kType = "glm-5.3-flash";
 

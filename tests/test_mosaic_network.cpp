@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <lsxnetwork/json_escape.h>
 
 #include <lsxnetwork/affinity.h>
 #include <lsxnetwork/frame_queue.h>
@@ -406,7 +407,7 @@ TEST_CASE("openai endpoint: builds completion and error JSON",
         lsxnetwork::BuildError("nope", "invalid_request_error");
     CHECK(err.find("\"type\":\"invalid_request_error\"") != std::string::npos);
 
-    CHECK(lsxnetwork::JsonEscape("a\"b\n") == "a\\\"b\\n");
+    CHECK(lsxnetwork::json::JsonEscape("a\"b\n") == "a\\\"b\\n");
     CHECK(lsxnetwork::SseFrame("data") == "data: data\n\n");
 }
 

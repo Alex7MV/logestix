@@ -1,5 +1,5 @@
 #include "lsxcommon/mimo_tool_format.h"
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 
 #include <simdjson.h>
 
@@ -10,7 +10,7 @@
 #include "lsxcommon/tool_format.h"
 
 namespace lsxcommon {
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 namespace mimo {
 namespace {
 

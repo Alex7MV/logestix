@@ -1,4 +1,5 @@
 #include "lsxnetwork/openai_endpoint.h"
+#include <lsxnetwork/json_escape.h>
 
 #include <iomanip>
 #include <sstream>
@@ -305,35 +306,6 @@ simdjson::error_code OpenAiEndpoint::ParseLegacyCompletionRequest(
 
 // NOTE: lsxcommon/src/json_escape.h holds the canonical implementation of this
 // function (JSON RFC 8259: control chars as \u00XX). It is byte-identical to the
-// copy below but cannot be shared as-is: lsxnetwork does not link lsxcommon.
-// If lsxnetwork ever starts linking it, delete this function and include that
-// header instead. Do NOT switch to absl::CEscape -- it is a C escape, not a
-// JSON one (octal \001 for control bytes, \' for the apostrophe); neither is a
-// valid JSON string escape.
-std::string JsonEscape(const std::string& in) {
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char* kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
-
 std::string SseFrame(const std::string& data) {
     return "data: " + data + "\n\n";
 }
@@ -355,7 +327,7 @@ std::string BuildChatCompletion(const std::string& id, const std::string& model,
            model +
            "\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\","
            "\"content\":\"" +
-           JsonEscape(text) + "\"},\"finish_reason\":\"" + finish_reason +
+           json::JsonEscape(text) + "\"},\"finish_reason\":\"" + finish_reason +
            "\"}]," + Usage(prompt_tokens, completion_tokens) + "}";
 }
 
@@ -367,7 +339,7 @@ std::string BuildChatChunk(const std::string& id, const std::string& model,
         "{\"id\":\"" + id + "\",\"object\":\"chat.completion.chunk\",\"model\":\"" +
         model + "\",\"choices\":[{\"index\":0,\"delta\":{";
     if (first_delta) out += "\"role\":\"assistant\",";
-    out += "\"content\":\"" + JsonEscape(delta_content) + "\"},\"finish_reason\":";
+    out += "\"content\":\"" + json::JsonEscape(delta_content) + "\"},\"finish_reason\":";
     out += finish_reason.empty() ? "null" : ("\"" + finish_reason + "\"");
     out += "}]";
     if (include_usage && !finish_reason.empty())
@@ -381,7 +353,7 @@ std::string BuildTextCompletion(const std::string& id, const std::string& model,
                                 const std::string& finish_reason,
                                 int prompt_tokens, int completion_tokens) {
     return "{\"id\":\"" + id + "\",\"object\":\"text_completion\",\"model\":\"" +
-           model + "\",\"choices\":[{\"index\":0,\"text\":\"" + JsonEscape(text) +
+           model + "\",\"choices\":[{\"index\":0,\"text\":\"" + json::JsonEscape(text) +
            "\",\"finish_reason\":\"" + finish_reason + "\"}]," +
            Usage(prompt_tokens, completion_tokens) + "}";
 }
@@ -391,14 +363,14 @@ std::string BuildTextChunk(const std::string& id, const std::string& model,
                            const std::string& finish_reason) {
     std::string out = "{\"id\":\"" + id + "\",\"object\":\"text_completion\",\"model\":\"" +
                       model + "\",\"choices\":[{\"index\":0,\"text\":\"" +
-                      JsonEscape(delta_text) + "\",\"finish_reason\":";
+                      json::JsonEscape(delta_text) + "\",\"finish_reason\":";
     out += finish_reason.empty() ? "null" : ("\"" + finish_reason + "\"");
     out += "}]}";
     return out;
 }
 
 std::string BuildModel(const std::string& id) {
-    return "{\"id\":\"" + JsonEscape(id) +
+    return "{\"id\":\"" + json::JsonEscape(id) +
            "\",\"object\":\"model\",\"created\":0,\"owned_by\":\"logestix\"}";
 }
 
@@ -413,18 +385,18 @@ std::string BuildModelsList(const std::vector<std::string>& ids) {
 }
 
 std::string BuildError(const std::string& message, const std::string& type) {
-    return "{\"error\":{\"message\":\"" + JsonEscape(message) + "\",\"type\":\"" +
-           JsonEscape(type) + "\",\"param\":null,\"code\":null}}";
+    return "{\"error\":{\"message\":\"" + json::JsonEscape(message) + "\",\"type\":\"" +
+           json::JsonEscape(type) + "\",\"param\":null,\"code\":null}}";
 }
 
 std::string ToolCallsToJson(const std::vector<ChatToolCall>& calls) {
     std::string out = "[";
     for (std::size_t i = 0; i < calls.size(); ++i) {
         if (i) out += ",";
-        out += "{\"id\":\"" + JsonEscape(calls[i].id) +
+        out += "{\"id\":\"" + json::JsonEscape(calls[i].id) +
                "\",\"type\":\"function\",\"function\":{\"name\":\"" +
-               JsonEscape(calls[i].name) + "\",\"arguments\":\"" +
-               JsonEscape(calls[i].arguments_json.empty() ? "{}"
+               json::JsonEscape(calls[i].name) + "\",\"arguments\":\"" +
+               json::JsonEscape(calls[i].arguments_json.empty() ? "{}"
                                                           : calls[i].arguments_json) +
                "\"}}";
     }

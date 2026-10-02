@@ -1,6 +1,6 @@
 #include "lsxcommon/deepseek_moe_tool_format.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <simdjson.h>
 
 #include <cstdio>
@@ -21,7 +21,7 @@ constexpr std::string_view kThink = "<think>";
 constexpr std::string_view kThinkEnd = "</think>";
 constexpr std::string_view kDsml = "｜DSML｜";
 
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 std::string SerializeJson(simdjson::dom::element e);
 

@@ -1,6 +1,6 @@
 #include "lsxcommon/gigachat_tool_format.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <simdjson.h>
 
 #include <algorithm>
@@ -21,7 +21,7 @@ constexpr const char *kThink = "<think>";
 constexpr const char *kThinkEnd = "</think>";
 constexpr const char *kGcml = "｜GCML｜";
 
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 std::string SerializeJson(simdjson::dom::element e);
 

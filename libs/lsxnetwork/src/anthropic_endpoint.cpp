@@ -1,4 +1,5 @@
 #include "lsxnetwork/anthropic_endpoint.h"
+#include <lsxnetwork/json_escape.h>
 
 #include <utility>
 
@@ -190,9 +191,9 @@ std::string Usage(int in, int out) {
 std::string MessageHead(const std::string& id, const std::string& model,
                         const std::string& content, const std::string& stop_reason,
                         int in, int out) {
-    return "{\"id\":\"" + JsonEscape(id) +
+    return "{\"id\":\"" + json::JsonEscape(id) +
            "\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"" +
-           JsonEscape(model) + "\",\"content\":" + content +
+           json::JsonEscape(model) + "\",\"content\":" + content +
            ",\"stop_reason\":\"" + stop_reason +
            "\",\"stop_sequence\":null," + Usage(in, out) + "}";
 }
@@ -200,10 +201,10 @@ std::string MessageHead(const std::string& id, const std::string& model,
 
 std::string AnthropicMessageStart(const std::string& id, const std::string& model,
                                   int input_tokens) {
-    const std::string msg = "{\"id\":\"" + JsonEscape(id) +
+    const std::string msg = "{\"id\":\"" + json::JsonEscape(id) +
                             "\",\"type\":\"message\",\"role\":\"assistant\","
                             "\"model\":\"" +
-                            JsonEscape(model) +
+                            json::JsonEscape(model) +
                             "\",\"content\":[],\"stop_reason\":null,"
                             "\"stop_sequence\":null," +
                             Usage(input_tokens, 0) + "}";
@@ -222,7 +223,7 @@ std::string AnthropicContentBlockDeltaText(int index, const std::string& text) {
     return AnthropicEvent(
         "content_block_delta",
         "{\"type\":\"content_block_delta\",\"index\":" + std::to_string(index) +
-            ",\"delta\":{\"type\":\"text_delta\",\"text\":\"" + JsonEscape(text) +
+            ",\"delta\":{\"type\":\"text_delta\",\"text\":\"" + json::JsonEscape(text) +
             "\"}}");
 }
 
@@ -237,8 +238,8 @@ std::string AnthropicToolUseBlockStart(int index, const std::string& id,
     return AnthropicEvent(
         "content_block_start",
         "{\"type\":\"content_block_start\",\"index\":" + std::to_string(index) +
-            ",\"content_block\":{\"type\":\"tool_use\",\"id\":\"" + JsonEscape(id) +
-            "\",\"name\":\"" + JsonEscape(name) + "\",\"input\":{}}}");
+            ",\"content_block\":{\"type\":\"tool_use\",\"id\":\"" + json::JsonEscape(id) +
+            "\",\"name\":\"" + json::JsonEscape(name) + "\",\"input\":{}}}");
 }
 
 std::string AnthropicToolUseDelta(int index, const std::string& partial_json) {
@@ -246,7 +247,7 @@ std::string AnthropicToolUseDelta(int index, const std::string& partial_json) {
         "content_block_delta",
         "{\"type\":\"content_block_delta\",\"index\":" + std::to_string(index) +
             ",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"" +
-            JsonEscape(partial_json) + "\"}}");
+            json::JsonEscape(partial_json) + "\"}}");
 }
 
 std::string AnthropicMessageDelta(const std::string& stop_reason,
@@ -267,7 +268,7 @@ std::string BuildAnthropicMessage(const std::string& id, const std::string& mode
                                   const std::string& stop_reason,
                                   int input_tokens, int output_tokens) {
     const std::string content =
-        "[{\"type\":\"text\",\"text\":\"" + JsonEscape(text) + "\"}]";
+        "[{\"type\":\"text\",\"text\":\"" + json::JsonEscape(text) + "\"}]";
     return MessageHead(id, model, content, stop_reason, input_tokens,
                        output_tokens);
 }
@@ -280,8 +281,8 @@ std::string BuildAnthropicToolMessage(const std::string& id,
     std::string content = "[";
     for (std::size_t i = 0; i < calls.size(); ++i) {
         if (i) content += ",";
-        content += "{\"type\":\"tool_use\",\"id\":\"" + JsonEscape(calls[i].id) +
-                   "\",\"name\":\"" + JsonEscape(calls[i].name) + "\",\"input\":" +
+        content += "{\"type\":\"tool_use\",\"id\":\"" + json::JsonEscape(calls[i].id) +
+                   "\",\"name\":\"" + json::JsonEscape(calls[i].name) + "\",\"input\":" +
                    (calls[i].arguments_json.empty() ? std::string("{}")
                                                      : calls[i].arguments_json) +
                    "}";
@@ -293,16 +294,16 @@ std::string BuildAnthropicToolMessage(const std::string& id,
 
 std::string BuildAnthropicError(const std::string& message,
                                 const std::string& type) {
-    return "{\"type\":\"error\",\"error\":{\"type\":\"" + JsonEscape(type) +
-           "\",\"message\":\"" + JsonEscape(message) + "\"}}";
+    return "{\"type\":\"error\",\"error\":{\"type\":\"" + json::JsonEscape(type) +
+           "\",\"message\":\"" + json::JsonEscape(message) + "\"}}";
 }
 
 std::string BuildAnthropicModelsList(const std::vector<std::string>& ids) {
     std::string data = "[";
     for (std::size_t i = 0; i < ids.size(); ++i) {
         if (i) data += ",";
-        data += "{\"id\":\"" + JsonEscape(ids[i]) + "\",\"display_name\":\"" +
-                JsonEscape(ids[i]) +
+        data += "{\"id\":\"" + json::JsonEscape(ids[i]) + "\",\"display_name\":\"" +
+                json::JsonEscape(ids[i]) +
                 "\",\"description\":\"logestix\",\"type\":\"model\"}";
     }
     data += "]";

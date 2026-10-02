@@ -1,5 +1,12 @@
-// json_escape.h — the single JSON string-escaping implementation for
-// lsxcommon (response bodies, tool-call arguments, perf and governor logs).
+// json_escape.h — the single JSON string-escaping implementation (response
+// bodies, tool-call arguments, perf and governor logs).
+//
+// It lives in lsxnetwork, not lsxcommon, because the dependency runs
+// lsxcommon -> lsxnetwork: lsxnetwork must not include lsxcommon or the two
+// libraries would depend on each other. Since lsxcommon links lsxnetwork
+// PUBLIC, this header is visible to both — the SSE serializers in
+// openai_endpoint.cpp / anthropic_endpoint.cpp and the model tool codecs share
+// one implementation instead of each keeping a copy.
 //
 // Do NOT substitute absl::CEscape here: it is a C escape, not a JSON one.
 // absl::CEscape renders non-printable bytes as OCTAL ("\001", see
@@ -16,7 +23,7 @@
 #include <string>
 #include <string_view>
 
-namespace lsxcommon::json {
+namespace lsxnetwork::json {
 
 inline std::string JsonEscape(std::string_view in)
 {
@@ -43,4 +50,4 @@ inline std::string JsonEscape(std::string_view in)
     return out;
 }
 
-} // namespace lsxcommon::json
+} // namespace lsxnetwork::json

@@ -1,6 +1,6 @@
 #include "lsxcommon/tool_format.h"
 
-#include "json_escape.h"
+#include <lsxnetwork/json_escape.h>
 #include <simdjson.h>
 
 #include <cstdint>
@@ -13,7 +13,7 @@ namespace lsxcommon {
 namespace tools {
 namespace {
 
-using lsxcommon::json::JsonEscape;
+using lsxnetwork::json::JsonEscape;
 
 // Minimal recursive serializer for a simdjson DOM element (compact JSON).
 std::string Serialize(simdjson::dom::element e);

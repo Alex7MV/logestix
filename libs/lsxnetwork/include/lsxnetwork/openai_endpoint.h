@@ -121,7 +121,6 @@ public:
 };
 
 /// Minimal JSON string escaping for response bodies.
-std::string JsonEscape(const std::string& in);
 
 /// Frames a payload as an SSE event (`data: <payload>\n\n`).
 std::string SseFrame(const std::string& data);
