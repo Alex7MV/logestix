@@ -964,7 +964,7 @@ endforeach()
 # One OBJECT lib + executable per .cu test file. The previous shared
 # `test_qwen_cu` object library linked ALL 14 files into EVERY executable:
 # the binaries were byte-identical, each ran the full ~187k assertions, and a
-# single failing assertion marked all 14 ctest targets failed (OPEN_TASKS E1).
+# single failing assertion marked all 14 ctest targets failed (docs/open-tasks/2026-09-30-..., item E1).
 # Per-file objects keep the target names/labels but run only their own cases.
 function(lsx_add_qwen_cu_test name)
     add_library(${name}_cu OBJECT ${name}.cu)

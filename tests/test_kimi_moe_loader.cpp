@@ -132,7 +132,7 @@ TEST_CASE("Kimi expert index resolves routed experts", "[kimi][loader]")
     REQUIRE(e.host_w1 >= chunk0);
     REQUIRE(e.host_w1 < chunk0 + kChunk);
 #else
-    // Expert pinning is not implemented on Windows (docs/OPEN_TASKS.md B1):
+    // Expert pinning is not implemented on Windows (docs/open-tasks/2026-09-30-..., item B1):
     // PinChunked returns false, pinned_pools stays empty, and the loader falls
     // back to pageable MemoryMappedFile views — correctness-neutral, just a
     // slower H2D path. The pointers above are the file-backed fallback views.

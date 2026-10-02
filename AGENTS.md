@@ -10,8 +10,10 @@ No backward compatibility — any code targeting pre-Blackwell (sm_90, sm_80) is
 CUDA Toolkit 13.4 (nvcc V13.4.92; minimum 13.2+), full native C++23 support in NVCC.
 
 Open, triaged follow-up work (real defects, Windows platform gaps,
-hardware-dependent budgets, missing coverage) — `docs/OPEN_TASKS.md`. The
-`fast` label is green (78/78); `inference` is not, and the reasons are
+hardware-dependent budgets, missing coverage) — `docs/OPEN_TASKS.md`. It keeps
+only genuinely open work; resolved items move to a dated snapshot in
+`docs/open-tasks/` (index: `docs/open-tasks/README.md`). The
+`fast` label is green (86/86); `inference` is not, and the reasons are
 catalogued there rather than left to be rediscovered.
 
 ## Dependencies

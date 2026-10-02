@@ -8,7 +8,7 @@ project(logestix
 
 find_package(CUDAToolkit REQUIRED)
 
-# ── Toolkit consistency guard (OPEN_TASKS G1) ────────────────────────────────
+# ── Toolkit consistency guard (docs/open-tasks/2026-09-30-..., item G1) ──────────
 # Upgrading CUDA leaves an existing build/ pinned to the previous toolkit: the
 # cached `CUDAToolkit_*` entries stay valid, so a new CUDAToolkit_ROOT is not
 # re-derived and the header version can disagree with the runtime the compiler
@@ -25,7 +25,7 @@ if(DEFINED CUDAToolkit_VERSION AND DEFINED CMAKE_CUDA_COMPILER_VERSION)
             "CUDA toolkit/compiler version mismatch: find_package(CUDAToolkit) "
             "resolved ${CUDAToolkit_VERSION} but the CUDA compiler is "
             "${CMAKE_CUDA_COMPILER_VERSION}. This usually means a stale build/ "
-            "cache after a toolkit upgrade (OPEN_TASKS G1). Reconfigure with "
+            "cache after a toolkit upgrade (docs/open-tasks/2026-09-30-...). Reconfigure with "
             "`cmake -U CUDAToolkit_* ...` or wipe the build directory.")
     endif()
 endif()

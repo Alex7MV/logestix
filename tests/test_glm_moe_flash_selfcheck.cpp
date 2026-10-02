@@ -116,7 +116,7 @@ TEST_CASE("GLM-5.3-Flash end-to-end tool round-trip (real weights)",
     model->Unload();
 }
 
-// D1 (docs/OPEN_TASKS.md): no test drove RunGlmFlashGeneration, so the
+// D1 (docs/open-tasks/2026-09-30-...): no test drove RunGlmFlashGeneration, so the
 // LSX_TRACE_FLASH host-decision branch fixed in 6108ecf was never executed.
 // The Paris selfcheck above reaches generation but with the debug flag unset;
 // this case sets it so RunGlmFlashGeneration must launch the probe kernels via
