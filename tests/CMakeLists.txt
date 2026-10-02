@@ -1,3 +1,8 @@
+# GPU-keyed kernel budgets: tests read tests/perf/kernel_budgets.json, and
+# LSX_KERNEL_BUDGET_WRITE=1 turns a sweep into a recalibration. Defined before
+# any target that consumes it (CMake set() is order-dependent).
+set(LSX_KERNEL_BUDGETS "${CMAKE_CURRENT_SOURCE_DIR}/perf/kernel_budgets.json")
+
 # ── Repository test executable ─────────────────────────────────
 add_executable(test_core test_core.cpp)
 target_link_libraries(test_core PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson httplib::httplib Catch2::Catch2WithMain)
@@ -1009,6 +1014,8 @@ function(lsx_add_qwen_cu_test name)
                 "$<TARGET_FILE_DIR:${name}>"
         )
     endif()
+    target_compile_definitions(${name}_cu PRIVATE
+        LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -1825,6 +1832,8 @@ set_tests_properties(test_gemma_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 foreach(qt test_gemma_moe_norm test_gemma_moe_rotary test_gemma_moe_attn test_gemma_moe_moe)
     add_executable(${qt} ${qt}.cpp)
     target_link_libraries(${qt} PRIVATE lsxcommon Catch2::Catch2WithMain)
+    target_compile_definitions(${qt} PRIVATE
+        LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
     if(WIN32)
         add_custom_command(TARGET ${qt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3476,6 +3485,8 @@ target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
     SIMDJSON_THREADS_ENABLED=1
 )
 target_link_libraries(test_qwen_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_kernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_qwen_moe_kernels)
 set_target_properties(test_qwen_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -4806,6 +4817,8 @@ target_compile_definitions(test_gigachat_moe_devkernels_cu PRIVATE
     SIMDJSON_THREADS_ENABLED=1
 )
 target_link_libraries(test_gigachat_moe_devkernels_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_gigachat_moe_devkernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_gigachat_moe_devkernels)
 set_target_properties(test_gigachat_moe_devkernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -5028,6 +5041,8 @@ target_compile_definitions(test_nemotron_moe_kernels_cu PRIVATE
     SIMDJSON_THREADS_ENABLED=1
 )
 target_link_libraries(test_nemotron_moe_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_nemotron_moe_kernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_nemotron_moe_kernels)
 set_target_properties(test_nemotron_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -5135,8 +5150,9 @@ target_include_directories(test_qwen_moe_exp_kernels_cu PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
-target_link_libraries(test_qwen_moe_exp_kernels_cu PRIVATE
-    Catch2::Catch2WithMain)
+target_link_libraries(test_qwen_moe_exp_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_qwen_moe_exp_kernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_qwen_moe_exp_kernels)
 set_target_properties(test_qwen_moe_exp_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -5177,8 +5193,9 @@ target_include_directories(test_glm_moe_flash_kernels_cu PRIVATE
     "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include"
     "${PROJECT_SOURCE_DIR}/third_party/simdjson/include"
 )
-target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE
-    Catch2::Catch2WithMain)
+target_link_libraries(test_glm_moe_flash_kernels_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_glm_moe_flash_kernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_glm_moe_flash_kernels)
 set_target_properties(test_glm_moe_flash_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -5628,3 +5645,15 @@ target_link_libraries(test_diagnostics PRIVATE lsxcommon arrow_shared
     arrow_cuda_shared simdjson::simdjson Catch2::Catch2WithMain)
 add_test(NAME test_diagnostics COMMAND test_diagnostics)
 set_tests_properties(test_diagnostics PROPERTIES LABELS fast)
+
+# ── GPU-keyed kernel budgets ────────────────────────────────────────────────
+# Every suite whose budgets now come from perf/kernel_budgets.json SKIPs when
+# no record exists for the running GPU, so all of them need exit code 4
+# tolerated. LSX_KERNEL_BUDGET_WRITE=1 recalibrates instead of asserting.
+set(LSX_KERNEL_BUDGET_TESTS
+    test_gemma_moe_norm test_gemma_moe_moe test_glm_moe_flash_kernels
+    test_qwen_moe_kernels test_qwen_nvfp4_gemv test_qwen_moe_exp_kernels
+    test_nemotron_moe_kernels test_gigachat_moe_devkernels)
+foreach(_bt IN LISTS LSX_KERNEL_BUDGET_TESTS)
+    set_tests_properties(${_bt} PROPERTIES SKIP_RETURN_CODE 4)
+endforeach()

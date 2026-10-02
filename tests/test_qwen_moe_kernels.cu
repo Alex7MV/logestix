@@ -5,6 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_kernel_budget.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -385,7 +387,8 @@ TEST_CASE("router real-shape decode latency budget", "[qwen-moe-router]")
 #ifdef NDEBUG
     // Release-only budget: the deep-unrolled uint4 stage-1 walk lands
     // ~30 us; the narrow strided walk + select lands ~12 us.
-    REQUIRE(us < 20.0);
+    kernel_budget::Require("qwen_moe.router.decode", us, kernel_budget::Kind::kMax,
+                           "warp-per-row router top-k+renorm");
 #endif
 
     cudaFree(d_w);

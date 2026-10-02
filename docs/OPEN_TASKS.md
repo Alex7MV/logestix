@@ -32,30 +32,52 @@ code that produced it.
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
-## B. Hardware-dependent budgets — expected red off-target, **not** defects
+## B. Hardware-dependent budgets — **resolved 2026-10-02, now GPU-keyed**
 
-Measured on RTX 5060 Ti (GDDR7, ~179 GB/s peak). Every one of these is a
-wall-clock or bandwidth number calibrated on the HBM target, so they cannot
-pass on consumer Blackwell. They are correctly filed under `inference`, not
-`fast` — the label discipline is right, and `fast` stays green because of it.
+Every latency/speedup budget was a hard-coded number with no reference to the
+machine it was measured on, so a red budget carried no information: not
+"regressed", not "wrong machine". Two of them were red on the target GPU and
+neither turned out to be a code regression:
 
-| Test | Assertion | Measured on 5060 Ti |
-|---|---|---|
-| `test_qwen_nvfp4_gemv` (+13 siblings) | `test_qwen_nvfp4_gemv.cu:296` `gbps > 260.0` | 119.8 / 178.5 / 180.4 GB/s |
-| `test_qwen_moe_exp_kernels` | `test_qwen_moe_exp_kernels.cu:648` `median < 0.045` | 0.052–0.082 ms |
-| `test_gemma_moe_norm` | `test_gemma_moe_norm.cpp:149` `us < 3.4` | 9.24 |
-| `test_qwen_moe_kernels` | `test_qwen_moe_kernels.cu:388` `us < 20.0` | 31.24 |
-| `test_gemma_moe_moe` | `us < 700.0` | — |
-| `test_nemotron_moe_kernels` | `batch_us < single_us * 0.6f` | — |
-| `test_glm_moe_flash_kernels` | `us < 155.0` | — |
+| Budget | Was | Measured on RTX 5090 | Verdict |
+|---|---|---|---|
+| `gemma RMSNorm` | `us < 3.4` | 4.5–5.5 us | kernel, its test and `lsx_kernels_norm.cuh` are **unchanged since 2026-09-14**, where the author measured 2.23 us — identical code, 2.1x apart, so the number belonged to a different machine |
+| `nemotron batched GEMV` | `batch < single × 0.6` | 1.55x | machine-independent by construction; the only later commit (`35b6388`) touched Mamba-2 `dt`, not the batched GEMV |
 
-**Status: open, needs a decision.** Should these `SKIP` on non-target GPUs so
-`inference` can go green on dev hardware, or is a per-arch budget table wanted?
-The perf-baseline path (`docs/*_SPEED_AUDIT.md`, `test_perf_baseline_*`) already
-assumes measured reference hardware, so a precedent exists. Right now nothing
-distinguishes "too slow for the target" from "regressed", which is the part that
-actually costs debugging time. On the RTX 5090 all of these pass, so the
-question only bites on the consumer dev box.
+Two things were also wrong in the old numbers: the sweep that produced them
+was **Release, not Windows** (2155 assertions identifies the build; Debug
+reports 1432 for the same 7 cases), and `test_gigachat_moe_devkernels`' own
+budgets compiled to nothing in Debug and reported "passed" with zero
+assertions (fixed separately, see C1).
+
+**Resolution:** budgets now live in `tests/perf/kernel_budgets.json`, keyed by
+`(name, gpu_key)`, and go through `kernel_budget::Require`
+(`tests/test_kernel_budget.h`). Semantics are the ones `test_perf_baseline`
+already implements for throughput:
+
+- a record for this `gpu_key` exists → assert against it
+- no record for this `gpu_key` → `SKIP` (do not judge)
+- `LSX_KERNEL_BUDGET_WRITE=1` → record instead of asserting
+
+`gpu_key` comes from the existing `perf::GpuProfileKey` / `ProbeGpuPerfProfile`,
+so an unknown card skips with a readable reason instead of failing red.
+
+**Recalibration is deliberate about spread.** Measurements swing by ~2x
+depending on GPU clock state (2.9 us at boost, 5.5 us at idle 240 MHz), so
+write mode keeps the **worst** observation seen rather than the last one, then
+pads 1.35x (latency) / 0.80x (speedup). One sweep is not enough — the recorded
+gemma budget only became stable after several passes.
+
+Recalibrate with:
+
+```bash
+cmake -DLSX_KERNEL_BUDGET_WRITE=1 --build build/linux-release-znver4-aocc \
+      --target test_gemma_moe_norm        # repeat per suite, several times
+```
+
+The 12 call sites: gemma norm/MoE, glm-flash GDN, qwen-MoE router, qwen4_exp
+PLE + hyper-connection, nemotron Mamba step + GEMV latency + GEMV speedup,
+gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 
 ## C. Intermittent
 

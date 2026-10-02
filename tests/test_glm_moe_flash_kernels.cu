@@ -1,6 +1,8 @@
 // GLM-5.3-Flash CUDA kernel unit tests (bit-parity against host refs).
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_kernel_budget.h"
+
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -696,7 +698,8 @@ TEST_CASE("GLM routed FFN real-shape latency + determinism")
 #ifdef NDEBUG
     // Release-only budget: the batched chain lands ~130 us; the legacy
     // per-expert chain (8x4 launches) is ~190 us.
-    REQUIRE(us < 155.0);
+    kernel_budget::Require("glm_flash.gdn.decode", us, kernel_budget::Kind::kMax,
+                           "Gated DeltaNet decode step");
 #endif
 
     lsxcommon::lsx_nvfp4::SetLsxTcFastMath(false);

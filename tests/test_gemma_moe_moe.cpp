@@ -1,6 +1,8 @@
 // Gemma-4 MoE tests: router top-k (determinism, tie-break, scales),
 // dense MLP (GELU-tanh) and NVFP4 expert FFN against CPU references.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_kernel_budget.h"
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cmath>
@@ -523,7 +525,8 @@ TEST_CASE("gemma NVFP4 logits decode latency budget",
     INFO("NVFP4 LM-head latency = " << us << " us (" <<
          (static_cast<double>(pb + sb) / (us * 1e-6) / 1e9) << " GB/s)");
     // Byte-scalar weight walk ~957 us; uint4-chunk walk ~430 us.
-    CHECK(us < 700.0);
+    kernel_budget::Require("gemma.moe.decode", us, kernel_budget::Kind::kMax,
+                           "gemma routed+shared MoE decode step");
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
     cudaStreamDestroy(stream);

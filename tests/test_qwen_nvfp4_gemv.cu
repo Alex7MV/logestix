@@ -9,6 +9,7 @@
 // Numeric contract: FP32 accumulate, k-order free (tolerance class), exactly
 // like the TC fast-math paths. Determinism contract: fixed partitioning ->
 // bit-stable across repeated launches (run-to-run), pinned here.
+#include "test_kernel_budget.h"
 #include <catch2/catch_all.hpp>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -293,7 +294,9 @@ TEST_CASE("seq1 GEMV dense-decode aggregate bandwidth budget",
     // The warp-per-row launch (fast-math route, shallow K) measured 229 GB/s
     // on the RTX 5090; the 8-warp sliced KP=2 launch measures 285 at the same
     // shapes (gemma-4-26B decode: 88.7 -> 95.5 t/s). Budget sits between.
-    CHECK(gbps > 260.0);
+    kernel_budget::Require("nvfp4.gemmv.bandwidth_gbps", gbps,
+                           kernel_budget::Kind::kMin,
+                           "NVFP4 GEMV effective bandwidth");
     cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
     lsxcommon::qwen::SetQwenTcFastMath(false);
     lsxcommon::qwen::SetQwenSeq1Gemv(false);

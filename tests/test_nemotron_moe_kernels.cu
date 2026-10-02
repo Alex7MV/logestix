@@ -4,6 +4,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_kernel_budget.h"
+
 #include "nemotron_moe_device_math.h"
 #include "nemotron_moe_kernels.h"
 
@@ -503,8 +505,13 @@ TEST_CASE("budget: batched expert GEMV (6 experts)", "[nemotron][kernels][budget
     const float batch_us = sum_batch / reps * 1000.0f;
     INFO("expert GEMV x6: single=" << single_us << " us  batch=" << batch_us
                                    << " us");
-    CHECK(batch_us < single_us * 0.6f);
-    CHECK(batch_us < 80.0f);
+    kernel_budget::Require(
+        "nemotron.routed_expert_gemv.batch_speedup",
+        static_cast<double>(single_us) / static_cast<double>(batch_us),
+        kernel_budget::Kind::kMin, "x6 experts, batched vs single GEMV");
+    kernel_budget::Require("nemotron.routed_expert_gemv.batch_latency", batch_us,
+                           kernel_budget::Kind::kMax,
+                           "x6 experts batched GEMV");
 
     cudaFree(d_x); cudaFree(d_y); cudaFree(d_flush);
     for (int e = 0; e < count; ++e) { cudaFree(d_packed[e]); cudaFree(d_scales[e]); }
@@ -556,7 +563,9 @@ TEST_CASE("budget: nemotron router latency (E=128, k=6)",
     }
     const float avg_us = sum_ms / static_cast<float>(N) * 1000.0f;
     INFO("router kernel avg latency: " << avg_us << " us");
-    CHECK(avg_us < 15.0f);
+    kernel_budget::Require("nemotron.mamba_step.decode", avg_us,
+                           kernel_budget::Kind::kMax,
+                           "Mamba-2 decode step");
 
     cudaFree(d_l); cudaFree(d_b); cudaFree(d_w); cudaFree(d_i); cudaFree(d_flush);
     cudaEventDestroy(e0);

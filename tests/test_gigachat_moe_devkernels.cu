@@ -1,6 +1,8 @@
 // TDD — GigaChat3.5 device-kernel parity vs the pinned host reference in
 // gigachat_moe_device_math.h. Executed on the local RTX 5090; label inference.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_kernel_budget.h"
 #include <catch2/catch_approx.hpp>
 
 #include "gigachat_moe_kernels.h"
@@ -309,7 +311,9 @@ TEST_CASE("gigachat gated norm decode latency budget",
     REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
     const double us = static_cast<double>(ms) * 1000.0 / kIters;
     INFO("gated norm dim=7168 latency = " << us << " us");
-    CHECK(us < 40.0);
+    kernel_budget::Require("gigachat.gated_norm.decode", us,
+                           kernel_budget::Kind::kMax,
+                           "zero-centered gated norm, dim=7168");
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
 #else
@@ -361,7 +365,8 @@ TEST_CASE("gigachat router decode latency budget",
     REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
     const double us = static_cast<double>(ms) * 1000.0 / kIters;
     INFO("router E=256 H=7168 latency = " << us << " us");
-    CHECK(us < 60.0);
+    kernel_budget::Require("gigachat.router.decode", us,
+                           kernel_budget::Kind::kMax, "sigmoid router E=256 H=7168");
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
 #else

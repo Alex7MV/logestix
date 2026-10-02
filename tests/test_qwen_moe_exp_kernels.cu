@@ -1,6 +1,8 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_kernel_budget.h"
 #include <catch2/catch_approx.hpp>
 #include "qwen_moe_exp_device_math.h"
 #include "qwen_moe_exp_constants.h"
@@ -573,7 +575,8 @@ TEST_CASE("PLE inject real-scale decode latency budget", "[qwen-exp-kernels]")
     const float median = ms[kReps / 2];
     INFO("PLE inject real-scale median " << median << " ms/call");
 #if defined(NDEBUG)
-    REQUIRE(median < 6.0f);
+    kernel_budget::Require("qwen_exp.ple_inject.median_ms", median,
+                           kernel_budget::Kind::kMax, "PLE shard inject");
 #else
     (void)median;  // latency budget is a release-only perf guard
 #endif
@@ -645,7 +648,9 @@ TEST_CASE("hc cached GatedResidual real-scale decode latency budget",
     const float median = ms[kReps / 2];
     INFO("hc cached real-scale median " << median << " ms/call");
 #if defined(NDEBUG)
-    REQUIRE(median < 0.045f);
+    kernel_budget::Require("qwen_exp.hc_cached.median_ms", median,
+                           kernel_budget::Kind::kMax,
+                           "GatedResidual hyper-connection, cached row");
 #else
     (void)median;  // latency budget is a release-only perf guard
 #endif

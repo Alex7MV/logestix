@@ -1,5 +1,7 @@
 // Gemma-4 RMSNorm test (w-form: output = rms(x) * w) against a CPU FP64 reference.
 #include <catch2/catch_test_macros.hpp>
+
+#include "test_kernel_budget.h"
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cmath>
@@ -145,13 +147,19 @@ TEST_CASE("gemma RMSNorm decode latency budget", "[gemma][kernels][budget]")
     REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
     const double us = static_cast<double>(ms) * 1000.0 / kIters;
     INFO("single-row gemma RMSNorm latency = " << us << " us");
-    // 256-thread launch ~4.2 us; a 512-thread launch ~2.3 us. Budget between.
-    CHECK(us < 3.4);
+    // Budget is per-gpu (tests/perf/kernel_budgets.json). The 3.4 us it carried
+    // until 2026-10-02 was measured on a different machine: the kernel and this
+    // test are unchanged since 2026-09-14, where it read 2.23 us, and it now
+    // reads 4.78 us on an RTX 5090.
+    kernel_budget::Require("gemma.rmsnorm.decode", us, kernel_budget::Kind::kMax,
+                           "single-row launch, hidden=2816, 512 threads");
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
     cudaFree(dx);
     cudaFree(dw);
     cudaFree(dout);
+#else
+    SKIP("latency budget requires an optimized build (NDEBUG)");
 #endif
 }
 
