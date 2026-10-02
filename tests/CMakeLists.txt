@@ -1896,6 +1896,19 @@ target_link_libraries(test_perf_baseline PRIVATE lsxcommon
 # giving every model the lsxbenchmark-isolated measurement it baselines.
 # Literal names (no foreach): test_ctest_labels_guard statically parses
 # add_test/set_tests_properties and requires literal, quoted-label-free calls.
+# MiMo-V2.6-Flash-RL is registered and converted, but its real-weight
+# selfcheck is red because the checkpoint does not answer the standard prompts
+# in this environment (docs/OPEN_TASKS.md A2). The target is registered so the
+# perf gate exists the moment a usable checkpoint is in the vault; until then it
+# SKIPs without a model and seeds no baseline.
+add_test(NAME test_perf_baseline_mimo_v2_6_flash_rl
+         COMMAND test_perf_baseline "perf baseline: mimo-v2.6-flash-rl")
+set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl PROPERTIES
+    TIMEOUT 1200
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiMo-V2.6-Flash-RL")
+set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl
+    PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_gemma_4_26b_a4b_it
          COMMAND test_perf_baseline "perf baseline: gemma-4-26b-a4b-it")
 set_tests_properties(test_perf_baseline_gemma_4_26b_a4b_it PROPERTIES
@@ -2481,6 +2494,52 @@ target_compile_definitions(test_deepseek_moe_moe_cu PRIVATE
     LOGESTIX_HAS_CUDA
 )
 target_link_libraries(test_deepseek_moe_moe_cu PRIVATE Catch2::Catch2WithMain)
+
+# ── Nemotron-3.5 device session (allocation + layer-slot bookkeeping) ──
+add_library(test_nemotron_session_cu OBJECT test_nemotron_session.cu)
+set_target_properties(test_nemotron_session_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES "120-real;121-real")
+target_compile_options(test_nemotron_session_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_nemotron_session_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
+target_link_libraries(test_nemotron_session_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_nemotron_session)
+set_target_properties(test_nemotron_session PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_nemotron_session PRIVATE
+    test_nemotron_session_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_nemotron_session COMMAND test_nemotron_session)
+set_tests_properties(test_nemotron_session PROPERTIES LABELS inference)
+set_tests_properties(test_nemotron_session PROPERTIES SKIP_RETURN_CODE 4)
+
+# ── DeepSeek-V4-Flash RMSNorm kernel test (GPU parity vs FP64 host ref) ──
+add_library(test_deepseek_moe_norm_kernels_cu OBJECT
+    test_deepseek_moe_norm_kernels.cu)
+set_target_properties(test_deepseek_moe_norm_kernels_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real")
+target_compile_options(test_deepseek_moe_norm_kernels_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
+target_include_directories(test_deepseek_moe_norm_kernels_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-src/cpp/src"
+    "${CMAKE_BINARY_DIR}/_deps/arrow-build/src"
+    "${CMAKE_BINARY_DIR}/_deps/spdlog-src/include")
+target_compile_definitions(test_deepseek_moe_norm_kernels_cu PRIVATE
+    LOGESTIX_HAS_CUDA)
+target_link_libraries(test_deepseek_moe_norm_kernels_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_deepseek_moe_norm_kernels)
+set_target_properties(test_deepseek_moe_norm_kernels PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_deepseek_moe_norm_kernels PRIVATE
+    test_deepseek_moe_norm_kernels_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_deepseek_moe_norm_kernels COMMAND test_deepseek_moe_norm_kernels)
+set_tests_properties(test_deepseek_moe_norm_kernels PROPERTIES LABELS inference)
+set_tests_properties(test_deepseek_moe_norm_kernels PROPERTIES SKIP_RETURN_CODE 4)
 
 add_executable(test_deepseek_moe_moe)
 set_target_properties(test_deepseek_moe_moe PROPERTIES LINKER_LANGUAGE CXX)
@@ -5571,3 +5630,10 @@ target_compile_definitions(test_prompt_bridge PRIVATE
 target_link_libraries(test_prompt_bridge PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_prompt_bridge COMMAND test_prompt_bridge)
 set_tests_properties(test_prompt_bridge PROPERTIES LABELS fast)
+
+# ── Arrow memory/device diagnostics (host-only) ──
+add_executable(test_diagnostics test_diagnostics.cpp)
+target_link_libraries(test_diagnostics PRIVATE lsxcommon arrow_shared
+    arrow_cuda_shared simdjson::simdjson Catch2::Catch2WithMain)
+add_test(NAME test_diagnostics COMMAND test_diagnostics)
+set_tests_properties(test_diagnostics PROPERTIES LABELS fast)
