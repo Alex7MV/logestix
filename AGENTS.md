@@ -89,7 +89,11 @@ procedure — `perf-tuning-a-model`.
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, `token_stream.h`
   (`GenerationStream`: CUDA-safe per-token callback + abort, threaded into every
-  family generation loop), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
+  family generation loop; `Emit(token, step, logit_maxv)`. The shared lifecycle
+  contract each family must wire — residency lock, streaming/abort, context
+  teardown, governor lease, result fill, session state under the lock — is
+  machine-enforced per model by the `kLifecycle` registry in
+  `test_model_independence_guard.cpp`), `chat_conversation.h`/`tool_format.{h,cpp}` (tool
   calling render/parse), `incremental_detokenizer.{h,cpp}`, the model-neutral
   layer `lsx_inference_nvfp4.cu` + device-independent GEMV `lsx_gemv.cu`
   (`RunLxGemmVec`/`RunLxGemmVecWT`; the only GEMM path), `expert_store.h`,
