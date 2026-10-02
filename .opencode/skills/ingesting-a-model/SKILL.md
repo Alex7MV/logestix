@@ -39,6 +39,19 @@ end.
 - **Norms and biases are never quantized** — they stay FP16/BF16.
 - **Model independence.** Each model opens
   `LsxFastMathScope(EffectiveFastMathMode(cfg_))` inside its own `Infer`.
+- **Shared lifecycle contract.** The model TU that owns the generation body
+  must carry all of it: `RunUnderResidencyLock` around the whole decode,
+  a `GenerationStream` (one `Emit` per decoded token) honouring
+  `req.abort_flag`, `TeardownContext()` in `TeardownWeights`,
+  `AcquirePermanentWeights`/`AcquireExpertCacheLease` in `Load`, and a filled
+  `InferenceResult` (`output_text` + `weight_resident_bytes`). A
+  `GenerationStream*` parameter that is accepted and then discarded
+  (`(void)gs;`) does NOT satisfy it — `lsxfabric --serve` streams exclusively
+  through `req.token_callback`, so a family that never emits delivers an empty
+  stream and cannot be cancelled. Incremental-session state (KV cache +
+  generated tail) is created and published INSIDE the lock. All of it is
+  machine-enforced by `test_model_independence_guard.cpp::kLifecycle` —
+  extend that registry in the same commit.
 
 ## The 8 stages
 
@@ -245,7 +258,7 @@ without updating them fails CI.
 | Guard (in `tests/`) | What to extend | Rule it enforces |
 |---|---|---|
 | `test_code_naming_guard.cpp` | `SchemeRegex()` token sets, `AllowedCommon()` allowlist | the naming convention above |
-| `test_model_independence_guard.cpp` | `kPassports` row (`model_type`, passport `header`, owning `ns`) + `consumers` (new model `.cpp`) | unique frozen-geometry passport per model, one constants header per model in its own namespace, no passport→passport includes, no cross-family geometry borrowing, `LsxFastMathScope` in `Infer` |
+| `test_model_independence_guard.cpp` | `kPassports` row (`model_type`, passport `header`, owning `ns`) + `consumers` (new model `.cpp`) + `kLifecycle` (model → the TU(s) forming its generation path) | unique frozen-geometry passport per model, one constants header per model in its own namespace, no passport→passport includes, no cross-family geometry borrowing, `LsxFastMathScope` in `Infer`, and the shared lifecycle contract (residency lock, streaming/abort, context teardown, governor lease, result fill, session state under the lock) |
 | `test_model_suite_guard.cpp` | `Suites()` row: convert → load → model → kernels → selfcheck | full autonomous lifecycle; every stage target registered in `tests/CMakeLists.txt`; `SKIP_RETURN_CODE 4` on selfcheck; no cross-family test fixtures; no vault loading in loader/model stages; synth primitives only in `test_synth_checkpoint.h` |
 | `test_ctest_labels_guard.cpp` | — (just label new tests) | every test carries a label in the same commit |
 | `test_absl_format_guard.cpp` | — | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
@@ -255,6 +268,10 @@ without updating them fails CI.
 - [ ] `kType` registered; `Load` forbids a frozen-geometry mismatch.
 - [ ] Converter test (label `convert`, bounded TIMEOUT, synthetic checkpoint).
 - [ ] Loader/model/kernels tests present and labelled.
+- [ ] Streaming + cancellation wired: one `Emit` per decoded token through
+      `req.token_callback`, `req.abort_flag` honoured between steps (pinned by
+      `tests/test_streaming_assert.h` and a pre-set-abort case in the model
+      stage; enforced by the `kLifecycle` guard).
 - [ ] Tool-calling bridge implemented (stage 4b): native
       `BuildConversationInputIds`/`ParseToolCalls` verified against the
       checkpoint template, plus a host `fast` test on a synthetic tokenizer.
@@ -288,6 +305,16 @@ ingested.
   (a skip then reports as a failure).
 - Shipping a model without the stage 4b tool-calling bridge, relying on the
   generic Hermes default when the checkpoint has its own tool format.
+- Accepting a `GenerationStream*` in the generation entry point and never using
+  it: the model then streams nothing through `--serve` and ignores cancel.
+- Mutating persistent session state (the KV cache, the generated tail) outside
+  `RunUnderResidencyLock` — a concurrent `Infer` then frees the cache the other
+  one decodes from.
+- Counting a partial device footprint in `resident_bytes_` (it drives the
+  governor lease and the `resident:` line of `lsxbenchmark --bench`); count at
+  the allocation sites instead of re-deriving a formula.
+- Freeing per-call device buffers only on the success path: CUDA errors are
+  sticky, so one failure then leaks a full workspace per retry. Use RAII.
 - Guessing the native tool format instead of reading `chat_template.jinja` /
   the vendor encoder and the tokenizer's `added_tokens`.
 - Round-tripping `ParseToolCalls` from the full framed prompt — the instructions

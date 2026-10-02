@@ -164,6 +164,58 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
+## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
+
+The lifecycle review closed every mechanical gap (streaming/abort, residency
+lock, governor leases, context teardown, result fill, error-path cleanup) and
+added `kLifecycle` to `tests/test_model_independence_guard.cpp` so they
+cannot regress. Four items were deliberately NOT changed — each needs a
+product or numerics decision, not a patch.
+
+### E1. `LsxFastMathScope` assumes sequential cross-model dispatch
+- The kernel-routing toggles are process-global (`std::atomic<bool>`, so no UB
+  — `libs/lsxcommon/src/lsx_inference_nvfp4.cu:18`), and every model asserts
+  its own policy per `Infer`. Two models inferring **concurrently** would flip
+  each other's kernel routing mid-decode: silently wrong numerics, no crash.
+- Today every dispatch path is sequential (orchestrator: one consumer thread;
+  `lsxfabric --serve`: one request at a time), and the assumption is written
+  down in `lsx_inference_nvfp4.h:57`. So this is latent, not live.
+- **Next step if it ever matters:** per-stream routing state (a device-side
+  policy handle passed down the launch chain) instead of process globals, or a
+  documented single-model-at-a-time engine invariant with a guard test.
+
+### E2. `alice` publishes the FIRST logits row; every other family the LAST
+- `alice_moe_inference_pipeline.cu:492` fills `final_logits` when
+  `first_token < 0`, so `InferenceResult::final_logits` is the row of the
+  first generated token. All other families publish the last row
+  (`qwen_inference.cu:2263`, `granite_dense_inference.cu:987`,
+  `nemotron_moe_model.cpp:226` "Keep the last step's logits row").
+- Within alice this is self-consistent (its DET gate compares it to itself),
+  but it makes any cross-model logits/hashes comparison apples-to-oranges.
+- **Not changed because it would move alice's DET/FSI goldens**, which are
+  captured from real weights. Decide the fleet-wide semantics first, then
+  re-capture the affected goldens in one commit.
+
+### E3. `mimo` loads its weights through a host-side BF16→FP16 conversion
+- `UploadHalf` (`mimo_moe_model.cpp:47`) decodes every BF16 tensor into a
+  temporary host `std::vector`, then issues a synchronous pageable
+  `cudaMemcpy` on the default stream — `(void)st;` ignores the model's stream.
+  For ~11 GiB of weights this is slow and bypasses the persistent context.
+- Correctness is fine and MiMo's perf gate is withdrawn (vendor checkpoint
+  defect, A2), so this is a load-time cost only. Fixing it properly means a
+  device-side BF16→FP16 kernel + stream-ordered upload, i.e. the same fast-load
+  path GLM uses (`glm_moe_load.cu::GlmBf16ToHalfInPlace`).
+
+### E4. Temperature / top_p are accepted and ignored by the OpenAI surface
+- `ModelRequest` (`libs/lsxcommon/include/lsxcommon/model.h:52`) has no
+  sampling fields and every family decodes argmax, so a request with
+  `"temperature": 0.7` through the TaskMosaic bridge is served greedily. This
+  is currently only documented in `openai_endpoint.h:112`
+  ("Unknown fields (tools, temperature, ...) are ignored").
+- **Next step:** either document it in the bridge's own API docs next to the
+  endpoint, or plumb `temperature`/`top_p` into `ModelRequest` and the
+  `sample::ISampler` implementations. Not a regression — nothing regressed.
+
 ## Archive
 
 Resolved items moved out of this file on 2026-10-02, preserved with their full
