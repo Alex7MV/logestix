@@ -26,6 +26,7 @@
 #include "lsxcommon/deepseek_moe_repack.h"
 #include "lsxcommon/deepseek_moe_v41_convert.h"
 #include "lsxcommon/log.h"
+#include "cli.h"
 #include <arrow/api.h>
 #include <fstream>
 #include <iterator>
@@ -126,7 +127,43 @@ int main(int argc, char* argv[]) {
     bool alice = absl::GetFlag(FLAGS_alice);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
-    if (input_path.empty()) {
+    // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
+    // unit-testable; this function only executes the resolved pipeline. The
+    // precedence this switch relies on is pinned by tests/test_lsxforge_cli.cpp.
+    lsxforge::Flags flags;
+    flags.input = input_path;
+    flags.output = output_path;
+    flags.tokenizer = absl::GetFlag(FLAGS_tokenizer);
+    flags.repack_shared = repack_shared;
+    flags.repack_experts = repack_experts;
+    flags.vram_recompute = absl::GetFlag(FLAGS_vram_recompute);
+    flags.deepseek_nvfp4 = absl::GetFlag(FLAGS_deepseek_nvfp4);
+    flags.deepseek_v41 = absl::GetFlag(FLAGS_deepseek_v41);
+    flags.run = !absl::GetFlag(FLAGS_run).empty();
+    flags.glm = glm;
+    flags.kimi = kimi;
+    flags.qwen = qwen;
+    flags.qwen35moe = qwen35moe;
+    flags.qwen36moe = qwen36moe;
+    flags.ornith = ornith;
+    flags.qwen38flashnext = qwen38flashnext;
+    flags.gemma4 = gemma4;
+    flags.nemotron = nemotron;
+    flags.gigachat = gigachat;
+    flags.glmflash = glmflash;
+    flags.granite = granite;
+    flags.phi = phi;
+    flags.mimo = mimo;
+    flags.alice = alice;
+    const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
+    if (resolution.pipeline == lsxforge::Pipeline::kError) {
+        lsxcommon::Core::Initialize("lsxforge_runtime.log");
+        lsxcommon::log::error("lsxforge: " + resolution.error);
+        lsxcommon::Core::Shutdown();
+        return 2;
+    }
+
+    if (resolution.pipeline == lsxforge::Pipeline::kVersion) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
         lsxcommon::version();
         lsxcommon::log_gpu_info();
@@ -141,7 +178,7 @@ int main(int argc, char* argv[]) {
     // Generation path execution option. Resolved prompt (or the default
     // blueprint prompt) is encoded through the model tokenizer and handed to
     // the single end-to-end cudaStream_t Prefill->Decode autogeneration loop.
-    if (!absl::GetFlag(FLAGS_run).empty()) {
+    if (resolution.pipeline == lsxforge::Pipeline::kGenerate) {
         lsxcommon::runtime::GenerationCliArgs args;
         args.model_path = input_path;
         args.prompt = run_prompt;
@@ -151,7 +188,8 @@ int main(int argc, char* argv[]) {
         return rc;
     }
 
-    if (absl::GetFlag(FLAGS_vram_recompute)) {
+    switch (resolution.pipeline) {
+    case lsxforge::Pipeline::kVramRecompute: {
         // Detect the converted format from the index and dispatch to the
         // matching family recompute.
         namespace fs = std::filesystem;
@@ -183,7 +221,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (absl::GetFlag(FLAGS_deepseek_nvfp4)) {
+    case lsxforge::Pipeline::kDeepseekNvfp4: {
         lsxcommon::log::info(absl::StrFormat(
             "DeepSeek NVFP4 repack (logestix-v1 -> v1-nvfp4): %s -> %s",
             input_path, output_path));
@@ -201,7 +239,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (absl::GetFlag(FLAGS_deepseek_v41)) {
+    case lsxforge::Pipeline::kDeepseekV41: {
         lsxcommon::log::info(absl::StrFormat(
             "DeepSeek-V4.1-Flash conversion (%s -> %s)", input_path,
             output_path));
@@ -218,7 +256,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (repack_shared) {
+    case lsxforge::Pipeline::kRepackShared: {
         lsxcommon::log::info(absl::StrFormat("Re-packing shared experts from %s ...", input_path));
         auto st = lsxcommon::RepackSharedExperts(input_path, output_path);
         if (!st.ok()) {
@@ -231,7 +269,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (repack_experts) {
+    case lsxforge::Pipeline::kRepackRouted: {
         lsxcommon::log::info(absl::StrFormat("Re-packing routed experts (fp4 passthrough) from %s ...",
                      input_path));
         auto st = lsxcommon::RepackRoutedExperts(input_path, output_path);
@@ -245,7 +283,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (tokenizer_only) {
+    case lsxforge::Pipeline::kTokenizer: {
         namespace fs = std::filesystem;
         auto tokenizer_json = fs::path(input_path) / "tokenizer.json";
         auto pinned_dir = fs::path(input_path) / "logestix" / "pinned";
@@ -263,7 +301,7 @@ int main(int argc, char* argv[]) {
     }
 
     lsxcommon::log::info(absl::StrFormat("Converting model: %s -> %s", input_path, output_path));
-    if (glmflash) {
+    case lsxforge::Pipeline::kGlmFlash: {
         lsxcommon::log::info("GLM-5.3-Flash pipeline (unified logestix layout)");
         auto st = lsxcommon::glm_moe_flash::ConvertGlm5NextModel(input_path,
                                                                  output_path);
@@ -278,7 +316,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (granite) {
+    case lsxforge::Pipeline::kGranite: {
         lsxcommon::log::info("Granite-4.2-30B pipeline (logestix-granite layout)");
         auto st = lsxcommon::granite::ConvertGraniteModel(input_path, output_path);
         if (!st.ok()) {
@@ -292,7 +330,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (phi) {
+    case lsxforge::Pipeline::kPhi: {
         lsxcommon::log::info("phi-4 pipeline (logestix-phi layout)");
         auto st = lsxcommon::phi::ConvertPhiModel(input_path, output_path);
         if (!st.ok()) {
@@ -306,7 +344,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (alice) {
+    case lsxforge::Pipeline::kAlice: {
         lsxcommon::log::info(
             "AliceAI-Foundation pipeline (logestix-alice-nvfp4 layout)");
         auto st = lsxcommon::alice::ConvertAliceModel(input_path, output_path);
@@ -321,7 +359,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (gemma4) {
+    case lsxforge::Pipeline::kGemma4: {
         lsxcommon::log::info("Gemma-4 pipeline (logestix-gemma layout)");
         auto st = lsxcommon::gemma::ConvertGemmaModel(input_path, output_path);
         if (!st.ok()) {
@@ -334,7 +372,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (nemotron) {
+    case lsxforge::Pipeline::kNemotron: {
         lsxcommon::log::info(
             "Nemotron-3.5-Lightning pipeline (unified logestix layout)");
         auto st = lsxcommon::nemotron_moe::ConvertNemotronModel(input_path,
@@ -350,7 +388,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (gigachat) {
+    case lsxforge::Pipeline::kGigachat: {
         lsxcommon::log::info(
             "GigaChat3.5-432B-A28B-Reasoning pipeline (unified logestix layout)");
         auto st = lsxcommon::gigachat::ConvertGigaChatModel(input_path,
@@ -366,7 +404,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (mimo) {
+    case lsxforge::Pipeline::kMimo: {
         lsxcommon::log::info(
             "MiMo-V2.6-Flash-RL pipeline (logestix-mimo-nvfp4 layout)");
         auto st = lsxcommon::mimo::ConvertMiMoModel(input_path, output_path);
@@ -381,7 +419,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (qwen38flashnext) {
+    case lsxforge::Pipeline::kQwen38FlashNext: {
         lsxcommon::log::info("Qwen3.8-Flash-Next pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe_exp::ConvertQwen38FlashNextModel(input_path, output_path);
         if (!st.ok()) {
@@ -394,7 +432,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (qwen36moe) {
+    case lsxforge::Pipeline::kQwen36Moe: {
         lsxcommon::log::info("Qwen3.6-MoE pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe_36::ConvertQwen36MoeModel(input_path, output_path);
         if (!st.ok()) {
@@ -407,7 +445,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (ornith) {
+    case lsxforge::Pipeline::kOrnith: {
         lsxcommon::log::info("Ornith-1.5-35B-A3B pipeline (MLX -> unified logestix layout)");
         auto st = lsxcommon::ornith::ConvertOrnithMoeModel(input_path, output_path);
         if (!st.ok()) {
@@ -420,7 +458,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (qwen35moe) {
+    case lsxforge::Pipeline::kQwen35Moe: {
         lsxcommon::log::info("Qwen3.5-MoE pipeline (unified logestix layout)");
         auto st = lsxcommon::qwen_moe::ConvertQwen35MoeModel(input_path, output_path);
         if (!st.ok()) {
@@ -433,7 +471,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (qwen) {
+    case lsxforge::Pipeline::kQwenDense: {
         lsxcommon::log::info("Qwen3.5 pipeline (logestix-qwen layout)");
         auto st = lsxcommon::qwen::ConvertQwenModel(input_path, output_path);
         if (!st.ok()) {
@@ -446,7 +484,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (glm) {
+    case lsxforge::Pipeline::kGlm: {
         lsxcommon::log::info("GLM-5.2 pipeline (logestix-glm layout)");
         auto st = lsxcommon::glm::ConvertGlmModel(input_path, output_path);
         if (!st.ok()) {
@@ -459,7 +497,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (kimi) {
+    case lsxforge::Pipeline::kKimi: {
         lsxcommon::log::info("Kimi-K2.7-Code pipeline (logestix-kimi layout)");
         auto st = lsxcommon::kimi::ConvertKimiModel(input_path, output_path);
         if (!st.ok()) {
@@ -472,18 +510,22 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    lsxcommon::Converter converter;
-    converter.SetInputPath(input_path)
-             .SetOutputPath(output_path)
-             .SetVerbose(true);
-    auto status = converter.Run();
-    if (!status.ok()) {
-        lsxcommon::log::error(absl::StrFormat("Conversion failed: %s", status.ToString()));
-        lsxcommon::Core::Shutdown();
-        return 1;
-    }
+    default: {
+        // Generic safetensors converter (the historical lsxforge path).
+        lsxcommon::Converter converter;
+        converter.SetInputPath(input_path)
+                 .SetOutputPath(output_path)
+                 .SetVerbose(true);
+        auto status = converter.Run();
+        if (!status.ok()) {
+            lsxcommon::log::error(absl::StrFormat("Conversion failed: %s", status.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
 
-    lsxcommon::log::info("Conversion complete");
-    lsxcommon::Core::Shutdown();
-    return 0;
+        lsxcommon::log::info("Conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+    }
 }

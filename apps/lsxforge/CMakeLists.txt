@@ -1,4 +1,4 @@
-add_executable(lsxforge src/main.cpp)
+add_executable(lsxforge src/main.cpp src/cli.cpp)
 target_link_libraries(lsxforge PRIVATE lsxcommon arrow_shared arrow_cuda_shared simdjson::simdjson absl::flags_parse absl::flags ${CMAKE_DL_LIBS})
 
 lsx_copy_third_party_notices(lsxforge)
