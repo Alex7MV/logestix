@@ -1896,19 +1896,6 @@ target_link_libraries(test_perf_baseline PRIVATE lsxcommon
 # giving every model the lsxbenchmark-isolated measurement it baselines.
 # Literal names (no foreach): test_ctest_labels_guard statically parses
 # add_test/set_tests_properties and requires literal, quoted-label-free calls.
-# MiMo-V2.6-Flash-RL is registered and converted, but its real-weight
-# selfcheck is red because the checkpoint does not answer the standard prompts
-# in this environment (docs/OPEN_TASKS.md A2). The target is registered so the
-# perf gate exists the moment a usable checkpoint is in the vault; until then it
-# SKIPs without a model and seeds no baseline.
-add_test(NAME test_perf_baseline_mimo_v2_6_flash_rl
-         COMMAND test_perf_baseline "perf baseline: mimo-v2.6-flash-rl")
-set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl PROPERTIES
-    TIMEOUT 1200
-    SKIP_RETURN_CODE 4
-    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=MiMo-V2.6-Flash-RL")
-set_tests_properties(test_perf_baseline_mimo_v2_6_flash_rl
-    PROPERTIES LABELS perf)
 add_test(NAME test_perf_baseline_gemma_4_26b_a4b_it
          COMMAND test_perf_baseline "perf baseline: gemma-4-26b-a4b-it")
 set_tests_properties(test_perf_baseline_gemma_4_26b_a4b_it PROPERTIES

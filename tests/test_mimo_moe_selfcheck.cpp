@@ -1,6 +1,20 @@
 // TDD — MiMo-V2.6-Flash-RL SelfCheck harness (Model Ingestion Protocol step 8).
 // Real-model test: SKIPs when no converted MiMo checkpoint is present
 // (CTest SKIP_RETURN_CODE 4).
+//
+// KNOWN PERMANENT FAILURE if a MiMo checkpoint ever appears in the vault: the
+// checkpoint is bad, not this code. A 48-layer forward built from the vendor's
+// own modeling_mimo_v2.py produces the same top-5 token ids and values as this
+// implementation, and the vendor oracle fails on a plain question with the
+// same repetitive garbage — see docs/open-tasks/2026-09-30-..., item A2. The
+// two intermediate hypotheses ("the routed expert weights are wrong", then
+// "decode attention diverges at pos >= 2") were both disproved by the oracle
+// and by clean single-run dumps respectively. So a red selfcheck here means the
+// checkpoint, not logestix: do not start debugging the kernels.
+//
+// The synthetic MiMo suites (convert, loader, kernels, model, dequant,
+// geometry, expert cache, tool framing) DO cover our code and are green — they
+// stay the real signal for this family.
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>

@@ -1,24 +1,11 @@
-# Open tasks — CUDA review & Windows bring-up
+# Open tasks
 
-Written 2026-09-30, after the inference review of `24bf180~1..bed5d9f` and the
-Windows build repair that followed. **Archived 2026-10-02**: every item in it
-is now closed (see the per-item resolutions below and the archive index), so
-this snapshot moved to
-[`open-tasks/2026-09-30-cuda-review-windows-bringup.md`](open-tasks/2026-09-30-cuda-review-windows-bringup.md).
+**Rule:** only genuinely open work lives here. When an item is resolved it
+moves to `docs/open-tasks/<date>-<slug>.md` and leaves a row in the Archive
+table at the bottom. Index: [`open-tasks/README.md`](open-tasks/README.md).
 
-**Current state at the time of writing:** `fast` label is **72/72 green** on
-this machine (RTX 5060 Ti, CC 12.0, 16 GiB, CUDA Toolkit V13.4.92,
-Windows 11 / VS 2026). `inference` label is red; every item below is triaged.
 Nothing here is speculative — each entry carries the measured value or error
 code that produced it.
-
-Reproduce the inventory with:
-
-```powershell
-$ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
-& $ctest --test-dir build -C Release -L fast      --timeout 900
-& $ctest --test-dir build -C Release -L inference --timeout 900
-```
 
 ---
 
@@ -35,7 +22,7 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   call in the process returns 700, so the bulk of the failure list is cascade.
   Triage from the *first* failing `REQUIRE`, not the last.
 - Also carries a latency budget failure at `tests/test_qwen_moe_kernels.cu:388`
-  (`us < 20.0`, measured 31.24) — that part belongs to section C.
+  (`us < 20.0`, measured 31.24) — that part belongs to section B.
 - **Next step:** same workflow that resolved the GigaChat router.
   ```
   compute-sanitizer --tool memcheck --launch-timeout 120 <test>.exe
@@ -45,21 +32,7 @@ $ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Comm
   (`libs/lsxcommon/src/lsx_tc_gemm.cu:891`) already rejects non-CC-12, and this
   GPU *is* CC 12, so the `major != 12` guard is not what is firing here.
 
-### A2. MiMo-V2.6-Flash-RL real-weight SelfCheck: wrong top-1 — **no implementation bug**
-- **Status: closed 2026-09-30.** The implementation is **bit-exact with the
-  vendor `modeling_mimo_v2.py`**: a manual 48-layer forward built from the
-  vendor `MiMoV2DecoderLayer` produces `top5 = [2181, 110015, 113764, 11853,
-  1268]` and the device produces `top1 = 2181`. The vendor oracle also fails on
-  a plain question with the same repetitive garbage. `selfcheck` stays red
-  because the **checkpoint** does not answer the standard prompts in this
-  environment. The correct implementation was merged and the converted model
-  removed. If revisited, verify the checkpoint shards/checksums or obtain the
-  exact transformers build it was produced with.
-- Full investigation trail (including the two intermediate wrong hypotheses —
-  "expert weights are wrong", then "pos >= 2 attention divergence") is in the
-  archived snapshot, section A2.
-
-## C. Hardware-dependent budgets — expected red off-target, **not** defects
+## B. Hardware-dependent budgets — expected red off-target, **not** defects
 
 Measured on RTX 5060 Ti (GDDR7, ~179 GB/s peak). Every one of these is a
 wall-clock or bandwidth number calibrated on the HBM target, so they cannot
@@ -84,9 +57,9 @@ distinguishes "too slow for the target" from "regressed", which is the part that
 actually costs debugging time. On the RTX 5090 all of these pass, so the
 question only bites on the consumer dev box.
 
-## F. Intermittent
+## C. Intermittent
 
-### F1. `test_gigachat_moe_devkernels` flaked once — **status: watching**
+### C1. `test_gigachat_moe_devkernels` flaked once — **status: watching**
 - Failed in one `-L inference` sweep; passes standalone (2155 assertions, 7
   cases) and passes under `ctest -R ^test_gigachat_moe_devkernels$`.
 - 10 consecutive standalone runs all pass. Suspect GPU contention rather than a
@@ -109,11 +82,12 @@ investigation trail:
 | D2 — hardcoded POSIX temp paths in tests | `std::filesystem::temp_directory_path()` |
 | E1 — 14 test executables were one binary | per-`.cu` object libraries |
 | G1 — toolkit mismatch caught only after the build | configure-time check in `CMakeLists.txt` |
-| A2 — MiMo wrong top-1 | no implementation bug; vendor oracle matches |
+| A2 — MiMo wrong top-1 | closed 2026-10-02: no implementation bug, the checkpoint is bad (vendor oracle matches) — [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md) |
 | Inference-conformance review (9 deviations) | all fixed in dedicated commits |
 | "Closed in this session" list | 15 items, all closed |
 
-Full text: [`open-tasks/2026-09-30-cuda-review-windows-bringup.md`](open-tasks/2026-09-30-cuda-review-windows-bringup.md).
+Full text: [`open-tasks/2026-09-30-cuda-review-windows-bringup.md`](open-tasks/2026-09-30-cuda-review-windows-bringup.md)
+and [`open-tasks/2026-10-02-mimo-closed.md`](open-tasks/2026-10-02-mimo-closed.md).
 
 ## Maintenance rule
 
