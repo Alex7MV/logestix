@@ -39,10 +39,14 @@ machine it was measured on, so a red budget carried no information: not
 "regressed", not "wrong machine". Two of them were red on the target GPU and
 neither turned out to be a code regression:
 
-| Budget | Was | Measured on RTX 5090 | Verdict |
+| Budget | Was | Measured (clean RTX 5090) | Verdict |
 |---|---|---|---|
-| `gemma RMSNorm` | `us < 3.4` | 4.5–5.5 us | kernel, its test and `lsx_kernels_norm.cuh` are **unchanged since 2026-09-14**, where the author measured 2.23 us — identical code, 2.1x apart, so the number belonged to a different machine |
-| `nemotron batched GEMV` | `batch < single × 0.6` | 1.55x | machine-independent by construction; the only later commit (`35b6388`) touched Mamba-2 `dt`, not the batched GEMV |
+| `gemma RMSNorm` | `us < 3.4` | **2.894–2.897 us** | the old number was fine for this card. An intermediate measurement of 4.5–5.5 us turned out to be **taken while the GPU was busy** — with the card free it is 2.89 and the old budget passes |
+| `nemotron batched GEMV` | `batch < single × 0.6` | **1.34–1.44x** | fails as written: 1.67x demanded, ~1.4x achieved. Machine-independent by construction, and the only later commit (`35b6388`) touched Mamba-2 `dt`, not the batched GEMV |
+
+The intermediate reading above is the reason the `gpu_key` work mattered anyway: a
+budget with no machine reference cannot tell "the card was busy" from "the code
+regressed", and the first reading of the day was wrong for exactly that reason.
 
 Two things were also wrong in the old numbers: the sweep that produced them
 was **Release, not Windows** (2155 assertions identifies the build; Debug
@@ -62,11 +66,16 @@ already implements for throughput:
 `gpu_key` comes from the existing `perf::GpuProfileKey` / `ProbeGpuPerfProfile`,
 so an unknown card skips with a readable reason instead of failing red.
 
-**Recalibration is deliberate about spread.** Measurements swing by ~2x
-depending on GPU clock state (2.9 us at boost, 5.5 us at idle 240 MHz), so
-write mode keeps the **worst** observation seen rather than the last one, then
-pads 1.35x (latency) / 0.80x (speedup). One sweep is not enough — the recorded
-gemma budget only became stable after several passes.
+**Recalibration keeps both ends of the range, not one number.** Each entry
+stores `observed_min`, `observed_max` and `samples` next to the budget, and the
+budget is derived from the **worse** end with a 1.35x (latency) / 0.80x
+(speedup) pad. A single recorded value hides exactly the thing that made this
+investigation slow: these measurements swing by ~2x with GPU clock state and
+occupancy (2.89 us on a free card, 4.5–5.5 us with a competing process), so
+`INFO` now prints the range and the sample count next to the limit.
+
+On an idle card the observed ranges are tight (gemma RMSNorm 2.894–2.897 over 6
+samples); the wide swings only appear under contention.
 
 Recalibrate with:
 

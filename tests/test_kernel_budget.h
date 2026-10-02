@@ -56,6 +56,13 @@ struct Entry {
     std::string gpu_key;
     double budget = 0.0;
     Kind kind = Kind::kMax;
+    // The range actually observed while calibrating. Kept alongside the budget
+    // because the spread is itself the finding: these measurements swing ~2x
+    // with GPU clock state (2.9 us at boost vs 5.5 us idle at 240 MHz), and a
+    // single number hides that.
+    double observed_min = 0.0;
+    double observed_max = 0.0;
+    int samples = 0;
     std::string note;
     std::string date;
 };
@@ -147,6 +154,9 @@ inline std::vector<Entry> LoadAll()
         e.note = field("note");
         e.date = field("date");
         e.budget = number("budget");
+        e.observed_min = number("observed_min");
+        e.observed_max = number("observed_max");
+        e.samples = static_cast<int>(number("samples"));
         if (e.name.empty() || e.gpu_key.empty()) continue;
         out.push_back(std::move(e));
     }
@@ -163,6 +173,9 @@ inline void WriteAll(const std::vector<Entry> &v)
           << "\", \"gpu_key\": \"" << Escape(e.gpu_key)
           << "\", \"kind\": \"" << KindStr(e.kind)
           << "\", \"budget\": " << e.budget
+          << ", \"observed_min\": " << e.observed_min
+          << ", \"observed_max\": " << e.observed_max
+          << ", \"samples\": " << e.samples
           << ", \"date\": \"" << e.date
           << "\", \"note\": \"" << Escape(e.note)
           << "\"}" << (i + 1 < v.size() ? "," : "") << "\n";
@@ -214,28 +227,47 @@ inline void Require(const std::string &name, double measured, Kind kind,
         // happens to catch a fast sample cannot leave the budget below what
         // the kernel actually does. Then pad: 1.35x for a latency ceiling,
         // 0.8x for a speedup floor.
+        // Keep BOTH ends of the observed range; the budget is derived from the
+        // worse of them, so a sweep that happens to catch only fast samples
+        // cannot leave the limit below what the kernel actually does.
         const double pad = kind == Kind::kMax ? 1.35 : 0.80;
-        e.budget = measured * pad;
         bool merged = false;
         for (auto &x : all) {
             if (x.name != name || x.gpu_key != gpu) continue;
-            const double candidate = e.budget;
-            const double keep = kind == Kind::kMax
-                                    ? std::max(x.budget, candidate)
-                                    : std::min(x.budget, candidate);
-            x.budget = keep;
+            if (x.samples == 0) {
+                x.observed_min = measured;
+                x.observed_max = measured;
+            } else {
+                x.observed_min = kind == Kind::kMax
+                                     ? std::min(x.observed_min, measured)
+                                     : std::max(x.observed_min, measured);
+                x.observed_max = kind == Kind::kMax
+                                     ? std::max(x.observed_max, measured)
+                                     : std::min(x.observed_max, measured);
+            }
+            x.samples += 1;
+            const double worst = kind == Kind::kMax ? x.observed_max
+                                                    : x.observed_min;
+            x.budget = worst * pad;
             x.kind = kind;
             x.note = note;
             x.date = Today();
             merged = true;
         }
-        if (!merged) all.push_back(e);
+        if (!merged) {
+            e.observed_min = measured;
+            e.observed_max = measured;
+            e.samples = 1;
+            e.budget = measured * pad;
+            all.push_back(e);
+        }
         std::sort(all.begin(), all.end(), [](const Entry &a, const Entry &b) {
             return a.name != b.name ? a.name < b.name : a.gpu_key < b.gpu_key;
         });
         WriteAll(all);
-        WARN("recorded budget for " + name + " on " + gpu + ": " +
-             std::to_string(e.budget));
+        WARN("recorded " + name + " on " + gpu + ": observed " +
+             std::to_string(measured) + " (budget now " +
+             std::to_string(e.budget) + ")");
         // Do NOT skip in write mode: a case carrying two budgets (the nemotron
         // GEMV asserts speedup and latency) would otherwise record only the
         // first one, since SKIP ends the case.
@@ -246,8 +278,11 @@ inline void Require(const std::string &name, double measured, Kind kind,
     for (const Entry &e : all) {
         if (e.name != name || e.gpu_key != gpu) continue;
         INFO("kernel budget " << name << " on " << gpu << " ("
-             << KindStr(e.kind) << ' ' << e.budget << ", recorded "
-             << e.date << (e.note.empty() ? "" : ": " + e.note) << ")");
+             << KindStr(e.kind) << ' ' << e.budget << ", observed "
+             << e.observed_min << ".." << e.observed_max << " over "
+             << e.samples << (e.samples == 1 ? " sample" : " samples")
+             << ", recorded " << e.date
+             << (e.note.empty() ? "" : ": " + e.note) << ")");
         if (kind == Kind::kMax)
             REQUIRE(measured < e.budget);
         else
