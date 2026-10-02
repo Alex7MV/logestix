@@ -90,40 +90,48 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 
 ## C. Intermittent
 
-### C1. `test_gigachat_moe_devkernels` flaked once — **status: investigated 2026-10-02**
-- Original report: failed in one `-L inference` sweep on 2026-09-30, passed
-  standalone. The failing assertion was not captured, so the first job was
-  establishing which build it could have been.
-- **Which build: Release, and this host.** The archived note says "2155
-  assertions, 7 cases". A Debug build reports 1432 assertions for the same 7
-  cases — the difference is the two latency-budget cases, whose bodies sit
-  behind `#if defined(NDEBUG)` and are therefore empty in Debug. 2155 matches
-  the Release count exactly, so the flake was the `linux-release-znver4` sweep,
-  not Windows and not Debug.
-- **The only timing-sensitive assertions in the file are the two budgets.**
-  Every other case is a parity check against a host reference and is
-  deterministic. Measured on an idle RTX 5090, 15 consecutive samples:
-  - gated norm, `CHECK(us < 40.0)` (line 312): 26.04–26.13 us, **34% headroom**
-  - router, `CHECK(us < 60.0)` (line 357): 12.72 us, **79% headroom**
-- **"GPU contention" hypothesis: measured and rejected.** With a competing CUDA
-  process resident (638 MiB, verified via `nvidia-smi`), the gated-norm sample
-  moved 26.07 → 26.16 us (+0.3%) — nowhere near the budget. Ordinary contention
-  does not move this measurement, so the original guess (kept in the archive as
-  a guess) does not hold.
-- **Could not reproduce:** 12 Debug runs, 15 Release samples and a contended
-  Release sample are all green. No failing assertion was ever recorded, and the
-  ctest logs that would carry it are gone. So the flake's cause remains
-  unproven — what is now closed is the *concealment* that made it untriageable:
-- **Real defect found and fixed.** Both budget cases compiled to nothing in
-  Debug and reported "passed" with **zero assertions**, so a Debug sweep looked
-  green while checking no latency at all — and `ctest` had no `SKIP_RETURN_CODE`,
-  so there was no honest way to skip. Both now `SKIP` in Debug (mirroring
-  `test_perf_baseline`), and the target declares `SKIP_RETURN_CODE 4`. Debug now
-  reports "5 passed | 2 skipped"; Release is unchanged at 2155/2155.
-- **If it recurs:** capture `--output-on-failure` output. With the SKIP in place
-  and the budgets at 34%/79% headroom, a recorded sample identifies the cause
-  immediately — a sample near 40 us means the kernel regressed; an assertion
-  outside the two budget lines means it was never this test's timing.
+### C1. `test_gigachat_moe_devkernels` flaked once — **cause found 2026-10-02**
+- Original report: failed once in an `-L inference` sweep on 2026-09-30,
+  passed standalone, and the failing assertion was never captured.
+- **The cause is GPU contention, and the earlier "+0.3%" figure understated it
+  by three orders of magnitude.** That measurement put one idle 638 MiB CUDA
+  process next to the test. Running five copies of the test against the same
+  RTX 5090 does the job properly:
+
+  | run | gated norm (budget 35.25 us) | router (budget 17.19 us) |
+  |---|---|---|
+  | 1 | 65.04 | 39.37 |
+  | 2 | 65.47 | 32.46 |
+  | 3 | 59.33 | 38.83 |
+  | 4 | 35.22 | — |
+  | 5 | passed | passed |
+
+  Four of five fail, one clears the gated-norm budget by 0.03 us. This is the
+  flake: a latency budget measured on a shared GPU is a measurement of the
+  box, not of the kernel.
+- **Everything else is now excluded.** 80 consecutive solo Release runs are
+  green; `compute-sanitizer --tool memcheck`, `racecheck` (0 hazards) and
+  `initcheck` report nothing, so there is no data race and no uninitialised
+  global read in this file. The parity cases are host-reference comparisons
+  and deterministic.
+- **Two further things learned, worth not re-learning.** `compute-sanitizer` is
+  *not* a usable stand-in for load: under memcheck the gated-norm sample is
+  3344 us, ~128x the idle number, so budgets will always fail under a
+  sanitizer and a failure there says nothing. And no test in the suite sets
+  `RESOURCE_LOCK`, so a `ctest -j` sweep — or any model load running
+  alongside — is enough to trigger this. ctest is sequential by default and
+  no preset passes `-j`, so a stock sweep is safe; the AGENTS "one GPU load
+  at a time" rule is what actually protects it, which is worth knowing is
+  load-bearing rather than decorative.
+- **Hardened both budget cases to best-of-5** (minimum of five timed series,
+  was one). This does not survive real contention — see the table above, where
+  all five series are slow — but it removes the short-lived-spike path, and it
+  is the part of the exposure that is genuinely random.
+- **Still open, deliberately:** making the budgets contention-proof rather than
+  contention-tolerant. `RESOURCE_LOCK "gpu"` across the eight budget-bearing
+  tests would stop `ctest -j` from ever doing this, and is the obvious next
+  step if it recurs. Not done yet because nothing in the current workflow
+  triggers it.
 
 ## D. Performance
 
