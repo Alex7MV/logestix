@@ -126,23 +126,41 @@ TEST_CASE("forge cli: repack and vram-recompute side paths", "[lsxforge][cli]")
     CHECK(ResolvePipeline(e).pipeline == Pipeline::kDeepseekV41);
 }
 
-TEST_CASE("forge cli: two family flags run the earlier converter",
+TEST_CASE("forge cli: two family flags are rejected as ambiguous",
           "[lsxforge][cli]")
 {
-    // Characterisation, not an endorsement: main() tested the family flags in
-    // a fixed order and the first match won, so `--glm --alice` ran the alice
-    // pipeline (main.cpp checks alice at line 309, glm at 449). The silent
-    // wrong-converter risk is real; turning it into a usage error is a CLI
-    // behaviour change for the operator, not part of this extraction.
-    Flags f = Base();
-    f.alice = true;
-    f.glm = true;
-    CHECK(ResolvePipeline(f).pipeline == Pipeline::kAlice);
+    // Previously first-match-wins in main()'s order, so `--glm --alice` ran
+    // the alice pipeline and the typo in the other flag went unnoticed while
+    // the wrong converter ran. Selecting two different converters is now a
+    // usage error (exit 2).
+    for (const auto &[a, b] : {std::pair{"glm", "alice"},
+                                std::pair{"kimi", "granite"},
+                                {"phi", "glm"}, {"gemma4", "mimo"}}) {
+        CAPTURE(a);
+        CAPTURE(b);
+        Flags f = Base();
+        const std::string first(a), second(b);
+        if (first == "glm") f.glm = true;
+        else if (first == "alice") f.alice = true;
+        else if (first == "kimi") f.kimi = true;
+        else if (first == "granite") f.granite = true;
+        else if (first == "phi") f.phi = true;
+        else if (first == "gemma4") f.gemma4 = true;
+        else if (first == "mimo") f.mimo = true;
+        if (second == "glm") f.glm = true;
+        else if (second == "alice") f.alice = true;
+        else if (second == "kimi") f.kimi = true;
+        else if (second == "granite") f.granite = true;
+        else if (second == "phi") f.phi = true;
+        else if (second == "gemma4") f.gemma4 = true;
+        else if (second == "mimo") f.mimo = true;
 
-    Flags g = Base();
-    g.kimi = true;
-    g.granite = true;
-    CHECK(ResolvePipeline(g).pipeline == Pipeline::kGranite);
+        const auto r = ResolvePipeline(f);
+        CHECK(r.pipeline == Pipeline::kError);
+        CHECK_FALSE(r.error.empty());
+        // The message must name both flags so the user can find the typo.
+        CHECK(r.error.find("--") != std::string::npos);
+    }
 }
 
 TEST_CASE("forge cli: a family flag without --input is a usage error",

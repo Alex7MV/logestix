@@ -45,30 +45,41 @@ Resolution ResolvePipeline(const Flags &flags)
     if (!flags.tokenizer.empty()) return {Pipeline::kTokenizer, {}};
 
     // Family flags, in the order main() tested them. The chain was
-    // first-match-wins: passing two family flags silently ran the earlier one.
-    // ResolvePipeline reproduces that order exactly (see
-    // tests/test_lsxforge_cli.cpp "two family flags run the earlier converter")
-    // — making it an error is a CLI behaviour change and belongs to the
-    // operator, not to this extraction.
-    const std::vector<std::pair<Pipeline, bool>> kFamilies = {
-        {Pipeline::kGlmFlash, flags.glmflash},
-        {Pipeline::kGranite, flags.granite},
-        {Pipeline::kPhi, flags.phi},
-        {Pipeline::kAlice, flags.alice},
-        {Pipeline::kGemma4, flags.gemma4},
-        {Pipeline::kNemotron, flags.nemotron},
-        {Pipeline::kGigachat, flags.gigachat},
-        {Pipeline::kMimo, flags.mimo},
-        {Pipeline::kQwen38FlashNext, flags.qwen38flashnext},
-        {Pipeline::kQwen36Moe, flags.qwen36moe},
-        {Pipeline::kOrnith, flags.ornith},
-        {Pipeline::kQwen35Moe, flags.qwen35moe},
-        {Pipeline::kQwenDense, flags.qwen},
-        {Pipeline::kGlm, flags.glm},
-        {Pipeline::kKimi, flags.kimi},
-    };
-    for (const auto &[pipeline, set] : kFamilies)
-        if (set) return {pipeline, {}};
+    // first-match-wins: passing two family flags silently ran the earlier one,
+    // so a typo in the second flag produced a model in an unexpected layout.
+    // Selecting two different converters is now rejected (exit 2).
+    const std::vector<std::pair<const char *, std::pair<Pipeline, bool>>>
+        kFamilies = {
+            {"--glmflash", {Pipeline::kGlmFlash, flags.glmflash}},
+            {"--granite", {Pipeline::kGranite, flags.granite}},
+            {"--phi", {Pipeline::kPhi, flags.phi}},
+            {"--alice", {Pipeline::kAlice, flags.alice}},
+            {"--gemma4", {Pipeline::kGemma4, flags.gemma4}},
+            {"--nemotron", {Pipeline::kNemotron, flags.nemotron}},
+            {"--gigachat", {Pipeline::kGigachat, flags.gigachat}},
+            {"--mimo", {Pipeline::kMimo, flags.mimo}},
+            {"--qwen38flashnext",
+             {Pipeline::kQwen38FlashNext, flags.qwen38flashnext}},
+            {"--qwen36moe", {Pipeline::kQwen36Moe, flags.qwen36moe}},
+            {"--ornith", {Pipeline::kOrnith, flags.ornith}},
+            {"--qwen35moe", {Pipeline::kQwen35Moe, flags.qwen35moe}},
+            {"--qwen", {Pipeline::kQwenDense, flags.qwen}},
+            {"--glm", {Pipeline::kGlm, flags.glm}},
+            {"--kimi", {Pipeline::kKimi, flags.kimi}},
+        };
+
+    const char *chosen = nullptr;
+    Pipeline pipeline = Pipeline::kGeneric;
+    for (const auto &[name, entry] : kFamilies) {
+        if (!entry.second) continue;
+        if (chosen)
+            return {Pipeline::kError,
+                    std::string(chosen) + " and " + name +
+                        " both select a converter; pass exactly one"};
+        chosen = name;
+        pipeline = entry.first;
+    }
+    if (chosen) return {pipeline, {}};
 
     return {Pipeline::kGeneric, {}};
 }
