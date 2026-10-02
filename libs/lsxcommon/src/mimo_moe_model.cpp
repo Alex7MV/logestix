@@ -45,7 +45,7 @@ float Bf16BitsToFloat(uint16_t b)
 }
 
 bool UploadHalf(const TensorView &t, __half **out, int64_t expect,
-                cudaStream_t st, std::string &err)
+                cudaStream_t st, std::uint64_t &device_bytes, std::string &err)
 {
     if (t.dtype != "BF16" || static_cast<int64_t>(t.bytes) != expect * 2)
     {
@@ -63,13 +63,14 @@ bool UploadHalf(const TensorView &t, __half **out, int64_t expect,
         return false;
     }
     *out = static_cast<__half *>(p);
+    device_bytes += static_cast<std::uint64_t>(expect) * 2;
     (void)st;
     return cudaMemcpy(p, h.data(), static_cast<size_t>(expect) * 2,
                       cudaMemcpyHostToDevice) == cudaSuccess;
 }
 
 bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
-                cudaStream_t st, std::string &err)
+                cudaStream_t st, std::uint64_t &device_bytes, std::string &err)
 {
     if (t.dtype != "BF16" || static_cast<int64_t>(t.bytes) != expect * 2)
     {
@@ -83,13 +84,14 @@ bool UploadBf16(const TensorView &t, __nv_bfloat16 **out, int64_t expect,
         return false;
     }
     *out = static_cast<__nv_bfloat16 *>(p);
+    device_bytes += static_cast<std::uint64_t>(expect) * 2;
     (void)st;
     return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 2,
                       cudaMemcpyHostToDevice) == cudaSuccess;
 }
 
 bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st,
-               std::string &err)
+               std::uint64_t &device_bytes, std::string &err)
 {
     if (t.dtype != "F32" || static_cast<int64_t>(t.bytes) != expect * 4)
     {
@@ -103,6 +105,7 @@ bool UploadF32(const TensorView &t, float **out, int64_t expect, cudaStream_t st
         return false;
     }
     *out = static_cast<float *>(p);
+    device_bytes += static_cast<std::uint64_t>(expect) * 4;
     (void)st;
     return cudaMemcpy(p, t.data, static_cast<size_t>(expect) * 4,
                       cudaMemcpyHostToDevice) == cudaSuccess;
@@ -157,6 +160,7 @@ void MiMoV26FlashModel::TeardownWeights()
     d_gate = d_up = d_act = d_mlp = d_expert_out = nullptr;
     d_router_idx = nullptr; d_router_w = nullptr; d_logits = nullptr;
     mimo::FreeMimoExpertCache(expert_cache_);
+    device_bytes_ = 0;
     resident_bytes_ = 0;
     TeardownContext();
 }
@@ -186,7 +190,8 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
     L.qkv.rows = static_cast<int>(qkv->shape[0]);
     L.qkv.cols = static_cast<int>(qkv->shape[1]);
     if (!UploadHalf(*qkv, &L.qkv.d_w,
-                    static_cast<int64_t>(L.qkv.rows) * L.qkv.cols, stream(), err))
+                    static_cast<int64_t>(L.qkv.rows) * L.qkv.cols, stream(),
+                    device_bytes_, err))
     {
         lsxcommon::log::error(absl::StrCat("[mimo-model] qkv upload: ", err));
         return false;
@@ -194,10 +199,13 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
     const TensorView *onorm = FindTensor(*raw, "input_layernorm.weight");
     const TensorView *pnorm = FindTensor(*raw, "post_attention_layernorm.weight");
     const TensorView *op = FindTensor(*raw, "self_attn.o_proj.weight");
-    if (!onorm || !UploadHalf(*onorm, &L.d_input_norm, hidden, stream(), err) ||
-        !pnorm || !UploadHalf(*pnorm, &L.d_post_norm, hidden, stream(), err) ||
+    if (!onorm ||
+        !UploadHalf(*onorm, &L.d_input_norm, hidden, stream(), device_bytes_, err) ||
+        !pnorm ||
+        !UploadHalf(*pnorm, &L.d_post_norm, hidden, stream(), device_bytes_, err) ||
         !op || !UploadHalf(*op, &L.d_o_proj,
-                           static_cast<int64_t>(hidden) * o_size, stream(), err))
+                           static_cast<int64_t>(hidden) * o_size, stream(),
+                           device_bytes_, err))
     {
         lsxcommon::log::error(absl::StrCat("[mimo-model] norm/o_proj upload: ", err));
         return false;
@@ -206,7 +214,8 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
     if (L.is_swa)
     {
         const TensorView *sink = FindTensor(*raw, "attention_sink_bias");
-        if (!sink || !UploadHalf(*sink, &L.d_sink, topo_.heads, stream(), err))
+        if (!sink || !UploadHalf(*sink, &L.d_sink, topo_.heads, stream(),
+                                 device_bytes_, err))
         {
             lsxcommon::log::error("[mimo-model] sink upload");
             return false;
@@ -219,8 +228,9 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
         const TensorView *b = FindTensor(*raw, "mlp.gate.e_score_correction_bias");
         if (!g || !UploadBf16(*g, &L.d_router_gate,
                               static_cast<int64_t>(topo_.num_experts) * hidden,
-                              stream(), err) ||
-            !b || !UploadF32(*b, &L.d_router_bias, topo_.num_experts, stream(), err))
+                              stream(), device_bytes_, err) ||
+            !b || !UploadF32(*b, &L.d_router_bias, topo_.num_experts, stream(),
+                             device_bytes_, err))
         {
             lsxcommon::log::error("[mimo-model] router upload");
             return false;
@@ -241,7 +251,7 @@ bool MiMoV26FlashModel::UploadLayer(int layer)
             w.cols = static_cast<int>(t->shape[1]);
             return UploadHalf(*t, &w.d_w,
                               static_cast<int64_t>(w.rows) * w.cols, stream(),
-                              err);
+                              device_bytes_, err);
         };
         if (!up1(dgate, L.dense_gate) || !up1(dup, L.dense_up) ||
             !up1(ddown, L.dense_down))
@@ -312,10 +322,11 @@ bool MiMoV26FlashModel::Load()
     const TensorView *hdf = FindTensor(*glob, "lm_head.weight");
     const TensorView *fn = FindTensor(*glob, "model.norm.weight");
     if (!emb || !UploadHalf(*emb, &d_embed, static_cast<int64_t>(vocab) * hidden,
-                            stream(), err) ||
+                            stream(), device_bytes_, err) ||
         !hdf || !UploadHalf(*hdf, &d_head, static_cast<int64_t>(vocab) * hidden,
-                            stream(), err) ||
-        !fn || !UploadHalf(*fn, &d_final_norm, hidden, stream(), err))
+                            stream(), device_bytes_, err) ||
+        !fn || !UploadHalf(*fn, &d_final_norm, hidden, stream(), device_bytes_,
+                           err))
     {
         lsxcommon::log::error(absl::StrCat("[mimo-model] global upload: ", err));
         return AbortLoad();
@@ -373,8 +384,12 @@ bool MiMoV26FlashModel::Load()
         return AbortLoad();
     }
 
-    resident_bytes_ = static_cast<std::uint64_t>(vocab) * hidden * 2 * 2 +
-                      static_cast<std::uint64_t>(topo_.layers) * hidden * 2 * 2;
+    // Resident weight set = every device weight uploaded above (globals +
+    // all layer projections + routers) plus the device expert slots. Counted
+    // at the allocation sites, so it cannot drift from what the model really
+    // holds. The KV cache and the per-call scratch stay outside the lease,
+    // matching every other family (see IModel::ResidentWeightBytes).
+    resident_bytes_ = device_bytes_ + expert_cache_.cache_bytes;
     if (!AcquirePermanentWeights(resident_bytes_)) return AbortLoad();
     FinishLoad();
     return true;
@@ -518,52 +533,67 @@ gpu::InferenceResult MiMoV26FlashModel::Infer(const ModelRequest &req)
         return r;
     }
 
-    std::vector<int32_t> gen;
-    std::vector<float> host_logits(topo_.vocab);
-    int pos = 0;
-    for (int32_t t : req.input_ids)
-    {
-        if (!ForwardOne(t, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
-        ++pos;
-    }
-    auto argmax = [&]() {
-        if (cudaMemcpyAsync(host_logits.data(), d_logits,
-                            static_cast<size_t>(topo_.vocab) * 4,
-                            cudaMemcpyDeviceToHost, st) != cudaSuccess)
-            return -1;
-        cudaStreamSynchronize(st);
-        int best = 0;
-        for (int i = 1; i < topo_.vocab; ++i)
-            if (host_logits[i] > host_logits[best]) best = i;
-        return best;
-    };
-    int next = argmax();
-    const int32_t eos = (req.ignore_eos || !tok_db_) ? kIgnoreEosTokenId : tok_db_->eos_id;
-    for (int step = 0; step < req.max_gen_tokens; ++step)
-    {
-        gen.push_back(next);
-        if (next == eos) { r.eos_terminated = true; break; }
-        if (step + 1 >= req.max_gen_tokens) break;
-        if (!ForwardOne(next, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
-        ++pos;
-        next = argmax();
-        if (next < 0) { r.error_msg = "logit copy failed"; return r; }
-    }
+    // Streaming + cooperative cancellation: lsxfabric --serve and TaskMosaic
+    // publish tokens exclusively through req.token_callback.
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
 
-    runtime::FillInferenceResult(
-        r, {.tokens = &gen,
-            .final_logits = &host_logits,
-            .ttft_ms = 0.0,
-            .total_ms = 0.0,
-            .error_msg = &r.error_msg,
-            .eos_terminated = r.eos_terminated,
-            .kv_slots_used = pos,
-            .first_maxv = 0.f,
-            .resident_bytes = resident_bytes_},
-        topo_.layers);
-    if (tok_db_ && !r.gen_tokens.empty())
-        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
-    return r;
+    // The whole decode runs under the shared residency lock: Unload() takes
+    // the unique lock, so teardown cannot free the KV/weights mid-generation
+    // (ModelBase lifecycle contract, every other family).
+    return RunUnderResidencyLock([&] {
+        std::vector<int32_t> gen;
+        std::vector<float> host_logits(topo_.vocab);
+        int pos = 0;
+        for (int32_t t : req.input_ids)
+        {
+            if (!ForwardOne(t, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
+            ++pos;
+        }
+        auto argmax = [&]() {
+            if (cudaMemcpyAsync(host_logits.data(), d_logits,
+                                static_cast<size_t>(topo_.vocab) * 4,
+                                cudaMemcpyDeviceToHost, st) != cudaSuccess)
+                return -1;
+            cudaStreamSynchronize(st);
+            int best = 0;
+            for (int i = 1; i < topo_.vocab; ++i)
+                if (host_logits[i] > host_logits[best]) best = i;
+            return best;
+        };
+        int next = argmax();
+        if (next < 0) { r.error_msg = "logit copy failed"; return r; }
+        const int32_t eos = (req.ignore_eos || !tok_db_) ? kIgnoreEosTokenId : tok_db_->eos_id;
+        for (int step = 0; step < req.max_gen_tokens; ++step)
+        {
+            gen.push_back(next);
+            gs.Emit(static_cast<std::uint32_t>(next), static_cast<std::uint32_t>(step),
+                    host_logits[static_cast<size_t>(next)]);
+            if (gs.Aborted()) break;
+            if (next == eos) { r.eos_terminated = true; break; }
+            if (step + 1 >= req.max_gen_tokens) break;
+            if (!ForwardOne(next, pos, d_logits)) { r.error_msg = "forward failed"; return r; }
+            ++pos;
+            next = argmax();
+            if (next < 0) { r.error_msg = "logit copy failed"; return r; }
+        }
+
+        runtime::FillInferenceResult(
+            r, {.tokens = &gen,
+                .final_logits = &host_logits,
+                .ttft_ms = 0.0,
+                .total_ms = 0.0,
+                .error_msg = &r.error_msg,
+                .eos_terminated = r.eos_terminated,
+                .kv_slots_used = pos,
+                .first_maxv = 0.f,
+                .resident_bytes = resident_bytes_},
+            topo_.layers);
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
+        return r;
+    });
 }
 
 gpu::InferenceResult MiMoV26FlashModel::SelfCheck(const ModelRequest &req)

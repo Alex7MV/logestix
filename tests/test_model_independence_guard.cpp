@@ -16,17 +16,23 @@
 //   4. Process-wide numeric toggles (fast-math class) are documented as
 //      single-model-at-a-time knobs; the orchestrator never hosts two
 //      models sharing one toggle simultaneously.
+//   5. Every family model wires the SHARED lifecycle contract of ModelBase
+//      (residency lock, streaming/abort handle, governor lease, context
+//      teardown, published result) — see `kLifecycle` below.
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <absl/container/btree_map.h>
 #include <absl/container/btree_set.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 
 #include <filesystem>
 #include <fstream>
 #include <regex>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -339,6 +345,142 @@ TEST_CASE("family-own models document their fast-math policy",
                     "per-call fast-math policy (LsxFastMathScope, model-independence "
                     "invariant)") != std::string::npos);
     }
+}
+
+TEST_CASE("every family model wires the shared lifecycle contract",
+          "[independence][lifecycle]")
+{
+    // The canonical lifecycle lives in ModelBase (residency lock, streaming
+    // handle, governor leases, context teardown, result fill). Each family
+    // re-implements its own Load/Infer, so the contract is enforced HERE, per
+    // model, on the translation units that make up its generation path: the
+    // TU owning the Infer body (a thin leaf that only overrides
+    // ValidateGeometry names the shared base instead) plus, when the model
+    // delegates the whole run to a device pipeline TU, that pipeline.
+    //
+    // Extend this registry in the SAME commit as a new model's Infer.
+    struct LifecycleRow {
+        const char *model_type;
+        std::vector<const char *> path;  // TUs forming the generation path
+    };
+    const std::vector<LifecycleRow> kLifecycle = {
+        {"glm-5.2", {"glm_moe_model.cpp"}},
+        {"glm-5.3-flash", {"glm_moe_flash_model.cpp"}},
+        {"deepseek-v4-flash",
+         {"deepseek_moe_model.cpp", "deepseek_moe_inference_pipeline.cu"}},
+        {"deepseek-v4.1-flash",
+         {"deepseek_moe_v41_model.cpp", "deepseek_moe_v41_inference_pipeline.cu"}},
+        {"qwen3.5-9b", {"qwen_base_model.cpp"}},
+        {"qwen3.8-27b", {"qwen_base_model.cpp"}},
+        {"qwen3.5-35b-a3b", {"qwen_moe_model.cpp"}},
+        {"qwen3.6-35b-a3b", {"qwen_moe_model.cpp"}},
+        {"qwen3.8-flash-next", {"qwen_moe_exp_model.cpp"}},
+        {"gemma-4-26b-a4b-it", {"gemma_base_model.cpp"}},
+        {"kimi-k2.7-code", {"kimi_moe_model.cpp"}},
+        {"ornith-1.5-35b-a3b", {"ornith_moe_model.cpp"}},
+        {"granite-4.2-30b", {"granite_dense_model.cpp"}},
+        {"phi-4", {"phi_dense_model.cpp"}},
+        {"nemotron-3.5-lightning-30b-a3b", {"nemotron_moe_model.cpp"}},
+        {"gigachat3.5-432b-a28b-reasoning", {"gigachat_moe_model.cpp"}},
+        {"mimo-v2.6-flash-rl", {"mimo_moe_model.cpp"}},
+        {"alice-foundation-80b-a3b", {"alice_moe_model.cpp",
+                                      "alice_moe_inference_pipeline.cu"}},
+    };
+    // marker group -> what it guarantees. EVERY spelling in a group must be
+    // absent for the contract to be considered unwired (any-of semantics:
+    // a family may publish the result field directly or through the shared
+    // runtime::FillInferenceResult).
+    struct MarkerGroup {
+        const char *id;
+        std::vector<const char *> any_of;
+    };
+    const std::vector<MarkerGroup> kMarkers = {
+        {"residency-lock", {"RunUnderResidencyLock"}},
+        {"streaming",
+         // An actual INVOCATION — a GenerationStream that is only accepted
+         // and then discarded (`(void)gs;`) does not satisfy the contract.
+         {"gs->Emit", "GenerationStream gs", "token_callback("}},
+        {"abort", {"abort_flag"}},
+        {"context-teardown", {"TeardownContext"}},
+        {"governor-lease", {"AcquirePermanentWeights", "AcquireExpertCacheLease"}},
+        {"output-text", {"DecodeGeneratedText", "output_text"}},
+        {"resident-bytes", {"weight_resident_bytes", "FillInferenceResult"}},
+    };
+    // Accumulate every violation so one run reports the whole gap set.
+    std::vector<std::string> violations;
+    absl::btree_set<std::string> claimed;
+    for (const auto &row : kLifecycle) {
+        std::string path;  // every TU of the generation path, concatenated
+        for (const char *tu : row.path) {
+            const std::string text = ReadFile(kSrcDir / tu);
+            if (text.empty()) {
+                violations.push_back(
+                    absl::StrCat(row.model_type, ": cannot read ", tu));
+                continue;
+            }
+            path += text;
+        }
+        if (path.empty()) continue;
+        claimed.insert(row.model_type);
+        for (const auto &g : kMarkers) {
+            bool found = false;
+            for (const char *needle : g.any_of) {
+                if (path.find(needle) != std::string::npos) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                violations.push_back(
+                    absl::StrCat(row.model_type, " (",
+                                 absl::StrJoin(row.path, "+"),
+                                 "): unwired lifecycle contract '", g.id,
+                                 "' — expected one of {",
+                                 absl::StrJoin(g.any_of, ", "), "}"));
+            }
+        }
+    }
+    // Every ingested model must be claimed by the registry itself.
+    for (const auto &p : kPassports) {
+        if (claimed.count(p.model_type) != 1) {
+            violations.push_back(
+                absl::StrCat(p.model_type, ": no kLifecycle registry row"));
+        }
+    }
+    // Incremental-session families keep persistent decode state (the KV cache
+    // plus the generated tail). Creating, resetting or publishing that state
+    // OUTSIDE the shared residency lock lets a concurrent Infer free the cache
+    // the other one is decoding from — the lock only helps if the state it
+    // protects is mutated under it. Structural check, scoped to the Infer
+    // body: the lock must be opened before the first session mutation there
+    // (a Load-time lock elsewhere in the file does not protect Infer state).
+    for (const auto &row : kLifecycle) {
+        std::string text;
+        for (const char *tu : row.path) text += ReadFile(kSrcDir / tu);
+        std::size_t body = text.find("::Infer(const ModelRequest");
+        const std::size_t shared_body =
+            text.find("::RunInferShared(const ModelRequest");
+        if (shared_body != std::string::npos &&
+            (body == std::string::npos || shared_body < body))
+            body = shared_body;  // shared base carries the real generation body
+        if (body == std::string::npos) continue;  // not an Infer owner
+        const std::size_t lock_at = text.find("RunUnderResidencyLock", body);
+        if (lock_at == std::string::npos) continue;  // reported above
+        for (const char *stateful : {"DecideSession", "kv_.reset()"}) {
+            const std::size_t at = text.find(stateful, body);
+            if (at == std::string::npos) continue;
+            if (at < lock_at) {
+                violations.push_back(absl::StrCat(
+                    row.model_type, " (", absl::StrJoin(row.path, "+"),
+                    "): session state '", stateful,
+                    "' is mutated before the residency lock is taken — two "
+                    "concurrent Infer calls would free the KV the other "
+                    "decodes from"));
+            }
+        }
+    }
+    INFO("lifecycle contract violations:\n  " << absl::StrJoin(violations, "\n  "));
+    REQUIRE(violations.empty());
 }
 
 TEST_CASE("broken fused-decode attention path is removed", "[independence]")

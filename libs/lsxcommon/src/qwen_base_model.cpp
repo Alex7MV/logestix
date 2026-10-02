@@ -95,66 +95,68 @@ gpu::InferenceResult QwenBaseModel::Infer(const ModelRequest &req)
     }
     cudaStream_t st = stream();
 
-        // Incremental session policy (spec item 15): a request whose input_ids
-    // exactly match the previous call's generated tail continues the session
-    // KV cache from {kv_->last_tok}; anything else starts a fresh session.
-    const qwen::SessionDecision session = qwen::DecideSession(
-        kv_ && kv_->allocated(),
-        kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
-    if (!session.is_continuation) {
-        kv_.reset();
-        kv_ = std::make_unique<qwen::QwenKvCache>();
-        session_tail_.clear();
-    }
-    const std::vector<int32_t> &gen_input = session.gen_input;
-
-    qwen::QwenGenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
-    auto run = [&]() -> cudaError_t {
-        const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
-        return qwen::RunQwenGeneration(st, pw_, gen_input,
-                                       req.max_gen_tokens, eos_id, gen,
-                                       lsxcommon::sample::DefaultSampler(),
-                                       kv_.get(), &gs);
-    };
 
-    cudaError_t e = RunUnderResidencyLock(run);
-    if (e != cudaSuccess) {
-        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
-        r.ok = false;
-        // A failed continuation may have advanced kv_rows mid-stream; drop the
-        // session so the next call starts fresh.
-        kv_.reset();
-        session_tail_.clear();
+    // The whole request runs inside ONE shared-lock scope. Incremental
+    // session policy (spec item 15): a request whose input_ids exactly match
+    // the previous call's generated tail continues the KV cache from
+    // {kv_->last_tok}; anything else starts a fresh one. Creating, decoding
+    // through and publishing that state all happen under the lock, so two
+    // concurrent Infer calls can never free the cache the other one reads.
+    return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
+        const qwen::SessionDecision session = qwen::DecideSession(
+            kv_ && kv_->allocated(),
+            kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
+        if (!session.is_continuation) {
+            kv_.reset();
+            kv_ = std::make_unique<qwen::QwenKvCache>();
+            session_tail_.clear();
+        }
+
+        qwen::QwenGenerationResult gen;
+        const int eos_id = (req.ignore_eos || !tok_db_)
+                               ? lsxcommon::kIgnoreEosTokenId
+                               : tok_db_->eos_id;
+        const cudaError_t e = qwen::RunQwenGeneration(
+            st, pw_, session.gen_input, req.max_gen_tokens, eos_id, gen,
+            lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+        if (e != cudaSuccess) {
+            r.error_msg = runtime::CombineGenError(e, gen.error_msg);
+            r.ok = false;
+            // A failed continuation may have advanced kv_rows mid-stream; drop
+            // the session so the next call starts fresh.
+            kv_.reset();
+            session_tail_.clear();
+            return r;
+        }
+
+        // Occupancy (spec item 15): the incremental cache holds prompt +
+        // generated rows once the pending last-token row is counted
+        // (kv_rows + 1). The fallback (non-incremental) mirrors the same
+        // prompt + gen semantic.
+        const int kv_slots =
+            (kv_ && kv_->allocated())
+                ? kv_->kv_rows + 1
+                : static_cast<int>(gen.tokens.size()) +
+                      static_cast<int>(req.input_ids.size());
+        runtime::FillInferenceResult(
+            r, {.tokens = &gen.tokens,
+                .final_logits = &gen.final_logits,
+                .ttft_ms = gen.ttft_ms,
+                .total_ms = gen.total_ms,
+                .error_msg = &gen.error_msg,
+                .eos_terminated = gen.eos_terminated,
+                .kv_slots_used = kv_slots,
+                .first_maxv = 0.f,
+                .resident_bytes = gen.resident_bytes},
+            pw_.top.num_layers);
+        session_tail_ = r.gen_tokens;
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
         return r;
-    }
-
-    // Occupancy (spec item 15): the incremental cache holds prompt + generated
-    // rows once the pending last-token row is counted (kv_rows + 1). The
-    // fallback (non-incremental) mirrors the same prompt + gen semantic.
-    const int kv_slots =
-        (kv_ && kv_->allocated())
-            ? kv_->kv_rows + 1
-            : static_cast<int>(gen.tokens.size()) +
-                  static_cast<int>(req.input_ids.size());
-    runtime::FillInferenceResult(
-        r, {.tokens = &gen.tokens,
-            .final_logits = &gen.final_logits,
-            .ttft_ms = gen.ttft_ms,
-            .total_ms = gen.total_ms,
-            .error_msg = &gen.error_msg,
-            .eos_terminated = gen.eos_terminated,
-            .kv_slots_used = kv_slots,
-            .first_maxv = 0.f,
-            .resident_bytes = gen.resident_bytes},
-        pw_.top.num_layers);
-    session_tail_ = r.gen_tokens;
-    if (tok_db_ && !r.gen_tokens.empty())
-        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
-
-    return r;
+    });
 }
 
 // QwenBaseModel::Unload — canonical ModelBase template method

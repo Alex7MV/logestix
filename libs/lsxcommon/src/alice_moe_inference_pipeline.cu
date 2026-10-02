@@ -159,6 +159,28 @@ struct ExpertCache {
         pool = nullptr;
         slots = 0;
     }
+    ~ExpertCache() { Free(); }
+    ExpertCache() = default;
+    ExpertCache(const ExpertCache &) = delete;
+    ExpertCache &operator=(const ExpertCache &) = delete;
+};
+
+// Frees every per-call device allocation on ANY exit path. The decode has
+// ~30 CUDA-error returns plus two host abort returns; with a single free
+// block at the end each of them leaked the whole workspace, and because CUDA
+// errors are sticky one failure cascaded into progressive VRAM exhaustion.
+struct WorkspaceGuard {
+    std::vector<void *> ptrs;
+    void track(void *p) { ptrs.push_back(p); }
+    ~WorkspaceGuard()
+    {
+        for (void *p : ptrs) {
+            if (p) cudaFree(p);
+        }
+    }
+    WorkspaceGuard() = default;
+    WorkspaceGuard(const WorkspaceGuard &) = delete;
+    WorkspaceGuard &operator=(const WorkspaceGuard &) = delete;
 };
 
 inline cudaError_t ExpertGemmSlot(cudaStream_t s, const ExpertCache &c,
@@ -211,8 +233,13 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
     const int kdim = KDAH * KD, vdim = KDAH * VD;
     const int attn_len = NH * HD;
 
-    // Device buffers.
-#define A(ptr, n) cudaMallocAsync(reinterpret_cast<void **>(&(ptr)), (n) * sizeof(*(ptr)), stream)
+    // Device buffers (owned by ws_free: freed on every exit path).
+    WorkspaceGuard ws_free;
+#define A(ptr, n)                                                              \
+    (cudaMallocAsync(reinterpret_cast<void **>(&(ptr)), (n) * sizeof(*(ptr)),  \
+                     stream) == cudaSuccess                                    \
+         ? (ws_free.track(ptr), static_cast<cudaError_t>(cudaSuccess))         \
+         : cudaErrorMemoryAllocation)
     __half *x=nullptr,*mixed=nullptr,*partial=nullptr,*src=nullptr,*completed=nullptr;
     __half *qg=nullptr,*attn=nullptr,*attn_out=nullptr,*kcache=nullptr,*vcache=nullptr;
     __half *kq=nullptr,*kk=nullptr,*kv=nullptr,*kfa=nullptr,*kga=nullptr,*kb=nullptr;
@@ -466,6 +493,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
 
     int pos = 0;
     for (; pos < static_cast<int>(ids.size()); ++pos) {
+        if (gs != nullptr && gs->Aborted()) break;
         const bool last = (pos == static_cast<int>(ids.size()) - 1);
         e = forward(ids[(size_t)pos], pos, last);
         if (e) {
@@ -479,6 +507,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
     result.ttft_ms = std::chrono::duration<double, std::milli>(
                          std::chrono::steady_clock::now() - t_start).count();
     for (int step = 0; step < max_new; ++step) {
+        if (gs != nullptr && gs->Aborted()) break;
         std::vector<__half> hlog(VOCAB);
         cudaMemcpyAsync(hlog.data(), logits, VOCAB * sizeof(__half),
                         cudaMemcpyDeviceToHost, stream);
@@ -496,6 +525,11 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                 result.final_logits[(size_t)i] = __half2float(hlog[(size_t)i]);
         }
         result.tokens.push_back(best);
+        // One chunk per decoded token, then honour a cooperative cancel
+        // before the next forward (lsxfabric --serve / TaskMosaic streaming).
+        if (gs != nullptr) gs->Emit(static_cast<std::uint32_t>(best),
+                                    static_cast<std::uint32_t>(step),
+                                    static_cast<float>(bv));
         if (eos_id >= 0 && best == eos_id) { result.eos_terminated = true; break; }
         if (step + 1 >= max_new) break;
         e = forward(best, pos, true);
@@ -511,14 +545,7 @@ cudaError_t RunAliceGeneration(cudaStream_t stream, const AlicePinnedWeights &pw
                           std::chrono::steady_clock::now() - t_start).count();
     result.ok = true;
 
-    ec.Free();
-#define F(p) if (p) cudaFree(p)
-    F(x);F(mixed);F(partial);F(attn);F(attn_out);F(src);F(completed);F(qg);
-    F(kq);F(kk);F(kv);F(kfa);F(kga);F(kb);F(alpha);F(gate);F(convq);F(convk);
-    F(convv);F(kout);F(mgate);F(mup);F(mact);F(mdown);F(sgate);F(sup);F(sact);
-    F(sdown);F(acc);F(cosb);F(sinb);F(logits);F(kcache);F(vcache);F(state);
-    F(hist);F(router_logits);F(wts);F(idx);F(posb);F(stage_p);F(stage_s);
-#undef F
+    // ws_free / ec release the workspace here and on every error return.
     return cudaSuccess;
 }
 

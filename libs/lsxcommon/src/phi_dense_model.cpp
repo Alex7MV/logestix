@@ -102,63 +102,65 @@ gpu::InferenceResult Phi4Model::Infer(const ModelRequest &req)
     }
     cudaStream_t st = stream();
 
-    // Incremental session policy: a request matching the previous call's
-    // generated tail continues from {kv_->last_tok}; anything else restarts.
-    const bool continuation =
-        kv_ && kv_->allocated() && !session_tail_.empty() &&
-        req.input_ids == session_tail_;
-    std::vector<int32_t> gen_input;
-    if (continuation)
-        gen_input = std::vector<int32_t>{kv_->last_tok};
-    else {
-        kv_.reset();
-        kv_.reset(new phi::PhiKvCache());
-        session_tail_.clear();
-        gen_input = req.input_ids;
-    }
-
-    phi::PhiGenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
-    auto run = [&]() -> cudaError_t {
+
+    // The whole request runs inside ONE shared-lock scope. Incremental
+    // session policy: a request matching the previous call's generated tail
+    // continues from {kv_->last_tok}; anything else restarts. Creating,
+    // decoding through and publishing the KV state under the lock keeps two
+    // concurrent Infer calls from freeing each other's cache.
+    return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
+        const bool continuation =
+            kv_ && kv_->allocated() && !session_tail_.empty() &&
+            req.input_ids == session_tail_;
+        std::vector<int32_t> gen_input;
+        if (continuation) {
+            gen_input = std::vector<int32_t>{kv_->last_tok};
+        } else {
+            kv_.reset();
+            kv_.reset(new phi::PhiKvCache());
+            session_tail_.clear();
+            gen_input = req.input_ids;
+        }
+
+        phi::PhiGenerationResult gen;
         const int eos_id = (req.ignore_eos || !tok_db_)
                                ? lsxcommon::kIgnoreEosTokenId
                                : tok_db_->eos_id;
-        return phi::RunPhiGeneration(
+        const cudaError_t e = phi::RunPhiGeneration(
             st, pw_, gen_input, req.max_gen_tokens, eos_id, gen,
             lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
-    };
+        if (e != cudaSuccess) {
+            r.error_msg = runtime::CombineGenError(e, gen.error_msg);
+            r.ok = false;
+            kv_.reset();
+            session_tail_.clear();
+            return r;
+        }
 
-    cudaError_t e = RunUnderResidencyLock(run);
-    if (e != cudaSuccess) {
-        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
-        r.ok = false;
-        kv_.reset();
-        session_tail_.clear();
+        const int kv_slots =
+            (kv_ && kv_->allocated())
+                ? kv_->kv_rows
+                : static_cast<int>(gen.tokens.size()) +
+                      static_cast<int>(req.input_ids.size());
+        runtime::FillInferenceResult(
+            r, {.tokens = &gen.tokens,
+                .final_logits = &gen.final_logits,
+                .ttft_ms = gen.ttft_ms,
+                .total_ms = gen.total_ms,
+                .error_msg = &gen.error_msg,
+                .eos_terminated = gen.eos_terminated,
+                .kv_slots_used = kv_slots,
+                .first_maxv = 0.f,
+                .resident_bytes = gen.resident_bytes},
+            pw_.top.num_layers);
+        session_tail_ = r.gen_tokens;
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
         return r;
-    }
-
-    const int kv_slots = (kv_ && kv_->allocated())
-                             ? kv_->kv_rows
-                             : static_cast<int>(gen.tokens.size()) +
-                                   static_cast<int>(req.input_ids.size());
-    runtime::FillInferenceResult(
-        r, {.tokens = &gen.tokens,
-            .final_logits = &gen.final_logits,
-            .ttft_ms = gen.ttft_ms,
-            .total_ms = gen.total_ms,
-            .error_msg = &gen.error_msg,
-            .eos_terminated = gen.eos_terminated,
-            .kv_slots_used = kv_slots,
-            .first_maxv = 0.f,
-            .resident_bytes = gen.resident_bytes},
-        pw_.top.num_layers);
-    session_tail_ = r.gen_tokens;
-    if (tok_db_ && !r.gen_tokens.empty())
-        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
-
-    return r;
+    });
 }
 
 gpu::InferenceResult Phi4Model::SelfCheck(const ModelRequest &req)

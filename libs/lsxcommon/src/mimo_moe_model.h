@@ -103,6 +103,9 @@ private:
     int o_size_ = 0;
     int kv_heads_ga_ = 4;
     int kv_heads_swa_ = 8;
+    // Running total of the weight bytes actually cudaMalloc'd by the upload
+    // helpers; published as resident_bytes_ at the end of Load.
+    std::uint64_t device_bytes_ = 0;
 };
 
 } // namespace lsxcommon

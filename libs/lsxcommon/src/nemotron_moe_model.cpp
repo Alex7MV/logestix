@@ -3,10 +3,12 @@
 
 #include "lsxcommon/log.h"
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/prompt_framing.h"
 #include "lsxcommon/qwen_tool_format.h"
 #include "lsxcommon/tool_format.h"
 
+#include <absl/strings/str_cat.h>
 #include <absl/strings/str_format.h>
 #include <simdjson.h>
 
@@ -118,6 +120,13 @@ bool NemotronHModel::Load()
         resident_bytes_ = weights_.resident_bytes + expert_cache_.cache_bytes;
     }
 
+    // Governor accounting (lifecycle-unification II): the dense backbone is
+    // permanent, the expert slot cache is a separate adaptive lease (both
+    // released by the canonical Unload/AbortLoad).
+    if (!AcquirePermanentWeights(weights_.resident_bytes)) return AbortLoad();
+    AcquireExpertCacheLease(expert_cache_.cache_bytes, expert_cache_.cache_bytes,
+                            expert_cache_.cache_bytes);
+
     FinishLoad();
     log::info(absl::StrFormat(
         "[nemotron] loaded %s: %d layers, %d experts, vocab %d",
@@ -130,6 +139,7 @@ void NemotronHModel::TeardownWeights()
     nemotron_moe::FreeNmExpertCache(expert_cache_);
     session_.Free();
     weights_.Free();
+    TeardownContext();
 }
 
 namespace {
@@ -142,6 +152,29 @@ int ArgMaxHost(const std::vector<float> &v)
     return best;
 }
 
+// Owns the three timing events of one Infer run. The decode loop has four
+// early error returns; without this guard each of them leaked its events.
+struct ScopedCudaEvents {
+    cudaEvent_t start = nullptr;
+    cudaEvent_t first = nullptr;
+    cudaEvent_t stop = nullptr;
+
+    ScopedCudaEvents()
+    {
+        cudaEventCreate(&start);
+        cudaEventCreate(&first);
+        cudaEventCreate(&stop);
+    }
+    ~ScopedCudaEvents()
+    {
+        if (start) cudaEventDestroy(start);
+        if (first) cudaEventDestroy(first);
+        if (stop) cudaEventDestroy(stop);
+    }
+    ScopedCudaEvents(const ScopedCudaEvents &) = delete;
+    ScopedCudaEvents &operator=(const ScopedCudaEvents &) = delete;
+};
+
 } // namespace
 
 gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
@@ -151,14 +184,15 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
         gpu::InferenceResult r;
         if (!ValidateInferRequest(req, r)) return r;
 
+        lsxcommon::GenerationStream gs;
+        gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+        gs.abort_flag = req.abort_flag;
+
         nemotron_moe::ResetNemotronSession(session_, stream());
         std::vector<float> logits(static_cast<size_t>(idx_.vocab_size));
 
-        cudaEvent_t ev0 = nullptr, ev_first = nullptr, ev1 = nullptr;
-        cudaEventCreate(&ev0);
-        cudaEventCreate(&ev_first);
-        cudaEventCreate(&ev1);
-        cudaEventRecord(ev0, stream());
+        ScopedCudaEvents ev;
+        cudaEventRecord(ev.start, stream());
 
         int pos = 0;
         for (int32_t id : req.input_ids) {
@@ -171,7 +205,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
             }
             ++pos;
         }
-        cudaEventRecord(ev_first, stream());
+        cudaEventRecord(ev.first, stream());
 
         const int eos = idx_.eos_token_id;
         int generated = 0;
@@ -208,38 +242,32 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
                 }
                 ++pos;
             }
-            if (req.token_callback) {
-                TokenChunk c;
-                c.token_id = static_cast<uint32_t>(next);
-                c.step_t = static_cast<uint32_t>(step);
-                // Current step's max logit, not the step-0 value.
-                c.logit_maxv = logits[static_cast<size_t>(next)];
-                req.token_callback(c);
-            }
-            if (req.abort_flag && req.abort_flag->load()) break;
+            gs.Emit(static_cast<std::uint32_t>(next), static_cast<std::uint32_t>(step),
+                    logits[static_cast<size_t>(next)]);
+            if (gs.Aborted()) break;
         }
         r.num_tokens = generated;
         r.num_layers = idx_.num_layers;
         r.weight_resident_bytes = resident_bytes_;
+        r.kv_slots_used = pos;
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
         log::info(absl::StrFormat(
             "[nemotron] expert cache: hits=%lld misses=%lld slots=%d",
             static_cast<long long>(expert_cache_.device.hits),
             static_cast<long long>(expert_cache_.device.misses),
             expert_cache_.device.slots));
-        cudaEventRecord(ev1, stream());
-        cudaEventSynchronize(ev1);
+        cudaEventRecord(ev.stop, stream());
+        cudaEventSynchronize(ev.stop);
         float ttft = 0.0f, total = 0.0f;
-        cudaEventElapsedTime(&ttft, ev0, ev_first);
-        cudaEventElapsedTime(&total, ev0, ev1);
+        cudaEventElapsedTime(&ttft, ev.start, ev.first);
+        cudaEventElapsedTime(&total, ev.start, ev.stop);
         r.ttft_ms = static_cast<double>(ttft);
         r.total_time_ms = static_cast<double>(total);
         r.tokens_per_sec =
             total > 0.0f ? static_cast<double>(generated) * 1000.0 /
                                static_cast<double>(total)
                          : 0.0;
-        cudaEventDestroy(ev0);
-        cudaEventDestroy(ev_first);
-        cudaEventDestroy(ev1);
         r.ok = true;
         return r;
     });
@@ -247,41 +275,26 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
 
 gpu::InferenceResult NemotronHModel::SelfCheck(const ModelRequest &req)
 {
-    gpu::InferenceResult r = Infer(req);
-    r.selfcheck_passed = false;
-    if (!r.ok || r.gen_tokens.empty() || !tok_db_ || !tok_db_->valid())
-        return r;
-    // Decode the first generated token (the top-1 control token) and trim the
-    // BPE leading space; the control prompt must answer "Paris".
-    char buf[512];
-    size_t cap = sizeof(buf);
-    if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(), 1, buf, &cap) == 0) {
-        std::string text(buf, cap);
-        const auto first = text.find_first_not_of(" \t\n");
-        const auto last = text.find_last_not_of(" \t\n");
-        if (first != std::string::npos)
-            text = text.substr(first, last - first + 1);
-        else
-            text.clear();
-        r.first_gen_text = text;
-        r.selfcheck_passed = text == "Paris";
-    }
-    // Full output text (all generated tokens) for callers that want it.
-    if (!r.gen_tokens.empty()) {
-        char obuf[1024];
-        size_t ocap = sizeof(obuf);
-        if (arrow_tokenizer_decode(*tok_db_, r.gen_tokens.data(),
-                                   r.gen_tokens.size(), obuf, &ocap) == 0)
-            r.output_text.assign(obuf, ocap);
-    }
-    return r;
+    // Unified Paris harness: the strict 1->2-token "Paris" contract plus the
+    // cross-model `logits_hash` evidence and the LSX_SELFCHECK_EXPECT_HASH gate
+    // (numeric-contract §1). frame_prompt stays OFF on purpose — the selfcheck
+    // suite feeds its own control-prompt ids, and re-framing here would make
+    // the gate depend on the chat template instead of the control token.
+    return runtime::RunParisSelfCheck(*this, req);
 }
 
 bool NemotronHModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
                                          std::string_view raw_prompt,
                                          std::vector<int32_t> &out_ids) const
 {
-    return prompt::EncodeRawPrompt(tok, raw_prompt, out_ids);
+    // Single-turn native frame, same shape as RenderNemotronConversation
+    // emits for a one-message conversation (verified against the checkpoint's
+    // chat_template.jinja: bare role word + "\n", generation prompt opens
+    // <think>). A chat model must never see an unframed prompt.
+    const std::string frame = absl::StrCat("user\n", raw_prompt,
+                                           "\nassistant\n<think>\n");
+    if (AppendQwenChatIds(tok, frame, out_ids)) return true;
+    return prompt::EncodeRawPrompt(tok, frame, out_ids);
 }
 
 // ── Nemotron-3.5 ChatML/XML tool format ─────────────────────────────────────
@@ -506,7 +519,9 @@ bool NemotronHModel::BuildConversationInputIds(
     std::string text;
     if (!RenderNemotronConversation(conv, text)) return false;
     if (!AppendQwenChatIds(tok, text, out_ids))
-        return BuildPromptInputIds(tok, text, out_ids);
+        // Already-rendered conversation: encode it verbatim, never re-wrap
+        // it in the single-turn frame.
+        return prompt::EncodeRawPrompt(tok, text, out_ids);
     return true;
 }
 

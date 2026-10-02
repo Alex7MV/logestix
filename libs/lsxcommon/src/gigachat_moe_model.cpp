@@ -16,6 +16,29 @@
 namespace lsxcommon {
 namespace {
 
+// Owns the three timing events of one Infer run. The decode loop has four
+// early error returns; without this guard each of them leaked its events.
+struct ScopedCudaEvents {
+    cudaEvent_t start = nullptr;
+    cudaEvent_t first = nullptr;
+    cudaEvent_t stop = nullptr;
+
+    ScopedCudaEvents()
+    {
+        cudaEventCreate(&start);
+        cudaEventCreate(&first);
+        cudaEventCreate(&stop);
+    }
+    ~ScopedCudaEvents()
+    {
+        if (start) cudaEventDestroy(start);
+        if (first) cudaEventDestroy(first);
+        if (stop) cudaEventDestroy(stop);
+    }
+    ScopedCudaEvents(const ScopedCudaEvents &) = delete;
+    ScopedCudaEvents &operator=(const ScopedCudaEvents &) = delete;
+};
+
 // Encodes `s` and appends the ids, dropping the encoder's auto-prepended BOS
 // (the framing places exactly one BOS at position 0).
 bool AppendEncoded(const ArrowTokenizerDb &tok, std::string_view s,
@@ -61,6 +84,7 @@ void GigaChat35Model::TeardownWeights()
     pipeline_.Free();
     gigachat::FreeGcExpertCache(expert_cache_);
     weights_.Free();
+    TeardownContext();
 }
 
 bool GigaChat35Model::BuildPipelineDims(gigachat::GcPipelineDims &d) const
@@ -159,6 +183,13 @@ bool GigaChat35Model::Load()
     }
     resident_bytes_ = weights_.resident_bytes + expert_cache_.cache_bytes;
 
+    // Governor accounting (lifecycle-unification II): the dense backbone is
+    // permanent, the expert slot cache is a separate adaptive lease (both
+    // released by the canonical Unload/AbortLoad).
+    if (!AcquirePermanentWeights(weights_.resident_bytes)) return AbortLoad();
+    AcquireExpertCacheLease(expert_cache_.cache_bytes, expert_cache_.cache_bytes,
+                            expert_cache_.cache_bytes);
+
     FinishLoad();
     log::info(absl::StrFormat(
         "[gigachat] loaded %s: %d layers, %d experts, vocab %d",
@@ -183,6 +214,10 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
                           std::to_string(max_seq_);
             return r;
         }
+        lsxcommon::GenerationStream gs;
+        gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+        gs.abort_flag = req.abort_flag;
+
         if (pipeline_.Reset(stream()) != cudaSuccess)
         {
             r.error_msg = "cache reset failed";
@@ -190,11 +225,8 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
         }
 
         std::vector<float> logits(static_cast<size_t>(idx_.vocab_size));
-        cudaEvent_t ev0 = nullptr, ev_first = nullptr, ev1 = nullptr;
-        cudaEventCreate(&ev0);
-        cudaEventCreate(&ev_first);
-        cudaEventCreate(&ev1);
-        cudaEventRecord(ev0, stream());
+        ScopedCudaEvents ev;
+        cudaEventRecord(ev.start, stream());
 
         int pos = 0;
         for (int32_t id : req.input_ids)
@@ -209,7 +241,7 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
             }
             ++pos;
         }
-        cudaEventRecord(ev_first, stream());
+        cudaEventRecord(ev.first, stream());
 
         const int eos = idx_.eos_token_id;
         int generated = 0;
@@ -252,34 +284,27 @@ gpu::InferenceResult GigaChat35Model::Infer(const ModelRequest &req)
                 }
                 ++pos;
             }
-            if (req.token_callback)
-            {
-                TokenChunk c;
-                c.token_id = static_cast<uint32_t>(next);
-                c.step_t = static_cast<uint32_t>(step);
-                // Current step's max logit, not the step-0 value.
-                c.logit_maxv = logits[static_cast<size_t>(next)];
-                req.token_callback(c);
-            }
-            if (req.abort_flag && req.abort_flag->load()) break;
+            gs.Emit(static_cast<std::uint32_t>(next), static_cast<std::uint32_t>(step),
+                    logits[static_cast<size_t>(next)]);
+            if (gs.Aborted()) break;
         }
         r.num_tokens = generated;
         r.num_layers = idx_.num_layers;
         r.weight_resident_bytes = resident_bytes_;
-        cudaEventRecord(ev1, stream());
-        cudaEventSynchronize(ev1);
+        r.kv_slots_used = pos;
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
+        cudaEventRecord(ev.stop, stream());
+        cudaEventSynchronize(ev.stop);
         float ttft = 0.0f, total = 0.0f;
-        cudaEventElapsedTime(&ttft, ev0, ev_first);
-        cudaEventElapsedTime(&total, ev0, ev1);
+        cudaEventElapsedTime(&ttft, ev.start, ev.first);
+        cudaEventElapsedTime(&total, ev.start, ev.stop);
         r.ttft_ms = static_cast<double>(ttft);
         r.total_time_ms = static_cast<double>(total);
         r.tokens_per_sec = total > 0.0f
                                ? static_cast<double>(generated) * 1000.0 /
                                      static_cast<double>(total)
                                : 0.0;
-        cudaEventDestroy(ev0);
-        cudaEventDestroy(ev_first);
-        cudaEventDestroy(ev1);
         r.ok = true;
         return r;
     });

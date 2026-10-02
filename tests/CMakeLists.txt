@@ -5000,6 +5000,8 @@ target_link_libraries(test_nemotron_moe_model PRIVATE
     lsxcommon Catch2::Catch2WithMain)
 target_include_directories(test_nemotron_moe_model PRIVATE
     ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_nemotron_moe_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME test_nemotron_moe_model COMMAND test_nemotron_moe_model)
 
 # test_nemotron_moe_kernels — Mamba-2 mixer kernels. Same OBJECT-lib pattern as

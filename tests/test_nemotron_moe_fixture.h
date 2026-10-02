@@ -133,6 +133,19 @@ inline void WriteNemotronCheckpoint(const std::filesystem::path &dir)
     WriteSafetensors(dir, "model.safetensors", ts);
 }
 
+// Opt-in: gives the synthetic checkpoint a real BPE tokenizer so the framing
+// tests can encode/decode. Not written by WriteNemotronCheckpoint on purpose —
+// the loader treats a missing tokenizer as optional, and the other nemotron
+// tests must keep exercising that path.
+// `tok_json` is passed in (not a TOKENIZER_TEST_DATA_DIR macro) so this header
+// stays free of build-system globals: only the target that calls it needs the
+// compile definition.
+inline void WriteNemotronTokenizer(const std::filesystem::path &dir,
+                                   const std::filesystem::path &tok_json)
+{
+    std::filesystem::copy_file(tok_json, dir / "tokenizer.json");
+}
+
 // Real frozen-geometry layer mix (attention at 5/12/19/26/33/42).
 inline std::vector<std::string> RealLayerTypes()
 {

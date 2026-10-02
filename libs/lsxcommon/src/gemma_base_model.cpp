@@ -161,29 +161,31 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
 
     // Session policy: every request runs a fresh prefill+decode (the
     // generation loop always prefills its input); session_tail_ tracks the
-    // last generated tail for orchestrator introspection.
-    kv_.reset();
-    kv_ = std::make_unique<gemma::GemmaKvCache>();
-    session_tail_.clear();
-    const std::vector<int32_t> &gen_input = req.input_ids;
-
+    // last generated tail for orchestrator introspection. The whole request
+    // runs inside ONE shared-lock scope — creating, allocating, decoding
+    // through and publishing the KV state under the lock — so two concurrent
+    // Infer calls can never free the cache the other one reads.
     gemma::GemmaExpertDb &expert_db = expert_db_;
-
-    // Capacity: prompt + generation + slack.
-    const int need = static_cast<int>(gen_input.size()) +
-                     std::max(1, req.max_gen_tokens) + 8;
-    cudaError_t e = kv_->Allocate(pw_, need);
-    if (e != cudaSuccess) {
-        r.error_msg = "kv alloc failed";
-        return r;
-    }
-
     gemma::GemmaGenerationResult gen;
     if (!gen_ctx_) gen_ctx_ = gemma::CreateGemmaGenContext();
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
-    e = RunUnderResidencyLock([&] {
+    return RunUnderResidencyLock([&]() -> gpu::InferenceResult {
+        kv_.reset();
+        kv_ = std::make_unique<gemma::GemmaKvCache>();
+        session_tail_.clear();
+        const std::vector<int32_t> &gen_input = req.input_ids;
+
+        // Capacity: prompt + generation + slack.
+        const int need = static_cast<int>(gen_input.size()) +
+                         std::max(1, req.max_gen_tokens) + 8;
+        const cudaError_t ae = kv_->Allocate(pw_, need);
+        if (ae != cudaSuccess) {
+            r.error_msg = "kv alloc failed";
+            return r;
+        }
+
         std::vector<int> eos_ids;
         if (req.ignore_eos || !tok_db_)
             eos_ids = {lsxcommon::kIgnoreEosTokenId};
@@ -191,42 +193,40 @@ gpu::InferenceResult GemmaBaseModel::Infer(const ModelRequest &req)
             eos_ids = pw_.top.eos_ids;
         else
             eos_ids = {tok_db_->eos_id};
-        return gemma::RunGemmaGeneration(
+        const cudaError_t ge = gemma::RunGemmaGeneration(
             st, pw_, expert_db, gen_input, req.max_gen_tokens, eos_ids,
             pw_.top.error_msg.empty() ? pw_.top.final_logit_softcapping : 0.f,
             gen, *kv_, gen_ctx_, &gs);
-    });
-    if (e != cudaSuccess)
-        lsxcommon::log::error(
-            "[gemma-model] RunGemmaGeneration rc=" +
-            std::to_string(static_cast<int>(e)) + " (" +
-            cudaGetErrorString(e) + ") gen_err='" + gen.error_msg + "'");
+        if (ge != cudaSuccess)
+            lsxcommon::log::error(
+                "[gemma-model] RunGemmaGeneration rc=" +
+                std::to_string(static_cast<int>(ge)) + " (" +
+                cudaGetErrorString(ge) + ") gen_err='" + gen.error_msg + "'");
+        if (ge != cudaSuccess || !gen.ok) {
+            r.error_msg = runtime::CombineGenError(ge, gen.error_msg);
+            r.ok = false;
+            kv_.reset();
+            session_tail_.clear();
+            return r;
+        }
 
-    if (e != cudaSuccess || !gen.ok) {
-        r.error_msg = runtime::CombineGenError(e, gen.error_msg);
-        r.ok = false;
-        kv_.reset();
-        session_tail_.clear();
+        runtime::FillInferenceResult(
+            r, {.tokens = &gen.tokens,
+                .final_logits = &gen.final_logits,
+                .ttft_ms = gen.ttft_ms,
+                .total_ms = gen.total_ms,
+                .error_msg = &gen.error_msg,
+                .eos_terminated = gen.eos_terminated,
+                .kv_slots_used = static_cast<int>(gen_input.size()) +
+                                 static_cast<int>(gen.tokens.size()),
+                .first_maxv = 0.f,
+                .resident_bytes = resident_bytes_},
+            static_cast<int>(pw_.layers.size()));
+        session_tail_ = r.gen_tokens;
+        if (tok_db_ && !r.gen_tokens.empty())
+            r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
         return r;
-    }
-
-    runtime::FillInferenceResult(
-        r, {.tokens = &gen.tokens,
-            .final_logits = &gen.final_logits,
-            .ttft_ms = gen.ttft_ms,
-            .total_ms = gen.total_ms,
-            .error_msg = &gen.error_msg,
-            .eos_terminated = gen.eos_terminated,
-            .kv_slots_used = static_cast<int>(gen_input.size()) +
-                             static_cast<int>(gen.tokens.size()),
-            .first_maxv = 0.f,
-            .resident_bytes = resident_bytes_},
-        static_cast<int>(pw_.layers.size()));
-    session_tail_ = r.gen_tokens;
-    if (tok_db_ && !r.gen_tokens.empty())
-        r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
-
-    return r;
+    });
 }
 
 // GemmaBaseModel::Unload — canonical ModelBase template method

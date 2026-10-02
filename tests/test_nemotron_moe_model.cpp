@@ -6,7 +6,10 @@
 
 #include "nemotron_moe_model.h"
 #include "lsxcommon/model_factory.h"
+#include "lsxcommon/model_runtime.h"
 #include "lsxcommon/nemotron_moe_convert.h"
+#include "lsxcommon/prompt_framing.h"
+#include "lsxcommon/tokenizer_arrows.h"
 
 #include <spdlog/spdlog.h>
 
@@ -160,6 +163,44 @@ TEST_CASE("nemotron expert LRU stays bit-identical under slot eviction",
     REQUIRE(tight.logits.size() == full.logits.size());
     CHECK(std::memcmp(tight.logits.data(), full.logits.data(),
                       full.logits.size() * sizeof(float)) == 0);
+}
+
+TEST_CASE("nemotron single-prompt framing uses the native chat template",
+          "[nemotron][fast][prompt_framing]")
+{
+    // A chat model must never see an unframed prompt: the single-prompt path
+    // (lsxbenchmark --run, lsxfabric --testprompt) must emit the same frame as
+    // the conversation renderer — bare role word + "\n", generation prompt
+    // opening <think> (verified against the checkpoint's chat_template.jinja).
+    SetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    const auto src = nemotrontest::MakeTempDir("nm_frame_src");
+    const auto dst = nemotrontest::MakeTempDir("nm_frame_dst");
+    nemotrontest::WriteNemotronCheckpoint(src);
+    nemotrontest::WriteNemotronTokenizer(
+        src, TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json");
+    REQUIRE(nemotron_moe::ConvertNemotronModel(src.string(), dst.string()).ok());
+
+    ArrowTokenizerDb db;
+    REQUIRE(LoadTokenizerArrows(dst.string(), db));
+    REQUIRE(db.valid());
+
+    static constexpr char kPrompt[] = "The capital of France is";
+    std::vector<int32_t> ids;
+    NemotronHModel framing_probe(ModelInitConfig{});
+    REQUIRE(framing_probe.BuildPromptInputIds(db, kPrompt, ids));
+    REQUIRE(!ids.empty());
+
+    // Round-trip the ids: the frame must be exactly the native single turn.
+    const std::string expected = std::string("user\n") + kPrompt +
+                                 "\nassistant\n<think>\n";
+    const std::string decoded = runtime::DecodeGeneratedText(db, ids);
+    INFO("decoded frame: [" << decoded << "]");
+    REQUIRE(decoded == expected);
+
+    // And the raw encoder must NOT be what the prompt path uses.
+    std::vector<int32_t> bare;
+    REQUIRE(prompt::EncodeRawPrompt(db, kPrompt, bare));
+    REQUIRE(runtime::DecodeGeneratedText(db, bare) == kPrompt);
 }
 
 TEST_CASE("nemotron tool framing renders the XML declaration block",

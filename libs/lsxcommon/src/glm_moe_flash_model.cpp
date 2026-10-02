@@ -218,6 +218,7 @@ void Glm5NextFlashModel::TeardownWeights()
     pw_.Free();
     experts_.Free();
     qwen_moe::FreeQwenMoeExpertCache(cache_);
+    TeardownContext();
 }
 
 // ── GLM-5.3-Flash native tool format ────────────────────────────────────────

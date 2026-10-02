@@ -7,10 +7,17 @@
 #include "lsxcommon/alice_moe_load.h"
 #include "lsxcommon/model_factory.h"
 
+#include <cuda_runtime.h>
+
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
+#include <vector>
 
 #include "test_alice_moe_fixture.h"
+#include "test_streaming_assert.h"
 
 using namespace lsxcommon::alice::frozen;
 
@@ -142,4 +149,120 @@ TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
                                  << " ms total=" << r1.total_time_ms
                                  << " ms tokens_per_sec=" << r1.tokens_per_sec);
     REQUIRE(r1.tokens_per_sec > 0.0);
+}
+
+namespace {
+
+// Converts the synthetic checkpoint once per test case into a stable temp dir.
+std::filesystem::path ConvertedSyntheticAlice(const char *tag)
+{
+    namespace fs = std::filesystem;
+    const fs::path in = fs::temp_directory_path() /
+                        (std::string("alice_model_in_") + tag);
+    const fs::path out = fs::temp_directory_path() /
+                         (std::string("alice_model_out_") + tag);
+    fs::remove_all(in);
+    fs::remove_all(out);
+    fs::create_directories(in);
+    alicetest::WriteAliceConfigJson(in);
+    alicetest::WriteAliceShard(in);
+    auto st = lsxcommon::alice::ConvertAliceModel(in.string(), out.string());
+    if (!st.ok()) FAIL(st.ToString());
+    REQUIRE(st.ok());
+    return out;
+}
+
+std::unique_ptr<lsxcommon::IModel> LoadSyntheticAlice(const char *tag)
+{
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = ConvertedSyntheticAlice(tag).string();
+    cfg.model_type = "alice-foundation-80b-a3b";
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("alice synthetic load failed");
+    return model;
+}
+
+} // namespace
+
+TEST_CASE("alice Infer streams one chunk per generated token",
+          "[alice][model][lifecycle]")
+{
+    // lsxfabric --serve / TaskMosaic stream exclusively through
+    // req.token_callback: a family that never invokes it delivers an empty
+    // stream (only the final DONE frame) to every client.
+    auto model = LoadSyntheticAlice("stream");
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 5, 7};
+    req.max_gen_tokens = 3;
+    ExpectStreamMatchesTokens(*model, req);
+    model->Unload();
+}
+
+TEST_CASE("alice Infer honours a pre-set abort flag",
+          "[alice][model][lifecycle]")
+{
+    auto model = LoadSyntheticAlice("abort");
+    std::atomic<bool> abort{true};
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 5, 7};
+    req.max_gen_tokens = 4;
+    req.abort_flag = &abort;
+    const auto r = model->Infer(req);
+    if (!r.ok) FAIL(r.error_msg);
+    CHECK(r.ok);
+    // Cancellation must stop the decode well before the requested budget.
+    CHECK(r.gen_tokens.size() < static_cast<std::size_t>(req.max_gen_tokens));
+    model->Unload();
+}
+
+TEST_CASE("alice publishes its resident weight bytes", "[alice][model][lifecycle]")
+{
+    // `lsxbenchmark --bench` prints `resident:` from
+    // InferenceResult::weight_resident_bytes; a family that never fills it
+    // reports 0 MiB no matter what it holds.
+    auto model = LoadSyntheticAlice("resident");
+    const auto r = model->Infer([&] {
+        lsxcommon::ModelRequest req;
+        req.input_ids = {1, 5, 7};
+        req.max_gen_tokens = 1;
+        return req;
+    }());
+    if (!r.ok) FAIL(r.error_msg);
+    INFO("weight_resident_bytes=" << r.weight_resident_bytes);
+    REQUIRE(r.weight_resident_bytes > 0);
+    REQUIRE(r.weight_resident_bytes == model->ResidentWeightBytes());
+    model->Unload();
+}
+
+TEST_CASE("alice repeated generation does not grow device memory",
+          "[alice][model][lifecycle]")
+{
+    // RunAliceGeneration allocates ~40 device buffers per call. If any exit
+    // path skipped the free block, repeated generations would ratchet VRAM up
+    // until OOM — check the steady state over several calls.
+    auto model = LoadSyntheticAlice("leak");
+    lsxcommon::ModelRequest req;
+    req.input_ids = {1, 5, 7};
+    req.max_gen_tokens = 2;
+
+    std::size_t free_after_warmup = 0, total = 0;
+    for (int i = 0; i < 4; ++i) {
+        const auto r = model->Infer(req);
+        if (!r.ok) FAIL(r.error_msg);
+        std::size_t f = 0;
+        cudaMemGetInfo(&f, &total);
+        if (i == 1) free_after_warmup = f;
+        if (i == 3) {
+            const std::int64_t delta =
+                static_cast<std::int64_t>(free_after_warmup) -
+                static_cast<std::int64_t>(f);
+            INFO("device free delta over 2 calls: " << delta << " bytes");
+            // One cached CUDA context growth is tolerated; a leaked
+            // workspace (tens of MiB here) is not.
+            REQUIRE(delta < 8ll * 1024 * 1024);
+        }
+    }
+    model->Unload();
 }

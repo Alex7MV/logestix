@@ -272,43 +272,50 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
         return r;
     }
 
-    // Incremental session policy (mirrors QwenBaseModel).
-    const qwen::SessionDecision session = qwen::DecideSession(
-        kv_ && kv_->allocated(),
-        kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
-    if (!session.is_continuation) {
-        kv_.reset();
-        kv_ = std::make_unique<qwen::QwenKvCache>();
-        session_tail_.clear();
-    }
-    const std::vector<int32_t> &gen_input = session.gen_input;
-
     qwen::QwenGenerationResult gen;
     lsxcommon::GenerationStream gs;
     gs.on_token = req.token_callback ? &req.token_callback : nullptr;
     gs.abort_flag = req.abort_flag;
     const int eos_id = (req.ignore_eos || !tok_db_) ? lsxcommon::kIgnoreEosTokenId : tok_db_->eos_id;
+    int kv_slots = 0;
+    // Incremental session policy (mirrors QwenBaseModel), entirely inside one
+    // shared-lock scope: the KV state is created, decoded through and
+    // published under the lock so concurrent Infer calls cannot free the
+    // cache the other one reads.
     cudaError_t e = RunUnderResidencyLock([&] {
-        return qwen_moe::RunQwenMoeGeneration(
-            stream(), pw_, experts_, cache_, scratch_, gen_input,
+        const qwen::SessionDecision session = qwen::DecideSession(
+            kv_ && kv_->allocated(),
+            kv_ ? kv_->last_tok : -1, session_tail_, req.input_ids);
+        if (!session.is_continuation) {
+            kv_.reset();
+            kv_ = std::make_unique<qwen::QwenKvCache>();
+            session_tail_.clear();
+        }
+        const cudaError_t ge = qwen_moe::RunQwenMoeGeneration(
+            stream(), pw_, experts_, cache_, scratch_, session.gen_input,
             req.max_gen_tokens, eos_id, gen,
             lsxcommon::sample::DefaultSampler(), kv_.get(), &gs);
+        // Uniform failure contract (GLM/Kimi parity): both a CUDA error and a
+        // family-level generation failure abort the request and drop the
+        // session.
+        if (ge != cudaSuccess || !gen.ok) {
+            kv_.reset();
+            session_tail_.clear();
+            return ge;
+        }
+        kv_slots = (kv_ && kv_->allocated())
+                       ? kv_->kv_rows + 1
+                       : static_cast<int>(gen.tokens.size()) +
+                             static_cast<int>(req.input_ids.size());
+        session_tail_ = gen.tokens;
+        return cudaSuccess;
     });
-    // Uniform failure contract (GLM/Kimi parity): both a CUDA error and a
-    // family-level generation failure abort the request and drop the session.
     if (e != cudaSuccess || !gen.ok) {
         r.error_msg = runtime::CombineGenError(e, gen.error_msg);
         r.ok = false;
-        kv_.reset();
-        session_tail_.clear();
         return r;
     }
 
-    const int kv_slots =
-        (kv_ && kv_->allocated())
-            ? kv_->kv_rows + 1
-            : static_cast<int>(gen.tokens.size()) +
-                  static_cast<int>(req.input_ids.size());
     runtime::FillInferenceResult(
         r, {.tokens = &gen.tokens,
             .final_logits = &gen.final_logits,
@@ -320,7 +327,6 @@ gpu::InferenceResult QwenMoeModelBase::RunInferShared(const ModelRequest &req)
             .first_maxv = 0.f,
             .resident_bytes = gen.resident_bytes},
         pw_.top.num_layers);
-    session_tail_ = r.gen_tokens;
     if (tok_db_ && !r.gen_tokens.empty())
         r.output_text = runtime::DecodeGeneratedText(*tok_db_, r.gen_tokens);
     return r;

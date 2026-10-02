@@ -28,11 +28,14 @@ struct GenerationStream {
                abort_flag->load(std::memory_order_acquire);
     }
 
-    void Emit(std::uint32_t token_id, std::uint32_t step) const {
+    void Emit(std::uint32_t token_id, std::uint32_t step,
+              float logit_maxv = 0.0f) const
+    {
         if (on_token == nullptr || !*on_token) return;
         TokenChunk c;
         c.token_id = token_id;
         c.step_t = step;
+        c.logit_maxv = logit_maxv;
         (*on_token)(c);
     }
 };

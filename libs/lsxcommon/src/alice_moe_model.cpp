@@ -57,6 +57,11 @@ bool AliceFoundation80BModel::Load()
     experts_ = std::make_unique<alice::AliceExpertHost>(cfg_.model_path);
     weights_loaded_ = true;
     resident_bytes_ = pw_.resident_bytes;
+    // Governor accounting (lifecycle-unification II): the pinned dense set is
+    // the permanent lease (released by the canonical Unload/AbortLoad). The
+    // routed-expert store is a host mmap and streams through the per-call
+    // device cache, so it carries no permanent lease.
+    if (!AcquirePermanentWeights(resident_bytes_)) return AbortLoad();
     FinishLoad();
     return true;
 }
@@ -81,11 +86,17 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
     const int eos_id = (req.ignore_eos || !tok_db_)
                            ? kIgnoreEosTokenId
                            : tok_db_->eos_id;
+    // Streaming + cooperative cancellation: lsxfabric --serve and TaskMosaic
+    // publish tokens exclusively through req.token_callback.
+    lsxcommon::GenerationStream gs;
+    gs.on_token = req.token_callback ? &req.token_callback : nullptr;
+    gs.abort_flag = req.abort_flag;
+
     alice::AliceGenerationResult gen;
     auto ec = RunUnderResidencyLock([&]() {
         return alice::RunAliceGeneration(stream(), pw_, *experts_, req.input_ids,
                                          req.max_gen_tokens, eos_id, gen,
-                                         sample::DefaultSampler());
+                                         sample::DefaultSampler(), &gs);
     });
     if (ec != cudaSuccess || !gen.ok) {
         r.error_msg = gen.error_msg.empty() ? "alice cuda error" : gen.error_msg;
@@ -96,7 +107,7 @@ gpu::InferenceResult AliceFoundation80BModel::Infer(const ModelRequest &req)
     r.gen_tokens = gen.tokens;
     r.num_tokens = static_cast<int>(gen.tokens.size());
     r.first_gen_tok_id = gen.first_token;
-    r.first_gen_text = "";
+    r.weight_resident_bytes = resident_bytes_;
     r.final_logits = gen.final_logits;
     r.eos_terminated = gen.eos_terminated;
     r.ttft_ms = gen.ttft_ms;
