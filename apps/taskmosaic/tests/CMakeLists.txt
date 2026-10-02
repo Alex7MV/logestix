@@ -80,3 +80,30 @@ endif()
 add_test(NAME test_taskmosaic_bridge COMMAND test_taskmosaic_bridge)
 set_tests_properties(test_taskmosaic_bridge PROPERTIES LABELS fast)
 set_tests_properties(test_taskmosaic_bridge PROPERTIES TIMEOUT 120)
+
+# Real PromptFramer implementation (host-only, index-only fixture).
+add_executable(test_lsx_framer
+    test_lsx_framer.cpp
+    ../src/lsx_framer.cpp)
+target_include_directories(test_lsx_framer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    ${CMAKE_SOURCE_DIR}/tests)
+target_compile_definitions(test_lsx_framer PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
+target_link_libraries(test_lsx_framer PRIVATE lsxcommon simdjson::simdjson Catch2::Catch2WithMain)
+
+if(WIN32)
+    add_custom_command(TARGET test_lsx_framer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_lsx_framer>"
+    )
+    add_custom_command(TARGET test_lsx_framer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_lsx_framer>"
+    )
+endif()
+
+add_test(NAME test_lsx_framer COMMAND test_lsx_framer)
+set_tests_properties(test_lsx_framer PROPERTIES LABELS fast)

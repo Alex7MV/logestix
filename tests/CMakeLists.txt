@@ -5555,3 +5555,19 @@ set_tests_properties(
     test_qwen_moe_exp_convert
     test_nvfp4_pack
     PROPERTIES TIMEOUT 120)
+
+# ── tokenizer arrows loader (host-only, index-only fixture) ──
+add_executable(test_tokenizer_arrows test_tokenizer_arrows.cpp)
+target_compile_definitions(test_tokenizer_arrows PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_tokenizer_arrows PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_tokenizer_arrows COMMAND test_tokenizer_arrows)
+set_tests_properties(test_tokenizer_arrows PROPERTIES LABELS fast)
+
+# ── prompt_bridge framing bridge (host-only, index-only fixture) ──
+add_executable(test_prompt_bridge test_prompt_bridge.cpp)
+target_compile_definitions(test_prompt_bridge PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_prompt_bridge PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_prompt_bridge COMMAND test_prompt_bridge)
+set_tests_properties(test_prompt_bridge PROPERTIES LABELS fast)
