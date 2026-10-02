@@ -130,4 +130,16 @@ TEST_CASE("alice synthetic generation is deterministic", "[alice][model]")
     REQUIRE(r2.ok);
     REQUIRE(r2.gen_tokens == r1.gen_tokens);
     REQUIRE(r2.final_logits == r1.final_logits);
+
+    // The generation driver's timing contract. RunAliceGeneration reports
+    // prefill-only ttft (Alice recomputes the whole sequence per step, so
+    // "first token" is one full prefill) and a total that must cover it. A
+    // zeroed or inverted pair is not a crash — it is worse, because every
+    // perf reading derived from it is silently wrong.
+    REQUIRE(r1.ttft_ms > 0.0);
+    REQUIRE(r1.total_time_ms >= r1.ttft_ms);
+    INFO("alice timings: ttft=" << r1.ttft_ms
+                                 << " ms total=" << r1.total_time_ms
+                                 << " ms tokens_per_sec=" << r1.tokens_per_sec);
+    REQUIRE(r1.tokens_per_sec > 0.0);
 }
