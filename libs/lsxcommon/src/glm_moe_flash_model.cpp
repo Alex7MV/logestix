@@ -1,4 +1,5 @@
 // Glm5NextFlashModel implementation (Kimi/Qwen38 ModelBase pattern).
+#include "json_escape.h"
 #include "lsxcommon/gpu_perf.h"
 #include "glm_moe_flash_model.h"
 
@@ -21,6 +22,7 @@
 #include <cuda_runtime.h>
 
 namespace lsxcommon {
+using lsxcommon::json::JsonEscape;
 
 const std::string Glm5NextFlashModel::kType = "glm-5.3-flash";
 
@@ -295,31 +297,6 @@ std::string_view GlmTrim(std::string_view s)
     return s;
 }
 
-std::string GlmJsonEscape(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
-
 std::string GlmSerialize(simdjson::dom::element e);
 
 std::string GlmSerialize(simdjson::dom::element e)
@@ -332,7 +309,7 @@ std::string GlmSerialize(simdjson::dom::element e)
             for (auto [k, v] : e.get_object()) {
                 if (!first) out += ",";
                 first = false;
-                out += "\"" + GlmJsonEscape(k) + "\":" + GlmSerialize(v);
+                out += "\"" + JsonEscape(k) + "\":" + GlmSerialize(v);
             }
             out += "}";
             return out;
@@ -349,7 +326,7 @@ std::string GlmSerialize(simdjson::dom::element e)
             return out;
         }
         case element_type::STRING:
-            return "\"" + GlmJsonEscape(e.get_string().value_unsafe()) + "\"";
+            return "\"" + JsonEscape(e.get_string().value_unsafe()) + "\"";
         case element_type::INT64:
             return std::to_string(e.get_int64().value_unsafe());
         case element_type::UINT64:
@@ -392,9 +369,9 @@ bool Glm5NextFlashModel::RenderGlmFlashConversation(const ChatConversation &conv
                "<tools></tools> XML tags:\n<tools>";
         for (const ToolSpec &t : conv.tools) {
             out += "\n{\"name\":\"";
-            out += GlmJsonEscape(esc(t.name));
+            out += JsonEscape(esc(t.name));
             out += "\",\"description\":\"";
-            out += GlmJsonEscape(esc(t.description));
+            out += JsonEscape(esc(t.description));
             out += "\",\"parameters\":";
             out += t.parameters_json.empty() ? std::string("{}")
                                              : esc(t.parameters_json);
@@ -497,7 +474,7 @@ std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
             kp = vend + kArgValEnd.size();
             if (!first) args += ",";
             first = false;
-            args += "\"" + GlmJsonEscape(key) + "\":";
+            args += "\"" + JsonEscape(key) + "\":";
             // The GLM XML format carries no string flag, so a string value that
             // is itself valid JSON (e.g. "42") is inherently ambiguous and
             // round-trips as that JSON type.
@@ -506,7 +483,7 @@ std::vector<ToolCall> Glm5NextFlashModel::ParseGlmFlashToolCallText(
             if (parser.parse(padded).get(ev) == simdjson::SUCCESS)
                 args += GlmSerialize(ev);
             else
-                args += "\"" + GlmJsonEscape(raw) + "\"";
+                args += "\"" + JsonEscape(raw) + "\"";
         }
         args += "}";
 

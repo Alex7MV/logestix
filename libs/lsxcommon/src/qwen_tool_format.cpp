@@ -1,4 +1,5 @@
 #include "lsxcommon/qwen_tool_format.h"
+#include "json_escape.h"
 
 #include <simdjson.h>
 
@@ -9,6 +10,7 @@
 #include "lsxcommon/tool_format.h"
 
 namespace lsxcommon {
+using lsxcommon::json::JsonEscape;
 namespace {
 
 // Appends the BPE encoding of `text` to `ids`. arrow_tokenizer_encode
@@ -48,31 +50,6 @@ std::string_view TrimAscii(std::string_view s)
     return s;
 }
 
-std::string QwenJsonEscape(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
-
 std::string QwenSerialize(simdjson::dom::element e);
 
 std::string QwenSerialize(simdjson::dom::element e)
@@ -85,7 +62,7 @@ std::string QwenSerialize(simdjson::dom::element e)
             for (auto [k, v] : e.get_object()) {
                 if (!first) out += ",";
                 first = false;
-                out += "\"" + QwenJsonEscape(k) + "\":" + QwenSerialize(v);
+                out += "\"" + JsonEscape(k) + "\":" + QwenSerialize(v);
             }
             out += "}";
             return out;
@@ -102,7 +79,7 @@ std::string QwenSerialize(simdjson::dom::element e)
             return out;
         }
         case element_type::STRING:
-            return "\"" + QwenJsonEscape(e.get_string().value_unsafe()) + "\"";
+            return "\"" + JsonEscape(e.get_string().value_unsafe()) + "\"";
         case element_type::INT64:
             return std::to_string(e.get_int64().value_unsafe());
         case element_type::UINT64:
@@ -147,9 +124,9 @@ bool RenderQwenConversation(const ChatConversation &conv, std::string &out,
             "<tools>";
         for (const ToolSpec &t : conv.tools) {
             out += "\n{\"type\":\"function\",\"function\":{\"name\":\"";
-            out += QwenJsonEscape(esc(t.name));
+            out += JsonEscape(esc(t.name));
             out += "\",\"description\":\"";
-            out += QwenJsonEscape(esc(t.description));
+            out += JsonEscape(esc(t.description));
             out += "\",\"parameters\":";
             out += t.parameters_json.empty() ? std::string("{}")
                                              : esc(t.parameters_json);
@@ -319,7 +296,7 @@ std::vector<ToolCall> ParseQwenToolCallText(std::string_view text)
             ap = vend + kParamEnd.size();
             if (!first) args += ",";
             first = false;
-            args += "\"" + QwenJsonEscape(key) + "\":";
+            args += "\"" + JsonEscape(key) + "\":";
             // Preserve JSON types (numbers/objects); otherwise a string.
             // The Qwen XML format carries no string flag, so a string value
             // that is itself valid JSON (e.g. "42") is inherently ambiguous and
@@ -329,7 +306,7 @@ std::vector<ToolCall> ParseQwenToolCallText(std::string_view text)
             if (parser.parse(padded).get(ev) == simdjson::SUCCESS)
                 args += QwenSerialize(ev);
             else
-                args += "\"" + QwenJsonEscape(raw) + "\"";
+                args += "\"" + JsonEscape(raw) + "\"";
         }
         args += "}";
         ToolCall call;

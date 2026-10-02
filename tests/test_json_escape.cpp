@@ -94,13 +94,14 @@ struct CopyRow {
     const char *symbol;
 };
 
+// lsxcommon now has exactly one implementation. The qwen / glm-flash / mimo
+// codecs that each carried a byte-identical copy now call it, so the drift
+// guard became the reverse check below. The lsxnetwork copy stays: that library
+// does not link lsxcommon, and its own comment says so.
 const std::vector<CopyRow> &Copies()
 {
     static const std::vector<CopyRow> v = {
         {"reference (json_escape.h)", "libs/lsxcommon/src/json_escape.h", "JsonEscape"},
-        {"qwen_tool_format.cpp", "libs/lsxcommon/src/qwen_tool_format.cpp", "QwenJsonEscape"},
-        {"glm_moe_flash_model.cpp", "libs/lsxcommon/src/glm_moe_flash_model.cpp", "GlmJsonEscape"},
-        {"mimo_tool_format.cpp", "libs/lsxcommon/src/mimo_tool_format.cpp", "MimoJsonEscape"},
         {"lsxnetwork/openai_endpoint.cpp", "libs/lsxnetwork/src/openai_endpoint.cpp", "JsonEscape"},
     };
     return v;
@@ -182,4 +183,38 @@ TEST_CASE("json escape: every copy matches the reference arms",
         }
         CHECK(arms == reference);
     }
+}
+
+TEST_CASE("json escape: lsxcommon keeps no family-local copy",
+          "[json][escape][guard]")
+{
+    // The qwen / glm-flash / mimo codecs used to each carry a byte-identical
+    // copy of the escape loop (QwenJsonEscape, GlmJsonEscape, MimoJsonEscape).
+    // Reintroducing one is easy and silent — it would compile, pass every other
+    // test and then diverge. The hex digit table is the fingerprint of a copy.
+    const fs::path root(LSX_SOURCE_DIR);
+    static const std::regex kHexTable(R"(static\s+const\s+char\s*\*?\s*kHex)");
+    std::vector<std::string> found;
+    for (const char *sub : {"lsxcommon", "lsxnetwork"}) {
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(root / "libs" / sub, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file()) continue;
+            const auto ext = it->path().extension().string();
+            if (ext != ".h" && ext != ".cpp" && ext != ".cu") continue;
+            if (std::regex_search(ReadFile(it->path()), kHexTable))
+                found.push_back(
+                    it->path().lexically_relative(root).generic_string());
+        }
+    }
+    std::sort(found.begin(), found.end());
+    std::string joined;
+    for (const auto &f : found) joined += f + "\n";
+    INFO("files declaring their own hex table:\n" << joined);
+    // Exactly two: the lsxcommon reference and the lsxnetwork copy that cannot
+    // link it. Anything else is a reintroduced duplicate.
+    REQUIRE(found.size() == 2);
+    CHECK(found[0] == "libs/lsxcommon/src/json_escape.h");
+    CHECK(found[1] == "libs/lsxnetwork/src/openai_endpoint.cpp");
 }

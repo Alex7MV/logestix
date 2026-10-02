@@ -1,4 +1,5 @@
 #include "lsxcommon/mimo_tool_format.h"
+#include "json_escape.h"
 
 #include <simdjson.h>
 
@@ -9,6 +10,7 @@
 #include "lsxcommon/tool_format.h"
 
 namespace lsxcommon {
+using lsxcommon::json::JsonEscape;
 namespace mimo {
 namespace {
 
@@ -56,31 +58,6 @@ std::string_view TrimAscii(std::string_view s)
     return s;
 }
 
-std::string MimoJsonEscape(std::string_view in)
-{
-    std::string out;
-    out.reserve(in.size() + 8);
-    static const char *kHex = "0123456789abcdef";
-    for (char c : in) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += kHex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-                    out += kHex[static_cast<unsigned char>(c) & 0xF];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    return out;
-}
-
 std::string MimoSerialize(simdjson::dom::element e);
 
 std::string MimoSerialize(simdjson::dom::element e)
@@ -93,7 +70,7 @@ std::string MimoSerialize(simdjson::dom::element e)
             for (auto [k, v] : e.get_object()) {
                 if (!first) out += ",";
                 first = false;
-                out += "\"" + MimoJsonEscape(k) + "\":" + MimoSerialize(v);
+                out += "\"" + JsonEscape(k) + "\":" + MimoSerialize(v);
             }
             out += "}";
             return out;
@@ -110,7 +87,7 @@ std::string MimoSerialize(simdjson::dom::element e)
             return out;
         }
         case element_type::STRING:
-            return "\"" + MimoJsonEscape(e.get_string().value_unsafe()) + "\"";
+            return "\"" + JsonEscape(e.get_string().value_unsafe()) + "\"";
         case element_type::INT64:
             return std::to_string(e.get_int64().value_unsafe());
         case element_type::UINT64:
@@ -132,9 +109,9 @@ std::string RenderTools(const std::vector<ToolSpec> &tools)
     std::string out = "You are provided with the following tools:\n\n<tools>";
     for (const ToolSpec &t : tools) {
         out += "\n{\"type\":\"function\",\"function\":{\"name\":\"";
-        out += MimoJsonEscape(t.name);
+        out += JsonEscape(t.name);
         out += "\",\"description\":\"";
-        out += MimoJsonEscape(t.description);
+        out += JsonEscape(t.description);
         out += "\",\"parameters\":";
         out += t.parameters_json.empty() ? std::string("{}") : t.parameters_json;
         out += "}}";
@@ -263,14 +240,14 @@ std::vector<ToolCall> ParseMimoToolCallText(std::string_view text)
             ap = vend + kParamEnd.size();
             if (!first) args += ",";
             first = false;
-            args += "\"" + MimoJsonEscape(key) + "\":";
+            args += "\"" + JsonEscape(key) + "\":";
             // Preserve JSON types; otherwise a string.
             simdjson::dom::element ev;
             simdjson::padded_string padded(raw);
             if (parser.parse(padded).get(ev) == simdjson::SUCCESS)
                 args += MimoSerialize(ev);
             else
-                args += "\"" + MimoJsonEscape(raw) + "\"";
+                args += "\"" + JsonEscape(raw) + "\"";
         }
         args += "}";
         ToolCall call;
