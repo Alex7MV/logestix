@@ -1281,6 +1281,7 @@ target_include_directories(test_xing_moe_loader PRIVATE
 target_link_libraries(test_xing_moe_loader PRIVATE lsxcommon
     Catch2::Catch2WithMain)
 add_test(NAME test_xing_moe_loader COMMAND test_xing_moe_loader)
+set_tests_properties(test_xing_moe_loader PROPERTIES LABELS inference)
 set_tests_properties(test_xing_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
 set_tests_properties(test_xing_moe_loader PROPERTIES ENVIRONMENT
     "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")

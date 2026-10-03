@@ -102,6 +102,12 @@ struct XingPinnedWeights {
     std::vector<uint8_t *> expert_slabs;
     std::vector<size_t> slab_bytes;
     std::vector<std::vector<XingExpertRecord>> expert_records;
+    // Device-resident POINTER tables, one row per layer [num_experts]: because
+    // every expert is resident, the decode loop only has to gather the 4
+    // selected rows into a tiny staging array on-device (no per-token H2D).
+    std::vector<const uint8_t **> expert_packed_ptrs;
+    std::vector<const uint8_t **> expert_scale_ptrs;
+    std::vector<float *> expert_gs;
     // Per-layer raw scratch (hc / norms) counted into resident_bytes.
     std::size_t resident_bytes = 0;
 
