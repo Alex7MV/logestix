@@ -15,6 +15,8 @@
 
 #include "test_synth_checkpoint.h"
 
+#include "xing_moe_constants.h"
+
 #include <absl/strings/str_cat.h>
 
 #include <cstdint>
@@ -116,6 +118,100 @@ inline std::vector<FakeTensor> BuildSyntheticXingModel(int num_layers = 3,
             AppendXingDenseMlp(t, l);
         else
             AppendXingMoeFfn(t, l, num_experts);
+    }
+    AppendXingMtp(t, mtp_layer);
+    return t;
+}
+
+// A decode fixture's weights must be FINITE and small: MakeBf16 emits raw bit
+// patterns 0..65535, which include bf16 Inf (0x7F80) and NaN, so a pipeline that
+// is actually correct still produces an all-NaN logit row. This pattern keeps
+// every value in [-0.08, +0.08].
+inline std::vector<uint8_t> XingWeight(int64_t n, float scale = 0.01f)
+{
+    return synthtest::MakeBf16Values(
+        n, [scale](int64_t i) { return static_cast<float>(i % 17) * scale - 8 * scale; });
+}
+
+// FULL frozen geometry, shrunken only in layer/expert COUNT (~300 MiB of
+// synthetic tensors). The decode stage needs every projection to have its real
+// width: XingDimsFromWeights keeps hidden/heads at the passport values, so a
+// [16,16] fixture cannot be stepped (its kv_b would be read as 8192 floats).
+inline std::vector<FakeTensor> BuildSyntheticXingRealGeometry(
+    int num_layers = 3, int num_experts = 2, int mtp_layer = 40)
+{
+    namespace f = lsxcommon::xing::frozen;
+    const int H = f::kHidden, V = f::kVocab;
+    const int QL = f::kQLoraRank, KL = f::kKvLoraRank;
+    std::vector<FakeTensor> t;
+    t.push_back({"model.embed_tokens.weight", "BF16", {V, H},
+                 XingWeight(static_cast<int64_t>(V) * H)});
+    t.push_back({"lm_head.weight", "BF16", {V, H},
+                 XingWeight(static_cast<int64_t>(V) * H)});
+    t.push_back({"model.norm.weight", "BF16", {H}, XingWeight(H)});
+
+    for (int l = 0; l < num_layers; ++l)
+    {
+        const auto p = absl::StrCat("model.layers.", l, ".");
+        t.push_back({p + "input_layernorm.weight", "BF16", {H}, XingWeight(H)});
+        t.push_back({p + "post_attention_layernorm.weight", "BF16", {H}, XingWeight(H)});
+        t.push_back({p + "self_attn.q_a_proj.weight", "BF16", {QL, H},
+                     XingWeight(static_cast<int64_t>(QL) * H)});
+        t.push_back({p + "self_attn.q_a_layernorm.weight", "BF16", {QL}, XingWeight(QL)});
+        t.push_back({p + "self_attn.q_b_proj.weight", "BF16", {f::kQSize, QL},
+                     XingWeight(static_cast<int64_t>(f::kQSize) * QL)});
+        t.push_back({p + "self_attn.kv_a_proj_with_mqa.weight", "BF16", {f::kKvAWidth, H},
+                     XingWeight(static_cast<int64_t>(f::kKvAWidth) * H)});
+        t.push_back({p + "self_attn.kv_a_layernorm.weight", "BF16", {KL}, XingWeight(KL)});
+        t.push_back({p + "self_attn.kv_b_proj.weight", "BF16", {f::kKvBWidth, KL},
+                     XingWeight(static_cast<int64_t>(f::kKvBWidth) * KL)});
+        t.push_back({p + "self_attn.o_proj.weight", "BF16", {H, f::kOSize},
+                     XingWeight(static_cast<int64_t>(H) * f::kOSize)});
+        // mHC at full width: hc_fn [24, 4H].
+        t.push_back({p + "attn_hc.hc_fn", "BF16", {f::kHcMix, f::kHcFlat},
+                     XingWeight(static_cast<int64_t>(f::kHcMix) * f::kHcFlat)});
+        t.push_back({p + "attn_hc.hc_base", "BF16", {f::kHcMix}, XingWeight(f::kHcMix)});
+        t.push_back({p + "attn_hc.hc_scale", "F32", {3}, MakeF32(3)});
+        t.push_back({p + "ffn_hc.hc_fn", "BF16", {f::kHcMix, f::kHcFlat},
+                     XingWeight(static_cast<int64_t>(f::kHcMix) * f::kHcFlat)});
+        t.push_back({p + "ffn_hc.hc_base", "BF16", {f::kHcMix}, XingWeight(f::kHcMix)});
+        t.push_back({p + "ffn_hc.hc_scale", "F32", {3}, MakeF32(3)});
+
+        if (l < 2)
+        {
+            const int I = f::kDenseIntermediate;
+            t.push_back({p + "mlp.gate_proj.weight", "BF16", {I, H},
+                         XingWeight(static_cast<int64_t>(I) * H)});
+            t.push_back({p + "mlp.up_proj.weight", "BF16", {I, H},
+                         XingWeight(static_cast<int64_t>(I) * H)});
+            t.push_back({p + "mlp.down_proj.weight", "BF16", {H, I},
+                         XingWeight(static_cast<int64_t>(H) * I)});
+        }
+        else
+        {
+            const int MI = f::kMoeIntermediate;
+            const auto mp = absl::StrCat(p, "mlp.");
+            t.push_back({mp + "gate.weight", "BF16", {num_experts, H},
+                         XingWeight(static_cast<int64_t>(num_experts) * H)});
+            t.push_back({mp + "gate.e_score_correction_bias", "F32", {num_experts},
+                         MakeF32(num_experts)});
+            for (int e = 0; e < num_experts; ++e)
+            {
+                const auto ep = absl::StrCat(mp, "experts.", e, ".");
+                t.push_back({ep + "gate_proj.weight", "BF16", {MI, H},
+                             XingWeight(static_cast<int64_t>(MI) * H)});
+                t.push_back({ep + "up_proj.weight", "BF16", {MI, H},
+                             XingWeight(static_cast<int64_t>(MI) * H)});
+                t.push_back({ep + "down_proj.weight", "BF16", {H, MI},
+                             XingWeight(static_cast<int64_t>(H) * MI)});
+            }
+            t.push_back({mp + "shared_experts.gate_proj.weight", "BF16", {MI, H},
+                         XingWeight(static_cast<int64_t>(MI) * H)});
+            t.push_back({mp + "shared_experts.up_proj.weight", "BF16", {MI, H},
+                         XingWeight(static_cast<int64_t>(MI) * H)});
+            t.push_back({mp + "shared_experts.down_proj.weight", "BF16", {H, MI},
+                         XingWeight(static_cast<int64_t>(H) * MI)});
+        }
     }
     AppendXingMtp(t, mtp_layer);
     return t;

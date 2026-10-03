@@ -109,12 +109,14 @@ struct XingPinnedWeights {
     std::vector<uint8_t *> expert_slabs;
     std::vector<size_t> slab_bytes;
     std::vector<std::vector<XingExpertRecord>> expert_records;
-    // Device-resident POINTER tables, one row per layer [num_experts]: because
-    // every expert is resident, the decode loop only has to gather the 4
-    // selected rows into a tiny staging array on-device (no per-token H2D).
-    std::vector<const uint8_t **> expert_packed_ptrs;
-    std::vector<const uint8_t **> expert_scale_ptrs;
-    std::vector<float *> expert_gs;
+    // HOST pointer tables, one row per layer [2 * num_experts] (gate/up rows in
+    // the first half, down rows in the second). The model-neutral expert-batch
+    // GEMV takes its pointer arrays BY VALUE on the host and ships them to the
+    // kernel in a by-value struct, so a device-resident table cannot be used
+    // here - the decode loop copies the 4 ids back and indexes these.
+    std::vector<std::vector<const uint8_t *>> expert_packed_ptrs;
+    std::vector<std::vector<const uint8_t *>> expert_scale_ptrs;
+    std::vector<std::vector<float>> expert_gs;  // [2 * num_experts]
     // Per-layer raw scratch (hc / norms) counted into resident_bytes.
     std::size_t resident_bytes = 0;
 

@@ -63,16 +63,24 @@ cudaError_t UploadBytes(const uint8_t *src, size_t n, const uint8_t **dst,
     return cudaSuccess;
 }
 
-// Dense NVFP4 record -> device.
+// Dense NVFP4 record -> device. packed and scales are SEPARATE Arrow columns,
+// i.e. two unrelated host addresses: uploading them as one blob and pointing
+// `scales` at `packed + packed_bytes` reads whatever follows the nibbles in the
+// packed buffer. That produced garbage E4M3 scales (0xf7ef instead of 0x38) and
+// an all-inf logit row with no error anywhere - the same split the shared
+// fastload::UploadNvfp4Weight does.
 cudaError_t UploadNvfp4(const lsxcommon::DenseNvfp4View &v,
                          XingNvfp4Weight &w, cudaStream_t stream,
                          std::size_t &accounted)
 {
-    const size_t n = static_cast<size_t>(v.packed_bytes) +
-                     static_cast<size_t>(v.scale_bytes);
-    const cudaError_t err = UploadBytes(v.packed, n, &w.packed, accounted);
+    const cudaError_t err = UploadBytes(v.packed,
+                                        static_cast<size_t>(v.packed_bytes),
+                                        &w.packed, accounted);
     if (err != cudaSuccess) return err;
-    w.scales = w.packed + v.packed_bytes;
+    const cudaError_t esc = UploadBytes(v.scales,
+                                        static_cast<size_t>(v.scale_bytes),
+                                        &w.scales, accounted);
+    if (esc != cudaSuccess) return esc;
     w.global_scale = v.global_scale;
     w.rows = v.rank > 0 ? v.shape[0] : 0;
     w.cols = v.rank > 1 ? v.shape[1] : 1;
@@ -278,9 +286,6 @@ void FreeXingWeights(XingPinnedWeights &pw)
     for (auto *s : pw.expert_slabs)
         if (s) cudaFree(s);
     pw.expert_slabs.clear();
-    for (auto *t : pw.expert_packed_ptrs) if (t) cudaFree(const_cast<void*>(static_cast<const void*>(t)));
-    for (auto *t : pw.expert_scale_ptrs) if (t) cudaFree(const_cast<void*>(static_cast<const void*>(t)));
-    for (auto *t : pw.expert_gs) if (t) cudaFree(t);
     pw.expert_packed_ptrs.clear();
     pw.expert_scale_ptrs.clear();
     pw.expert_gs.clear();
@@ -470,9 +475,9 @@ cudaError_t LoadXingWeights(const std::string &model_path,
     pw.expert_slabs.assign(static_cast<size_t>(pw.num_layers), nullptr);
     pw.slab_bytes.assign(static_cast<size_t>(pw.num_layers), 0);
     pw.expert_records.assign(static_cast<size_t>(pw.num_layers), {});
-    pw.expert_packed_ptrs.assign(static_cast<size_t>(pw.num_layers), nullptr);
-    pw.expert_scale_ptrs.assign(static_cast<size_t>(pw.num_layers), nullptr);
-    pw.expert_gs.assign(static_cast<size_t>(pw.num_layers), nullptr);
+    pw.expert_packed_ptrs.assign(static_cast<size_t>(pw.num_layers), {});
+    pw.expert_scale_ptrs.assign(static_cast<size_t>(pw.num_layers), {});
+    pw.expert_gs.assign(static_cast<size_t>(pw.num_layers), {});
     for (int l = pw.first_moe_layer; l < pw.num_layers; ++l)
     {
         const fs::path dir = base / "experts" / absl::StrCat("layer_", l);
@@ -487,11 +492,6 @@ cudaError_t LoadXingWeights(const std::string &model_path,
         // Two packed pointers and one scale pointer per expert: gate rows for
         // the gate GEMV, down rows (w2) for the down GEMV, and the up rows'
         // scale tile (s3) because gate and up share the gate/up scale split.
-        std::vector<const uint8_t *> packed_ptrs(
-            static_cast<size_t>(pw.num_experts) * 2, nullptr);
-        std::vector<const uint8_t *> scale_ptrs(
-            static_cast<size_t>(pw.num_experts) * 2, nullptr);
-        std::vector<float> gs(static_cast<size_t>(pw.num_experts) * 3, 1.0f);
         std::vector<Staged> staged(static_cast<size_t>(pw.num_experts));
         size_t total = 0;
         for (int e = 0; e < pw.num_experts; ++e)
@@ -565,57 +565,33 @@ cudaError_t LoadXingWeights(const std::string &model_path,
             }
             pw.expert_records[static_cast<size_t>(l)]
                 .push_back(std::move(st.rec));
-            // Pointer tables for the neutral expert-batch GEMV.
-            packed_ptrs[static_cast<size_t>(k)] =
-                pw.expert_slabs[static_cast<size_t>(l)] + r.w1_off;
-            packed_ptrs[static_cast<size_t>(pw.num_experts) + k] =
-                pw.expert_slabs[static_cast<size_t>(l)] + r.w2_off;
-            scale_ptrs[static_cast<size_t>(k)] =
-                pw.expert_slabs[static_cast<size_t>(l)] + r.s1_off;
-            scale_ptrs[static_cast<size_t>(pw.num_experts) + k] =
-                pw.expert_slabs[static_cast<size_t>(l)] + r.s3_off;
-            gs[3 * static_cast<size_t>(k) + 0] = r.gs1;
-            gs[3 * static_cast<size_t>(k) + 1] = r.gs2;
-            gs[3 * static_cast<size_t>(k) + 2] = r.gs3;
         }
     }
 
+    // HOST pointer tables for the model-neutral expert-batch GEMV: gate/up rows
+    // (w1 + its scale tile) first, down rows (w2 + s3) second.
     for (int l = pw.first_moe_layer; l < pw.num_layers; ++l)
     {
         const size_t slot = static_cast<size_t>(l);
-        const size_t n = static_cast<size_t>(pw.num_experts) * 2;
-        const size_t gsn = static_cast<size_t>(pw.num_experts) * 3;
-        void *pp = nullptr, *sp = nullptr, *gp = nullptr;
-        if (cudaMalloc(&pp, n * sizeof(void *)) != cudaSuccess ||
-            cudaMalloc(&sp, n * sizeof(void *)) != cudaSuccess ||
-            cudaMalloc(&gp, gsn * sizeof(float)) != cudaSuccess)
-            return fail(absl::StrCat("expert pointer tables (layer ", l, ")"),
-                        cudaErrorMemoryAllocation);
-        // Re-read the staged rows from the (already uploaded) records.
-        std::vector<const uint8_t *> hp(n, nullptr);
-        std::vector<const uint8_t *> hs(n, nullptr);
-        std::vector<float> hg(gsn, 1.0f);
-        const auto &recs = pw.expert_records[slot];
+        const size_t n = static_cast<size_t>(pw.num_experts);
         const uint8_t *slab = pw.expert_slabs[slot];
-        for (int k = 0; k < pw.num_experts && k < static_cast<int>(recs.size());
-             ++k)
+        auto &pp = pw.expert_packed_ptrs[slot];
+        auto &sp = pw.expert_scale_ptrs[slot];
+        auto &gv = pw.expert_gs[slot];
+        pp.assign(n * 2, nullptr);
+        sp.assign(n * 2, nullptr);
+        gv.assign(n * 2, 1.0f);
+        const auto &recs = pw.expert_records[slot];
+        for (size_t k = 0; k < recs.size() && k < n; ++k)
         {
-            const auto &r = recs[static_cast<size_t>(k)];
-            hp[static_cast<size_t>(k)] = slab + r.w1_off;
-            hp[static_cast<size_t>(pw.num_experts) + k] = slab + r.w2_off;
-            hs[static_cast<size_t>(k)] = slab + r.s1_off;
-            hs[static_cast<size_t>(pw.num_experts) + k] = slab + r.s3_off;
-            hg[3 * static_cast<size_t>(k) + 0] = r.gs1;
-            hg[3 * static_cast<size_t>(k) + 1] = r.gs2;
-            hg[3 * static_cast<size_t>(k) + 2] = r.gs3;
+            const auto &r = recs[k];
+            pp[k] = slab + r.w1_off;          // gate rows
+            pp[n + k] = slab + r.w2_off;      // down rows
+            sp[k] = slab + r.s1_off;          // gate/up scale tile
+            sp[n + k] = slab + r.s3_off;
+            gv[k] = r.gs1;
+            gv[n + k] = r.gs2;
         }
-        cudaMemcpy(pp, hp.data(), n * sizeof(void *), cudaMemcpyHostToDevice);
-        cudaMemcpy(sp, hs.data(), n * sizeof(void *), cudaMemcpyHostToDevice);
-        cudaMemcpy(gp, hg.data(), gsn * sizeof(float), cudaMemcpyHostToDevice);
-        pw.expert_packed_ptrs[slot] = static_cast<const uint8_t **>(pp);
-        pw.expert_scale_ptrs[slot] = static_cast<const uint8_t **>(sp);
-        pw.expert_gs[slot] = static_cast<float *>(gp);
-        acc += n * sizeof(void *) * 2 + gsn * sizeof(float);
     }
 
     pw.resident_bytes = acc;

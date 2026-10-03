@@ -216,9 +216,9 @@ __global__ void xing_mix_kernel(const float *__restrict__ streams,
 // lowest id) while every thread cooperates on the expert dot products.
 __global__ void xing_router_kernel(const __nv_bfloat16 *__restrict__ weight,
                                    const float *__restrict__ bias,
-                                   const float *__restrict__ x, int num_experts,
-                                   int hidden, int top_k, bool norm_topk_prob,
-                                   float routed_scale,
+                                   const __nv_bfloat16 *__restrict__ x,
+                                   int num_experts, int hidden, int top_k,
+                                   bool norm_topk_prob, float routed_scale,
                                    float *__restrict__ out_weights,
                                    int32_t *__restrict__ out_experts)
 {
@@ -232,7 +232,8 @@ __global__ void xing_router_kernel(const __nv_bfloat16 *__restrict__ weight,
         const __nv_bfloat16 *row = weight + static_cast<size_t>(e) * hidden;
         float acc = 0.0f;
         for (int i = 0; i < hidden; ++i)
-            acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(row[i]), x[i]));
+            acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(row[i]),
+                                           __bfloat162float(x[i])));
         score[e] = XingSigmoid(acc);
         taken[e] = false;
     }
@@ -271,10 +272,10 @@ __global__ void xing_router_kernel(const __nv_bfloat16 *__restrict__ weight,
         }
         // Zero-fill the unused lanes so the caller's 16-wide buffers are fully
         // defined even though this family selects 4.
-        for (int k = top_k; k < 16; ++k)
+        for (int i = top_k; i < 16; ++i)
         {
-            out_weights[k] = 0.0f;
-            out_experts[k] = -1;
+            out_weights[i] = 0.0f;
+            out_experts[i] = -1;
         }
     }
 }
@@ -306,6 +307,23 @@ cudaError_t LaunchXingHyperConnection(
     if ((2 + hc_mult) * hc_mult > kMaxMix) return cudaErrorInvalidValue;
     const size_t smem =
         (static_cast<size_t>(hc_mult) * hidden + kThreads) * sizeof(float);
+    // 4 x 3584 streams + the reduction slots is ~56 KiB, above the 48 KiB a
+    // block gets by DEFAULT on sm_120. Without this opt-in the launch fails with
+    // cudaErrorInvalidValue - which is exactly what the full-geometry decode
+    // test hit while the small-geometry kernel test stayed green.
+    if (smem > 48 * 1024)
+    {
+        static bool opted = false;
+        if (!opted)
+        {
+            const cudaError_t a = cudaFuncSetAttribute(
+                xing_hyper_conn_kernel,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                static_cast<int>(smem));
+            if (a != cudaSuccess) return a;
+            opted = true;
+        }
+    }
     xing_hyper_conn_kernel<<<1, kThreads, smem, stream>>>(
         streams, hc_fn, hc_base, hc_scale, hc_mult, hidden, eps, sinkhorn_iters,
         clamp_min, clamp_max, post_gain, collapsed, post, comb);
@@ -324,7 +342,7 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 }
 
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
-                             const float *x, int num_experts, int hidden,
+                             const __nv_bfloat16 *x, int num_experts, int hidden,
                              int top_k, bool norm_topk_prob,
                              float routed_scale, float *out_weights,
                              int32_t *out_experts, cudaStream_t stream)
@@ -332,8 +350,12 @@ cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
     if (num_experts <= 0 || num_experts > kMaxExperts || hidden <= 0 ||
         top_k <= 0 || top_k > 16)
         return cudaErrorInvalidValue;
+    // A top_k larger than the expert count has no k-th candidate: the selection
+    // loop would emit expert id -1 and the caller's resolve step would reject
+    // the whole layer. Clamp instead, and zero the lanes we do not fill.
+    const int k = std::min(top_k, num_experts);
     xing_router_kernel<<<1, kThreads, 0, stream>>>(
-        weight, bias, x, num_experts, hidden, top_k, norm_topk_prob,
+        weight, bias, x, num_experts, hidden, k, norm_topk_prob,
         routed_scale, out_weights, out_experts);
     return cudaGetLastError();
 }

@@ -56,8 +56,11 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 // the expert ids; the caller feeds them straight into the expert chain.
 //   weight  [num_experts, hidden] BF16
 //   bias    [num_experts] F32 (e_score_correction_bias)
+//   x       [hidden] BF16 - the device-independent neutral GEMV only dispatches
+//           matching dtypes, so the router's activation is BF16 like its weight
+//           (the kernel converts per element, keeping the dot product in F32).
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
-                             const float *x, int num_experts, int hidden,
+                             const __nv_bfloat16 *x, int num_experts, int hidden,
                              int top_k, bool norm_topk_prob,
                              float routed_scale, float *out_weights,
                              int32_t *out_experts, cudaStream_t stream);

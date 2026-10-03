@@ -1274,6 +1274,20 @@ set_tests_properties(test_xing_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_xing_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Xing4.0-29B-A4B model test (decode step / determinism / KV growth) ──
+add_executable(test_xing_moe_model test_xing_moe_model.cpp)
+target_include_directories(test_xing_moe_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_compile_definitions(test_xing_moe_model PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_xing_moe_model PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_model COMMAND test_xing_moe_model)
+set_tests_properties(test_xing_moe_model PROPERTIES LABELS inference)
+set_tests_properties(test_xing_moe_model PROPERTIES TIMEOUT 600)
+set_tests_properties(test_xing_moe_model PROPERTIES ENVIRONMENT
+    "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Xing4.0-29B-A4B loader test (mHC / MLA / all-resident experts) ──
 add_executable(test_xing_moe_loader test_xing_moe_loader.cpp)
 target_include_directories(test_xing_moe_loader PRIVATE

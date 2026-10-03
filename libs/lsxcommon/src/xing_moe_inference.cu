@@ -23,7 +23,11 @@
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
 #include "lsxcommon/lsx_gemv.h"
+#include "lsxcommon/log.h"
 #include "lsxcommon/shared_experts.h"
+
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 
 #include <cuda_bf16.h>
 
@@ -37,10 +41,23 @@ namespace frozen = lsxcommon::xing::frozen;
 
 constexpr int kThreads = 256;
 
-inline cudaError_t Ck(cudaError_t e)
-{
-    return e;
-}
+// Propagate-on-error: as a plain function call `XING_CK(x)` evaluated and DISCARDED
+// the code, so a failed launch silently produced an all-NaN logit row instead of
+// stopping the step. Every call site is a statement, which makes this macro safe.
+#define XING_CK(expr)                             \
+    do {                                          \
+        const cudaError_t xing_ck_e_ = (expr);    \
+        if (xing_ck_e_ != cudaSuccess) {           \
+            xing_fail_line = static_cast<int>(__LINE__); \
+            lsxcommon::log::error(absl::StrFormat(   \
+                "xing stage failed at line %d: %s", __LINE__,              \
+                cudaGetErrorString(xing_ck_e_)));    \
+            return xing_ck_e_;                    \
+        }                                         \
+    } while (0)
+
+// Line of the failing stage, for diagnostics when a step returns an error.
+static thread_local int xing_fail_line = 0;
 
 // NVFP4 dense GEMV over one token (K % 32 == 0 holds for every projection).
 inline cudaError_t Gv(const XingNvfp4Weight &w, const __half *x, __half *y,
@@ -211,29 +228,75 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
     }
 }
 
-// Gathers the 4 selected experts' device pointers into the tiny staging arrays
-// the neutral expert-batch GEMV consumes. Device-side: no per-token H2D.
-__global__ void xing_gather_expert_ptrs_kernel(const int32_t *__restrict__ ids,
-                                               int count,
-                                               const uint8_t *const *packed_tbl,
-                                               const uint8_t *const *scale_tbl,
-                                               const float *__restrict__ gs_tbl,
-                                               const uint8_t **packed_out,
-                                               const uint8_t **scale_out,
-                                               float *gs_out)
+// Host-side staging for the four selected experts: the model-neutral
+// expert-batch GEMV takes its packed/scale pointer arrays BY VALUE (it copies
+// them into a by-value struct for the kernel), so the routed ids must reach the
+// host. One D2H of 4 ints per layer, exactly the shape nemotron and gigachat
+// use — the ids, not the 4 KiB activation.
+struct XingRoutedViews {
+    std::vector<const uint8_t *> packed_gate, packed_down;
+    std::vector<const uint8_t *> scales_gate, scales_down;
+    std::vector<float> gs_gate, gs_down;
+};
+
+cudaError_t ResolveXingRouted(const XingPinnedWeights &pw, int layer,
+                              const int32_t *d_ids, int top_k, cudaStream_t stream,
+                              XingRoutedViews &out, XingSession *s)
 {
-    const int i = threadIdx.x;
-    if (i >= count) return;
-    const int e = ids[i];
-    const int up = 0;   // gate/up share the gate projection rows (w1)
-    packed_out[i] = packed_tbl[e];
-    packed_out[count + i] = packed_tbl[e];      // placeholder, fixed below
-    scale_out[i] = scale_tbl[e];
-    scale_out[count + i] = scale_tbl[e];
-    gs_out[3 * i + 0] = gs_tbl[3 * e + 0];
-    gs_out[3 * i + 1] = gs_tbl[3 * e + 1];
-    gs_out[3 * i + 2] = gs_tbl[3 * e + 2];
-    (void)up;
+    const size_t slot = static_cast<size_t>(layer);
+    if (slot >= pw.expert_packed_ptrs.size() || top_k <= 0) return cudaErrorInvalidValue;
+    out.packed_gate.resize(static_cast<size_t>(top_k));
+    out.packed_down.resize(static_cast<size_t>(top_k));
+    out.scales_gate.resize(static_cast<size_t>(top_k));
+    out.scales_down.resize(static_cast<size_t>(top_k));
+    out.gs_gate.resize(static_cast<size_t>(top_k));
+    out.gs_down.resize(static_cast<size_t>(top_k));
+    std::vector<int> ids(static_cast<size_t>(top_k), -1);
+    const cudaError_t cp = cudaMemcpyAsync(
+        ids.data(), d_ids, sizeof(int) * static_cast<size_t>(top_k),
+        cudaMemcpyDeviceToHost, stream);
+    if (cp != cudaSuccess) return cp;
+    const cudaError_t sy = cudaStreamSynchronize(stream);
+    if (sy != cudaSuccess) return sy;
+    const int E = pw.num_experts;
+    if (s) s->last_routed_ids.assign(ids.begin(), ids.end());
+    const auto &pp = pw.expert_packed_ptrs[slot];
+    const auto &sp = pw.expert_scale_ptrs[slot];
+    const auto &gv = pw.expert_gs[slot];
+    for (int i = 0; i < top_k; ++i)
+    {
+        const int e = ids[static_cast<size_t>(i)];
+        if (e < 0 || e >= E)
+        {
+            log::error(absl::StrFormat(
+                "xing routed id %d out of range (experts=%d, layer=%d)", e, E, layer));
+            return cudaErrorInvalidValue;
+        }
+        const size_t k = static_cast<size_t>(i);
+        const size_t n = static_cast<size_t>(E);
+        out.packed_gate[k] = pp[k < n ? k : 0];        // w1 (gate rows)
+        out.scales_gate[k] = sp[k < n ? k : 0];        // s1 (shared tile)
+        out.gs_gate[k] = gv[k < n ? k : 0];
+        out.packed_down[k] = pp[n + k];
+        out.scales_down[k] = sp[n + k];
+        out.gs_down[k] = gv[n + k];
+        // re-index by the routed id
+        out.packed_gate[k] = pp[static_cast<size_t>(e)];
+        out.scales_gate[k] = sp[static_cast<size_t>(e)];
+        out.gs_gate[k] = gv[static_cast<size_t>(e)];
+        out.packed_down[k] = pp[n + static_cast<size_t>(e)];
+        out.scales_down[k] = sp[n + static_cast<size_t>(e)];
+        out.gs_down[k] = gv[n + static_cast<size_t>(e)];
+        if (!out.packed_gate[k] || !out.scales_gate[k] ||
+            !out.packed_down[k] || !out.scales_down[k])
+        {
+            log::error(absl::StrCat("xing resolved null expert view, layer ", layer,
+                                    " e=", e, " tables=", pp.size(), "/",
+                                    sp.size(), "/", gv.size()));
+            return cudaErrorInvalidValue;
+        }
+    }
+    return cudaSuccess;
 }
 
 // Broadcast one embedding row into all hc_mult streams.
@@ -277,6 +340,72 @@ inline cudaError_t ToF32(const __half *src, float *dst, int64_t n,
 
 }  // namespace
 
+XingDims XingDimsFromWeights(const XingPinnedWeights &pw)
+{
+    XingDims d;
+    d.hidden = frozen::kHidden;
+    d.hc_mult = frozen::kHcMult;
+    d.vocab = frozen::kVocab;
+    d.layers = pw.num_layers;
+    d.experts = pw.num_experts;
+    d.top_k = frozen::kTopK;
+    d.first_moe_layer = pw.first_moe_layer;
+    d.q_lora = frozen::kQLoraRank;
+    d.kv_lora = frozen::kKvLoraRank;
+    d.heads = frozen::kHeads;
+    d.qk_nope = frozen::kQkNopeHeadDim;
+    d.qk_rope = frozen::kQkRopeHeadDim;
+    d.qk_head = frozen::kQkHeadDim;
+    d.v_head = frozen::kVHeadDim;
+    d.dense_inter = frozen::kDenseIntermediate;
+    d.moe_inter = frozen::kMoeIntermediate;
+    d.sinkhorn_iters = frozen::kHcSinkhornIters;
+    d.attn_scale = frozen::kAttnScale;
+    d.routed_scale = frozen::kRoutedScale;
+    d.norm_topk_prob = frozen::kNormTopkProb;
+    d.hc_eps = frozen::kRmsEps;
+    d.clamp_min = frozen::kHcClampMin;
+    d.clamp_max = frozen::kHcClampMax;
+    d.post_gain = frozen::kHcPostGain;
+    // A synthetic fixture shrinks the geometry; the weight shapes are the only
+    // honest source for it, so every field the step reads comes from them.
+    if (!pw.layers.empty())
+    {
+        const auto &l0 = pw.layers.front();
+        if (l0.input_ln != nullptr && l0.q_a.rows > 0)
+        {
+            // The decode fixture writes FULL frozen widths (only the layer and
+            // expert COUNTS shrink), so hidden/heads stay at the passport and
+            // only the projection widths the tensors actually describe are
+            // taken from them.
+            d.q_lora = static_cast<int>(l0.q_a.rows);
+            if (d.q_lora <= 0) d.q_lora = frozen::kQLoraRank;
+        }
+        d.hc_mult = static_cast<int>(l0.attn_hc.hc_fn_cols /
+                                     std::max(1, d.hidden));
+        d.dense_inter = static_cast<int>(l0.dense_gate.rows);
+    }
+    // The MoE widths live on the first MoE layer, not on layer 0: reading
+    // shared_gate.rows off the dense prefix yields 0 and every routed GEMV then
+    // gets N=0 (cudaErrorInvalidValue one layer deep, with no clue where).
+    for (int l = pw.first_moe_layer; l < pw.num_layers; ++l)
+    {
+        const auto &lm = pw.layers[static_cast<size_t>(l)];
+        if (lm.shared_gate.valid())
+        {
+            d.moe_inter = static_cast<int>(lm.shared_gate.rows);
+            break;
+        }
+    }
+    if (d.dense_inter <= 0 && pw.num_layers > pw.first_moe_layer)
+    {
+        // MoE-only fixture: the dense width lives in the passport.
+        d.dense_inter = frozen::kDenseIntermediate;
+    }
+    if (pw.embed.rows > 0) d.vocab = static_cast<int>(pw.embed.rows);
+    return d;
+}
+
 void XingSession::Free()
 {
     FreeXingSession(*this);
@@ -288,51 +417,73 @@ void FreeXingSession(XingSession &s)
         if (p) cudaFree(p);
     };
     d(s.d_k); d(s.d_v); d(s.d_hidden); d(s.d_collapsed); d(s.d_post);
-    d(s.d_comb); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
+    d(s.d_comb); d(s.d_act); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
     d(s.d_attn); d(s.d_scores); d(s.d_logits); d(s.d_gate); d(s.d_expert_ids);
-    d(s.d_half); d(s.d_half_big); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
-    d(s.d_embed_table);
+    d(s.d_half); d(s.d_half_up); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
+    d(s.d_embed_table); d(s.d_router_act); d(s.d_router_logits);
     s = XingSession{};
 }
 
-cudaError_t AllocateXingSession(XingSession &s, int capacity, int vocab,
-                                int dense_intermediate, cudaStream_t stream)
+cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
+                                int capacity, cudaStream_t stream)
 {
     (void)stream;
     FreeXingSession(s);
-    const int H = frozen::kHidden;
-    const int hc = frozen::kHcMult;
+    const int H = dims.hidden;
+    const int hc = dims.hc_mult;
+    const int vocab = dims.vocab;
+    const int dense_intermediate = dims.dense_inter;
     auto alloc = [](void **p, size_t bytes) {
         return bytes == 0 ? cudaSuccess : cudaMalloc(p, bytes);
     };
-    Ck(alloc(reinterpret_cast<void **>(&s.d_k),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_k),
              static_cast<size_t>(capacity) * frozen::kHeads *
                  (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_v),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_v),
              static_cast<size_t>(capacity) * frozen::kHeads *
                  frozen::kVHeadDim * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_hidden),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_hidden),
              static_cast<size_t>(hc) * H * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_collapsed), static_cast<size_t>(H) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_post), static_cast<size_t>(hc) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_comb), static_cast<size_t>(hc) * hc * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_norm),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_collapsed), static_cast<size_t>(H) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_post), static_cast<size_t>(hc) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_comb), static_cast<size_t>(hc) * hc * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_act), static_cast<size_t>(H) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_norm),
              static_cast<size_t>(std::max({H, frozen::kQLoraRank, frozen::kKvLoraRank})) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_q), static_cast<size_t>(frozen::kQSize) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_kv_latent), static_cast<size_t>(frozen::kKvAWidth) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_kv_b), static_cast<size_t>(frozen::kKvBWidth) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_attn), static_cast<size_t>(frozen::kOSize) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_scores), static_cast<size_t>(capacity) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_logits), static_cast<size_t>(vocab) * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_gate), 16 * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_expert_ids), 16 * 4));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_half),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_q), static_cast<size_t>(dims.heads * dims.qk_head) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_kv_latent), static_cast<size_t>(dims.kv_lora + dims.qk_rope) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_kv_b), static_cast<size_t>(dims.heads * (dims.qk_nope + dims.v_head)) * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_attn), static_cast<size_t>(dims.heads * dims.v_head) * 4));
+    // One score row PER HEAD: the attention kernel indexes scores[h*capacity+t],
+    // so a single capacity-sized row overruns as soon as heads > 1 (found by the
+    // full-geometry decode test; the synthetic kernel test used one head).
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_scores),
+             static_cast<size_t>(capacity) * dims.heads * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_logits), static_cast<size_t>(vocab) * 4));
+    s.logit_count = vocab;
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_act),
+                  static_cast<size_t>(H) * sizeof(__nv_bfloat16)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_logits),
+                  static_cast<size_t>(std::max(1, dims.experts)) *
+                      sizeof(__nv_bfloat16)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_gate), 16 * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_expert_ids), 16 * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_half),
              static_cast<size_t>(dense_intermediate) * 2 * sizeof(__half)));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_half_big),
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_half_up),
+             static_cast<size_t>(dense_intermediate) * sizeof(__half)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_half_big),
              static_cast<size_t>(vocab) * sizeof(__half)));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_epacked), 8 * sizeof(void *)));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_escales), 8 * sizeof(void *)));
-    Ck(alloc(reinterpret_cast<void **>(&s.d_egs), 8 * sizeof(float)));
+    // Routed-expert down-projection output, one row per selected expert. It
+    // MUST NOT alias the swiglu input: the batched GEMV writes y + e*H while
+    // later experts still read x + e*moe_intermediate, and that overlap races
+    // with block order (the step was non-deterministic run to run because of it).
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_expert_out),
+             static_cast<size_t>(std::max(1, dims.top_k)) *
+                 static_cast<size_t>(H) * sizeof(__half)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_epacked), 8 * sizeof(void *)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_escales), 8 * sizeof(void *)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_egs), 8 * sizeof(float)));
     s.capacity = capacity;
     s.length = 0;
     return cudaGetLastError();
@@ -382,14 +533,34 @@ bool BuildXingYarnTables(int capacity, std::vector<float> &cos_t,
     return true;
 }
 
-cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
-                           int token_id, const float *d_rc, const float *d_rs,
-                           int pos, cudaStream_t stream)
+cudaError_t UploadXingYarnTables(cudaStream_t stream, int capacity,
+                                 const std::vector<float> &cos_t,
+                                 const std::vector<float> &sin_t,
+                                 float **dst_rc, float **dst_rs)
 {
-    const int H = frozen::kHidden;
-    const int hc = frozen::kHcMult;
-    const int rope = frozen::kRopeDim;
+    const size_t n = cos_t.size();
+    if (n == 0 || sin_t.size() != n) return cudaErrorInvalidValue;
+    XING_CK(cudaMalloc(reinterpret_cast<void **>(dst_rc), n * sizeof(float)));
+    XING_CK(cudaMalloc(reinterpret_cast<void **>(dst_rs), n * sizeof(float)));
+    XING_CK(cudaMemcpy(*dst_rc, cos_t.data(), n * sizeof(float),
+                  cudaMemcpyHostToDevice));
+    XING_CK(cudaMemcpy(*dst_rs, sin_t.data(), n * sizeof(float),
+                  cudaMemcpyHostToDevice));
+    return cudaGetLastError();
+}
+
+cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
+                           XingSession &s, int token_id, const float *d_rc,
+                           const float *d_rs, int pos, cudaStream_t stream,
+                           int layers_override)
+{
+    const int H = dims.hidden;
+    const int hc = dims.hc_mult;
+    const int rope = dims.qk_rope;
     const int pairs = rope / 2;
+    const int heads = dims.heads;
+    xing_fail_line = 0;
+    XingRoutedViews routed;   // reused per layer; resize() keeps the capacity
 
     // Seed all four streams with the embedding row. The embedding is stored
     // NVFP4, so it is dequantized ONCE into a persistent FP16 table (the
@@ -397,42 +568,54 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
     // would dominate the step time.
     if (s.d_embed_table == nullptr)
     {
-        const int64_t elems = static_cast<int64_t>(frozen::kVocab) * H;
-        Ck(cudaMalloc(reinterpret_cast<void **>(&s.d_embed_table),
-                      static_cast<size_t>(elems) * sizeof(__half)));
-        Ck(lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.packed, pw.embed.packed_bytes,
-                                pw.embed.scales, pw.embed.scale_bytes,
-                                pw.embed.global_scale, s.d_embed_table, elems));
+        const int64_t elems = static_cast<int64_t>(dims.vocab) * H;
+        const cudaError_t ae = cudaMalloc(
+            reinterpret_cast<void **>(&s.d_embed_table),
+            static_cast<size_t>(elems) * sizeof(__half));
+        if (ae != cudaSuccess) return ae;
+        const cudaError_t de = lsxcommon::gpu::dequant_shared_nvfp4(
+            stream, pw.embed.packed, pw.embed.packed_bytes, pw.embed.scales,
+            pw.embed.scale_bytes, pw.embed.global_scale, s.d_embed_table,
+            elems);
+        if (de != cudaSuccess) return de;
     }
     xing_embed_gather_kernel<<<1, kThreads, 0, stream>>>(s.d_embed_table,
                                                          token_id, s.d_hidden,
                                                          hc, H);
     s.token_id = token_id;
 
-    for (int l = 0; l < pw.num_layers; ++l)
+    // layers_override lets a test run a PREFIX of the stack (bisecting where a
+    // non-finite value first appears); 0 means the whole model.
+    const int layer_limit =
+        layers_override < 0 ? pw.num_layers
+                            : std::min(layers_override, pw.num_layers);
+    for (int l = 0; l < layer_limit; ++l)
     {
         const auto &ly = pw.layers[static_cast<size_t>(l)];
 
         // ── attention block ────────────────────────────────────────────────
-        Ck(LaunchXingHyperConnection(
+        XING_CK(LaunchXingHyperConnection(
             s.d_hidden, ly.attn_hc.hc_fn, ly.attn_hc.hc_base, ly.attn_hc.hc_scale,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
             s.d_comb, stream));
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
-            s.d_collapsed, ly.input_ln, s.d_norm, H, frozen::kRmsEps);
+            s.d_collapsed, ly.input_ln, s.d_act, H, frozen::kRmsEps);
 
-        Ck(ToHalf(s.d_norm, s.d_half, H, stream));
-        Ck(Gv(ly.q_a, s.d_half, s.d_half_big, stream));      // [q_lora]
-        Ck(ToF32(s.d_half_big, s.d_norm, frozen::kQLoraRank, stream));
+        // q_a down-projects the activation; its inner norm overwrites d_norm, so
+        // the activation stays in d_act for kv_a below.
+        XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
+        XING_CK(Gv(ly.q_a, s.d_half, s.d_half_big, stream));      // [q_lora]
+        XING_CK(ToF32(s.d_half_big, s.d_norm, frozen::kQLoraRank, stream));
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
             s.d_norm, ly.q_a_ln, s.d_norm, frozen::kQLoraRank, frozen::kRmsEps);
-        Ck(ToHalf(s.d_norm, s.d_half, frozen::kQLoraRank, stream));
-        Ck(Gv(ly.q_b, s.d_half, s.d_half_big, stream));      // [heads*qk]
-        Ck(ToF32(s.d_half_big, s.d_q, frozen::kQSize, stream));
+        XING_CK(ToHalf(s.d_norm, s.d_half, frozen::kQLoraRank, stream));
+        XING_CK(Gv(ly.q_b, s.d_half, s.d_half_big, stream));      // [heads*qk]
+        XING_CK(ToF32(s.d_half_big, s.d_q, frozen::kQSize, stream));
 
-        Ck(Gv(ly.kv_a, s.d_half, s.d_half_big, stream));     // [kv_lora+rope]
-        Ck(ToF32(s.d_half_big, s.d_kv_latent, frozen::kKvAWidth, stream));
+        XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
+        XING_CK(Gv(ly.kv_a, s.d_half, s.d_half_big, stream));     // [kv_lora+rope]
+        XING_CK(ToF32(s.d_half_big, s.d_kv_latent, frozen::kKvAWidth, stream));
         // kv_a_layernorm over the latent part only; the rope part passes through.
         {
             float *latent = s.d_norm;   // scratch of kv_lora floats
@@ -442,9 +625,9 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
             cudaMemcpyAsync(s.d_kv_latent, latent, frozen::kKvLoraRank * 4,
                             cudaMemcpyDeviceToDevice, stream);
         }
-        Ck(ToHalf(s.d_kv_latent, s.d_half, frozen::kKvLoraRank, stream));
-        Ck(Gv(ly.kv_b, s.d_half, s.d_half_big, stream));      // [heads*(nope+v)]
-        Ck(ToF32(s.d_half_big, s.d_kv_b, frozen::kKvBWidth, stream));
+        XING_CK(ToHalf(s.d_kv_latent, s.d_half, frozen::kKvLoraRank, stream));
+        XING_CK(Gv(ly.kv_b, s.d_half, s.d_half_big, stream));      // [heads*(nope+v)]
+        XING_CK(ToF32(s.d_half_big, s.d_kv_b, frozen::kKvBWidth, stream));
 
         // Interleaved RoPE on q's rope subspace and on k_rot.
         xing_rope_q_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
@@ -463,91 +646,94 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
             s.d_q, s.d_k, s.d_v, pos, frozen::kHeads, frozen::kQkHeadDim,
             frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
             s.capacity);
-        Ck(ToHalf(s.d_attn, s.d_half, frozen::kOSize, stream));
+        XING_CK(ToHalf(s.d_attn, s.d_half, frozen::kOSize, stream));
         // The mix needs o_proj's output in F32 next to the four streams; stage it
         // through the collapsed buffer, which the next mHC re-reads anyway.
         {
             __half *o_half = s.d_half_big;
-            Ck(Gv(ly.o_proj, s.d_half, o_half, stream));
-            Ck(ToF32(o_half, s.d_kv_b, frozen::kOSize, stream));
+            XING_CK(Gv(ly.o_proj, s.d_half, o_half, stream));
+            XING_CK(ToF32(o_half, s.d_kv_b, frozen::kOSize, stream));
         }
-        Ck(LaunchXingMix(s.d_hidden, s.d_kv_b, s.d_post, s.d_comb, hc, H,
+        XING_CK(LaunchXingMix(s.d_hidden, s.d_kv_b, s.d_post, s.d_comb, hc, H,
                          s.d_hidden, stream));
 
         // ── FFN block ──────────────────────────────────────────────────────
-        Ck(LaunchXingHyperConnection(
+        XING_CK(LaunchXingHyperConnection(
             s.d_hidden, ly.ffn_hc.hc_fn, ly.ffn_hc.hc_base, ly.ffn_hc.hc_scale,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
             s.d_comb, stream));
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
-            s.d_collapsed, ly.post_attn_ln, s.d_norm, H, frozen::kRmsEps);
-        Ck(ToHalf(s.d_norm, s.d_half, H, stream));
+            s.d_collapsed, ly.post_attn_ln, s.d_act, H, frozen::kRmsEps);
+        XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
 
         if (!ly.is_moe)
         {
-            Ck(Gv(ly.dense_gate, s.d_half, s.d_half_big, stream));
-            Ck(Gv(ly.dense_up, s.d_half, s.d_half + frozen::kDenseIntermediate,
-                  stream));
+            XING_CK(Gv(ly.dense_gate, s.d_half, s.d_half_big, stream));
             constexpr int N = frozen::kDenseIntermediate;
+            XING_CK(Gv(ly.dense_up, s.d_half, s.d_half_up, stream));
             lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
-                <<<(N + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half + N,
+                <<<(N + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half_up,
                                                       s.d_half_big, N, 0.0f);
-            Ck(Gv(ly.dense_down, s.d_half_big, s.d_half, stream));
-            Ck(ToF32(s.d_half, s.d_kv_b, H, stream));
+            XING_CK(Gv(ly.dense_down, s.d_half_big, s.d_half, stream));
+            XING_CK(ToF32(s.d_half, s.d_kv_b, H, stream));
         }
         else
         {
-            // Router: BF16 weight + FP32 bias (never quantized).
-            Ck(lsxcommon::gemv::RunLxGemmVec(
-                stream, ly.router, s.d_norm, 1, pw.num_experts, H,
-                lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kF32,
-                1.0f, s.d_scores, lsxcommon::gemv::LxDtype::kF32, 0.0f));
-            Ck(LaunchXingRouter(ly.router, ly.e_score_bias, s.d_norm, pw.num_experts,
-                                H, frozen::kTopK, frozen::kNormTopkProb,
-                                frozen::kRoutedScale, s.d_gate, s.d_expert_ids,
-                                stream));
-            xing_gather_expert_ptrs_kernel<<<1, frozen::kTopK, 0, stream>>>(
-                s.d_expert_ids, frozen::kTopK, pw.expert_packed_ptrs[l],
-                pw.expert_scale_ptrs[l], pw.expert_gs[l], s.d_epacked, s.d_escales,
-                s.d_egs);
+            // Router: BF16 weight + FP32 bias (never quantized). The
+            // device-independent GEMV dispatches matching dtypes only, so the
+            // activation is converted to BF16 first.
+            lsxcommon::kernels::F32toTKernel<__nv_bfloat16>
+                <<<(H + 255) / 256, 256, 0, stream>>>(s.d_act, s.d_router_act,
+                                                      static_cast<int64_t>(H));
+            XING_CK(lsxcommon::gemv::RunLxGemmVec(
+                stream, ly.router, s.d_router_act, 1, dims.experts, H,
+                lsxcommon::gemv::LxDtype::kBF16, lsxcommon::gemv::LxDtype::kBF16,
+                1.0f, s.d_router_logits, lsxcommon::gemv::LxDtype::kBF16, 0.0f));
+            XING_CK(LaunchXingRouter(ly.router, ly.e_score_bias, s.d_router_act,
+                                     dims.experts, H, dims.top_k,
+                                     dims.norm_topk_prob, dims.routed_scale,
+                                     s.d_gate, s.d_expert_ids, stream));
+            XING_CK(ResolveXingRouted(pw, l, s.d_expert_ids, dims.top_k, stream,
+                                 routed, &s));
             // gate/up per expert, swiglu, down per expert, weighted accumulate.
-            const int MI = frozen::kMoeIntermediate;
+            const int MI = dims.moe_inter;
             cudaMemsetAsync(s.d_attn, 0, static_cast<size_t>(H) * 4, stream);
-            Ck(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, s.d_half, s.d_epacked, s.d_escales, s.d_egs, frozen::kTopK,
-                0, s.d_half_big, H, MI));
-            Ck(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, s.d_half, s.d_epacked + frozen::kTopK,
-                s.d_escales + frozen::kTopK, s.d_egs, frozen::kTopK, 0,
-                s.d_half_big + static_cast<size_t>(MI) * frozen::kTopK, H, MI));
+            XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, s.d_half, routed.packed_gate.data(),
+                routed.scales_gate.data(), routed.gs_gate.data(), dims.top_k, 0,
+                s.d_half_big, H, MI));
+            XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, s.d_half, routed.packed_gate.data(),
+                routed.scales_gate.data(), routed.gs_gate.data(), dims.top_k, 0,
+                s.d_half_big + static_cast<size_t>(MI) * dims.top_k, H, MI));
             lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
-                <<<static_cast<int>((static_cast<int64_t>(MI) * frozen::kTopK + 255) / 256),
+                <<<static_cast<int>((static_cast<int64_t>(MI) * dims.top_k + 255) / 256),
                    256, 0, stream>>>(
-                    s.d_half_big, s.d_half_big + static_cast<size_t>(MI) * frozen::kTopK,
-                    s.d_half_big, static_cast<int64_t>(MI) * frozen::kTopK, 0.0f);
-            Ck(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, s.d_half_big, s.d_epacked + frozen::kTopK,
-                s.d_escales + frozen::kTopK, s.d_egs, frozen::kTopK,
-                MI, s.d_half_big, MI, H));
-            xing_scale_acc_kernel<<<dim3((H + 255) / 256, frozen::kTopK), 256, 0, stream>>>(
-                s.d_half_big, s.d_gate, H, H, s.d_attn);
+                    s.d_half_big, s.d_half_big + static_cast<size_t>(MI) * dims.top_k,
+                    s.d_half_big, static_cast<int64_t>(MI) * dims.top_k, 0.0f);
+            // Separate output buffer: aliasing the swiglu input here races
+            // (writing y + e*H overwrites the inputs of experts e+1..e+3) and
+            // made the whole step non-deterministic run to run.
+            xing_scale_acc_kernel<<<dim3((H + 255) / 256, dims.top_k), 256, 0, stream>>>(
+                s.d_expert_out, s.d_gate, H, H, s.d_attn);
             // Shared expert on top of the routed sum.
-            Ck(Gv(ly.shared_gate, s.d_half, s.d_half_big, stream));
-            Ck(Gv(ly.shared_up, s.d_half, s.d_half + MI, stream));
+            XING_CK(Gv(ly.shared_gate, s.d_half, s.d_half_big, stream));
+            XING_CK(Gv(ly.shared_up, s.d_half, s.d_half_up, stream));
             lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
-                <<<(MI + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half + MI,
+                <<<(MI + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half_up,
                                                       s.d_half_big, MI, 0.0f);
-            Ck(Gv(ly.shared_down, s.d_half_big, s.d_half, stream));
-            Ck(ToF32(s.d_half, s.d_norm, H, stream));
+            XING_CK(Gv(ly.shared_down, s.d_half_big, s.d_half, stream));
+            XING_CK(ToF32(s.d_half, s.d_norm, H, stream));
             lsxcommon::kernels::AddOutKernel<float><<<(H + 255) / 256, 256, 0, stream>>>(
                 s.d_attn, s.d_norm, s.d_attn, H);
         }
-        Ck(LaunchXingMix(s.d_hidden, ly.is_moe ? s.d_attn : s.d_kv_b, s.d_post,
+        XING_CK(LaunchXingMix(s.d_hidden, ly.is_moe ? s.d_attn : s.d_kv_b, s.d_post,
                          s.d_comb, hc, H, s.d_hidden, stream));
+        s.last_layer = l;
     }
 
     // Mean over the four streams -> final norm -> lm_head.
@@ -555,22 +741,75 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
         s.d_hidden, hc, H, s.d_norm);
     xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
         s.d_norm, pw.final_norm, s.d_norm, H, frozen::kRmsEps);
-    Ck(ToHalf(s.d_norm, s.d_half, H, stream));
-    Ck(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+    XING_CK(ToHalf(s.d_norm, s.d_half, H, stream));
+    XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
         stream, s.d_half, pw.head.packed, pw.head.scales, pw.head.global_scale,
-        s.d_half_big, H, frozen::kVocab));
-    Ck(ToF32(s.d_half_big, s.d_logits, frozen::kVocab, stream));
+        s.d_half_big, H, dims.vocab));
+    XING_CK(ToF32(s.d_half_big, s.d_logits, dims.vocab, stream));
     s.length = pos + 1;
+    s.fail_line = 0;
     return cudaGetLastError();
 }
 
-void XingReadLogits(const XingPinnedWeights &pw, const XingSession &s,
-                    float *host_logits, cudaStream_t stream)
+__global__ void xing_count_nonfinite_kernel(const float *__restrict__ x, int64_t n,
+                                             int *__restrict__ out)
 {
-    cudaMemcpyAsync(host_logits, s.d_logits,
-                    static_cast<size_t>(frozen::kVocab) * sizeof(float),
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    if (!isfinite(x[i])) atomicAdd(out, 1);
+}
+
+cudaError_t XingCountNonFinite(const float *d, int64_t n, int *out_count,
+                               cudaStream_t stream)
+{
+    // One counter per block, summed on the host: no cross-block atomics on the
+    // decode path itself, and this is a diagnostic entry point anyway.
+    constexpr int kBlocks = 256;
+    int *d_count = nullptr;
+    if (cudaMalloc(&d_count, sizeof(int)) != cudaSuccess) return cudaErrorMemoryAllocation;
+    cudaMemsetAsync(d_count, 0, sizeof(int), stream);
+    xing_count_nonfinite_kernel<<<kBlocks, 256, 0, stream>>>(d, n, d_count);
+    const cudaError_t e = cudaMemcpyAsync(out_count, d_count, sizeof(int),
+                                          cudaMemcpyDeviceToHost, stream);
+    cudaFree(d_count);
+    return e;
+}
+
+__global__ void xing_max_abs_kernel(const float *__restrict__ x, int64_t n,
+                                    float *__restrict__ out)
+{
+    const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
+    if (i >= n) return;
+    atomicMax(reinterpret_cast<int *>(out), __float_as_int(fabsf(x[i])));
+}
+
+cudaError_t XingMaxAbs(const float *d, int64_t n, float *out_max,
+                       cudaStream_t stream)
+{
+    float *d_max = nullptr;
+    if (cudaMalloc(&d_max, sizeof(float)) != cudaSuccess) return cudaErrorMemoryAllocation;
+    const unsigned zero = 0x00000000u;
+    cudaMemcpyAsync(d_max, &zero, sizeof(float), cudaMemcpyHostToDevice, stream);
+    const int blocks = static_cast<int>(std::min<int64_t>((n + 255) / 256, 65536));
+    xing_max_abs_kernel<<<blocks, 256, 0, stream>>>(d, n, d_max);
+    const cudaError_t e = cudaMemcpyAsync(out_max, d_max, sizeof(float),
+                                          cudaMemcpyDeviceToHost, stream);
+    cudaFree(d_max);
+    return e;
+}
+
+int XingLastFailureLine()
+{
+    return xing_fail_line;
+}
+
+void XingReadLogits(const XingSession &s, float *host_logits,
+                    cudaStream_t stream)
+{
+    // vocab is implicit in the buffer the step allocated; the caller sizes the
+    // host array from XingDims.
+    cudaMemcpyAsync(host_logits, s.d_logits, s.logit_count * sizeof(float),
                     cudaMemcpyDeviceToHost, stream);
-    (void)pw;
 }
 
 }  // namespace lsxcommon::xing

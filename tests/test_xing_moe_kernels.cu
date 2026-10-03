@@ -350,16 +350,26 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     for (auto &v : bias) v = dist(rng) * 0.05f;
     std::vector<float> x(kHidden);
     for (auto &v : x) v = dist(rng);
+    // The activation reaches the router as BF16: the device-independent neutral
+    // GEMV dispatches matching dtypes only, so the router's input is converted.
+    std::vector<__nv_bfloat16> x_bf(kHidden);
+    for (size_t i = 0; i < x.size(); ++i)
+        x_bf[i] = __float2bfloat16(x[i]);
 
+    // The reference consumes the SAME BF16-rounded activation the kernel sees,
+    // otherwise the comparison measures the rounding, not the routing.
+    std::vector<float> x_bf_as_f32(kHidden);
+    for (int i = 0; i < kHidden; ++i)
+        x_bf_as_f32[i] = __bfloat162float(x_bf[i]);
     std::vector<float> ref_w;
     std::vector<int> ref_ids;
-    ReferenceRouter(weight, bias, x, ref_w, ref_ids);
+    ReferenceRouter(weight, bias, x_bf_as_f32, ref_w, ref_ids);
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     auto *d_w = Upload(weight);
     auto *d_b = Upload(bias);
-    auto *d_x = Upload(x);
+    auto *d_x = Upload(x_bf);
     float *d_ow = nullptr;
     int32_t *d_oe = nullptr;
     REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
