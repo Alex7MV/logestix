@@ -43,6 +43,7 @@ XingParsedTensor xing_classify(const std::string &name);
 struct XingTopology {
     long long num_layers = 0;
     long long experts_per_layer = 0;
+    long long hc_mult = 0;      // mHC stream count (frozen 4)
     std::vector<long long> moe_layers;
     std::vector<long long> dense_layers;
     std::vector<long long> mtp_layers;

@@ -325,6 +325,7 @@ XingTopology xing_load_topology(const std::string &index_json_path)
         };
         scalar("num_layers", top.num_layers);
         scalar("experts_per_layer", top.experts_per_layer);
+        scalar("hc_mult", top.hc_mult);
         scan_lists("moe_layers", top.moe_layers);
         scan_lists("dense_layers", top.dense_layers);
         scan_lists("mtp_layers", top.mtp_layers);

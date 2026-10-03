@@ -71,6 +71,7 @@ bool AllowedCommon(const std::string& stem)
         "gigachat_tool_format",      // GigaChat chatml-v5 GCML codec
         "mimo_tool_format",          // MiMo ChatML + <tool_call> codec
         "alice_tool_format",         // AliceAI native chat/tool codec
+        "xing_moe_tool_format",       // Xing4.0 <_user>/<_bot> + ZWSP tool codec
     };
     return std::find(kAllowed.begin(), kAllowed.end(), stem) != kAllowed.end();
 }

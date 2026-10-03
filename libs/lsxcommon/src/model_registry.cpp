@@ -2,6 +2,7 @@
 #include "lsxcommon/model_factory.h"
 
 #include "alice_moe_model.h"
+#include "xing_moe_model.h"
 #include "lsxcommon/gigachat_moe_model.h"
 #include "deepseek_moe_model.h"
 #include "deepseek_moe_v41_model.h"
@@ -43,6 +44,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Phi4Model>();
         LsxModelFactory::Register<MiMoV26FlashModel>();
         LsxModelFactory::Register<AliceFoundation80BModel>();
+        LsxModelFactory::Register<XingMoeModel>();
         // Alias for the vault-normalized index "model" name
         // ("AliceAI-Foundation-80B-A3B-Base" -> "aliceai-foundation-80b-a3b-base"),
         // so path auto-detection (lsxbenchmark/lsxfabric) resolves the model.

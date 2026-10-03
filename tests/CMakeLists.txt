@@ -1274,6 +1274,15 @@ set_tests_properties(test_xing_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_xing_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Xing4.0-29B-A4B tool-calling codec (host-only, synthetic tokenizer) ──
+add_executable(test_xing_tool_framing test_xing_tool_framing.cpp)
+target_compile_definitions(test_xing_tool_framing PRIVATE
+    TOKENIZER_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+target_link_libraries(test_xing_tool_framing PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_xing_tool_framing COMMAND test_xing_tool_framing)
+set_tests_properties(test_xing_tool_framing PROPERTIES LABELS fast)
+
 # ── Xing4.0-29B-A4B model test (decode step / determinism / KV growth) ──
 add_executable(test_xing_moe_model test_xing_moe_model.cpp)
 target_include_directories(test_xing_moe_model PRIVATE
