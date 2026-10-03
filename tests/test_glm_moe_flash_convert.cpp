@@ -328,16 +328,20 @@ TEST_CASE("ConvertGlm5NextModel: synthetic tiny checkpoint — layout + index")
     REQUIRE(fs::exists(base / "experts" / "layer_003" / "exp_001.arrow"));
 
     // model.index.json: format tag + topology lists (frozen-driven).
-    std::ifstream f(base / "model.index.json");
-    std::stringstream ss;
-    ss << f.rdbuf();
-    const std::string idx = ss.str();
-    REQUIRE(idx.find("logestix-glm5next") != std::string::npos);
-    REQUIRE(idx.find("\"hidden_size\": 64") != std::string::npos);
-    REQUIRE(idx.find("\"num_experts\": 2") != std::string::npos);
-    REQUIRE(idx.find("\"kda_layers\"") != std::string::npos);
-    REQUIRE(idx.find("\"dsa_layers\"") != std::string::npos);
-    REQUIRE(idx.find("\"moe_layers\": [3,") != std::string::npos);
+    // The stream must be closed before the cleanup below: Windows refuses to
+    // delete an open file, while Linux unlinks it and hides the ordering bug.
+    {
+        std::ifstream f(base / "model.index.json");
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string idx = ss.str();
+        REQUIRE(idx.find("logestix-glm5next") != std::string::npos);
+        REQUIRE(idx.find("\"hidden_size\": 64") != std::string::npos);
+        REQUIRE(idx.find("\"num_experts\": 2") != std::string::npos);
+        REQUIRE(idx.find("\"kda_layers\"") != std::string::npos);
+        REQUIRE(idx.find("\"dsa_layers\"") != std::string::npos);
+        REQUIRE(idx.find("\"moe_layers\": [3,") != std::string::npos);
+    }
 
     fs::remove_all(fix.in);
     fs::remove_all(fix.out);

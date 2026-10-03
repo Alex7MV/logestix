@@ -235,10 +235,17 @@ TEST_CASE("gemma converter emits NVFP4 records for dense MLP",
     CHECK(find("model.language_model.layers.0.mlp.gate_proj.weight") == nullptr);
 
     // Index advertises the mlp_nvfp4 flag.
-    std::ifstream idx(out / "logestix" / "model.index.json");
-    std::string json((std::istreambuf_iterator<char>(idx)),
-                     std::istreambuf_iterator<char>());
-    CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
+    {
+        std::ifstream idx(out / "logestix" / "model.index.json");
+        std::string json((std::istreambuf_iterator<char>(idx)),
+                         std::istreambuf_iterator<char>());
+        CHECK(json.find("\"mlp_nvfp4\": true") != std::string::npos);
+    }
+
+    // Release every handle before the cleanup: Windows refuses to delete a
+    // mapped or open file, while Linux happily unlinks both and hides the
+    // ordering bug.
+    batch_res->keepalive.reset();
 
     remove_all(tmp);
 }
