@@ -21,7 +21,7 @@ enum class XingTensorKind {
     HyperConnection, // layers.N.{attn_hc,ffn_hc}.{hc_fn,hc_base,hc_scale}
     LayerNorm,       // layers.N.{input,post_attention}_layernorm + MLA inner norms
     Global,          // embed_tokens / lm_head / model.norm
-    Mtp,             // the stored layers.40 speculative block
+    Mtp,             // every tensor of the stored layers.40 speculation block
 };
 
 struct XingParsedTensor {
@@ -34,7 +34,8 @@ struct XingParsedTensor {
 
 // Classifies a full safetensors tensor name into a Xing pipeline category.
 // Anything outside the text decoder (vision towers, mm_projector) classifies
-// as Unknown and is stripped.
+// as Unknown and is stripped. Every tensor of the stored MTP block (layer >= 
+// num_hidden_layers) classifies as Mtp.
 XingParsedTensor xing_classify(const std::string &name);
 
 // Topology of a converted Xing4.0-29B-A4B model, derived from the source

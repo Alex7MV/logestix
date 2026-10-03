@@ -109,11 +109,12 @@ arrow::Status BuildAndVerifyTokenizer(
 arrow::Status BuildAndVerifyTokenizerSentencePiece(
     const std::string &tokenizer_model_path,
     const std::filesystem::path &pinned_dir,
-    const TokenizerSpecialIds &required_specials)
+    const TokenizerSpecialIds &required_specials,
+    const SpSpecialTokens &specials)
 {
     // (1) Build binary Arrow files from tokenizer.model (SentencePiece BPE).
-    ARROW_RETURN_NOT_OK(
-        BuildTokenizerArrowFilesSentencePiece(tokenizer_model_path, pinned_dir));
+    ARROW_RETURN_NOT_OK(BuildTokenizerArrowFilesSentencePiece(
+        tokenizer_model_path, pinned_dir, specials));
     return VerifyTokenizerArtifacts(pinned_dir, required_specials);
 }
 

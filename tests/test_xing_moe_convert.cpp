@@ -115,11 +115,21 @@ TEST_CASE("Xing classifier covers every tensor family", "[xing][convert]")
     REQUIRE(xing_classify("lm_head.weight").kind == X::Global);
     REQUIRE(xing_classify("model.norm.weight").kind == X::Global);
 
-    // Stored MTP block.
+    // Stored MTP block: layers.40 is a FULL decoder layer plus the speculative
+    // head, so its attention/MoE tensors must be Mtp too - keying the block by
+    // tensor identity would scatter it into the resident graph.
     REQUIRE(xing_classify("model.layers.40.embed_tokens.weight").kind == X::Mtp);
     REQUIRE(xing_classify("model.layers.40.eh_proj.weight").kind == X::Mtp);
     REQUIRE(xing_classify("model.layers.40.shared_head.head.weight").kind == X::Mtp);
     REQUIRE(xing_classify("model.layers.40.enorm.weight").kind == X::Mtp);
+    REQUIRE(xing_classify("model.layers.40.self_attn.q_a_proj.weight").kind == X::Mtp);
+    REQUIRE(xing_classify("model.layers.40.mlp.experts.7.gate_proj.weight").kind ==
+            X::Mtp);
+    REQUIRE(xing_classify("model.layers.40.mlp.gate.weight").kind == X::Mtp);
+    REQUIRE(xing_classify("model.layers.40.input_layernorm.weight").kind == X::Mtp);
+    // The last resident layer is still a normal layer.
+    REQUIRE(xing_classify("model.layers.39.self_attn.q_a_proj.weight").kind ==
+            X::Attention);
 
     // Foreign towers classify Unknown (stripped ballast).
     REQUIRE(xing_classify("vision_tower.blocks.0.attn.qkv.weight").kind == X::Unknown);

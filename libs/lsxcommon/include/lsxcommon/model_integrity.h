@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lsxcommon/converter.h"
+
 #include "lsxcommon/safetensors.h"
 #include "lsxcommon/tokenizer.h"
 #include <arrow/api.h>
@@ -34,7 +36,8 @@ arrow::Status BuildAndVerifyTokenizer(
 arrow::Status BuildAndVerifyTokenizerSentencePiece(
     const std::string &tokenizer_model_path,
     const std::filesystem::path &pinned_dir,
-    const TokenizerSpecialIds &required_specials);
+    const TokenizerSpecialIds &required_specials,
+    const SpSpecialTokens &specials = {});
 
 // ── Source integrity ──
 

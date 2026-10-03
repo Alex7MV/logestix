@@ -1251,6 +1251,17 @@ set_tests_properties(test_xing_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_xing_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Xing4.0-29B-A4B loader test (mHC / MLA / all-resident experts) ──
+add_executable(test_xing_moe_loader test_xing_moe_loader.cpp)
+target_include_directories(test_xing_moe_loader PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_xing_moe_loader PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_loader COMMAND test_xing_moe_loader)
+set_tests_properties(test_xing_moe_loader PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_xing_moe_loader PROPERTIES ENVIRONMENT
+    "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # ── Kimi-K2.7-Code converter test (geometry, classifier, topology) ──
 add_executable(test_kimi_moe_convert test_kimi_moe_convert.cpp)
 target_compile_definitions(test_kimi_moe_convert PRIVATE

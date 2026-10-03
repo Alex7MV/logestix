@@ -12,6 +12,7 @@
 #include "lsxcommon/gemma_moe_convert.h"
 #include "lsxcommon/gigachat_moe_convert.h"
 #include "lsxcommon/alice_moe_convert.h"
+#include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
@@ -69,6 +70,8 @@ ABSL_FLAG(bool, mimo, false,
 ABSL_FLAG(bool, alice, false,
           "AliceAI-Foundation-80B-A3B-Base (KDA + gated attention sparse MoE) "
           "conversion pipeline");
+ABSL_FLAG(bool, xing, false,
+          "Xing4.0-29B-A4B (mHC + MLA + MTP sparse MoE) conversion pipeline");
 ABSL_FLAG(bool, vram_recompute, false,
           "recompute the vram block of a converted model.index.json "
           "(--input = source safetensors dir, --output = converted root)");
@@ -125,6 +128,7 @@ int main(int argc, char* argv[]) {
     bool phi = absl::GetFlag(FLAGS_phi);
     bool mimo = absl::GetFlag(FLAGS_mimo);
     bool alice = absl::GetFlag(FLAGS_alice);
+    bool xing = absl::GetFlag(FLAGS_xing);
     const std::string run_prompt = lsxcommon::cli::ResolveGenerationPrompt(absl::GetFlag(FLAGS_run));
 
     // The flag-to-pipeline decision lives in cli.h (ResolvePipeline) so it is
@@ -155,6 +159,7 @@ int main(int argc, char* argv[]) {
     flags.phi = phi;
     flags.mimo = mimo;
     flags.alice = alice;
+    flags.xing = xing;
     const lsxforge::Resolution resolution = lsxforge::ResolvePipeline(flags);
     if (resolution.pipeline == lsxforge::Pipeline::kError) {
         lsxcommon::Core::Initialize("lsxforge_runtime.log");
@@ -355,6 +360,21 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Alice conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kXing: {
+        lsxcommon::log::info(
+            "Xing4.0-29B-A4B pipeline (logestix-xing-nvfp4 layout)");
+        auto st = lsxcommon::xing::ConvertXingModel(input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(
+                absl::StrFormat("Xing conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Xing conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

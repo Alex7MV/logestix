@@ -54,6 +54,7 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--granite", {Pipeline::kGranite, flags.granite}},
             {"--phi", {Pipeline::kPhi, flags.phi}},
             {"--alice", {Pipeline::kAlice, flags.alice}},
+            {"--xing", {Pipeline::kXing, flags.xing}},
             {"--gemma4", {Pipeline::kGemma4, flags.gemma4}},
             {"--nemotron", {Pipeline::kNemotron, flags.nemotron}},
             {"--gigachat", {Pipeline::kGigachat, flags.gigachat}},

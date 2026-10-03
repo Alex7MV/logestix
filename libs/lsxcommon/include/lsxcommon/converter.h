@@ -82,8 +82,20 @@ arrow::Status BuildTokenizerArrowFilesTikToken(
 // rules from the piece set + scores, and writes the same
 // tokenizer_vocab.arrow / tokenizer_merges.arrow pair as BuildTokenizerArrowFiles
 // with `tokenizer_kind="sp-bpe"` metadata.
+// Piece names of the four special tokens to resolve their ids from. Defaults
+// are the LLaMA-style names; a family whose tokenizer spells them differently
+// (Xing: <_start>/<_end>/<_pad>) must pass its own — the ids are then taken from
+// the piece set, never hardcoded.
+struct SpSpecialTokens {
+    const char *bos = "<s>";
+    const char *eos = "</s>";
+    const char *pad = "<pad>";
+    const char *unk = "<unk>";
+};
+
 arrow::Status BuildTokenizerArrowFilesSentencePiece(
     const std::string &tokenizer_model_path,
-    const std::filesystem::path &pinned_dir);
+    const std::filesystem::path &pinned_dir,
+    const SpSpecialTokens &specials = {});
 
 } // namespace lsxcommon

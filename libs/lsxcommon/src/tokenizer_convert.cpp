@@ -722,7 +722,8 @@ int SpUtf8Count(const std::string &s)
 
 arrow::Status BuildTokenizerArrowFilesSentencePiece(
     const std::string &tokenizer_model_path,
-    const std::filesystem::path &pinned_dir)
+    const std::filesystem::path &pinned_dir,
+    const SpSpecialTokens &specials)
 {
     std::ifstream f(tokenizer_model_path, std::ios::binary | std::ios::ate);
     if (!f)
@@ -925,10 +926,10 @@ arrow::Status BuildTokenizerArrowFilesSentencePiece(
     }
 
     TokenizerVocabMeta meta;
-    meta.bos_id = find_piece("<s>");
-    meta.eos_id = find_piece("</s>");
-    meta.pad_id = find_piece("<pad>");
-    meta.unk_id = find_piece("<unk>");
+    meta.bos_id = find_piece(specials.bos);
+    meta.eos_id = find_piece(specials.eos);
+    meta.pad_id = find_piece(specials.pad);
+    meta.unk_id = find_piece(specials.unk);
     if (meta.unk_id < 0) meta.unk_id = 0;
     meta.vocab_size = vocab_size;
     meta.byte_to_token_id = byte_to_token_id;

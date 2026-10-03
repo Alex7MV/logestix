@@ -38,6 +38,7 @@ enum class Pipeline {
     kPhi,
     kMimo,
     kAlice,
+    kXing,
     kGeneric,
     kError,
 };
@@ -69,6 +70,7 @@ struct Flags {
     bool phi = false;
     bool mimo = false;
     bool alice = false;
+    bool xing = false;
 };
 
 struct Resolution {

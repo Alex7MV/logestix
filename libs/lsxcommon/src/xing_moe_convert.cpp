@@ -23,8 +23,10 @@
 #include <absl/algorithm/container.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/strings/str_format.h>
+#include <absl/strings/str_join.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -203,13 +205,15 @@ std::optional<XingParsedTensor> ParseLayerNorm(const std::string &rest)
     return std::nullopt;
 }
 
-bool IsMtpRest(const std::string &rest)
+// The stored MTP block is a FULL decoder layer plus the speculative head:
+// model.layers.40 carries its own MLA projections, a 64-expert MoE and the
+// router, next to the MTP-only tensors (embed_tokens/enorm/hnorm/eh_proj/
+// shared_head). Classifying by tensor identity would therefore scatter it
+// across the resident graph, so the block is keyed by layer INDEX: every
+// tensor at or above num_hidden_layers belongs to MTP.
+bool IsMtpLayer(int layer)
 {
-    static const std::vector<std::string> kMtp = {
-        "embed_tokens.weight", "enorm.weight", "hnorm.weight",
-        "eh_proj.weight", "shared_head.head.weight",
-        "shared_head.norm.weight"};
-    return std::find(kMtp.begin(), kMtp.end(), rest) != kMtp.end();
+    return layer >= lsxcommon::xing::frozen::kLayers;
 }
 
 } // namespace
@@ -229,10 +233,7 @@ XingParsedTensor xing_classify(const std::string &name)
     std::string rest;
     if (!SplitLayerName(name, layer, rest)) return out;
 
-    // The MTP block is layers.40 in the frozen geometry, but classification
-    // keys off tensor identity, not the index: anything whose tail matches the
-    // stored speculative block belongs to it.
-    if (IsMtpRest(rest))
+    if (IsMtpLayer(layer))
     {
         out.kind = XingTensorKind::Mtp;
         out.layer = layer;
@@ -503,7 +504,10 @@ XingConfig ParseConfig(const std::string &text)
     c.hc_eps = JsonDouble(text, "hc_eps", 0.0);
     c.clamp_min = JsonDouble(text, "mhc_h_res_clamp_min", 0.0);
     c.clamp_max = JsonDouble(text, "mhc_h_res_clamp_max", 0.0);
-    c.rope_interleave = JsonBool(text, "rope_interleave", false);
+    // Absent means the Xing4_0Config dataclass default (True): config.json
+    // only spells the key out when it deviates, so defaulting to false would
+    // reject the real checkpoint as a non-frozen architecture.
+    c.rope_interleave = JsonBool(text, "rope_interleave", true);
     c.bos_id = JsonInt(text, "bos_token_id", -1);
     c.eos_id = JsonInt(text, "eos_token_id", -1);
     c.context_length = JsonInt(text, "max_position_embeddings", 0);
@@ -615,29 +619,52 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
 
     if (!SyntheticGeometryAllowed())
     {
-        const bool ok = cfg.hidden == frozen::kHidden &&
-                        cfg.layers == frozen::kLayers &&
-                        cfg.vocab == frozen::kVocab &&
-                        cfg.heads == frozen::kHeads &&
-                        cfg.kv_heads == frozen::kKvHeads &&
-                        cfg.q_lora == frozen::kQLoraRank &&
-                        cfg.kv_lora == frozen::kKvLoraRank &&
-                        cfg.qk_nope == frozen::kQkNopeHeadDim &&
-                        cfg.qk_rope == frozen::kQkRopeHeadDim &&
-                        cfg.v_head == frozen::kVHeadDim &&
-                        cfg.first_k_dense == frozen::kFirstKDense &&
-                        cfg.moe_intermediate == frozen::kMoeIntermediate &&
-                        cfg.dense_intermediate == frozen::kDenseIntermediate &&
-                        cfg.num_experts == frozen::kNumRouted &&
-                        cfg.top_k == frozen::kTopK &&
-                        cfg.n_shared == frozen::kSharedExperts &&
-                        cfg.hc_mult == frozen::kHcMult &&
-                        cfg.hc_sinkhorn_iters == frozen::kHcSinkhornIters &&
-                        cfg.rope_interleave == frozen::kRopeInterleave;
-        if (!ok)
+        // Name every mismatching field: a single "geometry mismatch" string
+        // cost a real conversion run before this diagnostic existed.
+        std::vector<std::string> bad;
+        const auto chk = [&bad](const char *name, long long got, long long want) {
+            if (got != want) bad.push_back(absl::StrFormat("%s=%lld!=%lld", name, got, want));
+        };
+        chk("hidden", cfg.hidden, frozen::kHidden);
+        chk("layers", cfg.layers, frozen::kLayers);
+        chk("vocab", cfg.vocab, frozen::kVocab);
+        chk("heads", cfg.heads, frozen::kHeads);
+        chk("kv_heads", cfg.kv_heads, frozen::kKvHeads);
+        chk("q_lora", cfg.q_lora, frozen::kQLoraRank);
+        chk("kv_lora", cfg.kv_lora, frozen::kKvLoraRank);
+        chk("qk_nope", cfg.qk_nope, frozen::kQkNopeHeadDim);
+        chk("qk_rope", cfg.qk_rope, frozen::kQkRopeHeadDim);
+        chk("v_head", cfg.v_head, frozen::kVHeadDim);
+        chk("first_k_dense", cfg.first_k_dense, frozen::kFirstKDense);
+        chk("moe_intermediate", cfg.moe_intermediate, frozen::kMoeIntermediate);
+        chk("dense_intermediate", cfg.dense_intermediate, frozen::kDenseIntermediate);
+        chk("num_experts", cfg.num_experts, frozen::kNumRouted);
+        chk("top_k", cfg.top_k, frozen::kTopK);
+        chk("n_shared", cfg.n_shared, frozen::kSharedExperts);
+        chk("hc_mult", cfg.hc_mult, frozen::kHcMult);
+        chk("hc_sinkhorn_iters", cfg.hc_sinkhorn_iters, frozen::kHcSinkhornIters);
+        // llround: 1e-6f * 1e6 truncates to 0 in float, which reported a false
+        // mismatch on the real checkpoint.
+        chk("hc_eps", std::llround(cfg.hc_eps * 1e6),
+            std::llround(static_cast<double>(frozen::kHcEps) * 1e6));
+        if (cfg.clamp_min != frozen::kHcClampMin || cfg.clamp_max != frozen::kHcClampMax)
+            bad.push_back(absl::StrFormat("clamp=[%g,%g]!=[%g,%g]", cfg.clamp_min,
+                                          cfg.clamp_max, frozen::kHcClampMin,
+                                          frozen::kHcClampMax));
+        if (cfg.rope_interleave != frozen::kRopeInterleave)
+            bad.push_back(absl::StrFormat("rope_interleave=%d", cfg.rope_interleave));
+        if (cfg.norm_topk_prob != frozen::kNormTopkProb)
+            bad.push_back("norm_topk_prob");
+        if (cfg.sigmoid_score != frozen::kSigmoidScore)
+            bad.push_back("scoring_func");
+        if (cfg.noaux_tc != frozen::kNoauxTc) bad.push_back("topk_method");
+        if (cfg.routed_scale != frozen::kRoutedScale)
+            bad.push_back(absl::StrFormat("routed_scale=%g", cfg.routed_scale));
+        if (!bad.empty())
             return arrow::Status::Invalid(
-                "Xing frozen geometry mismatch (set "
-                "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 only for synthetic tests)");
+                "Xing frozen geometry mismatch: ",
+                absl::StrJoin(bad, ", "),
+                " (set LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1 only for synthetic tests)");
     }
 
     auto model = scan_directory(input_dir);
@@ -863,11 +890,16 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
     const fs::path spm_path = fs::path(input_dir) / "tokenizer.model";
     if (fs::exists(spm_path))
     {
+        // Xing spells its specials <_start>/<_end>/<_pad> (tokenizer_config.json
+        // added_tokens_decoder ids 1/2/3) — the LLaMA-style defaults the shared
+        // sp-bpe builder used to assume would resolve to -1 and fail the
+        // integrity gate.
         ARROW_RETURN_NOT_OK(integrity::BuildAndVerifyTokenizerSentencePiece(
             spm_path.string(), pinned_dir,
             integrity::TokenizerSpecialIds{.bos_required = true,
                                            .eos_required = true,
-                                           .pad_required = true}));
+                                           .pad_required = true},
+            SpSpecialTokens{"<_start>", "<_end>", "<_pad>", "<unk>"}));
     }
     else if (!SyntheticGeometryAllowed())
     {
@@ -900,8 +932,15 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
     f << "{\n";
     f << "  \"format\": \"logestix-xing-nvfp4\",\n";
     f << "  \"model\": \"Xing4.0-29B-A4B\",\n";
-    f << "  \"num_layers\": " << cfg.layers << ",\n";
-    f << "  \"experts_per_layer\": " << cfg.num_experts << ",\n";
+    // The index reports what was actually written (observed), not what the
+    // config asked for: a synthetic fixture is legitimately smaller, and the
+    // loader's frozen gate compares against the passport, not against this.
+    long long observed_experts = 0;
+    for (const auto &[l, per_expert] : experts)
+        observed_experts = std::max<long long>(
+            observed_experts, static_cast<long long>(per_expert.size()));
+    f << "  \"num_layers\": " << observed_layers << ",\n";
+    f << "  \"experts_per_layer\": " << observed_experts << ",\n";
     f << "  \"hc_mult\": " << cfg.hc_mult << ",\n";
     f << "  \"hc_sinkhorn_iters\": " << cfg.hc_sinkhorn_iters << ",\n";
     f << "  \"context_length\": " << cfg.context_length << ",\n";
