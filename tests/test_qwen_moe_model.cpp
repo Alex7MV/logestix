@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 using namespace lsxcommon;
 
@@ -40,6 +41,28 @@ struct ConvertedModel {
         std::filesystem::remove_all(out, ec);
     }
 };
+
+// The fixture ships no tokenizer arrows, so copy the shared synthetic BPE
+// tokenizer in and re-run the conversion stage before a model can Infer.
+std::unique_ptr<IModel> LoadSyntheticModel(const ConvertedModel &fx,
+                                           int max_gen = 12)
+{
+    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
+    std::filesystem::copy_file(
+        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
+        fx.in / "tokenizer.json",
+        std::filesystem::copy_options::overwrite_existing);
+    REQUIRE(qwen_moe::ConvertQwen35MoeModel(fx.in.string(), fx.out.string()).ok());
+    ModelInitConfig cfg;
+    cfg.model_type = Qwen35MoeModel::kType;
+    cfg.model_path = fx.out.string();
+    cfg.max_gen_tokens = max_gen;
+    cfg.fast_math = true;
+    auto m = LsxModelFactory::Create(cfg);
+    REQUIRE(m != nullptr);
+    REQUIRE(m->Load());
+    return m;
+}
 
 } // namespace
 
@@ -161,20 +184,7 @@ TEST_CASE("device-fed decode run-to-run determinism", "[qwen-moe-decode]")
     ConvertedModel fx;
     // The model path needs tokenizer arrows: copy the shared synthetic BPE
     // tokenizer into the fixture output and re-run the conversion stage.
-    qwen_moe_test::MoeSetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY", "1");
-    std::filesystem::copy_file(
-        TOKENIZER_TEST_DATA_DIR "/synthetic_tok.json",
-        fx.in / "tokenizer.json",
-        std::filesystem::copy_options::overwrite_existing);
-    REQUIRE(qwen_moe::ConvertQwen35MoeModel(fx.in.string(), fx.out.string()).ok());
-    ModelInitConfig cfg;
-    cfg.model_type = Qwen35MoeModel::kType;
-    cfg.model_path = fx.out.string();
-    cfg.max_gen_tokens = 12;
-    cfg.fast_math = true;
-    auto m = LsxModelFactory::Create(cfg);
-    REQUIRE(m != nullptr);
-    REQUIRE(m->Load());
+    auto m = LoadSyntheticModel(fx);
     ModelRequest req;
     req.input_ids = {1, 2, 3, 4, 5};
     auto r1 = m->Infer(req);
@@ -186,6 +196,44 @@ TEST_CASE("device-fed decode run-to-run determinism", "[qwen-moe-decode]")
                       r1.final_logits.size() * sizeof(float)) == 0);
     CHECK(r1.gen_tokens == r2.gen_tokens);
     ExpectStreamMatchesTokens(*m, req);
+    m->Unload();
+    qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
+}
+
+// Cooperative cancel (OPEN_TASKS §E1a). The MoE family only had a streaming
+// assertion; nothing asserted that a raised abort_flag actually stops the
+// decode loop, which is the whole contract `lsxfabric --serve` depends on.
+TEST_CASE("cooperative cancel stops the decode loop",
+          "[qwen-moe-model][qwen-moe-decode]")
+{
+    ConvertedModel fx;
+    auto m = LoadSyntheticModel(fx, /*max_gen=*/24);
+    ModelRequest req;
+    req.input_ids = {1, 2, 3, 4, 5};
+
+    SECTION("flag already set when Infer starts")
+    {
+        ExpectPreSetAbortStops(*m, req);
+    }
+    SECTION("flag raised from the token callback mid-generation")
+    {
+        ExpectCallbackAbortStops(*m, req, /*stop_after=*/2);
+    }
+    SECTION("unrelated runs still fill the budget (control)")
+    {
+        ModelRequest full = req;
+        full.max_gen_tokens = 24;
+        std::size_t chunks = 0;
+        full.token_callback = [&](const TokenChunk &) { ++chunks; };
+        const auto res = m->Infer(full);
+        REQUIRE(res.ok);
+        // The control matters: if a 24-token budget produced fewer tokens for
+        // an unrelated reason (EOS on random weights), the two assertions
+        // above would pass without proving anything about cancellation.
+        CHECK(res.gen_tokens.size() == 24);
+        CHECK(chunks == 24);
+    }
+
     m->Unload();
     qwen_moe_test::MoeUnsetEnv("LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY");
 }
