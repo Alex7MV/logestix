@@ -1,5 +1,7 @@
 #include <catch2/catch_all.hpp>
 
+#include "test_streaming_assert.h"
+
 #include <lsxcommon/model_factory.h>
 #include <lsxcommon/qwen_dense_convert.h>
 #include <lsxcommon/qwen_inference_load.h>
@@ -8,6 +10,7 @@
 
 #include "test_qwen_dense_fixture.h"
 
+#include <atomic>
 #include <filesystem>
 
 using namespace std::filesystem;
@@ -67,6 +70,27 @@ TEST_CASE("Qwen3.8-27B model factory registration and generation")
     auto sc = model->SelfCheck(req);
     CHECK(sc.ok);
     CHECK(sc.error_msg.empty());
+
+    // Streaming contract (one chunk per decoded token, in order) and
+    // cooperative cancel. qwen3.5-9b asserts the same on the shared
+    // QwenBaseModel path; this variant must be pinned on its own so a change
+    // that breaks only the 27B geometry is caught here.
+    ExpectStreamMatchesTokens(*model, req);
+
+    {
+        std::atomic<bool> abort{true};
+        lsxcommon::ModelRequest areq = req;
+        areq.max_gen_tokens = 8;
+        areq.abort_flag = &abort;
+        std::vector<std::uint32_t> chunks;
+        areq.token_callback = [&](const lsxcommon::TokenChunk &c) {
+            chunks.push_back(c.token_id);
+        };
+        const auto ar = model->Infer(areq);
+        CHECK(ar.ok);
+        CHECK(ar.gen_tokens.size() < static_cast<std::size_t>(areq.max_gen_tokens));
+        CHECK(chunks.size() == ar.gen_tokens.size());
+    }
 
     model->Unload();
     remove_all(tmp);

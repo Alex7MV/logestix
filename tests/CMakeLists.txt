@@ -135,6 +135,11 @@ set_tests_properties(test_gpu_perf PROPERTIES SKIP_RETURN_CODE 4)
 add_executable(test_perf_baseline_logic test_perf_baseline_logic.cpp)
 target_link_libraries(test_perf_baseline_logic PRIVATE lsxcommon
                       Catch2::Catch2WithMain)
+# The registry-pairing case reads tests/perf/perf_baselines.json and the perf
+# test TU from the source tree, so it needs the source root (ctest runs the
+# binary with the build dir as CWD).
+target_compile_definitions(test_perf_baseline_logic PRIVATE
+    LSX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME test_perf_baseline_logic COMMAND test_perf_baseline_logic)
 
 # ── GPU board-power sampling (host-only; NVML cases SKIP when unavailable) ──

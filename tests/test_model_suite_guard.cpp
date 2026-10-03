@@ -657,6 +657,85 @@ TEST_CASE("suite guard: every family test target is claimed by a suite row",
     CHECK(orphans.empty());
 }
 
+TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
+          "[suite][guard]")
+{
+    // Stage 4b is MANDATORY in the ingestion protocol, yet it lived only as a
+    // target listed inside the "model" stage row: a new family could ship with
+    // no tool test at all and every guard stayed green. A row must therefore
+    // say, explicitly, either
+    //   * the target(s) that prove the native render+parse round-trip, or
+    //   * "generic" — the model keeps model.h's Hermes default and nothing more
+    //     is claimed (parse_tool_calls must then be empty).
+    struct ToolRow {
+        const char *model;
+        std::vector<const char *> targets;  // empty => generic fallback
+    };
+    static const std::vector<ToolRow> kTooling = {
+        {"glm-5.2", {}},
+        {"glm-5.3-flash", {"test_glm_flash_tool_framing"}},
+        {"deepseek-v4-flash", {"test_deepseek_tool_framing"}},
+        {"deepseek-v4.1-flash", {"test_deepseek_tool_framing"}},
+        {"qwen3.5-9b", {"test_qwen_tool_framing"}},
+        {"qwen3.8-27b", {"test_qwen_tool_framing"}},
+        {"qwen3.5-35b-a3b", {"test_qwen_tool_framing"}},
+        {"qwen3.6-35b-a3b", {"test_qwen_tool_framing"}},
+        {"qwen3.8-flash-next", {"test_qwen_tool_framing"}},
+        {"gemma-4-26b-a4b-it", {"test_gemma_tool_framing"}},
+        {"kimi-k2.7-code", {}},
+        {"ornith-1.5-35b-a3b", {"test_qwen_tool_framing"}},
+        {"phi-4", {"test_phi_tool_framing"}},
+        {"granite-4.2-30b", {}},
+        // nemotron keeps its tool case inside the model target rather than in
+        // a dedicated one; naming the target that actually carries it is what
+        // the guard checks.
+        {"nemotron-3.5-lightning-30b-a3b", {"test_nemotron_moe_model"}},
+        {"gigachat3.5-432b-a28b-reasoning", {"test_gigachat_tool_framing"}},
+        {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
+        {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},
+    };
+    // Every ingested model must be in the table (a new family must state its
+    // verdict), and every named target must be a registered ctest target.
+    const std::set<std::string> registered = [] {
+        std::set<std::string> names;
+        for (const auto &n : RegisteredTestNames(
+                 ReadFileOrThrow(fs::path(LSX_SOURCE_DIR) / "tests" / "CMakeLists.txt")))
+            names.insert(n);
+        return names;
+    }();
+    std::vector<std::string> problems;
+    for (const auto &s : Suites())
+    {
+        const auto it = std::find_if(kTooling.begin(), kTooling.end(),
+                                     [&](const ToolRow &r) {
+                                         return std::string(r.model) == s.model;
+                                     });
+        if (it == kTooling.end()) {
+            problems.push_back(std::string(s.model) +
+                               ": no tool-calling verdict declared");
+            continue;
+        }
+        for (const char *t : it->targets)
+            if (!registered.count(t))
+                problems.push_back(std::string(s.model) + ": tool target '" + t +
+                                   "' is not a registered ctest target");
+    }
+    for (const auto &row : kTooling)
+    {
+        const bool known = std::any_of(Suites().begin(), Suites().end(),
+                                       [&](const SuiteSpec &s) {
+                                           return std::string(s.model) == row.model;
+                                       });
+        if (!known)
+            problems.push_back(std::string(row.model) +
+                               ": tool verdict row has no Suites() row");
+    }
+    std::string joined;
+    for (const auto &x : problems) joined += x + "\n";
+    INFO("tool-calling verdicts:\n" << joined);
+    CHECK(problems.empty());
+}
+
 TEST_CASE("suite guard: every suite row declares the full stage set",
           "[suite][guard]")
 {

@@ -4,8 +4,18 @@
 
 #include "lsxcommon/perf_baseline.h"
 
+#ifndef LSX_SOURCE_DIR
+#define LSX_SOURCE_DIR "."
+#endif
+
+#include <algorithm>
+#include <fstream>
 #include <optional>
+#include <regex>
+#include <set>
+#include <sstream>
 #include <string>
+#include <vector>
 
 using lsxcommon::perf_baseline::JudgePerf;
 using lsxcommon::perf_baseline::JudgePerfLen;
@@ -277,4 +287,91 @@ TEST_CASE("Perf baselines: entry lookup by (model_type, gpu_key)",
     REQUIRE(FindEntry(t, "gemma-4-26b-a4b-it", "rtx 5090", "windows") == nullptr);
     REQUIRE(FindEntry(t, "glm-5.3-flash", "rtx 5090", "linux") == nullptr);
     REQUIRE(FindEntry(t, "gemma-4-26b-a4b-it", "rtx 4090", "linux") == nullptr);
+}
+
+
+// ── Registry pairing (host-only) ────────────────────────────────────────────
+//
+// The protocol requires BOTH halves of the perf stage: a
+// tests/perf/perf_baselines.json entry and a perf-labelled TEST_CASE that
+// measures the model. A JSON entry without a target is an unguarded baseline
+// (nothing ever fails when the model regresses), and a target without an entry
+// measures against nothing. Nothing bound the two, so either half could be
+// added or deleted silently.
+
+namespace {
+
+std::string ReadAll(const std::string &path)
+{
+    std::ifstream f(path, std::ios::binary);
+    REQUIRE(f.good());
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+// model_type values that carry at least one entry in perf_baselines.json.
+std::set<std::string> BaselineModels(const std::string &json)
+{
+    auto parsed = ParsePerfBaselines(json);
+    REQUIRE(parsed.has_value());
+    const PerfBaselineTable &table = *parsed;
+    std::set<std::string> out;
+    for (const auto &e : table.entries) out.insert(e.model_type);
+    return out;
+}
+
+// model_type values named by a TEST_CASE in tests/test_perf_baseline.cpp.
+std::set<std::string> PerfCaseModels(const std::string &test_src)
+{
+    std::set<std::string> out;
+    static const std::regex case_re(R"(TEST_CASE\(\s*"([^"]+))");
+    std::smatch m;
+    auto begin = test_src.cbegin();
+    while (std::regex_search(begin, test_src.cend(), m, case_re)) {
+        for (const auto &mid :
+             {std::string("glm-5.2"), std::string("glm-5.3-flash"),
+              std::string("deepseek-v4-flash"),
+              std::string("deepseek-v4.1-flash"), std::string("gemma-4"),
+              std::string("kimi-k2.7"), std::string("qwen3.5-9b"),
+              std::string("qwen3.8-27b"), std::string("qwen3.5-35b"),
+              std::string("qwen3.6-35b"), std::string("qwen3.8-flash-next"),
+              std::string("nemotron"), std::string("mimo"), std::string("gigachat"),
+              std::string("granite"), std::string("phi-4"), std::string("ornith"),
+              std::string("alice")}) {
+            if (m[1].str().find(mid) != std::string::npos) out.insert(mid);
+        }
+        begin = m.suffix().first;
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("perf registry: every baseline entry has a measuring TEST_CASE",
+          "[perf_baseline][guard]")
+{
+    const std::string root = LSX_SOURCE_DIR;
+    const auto baselines =
+        BaselineModels(ReadAll(root + "/tests/perf/perf_baselines.json"));
+    const auto cases =
+        PerfCaseModels(ReadAll(root + "/tests/test_perf_baseline.cpp"));
+    std::vector<std::string> orphans;
+    for (const auto &m : baselines) {
+        // The case names a display stem (e.g. "glm-5.3-flash"), which is a
+        // prefix-stable match: every model_type in the table appears verbatim
+        // inside some case name.
+        bool covered = false;
+        for (const auto &c : cases) {
+            const auto &[it, unused] = std::minmax(m, c);
+            (void)unused;
+            if (c.find(m) != std::string::npos || m.find(c) != std::string::npos)
+                covered = true;
+        }
+        if (!covered) orphans.push_back("baseline entry with no perf TEST_CASE: " + m);
+    }
+    std::string joined;
+    for (const auto &x : orphans) joined += x + "\n";
+    INFO("perf registry drift:\n" << joined);
+    REQUIRE(orphans.empty());
 }

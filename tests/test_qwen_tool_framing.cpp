@@ -16,13 +16,17 @@
 #include <lsxcommon/qwen_tool_format.h>
 #include <lsxcommon/tokenizer.h>
 
+#include "ornith_moe_model.h"
 #include "qwen_dense_model.h"
+#include "qwen_moe_exp_model.h"
 
 namespace fs = std::filesystem;
 
 using lsxcommon::ArrowTokenizerDb;
 using lsxcommon::ChatConversation;
 using lsxcommon::ChatMessage;
+using lsxcommon::OrnithMoeModel;
+using lsxcommon::Qwen38FlashNextModel;
 using lsxcommon::Qwen3_5_9BModel;
 using lsxcommon::ToolCall;
 using lsxcommon::ToolSpec;
@@ -65,6 +69,12 @@ std::vector<int32_t> RawEncode(const ArrowTokenizerDb &db, std::string_view text
     ids.resize(static_cast<size_t>(n));
     return ids;
 }
+
+// Plain ASCII markers, shared by the two cases that build a generated stream
+// from sentinel ids. Verified against tests/data/synthetic_qwen_tok.json:
+// "<tool_call>" (11 bytes) and "</tool_call>" (12), both special=false.
+constexpr const char *TOOL_OPEN_MARKER = "<tool_call>";
+constexpr const char *TOOL_CLOSE_MARKER = "</tool_call>";
 
 bool Contains(const std::string &hay, std::string_view needle)
 {
@@ -269,6 +279,80 @@ TEST_CASE("qwen tool framing: ParseToolCalls round-trips generated ids",
     REQUIRE(calls.size() == 1);
     CHECK(calls[0].name == "get_weather");
     CHECK(calls[0].arguments_json == R"({"city":"Paris","days":3})");
+
+    f.db = ArrowTokenizerDb{};
+    fs::remove_all(f.pinned);
+}
+
+TEST_CASE("qwen-codec consumers without their own target: ornith and "
+          "qwen3.8-flash-next render/parse the native XML format",
+          "[qwen][ornith][tool_framing]")
+{
+    // Both families override BuildConversationInputIds/ParseToolCalls with the
+    // shared Qwen codec (ornith with enable_thinking=true — it is a reasoning
+    // fine-tune), so a change to that bridge must be pinned here and not only
+    // on the dense Qwen model.
+    DbFiles f = BuildDb("synthetic_qwen_tok.json");
+    const auto &db = f.db;
+
+    ChatConversation conv = ToolConversation();
+    ChatMessage asst;
+    asst.role = "assistant";
+    asst.content = "Checking.";
+    ToolCall call;
+    call.name = "get_weather";
+    call.arguments_json = R"({"city":"Paris"})";
+    asst.tool_calls.push_back(call);
+    conv.messages.push_back(asst);
+    conv.messages.push_back({"tool", "sunny", "call_0", {}});
+
+    // 1. Ornith: same codec, thinking ENABLED => the generation prompt keeps an
+    // OPEN <think> block (the dense prefill closes it).
+    std::string ornith_text;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, ornith_text,
+                                              /*enable_thinking=*/true));
+    const std::string open_think = "assistant\n<think>\n";
+    REQUIRE(ornith_text.size() >= open_think.size());
+    CHECK(ornith_text.substr(ornith_text.size() - open_think.size()) == open_think);
+    std::vector<int32_t> ornith_ids;
+    OrnithMoeModel ornith(lsxcommon::ModelInitConfig{});
+    REQUIRE(ornith.BuildConversationInputIds(db, conv, ornith_ids));
+    CHECK(!ornith_ids.empty());
+
+    // 2. Qwen3.8-Flash-Next: dense prefill (think closed).
+    std::string exp_text;
+    REQUIRE(lsxcommon::RenderQwenConversation(conv, exp_text));
+    const std::string gen = "assistant\n<think>\n\n</think>\n\n";
+    REQUIRE(exp_text.size() >= gen.size());
+    CHECK(exp_text.substr(exp_text.size() - gen.size()) == gen);
+    std::vector<int32_t> exp_ids;
+    Qwen38FlashNextModel exp(lsxcommon::ModelInitConfig{});
+    REQUIRE(exp.BuildConversationInputIds(db, conv, exp_ids));
+    CHECK(!exp_ids.empty());
+
+    // 3. Parse round-trip on generated ids, for both. Build the stream from the
+    //    sentinel ids + BPE-encoded inner text, exactly like the dense case
+    //    above — a literal zero-width space in a test string is a trap.
+    const int32_t tool_open = lsxcommon::arrow_tokenizer_lookup(db, TOOL_OPEN_MARKER, 11);
+    const int32_t tool_close = lsxcommon::arrow_tokenizer_lookup(db, TOOL_CLOSE_MARKER, 12);
+    REQUIRE(tool_open >= 0);
+    REQUIRE(tool_close >= 0);
+    const std::string inner =
+        "<function=get_weather><parameter=city>Paris</parameter></function>";
+    std::vector<int32_t> gen_ids;
+    gen_ids.push_back(tool_open);
+    for (int32_t id : RawEncode(db, inner)) gen_ids.push_back(id);
+    gen_ids.push_back(tool_close);
+
+    std::vector<ToolCall> calls;
+    REQUIRE(ornith.ParseToolCalls(db, gen_ids, calls));
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json == R"({"city":"Paris"})");
+    calls.clear();
+    REQUIRE(exp.ParseToolCalls(db, gen_ids, calls));
+    REQUIRE(calls.size() == 1);
+    CHECK(calls[0].name == "get_weather");
 
     f.db = ArrowTokenizerDb{};
     fs::remove_all(f.pinned);

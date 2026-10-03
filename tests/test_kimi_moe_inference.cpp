@@ -2,7 +2,10 @@
 // Real-model test: SKIPs when no converted Kimi checkpoint is present.
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_streaming_assert.h"
+
 #include <cuda_runtime.h>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -68,6 +71,27 @@ TEST_CASE("Kimi-K2.7-Code full inference is deterministic across calls",
     if (!r1.ok) FAIL("r1 failed: " + r1.error_msg);
     REQUIRE(r1.ok);
     REQUIRE(r1.gen_tokens.size() == 4);
+
+    // Streaming contract: one chunk per decoded token, in order. This is what
+    // lsxfabric --serve publishes, so a family that never invokes
+    // req.token_callback serves an empty stream.
+    ExpectStreamMatchesTokens(*m, req);
+
+    // Cooperative cancellation must stop the decode before the budget.
+    {
+        std::atomic<bool> abort{true};
+        lsxcommon::ModelRequest areq = req;
+        areq.max_gen_tokens = 8;
+        areq.abort_flag = &abort;
+        std::vector<std::uint32_t> chunks;
+        areq.token_callback = [&](const lsxcommon::TokenChunk &c) {
+            chunks.push_back(c.token_id);
+        };
+        const auto ar = m->Infer(areq);
+        if (!ar.ok) FAIL("aborted Infer failed: " + ar.error_msg);
+        CHECK(ar.gen_tokens.size() < static_cast<std::size_t>(areq.max_gen_tokens));
+        CHECK(chunks.size() == ar.gen_tokens.size());
+    }
     REQUIRE(!r1.final_logits.empty());
 
     auto r2 = m->Infer(req);
