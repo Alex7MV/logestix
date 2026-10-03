@@ -16,6 +16,19 @@ using lsxcommon::qwen_moe::QwenMoeExpertDeviceCache;
 
 namespace {
 
+// Stage a host activation range into device memory. The TC quantizer reads its
+// activation input on the device, so the engine always quantizes from a
+// device buffer (qwen_moe_exp_inference.cu:2128 passes d_mixed). Handing it a
+// host pointer only works where HMM/ATS maps host memory into the device
+// address space, which is not guaranteed on every platform.
+void StageActs(cudaStream_t stream, const void *src, std::size_t bytes,
+               void **d_out)
+{
+    REQUIRE(cudaMalloc(d_out, bytes) == cudaSuccess);
+    REQUIRE(cudaMemcpyAsync(*d_out, src, bytes, cudaMemcpyHostToDevice,
+                            stream) == cudaSuccess);
+}
+
 QwenMoeExpertDeviceCache MakeCache(int slots, int total_experts,
                                    std::vector<int32_t> &slot_of,
                                    std::vector<int32_t> &owner,
@@ -96,10 +109,16 @@ TEST_CASE("bf16 act-quant matches fp16 variant for bf16-representable values",
     for (int i = 0; i < K; ++i)
         hxf[static_cast<size_t>(i)] = __float2half(
             __bfloat162float(hx[static_cast<size_t>(i)]));
+    __half *d_hxf = nullptr;
+    __nv_bfloat16 *d_hxb = nullptr;
+    StageActs(st, hxf.data(), hxf.size() * sizeof(__half),
+              reinterpret_cast<void **>(&d_hxf));
+    StageActs(st, hx.data(), hx.size() * sizeof(__nv_bfloat16),
+              reinterpret_cast<void **>(&d_hxb));
     REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
-                st, hxf.data(), 1, K, d_xq, d_xqs) == cudaSuccess);
+                st, d_hxf, 1, K, d_xq, d_xqs) == cudaSuccess);
     REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4Bf16(
-                st, hx.data(), 1, K, d_xqb, d_xqsb) == cudaSuccess);
+                st, d_hxb, 1, K, d_xqb, d_xqsb) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
     std::vector<uint8_t> pq(K / 2), ps(K / 16), qb(K / 2), qs(K / 16);
     cudaMemcpy(pq.data(), d_xq, pq.size(), cudaMemcpyDeviceToHost);
@@ -743,7 +762,10 @@ TEST_CASE("tc batch gemm matches per-slot chain bitwise", "[qwen-moe-tc-batch]")
     uint8_t *d_xq; uint8_t *d_xqs;
     cudaMalloc(&d_xq, static_cast<size_t>(H) / 2);
     cudaMalloc(&d_xqs, static_cast<size_t>((H + 15) / 16));
-    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
+    __half *d_hx_stage = nullptr;
+    StageActs(stream, hx.data(), hx.size() * sizeof(__half),
+              reinterpret_cast<void **>(&d_hx_stage));
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, d_hx_stage, 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     __half *d_y13_seq, *d_y13_batch, *d_y2_seq, *d_y2_batch;
@@ -879,7 +901,10 @@ TEST_CASE("tc batch routed ffn matches legacy chain bitwise",
     uint8_t *d_xq, *d_xqs;
     cudaMalloc(&d_xq, static_cast<size_t>(H) / 2);
     cudaMalloc(&d_xqs, static_cast<size_t>((H + 15) / 16));
-    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
+    __half *d_hx_stage = nullptr;
+    StageActs(stream, hx.data(), hx.size() * sizeof(__half),
+              reinterpret_cast<void **>(&d_hx_stage));
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, d_hx_stage, 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     __half *d_postin, *d_yg, *d_yu, *d_y2, *d_ygu_batch, *d_h_batch,
@@ -1084,7 +1109,10 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     uint8_t *d_xq, *d_xqs;
     cudaMalloc(&d_xq, H / 2);
     cudaMalloc(&d_xqs, (H + 15) / 16);
-    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, hx.data(), 1, H,
+    __half *d_hx_stage = nullptr;
+    StageActs(stream, hx.data(), hx.size() * sizeof(__half),
+              reinterpret_cast<void **>(&d_hx_stage));
+    REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(stream, d_hx_stage, 1, H,
                                                    d_xq, d_xqs) == cudaSuccess);
 
     // Down projection consumes a DISTINCT per-slot activation (each expert has
@@ -1100,9 +1128,12 @@ TEST_CASE("tc batch gemm real-geometry split-k parity", "[qwen-moe-tc-batch]")
     uint8_t *d_ad, *d_ads;
     cudaMalloc(&d_ad, static_cast<size_t>(K) * down_pack_slot);
     cudaMalloc(&d_ads, static_cast<size_t>(K) * down_scale_slot);
+    __half *d_hdown = nullptr;
+    StageActs(stream, hdown.data(), hdown.size() * sizeof(__half),
+              reinterpret_cast<void **>(&d_hdown));
     for (int k = 0; k < K; ++k) {
         REQUIRE(lsxcommon::lsx_tc::LsxTcQuantizeActsNvfp4(
-                    stream, hdown.data() + static_cast<size_t>(k) * I, 1, I,
+                    stream, d_hdown + static_cast<std::size_t>(k) * I, 1, I,
                     d_ad + static_cast<int64_t>(k) * down_pack_slot,
                     d_ads + static_cast<int64_t>(k) * down_scale_slot) ==
                 cudaSuccess);

@@ -3,6 +3,8 @@
 //   RunPhiRmsNormKernel / RunPhiRopeKernel / RunPhiAttentionKernel.
 #include <catch2/catch_all.hpp>
 
+#include "test_kernel_budget.h"
+
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
@@ -421,7 +423,9 @@ TEST_CASE("phi seq1 GEMV decode-shape aggregate bandwidth budget",
     // streaming ceiling on this part = ~1618 GB/s. Budget sits just below the
     // current figure so a silent regression to the branchy decode,
     // low-occupancy or scalar-x launch fails here.
-    CHECK(agg > 1250.0);
+    kernel_budget::Require("phi.dense_gemm.bandwidth", agg,
+                           kernel_budget::Kind::kMin,
+                           "aggregate dense-decode NVFP4 GEMV, GB/s");
     cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
         lsxg::SetLsxTcFastMath(false);
         lsxg::SetLsxSeq1Gemv(false);

@@ -151,6 +151,13 @@ struct DeviceExpertWeight {
 // by scores + bias (bias steers selection only), the returned weights are the
 // selected unbiased scores, renormalized when topk > 1 and scaled by
 // route_scale. x/gate_w are FP16; bias F32.
+//
+// Every pointer here (x, gate_w, bias, out_idx, out_w, scores_scratch) must be
+// device memory. The kernel dereferences all of them. On a system with HMM or
+// ATS a host pointer happens to work, because host memory is then mapped into
+// the device address space; where neither is present the access faults with
+// cudaErrorIllegalAddress. Never rely on that: stage into device memory, as
+// deepseek_moe_v41_inference_pipeline.cu does.
 cudaError_t LaunchRouterTopK(cudaStream_t stream,
                              const uint16_t *x, const uint16_t *gate_w,
                              const float *bias, int n_routed, int hidden,
