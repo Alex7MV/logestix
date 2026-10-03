@@ -246,10 +246,15 @@ TEST_CASE("Xing converter: mHC stays BF16, MLA projections go NVFP4",
     REQUIRE(qa_ln->dtype == "BF16");
     REQUIRE(qa_ln->bytes == 32);  // [16]
 
-    // The noaux_tc router bias rides raw in FP32 (_keep_in_fp32_modules_strict
-    // upstream); the router weight itself is an ordinary NVFP4 linear.
+    // BOTH router tensors stay high precision: the weight because its argmax
+    // picks the expert set (NVFP4 rounding there swaps experts instead of
+    // blurring an output), the bias because upstream lists it in
+    // _keep_in_fp32_modules_strict.
     const auto *bias = find_raw("model.layers.2.mlp.gate.e_score_correction_bias");
     REQUIRE(bias != nullptr);
     REQUIRE(bias->dtype == "F32");
-    REQUIRE(find_nvfp4("model.layers.2.mlp.gate.weight") != nullptr);
+    const auto *router = find_raw("model.layers.2.mlp.gate.weight");
+    REQUIRE(router != nullptr);
+    REQUIRE(router->dtype == "BF16");
+    REQUIRE(find_nvfp4("model.layers.2.mlp.gate.weight") == nullptr);
 }

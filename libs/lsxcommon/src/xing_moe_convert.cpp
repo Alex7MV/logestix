@@ -778,19 +778,14 @@ arrow::Status ConvertXingModel(const std::string &input_dir,
                 // e_score_correction_bias is kept in FP32 exactly (the source
                 // lists it in _keep_in_fp32_modules_strict); the router weight
                 // is a real linear map and is quantized like any other.
-                if (absl::EndsWith(t.name, ".e_score_correction_bias"))
-                {
-                    TensorRecord r;
-                    ARROW_RETURN_NOT_OK(RawRecord(input_dir, ref, r));
-                    raw_by_layer[p.layer].push_back(std::move(r));
-                }
-                else
-                {
-                    DenseNvfp4Record rec;
-                    ARROW_RETURN_NOT_OK(QuantizeDense(input_dir, ref, rec));
-                    nvfp4_by_layer[p.layer].push_back(std::move(rec));
-                    layer_scales[p.layer].push_back({rec.name, rec.global_scale});
-                }
+                // BOTH router tensors stay high precision. The weight is a
+                // [64, 3584] map whose ARGMAX decides which experts run: NVFP4
+                // rounding there does not blur an output, it silently swaps the
+                // expert set and produces fluent garbage. Every other family
+                // keeps its router in BF16 for the same reason.
+                TensorRecord r;
+                ARROW_RETURN_NOT_OK(RawRecord(input_dir, ref, r));
+                raw_by_layer[p.layer].push_back(std::move(r));
                 break;
             }
             case XingTensorKind::DenseMlp:

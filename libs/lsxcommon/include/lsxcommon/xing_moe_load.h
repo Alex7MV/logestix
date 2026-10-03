@@ -51,8 +51,10 @@ struct XingLayerWeights {
     // mHC: two blocks per layer, residual mixing.
     XingHyperConn attn_hc;
     XingHyperConn ffn_hc;
-    // Router (noaux_tc: NVFP4 weight + FP32 bias).
-    XingNvfp4Weight router;
+    // Router (noaux_tc). The weight is a [E, H] map whose ARGMAX selects the
+    // experts, so it stays BF16 (never quantized); the correction bias is F32.
+    const uint8_t *router = nullptr;  // BF16 [E, H]
+    int64_t router_size = 0;          // bytes
     const float *e_score_bias = nullptr;  // F32 [E]
     // Dense SwiGLU (layers [0, kFirstKDense)).
     XingNvfp4Weight dense_gate;  // [dense_inter, H]

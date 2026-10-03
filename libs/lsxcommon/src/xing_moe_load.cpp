@@ -239,7 +239,7 @@ void FreeXingWeights(XingPinnedWeights &pw)
     for (auto &l : pw.layers)
     {
         for (XingNvfp4Weight *w :
-             {&l.q_a, &l.q_b, &l.kv_a, &l.kv_b, &l.o_proj, &l.router,
+             {&l.q_a, &l.q_b, &l.kv_a, &l.kv_b, &l.o_proj,
               &l.dense_gate, &l.dense_up, &l.dense_down, &l.shared_gate,
               &l.shared_up, &l.shared_down})
             drop(w->packed);
@@ -254,6 +254,7 @@ void FreeXingWeights(XingPinnedWeights &pw)
         drop(l.ffn_hc.hc_base);
         drop(l.ffn_hc.hc_scale);
         drop(l.e_score_bias);
+        drop(l.router);
         l = XingLayerWeights{};
     }
     pw.layers.clear();
@@ -363,6 +364,11 @@ cudaError_t LoadXingWeights(const std::string &model_path,
                 UploadRaw(v, &ly.input_ln, stream, acc);
             else if (rel == "post_attention_layernorm.weight")
                 UploadRaw(v, &ly.post_attn_ln, stream, acc);
+            else if (rel == "mlp.gate.weight")
+            {
+                UploadRaw(v, &ly.router, stream, acc);
+                ly.router_size = v.bytes;
+            }
             else if (rel == "mlp.gate.e_score_correction_bias")
             {
                 const uint8_t *dev = nullptr;
@@ -396,7 +402,6 @@ cudaError_t LoadXingWeights(const std::string &model_path,
             else if (tail == "self_attn.kv_a_proj_with_mqa.weight") dst = &ly.kv_a;
             else if (tail == "self_attn.kv_b_proj.weight") dst = &ly.kv_b;
             else if (tail == "self_attn.o_proj.weight") dst = &ly.o_proj;
-            else if (tail == "mlp.gate.weight") dst = &ly.router;
             else if (tail == "mlp.gate_proj.weight") dst = &ly.dense_gate;
             else if (tail == "mlp.up_proj.weight") dst = &ly.dense_up;
             else if (tail == "mlp.down_proj.weight") dst = &ly.dense_down;
@@ -425,7 +430,7 @@ cudaError_t LoadXingWeights(const std::string &model_path,
                         cudaErrorInvalidValue);
         if (ly.is_moe)
         {
-            if (!ly.router.valid() || !ly.e_score_bias || !ly.shared_gate.valid() ||
+            if (!ly.router || !ly.e_score_bias || !ly.shared_gate.valid() ||
                 !ly.shared_up.valid() || !ly.shared_down.valid())
                 return fail(absl::StrCat("layer_", l, ": incomplete MoE block"),
                             cudaErrorInvalidValue);

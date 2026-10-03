@@ -247,6 +247,30 @@ target_link_libraries(lsxcommon_qwen_moe_cu
     absl::strings
 )
 
+# Xing4.0-29B-A4B kernels + inference (mHC four-stream residual, MLA,
+# interleaved YaRN RoPE). -fmad=false like the other bit-exact families: the
+# mHC gates pick the expert set, so their arithmetic must not be reassociated.
+add_library(lsxcommon_xing_cu OBJECT
+    src/xing_moe_kernels.cu
+)
+set_target_properties(lsxcommon_xing_cu PROPERTIES
+    CUDA_ARCHITECTURES "120-real;121-real"
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+)
+target_compile_options(lsxcommon_xing_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr;-fmad=false>
+    $<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<PLATFORM_ID:Windows>>:-Xcompiler=/utf-8>
+)
+target_include_directories(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_INCLUDES})
+target_compile_definitions(lsxcommon_xing_cu PRIVATE ${LSXCOMMON_CU_DEFS})
+target_link_libraries(lsxcommon_xing_cu
+    "${CUDA_CUDART_LIBRARY}"
+    arrow_shared
+    arrow_cuda_shared
+    absl::strings
+)
+
 # Tensor-core NVFP4 fast path (audit Phase 3, F-01): kind::mxf4nvf4 PTX
 # assembles ONLY on the arch-'a' targets, so this object lib carries its own
 # --generate-code set (sm_120a / sm_121a). Plain sm_120/121 SASS for the
@@ -427,6 +451,7 @@ target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_granite_cu
     lsxcommon_phi_cu
     lsxcommon_alice_cu
+    lsxcommon_xing_cu
     lsx_tune)
 
 # Nemotron-3.5 (NemotronH hybrid) Mamba-2 / gated-RMSNorm kernels.

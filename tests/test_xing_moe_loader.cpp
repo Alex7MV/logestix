@@ -100,7 +100,7 @@ TEST_CASE("LoadXingWeights uploads mHC, MLA, router and all-resident experts",
         REQUIRE(ly.dense_gate.valid());
         REQUIRE(ly.dense_up.valid());
         REQUIRE(ly.dense_down.valid());
-        REQUIRE_FALSE(ly.router.valid());
+        REQUIRE(ly.router == nullptr);
         REQUIRE(ly.e_score_bias == nullptr);
     }
 
@@ -108,9 +108,8 @@ TEST_CASE("LoadXingWeights uploads mHC, MLA, router and all-resident experts",
     {
         const auto &ly = pw.layers[static_cast<size_t>(pw.first_moe_layer)];
         REQUIRE(ly.is_moe);
-        REQUIRE(ly.router.valid());
-        REQUIRE(ly.router.rows == 2);      // fixture experts
-        REQUIRE(ly.router.cols == 16);
+        REQUIRE(ly.router != nullptr);    // BF16, never quantized
+        REQUIRE(ly.router_size == 2 * 16 * 2);
         REQUIRE(ly.e_score_bias != nullptr);
         REQUIRE(ly.shared_gate.valid());
         REQUIRE(ly.shared_up.valid());
