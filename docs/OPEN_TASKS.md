@@ -184,20 +184,25 @@ product or numerics decision, not a patch.
   policy handle passed down the launch chain) instead of process globals, or a
   documented single-model-at-a-time engine invariant with a guard test.
 
-### E1a. Cooperative-cancel is only pinned end-to-end for 2 of 18 families
-- `GenerationStream::Aborted()` and the pre-set-flag path have unit coverage
-  (`tests/test_generation_stream.cpp`, `tests/test_model_engine.cpp`), and the
-  families that reported a cancel bug (alice, mimo) now have a real
-  pre-set-abort case. The other 16 route the same `GenerationStream::Aborted()`
-  call but no test asserts that a real decode stops early — a family could
+### E1a. Cooperative-cancel is pinned end-to-end for 5 of 18 families
+- `GenerationStream::Aborted()` has unit coverage (`tests/test_generation_stream.cpp`,
+  `tests/test_model_engine.cpp`), and five families now assert that a raised
+  flag stops a real decode: alice, mimo (the two that reported the bug), kimi,
+  qwen3.8-27b and qwen3.5-35b-a3b. The other 13 route the same
+  `GenerationStream::Aborted()` call but no test asserts it — a family could
   check the flag in the wrong place and stay green.
-- Measured 2026-10-02 (TDD coverage audit). Streaming-order assertions cover
-  18/18 after the audit; cancel coverage is 2/18.
-- **Next step:** a shared helper next to `ExpectStreamMatchesTokens`
-  (`tests/test_streaming_assert.h`) that pre-sets the flag, runs one bounded
-  generation, and asserts fewer tokens than the budget plus one chunk per
-  token; call it from each family's model-stage target. Cheap, mechanical, and
-  it closes the last unverified leg of the `--serve` contract.
+- Measured 2026-10-02 (TDD coverage audit), re-measured 2026-10-03 after the
+  qwen_moe work. Streaming-order assertions cover 18/18; cancel coverage 5/18.
+- The shared helper the audit asked for now exists in
+  `tests/test_streaming_assert.h`: `ExpectPreSetAbortStops` and
+  `ExpectCallbackAbortStops` (the latter raises the flag *from the token
+  callback*, i.e. the real `--serve` path — the pre-set variant alone cannot
+  distinguish "checked between steps" from "checked once at entry"). Each use
+  needs a control that runs the same budget with no flag and gets the full
+  token count, otherwise EOS truncation on random weights makes it pass for the
+  wrong reason.
+- **Next step:** call those two helpers from each remaining family's model-stage
+  target. Mechanical, ~15 lines per family.
 
 ### E2. `alice` publishes the FIRST logits row; every other family the LAST
 - `alice_moe_inference_pipeline.cu:492` fills `final_logits` when

@@ -28,7 +28,33 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 | GigaChat3.5-432B | recognized (`gigachat3_5`) + custom code; FP8 (416 G) — same CUDA/VRAM blocker as DeepSeek-V4-Flash, plus RAM pressure |
 | DeepSeek-V4.1-Flash | not capturable locally — `deepseek_v41` is not in transformers 5.15.1 and the release ships its **own inference stack** (`inference/model.py`, `convert.py`, `generate.py`; tilelang FP8/FP4 kernels, tensor-parallel, target 2×80 GB GPU), not HF remote code. Do not confuse it with the flat FP8 + FP4 MoE checkpoint in the vault. |
 | GLM-5.3-Flash | not capturable — `glm5_next` unknown to transformers 5.15.1 |
-| GLM-5.2, Qwen3.5-35B-A3B, Kimi-K2.7-Code | source absent from the vault |
+| Qwen3.5-35B-A3B | captured (all 3 exact) on **CPU**, no `OVERRIDES` entry — see below |
+| GLM-5.2, Kimi-K2.7-Code | source absent from the vault |
+
+### Qwen3.5-35B-A3B capture recipe (CPU, no overrides)
+
+The checkpoint is a `qwen3_5_moe` VL MoE (40 layers, 256 experts, hybrid
+linear/full attention, 67 GiB bf16) and transformers 5.15.1 loads it natively,
+so the **generic** capture path works with no `OVERRIDES` entry:
+
+```bash
+python tools/fsi_capture.py --model /mnt/llm_models/models/Qwen3.5-35B-A3B \
+    --type qwen3.5-35b-a3b --out tests/fixtures/fsi/qwen3.5-35b-a3b.json
+```
+
+The useful operational fact: `GENERIC` leaves `device` at `None`, i.e. the
+capture runs on **CPU** and needs no VRAM. All three prompts (3 x 128 new
+tokens) take ~2 minutes on a 160-core host with the weights resident in page
+cache — far cheaper than sharding onto the GPU, and it leaves the GPU free for
+the converted-model verification that follows. Same for `code_capture.py` /
+`det_capture.py`; the three goldens for this model were captured in ~4 minutes
+total.
+
+All three answers are the source model's own (no template deviation):
+`PV=CF*((1-exp(-r*n))/(1-exp(-r)))`,
+`Balance_Alpha=(((100000000*Rate_A)-Slip_A)*Rate_B-Slip_B)*Rate_C-Slip_C`,
+`Drawdown>Threshold` — and the converted NVFP4 model reproduces all three at
+`kOff` (62 s / 52 s / 94 s per gate).
 
 ### Qwen3.8-Flash-Next (`qwen4_exp`) capture recipe
 
@@ -51,6 +77,7 @@ that this build does not accept/route. Capture works after (documented in
 
 | Family | Result |
 |---|---|
+| Qwen3.5-35B-A3B | **PASS 3/3** (wired into CI; 2026-10-03) |
 | Qwen3.6-35B-A3B | **PASS 3/3** (wired into CI) |
 | Qwen3.8-Flash-Next | **PASS 3/3** (wired into CI) |
 | Granite-4.2-30B | **PASS 3/3** (wired into CI) |
