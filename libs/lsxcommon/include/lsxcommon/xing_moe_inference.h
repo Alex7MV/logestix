@@ -48,7 +48,11 @@ struct XingSession {
     float *d_logits = nullptr;  // [vocab]
     float *d_gate = nullptr;    // [16] router weights
     int32_t *d_expert_ids = nullptr;  // [16]
+    int32_t token_id = 0;             // current step's input token
     __half *d_half = nullptr;   // [2 * dense_intermediate] GEMV staging
+    // Persistent FP16 embedding table (dequantized once from the NVFP4 pack;
+    // a per-token dequant of 131072x3584 would dominate the step time).
+    __half *d_embed_table = nullptr;
     __half *d_half_big = nullptr;  // [vocab] head output
     // Expert pointer tables (all experts resident -> no staging copies).
     const uint8_t **d_epacked = nullptr;  // [4] selected
@@ -70,11 +74,11 @@ void FreeXingSession(XingSession &s);
 bool BuildXingYarnTables(int capacity, std::vector<float> &cos_t,
                          std::vector<float> &sin_t);
 
-// One decode step at absolute position `pos`. `x_emb` is the embedding row
-// (F32[hidden]); `logits_out` receives F32[vocab]. Returns a CUDA error code.
+// One decode step. `token_id` selects the embedding row (NOT the position),
+// `pos` is the absolute KV-cache position. Returns a CUDA error code.
 cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
-                           const float *d_rc, const float *d_rs, int pos,
-                           cudaStream_t stream);
+                           int token_id, const float *d_rc, const float *d_rs,
+                           int pos, cudaStream_t stream);
 
 // Reads back the last step's logits (host pointer, length = pw vocab).
 void XingReadLogits(const XingPinnedWeights &pw, const XingSession &s,

@@ -76,6 +76,8 @@ cudaError_t UploadNvfp4(const lsxcommon::DenseNvfp4View &v,
     w.global_scale = v.global_scale;
     w.rows = v.rank > 0 ? v.shape[0] : 0;
     w.cols = v.rank > 1 ? v.shape[1] : 1;
+    w.packed_bytes = v.packed_bytes;
+    w.scale_bytes = v.scale_bytes;
     (void)stream;
     return cudaSuccess;
 }
@@ -86,6 +88,19 @@ cudaError_t UploadRaw(const lsxcommon::TensorView &v, const uint8_t **dst,
 {
     (void)stream;
     return UploadBytes(v.data, v.bytes, dst, accounted);
+}
+
+// Typed variant: the caller knows the record is BF16 (norms, mHC, router), so
+// the device pointer is exposed with its real dtype instead of `uint8_t*`.
+cudaError_t UploadBf16(const lsxcommon::TensorView &v,
+                       const __nv_bfloat16 **dst, cudaStream_t stream,
+                       std::size_t &accounted)
+{
+    const uint8_t *raw = nullptr;
+    const cudaError_t e = UploadRaw(v, &raw, stream, accounted);
+    if (e != cudaSuccess) return e;
+    *dst = reinterpret_cast<const __nv_bfloat16 *>(raw);
+    return cudaSuccess;
 }
 
 struct IndexInfo {
@@ -210,11 +225,13 @@ bool LoadHyperConn(const lsxcommon::TensorBatchViews &batch,
                                 fn->rank));
         return false;
     }
-    const uint8_t *scale_dev = nullptr;
-    if (UploadRaw(*fn, &hc.hc_fn, stream, accounted) != cudaSuccess) return false;
-    if (UploadRaw(*base, &hc.hc_base, stream, accounted) != cudaSuccess) return false;
+    const uint8_t *fn_dev = nullptr, *base_dev = nullptr, *scale_dev = nullptr;
+    if (UploadRaw(*fn, &fn_dev, stream, accounted) != cudaSuccess) return false;
+    if (UploadRaw(*base, &base_dev, stream, accounted) != cudaSuccess) return false;
     if (UploadRaw(*scale, &scale_dev, stream, accounted) != cudaSuccess)
         return false;
+    hc.hc_fn = reinterpret_cast<const __nv_bfloat16 *>(fn_dev);
+    hc.hc_base = reinterpret_cast<const __nv_bfloat16 *>(base_dev);
     hc.hc_scale = reinterpret_cast<const float *>(scale_dev);
     hc.hc_fn_rows = fn->shape[0];
     hc.hc_fn_cols = fn->shape[1];
@@ -329,7 +346,7 @@ cudaError_t LoadXingWeights(const std::string &model_path,
             if (v.name != "model.norm.weight")
                 return fail("unexpected pinned global " + std::string(v.name),
                             cudaErrorInvalidValue);
-            const cudaError_t e = UploadRaw(v, &pw.final_norm, stream, acc);
+            const cudaError_t e = UploadBf16(v, &pw.final_norm, stream, acc);
             if (e != cudaSuccess) return fail("final norm upload failed", e);
         }
         if (!pw.embed.valid() || !pw.head.valid() || !pw.final_norm)
@@ -363,16 +380,16 @@ cudaError_t LoadXingWeights(const std::string &model_path,
             const std::string name{v.name};
             const std::string rel = name.substr(pfx.size());
             if (rel == "self_attn.q_a_layernorm.weight")
-                UploadRaw(v, &ly.q_a_ln, stream, acc);
+                UploadBf16(v, &ly.q_a_ln, stream, acc);
             else if (rel == "self_attn.kv_a_layernorm.weight")
-                UploadRaw(v, &ly.kv_a_ln, stream, acc);
+                UploadBf16(v, &ly.kv_a_ln, stream, acc);
             else if (rel == "input_layernorm.weight")
-                UploadRaw(v, &ly.input_ln, stream, acc);
+                UploadBf16(v, &ly.input_ln, stream, acc);
             else if (rel == "post_attention_layernorm.weight")
-                UploadRaw(v, &ly.post_attn_ln, stream, acc);
+                UploadBf16(v, &ly.post_attn_ln, stream, acc);
             else if (rel == "mlp.gate.weight")
             {
-                UploadRaw(v, &ly.router, stream, acc);
+                UploadBf16(v, &ly.router, stream, acc);
                 ly.router_size = v.bytes;
             }
             else if (rel == "mlp.gate.e_score_correction_bias")

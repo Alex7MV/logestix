@@ -252,6 +252,7 @@ target_link_libraries(lsxcommon_qwen_moe_cu
 # mHC gates pick the expert set, so their arithmetic must not be reassociated.
 add_library(lsxcommon_xing_cu OBJECT
     src/xing_moe_kernels.cu
+    src/xing_moe_inference.cu
 )
 set_target_properties(lsxcommon_xing_cu PROPERTIES
     CUDA_ARCHITECTURES "120-real;121-real"

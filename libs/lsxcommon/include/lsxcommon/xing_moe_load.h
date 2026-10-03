@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
 #include <cstdint>
@@ -16,6 +17,11 @@ struct XingNvfp4Weight {
     float global_scale = 1.0f;
     int64_t rows = 0;
     int64_t cols = 0;
+    // Byte spans: the scales live INSIDE the packed allocation (the converter
+    // writes one contiguous blob per record), so the embedding dequant needs
+    // the lengths, not just the base pointer.
+    int64_t packed_bytes = 0;
+    int64_t scale_bytes = 0;
     bool valid() const { return packed != nullptr && scales != nullptr; }
 };
 
@@ -24,11 +30,11 @@ struct XingNvfp4Weight {
 // hc_base [24] and hc_scale [3] are the per-block bias and the three output
 // gains. There is no input-norm tensor (Xing4_0UnweightedRMSNorm).
 struct XingHyperConn {
-    const uint8_t *hc_fn = nullptr;    // BF16 bits
+    const __nv_bfloat16 *hc_fn = nullptr;   // [24, 4H]
     int64_t hc_fn_rows = 0;
     int64_t hc_fn_cols = 0;
-    const uint8_t *hc_base = nullptr;  // BF16 bits [24]
-    const float *hc_scale = nullptr;    // F32 [3]
+    const __nv_bfloat16 *hc_base = nullptr;  // [24]
+    const float *hc_scale = nullptr;         // F32 [3]
     bool valid() const { return hc_fn != nullptr && hc_base != nullptr && hc_scale; }
 };
 
@@ -43,17 +49,18 @@ struct XingLayerWeights {
     XingNvfp4Weight kv_a;     // [kv_lora+rope, H]
     XingNvfp4Weight kv_b;     // [heads*(nope+v), kv_lora]
     XingNvfp4Weight o_proj;   // [H, heads*v]
-    const uint8_t *q_a_ln = nullptr;    // BF16 [q_lora]
-    const uint8_t *kv_a_ln = nullptr;   // BF16 [kv_lora]
-    // Block norms.
-    const uint8_t *input_ln = nullptr;      // BF16 [H]
-    const uint8_t *post_attn_ln = nullptr;  // BF16 [H]
+    // Norms stay BF16 and are typed as such: a norm that silently reads its
+    // weight as bytes is a plausible-looking garbage stream, not a crash.
+    const __nv_bfloat16 *q_a_ln = nullptr;    // [q_lora]
+    const __nv_bfloat16 *kv_a_ln = nullptr;   // [kv_lora]
+    const __nv_bfloat16 *input_ln = nullptr;      // [H]
+    const __nv_bfloat16 *post_attn_ln = nullptr;  // [H]
     // mHC: two blocks per layer, residual mixing.
     XingHyperConn attn_hc;
     XingHyperConn ffn_hc;
     // Router (noaux_tc). The weight is a [E, H] map whose ARGMAX selects the
     // experts, so it stays BF16 (never quantized); the correction bias is F32.
-    const uint8_t *router = nullptr;  // BF16 [E, H]
+    const __nv_bfloat16 *router = nullptr;  // BF16 [E, H]
     int64_t router_size = 0;          // bytes
     const float *e_score_bias = nullptr;  // F32 [E]
     // Dense SwiGLU (layers [0, kFirstKDense)).
@@ -95,7 +102,7 @@ struct XingPinnedWeights {
     int first_moe_layer = 0;
     XingNvfp4Weight embed;
     XingNvfp4Weight head;
-    const uint8_t *final_norm = nullptr;  // BF16 [H]
+    const __nv_bfloat16 *final_norm = nullptr;  // BF16 [H]
     std::vector<XingLayerWeights> layers;
     // Routed experts, per layer: one device slab (packed + scales) plus an
     // offset table. slab_scale_bytes[i] mirrors slab_bytes[i] for the E4M3 part.

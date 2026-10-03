@@ -18,10 +18,12 @@
 #include "xing_moe_constants.h"
 #include "xing_moe_device_math.h"
 
-#include "lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsx_kernels_act.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
+#include "lsxcommon/lsx_gemv.h"
+#include "lsxcommon/shared_experts.h"
 
 #include <cuda_bf16.h>
 
@@ -104,40 +106,16 @@ __global__ void xing_mean_streams_kernel(const float *__restrict__ streams,
     out[j] = __fdiv_rn(acc, static_cast<float>(hc_mult));
 }
 
-// Interleaved YaRN RoPE on the 64-dim rope subspace: pairs (x0,x1), (x2,x3), ...
-// rotated by one frequency each (rope_interleave=True, bit-identical to the
-// half-split rotate_half formulation on both q and k, hence score-preserving).
-__global__ void xing_rope_kernel(float *__restrict__ q, float *__restrict__ k,
-                                 int heads, int rope, int pairs,
-                                 const float *__restrict__ cos_t,
-                                 const float *__restrict__ sin_t)
-{
-    const int h = blockIdx.x;
-    for (int j = threadIdx.x; j < pairs; j += blockDim.x)
-    {
-        const float c = cos_t[j];
-        const float s = sin_t[j];
-        const int qi = (h * (rope - 0)) + 2 * j;   // q is [heads, nope+rope]
-        const int qn = frozen::kQkNopeHeadDim + 2 * j;
-        const float a = q[qn];
-        const float b = q[qn + 1];
-        q[qn] = __fsub_rn(__fmul_rn(a, c), __fmul_rn(b, s));
-        q[qn + 1] = __fadd_rn(__fmul_rn(a, s), __fmul_rn(b, c));
-        (void)qi;
-        if (h == 0)
-        {
-            const float ka = k[2 * j];
-            const float kb = k[2 * j + 1];
-            k[2 * j] = __fsub_rn(__fmul_rn(ka, c), __fmul_rn(kb, s));
-            k[2 * j + 1] = __fadd_rn(__fmul_rn(ka, s), __fmul_rn(kb, c));
-        }
-    }
-}
-
-// The rope subspace of q lives at [heads, nope ... nope+rope) inside d_q; the
-// kernel needs the base offset, so it is passed explicitly.
-__global__ void xing_rope_q_kernel(float *__restrict__ q, int heads, int rope,
-                                   int pairs, int q_offset,
+// Interleaved YaRN RoPE: the 64-dim rope subspace is laid out as adjacent pairs
+// (x0,x1), (x2,x3), ... each rotated by ONE frequency (rope_interleave=True).
+// Upstream notes this is bit-identical to the half-split rotate_half form on
+// both q and k, hence score-preserving - so either layout gives the same logits.
+//
+// Two entry points because the two tensors are laid out differently: q's rope
+// subspace is strided per head inside the [heads, nope+rope] buffer, while k_rot
+// is a standalone [rope] row copied into the cache.
+__global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs,
+                                   int q_offset,
                                    const float *__restrict__ cos_t,
                                    const float *__restrict__ sin_t)
 {
@@ -151,6 +129,22 @@ __global__ void xing_rope_q_kernel(float *__restrict__ q, int heads, int rope,
         const float b = q[qn + 1];
         q[qn] = __fsub_rn(__fmul_rn(a, c), __fmul_rn(b, s));
         q[qn + 1] = __fadd_rn(__fmul_rn(a, s), __fmul_rn(b, c));
+    }
+}
+
+// k_rot is a single [rope] row (MQA-style shared across heads upstream).
+__global__ void xing_rope_k_kernel(float *__restrict__ k_rot, int pairs,
+                                   const float *__restrict__ cos_t,
+                                   const float *__restrict__ sin_t)
+{
+    for (int j = threadIdx.x; j < pairs; j += blockDim.x)
+    {
+        const float c = cos_t[j];
+        const float s = sin_t[j];
+        const float a = k_rot[2 * j];
+        const float b = k_rot[2 * j + 1];
+        k_rot[2 * j] = __fsub_rn(__fmul_rn(a, c), __fmul_rn(b, s));
+        k_rot[2 * j + 1] = __fadd_rn(__fmul_rn(a, s), __fmul_rn(b, c));
     }
 }
 
@@ -242,6 +236,18 @@ __global__ void xing_gather_expert_ptrs_kernel(const int32_t *__restrict__ ids,
     (void)up;
 }
 
+// Broadcast one embedding row into all hc_mult streams.
+__global__ void xing_embed_gather_kernel(const __half *__restrict__ table,
+                                         int id, float *__restrict__ streams,
+                                         int hc_mult, int hidden)
+{
+    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+    {
+        const float v = __half2float(table[static_cast<int64_t>(id) * hidden + j]);
+        for (int d = 0; d < hc_mult; ++d) streams[d * hidden + j] = v;
+    }
+}
+
 // Weighted accumulate of the routed outputs into the token hidden state.
 __global__ void xing_scale_acc_kernel(const __half *__restrict__ y,
                                       const float *__restrict__ w,
@@ -285,6 +291,7 @@ void FreeXingSession(XingSession &s)
     d(s.d_comb); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
     d(s.d_attn); d(s.d_scores); d(s.d_logits); d(s.d_gate); d(s.d_expert_ids);
     d(s.d_half); d(s.d_half_big); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
+    d(s.d_embed_table);
     s = XingSession{};
 }
 
@@ -376,16 +383,31 @@ bool BuildXingYarnTables(int capacity, std::vector<float> &cos_t,
 }
 
 cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
-                           const float *d_rc, const float *d_rs, int pos,
-                           cudaStream_t stream)
+                           int token_id, const float *d_rc, const float *d_rs,
+                           int pos, cudaStream_t stream)
 {
     const int H = frozen::kHidden;
     const int hc = frozen::kHcMult;
     const int rope = frozen::kRopeDim;
     const int pairs = rope / 2;
 
-    // The embedding row is the seed of all four streams.
-    cudaMemcpyAsync(s.d_hidden, pw.embed_rows_dev(pos) , 0, cudaMemcpyDeviceToDevice, stream);
+    // Seed all four streams with the embedding row. The embedding is stored
+    // NVFP4, so it is dequantized ONCE into a persistent FP16 table (the
+    // qwen_moe pattern) and gathered per step - a 131072x3584 dequant per token
+    // would dominate the step time.
+    if (s.d_embed_table == nullptr)
+    {
+        const int64_t elems = static_cast<int64_t>(frozen::kVocab) * H;
+        Ck(cudaMalloc(reinterpret_cast<void **>(&s.d_embed_table),
+                      static_cast<size_t>(elems) * sizeof(__half)));
+        Ck(lsxcommon::gpu::dequant_shared_nvfp4(stream, pw.embed.packed, pw.embed.packed_bytes,
+                                pw.embed.scales, pw.embed.scale_bytes,
+                                pw.embed.global_scale, s.d_embed_table, elems));
+    }
+    xing_embed_gather_kernel<<<1, kThreads, 0, stream>>>(s.d_embed_table,
+                                                         token_id, s.d_hidden,
+                                                         hc, H);
+    s.token_id = token_id;
 
     for (int l = 0; l < pw.num_layers; ++l)
     {
@@ -426,17 +448,13 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
 
         // Interleaved RoPE on q's rope subspace and on k_rot.
         xing_rope_q_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
-            s.d_q, frozen::kHeads, rope, pairs, frozen::kHeads * frozen::kQkNopeHeadDim,
+            s.d_q, pairs, frozen::kHeads * frozen::kQkNopeHeadDim,
             d_rc + static_cast<size_t>(pos) * pairs,
             d_rs + static_cast<size_t>(pos) * pairs);
-        {
-            // k_rot = kv_latent[kv_lora .. kv_lora+rope): rotate in place.
-            __global__ void noop() {}
-            (void)noop;
-            kx_rope_kernel_helper(s.d_kv_latent + frozen::kKvLoraRank, pairs,
-                                  d_rc + static_cast<size_t>(pos) * pairs,
-                                  d_rs + static_cast<size_t>(pos) * pairs, stream);
-        }
+        xing_rope_k_kernel<<<1, kThreads, 0, stream>>>(
+            s.d_kv_latent + frozen::kKvLoraRank, pairs,
+            d_rc + static_cast<size_t>(pos) * pairs,
+            d_rs + static_cast<size_t>(pos) * pairs);
 
         xing_write_cache_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
             s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, s.d_k, s.d_v, pos,
@@ -472,7 +490,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
             Ck(Gv(ly.dense_up, s.d_half, s.d_half + frozen::kDenseIntermediate,
                   stream));
             constexpr int N = frozen::kDenseIntermediate;
-            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::kGlibc,
+            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
                 <<<(N + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half + N,
                                                       s.d_half_big, N, 0.0f);
@@ -504,7 +522,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
                 stream, s.d_half, s.d_epacked + frozen::kTopK,
                 s.d_escales + frozen::kTopK, s.d_egs, frozen::kTopK, 0,
                 s.d_half_big + static_cast<size_t>(MI) * frozen::kTopK, H, MI));
-            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::kGlibc,
+            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
                 <<<static_cast<int>((static_cast<int64_t>(MI) * frozen::kTopK + 255) / 256),
                    256, 0, stream>>>(
@@ -519,14 +537,14 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, XingSession &s,
             // Shared expert on top of the routed sum.
             Ck(Gv(ly.shared_gate, s.d_half, s.d_half_big, stream));
             Ck(Gv(ly.shared_up, s.d_half, s.d_half + MI, stream));
-            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::kGlibc,
+            lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
                 <<<(MI + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half + MI,
                                                       s.d_half_big, MI, 0.0f);
             Ck(Gv(ly.shared_down, s.d_half_big, s.d_half, stream));
             Ck(ToF32(s.d_half, s.d_norm, H, stream));
-            Ck(lsxcommon::kernels::AddOutKernel<float><<<(H + 255) / 256, 256, 0, stream>>>(
-                s.d_attn, s.d_norm, s.d_attn, H));
+            lsxcommon::kernels::AddOutKernel<float><<<(H + 255) / 256, 256, 0, stream>>>(
+                s.d_attn, s.d_norm, s.d_attn, H);
         }
         Ck(LaunchXingMix(s.d_hidden, ly.is_moe ? s.d_attn : s.d_kv_b, s.d_post,
                          s.d_comb, hc, H, s.d_hidden, stream));
