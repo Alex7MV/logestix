@@ -146,7 +146,11 @@ source; it still guards the converted path (e.g. GLM-5.3-Flash). See
 ### 3. Test + CMake + guard
 
 - Copy the family's vault-path-helper **pattern** into a self-contained
-  `tests/test_<family>_code_selfcheck.cpp`; call only the `code::` harness.
+  `tests/test_<family>_code_selfcheck.cpp`; call only the `code::` harness — its header and implementation are
+  `libs/lsxcommon/include/lsxcommon/code_selfcheck.h` and
+  `libs/lsxcommon/src/code_selfcheck.cpp` (host-only, model-neutral: the
+  test owns the model and passes a `ModelRequest`; the harness never loads
+  weights itself).
 - Create the model with `cfg.fast_math_mode = kOff`.
 - `SKIP` when the converted model **or** the golden is absent.
 - CMake: `target_compile_definitions(... LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")`,

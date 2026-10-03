@@ -131,7 +131,11 @@ forced by the unrunnable source; it still guards the converted path. See
 ### 3. Test + CMake + guard
 
 - Copy the family's vault-path-helper **pattern** into a self-contained
-  `tests/test_<family>_fsi_selfcheck.cpp`; call only the `fsi::` harness.
+  `tests/test_<family>_fsi_selfcheck.cpp`; call only the `fsi::` harness — its header and implementation are
+  `libs/lsxcommon/include/lsxcommon/fsi_selfcheck.h` and
+  `libs/lsxcommon/src/fsi_selfcheck.cpp` (host-only, model-neutral: the
+  test owns the model and passes a `ModelRequest`; the harness never loads
+  weights itself).
 - Create the model with `cfg.fast_math_mode = kOff`.
 - `SKIP` when the converted model **or** the golden is absent.
 - CMake: `target_compile_definitions(... LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")`,

@@ -76,12 +76,22 @@ nsys stats --report cuda_gpu_kern_sum,cuda_gpu_mem_time_sum --format table /tmp/
 
 Budget test, in the model's existing test TU:
 
+- **Never hard-code a bare number.** Latency budgets live in
+  `tests/perf/kernel_budgets.json`, keyed by `(name, gpu_key)`, and go through
+  `kernel_budget::Require` (`tests/test_kernel_budget.h`). Semantics: a record
+  for this `gpu_key` → assert against it; no record → SKIP (do not judge);
+  `LSX_KERNEL_BUDGET_WRITE=1` → record the measurement instead. A bare
+  constant cannot tell "regressed" from "measured on another box" — that
+  ambiguity was measured on this host (identical code, 2.1x apart), see
+  `docs/OPEN_TASKS.md` §B.
 - Assert a latency budget (µs), an aggregate bandwidth budget (GB/s), or a
   count budget (misses/token).
 - Per-iteration `cudaEventRecord` around **only** the kernel; flush L2 with a
   >L2 `cudaMemsetAsync` (128 MB) between launches. A "flush+kernel minus
   flush-alone" subtraction is unreliable here.
 - Guard the assertion with `#if defined(NDEBUG)`.
+- Take the **minimum of several timed series** (best-of-5 is the house rule):
+  one series still catches short-lived spikes.
 - **Watch it fail.** A test that passes immediately proves nothing.
 - Gotcha: gate-dependent kernels need the gate ON in the test (e.g. the seq1
   GEMV warp path is behind `SetQwenTcFastMath(true)`), or you measure and tune
@@ -89,6 +99,10 @@ Budget test, in the model's existing test TU:
 - For scheduling/overlap changes there is no host-observable timing state: pin
   the correctness-critical dependency rule instead (e.g. `wait_miss_pos`) and
   let the E2E bench be the perf gate.
+- Recalibrate deliberately:
+  `cmake -DLSX_KERNEL_BUDGET_WRITE=1 --build . --target <test>`, then review
+  the JSON diff. Never recalibrate to make a red budget green without
+  attributing the wall time (Step 2).
 
 ## Step 4 — micro-probes for kernel variants
 
@@ -116,6 +130,11 @@ kernels beat guessing.
 - Gates and traps in full: see **Verifying a numeric change** below.
 
 ## Step 7 — record
+
+Both halves are machine-bound: `test_perf_baseline_logic` fails if a
+`perf_baselines.json` entry has no measuring `TEST_CASE` in
+`tests/test_perf_baseline.cpp` (an entry without a target is an unguarded
+baseline). Add the JSON entry and the case in the same commit.
 
 - `tests/perf/perf_baselines.json`: `tokens_per_sec`, `max_gen`, `gen_tokens`,
   `date`, `prompt`, plus the recorded evidence `ttft_ms`, `avg_power_w`,

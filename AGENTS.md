@@ -85,7 +85,7 @@ procedure — `perf-tuning-a-model`.
 
 - `libs/lsxcommon/` — shared STATIC library; namespace `lsxcommon`. Core:
   `core.cpp` (logging/init), `schema.cpp` (ExpertSchema/PackedExpert),
-  `converter.cpp` (GPU NVFP4 quantization), `loader.cpp`, `tokenizer.cpp` +
+  `converter.cpp` (GPU NVFP4 quantization), `tokenizer.cpp` +
   `pretokenizer.cpp`/`unicode.cpp`, `model_factory.cpp`/`model_registry.cpp`,
   `model_runtime.cpp` (lsxbenchmark --bench), `gpu_perf.cpp`, `token_stream.h`
   (`GenerationStream`: CUDA-safe per-token callback + abort, threaded into every
@@ -258,8 +258,23 @@ assertions, selfcheck env vars, model perf details) — skill
 **`logestix-repo-map`**
 (`.opencode/skills/logestix-repo-map/SKILL.md`). Its machine-checked
 equivalents: `test_model_suite_guard.cpp::Suites()` (model → stages →
-ctest targets) and `test_model_independence_guard.cpp::kPassports` (model →
-passport header → namespace) — when they disagree, they are authoritative.
+ctest targets), `test_model_independence_guard.cpp::kPassports` (model →
+passport header → namespace) and `::kLifecycle` (model → the TU(s) that must
+wire the shared lifecycle contract) — when they disagree, they are
+authoritative.
+
+### Skill map — the model lifecycle, phase by phase
+
+| phase | skill | what it decides |
+|---|---|---|
+| 0. intake / triage | **`ingesting-a-model`** § Stage 0 | is this a new family or a sibling? geometry, tokenizer verdict, what to strip, does it fit this machine |
+| 1. ingestion | **`ingesting-a-model`** stages 1–8 | converter → NVFP4 → registration → tokenizer bridge → 4b tool calling → kernels → sandbox → passport + tests |
+| 2. build | **`building-the-project`**, `cuda-cmake-build-gotchas` | presets, toolchain, where the binaries land, why the build breaks |
+| 3. correctness gates | **`test-lifecycle`**, `fsi-selfcheck`, `code-selfcheck`, `det-selfcheck` | labels, targets, and the three parity/determinism goldens |
+| 4. throughput | **`perf-tuning-a-model`** | attribute the wall time, budget tests, baselines |
+| 5. launch + serve | **`running-a-model`** §2a/§2b | the ordered fast-launch runbook and the acceptance checklist |
+| 6. locating code / rules | **`logestix-repo-map`**, `nvfp4-blackwell-conventions`, `absl-in-cuda-cpp`, `coding-conventions` | which file owns what; kernel and host-C++ rules |
+| host resources / GPU | **`running-a-model`** §8 | one GPU workload at a time, inference exemption |
 
 Running and operating inference — skill **`running-a-model`**
 (`.opencode/skills/running-a-model/SKILL.md`): apps and their flags
@@ -299,8 +314,10 @@ because the protocol is cited in code as "Model Ingestion Protocol step N".
   (a STATIC library re-exports link dependencies), spdlog PRIVATE.
 - Every app in `apps/*/` links `lsxcommon` PRIVATE; Catch2 v3.16.0
   via FetchContent when `BUILD_TESTING=ON`.
-- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` (before
-  `add_subdirectory`); POST_BUILD copies `arrow.dll`/`arrow_cuda.dll` (Win32).
+- `CMAKE_RUNTIME_OUTPUT_DIRECTORY` = `${CMAKE_BINARY_DIR}/bin` **Win32 only**
+  (`if(WIN32)` before `add_subdirectory`) — on Linux the binaries stay in
+  `build/<preset>/apps/<app>/`; POST_BUILD copies `arrow.dll`/`arrow_cuda.dll`
+  (Win32).
 - Flags (MSVC/NVCC), `lsx_tune`/LTO gating, dependency patches and CUDA architectures
   — skill `cuda-cmake-build-gotchas`.
 

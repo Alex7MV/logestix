@@ -40,6 +40,20 @@ attribution, budget tests, baselines) is the `perf-tuning-a-model` skill.
   (e.g. a zero-check on the e4 field, ceil-rounding of the pow2 E4M3 scale)
   requires updating the NVIDIA mirror **and** a regression test in the same
   change.
+- Where each piece lives (`libs/lsxcommon/src/`): `nvfp4_codec.h` — the
+  `__host__ __device__` E2M1 nibble decode (branchless immediates, never a
+  `__constant__` LUT: a header-defined array is merged across object
+  libraries and a TU can read another model's copy) and the pow2 E4M3 scale
+  decode; `nvfp4_scale.h` — the host/device pair `FloatToE4m3P2` /
+  `E4m3P2ToFloat` plus the E8M0→E4M3 pair remap;
+  `lsx_kernels_quant.cuh` — the FULL E4M3 decode (`F8E4m3ToFloat`, for genuine
+  FP8 tensors) and the E2M1 encode flavors. The two E4M3 flavors are **not**
+  interchangeable: pow2 scales use `nvfp4_codec`/`nvfp4_scale`, real FP8 data
+  uses `F8E4m3ToFloat`.
+- Model-neutral device helpers that families alias rather than copy:
+  `lsx_device_math.h` (`ExpfGlibc`/`RsqrtfGlibc`, aliased by
+  `glm_moe_device_math.h`) and `lsx_reduce.cuh` (`BlockMaxShfl`, aliased by
+  `qwen_reduce.cuh`).
 
 ## CCCL / cub / thrust
 

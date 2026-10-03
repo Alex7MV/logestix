@@ -7,11 +7,16 @@ description: Use when adding, adapting or ingesting a new model architecture int
 
 ## Overview
 
-**MODEL INGEST INVARIANT**: adding a model is a fixed 8-stage sequence, plus the
-mandatory **stage 4b tool-calling bridge**. Every agent MUST follow the order;
-skipping or reordering a stage is a broken build.
+**MODEL INGEST INVARIANT**: adding a model is a **Stage 0 triage** followed by a
+fixed 8-stage sequence, plus the mandatory **stage 4b tool-calling bridge**.
+Every agent MUST follow the order; skipping or reordering a stage is a broken
+build.
 Reference implementations (real code anchors, not placeholders): GLM-5.2,
 DeepSeek-V4-Flash, GLM-5.3-Flash, Qwen3.5-9B, Kimi-K2.7-Code.
+Where the model came from, and whether it is even runnable here, is decided in
+Stage 0 — not once the kernels are written. The operator-side counterpart (how
+to LAUNCH and accept one of these models, in order, at maximum speed) is
+`running-a-model` §2a/§2b.
 
 This skill is the single source of truth for the protocol, the file-naming
 convention and the guard registries. `AGENTS.md` only points here.
@@ -52,6 +57,65 @@ end.
   generated tail) is created and published INSIDE the lock. All of it is
   machine-enforced by `test_model_independence_guard.cpp::kLifecycle` —
   extend that registry in the same commit.
+
+## Stage 0 — triage the source checkpoint (before stage 1)
+
+The 8 stages assume you already decided to ingest this model. This is the step
+that decides it, and it is where a model is won or lost: every number you skip
+here comes back as a silently wrong token.
+
+**0.1 Classify: new family, sibling variant, or unsupported?**
+- Existing `kType` in `libs/lsxcommon/src/model_registry.cpp` and the same
+  architecture → **sibling variant**: add a `kPassports` row, a `Suites()` row
+  and a `kLifecycle` row, and reuse the parent's loader/kernels. Do NOT write a
+  new constants header (that is what model independence forbids).
+- Same architecture family, different geometry (width, expert count, hybrid
+  pattern, head layout) → **new family** → its own frozen header (stage 3).
+- A tensor the classifier does not recognise → unsupported until you extend the
+  classifier deliberately. Never "skip the unknown ones".
+
+**0.2 Read the geometry from `config.json` and write it down.** The fields the
+converters actually parse (grep your target converter to confirm): `hidden_size`,
+`num_hidden_layers`, `num_attention_heads`, `num_key_value_heads`, `head_dim`,
+`vocab_size`, `intermediate_size`, `moe_intermediate_size`,
+`shared_expert_intermediate_size`, `num_experts`/`num_local_experts`,
+`num_experts_per_tok`, `rope_theta`, `max_position_embeddings`.
+**The hybrid pattern is the most-missed item**: record which layers are full
+attention vs linear/Mamba/GDN/KDA/DeltaNet, and any sink-bias, window, indexer
+or compressor layers. GLM-5.3-Flash has `kda_layers`/`dsa_layers` lists, not a
+uniform pattern — a single `layer_types` assumption silently decodes garbage.
+
+**0.3 Tokenizer.** Kind: byte-level BPE or SentencePiece-BPE (SP needs
+`tokenizer_kind="sp-bpe"` + `BuildTokenizerArrowFilesSentencePiece` — the alice
+precedent). Record `added_tokens` and which of them are `special: true`, plus
+`bos`/`eos`/`pad` ids and whether `tie_word_embeddings` is set. If
+`chat_template.jinja` exists, read it NOW — the tool format (stage 4b) and the
+single-prompt framing (a chat model must never see an unframed prompt) both come
+from it.
+
+**0.4 Ballast to strip — and to COUNT.** Vision/audio towers, MTP/speculative
+heads: stored and counted, never applied (`mtp_layer`, `skipped_visual_tensors`
+in the written index). Everything else must be classified; a leftover tensor
+should make the converter error, not pass.
+
+**0.5 Feasibility against THIS machine.** NVFP4 dense ≈ `numel/2` + `numel/16`
+scale bytes (norms/biases stay FP16), plus KV at the target context, plus the
+host-mapped expert store. Compare with card VRAM (expert slot cache is sized
+from free VRAM minus a 2 GiB reserve) and host RAM — expert pinning is chunked
+because a single >300 GiB `cudaHostAlloc` is refused, and needs
+`ulimit -l unlimited`. A model that only fits at 2 GiB free VRAM is not a
+candidate.
+
+**0.6 Semantics to verify before trusting any output** (each is a source of
+"answers, but not the model's answers"): attention scale and where it is applied
+(some checkpoints fold it into the weights, some add it at QK), partial rotary
+factor and a per-layer-type `rope_theta`, any RoPE scaling factor, sliding
+window + learned sink bias, routed scaling / expert renormalisation, value
+scale, and whether MTP is (not) applied.
+
+**Gate:** do not start stage 1 until you can answer, in one commit message: which
+registry rows you will extend, the geometry table above, the tokenizer verdict,
+what you strip, and the feasibility numbers.
 
 ## The 8 stages
 
@@ -153,6 +217,12 @@ An ingested model is **not done** without it.
 - Parse from decoded text when the markers are `special:false` (they survive
   `arrow_tokenizer_decode`); scan token ids when a marker is `special:true`.
   Fall back to `tools::ParseToolCallsText` when the native markers are absent.
+- A model that emits a BARE JSON object (`{"name": …, "arguments": …}`) —
+  Granite-4.2 is the verified example — needs no override at all: the
+  `model.h` default already tries `tools::ParseBareToolCallJson` after
+  `ParseToolCallsText` (`include/lsxcommon/tool_format.h`). Do NOT add a
+  "native" renderer for such a family without re-verifying the round-trip
+  against real weights.
 - Shared codecs live in model-neutral `tools::` (`tool_format.{h,cpp}`) or a
   guard-allowlisted family file (e.g. `deepseek_moe_tool_format.{h,cpp}` — add
   the stem to `AllowedCommon()` in the same commit).
@@ -259,7 +329,7 @@ without updating them fails CI.
 |---|---|---|
 | `test_code_naming_guard.cpp` | `SchemeRegex()` token sets, `AllowedCommon()` allowlist | the naming convention above |
 | `test_model_independence_guard.cpp` | `kPassports` row (`model_type`, passport `header`, owning `ns`) + `consumers` (new model `.cpp`) + `kLifecycle` (model → the TU(s) forming its generation path) | unique frozen-geometry passport per model, one constants header per model in its own namespace, no passport→passport includes, no cross-family geometry borrowing, `LsxFastMathScope` in `Infer`, and the shared lifecycle contract (residency lock, streaming/abort, context teardown, governor lease, result fill, session state under the lock) |
-| `test_model_suite_guard.cpp` | `Suites()` row: convert → load → model → kernels → selfcheck | full autonomous lifecycle; every stage target registered in `tests/CMakeLists.txt`; `SKIP_RETURN_CODE 4` on selfcheck; no cross-family test fixtures; no vault loading in loader/model stages; synth primitives only in `test_synth_checkpoint.h` |
+| `test_model_suite_guard.cpp` | `Suites()` row: convert → load → model → kernels → selfcheck → fsi → code → det | full autonomous lifecycle; every stage target registered in `tests/CMakeLists.txt`; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; no cross-family test fixtures; no vault loading in loader/model stages; synth primitives only in `test_synth_checkpoint.h`. Sharing a stage with a sibling variant is allowed but must be written in the row (e.g. qwen3.6 reuses qwen_moe's loader + kernels), and the guard rejects both an unclaimed family target and a row missing a stage. A second case binds stage 4b: every family must declare its tool-calling verdict (the proving target, or an explicit "generic" row) |
 | `test_ctest_labels_guard.cpp` | — (just label new tests) | every test carries a label in the same commit |
 | `test_absl_format_guard.cpp` | — | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
 
@@ -275,6 +345,8 @@ without updating them fails CI.
 - [ ] Tool-calling bridge implemented (stage 4b): native
       `BuildConversationInputIds`/`ParseToolCalls` verified against the
       checkpoint template, plus a host `fast` test on a synthetic tokenizer.
+      The verdict (target name, or "generic") is written into the tool-verdict
+      table of `test_model_suite_guard.cpp` in the same commit.
 - [ ] `test_<model>_selfcheck.cpp` ≥3 cycles, bit-exact, `SKIP_RETURN_CODE 4`.
 - [ ] perf entry in `tests/perf/perf_baselines.json` + `test_perf_baseline_<model>`.
 - [ ] All four guard registries above updated.

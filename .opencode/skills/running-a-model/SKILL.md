@@ -74,14 +74,95 @@ Flag details (verified against `apps/*/src/cli.*`):
   `--max-gen 64`. Benchmark-era flags (`--benchmark`, `--selfcheck`,
   `--bit-exact`, `--fast-math`) are **silently ignored** — speed measurement
   lives in lsxbenchmark.
-- **lsxforge** — `--input` / `--output` (default `converted_model`), plus one
-  family pipeline: `--glm`, `--kimi`, `--qwen`, `--qwen35moe`, `--qwen36moe`,
-  `--qwen38flashnext`, `--gemma4`, `--glmflash`, `--deepseek_nvfp4`,
-  `--deepseek_v41`; utilities `--tokenizer <tokenizer.json>`,
-  `--vram_recompute`, `--repack_shared`, `--repack_experts`.
+- **lsxforge** — `--input` / `--output` (default `converted_model`), plus
+  **one** pipeline flag; passing two family flags is a hard error (it used to
+  silently run the first). All 23 flags are `ABSL_FLAG`s in
+  `apps/lsxforge/src/main.cpp`:
+  - family: `--glm`, `--glmflash`, `--qwen`, `--qwen35moe`, `--qwen36moe`,
+    `--qwen38flashnext`, `--gemma4`, `--kimi`, `--ornith`, `--nemotron`,
+    `--gigachat`, `--mimo`, `--granite`, `--phi`, `--alice`
+  - deepseek: `--deepseek_nvfp4` (offline expert repack E8M0/32 → NVFP4
+    E4M3/16), `--deepseek_v41` (V4.1 conversion)
+  - utilities: `--tokenizer <tokenizer.json>`, `--vram_recompute`,
+    `--repack_shared`, `--repack_experts`, `--run/-r <prompt>`
+  - Dispatch order (`cli.cpp`): utilities → repack → deepseek → family.
 - **lsxcli** — `--info` prints the model summary; `--infofull` also prints every
   shard. Both route to `runtime::RunCliInspect` and add the conversion-time VRAM
   profile (min / optimal / max).
+
+## 2a. Fast launch on the built-in engine (the ordered path)
+
+There is no speed flag — the engine resolves a per-GPU policy at
+`InitializeEngine()`. "Fast" therefore means: the right build, a free GPU, the
+canonical protocol, and a measurement you can compare. Run these in order; stop
+at the first red step.
+
+```bash
+# 0. Pick the build: Debug for correctness, the AOCC/Release tree for speed.
+cmake --build --preset linux-debug                 # correctness
+ninja -C build/linux-release-znver4-aocc lsxbenchmark lsxfabric   # speed
+
+# 1. Free the GPU. One workload at a time — contention skews t/s by up to 2x.
+nvidia-smi --query-gpu=memory.used --format=csv,noheader
+
+B=./build/linux-release-znver4-aocc/apps
+
+# 2. Does the converted layout load through the engine?
+$B/lsxfabric/lsxfabric --localmodel <vault-root> --validate
+
+# 3. Does it answer correctly? (Paris; also prints logits_hash.)
+$B/lsxbenchmark/lsxbenchmark --model <vault-root> --selfcheck
+
+# 4. How fast, in the canonical protocol? Same prompt + --max-gen as the
+#    baseline entry in tests/perf/perf_baselines.json, else it is not comparable.
+$B/lsxbenchmark/lsxbenchmark --model <vault-root> --bench --max-gen 2048 \
+    --prompt "The capital of France is"
+
+# 5. Serve. ROUTER for requests, PULL for cancel; the client must see
+#    incremental token frames (not one final DONE) or streaming is broken.
+$B/lsxfabric/lsxfabric --localmodel <vault-root> --serve \
+    --listen tcp://127.0.0.1:5555 --listen-cancel tcp://127.0.0.1:5556
+
+# 6. Bridge it (OpenAI + Anthropic surfaces, tool calling). The config binds
+#    a model id to the fabric endpoints from step 5 (apps/taskmosaic/src/config.h):
+#    {"models":[{"id":"my-model","model_path":"/mnt/llm_models/models/<Model>",
+#      "backend":{"endpoint":"tcp://127.0.0.1:5555",
+#                 "cancel_endpoint":"tcp://127.0.0.1:5556"}}],
+#     "default_model":"my-model"}
+$B/taskmosaic/taskmosaic --config <config.json>
+```
+
+Reading the numbers:
+
+- Step 4 also prints `resident:` — if it is 0 MiB or wildly below the
+  conversion-time VRAM profile, the model is not publishing its residency.
+- Throughput below the baseline is a perf problem, not a launch problem: go to
+  `perf-tuning-a-model` (attribute the wall time first; do not tune blind).
+- `LSX_PERF_AUTO=0` restores the legacy bit-exact defaults — an A/B switch, not
+  a speed-up. `--bit-exact` is the verification mode (`FastMathMode::kOff`).
+- Loading is per-process and can dominate wall time (Kimi re-pins 544 GiB:
+  budget minutes and `ulimit -l unlimited`).
+
+## 2b. Acceptance — when may a model be called "supported"?
+
+Ingestion is not done until all of these are green for THAT family (the
+developer-side checklist is `ingesting-a-model` § Definition of done):
+
+| # | Gate | Command |
+|---|---|---|
+| 1 | the shared fast suite (guards included) | `ctest --preset linux-debug` |
+| 2 | convert/load/model/kernels stages registered and green | `ctest --preset linux-debug-convert`, then the family's `inference` targets |
+| 3 | SelfCheck: Paris + ≥3 bit-exact cycles | `LSX_TEST_<MODEL>_MODEL_PATH=<root> ctest -R <family>_selfcheck` |
+| 4 | FSI / CODE / DET goldens recorded and green | `ctest -R "<family>_(fsi|code|det)_selfcheck"` with the model's path env |
+| 5 | tool calling: native render + parse round-trip | `ctest -R <family>_tool_framing` |
+| 6 | perf baseline entry + perf-labelled target green (Release only) | `ctest --preset linux-release-znver4-perf` |
+| 7 | no HIGH item open for the family | `docs/OPEN_TASKS.md` |
+
+Stages 3–4 need real weights and `SKIP` (exit 4) without them: a green sweep
+that skipped every selfcheck is not acceptance, it is absence of evidence.
+Steps 2–5 are enforced structurally by `test_model_suite_guard` (`Suites()`),
+which fails if a stage target is missing, unclaimed, or if a loader/model stage
+touches the vault.
 
 ## 3. Engine lifecycle
 
@@ -128,7 +209,8 @@ The engine, not the model, owns memory. Models ask for a plan and leases.
   fails deterministically on shortage; `kAdaptive` is clamped to
   `[min_bytes, max_bytes]` and can be soft-resized. A `kDefaultVramKeepOut`
   (512 MiB) is never granted. **TEST-ONLY** `GovernorOptions.relax_memory_refusal`
-  (env `LSX_TEST_RELAX_VRAM_REFUSAL`) disables strict refusal.
+  disables strict refusal — an in-process field, **not** an environment
+  variable (there is no `LSX_*_RELAX_VRAM_REFUSAL` knob).
 - `vram_estimate.h` — `VramProfile{min, optimal, max}` computed at conversion time
   (NVFP4 size = `numel/2` nibbles + `numel/16` E4M3 scales; norms/biases keep raw
   bytes). Stored in `model.index.json`'s `"vram"` block; `--vram_recompute`
@@ -177,16 +259,20 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 | `LSX_EXPERT_PIN` | `=0` disables routed-expert host pinning (pageable, slow) |
 | `LSX_FLASH_SLOTS` | GLM-5.3-Flash expert LRU slot override |
 | `LSX_V41_EXPERT_CACHE` | DeepSeek-V4.1 expert-cache override |
-| `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`) |
+| `LSX_*_EXPERT_CACHE_SLOTS` | per-model LRU slot override (`GLM`, `QWEN_MOE`, `QWEN38`, `GEMMA`, `KIMI`, `DEEPSEEK`, `NEMOTRON`, `GIGACHAT`, `ORNITH_MOE`, `MIMO`) |
 | `LSX_KIMI_CACHE_BYPASS` | bypass the Kimi expert cache |
 
 **Prod — numeric / model toggles** (A/B switches; leave unset in production)
 
-`LSX_KIMI_TC`, `LSX_KIMI_TC_OFF`, `LSX_GEMMA_GEMV`, `LSX_GEMMA_MLP_BF16`,
-`LSX_GEMMA_ATTN_BF16`, `LSX_GEMMA_HEAD_BF16`, `LSX_GEMMA_KV_FP8`,
-`LSX_GEMMA_DUAL_STREAM`, `LSX_GEMMA_INLINE_UPLOADS`, `LSX_GEMMA_MOE_BATCH`,
-`LSX_FLASH_GATE`, `LSX_FLASH_QSCALE`, `LSX_FLASH_HEAD`, `LSX_FLASH_CONV_SILU`,
-`LSX_DS_PREFETCH`, `LSX_DS_PREFETCH_SYNC`, `LSX_V41_DEBUG`, `LSX_DEC_DISABLE`.
+`LSX_KIMI_TC`, `LSX_GEMMA_GEMV`, `LSX_GEMMA_MLP_BF16`, `LSX_GEMMA_ATTN_BF16`,
+`LSX_GEMMA_INLINE_UPLOADS`, `LSX_GEMMA_MOE_BATCH`, `LSX_FLASH_GATE`,
+`LSX_FLASH_QSCALE`, `LSX_FLASH_HEAD`, `LSX_FLASH_CONV_SILU`, `LSX_DS_PREFETCH`,
+`LSX_DS_PREFETCH_SYNC`, `LSX_V41_DEBUG`, `LSX_DEC_ENABLE`, `LSX_EXP_FFN_NOSBATCH`.
+
+Removed knobs (documented here in the past, no longer read by any TU):
+`LSX_KIMI_TC_OFF`, `LSX_GEMMA_HEAD_BF16`, `LSX_GEMMA_KV_FP8`,
+`LSX_GEMMA_DUAL_STREAM`. Note `LSX_DEC_ENABLE` (not `..._DISABLE`) is the
+decode-tile switch — see the table above.
 
 **Debug / tracing** (never in production)
 
@@ -194,6 +280,7 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 `KIMI_DIAG_IDS`, `KIMI_CACHE_MAX_LAYER`, `KIMI_NOEVICTION`, `KIMI_ALLOC`,
 `LSX_KIMI_DUMP_L1` / `LSX_KIMI_DUMP_DONE` (L1 input capture for `test_kimi_moe_tc_diag`),
 `LSX_TRACE_TOKENS`, `LSX_TRACE_FLASH`, `LSX_PERF_PHASES`, `LSX_AUDIT_STAGES`,
+`LSX_FLASH_GEMV_DEBUG`, `LSX_FLASH_LOAD_DEBUG`,
 `LSX_GEMV_TRACE`, `LSX_PROBE_FFN`, `LSX_DS_FFN_PROBE`,
 `LSX_DS_PF_NOOP` / `LSX_DS_PF_NOPRE` (DeepSeek prefetch A/B),
 `LSX_DS_VERIFY_COPY` / `LSX_DS_VERIFY_READ` (DeepSeek copy/read verify),
@@ -202,17 +289,40 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 
 **Tests / selfcheck** (read by test targets; see `ingesting-a-model`)
 
+Almost all of these are read by test executables only, and a test whose weights
+are absent `SKIP`s (exit 4) rather than failing. Four exceptions are read by
+PRODUCTION code and must stay unset in a real run:
+`LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` (the shared
+`synthetic_geometry.h` gate every converter/loader/model checks),
+`LSX_TEST_FAST_MATH` (`gpu_perf.h`), and the Gemma ablation set
+`LSX_TEST_GEMMA_{DEBUG_SYNC,NO_ATTN,NO_DENSE,NO_MOE,HASH}`
+(`gemma_moe_inference.cu`).
+
+**Set by CTest — you never pass them:**
+
 | variable | meaning |
 |---|---|
-| `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY` | relax frozen-geometry gates for converter/loader tests (runtime env, set via CTest `ENVIRONMENT`) |
-| `LSX_PERF_VAULT_SUBDIR` | model subdir for `test_perf_baseline_*` |
-| `LSX_TEST_PERF_GEN_TOKENS` | generated length for perf tests |
-| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count |
-| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | real-model path; absence → `SKIP` (exit 4) |
-| `LSX_TEST_<MODEL>_SOURCE_PATH` | source checkpoint for converter tests (Qwen36/Qwen-MoE) |
-| `LSX_TEST_<MODEL>_GEN_TOKENS` | generated length for a model's model-stage test (Kimi) |
-| `LSX_TEST_GEMMA_{DEBUG,DEBUG_SYNC,HASH,NO_ATTN,NO_DENSE,NO_MOE}` | Gemma ablation/debug toggles |
+| `LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1` | relax the frozen-geometry gates for converter/loader/model fixtures (31 targets set it) |
+| `LSX_PERF_VAULT_SUBDIR=<subdir>` | vault subdir per `test_perf_baseline_*` target (16 targets) |
+| `LSX_TEST_NEMOTRON_ROOT=<dir>` | vault path for the nemotron selfcheck |
+
+**Operator-supplied — the real-weight suites `SKIP` until you set these:**
+
+| variable | meaning |
+|---|---|
+| `LSX_TEST_<MODEL>_SELFCHECK_CYCLES` | selfcheck stress-cycle count. One per family, and the stem is NOT the kType: `QWEN` (dense), `QWEN27`, `QWEN_MOE`, `QWEN36`, `QWEN38`, `GLM` (GLM-5.2; GLM-5.3-Flash reuses `LSX_TEST_GLM_SELFCHECK_CYCLES`), `GEMMA`, `KIMI`, `DEEPSEEK`, `DEEPSEEK_V41`, `GIGACHAT`, `GRANITE`, `PHI`, `ORNITH`, `NEMOTRON`, `MIMO` |
+| `LSX_TEST_<MODEL>_MODEL_PATH` / `_ROOT` / `_MODEL_DIR` | converted-model directory. Same stems as above, suffix varies: `_MODEL_PATH` = `QWEN`, `QWEN27`, `QWEN_MOE`, `QWEN36`, `DEEPSEEK`, `GEMMA`, `GRANITE`, `KIMI`, `MIMO`, `ORNITH`, `PHI`; `_ROOT` = `ALICE`, `DEEPSEEK_V41`, `GIGACHAT`, `GLM_FLASH`, `NEMOTRON`; `_MODEL_DIR` = `QWEN38`; unprefixed `LSX_TEST_MODEL_PATH` = the `test_model_factory` real-model case |
+| `LSX_TEST_<MODEL>_SOURCE_PATH` | source safetensors dir for the parity captures: `QWEN_MOE`, `QWEN36`, `ORNITH` |
+| `LSX_TEST_PERF_GEN_TOKENS` | generated length for the `test_blackwell_perf_*` targets |
+| `LSX_TEST_KIMI_GEN_TOKENS` | generated length for `test_kimi_moe_model` |
 | `LSX_TEST_FAST_MATH` | force the TC path in tests |
+| `LSX_TEST_GEMMA_DEBUG` | Gemma selfcheck debug print (read by the test) |
+| `LSX_TEST_GEMMA_{DEBUG_SYNC,HASH,NO_ATTN,NO_DENSE,NO_MOE}` | Gemma ablation/debug aids read by the **production** TU `gemma_moe_inference.cu` — unset outside a debug session |
+| `LSX_TEST_ALICE_TINY_{HF,OUT}` | HF checkpoint dir + converted output for the alice tiny-HF parity case; `_IDS` (comma list) and `_EXPECT` (argmax) parameterise it |
+
+Regenerate this list instead of trusting it:
+`grep -rhoE '"LSX_TEST_[A-Z0-9_]+"' tests/ | sort -u` (cross-check against
+`grep -oE 'LSX_[A-Z0-9_]+' tests/CMakeLists.txt` for the CTest-set ones).
 
 **Build / router**
 
@@ -223,7 +333,10 @@ rg -o 'getenv\("(LSX_|KIMI_)[A-Z0-9_]+"' libs apps | sort -u
 
 - **OOM / VRAM refusal** — the governor's `kRequired` leases fail deterministically;
   the log names the lease kind. Free VRAM first (the rule is one GPU workload at a
-  time); `LSX_TEST_RELAX_VRAM_REFUSAL` exists for tests only.
+  time). Tests that need the continue-anyway semantics set
+  `GovernorOptions::relax_memory_refusal` directly — there is no env knob for
+  it (an earlier version of this skill named `LSX_TEST_RELAX_VRAM_REFUSAL`,
+  which never existed).
 - **Pinning a large routed-expert store** — a single `cudaHostAlloc` > 300 GiB is
   refused by the driver; the store is pinned in chunks
   (`ExpertStore::PinChunked`). Kimi re-pins 544 GiB and needs

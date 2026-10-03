@@ -21,13 +21,23 @@ the guard tests' registries also appear in `logestix-repo-map`.
 
 | Label | What it is | When it runs |
 |---|---|---|
-| `fast` (45) | host-only tests | every `ctest --preset` (default of all presets) |
-| `convert` (13) | model converters | when a converter changed (router) or when debugging a model |
-| `inference` (85) | CUDA / model contour | when the contour changed (router) or manually |
-| `perf` (15) | perf benchmarks on real weights | separate command only, Release only |
+| `fast` | host-only tests | every `ctest --preset` (default of all presets) |
+| `convert` | model converters | when a converter changed (router) or when debugging a model |
+| `inference` | CUDA / model contour | when the contour changed (router) or manually |
+| `perf` | perf benchmarks on real weights | separate command only, Release only |
 
-Counts are a Linux snapshot (2026-09); `test_ctest_labels_guard` is the real
-authority.
+Counts move every week and a number in a skill rots silently, so read them
+instead of trusting a table:
+
+```bash
+ctest --preset linux-debug -N                  # fast total (the preset default)
+grep -oE 'LABELS "[a-z]+"' build/linux-debug/tests/CTestTestfile.cmake | sort | uniq -c
+```
+
+(linux-debug on 2026-10-02: fast 86 through the preset, convert 20,
+inference 172, perf 22 targets — a target may carry two labels, so the label
+sums exceed the fast total.) `test_ctest_labels_guard` is the authority for
+"every target has a label".
 
 ## Label discipline
 
@@ -41,7 +51,7 @@ fails the build otherwise. Classification rules for a changed path are the
 |---|---|
 | `test_code_naming_guard.cpp` | model file-naming scheme (`SchemeRegex()` / `AllowedCommon()`) |
 | `test_model_independence_guard.cpp` | unique frozen-geometry passport per model, no cross-family borrowing, `LsxFastMathScope` in `Infer` (`kPassports`, `consumers`) |
-| `test_model_suite_guard.cpp` | per-model lifecycle stages exist as ctest targets (`Suites()`); `SKIP_RETURN_CODE 4` on selfcheck; no vault loading in loader/model stages |
+| `test_model_suite_guard.cpp` | the per-model suite is autonomous AND complete (11 cases, `Suites()`): every lifecycle stage (convert → load → model → kernels → selfcheck → fsi → code → det) has a registered ctest target; every family test target is claimed by a row (no orphans) and every row declares the full stage set; `SKIP_RETURN_CODE 4` on the selfcheck/fsi/code/det targets; **loader/model stage tests must run on synthetic fixtures** — no vault path, and no cross-family fixture borrowing (the synthetic primitives live only in `tests/test_synth_checkpoint.h`) |
 | `test_ctest_labels_guard.cpp` | every test target carries a label; every skip-capable target (`SKIP(` in its source) has `SKIP_RETURN_CODE 4`; `test_perf_baseline.cpp` carries an NDEBUG Release guard (all in addition to the label/TIMEOUT/preset/router checks) |
 | `test_absl_format_guard.cpp` | `absl::StrFormat` is printf-style (`%s/%d/%u/%f`), never `{}` |
 | `test_cuda_toolkit_guard.cu` | CUDA runtime ≥13.2, header/runtime match, `cuda_fp4` E2M1 semantics, Blackwell-only GPUs |
