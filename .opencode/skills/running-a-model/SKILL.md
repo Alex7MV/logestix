@@ -59,7 +59,10 @@ cmake --build build/linux-release-znver4-aocc                               # pe
 | `lsxbenchmark` | bit-exact measurement | `lsxbenchmark --model <root> --bench --bit-exact` |
 | `lsxfabric` | generate exactly as the engine does | `lsxfabric --localmodel <root> --testprompt --prompt "<p>" --max-gen 64` |
 | `lsxfabric` | load-validate a converted model through the engine | `lsxfabric --localmodel <root> --validate` |
-| `lsxforge` | convert a source checkpoint | `lsxforge --input <src> --output <root> --<family>` |
+| `lsxforge` | convert a source checkpoint | `lsxforge --input <src> --output <src> --<family>` —
+  `--output` is the **model root**, not the destination: every converter appends
+  `logestix/` itself, so `--output <src>/logestix` silently produces
+  `<src>/logestix/logestix` |
 | `lsxforge` | one-shot generation path | `lsxforge --input <root> --run "<prompt>"` (or `-r`) |
 | `lsxcli` | inspect a converted model | `lsxcli --model <root> --info` / `--infofull` |
 | `taskmosaic` | orchestrator stub (init + GPU log) | `taskmosaic` (no flags) |
