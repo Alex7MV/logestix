@@ -77,6 +77,7 @@ add_library(lsxcommon STATIC
     src/qwen_moe_36_convert.cpp
     src/ornith_moe_convert.cpp
     src/qwen_moe_exp_convert.cpp
+    src/xing_moe_convert.cpp
     src/qwen_moe_exp_load.cpp
     src/qwen_moe_exp_model.cpp
     src/qwen_moe_load.cpp

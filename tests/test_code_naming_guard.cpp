@@ -24,7 +24,7 @@ bool StartsWith(const std::string& s, const std::string& p)
 
 std::regex SchemeRegex()
 {
-    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice)";
+    const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing)";
     const std::string type   = "(?:moe|dense)";
     const std::string var    = "(?:27b|flash|36|v41)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
@@ -50,7 +50,7 @@ const std::vector<std::string>& FamilyStems()
 {
     static const std::vector<std::string> v =
         {"glm", "qwen", "gemma", "kimi", "deepseek", "nemotron", "gigachat",
-         "ornith", "granite", "mimo", "phi", "alice"};
+         "ornith", "granite", "mimo", "phi", "alice", "xing"};
     return v;
 }
 
