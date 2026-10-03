@@ -414,6 +414,18 @@ target_link_libraries(lsxcommon_alice_cu
     absl::strings
 )
 
+# NVCC options that the PUBLIC headers in include/lsxcommon require of any
+# translation unit that includes them (host `constexpr` helpers are called from
+# `__device__` code). Until this existed the flags were PRIVATE to the object
+# libraries below, so the project's own .cu files compiled while every external
+# consumer had to rediscover them from the build error. Exported as an
+# INTERFACE requirement via lsxcommon so headers declare their own needs.
+add_library(lsxcommon_cuda_reqs INTERFACE)
+target_compile_options(lsxcommon_cuda_reqs INTERFACE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;--expt-relaxed-constexpr>)
+
+target_link_libraries(lsxcommon PUBLIC lsxcommon_cuda_reqs)
+
 target_link_libraries(lsxcommon PUBLIC lsxcommon_cu lsxcommon_glm_cu
     lsxcommon_qwen_cu lsxcommon_qwen_moe_cu lsxcommon_tc_cu
     lsxcommon_kimi_cu lsxcommon_gemma_cu lsxcommon_qwen_moe_exp_cu
