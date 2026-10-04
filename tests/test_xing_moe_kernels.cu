@@ -227,7 +227,7 @@ TEST_CASE("Xing mHC block matches the host reference", "[xing][kernels]")
     REQUIRE(cudaMalloc(&d_collapsed, kHidden * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_post, kHcMult * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_comb, kHcMult * kHcMult * sizeof(float)) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_rows, kMixSmall * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rows, (kMixSmall + 8) * sizeof(float)) == cudaSuccess);
 
     REQUIRE(LaunchXingHyperConnection(d_hidden, d_fn, d_base, d_scale, kHcMult,
                                       kHidden, kEps, kSinkhorn, kClampMin,
@@ -675,7 +675,7 @@ Outputs RunDevice(const Inputs &in, cudaStream_t stream)
     REQUIRE(cudaMalloc(&d_collapsed, kRealHidden * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_post, kRealHcMult * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_comb, kRealHcMult * kRealHcMult * sizeof(float)) == cudaSuccess);
-    REQUIRE(cudaMalloc(&d_rows, kRealMix * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rows, (kRealMix + 8) * sizeof(float)) == cudaSuccess);
     REQUIRE(LaunchXingHyperConnection(
                 d_streams, d_fn, d_base, d_scale, kRealHcMult, kRealHidden, kEps, kSinkhorn,
                 kClampMin, kClampMax, kPostGain, d_collapsed, d_post, d_comb,

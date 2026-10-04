@@ -36,8 +36,9 @@ cudaError_t LaunchXingUnweightedRmsNorm4(const float *x, float *out,
 //   collapsed    [hidden]  out = sum_d sigmoid(pre) * hidden_d
 //   post         [hc_mult] out = post_gain * sigmoid(post)
 //   comb         [hc_mult * hc_mult]     Sinkhorn-normalised mixing matrix
-//   rows         [mix]                   scratch between the two kernels of the
-//                                        split (one dot product per hc_fn row)
+//   rows         [kMaxMix + kMaxHcMult]  scratch between the three kernels of
+//                                        the split: mix dot products (one per
+//                                        hc_fn row), then the pre gates
 cudaError_t LaunchXingHyperConnection(
     const float *streams, const __nv_bfloat16 *hc_fn,
     const __nv_bfloat16 *hc_base, const float *hc_scale, int hc_mult,

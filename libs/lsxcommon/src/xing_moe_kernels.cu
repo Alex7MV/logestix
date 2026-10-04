@@ -64,6 +64,9 @@ __global__ void xing_unweighted_rmsnorm4_kernel(
 // over `hidden` and does not care.
 constexpr int kProjThreads = 1024;
 
+// Mirrors kAttnSplits in xing_moe_inference.h (the session sizes the scratch).
+constexpr int kMaxAttnSplits = 16;
+
 // mHC, phase 1 of 2: the hc_fn projection, one block per row (mix = 24 at
 // hc_mult=4).
 //
@@ -139,11 +142,11 @@ __global__ void xing_hyper_conn_proj_kernel(
 //
 // Measured: 61 us (single-block original) -> 3.1 us projection + ~2 us gates.
 __global__ void xing_hyper_conn_gates_kernel(
-    const float *__restrict__ streams, const float *__restrict__ rows_in,
-    const __nv_bfloat16 *__restrict__ hc_base, const float *__restrict__ hc_scale,
-    int hc_mult, int hidden, float eps, int sinkhorn_iters, float clamp_min,
-    float clamp_max, float post_gain, float *__restrict__ collapsed,
-    float *__restrict__ post, float *__restrict__ comb)
+    const float *__restrict__ rows_in, const __nv_bfloat16 *__restrict__ hc_base,
+    const float *__restrict__ hc_scale, int hc_mult, int hidden, float eps,
+    int sinkhorn_iters, float clamp_min, float clamp_max, float post_gain,
+    float *__restrict__ post, float *__restrict__ comb,
+    float *__restrict__ pre_gate_out)
 {
     __shared__ float pre_gate[kMaxHcMult];
     __shared__ float comb_buf[kMaxMix];
@@ -184,50 +187,100 @@ __global__ void xing_hyper_conn_gates_kernel(
     if ((tid & 31) == 0) atomicMax(reinterpret_cast<int *>(&tile_max),
                                    __float_as_int(local));
     __syncthreads();
-    for (int i = tid; i < hw; i += blockDim.x)
-        comb_buf[kCombBase + i] =
-            device::XingExpfGlibc(comb_buf[kCombBase + i] - tile_max);
-    // Sinkhorn: thread r owns row r (then column r). The per-cell arithmetic is
-    // unchanged; only who executes it moved.
-    for (int it = 0; it < sinkhorn_iters; ++it)
+    if (hw > 32)
+        for (int i = tid; i < hw; i += blockDim.x)
+            comb_buf[kCombBase + i] =
+                device::XingExpfGlibc(comb_buf[kCombBase + i] - tile_max);
+    // Sinkhorn. hc_mult^2 cells fit in one warp at the frozen geometry (16 of
+    // 32 lanes), so warp 0 keeps the whole tile in REGISTERS and the 20
+    // iterations need no shared-memory round trip and no __syncthreads at all -
+    // that alone was most of the block's 12.6 us. The arithmetic per cell is
+    // unchanged: a row sum still accumulates c = 0..hc_mult-1 in that order (the
+    // four values arrive by shuffle in lane order) and a column sum r = 0.. in
+    // that order, so this is bit-identical to the serial version, not a
+    // tolerance-class change. Wider hc_mult falls back to the shared-memory
+    // path below.
+    if (hw <= 32)
     {
-        __syncthreads();
-        for (int r = tid; r < hc_mult; r += blockDim.x)
+        const int lane = tid & 31;
+        const int r = lane / hc_mult;
+        const int c = lane - r * hc_mult;
+        const bool live = lane < hw;
+        float cell = live ? device::XingExpfGlibc(
+                                __fsub_rn(comb_buf[kCombBase + lane], tile_max))
+                          : 0.0f;
+        for (int it = 0; it < sinkhorn_iters; ++it)
         {
             float s = 0.0f;
-            for (int c = 0; c < hc_mult; ++c)
-                s += comb_buf[kCombBase + r * hc_mult + c];
-            s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-            for (int c = 0; c < hc_mult; ++c)
-                comb_buf[kCombBase + r * hc_mult + c] *= s;
+            for (int j = 0; j < hc_mult; ++j)
+                s += __shfl_sync(0xffffffffu, cell, r * hc_mult + j);
+            const float inv = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+            cell = __fmul_rn(cell, inv);
+            s = 0.0f;
+            for (int j = 0; j < hc_mult; ++j)
+                s += __shfl_sync(0xffffffffu, cell, j * hc_mult + c);
+            const float inv2 = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+            cell = __fmul_rn(cell, inv2);
         }
-        __syncthreads();
-        for (int c = tid; c < hc_mult; c += blockDim.x)
-        {
-            float s = 0.0f;
-            for (int r = 0; r < hc_mult; ++r)
-                s += comb_buf[kCombBase + r * hc_mult + c];
-            s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
-            for (int r = 0; r < hc_mult; ++r)
-                comb_buf[kCombBase + r * hc_mult + c] *= s;
-        }
+        if (live) comb[lane] = cell;
     }
-    if (tid == 0)
-        for (int i = 0; i < hw; ++i) comb[i] = comb_buf[kCombBase + i];
+    else
+    {
+        // Sinkhorn: thread r owns row r (then column r). The per-cell arithmetic
+        // is unchanged; only who executes it moved.
+        for (int it = 0; it < sinkhorn_iters; ++it)
+        {
+            __syncthreads();
+            for (int r = tid; r < hc_mult; r += blockDim.x)
+            {
+                float s = 0.0f;
+                for (int c = 0; c < hc_mult; ++c)
+                    s += comb_buf[kCombBase + r * hc_mult + c];
+                s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                for (int c = 0; c < hc_mult; ++c)
+                    comb_buf[kCombBase + r * hc_mult + c] *= s;
+            }
+            __syncthreads();
+            for (int c = tid; c < hc_mult; c += blockDim.x)
+            {
+                float s = 0.0f;
+                for (int r = 0; r < hc_mult; ++r)
+                    s += comb_buf[kCombBase + r * hc_mult + c];
+                s = __fdiv_rn(1.0f, __fadd_rn(s, eps));
+                for (int r = 0; r < hc_mult; ++r)
+                    comb_buf[kCombBase + r * hc_mult + c] *= s;
+            }
+        }
+        if (tid == 0)
+            for (int i = 0; i < hw; ++i) comb[i] = comb_buf[kCombBase + i];
+    }
     __syncthreads();
 
-    // The collapse multiplies the RAW streams, not the normalised ones: the
-    // unweighted RMSNorm only feeds hc_fn, while upstream collapses with
-    // `pre * hidden_streams` (Xing4_0HyperConnection.forward). Reading a
-    // normalised copy here would apply the factor twice - caught by the
-    // host-parity test.
-    for (int j = threadIdx.x; j < hidden; j += blockDim.x)
+    // pre_gate goes to the shared scratch for the collapse kernel: hc_mult
+    // floats, and the alternative is recomputing four sigmoids per block.
+    for (int d = tid; d < hc_mult; d += blockDim.x)
+        pre_gate_out[d] = pre_gate[d];
+}
+
+// mHC, phase 3: the collapse, on a wide block.
+//
+// Multiplies the RAW streams, not the normalised ones: the unweighted RMSNorm
+// only feeds hc_fn, while upstream collapses with `pre * hidden_streams`
+// (Xing4_0HyperConnection.forward). Reading a normalised copy here would apply
+// the factor twice - caught by the host-parity test.
+__global__ void xing_hyper_conn_collapse_kernel(const float *__restrict__ streams,
+                                                const float *__restrict__ gates,
+                                                int hc_mult, int hidden,
+                                                float *__restrict__ collapsed)
+{
+    float g[8];
+    for (int d = 0; d < hc_mult; ++d) g[d] = gates[d];
+    for (int c = threadIdx.x; c < hidden; c += blockDim.x)
     {
         float acc = 0.0f;
         for (int d = 0; d < hc_mult; ++d)
-            acc = __fadd_rn(acc, __fmul_rn(pre_gate[d],
-                                           streams[d * hidden + j]));
-        collapsed[j] = acc;
+            acc = __fadd_rn(acc, __fmul_rn(g[d], streams[d * hidden + c]));
+        collapsed[c] = acc;
     }
 }
 
@@ -571,30 +624,50 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
 
 // Split-K phase 2: rescale each chunk by exp(m_s - m_global), sum the chunks and
 // divide by the global sum. One block per head, one thread per head dim.
+// Split-K phase 2: rescale each chunk by exp(m_s - m_global), sum the chunks and
+// divide by the global sum. One block per head, one thread per head dim.
+//
+// The kAttnSplits rescale factors are computed ONCE into shared by the first
+// kAttnSplits threads instead of once per head dim: they are per-chunk scalars,
+// and ExpfGlibc is a double-precision replica on a part that retires FP64 at
+// 1/64, so 16 chunks x 128 dims of threads meant 16 serial exps per thread and
+// the combine cost 6.8 us - 0.28 ms of a decode step across the layers.
 __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
                                          const float *__restrict__ d_l,
                                          const float *__restrict__ d_part,
                                          int heads, int vh, int splits,
                                          float *__restrict__ out)
 {
+    __shared__ float w[kMaxAttnSplits];
+    __shared__ float gmax;
     const int h = blockIdx.x;
-    const int d = threadIdx.x;
-    if (d >= vh) return;
+    const int tid = threadIdx.x;
     const float *m = d_m + static_cast<size_t>(h) * splits;
     const float *l = d_l + static_cast<size_t>(h) * splits;
-    const float *part = d_part + static_cast<size_t>(h) * splits * vh + d;
-    float gm = -INFINITY;
-    for (int s = 0; s < splits; ++s) gm = fmaxf(gm, m[s]);
-    float denom = 0.0f, total = 0.0f;
-    for (int s = 0; s < splits; ++s)
+    const float *part = d_part + static_cast<size_t>(h) * splits * vh;
+    float local = -INFINITY;
+    for (int s = tid; s < splits; s += blockDim.x) local = fmaxf(local, m[s]);
+    for (int off = 16; off > 0; off >>= 1)
+        local = fmaxf(local, __shfl_down_sync(0xffffffffu, local, off));
+    if (tid == 0) gmax = local;
+    __syncthreads();
+    const float gm = gmax;
+    for (int s = tid; s < splits; s += blockDim.x)
+        w[s] = device::XingExpfGlibc(__fsub_rn(m[s], gm));
+    __syncthreads();
+    if (tid < vh)
     {
-        const float w = device::XingExpfGlibc(__fsub_rn(m[s], gm));
-        denom = __fadd_rn(denom, __fmul_rn(l[s], w));
-        total = __fadd_rn(total, __fmul_rn(part[static_cast<size_t>(s) * vh], w));
+        float denom = 0.0f, total = 0.0f;
+        for (int s = 0; s < splits; ++s)
+        {
+            denom = __fadd_rn(denom, __fmul_rn(l[s], w[s]));
+            total = __fadd_rn(
+                total,
+                __fmul_rn(part[static_cast<size_t>(s) * vh + tid], w[s]));
+        }
+        out[static_cast<size_t>(h) * vh + tid] = __fdiv_rn(total, denom);
     }
-    out[static_cast<size_t>(h) * vh + d] = __fdiv_rn(total, denom);
 }
-
 }  // namespace
 
 cudaError_t LaunchXingAttention(const float *q, const float *kc,
@@ -660,13 +733,18 @@ cudaError_t LaunchXingHyperConnection(
     // the load latency of a 14 KiB-stride dot product.
     xing_hyper_conn_proj_kernel<<<mix, kProjThreads, 0, stream>>>(
         streams, hc_fn, hc_mult, hidden, eps, rows);
-    // Phase 2 stays at kThreads: it is one block over `hidden`, and the
-    // thread-0 Sinkhorn path compiles to 77 registers, which cannot be resident
-    // at 1024 threads (77 x 1024 > the 64 Ki register file per SM - the launch
-    // failed with cudaErrorLaunchFailure, reported at the next sync).
+    // Phase 2 is split again: the gates/Sinkhorn block is tiny, but its collapse
+    // was a 57 KB read that ONE block had to issue, and that is latency-bound
+    // (256 threads = 8 warps of loads in flight). Running the gates at 1024
+    // threads instead measured 15.4 us against 12.6 - __launch_bounds__'s 64
+    // register cap made the FP64 path spill, which cost more than the warps won.
+    // So the collapse gets its own wide block with no FP64 in it at all.
     xing_hyper_conn_gates_kernel<<<1, kThreads, 0, stream>>>(
-        streams, rows, hc_base, hc_scale, hc_mult, hidden, eps, sinkhorn_iters,
-        clamp_min, clamp_max, post_gain, collapsed, post, comb);
+        rows, hc_base, hc_scale, hc_mult, hidden, eps, sinkhorn_iters, clamp_min,
+        clamp_max, post_gain, post, comb, rows + kMaxMix);
+    xing_hyper_conn_collapse_kernel<<<(hidden + kProjThreads - 1) / kProjThreads,
+                                      kProjThreads, 0, stream>>>(
+        streams, rows + kMaxMix, hc_mult, hidden, collapsed);
     return cudaGetLastError();
 }
 cudaError_t LaunchXingMix(const float *streams, const float *out,

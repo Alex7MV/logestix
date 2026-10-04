@@ -88,7 +88,9 @@ struct XingSession {
     float *d_collapsed = nullptr;  // [hidden]
     float *d_post = nullptr;       // [hc_mult]
     float *d_comb = nullptr;       // [hc_mult * hc_mult]
-    float *d_rows = nullptr;       // [(2+hc_mult)*hc_mult] mHC row scratch
+    // mHC scratch: the hc_fn row dot products followed by the pre gates, sized
+    // kMaxMix + kMaxHcMult (80 + 8 floats) rather than the actual mix.
+    float *d_rows = nullptr;
     // Split-K attention scratch: per (head, chunk) max/sum and the unnormalised
     // value accumulation, combined by xing_attn_combine_kernel.
     float *d_attn_m = nullptr;     // [heads * kAttnSplits]

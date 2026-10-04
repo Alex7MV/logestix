@@ -498,7 +498,7 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_post), static_cast<size_t>(hc) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_comb), static_cast<size_t>(hc) * hc * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_rows),
-             static_cast<size_t>((2 + hc) * hc) * 4));
+             static_cast<size_t>((80 + 8)) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_attn_m),
              static_cast<size_t>(kAttnSplits * frozen::kHeads) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_attn_l),
