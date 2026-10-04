@@ -16,6 +16,7 @@ required to reproduce that normalized answer at `FastMathMode::kOff`.
 
 | Family | Result |
 |---|---|
+| xing4.0-29b-a4b | captured (all 3 exact, real CPU forward of the shipped `modeling_xing4_0.py`) — see the section at the end |
 | Qwen3.6-35B-A3B | captured (all 3 exact) |
 | Qwen3.8-Flash-Next | captured (all 3 exact; experimental `qwen4_exp` arch loaded with patches, see below) |
 | NVIDIA-Nemotron-3.5-Lightning-30B-A3B | captured (all 3 exact) |
@@ -462,3 +463,41 @@ is selected instead of a reasoning echo.
 **Result:** FSI-TEST-01/02/03 PASS at `kOff` with `max_new_tokens=2048` (the
 model reasons at length before the answer line). The model reproduces the
 canonical formulas/comparison.
+
+## xing4.0-29b-a4b (2026-10-04)
+
+**Capture: real.** The checkpoint ships `modeling_xing4_0.py` and fits CPU
+(58 GB BF16), so `tools/{fsi,code,det}_capture.py` ran the unmodified upstream
+model on `transformers` 5.15.1 / `torch` 2.13 (bf16, eager attention) and all
+three stages captured exactly — FSI 3/3, CODE 3/3, DET 3/3
+(`tests/fixtures/{fsi,code,det}/xing4.0-29b-a4b.json`).
+
+**Result: all three gates PASS at `kOff`** (`test_xing_moe_{fsi,code,det}_selfcheck`).
+
+Six defects had to be fixed before parity; each was invisible to the synthetic
+fixtures and to SelfCheck's "is Paris the answer" check, so they are recorded
+here as the reusable lesson rather than as a Xing-only note:
+
+| Defect | Why the existing tests missed it |
+|---|---|
+| RoPE launcher took a **caller-supplied scalar** as the head offset, so all 32 heads rotated the same 64 floats | a single-token prefill never reads the cache back — the softmax is trivial |
+| **One KV buffer for all 40 layers** (upstream keys `past_key_values.update(..., layer_idx)`) | same single-token blindness; a 2-token prompt already diverges |
+| MoE used the **gate weights for the SwiGLU up-branch** and never ran the down projection (the expert view table had 2 of 3 matrices) | `silu(gate)*gate` is a well-formed MLP: finite, plausible, wrong |
+| The shared `k_rot` slice was written by the `h == 0` block only | heads 1..31 read **uninitialized** rope dims; surfaced as first-step non-determinism, found with `compute-sanitizer --tool initcheck` |
+| Routed-expert accumulation was a read-modify-write of one `acc[i]` from all `top_k` blocks | race, not an overflow — only `racecheck`/multi-step comparison sees it |
+| Blocking `cudaMemcpy` for the sampled token **and** for the logits ran on the legacy default stream, which does not synchronize with the context stream (`cudaStreamNonBlocking`) | identical requests sampled different sequences; the numbers looked like tie-breaking noise |
+
+**YaRN:** upstream's `Xing4_0RotaryEmbedding` receives `attention_factor = 1.0`
+for this checkpoint (`rope_scaling.mscale_all_dim = 1.0` does not reach it), so
+cos/sin satisfy `cos^2 + sin^2 == 1`; `mscale = 0.1*ln(64)+1 = 1.4158883` appears
+**only** in the softmax scale, where the attention module squares it
+(`kAttnScale = 1.4158883^2 / sqrt(192)`). Scaling the tables as well doubles
+every attention score — the model still answers "Paris", but FSI-01/02 truncate.
+
+**Tool-call markers:** `tokenizer_config.json` advertises `<\u200Btool_call>`
+(zero-width space) at ids 11/12, but the SentencePiece piece stored at those ids
+— and what `tokenizers` actually matches — is the **plain** spelling: encoding
+the ZWSP form yields six ordinary pieces (`[612, 127643, 9621, 34, 4039, 124430]`),
+not `[11]`. The codec therefore looks up and renders the plain form; re-encoding
+upstream's own template output reproduces the marker ids. A test asserts both
+facts against the exported vocabulary.

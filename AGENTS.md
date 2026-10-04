@@ -218,6 +218,31 @@ procedure — `perf-tuning-a-model`.
   layer graph + generation), `alice_moe_model.{h,cpp}`; format tag
   `logestix-alice-nvfp4`; converted with `lsxforge --alice`; real-weight
   selfcheck passes).
+  Xing4.0-29B-A4B (independent family `xing`: TeleChat, mHC (hyper-connection)
+  depth mixer with **4 parallel hidden streams** + full MLA + stored MTP layer,
+  40L resident + MTP layer 40 / 3584H / 32 MLA heads / `q_lora=768` /
+  `kv_lora=512` / `qk_nope=128` + `qk_rope=64` / `v_head=128` / 64 routed
+  experts top-4 (2 dense first layers) + 1 shared I=9216 / vocab 131072 /
+  YaRN factor 64 with `mscale^2` folded into the softmax scale ONLY (the tables
+  stay unscaled — upstream's rotary returns `attention_factor = 1.0`);
+  `xing_moe_constants.h` (frozen passport), `xing_moe_convert.{h,cpp}` (BF16 →
+  NVFP4 for every linear incl. embed/lm_head; **mHC tensors, all norms and the
+  BF16 router stay high precision** — NVFP4 rounding in the router does not blur
+  an output, it swaps the expert set), `xing_moe_load.{h,cpp}` (all 2432 routed
+  experts **resident**, three NVFP4 views per expert in the repo's w1/w2/w3 order
+  `[gate | down | up]`; no expert cache/LRU — the model fits in 16 GiB),
+  `xing_moe_kernels.{h,cu}` (unweighted RMSNorm / mHC + 20-iteration Sinkhorn /
+  four-stream mix / sigmoid noaux_tc router), `xing_moe_inference.{h,cu}`
+  (MLA with interleaved YaRN RoPE, **per-layer** KV cache slices, dense+MoE
+  decode, `LaunchXingRopeQ/K` export the per-head offset internally),
+  `xing_moe_model.{h,cpp}`, `xing_moe_tool_format.{h,cpp}` (native tool calling;
+  the markers at ids 11/12 are the **plain** `<tool_call>` spellings — the
+  zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
+  format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
+  SelfCheck + FSI + CODE + DET all pass. Decode is correctness-first and ~11x
+  off the tuned families (per-MoE-layer routed-id D2H sync, host logits round
+  trip, token-by-token prefill); `tests/perf/perf_baselines.json` records
+  14.4 t/s (perf) / 9.1 t/s (r3) at 2048 tokens as that floor.
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).

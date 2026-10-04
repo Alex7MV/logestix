@@ -164,6 +164,28 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
+### D2. `xing` decode is ~11x off the tuned families (14.4 t/s vs 162 t/s)
+- **Status: open — correctness-first path, measured floor recorded.**
+  Xing4.0-29B-A4B reaches **14.4 t/s** (perf) / **9.1 t/s** (r3) at 2048 tokens
+  on the RTX 5090, while Qwen3.5-35B-A3B reaches 162 t/s on the same host and
+  policy. The gap is architectural, not a kernel regression: the family was
+  landed correctness-first and three known costs dominate the step.
+- Per-token costs, in the order they were identified:
+  1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
+     stream once per MoE layer** (38 syncs/token) because the neutral
+     expert-batch GEMV takes its pointer arrays by value on the host. Fixable
+     with a device-resident id->slot table (the gigachat slot-LRU pattern).
+  2. `XingMoeModel::Infer` round-trips the whole `[vocab]` logits row to the
+     host and back per generated token, and `cudaMalloc`/`cudaFree`s three
+     small buffers per step. The deepseek pipeline keeps the row on the device.
+  3. Prefill replays the prompt one token per step (no incremental/parallel
+     prefill), so TTFT grows linearly with prompt length.
+- The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
+  and `r3`) as an explicit **floor**, not a tuned number, so the perf guard
+  treats a regression against it as a real signal.
+- Parity is unaffected: SelfCheck Paris and the FSI/CODE/DET gates pass at
+  `kOff`, so this is pure throughput work.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
