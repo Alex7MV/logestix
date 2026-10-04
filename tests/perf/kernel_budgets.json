@@ -1,22 +1,7 @@
 {
   "budgets": [
-    {"name": "gemma.moe.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 685.778, "observed_min": 507.488, "observed_max": 507.984, "samples": 3, "date": "2026-10-02", "note": "gemma routed+shared MoE decode step"},
-    {"name": "gemma.rmsnorm.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 3.91065, "observed_min": 2.89454, "observed_max": 2.89678, "samples": 6, "date": "2026-10-02", "note": "single-row launch, hidden=2816, 512 threads"},
-    {"name": "gigachat.gated_norm.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 35.2475, "observed_min": 26.0947, "observed_max": 26.1092, "samples": 3, "date": "2026-10-02", "note": "zero-centered gated norm, dim=7168"},
-    {"name": "gigachat.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.1941, "observed_min": 12.7218, "observed_max": 12.7364, "samples": 3, "date": "2026-10-02", "note": "sigmoid router E=256 H=7168"},
-    {"name": "glm_flash.gdn.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 171.347, "observed_min": 124.419, "observed_max": 126.924, "samples": 3, "date": "2026-10-02", "note": "Gated DeltaNet decode step"},
-    {"name": "granite.dense_gemm.bandwidth", "gpu_key": "rtx 5060 ti", "kind": "min", "budget": 307.374, "observed_min": 384.218, "observed_max": 372.312, "samples": 4, "date": "2026-10-02", "note": "aggregate dense-decode NVFP4 GEMV, GB/s"},
-    {"name": "nemotron.mamba_step.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 11.5987, "observed_min": 8.20047, "observed_max": 8.59166, "samples": 4, "date": "2026-10-02", "note": "Mamba-2 decode step"},
-    {"name": "nemotron.routed_expert_gemv.batch_latency", "gpu_key": "rtx 5090", "kind": "max", "budget": 35.9605, "observed_min": 26.5184, "observed_max": 26.6374, "samples": 4, "date": "2026-10-02", "note": "x6 experts batched GEMV"},
-    {"name": "nemotron.routed_expert_gemv.batch_speedup", "gpu_key": "rtx 5090", "kind": "min", "budget": 1.15121, "observed_min": 1.43901, "observed_max": 1.34366, "samples": 4, "date": "2026-10-02", "note": "x6 experts, batched vs single GEMV"},
-    {"name": "nvfp4.gemmv.bandwidth_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 348.284, "observed_min": 435.355, "observed_max": 433.432, "samples": 3, "date": "2026-10-02", "note": "NVFP4 GEMV effective bandwidth"},
-    {"name": "ornith.router.decode", "gpu_key": "rtx 5060 ti", "kind": "max", "budget": 57.5137, "observed_min": 29.4565, "observed_max": 42.6027, "samples": 4, "date": "2026-10-02", "note": "warp-per-row router top-k+renorm"},
-    {"name": "phi.dense_gemm.bandwidth", "gpu_key": "rtx 5060 ti", "kind": "min", "budget": 290.278, "observed_min": 362.847, "observed_max": 359.069, "samples": 4, "date": "2026-10-02", "note": "aggregate dense-decode NVFP4 GEMV, GB/s"},
-    {"name": "qwen_exp.hc_cached.median_ms", "gpu_key": "rtx 5090", "kind": "max", "budget": 0.0438048, "observed_min": 0.030656, "observed_max": 0.032448, "samples": 3, "date": "2026-10-02", "note": "GatedResidual hyper-connection, cached row"},
-    {"name": "qwen_exp.ple_inject.median_ms", "gpu_key": "rtx 5090", "kind": "max", "budget": 3.23378, "observed_min": 2.38067, "observed_max": 2.39539, "samples": 3, "date": "2026-10-02", "note": "PLE shard inject"},
-    {"name": "qwen_moe.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.1132, "observed_min": 12.6384, "observed_max": 12.6765, "samples": 3, "date": "2026-10-02", "note": "warp-per-row router top-k+renorm"},
-    {"name": "xing.attention.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 78.5549, "observed_min": 56.9152, "observed_max": 58.1888, "samples": 5, "date": "2026-10-04", "note": "split-K, 32 heads x 8 position chunks at pos=2047"},
-    {"name": "xing.mhc.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.5541, "observed_min": 12.7366, "observed_max": 13.003, "samples": 5, "date": "2026-10-04", "note": "3 launches, hidden=3584, hc_mult=4 (proj 24 blocks + warp-Sinkhorn gates + wide collapse)"},
-    {"name": "xing.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 44.5513, "observed_min": 32.7808, "observed_max": 33.001, "samples": 5, "date": "2026-10-04", "note": "one warp per expert + block-parallel top-k, 256 routed + 1 shared"}
+    {"name": "xing.attention.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 78.4966, "observed_min": 57.008, "observed_max": 58.1456, "samples": 5, "date": "2026-10-04", "note": "split-K, 32 heads x 8 position chunks at pos=2047"},
+    {"name": "xing.mhc.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.5576, "observed_min": 12.5344, "observed_max": 13.0056, "samples": 5, "date": "2026-10-04", "note": "3 launches, hidden=3584, hc_mult=4 (proj 24 blocks + warp-Sinkhorn gates + wide collapse)"},
+    {"name": "xing.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 8.16264, "observed_min": 5.38848, "observed_max": 6.0464, "samples": 5, "date": "2026-10-04", "note": "projection one block per expert (64 blocks x 32 lanes) + top-k block; 64 experts x hidden 3584"}
   ]
 }

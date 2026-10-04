@@ -422,10 +422,12 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     auto *d_x = Upload(x_bf);
     float *d_ow = nullptr;
     int32_t *d_oe = nullptr;
+    float *d_scores = nullptr;
     REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_scores, kExperts * sizeof(float)) == cudaSuccess);
     REQUIRE(LaunchXingRouter(d_w, d_b, d_x, kExperts, kHidden, kTopK, true, 2.0f,
-                             d_ow, d_oe, stream) == cudaSuccess);
+                             d_ow, d_oe, d_scores, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     const auto ow = Download(d_ow, 16);
@@ -485,8 +487,10 @@ TEST_CASE("Xing router matches the host reference at the 29B shape",
     int32_t *d_oe = nullptr;
     REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
+    float *d_scores = nullptr;
+    REQUIRE(cudaMalloc(&d_scores, kE * sizeof(float)) == cudaSuccess);
     REQUIRE(LaunchXingRouter(d_w, d_b, d_x, kE, kH, kTopK, true, 2.0f, d_ow, d_oe,
-                             stream) == cudaSuccess);
+                             d_scores, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
     const auto ow = Download(d_ow, 16);
     std::vector<int32_t> oe(16, -1);
@@ -524,9 +528,11 @@ TEST_CASE("Xing router stays inside its latency budget at the 29B shape",
     int32_t *d_oe = nullptr;
     REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
+    float *d_scores = nullptr;
+    REQUIRE(cudaMalloc(&d_scores, kE * sizeof(float)) == cudaSuccess);
     const auto launch = [&] {
         return LaunchXingRouter(d_w, d_b, d_x, kE, kH, kTopK, true, 2.0f, d_ow,
-                                d_oe, stream);
+                                d_oe, d_scores, stream);
     };
     for (int i = 0; i < 20; ++i) REQUIRE(launch() == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -544,8 +550,8 @@ TEST_CASE("Xing router stays inside its latency budget at the 29B shape",
     INFO("router launch " << us << " us at 64 experts x " << kH);
 #if defined(NDEBUG)
     kernel_budget::Require("xing.router.decode", us, kernel_budget::Kind::kMax,
-                           "one warp per expert + block-parallel top-k, 256"
-                           " routed + 1 shared");
+                           "projection one block per expert (64 blocks x 32"
+                           " lanes) + top-k block; 64 experts x hidden 3584");
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif

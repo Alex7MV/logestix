@@ -466,7 +466,7 @@ void FreeXingSession(XingSession &s)
     d(s.d_attn_part); d(s.d_act); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
     d(s.d_attn); d(s.d_scores); d(s.d_logits); d(s.d_gate); d(s.d_expert_ids);
     d(s.d_half); d(s.d_half_up); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
-    d(s.d_embed_table); d(s.d_router_act); d(s.d_router_logits);
+    d(s.d_embed_table); d(s.d_router_act); d(s.d_router_scores); d(s.d_router_logits);
     s = XingSession{};
 }
 
@@ -522,6 +522,8 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     s.logit_count = vocab;
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_act),
                   static_cast<size_t>(H) * sizeof(__nv_bfloat16)));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_scores),
+             static_cast<size_t>(frozen::kNumRouted) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_router_logits),
                   static_cast<size_t>(std::max(1, dims.experts)) *
                       sizeof(__nv_bfloat16)));
@@ -836,7 +838,8 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             XING_CK(LaunchXingRouter(ly.router, ly.e_score_bias, s.d_router_act,
                                      dims.experts, H, dims.top_k,
                                      dims.norm_topk_prob, dims.routed_scale,
-                                     s.d_gate, s.d_expert_ids, stream));
+                                     s.d_gate, s.d_expert_ids,
+                                     s.d_router_scores, stream));
             XING_CK(ResolveXingRouted(pw, l, s.d_expert_ids, dims.top_k, stream,
                                  routed, &s));
             // gate/up per expert, swiglu, down per expert, weighted accumulate.

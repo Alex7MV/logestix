@@ -78,10 +78,11 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc
                                 int n_pos, int splits, float *d_m, float *d_l,
                                 float *d_part, cudaStream_t stream);
 
+//   scores      [num_experts]           scratch between the two router phases
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
                              const __nv_bfloat16 *x, int num_experts, int hidden,
                              int top_k, bool norm_topk_prob,
                              float routed_scale, float *out_weights,
-                             int32_t *out_experts, cudaStream_t stream);
+                             int32_t *out_experts, float *scores, cudaStream_t stream);
 
 }  // namespace lsxcommon::xing

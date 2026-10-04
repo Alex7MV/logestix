@@ -319,11 +319,40 @@ __global__ void xing_mix_kernel(const float *__restrict__ streams,
 // Selection semantics match the serial scan it replaces: the bias only steers the
 // CHOICE, the weight stays the raw sigmoid score, and ties go to the LOWEST
 // expert index.
-__global__ void xing_router_kernel(
+// Router phase 1: the projection, one block per expert.
+//
+// The whole router ran as `<<<1, 256>>>` - one block is one SM, so all
+// E x hidden router weights (64 x 3584 = 458 KiB at the frozen geometry) were
+// read through a single SM's cache slice, and 38 calls per token made this the
+// largest single kernel in a decode step. One block per expert is bit-identical
+// (same 32-lane strided k-order, same shuffle reduction) and turns 458 KiB
+// through one SM into 7 KiB through 64.
+__global__ __launch_bounds__(32) void xing_router_proj_kernel(
     const __nv_bfloat16 *__restrict__ weight,
-    const float *__restrict__ bias,
-    const __nv_bfloat16 *__restrict__ x, int num_experts, int hidden, int top_k,
-    bool norm_topk_prob, float routed_scale,
+    const __nv_bfloat16 *__restrict__ x, int num_experts, int hidden,
+    float *__restrict__ scores)
+{
+    constexpr int kWarpSz = 32;
+    const int e = blockIdx.x;
+    if (e >= num_experts) return;
+    const int lane = threadIdx.x;
+    const __nv_bfloat16 *row = weight + static_cast<size_t>(e) * hidden;
+    float acc = 0.0f;
+    for (int i = lane; i < hidden; i += kWarpSz)
+        acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(row[i]),
+                                       __bfloat162float(x[i])));
+    for (int off = kWarpSz / 2; off > 0; off >>= 1)
+        acc += __shfl_down_sync(0xffffffffu, acc, off);
+    if (lane == 0) scores[e] = acc;
+}
+
+// Router phase 2: sigmoid, top-k and the weight renorm. One block, but the
+// expensive part (the projection) moved to phase 1; what is left is E sigmoids
+// (one thread each - see the note in phase 1's caller about ExpfGlibc being a
+// double-precision replica), top_k rounds of a warp argmax, and 16-lane writes.
+__global__ void xing_router_topk_kernel(
+    const float *__restrict__ bias, const float *__restrict__ scores_in,
+    int num_experts, int top_k, bool norm_topk_prob, float routed_scale,
     float *__restrict__ out_weights, int32_t *__restrict__ out_experts)
 {
     constexpr int kWarpSz = 32;
@@ -338,22 +367,20 @@ __global__ void xing_router_kernel(
     const int lane = threadIdx.x & (kWarpSz - 1);
     const int warp = threadIdx.x >> 5;
 
-    // projection: one warp per expert, k-order unchanged within the row
-    for (int e = warp; e < num_experts; e += kWarps)
+    for (int e = threadIdx.x; e < num_experts; e += blockDim.x)
+        score[e] = scores_in[e];
+    __syncthreads();
+    // The sigmoid is one thread per expert, NOT inside the loop above:
+    // XingSigmoid is a bit-exact glibc replica in DOUBLE precision and a
+    // consumer Blackwell SM retires FP64 at 1/64 of FP32, so E/kWarps = 8
+    // back-to-back double-precision calls per warp cost ~13 us - measurable as
+    // the part of this kernel that does NOT scale with `hidden` (13.2 us at
+    // hidden=224 vs 32.7 us at 3584). Same function on the same value, so the
+    // scores stay bit-identical.
+    for (int e = threadIdx.x; e < num_experts; e += blockDim.x)
     {
-        const __nv_bfloat16 *row = weight + static_cast<size_t>(e) * hidden;
-        float acc = 0.0f;
-        for (int i = lane; i < hidden; i += kWarpSz)
-            acc = __fadd_rn(acc,
-                            __fmul_rn(__bfloat162float(row[i]),
-                                      __bfloat162float(x[i])));
-        for (int off = kWarpSz / 2; off > 0; off >>= 1)
-            acc += __shfl_down_sync(0xffffffffu, acc, off);
-        if (lane == 0)
-        {
-            score[e] = XingSigmoid(acc);
-            taken[e] = false;
-        }
+        score[e] = XingSigmoid(score[e]);
+        taken[e] = false;
     }
     __syncthreads();
 
@@ -762,7 +789,8 @@ cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
                              const __nv_bfloat16 *x, int num_experts, int hidden,
                              int top_k, bool norm_topk_prob,
                              float routed_scale, float *out_weights,
-                             int32_t *out_experts, cudaStream_t stream)
+                             int32_t *out_experts, float *scores,
+                             cudaStream_t stream)
 {
     if (num_experts <= 0 || num_experts > kMaxExperts || hidden <= 0 ||
         top_k <= 0 || top_k > 16)
@@ -771,9 +799,12 @@ cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
     // loop would emit expert id -1 and the caller's resolve step would reject
     // the whole layer. Clamp instead, and zero the lanes we do not fill.
     const int k = std::min(top_k, num_experts);
-    xing_router_kernel<<<1, kThreads, 0, stream>>>(
-        weight, bias, x, num_experts, hidden, k, norm_topk_prob,
-        routed_scale, out_weights, out_experts);
+    if (!scores) return cudaErrorInvalidValue;
+    xing_router_proj_kernel<<<num_experts, 32, 0, stream>>>(
+        weight, x, num_experts, hidden, scores);
+    xing_router_topk_kernel<<<1, kThreads, 0, stream>>>(
+        bias, scores, num_experts, k, norm_topk_prob, routed_scale, out_weights,
+        out_experts);
     return cudaGetLastError();
 }
 

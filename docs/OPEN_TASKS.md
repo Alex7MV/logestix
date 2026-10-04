@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 95.0 t/s (seven single-block / serial kernels)
+### D2. `xing` decode: 14.4 -> 105.7 t/s (nine single-block / serial kernels)
 - **Status: CLOSED for the serial-kernel class (2026-10-04).
-  14.40 -> 95.00 t/s perf / 9.10 -> 19.50 t/s r3 at 2048 tokens.** Every
+  14.40 -> 105.70 t/s perf / 9.10 -> 19.90 t/s r3 at 2048 tokens.** Every
   single-block, thread-0-serial and under-occupied kernel on the decode path is
   fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
   different (numerics) project - see the end. Every fix came from the same
@@ -177,7 +177,7 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   | kernel | before | after | what it was |
   |---|---|---|---|
   | `xing_hyper_conn_kernel` | 229 us | 61 us | `<<<1,256>>>`, 24 sequential 256-thread tree reductions (192 dependent barriers) |
-  | `xing_router_kernel` | 129 us | 33 us | `<<<1,256>>>`, one thread per expert, then 4x64 serial shared reads on thread 0 |
+  | `xing_router_proj_kernel` + `..._topk_kernel` | 129 us | 6.4 us | `<<<1,256>>>`: one SM read all 458 KiB of router weights, and XingSigmoid (a double-precision glibc replica) ran 8x per warp back to back before the top-k could start |
   | `xing_attn_kernel` | 814 us | 209 us | `<<<32,256>>>` (32 of 170 SMs), softmax serial on thread 0, values serial over t on one thread per dim |
   | `xing_attn_split_kernel` | 209 us | 63 us | the fixed grid was 32 blocks - one per head; split-K over position chunks (heads x 8 = 256 blocks) plus a combine kernel |
   | `xing_hyper_conn_gates_kernel` | 36 us | 6.5 us | 20 Sinkhorn iterations + 16 exps serial on thread 0, and `ExpfGlibc` is a DOUBLE-precision replica - a consumer SM retires FP64 at 1/64 rate; then warp-0 registers with shuffles |
@@ -187,8 +187,8 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - The attention ones are what the length curve pointed at:
   `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
   step was context-dependent, all of it in that kernel. After the two attention
-  passes the same sweep gives **8755 + 1677**, i.e. the context term shrank 9.9x
-  and is now 16% of the step; the fixed term is 83% and is the whole frontier
+  passes the same sweep gives **7682 + 1671**, i.e. the context term shrank 9.9x
+  and is now 18% of the step; the fixed term is 81% and is the whole frontier
   (it was 46% of the step before this series).
 - The depth mixer needed TWO passes and the second one had to be re-derived after
   the first looked done. Splitting `<<<1,256>>>` into a projection (24 blocks,
@@ -219,8 +219,8 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Each kernel carries a Release-only latency budget and a host-parity case at the
   production shape - the original cases used hidden=64 / 16 experts, which is why
   all three defects survived a green suite.
-- **What the remaining 8.75 ms/token is NOT: bandwidth.** At 95 t/s the model
-  reads 2.19 GB/token x 95 = 208 GB/s, which is 12% of the 1792 GB/s peak -
+- **What the remaining 7.7 ms/token is NOT: bandwidth.** At 105.7 t/s the model
+  reads 2.19 GB/token x 105.7 = 231 GB/s, which is 13% of the 1792 GB/s peak -
   and a layer's ~53 MB should take 31 us at peak, while a layer measures ~222 us
   (9.1 ms / 41). So decode is latency/occupancy-bound, not bandwidth-bound, and
   the next lever is the GEMV path itself: `RunLxGemmVec` splits output rows
@@ -229,9 +229,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Raising decode further means wider GEMV tiles (more rows per block, split-K
   over the K dimension) - correctness-first no longer, i.e. a real numerics
   project with its own gate, not another serial-kernel fix.
-- Effective bandwidth went 31.6 -> 208 GB/s (95 t/s, 10.5 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 95 t/s the model reads
-  208 GB/s of it - which is the point above: the roofline is not the binding
+- Effective bandwidth went 31.6 -> 231 GB/s (105.7 t/s, 9.5 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 105.7 t/s the model reads
+  231 GB/s of it - which is the point above: the roofline is not the binding
   constraint any more, the GEMV occupancy is.
 - Tool calling is verified on the REAL weights
   (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine

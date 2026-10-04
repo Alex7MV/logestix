@@ -114,6 +114,7 @@ struct XingSession {
     // buffers (the router kernel then converts per element).
     __nv_bfloat16 *d_router_act = nullptr;   // [hidden]
     __nv_bfloat16 *d_router_logits = nullptr;  // [experts]
+    float *d_router_scores = nullptr;  // [experts] between the router phases
     float *d_gate = nullptr;    // [16] router weights
     int32_t *d_expert_ids = nullptr;  // [16]
     int32_t token_id = 0;             // current step's input token
