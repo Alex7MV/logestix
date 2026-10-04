@@ -488,19 +488,143 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
         out[static_cast<size_t>(h) * vh + d] = total;
     }
 }
+// Split-K phase 1: one block per (head, chunk of positions). Same per-chunk
+// arithmetic as the single-block kernel - score, block softmax over the chunk,
+// weighted V sum - but the chunk's max and sum are published instead of
+// normalised in place, because only the combine kernel knows the global max.
+__global__ void xing_attn_split_kernel(const float *__restrict__ q,
+                                       const float *__restrict__ kc,
+                                       const float *__restrict__ vc, int pos,
+                                       int heads, int qk, int vh, float scale,
+                                       int capacity, int chunk, float *d_m,
+                                       float *d_l, float *d_part)
+{
+    extern __shared__ float sm[];
+    __shared__ float warp_max[8];
+    __shared__ float warp_sum[8];
+    __shared__ float partial[2][128];
+    const int h = blockIdx.x;
+    const int s = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int nthreads = blockDim.x;
+    const int begin = s * chunk;
+    const int end = min(begin + chunk, pos + 1);
+    const int count = end - begin;
+    float *sc = sm;
+    const float *qt = q + static_cast<size_t>(h) * qk;
+
+    for (int t = tid; t < count; t += nthreads)
+    {
+        const float *kt = kc + (static_cast<size_t>(begin + t) * heads + h) * qk;
+        float acc = 0.0f;
+        for (int i = 0; i < qk; ++i)
+            acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
+        sc[t] = __fmul_rn(acc, scale);
+    }
+    float m = -INFINITY;
+    for (int t = tid; t < count; t += nthreads) m = fmaxf(m, sc[t]);
+    for (int off = 16; off > 0; off >>= 1)
+        m = fmaxf(m, __shfl_down_sync(0xffffffffu, m, off));
+    if ((tid & 31) == 0) warp_max[tid >> 5] = m;
+    __syncthreads();
+    m = -INFINITY;
+    for (int w = 0; w < (nthreads >> 5); ++w) m = fmaxf(m, warp_max[w]);
+
+    float sum = 0.0f;
+    for (int t = tid; t < count; t += nthreads)
+    {
+        const float e = device::XingExpfGlibc(__fsub_rn(sc[t], m));
+        sc[t] = e;
+        sum = __fadd_rn(sum, e);
+    }
+    for (int off = 16; off > 0; off >>= 1)
+        sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, off));
+    if ((tid & 31) == 0) warp_sum[tid >> 5] = sum;
+    __syncthreads();
+    sum = 0.0f;
+    for (int w = 0; w < (nthreads >> 5); ++w) sum = __fadd_rn(sum, warp_sum[w]);
+    if (tid == 0)
+    {
+        d_m[static_cast<size_t>(h) * gridDim.y + s] = m;
+        d_l[static_cast<size_t>(h) * gridDim.y + s] = sum;
+    }
+
+    // Unnormalised weighted sum: the combine applies exp(m_s - m_global)/l.
+    const int groups = nthreads / vh;
+    const int group = tid / vh;
+    const int d = tid - group * vh;
+    float acc = 0.0f;
+    for (int t = group; t < count; t += groups)
+        acc = __fadd_rn(
+            acc, __fmul_rn(sc[t],
+                           vc[(static_cast<size_t>(begin + t) * heads + h) * vh +
+                              d]));
+    if (groups > 1 && group > 0) partial[group - 1][d] = acc;
+    __syncthreads();
+    if (tid < vh)
+    {
+        float total = acc;
+        for (int g = 1; g < groups; ++g) total = __fadd_rn(total, partial[g - 1][d]);
+        d_part[(static_cast<size_t>(h) * gridDim.y + s) * vh + d] = total;
+    }
+}
+
+// Split-K phase 2: rescale each chunk by exp(m_s - m_global), sum the chunks and
+// divide by the global sum. One block per head, one thread per head dim.
+__global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
+                                         const float *__restrict__ d_l,
+                                         const float *__restrict__ d_part,
+                                         int heads, int vh, int splits,
+                                         float *__restrict__ out)
+{
+    const int h = blockIdx.x;
+    const int d = threadIdx.x;
+    if (d >= vh) return;
+    const float *m = d_m + static_cast<size_t>(h) * splits;
+    const float *l = d_l + static_cast<size_t>(h) * splits;
+    const float *part = d_part + static_cast<size_t>(h) * splits * vh + d;
+    float gm = -INFINITY;
+    for (int s = 0; s < splits; ++s) gm = fmaxf(gm, m[s]);
+    float denom = 0.0f, total = 0.0f;
+    for (int s = 0; s < splits; ++s)
+    {
+        const float w = device::XingExpfGlibc(__fsub_rn(m[s], gm));
+        denom = __fadd_rn(denom, __fmul_rn(l[s], w));
+        total = __fadd_rn(total, __fmul_rn(part[static_cast<size_t>(s) * vh], w));
+    }
+    out[static_cast<size_t>(h) * vh + d] = __fdiv_rn(total, denom);
+}
+
 }  // namespace
 
 cudaError_t LaunchXingAttention(const float *q, const float *kc,
                                 const float *vc, int pos, int heads, int qk,
                                 int vh, float scale, float *scores, float *out,
-                                int capacity, int n_pos, cudaStream_t stream)
+                                int capacity, int n_pos, int splits, float *d_m,
+                                float *d_l, float *d_part, cudaStream_t stream)
 {
     if (!q || !kc || !vc || !scores || !out || heads <= 0 || qk <= 0 ||
-        vh <= 0 || pos < 0 || n_pos <= pos || capacity < n_pos)
+        vh <= 0 || pos < 0 || n_pos <= pos || capacity < n_pos || splits <= 0)
         return cudaErrorInvalidValue;
-    // One block per head; n_pos floats stage the softmax weights.
-    xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float), stream>>>(
-        q, kc, vc, pos, heads, qk, vh, scale, scores, out, capacity);
+    // One block per position chunk on top of the one per head: at pos=2047 the
+    // plain form filled 32 of 170 SMs, and the whole context-dependent half of a
+    // step ran there. Chunks are multiples of the block size so the score phase
+    // keeps its coalesced (and its shared-memory staging contiguous) layout.
+    const int chunk = ((n_pos + splits - 1) / splits + kThreads - 1) /
+                      kThreads * kThreads;
+    const int used = (n_pos + chunk - 1) / chunk;
+    if (used <= 1)
+    {
+        xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float), stream>>>(
+            q, kc, vc, pos, heads, qk, vh, scale, scores, out, capacity);
+        return cudaGetLastError();
+    }
+    if (!d_m || !d_l || !d_part) return cudaErrorInvalidValue;
+    xing_attn_split_kernel<<<dim3(heads, used), kThreads,
+                             chunk * sizeof(float), stream>>>(
+        q, kc, vc, pos, heads, qk, vh, scale, capacity, chunk, d_m, d_l, d_part);
+    xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
+        d_m, d_l, d_part, heads, vh, used, out);
     return cudaGetLastError();
 }
 

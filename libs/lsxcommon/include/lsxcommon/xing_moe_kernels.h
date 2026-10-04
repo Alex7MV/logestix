@@ -68,10 +68,14 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 //   out    [heads, vh]
 // `n_pos` (= pos + 1) sizes the shared staging; it is passed separately so the
 // caller never has to round the context up to a block size.
+// `splits` > 1 runs the split-K form: grid (heads x splits), one block per
+// (head, chunk of positions), then a combine kernel. Scratch: d_m/d_l are
+// [heads * splits] and d_part is [heads * splits * vh].
 cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc,
                                 int pos, int heads, int qk, int vh, float scale,
                                 float *scores, float *out, int capacity,
-                                int n_pos, cudaStream_t stream);
+                                int n_pos, int splits, float *d_m, float *d_l,
+                                float *d_part, cudaStream_t stream);
 
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
                              const __nv_bfloat16 *x, int num_experts, int hidden,

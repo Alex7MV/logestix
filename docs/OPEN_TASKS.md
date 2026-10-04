@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 70.6 t/s (four single-block / serial kernels)
-- **Status: mHC (twice), router and attention fixed (2026-10-04).
-  14.40 -> 70.60 t/s perf / 9.10 -> 18.20 t/s r3 at 2048 tokens.** Every fix came from the same
+### D2. `xing` decode: 14.4 -> 91.4 t/s (five single-block / serial kernels)
+- **Status: mHC (twice), router, attention (twice) fixed (2026-10-04).
+  14.40 -> 91.40 t/s perf / 9.10 -> 19.30 t/s r3 at 2048 tokens.** Every fix came from the same
   method: nsys + a `--max-gen` sweep to separate fixed from context-dependent
   cost, then a Release-only latency budget at the PRODUCTION shape.
 - The three serial costs, in the order nsys found them:
@@ -176,13 +176,15 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   | `xing_hyper_conn_kernel` | 229 us | 61 us | `<<<1,256>>>`, 24 sequential 256-thread tree reductions (192 dependent barriers) |
   | `xing_router_kernel` | 129 us | 33 us | `<<<1,256>>>`, one thread per expert, then 4x64 serial shared reads on thread 0 |
   | `xing_attn_kernel` | 814 us | 209 us | `<<<32,256>>>` (32 of 170 SMs), softmax serial on thread 0, values serial over t on one thread per dim |
+  | `xing_attn_split_kernel` | 209 us | 63 us | the fixed grid was 32 blocks - one per head; split-K over position chunks (heads x 8 = 256 blocks) plus a combine kernel |
   | `xing_hyper_conn_gates_kernel` | 36 us | 13 us | 20 Sinkhorn iterations + 16 exps serial on thread 0, and `ExpfGlibc` is a DOUBLE-precision replica - a consumer SM retires FP64 at 1/64 rate |
 
-- The attention one is what the length curve pointed at:
+- The attention ones are what the length curve pointed at:
   `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
-  step was context-dependent, all of it in that kernel. After the fix the same
-  sweep gives **8831 + 5095**, i.e. the context term shrank 3.2x and the fixed
-  term is now 62% of the step (it was 46% before all four).
+  step was context-dependent, all of it in that kernel. After the two attention
+  passes the same sweep gives **9096 + 1745**, i.e. the context term shrank 9.5x
+  and is now 16% of the step; the fixed term is 83% and is the whole frontier
+  (it was 46% of the step before this series).
 - The depth mixer needed TWO passes and the second one had to be re-derived after
   the first looked done. Splitting `<<<1,256>>>` into a projection (24 blocks,
   one per hc_fn row) and a gates block took 61 -> 40 us - and then nsys said the
@@ -212,10 +214,20 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Each kernel carries a Release-only latency budget and a host-parity case at the
   production shape - the original cases used hidden=64 / 16 experts, which is why
   all three defects survived a green suite.
-- Effective bandwidth went 31.6 -> 227 GB/s (70.6 t/s, 14.2 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 70.6 t/s the model reads
-  227 GB/s of it. The attention has more headroom (it is one block per head, so
-  a position-split with a combine kernel could use 8x more SMs).
+- **What the remaining 9.1 ms/token is NOT: bandwidth.** At 91.4 t/s the model
+  reads 2.19 GB/token x 91.4 = 200 GB/s, which is 11% of the 1792 GB/s peak -
+  and a layer's ~53 MB should take 31 us at peak, while a layer measures ~222 us
+  (9.1 ms / 41). So decode is latency/occupancy-bound, not bandwidth-bound, and
+  the next lever is the GEMV path itself: `RunLxGemmVec` splits output rows
+  across blocks conservatively and never fills 170 SMs, so each of the ~15
+  dependent kernels per layer pays launch + drain latency at low occupancy.
+  Raising decode further means wider GEMV tiles (more rows per block, split-K
+  over the K dimension) - correctness-first no longer, i.e. a real numerics
+  project with its own gate, not another serial-kernel fix.
+- Effective bandwidth went 31.6 -> 200 GB/s (91.4 t/s, 10.9 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 91.4 t/s the model reads
+  200 GB/s of it - which is the point above: the roofline is not the binding
+  constraint any more, the GEMV occupancy is.
 - Per-token costs, in the order they were identified:
 1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
      stream once per MoE layer** (38 syncs/token) because the neutral

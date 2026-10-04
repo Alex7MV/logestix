@@ -64,6 +64,11 @@ XingDims XingDimsFromWeights(const XingPinnedWeights &pw);
 // latents — Xing4_0Attention materialises k_pass/value instead of absorbing
 // kv_b_proj into q/o, so this is [heads, nope+rope] K and [heads, v] V per
 // token, 40 KiB/token/layer (3.1 GiB at a 2048-token context).
+// Position chunks per head in the split-K attention. 8 x 32 = 256 blocks fills
+// the 170 SMs of the target part twice over at a 2k context; more splits only
+// add combine work once the chunks get shorter than a block.
+constexpr int kAttnSplits = 8;
+
 struct XingSession {
     int capacity = 0;
     int length = 0;          // tokens already in the cache
@@ -84,6 +89,11 @@ struct XingSession {
     float *d_post = nullptr;       // [hc_mult]
     float *d_comb = nullptr;       // [hc_mult * hc_mult]
     float *d_rows = nullptr;       // [(2+hc_mult)*hc_mult] mHC row scratch
+    // Split-K attention scratch: per (head, chunk) max/sum and the unnormalised
+    // value accumulation, combined by xing_attn_combine_kernel.
+    float *d_attn_m = nullptr;     // [heads * kAttnSplits]
+    float *d_attn_l = nullptr;     // [heads * kAttnSplits]
+    float *d_attn_part = nullptr;  // [heads * kAttnSplits * v_head]
     // F32 scratch: layer norm outputs, attention scores, logits.
     // d_act keeps the LAYERNORMED HIDDEN alive across the MLA chain: q_a's
     // inner RMSNorm overwrites d_norm in place, and kv_a must still consume the

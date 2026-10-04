@@ -796,7 +796,8 @@ namespace attn_shape {
 constexpr int kHeads = 32;
 constexpr int kQk = 192;   // 128 nope + 64 rope
 constexpr int kVh = 128;
-constexpr int kPos = 2047; // canonical 2048-token context
+constexpr int kPos = 2047;
+constexpr int kTestAttnSplits = 8; // canonical 2048-token context
 constexpr float kScale = 0.14467962580268925f;  // mscale^2 / sqrt(192)
 
 struct Cache
@@ -857,6 +858,9 @@ struct Device
 {
     float *q = nullptr, *k = nullptr, *v = nullptr, *scores = nullptr,
           *out = nullptr;
+    float *m = nullptr;     // [heads * splits]
+    float *l = nullptr;
+    float *part = nullptr;  // [heads * splits * vh]
 };
 
 Device Upload(const Cache &c, int capacity)
@@ -870,6 +874,13 @@ Device Upload(const Cache &c, int capacity)
             cudaSuccess);
     REQUIRE(cudaMalloc(&d.out, static_cast<size_t>(kHeads) * kVh * sizeof(float)) ==
             cudaSuccess);
+    REQUIRE(cudaMalloc(&d.m, static_cast<size_t>(kHeads) * kTestAttnSplits * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d.l, static_cast<size_t>(kHeads) * kTestAttnSplits * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d.part,
+                       static_cast<size_t>(kHeads) * kTestAttnSplits * kVh *
+                           sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMemcpy(d.q, c.q.data(), c.q.size() * sizeof(float),
                        cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(d.k, c.k.data(), c.k.size() * sizeof(float),
@@ -883,6 +894,9 @@ void Free(Device &d)
 {
     cudaFree(d.q); cudaFree(d.k); cudaFree(d.v); cudaFree(d.scores);
     cudaFree(d.out);
+    cudaFree(d.m);
+    cudaFree(d.l);
+    cudaFree(d.part);
 }
 
 } // namespace attn_shape
@@ -898,13 +912,21 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     Device d = Upload(c, capacity);
-    REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh, kScale,
-                                d.scores, d.out, capacity, kPos + 1,
-                                stream) == cudaSuccess);
-    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
-    const auto got = Download(d.out, kHeads * kVh);
-    for (size_t i = 0; i < ref.size(); ++i)
-        REQUIRE(got[i] == Approx(ref[i]).margin(1e-5));
+    // Both forms have to match the eager reference: the decode step always runs
+    // the split-K one, but `splits` collapses to the single-block kernel at short
+    // contexts (one chunk), so the fallback is on the live path too.
+    for (const int splits : {kTestAttnSplits, 1})
+    {
+        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
+                                    kScale, d.scores, d.out, capacity, kPos + 1,
+                                    splits, d.m, d.l, d.part, stream) ==
+                cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        const auto got = Download(d.out, kHeads * kVh);
+        INFO("splits=" << splits);
+        for (size_t i = 0; i < ref.size(); ++i)
+            REQUIRE(got[i] == Approx(ref[i]).margin(1e-5));
+    }
     Free(d);
     cudaStreamDestroy(stream);
 }
@@ -920,8 +942,9 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     Device d = Upload(c, capacity);
     const auto launch = [&] {
-        return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh, kScale,
-                                   d.scores, d.out, capacity, kPos + 1, stream);
+        return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
+                                   kScale, d.scores, d.out, capacity, kPos + 1,
+                                   kTestAttnSplits, d.m, d.l, d.part, stream);
     };
     for (int i = 0; i < 3; ++i) REQUIRE(launch() == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -938,7 +961,10 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     const double us = ms * 1000.0 / iters;
     INFO("attention launch " << us << " us at pos=" << kPos);
 #if defined(NDEBUG)
-    REQUIRE(us < 250.0);
+    // 90 us is the split-K target: heads x kTestAttnSplits = 256 blocks over 170
+    // SMs, against 32 blocks (32 of 170 SMs) for the single-block form, which
+    // measured 209 us at this shape.
+    REQUIRE(us < 90.0);
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif
