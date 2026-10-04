@@ -502,32 +502,32 @@
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "perf",
-      "tokens_per_sec": 14.40,
+      "tokens_per_sec": 28.60,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-10-04",
       "commit": "-",
       "gen_tokens": 2048,
-      "ttft_ms": 315.00,
-      "avg_power_w": 143.90,
-      "peak_power_w": 148.00,
-      "power_samples": 7094
+      "ttft_ms": 109.00,
+      "avg_power_w": 172.50,
+      "peak_power_w": 181.60,
+      "power_samples": 3566
     },
     {
       "model_type": "xing4.0-29b-a4b",
       "gpu_key": "rtx 5090",
       "os": "linux",
       "mode": "r3",
-      "tokens_per_sec": 9.10,
+      "tokens_per_sec": 13.20,
       "max_gen": 2048,
       "prompt": "The capital of France is",
       "date": "2026-10-04",
       "commit": "-",
       "gen_tokens": 2048,
-      "ttft_ms": 558.00,
-      "avg_power_w": 151.80,
-      "peak_power_w": 154.10,
-      "power_samples": 11256
+      "ttft_ms": 351.00,
+      "avg_power_w": 168.80,
+      "peak_power_w": 171.00,
+      "power_samples": 7730
     }
   ]
 }

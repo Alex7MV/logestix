@@ -59,9 +59,19 @@ __global__ void xing_unweighted_rmsnorm4_kernel(
         out[j] = __fmul_rn(x[j], inv);
 }
 
-// One token, one block. hc_fn (24 x 14336 = 688 KiB per block) is streamed
-// from global; the 4 streams themselves are staged in shared memory because the
-// collapse and the mix both read them again.
+// One token, ONE WARP PER hc_fn ROW (mix = 24 rows over 8 warps of a 256-thread
+// block, i.e. three waves with no inter-row barrier).
+//
+// The previous version reduced all 256 threads once per row: 24 sequential tree
+// reductions = 192 dependent __syncthreads inside a single block (one SM of 170),
+// which nsys put at 80% of ALL kernel time for the 29B checkpoint - 80 launches
+// per token x ~355 us. Shuffle reductions inside a warp, one barrier for the norm
+// and one for the row results, cost ~3.7x less at the production shape
+// (test_xing_moe_kernels: "Xing mHC stays inside its latency budget").
+//
+// Shared-memory layout is unchanged, so the launcher's size calculation and its
+// >48 KB opt-in keep working: `red` (kThreads floats) holds the per-row dot
+// products first, then the per-warp partial sums of the norm reduction.
 __global__ void xing_hyper_conn_kernel(
     const float *__restrict__ streams,
     const __nv_bfloat16 *__restrict__ hc_fn,
@@ -72,11 +82,18 @@ __global__ void xing_hyper_conn_kernel(
 {
     extern __shared__ float smem[];
     float *sh = smem;                        // hc_mult * hidden
-    float *red = smem + hc_mult * hidden;    // kThreads
+    float *red = smem + hc_mult * hidden;    // kThreads: rows[0..mix), then warp sums
     __shared__ float pre_gate[kMaxHcMult];
     __shared__ float comb_buf[kMaxMix];
     const int n = hc_mult * hidden;
     const int mix = (2 + hc_mult) * hc_mult;
+
+    constexpr int kWarpSz = 32;
+    constexpr int kWarps = kThreads / kWarpSz;
+    const int lane = threadIdx.x & (kWarpSz - 1);
+    const int warp = threadIdx.x >> 5;
+    float *const rows = red;                 // mix floats
+    float *const warp_sum = red + kMaxMix;   // kWarps floats
 
     float sum = 0.0f;
     for (int j = threadIdx.x; j < n; j += blockDim.x)
@@ -85,42 +102,39 @@ __global__ void xing_hyper_conn_kernel(
         sh[j] = v;
         sum = __fadd_rn(sum, __fmul_rn(v, v));
     }
-    red[threadIdx.x] = sum;
+    // Warp-shuffle reduction, then ONE cross-warp pass: 2 barriers instead of
+    // the 8 that the full-block tree cost.
+    for (int off = kWarpSz / 2; off > 0; off >>= 1)
+        sum += __shfl_down_sync(0xffffffffu, sum, off);
+    if (lane == 0) warp_sum[warp] = sum;
     __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
+    if (threadIdx.x == 0)
     {
-        if (threadIdx.x < s)
-            red[threadIdx.x] = __fadd_rn(red[threadIdx.x], red[threadIdx.x + s]);
-        __syncthreads();
+        float s = 0.0f;
+        for (int w = 0; w < kWarps; ++w) s = __fadd_rn(s, warp_sum[w]);
+        warp_sum[0] = s;
     }
-    const float inv =
-        device::XingRsqrtfGlibc(__fadd_rn(__fdiv_rn(red[0], static_cast<float>(n)), eps));
+    __syncthreads();
+    const float inv = device::XingRsqrtfGlibc(
+        __fadd_rn(__fdiv_rn(warp_sum[0], static_cast<float>(n)), eps));
     for (int j = threadIdx.x; j < n; j += blockDim.x)
         sh[j] = __fmul_rn(sh[j], inv);
     __syncthreads();
 
-    // hc_fn @ flat, split into pre(hc_mult) / post(hc_mult) / comb(hc_mult^2).
-    // `red` is reused: the norm reduction it held was already folded into `inv`,
-    // and each row needs a full BLOCK reduction (writing every thread's partial
-    // to one slot would keep only whichever thread landed last).
-    for (int k = 0; k < mix; ++k)
+    // One warp per row: k-order within a row is unchanged (lane-strided over j),
+    // only the grouping of the partial sums differs, which is a tolerance-class
+    // change pinned by the hidden=3584 host-parity test.
+    for (int k = warp; k < mix; k += kWarps)
     {
         const __nv_bfloat16 *row = hc_fn + static_cast<size_t>(k) * n;
         float acc = 0.0f;
-        for (int j = threadIdx.x; j < n; j += blockDim.x)
+        for (int j = lane; j < n; j += kWarpSz)
             acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(row[j]), sh[j]));
-        red[threadIdx.x] = acc;
-        __syncthreads();
-        for (int s = blockDim.x / 2; s > 0; s >>= 1)
-        {
-            if (threadIdx.x < s)
-                red[threadIdx.x] =
-                    __fadd_rn(red[threadIdx.x], red[threadIdx.x + s]);
-            __syncthreads();
-        }
-        if (threadIdx.x == 0) comb_buf[k] = red[0];
-        __syncthreads();
+        for (int off = kWarpSz / 2; off > 0; off >>= 1)
+            acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0) rows[k] = acc;
     }
+    __syncthreads();
 
     if (threadIdx.x == 0)
     {
@@ -128,12 +142,11 @@ __global__ void xing_hyper_conn_kernel(
         {
             const float pre_b = __bfloat162float(hc_base[d]);
             const float post_b = __bfloat162float(hc_base[hc_mult + d]);
-            pre_gate[d] = XingSigmoid(__fadd_rn(
-                __fmul_rn(comb_buf[d], hc_scale[0]), pre_b));
+            pre_gate[d] = XingSigmoid(
+                __fadd_rn(__fmul_rn(rows[d], hc_scale[0]), pre_b));
             post[d] = __fmul_rn(post_gain,
                                 XingSigmoid(__fadd_rn(
-                                    __fmul_rn(comb_buf[hc_mult + d],
-                                              hc_scale[1]),
+                                    __fmul_rn(rows[hc_mult + d], hc_scale[1]),
                                     post_b)));
         }
         const int off = 2 * hc_mult;
@@ -141,7 +154,7 @@ __global__ void xing_hyper_conn_kernel(
         for (int i = 0; i < hc_mult * hc_mult; ++i)
         {
             const float lg = fminf(
-                fmaxf(__fadd_rn(__fmul_rn(comb_buf[off + i], hc_scale[2]),
+                fmaxf(__fadd_rn(__fmul_rn(rows[off + i], hc_scale[2]),
                                __bfloat162float(hc_base[off + i])),
                       clamp_min),
                 clamp_max);
@@ -149,8 +162,7 @@ __global__ void xing_hyper_conn_kernel(
             mx = fmaxf(mx, lg);
         }
         for (int i = 0; i < hc_mult * hc_mult; ++i)
-            comb_buf[kCombBase + i] =
-                device::XingExpfGlibc(comb_buf[kCombBase + i] - mx);
+            comb_buf[kCombBase + i] = device::XingExpfGlibc(comb_buf[kCombBase + i] - mx);
         for (int it = 0; it < sinkhorn_iters; ++it)
         {
             for (int r = 0; r < hc_mult; ++r)
@@ -179,7 +191,7 @@ __global__ void xing_hyper_conn_kernel(
     // The collapse multiplies the RAW streams, not the normalised ones: the
     // unweighted RMSNorm only feeds hc_fn, while upstream collapses with
     // `pre * hidden_streams` (Xing4_0HyperConnection.forward). Reading `sh`
-    // here would silently normalise twice — caught by the host-parity test.
+    // here would silently normalise twice - caught by the host-parity test.
     for (int j = threadIdx.x; j < hidden; j += blockDim.x)
     {
         float acc = 0.0f;

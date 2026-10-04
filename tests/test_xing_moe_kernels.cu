@@ -50,7 +50,8 @@ void ReferenceHyperConn(const std::vector<float> &hidden,
                         std::vector<float> &collapsed, std::vector<float> &post,
                         std::vector<float> &comb)
 {
-    const int n = kHcMult * kHidden;
+    const int hidden_dim = static_cast<int>(hidden.size()) / kHcMult;
+    const int n = kHcMult * hidden_dim;
     const int mix = (2 + kHcMult) * kHcMult;
 
     double sumsq = 0.0;
@@ -68,7 +69,7 @@ void ReferenceHyperConn(const std::vector<float> &hidden,
         t[k] = acc;
     }
 
-    collapsed.assign(kHidden, 0.0f);
+    collapsed.assign(static_cast<size_t>(hidden_dim), 0.0f);
     post.assign(kHcMult, 0.0f);
     comb.assign(static_cast<size_t>(kHcMult) * kHcMult, 0.0f);
 
@@ -111,10 +112,11 @@ void ReferenceHyperConn(const std::vector<float> &hidden,
         }
     }
     comb = c;
-    for (int j = 0; j < kHidden; ++j)
+    for (int j = 0; j < hidden_dim; ++j)
     {
         float acc = 0.0f;
-        for (int d = 0; d < kHcMult; ++d) acc += pre[d] * hidden[d * kHidden + j];
+        for (int d = 0; d < kHcMult; ++d)
+            acc += pre[d] * hidden[d * hidden_dim + j];
         collapsed[j] = acc;
     }
 }
@@ -482,5 +484,154 @@ TEST_CASE("Xing interleaved rope rotates every head in place", "[xing][kernels]"
     }
 
     cudaFree(d_q); cudaFree(d_krot); cudaFree(d_cos); cudaFree(d_sin);
+    cudaStreamDestroy(stream);
+}
+
+// The mHC block at the REAL 29B shape (hidden 3584, hc_mult 4, mix 24) - the
+// small brute-forceable shape above cannot see the launch geometry cost, which
+// is what made this family 11x slower than the tuned ones.
+namespace real_shape {
+
+constexpr int kRealHidden = 3584;   // Xing4.0-29B hidden_size
+constexpr int kRealHcMult = 4;      // hc_mult
+constexpr int kRealMix = (2 + kRealHcMult) * kRealHcMult;
+
+struct Inputs
+{
+    std::vector<float> streams;
+    std::vector<__nv_bfloat16> fn, base;
+    std::vector<float> scale = {0.7f, -0.4f, 1.3f};
+};
+
+Inputs MakeInputs(unsigned seed)
+{
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    Inputs in;
+    in.streams.resize(static_cast<size_t>(kRealHcMult) * kRealHidden);
+    for (auto &v : in.streams) v = dist(rng);
+    in.fn.resize(static_cast<size_t>(kRealMix) * kRealHcMult * kRealHidden);
+    for (auto &v : in.fn) v = __float2bfloat16(dist(rng) * 0.3f);
+    in.base.resize(kRealMix);
+    for (auto &v : in.base) v = __float2bfloat16(dist(rng) * 0.1f);
+    return in;
+}
+
+struct Outputs
+{
+    std::vector<float> collapsed, post, comb;
+};
+
+Outputs RunDevice(const Inputs &in, cudaStream_t stream)
+{
+    const int n = kRealHcMult * kRealHidden;
+    auto *d_streams = Upload(in.streams);
+    auto *d_fn = Upload(in.fn);
+    auto *d_base = Upload(in.base);
+    auto *d_scale = Upload(in.scale);
+    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr;
+    REQUIRE(cudaMalloc(&d_collapsed, kRealHidden * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_post, kRealHcMult * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_comb, kRealHcMult * kRealHcMult * sizeof(float)) == cudaSuccess);
+    REQUIRE(LaunchXingHyperConnection(
+                d_streams, d_fn, d_base, d_scale, kRealHcMult, kRealHidden, kEps, kSinkhorn,
+                kClampMin, kClampMax, kPostGain, d_collapsed, d_post, d_comb,
+                stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    Outputs out;
+    out.collapsed = Download(d_collapsed, kRealHidden);
+    out.post = Download(d_post, kRealHcMult);
+    out.comb = Download(d_comb, kRealHcMult * kRealHcMult);
+    cudaFree(d_collapsed);
+    cudaFree(d_post);
+    cudaFree(d_comb);
+    return out;
+}
+
+} // namespace real_shape
+
+// Parity at the production shape. The rewrite that follows changes the partial
+// -sum grouping inside the hc_fn projection, so this is the gate that keeps the
+// mHC math honest at hidden=3584 rather than only at hidden=64.
+TEST_CASE("Xing mHC matches the host reference at the 29B shape",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace real_shape;
+    const Inputs in = MakeInputs(4242);
+    std::vector<float> ref_collapsed, ref_post, ref_comb;
+    ReferenceHyperConn(in.streams, in.fn, in.base, in.scale, ref_collapsed,
+                       ref_post, ref_comb);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    const Outputs got = RunDevice(in, stream);
+    for (size_t i = 0; i < ref_collapsed.size(); ++i)
+        REQUIRE(got.collapsed[i] == Approx(ref_collapsed[i]).margin(2e-5));
+    for (size_t i = 0; i < ref_post.size(); ++i)
+        REQUIRE(got.post[i] == Approx(ref_post[i]).margin(2e-5));
+    for (size_t i = 0; i < ref_comb.size(); ++i)
+        REQUIRE(got.comb[i] == Approx(ref_comb[i]).margin(2e-5));
+    cudaStreamDestroy(stream);
+}
+
+// Latency budget at the production shape. nsys on the real 29B checkpoint put
+// 80% of ALL kernel time in this one launch: 24 sequential 256-thread tree
+// reductions (192 dependent barriers) inside a SINGLE block, i.e. one SM of 170.
+// 80 launches per token x ~229 us = ~41 ms of a 69 ms token.
+TEST_CASE("Xing mHC stays inside its latency budget at the 29B shape",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace real_shape;
+    const Inputs in = MakeInputs(99);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    // Stage the buffers ONCE: the budget is the LAUNCH, so the 688 KiB hc_fn
+    // upload and the readback must not be inside the timed region (doing that
+    // measures cudaMemcpy, not the kernel - the first version of this test
+    // reported 180 us for a 60 us kernel).
+    auto *d_streams = Upload(in.streams);
+    auto *d_fn = Upload(in.fn);
+    auto *d_base = Upload(in.base);
+    auto *d_scale = Upload(in.scale);
+    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr;
+    REQUIRE(cudaMalloc(&d_collapsed, kRealHidden * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_post, kRealHcMult * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_comb, kRealHcMult * kRealHcMult * sizeof(float)) ==
+            cudaSuccess);
+    const auto launch = [&] {
+        return LaunchXingHyperConnection(
+            d_streams, d_fn, d_base, d_scale, kRealHcMult, kRealHidden, kEps,
+            kSinkhorn, kClampMin, kClampMax, kPostGain, d_collapsed, d_post,
+            d_comb, stream);
+    };
+    for (int i = 0; i < 20; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(cudaGetLastError() == cudaSuccess);
+
+    cudaEvent_t a, b;
+    REQUIRE(cudaEventCreate(&a) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&b) == cudaSuccess);
+    const int iters = 200;
+    REQUIRE(cudaEventRecord(a, stream) == cudaSuccess);
+    for (int i = 0; i < iters; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaEventRecord(b, stream) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, a, b) == cudaSuccess);
+    const double us = ms * 1000.0 / iters;
+    INFO("mHC launch " << us << " us at hidden=" << kRealHidden);
+#if defined(NDEBUG)
+    // Release-only gate: a debug build's device code is not the shipped one.
+    REQUIRE(us < 90.0);
+#else
+    WARN("latency budget is a Release-only gate; measured " << us << " us");
+#endif
+    cudaEventDestroy(a);
+    cudaEventDestroy(b);
+    cudaFree(d_collapsed);
+    cudaFree(d_post);
+    cudaFree(d_comb);
     cudaStreamDestroy(stream);
 }

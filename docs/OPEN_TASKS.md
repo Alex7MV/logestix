@@ -164,25 +164,42 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode is ~11x off the tuned families (14.4 t/s vs 162 t/s)
-- **Status: open — correctness-first path, measured floor recorded.**
-  Xing4.0-29B-A4B reaches **14.4 t/s** (perf) / **9.1 t/s** (r3) at 2048 tokens
-  on the RTX 5090, while Qwen3.5-35B-A3B reaches 162 t/s on the same host and
-  policy. The gap is architectural, not a kernel regression: the family was
-  landed correctness-first and three known costs dominate the step.
+### D2. `xing` decode: 14.4 -> 28.6 t/s (mHC), the host round trip is next
+- **Status: mHC kernel fixed (2026-10-04), 14.40 -> 28.60 t/s perf / 9.10 ->
+  13.20 t/s r3 at 2048 tokens; TTFT 315 -> 109 ms.**
+- nsys on the real 29B checkpoint put **80% of all kernel time in
+  `xing_hyper_conn_kernel`** (229 us/launch standalone, 512 us in situ, 80
+  launches/token = ~41 ms of a 69 ms token) and another 10% in
+  `xing_router_kernel` (129 us x 38). Both were `<<<1, 256>>>` - one SM of 170.
+  The mHC block additionally ran 24 sequential 256-thread tree reductions, i.e.
+  192 dependent `__syncthreads` per launch.
+- Fix (commit `fix:` xing mHC): one warp per `hc_fn` row with shuffle
+  reductions, one barrier for the norm and one for the row results.
+  **229 -> 61 us** (3.75x), pinned by a Release-only latency budget
+  (`test_xing_moe_kernels`) plus a host-parity case at the production
+  hidden=3584. E2E reproduced twice (71583 / 71639 ms).
+- The change is tolerance class (the partial-sum grouping inside the `hc_fn`
+  projection differs), so the numeric gates were re-run on the real weights:
+  SelfCheck Paris x3, FSI 3/3, CODE 3/3, DET 3/3 all still pass.
+- Effective bandwidth went 31.6 -> 76 GB/s. The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; the remaining gap is items
+  1-3 below.
 - Per-token costs, in the order they were identified:
-  1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
+1. `xing_router_kernel` is still `<<<1, 256>>>` with a serial top-4 scan on
+  thread 0: 129 us x 38 = ~4.9 ms/token. Same fix shape (one block per expert
+  row, parallel top-k) should take it under 0.3 ms.
+2. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
      stream once per MoE layer** (38 syncs/token) because the neutral
      expert-batch GEMV takes its pointer arrays by value on the host. Fixable
      with a device-resident id->slot table (the gigachat slot-LRU pattern).
-  2. `XingMoeModel::Infer` round-trips the whole `[vocab]` logits row to the
-     host and back per generated token, and `cudaMalloc`/`cudaFree`s three
-     small buffers per step. The deepseek pipeline keeps the row on the device.
-  3. Prefill replays the prompt one token per step (no incremental/parallel
-     prefill), so TTFT grows linearly with prompt length.
+3. `XingMoeModel::Infer` round-trips the whole `[vocab]` logits row to the
+   host and back per generated token, and `cudaMalloc`/`cudaFree`s three
+   small buffers per step. The deepseek pipeline keeps the row on the device.
+4. Prefill replays the prompt one token per step (no incremental/parallel
+   prefill), so TTFT grows linearly with prompt length.
 - The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
-  and `r3`) as an explicit **floor**, not a tuned number, so the perf guard
-  treats a regression against it as a real signal.
+  and `r3`); it is still an explicit **floor**, not a tuned number, so the perf
+  guard treats a regression against it as a real signal.
 - Parity is unaffected: SelfCheck Paris and the FSI/CODE/DET gates pass at
   `kOff`, so this is pure throughput work.
 

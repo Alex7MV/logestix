@@ -239,10 +239,12 @@ procedure — `perf-tuning-a-model`.
   the markers at ids 11/12 are the **plain** `<tool_call>` spellings — the
   zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
   format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
-  SelfCheck + FSI + CODE + DET all pass. Decode is correctness-first and ~11x
-  off the tuned families (per-MoE-layer routed-id D2H sync, host logits round
-  trip, token-by-token prefill); `tests/perf/perf_baselines.json` records
-  14.4 t/s (perf) / 9.1 t/s (r3) at 2048 tokens as that floor.
+  SelfCheck + FSI + CODE + DET all pass. Decode is still correctness-first:
+  28.6 t/s (perf) / 13.2 t/s (r3) at 2048 tokens against a 694 t/s memory
+  roofline (`tests/perf/perf_baselines.json`); the mHC and router kernels are
+  single-block by design and the remaining costs are the per-MoE-layer routed-id
+  D2H sync, the per-token host logits round trip and token-by-token prefill
+  (`docs/OPEN_TASKS.md` D2).
 - `libs/lsxnetwork/` — shared STATIC library; namespace `lsxnetwork`; zero-alloc
   async network layer for TaskMosaic CE (FrameQueue SPSC, ZMQ context, I/O worker,
   OpenAI endpoint, affinity).
