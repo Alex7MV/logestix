@@ -265,8 +265,11 @@ procedure — `perf-tuning-a-model`.
   Qwen3.5/3.6 (ChatML XML), GLM-5.3-Flash (`<|system|>` + `<arg_key>`),
   DeepSeek-V4/V4.1 (DSML; `deepseek_moe_tool_format.{h,cpp}`), Gemma-4
   (`<|tool_call>call:…`; `gemma_tool_format.{h,cpp}`), GigaChat-3.5
-  (chatml-v5 GCML; `gigachat_tool_format.{h,cpp}`) and Nemotron-3.5
-  (Qwen-style XML), with a generic Hermes fallback elsewhere. The fallback
+  (chatml-v5 GCML; `gigachat_tool_format.{h,cpp}`), Nemotron-3.5
+  (Qwen-style XML) and Xing-4.0 (`<tool_call>` + `<param_key>`; the markers
+  are the control ids 11/12, so the parse splices them from the ids -
+  `xing_moe_tool_format.{h,cpp}`, real-weight verified), with a generic Hermes
+  fallback elsewhere. The fallback
   families emit a bare `{"name":…,"arguments":…}` object (Granite-4.2 is
   verified on real weights — `test_granite_dense_selfcheck`), so the generic
   parser tries `tools::ParseBareToolCallJson` after `tools::ParseToolCallsText`;

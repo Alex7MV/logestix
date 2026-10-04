@@ -233,14 +233,24 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   is 2.19 GB/token => **694 t/s at 85% of peak**; at 95 t/s the model reads
   208 GB/s of it - which is the point above: the roofline is not the binding
   constraint any more, the GEMV occupancy is.
-- Per-token costs, in the order they were identified:
+- Tool calling is verified on the REAL weights
+  (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine
+  other families run): the model emits its native markers as the control ids
+  11/12, `arrow_tokenizer_decode` drops special tokens, so `output_text` reads
+  as a bare `get_weather<param_key>city</param_key><param_value>Paris</...>` with
+  no marker in it - which is why `xing_moe_tool_format::Parse` walks the ids and
+  splices the marker bytes instead of decoding, and why the test asserts the ids
+  are present rather than trusting the decoded text. An earlier "emission not
+  observed" note was that same artifact, not a defect.
+- Remaining per-token costs, in the order they were identified:
 1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
      stream once per MoE layer** (38 syncs/token) because the neutral
      expert-batch GEMV takes its pointer arrays by value on the host. Fixable
      with a device-resident id->slot table (the gigachat slot-LRU pattern).
-2. `XingMoeModel::Infer` round-trips the whole `[vocab]` logits row to the
-   host and back per generated token, and `cudaMalloc`/`cudaFree`s three
-   small buffers per step. The deepseek pipeline keeps the row on the device.
+2. ~~`XingMoeModel::Infer` round-trips the whole `[vocab]` logits row~~ DONE
+   (9108ff4): the sampler now reads `session_->d_logits` in place and only the
+   8-byte argmax comes back, with the row captured once for `final_logits`. The
+   three per-step `cudaMalloc`/`cudaFree` are gone with it.
 3. Prefill replays the prompt one token per step (no incremental/parallel
    prefill), so TTFT grows linearly with prompt length.
 - The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`

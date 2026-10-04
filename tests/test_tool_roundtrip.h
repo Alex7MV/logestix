@@ -16,8 +16,13 @@
 #include <string>
 #include <vector>
 
+// `gen_tokens` is an optional out-param for families whose native codec is
+// id-driven: `output_text` drops special tokens, so a model that DOES emit its
+// tool-call markers looks marker-less in the log. Checking the ids is what tells
+// the native parse path apart from the generic fallback.
 inline std::vector<lsxcommon::ToolCall> RunToolRoundTrip(
-    lsxcommon::IModel &model, int max_gen_tokens = 256)
+    lsxcommon::IModel &model, int max_gen_tokens = 256,
+    std::vector<int32_t> *gen_tokens = nullptr)
 {
     using namespace lsxcommon;
 
@@ -48,6 +53,7 @@ inline std::vector<lsxcommon::ToolCall> RunToolRoundTrip(
     spdlog::info("[tool-roundtrip] output='{}' gen_tokens={}", r.output_text,
                  r.gen_tokens.size());
     REQUIRE(r.ok);
+    if (gen_tokens) *gen_tokens = r.gen_tokens;
 
     std::vector<ToolCall> calls;
     REQUIRE(model.ParseToolCalls(model.Tokenizer(), r.gen_tokens, calls));

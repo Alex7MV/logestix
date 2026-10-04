@@ -8,6 +8,8 @@
 #include <lsxcommon/path_registry.h>
 #include <lsxcommon/model_factory.h>
 
+#include "test_tool_roundtrip.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -99,5 +101,51 @@ TEST_CASE("xing selfcheck answers Paris", "[xing][inference]")
                             ref_logits.size() * sizeof(float)) == 0);
         REQUIRE(sc.first_gen_tok_id == sc0.first_gen_tok_id);
     }
+    model->Unload();
+}
+
+// The nine other native/fallback families pin tool calling on the REAL weights
+// with this exact case; Xing had render/parse coverage on synthetic text only,
+// which is why "does it actually emit a call" was still open. SKIPs (4) without
+// the vault entry.
+TEST_CASE("Xing4.0-29B-A4B end-to-end tool round-trip (real weights)",
+          "[xing][model][tool][real-model]")
+{
+    const std::string root = Root();
+    if (!std::filesystem::exists(root + "/logestix/model.index.json"))
+        SKIP("Xing4.0-29B-A4B converted model not present");
+
+    lsxcommon::EnsureModelRegistry();
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = root;
+    cfg.model_type = "xing4.0-29b-a4b";
+    // Parity mode: a real generation, and the same numeric class every other
+    // family's tool round-trip runs in.
+    cfg.fast_math_mode = lsxcommon::FastMathMode::kOff;
+    auto model = lsxcommon::LsxModelFactory::Create(cfg);
+    REQUIRE(model != nullptr);
+    if (!model->Load()) FAIL("Xing Load failed");
+
+    std::vector<int32_t> gen_tokens;
+    const std::vector<lsxcommon::ToolCall> calls =
+        RunToolRoundTrip(*model, 512, &gen_tokens);
+    REQUIRE(!calls.empty());
+    CHECK(calls[0].name == "get_weather");
+    CHECK(calls[0].arguments_json.find("Paris") != std::string::npos);
+
+    // The parse above has to be the NATIVE one, not the generic Hermes or
+    // bare-JSON fallback: Xing emits its tool-call markers as the control ids
+    // 11/12, and arrow_tokenizer_decode drops special tokens, so r.output_text
+    // reads as a bare `get_weather<param_key>city</param_key>...` with no marker
+    // in it at all. That is exactly why xing_moe_tool_format::Parse walks the ids
+    // and splices the marker bytes instead of decoding, and why "did it emit the
+    // markers" cannot be answered from the decoded text.
+    const auto has_id = [&gen_tokens](int32_t id) {
+        return std::find(gen_tokens.begin(), gen_tokens.end(), id) !=
+               gen_tokens.end();
+    };
+    CHECK(has_id(11));
+    CHECK(has_id(12));
+
     model->Unload();
 }
