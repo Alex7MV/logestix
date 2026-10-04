@@ -934,7 +934,8 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     {
         REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
                                     kScale, d.scores, d.out, capacity, kPos + 1,
-                                    splits, d.m, d.l, d.part, stream) ==
+                                    splits, d.m, d.l, d.part, nullptr,
+                                    stream) ==
                 cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         const auto got = Download(d.out, kHeads * kVh);
@@ -959,7 +960,8 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     const auto launch = [&] {
         return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
                                    kScale, d.scores, d.out, capacity, kPos + 1,
-                                   kTestAttnSplits, d.m, d.l, d.part, stream);
+                                   kTestAttnSplits, d.m, d.l, d.part, nullptr,
+                                   stream);
     };
     for (int i = 0; i < 3; ++i) REQUIRE(launch() == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);

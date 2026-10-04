@@ -67,6 +67,8 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 //   kc/vc  [n_pos, heads, qk] / [n_pos, heads, vh]   rows 0..pos are valid
 //   scores [capacity * heads]                 scratch, one n_pos row per head
 //   out    [heads, vh]
+//   out16  [heads, vh]  optional F16 copy of `out` (same rounding as the ToHalf
+//                       launch it replaces; may be null)
 // `n_pos` (= pos + 1) sizes the shared staging; it is passed separately so the
 // caller never has to round the context up to a block size.
 // `splits` > 1 runs the split-K form: grid (heads x splits), one block per
@@ -76,7 +78,8 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc
                                 int pos, int heads, int qk, int vh, float scale,
                                 float *scores, float *out, int capacity,
                                 int n_pos, int splits, float *d_m, float *d_l,
-                                float *d_part, cudaStream_t stream);
+                                float *d_part, __half *out16,
+                                cudaStream_t stream);
 
 //   scores      [num_experts]           scratch between the two router phases
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,

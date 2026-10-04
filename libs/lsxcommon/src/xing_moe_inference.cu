@@ -900,7 +900,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             s.d_q, kc, vc, pos, frozen::kHeads, frozen::kQkHeadDim,
             frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
             s.capacity, pos + 1, kAttnSplits, s.d_attn_m, s.d_attn_l,
-            s.d_attn_part, stream));
+            s.d_attn_part, s.d_half, stream));
         XingStageRms("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         if (l == 0)
         {
@@ -915,7 +915,9 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                           stream);
         }
         XingStageDump("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
-        XING_CK(ToHalf(s.d_attn, s.d_half, frozen::kOSize, stream));
+        // s.d_half now holds the attention output in FP16, written by the
+        // attention kernel itself (the ToHalf that used to sit here is gone; the
+        // values are the same 16 bits).
         // The mix needs o_proj's output in F32 next to the four streams; stage it
         // through the collapsed buffer, which the next mHC re-reads anyway.
         {

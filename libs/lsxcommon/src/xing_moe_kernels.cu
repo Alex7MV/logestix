@@ -474,12 +474,17 @@ __global__ void xing_router_topk_kernel(
 // measured as us/token = 14.3 ms + 16.5 ms per 1000 cached positions. Budget:
 // test_xing_moe_kernels "Xing attention stays inside its latency budget at a 2k
 // context".
+// `out16` receives __float2half of the same value: the decode step's next kernel
+// (o_proj) consumes FP16 and used to run a whole elementwise ToHalf launch over
+// the attention output to get it - 40 per token at an empty-launch cost of
+// 1.84 us. Bit-identical, because the rounding happens at the same value.
 __global__ void xing_attn_kernel(const float *__restrict__ q,
                                  const float *__restrict__ kc,
                                  const float *__restrict__ vc, int pos, int heads,
                                  int qk, int vh, float scale,
                                  float *__restrict__ scores,
-                                 float *__restrict__ out, int capacity)
+                                 float *__restrict__ out,
+                                 __half *__restrict__ out16, int capacity)
 {
     extern __shared__ float sm[];
     __shared__ float warp_max[8];
@@ -566,6 +571,7 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
         float total = acc;
         for (int g = 1; g < groups; ++g) total = __fadd_rn(total, partial[g - 1][d]);
         out[static_cast<size_t>(h) * vh + d] = total;
+        if (out16) out16[static_cast<size_t>(h) * vh + d] = __float2half(total);
     }
 }
 // Split-K phase 1: one block per (head, chunk of positions). Same per-chunk
@@ -663,7 +669,8 @@ __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
                                          const float *__restrict__ d_l,
                                          const float *__restrict__ d_part,
                                          int heads, int vh, int splits,
-                                         float *__restrict__ out)
+                                         float *__restrict__ out,
+                                         __half *__restrict__ out16)
 {
     __shared__ float w[kMaxAttnSplits];
     __shared__ float gmax;
@@ -692,7 +699,9 @@ __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
                 total,
                 __fmul_rn(part[static_cast<size_t>(s) * vh + tid], w[s]));
         }
-        out[static_cast<size_t>(h) * vh + tid] = __fdiv_rn(total, denom);
+        const float v = __fdiv_rn(total, denom);
+        out[static_cast<size_t>(h) * vh + tid] = v;
+        if (out16) out16[static_cast<size_t>(h) * vh + tid] = __float2half(v);
     }
 }
 }  // namespace
@@ -701,7 +710,8 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc,
                                 const float *vc, int pos, int heads, int qk,
                                 int vh, float scale, float *scores, float *out,
                                 int capacity, int n_pos, int splits, float *d_m,
-                                float *d_l, float *d_part, cudaStream_t stream)
+                                float *d_l, float *d_part, __half *out16,
+                                cudaStream_t stream)
 {
     if (!q || !kc || !vc || !scores || !out || heads <= 0 || qk <= 0 ||
         vh <= 0 || pos < 0 || n_pos <= pos || capacity < n_pos || splits <= 0)
@@ -716,15 +726,15 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc,
     if (used <= 1)
     {
         xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float), stream>>>(
-            q, kc, vc, pos, heads, qk, vh, scale, scores, out, capacity);
+            q, kc, vc, pos, heads, qk, vh, scale, scores, out, out16, capacity);
         return cudaGetLastError();
     }
     if (!d_m || !d_l || !d_part) return cudaErrorInvalidValue;
     xing_attn_split_kernel<<<dim3(heads, used), kThreads,
                              chunk * sizeof(float), stream>>>(
         q, kc, vc, pos, heads, qk, vh, scale, capacity, chunk, d_m, d_l, d_part);
-    xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
-        d_m, d_l, d_part, heads, vh, used, out);
+    xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(d_m, d_l, d_part, heads,
+                                                      vh, used, out, out16);
     return cudaGetLastError();
 }
 
