@@ -165,6 +165,17 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int K, int N, bool acc = false);
 
+// Same streaming GEMV writing F32 instead of __half, so a caller whose next
+// kernel consumes F32 does not pay an elementwise conversion launch per GEMV
+// (1.84 us of launch floor per call on an RTX 5090; 244 such conversions per
+// Xing decode token). The per-row math is identical; the result skips the F16
+// rounding of the store, so it is a TOLERANCE-CLASS variant - same relationship
+// to the F16 form as the TC fast-math routes have.
+cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N, bool acc = false);
+
 // Batched seq==1 streaming NVFP4 GEMV: `count` independent weights (routed
 // experts), one block-column per expert on gridDim.y. `x_stride == 0` applies
 // the same input row to every expert (up projection); `x_stride > 0` reads

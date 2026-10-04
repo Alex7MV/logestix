@@ -133,6 +133,22 @@ inline cudaError_t Gv(const XingNvfp4Weight &w, const __half *x, __half *y,
         static_cast<int>(w.rows));
 }
 
+// Same GEMV writing F32 straight into the caller's buffer. Every dense
+// projection here used to be Gv() into d_half_big followed by ToF32(), i.e. one
+// extra elementwise launch per projection - 244 per token at this model's
+// per-layer structure, and an empty 1-block launch costs 1.84 us on this machine
+// (measured), so a large slice of a step that is ~1000 dependent launches.
+// Tolerance class: the per-row math is identical and the F16 rounding of the
+// store disappears, which is strictly more accurate.
+inline cudaError_t GvF32(const XingNvfp4Weight &w, const __half *x, float *y,
+                        cudaStream_t stream)
+{
+    if (!w.valid()) return cudaErrorInvalidValue;
+    return lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+        stream, x, w.packed, w.scales, w.global_scale, y,
+        static_cast<int>(w.cols), static_cast<int>(w.rows));
+}
+
 // F32 -> FP16 (NVFP4 consumes FP16 activations).
 __global__ void f32_to_f16_kernel(const float *__restrict__ x,
                                   __half *__restrict__ y, int64_t n)
@@ -727,19 +743,16 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         // q_a down-projects the activation; its inner norm overwrites d_norm, so
         // the activation stays in d_act for kv_a below.
         XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
-        XING_CK(Gv(ly.q_a, s.d_half, s.d_half_big, stream));      // [q_lora]
-        XING_CK(ToF32(s.d_half_big, s.d_norm, frozen::kQLoraRank, stream));
+        XING_CK(GvF32(ly.q_a, s.d_half, s.d_norm, stream));       // [q_lora]
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
             s.d_norm, ly.q_a_ln, s.d_norm, frozen::kQLoraRank, frozen::kRmsEps);
         XING_CK(ToHalf(s.d_norm, s.d_half, frozen::kQLoraRank, stream));
-        XING_CK(Gv(ly.q_b, s.d_half, s.d_half_big, stream));      // [heads*qk]
-        XING_CK(ToF32(s.d_half_big, s.d_q, frozen::kQSize, stream));
+        XING_CK(GvF32(ly.q_b, s.d_half, s.d_q, stream));           // [heads*qk]
         XingStageRms("q_a", l, token_id, s.d_norm, frozen::kQLoraRank, stream);
         XingStageRms("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
 
         XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
-        XING_CK(Gv(ly.kv_a, s.d_half, s.d_half_big, stream));     // [kv_lora+rope]
-        XING_CK(ToF32(s.d_half_big, s.d_kv_latent, frozen::kKvAWidth, stream));
+        XING_CK(GvF32(ly.kv_a, s.d_half, s.d_kv_latent, stream));   // [kv_lora+rope]
         XingStageRms("kv_a", l, token_id, s.d_kv_latent, frozen::kKvAWidth,
                      stream);
         // kv_a_layernorm over the latent part only; the rope part passes through.
@@ -752,8 +765,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                             cudaMemcpyDeviceToDevice, stream);
         }
         XING_CK(ToHalf(s.d_kv_latent, s.d_half, frozen::kKvLoraRank, stream));
-        XING_CK(Gv(ly.kv_b, s.d_half, s.d_half_big, stream));      // [heads*(nope+v)]
-        XING_CK(ToF32(s.d_half_big, s.d_kv_b, frozen::kKvBWidth, stream));
+        XING_CK(GvF32(ly.kv_b, s.d_half, s.d_kv_b, stream));        // [heads*(nope+v)]
         XingStageRms("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
         XingStageDump("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
         XingStageDump("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
@@ -801,9 +813,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         // The mix needs o_proj's output in F32 next to the four streams; stage it
         // through the collapsed buffer, which the next mHC re-reads anyway.
         {
-            __half *o_half = s.d_half_big;
-            XING_CK(Gv(ly.o_proj, s.d_half, o_half, stream));
-            XING_CK(ToF32(o_half, s.d_kv_b, frozen::kOSize, stream));
+            XING_CK(GvF32(ly.o_proj, s.d_half, s.d_kv_b, stream));
             XingStageRms("attn_out", l, token_id, s.d_kv_b, frozen::kOSize,
                          stream);
         }
@@ -832,8 +842,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                                             false>
                 <<<(N + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half_up,
                                                       s.d_half_big, N, 0.0f);
-            XING_CK(Gv(ly.dense_down, s.d_half_big, s.d_half, stream));
-            XING_CK(ToF32(s.d_half, s.d_kv_b, H, stream));
+            XING_CK(GvF32(ly.dense_down, s.d_half_big, s.d_kv_b, stream));
         }
         else
         {
@@ -893,8 +902,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                                             false>
                 <<<(MI + 255) / 256, 256, 0, stream>>>(s.d_half_big, s.d_half_up,
                                                       s.d_half_big, MI, 0.0f);
-            XING_CK(Gv(ly.shared_down, s.d_half_big, s.d_half, stream));
-            XING_CK(ToF32(s.d_half, s.d_norm, H, stream));
+            XING_CK(GvF32(ly.shared_down, s.d_half_big, s.d_norm, stream));
             lsxcommon::kernels::AddOutKernel<float><<<(H + 255) / 256, 256, 0, stream>>>(
                 s.d_attn, s.d_norm, s.d_attn, H);
         }

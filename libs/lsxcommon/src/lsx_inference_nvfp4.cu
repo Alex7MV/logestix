@@ -267,6 +267,17 @@ __global__ void lsx_nvfp4_gemm_tile_kernel(
 // K parallelism: one warp owns a [1024/KP .. ]-element K-slice of one output
 // row; per-row partials meet in shared memory and are summed in slice order
 // by lane 0 (fixed partitioning + fixed order => run-to-run bit-stable).
+// One load for either output element type, so the accumulate paths above can be
+// written once.
+template <typename YT>
+__device__ __forceinline__ float YtLoad(YT v)
+{
+    if constexpr (std::is_same<YT, float>::value)
+        return v;
+    else
+        return __half2float(v);
+}
+
 // Warp reduction uses __shfl_down_sync only.
 //
 // Host contract: seq==1 fast-math dispatch only; requires K % 32 == 0
@@ -274,13 +285,19 @@ __global__ void lsx_nvfp4_gemm_tile_kernel(
 // straddle rows. Numeric class: FP32 accumulate, k-order free -- tolerance
 // vs the scalar path exactly like the TC fast-math routes (see
 // nvidia-cuda-docs MCP, NVFP4 §1 decode semantics; docs/NVIDIA_DOCS.md).
-template <int KP>
+// YT is the output element type: __half for every historical caller, float for
+// RunLsxNvfp4GemmSeq1GemmVF32. The float form exists because a caller whose next
+// kernel wants F32 otherwise pays a whole elementwise conversion launch per GEMV
+// - 1.84 us of launch floor on this machine, 244 of them per Xing decode token.
+// It also drops the F16 rounding of the GEMV result, so it is a tolerance-class
+// variant (more accurate, not bit-identical).
+template <typename YT, int KP>
 __global__ void lsx_nvfp4_gemv_kernel(
     const __half *__restrict__ x,
     const uint8_t *__restrict__ packed,
     const uint8_t *__restrict__ scales,
     float global_scale, float global_scale_up, int n_half,
-    __half *__restrict__ y,
+    YT *__restrict__ y,
     int K, int N, bool acc_in)
 {
     constexpr int WARPS = 8;
@@ -379,8 +396,7 @@ __global__ void lsx_nvfp4_gemv_kernel(
         const int r = blockIdx.x * ROWS + (warp / KP);
         if (r < N) {
             const float v = t * row_scale;
-            y[r] = acc_in ? __float2half(__half2float(y[r]) + v)
-                          : __float2half(v);
+            y[r] = acc_in ? YtLoad<YT>(y[r]) + v : v;
         }
     }
 }
@@ -481,13 +497,14 @@ __global__ void lsx_nvfp4_gemv_expert_batch_kernel(
 // for the sliced-kp kernel. Numeric class: FP32 accumulate, fixed merge
 // order (two half-K chains, then pairs) -- run-to-run deterministic.
 // Contract: K % 64 == 0 (the lane stratum walks 64-element windows).
+template <typename YT>
 __global__ void __launch_bounds__(256)
 lsx_nvfp4_gemv_warprow_kernel(
     const __half *__restrict__ x,
     const uint8_t *__restrict__ packed,
     const uint8_t *__restrict__ scales,
     float global_scale, float global_scale_up, int n_half,
-    __half *__restrict__ y,
+    YT *__restrict__ y,
     int K, int N, bool acc_in)
 {
     const int lane = threadIdx.x & 31;
@@ -592,8 +609,7 @@ lsx_nvfp4_gemv_warprow_kernel(
         acc += __shfl_down_sync(0xffffffffu, acc, off);
     if (lane == 0) {
         const float v = acc * row_scale;
-        y[row] = acc_in ? __float2half(__half2float(y[row]) + v)
-                        : __float2half(v);
+        y[row] = acc_in ? YtLoad<YT>(y[row]) + v : v;
     }
 }
 
@@ -617,10 +633,11 @@ inline int PickGemvKp(int K, int rows)
     return 1;
 }
 
+template <typename YT>
 cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
-    __half *y, int K, int N, bool acc_in)
+    YT *y, int K, int N, bool acc_in)
 {
     if (!x || !packed || !scales || !y || K <= 0 || N <= 0) return cudaErrorInvalidValue;
     if ((K & 31) != 0) return cudaErrorInvalidValue;
@@ -655,7 +672,7 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
         g_lsx_tc_fast_math.load(std::memory_order_relaxed)) {
         constexpr int WARPS = 8;   // rows per block (probe: 8 > 4 or 16)
         const int grid = (N + WARPS - 1) / WARPS;
-        lsx_nvfp4_gemv_warprow_kernel<<<grid, WARPS * 32, 0, stream>>>(
+        lsx_nvfp4_gemv_warprow_kernel<YT><<<grid, WARPS * 32, 0, stream>>>(
             x, packed, scales, global_scale, global_scale, N, y, K, N,
             acc_in);
         return cudaGetLastError();
@@ -675,7 +692,7 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GemmV(
         constexpr int KPc = decltype(kp_tag)::value;
         constexpr int ROWS = WARPS / KPc;
         const dim3 grid((N + ROWS - 1) / ROWS);
-        lsx_nvfp4_gemv_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
+        lsx_nvfp4_gemv_kernel<YT, KPc><<<grid, WARPS * 32, 0, stream>>>(
             x, packed, scales, global_scale, global_scale, N, y, K, N, acc_in);
         return cudaGetLastError();
     };
@@ -707,7 +724,7 @@ cudaError_t LaunchLsxNvfp4GemmSeq1GateUpPair(
         constexpr int ROWS = WARPS / KPc;
         const int n_total = 2 * n_half;
         const dim3 grid((n_total + ROWS - 1) / ROWS);
-        lsx_nvfp4_gemv_kernel<KPc><<<grid, WARPS * 32, 0, stream>>>(
+        lsx_nvfp4_gemv_kernel<__half, KPc><<<grid, WARPS * 32, 0, stream>>>(
             x, packed, scales, gs_gate, gs_up, n_half, y, K, n_total, acc_in);
         return cudaGetLastError();
     };
@@ -873,8 +890,17 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     const uint8_t *packed, const uint8_t *scales, float global_scale,
     __half *y, int K, int N, bool acc)
 {
-    return LaunchLsxNvfp4GemmSeq1GemmV(stream, x, packed, scales,
-                                        global_scale, y, K, N, acc);
+    return LaunchLsxNvfp4GemmSeq1GemmV<__half>(stream, x, packed, scales,
+                                               global_scale, y, K, N, acc);
+}
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N, bool acc)
+{
+    return LaunchLsxNvfp4GemmSeq1GemmV<float>(stream, x, packed, scales,
+                                               global_scale, y, K, N, acc);
 }
 
 cudaError_t RunLsxNvfp4GemmGateUpPair(
