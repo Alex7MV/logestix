@@ -13,6 +13,10 @@
 
 #include "test_kernel_budget.h"
 
+#include <lsxcommon/lsx_inference_nvfp4.h>
+
+#include <cstring>
+
 #include "lsxcommon/xing_moe_inference.h"
 #include "lsxcommon/xing_moe_kernels.h"
 
@@ -984,4 +988,156 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     cudaEventDestroy(a); cudaEventDestroy(b);
     Free(d);
     cudaStreamDestroy(stream);
+}
+
+namespace {
+
+std::vector<__half> DownloadHalves(__half *d, int n)
+{
+    std::vector<__half> out(static_cast<size_t>(n));
+    REQUIRE(cudaMemcpy(out.data(), d, sizeof(__half) * static_cast<size_t>(n),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    return out;
+}
+
+} // namespace
+
+// The device-table expert batch is the precondition for CUDA-graph capture of a
+// decode step: it resolves the routed ids on the device, so no D2H and no
+// cudaStreamSynchronize sits inside a layer. It is a different code path from the
+// by-value batch, so "different path" is exactly what must NOT mean "different
+// numbers": every row of both outputs is compared bit for bit.
+TEST_CASE("NVFP4 device-table expert batch is bit-identical to the by-value batch",
+          "[nvfp4][fast]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    // The streaming ids kernel only dispatches when BOTH toggles are on, and a
+    // test binary starts with them off - so without this the case would only ever
+    // cover the host-side fallback and the kernel itself would ship untested.
+    lsxcommon::lsx_nvfp4::LsxFastMathScope fast(true, true);
+    // A shape that takes the streaming kernel (K % 32 == 0, K >= 256) and a
+    // small one that must fall back, so both branches of the entry point are
+    // covered; the fallback resolves ids on the host by design.
+    for (const int K : {512, 96})
+    {
+        constexpr int kE = 8, kCount = 4, kN = 64, kLayers = 3, kLayer = 2;
+        std::mt19937 rng(9);
+        std::uniform_real_distribution<float> dist(-0.2f, 0.2f);
+        const size_t packed_bytes = static_cast<size_t>(kN) * (K / 2);
+        const size_t scale_bytes = static_cast<size_t>(kN) * (K / 16);
+        std::vector<std::vector<uint8_t>> packed(kE), scales(kE);
+        std::vector<float> gs(kE);
+        for (int e = 0; e < kE; ++e)
+        {
+            packed[e].resize(packed_bytes);
+            scales[e].resize(scale_bytes);
+            for (auto &v : packed[e]) v = static_cast<uint8_t>(rng() & 0xff);
+            for (auto &v : scales[e])
+                v = static_cast<uint8_t>(0x30 + (rng() % 4));
+            gs[e] = 0.5f + 0.1f * e;
+        }
+        std::vector<__half> x(static_cast<size_t>(K));
+        for (auto &v : x) v = __float2half(dist(rng));
+        const std::vector<int32_t> ids = {5, 1, 7, 2};
+
+        cudaStream_t stream = nullptr;
+        REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+        auto *d_x = Upload(x);
+        auto *d_ids = Upload(ids);
+        // kLayers layers of rows, and the dispatch is asked for layer kLayer: the
+        // first version of the kernel ignored table_offset and read layer 0,
+        // which in the real model is a DENSE layer whose rows are all zero - so it
+        // dereferenced a null packed pointer and faulted. With kLayer != 0 and a
+        // distinct row per (layer, expert) this case now fails if the offset is
+        // dropped.
+        std::vector<lsxcommon::lsx_nvfp4::LsxExpertPtrRow> rows(kLayers * kE);
+        std::vector<uint8_t *> d_packed(kLayers * kE), d_scales(kLayers * kE);
+        for (int l = 0; l < kLayers; ++l)
+        {
+            for (int e = 0; e < kE; ++e)
+            {
+                const size_t at = static_cast<size_t>(l) * kE + e;
+                REQUIRE(cudaMalloc(&d_packed[at], packed_bytes) == cudaSuccess);
+                REQUIRE(cudaMalloc(&d_scales[at], scale_bytes) == cudaSuccess);
+                // distinct bytes per (layer, expert) so a wrong layer is visible
+                std::vector<uint8_t> p = packed[e];
+                for (auto &v : p) v = static_cast<uint8_t>(v + 7 * l);
+                REQUIRE(cudaMemcpy(d_packed[at], p.data(), packed_bytes,
+                                    cudaMemcpyHostToDevice) == cudaSuccess);
+                REQUIRE(cudaMemcpy(d_scales[at], scales[e].data(), scale_bytes,
+                                    cudaMemcpyHostToDevice) == cudaSuccess);
+                rows[at] = {d_packed[at], d_scales[at],
+                            gs[e] * (1.0f + 0.25f * static_cast<float>(l))};
+            }
+        }
+        auto *d_rows = Upload(rows);
+        // by-value inputs
+        std::vector<const uint8_t *> vp(kCount), vs(kCount);
+        std::vector<float> vg(kCount);
+        for (int i = 0; i < kCount; ++i)
+        {
+            const size_t at = static_cast<size_t>(kLayer) * kE +
+                              static_cast<size_t>(ids[i]);
+            vp[i] = d_packed[at];
+            vs[i] = d_scales[at];
+            vg[i] = rows[at].gs;
+        }
+        __half *y_a = nullptr, *y_b = nullptr;
+        REQUIRE(cudaMalloc(&y_a, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMalloc(&y_b, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMemset(y_a, 0, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMemset(y_b, 0, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                    stream, d_x, vp.data(), vs.data(), vg.data(), kCount, 0, y_a,
+                    K, kN) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                    stream, d_x, d_ids, d_rows, kLayer * kE, kE, kCount, 0, y_b,
+                    K, kN) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        const auto a = DownloadHalves(y_a, kCount * kN);
+        const auto b = DownloadHalves(y_b, kCount * kN);
+        INFO("K=" << K);
+        REQUIRE(a.size() == b.size());
+        REQUIRE(!a.empty());
+        // Compare the raw 16 bits (memcmp), not the values: a same-value
+        // comparison would hide a NaN payload difference, which is exactly what a
+        // store-type change can introduce.
+        REQUIRE(a.size() * sizeof(__half) == b.size() * sizeof(__half));
+        REQUIRE(std::memcmp(a.data(), b.data(), a.size() * sizeof(__half)) == 0);
+        // Sanity that the id really selects the expert: the same GEMV against a
+        // DIFFERENT row must differ. Without this, a kernel that ignored d_ids
+        // and always read row 0 would still pass the comparison above whenever
+        // ids[0] happened to be 0 - and it is not.
+        {
+            const std::vector<int32_t> other = {0, 1, 7, 2};
+            auto *d_other = Upload(other);
+            __half *y_c = nullptr;
+            REQUIRE(cudaMalloc(&y_c, sizeof(__half) * kCount * kN) ==
+                    cudaSuccess);
+            REQUIRE(cudaMemset(y_c, 0, sizeof(__half) * kCount * kN) ==
+                    cudaSuccess);
+            REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                        stream, d_x, d_other, d_rows, kLayer * kE, kE, kCount, 0,
+                        y_c, K, kN) == cudaSuccess);
+            REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+            const auto c = DownloadHalves(y_c, kCount * kN);
+            const bool differs =
+                std::memcmp(b.data(), c.data(), b.size() * sizeof(__half)) != 0;
+            if (K >= 256) REQUIRE(differs);
+            cudaFree(y_c);
+            cudaFree(d_other);
+        }
+        for (size_t i = 0; i < d_packed.size(); ++i)
+        {
+            cudaFree(d_packed[i]);
+            cudaFree(d_scales[i]);
+        }
+        cudaFree(y_a);
+        cudaFree(y_b);
+        cudaFree(d_x);
+        cudaFree(d_ids);
+        cudaFree(d_rows);
+        cudaStreamDestroy(stream);
+    }
 }

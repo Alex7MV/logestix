@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 109.8 t/s (nine serial kernels + 364 launches)
+### D2. `xing` decode: 14.4 -> 113.6 t/s (nine serial kernels + device dispatch)
 - **Status: CLOSED for the serial-kernel class (2026-10-04).
-  14.40 -> 109.80 t/s perf / 9.10 -> 20.00 t/s r3 at 2048 tokens.** Every
+  14.40 -> 113.60 t/s perf / 9.10 -> 20.00 t/s r3 at 2048 tokens.** Every
   single-block, thread-0-serial and under-occupied kernel on the decode path is
   fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
   different (numerics) project - see the end. Every fix came from the same
@@ -187,7 +187,7 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - The attention ones are what the length curve pointed at:
   `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
   step was context-dependent, all of it in that kernel. After the two attention
-  passes the same sweep gives **7319 + 1689**, i.e. the context term shrunk 9.8x
+  passes the same sweep gives **7016 + 1680**, i.e. the context term shrunk 9.8x
   and is now 19% of the step; the fixed term is 81% and is the whole frontier
   (it was 46% of the step before this series).
 - The depth mixer needed TWO passes and the second one had to be re-derived after
@@ -219,10 +219,10 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Each kernel carries a Release-only latency budget and a host-parity case at the
   production shape - the original cases used hidden=64 / 16 experts, which is why
   all three defects survived a green suite.
-- **What the remaining 7.3 ms/token is NOT: bandwidth.** Per token the decode
+- **What the remaining 7.0 ms/token is NOT: bandwidth.** Per token the decode
   path streams the 4-of-64 routed experts, the shared expert, the attention
-  projections, the two dense layers and the LM head: ~2.68 GB, so at 109.8 t/s
-  that is 294 GB/s, 16% of the 1792 GB/s peak -
+  projections, the two dense layers and the LM head: ~2.68 GB, so at 113.6 t/s
+  that is 304 GB/s, 17% of the 1792 GB/s peak -
   and a layer's ~53 MB should take 31 us at peak, while a layer measures ~222 us
   (9.1 ms / 41). So decode is latency/occupancy-bound, not bandwidth-bound, and
   the next lever is the GEMV path itself: `RunLxGemmVec` splits output rows
@@ -231,9 +231,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Raising decode further means wider GEMV tiles (more rows per block, split-K
   over the K dimension) - correctness-first no longer, i.e. a real numerics
   project with its own gate, not another serial-kernel fix.
-- Effective bandwidth went 31.6 -> 294 GB/s (109.8 t/s, 9.1 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 109.8 t/s the model reads
-  294 GB/s of it - which is the point above: the roofline is not the binding
+- Effective bandwidth went 31.6 -> 304 GB/s (113.6 t/s, 8.8 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 113.6 t/s the model reads
+  304 GB/s of it - which is the point above: the roofline is not the binding
   constraint any more, the GEMV occupancy is.
 - **What the next project is, and it is plumbing, not arithmetic.** After the
   router fix the profile is dominated by kernels that are far too slow for their
@@ -257,16 +257,15 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   are present rather than trusting the decoded text. An earlier "emission not
   observed" note was that same artifact, not a defect.
 - Remaining per-token costs, in the order they were identified:
-1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ MEASURED FREE,
-   twice, and the second measurement is the one that counts: 64.3 vs 64.3 t/s
-   with the syncs skipped, and 21569 vs 21555 ms at 2048 tokens with them
-   skipped - 0.06%. A decode-loop sync only costs what it drains, and per layer
-   the GPU has ~200 us queued and the host has ~1 us of pointer-array fill to do
-   afterwards, so it is entirely hidden. The device-resident id->slot table (the
-   gigachat slot-LRU pattern) would buy nothing and is NOT worth doing; the
-   measurement is the deliverable. Note the skip is a timing experiment only -
-   without the sync the ids are not yet landed, so it is not a correctness
-   option.
+1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ DONE, and the
+   earlier "measured free" conclusion was HALF RIGHT. Skipping only the
+   `cudaStreamSynchronize` really is free (64.3 vs 64.3 t/s, then 21569 vs
+   21555 ms - 0.06%): a decode-loop sync costs only what it drains. What the
+   experiment did NOT skip was the host resolve around it - six `assign()`
+   calls plus nine pointer fields per selected expert, 38 times per token - and
+   moving the whole thing to the device (uploaded per-layer expert pointer
+   tables, ids read in the GEMV kernel) is worth **+3.4%**. Both halves had to
+   go: the sync was free, the resolve was not.
 2. ~~`XingMoeModel::Infer` round-trips the whole `[vocab]` logits row~~ DONE
    (9108ff4): the sampler now reads `session_->d_logits` in place and only the
    8-byte argmax comes back, with the row captured once for `final_logits`. The

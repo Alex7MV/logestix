@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/xing_moe_kernels.h"
 #include "lsxcommon/xing_moe_load.h"
 
@@ -127,6 +128,15 @@ struct XingSession {
     std::vector<int32_t> last_routed_ids;
     __half *d_half = nullptr;   // [2 * dense_intermediate] GEMV staging
     __half *d_half2 = nullptr;  // [max(hidden, dense_inter)] second F16 slot
+    // Device-resident routed-expert pointer tables, one per matrix
+    // (gate | down | up), each [layers * experts] of LsxExpertPtrRow. Built once
+    // from the loader's host tables so the decode step resolves the routed ids ON
+    // THE DEVICE - no D2H and no stream synchronize inside a layer, which is what
+    // makes a CUDA-graph capture of the step possible at all.
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_gate = nullptr;
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_down = nullptr;
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_up = nullptr;
+    bool expert_tables_uploaded = false;
     // Dedicated "up" output. Writing the up projection into d_half + I ALIASES
     // its own input whenever I < K (shared expert: 1024 < 3584), and whether a
     // given x[k] is read before the overlapping store lands depends on block
