@@ -24,11 +24,14 @@
 
 #include "lsxcommon/xing_moe_tool_format.h"
 
+#include "lsxcommon/log.h"
+
 #include "xing_moe_constants.h"
 
 #include "lsxcommon/tool_format.h"
 
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 #include <absl/strings/str_join.h>
 #include <absl/strings/strip.h>
 
@@ -42,12 +45,15 @@ namespace {
 namespace frozen = lsxcommon::xing::frozen;
 
 // Frozen control-marker ids (tokenizer_config.json).
-// Upstream marker bytes. The tool-call pair carries a ZERO-WIDTH SPACE
-// (U+200B) right after the opening '<' — written as an escape so the bytes are
-// reviewable and cannot be stripped by a source filter (they HAVE been, in this
-// repository's MiMo codec).
+// Upstream marker bytes. tokenizer_config.json advertises the tool-call pair
+// with a ZERO-WIDTH SPACE (U+200B) after the opening '<'; the SentencePiece
+// piece actually stored at those ids - and the form the upstream tokenizer
+// matches, since encoding either spelling yields id 11/12 - is the PLAIN one.
+// MarkersPresentIn looks the surface form up in the exported vocabulary, so it
+// must ask for the form that is IN the vocabulary. Rendering is unaffected:
+// Render() injects every marker as its id instead of encoding it as text.
 //
-// kIds[i].first is the FROZEN id from tokenizer_config.json; SentinelsPresent
+// Markers carry the FROZEN id from tokenizer_config.json; MarkersPresentIn
 // verifies name -> id against the live vocabulary, so a checkpoint that ever
 // renumbers is caught instead of silently mis-rendering.
 struct Marker {
@@ -60,8 +66,8 @@ constexpr Marker kUser          {"<_user>",        frozen::kUserId};
 constexpr Marker kBot           {"<_bot>",         frozen::kBotId};
 constexpr Marker kThink         {"<think>",   frozen::kThinkId};
 constexpr Marker kThinkEnd      {"</think>",  frozen::kThinkEndId};
-constexpr Marker kToolCall      {"<\xE2\x80\x8B" "tool_call>",   frozen::kToolCallId};
-constexpr Marker kToolCallEnd   {"</\xE2\x80\x8B" "tool_call>",  frozen::kToolCallEndId};
+constexpr Marker kToolCall      {"<tool_call>",   frozen::kToolCallId};
+constexpr Marker kToolCallEnd   {"</tool_call>",  frozen::kToolCallEndId};
 constexpr Marker kToolResponse  {"<tool_response>",  frozen::kToolResponseId};
 constexpr Marker kToolResponseEnd {"</tool_response>", frozen::kToolResponseEndId};
 constexpr Marker kEnd          {"<_end>",          frozen::kEosId};
@@ -107,7 +113,32 @@ bool MarkersPresentIn(const ArrowTokenizerDb &tok)
     {
         const int32_t id =
             arrow_tokenizer_lookup(tok, mk.text, std::strlen(mk.text));
-        if (id != mk.id) return false;
+        if (id != mk.id)
+        {
+            std::string hex;
+            absl::StrAppendFormat(&hex, "vocab=%d bytes=", tok.vocab_size);
+            for (size_t i = 0; i < std::strlen(mk.text); ++i)
+                absl::StrAppendFormat(&hex, "%02x ",
+                                      static_cast<unsigned>(
+                                          static_cast<unsigned char>(mk.text[i])));
+            for (int32_t probe : {8, 9, 10, 11, 12, 13})
+            {
+                if (probe >= tok.vocab_size) break;
+                const int64_t off = tok.token_offsets[probe];
+                const int64_t tlen = tok.token_offsets[probe + 1] - off;
+                absl::StrAppendFormat(&hex, "| id%d(%ld)=", probe,
+                                      static_cast<long>(tlen));
+                for (int64_t i = 0; i < tlen; ++i)
+                    absl::StrAppendFormat(
+                        &hex, "%02x",
+                        static_cast<unsigned>(
+                            static_cast<unsigned char>(tok.token_bytes[off + i])));
+            }
+            log::error(absl::StrFormat(
+                "xing tool_format: marker '%s' lookup=%d expected=%d %s",
+                mk.text, id, mk.id, hex));
+            return false;
+        }
     }
     return true;
 }
@@ -163,33 +194,87 @@ std::string StripThink(const std::string &c)
         absl::StripAsciiWhitespace(c.substr(close + 8)));
 }
 
+// Re-serializes a JSON document with json.dumps defaults (", " between items,
+// ": " after keys) so the rendered tool block matches the template's
+// `tool | tojson` byte for byte. Structural characters inside strings are left
+// alone.
+std::string JsonReserialize(const std::string &in)
+{
+    std::string out;
+    out.reserve(in.size() + 16);
+    bool in_str = false;
+    for (size_t i = 0; i < in.size(); ++i)
+    {
+        const char c = in[i];
+        if (in_str)
+        {
+            out.push_back(c);
+            if (c == '\\' && i + 1 < in.size())
+            {
+                out.push_back(in[++i]);
+            }
+            else if (c == '"')
+            {
+                in_str = false;
+            }
+            continue;
+        }
+        switch (c)
+        {
+        case '"':
+            in_str = true;
+            out.push_back(c);
+            break;
+        case ',':
+            out.append(", ");
+            // swallow following whitespace
+            while (i + 1 < in.size() && (in[i + 1] == ' ' || in[i + 1] == '\t' ||
+                                         in[i + 1] == '\n'))
+                ++i;
+            break;
+        case ':':
+            out.append(": ");
+            while (i + 1 < in.size() && (in[i + 1] == ' ' || in[i + 1] == '\t'))
+                ++i;
+            break;
+        default:
+            out.push_back(c);
+            break;
+        }
+    }
+    return out;
+}
+
 std::string ToolsBlock(const std::vector<ToolSpec> &tools)
 {
+    // The template dumps each tool verbatim ({{ tool | tojson }}), i.e. the
+    // OpenAI {"type":"function","function":{...}} envelope - not the bare
+    // function object - with json.dumps spacing (", " / ": ").
     std::vector<std::string> jsons;
     jsons.reserve(tools.size());
     for (const auto &t : tools)
     {
-        std::vector<std::string> parts;
-        parts.push_back(absl::StrCat("\"name\": \"", t.name, "\""));
-        parts.push_back(absl::StrCat("\"description\": \"", t.description, "\""));
-        parts.push_back(
-            absl::StrCat("\"parameters\": ", t.parameters_json.empty()
-                                                  ? std::string("{}")
-                                                  : t.parameters_json));
-        jsons.push_back(absl::StrCat("{", absl::StrJoin(parts, ", "), "}"));
+        const std::string params =
+            t.parameters_json.empty() ? "{}" : JsonReserialize(t.parameters_json);
+        jsons.push_back(absl::StrCat(
+            "{\"type\": \"function\", \"function\": {\"name\": \"", t.name,
+            "\", \"description\": \"", t.description, "\", \"parameters\": ",
+            params, "}}"));
     }
     return absl::StrCat(
         "\n# Tools\n\nYou may call one or more functions to assist with the "
         "user query.\n\nYou are provided with function signatures within "
         "<tools></tools> XML tags:\n<tools>\n",
-        absl::StrJoin(jsons, "\n"), "\n</tools>\n\nFor each function call, "
-        "output the function name and arguments within the following XML "
-        "format:\n");
+        absl::StrJoin(jsons, "\n"),
+        "\n</tools>\n\nFor each function call, output the function name and "
+        "arguments within the following XML format:\n",
+        // The template's worked example. Plain marker spelling: it must match
+        // what Render/Parse actually emit (see the marker comment above).
+        "<tool_call>{function-name}<param_key>{param-key-1}</param_key>"
+        "<param_value>{param-value-1}</param_value><param_key>{param-key-2}"
+        "</param_key><param_value>{param-value-2}</param_value>..."
+        "</tool_call>");
 }
-
-}  // namespace
-
-namespace {
 
 bool RenderWith(const ChatConversation &conv, std::string &out,
                 bool add_generation_prompt, const Markers &m)
@@ -205,17 +290,27 @@ bool RenderWith(const ChatConversation &conv, std::string &out,
             body.push_back(&msg);
     }
     out += m.system + system;
-    if (!conv.tools.empty()) out += ToolsBlock(conv.tools) + "\n";
+    if (!conv.tools.empty()) out += ToolsBlock(conv.tools);
     for (const ChatMessage *msg : body)
     {
         if (msg->role == "user")
         {
-            out += m.user + MessageText(*msg) + "\n";
+            // No newline: the template's `{%- elif %}` on the next line
+            // strips it, so `<_user>U` is followed directly by `<_bot>`.
+            out += m.user + MessageText(*msg);
         }
         else if (msg->role == "assistant" || msg->role == "bot")
         {
-            out += m.bot + "\n" + m.think + "\n" + ReasoningOf(*msg) + "\n" +
-                   m.think_end + StripThink(MessageText(*msg)) + m.end + "\n";
+            // Template order: <_bot><think>\n{reasoning}\n</think>{content}
+            // {tool_calls}<_end>\n - the tool calls live INSIDE the assistant
+            // turn, before <_end>.
+            std::string body =
+                m.think + "\n" +
+                std::string(absl::StripAsciiWhitespace(ReasoningOf(*msg))) +
+                "\n" + m.think_end;
+            const std::string content = StripThink(MessageText(*msg));
+            if (!absl::StripAsciiWhitespace(content).empty()) body += content;
+            out += m.bot + body;
             for (const auto &tc : msg->tool_calls)
             {
                 out += m.tool_call + tc.name;
@@ -270,6 +365,7 @@ bool RenderWith(const ChatConversation &conv, std::string &out,
                 }
                 out += m.tool_call_end;
             }
+            out += m.end + "\n";
         }
         else if (msg->role == "tool")
         {
@@ -364,8 +460,12 @@ std::vector<ToolCall> ParseToolCallText(std::string_view text)
 {
     // Written against the LITERAL upstream spelling, which contains U+200B
     // after each opening '<' of the tool-call pair. Escapes keep it reviewable.
-    static const std::string kOpen = "<\xE2\x80\x8B" "tool_call>";
-    static const std::string kClose = "</\xE2\x80\x8B" "tool_call>";
+    // Plain spellings: the exported vocabulary stores those bytes at ids
+    // 11/12, and the id-driven path (what the runtime sees) is unaffected.
+    // The zero-width-space variants tokenizer_config.json advertises resolve to
+    // the same ids upstream but are not pieces here.
+    static const std::string kOpen = "<tool_call>";
+    static const std::string kClose = "</tool_call>";
     static const std::string kKey = "<param_key>";
     static const std::string kKeyEnd = "</param_key>";
     static const std::string kVal = "<param_value>";

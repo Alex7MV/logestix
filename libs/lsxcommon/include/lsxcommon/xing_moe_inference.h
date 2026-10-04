@@ -67,8 +67,17 @@ XingDims XingDimsFromWeights(const XingPinnedWeights &pw);
 struct XingSession {
     int capacity = 0;
     int length = 0;          // tokens already in the cache
-    float *d_k = nullptr;    // [capacity, heads, nope+rope]
-    float *d_v = nullptr;    // [capacity, heads, v]
+    int kv_layers = 0;       // layers with their own cache slice
+    int64_t kv_layer_k = 0;  // floats per layer in d_k
+    int64_t kv_layer_v = 0;  // floats per layer in d_v
+    // PER-LAYER KV cache: every decoder layer keeps its own K/V (upstream's
+    // past_key_values.update(..., layer_idx)), so layer l starts at
+    // l * kv_layer_k / l * kv_layer_v. One shared buffer would make each layer
+    // overwrite the previous layer's token rows, and the damage is invisible in
+    // a single-token prefill (nothing is read back) yet destroys every
+    // multi-token prompt.
+    float *d_k = nullptr;    // [layers, capacity, heads, nope+rope]
+    float *d_v = nullptr;    // [layers, capacity, heads, v]
     // Four-stream hidden state [hc_mult * hidden] and the mHC outputs.
     float *d_hidden = nullptr;    // [4 * hidden]
     float *d_collapsed = nullptr;  // [hidden]
@@ -150,8 +159,27 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                            const float *d_rs, int pos, cudaStream_t stream,
                            int layers_override = -1);
 
+// Interleaved YaRN rotation of q's rope subspace ([heads, qk_head_dim] with
+// `pairs` rope dims at offset `qk_head_dim - 2*pairs`) and of the shared k_rot
+// ([2*pairs]). Both launchers derive every element offset from `blockIdx`
+// internally: the per-head base must never be a caller-supplied scalar, because
+// a single shared offset silently rotates one head and leaves the rest
+// unrotated — a failure that a one-token prefill cannot observe (the softmax is
+// trivial there).
+cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
+                            const float *cos_t, const float *sin_t,
+                            cudaStream_t stream);
+cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_t,
+                            const float *sin_t, cudaStream_t stream);
+
 // Source line of the stage that failed the last XingDecodeStep (0 = none).
 int XingLastFailureLine();
+
+// Diagnostic (tests): copies one layer's K/V row for `pos` into host memory -
+// `host_k` receives kv_layer_k floats, `host_v` kv_layer_v. Lets a test see
+// WHICH layer's values a cache slot holds without a device-side formatter.
+cudaError_t XingCopyLayerKV(const XingSession &s, int layer, int pos,
+                            float *host_k, float *host_v, cudaStream_t stream);
 
 // Counts non-finite elements of a device F32 buffer (diagnostics/tests: a
 // decode pipeline that silently produces NaN logits is otherwise invisible).

@@ -129,6 +129,13 @@ bool XingMoeModel::Load()
 
 gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
 {
+    // Model independence (E1): the NVFP4/tensor-core toggles are process-global,
+    // so this family asserts its OWN policy for the duration of the call and
+    // restores the previous process state on exit. See LsxFastMathScope in
+    // lsx_inference_nvfp4.h; the orchestrator dispatches sequentially, so the
+    // scope cannot straddle two models' inferences.
+    const lsx_nvfp4::LsxFastMathScope fm_scope(EffectiveFastMathMode(cfg_));
+
     gpu::InferenceResult r;
     if (!ValidateInferRequest(req, r)) return r;
     if (!loaded_)
@@ -254,23 +261,55 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 cudaFree(d_mv);
                 return cudaErrorMemoryAllocation;
             }
-            cudaMemcpy(d_logits_dev, host_logits_.data(),
-                       static_cast<size_t>(dims_.vocab) * sizeof(float),
-                       cudaMemcpyHostToDevice);
+            // Stream-ordered: a blocking cudaMemcpy is issued on the legacy
+            // default stream, which does NOT synchronize with the context
+            // stream (cudaStreamNonBlocking), so the argmax kernel could read
+            // the logits buffer BEFORE this copy landed - a silent race that
+            // sampled from the PREVIOUS step's logits.
+            cudaMemcpyAsync(d_logits_dev, host_logits_.data(),
+                            static_cast<size_t>(dims_.vocab) * sizeof(float),
+                            cudaMemcpyHostToDevice, stream());
+            if (cudaStreamSynchronize(stream()) != cudaSuccess)
+                return cudaErrorUnknown;
             const cudaError_t sce = sampler.Sample(
                 stream(), d_logits_dev, dims_.vocab, sample::LogitType::kF32,
                 d_tok, d_mv);
             int32_t next = 0;
             if (sce == cudaSuccess)
             {
-                cudaMemcpy(&next, d_tok, sizeof(int32_t), cudaMemcpyDeviceToHost);
-                cudaMemcpy(&maxv, d_mv, sizeof(float), cudaMemcpyDeviceToHost);
+                // Stream-ordered readback + sync of JUST this stream. A blocking
+                // cudaMemcpy runs on the legacy default stream, which does NOT
+                // synchronize with the context stream (created with
+                // cudaStreamNonBlocking), so it could read the token slot
+                // before the argmax kernel had written it - a silent race that
+                // made two identical requests sample different sequences.
+                cudaMemcpyAsync(&next, d_tok, sizeof(int32_t),
+                                cudaMemcpyDeviceToHost, stream());
+                cudaMemcpyAsync(&maxv, d_mv, sizeof(float),
+                                cudaMemcpyDeviceToHost, stream());
+                if (cudaStreamSynchronize(stream()) != cudaSuccess)
+                    return cudaErrorUnknown;
             }
             cudaFree(d_tok);
             cudaFree(d_mv);
             cudaFree(d_logits_dev);
             if (sce != cudaSuccess) return sce;
             tokens.push_back(next);
+            // LSX_TEST_XING_LAYER_DEBUG: FNV-1a over the logits bits, so a
+            // device run can be diffed against another run token by token
+            // (the layer-level hash in xing_moe_inference.cu localizes it).
+            if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+            {
+                unsigned h = 2166136261u;
+                for (const float v : host_logits_)
+                {
+                    unsigned b;
+                    std::memcpy(&b, &v, sizeof(b));
+                    h = (h ^ b) * 16777619u;
+                }
+                std::fprintf(stderr, "[xing-gen] pos=%d tok=%d hash=%08x\n", pos,
+                             next, h);
+            }
             gs.Emit(next, pos, maxv);
             if (tokens.size() == 1)
                 ttft_ms = static_cast<double>(

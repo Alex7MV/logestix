@@ -13,6 +13,8 @@
 #include <arrow/io/file.h>
 
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -72,16 +74,22 @@ TEST_CASE("Xing control markers sit at their frozen ids", "[xing][fast]")
     REQUIRE(SentinelsPresent(db));
     // The ZWSP is part of the marker: this is the assertion a hand-written
     // "<tool_call>" would fail.
-    // "<\xE2\x80\x8B" "tool_call>" is 14 bytes: '<', U+200B (3), "tool_call>".
+    // The exported vocabulary stores the PLAIN tool-call spellings at ids
+    // 11/12 (the zero-width-space variants advertised by tokenizer_config.json
+    // are not pieces); the upstream tokenizer resolves either spelling to the
+    // same id, so the codec must look up the form that is in the vocabulary.
     REQUIRE(lsxcommon::arrow_tokenizer_lookup(
-                db, "<\xE2\x80\x8B" "tool_call>", 14) == 11);
+                db, "<tool_call>", 11) == 11);
     REQUIRE(lsxcommon::arrow_tokenizer_lookup(
-                db, "</\xE2\x80\x8B" "tool_call>", 15) == 12);
+                db, "</tool_call>", 12) == 12);
     REQUIRE(lsxcommon::arrow_tokenizer_lookup(db, "<_bot>", 6) == 5);
     REQUIRE(lsxcommon::arrow_tokenizer_lookup(db, "<_user>", 7) == 4);
     REQUIRE(lsxcommon::arrow_tokenizer_lookup(db, "<think>", 7) == 9);
-    // A marker without the ZWSP is NOT in the vocabulary.
-    REQUIRE(lsxcommon::arrow_tokenizer_lookup(db, "<tool_call>", 11) < 0);
+    // The zero-width-space spelling advertised by tokenizer_config.json is NOT
+    // a vocabulary entry - which is exactly why the codec looks up the plain
+    // form (an escaped literal, so the bytes survive source filters).
+    REQUIRE(lsxcommon::arrow_tokenizer_lookup(db, "<\xE2\x80\x8B" "tool_call>", 14) <
+            0);
 }
 
 TEST_CASE("Xing render matches the checkpoint transcript shape", "[xing][fast]")
@@ -92,7 +100,8 @@ TEST_CASE("Xing render matches the checkpoint transcript shape", "[xing][fast]")
     std::string text;
     REQUIRE(RenderText(conv, text, true));
     REQUIRE(text.find("<_system>You are helpful.") == 0);
-    REQUIRE(text.find("<_user>Weather in Paris?\n") != std::string::npos);
+    // No newline after the user turn: the template's `{%- elif %}` strips it.
+    REQUIRE(text.find("<_user>Weather in Paris?<_bot>") != std::string::npos);
     // The generation prompt opens the assistant turn and the think block.
     const std::string kTail = "<_bot><think>\n";
     REQUIRE(text.size() >= kTail.size());
@@ -132,9 +141,9 @@ TEST_CASE("Xing tool-call round trip through decode", "[xing][fast]")
     const ArrowTokenizerDb db = BuildDb();
     // What the model is expected to emit, marker bytes included.
     const std::string generated =
-        std::string("<think>\nNeed the tool.</think>") + "<\xE2\x80\x8B" +
-        "tool_call>get_weather<param_key>city</param_key>"
-        "<param_value>Paris</param_value></\xE2\x80\x8B" "tool_call>";
+        std::string("<think>\nNeed the tool.</think>") +
+        "<tool_call>get_weather<param_key>city</param_key>"
+        "<param_value>Paris</param_value></tool_call>";
 
     const auto calls = ParseToolCallText(generated);
     REQUIRE(calls.size() == 1);
@@ -171,11 +180,11 @@ TEST_CASE("Xing assistant turn re-renders its own tool call", "[xing][fast]")
     conv.messages.push_back(asst);
     std::string text;
     REQUIRE(RenderText(conv, text, false));
-    REQUIRE(text.find("<\xE2\x80\x8B" "tool_call>get_weather") !=
+    REQUIRE(text.find("<tool_call>get_weather") !=
             std::string::npos);
     REQUIRE(text.find("<param_key>city</param_key><param_value>Paris</param_value>") !=
             std::string::npos);
-    REQUIRE(text.find("</\xE2\x80\x8B" "tool_call>") != std::string::npos);
+    REQUIRE(text.find("</tool_call>") != std::string::npos);
     // Round trip: the rendered turn parses back to the same call.
     const auto calls = ParseToolCallText(text);
     REQUIRE(calls.size() == 1);
@@ -199,4 +208,53 @@ TEST_CASE("Xing parse falls back to Hermes then bare JSON", "[xing][fast]")
     ids.resize(static_cast<size_t>(n));
     REQUIRE(Parse(db, ids, calls));
     REQUIRE(calls.empty());
+}
+// The rendered transcript must match what upstream's chat_template.jinja
+// produces for the same conversation, byte for byte. The golden was captured
+// with tokenizer.apply_chat_template() (transformers 5.15, trust_remote_code)
+// over the real checkpoint; the only sanctioned deviation is the tool-call
+// marker spelling: the jinja emits the zero-width-space form, which this
+// vocabulary does NOT resolve to ids 11/12 (encoding it yields six ordinary
+// pieces), so the codec renders the plain form those ids actually carry.
+TEST_CASE("Xing render matches the upstream chat template", "[xing][fast]")
+{
+    const ArrowTokenizerDb db = BuildDb();
+    ChatConversation conv;
+    conv.messages.push_back({"system", "S"});
+    conv.messages.push_back({"user", "U"});
+    {
+        ChatMessage a;
+        a.role = "assistant";
+        ToolCall tc;
+        tc.name = "get_weather";
+        tc.arguments_json = R"({"city":"Paris"})";
+        a.tool_calls.push_back(tc);
+        conv.messages.push_back(a);
+    }
+    conv.messages.push_back({"tool", "sunny"});
+    conv.tools.push_back(WeatherTool());
+
+    std::string ours;
+    REQUIRE(RenderText(conv, ours, /*add_generation_prompt=*/true));
+
+    std::ifstream golden(TOKENIZER_TEST_DATA_DIR "/xing_upstream_render.txt");
+    REQUIRE(golden.good());
+    std::stringstream buf;
+    buf << golden.rdbuf();
+    std::string upstream = buf.str();
+
+    const std::string zwsp = "\xE2\x80\x8B";
+    for (std::string *s : {&ours, &upstream})
+    {
+        std::string out;
+        for (size_t i = 0; i < s->size();)
+        {
+            if (s->compare(i, zwsp.size(), zwsp) == 0) i += zwsp.size();
+            else out.push_back((*s)[i++]);
+        }
+        *s = std::move(out);
+    }
+    INFO("ours " << ours.size() << " bytes, upstream " << upstream.size()
+                 << " bytes");
+    REQUIRE(ours == upstream);
 }

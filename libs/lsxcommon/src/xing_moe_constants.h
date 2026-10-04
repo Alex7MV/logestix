@@ -68,12 +68,13 @@ inline constexpr double kYarnBetaSlow   = 1.0;
 inline constexpr int    kRopeDim        = kQkRopeHeadDim;   // 64
 inline constexpr bool   kRopeInterleave = true;
 
-// YaRN attention factor. HF's `_compute_yarn_parameters` returns
-// get_mscale(factor) = 0.1*log(factor)+1 and multiplies cos/sin by it;
-// Xing4_0Attention *additionally* folds mscale*mscale into the logit scale
-// (the DeepSeek-V3 double-application quirk). Both must be reproduced: the
-// rope subspace therefore sees mscale^4 relative to a bare rotation.
-inline constexpr double kYarnMscale     = 1.4158883083359672;
+// YaRN cos/sin scaling. transformers 5.15's `_compute_yarn_parameters` returns
+// attention_factor = 1.0 for this checkpoint (rope_scaling.mscale_all_dim=1.0
+// does NOT reach the returned factor), and Xing4_0RotaryEmbedding multiplies
+// cos/sin by it - verified against modeling_xing4_0.py, whose tables satisfy
+// cos^2 + sin^2 == 1 exactly. The mscale = 0.1*ln(factor)+1 = 1.4158883 shows up
+// ONLY in the softmax scale, where the attention module folds mscale*mscale in.
+inline constexpr double kYarnMscale     = 1.0;
 // mscale^2 / sqrt(192).
 inline constexpr float kAttnScale = 0.14467962580268925f;
 

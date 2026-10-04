@@ -1,0 +1,15 @@
+<_system>S
+# Tools
+
+You may call one or more functions to assist with the user query.
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "get_weather", "description": "Get current weather for a city", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+</tools>
+
+For each function call, output the function name and arguments within the following XML format:
+<tool_call>{function-name}<param_key>{param-key-1}</param_key><param_value>{param-value-1}</param_value><param_key>{param-key-2}</param_key><param_value>{param-value-2}</param_value>...</tool_call><_user>U<_bot><think>
+
+</think><tool_call>get_weather<param_key>city</param_key><param_value>Paris</param_value></tool_call><_end>
+<_observation><tool_response>sunny</tool_response><_bot><think>

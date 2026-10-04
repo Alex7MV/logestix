@@ -11,6 +11,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "lsxcommon/xing_moe_inference.h"
 #include "lsxcommon/xing_moe_kernels.h"
 
 #include <cuda_runtime.h>
@@ -402,5 +403,84 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     REQUIRE(sum == Approx(2.0f).margin(1e-5));
 
     cudaFree(d_w); cudaFree(d_b); cudaFree(d_x); cudaFree(d_ow); cudaFree(d_oe);
+    cudaStreamDestroy(stream);
+}
+// Interleaved YaRN rotation, per head. Every head gets its OWN rope angle
+// content (cos/sin differ per head via the phase), so a launcher that applies
+// one shared element offset to all heads - the shape of bug this test was
+// written for - shows up as "only one head moved".
+TEST_CASE("Xing interleaved rope rotates every head in place", "[xing][kernels]")
+{
+    if (!HasDevice()) return;
+    constexpr int kHeadsT = 6;
+    constexpr int kNopeT = 8;
+    constexpr int kPairs = 5;                 // 10 rope dims per head
+    constexpr int kQkT = kNopeT + 2 * kPairs; // 18
+    cudaStream_t stream;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+
+    std::vector<float> q(static_cast<size_t>(kHeadsT) * kQkT, 0.0f);
+    for (int h = 0; h < kHeadsT; ++h)
+        for (int j = 0; j < kPairs; ++j)
+        {
+            q[h * kQkT + kNopeT + 2 * j] = static_cast<float>(h + 1) * 0.5f + 0.01f * j;
+            q[h * kQkT + kNopeT + 2 * j + 1] = 0.25f * static_cast<float>(j + 1);
+        }
+    std::vector<float> cos_t(kPairs), sin_t(kPairs);
+    for (int j = 0; j < kPairs; ++j)
+    {
+        const float a = 0.3f * static_cast<float>(j + 1);
+        cos_t[j] = std::cos(a);
+        sin_t[j] = std::sin(a);
+    }
+    std::vector<float> krot(2 * kPairs);
+    for (int j = 0; j < 2 * kPairs; ++j) krot[j] = 0.5f * static_cast<float>(j + 1);
+
+    float *d_q = nullptr, *d_krot = nullptr, *d_cos = nullptr, *d_sin = nullptr;
+    REQUIRE(cudaMalloc(&d_q, q.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_krot, krot.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_cos, cos_t.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_sin, sin_t.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_q, q.data(), q.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_krot, krot.data(), krot.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_cos, cos_t.data(), cos_t.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d_sin, sin_t.data(), sin_t.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+
+    REQUIRE(LaunchXingRopeQ(d_q, kHeadsT, kQkT, kPairs, d_cos, d_sin, stream) ==
+            cudaSuccess);
+    REQUIRE(LaunchXingRopeK(d_krot, kPairs, d_cos, d_sin, stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
+    const auto got = Download(d_q, static_cast<int>(q.size()));
+    // Host reference, straight from apply_rotary_pos_emb_interleave.
+    for (int h = 0; h < kHeadsT; ++h)
+    {
+        for (int j = 0; j < kPairs; ++j)
+        {
+            const float a = q[static_cast<size_t>(h) * kQkT + kNopeT + 2 * j];
+            const float b = q[static_cast<size_t>(h) * kQkT + kNopeT + 2 * j + 1];
+            REQUIRE(got[static_cast<size_t>(h) * kQkT + kNopeT + 2 * j] ==
+                    Approx(a * cos_t[j] - b * sin_t[j]).margin(1e-6));
+            REQUIRE(got[static_cast<size_t>(h) * kQkT + kNopeT + 2 * j + 1] ==
+                    Approx(a * sin_t[j] + b * cos_t[j]).margin(1e-6));
+        }
+        // The nope subspace is untouched.
+        for (int i = 0; i < kNopeT; ++i)
+            REQUIRE(got[static_cast<size_t>(h) * kQkT + i] ==
+                    Approx(q[static_cast<size_t>(h) * kQkT + i]));
+    }
+    const auto gk = Download(d_krot, 2 * kPairs);
+    for (int j = 0; j < kPairs; ++j)
+    {
+        const float a = krot[2 * j], b = krot[2 * j + 1];
+        REQUIRE(gk[2 * j] == Approx(a * cos_t[j] - b * sin_t[j]).margin(1e-6));
+        REQUIRE(gk[2 * j + 1] == Approx(a * sin_t[j] + b * cos_t[j]).margin(1e-6));
+    }
+
+    cudaFree(d_q); cudaFree(d_krot); cudaFree(d_cos); cudaFree(d_sin);
     cudaStreamDestroy(stream);
 }

@@ -33,13 +33,76 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
 namespace lsxcommon::xing {
 namespace {
 
+// Stage probe (LSX_TEST_XING_LAYER_DEBUG): RMS of one device buffer, printed to
+// stderr with the layer/token that produced it, so a device run can be lined up
+// against modeling_xing4_0.py's per-module hook dump. Same fprintf diagnostic
+// convention as qwen_moe's LSX_TEST_MOE_STAGE_DEBUG.
+void XingStageDump(const char *stage, int layer, int token_id, const float *d,
+                   int64_t n, cudaStream_t stream)
+{
+    const char *dir = std::getenv("LSX_TEST_XING_DUMP_DIR");
+    if (dir == nullptr) return;
+    std::string path;
+    static std::vector<float> host;
+    if (static_cast<int64_t>(host.size()) < n) host.resize(static_cast<size_t>(n));
+    if (cudaMemcpyAsync(host.data(), d, static_cast<size_t>(n) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return;
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return;
+    absl::StrAppendFormat(&path, "%s/%s_L%d_tok%d.bin", dir, stage, layer, token_id);
+    FILE *f = std::fopen(path.c_str(), "wb");
+    if (f == nullptr) return;
+    std::fwrite(host.data(), sizeof(float), static_cast<size_t>(n), f);
+    std::fclose(f);
+}
+
+unsigned XingHashF32(const float *host, size_t n)
+{
+    unsigned h = 2166136261u;
+    for (size_t i = 0; i < n; ++i)
+    {
+        unsigned bits;
+        std::memcpy(&bits, &host[i], sizeof(bits));
+        h = (h ^ bits) * 16777619u;
+    }
+    return h;
+}
+
+void XingStageRms(const char *stage, int layer, int token_id, const float *d,
+                  int64_t n, cudaStream_t stream)
+{
+    if (!std::getenv("LSX_TEST_XING_LAYER_DEBUG")) return;
+    static std::vector<float> host;
+    if (static_cast<int64_t>(host.size()) < n) host.resize(static_cast<size_t>(n));
+    if (cudaMemcpyAsync(host.data(), d, static_cast<size_t>(n) * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return;
+    if (cudaStreamSynchronize(stream) != cudaSuccess) return;
+    double ss = 0.0;
+    int64_t bad = 0;
+    for (int64_t j = 0; j < n; ++j)
+    {
+        const double v = host[static_cast<size_t>(j)];
+        if (!std::isfinite(v)) ++bad;
+        else ss += v * v;
+    }
+    std::fprintf(stderr, "[xing-stage] %-22s L=%d tok=%d rms=%.6g nonfinite=%ld\n",
+                 stage, layer, token_id,
+                 std::sqrt(ss / static_cast<double>(n)), static_cast<long>(bad));
+}
+
 namespace frozen = lsxcommon::xing::frozen;
 
 constexpr int kThreads = 256;
+constexpr int kMaxHcMultDebug = 8;
 
 // Propagate-on-error: as a plain function call `XING_CK(x)` evaluated and DISCARDED
 // the code, so a failed launch silently produced an all-NaN logit row instead of
@@ -131,9 +194,14 @@ __global__ void xing_mean_streams_kernel(const float *__restrict__ streams,
 // Two entry points because the two tensors are laid out differently: q's rope
 // subspace is strided per head inside the [heads, nope+rope] buffer, while k_rot
 // is a standalone [rope] row copied into the cache.
-__global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs,
-                                   int q_offset,
-                                   const float *__restrict__ cos_t,
+// `nope` is the rope subspace's offset INSIDE one head, so the element address
+// is h*qk + nope + 2*j (gigachat's rope_qk_kernel convention). An earlier
+// version took a single shared `q_offset` argument, and the decode step passed
+// the constant `heads * kQkNopeHeadDim`: all 32 heads then rotated the same 64
+// floats while head 0's rope subspace stayed unrotated. Only a multi-position
+// prefill can see it - with one cached token the softmax is trivial.
+__global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs, int qk,
+                                   int nope, const float *__restrict__ cos_t,
                                    const float *__restrict__ sin_t)
 {
     const int h = blockIdx.x;
@@ -141,7 +209,7 @@ __global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs,
     {
         const float c = cos_t[j];
         const float s = sin_t[j];
-        const int qn = q_offset + 2 * j;
+        const int qn = h * qk + nope + 2 * j;
         const float a = q[qn];
         const float b = q[qn + 1];
         q[qn] = __fsub_rn(__fmul_rn(a, c), __fmul_rn(b, s));
@@ -180,8 +248,13 @@ __global__ void xing_write_cache_kernel(const float *__restrict__ kv_b,
     const float *src = kv_b + static_cast<size_t>(h) * kvw;
     for (int i = threadIdx.x; i < nope; i += blockDim.x) kb[i] = src[i];
     for (int i = threadIdx.x; i < vh; i += blockDim.x) vb[i] = src[nope + i];
-    if (h == 0)
-        for (int i = threadIdx.x; i < rope; i += blockDim.x) kb[nope + i] = krot[i];
+    // EVERY head writes the shared rotated k_rot. Upstream expands k_rot across
+    // heads (`k_rot.expand(*k_pass.shape[:-1], -1)`), so writing it from the h==0
+    // block alone left heads 1..N-1 reading uninitialized rope dims - garbage
+    // that differs run to run and only shows up as non-determinism in the first
+    // step of a session (a lone token attends to its own row, where head 0 is
+    // the only one that was written).
+    for (int i = threadIdx.x; i < rope; i += blockDim.x) kb[nope + i] = krot[i];
 }
 
 __global__ void xing_attn_kernel(const float *__restrict__ q,
@@ -233,10 +306,12 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
 // them into a by-value struct for the kernel), so the routed ids must reach the
 // host. One D2H of 4 ints per layer, exactly the shape nemotron and gigachat
 // use — the ids, not the 4 KiB activation.
+// One routed expert's three NVFP4 matrices, resolved from the layer's host
+// pointer table ([gate | down | up], see XingPinnedWeights).
 struct XingRoutedViews {
-    std::vector<const uint8_t *> packed_gate, packed_down;
-    std::vector<const uint8_t *> scales_gate, scales_down;
-    std::vector<float> gs_gate, gs_down;
+    std::vector<const uint8_t *> packed_gate, packed_up, packed_down;
+    std::vector<const uint8_t *> scales_gate, scales_up, scales_down;
+    std::vector<float> gs_gate, gs_up, gs_down;
 };
 
 cudaError_t ResolveXingRouted(const XingPinnedWeights &pw, int layer,
@@ -245,12 +320,16 @@ cudaError_t ResolveXingRouted(const XingPinnedWeights &pw, int layer,
 {
     const size_t slot = static_cast<size_t>(layer);
     if (slot >= pw.expert_packed_ptrs.size() || top_k <= 0) return cudaErrorInvalidValue;
-    out.packed_gate.resize(static_cast<size_t>(top_k));
-    out.packed_down.resize(static_cast<size_t>(top_k));
-    out.scales_gate.resize(static_cast<size_t>(top_k));
-    out.scales_down.resize(static_cast<size_t>(top_k));
-    out.gs_gate.resize(static_cast<size_t>(top_k));
-    out.gs_down.resize(static_cast<size_t>(top_k));
+    const size_t n_view = static_cast<size_t>(top_k);
+    out.packed_gate.assign(n_view, nullptr);
+    out.packed_up.assign(n_view, nullptr);
+    out.packed_down.assign(n_view, nullptr);
+    out.scales_gate.assign(n_view, nullptr);
+    out.scales_up.assign(n_view, nullptr);
+    out.scales_down.assign(n_view, nullptr);
+    out.gs_gate.assign(n_view, 1.0f);
+    out.gs_up.assign(n_view, 1.0f);
+    out.gs_down.assign(n_view, 1.0f);
     std::vector<int> ids(static_cast<size_t>(top_k), -1);
     const cudaError_t cp = cudaMemcpyAsync(
         ids.data(), d_ids, sizeof(int) * static_cast<size_t>(top_k),
@@ -274,20 +353,18 @@ cudaError_t ResolveXingRouted(const XingPinnedWeights &pw, int layer,
         }
         const size_t k = static_cast<size_t>(i);
         const size_t n = static_cast<size_t>(E);
-        out.packed_gate[k] = pp[k < n ? k : 0];        // w1 (gate rows)
-        out.scales_gate[k] = sp[k < n ? k : 0];        // s1 (shared tile)
-        out.gs_gate[k] = gv[k < n ? k : 0];
-        out.packed_down[k] = pp[n + k];
-        out.scales_down[k] = sp[n + k];
-        out.gs_down[k] = gv[n + k];
-        // re-index by the routed id
-        out.packed_gate[k] = pp[static_cast<size_t>(e)];
-        out.scales_gate[k] = sp[static_cast<size_t>(e)];
-        out.gs_gate[k] = gv[static_cast<size_t>(e)];
-        out.packed_down[k] = pp[n + static_cast<size_t>(e)];
-        out.scales_down[k] = sp[n + static_cast<size_t>(e)];
-        out.gs_down[k] = gv[n + static_cast<size_t>(e)];
+        const size_t ge = static_cast<size_t>(e);
+        out.packed_gate[k] = pp[ge];         // w1: gate rows
+        out.scales_gate[k] = sp[ge];
+        out.gs_gate[k] = gv[ge];
+        out.packed_down[k] = pp[n + ge];     // w2: down rows
+        out.scales_down[k] = sp[n + ge];
+        out.gs_down[k] = gv[n + ge];
+        out.packed_up[k] = pp[2 * n + ge];   // w3: up rows
+        out.scales_up[k] = sp[2 * n + ge];
+        out.gs_up[k] = gv[2 * n + ge];
         if (!out.packed_gate[k] || !out.scales_gate[k] ||
+            !out.packed_up[k] || !out.scales_up[k] ||
             !out.packed_down[k] || !out.scales_down[k])
         {
             log::error(absl::StrCat("xing resolved null expert view, layer ", layer,
@@ -312,14 +389,24 @@ __global__ void xing_embed_gather_kernel(const __half *__restrict__ table,
 }
 
 // Weighted accumulate of the routed outputs into the token hidden state.
+// acc[i] += sum_e w[e] * y[e][i], with ONE thread per output element looping
+// over the experts. Mapping the experts onto blockIdx.y instead made every
+// block a read-modify-write of the SAME acc[i]: the top_k contributions raced
+// (dropped updates, and a different winner run to run - the decode step was
+// non-deterministic in its FIRST step, before any cache slot was warm).
 __global__ void xing_scale_acc_kernel(const __half *__restrict__ y,
-                                      const float *__restrict__ w,
-                                      int rows, int n, float *__restrict__ acc)
+                                      const float *__restrict__ w, int top_k,
+                                      int n, float *__restrict__ acc)
 {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    const int64_t k = static_cast<int64_t>(blockIdx.y) * n + i;
-    acc[i] = __fadd_rn(acc[i], __fmul_rn(__half2float(y[k]), w[blockIdx.y]));
+    float a = acc[i];
+    for (int e = 0; e < top_k; ++e)
+    {
+        const int64_t k = static_cast<int64_t>(e) * n + i;
+        a = __fadd_rn(a, __fmul_rn(__half2float(y[k]), w[e]));
+    }
+    acc[i] = a;
 }
 
 inline cudaError_t ToHalf(const float *src, __half *dst, int64_t n,
@@ -436,12 +523,16 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     auto alloc = [](void **p, size_t bytes) {
         return bytes == 0 ? cudaSuccess : cudaMalloc(p, bytes);
     };
+    const int kv_layers = std::max(1, dims.layers);
+    s.kv_layers = kv_layers;
+    s.kv_layer_k = static_cast<int64_t>(capacity) * frozen::kHeads *
+                   (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim);
+    s.kv_layer_v = static_cast<int64_t>(capacity) * frozen::kHeads *
+                   frozen::kVHeadDim;
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_k),
-             static_cast<size_t>(capacity) * frozen::kHeads *
-                 (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim) * 4));
+             static_cast<size_t>(s.kv_layer_k) * kv_layers * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_v),
-             static_cast<size_t>(capacity) * frozen::kHeads *
-                 frozen::kVHeadDim * 4));
+             static_cast<size_t>(s.kv_layer_v) * kv_layers * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_hidden),
              static_cast<size_t>(hc) * H * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_collapsed), static_cast<size_t>(H) * 4));
@@ -486,6 +577,22 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_egs), 8 * sizeof(float)));
     s.capacity = capacity;
     s.length = 0;
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
+                            const float *cos_t, const float *sin_t,
+                            cudaStream_t stream)
+{
+    xing_rope_q_kernel<<<heads, kThreads, 0, stream>>>(
+        q, pairs, qk_head_dim, qk_head_dim - 2 * pairs, cos_t, sin_t);
+    return cudaGetLastError();
+}
+
+cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_t,
+                            const float *sin_t, cudaStream_t stream)
+{
+    xing_rope_k_kernel<<<1, kThreads, 0, stream>>>(krot, pairs, cos_t, sin_t);
     return cudaGetLastError();
 }
 
@@ -560,6 +667,13 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
     const int pairs = rope / 2;
     const int heads = dims.heads;
     xing_fail_line = 0;
+    if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+    {
+        XingStageDump("v_start", 0, token_id, s.d_v,
+                      static_cast<int64_t>(pos + 1) * frozen::kHeads *
+                          frozen::kVHeadDim,
+                      stream);
+    }
     XingRoutedViews routed;   // reused per layer; resize() keeps the capacity
 
     // Seed all four streams with the embedding row. The embedding is stored
@@ -583,6 +697,24 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                                                          token_id, s.d_hidden,
                                                          hc, H);
     s.token_id = token_id;
+    if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+    {
+        static std::vector<float> host;
+        host.resize(static_cast<size_t>(hc) * H);
+        if (cudaMemcpyAsync(host.data(), s.d_hidden, host.size() * sizeof(float),
+                            cudaMemcpyDeviceToHost, stream) == cudaSuccess)
+        {
+            cudaStreamSynchronize(stream);
+            double ss = 0.0, amax = 0.0;
+            for (const float v : host)
+            {
+                ss += static_cast<double>(v) * v;
+                amax = std::max(amax, std::fabs(static_cast<double>(v)));
+            }
+            std::fprintf(stderr, "[xing-embed] tok=%d rms=%.6g max=%.6g\n", token_id,
+                         std::sqrt(ss / static_cast<double>(host.size())), amax);
+        }
+    }
 
     // layers_override lets a test run a PREFIX of the stack (bisecting where a
     // non-finite value first appears); 0 means the whole model.
@@ -592,6 +724,10 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
     for (int l = 0; l < layer_limit; ++l)
     {
         const auto &ly = pw.layers[static_cast<size_t>(l)];
+        // Per-layer KV slice: upstream keys layer_idx, so sharing one buffer
+        // would silently hand every layer the previous layer's token rows.
+        float *const kc = s.d_k + static_cast<int64_t>(l) * s.kv_layer_k;
+        float *const vc = s.d_v + static_cast<int64_t>(l) * s.kv_layer_v;
 
         // ── attention block ────────────────────────────────────────────────
         XING_CK(LaunchXingHyperConnection(
@@ -599,8 +735,12 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
             s.d_comb, stream));
+        XingStageRms("hc.collapsed", l, token_id, s.d_collapsed, H, stream);
+        XingStageRms("hc.post", l, token_id, s.d_post, hc, stream);
+        XingStageRms("hc.comb", l, token_id, s.d_comb, hc * hc, stream);
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
             s.d_collapsed, ly.input_ln, s.d_act, H, frozen::kRmsEps);
+        XingStageRms("input_ln", l, token_id, s.d_act, H, stream);
 
         // q_a down-projects the activation; its inner norm overwrites d_norm, so
         // the activation stays in d_act for kv_a below.
@@ -612,10 +752,14 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XING_CK(ToHalf(s.d_norm, s.d_half, frozen::kQLoraRank, stream));
         XING_CK(Gv(ly.q_b, s.d_half, s.d_half_big, stream));      // [heads*qk]
         XING_CK(ToF32(s.d_half_big, s.d_q, frozen::kQSize, stream));
+        XingStageRms("q_a", l, token_id, s.d_norm, frozen::kQLoraRank, stream);
+        XingStageRms("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
 
         XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
         XING_CK(Gv(ly.kv_a, s.d_half, s.d_half_big, stream));     // [kv_lora+rope]
         XING_CK(ToF32(s.d_half_big, s.d_kv_latent, frozen::kKvAWidth, stream));
+        XingStageRms("kv_a", l, token_id, s.d_kv_latent, frozen::kKvAWidth,
+                     stream);
         // kv_a_layernorm over the latent part only; the rope part passes through.
         {
             float *latent = s.d_norm;   // scratch of kv_lora floats
@@ -628,24 +772,48 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XING_CK(ToHalf(s.d_kv_latent, s.d_half, frozen::kKvLoraRank, stream));
         XING_CK(Gv(ly.kv_b, s.d_half, s.d_half_big, stream));      // [heads*(nope+v)]
         XING_CK(ToF32(s.d_half_big, s.d_kv_b, frozen::kKvBWidth, stream));
+        XingStageRms("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
+        XingStageDump("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
+        XingStageDump("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
 
         // Interleaved RoPE on q's rope subspace and on k_rot.
-        xing_rope_q_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
-            s.d_q, pairs, frozen::kHeads * frozen::kQkNopeHeadDim,
-            d_rc + static_cast<size_t>(pos) * pairs,
-            d_rs + static_cast<size_t>(pos) * pairs);
-        xing_rope_k_kernel<<<1, kThreads, 0, stream>>>(
-            s.d_kv_latent + frozen::kKvLoraRank, pairs,
-            d_rc + static_cast<size_t>(pos) * pairs,
-            d_rs + static_cast<size_t>(pos) * pairs);
+        const float *rc = d_rc + static_cast<size_t>(pos) * pairs;
+        const float *rs = d_rs + static_cast<size_t>(pos) * pairs;
+        XING_CK(LaunchXingRopeQ(s.d_q, frozen::kHeads, frozen::kQkHeadDim, pairs,
+                               rc, rs, stream));
+        XING_CK(LaunchXingRopeK(s.d_kv_latent + frozen::kKvLoraRank, pairs, rc,
+                               rs, stream));
 
         xing_write_cache_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
-            s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, s.d_k, s.d_v, pos,
+            s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, kc, vc, pos,
             frozen::kHeads, frozen::kQkNopeHeadDim, rope, frozen::kVHeadDim);
+        if (l == 0 && std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+        {
+            std::fprintf(stderr, "[xing-kv] tok=%d pos=%d layer=%d v=%p cap=%d\n",
+                         token_id, pos, l, static_cast<void *>(vc), s.capacity);
+            XingStageDump("v_pre", l, token_id, vc,
+                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
+                              frozen::kVHeadDim,
+                          stream);
+        }
         xing_attn_kernel<<<frozen::kHeads, kThreads, (pos + 1) * sizeof(float), stream>>>(
-            s.d_q, s.d_k, s.d_v, pos, frozen::kHeads, frozen::kQkHeadDim,
+            s.d_q, kc, vc, pos, frozen::kHeads, frozen::kQkHeadDim,
             frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
             s.capacity);
+        XingStageRms("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
+        if (l == 0)
+        {
+            XingStageDump("q_rope", l, token_id, s.d_q, frozen::kQSize, stream);
+            XingStageDump("kcache", l, token_id, kc,
+                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
+                              (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim),
+                          stream);
+            XingStageDump("vcache", l, token_id, vc,
+                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
+                              frozen::kVHeadDim,
+                          stream);
+        }
+        XingStageDump("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         XING_CK(ToHalf(s.d_attn, s.d_half, frozen::kOSize, stream));
         // The mix needs o_proj's output in F32 next to the four streams; stage it
         // through the collapsed buffer, which the next mHC re-reads anyway.
@@ -653,6 +821,8 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             __half *o_half = s.d_half_big;
             XING_CK(Gv(ly.o_proj, s.d_half, o_half, stream));
             XING_CK(ToF32(o_half, s.d_kv_b, frozen::kOSize, stream));
+            XingStageRms("attn_out", l, token_id, s.d_kv_b, frozen::kOSize,
+                         stream);
         }
         XING_CK(LaunchXingMix(s.d_hidden, s.d_kv_b, s.d_post, s.d_comb, hc, H,
                          s.d_hidden, stream));
@@ -663,8 +833,11 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
             s.d_comb, stream));
+        XingStageRms("ffnhc.collapsed", l, token_id, s.d_collapsed, H, stream);
+        XingStageRms("ffnhc.comb", l, token_id, s.d_comb, hc * hc, stream);
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
             s.d_collapsed, ly.post_attn_ln, s.d_act, H, frozen::kRmsEps);
+        XingStageRms("post_attn_ln", l, token_id, s.d_act, H, stream);
         XING_CK(ToHalf(s.d_act, s.d_half, H, stream));
 
         if (!ly.is_moe)
@@ -704,9 +877,13 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                 stream, s.d_half, routed.packed_gate.data(),
                 routed.scales_gate.data(), routed.gs_gate.data(), dims.top_k, 0,
                 s.d_half_big, H, MI));
+            // The SECOND branch of the SwiGLU is up_proj (w3). Passing the
+            // gate views here - and skipping the down projection entirely -
+            // still yields finite logits, because silu(gate)*gate is a
+            // perfectly well-formed MLP; it just isn't this model.
             XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
-                stream, s.d_half, routed.packed_gate.data(),
-                routed.scales_gate.data(), routed.gs_gate.data(), dims.top_k, 0,
+                stream, s.d_half, routed.packed_up.data(),
+                routed.scales_up.data(), routed.gs_up.data(), dims.top_k, 0,
                 s.d_half_big + static_cast<size_t>(MI) * dims.top_k, H, MI));
             lsxcommon::kernels::SwigluKernel<__half, lsxcommon::kernels::ExpFlavor::Glibc,
                                             false>
@@ -714,11 +891,17 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                    256, 0, stream>>>(
                     s.d_half_big, s.d_half_big + static_cast<size_t>(MI) * dims.top_k,
                     s.d_half_big, static_cast<int64_t>(MI) * dims.top_k, 0.0f);
+            // down_proj (w2) over each expert's own SwiGLU slice
+            // (x_stride = MI), into the per-expert output rows.
+            XING_CK(lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                stream, s.d_half_big, routed.packed_down.data(),
+                routed.scales_down.data(), routed.gs_down.data(), dims.top_k, MI,
+                s.d_expert_out, MI, H));
             // Separate output buffer: aliasing the swiglu input here races
             // (writing y + e*H overwrites the inputs of experts e+1..e+3) and
             // made the whole step non-deterministic run to run.
-            xing_scale_acc_kernel<<<dim3((H + 255) / 256, dims.top_k), 256, 0, stream>>>(
-                s.d_expert_out, s.d_gate, H, H, s.d_attn);
+            xing_scale_acc_kernel<<<(H + 255) / 256, 256, 0, stream>>>(
+                s.d_expert_out, s.d_gate, dims.top_k, H, s.d_attn);
             // Shared expert on top of the routed sum.
             XING_CK(Gv(ly.shared_gate, s.d_half, s.d_half_big, stream));
             XING_CK(Gv(ly.shared_up, s.d_half, s.d_half_up, stream));
@@ -731,8 +914,52 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             lsxcommon::kernels::AddOutKernel<float><<<(H + 255) / 256, 256, 0, stream>>>(
                 s.d_attn, s.d_norm, s.d_attn, H);
         }
+        XingStageRms(ly.is_moe ? "moe_out" : "mlp_out", l, token_id,
+                     ly.is_moe ? s.d_attn : s.d_kv_b, H, stream);
         XING_CK(LaunchXingMix(s.d_hidden, ly.is_moe ? s.d_attn : s.d_kv_b, s.d_post,
                          s.d_comb, hc, H, s.d_hidden, stream));
+        // Layer-by-layer divergence probe: the mean-stream RMS of every layer is
+        // printed so a device run can be compared against modeling_xing4_0.py's
+        // output_hidden_states. The first layer whose RMS departs from the
+        // reference localises the wiring defect (fprintf to stderr follows the
+        // qwen_moe LSX_TEST_MOE_STAGE_DEBUG convention - this is a diagnostic,
+        // not application logging).
+        if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+        {
+            static std::vector<float> host;
+            host.resize(static_cast<size_t>(hc) * H);
+            const cudaError_t ce = cudaMemcpyAsync(
+                host.data(), s.d_hidden, host.size() * sizeof(float),
+                cudaMemcpyDeviceToHost, stream);
+            if (ce == cudaSuccess)
+            {
+                cudaStreamSynchronize(stream);
+                double ss = 0.0, amax = 0.0, bad = 0.0;
+                for (size_t j = 0; j < host.size(); ++j)
+                {
+                    const double v = host[j];
+                    if (!std::isfinite(v)) ++bad;
+                    ss += v * v;
+                    amax = std::max(amax, std::fabs(v));
+                }
+                std::fprintf(stderr,
+                             "[xing-layer] tok=%d %d rms=%.6g max=%.6g nonfinite=%g\n",
+                             token_id, l, std::sqrt(ss / static_cast<double>(host.size())),
+                             amax, bad);
+                double per[kMaxHcMultDebug] = {};
+                for (int d = 0; d < hc; ++d)
+                    for (int j = 0; j < H; ++j)
+                        per[d] += static_cast<double>(host[d * H + j]) *
+                                  static_cast<double>(host[d * H + j]);
+                std::fprintf(stderr, "[xing-layer] %d %d pos=%d hash=%08x\n", l,
+                             token_id, pos,
+                             XingHashF32(host.data(), host.size()));
+                std::fprintf(stderr, "[xing-layer] tok=%d %d streams", token_id, l);
+                for (int d = 0; d < hc; ++d)
+                    std::fprintf(stderr, " %.6g", std::sqrt(per[d] / H));
+                std::fprintf(stderr, "\n");
+            }
+        }
         s.last_layer = l;
     }
 
@@ -757,6 +984,29 @@ __global__ void xing_count_nonfinite_kernel(const float *__restrict__ x, int64_t
     const int64_t i = blockIdx.x * static_cast<int64_t>(blockDim.x) + threadIdx.x;
     if (i >= n) return;
     if (!isfinite(x[i])) atomicAdd(out, 1);
+}
+
+cudaError_t XingCopyLayerKV(const XingSession &s, int layer, int pos,
+                            float *host_k, float *host_v, cudaStream_t stream)
+{
+    if (layer < 0 || layer >= s.kv_layers) return cudaErrorInvalidValue;
+    const int64_t base_k = static_cast<int64_t>(layer) * s.kv_layer_k +
+                           static_cast<int64_t>(pos) * frozen::kHeads *
+                               (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim);
+    const int64_t base_v = static_cast<int64_t>(layer) * s.kv_layer_v +
+                           static_cast<int64_t>(pos) * frozen::kHeads *
+                               frozen::kVHeadDim;
+    const size_t k_row = static_cast<size_t>(frozen::kHeads) * frozen::kQkHeadDim;
+    const size_t v_row = static_cast<size_t>(frozen::kHeads) * frozen::kVHeadDim;
+    if (host_k != nullptr && pos < s.capacity &&
+        cudaMemcpyAsync(host_k, s.d_k + base_k, k_row * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return cudaErrorInvalidValue;
+    if (host_v != nullptr && pos < s.capacity &&
+        cudaMemcpyAsync(host_v, s.d_v + base_v, v_row * sizeof(float),
+                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+        return cudaErrorInvalidValue;
+    return cudaSuccess;
 }
 
 cudaError_t XingCountNonFinite(const float *d, int64_t n, int *out_count,

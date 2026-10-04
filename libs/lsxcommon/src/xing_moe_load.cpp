@@ -578,19 +578,24 @@ cudaError_t LoadXingWeights(const std::string &model_path,
         auto &pp = pw.expert_packed_ptrs[slot];
         auto &sp = pw.expert_scale_ptrs[slot];
         auto &gv = pw.expert_gs[slot];
-        pp.assign(n * 2, nullptr);
-        sp.assign(n * 2, nullptr);
-        gv.assign(n * 2, 1.0f);
+        // Three views per expert, in the repo's w1/w2/w3 order:
+        // [gate (w1) | down (w2) | up (w3)].
+        pp.assign(n * 3, nullptr);
+        sp.assign(n * 3, nullptr);
+        gv.assign(n * 3, 1.0f);
         const auto &recs = pw.expert_records[slot];
         for (size_t k = 0; k < recs.size() && k < n; ++k)
         {
             const auto &r = recs[k];
-            pp[k] = slab + r.w1_off;          // gate rows
-            pp[n + k] = slab + r.w2_off;      // down rows
-            sp[k] = slab + r.s1_off;          // gate/up scale tile
-            sp[n + k] = slab + r.s3_off;
+            pp[k] = slab + r.w1_off;          // w1: gate rows
+            pp[n + k] = slab + r.w2_off;      // w2: down rows
+            pp[2 * n + k] = slab + r.w3_off;  // w3: up rows
+            sp[k] = slab + r.s1_off;
+            sp[n + k] = slab + r.s2_off;
+            sp[2 * n + k] = slab + r.s3_off;
             gv[k] = r.gs1;
             gv[n + k] = r.gs2;
+            gv[2 * n + k] = r.gs3;
         }
     }
 

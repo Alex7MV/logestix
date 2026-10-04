@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <cstring>
 #include <vector>
 
 namespace frozen = lsxcommon::xing::frozen;
@@ -260,4 +261,101 @@ TEST_CASE("Xing decode advances the KV cache one token per step",
     // Position 4 must differ from position 3: a step that ignored `pos` would
     // silently produce the same logits forever.
     REQUIRE(f.session->length == 4);
+}
+// Every decoder layer owns its K/V (upstream passes layer_idx to
+// past_key_values.update). With one shared buffer each layer overwrites the
+// previous layer's row for the same position, so a two-layer stack would return
+// the LAST layer's values for layer 0 - and nothing in a single-token prefill
+// notices, because a lone token is never read back.
+TEST_CASE("Xing keeps a separate KV cache per layer", "[xing][model]")
+{
+    ConvertedFixture f = BuildFixture();
+    const auto dims = xing::XingDimsFromWeights(f.pw);
+    REQUIRE(dims.layers >= 2);
+
+    f.session = std::make_unique<lsxcommon::xing::XingSession>();
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
+            cudaSuccess);
+    REQUIRE(xing::BuildXingYarnTables(kCapacity, f.rc, f.rs));
+    REQUIRE(xing::UploadXingYarnTables(f.stream, kCapacity, f.rc, f.rs, &f.d_rc,
+                                       &f.d_rs) == cudaSuccess);
+    REQUIRE(xing::XingDecodeStep(f.pw, dims, *f.session, 11, f.d_rc, f.d_rs, 0,
+                                 f.stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(f.stream) == cudaSuccess);
+
+    const size_t k_row = static_cast<size_t>(frozen::kHeads) * frozen::kQkHeadDim;
+    const size_t v_row = static_cast<size_t>(frozen::kHeads) * frozen::kVHeadDim;
+    std::vector<float> k0(k_row), k1(k_row), v0(v_row), v1(v_row);
+    REQUIRE(xing::XingCopyLayerKV(*f.session, 0, 0, k0.data(), v0.data(),
+                                  f.stream) == cudaSuccess);
+    REQUIRE(xing::XingCopyLayerKV(*f.session, 1, 0, k1.data(), v1.data(),
+                                  f.stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(f.stream) == cudaSuccess);
+
+    // The fixture's layers hold different random weights, so neither K nor V
+    // may coincide across layers.
+    REQUIRE(k0 != k1);
+    REQUIRE(v0 != v1);
+    // A written slot is not all-zero (an unwritten cache reads back as zeros).
+    const auto nonzero = [](const std::vector<float> &v) {
+        return std::any_of(v.begin(), v.end(),
+                           [](float x) { return x != 0.0f; });
+    };
+    REQUIRE(nonzero(k0));
+    REQUIRE(nonzero(v0));
+    REQUIRE(nonzero(k1));
+    REQUIRE(nonzero(v1));
+}
+
+// Multi-step determinism. Every earlier Xing test ran a SINGLE token, where the
+// attention softmax is trivial and nothing reads the cache back - so a defect
+// that only shows once positions accumulate (the real 29B model diverged after
+// a dozen steps) was invisible. This walks a short prompt and then decodes,
+// twice, and demands bit-identical logits.
+TEST_CASE("Xing multi-step decode is bit-reproducible", "[xing][model]")
+{
+    ConvertedFixture f = BuildFixture();
+    const auto dims = xing::XingDimsFromWeights(f.pw);
+    // A DEEPER cache than the other cases use: the real 29B model only lost
+    // determinism once a dozen positions were in the cache, so a 2-step walk
+    // cannot see it.
+    constexpr int kDeep = 32;
+    f.session = std::make_unique<lsxcommon::xing::XingSession>();
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep, f.stream) ==
+            cudaSuccess);
+    REQUIRE(xing::BuildXingYarnTables(kDeep, f.rc, f.rs));
+    REQUIRE(xing::UploadXingYarnTables(f.stream, kDeep, f.rc, f.rs, &f.d_rc,
+                                       &f.d_rs) == cudaSuccess);
+
+    const std::vector<int32_t> prompt = {5, 17};
+    const int kSteps = 18;
+    std::vector<float> first;
+    auto run = [&]() {
+        f.session->Free();
+        REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep, f.stream) ==
+                cudaSuccess);
+        int pos = 0;
+        for (const int32_t t : prompt)
+        {
+            REQUIRE(xing::XingDecodeStep(f.pw, dims, *f.session, t, f.d_rc, f.d_rs,
+                                         pos, f.stream) == cudaSuccess);
+            ++pos;
+        }
+        for (int i = 0; i < kSteps; ++i)
+        {
+            REQUIRE(xing::XingDecodeStep(f.pw, dims, *f.session, 7 + i, f.d_rc,
+                                         f.d_rs, pos, f.stream) == cudaSuccess);
+            ++pos;
+        }
+        std::vector<float> logits(frozen::kVocab, 0.0f);
+        xing::XingReadLogits(*f.session, logits.data(), f.stream);
+        REQUIRE(cudaStreamSynchronize(f.stream) == cudaSuccess);
+        return logits;
+    };
+    first = run();
+    const std::vector<float> second = run();
+    // memcmp, not ==: the synthetic fixture's random weights can overflow to
+    // NaN, and NaN != NaN would mask the bitwise comparison we actually want.
+    REQUIRE(std::memcmp(first.data(), second.data(),
+                        first.size() * sizeof(float)) == 0);
 }

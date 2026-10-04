@@ -109,14 +109,16 @@ struct XingPinnedWeights {
     std::vector<uint8_t *> expert_slabs;
     std::vector<size_t> slab_bytes;
     std::vector<std::vector<XingExpertRecord>> expert_records;
-    // HOST pointer tables, one row per layer [2 * num_experts] (gate/up rows in
-    // the first half, down rows in the second). The model-neutral expert-batch
+    // HOST pointer tables, one row per layer [3 * num_experts] in the repo's
+    // w1/w2/w3 order: [gate (w1) | down (w2) | up (w3)], num_experts entries
+    // each. The SwiGLU needs all three - reusing gate for the up branch
+    // produces finite but meaningless logits. The model-neutral expert-batch
     // GEMV takes its pointer arrays BY VALUE on the host and ships them to the
     // kernel in a by-value struct, so a device-resident table cannot be used
     // here - the decode loop copies the 4 ids back and indexes these.
     std::vector<std::vector<const uint8_t *>> expert_packed_ptrs;
     std::vector<std::vector<const uint8_t *>> expert_scale_ptrs;
-    std::vector<std::vector<float>> expert_gs;  // [2 * num_experts]
+    std::vector<std::vector<float>> expert_gs;  // [3 * num_experts]
     // Per-layer raw scratch (hc / norms) counted into resident_bytes.
     std::size_t resident_bytes = 0;
 

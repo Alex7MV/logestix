@@ -163,3 +163,50 @@ TEST_CASE("LoadXingWeights is strict about a missing layer", "[xing][loader]")
     REQUIRE_FALSE(error.empty());
     cudaStreamDestroy(stream);
 }
+// Each routed expert needs THREE NVFP4 views: gate (w1), down (w2) and up (w3)
+// - the repo convention is w1=gate, w2=down, w3=up. A two-view table silently
+// makes the SwiGLU branch use the gate weights twice and leaves the down
+// projection unwritten, which still produces finite logits.
+TEST_CASE("LoadXingWeights exposes gate, up and down per routed expert",
+          "[xing][loader]")
+{
+    const auto model = BuildConvertedFixture();
+    XingPinnedWeights pw;
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    std::string error;
+    REQUIRE(xing::LoadXingWeights(model, pw, stream, error) == cudaSuccess);
+    REQUIRE(error.empty());
+    REQUIRE(pw.num_experts > 0);
+
+    const size_t n = static_cast<size_t>(pw.num_experts);
+    const int moe = pw.first_moe_layer;
+    REQUIRE(moe < pw.num_layers);
+    const auto &pp = pw.expert_packed_ptrs[static_cast<size_t>(moe)];
+    const auto &sp = pw.expert_scale_ptrs[static_cast<size_t>(moe)];
+    const auto &gv = pw.expert_gs[static_cast<size_t>(moe)];
+    // gate rows | down rows | up rows, one entry per expert each.
+    REQUIRE(pp.size() == 3 * n);
+    REQUIRE(sp.size() == 3 * n);
+    REQUIRE(gv.size() == 3 * n);
+    for (size_t e = 0; e < n; ++e)
+    {
+        REQUIRE(pp[e] != nullptr);          // gate
+        REQUIRE(pp[n + e] != nullptr);      // down
+        REQUIRE(pp[2 * n + e] != nullptr);  // up
+        REQUIRE(sp[e] != nullptr);
+        REQUIRE(sp[n + e] != nullptr);
+        REQUIRE(sp[2 * n + e] != nullptr);
+        // The three projections are different matrices with different byte
+        // ranges, so no two views may share a base pointer.
+        REQUIRE(pp[e] != pp[n + e]);
+        REQUIRE(pp[e] != pp[2 * n + e]);
+        REQUIRE(pp[n + e] != pp[2 * n + e]);
+    }
+    // The first two layers are dense, so they carry no expert table.
+    for (int l = 0; l < pw.first_moe_layer; ++l)
+        REQUIRE(pw.expert_packed_ptrs[static_cast<size_t>(l)].empty());
+
+    pw.Free();
+    cudaStreamDestroy(stream);
+}
