@@ -366,50 +366,137 @@ int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
     return static_cast<int32_t>(o);
 }
 
+// ── UTF-8 output guarantee, shared by both decode paths ──────────────────────
+//
+// Decode concatenates the raw vocabulary bytes of every non-special token.
+// That stream is NOT guaranteed to be valid UTF-8: a byte-level vocabulary maps
+// each raw byte to a token whose value IS that byte (gemma-4-26B-A4B-it ships
+// 125 such single-byte entries, and byte_to_token_id[0xE9] points at the
+// one-byte 0xE9 token), so a model can emit a lone lead or continuation byte.
+// The encoder rejects such text (arrow_tokenizer_encode -> -1), which makes
+// BuildConversationInputIds fail and silently drops every follow-up turn of a
+// chat. Decoding therefore substitutes U+FFFD for any byte that cannot begin or
+// complete a well-formed sequence, so the decode -> frame -> encode round-trip
+// always holds.
+//
+// Byte-fallback pieces legitimately assemble multi-byte codepoints across token
+// boundaries, so this is a streaming sequence-aware filter, not a per-byte one.
+
+// U+FFFD REPLACEMENT CHARACTER.
+constexpr char kReplacement[] = "\xEF\xBF\xBD";
+constexpr size_t kReplacementLen = 3;
+
+// Incremental UTF-8 filter: Feed() one byte at a time, then Finish(). Bytes are
+// buffered only while a multi-byte sequence is still incomplete, so a codepoint
+// split across tokens survives intact.
+class Utf8Sanitizer {
+public:
+    // Appends this byte's contribution to `out`; returns the byte count added.
+    size_t Feed(uint8_t b, char *out) {
+        if (n_pending_ == 0) {
+            // Not mid-sequence: ASCII goes straight through, a lead byte starts
+            // a new one, anything else is undecodable on its own.
+            if (b < 0x80u) { out[0] = static_cast<char>(b); return 1; }
+            need_ = utf8_expected_len(b);
+            if (need_ == 0) return EmitReplacement(out);
+            pending_[n_pending_++] = b;
+            return 0;
+        }
+        // A byte that is not a continuation byte does not belong to this
+        // sequence: flush the maximal invalid subpart as one replacement and
+        // reprocess the offending byte, which may itself start a valid
+        // sequence (the Unicode "maximal subpart" rule).
+        if ((b & 0xC0u) != 0x80u) {
+            n_pending_ = 0;
+            const size_t n = EmitReplacement(out);
+            return n + Feed(b, out + n);
+        }
+        pending_[n_pending_++] = b;
+        if (n_pending_ < need_) return 0;      // still incomplete
+        size_t len = 0;
+        const uint32_t cp = decode_utf8(reinterpret_cast<const char *>(pending_), n_pending_, &len);
+        n_pending_ = 0;
+        if (cp == kInvalidUtf8) return EmitReplacement(out);
+        std::memcpy(out, pending_, len);
+        return len;
+    }
+
+    // Flushes a trailing incomplete sequence as one replacement character.
+    size_t Finish(char *out) {
+        if (n_pending_ == 0) return 0;
+        n_pending_ = 0;
+        return EmitReplacement(out);
+    }
+
+private:
+    static size_t EmitReplacement(char *out) {
+        std::memcpy(out, kReplacement, kReplacementLen);
+        return kReplacementLen;
+    }
+
+    uint8_t pending_[4] = {};
+    size_t n_pending_ = 0;
+    size_t need_ = 0;
+};
+
+// Feeds one SentencePiece token's decoded bytes to `sink`: a <0xXX> piece
+// expands to the raw byte it stands for, the U+2581 word marker becomes a
+// space, everything else is verbatim. Shared by both decode passes so the
+// capacity count and the emitted bytes can never disagree.
+template <typename Sink>
+void FeedSpToken(const uint8_t *p, int64_t len, Sink &&sink)
+{
+    uint8_t byte;
+    if (SpBytePiece(p, len, &byte)) { sink(byte); return; }
+    for (int64_t k = 0; k < len;) {
+        if (k + 2 < len && p[k] == 0xE2 && p[k + 1] == 0x96 && p[k + 2] == 0x81) {
+            sink(static_cast<uint8_t>(' '));
+            k += 3;
+        } else {
+            sink(p[k]);
+            ++k;
+        }
+    }
+}
+
 int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
                       size_t n_ids, char *out_text, size_t *max_out_len)
 {
-    // Pass 1: count.
+    // Pass 1: sanitized length (a bad byte expands 1 -> 3, so the raw byte
+    // count cannot be reused).
     size_t total = 0;
-    for (size_t i = 0; i < n_ids; ++i) {
-        int32_t id = ids[i];
-        if (id < 0 || id >= db.vocab_size) return -1;
-        if (db.is_special[id]) continue;
-        const int64_t off = db.token_offsets[id];
-        const int64_t len = db.token_offsets[id + 1] - off;
-        uint8_t byte;
-        if (SpBytePiece(db.token_bytes + off, len, &byte))
-            total += 1;
-        else
-            total += static_cast<size_t>(len);
+    {
+        Utf8Sanitizer san;
+        char scratch[kReplacementLen];
+        for (size_t i = 0; i < n_ids; ++i) {
+            const int32_t id = ids[i];
+            if (id < 0 || id >= db.vocab_size) return -1;
+            if (db.is_special[id]) continue;
+            FeedSpToken(db.token_bytes + db.token_offsets[id],
+                        db.token_offsets[id + 1] - db.token_offsets[id],
+                        [&](uint8_t b) { total += san.Feed(b, scratch); });
+        }
+        total += san.Finish(scratch);
     }
     if (total > *max_out_len) {
         *max_out_len = total;
         return -2;
     }
 
-    // Pass 2: emit, mapping <0xXX> -> raw byte and ▁ -> space.
+    // Pass 2: emit through the same filter, so a <0xXX> piece that expands to a
+    // byte no UTF-8 sequence can start becomes U+FFFD instead of raw bytes the
+    // encoder would then reject.
     size_t o = 0;
-    for (size_t i = 0; i < n_ids; ++i) {
-        int32_t id = ids[i];
-        if (db.is_special[id]) continue;
-        const int64_t off = db.token_offsets[id];
-        const int64_t len = db.token_offsets[id + 1] - off;
-        uint8_t byte;
-        if (SpBytePiece(db.token_bytes + off, len, &byte)) {
-            out_text[o++] = static_cast<char>(byte);
-            continue;
+    {
+        Utf8Sanitizer san;
+        for (size_t i = 0; i < n_ids; ++i) {
+            const int32_t id = ids[i];
+            if (db.is_special[id]) continue;
+            FeedSpToken(db.token_bytes + db.token_offsets[id],
+                        db.token_offsets[id + 1] - db.token_offsets[id],
+                        [&](uint8_t b) { o += san.Feed(b, out_text + o); });
         }
-        const uint8_t *p = db.token_bytes + off;
-        for (int64_t k = 0; k < len;) {
-            if (k + 2 < len && p[k] == 0xE2 && p[k + 1] == 0x96 && p[k + 2] == 0x81) {
-                out_text[o++] = ' ';
-                k += 3;
-            } else {
-                out_text[o++] = static_cast<char>(p[k]);
-                ++k;
-            }
-        }
+        o += san.Finish(out_text + o);
     }
     // SentencePiece drops the leading whitespace produced by the dummy-prefix
     // '▁' (e.g. decode('▁The') == "The", decode('▁▁') == " ").
@@ -422,6 +509,8 @@ int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
 }
 
 } // anonymous namespace
+
+// ── gpt2 byte-level BPE (tokenizer_kind == 0) ────────────────────────────────
 
 int32_t arrow_tokenizer_encode(const ArrowTokenizerDb &db, const char *text,
                                size_t text_len, int32_t *out_tokens,
@@ -470,7 +559,10 @@ int32_t arrow_tokenizer_encode(const char *text, size_t text_len,
     return arrow_tokenizer_encode(*g_active_db, text, text_len, out_tokens, max_out_len);
 }
 
-// Stub — real implementation lands in Task 7.
+// Valid gpt2 byte-level BPE decode: specials skipped, raw vocabulary bytes
+// appended, every undecodable byte replaced by U+FFFD (see Utf8Sanitizer).
+// Returns 0 on success, -1 invalid db or id, -2 output capacity too small.
+// *max_out_len is in/out.
 int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
                                size_t n_ids, char *out_text, size_t *max_out_len)
 {
@@ -478,25 +570,43 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
     if (db.tokenizer_kind == 1)
         return sp_bpe_decode(db, ids, n_ids, out_text, max_out_len);
 
-    // Pass 1: count raw bytes, skipping specials.
+    // Pass 1: sanitized length (a bad byte expands 1 -> 3, so this cannot reuse
+    // the raw byte count).
     size_t total = 0;
-    for (size_t i = 0; i < n_ids; ++i) {
-        int32_t id = ids[i];
-        if (id < 0 || id >= db.vocab_size) return -1;
-        if (db.is_special[id]) continue;
-        total += static_cast<size_t>(db.token_offsets[id + 1] - db.token_offsets[id]);
+    {
+        Utf8Sanitizer san;
+        for (size_t i = 0; i < n_ids; ++i) {
+            int32_t id = ids[i];
+            if (id < 0 || id >= db.vocab_size) return -1;
+            if (db.is_special[id]) continue;
+            const uint8_t *p = db.token_bytes + db.token_offsets[id];
+            const size_t len = static_cast<size_t>(db.token_offsets[id + 1] -
+                                                   db.token_offsets[id]);
+            for (size_t k = 0; k < len; ++k) {
+                // Feed into a scratch sized for the widest single contribution.
+                char scratch[kReplacementLen];
+                total += san.Feed(p[k], scratch);
+            }
+        }
+        char scratch[kReplacementLen];
+        total += san.Finish(scratch);
     }
     if (total > *max_out_len) { *max_out_len = total; return -2; }
 
-    // Pass 2: copy raw bytes.
+    // Pass 2: emit sanitized bytes.
     size_t o = 0;
-    for (size_t i = 0; i < n_ids; ++i) {
-        int32_t id = ids[i];
-        if (db.is_special[id]) continue;
-        int64_t off = db.token_offsets[id];
-        int64_t len = db.token_offsets[id + 1] - off;
-        std::memcpy(out_text + o, db.token_bytes + off, static_cast<size_t>(len));
-        o += static_cast<size_t>(len);
+    {
+        Utf8Sanitizer san;
+        for (size_t i = 0; i < n_ids; ++i) {
+            int32_t id = ids[i];
+            if (db.is_special[id]) continue;
+            const uint8_t *p = db.token_bytes + db.token_offsets[id];
+            const size_t len = static_cast<size_t>(db.token_offsets[id + 1] -
+                                                   db.token_offsets[id]);
+            for (size_t k = 0; k < len; ++k)
+                o += san.Feed(p[k], out_text + o);
+        }
+        o += san.Finish(out_text + o);
     }
     *max_out_len = o;
     return 0;

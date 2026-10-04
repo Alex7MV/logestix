@@ -6,7 +6,7 @@ namespace lsxcommon {
 
 namespace {
 
-constexpr uint32_t kInvalid = 0xFFFFFFFFu;
+constexpr uint32_t kInvalid = kInvalidUtf8;
 
 inline bool is_ascii_punct(uint32_t cp)
 {
@@ -27,9 +27,13 @@ inline bool is_cjk_run(uint32_t cp)
            (cp >= 0x30A0 && cp <= 0x30FF);
 }
 
+} // anonymous namespace
+
 // Decodes one UTF-8 codepoint at p (0 < n bytes available). Returns kInvalid
 // and sets *len = 1 on any malformed sequence (overlong, surrogate, out of
 // range, bad continuation). All other returns are valid Unicode.
+// Declared in pretokenizer.h: arrow_tokenizer_decode sanitizes with the same
+// decoder, which is what keeps decode output re-encodable.
 uint32_t decode_utf8(const char *p, size_t n, size_t *len)
 {
     const uint8_t *s = reinterpret_cast<const uint8_t *>(p);
@@ -60,7 +64,14 @@ bad:
     return kInvalid;
 }
 
-} // anonymous namespace
+size_t utf8_expected_len(uint8_t b)
+{
+    if (b < 0x80u) return 1;
+    if ((b & 0xE0u) == 0xC0u) return 2;
+    if ((b & 0xF0u) == 0xE0u) return 3;
+    if ((b & 0xF8u) == 0xF0u) return 4;
+    return 0;
+}
 
 WordStream::WordStream(const char *text, size_t length)
     : begin_(text), end_(text + length)

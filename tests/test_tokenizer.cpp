@@ -452,6 +452,144 @@ TEST_CASE("arrow_tokenizer_decode round-trip and specials", "[tokenizer][decode]
     fs::remove_all(pinned);
 }
 
+// A byte-level vocabulary maps every raw byte to a token whose value IS that
+// byte, so the model can legitimately emit a token that decodes to a lone lead
+// or continuation byte — measured on gemma-4-26B-A4B-it: 125 such entries,
+// byte_to_token_id[0xE9] pointing at the one-byte 0xE9 token. Answer text like
+// that cannot be framed again: arrow_tokenizer_encode rejects it with rc=-1 and
+// BuildConversationInputIds fails, which is what silently drops every follow-up
+// question of a chat. Decode must therefore always hand back valid UTF-8.
+TEST_CASE("arrow_tokenizer_decode never emits undecodable bytes",
+          "[tokenizer][decode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);   // real mmaps, so valid() holds
+
+    static const uint8_t kBytes[] = {'a', 0xE9, 'b'};
+    static const int64_t kOffsets[] = {0, 1, 2, 3};
+    static const uint8_t kSpecial[] = {0, 0, 0};
+    static const int32_t kMergeL[] = {0}, kMergeR[] = {1};
+    static const int32_t kMergeRank[] = {0}, kMergeTok[] = {0};
+    db.token_bytes = kBytes;
+    db.token_offsets = kOffsets;
+    db.is_special = kSpecial;
+    db.merge_left = kMergeL;
+    db.merge_right = kMergeR;
+    db.merge_rank = kMergeRank;
+    db.merge_token_id = kMergeTok;
+    db.merge_count = 1;
+    db.vocab_size = 3;
+    db.tokenizer_kind = 0;
+    // Real byte-level vocabs expose all 256 bytes (measured on
+    // gemma-4-26B-A4B-it: byte_to_token_id populated 256/256), so the encoder
+    // can frame any byte sequence the decoder may emit. Without full coverage
+    // the round-trip check below would fail on the fixture, not on the decoder.
+    for (int b = 0; b < 256; ++b) db.byte_to_token_id[b] = 0;
+    db.byte_to_token_id[0x61] = 0;
+    db.byte_to_token_id[0xE9] = 1;
+    db.byte_to_token_id[0x62] = 2;
+    REQUIRE(db.valid());
+
+    const auto decode = [&db](std::vector<int32_t> ids, std::string& out) {
+        out.assign(256, '\0');
+        size_t ocap = out.size();
+        const int32_t r = lsxcommon::arrow_tokenizer_decode(
+            db, ids.data(), ids.size(), out.data(), &ocap);
+        if (r != 0) return r;
+        out.resize(ocap);
+        return 0;
+    };
+
+    // A lone 0xE9 is not a UTF-8 sequence: it must be replaced, not passed on.
+    {
+        std::string text;
+        REQUIRE(decode({1}, text) == 0);
+        INFO("decoded " << text.size() << " byte(s)");
+        CHECK(text == "\xEF\xBF\xBD");            // U+FFFD
+        // And the chat invariant: whatever decode emits must frame again.
+        std::vector<int32_t> ids(64);
+        size_t cap = ids.size();
+        CHECK(lsxcommon::arrow_tokenizer_encode(db, text.data(), text.size(),
+                                               ids.data(), &cap) >= 0);
+    }
+
+    // Same byte surrounded by real text — the text must survive intact.
+    {
+        std::string text;
+        REQUIRE(decode({0, 1, 2}, text) == 0);
+        CHECK(text == "a\xEF\xBF\xBD" "b");
+    }
+
+    // A codepoint split across two byte tokens is NOT an error: byte-fallback
+    // pieces legitimately assemble multi-byte sequences and must pass through.
+    {
+        static const uint8_t kSplit[] = {0xC3, 0xA9};
+        static const int64_t kSplitOff[] = {0, 1, 2};
+        db.token_bytes = kSplit;
+        db.token_offsets = kSplitOff;
+        std::string text;
+        REQUIRE(decode({0, 1}, text) == 0);
+        CHECK(text == "\xC3\xA9");                // "é" intact
+    }
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
+
+// Same contract for the SentencePiece-BPE branch (tokenizer_kind == 1, the
+// bridge the alice family uses). There the decode step deliberately expands a
+// <0xHH> piece to the raw byte it stands for, so it can emit lone lead and
+// continuation bytes exactly like the byte-level branch did — and the framing
+// round-trip breaks in the same way. Byte-fallback pieces that legitimately
+// assemble a codepoint must still survive.
+TEST_CASE("sp-bpe decode never emits undecodable bytes", "[tokenizer][decode]")
+{
+    lsxcommon::ArrowTokenizerDb db;
+    auto pinned = BuildSyntheticDb(db);
+
+    // id0 "a", id1 "<0x97>" (byte-fallback piece), id2 "b", id3 "<0xC3>",
+    // id4 "<0xA9>" — the last two assemble "é" across two pieces.
+    static const char kPieces[] = "a" "<0x97>" "b" "<0xC3>" "<0xA9>";
+    static const int64_t kOff[] = {0, 1, 7, 8, 14, 20};
+    static const uint8_t kSpecial[] = {0, 0, 0, 0, 0};
+    db.token_bytes = reinterpret_cast<const uint8_t *>(kPieces);
+    db.token_offsets = kOff;
+    db.is_special = kSpecial;
+    db.vocab_size = 5;
+    db.tokenizer_kind = 1;
+    for (int b = 0; b < 256; ++b) db.byte_to_token_id[b] = 0;
+    REQUIRE(db.valid());
+
+    const auto decode = [&db](std::vector<int32_t> ids, std::string& out) {
+        out.assign(256, '\0');
+        size_t ocap = out.size();
+        const int32_t r = lsxcommon::arrow_tokenizer_decode(
+            db, ids.data(), ids.size(), out.data(), &ocap);
+        if (r != 0) return r;
+        out.resize(ocap);
+        return 0;
+    };
+
+    {
+        std::string text;
+        REQUIRE(decode({1}, text) == 0);
+        CHECK(text == "\xEF\xBF\xBD");            // U+FFFD, not a lone 0x97
+    }
+    {
+        std::string text;
+        REQUIRE(decode({0, 1, 2}, text) == 0);
+        CHECK(text == "a\xEF\xBF\xBD" "b");
+    }
+    {
+        std::string text;                          // "é" from two pieces
+        REQUIRE(decode({3, 4}, text) == 0);
+        CHECK(text == "\xC3\xA9");
+    }
+
+    db = lsxcommon::ArrowTokenizerDb{};   // release mmap handles before deleting files
+    fs::remove_all(pinned);
+}
+
 TEST_CASE("arrow_tokenizer_decode error codes", "[tokenizer][decode]")
 {
     lsxcommon::ArrowTokenizerDb db;

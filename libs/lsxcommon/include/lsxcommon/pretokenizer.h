@@ -4,6 +4,18 @@
 
 namespace lsxcommon {
 
+// Strict UTF-8 codepoint decoder, shared with arrow_tokenizer_decode so the
+// decoder and the encoder can never disagree on what "valid text" means:
+// overlong forms, surrogates and codepoints above U+10FFFF are rejected.
+// On any malformed sequence returns kInvalidUtf8 and sets *len = 1.
+constexpr uint32_t kInvalidUtf8 = 0xFFFFFFFFu;
+uint32_t decode_utf8(const char *p, size_t n, size_t *len);
+
+// Length of the sequence the lead byte @p b starts, or 0 when it cannot start
+// one. Shape only — decode_utf8 decides validity, so the overlong / surrogate /
+// out-of-range rules stay in one place.
+size_t utf8_expected_len(uint8_t b);
+
 // Zero-copy byte span referencing the input text passed to WordStream.
 struct WordSpan {
     const char *begin = nullptr;
