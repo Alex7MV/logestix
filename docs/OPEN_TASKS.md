@@ -164,50 +164,41 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 32.0 t/s (mHC + router); host round trip next
-- **Status: both single-block kernels fixed (2026-10-04). 14.40 -> 32.00 t/s
-  perf / 9.10 -> 13.90 t/s r3 at 2048 tokens; TTFT 315 -> 86 ms.**
-- nsys on the real 29B checkpoint put **80% of all kernel time in
-  `xing_hyper_conn_kernel`** (229 us/launch standalone, 512 us in situ, 80
-  launches/token = ~41 ms of a 69 ms token) and another 10% in
-  `xing_router_kernel` (129 us x 38 = ~4.9 ms). Both were `<<<1, 256>>>` - one
-  SM of 170 - and both serialised their reductions.
-- Fix 1 (mHC): one warp per `hc_fn` row with shuffle reductions, one barrier for
-  the norm and one for the row results. **229 -> 61 us** (3.75x).
-- Fix 2 (router): one warp per expert for the [64, 3584] projection plus a
-  block-parallel top-k (warp-local argmax, then one candidate per warp, ties to
-  the lowest index - the serial scan's rule). **129 -> 33 us** (3.9x).
-- Both changes are tolerance class (partial-sum grouping inside the projections),
-  so every numeric gate was re-run on the real weights: SelfCheck Paris x3,
-  FSI 3/3, CODE 3/3, DET 3/3 all still pass. Both carry a Release-only latency
-  budget and a host-parity case at the production shape (hidden=3584, 64
-  experts) - the old cases used hidden=64 / 16 experts and could not see launch
-  geometry at all.
-- E2E at the canonical protocol reproduced twice per change (71583/71639 ms,
-  then 64040/64094 ms).
-- **Re-prioritised after measuring the length curve (2026-10-04).** Sweeping
-  `--max-gen` on the real checkpoint gives a clean linear model:
+### D2. `xing` decode: 14.4 -> 52.0 t/s (three single-block / serial kernels)
+- **Status: mHC, router and attention fixed (2026-10-04). 14.40 -> 52.00 t/s
+  perf / 9.10 -> 16.70 t/s r3 at 2048 tokens.** Every fix came from the same
+  method: nsys + a `--max-gen` sweep to separate fixed from context-dependent
+  cost, then a Release-only latency budget at the PRODUCTION shape.
+- The three serial costs, in the order nsys found them:
 
-  | generated | us/token | t/s |
-  |---|---|---|
-  | 128 | 15578 | 64.2 |
-  | 512 | 18260 | 54.8 |
-  | 1024 | 22564 | 44.3 |
-  | 2048 | 31289 | 32.0 |
+  | kernel | before | after | what it was |
+  |---|---|---|---|
+  | `xing_hyper_conn_kernel` | 229 us | 61 us | `<<<1,256>>>`, 24 sequential 256-thread tree reductions (192 dependent barriers) |
+  | `xing_router_kernel` | 129 us | 33 us | `<<<1,256>>>`, one thread per expert, then 4x64 serial shared reads on thread 0 |
+  | `xing_attn_kernel` | 814 us | 209 us | `<<<32,256>>>` (32 of 170 SMs), softmax serial on thread 0, values serial over t on one thread per dim |
 
-  `us/token = 14258 + 16518 us per 1000 cached positions`, i.e. at the canonical
-  length **54% of the step is context-dependent** - and that part is
-  `xing_attn_kernel`, which runs ONE block per head and walks all `t <= pos`
-  serially. It is now the single biggest item, ahead of the host round trip:
-  splitting the position range across blocks (flash-decoding style) plus a
-  combine kernel is the next lever, worth up to ~2x at 2048.
-- The fixed 14.3 ms is the launch-bound part: kernels are 13 ms/step, of which
-  the mHC block is still 6.6 ms (82 us x 80) even after the rewrite - one block
-  is one SM, so its floor is a two-kernel split (block-per-row projection, then a
-  tiny Sinkhorn), not a faster reduction.
-- Effective bandwidth went 31.6 -> 103 GB/s. The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; the remaining gap is items
-  1-3 below.
+- The attention one is what the length curve pointed at:
+  `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
+  step was context-dependent, all of it in that kernel. After the fix the same
+  sweep gives **14051 + 4905**, i.e. the context term shrank 3.4x and the fixed
+  term is now 73% of the step.
+- Fixed cost, where the next levers are (nsys, 70 steps): kernels 13 ms of which
+  the mHC block is still 6.6 ms - one block is one SM, so its floor is a
+  two-kernel split (block-per-row projection, then a tiny Sinkhorn), worth ~6
+  ms/token. Host-side: the per-token `[vocab]` logits round trip (512 KiB D2H +
+  512 KiB H2D) and three `cudaMalloc`/`cudaFree` per step; the deepseek pipeline
+  keeps the row on the device. `ResolveXingRouted`'s 38 D2H syncs per token were
+  MEASURED as free at 128 tokens (64.3 vs 64.3 t/s with them skipped), so they
+  are not worth doing before the two above.
+- Numeric gates re-run on the real weights after every change (all three kernel
+  rewrites are tolerance class): SelfCheck Paris x3, FSI 3/3, CODE 3/3, DET 3/3.
+  Each kernel carries a Release-only latency budget and a host-parity case at the
+  production shape - the original cases used hidden=64 / 16 experts, which is why
+  all three defects survived a green suite.
+- Effective bandwidth went 31.6 -> 168 GB/s (52 t/s, 19.2 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 52 t/s the model reads
+  168 GB/s of it. The attention has more headroom (it is one block per head, so
+  a position-split with a combine kernel could use 8x more SMs).
 - Per-token costs, in the order they were identified:
 1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
      stream once per MoE layer** (38 syncs/token) because the neutral

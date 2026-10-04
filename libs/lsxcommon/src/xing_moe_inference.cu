@@ -19,6 +19,7 @@
 #include "xing_moe_device_math.h"
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/xing_moe_kernels.h"
 #include "lsx_kernels_act.cuh"
 #include "lsx_kernels_math.cuh"
 #include "lsx_kernels_norm.cuh"
@@ -257,49 +258,6 @@ __global__ void xing_write_cache_kernel(const float *__restrict__ kv_b,
     for (int i = threadIdx.x; i < rope; i += blockDim.x) kb[nope + i] = krot[i];
 }
 
-__global__ void xing_attn_kernel(const float *__restrict__ q,
-                                 const float *__restrict__ kc,
-                                 const float *__restrict__ vc, int pos, int heads,
-                                 int qk, int vh, float scale,
-                                 float *__restrict__ scores,
-                                 float *__restrict__ out, int capacity)
-{
-    const int h = blockIdx.x;
-    extern __shared__ float sm[];
-    float *sc = scores + static_cast<size_t>(h) * capacity;
-    const float *qt = q + static_cast<size_t>(h) * qk;
-    for (int t = threadIdx.x; t <= pos; t += blockDim.x)
-    {
-        const float *kt = kc + (static_cast<size_t>(t) * heads + h) * qk;
-        float acc = 0.0f;
-        for (int i = 0; i < qk; ++i) acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
-        sc[t] = __fmul_rn(acc, scale);
-    }
-    __syncthreads();
-    if (threadIdx.x == 0)
-    {
-        float m = -INFINITY;
-        for (int t = 0; t <= pos; ++t) m = fmaxf(m, sc[t]);
-        float sum = 0.0f;
-        for (int t = 0; t <= pos; ++t)
-        {
-            const float e = device::XingExpfGlibc(sc[t] - m);
-            sm[t] = e;
-            sum = __fadd_rn(sum, e);
-        }
-        const float inv = __fdiv_rn(1.0f, sum);
-        for (int t = 0; t <= pos; ++t) sm[t] = __fmul_rn(sm[t], inv);
-    }
-    __syncthreads();
-    for (int d = threadIdx.x; d < vh; d += blockDim.x)
-    {
-        float acc = 0.0f;
-        for (int t = 0; t <= pos; ++t)
-            acc = __fadd_rn(acc, __fmul_rn(sm[t],
-                           vc[(static_cast<size_t>(t) * heads + h) * vh + d]));
-        out[static_cast<size_t>(h) * vh + d] = acc;
-    }
-}
 
 // Host-side staging for the four selected experts: the model-neutral
 // expert-batch GEMV takes its packed/scale pointer arrays BY VALUE (it copies
@@ -796,10 +754,10 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                               frozen::kVHeadDim,
                           stream);
         }
-        xing_attn_kernel<<<frozen::kHeads, kThreads, (pos + 1) * sizeof(float), stream>>>(
+        XING_CK(LaunchXingAttention(
             s.d_q, kc, vc, pos, frozen::kHeads, frozen::kQkHeadDim,
             frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
-            s.capacity);
+            s.capacity, pos + 1, stream));
         XingStageRms("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         if (l == 0)
         {

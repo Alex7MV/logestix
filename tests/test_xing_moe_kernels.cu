@@ -773,3 +773,164 @@ TEST_CASE("Xing mHC stays inside its latency budget at the 29B shape",
     cudaFree(d_comb);
     cudaStreamDestroy(stream);
 }
+
+// Attention at a long context. The decode step's cost is dominated by this:
+// us/token = 14.3 ms + 16.5 ms per 1000 cached positions on the real 29B
+// checkpoint (64.2 t/s at 128 tokens, 32.0 at 2048), and the whole context part
+// is xing_attn_kernel - one block per head, so 32 of 170 SMs, with the softmax
+// and the value accumulation serial over t <= pos.
+namespace attn_shape {
+
+constexpr int kHeads = 32;
+constexpr int kQk = 192;   // 128 nope + 64 rope
+constexpr int kVh = 128;
+constexpr int kPos = 2047; // canonical 2048-token context
+constexpr float kScale = 0.14467962580268925f;  // mscale^2 / sqrt(192)
+
+struct Cache
+{
+    std::vector<float> q, k, v;
+    Cache(unsigned seed)
+    {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        q.resize(static_cast<size_t>(kHeads) * kQk);
+        k.resize(static_cast<size_t>(kPos + 1) * kHeads * kQk);
+        v.resize(static_cast<size_t>(kPos + 1) * kHeads * kVh);
+        for (auto &x : q) x = dist(rng);
+        for (auto &x : k) x = dist(rng);
+        for (auto &x : v) x = dist(rng);
+    }
+};
+
+// Xing4_0Attention's eager path: softmax(qk^T * scaling) @ v over t <= pos.
+std::vector<float> ReferenceAttention(const Cache &c)
+{
+    std::vector<float> out(static_cast<size_t>(kHeads) * kVh, 0.0f);
+    for (int h = 0; h < kHeads; ++h)
+    {
+        std::vector<float> logits(kPos + 1);
+        float mx = -INFINITY;
+        for (int t = 0; t <= kPos; ++t)
+        {
+            const float *kt =
+                c.k.data() + (static_cast<size_t>(t) * kHeads + h) * kQk;
+            const float *qt = c.q.data() + static_cast<size_t>(h) * kQk;
+            float acc = 0.0f;
+            for (int i = 0; i < kQk; ++i) acc += qt[i] * kt[i];
+            logits[static_cast<size_t>(t)] = acc * kScale;
+            mx = std::max(mx, logits[static_cast<size_t>(t)]);
+        }
+        float sum = 0.0f;
+        for (auto &l : logits)
+        {
+            l = std::exp(l - mx);
+            sum += l;
+        }
+        for (int d = 0; d < kVh; ++d)
+        {
+            float acc = 0.0f;
+            for (int t = 0; t <= kPos; ++t)
+            {
+                const float w = logits[static_cast<size_t>(t)] / sum;
+                acc += w * c.v[(static_cast<size_t>(t) * kHeads + h) * kVh + d];
+            }
+            out[static_cast<size_t>(h) * kVh + d] = acc;
+        }
+    }
+    return out;
+}
+
+struct Device
+{
+    float *q = nullptr, *k = nullptr, *v = nullptr, *scores = nullptr,
+          *out = nullptr;
+};
+
+Device Upload(const Cache &c, int capacity)
+{
+    Device d;
+    REQUIRE(cudaMalloc(&d.q, c.q.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d.k, c.k.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d.v, c.v.size() * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d.scores,
+                       static_cast<size_t>(capacity) * kHeads * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMalloc(&d.out, static_cast<size_t>(kHeads) * kVh * sizeof(float)) ==
+            cudaSuccess);
+    REQUIRE(cudaMemcpy(d.q, c.q.data(), c.q.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d.k, c.k.data(), c.k.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMemcpy(d.v, c.v.data(), c.v.size() * sizeof(float),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    return d;
+}
+
+void Free(Device &d)
+{
+    cudaFree(d.q); cudaFree(d.k); cudaFree(d.v); cudaFree(d.scores);
+    cudaFree(d.out);
+}
+
+} // namespace attn_shape
+
+TEST_CASE("Xing attention matches the host reference at a 2k context",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace attn_shape;
+    const Cache c(20261004);
+    const int capacity = kPos + 1;
+    const auto ref = ReferenceAttention(c);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    Device d = Upload(c, capacity);
+    REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh, kScale,
+                                d.scores, d.out, capacity, kPos + 1,
+                                stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    const auto got = Download(d.out, kHeads * kVh);
+    for (size_t i = 0; i < ref.size(); ++i)
+        REQUIRE(got[i] == Approx(ref[i]).margin(1e-5));
+    Free(d);
+    cudaStreamDestroy(stream);
+}
+
+TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace attn_shape;
+    const Cache c(11);
+    const int capacity = kPos + 1;
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    Device d = Upload(c, capacity);
+    const auto launch = [&] {
+        return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh, kScale,
+                                   d.scores, d.out, capacity, kPos + 1, stream);
+    };
+    for (int i = 0; i < 3; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    cudaEvent_t a, b;
+    REQUIRE(cudaEventCreate(&a) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&b) == cudaSuccess);
+    const int iters = 20;
+    REQUIRE(cudaEventRecord(a, stream) == cudaSuccess);
+    for (int i = 0; i < iters; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaEventRecord(b, stream) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, a, b) == cudaSuccess);
+    const double us = ms * 1000.0 / iters;
+    INFO("attention launch " << us << " us at pos=" << kPos);
+#if defined(NDEBUG)
+    REQUIRE(us < 250.0);
+#else
+    WARN("latency budget is a Release-only gate; measured " << us << " us");
+#endif
+    cudaEventDestroy(a); cudaEventDestroy(b);
+    Free(d);
+    cudaStreamDestroy(stream);
+}

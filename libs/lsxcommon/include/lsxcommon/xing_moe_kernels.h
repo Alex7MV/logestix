@@ -59,6 +59,18 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 //   x       [hidden] BF16 - the device-independent neutral GEMV only dispatches
 //           matching dtypes, so the router's activation is BF16 like its weight
 //           (the kernel converts per element, keeping the dot product in F32).
+// Causal MHA decode over one layer's KV cache slice.
+//   q      [heads, qk]                        this token's query, rope applied
+//   kc/vc  [n_pos, heads, qk] / [n_pos, heads, vh]   rows 0..pos are valid
+//   scores [capacity * heads]                 scratch, one n_pos row per head
+//   out    [heads, vh]
+// `n_pos` (= pos + 1) sizes the shared staging; it is passed separately so the
+// caller never has to round the context up to a block size.
+cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc,
+                                int pos, int heads, int qk, int vh, float scale,
+                                float *scores, float *out, int capacity,
+                                int n_pos, cudaStream_t stream);
+
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
                              const __nv_bfloat16 *x, int num_experts, int hidden,
                              int top_k, bool norm_topk_prob,

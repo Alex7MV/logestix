@@ -355,7 +355,124 @@ __global__ void xing_router_kernel(
     }
 }
 
+// Causal MHA decode for one layer: one block per head.
+//
+// All three phases use the whole block now. The softmax and the value
+// accumulation used to be serial over t <= pos (thread 0 for the softmax, one
+// thread per head dim for the values), so at pos = 2047 a layer cost ~814 us -
+// the entire context-dependent half of a 31 ms token on the real 29B checkpoint,
+// measured as us/token = 14.3 ms + 16.5 ms per 1000 cached positions. Budget:
+// test_xing_moe_kernels "Xing attention stays inside its latency budget at a 2k
+// context".
+__global__ void xing_attn_kernel(const float *__restrict__ q,
+                                 const float *__restrict__ kc,
+                                 const float *__restrict__ vc, int pos, int heads,
+                                 int qk, int vh, float scale,
+                                 float *__restrict__ scores,
+                                 float *__restrict__ out, int capacity)
+{
+    extern __shared__ float sm[];
+    __shared__ float warp_max[8];
+    __shared__ float warp_sum[8];
+    __shared__ float partial[2][128];
+    const int h = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int nthreads = blockDim.x;
+    const int n_pos = pos + 1;
+    float *sc = scores + static_cast<size_t>(h) * capacity;
+    const float *qt = q + static_cast<size_t>(h) * qk;
+
+    // phase 1: scores, parallel over positions with a 2-way unroll so each
+    // thread keeps two K rows in flight.
+    {
+        int t = tid;
+        for (; t + nthreads < n_pos; t += 2 * nthreads)
+        {
+            const float *kt0 = kc + (static_cast<size_t>(t) * heads + h) * qk;
+            const float *kt1 =
+                kt0 + static_cast<size_t>(nthreads) * heads * qk;
+            float a0 = 0.0f, a1 = 0.0f;
+            for (int i = 0; i < qk; ++i)
+            {
+                a0 = __fadd_rn(a0, __fmul_rn(qt[i], kt0[i]));
+                a1 = __fadd_rn(a1, __fmul_rn(qt[i], kt1[i]));
+            }
+            sc[t] = __fmul_rn(a0, scale);
+            sc[t + nthreads] = __fmul_rn(a1, scale);
+        }
+        for (; t < n_pos; t += nthreads)
+        {
+            const float *kt = kc + (static_cast<size_t>(t) * heads + h) * qk;
+            float acc = 0.0f;
+            for (int i = 0; i < qk; ++i)
+                acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
+            sc[t] = __fmul_rn(acc, scale);
+        }
+    }
+
+    // Block reduction over the score row: shuffle inside a warp, then one slot
+    // per warp. Replaces the 2048-iteration serial scan on thread 0.
+    float m = -INFINITY;
+    for (int t = tid; t < n_pos; t += nthreads) m = fmaxf(m, sc[t]);
+    for (int off = 16; off > 0; off >>= 1)
+        m = fmaxf(m, __shfl_down_sync(0xffffffffu, m, off));
+    if ((tid & 31) == 0) warp_max[tid >> 5] = m;
+    __syncthreads();
+    m = -INFINITY;
+    for (int w = 0; w < (nthreads >> 5); ++w) m = fmaxf(m, warp_max[w]);
+
+    float sum = 0.0f;
+    for (int t = tid; t < n_pos; t += nthreads)
+    {
+        const float e = device::XingExpfGlibc(__fsub_rn(sc[t], m));
+        sm[t] = e;
+        sum = __fadd_rn(sum, e);
+    }
+    for (int off = 16; off > 0; off >>= 1)
+        sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, off));
+    if ((tid & 31) == 0) warp_sum[tid >> 5] = sum;
+    __syncthreads();
+    sum = 0.0f;
+    for (int w = 0; w < (nthreads >> 5); ++w) sum = __fadd_rn(sum, warp_sum[w]);
+    const float inv = __fdiv_rn(1.0f, sum);
+    for (int t = tid; t < n_pos; t += nthreads) sm[t] = __fmul_rn(sm[t], inv);
+    __syncthreads();
+
+    // phase 3: weighted sum over positions. Each head dim is accumulated by
+    // nthreads / vh threads at once (two groups at vh=128, blockDim=256), each
+    // striding the positions; the partials are summed through shared memory.
+    const int groups = nthreads / vh;
+    const int group = tid / vh;
+    const int d = tid - group * vh;
+    float acc = 0.0f;
+    for (int t = group; t < n_pos; t += groups)
+        acc = __fadd_rn(
+            acc,
+            __fmul_rn(sm[t], vc[(static_cast<size_t>(t) * heads + h) * vh + d]));
+    if (groups > 1 && group > 0) partial[group - 1][d] = acc;
+    __syncthreads();
+    if (tid < vh)
+    {
+        float total = acc;
+        for (int g = 1; g < groups; ++g) total = __fadd_rn(total, partial[g - 1][d]);
+        out[static_cast<size_t>(h) * vh + d] = total;
+    }
+}
 }  // namespace
+
+cudaError_t LaunchXingAttention(const float *q, const float *kc,
+                                const float *vc, int pos, int heads, int qk,
+                                int vh, float scale, float *scores, float *out,
+                                int capacity, int n_pos, cudaStream_t stream)
+{
+    if (!q || !kc || !vc || !scores || !out || heads <= 0 || qk <= 0 ||
+        vh <= 0 || pos < 0 || n_pos <= pos || capacity < n_pos)
+        return cudaErrorInvalidValue;
+    // One block per head; n_pos floats stage the softmax weights.
+    xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float), stream>>>(
+        q, kc, vc, pos, heads, qk, vh, scale, scores, out, capacity);
+    return cudaGetLastError();
+}
 
 cudaError_t LaunchXingUnweightedRmsNorm4(const float *x, float *out,
                                           int hc_mult, int hidden, float eps,
