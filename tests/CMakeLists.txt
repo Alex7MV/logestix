@@ -1274,6 +1274,40 @@ set_tests_properties(test_xing_moe_convert PROPERTIES TIMEOUT 120)
 set_tests_properties(test_xing_moe_convert PROPERTIES
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
 
+# ── Xing4.0-29B-A4B selfcheck + FSI/CODE/DET golden parity gates ──
+add_executable(test_xing_moe_selfcheck test_xing_moe_selfcheck.cpp)
+target_link_libraries(test_xing_moe_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_selfcheck COMMAND test_xing_moe_selfcheck)
+set_tests_properties(test_xing_moe_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_xing_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+# Written out rather than in a foreach(): test_model_suite_guard's
+# RegisteredTestNames() resolves add_test(NAME <literal>) and foreach argument
+# lists, but cannot expand a variable inside a target name.
+add_executable(test_xing_moe_fsi_selfcheck test_xing_moe_fsi_selfcheck.cpp)
+target_compile_definitions(test_xing_moe_fsi_selfcheck PRIVATE
+    "LSX_FSI_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fsi\"")
+target_link_libraries(test_xing_moe_fsi_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_fsi_selfcheck COMMAND test_xing_moe_fsi_selfcheck)
+set_tests_properties(test_xing_moe_fsi_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_xing_moe_fsi_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_xing_moe_code_selfcheck test_xing_moe_code_selfcheck.cpp)
+target_compile_definitions(test_xing_moe_code_selfcheck PRIVATE
+    "LSX_CODE_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/code\"")
+target_link_libraries(test_xing_moe_code_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_code_selfcheck COMMAND test_xing_moe_code_selfcheck)
+set_tests_properties(test_xing_moe_code_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_xing_moe_code_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
+add_executable(test_xing_moe_det_selfcheck test_xing_moe_det_selfcheck.cpp)
+target_compile_definitions(test_xing_moe_det_selfcheck PRIVATE
+    "LSX_DET_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fixtures/det\"")
+target_link_libraries(test_xing_moe_det_selfcheck PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_xing_moe_det_selfcheck COMMAND test_xing_moe_det_selfcheck)
+set_tests_properties(test_xing_moe_det_selfcheck PROPERTIES LABELS inference)
+set_tests_properties(test_xing_moe_det_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── Xing4.0-29B-A4B tool-calling codec (host-only, synthetic tokenizer) ──
 add_executable(test_xing_tool_framing test_xing_tool_framing.cpp)
 target_compile_definitions(test_xing_tool_framing PRIVATE

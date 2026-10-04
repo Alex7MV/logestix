@@ -277,6 +277,15 @@ const std::vector<SuiteSpec> &Suites()
           {"fsi", {"test_phi_dense_fsi_selfcheck"}},
           {"code", {"test_phi_dense_code_selfcheck"}},
           {"det", {"test_phi_dense_det_selfcheck"}}}},
+        {"xing4.0-29b-a4b",
+         {{"convert", {"test_xing_moe_convert"}},
+          {"load", {"test_xing_moe_loader"}},
+          {"model", {"test_xing_moe_model", "test_xing_tool_framing"}},
+          {"kernels", {"test_xing_moe_kernels"}},
+          {"selfcheck", {"test_xing_moe_selfcheck"}},
+          {"fsi", {"test_xing_moe_fsi_selfcheck"}},
+          {"code", {"test_xing_moe_code_selfcheck"}},
+          {"det", {"test_xing_moe_det_selfcheck"}}}},
         {"alice-foundation-80b-a3b",
          {{"convert", {"test_alice_moe_convert"}},
           {"load", {"test_alice_moe_loader", "test_alice_tokenizer"}},
@@ -693,6 +702,9 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         {"gigachat3.5-432b-a28b-reasoning", {"test_gigachat_tool_framing"}},
         {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
         {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},
+        // Xing has a native renderer verified against its chat_template.jinja
+        // (not the generic Hermes fallback), so it is named here.
+        {"xing4.0-29b-a4b", {"test_xing_tool_framing"}},
     };
     // Every ingested model must be in the table (a new family must state its
     // verdict), and every named target must be a registered ctest target.

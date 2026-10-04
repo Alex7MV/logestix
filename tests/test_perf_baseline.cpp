@@ -99,6 +99,8 @@ const PerfModel kMiMo = {
     2048};
 const PerfModel kPhi = {
     "phi-4", "phi-4", "The capital of France is", 2048};
+const PerfModel kXing = {
+    "xing4.0-29b-a4b", "Xing4.0-29B-A4B", "The capital of France is", 2048};
 const PerfModel kAlice = {
     "alice-foundation-80b-a3b", "AliceAI-Foundation-80B-A3B-Base",
     "The capital of France is", 2048};
@@ -316,6 +318,11 @@ void RunPerfModel(const PerfModel &m)
 }
 
 } // namespace
+
+TEST_CASE("perf baseline: xing4.0-29b-a4b", "[perf]")
+{
+    RunPerfModel(kXing);
+}
 
 TEST_CASE("perf baseline: gemma-4-26b-a4b-it", "[perf]")
 {

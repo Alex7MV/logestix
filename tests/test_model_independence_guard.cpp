@@ -93,6 +93,7 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::phi::frozen"},
     {"alice-foundation-80b-a3b", "alice_moe_constants.h",
      "lsxcommon::alice::frozen"},
+    {"xing4.0-29b-a4b", "xing_moe_constants.h", "lsxcommon::xing::frozen"},
 };
 
 std::string ReadFile(const fs::path &p)
@@ -296,6 +297,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "phi_dense_model.cpp",         // phi-4
         "mimo_moe_model.cpp",          // mimo-v2.6-flash-rl
         "alice_moe_model.cpp",         // alice-foundation-80b-a3b
+        "xing_moe_model.cpp",          // xing4.0-29b-a4b (mHC four-stream)
     };
     for (const char *f : consumers) {
         const std::string text = ReadFile(kSrcDir / f);
@@ -385,6 +387,7 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         {"mimo-v2.6-flash-rl", {"mimo_moe_model.cpp"}},
         {"alice-foundation-80b-a3b", {"alice_moe_model.cpp",
                                       "alice_moe_inference_pipeline.cu"}},
+        {"xing4.0-29b-a4b", {"xing_moe_model.cpp"}},
     };
     // marker group -> what it guarantees. EVERY spelling in a group must be
     // absent for the contract to be considered unwired (any-of semantics:
