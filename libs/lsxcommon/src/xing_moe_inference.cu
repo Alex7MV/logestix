@@ -238,10 +238,17 @@ __global__ void xing_mean_streams_kernel(const float *__restrict__ streams,
 // the constant `heads * kQkNopeHeadDim`: all 32 heads then rotated the same 64
 // floats while head 0's rope subspace stayed unrotated. Only a multi-position
 // prefill can see it - with one cached token the softmax is trivial.
+// cos_t / sin_t are the BASE of the YaRN tables; the row for this step's position
+// is selected from d_scalars, so the launch arguments stay constant across a
+// captured graph.
 __global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs, int qk,
-                                   int nope, const float *__restrict__ cos_t,
-                                   const float *__restrict__ sin_t)
+                                   int nope, const float *__restrict__ cos_base,
+                                   const float *__restrict__ sin_base,
+                                   const int *__restrict__ d_scalars)
 {
+    const int pos = d_scalars[0];
+    const float *cos_t = cos_base + static_cast<size_t>(pos) * pairs;
+    const float *sin_t = sin_base + static_cast<size_t>(pos) * pairs;
     const int h = blockIdx.x;
     for (int j = threadIdx.x; j < pairs; j += blockDim.x)
     {
@@ -257,9 +264,13 @@ __global__ void xing_rope_q_kernel(float *__restrict__ q, int pairs, int qk,
 
 // k_rot is a single [rope] row (MQA-style shared across heads upstream).
 __global__ void xing_rope_k_kernel(float *__restrict__ k_rot, int pairs,
-                                   const float *__restrict__ cos_t,
-                                   const float *__restrict__ sin_t)
+                                   const float *__restrict__ cos_base,
+                                   const float *__restrict__ sin_base,
+                                   const int *__restrict__ d_scalars)
 {
+    const int pos = d_scalars[0];
+    const float *cos_t = cos_base + static_cast<size_t>(pos) * pairs;
+    const float *sin_t = sin_base + static_cast<size_t>(pos) * pairs;
     for (int j = threadIdx.x; j < pairs; j += blockDim.x)
     {
         const float c = cos_t[j];
@@ -276,9 +287,11 @@ __global__ void xing_rope_k_kernel(float *__restrict__ k_rot, int pairs,
 __global__ void xing_write_cache_kernel(const float *__restrict__ kv_b,
                                         const float *__restrict__ krot,
                                         float *__restrict__ kc, float *__restrict__ vc,
-                                        int pos, int heads, int nope, int rope,
+                                        const int *__restrict__ d_scalars,
+                                        int heads, int nope, int rope,
                                         int vh)
 {
+    const int pos = d_scalars[0];
     const int h = blockIdx.x;
     const int kvw = nope + vh;
     float *kb = kc + (static_cast<size_t>(pos) * heads + h) * (nope + rope);
@@ -458,9 +471,11 @@ cudaError_t ResolveXingRouted(const XingPinnedWeights &pw, int layer,
 
 // Broadcast one embedding row into all hc_mult streams.
 __global__ void xing_embed_gather_kernel(const __half *__restrict__ table,
-                                         int id, float *__restrict__ streams,
+                                         const int *__restrict__ d_scalars,
+                                         float *__restrict__ streams,
                                          int hc_mult, int hidden)
 {
+    const int id = d_scalars[1];
     for (int j = threadIdx.x; j < hidden; j += blockDim.x)
     {
         const float v = __half2float(table[static_cast<int64_t>(id) * hidden + j]);
@@ -588,7 +603,9 @@ void FreeXingSession(XingSession &s)
     d(s.d_attn_part); d(s.d_act); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
     d(s.d_attn); d(s.d_scores); d(s.d_logits); d(s.d_gate); d(s.d_expert_ids);
     d(s.d_half); d(s.d_half2); d(s.d_half_up);
-    cudaFree(s.d_rows_gate); cudaFree(s.d_rows_down); cudaFree(s.d_rows_up); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
+    cudaFree(s.d_rows_gate); cudaFree(s.d_rows_down); cudaFree(s.d_rows_up);
+    cudaFree(s.d_scalars);
+    if (s.h_scalars) cudaFreeHost(s.h_scalars); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
     d(s.d_embed_table); d(s.d_router_act); d(s.d_router_scores); d(s.d_router_logits);
     s = XingSession{};
 }
@@ -675,24 +692,52 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_epacked), 8 * sizeof(void *)));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_escales), 8 * sizeof(void *)));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_egs), 8 * sizeof(float)));
+    // Device {pos, token_id} plus its pinned host mirror. Pinned because the
+    // per-step fill is a single 8-byte async H2D copy, which costs no kernel
+    // launch - important, since this file is being squeezed for launch count.
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_scalars), 2 * sizeof(int)));
+    XING_CK(cudaHostAlloc(reinterpret_cast<void **>(&s.h_scalars),
+                         2 * sizeof(int), cudaHostAllocDefault));
+    s.h_scalars[0] = 0;
+    s.h_scalars[1] = 0;
+    XING_CK(cudaMemcpy(s.d_scalars, s.h_scalars, 2 * sizeof(int),
+                       cudaMemcpyHostToDevice));
     s.capacity = capacity;
     s.length = 0;
     return cudaGetLastError();
 }
 
+// Publish this step's {pos, token_id} for the kernels that read them from device
+// memory. MUST be called before XingDecodeStep on the eager path, and before
+// every cudaGraphLaunch on the captured path (inside a capture it would be
+// illegal - the copy is the whole reason the values travel in memory).
+cudaError_t XingSetStepScalars(XingSession &s, int pos, int token_id,
+                               cudaStream_t stream)
+{
+    s.h_scalars[0] = pos;
+    s.h_scalars[1] = token_id;
+    const cudaError_t e = cudaMemcpyAsync(s.d_scalars, s.h_scalars,
+                                         2 * sizeof(int),
+                                         cudaMemcpyHostToDevice, stream);
+    return e;
+}
+
 cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
-                            const float *cos_t, const float *sin_t,
-                            cudaStream_t stream)
+                            const float *cos_base, const float *sin_base,
+                            const int *d_scalars, cudaStream_t stream)
 {
     xing_rope_q_kernel<<<heads, kThreads, 0, stream>>>(
-        q, pairs, qk_head_dim, qk_head_dim - 2 * pairs, cos_t, sin_t);
+        q, pairs, qk_head_dim, qk_head_dim - 2 * pairs, cos_base, sin_base,
+        d_scalars);
     return cudaGetLastError();
 }
 
-cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_t,
-                            const float *sin_t, cudaStream_t stream)
+cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_base,
+                            const float *sin_base, const int *d_scalars,
+                            cudaStream_t stream)
 {
-    xing_rope_k_kernel<<<1, kThreads, 0, stream>>>(krot, pairs, cos_t, sin_t);
+    xing_rope_k_kernel<<<1, kThreads, 0, stream>>>(krot, pairs, cos_base,
+                                                   sin_base, d_scalars);
     return cudaGetLastError();
 }
 
@@ -798,7 +843,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         if (de != cudaSuccess) return de;
     }
     xing_embed_gather_kernel<<<1, kThreads, 0, stream>>>(s.d_embed_table,
-                                                         token_id, s.d_hidden,
+                                                         s.d_scalars, s.d_hidden,
                                                          hc, H);
     s.token_id = token_id;
     if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
@@ -876,16 +921,15 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XingStageDump("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
         XingStageDump("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
 
-        // Interleaved RoPE on q's rope subspace and on k_rot.
-        const float *rc = d_rc + static_cast<size_t>(pos) * pairs;
-        const float *rs = d_rs + static_cast<size_t>(pos) * pairs;
+        // Interleaved RoPE on q's rope subspace and on k_rot. The BASE tables go
+        // in; each kernel picks its own row from d_scalars[0].
         XING_CK(LaunchXingRopeQ(s.d_q, frozen::kHeads, frozen::kQkHeadDim, pairs,
-                               rc, rs, stream));
-        XING_CK(LaunchXingRopeK(s.d_kv_latent + frozen::kKvLoraRank, pairs, rc,
-                               rs, stream));
+                               d_rc, d_rs, s.d_scalars, stream));
+        XING_CK(LaunchXingRopeK(s.d_kv_latent + frozen::kKvLoraRank, pairs, d_rc,
+                               d_rs, s.d_scalars, stream));
 
         xing_write_cache_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
-            s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, kc, vc, pos,
+            s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, kc, vc, s.d_scalars,
             frozen::kHeads, frozen::kQkNopeHeadDim, rope, frozen::kVHeadDim);
         if (l == 0 && std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
         {

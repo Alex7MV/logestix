@@ -607,9 +607,18 @@ TEST_CASE("Xing interleaved rope rotates every head in place", "[xing][kernels]"
     REQUIRE(cudaMemcpy(d_sin, sin_t.data(), sin_t.size() * sizeof(float),
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
-    REQUIRE(LaunchXingRopeQ(d_q, kHeadsT, kQkT, kPairs, d_cos, d_sin, stream) ==
+    // The rope kernels take the BASE tables plus the device scalars; the test
+    // pins position 0, which is what a host-side `cos + pos*pairs` used to
+    // produce.
+    int *d_scalars = nullptr;
+    REQUIRE(cudaMalloc(&d_scalars, 2 * sizeof(int)) == cudaSuccess);
+    const int scalars[2] = {0, 0};
+    REQUIRE(cudaMemcpy(d_scalars, scalars, sizeof(scalars),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(LaunchXingRopeQ(d_q, kHeadsT, kQkT, kPairs, d_cos, d_sin, d_scalars,
+                            stream) == cudaSuccess);
+    REQUIRE(LaunchXingRopeK(d_krot, kPairs, d_cos, d_sin, d_scalars, stream) ==
             cudaSuccess);
-    REQUIRE(LaunchXingRopeK(d_krot, kPairs, d_cos, d_sin, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     const auto got = Download(d_q, static_cast<int>(q.size()));

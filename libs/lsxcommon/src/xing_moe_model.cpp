@@ -22,6 +22,13 @@
 #include <chrono>
 #include <cmath>
 
+// Propagate a CUDA error from a helper into Infer's error return.
+#define XING_MODEL_CK(call)                     \
+    do {                                         \
+        const cudaError_t e_ = (call);           \
+        if (e_ != cudaSuccess) return e_;        \
+    } while (0)
+
 namespace lsxcommon {
 
 const std::string XingMoeModel::kType = "xing4.0-29b-a4b";
@@ -226,6 +233,8 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
         for (size_t i = 0; i < feed.size(); ++i)
         {
             if (gs.Aborted()) break;
+            XING_MODEL_CK(xing::XingSetStepScalars(*session_, pos, feed[i],
+                                                    stream()));
             const cudaError_t se = xing::XingDecodeStep(
                 pw_, dims_, *session_, feed[i], d_rc_, d_rs_, pos, stream());
             if (se != cudaSuccess) return se;
@@ -314,6 +323,8 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 eos_terminated = true;
                 break;
             }
+            XING_MODEL_CK(xing::XingSetStepScalars(*session_, pos, next,
+                                                    stream()));
             const cudaError_t se = xing::XingDecodeStep(
                 pw_, dims_, *session_, next, d_rc_, d_rs_, pos, stream());
             if (se != cudaSuccess) return se;
