@@ -49,8 +49,12 @@ void XingMoeModel::TeardownWeights()
     session_.reset();
     if (d_rc_) cudaFree(d_rc_);
     if (d_rs_) cudaFree(d_rs_);
+    if (d_next_token_) cudaFree(d_next_token_);
+    if (d_next_maxv_) cudaFree(d_next_maxv_);
     d_rc_ = nullptr;
     d_rs_ = nullptr;
+    d_next_token_ = nullptr;
+    d_next_maxv_ = nullptr;
     rc_.clear();
     rs_.clear();
     host_logits_.clear();
@@ -236,69 +240,58 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
         }
 
         auto &sampler = sample::DefaultSampler();
+        if (d_next_token_ == nullptr &&
+            (cudaMalloc(reinterpret_cast<void **>(&d_next_token_),
+                        sizeof(int32_t)) != cudaSuccess ||
+             cudaMalloc(reinterpret_cast<void **>(&d_next_maxv_),
+                        sizeof(float)) != cudaSuccess))
+            return cudaErrorMemoryAllocation;
+        const bool debug_hash = std::getenv("LSX_TEST_XING_LAYER_DEBUG") != nullptr;
         for (int step = 0; step < std::max(0, req.max_gen_tokens); ++step)
         {
             if (gs.Aborted()) break;
-            host_logits_.assign(dims_.vocab, 0.0f);
-            xing::XingReadLogits(*session_, host_logits_.data(), stream());
-            const cudaError_t ce = cudaStreamSynchronize(stream());
-            if (ce != cudaSuccess) return ce;
-            int32_t d_token = 0;
-            float d_maxv = 0.0f;
-            int32_t *d_tok = nullptr;
-            float *d_mv = nullptr;
-            if (cudaMalloc(reinterpret_cast<void **>(&d_tok),
-                           sizeof(int32_t)) != cudaSuccess ||
-                cudaMalloc(reinterpret_cast<void **>(&d_mv),
-                           sizeof(float)) != cudaSuccess)
-                return cudaErrorMemoryAllocation;
-            float *d_logits_dev = nullptr;
-            if (cudaMalloc(reinterpret_cast<void **>(&d_logits_dev),
-                           static_cast<size_t>(dims_.vocab) * sizeof(float)) !=
-                cudaSuccess)
+            // Sample where the logits already are. XingDecodeStep's last act is
+            // ToF32 into session_->d_logits, so the old loop - 512 KiB D2H, a
+            // 512 KiB H2D back into a fresh allocation, three
+            // cudaMalloc/cudaFree and two extra stream syncs PER TOKEN - bought
+            // nothing: the sampler is a device kernel, and it now reads the
+            // decode buffer in place. Only the 8-byte argmax result comes back,
+            // which is the deepseek pipeline's contract.
+            const cudaError_t sce = sampler.Sample(
+                stream(), session_->d_logits, dims_.vocab,
+                sample::LogitType::kF32, d_next_token_, d_next_maxv_);
+            if (sce != cudaSuccess) return sce;
+            // Stream-ordered readback + sync of JUST this stream. A blocking
+            // cudaMemcpy runs on the legacy default stream, which does NOT
+            // synchronize with the context stream (created with
+            // cudaStreamNonBlocking), so it could read the token slot before the
+            // argmax kernel had written it - a silent race that made two
+            // identical requests sample different sequences.
+            int32_t next = 0;
+            float maxv = 0.0f;
+            cudaMemcpyAsync(&next, d_next_token_, sizeof(int32_t),
+                            cudaMemcpyDeviceToHost, stream());
+            cudaMemcpyAsync(&maxv, d_next_maxv_, sizeof(float),
+                            cudaMemcpyDeviceToHost, stream());
+            // final_logits reports the logits of the LAST emitted token (SelfCheck
+            // compares them bit for bit), so capture them here - after sampling,
+            // before the decode step below overwrites the buffer - on exactly the
+            // iterations that can end the loop. An abort on the next iteration
+            // therefore leaves final_logits empty instead of one step stale,
+            // which no gate reads.
+            if (debug_hash || next == eos_id ||
+                step + 1 >= std::max(0, req.max_gen_tokens))
             {
-                cudaFree(d_tok);
-                cudaFree(d_mv);
-                return cudaErrorMemoryAllocation;
+                host_logits_.assign(dims_.vocab, 0.0f);
+                xing::XingReadLogits(*session_, host_logits_.data(), stream());
             }
-            // Stream-ordered: a blocking cudaMemcpy is issued on the legacy
-            // default stream, which does NOT synchronize with the context
-            // stream (cudaStreamNonBlocking), so the argmax kernel could read
-            // the logits buffer BEFORE this copy landed - a silent race that
-            // sampled from the PREVIOUS step's logits.
-            cudaMemcpyAsync(d_logits_dev, host_logits_.data(),
-                            static_cast<size_t>(dims_.vocab) * sizeof(float),
-                            cudaMemcpyHostToDevice, stream());
             if (cudaStreamSynchronize(stream()) != cudaSuccess)
                 return cudaErrorUnknown;
-            const cudaError_t sce = sampler.Sample(
-                stream(), d_logits_dev, dims_.vocab, sample::LogitType::kF32,
-                d_tok, d_mv);
-            int32_t next = 0;
-            if (sce == cudaSuccess)
-            {
-                // Stream-ordered readback + sync of JUST this stream. A blocking
-                // cudaMemcpy runs on the legacy default stream, which does NOT
-                // synchronize with the context stream (created with
-                // cudaStreamNonBlocking), so it could read the token slot
-                // before the argmax kernel had written it - a silent race that
-                // made two identical requests sample different sequences.
-                cudaMemcpyAsync(&next, d_tok, sizeof(int32_t),
-                                cudaMemcpyDeviceToHost, stream());
-                cudaMemcpyAsync(&maxv, d_mv, sizeof(float),
-                                cudaMemcpyDeviceToHost, stream());
-                if (cudaStreamSynchronize(stream()) != cudaSuccess)
-                    return cudaErrorUnknown;
-            }
-            cudaFree(d_tok);
-            cudaFree(d_mv);
-            cudaFree(d_logits_dev);
-            if (sce != cudaSuccess) return sce;
             tokens.push_back(next);
             // LSX_TEST_XING_LAYER_DEBUG: FNV-1a over the logits bits, so a
             // device run can be diffed against another run token by token
             // (the layer-level hash in xing_moe_inference.cu localizes it).
-            if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+            if (debug_hash)
             {
                 unsigned h = 2166136261u;
                 for (const float v : host_logits_)

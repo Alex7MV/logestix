@@ -58,6 +58,11 @@ private:
     float *d_rc_ = nullptr;
     float *d_rs_ = nullptr;
     std::vector<float> host_logits_;
+    // Device-side sampling scratch (token id + max logit), allocated once per
+    // model instead of once per token: the old loop cudaMalloc'd and freed three
+    // buffers for every generated token.
+    int32_t *d_next_token_ = nullptr;
+    float *d_next_maxv_ = nullptr;
     std::vector<int32_t> session_tail_;
     int yarn_capacity_ = 0;
 };

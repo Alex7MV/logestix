@@ -196,9 +196,12 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   scalar tail can dominate a kernel, and nsys per-kernel attribution is what
   finds it - the block count looked fine.**
 - Fixed cost, where the next levers are: the per-token `[vocab]` logits round
-  trip (512 KiB D2H + 512 KiB H2D) plus three `cudaMalloc`/`cudaFree` per step -
-  the deepseek pipeline keeps the row on the device and does not allocate per
-  step. On the GPU side the remaining single-block work is the gates block
+  trip is GONE (the sampler now reads `session_->d_logits` in place and only the
+  8-byte argmax comes back, with the full row captured just for the final token
+  - worth +0.7% end to end, 106.9 -> 107.9 t/s at 128 tokens, so it was never
+  the E2E bottleneck, but it removes 1 MB of PCIe traffic and three
+  `cudaMalloc`/`cudaFree` per token, which is what concurrent sessions on one
+  model pay for). On the GPU side the remaining single-block work is the gates block
   (13 us x 40 layers = 0.5 ms/token) and the attention could still use more SMs
   (one block per head = 32 of 170; a position-split plus a combine kernel would
   open 8x more). `ResolveXingRouted`'s 38 D2H syncs per token were
