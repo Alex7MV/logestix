@@ -2492,6 +2492,18 @@ add_executable(test_incremental_detokenizer test_incremental_detokenizer.cpp)
 target_link_libraries(test_incremental_detokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 add_test(NAME test_incremental_detokenizer COMMAND test_incremental_detokenizer)
 
+# ── per-family vocabulary decode contract ────────────────────────────────────
+# Walks every converted model present on the machine and asserts that what the
+# decoder emits can be encoded again, so chat framing cannot break on a
+# vocabulary that maps raw bytes to one-byte tokens. SKIPs without weights.
+add_executable(test_tokenizer_vocab_contract test_tokenizer_vocab_contract.cpp)
+target_link_libraries(test_tokenizer_vocab_contract PRIVATE lsxcommon
+    Catch2::Catch2WithMain)
+add_test(NAME test_tokenizer_vocab_contract COMMAND test_tokenizer_vocab_contract)
+set_tests_properties(test_tokenizer_vocab_contract PROPERTIES LABELS inference)
+set_tests_properties(test_tokenizer_vocab_contract PROPERTIES TIMEOUT 300)
+set_tests_properties(test_tokenizer_vocab_contract PROPERTIES SKIP_RETURN_CODE 4)
+
 # ── generation streaming handle ──────────────────────────────────────────────
 add_executable(test_generation_stream test_generation_stream.cpp)
 target_link_libraries(test_generation_stream PRIVATE lsxcommon Catch2::Catch2WithMain)
