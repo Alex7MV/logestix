@@ -126,6 +126,7 @@ struct XingSession {
     // ORDER varies run to run loses bit-exactness).
     std::vector<int32_t> last_routed_ids;
     __half *d_half = nullptr;   // [2 * dense_intermediate] GEMV staging
+    __half *d_half2 = nullptr;  // [max(hidden, dense_inter)] second F16 slot
     // Dedicated "up" output. Writing the up projection into d_half + I ALIASES
     // its own input whenever I < K (shared expert: 1024 < 3584), and whether a
     // given x[k] is read before the overlapping store lands depends on block
