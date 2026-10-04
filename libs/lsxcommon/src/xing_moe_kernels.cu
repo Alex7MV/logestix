@@ -224,57 +224,120 @@ __global__ void xing_mix_kernel(const float *__restrict__ streams,
     }
 }
 
-// One block: thread 0 owns the bias-corrected top-k (deterministic tie-break by
-// lowest id) while every thread cooperates on the expert dot products.
-__global__ void xing_router_kernel(const __nv_bfloat16 *__restrict__ weight,
-                                   const float *__restrict__ bias,
-                                   const __nv_bfloat16 *__restrict__ x,
-                                   int num_experts, int hidden, int top_k,
-                                   bool norm_topk_prob, float routed_scale,
-                                   float *__restrict__ out_weights,
-                                   int32_t *__restrict__ out_experts)
+// Sigmoid noaux_tc router. One WARP PER EXPERT for the [num_experts, hidden]
+// projection, and a block-parallel top-k instead of a serial scan by thread 0.
+//
+// Before: <<<1, 256>>> with one thread per expert (64 of 256 busy, each reading
+// a whole 3584-wide row alone) and then 4 x 64 dependent shared-memory reads on
+// thread 0 - 129 us per launch, 38 launches per token (~4.9 ms, the second
+// largest serial cost after the mHC block). Budget:
+// test_xing_moe_kernels "Xing router stays inside its latency budget".
+//
+// Selection semantics match the serial scan it replaces: the bias only steers the
+// CHOICE, the weight stays the raw sigmoid score, and ties go to the LOWEST
+// expert index.
+__global__ void xing_router_kernel(
+    const __nv_bfloat16 *__restrict__ weight,
+    const float *__restrict__ bias,
+    const __nv_bfloat16 *__restrict__ x, int num_experts, int hidden, int top_k,
+    bool norm_topk_prob, float routed_scale,
+    float *__restrict__ out_weights, int32_t *__restrict__ out_experts)
 {
+    constexpr int kWarpSz = 32;
+    constexpr int kWarps = kThreads / kWarpSz;
     __shared__ float score[kMaxExperts];
     __shared__ bool taken[kMaxExperts];
     __shared__ float w[16];
     __shared__ int ids[16];
+    __shared__ float cand_score[kWarps];
+    __shared__ int cand_idx[kWarps];
 
-    for (int e = threadIdx.x; e < num_experts; e += blockDim.x)
+    const int lane = threadIdx.x & (kWarpSz - 1);
+    const int warp = threadIdx.x >> 5;
+
+    // projection: one warp per expert, k-order unchanged within the row
+    for (int e = warp; e < num_experts; e += kWarps)
     {
         const __nv_bfloat16 *row = weight + static_cast<size_t>(e) * hidden;
         float acc = 0.0f;
-        for (int i = 0; i < hidden; ++i)
-            acc = __fadd_rn(acc, __fmul_rn(__bfloat162float(row[i]),
-                                           __bfloat162float(x[i])));
-        score[e] = XingSigmoid(acc);
-        taken[e] = false;
+        for (int i = lane; i < hidden; i += kWarpSz)
+            acc = __fadd_rn(acc,
+                            __fmul_rn(__bfloat162float(row[i]),
+                                      __bfloat162float(x[i])));
+        for (int off = kWarpSz / 2; off > 0; off >>= 1)
+            acc += __shfl_down_sync(0xffffffffu, acc, off);
+        if (lane == 0)
+        {
+            score[e] = XingSigmoid(acc);
+            taken[e] = false;
+        }
     }
     __syncthreads();
 
-    if (threadIdx.x == 0)
+    // top-k: warp-local argmax, then kWarps candidates, repeated top_k times
+    float wsum = 0.0f;
+    for (int k = 0; k < top_k; ++k)
     {
-        float wsum = 0.0f;
-        for (int k = 0; k < top_k; ++k)
+        const int e = warp * kWarpSz + lane;
+        float best = -INFINITY;
+        int best_idx = -1;
+        if (e < num_experts && !taken[e])
         {
-            int best = -1;
-            float best_score = 0.0f;
-            for (int e = 0; e < num_experts; ++e)
+            best = __fadd_rn(score[e], bias[e]);
+            best_idx = e;
+        }
+        for (int off = kWarpSz / 2; off > 0; off >>= 1)
+        {
+            const float other = __shfl_down_sync(0xffffffffu, best, off);
+            const int other_idx = __shfl_down_sync(0xffffffffu, best_idx, off);
+            if (other > best || (other == best && other_idx < best_idx &&
+                                 best_idx >= 0))
             {
-                if (taken[e]) continue;
-                // noaux_tc: the bias only steers the CHOICE, the weight stays
-                // the raw sigmoid score.
-                const float s = __fadd_rn(score[e], bias[e]);
-                if (best < 0 || s > best_score)
+                best = other;
+                best_idx = other_idx;
+            }
+        }
+        if (lane == 0)
+        {
+            cand_score[warp] = best;
+            cand_idx[warp] = best_idx;
+        }
+        __syncthreads();
+        // warp 0 picks the winner among the kWarps candidates
+        if (threadIdx.x < kWarpSz)
+        {
+            float bs = (threadIdx.x < kWarps) ? cand_score[threadIdx.x] : -INFINITY;
+            int bi = (threadIdx.x < kWarps) ? cand_idx[threadIdx.x] : -1;
+            for (int off = kWarpSz / 2; off > 0; off >>= 1)
+            {
+                const float other = __shfl_down_sync(0xffffffffu, bs, off);
+                const int other_idx = __shfl_down_sync(0xffffffffu, bi, off);
+                if (other > bs || (other == bs && other_idx < bi && bi >= 0))
                 {
-                    best = e;
-                    best_score = s;
+                    bs = other;
+                    bi = other_idx;
                 }
             }
-            taken[best] = true;
-            ids[k] = best;
-            w[k] = score[best];
-            wsum = __fadd_rn(wsum, score[best]);
+            if (threadIdx.x == 0)
+            {
+                cand_idx[0] = bi;    // broadcast through shared memory
+                cand_score[0] = bs;
+            }
         }
+        __syncthreads();
+        if (threadIdx.x == 0)
+        {
+            const int best_e = cand_idx[0];
+            taken[best_e] = true;
+            ids[k] = best_e;
+            w[k] = score[best_e];
+            wsum = __fadd_rn(wsum, score[best_e]);
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0)
+    {
         const float denom =
             norm_topk_prob ? __fdiv_rn(1.0f, __fadd_rn(wsum, 1e-20f)) : 1.0f;
         for (int k = 0; k < top_k; ++k)

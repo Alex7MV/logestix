@@ -340,6 +340,52 @@ TEST_CASE("Xing unweighted RMSNorm covers all four streams at once",
     cudaStreamDestroy(stream);
 }
 
+// Host reference for Xing4_0TopkRouter (modeling_xing4_0.py): sigmoid scores,
+// noaux_tc bias steering the CHOICE only, lowest-index tie-break.
+void ReferenceRouter(const std::vector<__nv_bfloat16> &weight,
+                     const std::vector<float> &bias,
+                     const std::vector<__nv_bfloat16> &x, int experts,
+                     int hidden, int top_k, bool norm_topk_prob,
+                     double routed_scale, std::vector<float> &out_w,
+                     std::vector<int32_t> &out_ids)
+{
+    const auto bf = [](__nv_bfloat16 v) { return __bfloat162float(v); };
+    std::vector<float> score(static_cast<size_t>(experts));
+    for (int e = 0; e < experts; ++e)
+    {
+        float acc = 0.0f;
+        for (int i = 0; i < hidden; ++i)
+            acc += bf(weight[static_cast<size_t>(e) * hidden + i]) * bf(x[i]);
+        score[static_cast<size_t>(e)] = 1.0f / (1.0f + std::exp(-acc));
+    }
+    std::vector<bool> taken(static_cast<size_t>(experts), false);
+    out_w.assign(16, 0.0f);
+    out_ids.assign(16, -1);
+    float wsum = 0.0f;
+    for (int k = 0; k < top_k; ++k)
+    {
+        int best = -1;
+        float best_score = 0.0f;
+        for (int e = 0; e < experts; ++e)
+        {
+            if (taken[static_cast<size_t>(e)]) continue;
+            const float sv = score[static_cast<size_t>(e)] + bias[static_cast<size_t>(e)];
+            if (best < 0 || sv > best_score)
+            {
+                best = e;
+                best_score = sv;
+            }
+        }
+        taken[static_cast<size_t>(best)] = true;
+        out_ids[static_cast<size_t>(k)] = best;
+        out_w[static_cast<size_t>(k)] = score[static_cast<size_t>(best)];
+        wsum += score[static_cast<size_t>(best)];
+    }
+    const float denom = norm_topk_prob ? 1.0f / (wsum + 1e-20f) : 1.0f;
+    for (int k = 0; k < top_k; ++k)
+        out_w[static_cast<size_t>(k)] *= denom * static_cast<float>(routed_scale);
+}
+
 TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
           "[xing][kernels]")
 {
@@ -359,14 +405,10 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     for (size_t i = 0; i < x.size(); ++i)
         x_bf[i] = __float2bfloat16(x[i]);
 
-    // The reference consumes the SAME BF16-rounded activation the kernel sees,
-    // otherwise the comparison measures the rounding, not the routing.
-    std::vector<float> x_bf_as_f32(kHidden);
-    for (int i = 0; i < kHidden; ++i)
-        x_bf_as_f32[i] = __bfloat162float(x_bf[i]);
     std::vector<float> ref_w;
-    std::vector<int> ref_ids;
-    ReferenceRouter(weight, bias, x_bf_as_f32, ref_w, ref_ids);
+    std::vector<int32_t> ref_ids;
+    ReferenceRouter(weight, bias, x_bf, kExperts, kHidden, kTopK, true, 2.0,
+                    ref_w, ref_ids);
 
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
@@ -377,18 +419,18 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     int32_t *d_oe = nullptr;
     REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
-
-    REQUIRE(LaunchXingRouter(d_w, d_b, d_x, kExperts, kHidden, kTopK, true,
-                             2.0f, d_ow, d_oe, stream) == cudaSuccess);
+    REQUIRE(LaunchXingRouter(d_w, d_b, d_x, kExperts, kHidden, kTopK, true, 2.0f,
+                             d_ow, d_oe, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+
     const auto ow = Download(d_ow, 16);
     std::vector<int32_t> oe(16, -1);
     cudaMemcpy(oe.data(), d_oe, 16 * sizeof(int32_t), cudaMemcpyDeviceToHost);
 
     for (int k = 0; k < kTopK; ++k)
     {
-        REQUIRE(oe[k] == ref_ids[k]);
-        REQUIRE(ow[k] == Approx(ref_w[k]).margin(1e-6));
+        REQUIRE(oe[k] == ref_ids[static_cast<size_t>(k)]);
+        REQUIRE(ow[k] == Approx(ref_w[static_cast<size_t>(k)]).margin(1e-6));
     }
     // No duplicates among the selected experts.
     for (int i = 0; i < kTopK; ++i)
@@ -404,9 +446,105 @@ TEST_CASE("Xing sigmoid noaux_tc router matches the host reference",
     for (int k = 0; k < kTopK; ++k) sum += ow[k];
     REQUIRE(sum == Approx(2.0f).margin(1e-5));
 
-    cudaFree(d_w); cudaFree(d_b); cudaFree(d_x); cudaFree(d_ow); cudaFree(d_oe);
+    cudaFree(d_ow); cudaFree(d_oe);
     cudaStreamDestroy(stream);
 }
+
+// The router at the PRODUCTION shape (64 experts, hidden 3584). The case above
+// uses 16 experts of 64 dims, where the launch geometry and the serial top-k
+// scan cost nothing to see.
+TEST_CASE("Xing router matches the host reference at the 29B shape",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    constexpr int kE = 64, kH = 3584;
+    std::mt19937 rng(31337);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<__nv_bfloat16> weight(static_cast<size_t>(kE) * kH);
+    for (auto &v : weight) v = __float2bfloat16(dist(rng) * 0.05f);
+    std::vector<float> bias(kE);
+    for (auto &v : bias) v = dist(rng) * 0.05f;
+    std::vector<__nv_bfloat16> x(kH);
+    for (auto &v : x) v = __float2bfloat16(dist(rng));
+
+    std::vector<float> ref_w;
+    std::vector<int32_t> ref_ids;
+    ReferenceRouter(weight, bias, x, kE, kH, kTopK, true, 2.0, ref_w, ref_ids);
+
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    auto *d_w = Upload(weight);
+    auto *d_b = Upload(bias);
+    auto *d_x = Upload(x);
+    float *d_ow = nullptr;
+    int32_t *d_oe = nullptr;
+    REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
+    REQUIRE(LaunchXingRouter(d_w, d_b, d_x, kE, kH, kTopK, true, 2.0f, d_ow, d_oe,
+                             stream) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    const auto ow = Download(d_ow, 16);
+    std::vector<int32_t> oe(16, -1);
+    cudaMemcpy(oe.data(), d_oe, 16 * sizeof(int32_t), cudaMemcpyDeviceToHost);
+    for (int k = 0; k < kTopK; ++k)
+    {
+        REQUIRE(oe[k] == ref_ids[static_cast<size_t>(k)]);
+        REQUIRE(ow[k] == Approx(ref_w[static_cast<size_t>(k)]).margin(1e-6));
+    }
+    cudaFree(d_ow); cudaFree(d_oe);
+    cudaStreamDestroy(stream);
+}
+
+// Latency budget at the production shape. nsys measured 129 us x 38 launches =
+// ~4.9 ms per token - the second-largest serial cost after the mHC block, for a
+// [64, 3584] GEMV plus a 4-deep selection over 64 candidates.
+TEST_CASE("Xing router stays inside its latency budget at the 29B shape",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    constexpr int kE = 64, kH = 3584;
+    std::mt19937 rng(5);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<__nv_bfloat16> weight(static_cast<size_t>(kE) * kH);
+    for (auto &v : weight) v = __float2bfloat16(dist(rng) * 0.05f);
+    std::vector<float> bias(kE, 0.01f);
+    std::vector<__nv_bfloat16> x(kH);
+    for (auto &v : x) v = __float2bfloat16(dist(rng));
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    auto *d_w = Upload(weight);
+    auto *d_b = Upload(bias);
+    auto *d_x = Upload(x);
+    float *d_ow = nullptr;
+    int32_t *d_oe = nullptr;
+    REQUIRE(cudaMalloc(&d_ow, 16 * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_oe, 16 * sizeof(int32_t)) == cudaSuccess);
+    const auto launch = [&] {
+        return LaunchXingRouter(d_w, d_b, d_x, kE, kH, kTopK, true, 2.0f, d_ow,
+                                d_oe, stream);
+    };
+    for (int i = 0; i < 20; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    cudaEvent_t a, b;
+    REQUIRE(cudaEventCreate(&a) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&b) == cudaSuccess);
+    const int iters = 200;
+    REQUIRE(cudaEventRecord(a, stream) == cudaSuccess);
+    for (int i = 0; i < iters; ++i) REQUIRE(launch() == cudaSuccess);
+    REQUIRE(cudaEventRecord(b, stream) == cudaSuccess);
+    REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
+    float ms = 0.0f;
+    REQUIRE(cudaEventElapsedTime(&ms, a, b) == cudaSuccess);
+    const double us = ms * 1000.0 / iters;
+    INFO("router launch " << us << " us at 64 experts x " << kH);
+#if defined(NDEBUG)
+    REQUIRE(us < 40.0);
+#else
+    WARN("latency budget is a Release-only gate; measured " << us << " us");
+#endif
+    cudaEventDestroy(a); cudaEventDestroy(b); cudaStreamDestroy(stream);
+}
+
 // Interleaved YaRN rotation, per head. Every head gets its OWN rope angle
 // content (cos/sin differ per head via the phase), so a launcher that applies
 // one shared element offset to all heads - the shape of bug this test was
