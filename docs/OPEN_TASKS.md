@@ -185,6 +185,26 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   geometry at all.
 - E2E at the canonical protocol reproduced twice per change (71583/71639 ms,
   then 64040/64094 ms).
+- **Re-prioritised after measuring the length curve (2026-10-04).** Sweeping
+  `--max-gen` on the real checkpoint gives a clean linear model:
+
+  | generated | us/token | t/s |
+  |---|---|---|
+  | 128 | 15578 | 64.2 |
+  | 512 | 18260 | 54.8 |
+  | 1024 | 22564 | 44.3 |
+  | 2048 | 31289 | 32.0 |
+
+  `us/token = 14258 + 16518 us per 1000 cached positions`, i.e. at the canonical
+  length **54% of the step is context-dependent** - and that part is
+  `xing_attn_kernel`, which runs ONE block per head and walks all `t <= pos`
+  serially. It is now the single biggest item, ahead of the host round trip:
+  splitting the position range across blocks (flash-decoding style) plus a
+  combine kernel is the next lever, worth up to ~2x at 2048.
+- The fixed 14.3 ms is the launch-bound part: kernels are 13 ms/step, of which
+  the mHC block is still 6.6 ms (82 us x 80) even after the rewrite - one block
+  is one SM, so its floor is a two-kernel split (block-per-row projection, then a
+  tiny Sinkhorn), not a faster reduction.
 - Effective bandwidth went 31.6 -> 103 GB/s. The memory roofline for this model
   is 2.19 GB/token => **694 t/s at 85% of peak**; the remaining gap is items
   1-3 below.
