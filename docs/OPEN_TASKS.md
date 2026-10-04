@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 52.0 t/s (three single-block / serial kernels)
-- **Status: mHC, router and attention fixed (2026-10-04). 14.40 -> 52.00 t/s
-  perf / 9.10 -> 16.70 t/s r3 at 2048 tokens.** Every fix came from the same
+### D2. `xing` decode: 14.4 -> 70.6 t/s (four single-block / serial kernels)
+- **Status: mHC (twice), router and attention fixed (2026-10-04).
+  14.40 -> 70.60 t/s perf / 9.10 -> 18.20 t/s r3 at 2048 tokens.** Every fix came from the same
   method: nsys + a `--max-gen` sweep to separate fixed from context-dependent
   cost, then a Release-only latency budget at the PRODUCTION shape.
 - The three serial costs, in the order nsys found them:
@@ -176,18 +176,32 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   | `xing_hyper_conn_kernel` | 229 us | 61 us | `<<<1,256>>>`, 24 sequential 256-thread tree reductions (192 dependent barriers) |
   | `xing_router_kernel` | 129 us | 33 us | `<<<1,256>>>`, one thread per expert, then 4x64 serial shared reads on thread 0 |
   | `xing_attn_kernel` | 814 us | 209 us | `<<<32,256>>>` (32 of 170 SMs), softmax serial on thread 0, values serial over t on one thread per dim |
+  | `xing_hyper_conn_gates_kernel` | 36 us | 13 us | 20 Sinkhorn iterations + 16 exps serial on thread 0, and `ExpfGlibc` is a DOUBLE-precision replica - a consumer SM retires FP64 at 1/64 rate |
 
 - The attention one is what the length curve pointed at:
   `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
   step was context-dependent, all of it in that kernel. After the fix the same
-  sweep gives **14051 + 4905**, i.e. the context term shrank 3.4x and the fixed
-  term is now 73% of the step.
-- Fixed cost, where the next levers are (nsys, 70 steps): kernels 13 ms of which
-  the mHC block is still 6.6 ms - one block is one SM, so its floor is a
-  two-kernel split (block-per-row projection, then a tiny Sinkhorn), worth ~6
-  ms/token. Host-side: the per-token `[vocab]` logits round trip (512 KiB D2H +
-  512 KiB H2D) and three `cudaMalloc`/`cudaFree` per step; the deepseek pipeline
-  keeps the row on the device. `ResolveXingRouted`'s 38 D2H syncs per token were
+  sweep gives **8831 + 5095**, i.e. the context term shrank 3.2x and the fixed
+  term is now 62% of the step (it was 46% before all four).
+- The depth mixer needed TWO passes and the second one had to be re-derived after
+  the first looked done. Splitting `<<<1,256>>>` into a projection (24 blocks,
+  one per hc_fn row) and a gates block took 61 -> 40 us - and then nsys said the
+  gates block alone was 36 of those 40. The cause was arithmetic, not occupancy:
+  `ExpfGlibc`/`XingSigmoid` are bit-exact glibc replicas written in double
+  precision, so the 16 exps + 4 sigmoids of the Sinkhorn were 20 serial
+  double-precision calls on thread 0. One cell per thread (and one row/column
+  reciprocal per thread) is numerically IDENTICAL - exp and max are element-wise
+  and the Sinkhorn's per-cell updates were already independent - for 40 -> 17 us.
+  **The lesson worth keeping: on consumer Blackwell (1/64 FP64) a "tiny" serial
+  scalar tail can dominate a kernel, and nsys per-kernel attribution is what
+  finds it - the block count looked fine.**
+- Fixed cost, where the next levers are: the per-token `[vocab]` logits round
+  trip (512 KiB D2H + 512 KiB H2D) plus three `cudaMalloc`/`cudaFree` per step -
+  the deepseek pipeline keeps the row on the device and does not allocate per
+  step. On the GPU side the remaining single-block work is the gates block
+  (13 us x 40 layers = 0.5 ms/token) and the attention could still use more SMs
+  (one block per head = 32 of 170; a position-split plus a combine kernel would
+  open 8x more). `ResolveXingRouted`'s 38 D2H syncs per token were
   MEASURED as free at 128 tokens (64.3 vs 64.3 t/s with them skipped), so they
   are not worth doing before the two above.
 - Numeric gates re-run on the real weights after every change (all three kernel
@@ -195,9 +209,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Each kernel carries a Release-only latency budget and a host-parity case at the
   production shape - the original cases used hidden=64 / 16 experts, which is why
   all three defects survived a green suite.
-- Effective bandwidth went 31.6 -> 168 GB/s (52 t/s, 19.2 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 52 t/s the model reads
-  168 GB/s of it. The attention has more headroom (it is one block per head, so
+- Effective bandwidth went 31.6 -> 227 GB/s (70.6 t/s, 14.2 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 70.6 t/s the model reads
+  227 GB/s of it. The attention has more headroom (it is one block per head, so
   a position-split with a combine kernel could use 8x more SMs).
 - Per-token costs, in the order they were identified:
 1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the

@@ -462,7 +462,7 @@ void FreeXingSession(XingSession &s)
         if (p) cudaFree(p);
     };
     d(s.d_k); d(s.d_v); d(s.d_hidden); d(s.d_collapsed); d(s.d_post);
-    d(s.d_comb); d(s.d_act); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
+    d(s.d_comb); d(s.d_rows); d(s.d_act); d(s.d_norm); d(s.d_q); d(s.d_kv_latent); d(s.d_kv_b);
     d(s.d_attn); d(s.d_scores); d(s.d_logits); d(s.d_gate); d(s.d_expert_ids);
     d(s.d_half); d(s.d_half_up); d(s.d_half_big); d(s.d_expert_out); d(s.d_epacked); d(s.d_escales); d(s.d_egs);
     d(s.d_embed_table); d(s.d_router_act); d(s.d_router_logits);
@@ -496,6 +496,8 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_collapsed), static_cast<size_t>(H) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_post), static_cast<size_t>(hc) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_comb), static_cast<size_t>(hc) * hc * 4));
+    XING_CK(alloc(reinterpret_cast<void **>(&s.d_rows),
+             static_cast<size_t>((2 + hc) * hc) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_act), static_cast<size_t>(H) * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_norm),
              static_cast<size_t>(std::max({H, frozen::kQLoraRank, frozen::kKvLoraRank})) * 4));
@@ -692,7 +694,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             s.d_hidden, ly.attn_hc.hc_fn, ly.attn_hc.hc_base, ly.attn_hc.hc_scale,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
-            s.d_comb, stream));
+            s.d_comb, s.d_rows, stream));
         XingStageRms("hc.collapsed", l, token_id, s.d_collapsed, H, stream);
         XingStageRms("hc.post", l, token_id, s.d_post, hc, stream);
         XingStageRms("hc.comb", l, token_id, s.d_comb, hc * hc, stream);
@@ -790,7 +792,7 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
             s.d_hidden, ly.ffn_hc.hc_fn, ly.ffn_hc.hc_base, ly.ffn_hc.hc_scale,
             hc, H, frozen::kRmsEps, frozen::kHcSinkhornIters, frozen::kHcClampMin,
             frozen::kHcClampMax, frozen::kHcPostGain, s.d_collapsed, s.d_post,
-            s.d_comb, stream));
+            s.d_comb, s.d_rows, stream));
         XingStageRms("ffnhc.collapsed", l, token_id, s.d_collapsed, H, stream);
         XingStageRms("ffnhc.comb", l, token_id, s.d_comb, hc * hc, stream);
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(

@@ -27,6 +27,7 @@ using Catch::Approx;
 namespace {
 
 constexpr int kHcMult = 4;
+constexpr int kMixSmall = (2 + kHcMult) * kHcMult;
 constexpr int kHidden = 64;      // small enough to brute-force on the host
 constexpr int kExperts = 16;
 constexpr int kTopK = 4;
@@ -221,15 +222,17 @@ TEST_CASE("Xing mHC block matches the host reference", "[xing][kernels]")
     auto *d_fn = Upload(hc_fn);
     auto *d_base = Upload(hc_base);
     auto *d_scale = Upload(hc_scale);
-    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr;
+    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr,
+          *d_rows = nullptr;
     REQUIRE(cudaMalloc(&d_collapsed, kHidden * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_post, kHcMult * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_comb, kHcMult * kHcMult * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rows, kMixSmall * sizeof(float)) == cudaSuccess);
 
     REQUIRE(LaunchXingHyperConnection(d_hidden, d_fn, d_base, d_scale, kHcMult,
                                       kHidden, kEps, kSinkhorn, kClampMin,
                                       kClampMax, kPostGain, d_collapsed, d_post,
-                                      d_comb, stream) == cudaSuccess);
+                                      d_comb, d_rows, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     const auto collapsed = Download(d_collapsed, kHidden);
@@ -667,14 +670,16 @@ Outputs RunDevice(const Inputs &in, cudaStream_t stream)
     auto *d_fn = Upload(in.fn);
     auto *d_base = Upload(in.base);
     auto *d_scale = Upload(in.scale);
-    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr;
+    float *d_collapsed = nullptr, *d_post = nullptr, *d_comb = nullptr,
+          *d_rows = nullptr;
     REQUIRE(cudaMalloc(&d_collapsed, kRealHidden * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_post, kRealHcMult * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_comb, kRealHcMult * kRealHcMult * sizeof(float)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d_rows, kRealMix * sizeof(float)) == cudaSuccess);
     REQUIRE(LaunchXingHyperConnection(
                 d_streams, d_fn, d_base, d_scale, kRealHcMult, kRealHidden, kEps, kSinkhorn,
                 kClampMin, kClampMax, kPostGain, d_collapsed, d_post, d_comb,
-                stream) == cudaSuccess);
+                d_rows, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
     Outputs out;
     out.collapsed = Download(d_collapsed, kRealHidden);
@@ -738,11 +743,14 @@ TEST_CASE("Xing mHC stays inside its latency budget at the 29B shape",
     REQUIRE(cudaMalloc(&d_post, kRealHcMult * sizeof(float)) == cudaSuccess);
     REQUIRE(cudaMalloc(&d_comb, kRealHcMult * kRealHcMult * sizeof(float)) ==
             cudaSuccess);
+    float *d_rows = nullptr;
+    REQUIRE(cudaMalloc(&d_rows, kRealMix * sizeof(float)) == cudaSuccess);
+    constexpr int mhc_iters = kSinkhorn;
     const auto launch = [&] {
         return LaunchXingHyperConnection(
             d_streams, d_fn, d_base, d_scale, kRealHcMult, kRealHidden, kEps,
-            kSinkhorn, kClampMin, kClampMax, kPostGain, d_collapsed, d_post,
-            d_comb, stream);
+            mhc_iters, kClampMin, kClampMax, kPostGain,
+            d_collapsed, d_post, d_comb, d_rows, stream);
     };
     for (int i = 0; i < 20; ++i) REQUIRE(launch() == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -762,7 +770,11 @@ TEST_CASE("Xing mHC stays inside its latency budget at the 29B shape",
     INFO("mHC launch " << us << " us at hidden=" << kRealHidden);
 #if defined(NDEBUG)
     // Release-only gate: a debug build's device code is not the shipped one.
-    REQUIRE(us < 90.0);
+    // 25 us is the two-kernel target: one block per hc_fn row for the
+    // projection (24 blocks instead of one) plus a tiny gates+collapse kernel.
+    // One block means one SM, which is what made the previous 61 us (82 in
+    // situ) the largest fixed cost in the step.
+    REQUIRE(us < 25.0);
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif

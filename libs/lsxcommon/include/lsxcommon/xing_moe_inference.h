@@ -83,6 +83,7 @@ struct XingSession {
     float *d_collapsed = nullptr;  // [hidden]
     float *d_post = nullptr;       // [hc_mult]
     float *d_comb = nullptr;       // [hc_mult * hc_mult]
+    float *d_rows = nullptr;       // [(2+hc_mult)*hc_mult] mHC row scratch
     // F32 scratch: layer norm outputs, attention scores, logits.
     // d_act keeps the LAYERNORMED HIDDEN alive across the MLA chain: q_a's
     // inner RMSNorm overwrites d_norm in place, and kv_a must still consume the
