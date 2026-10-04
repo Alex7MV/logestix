@@ -233,6 +233,18 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   is 2.19 GB/token => **694 t/s at 85% of peak**; at 105.7 t/s the model reads
   231 GB/s of it - which is the point above: the roofline is not the binding
   constraint any more, the GEMV occupancy is.
+- **What the next project is, and it is plumbing, not arithmetic.** After the
+  router fix the profile is dominated by kernels that are far too slow for their
+  bytes: `xing_rmsnorm_kernel` at 4.8 us for a 3584-float row, 163 launches per
+  token, and 81 each of the three mHC kernels. All are single-block, so 169 of
+  170 SMs idle during a 42 KB reduction, and a decode step is ~400 dependent
+  launches. Replacing the RMSNorm's 8-barrier tree with warp shuffles bought
+  +0.4% (19292/19323 ms vs 19366/19392) which is the point: **the floor of a
+  one-block launch here is ~4 us regardless of what the block does.** Neither
+  more ILP nor fewer barriers moves it. The lever that does is CUDA graph
+  capture of a whole decode step, and that requires the routed-id dispatch to be
+  device-side - so the id->slot table whose sync measured free above becomes a
+  PREREQUISITE here, not a win. Second project: the prefill row-batching (below).
 - Tool calling is verified on the REAL weights
   (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine
   other families run): the model emits its native markers as the control ids

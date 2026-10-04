@@ -149,27 +149,39 @@ __global__ void f16_to_f32_kernel(const __half *__restrict__ x,
     if (i < n) y[i] = __half2float(x[i]);
 }
 
-// Weighted RMSNorm in F32 (Xing4_0RMSNorm): one block, thread-0 tree reduction.
+// Weighted RMSNorm in F32 (Xing4_0RMSNorm): one block.
+//
+// The reduction was a shared-memory tree with a __syncthreads() per step - 8
+// dependent barriers for 256 threads, on a kernel that moves 42 KB and is
+// launched 163 times per token (4 per layer). At 4.8 us it was the second-largest
+// kernel in the step and ~10x off what the bytes justify, because a single row
+// leaves 169 of 170 SMs idle. Warp shuffles plus one cross-warp pass is the same
+// pattern the mHC, attention and router kernels in this family already use:
+// 8 barriers -> 2. Tolerance class (the partial sums are grouped differently),
+// pinned by the real-weight gates.
 __global__ void xing_rmsnorm_kernel(const float *__restrict__ x,
                                     const __nv_bfloat16 *__restrict__ w,
                                     float *__restrict__ out, int hidden,
                                     float eps)
 {
+    constexpr int kWarpSz = 32;
     extern __shared__ float red[];
+    __shared__ float warp_sum[kThreads / kWarpSz];
+    const int lane = threadIdx.x & (kWarpSz - 1);
+    const int warp = threadIdx.x >> 5;
     float sum = 0.0f;
     for (int j = threadIdx.x; j < hidden; j += blockDim.x)
         sum = __fadd_rn(sum, __fmul_rn(x[j], x[j]));
-    red[threadIdx.x] = sum;
+    for (int off = kWarpSz / 2; off > 0; off >>= 1)
+        sum = __fadd_rn(sum, __shfl_down_sync(0xffffffffu, sum, off));
+    if (lane == 0) warp_sum[warp] = sum;
     __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1)
-    {
-        if (threadIdx.x < s)
-            red[threadIdx.x] = __fadd_rn(red[threadIdx.x], red[threadIdx.x + s]);
-        __syncthreads();
-    }
+    sum = 0.0f;
+    for (int i = 0; i < (int)(blockDim.x >> 5); ++i)
+        sum = __fadd_rn(sum, warp_sum[i]);
     const float inv =
         device::XingRsqrtfGlibc(__fadd_rn(
-            __fdiv_rn(red[0], static_cast<float>(hidden)), eps));
+            __fdiv_rn(sum, static_cast<float>(hidden)), eps));
     for (int j = threadIdx.x; j < hidden; j += blockDim.x)
         out[j] = __fmul_rn(__fmul_rn(x[j], inv),
                            __bfloat162float(w[j]));
