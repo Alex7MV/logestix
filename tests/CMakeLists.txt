@@ -72,6 +72,8 @@ target_include_directories(test_xing_cu PRIVATE
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
     "${PROJECT_SOURCE_DIR}/libs/lsxcommon/src")
 target_link_libraries(test_xing_cu PRIVATE Catch2::Catch2WithMain)
+target_compile_definitions(test_xing_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 add_executable(test_xing_moe_kernels)
 set_target_properties(test_xing_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
@@ -748,6 +750,8 @@ target_link_libraries(test_granite_cu PRIVATE Catch2::Catch2WithMain)
 add_executable(test_granite_dense_kernels)
 set_target_properties(test_granite_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_granite_dense_kernels PRIVATE test_granite_cu lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_granite_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 if(WIN32)
     add_custom_command(TARGET test_granite_dense_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -782,6 +786,8 @@ target_link_libraries(test_phi_cu PRIVATE Catch2::Catch2WithMain)
 add_executable(test_phi_dense_kernels)
 set_target_properties(test_phi_dense_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_phi_dense_kernels PRIVATE test_phi_cu lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_phi_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 if(WIN32)
     add_custom_command(TARGET test_phi_dense_kernels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -3659,6 +3665,8 @@ add_executable(test_ornith_moe_kernels)
 set_target_properties(test_ornith_moe_kernels PROPERTIES LINKER_LANGUAGE CXX)
 target_link_libraries(test_ornith_moe_kernels PRIVATE
     test_ornith_moe_kernels_cu lsxcommon_ornith_cu lsxcommon Catch2::Catch2WithMain)
+target_compile_definitions(test_ornith_moe_kernels_cu PRIVATE
+    LSX_KERNEL_BUDGETS_FILE="${LSX_KERNEL_BUDGETS}")
 
 if(WIN32)
     add_custom_command(TARGET test_ornith_moe_kernels POST_BUILD

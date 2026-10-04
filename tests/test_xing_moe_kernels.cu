@@ -11,6 +11,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "test_kernel_budget.h"
+
 #include "lsxcommon/xing_moe_inference.h"
 #include "lsxcommon/xing_moe_kernels.h"
 
@@ -541,7 +543,9 @@ TEST_CASE("Xing router stays inside its latency budget at the 29B shape",
     const double us = ms * 1000.0 / iters;
     INFO("router launch " << us << " us at 64 experts x " << kH);
 #if defined(NDEBUG)
-    REQUIRE(us < 40.0);
+    kernel_budget::Require("xing.router.decode", us, kernel_budget::Kind::kMax,
+                           "one warp per expert + block-parallel top-k, 256"
+                           " routed + 1 shared");
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif
@@ -770,11 +774,12 @@ TEST_CASE("Xing mHC stays inside its latency budget at the 29B shape",
     INFO("mHC launch " << us << " us at hidden=" << kRealHidden);
 #if defined(NDEBUG)
     // Release-only gate: a debug build's device code is not the shipped one.
-    // 25 us is the two-kernel target: one block per hc_fn row for the
-    // projection (24 blocks instead of one) plus a tiny gates+collapse kernel.
-    // One block means one SM, which is what made the previous 61 us (82 in
-    // situ) the largest fixed cost in the step.
-    REQUIRE(us < 25.0);
+    // Budget is per-gpu (tests/perf/kernel_budgets.json): these three numbers
+    // were calibrated on an RTX 5090, and the helper's own header records why a
+    // hard-coded kernel budget carries no information on another machine.
+    kernel_budget::Require("xing.mhc.decode", us, kernel_budget::Kind::kMax,
+                           "3 launches, hidden=3584, hc_mult=4 (proj 24 blocks +"
+                           " warp-Sinkhorn gates + wide collapse)");
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif
@@ -961,10 +966,12 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     const double us = ms * 1000.0 / iters;
     INFO("attention launch " << us << " us at pos=" << kPos);
 #if defined(NDEBUG)
-    // 90 us is the split-K target: heads x kTestAttnSplits = 256 blocks over 170
-    // SMs, against 32 blocks (32 of 170 SMs) for the single-block form, which
-    // measured 209 us at this shape.
-    REQUIRE(us < 90.0);
+    // 90 us was the split-K target: heads x kTestAttnSplits = 256 blocks over
+    // 170 SMs, against 32 blocks (32 of 170 SMs) for the single-block form,
+    // which measured 209 us at this shape.
+    kernel_budget::Require("xing.attention.decode", us,
+                           kernel_budget::Kind::kMax,
+                           "split-K, 32 heads x 8 position chunks at pos=2047");
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif

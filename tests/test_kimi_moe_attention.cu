@@ -393,7 +393,11 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
     INFO("max abs error: " << max_err);
     CHECK(max_err <= 0.35);
 
-    KimiMlaState st_host;
+    // KimiMlaState is 1.125 MiB (1024 slots x [512 latent + 64 rope]); it must
+    // not live on the stack — the Windows default 1 MiB thread stack is
+    // smaller than one instance, and the frame is probed before any statement.
+    std::vector<KimiMlaState> st_host_buf(1);
+    KimiMlaState &st_host = st_host_buf[0];
     cudaMemcpy(&st_host, d_state, sizeof(KimiMlaState),
                cudaMemcpyDeviceToHost);
     CHECK(st_host.n_used == seq);
@@ -416,7 +420,8 @@ TEST_CASE("Kimi MLA 3-token prefill matches naive CPU reference",
                                 d_state, 0, 0);
         REQUIRE(err == cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
-        KimiMlaState st_b;
+        std::vector<KimiMlaState> st_b_buf(1);
+        KimiMlaState &st_b = st_b_buf[0];
         cudaMemcpy(&st_b, d_state, sizeof(KimiMlaState),
                    cudaMemcpyDeviceToHost);
         for (int t = 0; t < seq; ++t)
