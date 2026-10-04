@@ -243,10 +243,16 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   are present rather than trusting the decoded text. An earlier "emission not
   observed" note was that same artifact, not a defect.
 - Remaining per-token costs, in the order they were identified:
-1. `ResolveXingRouted` copies the top-4 routed ids D2H and **synchronizes the
-     stream once per MoE layer** (38 syncs/token) because the neutral
-     expert-batch GEMV takes its pointer arrays by value on the host. Fixable
-     with a device-resident id->slot table (the gigachat slot-LRU pattern).
+1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ MEASURED FREE,
+   twice, and the second measurement is the one that counts: 64.3 vs 64.3 t/s
+   with the syncs skipped, and 21569 vs 21555 ms at 2048 tokens with them
+   skipped - 0.06%. A decode-loop sync only costs what it drains, and per layer
+   the GPU has ~200 us queued and the host has ~1 us of pointer-array fill to do
+   afterwards, so it is entirely hidden. The device-resident id->slot table (the
+   gigachat slot-LRU pattern) would buy nothing and is NOT worth doing; the
+   measurement is the deliverable. Note the skip is a timing experiment only -
+   without the sync the ids are not yet landed, so it is not a correctness
+   option.
 2. ~~`XingMoeModel::Infer` round-trips the whole `[vocab]` logits row~~ DONE
    (9108ff4): the sampler now reads `session_->d_logits` in place and only the
    8-byte argmax comes back, with the row captured once for `final_logits`. The
