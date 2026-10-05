@@ -373,7 +373,22 @@ records the structural reason to expect the same win there: its own comment says
 single 128-deep FMA chain was the QK critical path, and its KV read is 26.5% of the
 decode wall at ctx 2048.
 
-**BLOCKED: the port is NOT bit-identical, and the obvious reason was not the reason.**
+**RESOLVED for the split kernel (+4.3% / +4.9%, bit-identical).** The alignment
+hypothesis is dead — a runtime assert on the row pointer never fired, which is
+expected: the port changes how a row is READ and moves no pointer, so alignment is
+identical to the passing version and could not have been the cause. The real cause
+was item 3: the golden gates exercise the **non-split** kernel, because SelfCheck
+prompts are short enough that `splits` collapses to one chunk. Vectorising that kernel
+breaks parity; vectorising the split kernel does not. The two are not
+interchangeable, and the short-context one is deliberately left scalar.
+
+  Qwen3.5-35B-A3B (AOCC perf tree)   base      split-kernel port
+    max-gen 2048                   162.3        169.3 t/s  (+4.3%)
+    max-gen 4096                   162.1        170.0 t/s  (+4.9%)
+
+  All four real-weight gates pass (SelfCheck x3 Paris, FSI, CODE, DET). Bit-identical.
+
+**STILL BLOCKED: the non-split kernel, in all six families.**
 qwen and gemma accumulate with a plain `+=`, not `__fmaf_rn`, and the repo builds
 bit-exact TUs with `-fmad=false`. The first thing tried was a vectorised dot that kept
 the plain `+=` per element and the ascending d order - and it still broke parity:
@@ -399,14 +414,16 @@ Not root-caused. The candidates that remain, in the order I would check them:
    NON-split kernel, not the split one. Both were changed in the same commit, which
    would confound the result.
 
-Until this is understood, **all six ports are blocked**, not just qwen's: the same
-`+=`-with-`-fmad=false` shape is what distinguishes these families from Xíng, and Xíng
-was safe only because it already used explicit `__fadd_rn`/`__fmul_rn` everywhere.
+So the split kernel is ported and shipped; what is left is the non-split kernel, whose
+parity break is a separate and unexplained problem. It is also the low-value half: it
+is the short-context path, so it does not carry the decode throughput that motivates
+the port. It probably reads the same rows with a different accumulation shape, but
+that was not established.
 
-The cheapest next step is not a fix but a narrowing experiment: port ONLY the split
-kernel (the long-context path the change is actually for), leave the non-split kernel
-scalar, and re-run the three gates. If they pass, the cause was item 3 and the port is
-viable for the path that matters; if they still fail, it is alignment or contraction.
+Remaining port list, now unblocked for the split kernel only: **gemma, deepseek, mimo,
+gigachat** (qwen done; phi and granite already vectorised). Each needs the same
+discipline — port the split kernel, leave the non-split one scalar, and let the golden
+gates arbitrate, because they are what caught this.
 
 Not done here: an unmeasured kernel change is not a result, and neither is an
 unmeasured failure. This entry is the failure and the narrowing plan.

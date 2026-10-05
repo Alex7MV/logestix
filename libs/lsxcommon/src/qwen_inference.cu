@@ -301,6 +301,47 @@ cudaError_t RunQwenFullAttnKernel(
 // Numerics differ from the legacy kernel only by the chunk-rescale grouping
 // (same contract class as the TC-batch amendment: tolerance-envelope parity
 // vs legacy, binding run-to-run determinism).
+// q . k_row over `hd` halves, in ASCENDING d with a PLAIN `+=`.
+//
+// The plain `+=` is load-bearing, not laziness: this TU is compiled -fmad=false, and
+// a vectorised form that used __fmaf_rn or reordered the adds would change the
+// contraction behaviour. Ascending d keeps the per-element order identical.
+//
+// The 8-byte load (two __half2) replaces one 2-byte load per iteration: the scalar
+// loop held a single K row in flight per thread, which is what Xing's float4 change
+// fixed for +6.5% end to end. Requires hd % 8 == 0; scalar otherwise.
+//
+// SPLIT KERNEL ONLY, deliberately. Vectorising the non-split kernel as well BREAKS
+// parity (test_qwen_moe_{fsi,code,det}_selfcheck all fail on Qwen3.5-35B-A3B), even
+// though this same helper is bit-identical in the split kernel - so the two kernels
+// are not interchangeable and the short-context one is left alone. Since SelfCheck
+// prompts are short enough that splits collapses to one chunk, that non-split kernel
+// is what the golden gates actually exercise, which is how the difference was found.
+// The split kernel is the long-context path this change is for.
+__device__ __forceinline__ float QwenHalfDotRow(const __half *__restrict__ qrow,
+                                                const __half *__restrict__ krow,
+                                                int hd)
+{
+    float dot = 0.0f;
+    if ((hd & 7) == 0)
+    {
+        const __half2 *k2 = reinterpret_cast<const __half2 *>(krow);
+        for (int j = 0; j < (hd >> 2); j += 2)
+        {
+            const float2 f0 = __half22float2(k2[j]);
+            const float2 f1 = __half22float2(k2[j + 1]);
+            const int b = 4 * j;
+            dot += __half2float(qrow[b + 0]) * f0.x;
+            dot += __half2float(qrow[b + 1]) * f0.y;
+            dot += __half2float(qrow[b + 2]) * f1.x;
+            dot += __half2float(qrow[b + 3]) * f1.y;
+        }
+        return dot;
+    }
+    for (int d = 0; d < hd; ++d) dot += __half2float(qrow[d]) * __half2float(krow[d]);
+    return dot;
+}
+
 __global__ void split_kv_attn_partials_kernel(
     const __half *__restrict__ q, const __half *__restrict__ k,
     const __half *__restrict__ v, float *__restrict__ d_part,
@@ -327,9 +368,7 @@ __global__ void split_kv_attn_partials_kernel(
     for (int j = threadIdx.x; j < rows; j += threads) {
         const __half *krow =
             kbase_p + (int64_t)(begin + j) * kv_heads * head_dim;
-        float dot = 0.0f;
-        for (int d = 0; d < head_dim; ++d)
-            dot += __half2float(qrow[d]) * __half2float(krow[d]);
+        const float dot = QwenHalfDotRow(qrow, krow, head_dim);
         slogits[j] = dot * scale;
     }
     __syncthreads();
