@@ -371,7 +371,34 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   gates (SelfCheck/FSI/CODE/DET) pass unchanged. Half the ceiling gap went without
   writing a tiling kernel. `splits=16` was tried and is WORSE (852 vs 871 GB/s):
   smaller chunks cost more in partials and combine than the wave balance buys.
-  The V phase is still scalar - next candidate, same argument, not yet tried.
+  **Where the remaining time actually is** (throwaway probes on the live split-K
+  kernel at pos 2047, whole `LaunchXingAttention` = 42.9 us after float4; the probe
+  removes one read at a time and the results are wrong on purpose):
+
+  | removed | time | so the phase costs |
+  |---|---|---|
+  | nothing | 42.90 us | - |
+  | the V read | 42.89 us | **~0.01 us (0%)** |
+  | both reads | 15.58 us | K read 27.3 us (64%), overhead 15.6 us (36%) |
+
+  Two things follow, and both correct earlier reasoning in this file:
+
+  1. **At the canonical 2048 context attention is not bandwidth bound at all.** The K
+     read moves 50 MB in 27.3 us = **1842 GB/s effective, ABOVE the 1687 GB/s DRAM
+     ceiling** - so it is being served from L2, and so is V (33 MB), which is why V
+     is free and why vectorising it would have been wasted work. Whole KV at 2048 is
+     84 MB and fits. The streaming ceiling is the right yardstick only once the
+     context exceeds L2; at 2048 it is not, and quoting it there is misleading.
+  2. So V-phase vectorisation is NOT the next candidate - there is nothing in it.
+     The next lever at 2048 is the **36% overhead**: the online softmax's two block
+     reductions (max, then sum, each shfl-down + `warp_max[]`/`warp_sum[]` +
+     `__syncthreads`) plus one `XingExpfGlibc` per element - a glibc-replica exp in
+     FP64-emulation arithmetic, which is expensive and is the obvious suspect.
+     Note this is NOT a bandwidth problem, so the streaming ceiling says nothing
+     about it and it needs its own measurement, not a bandwidth budget.
+
+  Tiling, for the record, is a long-context play: it only matters once the context
+  exceeds L2 (>~4096 tokens here), where the K read is genuinely DRAM bound.
 
   **So yes, cooperative tiling of K/V into shared memory is worth attempting - it
   targets the measured deficit rather than a guess. Two honest caveats: the ceiling
