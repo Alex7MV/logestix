@@ -245,6 +245,25 @@ An ingested model is **not done** without it.
 - **Stream invariant** and **stride invariant**: all Q/K/V address offsets follow
   the physical tensor geometry — no overlap of adjacent time intervals in
   strided conv/recurrence buffers.
+- **KV cache layout**: address the cache through `KvCacheGeometry`
+  (`libs/lsxcommon/include/lsxcommon/lsx_kv_cache.h`) — three strides, so any
+  permutation of (head, pos) is a choice of two numbers — never a hand-rolled
+  `* heads + h` index. `test_model_independence_guard` enforces this; its
+  exemption list carries a reason per entry, and you delete your row when you
+  migrate. The knob is `ModelInitConfig::kv_cache_layout` and
+  `IModel::KvLayout()` must report what you actually built, so a family that
+  ignores it is visible rather than silent.
+- **The layout itself is a MEASURED choice, not an inherited default.** Ship
+  pos-major (`[pos][head][dim]`) unless you have an end-to-end number saying
+  otherwise. On Xing-4.0 head-major reads K/V 6-10% faster in isolation at ctx
+  4096/8191 and is 2-6% **slower** end to end at 2048/4096/8191 tokens: with the
+  rest of the step competing for L2, isolated read bandwidth does not predict the
+  step. Both layouts are bit-exact (`test_xing_kv_layout_parity`), so trying the
+  other is a config change — measure on the AOCC perf tree, don't assume. If your
+  attention maps one THREAD per head rather than one block (as in glm), the
+  coalescing trade-off differs again and needs its own analysis.
+- Do NOT ask for a bandwidth measurement at ingestion: the layout is chosen here,
+  its cost is measured in `perf-tuning-a-model`.
 - Isolate CUDA `.cu` files in their own OBJECT library (`-fmad=false` when
   bit-exact math is required).
 

@@ -1,7 +1,9 @@
 # KV cache layout `[head][pos][dim]` — shared layer + Xing migration
 
 Date: 2026-10-05
-Status: approved (brainstorming), pending implementation plan
+Status: IMPLEMENTED - and the premise was FALSIFIED by measurement. See
+"Outcome" at the end and `docs/OPEN_TASKS.md`. The shared layer, the knob and the
+parity gate shipped; head-major did NOT become the default.
 Origin: `docs/OPEN_TASKS.md` §D — "Deferred to its own task (2026-10-05): the KV cache layout"
 
 ## Problem
@@ -307,3 +309,49 @@ honest state of the migration at any point in time.
   first suspects are FP operation order under coalesced vs strided loads and any smem
   tile reuse that pos-major allowed; there is none in Xing today (`kt0`/`kt` are
   re-read per `t`), but that is the first place to look.
+
+
+## Outcome (added after implementation)
+
+The design's central claim - that `[pos][head][dim]` stride is why attention falls
+off at long context - is **false**. Implemented and measured on the AOCC perf tree:
+
+| max-gen | pos-major | head-major |
+|---|---|---|
+| 2048 | **119.3 t/s** | 116.8 t/s |
+| 4096 | **96.1 t/s** | 92.0 t/s |
+| 8191 | **68.7 t/s** | 64.9 t/s |
+
+Head-major DOES read K/V 6-10% faster in isolation at ctx 4096/8191 (811 vs 744
+GB/s), reproducibly - but only after the measurement harness stopped being biased
+by which layout ran first, which had produced a 9% "result" in both directions. The
+isolated read and the real step disagree because in the real step the cache read
+competes with 39 other layers' traffic for the same L2.
+
+So the long-context gap is access GRANULARITY (a 256-thread block has each thread
+walk a whole 192-float K row), not head/position order. The fix that measurement
+actually points at is cooperative tiling of K/V into shared memory, which is a
+different task and is not attempted here.
+
+Shipped regardless, because they are reusable and correct:
+- `libs/lsxcommon/include/lsxcommon/lsx_kv_cache.h` - three strides, not a tagged
+  layout, so both layouts coexist in one binary and stay bit-exact.
+- `ModelInitConfig::kv_cache_layout` + `IModel::KvLayout()` - the knob is neutral
+  and "ignored" is observable.
+- `tests/test_xing_kv_layout_parity.cpp` - a decode step under both layouts,
+  byte-identical logits AND cache.
+- `test_model_independence_guard` - KV addressing goes through the shared
+  geometry, with a reasoned exemption list.
+
+Two corrections to this spec's own reasoning, worth carrying forward:
+1. The spec predicted the win from "one block per head walks the whole context".
+   It omitted that the other 31 head-blocks are reading the adjacent addresses at
+   the same time, so pos-major's stride is not wasted bandwidth - it is
+   cross-block L2 locality. Head-major trades that for 32 long independent streams.
+2. The spec treated an isolated bandwidth budget as the honest gate for a
+   layout change. It is not: it ranked the two layouts the opposite way from the
+   step. Layout decisions need an end-to-end measurement on the perf tree.
+
+Also: the 119.1 t/s baseline lives in `build/linux-release-znver4-aocc`, not
+`build/linux-release-znver4`. Comparing a GCC-tree number against an AOCC baseline
+manufactures a regression that is not there - which happened here first.

@@ -500,6 +500,92 @@ TEST_CASE("broken fused-decode attention path is removed", "[independence]")
     REQUIRE(tu.find("RunQwenFusedOProj") == std::string::npos);
 }
 
+// The KV cache layout is a MEASURED per-family decision, not an inherited default,
+// so this guard does not mandate a layout. What it mandates is that the layout is
+// expressed through the shared geometry - a hand-rolled (t*heads + h)*dim is how
+// pos-major spread to nine files in the first place, and how a family ends up
+// unable to try the other layout without rewriting seven call sites.
+//
+// Measured on Xing-4.0 (docs/OPEN_TASKS.md): head-major reads K/V 6-10% faster in
+// isolation at ctx 4096/8191 and is 2-6% SLOWER end to end at every context. So
+// pos-major ships. This test therefore checks MECHANISM, never layout.
+TEST_CASE("KV cache layout goes through the shared geometry", "[guard][fast]")
+{
+    // Families exempt from the shared geometry, each with the reason. Both are
+    // "not a choice we can make here", not "we forgot":
+    //   nemotron - head-major by construction, its attention indexes
+    //               (hk * cache_stride + t) * head_dim already
+    //   glm      - one THREAD per head, not one block: a warp-of-heads has a
+    //               different coalescing trade-off and needs its own analysis
+    // Exemptions, each with its reason - a bare filename list would rot into a
+    // place where "we forgot" looks the same as "we decided". Two kinds:
+    //   structural  - the layout is not a choice this family can make
+    //   pending     - still hand-rolled; migrate and delete the row
+    static const std::vector<std::pair<std::string, std::string>> kKvLayoutExempt = {
+        {"nemotron_moe_inference_attn.cu",
+         "structural: head-major by construction, indexes (hk*cache_stride + t)*head_dim"},
+        {"glm_moe_inference.cu",
+         "structural: one THREAD per head, not one block - a warp-of-heads has a different coalescing trade-off and needs its own analysis"},
+        {"glm_moe_flash_inference.cu",
+         "structural: same one-thread-per-head blocking as glm"},
+        {"qwen_inference.cu",
+         "pending: migrates to the shared geometry when its decode attention is next touched"},
+        {"gemma_moe_inference.cu",
+         "pending: migrates to the shared geometry when its decode attention is next touched"},
+        {"mimo_moe_inference_attn.cu",
+         "pending: migrates to the shared geometry when its decode attention is next touched"},
+        {"gigachat_moe_inference_attn.cu",
+         "pending: migrates to the shared geometry when its decode attention is next touched"},
+        {"deepseek_moe_v41_inference.cu",
+         "pending: migrates to the shared geometry when its decode attention is next touched"},
+    };
+    // The pos-major idiom: `* heads + h` in an index. Written with character
+    // classes, not `\*` and `\b`: std::regex uses the ECMAScript grammar, where
+    // these escapes are spelled differently from PCRE, and a pattern that matches
+    // in a Python sanity check can silently match NOTHING here - which is how this
+    // test first "passed" with 26 files scanned and zero findings.
+    static const std::regex kPosMajorIdiom(
+        R"([*][ \t]*(kv_)?heads[ \t]*[+][ \t]*(h|head|hh)([^a-zA-Z0-9_]|$))");
+    std::error_code ec;
+    std::vector<std::string> violations;
+    std::size_t scanned = 0;
+    for (const auto &entry : fs::directory_iterator(kSrcDir, ec))
+    {
+        if (ec) break;
+        const std::string name = entry.path().filename().string();
+        if (name.find("_inference") == std::string::npos) continue;
+        if (name.size() < 3 || name.substr(name.size() - 3) != ".cu") continue;
+        const std::string text = ReadFile(entry.path());
+        if (text.empty()) continue;
+        if (text.find("KvCacheGeometry") != std::string::npos) continue;
+        ++scanned;
+        auto ex = std::find_if(kKvLayoutExempt.begin(), kKvLayoutExempt.end(),
+                               [&](const auto &e) { return e.first == name; });
+        const bool exempt = ex != kKvLayoutExempt.end();
+        if (exempt && ex->second.empty())
+            violations.push_back(name + ": exempt with no reason recorded");
+        for (std::smatch m; std::regex_search(text, m, kPosMajorIdiom);)
+        {
+            if (!exempt)
+            {
+                violations.push_back(name + ": hand-rolled KV stride '" +
+                                     m.str() +
+                                     "' - use KvCacheGeometry from "
+                                     "lsx_kv_cache.h");
+                break;
+            }
+            break;
+        }
+    }
+    INFO("scanned " << scanned << " inference .cu files without KvCacheGeometry");
+    INFO("violations:\n" << [&] {
+        std::string j;
+        for (const auto &v : violations) j += v + "\n";
+        return j;
+    }());
+    CHECK(violations.empty());
+}
+
 TEST_CASE("perf layer is model-neutral (no family stem)", "[independence][perf]")
 {
     // gpu_perf / perf_calibration are model-neutral infrastructure
