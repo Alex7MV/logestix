@@ -13,6 +13,10 @@
 
 #include "test_kernel_budget.h"
 
+#include <lsxcommon/lsx_inference_nvfp4.h>
+
+#include <cstring>
+
 #include "lsxcommon/xing_moe_inference.h"
 #include "lsxcommon/xing_moe_kernels.h"
 
@@ -603,9 +607,18 @@ TEST_CASE("Xing interleaved rope rotates every head in place", "[xing][kernels]"
     REQUIRE(cudaMemcpy(d_sin, sin_t.data(), sin_t.size() * sizeof(float),
                        cudaMemcpyHostToDevice) == cudaSuccess);
 
-    REQUIRE(LaunchXingRopeQ(d_q, kHeadsT, kQkT, kPairs, d_cos, d_sin, stream) ==
+    // The rope kernels take the BASE tables plus the device scalars; the test
+    // pins position 0, which is what a host-side `cos + pos*pairs` used to
+    // produce.
+    int *d_scalars = nullptr;
+    REQUIRE(cudaMalloc(&d_scalars, 2 * sizeof(int)) == cudaSuccess);
+    const int scalars[2] = {0, 0};
+    REQUIRE(cudaMemcpy(d_scalars, scalars, sizeof(scalars),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(LaunchXingRopeQ(d_q, kHeadsT, kQkT, kPairs, d_cos, d_sin, d_scalars,
+                            stream) == cudaSuccess);
+    REQUIRE(LaunchXingRopeK(d_krot, kPairs, d_cos, d_sin, d_scalars, stream) ==
             cudaSuccess);
-    REQUIRE(LaunchXingRopeK(d_krot, kPairs, d_cos, d_sin, stream) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
 
     const auto got = Download(d_q, static_cast<int>(q.size()));
@@ -872,6 +885,7 @@ struct Device
     float *m = nullptr;     // [heads * splits]
     float *l = nullptr;
     float *part = nullptr;  // [heads * splits * vh]
+    int *scalars = nullptr; // {pos, token_id}, as the session carries it
 };
 
 Device Upload(const Cache &c, int capacity)
@@ -898,6 +912,10 @@ Device Upload(const Cache &c, int capacity)
                        cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(d.v, c.v.data(), c.v.size() * sizeof(float),
                        cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d.scalars, 2 * sizeof(int)) == cudaSuccess);
+    const int scalars[2] = {kPos, 0};
+    REQUIRE(cudaMemcpy(d.scalars, scalars, sizeof(scalars),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
     return d;
 }
 
@@ -908,6 +926,7 @@ void Free(Device &d)
     cudaFree(d.m);
     cudaFree(d.l);
     cudaFree(d.part);
+    cudaFree(d.scalars);
 }
 
 } // namespace attn_shape
@@ -928,9 +947,10 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     // contexts (one chunk), so the fallback is on the live path too.
     for (const int splits : {kTestAttnSplits, 1})
     {
-        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
+        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
                                     kScale, d.scores, d.out, capacity, kPos + 1,
-                                    splits, d.m, d.l, d.part, stream) ==
+                                    splits, d.m, d.l, d.part, nullptr, false,
+                                    stream) ==
                 cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
         const auto got = Download(d.out, kHeads * kVh);
@@ -940,6 +960,120 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     }
     Free(d);
     cudaStreamDestroy(stream);
+}
+
+// The dense decode GEMVs, at the shapes a Xing layer actually issues. They are
+// all shallow-K (3584 for the projections, 4096 for o, 9216 for down), which is
+// BELOW the neutral layer's warp-per-row floor of K >= 4096 - so every one of them
+// takes the sliced KP launch. This budget is what says whether that floor is right
+// for Xing, and it is measured per shape rather than inferred from gemma's.
+TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
+          "[xing][kernels][budget]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+#if defined(NDEBUG)
+    // The route under test is the production one, which needs both gates on.
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+    struct Shape { int K; int N; const char *what; };
+    // K = reduction, N = output rows. One of each distinct shape a layer issues,
+    // plus the head, which is the single largest read of the step.
+    const Shape shapes[] = {
+        {3584, 768, "q_a"},   {768, 6144, "q_b"},      {3584, 576, "kv_a"},
+        {512, 8192, "kv_b"},  {4096, 3584, "o"},       {3584, 18432, "gate_up"},
+        {9216, 3584, "down"}, {3584, 131072, "head"},
+    };
+    constexpr int kIters = 40;
+    constexpr size_t kFlushBytes = 128u << 20;  // > RTX 5090 L2 (96 MiB)
+    uint8_t *flush = nullptr;
+    REQUIRE(cudaMalloc(&flush, kFlushBytes) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    double total_bytes = 0.0, total_us = 0.0;
+    double worst_gbps = 1e9;
+    const char *worst = nullptr;
+    std::string per_shape;
+    for (const auto &sh : shapes)
+    {
+        std::vector<__half> hx(sh.K);
+        std::vector<uint8_t> hp(static_cast<size_t>(sh.K) * sh.N / 2),
+            hs(static_cast<size_t>(sh.K) * sh.N / 16);
+        for (int i = 0; i < sh.K; ++i)
+            hx[i] = __float2half(float((i % 13) - 6) * 0.25f);
+        for (size_t i = 0; i < hp.size(); ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hs.size(); ++i)
+            hs[i] = static_cast<uint8_t>(128 + (i % 48));
+        __half *dx, *dy;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(sh.K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy, static_cast<size_t>(sh.N) * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), static_cast<size_t>(sh.K) * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp, hp.data(), hp.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds, hs.data(), hs.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                    nullptr, dx, dp, ds, 0.125f, dy, sh.K, sh.N, false) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        // best-of-5 series: one series still catches a short-lived spike
+        double best_us = 1e18;
+        for (int series = 0; series < 5; ++series)
+        {
+            double series_us = 0.0;
+            for (int i = 0; i < kIters; ++i)
+            {
+                REQUIRE(cudaMemsetAsync(flush, 0, kFlushBytes) == cudaSuccess);
+                REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+                REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                            nullptr, dx, dp, ds, 0.125f, dy, sh.K, sh.N, false) ==
+                        cudaSuccess);
+                REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+                REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+                float ms = 0.0f;
+                REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+                series_us += static_cast<double>(ms) * 1000.0;
+            }
+            best_us = std::min(best_us, series_us);
+        }
+        const double shape_bytes =
+            static_cast<double>(hp.size() + hs.size()) * kIters;
+        const double gbps = shape_bytes / (best_us * 1e-6) / 1e9;
+        per_shape += std::string(sh.what) + " K=" + std::to_string(sh.K) +
+                     " N=" + std::to_string(sh.N) + ": " +
+                     std::to_string(static_cast<int>(gbps)) + " GB/s (" +
+                     std::to_string(best_us / kIters) + " us, floor " +
+                     std::to_string(shape_bytes / kIters / 1792e9 * 1e6) +
+                     " us)\n";
+        if (gbps < worst_gbps)
+        {
+            worst_gbps = gbps;
+            worst = sh.what;
+        }
+        total_us += best_us;
+        total_bytes += shape_bytes;
+        cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
+    }
+    const double gbps = total_bytes / (total_us * 1e-6) / 1e9;
+    // The DRAM floor is what a shape could reach if it were purely bandwidth
+    // bound at this card's 1792 GB/s; the gap to it is the latency-bound part.
+    WARN("Xing dense decode GEMV, per shape (GB/s | us | floor):\n" << per_shape);
+    INFO("aggregate Xing dense-decode GEMV bandwidth = " << gbps << " GB/s");
+    kernel_budget::Require("xing.gemv.dense_decode_gbps", gbps,
+                           kernel_budget::Kind::kMin,
+                           "aggregate over the 8 dense decode shapes");
+    kernel_budget::Require("xing.gemv.dense_decode_worst_gbps", worst_gbps,
+                           kernel_budget::Kind::kMin,
+                           std::string("worst shape: ") + (worst ? worst : "?"));
+    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
+#else
+    WARN("bandwidth budget is a Release-only gate");
+#endif
 }
 
 TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
@@ -952,19 +1086,24 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     Device d = Upload(c, capacity);
-    const auto launch = [&] {
-        return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
-                                   kScale, d.scores, d.out, capacity, kPos + 1,
-                                   kTestAttnSplits, d.m, d.l, d.part, stream);
+    // `n_pos` is the eager geometry hint and must be the device position + 1 -
+    // the kernels themselves read the position from d.scalars, but the host still
+    // picks the launch shape from this number.
+    const auto launch = [&](int p, bool capture_safe) {
+        return LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
+                                   kScale, d.scores, d.out, capacity, p + 1,
+                                   kTestAttnSplits, d.m, d.l, d.part, nullptr,
+                                   capture_safe, stream);
     };
-    for (int i = 0; i < 3; ++i) REQUIRE(launch() == cudaSuccess);
+    for (int i = 0; i < 3; ++i) REQUIRE(launch(kPos, false) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    const auto eager = Download(d.out, kHeads * kVh);
     cudaEvent_t a, b;
     REQUIRE(cudaEventCreate(&a) == cudaSuccess);
     REQUIRE(cudaEventCreate(&b) == cudaSuccess);
     const int iters = 20;
     REQUIRE(cudaEventRecord(a, stream) == cudaSuccess);
-    for (int i = 0; i < iters; ++i) REQUIRE(launch() == cudaSuccess);
+    for (int i = 0; i < iters; ++i) REQUIRE(launch(kPos, false) == cudaSuccess);
     REQUIRE(cudaEventRecord(b, stream) == cudaSuccess);
     REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
     float ms = 0.0f;
@@ -981,7 +1120,179 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif
+    // Capture-safe geometry must write the SAME bits as eager at every position,
+    // including the ones that make the two attention forms take turns: 2047 fills
+    // all 8 chunks, 1000 leaves chunks 4-7 empty (they have to publish m=-inf/l=0
+    // or the combine reads the previous position's slots), and 255 belongs to the
+    // single-block path entirely, where the split kernels must not write `out`.
+    for (const int p : {kPos, 1000, 255})
+    {
+        INFO("position " << p);
+        const int scalars[2] = {p, 0};
+        REQUIRE(cudaMemcpy(d.scalars, scalars, sizeof(scalars),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(launch(p, false) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        const auto eager_at_p = Download(d.out, kHeads * kVh);
+        REQUIRE(launch(p, true) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        const auto captured_at_p = Download(d.out, kHeads * kVh);
+        for (size_t i = 0; i < eager_at_p.size(); ++i)
+            REQUIRE(captured_at_p[i] == eager_at_p[i]);
+    }
     cudaEventDestroy(a); cudaEventDestroy(b);
     Free(d);
     cudaStreamDestroy(stream);
+}
+
+namespace {
+
+std::vector<__half> DownloadHalves(__half *d, int n)
+{
+    std::vector<__half> out(static_cast<size_t>(n));
+    REQUIRE(cudaMemcpy(out.data(), d, sizeof(__half) * static_cast<size_t>(n),
+                       cudaMemcpyDeviceToHost) == cudaSuccess);
+    return out;
+}
+
+} // namespace
+
+// The device-table expert batch is the precondition for CUDA-graph capture of a
+// decode step: it resolves the routed ids on the device, so no D2H and no
+// cudaStreamSynchronize sits inside a layer. It is a different code path from the
+// by-value batch, so "different path" is exactly what must NOT mean "different
+// numbers": every row of both outputs is compared bit for bit.
+TEST_CASE("NVFP4 device-table expert batch is bit-identical to the by-value batch",
+          "[nvfp4][fast]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    // The streaming ids kernel only dispatches when BOTH toggles are on, and a
+    // test binary starts with them off - so without this the case would only ever
+    // cover the host-side fallback and the kernel itself would ship untested.
+    lsxcommon::lsx_nvfp4::LsxFastMathScope fast(true, true);
+    // A shape that takes the streaming kernel (K % 32 == 0, K >= 256) and a
+    // small one that must fall back, so both branches of the entry point are
+    // covered; the fallback resolves ids on the host by design.
+    for (const int K : {512, 96})
+    {
+        constexpr int kE = 8, kCount = 4, kN = 64, kLayers = 3, kLayer = 2;
+        std::mt19937 rng(9);
+        std::uniform_real_distribution<float> dist(-0.2f, 0.2f);
+        const size_t packed_bytes = static_cast<size_t>(kN) * (K / 2);
+        const size_t scale_bytes = static_cast<size_t>(kN) * (K / 16);
+        std::vector<std::vector<uint8_t>> packed(kE), scales(kE);
+        std::vector<float> gs(kE);
+        for (int e = 0; e < kE; ++e)
+        {
+            packed[e].resize(packed_bytes);
+            scales[e].resize(scale_bytes);
+            for (auto &v : packed[e]) v = static_cast<uint8_t>(rng() & 0xff);
+            for (auto &v : scales[e])
+                v = static_cast<uint8_t>(0x30 + (rng() % 4));
+            gs[e] = 0.5f + 0.1f * e;
+        }
+        std::vector<__half> x(static_cast<size_t>(K));
+        for (auto &v : x) v = __float2half(dist(rng));
+        const std::vector<int32_t> ids = {5, 1, 7, 2};
+
+        cudaStream_t stream = nullptr;
+        REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+        auto *d_x = Upload(x);
+        auto *d_ids = Upload(ids);
+        // kLayers layers of rows, and the dispatch is asked for layer kLayer: the
+        // first version of the kernel ignored table_offset and read layer 0,
+        // which in the real model is a DENSE layer whose rows are all zero - so it
+        // dereferenced a null packed pointer and faulted. With kLayer != 0 and a
+        // distinct row per (layer, expert) this case now fails if the offset is
+        // dropped.
+        std::vector<lsxcommon::lsx_nvfp4::LsxExpertPtrRow> rows(kLayers * kE);
+        std::vector<uint8_t *> d_packed(kLayers * kE), d_scales(kLayers * kE);
+        for (int l = 0; l < kLayers; ++l)
+        {
+            for (int e = 0; e < kE; ++e)
+            {
+                const size_t at = static_cast<size_t>(l) * kE + e;
+                REQUIRE(cudaMalloc(&d_packed[at], packed_bytes) == cudaSuccess);
+                REQUIRE(cudaMalloc(&d_scales[at], scale_bytes) == cudaSuccess);
+                // distinct bytes per (layer, expert) so a wrong layer is visible
+                std::vector<uint8_t> p = packed[e];
+                for (auto &v : p) v = static_cast<uint8_t>(v + 7 * l);
+                REQUIRE(cudaMemcpy(d_packed[at], p.data(), packed_bytes,
+                                    cudaMemcpyHostToDevice) == cudaSuccess);
+                REQUIRE(cudaMemcpy(d_scales[at], scales[e].data(), scale_bytes,
+                                    cudaMemcpyHostToDevice) == cudaSuccess);
+                rows[at] = {d_packed[at], d_scales[at],
+                            gs[e] * (1.0f + 0.25f * static_cast<float>(l))};
+            }
+        }
+        auto *d_rows = Upload(rows);
+        // by-value inputs
+        std::vector<const uint8_t *> vp(kCount), vs(kCount);
+        std::vector<float> vg(kCount);
+        for (int i = 0; i < kCount; ++i)
+        {
+            const size_t at = static_cast<size_t>(kLayer) * kE +
+                              static_cast<size_t>(ids[i]);
+            vp[i] = d_packed[at];
+            vs[i] = d_scales[at];
+            vg[i] = rows[at].gs;
+        }
+        __half *y_a = nullptr, *y_b = nullptr;
+        REQUIRE(cudaMalloc(&y_a, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMalloc(&y_b, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMemset(y_a, 0, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(cudaMemset(y_b, 0, sizeof(__half) * kCount * kN) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+                    stream, d_x, vp.data(), vs.data(), vg.data(), kCount, 0, y_a,
+                    K, kN) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                    stream, d_x, d_ids, d_rows, kLayer * kE, kE, kCount, 0, y_b,
+                    K, kN) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        REQUIRE(cudaGetLastError() == cudaSuccess);
+        const auto a = DownloadHalves(y_a, kCount * kN);
+        const auto b = DownloadHalves(y_b, kCount * kN);
+        INFO("K=" << K);
+        REQUIRE(a.size() == b.size());
+        REQUIRE(!a.empty());
+        // Compare the raw 16 bits (memcmp), not the values: a same-value
+        // comparison would hide a NaN payload difference, which is exactly what a
+        // store-type change can introduce.
+        REQUIRE(a.size() * sizeof(__half) == b.size() * sizeof(__half));
+        REQUIRE(std::memcmp(a.data(), b.data(), a.size() * sizeof(__half)) == 0);
+        // Sanity that the id really selects the expert: the same GEMV against a
+        // DIFFERENT row must differ. Without this, a kernel that ignored d_ids
+        // and always read row 0 would still pass the comparison above whenever
+        // ids[0] happened to be 0 - and it is not.
+        {
+            const std::vector<int32_t> other = {0, 1, 7, 2};
+            auto *d_other = Upload(other);
+            __half *y_c = nullptr;
+            REQUIRE(cudaMalloc(&y_c, sizeof(__half) * kCount * kN) ==
+                    cudaSuccess);
+            REQUIRE(cudaMemset(y_c, 0, sizeof(__half) * kCount * kN) ==
+                    cudaSuccess);
+            REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+                        stream, d_x, d_other, d_rows, kLayer * kE, kE, kCount, 0,
+                        y_c, K, kN) == cudaSuccess);
+            REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+            const auto c = DownloadHalves(y_c, kCount * kN);
+            const bool differs =
+                std::memcmp(b.data(), c.data(), b.size() * sizeof(__half)) != 0;
+            if (K >= 256) REQUIRE(differs);
+            cudaFree(y_c);
+            cudaFree(d_other);
+        }
+        for (size_t i = 0; i < d_packed.size(); ++i)
+        {
+            cudaFree(d_packed[i]);
+            cudaFree(d_scales[i]);
+        }
+        cudaFree(y_a);
+        cudaFree(y_b);
+        cudaFree(d_x);
+        cudaFree(d_ids);
+        cudaFree(d_rows);
+        cudaStreamDestroy(stream);
+    }
 }

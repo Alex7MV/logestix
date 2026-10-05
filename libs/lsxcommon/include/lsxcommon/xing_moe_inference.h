@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "lsxcommon/lsx_inference_nvfp4.h"
 #include "lsxcommon/xing_moe_kernels.h"
 #include "lsxcommon/xing_moe_load.h"
 
@@ -127,6 +128,27 @@ struct XingSession {
     std::vector<int32_t> last_routed_ids;
     __half *d_half = nullptr;   // [2 * dense_intermediate] GEMV staging
     __half *d_half2 = nullptr;  // [max(hidden, dense_inter)] second F16 slot
+    // Device-resident routed-expert pointer tables, one per matrix
+    // (gate | down | up), each [layers * experts] of LsxExpertPtrRow. Built once
+    // from the loader's host tables so the decode step resolves the routed ids ON
+    // THE DEVICE - no D2H and no stream synchronize inside a layer, which is what
+    // makes a CUDA-graph capture of the step possible at all.
+    // {pos, token_id} for the current step, in DEVICE memory. Every kernel that
+    // needs them reads them from here instead of taking them as arguments, which
+    // is what lets a captured CUDA graph be replayed for the next position: a
+    // graph bakes its kernel arguments in, so a per-token scalar must travel in
+    // memory. The host fills it with one 8-byte H2D copy before each step -
+    // outside the graph, which is legal there.
+    int *d_scalars = nullptr;
+    // The captured decode step, once recorded. Recorded on the first generated
+    // token and replayed for every one after it; see XingCaptureDecodeGraph.
+    cudaGraphExec_t graph_exec = nullptr;
+    // Pinned host mirror of d_scalars (source of that copy).
+    int *h_scalars = nullptr;
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_gate = nullptr;
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_down = nullptr;
+    lsx_nvfp4::LsxExpertPtrRow *d_rows_up = nullptr;
+    bool expert_tables_uploaded = false;
     // Dedicated "up" output. Writing the up projection into d_half + I ALIASES
     // its own input whenever I < K (shared expert: 1024 < 3584), and whether a
     // given x[k] is read before the overlapping store lands depends on block
@@ -169,10 +191,15 @@ cudaError_t UploadXingYarnTables(cudaStream_t stream, int capacity,
 
 // One decode step. `token_id` selects the embedding row (NOT the position),
 // `pos` is the absolute KV-cache position. Returns a CUDA error code.
+//
+// `capture_safe` must be true exactly when this call is being recorded into a CUDA
+// graph: it switches the attention to its fixed launch geometry. Nothing else in
+// the step is position-dependent any more (the scalars live in device memory), so
+// this is the single flag a captured step needs.
 cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                            XingSession &s, int token_id, const float *d_rc,
                            const float *d_rs, int pos, cudaStream_t stream,
-                           int layers_override = -1);
+                           int layers_override = -1, bool capture_safe = false);
 
 // Interleaved YaRN rotation of q's rope subspace ([heads, qk_head_dim] with
 // `pairs` rope dims at offset `qk_head_dim - 2*pairs`) and of the shared k_rot
@@ -181,11 +208,50 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
 // a single shared offset silently rotates one head and leaves the rest
 // unrotated — a failure that a one-token prefill cannot observe (the softmax is
 // trivial there).
+// `cos_t`/`sin_t` are the BASE of the YaRN tables; the row for the step's
+// position is selected inside the kernel from d_scalars[0], so the launch
+// arguments are the same for every token and a captured graph stays valid.
+// Publish this step's {pos, token_id} for the device-side kernels. Call before
+// XingDecodeStep, and before every graph launch (never during a capture).
+cudaError_t XingSetStepScalars(XingSession &s, int pos, int token_id,
+                               cudaStream_t stream);
+
+// Record the decode step into a CUDA graph and instantiate it into the session
+// (once; later calls are no-ops). A recorded step does not execute, so the caller
+// must launch it with XingLaunchDecodeGraph.
+//
+// Returns cudaErrorStreamCaptureUnsupported when the step is not capture-legal in
+// this configuration - nothing was started, nothing is broken, and the caller
+// should simply keep using the eager step (that is the legacy fast-math-off path,
+// not an error). Any other failure means a capture actually began and was
+// invalidated, which leaves the context unusable: the caller must report it rather
+// than continue.
+//
+// Legal only when nothing in the step allocates or synchronises, which the caller
+// guarantees: prefill has already run (so the FP16 embedding table and the routed
+// expert pointer tables exist), and LSX_TEST_XING_LAYER_DEBUG is off (its staging
+// does a blocking D2H readback). Refuses otherwise instead of capturing a step
+// that would fail later.
+cudaError_t XingCaptureDecodeGraph(const XingPinnedWeights &pw,
+                                   const XingDims &dims, XingSession &s,
+                                   const float *d_rc, const float *d_rs,
+                                   cudaStream_t stream,
+                                   int layers_override = -1);
+
+// True once XingCaptureDecodeGraph has produced a graph for this session.
+bool XingDecodeGraphReady(const XingSession &s);
+
+// Replay the captured step. The caller must have published this token's scalars
+// with XingSetStepScalars since the last launch - that copy is outside the graph
+// on purpose.
+cudaError_t XingLaunchDecodeGraph(XingSession &s, cudaStream_t stream);
+
 cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
                             const float *cos_t, const float *sin_t,
-                            cudaStream_t stream);
+                            const int *d_scalars, cudaStream_t stream);
 cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_t,
-                            const float *sin_t, cudaStream_t stream);
+                            const float *sin_t, const int *d_scalars,
+                            cudaStream_t stream);
 
 // Source line of the stage that failed the last XingDecodeStep (0 = none).
 int XingLastFailureLine();

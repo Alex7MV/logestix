@@ -22,6 +22,13 @@
 #include <chrono>
 #include <cmath>
 
+// Propagate a CUDA error from a helper into Infer's error return.
+#define XING_MODEL_CK(call)                     \
+    do {                                         \
+        const cudaError_t e_ = (call);           \
+        if (e_ != cudaSuccess) return e_;        \
+    } while (0)
+
 namespace lsxcommon {
 
 const std::string XingMoeModel::kType = "xing4.0-29b-a4b";
@@ -223,9 +230,17 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                                         : req.input_ids;
         int pos = session.is_continuation ? session_->length : 0;
         float maxv = 0.0f;
+        // LSX_XING_CUDA_GRAPH=0 keeps the legacy per-token launch path (what the
+        // bit-exact --bench run uses); anything else captures.
+        const bool graph_enabled = [](const char *v) {
+            return v == nullptr || v[0] == '\0' || std::strcmp(v, "0") != 0;
+        }(std::getenv("LSX_XING_CUDA_GRAPH"));
+        bool graph_failed = false;
         for (size_t i = 0; i < feed.size(); ++i)
         {
             if (gs.Aborted()) break;
+            XING_MODEL_CK(xing::XingSetStepScalars(*session_, pos, feed[i],
+                                                    stream()));
             const cudaError_t se = xing::XingDecodeStep(
                 pw_, dims_, *session_, feed[i], d_rc_, d_rs_, pos, stream());
             if (se != cudaSuccess) return se;
@@ -314,8 +329,63 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
                 eos_terminated = true;
                 break;
             }
-            const cudaError_t se = xing::XingDecodeStep(
-                pw_, dims_, *session_, next, d_rc_, d_rs_, pos, stream());
+            XING_MODEL_CK(xing::XingSetStepScalars(*session_, pos, next,
+                                                    stream()));
+            // CUDA graph: record the step once, replay it after that. The step is
+            // ~700 launches per token, so the launch traffic itself - not the
+            // kernels - is a measurable share of a decode step. Recording is
+            // skipped (and the eager step used) whenever it would be illegal or
+            // the environment asks for the legacy path; a capture that fails
+            // mid-flight falls back for the rest of the request too, because a
+            // session with a half-captured graph cannot be trusted.
+            const bool want_graph = graph_enabled && !graph_failed;
+            if (want_graph && !xing::XingDecodeGraphReady(*session_))
+            {
+                const cudaError_t ce = xing::XingCaptureDecodeGraph(
+                    pw_, dims_, *session_, d_rc_, d_rs_, stream());
+                if (ce == cudaErrorStreamCaptureUnsupported)
+                {
+                    // Not capture-legal in this configuration (fast-math off, the
+                    // layer-debug staging on). Nothing was recorded and nothing is
+                    // broken - just keep launching eagerly.
+                    graph_failed = true;
+                }
+                else if (ce != cudaSuccess)
+                {
+                    // Every illegal operation is checked before the recording
+                    // starts, so getting here means the step grew something
+                    // capture-hostile. The failure also leaves the context in an
+                    // undefined state, which is why this is reported instead of
+                    // quietly falling back: continuing could produce output from a
+                    // poisoned context rather than a slow answer.
+                    log::error("[xing-moe-model] CUDA graph capture failed (" +
+                               std::string(cudaGetErrorString(ce)) +
+                               ", step source line " +
+                               std::to_string(xing::XingLastFailureLine()) +
+                               "); the decode step is no longer capture-legal");
+                    return ce;
+                }
+                else
+                {
+                    // Once per process: every request captures, and a server would
+                    // otherwise repeat this line for each of them.
+                    static bool announced = false;
+                    if (!announced)
+                    {
+                        announced = true;
+                        log::info("[xing-moe-model] decode step captured into a "
+                                  "CUDA graph (" +
+                                  std::to_string(pw_.num_layers) +
+                                  " layers), replaying it per token");
+                    }
+                }
+            }
+            cudaError_t se = cudaSuccess;
+            if (want_graph && xing::XingDecodeGraphReady(*session_))
+                se = xing::XingLaunchDecodeGraph(*session_, stream());
+            else
+                se = xing::XingDecodeStep(pw_, dims_, *session_, next, d_rc_,
+                                          d_rs_, pos, stream());
             if (se != cudaSuccess) return se;
             ++pos;
         }

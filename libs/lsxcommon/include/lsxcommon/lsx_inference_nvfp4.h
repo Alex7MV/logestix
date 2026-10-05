@@ -160,6 +160,28 @@ cudaError_t RunLsxNvfp4Gemm(
 // E2M1 weights straight from global memory (coalesced uint4 loads) — no
 // shared-memory slab staging. Requires K % 32 == 0; k-order free (tolerance
 // class), run-to-run deterministic. External linkage for direct testing.
+// Device-table expert batch: `d_ids` (top-k routed ids, already on the device)
+// select experts out of `table_rows`, a flat [layer * num_experts] device upload
+// of LsxExpertPtrRow. No D2H and no stream synchronize on the streaming path, so
+// a caller can capture a decode step into a CUDA graph. `table_offset` is the
+// layer's slice; the rows must be BIT-IDENTICAL to the by-value path.
+struct LsxExpertPtrRow {
+    const uint8_t *packed;
+    const uint8_t *scales;
+    float gs;
+};
+
+// True when RunLsxNvfp4GemmSeq1GemmVExpertBatchIds will dispatch the streaming
+// ids kernel for this K (i.e. need no host round trip). A caller that has a
+// cheaper host-resolved path for the other case asks this instead of repeating
+// the dispatch condition.
+bool LsxExpertBatchIdsStreaming(int K);
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+    cudaStream_t stream, const __half *x, const int32_t *d_ids,
+    const LsxExpertPtrRow *table_rows, int table_offset, int num_experts,
+    int count, int x_stride, __half *y, int K, int N, bool acc = false);
+
 cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
@@ -171,6 +193,18 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
 // Xing decode token). The per-row math is identical; the result skips the F16
 // rounding of the store, so it is a TOLERANCE-CLASS variant - same relationship
 // to the F16 form as the TC fast-math routes have.
+// Two projections sharing ONE input row but living in separate weight tensors
+// (an MLA q_a + kv_a pair), writing F32. One launch instead of two; every output
+// row is the same dot product in the same k-order as the separate calls, so this
+// is bit-identical rather than tolerance-class. Shapes that would route to
+// warp-per-row fall back to two ordinary launches.
+cudaError_t RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    float *y2, int N1);
+
 cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,

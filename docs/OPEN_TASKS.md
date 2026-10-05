@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 109.8 t/s (nine serial kernels + 364 launches)
-- **Status: CLOSED for the serial-kernel class (2026-10-04).
-  14.40 -> 109.80 t/s perf / 9.10 -> 20.00 t/s r3 at 2048 tokens.** Every
+### D2. `xing` decode: 14.4 -> 117.2 t/s (nine serial kernels + device dispatch + graph replay)
+- **Status: CLOSED for the serial-kernel class (2026-10-05).
+  14.40 -> 117.20 t/s perf / 9.10 -> 20.10 t/s r3 at 2048 tokens.** Every
   single-block, thread-0-serial and under-occupied kernel on the decode path is
   fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
   different (numerics) project - see the end. Every fix came from the same
@@ -187,7 +187,7 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - The attention ones are what the length curve pointed at:
   `us/token = 14258 + 16518 per 1000 cached positions` meant 54% of a 2048-token
   step was context-dependent, all of it in that kernel. After the two attention
-  passes the same sweep gives **7319 + 1689**, i.e. the context term shrunk 9.8x
+  passes the same sweep gives **7016 + 1680**, i.e. the context term shrunk 9.8x
   and is now 19% of the step; the fixed term is 81% and is the whole frontier
   (it was 46% of the step before this series).
 - The depth mixer needed TWO passes and the second one had to be re-derived after
@@ -219,10 +219,10 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Each kernel carries a Release-only latency budget and a host-parity case at the
   production shape - the original cases used hidden=64 / 16 experts, which is why
   all three defects survived a green suite.
-- **What the remaining 7.3 ms/token is NOT: bandwidth.** Per token the decode
+- **What the remaining 7.0 ms/token is NOT: bandwidth.** Per token the decode
   path streams the 4-of-64 routed experts, the shared expert, the attention
-  projections, the two dense layers and the LM head: ~2.68 GB, so at 109.8 t/s
-  that is 294 GB/s, 16% of the 1792 GB/s peak -
+  projections, the two dense layers and the LM head: ~2.68 GB, so at 113.6 t/s
+  that is 304 GB/s, 17% of the 1792 GB/s peak -
   and a layer's ~53 MB should take 31 us at peak, while a layer measures ~222 us
   (9.1 ms / 41). So decode is latency/occupancy-bound, not bandwidth-bound, and
   the next lever is the GEMV path itself: `RunLxGemmVec` splits output rows
@@ -231,9 +231,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Raising decode further means wider GEMV tiles (more rows per block, split-K
   over the K dimension) - correctness-first no longer, i.e. a real numerics
   project with its own gate, not another serial-kernel fix.
-- Effective bandwidth went 31.6 -> 294 GB/s (109.8 t/s, 9.1 ms/token). The memory roofline for this model
-  is 2.19 GB/token => **694 t/s at 85% of peak**; at 109.8 t/s the model reads
-  294 GB/s of it - which is the point above: the roofline is not the binding
+- Effective bandwidth went 31.6 -> 304 GB/s (113.6 t/s, 8.8 ms/token). The memory roofline for this model
+  is 2.19 GB/token => **694 t/s at 85% of peak**; at 113.6 t/s the model reads
+  304 GB/s of it - which is the point above: the roofline is not the binding
   constraint any more, the GEMV occupancy is.
 - **What the next project is, and it is plumbing, not arithmetic.** After the
   router fix the profile is dominated by kernels that are far too slow for their
@@ -247,6 +247,29 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   capture of a whole decode step, and that requires the routed-id dispatch to be
   device-side - so the id->slot table whose sync measured free above becomes a
   PREREQUISITE here, not a win. Second project: the prefill row-batching (below).
+- **DONE (2026-10-05): the decode step is captured and replayed as a CUDA graph**
+  (114.1 -> 117.2 t/s at 2048, 113.9 -> 117.1 on the repeat; `LSX_XING_CUDA_GRAPH=0`
+  restores the legacy per-token launch path). Three things had to become true
+  first, and each is a separate commit:
+  1. the routed-expert dispatch resolves on the device (`8bb474c`), because the
+     host path drains the pipeline once per MoE layer and a drain cannot be
+     recorded;
+  2. `{pos, token_id}` live in device memory rather than in kernel arguments
+     (`f7fa0bb`) - a graph bakes its arguments in, so a per-token value has to
+     travel in memory. The embedding gather, the KV write and both RoPE kernels
+     read them there now, and the RoPE kernels take the BASE YaRN tables and
+     index their own row;
+  3. the attention launches a position-independent geometry when captured
+     (`3e0ae5a`): both forms at their maximum, excluding each other on the
+     device position, with empty chunks publishing `(m = -inf, l = 0)` so the
+     combine cannot read the previous position's slots. Same bits, verified at
+     pos 2047 / 1000 / 255.
+
+  What the graph does NOT cover: the sampler, the per-token logits readback and
+  the KV-layout work below. `XingCaptureDecodeGraph` refuses (rather than
+  capturing) when the step is not capture-legal - fast-math off, the layer-debug
+  staging on - and a capture that fails after it started is reported instead of
+  being papered over, because it leaves the context unusable.
 - Tool calling is verified on the REAL weights
   (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine
   other families run): the model emits its native markers as the control ids
@@ -257,22 +280,50 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   are present rather than trusting the decoded text. An earlier "emission not
   observed" note was that same artifact, not a defect.
 - Remaining per-token costs, in the order they were identified:
-1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ MEASURED FREE,
-   twice, and the second measurement is the one that counts: 64.3 vs 64.3 t/s
-   with the syncs skipped, and 21569 vs 21555 ms at 2048 tokens with them
-   skipped - 0.06%. A decode-loop sync only costs what it drains, and per layer
-   the GPU has ~200 us queued and the host has ~1 us of pointer-array fill to do
-   afterwards, so it is entirely hidden. The device-resident id->slot table (the
-   gigachat slot-LRU pattern) would buy nothing and is NOT worth doing; the
-   measurement is the deliverable. Note the skip is a timing experiment only -
-   without the sync the ids are not yet landed, so it is not a correctness
-   option.
+1. ~~`ResolveXingRouted` syncs once per MoE layer (38/token)~~ DONE, and the
+   earlier "measured free" conclusion was HALF RIGHT. Skipping only the
+   `cudaStreamSynchronize` really is free (64.3 vs 64.3 t/s, then 21569 vs
+   21555 ms - 0.06%): a decode-loop sync costs only what it drains. What the
+   experiment did NOT skip was the host resolve around it - six `assign()`
+   calls plus nine pointer fields per selected expert, 38 times per token - and
+   moving the whole thing to the device (uploaded per-layer expert pointer
+   tables, ids read in the GEMV kernel) is worth **+3.4%**. Both halves had to
+   go: the sync was free, the resolve was not.
 2. ~~`XingMoeModel::Infer` round-trips the whole `[vocab]` logits row~~ DONE
    (9108ff4): the sampler now reads `session_->d_logits` in place and only the
    8-byte argmax comes back, with the row captured once for `final_logits`. The
    three per-step `cudaMalloc`/`cudaFree` are gone with it.
 3. Prefill replays the prompt one token per step (no incremental/parallel
    prefill), so TTFT grows linearly with prompt length.
+- **Next target, measured (2026-10-05): the mHC depth mixer, 1.32 ms/token, 15%
+  of the step.** It is four launches per mHC block, two blocks per layer, so 320
+  per token: proj 5.93 us (24 blocks), gates 7.06 us (ONE block), collapse 1.97 us,
+  mix 1.55 us. The gates kernel is the interesting one - it is 0.56 ms/token on
+  its own and it is not bandwidth: the Sinkhorn already lives in warp 0's
+  registers at the frozen geometry (hc_mult=4, 16 of 32 lanes), so the cost is
+  20 strictly serial iterations of shuffle-sums and divides, with the other seven
+  warps idle. The obvious fix - merge gates into the wide collapse block so the
+  57 KiB stream read overlaps the Sinkhorn - is the one that was already tried
+  and reverted: the collapse block runs 1024 threads, whose 64-register cap makes
+  the FP64 exp replica spill, and that cost more than the overlap won. The way
+  through is a producer/consumer split INSIDE one launch: warps 1..7 prefetch the
+  streams into shared memory while warp 0 runs the iterations, one barrier, then
+  the collapse - FP64 stays off the wide path and the load overlaps the chain.
+  Budget: `xing.mhc.decode` in `kernel_budgets.json` guards the current 12.5-13.0 us
+  for proj+gates+collapse, so a regression here is visible immediately.
+- **Deferred to its own task (2026-10-05): the KV cache layout.** With the decode
+  step graph-replayed, the context-dependent cost is the only thing left that
+  scales. Measured on this branch: 141.6 / 132.5 / 117.2 t/s at 128 / 1024 /
+  2048 tokens, i.e. ~7.0 ms of fixed cost plus ~1.7 ms per 1000 cached positions.
+  Profiling 128 against 2048 shows attention is the ONLY kernel whose time grows
+  (0.81 -> 2.28 ms/token); everything else is flat. Isolated, the attention reads
+  its K/V at ~1364 GB/s while the context still fits L2 (pos 1024) and drops to
+  ~788/820 GB/s once it cannot (pos 4096/8191) - so it is L2-bandwidth-bound at
+  short context and DRAM-bound at long, and the layout is why: the cache is
+  `[pos][head][dim]`, so one head's dot product walks a 128 KiB stride per
+  position. A head-major `[head][pos][dim]` layout makes the per-head working set
+  contiguous and is the fix; it is a loader + kernel + parity exercise, not
+  arithmetic, and it is deliberately NOT started here.
 - The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
   and `r3`); it is still an explicit **floor**, not a tuned number, so the perf
   guard treats a regression against it as a real signal.

@@ -291,14 +291,22 @@ __device__ __forceinline__ float YtLoad(YT v)
 // - 1.84 us of launch floor on this machine, 244 of them per Xing decode token.
 // It also drops the F16 rounding of the GEMV result, so it is a tolerance-class
 // variant (more accurate, not bit-identical).
-template <typename YT, int KP>
+// TWO_VIEWS: two projections that share ONE input row but live in separate
+// weight tensors (an MLA q_a + kv_a pair). Rows >= split_rows read packed2 /
+// scales2 at scale gs2 and write y2. Defaulted off, so every existing
+// instantiation keeps its exact argument list and its exact arithmetic - the
+// selection only exists where it is asked for.
+template <typename YT, int KP, bool TWO_VIEWS = false>
 __global__ void lsx_nvfp4_gemv_kernel(
     const __half *__restrict__ x,
     const uint8_t *__restrict__ packed,
     const uint8_t *__restrict__ scales,
     float global_scale, float global_scale_up, int n_half,
     YT *__restrict__ y,
-    int K, int N, bool acc_in)
+    int K, int N, bool acc_in,
+    const uint8_t *__restrict__ packed2 = nullptr,
+    const uint8_t *__restrict__ scales2 = nullptr, int split_rows = 0,
+    float gs2 = 0.0f, YT *__restrict__ y2 = nullptr)
 {
     constexpr int WARPS = 8;
     constexpr int ROWS = WARPS / KP;
@@ -315,14 +323,19 @@ __global__ void lsx_nvfp4_gemv_kernel(
     // Per-row global scale: gate/up pair packs scale rows [0, n_half) with
     // global_scale and rows [n_half, N) with global_scale_up; plain launches
     // pass n_half == N so every row uses global_scale (unchanged behavior).
+    // Per-row weight selection. `wrow`/`srow` are hoisted out of the row body so
+    // the inner loop is untouched: a row's dot product is the same k-order over
+    // the same bytes whichever view it came from.
+    const bool second = TWO_VIEWS && row >= split_rows;
+    const uint8_t *pk = second ? packed2 : packed;
+    const uint8_t *sc = second ? scales2 : scales;
     const float row_scale =
-        (row < n_half) ? global_scale : global_scale_up;
+        second ? gs2 : ((row < n_half) ? global_scale : global_scale_up);
     if (row < N) {
+        const int r = second ? row - split_rows : row;
         const int k_half = K >> 1;
-        const uint8_t *wrow =
-            packed + static_cast<int64_t>(row) * k_half;
-        const uint8_t *srow =
-            scales + static_cast<int64_t>(row) * (K >> 4);
+        const uint8_t *wrow = pk + static_cast<int64_t>(r) * k_half;
+        const uint8_t *srow = sc + static_cast<int64_t>(r) * (K >> 4);
         const int kb = (K / KP) * (warp % KP);       // slice base element
         const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
         const int chunks = (K / KP) >> 5;            // 32-element units
@@ -396,7 +409,11 @@ __global__ void lsx_nvfp4_gemv_kernel(
         const int r = blockIdx.x * ROWS + (warp / KP);
         if (r < N) {
             const float v = t * row_scale;
-            y[r] = acc_in ? YtLoad<YT>(y[r]) + v : v;
+            if (TWO_VIEWS && r >= split_rows)
+                y2[r - split_rows] =
+                    acc_in ? YtLoad<YT>(y2[r - split_rows]) + v : v;
+            else
+                y[r] = acc_in ? YtLoad<YT>(y[r]) + v : v;
         }
     }
 }
@@ -411,27 +428,19 @@ struct LsxExpertBatchPtrs {
     float gs[8];
 };
 
-template <int KP>
-__global__ void lsx_nvfp4_gemv_expert_batch_kernel(
-    const __half *__restrict__ x, LsxExpertBatchPtrs ptrs,
-    __half *__restrict__ y, int K, int N, int x_stride, bool acc_in)
+
+// The per-row GEMV body shared by the by-value and device-table expert batches.
+// Verbatim copy of what used to be inline, wrapped so that BOTH entry points run
+// the same loop: they must produce bit-identical rows, and a second copy of this
+// body would be free to drift from the one the numeric gates were taken on.
+template <int KP, typename YT>
+__device__ __forceinline__ void LsxExpertRowGemv(
+    const __half *__restrict__ xe, const uint8_t *__restrict__ packed,
+    const uint8_t *__restrict__ scales, float gs, YT *__restrict__ y, int K,
+    int N, bool acc_in, float *sp, int row, int warp, int lane)
 {
-    constexpr int WARPS = 8;
-    constexpr int ROWS = WARPS / KP;
-    static_assert(ROWS >= 1 && KP <= WARPS);
-    __shared__ float sp[WARPS];
-
-    const int tid = threadIdx.x;
-    const int warp = tid >> 5;
-    const int lane = tid & 31;
-    const int e = blockIdx.y;
-    const __half *xe = x + static_cast<int64_t>(e) * x_stride;
-    const uint8_t *packed = ptrs.packed[e];
-    const uint8_t *scales = ptrs.scales[e];
-    const float gs = ptrs.gs[e];
-
+    constexpr int ROWS = 8 / KP;   // the kernels below fix WARPS = 8
     float acc = 0.0f;
-    const int row = blockIdx.x * ROWS + (warp / KP);
     if (row < N) {
         const int k_half = K >> 1;
         const uint8_t *wrow = packed + static_cast<int64_t>(row) * k_half;
@@ -479,14 +488,73 @@ __global__ void lsx_nvfp4_gemv_expert_batch_kernel(
         float t = 0.0f;
 #pragma unroll
         for (int j = 0; j < KP; ++j) t += sp[wbase + j];
-        const int r = blockIdx.x * ROWS + (warp / KP);
-        if (r < N) {
+        if (row < N) {
             const float v = t * gs;
-            __half *yr = y + static_cast<int64_t>(e) * N + r;
-            *yr = acc_in ? __float2half(__half2float(*yr) + v)
-                         : __float2half(v);
+            YT *yr = y + static_cast<int64_t>(blockIdx.y) * N + row;
+            *yr = acc_in ? YtLoad<YT>(*yr) + v : v;
         }
     }
+}
+
+// Device-table twin: gridDim.y still picks one of the `count` selected experts,
+// but WHICH expert each column is comes from d_ids[e] in device memory and the
+// pointers come from the uploaded table - so no host round trip, and a whole
+// decode step becomes capturable into a CUDA graph (a mid-graph stream
+// synchronize would be illegal).
+template <int KP>
+__global__ void lsx_nvfp4_gemv_expert_batch_ids_kernel(
+    const __half *__restrict__ x, const int32_t *__restrict__ d_ids,
+    const LsxExpertPtrRow *__restrict__ table, int table_offset,
+    int num_experts, __half *__restrict__ y, int K, int N, int x_stride,
+    bool acc_in)
+{
+    constexpr int WARPS = 8;
+    constexpr int ROWS = WARPS / KP;
+    static_assert(ROWS >= 1 && KP <= WARPS);
+    __shared__ float sp[WARPS];
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int e = blockIdx.y;
+    const int expert = d_ids[e];
+    // Only a caller bug can produce this (the loader validates the table, the
+    // router clamps its own top_k), but an unchecked id would turn into a wild
+    // pointer inside the GEMV, so refuse loudly instead.
+    if (expert < 0 || expert >= num_experts)
+    {
+        if (tid == 0)
+            printf("[lsx-nvfp4] expert id %d out of range (experts=%d)\n", expert,
+                   num_experts);
+        return;
+    }
+    // table_offset is the caller's LAYER slice: the upload is one flat
+    // [layers * experts] array, so every layer needs its own base.
+    const LsxExpertPtrRow rp = table[table_offset + expert];
+    LsxExpertRowGemv<KP, __half>(x + static_cast<int64_t>(e) * x_stride,
+                                 rp.packed, rp.scales, rp.gs, y, K, N, acc_in,
+                                 sp, blockIdx.x * ROWS + (warp / KP), warp,
+                                 lane);
+}
+
+template <int KP>
+__global__ void lsx_nvfp4_gemv_expert_batch_kernel(
+    const __half *__restrict__ x, LsxExpertBatchPtrs ptrs,
+    __half *__restrict__ y, int K, int N, int x_stride, bool acc_in)
+{
+    constexpr int WARPS = 8;
+    constexpr int ROWS = WARPS / KP;
+    static_assert(ROWS >= 1 && KP <= WARPS);
+    __shared__ float sp[WARPS];
+
+    const int tid = threadIdx.x;
+    const int warp = tid >> 5;
+    const int lane = tid & 31;
+    const int e = blockIdx.y;
+    LsxExpertRowGemv<KP, __half>(x + static_cast<int64_t>(e) * x_stride,
+                                 ptrs.packed[e], ptrs.scales[e], ptrs.gs[e], y,
+                                 K, N, acc_in, sp,
+                                 blockIdx.x * ROWS + (warp / KP), warp, lane);
+
 }
 
 // seq==1 warp-per-row GEMV (27B decode round): one warp owns a whole
@@ -885,6 +953,83 @@ cudaError_t LaunchNvfp4Gemm(const LsxNvfp4Weight &w, const __half *x, int seq,
 // seq==1 decode-path weight-streaming GEMV entry (external linkage so tests
 // can call it directly). Requires K % 32 == 0 (16 B row alignment); the
 // k-partition heuristic lives in the launch helper.
+// Device-table expert batch: the routed ids stay on the device (d_ids) and the
+// pointers come from `table_rows` (a flat [layer * num_experts] upload), so the
+// caller needs no D2H and no stream synchronize - the precondition for capturing
+// a decode step into a CUDA graph. `table_offset` is the layer's slice.
+//
+// The fallback (streaming path not usable: fast-math off, or K % 32 != 0) still
+// reads the four ids back and resolves them on the host, because the by-value
+// entry point cannot be fed from device memory. That path is a correctness
+// fallback, not the capture path.
+// True when the device-table entry point will actually dispatch the streaming
+// ids kernel (and therefore need no host round trip). Callers use it to choose
+// between the ids path and the older host-resolved one, instead of duplicating
+// the dispatch condition.
+bool LsxExpertBatchIdsStreaming(int K)
+{
+    return (K & 31) == 0 && LsxTcFastMath() && LsxSeq1Gemv();
+}
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVExpertBatchIds(
+    cudaStream_t stream, const __half *x, const int32_t *d_ids,
+    const LsxExpertPtrRow *table_rows, int table_offset, int num_experts,
+    int count, int x_stride, __half *y, int K, int N, bool acc)
+{
+    if (!x || !y || !d_ids || !table_rows || count <= 0 || count > 8 ||
+        K <= 0 || N <= 0 || num_experts <= 0)
+        return cudaErrorInvalidValue;
+    if ((K & 31) != 0 || !(LsxTcFastMath() && LsxSeq1Gemv()))
+    {
+        int32_t ids[8];
+        const cudaError_t cp = cudaMemcpyAsync(
+            ids, d_ids, static_cast<size_t>(count) * sizeof(int32_t),
+            cudaMemcpyDeviceToHost, stream);
+        if (cp != cudaSuccess) return cp;
+        const cudaError_t sy = cudaStreamSynchronize(stream);
+        if (sy != cudaSuccess) return sy;
+        const uint8_t *packed[8];
+        const uint8_t *scales[8];
+        float gs[8];
+        for (int e = 0; e < count; ++e)
+        {
+            const int id = ids[e];
+            if (id < 0 || id >= num_experts) return cudaErrorInvalidValue;
+            // table_rows is DEVICE memory (that is the whole point of this entry
+            // point), so the host-side resolver has to bring the row across
+            // first - dereferencing it here would fault.
+            LsxExpertPtrRow row{};
+            const cudaError_t rp = cudaMemcpy(
+                &row, table_rows + table_offset + id, sizeof(row),
+                cudaMemcpyDeviceToHost);
+            if (rp != cudaSuccess) return rp;
+            packed[e] = row.packed;
+            scales[e] = row.scales;
+            gs[e] = row.gs;
+        }
+        return RunLsxNvfp4GemmSeq1GemmVExpertBatch(
+            stream, x, packed, scales, gs, count, x_stride, y, K, N, acc);
+    }
+    const int kp = PickGemvKp(K, N);
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const dim3 grid((N + ROWS - 1) / ROWS, count);
+        lsx_nvfp4_gemv_expert_batch_ids_kernel<KPc>
+            <<<grid, WARPS * 32, 0, stream>>>(x, d_ids, table_rows,
+                                               table_offset, num_experts, y, K,
+                                               N, x_stride, acc);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
+
 cudaError_t RunLsxNvfp4GemmSeq1GemmV(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,
@@ -892,6 +1037,70 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
 {
     return LaunchLsxNvfp4GemmSeq1GemmV<__half>(stream, x, packed, scales,
                                                global_scale, y, K, N, acc);
+}
+
+// Two projections, ONE input row, two separate weight tensors. q_a and kv_a of an
+// MLA layer are exactly this: both read the same activation and both are tiny -
+// 0.86 and 0.65 us of DRAM traffic measured at 6.6 and 6.1 us of wall on this
+// machine, i.e. they are launch and ramp, not bandwidth - and they live in
+// different tensors, so the fused gate/up pair (which needs one contiguous pack)
+// does not apply. It costs nothing numerically: each output row is the same dot
+// product in the same k-order, it just happens in one grid instead of two.
+template <typename YT>
+static cudaError_t LaunchLsxNvfp4GemmSeq1GemmVTwoViews(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    YT *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    YT *y2, int N1, bool acc_in)
+{
+    const int N = N0 + N1;
+    if (!x || !packed || !scales || !y || !packed2 || !scales2 || !y2 ||
+        K <= 0 || N <= 0 || N0 <= 0 || N1 <= 0 || (K & 31) != 0)
+        return cudaErrorInvalidValue;
+    // Only the sliced route is fused. A shape that would take warp-per-row is
+    // large enough that its own launch is already amortised, so it falls back to
+    // two ordinary launches - the same bits either way.
+    if ((K & 63) == 0 && K >= 4096 && N >= 8192 &&
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed))
+    {
+        cudaError_t e = LaunchLsxNvfp4GemmSeq1GemmV(
+            stream, x, packed, scales, global_scale, y, K, N0, acc_in);
+        if (e != cudaSuccess) return e;
+        return LaunchLsxNvfp4GemmSeq1GemmV(stream, x, packed2, scales2,
+                                            global_scale2, y2, K, N1, acc_in);
+    }
+    const int kp = PickGemvKp(K, N);
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const dim3 grid((N + ROWS - 1) / ROWS);
+        // n_half == N keeps the gate/up per-row scale split inert; the two-view
+        // selection is what picks gs2 for rows >= N0.
+        lsx_nvfp4_gemv_kernel<YT, KPc, true><<<grid, WARPS * 32, 0, stream>>>(
+            x, packed, scales, global_scale, global_scale, N, y, K, N, acc_in,
+            packed2, scales2, N0, global_scale2, y2);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    float *y2, int N1)
+{
+    return LaunchLsxNvfp4GemmSeq1GemmVTwoViews(
+        stream, x, packed, scales, global_scale, y, K, N0, packed2, scales2,
+        global_scale2, y2, N1, false);
 }
 
 cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
