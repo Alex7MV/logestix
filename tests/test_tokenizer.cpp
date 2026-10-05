@@ -500,6 +500,22 @@ TEST_CASE("arrow_tokenizer_decode never emits undecodable bytes",
         return 0;
     };
 
+    // Regression (Debug-only stack-smashing abort): a byte that ends a pending
+    // sequence AND is itself undecodable makes one Feed() emit two replacement
+    // characters. [0xE9, 'a'] is that case - the lead byte opens a sequence, the
+    // ASCII byte cannot continue it, so the decoder must emit U+FFFD and then
+    // reprocess 'a' from a clean state. The counting pass used to size its
+    // scratch at one replacement and overflowed it.
+    {
+        std::string text;
+        REQUIRE(decode({1, 0}, text) == 0);   // 0xE9 then 'a'
+        CHECK(text == "\xEF\xBF\xBD" "a");
+        REQUIRE(decode({1, 1}, text) == 0);   // two undecodable bytes
+        CHECK(text == "\xEF\xBF\xBD\xEF\xBF\xBD");
+        REQUIRE(decode({1, 0, 2}, text) == 0); // lead, ASCII, 'b'
+        CHECK(text == "\xEF\xBF\xBD" "ab");
+    }
+
     // A lone 0xE9 is not a UTF-8 sequence: it must be replaced, not passed on.
     {
         std::string text;

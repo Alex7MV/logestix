@@ -385,6 +385,14 @@ int32_t sp_bpe_encode(const ArrowTokenizerDb &db, const char *text,
 // U+FFFD REPLACEMENT CHARACTER.
 constexpr char kReplacement[] = "\xEF\xBF\xBD";
 constexpr size_t kReplacementLen = 3;
+// The widest single Utf8Sanitizer::Feed() contribution. Not kReplacementLen: a
+// byte that is not a continuation byte ends the pending sequence with one
+// replacement and is then REPROCESSED from a clean state, where it may itself be
+// undecodable and emit a second. So [0xE9, 'a'] emits 3 + 1 = 4 bytes from one
+// call, and a scratch sized for one replacement overruns it - which is what
+// tripped the stack protector in Debug builds (both counting passes, below and in
+// sp_bpe_decode, had that scratch).
+constexpr size_t kMaxFeedBytes = 2 * kReplacementLen;
 
 // Incremental UTF-8 filter: Feed() one byte at a time, then Finish(). Bytes are
 // buffered only while a multi-byte sequence is still incomplete, so a codepoint
@@ -467,7 +475,7 @@ int32_t sp_bpe_decode(const ArrowTokenizerDb &db, const int32_t *ids,
     size_t total = 0;
     {
         Utf8Sanitizer san;
-        char scratch[kReplacementLen];
+        char scratch[kMaxFeedBytes];
         for (size_t i = 0; i < n_ids; ++i) {
             const int32_t id = ids[i];
             if (id < 0 || id >= db.vocab_size) return -1;
@@ -583,12 +591,11 @@ int32_t arrow_tokenizer_decode(const ArrowTokenizerDb &db, const int32_t *ids,
             const size_t len = static_cast<size_t>(db.token_offsets[id + 1] -
                                                    db.token_offsets[id]);
             for (size_t k = 0; k < len; ++k) {
-                // Feed into a scratch sized for the widest single contribution.
-                char scratch[kReplacementLen];
+                char scratch[kMaxFeedBytes];
                 total += san.Feed(p[k], scratch);
             }
         }
-        char scratch[kReplacementLen];
+        char scratch[kMaxFeedBytes];
         total += san.Finish(scratch);
     }
     if (total > *max_out_len) { *max_out_len = total; return -2; }
