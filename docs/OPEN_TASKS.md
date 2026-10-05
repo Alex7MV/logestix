@@ -295,6 +295,19 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
    three per-step `cudaMalloc`/`cudaFree` are gone with it.
 3. Prefill replays the prompt one token per step (no incremental/parallel
    prefill), so TTFT grows linearly with prompt length.
+- **Deferred to its own task (2026-10-05): the KV cache layout.** With the decode
+  step graph-replayed, the context-dependent cost is the only thing left that
+  scales. Measured on this branch: 141.6 / 132.5 / 117.2 t/s at 128 / 1024 /
+  2048 tokens, i.e. ~7.0 ms of fixed cost plus ~1.7 ms per 1000 cached positions.
+  Profiling 128 against 2048 shows attention is the ONLY kernel whose time grows
+  (0.81 -> 2.28 ms/token); everything else is flat. Isolated, the attention reads
+  its K/V at ~1364 GB/s while the context still fits L2 (pos 1024) and drops to
+  ~788/820 GB/s once it cannot (pos 4096/8191) - so it is L2-bandwidth-bound at
+  short context and DRAM-bound at long, and the layout is why: the cache is
+  `[pos][head][dim]`, so one head's dot product walks a 128 KiB stride per
+  position. A head-major `[head][pos][dim]` layout makes the per-head working set
+  contiguous and is the fix; it is a loader + kernel + parity exercise, not
+  arithmetic, and it is deliberately NOT started here.
 - The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
   and `r3`); it is still an explicit **floor**, not a tuned number, so the perf
   guard treats a regression against it as a real signal.
