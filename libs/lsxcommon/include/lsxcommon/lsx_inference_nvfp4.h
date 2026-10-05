@@ -193,6 +193,18 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
 // Xing decode token). The per-row math is identical; the result skips the F16
 // rounding of the store, so it is a TOLERANCE-CLASS variant - same relationship
 // to the F16 form as the TC fast-math routes have.
+// Two projections sharing ONE input row but living in separate weight tensors
+// (an MLA q_a + kv_a pair), writing F32. One launch instead of two; every output
+// row is the same dot product in the same k-order as the separate calls, so this
+// is bit-identical rather than tolerance-class. Shapes that would route to
+// warp-per-row fall back to two ordinary launches.
+cudaError_t RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    float *y2, int N1);
+
 cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
     cudaStream_t stream, const __half *x,
     const uint8_t *packed, const uint8_t *scales, float global_scale,

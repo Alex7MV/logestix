@@ -144,6 +144,81 @@ TEST_CASE("NVFP4 GEMV large-N parity (head class)",
 // 32-element uint4 chunk use scale byte sb, elements 16..31 use sb+1.
 // Adversarial contrast (sb decodes to ~0, sb+1 to the max pow2) makes ANY
 // lo/hi-nibble <-> scale-half mixup explode far beyond tolerance.
+// The two-view launch exists to pay ONE launch for two projections that share an
+// input row. The invariant that makes it safe is that it is not a new numeric
+// path: each output row must be the same dot product, in the same k-order, as the
+// separate calls. Compared by memcmp, not by tolerance.
+TEST_CASE("NVFP4 two-view GEMV is bit-identical to two separate launches",
+          "[qwen][gemm][nvfp4][gemv]")
+{
+    int devices = 0;
+    REQUIRE(cudaGetDeviceCount(&devices) == cudaSuccess);
+    if (devices == 0) SKIP("no CUDA device");
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+    struct Shape { int K; int N0; int N1; };
+    // The MLA projection pair, plus a deep-K shape that must take the fallback
+    // (two ordinary launches) rather than the fused route.
+    const Shape shapes[] = {
+        {3584, 768, 576}, {512, 8192, 1024}, {4096, 4096, 4096},
+    };
+    for (const auto &sh : shapes)
+    {
+        const int N = sh.N0 + sh.N1;
+        std::vector<__half> hx(sh.K);
+        std::vector<uint8_t> hp0(static_cast<size_t>(sh.K) * sh.N0 / 2),
+            hs0(static_cast<size_t>(sh.K) * sh.N0 / 16),
+            hp1(static_cast<size_t>(sh.K) * sh.N1 / 2),
+            hs1(static_cast<size_t>(sh.K) * sh.N1 / 16);
+        for (int i = 0; i < sh.K; ++i)
+            hx[i] = __float2half(float((i % 13) - 6) * 0.25f);
+        for (size_t i = 0; i < hp0.size(); ++i) hp0[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hp1.size(); ++i) hp1[i] = static_cast<uint8_t>((i * 7 + 3) & 0xFF);
+        for (size_t i = 0; i < hs0.size(); ++i) hs0[i] = static_cast<uint8_t>(128 + (i % 48));
+        for (size_t i = 0; i < hs1.size(); ++i) hs1[i] = static_cast<uint8_t>(96 + (i % 64));
+        __half *dx;
+        uint8_t *dp0, *ds0, *dp1, *ds1;
+        float *dy0a, *dy0b, *dy1a, *dy1b;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(sh.K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp0, hp0.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds0, hs0.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp1, hp1.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds1, hs1.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy0a, static_cast<size_t>(sh.N0) * 4) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy0b, static_cast<size_t>(sh.N0) * 4) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy1a, static_cast<size_t>(sh.N1) * 4) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy1b, static_cast<size_t>(sh.N1) * 4) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), static_cast<size_t>(sh.K) * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp0, hp0.data(), hp0.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds0, hs0.data(), hs0.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp1, hp1.data(), hp1.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds1, hs1.data(), hs1.size(), cudaMemcpyHostToDevice) == cudaSuccess);
+        // fused
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+                    nullptr, dx, dp0, ds0, 0.125f, dy0a, sh.K, sh.N0, dp1, ds1,
+                    0.25f, dy1a, sh.N1) == cudaSuccess);
+        // separate
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+                    nullptr, dx, dp0, ds0, 0.125f, dy0b, sh.K, sh.N0) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVF32(
+                    nullptr, dx, dp1, ds1, 0.25f, dy1b, sh.K, sh.N1) == cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        std::vector<float> a(sh.N0), b(sh.N0), c(sh.N1), d(sh.N1);
+        REQUIRE(cudaMemcpy(a.data(), dy0a, a.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(b.data(), dy0b, b.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(c.data(), dy1a, c.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+        REQUIRE(cudaMemcpy(d.data(), dy1b, d.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess);
+        INFO("K=" << sh.K << " N0=" << sh.N0 << " N1=" << sh.N1);
+        REQUIRE(a.size() == b.size());
+        REQUIRE(std::memcmp(a.data(), b.data(), a.size() * 4) == 0);
+        REQUIRE(c.size() == d.size());
+        REQUIRE(std::memcmp(c.data(), d.data(), c.size() * 4) == 0);
+        cudaFree(dx); cudaFree(dp0); cudaFree(ds0); cudaFree(dp1); cudaFree(ds1);
+        cudaFree(dy0a); cudaFree(dy0b); cudaFree(dy1a); cudaFree(dy1b);
+    }
+}
+
 TEST_CASE("NVFP4 GEMV chunk scale-block split", "[qwen][gemm][nvfp4][gemv]")
 {
     constexpr int K = 512, N = 64;

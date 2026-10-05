@@ -946,7 +946,20 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         // The FP16 activation is already in d_half (written by the input_ln norm
         // above), and the norm below lands its own FP16 in d_half2, so neither
         // projection re-runs the conversion and d_half survives for kv_a.
-        XING_CK(GvF32(ly.q_a, s.d_half, s.d_norm, stream));       // [q_lora]
+        // q_a and kv_a are two projections over the SAME activation, in separate
+        // weight tensors, and both are launch-bound rather than bandwidth-bound
+        // (0.86 and 0.65 us of DRAM traffic at 6.6 and 6.1 us of wall). One launch
+        // covers both; the rows and their k-order are unchanged, so this is
+        // bit-identical to the two separate GvF32 calls.
+        {
+            const cudaError_t qe = lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+                stream, s.d_half, ly.q_a.packed, ly.q_a.scales,
+                ly.q_a.global_scale, s.d_norm, H,
+                static_cast<int>(ly.q_a.rows), ly.kv_a.packed, ly.kv_a.scales,
+                ly.kv_a.global_scale, s.d_kv_latent,
+                static_cast<int>(ly.kv_a.rows));
+            XING_CK(qe);
+        }
         xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
             s.d_norm, ly.q_a_ln, s.d_norm, s.d_half2, frozen::kQLoraRank,
             frozen::kRmsEps);
@@ -954,7 +967,6 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XingStageRms("q_a", l, token_id, s.d_norm, frozen::kQLoraRank, stream);
         XingStageRms("q_b", l, token_id, s.d_q, frozen::kQSize, stream);
 
-        XING_CK(GvF32(ly.kv_a, s.d_half, s.d_kv_latent, stream));   // [kv_lora+rope]
         XingStageRms("kv_a", l, token_id, s.d_kv_latent, frozen::kKvAWidth,
                      stream);
         // kv_a_layernorm over the latent part only; the rope part passes through.

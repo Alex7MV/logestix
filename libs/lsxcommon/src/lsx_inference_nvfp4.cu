@@ -291,14 +291,22 @@ __device__ __forceinline__ float YtLoad(YT v)
 // - 1.84 us of launch floor on this machine, 244 of them per Xing decode token.
 // It also drops the F16 rounding of the GEMV result, so it is a tolerance-class
 // variant (more accurate, not bit-identical).
-template <typename YT, int KP>
+// TWO_VIEWS: two projections that share ONE input row but live in separate
+// weight tensors (an MLA q_a + kv_a pair). Rows >= split_rows read packed2 /
+// scales2 at scale gs2 and write y2. Defaulted off, so every existing
+// instantiation keeps its exact argument list and its exact arithmetic - the
+// selection only exists where it is asked for.
+template <typename YT, int KP, bool TWO_VIEWS = false>
 __global__ void lsx_nvfp4_gemv_kernel(
     const __half *__restrict__ x,
     const uint8_t *__restrict__ packed,
     const uint8_t *__restrict__ scales,
     float global_scale, float global_scale_up, int n_half,
     YT *__restrict__ y,
-    int K, int N, bool acc_in)
+    int K, int N, bool acc_in,
+    const uint8_t *__restrict__ packed2 = nullptr,
+    const uint8_t *__restrict__ scales2 = nullptr, int split_rows = 0,
+    float gs2 = 0.0f, YT *__restrict__ y2 = nullptr)
 {
     constexpr int WARPS = 8;
     constexpr int ROWS = WARPS / KP;
@@ -315,14 +323,19 @@ __global__ void lsx_nvfp4_gemv_kernel(
     // Per-row global scale: gate/up pair packs scale rows [0, n_half) with
     // global_scale and rows [n_half, N) with global_scale_up; plain launches
     // pass n_half == N so every row uses global_scale (unchanged behavior).
+    // Per-row weight selection. `wrow`/`srow` are hoisted out of the row body so
+    // the inner loop is untouched: a row's dot product is the same k-order over
+    // the same bytes whichever view it came from.
+    const bool second = TWO_VIEWS && row >= split_rows;
+    const uint8_t *pk = second ? packed2 : packed;
+    const uint8_t *sc = second ? scales2 : scales;
     const float row_scale =
-        (row < n_half) ? global_scale : global_scale_up;
+        second ? gs2 : ((row < n_half) ? global_scale : global_scale_up);
     if (row < N) {
+        const int r = second ? row - split_rows : row;
         const int k_half = K >> 1;
-        const uint8_t *wrow =
-            packed + static_cast<int64_t>(row) * k_half;
-        const uint8_t *srow =
-            scales + static_cast<int64_t>(row) * (K >> 4);
+        const uint8_t *wrow = pk + static_cast<int64_t>(r) * k_half;
+        const uint8_t *srow = sc + static_cast<int64_t>(r) * (K >> 4);
         const int kb = (K / KP) * (warp % KP);       // slice base element
         const uint4 *wv = reinterpret_cast<const uint4 *>(wrow + (kb >> 1));
         const int chunks = (K / KP) >> 5;            // 32-element units
@@ -396,7 +409,11 @@ __global__ void lsx_nvfp4_gemv_kernel(
         const int r = blockIdx.x * ROWS + (warp / KP);
         if (r < N) {
             const float v = t * row_scale;
-            y[r] = acc_in ? YtLoad<YT>(y[r]) + v : v;
+            if (TWO_VIEWS && r >= split_rows)
+                y2[r - split_rows] =
+                    acc_in ? YtLoad<YT>(y2[r - split_rows]) + v : v;
+            else
+                y[r] = acc_in ? YtLoad<YT>(y[r]) + v : v;
         }
     }
 }
@@ -1020,6 +1037,70 @@ cudaError_t RunLsxNvfp4GemmSeq1GemmV(
 {
     return LaunchLsxNvfp4GemmSeq1GemmV<__half>(stream, x, packed, scales,
                                                global_scale, y, K, N, acc);
+}
+
+// Two projections, ONE input row, two separate weight tensors. q_a and kv_a of an
+// MLA layer are exactly this: both read the same activation and both are tiny -
+// 0.86 and 0.65 us of DRAM traffic measured at 6.6 and 6.1 us of wall on this
+// machine, i.e. they are launch and ramp, not bandwidth - and they live in
+// different tensors, so the fused gate/up pair (which needs one contiguous pack)
+// does not apply. It costs nothing numerically: each output row is the same dot
+// product in the same k-order, it just happens in one grid instead of two.
+template <typename YT>
+static cudaError_t LaunchLsxNvfp4GemmSeq1GemmVTwoViews(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    YT *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    YT *y2, int N1, bool acc_in)
+{
+    const int N = N0 + N1;
+    if (!x || !packed || !scales || !y || !packed2 || !scales2 || !y2 ||
+        K <= 0 || N <= 0 || N0 <= 0 || N1 <= 0 || (K & 31) != 0)
+        return cudaErrorInvalidValue;
+    // Only the sliced route is fused. A shape that would take warp-per-row is
+    // large enough that its own launch is already amortised, so it falls back to
+    // two ordinary launches - the same bits either way.
+    if ((K & 63) == 0 && K >= 4096 && N >= 8192 &&
+        g_lsx_tc_fast_math.load(std::memory_order_relaxed))
+    {
+        cudaError_t e = LaunchLsxNvfp4GemmSeq1GemmV(
+            stream, x, packed, scales, global_scale, y, K, N0, acc_in);
+        if (e != cudaSuccess) return e;
+        return LaunchLsxNvfp4GemmSeq1GemmV(stream, x, packed2, scales2,
+                                            global_scale2, y2, K, N1, acc_in);
+    }
+    const int kp = PickGemvKp(K, N);
+    constexpr int WARPS = 8;
+    auto launch = [&](auto kp_tag) -> cudaError_t {
+        constexpr int KPc = decltype(kp_tag)::value;
+        constexpr int ROWS = WARPS / KPc;
+        const dim3 grid((N + ROWS - 1) / ROWS);
+        // n_half == N keeps the gate/up per-row scale split inert; the two-view
+        // selection is what picks gs2 for rows >= N0.
+        lsx_nvfp4_gemv_kernel<YT, KPc, true><<<grid, WARPS * 32, 0, stream>>>(
+            x, packed, scales, global_scale, global_scale, N, y, K, N, acc_in,
+            packed2, scales2, N0, global_scale2, y2);
+        return cudaGetLastError();
+    };
+    switch (kp) {
+    case 8:  return launch(std::integral_constant<int, 8>{});
+    case 4:  return launch(std::integral_constant<int, 4>{});
+    case 2:  return launch(std::integral_constant<int, 2>{});
+    default: return launch(std::integral_constant<int, 1>{});
+    }
+}
+
+cudaError_t RunLsxNvfp4GemmSeq1GemmVTwoViewsF32(
+    cudaStream_t stream, const __half *x,
+    const uint8_t *packed, const uint8_t *scales, float global_scale,
+    float *y, int K, int N0,
+    const uint8_t *packed2, const uint8_t *scales2, float global_scale2,
+    float *y2, int N1)
+{
+    return LaunchLsxNvfp4GemmSeq1GemmVTwoViews(
+        stream, x, packed, scales, global_scale, y, K, N0, packed2, scales2,
+        global_scale2, y2, N1, false);
 }
 
 cudaError_t RunLsxNvfp4GemmSeq1GemmVF32(
