@@ -351,6 +351,38 @@ allocation OOMs on a 32 GiB card, and destroying the first model does not return
 memory within the process), and it must NOT pin `FastMathMode::kOff` — that measures
 the legacy bit-exact path at 20 t/s, a ramp that never happens in production.
 
+## G. Attention score dot products: who already vectorised (2026-10-05)
+
+Audited before porting Xing's float4 score change, because the first candidate turned
+out to be the wrong one:
+
+| family | score dot product |
+|---|---|
+| xing | float4 (done 2026-10-05, +6.5% E2E) |
+| **phi, granite** | **already `__half2` + two accumulator chains**, with a comment citing the QK critical path |
+| qwen (+ornith), gemma | **scalar**, `dot += half2float(q[d]) * half2float(k[d])` per element |
+| deepseek, mimo, gigachat | scalar (no `half2` anywhere in the file) |
+
+So the port list is **6 families, not 8**, and phi/granite would have been wasted
+work - their split kernel (the live decode path) is already vectorised, and only the
+short-context non-split kernel was scalar.
+
+The scalar families are the same shape as Xing's was: one 2-byte load per iteration
+over `head_dim` with a serial accumulation, one K row in flight per thread. phi also
+records the structural reason to expect the same win there: its own comment says the
+single 128-deep FMA chain was the QK critical path, and its KV read is 26.5% of the
+decode wall at ctx 2048.
+
+CAUTION for the port: qwen and gemma accumulate with a plain `+=`, not `__fmaf_rn`,
+and the repo builds bit-exact TUs with `-fmad=false`. A vectorised version must keep
+the plain `+=` per element and the ascending d order, or it silently changes the
+contraction behaviour and stops being bit-identical. That constraint is invisible
+in the Xing port, which used explicit `__fadd_rn`/`__fmul_rn` throughout.
+
+Not done here: an unmeasured kernel change is not a result. This is the audit and the
+port plan; the port itself wants its own TDD cycle with the real-weight gates and an
+E2E re-measurement per family.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
