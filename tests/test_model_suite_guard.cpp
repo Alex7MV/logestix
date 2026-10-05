@@ -281,7 +281,7 @@ const std::vector<SuiteSpec> &Suites()
          {{"convert", {"test_xing_moe_convert"}},
           {"load", {"test_xing_moe_loader"}},
           {"model", {"test_xing_moe_model", "test_xing_tool_framing"}},
-          {"kernels", {"test_xing_moe_kernels"}},
+          {"kernels", {"test_xing_moe_kernels", "test_xing_kv_layout_parity"}},
           {"selfcheck", {"test_xing_moe_selfcheck"}},
           {"fsi", {"test_xing_moe_fsi_selfcheck"}},
           {"code", {"test_xing_moe_code_selfcheck"}},

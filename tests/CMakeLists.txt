@@ -1287,6 +1287,21 @@ add_test(NAME test_xing_moe_selfcheck COMMAND test_xing_moe_selfcheck)
 set_tests_properties(test_xing_moe_selfcheck PROPERTIES LABELS inference)
 set_tests_properties(test_xing_moe_selfcheck PROPERTIES SKIP_RETURN_CODE 4)
 
+# Bit-exact parity across KV layouts. Registered here rather than folded into
+# test_xing_moe_selfcheck so a parity failure names the layout as the suspect.
+add_executable(test_xing_kv_layout_parity test_xing_kv_layout_parity.cpp)
+target_include_directories(test_xing_kv_layout_parity PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+target_link_libraries(test_xing_kv_layout_parity PRIVATE lsxcommon Catch2::Catch2WithMain)
+# The fixture is a synthetic converted checkpoint: no 16 GiB resident model, and it
+# needs the synthetic-geometry escape hatch (a RUNTIME env var, per
+# synthetic_geometry.h - not a compile definition).
+add_test(NAME test_xing_kv_layout_parity COMMAND test_xing_kv_layout_parity)
+set_tests_properties(test_xing_kv_layout_parity PROPERTIES LABELS fast)
+set_tests_properties(test_xing_kv_layout_parity PROPERTIES SKIP_RETURN_CODE 4)
+set_tests_properties(test_xing_kv_layout_parity PROPERTIES TIMEOUT 900)
+set_tests_properties(test_xing_kv_layout_parity PROPERTIES ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
 # Written out rather than in a foreach(): test_model_suite_guard's
 # RegisteredTestNames() resolves add_test(NAME <literal>) and foreach argument
 # lists, but cannot expand a variable inside a target name.
