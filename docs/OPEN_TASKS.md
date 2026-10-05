@@ -295,6 +295,22 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
    three per-step `cudaMalloc`/`cudaFree` are gone with it.
 3. Prefill replays the prompt one token per step (no incremental/parallel
    prefill), so TTFT grows linearly with prompt length.
+- **Next target, measured (2026-10-05): the mHC depth mixer, 1.32 ms/token, 15%
+  of the step.** It is four launches per mHC block, two blocks per layer, so 320
+  per token: proj 5.93 us (24 blocks), gates 7.06 us (ONE block), collapse 1.97 us,
+  mix 1.55 us. The gates kernel is the interesting one - it is 0.56 ms/token on
+  its own and it is not bandwidth: the Sinkhorn already lives in warp 0's
+  registers at the frozen geometry (hc_mult=4, 16 of 32 lanes), so the cost is
+  20 strictly serial iterations of shuffle-sums and divides, with the other seven
+  warps idle. The obvious fix - merge gates into the wide collapse block so the
+  57 KiB stream read overlaps the Sinkhorn - is the one that was already tried
+  and reverted: the collapse block runs 1024 threads, whose 64-register cap makes
+  the FP64 exp replica spill, and that cost more than the overlap won. The way
+  through is a producer/consumer split INSIDE one launch: warps 1..7 prefetch the
+  streams into shared memory while warp 0 runs the iterations, one barrier, then
+  the collapse - FP64 stays off the wide path and the load overlaps the chain.
+  Budget: `xing.mhc.decode` in `kernel_budgets.json` guards the current 12.5-13.0 us
+  for proj+gates+collapse, so a regression here is visible immediately.
 - **Deferred to its own task (2026-10-05): the KV cache layout.** With the decode
   step graph-replayed, the context-dependent cost is the only thing left that
   scales. Measured on this branch: 141.6 / 132.5 / 117.2 t/s at 128 / 1024 /
