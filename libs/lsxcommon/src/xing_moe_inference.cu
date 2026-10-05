@@ -288,14 +288,15 @@ __global__ void xing_write_cache_kernel(const float *__restrict__ kv_b,
                                         const float *__restrict__ krot,
                                         float *__restrict__ kc, float *__restrict__ vc,
                                         const int *__restrict__ d_scalars,
-                                        int heads, int nope, int rope,
-                                        int vh)
+                                        KvCacheGeometry kgeom,
+                                        KvCacheGeometry vgeom, int nope,
+                                        int rope, int vh)
 {
     const int pos = d_scalars[0];
     const int h = blockIdx.x;
     const int kvw = nope + vh;
-    float *kb = kc + (static_cast<size_t>(pos) * heads + h) * (nope + rope);
-    float *vb = vc + (static_cast<size_t>(pos) * heads + h) * vh;
+    float *kb = kc + kgeom.Offset(0, h, pos);
+    float *vb = vc + vgeom.Offset(0, h, pos);
     const float *src = kv_b + static_cast<size_t>(h) * kvw;
     for (int i = threadIdx.x; i < nope; i += blockDim.x) kb[i] = src[i];
     for (int i = threadIdx.x; i < vh; i += blockDim.x) vb[i] = src[nope + i];
@@ -611,7 +612,8 @@ void FreeXingSession(XingSession &s)
 }
 
 cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
-                                int capacity, cudaStream_t stream)
+                                int capacity, KvCacheLayout layout,
+                                cudaStream_t stream)
 {
     (void)stream;
     FreeXingSession(s);
@@ -624,10 +626,15 @@ cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
     };
     const int kv_layers = std::max(1, dims.layers);
     s.kv_layers = kv_layers;
-    s.kv_layer_k = static_cast<int64_t>(capacity) * frozen::kHeads *
-                   (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim);
-    s.kv_layer_v = static_cast<int64_t>(capacity) * frozen::kHeads *
-                   frozen::kVHeadDim;
+    s.kgeom = KvCacheGeometry::Make(layout, capacity, frozen::kHeads,
+                                   frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim,
+                                   kv_layers);
+    s.vgeom = KvCacheGeometry::Make(layout, capacity, frozen::kHeads,
+                                   frozen::kVHeadDim, kv_layers);
+    // Layout-invariant: the same product the old hand-written strides computed,
+    // so the allocation size and the VRAM plan do not move.
+    s.kv_layer_k = s.kgeom.LayerStride();
+    s.kv_layer_v = s.vgeom.LayerStride();
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_k),
              static_cast<size_t>(s.kv_layer_k) * kv_layers * 4));
     XING_CK(alloc(reinterpret_cast<void **>(&s.d_v),
@@ -991,33 +998,40 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
 
         xing_write_cache_kernel<<<frozen::kHeads, kThreads, 0, stream>>>(
             s.d_kv_b, s.d_kv_latent + frozen::kKvLoraRank, kc, vc, s.d_scalars,
-            frozen::kHeads, frozen::kQkNopeHeadDim, rope, frozen::kVHeadDim);
+            s.kgeom, s.vgeom, frozen::kQkNopeHeadDim, rope, frozen::kVHeadDim);
         if (l == 0 && std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
         {
             std::fprintf(stderr, "[xing-kv] tok=%d pos=%d layer=%d v=%p cap=%d\n",
                          token_id, pos, l, static_cast<void *>(vc), s.capacity);
-            XingStageDump("v_pre", l, token_id, vc,
-                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
-                              frozen::kVHeadDim,
-                          stream);
+            for (int dh = 0; dh < frozen::kHeads; ++dh)
+                XingStageDump("v_pre", l, token_id, vc + s.vgeom.Offset(0, dh, 0),
+                              static_cast<int64_t>(pos + 1) * frozen::kVHeadDim,
+                              stream);
         }
         XING_CK(LaunchXingAttention(
-            s.d_q, kc, vc, s.d_scalars, frozen::kHeads, frozen::kQkHeadDim,
-            frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
-            s.capacity, pos + 1, kAttnSplits, s.d_attn_m, s.d_attn_l,
+            s.d_q, kc, vc, s.d_scalars, s.kgeom, s.vgeom, frozen::kHeads,
+            frozen::kQkHeadDim, frozen::kVHeadDim, frozen::kAttnScale, s.d_scores,
+            s.d_attn, pos + 1, kAttnSplits, s.d_attn_m, s.d_attn_l,
             s.d_attn_part, s.d_half, capture_safe, stream));
         XingStageRms("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         if (l == 0)
         {
             XingStageDump("q_rope", l, token_id, s.d_q, frozen::kQSize, stream);
-            XingStageDump("kcache", l, token_id, kc,
-                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
-                              (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim),
-                          stream);
-            XingStageDump("vcache", l, token_id, vc,
-                          static_cast<int64_t>(pos + 1) * frozen::kHeads *
-                              frozen::kVHeadDim,
-                          stream);
+            // pos-major prefix is [0, pos+1) contiguous; under head-major those
+            // positions are spread across heads, so the dump covers ONE position
+            // per head instead - enough to eyeball that every head wrote.
+            for (int dh = 0; dh < frozen::kHeads; ++dh)
+            {
+                XingStageDump("kcache", l, token_id,
+                              kc + s.kgeom.Offset(0, dh, 0),
+                              static_cast<int64_t>(pos + 1) *
+                                  (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim),
+                              stream);
+                XingStageDump("vcache", l, token_id,
+                              vc + s.vgeom.Offset(0, dh, 0),
+                              static_cast<int64_t>(pos + 1) * frozen::kVHeadDim,
+                              stream);
+            }
         }
         XingStageDump("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         // s.d_half now holds the attention output in FP16, written by the
@@ -1229,21 +1243,28 @@ cudaError_t XingCopyLayerKV(const XingSession &s, int layer, int pos,
                             float *host_k, float *host_v, cudaStream_t stream)
 {
     if (layer < 0 || layer >= s.kv_layers) return cudaErrorInvalidValue;
-    const int64_t base_k = static_cast<int64_t>(layer) * s.kv_layer_k +
-                           static_cast<int64_t>(pos) * frozen::kHeads *
-                               (frozen::kQkNopeHeadDim + frozen::kQkRopeHeadDim);
-    const int64_t base_v = static_cast<int64_t>(layer) * s.kv_layer_v +
-                           static_cast<int64_t>(pos) * frozen::kHeads *
-                               frozen::kVHeadDim;
-    const size_t k_row = static_cast<size_t>(frozen::kHeads) * frozen::kQkHeadDim;
-    const size_t v_row = static_cast<size_t>(frozen::kHeads) * frozen::kVHeadDim;
-    if (host_k != nullptr && pos < s.capacity &&
-        cudaMemcpyAsync(host_k, s.d_k + base_k, k_row * sizeof(float),
-                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+    if (pos < 0 || pos >= s.capacity) return cudaErrorInvalidValue;
+    // One strided 2D copy per cache: a position's row is kHeads runs of head_dim
+    // separated by head_stride under head-major, which is exactly a 2D copy with
+    // dpitch = head_stride. Under pos-major head_stride == head_dim, so the same
+    // call degenerates to the contiguous one - no branch on the layout.
+    // spitch is the HOST pitch - one head_dim row, so the heads land packed and the
+    // destination keeps its documented [heads, head_dim] shape. dpitch is the
+    // DEVICE pitch, one head_stride, which is the whole point: under head-major the
+    // heads of a position are strided in the cache but must be gathered here.
+    if (host_k != nullptr &&
+        cudaMemcpy2DAsync(host_k, frozen::kQkHeadDim * sizeof(float),
+                          s.d_k + s.kgeom.Offset(layer, 0, pos),
+                          s.kgeom.head_stride * sizeof(float),
+                          frozen::kQkHeadDim * sizeof(float), frozen::kHeads,
+                          cudaMemcpyDeviceToHost, stream) != cudaSuccess)
         return cudaErrorInvalidValue;
-    if (host_v != nullptr && pos < s.capacity &&
-        cudaMemcpyAsync(host_v, s.d_v + base_v, v_row * sizeof(float),
-                        cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+    if (host_v != nullptr &&
+        cudaMemcpy2DAsync(host_v, frozen::kVHeadDim * sizeof(float),
+                          s.d_v + s.vgeom.Offset(layer, 0, pos),
+                          s.vgeom.head_stride * sizeof(float),
+                          frozen::kVHeadDim * sizeof(float), frozen::kHeads,
+                          cudaMemcpyDeviceToHost, stream) != cudaSuccess)
         return cudaErrorInvalidValue;
     return cudaSuccess;
 }

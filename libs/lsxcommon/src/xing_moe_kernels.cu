@@ -485,8 +485,9 @@ __global__ void xing_router_topk_kernel(
 __global__ void xing_attn_kernel(const float *__restrict__ q,
                                  const float *__restrict__ kc,
                                  const float *__restrict__ vc,
-                                 const int *__restrict__ d_scalars, int heads,
-                                 int qk, int vh, float scale,
+                                 const int *__restrict__ d_scalars,
+                                 KvCacheGeometry kgeom, KvCacheGeometry vgeom,
+                                 int heads, int qk, int vh, float scale,
                                  float *__restrict__ scores,
                                  float *__restrict__ out,
                                  __half *__restrict__ out16, int capacity)
@@ -510,9 +511,14 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
         int t = tid;
         for (; t + nthreads < n_pos; t += 2 * nthreads)
         {
-            const float *kt0 = kc + (static_cast<size_t>(t) * heads + h) * qk;
+            const float *kt0 = kc + kgeom.Offset(0, h, t);
+            // nthreads positions ahead, so the hop is nthreads*pos_stride - not
+            // nthreads*heads*qk, which only holds for pos-major. Unreachable today
+            // (the guard above caps n_pos at nthreads, so t+nthreads >= n_pos and
+            // this loop never iterates), but leaving the pos-major stride in a
+            // migrated file is a trap for whoever lifts that cap.
             const float *kt1 =
-                kt0 + static_cast<size_t>(nthreads) * heads * qk;
+                kt0 + static_cast<size_t>(nthreads) * kgeom.pos_stride;
             float a0 = 0.0f, a1 = 0.0f;
             for (int i = 0; i < qk; ++i)
             {
@@ -524,7 +530,7 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
         }
         for (; t < n_pos; t += nthreads)
         {
-            const float *kt = kc + (static_cast<size_t>(t) * heads + h) * qk;
+            const float *kt = kc + kgeom.Offset(0, h, t);
             float acc = 0.0f;
             for (int i = 0; i < qk; ++i)
                 acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
@@ -570,7 +576,7 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
     for (int t = group; t < n_pos; t += groups)
         acc = __fadd_rn(
             acc,
-            __fmul_rn(sm[t], vc[(static_cast<size_t>(t) * heads + h) * vh + d]));
+            __fmul_rn(sm[t], vc[vgeom.Offset(0, h, t, d)]));
     if (groups > 1 && group > 0) partial[group - 1][d] = acc;
     __syncthreads();
     if (tid < vh)
@@ -596,6 +602,7 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
                                        const float *__restrict__ kc,
                                        const float *__restrict__ vc,
                                        const int *__restrict__ d_scalars,
+                                       KvCacheGeometry kgeom, KvCacheGeometry vgeom,
                                        int heads, int qk, int vh, float scale,
                                        int capacity, int splits, int max_chunk,
                                        float *d_m, float *d_l, float *d_part)
@@ -637,7 +644,7 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
 
     for (int t = tid; t < count; t += nthreads)
     {
-        const float *kt = kc + (static_cast<size_t>(begin + t) * heads + h) * qk;
+        const float *kt = kc + kgeom.Offset(0, h, begin + t);
         float acc = 0.0f;
         for (int i = 0; i < qk; ++i)
             acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
@@ -679,8 +686,7 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
     for (int t = group; t < count; t += groups)
         acc = __fadd_rn(
             acc, __fmul_rn(sc[t],
-                           vc[(static_cast<size_t>(begin + t) * heads + h) * vh +
-                              d]));
+                           vc[vgeom.Offset(0, h, begin + t, d)]));
     if (groups > 1 && group > 0) partial[group - 1][d] = acc;
     __syncthreads();
     if (tid < vh)
@@ -748,14 +754,17 @@ __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
 
 cudaError_t LaunchXingAttention(const float *q, const float *kc,
                                 const float *vc, const int *d_scalars,
+                                KvCacheGeometry kgeom, KvCacheGeometry vgeom,
                                 int heads, int qk, int vh, float scale,
-                                float *scores, float *out, int capacity,
-                                int n_pos, int splits, float *d_m, float *d_l,
+                                float *scores, float *out, int n_pos,
+                                int splits, float *d_m, float *d_l,
                                 float *d_part, __half *out16,
                                 bool capture_safe, cudaStream_t stream)
 {
+    const int capacity = static_cast<int>(kgeom.capacity);
     if (!q || !kc || !vc || !scores || !out || !d_scalars || heads <= 0 ||
-        qk <= 0 || vh <= 0 || n_pos <= 0 || capacity < n_pos || splits <= 0)
+        qk <= 0 || vh <= 0 || n_pos <= 0 || capacity < n_pos || splits <= 0 ||
+        kgeom.head_dim != qk || vgeom.head_dim != vh)
         return cudaErrorInvalidValue;
     if (splits > kMaxAttnSplits) return cudaErrorInvalidValue;
     // One block per position chunk on top of the one per head: at pos=2047 the
@@ -771,14 +780,16 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc,
         if (used <= 1)
         {
             xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float),
-                               stream>>>(q, kc, vc, d_scalars, heads, qk, vh, scale,
-                                         scores, out, out16, capacity);
+                               stream>>>(q, kc, vc, d_scalars, kgeom, vgeom, heads,
+                                         qk, vh, scale, scores, out, out16,
+                                         capacity);
             return cudaGetLastError();
         }
         if (!d_m || !d_l || !d_part) return cudaErrorInvalidValue;
         xing_attn_split_kernel<<<dim3(heads, used), kThreads,
                                  chunk * sizeof(float), stream>>>(
-            q, kc, vc, d_scalars, heads, qk, vh, scale, capacity, splits, chunk,
+            q, kc, vc, d_scalars, kgeom, vgeom, heads, qk, vh, scale, capacity,
+            splits, chunk,
             d_m, d_l, d_part);
         xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
             d_m, d_l, d_part, d_scalars, heads, vh, used, out, out16);
@@ -793,10 +804,12 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc,
     const int max_chunk = ((capacity + splits - 1) / splits + kThreads - 1) /
                           kThreads * kThreads;
     xing_attn_kernel<<<heads, kThreads, kThreads * sizeof(float), stream>>>(
-        q, kc, vc, d_scalars, heads, qk, vh, scale, scores, out, out16, capacity);
+        q, kc, vc, d_scalars, kgeom, vgeom, heads, qk, vh, scale, scores, out,
+        out16, capacity);
     xing_attn_split_kernel<<<dim3(heads, splits), kThreads,
                              max_chunk * sizeof(float), stream>>>(
-        q, kc, vc, d_scalars, heads, qk, vh, scale, capacity, splits, max_chunk,
+        q, kc, vc, d_scalars, kgeom, vgeom, heads, qk, vh, scale, capacity, splits,
+        max_chunk,
         d_m, d_l, d_part);
     xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
         d_m, d_l, d_part, d_scalars, heads, vh, splits, out, out16);

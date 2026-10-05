@@ -821,6 +821,21 @@ constexpr int kHeads = 32;
 constexpr int kQk = 192;   // 128 nope + 64 rope
 constexpr int kVh = 128;
 constexpr int kPos = 2047;
+
+// The Xing decode KV geometry at the frozen shape. Every LaunchXingAttention call
+// site builds this rather than passing `capacity`, because the launcher now takes
+// the geometry itself - a bare capacity would let the guard and the addressing
+// disagree.
+inline lsxcommon::KvCacheGeometry TestKGeom(int capacity)
+{
+    return lsxcommon::KvCacheGeometry::Make(
+        lsxcommon::KvCacheLayout::kHeadMajor, capacity, kHeads, kQk, 1);
+}
+inline lsxcommon::KvCacheGeometry TestVGeom(int capacity)
+{
+    return lsxcommon::KvCacheGeometry::Make(
+        lsxcommon::KvCacheLayout::kHeadMajor, capacity, kHeads, kVh, 1);
+}
 constexpr int kTestAttnSplits = 8; // canonical 2048-token context
 constexpr float kScale = 0.14467962580268925f;  // mscale^2 / sqrt(192)
 
@@ -841,17 +856,24 @@ struct Cache
 };
 
 // Xing4_0Attention's eager path: softmax(qk^T * scaling) @ v over t <= pos.
-std::vector<float> ReferenceAttention(const Cache &c)
+// The fixture buffer is laid out by the SAME geometry the launcher is given, so
+// this reference and the kernel read the same bytes. Its arithmetic stays
+// independent on purpose - it is a second implementation, not a restatement of
+// the kernel's index arithmetic - but the layout cannot differ, or it would be
+// testing a different buffer.
+std::vector<float> ReferenceAttention(const Cache &c,
+                                      const lsxcommon::KvCacheGeometry &kgeom,
+                                      const lsxcommon::KvCacheGeometry &vgeom,
+                                      int pos = kPos)
 {
     std::vector<float> out(static_cast<size_t>(kHeads) * kVh, 0.0f);
     for (int h = 0; h < kHeads; ++h)
     {
-        std::vector<float> logits(kPos + 1);
+        std::vector<float> logits(pos + 1);
         float mx = -INFINITY;
-        for (int t = 0; t <= kPos; ++t)
+        for (int t = 0; t <= pos; ++t)
         {
-            const float *kt =
-                c.k.data() + (static_cast<size_t>(t) * kHeads + h) * kQk;
+            const float *kt = c.k.data() + kgeom.Offset(0, h, t);
             const float *qt = c.q.data() + static_cast<size_t>(h) * kQk;
             float acc = 0.0f;
             for (int i = 0; i < kQk; ++i) acc += qt[i] * kt[i];
@@ -867,10 +889,10 @@ std::vector<float> ReferenceAttention(const Cache &c)
         for (int d = 0; d < kVh; ++d)
         {
             float acc = 0.0f;
-            for (int t = 0; t <= kPos; ++t)
+            for (int t = 0; t <= pos; ++t)
             {
                 const float w = logits[static_cast<size_t>(t)] / sum;
-                acc += w * c.v[(static_cast<size_t>(t) * kHeads + h) * kVh + d];
+                acc += w * c.v[vgeom.Offset(0, h, t, d)];
             }
             out[static_cast<size_t>(h) * kVh + d] = acc;
         }
@@ -938,17 +960,21 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     using namespace attn_shape;
     const Cache c(20261004);
     const int capacity = kPos + 1;
-    const auto ref = ReferenceAttention(c);
+    const auto ref = ReferenceAttention(c, TestKGeom(capacity), TestVGeom(capacity));
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     Device d = Upload(c, capacity);
-    // Both forms have to match the eager reference: the decode step always runs
-    // the split-K one, but `splits` collapses to the single-block kernel at short
-    // contexts (one chunk), so the fallback is on the live path too.
-    for (const int splits : {kTestAttnSplits, 1})
+    // Only the split-K form runs at this context. `xing_attn_kernel` opens with
+    // `if (n_pos > nthreads) return;` - it owns SHORT contexts exclusively, so at
+    // n_pos=2048 it is launched (splits=1 collapses to one chunk) and immediately
+    // no-ops. Iterating splits=1 here used to compare the PREVIOUS iteration's
+    // output and pass without checking anything; the plain kernel is covered by
+    // the short-context case below, which is the only place it computes.
+    for (const int splits : {kTestAttnSplits})
     {
-        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
-                                    kScale, d.scores, d.out, capacity, kPos + 1,
+        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, d.scalars, TestKGeom(capacity),
+                                    TestVGeom(capacity), kHeads, kQk, kVh,
+                                    kScale, d.scores, d.out, kPos + 1,
                                     splits, d.m, d.l, d.part, nullptr, false,
                                     stream) ==
                 cudaSuccess);
@@ -958,6 +984,42 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
         for (size_t i = 0; i < ref.size(); ++i)
             REQUIRE(got[i] == Approx(ref[i]).margin(1e-5));
     }
+    Free(d);
+    cudaStreamDestroy(stream);
+}
+
+// The plain (non-split) attention kernel owns short contexts only: it returns
+// immediately when n_pos > blockDim. This is its only coverage - and it is what
+// catches a wrong KV read there, which the 2k case above structurally cannot.
+TEST_CASE("Xing short-context attention matches the host reference",
+          "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace attn_shape;
+    // 200 positions: under the 256-thread block, so the plain kernel computes.
+    constexpr int kShortPos = 200;
+    const Cache c(20261005);
+    const int capacity = kPos + 1;
+    const auto ref = ReferenceAttention(c, TestKGeom(capacity), TestVGeom(capacity),
+                                        kShortPos);
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    Device d = Upload(c, capacity);
+    const int scalars[2] = {kShortPos, 0};
+    REQUIRE(cudaMemcpy(d.scalars, scalars, sizeof(scalars),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
+    // Poison `out` first: a kernel that silently no-ops must not be able to pass
+    // by leaving the previous iteration's (or cudaMalloc's) values in place.
+    REQUIRE(cudaMemset(d.out, 0x7f, kHeads * kVh * sizeof(float)) == cudaSuccess);
+    REQUIRE(LaunchXingAttention(d.q, d.k, d.v, d.scalars, TestKGeom(capacity),
+                                TestVGeom(capacity), kHeads, kQk, kVh, kScale,
+                                d.scores, d.out, kShortPos + 1, kTestAttnSplits,
+                                d.m, d.l, d.part, nullptr, false, stream) ==
+            cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    const auto got = Download(d.out, kHeads * kVh);
+    for (size_t i = 0; i < ref.size(); ++i)
+        REQUIRE(got[i] == Approx(ref[i]).margin(1e-5));
     Free(d);
     cudaStreamDestroy(stream);
 }
@@ -1090,10 +1152,10 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     // the kernels themselves read the position from d.scalars, but the host still
     // picks the launch shape from this number.
     const auto launch = [&](int p, bool capture_safe) {
-        return LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
-                                   kScale, d.scores, d.out, capacity, p + 1,
-                                   kTestAttnSplits, d.m, d.l, d.part, nullptr,
-                                   capture_safe, stream);
+        return LaunchXingAttention(d.q, d.k, d.v, d.scalars, TestKGeom(capacity),
+                                   TestVGeom(capacity), kHeads, kQk, kVh, kScale,
+                                   d.scores, d.out, p + 1, kTestAttnSplits, d.m,
+                                   d.l, d.part, nullptr, capture_safe, stream);
     };
     for (int i = 0; i < 3; ++i) REQUIRE(launch(kPos, false) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);

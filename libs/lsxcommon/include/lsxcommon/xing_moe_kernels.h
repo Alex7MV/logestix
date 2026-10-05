@@ -19,6 +19,8 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
+#include "lsxcommon/lsx_kv_cache.h"
+
 namespace lsxcommon::xing {
 
 // out[j] = x[j] * rsqrt(mean(x^2 over hc_mult*hidden) + eps). One block,
@@ -85,12 +87,16 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 // because a captured graph cannot have a per-position launch configuration. Both
 // modes write the same value, bit for bit; true just pays two extra empty launches
 // per layer, which is only ever paid on the graph path.
+// `kgeom`/`vgeom` carry the cache strides AND the capacity (kgeom.capacity),
+// replacing the old separate `capacity` argument: the guard "is pos inside the
+// cache" and the addressing must agree, and splitting them is how they drift.
 cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc,
-                                const int *d_scalars, int heads, int qk, int vh,
-                                float scale, float *scores, float *out,
-                                int capacity, int n_pos, int splits, float *d_m,
-                                float *d_l, float *d_part, __half *out16,
-                                bool capture_safe, cudaStream_t stream);
+                                const int *d_scalars, KvCacheGeometry kgeom,
+                                KvCacheGeometry vgeom, int heads, int qk, int vh,
+                                float scale, float *scores, float *out, int n_pos,
+                                int splits, float *d_m, float *d_l, float *d_part,
+                                __half *out16, bool capture_safe,
+                                cudaStream_t stream);
 
 //   scores      [num_experts]           scratch between the two router phases
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,

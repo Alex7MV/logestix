@@ -222,7 +222,8 @@ gpu::InferenceResult XingMoeModel::Infer(const ModelRequest &req)
             }
             session_ = std::make_unique<xing::XingSession>();
             const cudaError_t ae = xing::AllocateXingSession(
-                *session_, dims_, std::max(4, yarn_capacity_), stream());
+                *session_, dims_, std::max(4, yarn_capacity_), kv_cache_layout_,
+                stream());
             if (ae != cudaSuccess) return ae;
         }
 

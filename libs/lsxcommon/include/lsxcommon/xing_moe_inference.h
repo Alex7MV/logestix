@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "lsxcommon/lsx_inference_nvfp4.h"
+#include "lsxcommon/lsx_kv_cache.h"
 #include "lsxcommon/xing_moe_kernels.h"
 #include "lsxcommon/xing_moe_load.h"
 
@@ -76,14 +77,22 @@ struct XingSession {
     int kv_layers = 0;       // layers with their own cache slice
     int64_t kv_layer_k = 0;  // floats per layer in d_k
     int64_t kv_layer_v = 0;  // floats per layer in d_v
+    // Stride geometry of the two caches. K and V are separate because their rows
+    // differ in width (kQkHeadDim 192 vs kVHeadDim 128). LayerStride() is
+    // layout-invariant, so kv_layer_k / kv_layer_v above stay correct whichever
+    // layout is in force; only the addressing changes.
+    KvCacheGeometry kgeom{};
+    KvCacheGeometry vgeom{};
     // PER-LAYER KV cache: every decoder layer keeps its own K/V (upstream's
     // past_key_values.update(..., layer_idx)), so layer l starts at
     // l * kv_layer_k / l * kv_layer_v. One shared buffer would make each layer
     // overwrite the previous layer's token rows, and the damage is invisible in
     // a single-token prefill (nothing is read back) yet destroys every
     // multi-token prompt.
-    float *d_k = nullptr;    // [layers, capacity, heads, nope+rope]
-    float *d_v = nullptr;    // [layers, capacity, heads, v]
+    // head-major [layers, heads, capacity, nope+rope] / [..., v] by default; the
+    // layout in force is kgeom / vgeom, not this comment.
+    float *d_k = nullptr;
+    float *d_v = nullptr;
     // Four-stream hidden state [hc_mult * hidden] and the mHC outputs.
     float *d_hidden = nullptr;    // [4 * hidden]
     float *d_collapsed = nullptr;  // [hidden]
@@ -172,7 +181,8 @@ struct XingSession {
 
 // Allocates every scratch buffer for a `capacity`-token context.
 cudaError_t AllocateXingSession(XingSession &s, const XingDims &dims,
-                                int capacity, cudaStream_t stream);
+                                int capacity, KvCacheLayout layout,
+                                cudaStream_t stream);
 
 void FreeXingSession(XingSession &s);
 
@@ -257,8 +267,10 @@ cudaError_t LaunchXingRopeK(float *krot, int pairs, const float *cos_t,
 int XingLastFailureLine();
 
 // Diagnostic (tests): copies one layer's K/V row for `pos` into host memory -
-// `host_k` receives kv_layer_k floats, `host_v` kv_layer_v. Lets a test see
-// WHICH layer's values a cache slot holds without a device-side formatter.
+// `host_k` receives kv_layer_k floats laid out [heads, head_dim], `host_v`
+// kv_layer_v the same way. Under head-major that row is not contiguous in the
+// cache, so this gathers it with one strided 2D copy. Lets a test see WHICH
+// layer's values a cache slot holds without a device-side formatter.
 cudaError_t XingCopyLayerKV(const XingSession &s, int layer, int pos,
                             float *host_k, float *host_v, cudaStream_t stream);
 

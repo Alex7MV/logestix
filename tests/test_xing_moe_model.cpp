@@ -111,8 +111,9 @@ TEST_CASE("Xing decode step produces finite logits", "[xing][model]")
     REQUIRE(dims.heads == 32);
 
     f.session = std::make_unique<lsxcommon::xing::XingSession>();
-    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
-            cudaSuccess);
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) == cudaSuccess);
     REQUIRE(xing::BuildXingYarnTables(kCapacity, f.rc, f.rs));
     REQUIRE(xing::UploadXingYarnTables(f.stream, kCapacity, f.rc, f.rs, &f.d_rc,
                                        &f.d_rs) == cudaSuccess);
@@ -123,7 +124,9 @@ TEST_CASE("Xing decode step produces finite logits", "[xing][model]")
     for (int prefix = 0; prefix <= dims.layers; ++prefix)
     {
         f.session->Free();
-        REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
+        REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
                 cudaSuccess);
         const cudaError_t st =
             xing::XingDecodeStep(f.pw, dims, *f.session, 7, f.d_rc, f.d_rs, 0,
@@ -212,7 +215,9 @@ TEST_CASE("Xing decode is deterministic at a fixed position", "[xing][model]")
     ConvertedFixture f = BuildFixture();
     const auto dims = xing::XingDimsFromWeights(f.pw);
     f.session = std::make_unique<lsxcommon::xing::XingSession>();
-    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
             cudaSuccess);
     REQUIRE(xing::BuildXingYarnTables(kCapacity, f.rc, f.rs));
     REQUIRE(xing::UploadXingYarnTables(f.stream, kCapacity, f.rc, f.rs, &f.d_rc,
@@ -241,7 +246,9 @@ TEST_CASE("Xing decode advances the KV cache one token per step",
     ConvertedFixture f = BuildFixture();
     const auto dims = xing::XingDimsFromWeights(f.pw);
     f.session = std::make_unique<lsxcommon::xing::XingSession>();
-    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
             cudaSuccess);
     REQUIRE(xing::BuildXingYarnTables(kCapacity, f.rc, f.rs));
     REQUIRE(xing::UploadXingYarnTables(f.stream, kCapacity, f.rc, f.rs, &f.d_rc,
@@ -274,7 +281,9 @@ TEST_CASE("Xing keeps a separate KV cache per layer", "[xing][model]")
     REQUIRE(dims.layers >= 2);
 
     f.session = std::make_unique<lsxcommon::xing::XingSession>();
-    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity, f.stream) ==
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kCapacity,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
             cudaSuccess);
     REQUIRE(xing::BuildXingYarnTables(kCapacity, f.rc, f.rs));
     REQUIRE(xing::UploadXingYarnTables(f.stream, kCapacity, f.rc, f.rs, &f.d_rc,
@@ -321,7 +330,9 @@ TEST_CASE("Xing multi-step decode is bit-reproducible", "[xing][model]")
     // cannot see it.
     constexpr int kDeep = 32;
     f.session = std::make_unique<lsxcommon::xing::XingSession>();
-    REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep, f.stream) ==
+    REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
             cudaSuccess);
     REQUIRE(xing::BuildXingYarnTables(kDeep, f.rc, f.rs));
     REQUIRE(xing::UploadXingYarnTables(f.stream, kDeep, f.rc, f.rs, &f.d_rc,
@@ -332,7 +343,9 @@ TEST_CASE("Xing multi-step decode is bit-reproducible", "[xing][model]")
     std::vector<float> first;
     auto run = [&]() {
         f.session->Free();
-        REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep, f.stream) ==
+        REQUIRE(xing::AllocateXingSession(*f.session, dims, kDeep,
+                                      lsxcommon::KvCacheLayout::kHeadMajor,
+                                      f.stream) ==
                 cudaSuccess);
         int pos = 0;
         for (const int32_t t : prompt)
