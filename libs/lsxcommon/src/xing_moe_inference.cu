@@ -804,7 +804,7 @@ cudaError_t UploadXingYarnTables(cudaStream_t stream, int capacity,
 cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                            XingSession &s, int token_id, const float *d_rc,
                            const float *d_rs, int pos, cudaStream_t stream,
-                           int layers_override)
+                           int layers_override, bool capture_safe)
 {
     // The first step of a session uploads the routed-expert pointer tables; every
     // later step reuses them (the flag lives in the session, so this is one
@@ -941,10 +941,10 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                           stream);
         }
         XING_CK(LaunchXingAttention(
-            s.d_q, kc, vc, pos, frozen::kHeads, frozen::kQkHeadDim,
+            s.d_q, kc, vc, s.d_scalars, frozen::kHeads, frozen::kQkHeadDim,
             frozen::kVHeadDim, frozen::kAttnScale, s.d_scores, s.d_attn,
             s.capacity, pos + 1, kAttnSplits, s.d_attn_m, s.d_attn_l,
-            s.d_attn_part, s.d_half, stream));
+            s.d_attn_part, s.d_half, capture_safe, stream));
         XingStageRms("attn_core", l, token_id, s.d_attn, frozen::kOSize, stream);
         if (l == 0)
         {

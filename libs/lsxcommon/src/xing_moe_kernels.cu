@@ -478,9 +478,14 @@ __global__ void xing_router_topk_kernel(
 // (o_proj) consumes FP16 and used to run a whole elementwise ToHalf launch over
 // the attention output to get it - 40 per token at an empty-launch cost of
 // 1.84 us. Bit-identical, because the rounding happens at the same value.
+// CAPTURE_SAFE: with the fixed-geometry launch (below) this kernel is launched at
+// every position, so it must exclude itself where the split path owns the answer.
+// The condition is exactly the one the host used to pick the path with
+// (`used <= 1`), and it is uniform across the block.
 __global__ void xing_attn_kernel(const float *__restrict__ q,
                                  const float *__restrict__ kc,
-                                 const float *__restrict__ vc, int pos, int heads,
+                                 const float *__restrict__ vc,
+                                 const int *__restrict__ d_scalars, int heads,
                                  int qk, int vh, float scale,
                                  float *__restrict__ scores,
                                  float *__restrict__ out,
@@ -493,7 +498,9 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
     const int nthreads = blockDim.x;
+    const int pos = d_scalars[0];
     const int n_pos = pos + 1;
+    if (n_pos > nthreads) return;  // split-K owns it; see CAPTURE_SAFE
     float *sc = scores + static_cast<size_t>(h) * capacity;
     const float *qt = q + static_cast<size_t>(h) * qk;
 
@@ -578,12 +585,20 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
 // arithmetic as the single-block kernel - score, block softmax over the chunk,
 // weighted V sum - but the chunk's max and sum are published instead of
 // normalised in place, because only the combine kernel knows the global max.
+// `splits` is the CHUNK-COUNT DIVISOR, and stays 8 in both launch modes: the
+// per-position chunk is recomputed here from the device position with the formula
+// the host used, so the chunk boundaries - the reduction order, and therefore the
+// bits - are exactly what the host-chosen launch produced. The published slots
+// are still strided by gridDim.y, which is `used` on the eager path (fewer chunks
+// than the divisor at small contexts) and the full `splits` on the capture-safe
+// one, and each mode's combine is told the same number.
 __global__ void xing_attn_split_kernel(const float *__restrict__ q,
                                        const float *__restrict__ kc,
-                                       const float *__restrict__ vc, int pos,
+                                       const float *__restrict__ vc,
+                                       const int *__restrict__ d_scalars,
                                        int heads, int qk, int vh, float scale,
-                                       int capacity, int chunk, float *d_m,
-                                       float *d_l, float *d_part)
+                                       int capacity, int splits, int max_chunk,
+                                       float *d_m, float *d_l, float *d_part)
 {
     extern __shared__ float sm[];
     __shared__ float warp_max[8];
@@ -593,9 +608,30 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
     const int s = blockIdx.y;
     const int tid = threadIdx.x;
     const int nthreads = blockDim.x;
+    // gridDim.y == the number of chunk slots that exist for this launch; the
+    // divisor `splits` and the slot count differ whenever a chunk would be empty.
+    const int pos = d_scalars[0];
+    const int n_pos = pos + 1;
+    // Single-block path owns it. Uniform across the block.
+    if (n_pos <= nthreads) return;
+    const int chunk = ((n_pos + splits - 1) / splits + nthreads - 1) /
+                      nthreads * nthreads;
     const int begin = s * chunk;
-    const int end = min(begin + chunk, pos + 1);
+    const int end = min(begin + chunk, n_pos);
     const int count = end - begin;
+    // A chunk that starts past the context has nothing to contribute. It still has
+    // to publish: the combine sums all `splits` entries, and an unwritten slot
+    // would be read as whatever the previous position left there. (m=-inf, l=0)
+    // makes its weight exp(-inf - gmax) = 0, so it adds nothing to either sum.
+    if (begin >= n_pos)
+    {
+        if (tid == 0)
+        {
+            d_m[static_cast<size_t>(h) * gridDim.y + s] = -INFINITY;
+            d_l[static_cast<size_t>(h) * gridDim.y + s] = 0.0f;
+        }
+        return;
+    }
     float *sc = sm;
     const float *qt = q + static_cast<size_t>(h) * qk;
 
@@ -668,12 +704,16 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
 __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
                                          const float *__restrict__ d_l,
                                          const float *__restrict__ d_part,
+                                         const int *__restrict__ d_scalars,
                                          int heads, int vh, int splits,
                                          float *__restrict__ out,
                                          __half *__restrict__ out16)
 {
     __shared__ float w[kMaxAttnSplits];
     __shared__ float gmax;
+    // The single-block kernel wrote `out` at this position; combining stale
+    // partials over it would corrupt it. Uniform across the block.
+    if (d_scalars[0] + 1 <= kThreads) return;
     const int h = blockIdx.x;
     const int tid = threadIdx.x;
     const float *m = d_m + static_cast<size_t>(h) * splits;
@@ -707,15 +747,17 @@ __global__ void xing_attn_combine_kernel(const float *__restrict__ d_m,
 }  // namespace
 
 cudaError_t LaunchXingAttention(const float *q, const float *kc,
-                                const float *vc, int pos, int heads, int qk,
-                                int vh, float scale, float *scores, float *out,
-                                int capacity, int n_pos, int splits, float *d_m,
-                                float *d_l, float *d_part, __half *out16,
-                                cudaStream_t stream)
+                                const float *vc, const int *d_scalars,
+                                int heads, int qk, int vh, float scale,
+                                float *scores, float *out, int capacity,
+                                int n_pos, int splits, float *d_m, float *d_l,
+                                float *d_part, __half *out16,
+                                bool capture_safe, cudaStream_t stream)
 {
-    if (!q || !kc || !vc || !scores || !out || heads <= 0 || qk <= 0 ||
-        vh <= 0 || pos < 0 || n_pos <= pos || capacity < n_pos || splits <= 0)
+    if (!q || !kc || !vc || !scores || !out || !d_scalars || heads <= 0 ||
+        qk <= 0 || vh <= 0 || n_pos <= 0 || capacity < n_pos || splits <= 0)
         return cudaErrorInvalidValue;
+    if (splits > kMaxAttnSplits) return cudaErrorInvalidValue;
     // One block per position chunk on top of the one per head: at pos=2047 the
     // plain form filled 32 of 170 SMs, and the whole context-dependent half of a
     // step ran there. Chunks are multiples of the block size so the score phase
@@ -723,18 +765,41 @@ cudaError_t LaunchXingAttention(const float *q, const float *kc,
     const int chunk = ((n_pos + splits - 1) / splits + kThreads - 1) /
                       kThreads * kThreads;
     const int used = (n_pos + chunk - 1) / chunk;
-    if (used <= 1)
+    if (!capture_safe)
     {
-        xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float), stream>>>(
-            q, kc, vc, pos, heads, qk, vh, scale, scores, out, out16, capacity);
+        // Eager path: pick the path on the host, launch only what is needed.
+        if (used <= 1)
+        {
+            xing_attn_kernel<<<heads, kThreads, n_pos * sizeof(float),
+                               stream>>>(q, kc, vc, d_scalars, heads, qk, vh, scale,
+                                         scores, out, out16, capacity);
+            return cudaGetLastError();
+        }
+        if (!d_m || !d_l || !d_part) return cudaErrorInvalidValue;
+        xing_attn_split_kernel<<<dim3(heads, used), kThreads,
+                                 chunk * sizeof(float), stream>>>(
+            q, kc, vc, d_scalars, heads, qk, vh, scale, capacity, splits, chunk,
+            d_m, d_l, d_part);
+        xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
+            d_m, d_l, d_part, d_scalars, heads, vh, used, out, out16);
         return cudaGetLastError();
     }
+    // Capture-safe path: a graph bakes the launch configuration in, so it must not
+    // depend on the position. Both paths are launched at their maximum geometry and
+    // exclude each other on the device position (see CAPTURE_SAFE). Which one does
+    // the work is the same decision the host made, so the result is bit-identical -
+    // the extra launches cost ~1.8 us each and only on the graph path.
     if (!d_m || !d_l || !d_part) return cudaErrorInvalidValue;
-    xing_attn_split_kernel<<<dim3(heads, used), kThreads,
-                             chunk * sizeof(float), stream>>>(
-        q, kc, vc, pos, heads, qk, vh, scale, capacity, chunk, d_m, d_l, d_part);
-    xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(d_m, d_l, d_part, heads,
-                                                      vh, used, out, out16);
+    const int max_chunk = ((capacity + splits - 1) / splits + kThreads - 1) /
+                          kThreads * kThreads;
+    xing_attn_kernel<<<heads, kThreads, kThreads * sizeof(float), stream>>>(
+        q, kc, vc, d_scalars, heads, qk, vh, scale, scores, out, out16, capacity);
+    xing_attn_split_kernel<<<dim3(heads, splits), kThreads,
+                             max_chunk * sizeof(float), stream>>>(
+        q, kc, vc, d_scalars, heads, qk, vh, scale, capacity, splits, max_chunk,
+        d_m, d_l, d_part);
+    xing_attn_combine_kernel<<<heads, vh, 0, stream>>>(
+        d_m, d_l, d_part, d_scalars, heads, vh, splits, out, out16);
     return cudaGetLastError();
 }
 

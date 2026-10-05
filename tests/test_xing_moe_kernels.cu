@@ -885,6 +885,7 @@ struct Device
     float *m = nullptr;     // [heads * splits]
     float *l = nullptr;
     float *part = nullptr;  // [heads * splits * vh]
+    int *scalars = nullptr; // {pos, token_id}, as the session carries it
 };
 
 Device Upload(const Cache &c, int capacity)
@@ -911,6 +912,10 @@ Device Upload(const Cache &c, int capacity)
                        cudaMemcpyHostToDevice) == cudaSuccess);
     REQUIRE(cudaMemcpy(d.v, c.v.data(), c.v.size() * sizeof(float),
                        cudaMemcpyHostToDevice) == cudaSuccess);
+    REQUIRE(cudaMalloc(&d.scalars, 2 * sizeof(int)) == cudaSuccess);
+    const int scalars[2] = {kPos, 0};
+    REQUIRE(cudaMemcpy(d.scalars, scalars, sizeof(scalars),
+                       cudaMemcpyHostToDevice) == cudaSuccess);
     return d;
 }
 
@@ -921,6 +926,7 @@ void Free(Device &d)
     cudaFree(d.m);
     cudaFree(d.l);
     cudaFree(d.part);
+    cudaFree(d.scalars);
 }
 
 } // namespace attn_shape
@@ -941,9 +947,9 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     // contexts (one chunk), so the fallback is on the live path too.
     for (const int splits : {kTestAttnSplits, 1})
     {
-        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
+        REQUIRE(LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
                                     kScale, d.scores, d.out, capacity, kPos + 1,
-                                    splits, d.m, d.l, d.part, nullptr,
+                                    splits, d.m, d.l, d.part, nullptr, false,
                                     stream) ==
                 cudaSuccess);
         REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
@@ -966,20 +972,24 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
     cudaStream_t stream = nullptr;
     REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
     Device d = Upload(c, capacity);
-    const auto launch = [&] {
-        return LaunchXingAttention(d.q, d.k, d.v, kPos, kHeads, kQk, kVh,
-                                   kScale, d.scores, d.out, capacity, kPos + 1,
+    // `n_pos` is the eager geometry hint and must be the device position + 1 -
+    // the kernels themselves read the position from d.scalars, but the host still
+    // picks the launch shape from this number.
+    const auto launch = [&](int p, bool capture_safe) {
+        return LaunchXingAttention(d.q, d.k, d.v, d.scalars, kHeads, kQk, kVh,
+                                   kScale, d.scores, d.out, capacity, p + 1,
                                    kTestAttnSplits, d.m, d.l, d.part, nullptr,
-                                   stream);
+                                   capture_safe, stream);
     };
-    for (int i = 0; i < 3; ++i) REQUIRE(launch() == cudaSuccess);
+    for (int i = 0; i < 3; ++i) REQUIRE(launch(kPos, false) == cudaSuccess);
     REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    const auto eager = Download(d.out, kHeads * kVh);
     cudaEvent_t a, b;
     REQUIRE(cudaEventCreate(&a) == cudaSuccess);
     REQUIRE(cudaEventCreate(&b) == cudaSuccess);
     const int iters = 20;
     REQUIRE(cudaEventRecord(a, stream) == cudaSuccess);
-    for (int i = 0; i < iters; ++i) REQUIRE(launch() == cudaSuccess);
+    for (int i = 0; i < iters; ++i) REQUIRE(launch(kPos, false) == cudaSuccess);
     REQUIRE(cudaEventRecord(b, stream) == cudaSuccess);
     REQUIRE(cudaEventSynchronize(b) == cudaSuccess);
     float ms = 0.0f;
@@ -996,6 +1006,26 @@ TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
 #else
     WARN("latency budget is a Release-only gate; measured " << us << " us");
 #endif
+    // Capture-safe geometry must write the SAME bits as eager at every position,
+    // including the ones that make the two attention forms take turns: 2047 fills
+    // all 8 chunks, 1000 leaves chunks 4-7 empty (they have to publish m=-inf/l=0
+    // or the combine reads the previous position's slots), and 255 belongs to the
+    // single-block path entirely, where the split kernels must not write `out`.
+    for (const int p : {kPos, 1000, 255})
+    {
+        INFO("position " << p);
+        const int scalars[2] = {p, 0};
+        REQUIRE(cudaMemcpy(d.scalars, scalars, sizeof(scalars),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(launch(p, false) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        const auto eager_at_p = Download(d.out, kHeads * kVh);
+        REQUIRE(launch(p, true) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        const auto captured_at_p = Download(d.out, kHeads * kVh);
+        for (size_t i = 0; i < eager_at_p.size(); ++i)
+            REQUIRE(captured_at_p[i] == eager_at_p[i]);
+    }
     cudaEventDestroy(a); cudaEventDestroy(b);
     Free(d);
     cudaStreamDestroy(stream);

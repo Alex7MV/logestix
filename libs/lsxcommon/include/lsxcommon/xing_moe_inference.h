@@ -188,10 +188,15 @@ cudaError_t UploadXingYarnTables(cudaStream_t stream, int capacity,
 
 // One decode step. `token_id` selects the embedding row (NOT the position),
 // `pos` is the absolute KV-cache position. Returns a CUDA error code.
+//
+// `capture_safe` must be true exactly when this call is being recorded into a CUDA
+// graph: it switches the attention to its fixed launch geometry. Nothing else in
+// the step is position-dependent any more (the scalars live in device memory), so
+// this is the single flag a captured step needs.
 cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
                            XingSession &s, int token_id, const float *d_rc,
                            const float *d_rs, int pos, cudaStream_t stream,
-                           int layers_override = -1);
+                           int layers_override = -1, bool capture_safe = false);
 
 // Interleaved YaRN rotation of q's rope subspace ([heads, qk_head_dim] with
 // `pairs` rope dims at offset `qk_head_dim - 2*pairs`) and of the shared k_rot

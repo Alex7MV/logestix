@@ -74,12 +74,23 @@ cudaError_t LaunchXingMix(const float *streams, const float *out,
 // `splits` > 1 runs the split-K form: grid (heads x splits), one block per
 // (head, chunk of positions), then a combine kernel. Scratch: d_m/d_l are
 // [heads * splits] and d_part is [heads * splits * vh].
+// `d_scalars` is the session's {pos, token_id} buffer: the position is read from
+// device memory, not passed in, so the kernels can be replayed at a later position.
+// `n_pos` remains the eager-mode geometry hint and MUST equal d_scalars[0] + 1; the
+// kernels ignore it, but the eager path picks its launch shape from it.
+//
+// `capture_safe` selects the launch mode. False (eager) picks the single-block vs
+// split-K path on the host and launches only what is needed. True launches BOTH at
+// their maximum geometry and lets them exclude each other on the device position,
+// because a captured graph cannot have a per-position launch configuration. Both
+// modes write the same value, bit for bit; true just pays two extra empty launches
+// per layer, which is only ever paid on the graph path.
 cudaError_t LaunchXingAttention(const float *q, const float *kc, const float *vc,
-                                int pos, int heads, int qk, int vh, float scale,
-                                float *scores, float *out, int capacity,
-                                int n_pos, int splits, float *d_m, float *d_l,
-                                float *d_part, __half *out16,
-                                cudaStream_t stream);
+                                const int *d_scalars, int heads, int qk, int vh,
+                                float scale, float *scores, float *out,
+                                int capacity, int n_pos, int splits, float *d_m,
+                                float *d_l, float *d_part, __half *out16,
+                                bool capture_safe, cudaStream_t stream);
 
 //   scores      [num_experts]           scratch between the two router phases
 cudaError_t LaunchXingRouter(const __nv_bfloat16 *weight, const float *bias,
