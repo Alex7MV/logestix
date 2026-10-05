@@ -420,10 +420,31 @@ is the short-context path, so it does not carry the decode throughput that motiv
 the port. It probably reads the same rows with a different accumulation shape, but
 that was not established.
 
-Remaining port list, now unblocked for the split kernel only: **gemma, deepseek, mimo,
-gigachat** (qwen done; phi and granite already vectorised). Each needs the same
-discipline — port the split kernel, leave the non-split one scalar, and let the golden
-gates arbitrate, because they are what caught this.
+**RESULT so far, and a correction to the audit that produced this list.** Shipped:
+qwen (+4.3% / +4.9%) and gemma (+3.0%), both bit-identical. But two of the three
+remaining families do NOT have the pattern this port targets, and my audit inferred
+"scalar means needs port" from a grep that could only see the absence of `half2`:
+
+| family | score structure | port applies? |
+|---|---|---|
+| **deepseek** | thread-per-DIMENSION: `for t { for d = tid; d < kHD; d += kThreads }`, warp-coalesced, no per-row serial dot | **no** - there is no serial row walk to vectorise |
+| **mimo** | stages q and k into SHARED memory first, dots from smem | **different structure** - the lever would be the global->shared staging, not the dot |
+| **gigachat** | thread-per-position serial float dot over `qk` (the pattern) | **yes** |
+
+So the real list was 3 families, not 6: qwen, gemma, gigachat. deepseek needs nothing
+of this kind, and mimo needs a different change entirely.
+
+**gigachat is implemented but NOT landed**: GigaChat3.5-432B-A28B is not on this host,
+so its golden gates SKIP and there is nothing to arbitrate bit-identity with. An
+unverifiable numerics change is not a result, so it is parked rather than committed.
+The port is three sites in `gigachat_moe_inference_attn.cu` (`attn_scores_kernel`, a
+float4 `GigachatDotRow` preserving plain `+=` and ascending `i`, with a scalar fallback
+for `qk % 4 != 0`) and it is ready to apply and verify wherever the model lives.
+
+The audit lesson: `grep -c half2` is not a classification. Two of the three families it
+flagged have a different blocking structure, and reading the loop shape - not the
+absence of a token - is what distinguishes "needs this port" from "needs something
+else".
 
 Not done here: an unmeasured kernel change is not a result, and neither is an
 unmeasured failure. This entry is the failure and the narrowing plan.
