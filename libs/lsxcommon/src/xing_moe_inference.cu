@@ -722,6 +722,57 @@ cudaError_t XingSetStepScalars(XingSession &s, int pos, int token_id,
     return e;
 }
 
+cudaError_t XingCaptureDecodeGraph(const XingPinnedWeights &pw,
+                                   const XingDims &dims, XingSession &s,
+                                   const float *d_rc, const float *d_rs,
+                                   cudaStream_t stream, int layers_override)
+{
+    if (s.graph_exec) return cudaSuccess;
+    if (s.d_embed_table == nullptr || !s.expert_tables_uploaded)
+        return cudaErrorStreamCaptureUnsupported;
+    if (std::getenv("LSX_TEST_XING_LAYER_DEBUG"))
+        return cudaErrorStreamCaptureUnsupported;
+    // With fast-math off the expert dispatch resolves on the host, and that costs
+    // a pipeline drain per layer - a synchronisation, which cannot be recorded. The
+    // captured step is the streaming-dispatch step, so refuse this one up front
+    // rather than start a capture that is bound to fail mid-stream.
+    // The step branches on the same predicate, with dims.hidden as the GEMM's K.
+    if (!lsx_nvfp4::LsxExpertBatchIdsStreaming(dims.hidden))
+        return cudaErrorStreamCaptureUnsupported;
+    cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+    cudaError_t e = cudaStreamIsCapturing(stream, &status);
+    if (e != cudaSuccess) return e;
+    if (status != cudaStreamCaptureStatusNone) return cudaErrorStreamCaptureUnsupported;
+    cudaGraph_t graph = nullptr;
+    e = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
+    if (e != cudaSuccess) return e;
+    // The position and token are irrelevant here: they travel in device memory,
+    // so the recording is valid for every later token. `pos` still has to be the
+    // one this token uses, because it decides the eager-mode geometry hint the
+    // attention kernels are still told about.
+    e = XingDecodeStep(pw, dims, s, 0, d_rc, d_rs, 0, stream, layers_override,
+                       /*capture_safe=*/true);
+    if (e == cudaSuccess) e = cudaStreamEndCapture(stream, &graph);
+    else cudaStreamEndCapture(stream, &graph);
+    if (e != cudaSuccess || graph == nullptr)
+    {
+        if (graph) cudaGraphDestroy(graph);
+        return e != cudaSuccess ? e : cudaErrorStreamCaptureUnsupported;
+    }
+    e = cudaGraphInstantiate(&s.graph_exec, graph, nullptr, nullptr, 0);
+    cudaGraphDestroy(graph);
+    if (e != cudaSuccess) s.graph_exec = nullptr;
+    return e;
+}
+
+bool XingDecodeGraphReady(const XingSession &s) { return s.graph_exec != nullptr; }
+
+cudaError_t XingLaunchDecodeGraph(XingSession &s, cudaStream_t stream)
+{
+    if (!s.graph_exec) return cudaErrorInvalidValue;
+    return cudaGraphLaunch(s.graph_exec, stream);
+}
+
 cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
                             const float *cos_base, const float *sin_base,
                             const int *d_scalars, cudaStream_t stream)

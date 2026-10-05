@@ -164,9 +164,9 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Not a defect to fix. If a future change makes batching matter again, re-run
   the comparison above at the production shape before trusting either number.
 
-### D2. `xing` decode: 14.4 -> 113.6 t/s (nine serial kernels + device dispatch)
-- **Status: CLOSED for the serial-kernel class (2026-10-04).
-  14.40 -> 113.60 t/s perf / 9.10 -> 20.00 t/s r3 at 2048 tokens.** Every
+### D2. `xing` decode: 14.4 -> 117.2 t/s (nine serial kernels + device dispatch + graph replay)
+- **Status: CLOSED for the serial-kernel class (2026-10-05).
+  14.40 -> 117.20 t/s perf / 9.10 -> 20.10 t/s r3 at 2048 tokens.** Every
   single-block, thread-0-serial and under-occupied kernel on the decode path is
   fixed or measured-and-declined; what is left is the GEMV occupancy, which is a
   different (numerics) project - see the end. Every fix came from the same
@@ -247,6 +247,29 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   capture of a whole decode step, and that requires the routed-id dispatch to be
   device-side - so the id->slot table whose sync measured free above becomes a
   PREREQUISITE here, not a win. Second project: the prefill row-batching (below).
+- **DONE (2026-10-05): the decode step is captured and replayed as a CUDA graph**
+  (114.1 -> 117.2 t/s at 2048, 113.9 -> 117.1 on the repeat; `LSX_XING_CUDA_GRAPH=0`
+  restores the legacy per-token launch path). Three things had to become true
+  first, and each is a separate commit:
+  1. the routed-expert dispatch resolves on the device (`8bb474c`), because the
+     host path drains the pipeline once per MoE layer and a drain cannot be
+     recorded;
+  2. `{pos, token_id}` live in device memory rather than in kernel arguments
+     (`f7fa0bb`) - a graph bakes its arguments in, so a per-token value has to
+     travel in memory. The embedding gather, the KV write and both RoPE kernels
+     read them there now, and the RoPE kernels take the BASE YaRN tables and
+     index their own row;
+  3. the attention launches a position-independent geometry when captured
+     (`3e0ae5a`): both forms at their maximum, excluding each other on the
+     device position, with empty chunks publishing `(m = -inf, l = 0)` so the
+     combine cannot read the previous position's slots. Same bits, verified at
+     pos 2047 / 1000 / 255.
+
+  What the graph does NOT cover: the sampler, the per-token logits readback and
+  the KV-layout work below. `XingCaptureDecodeGraph` refuses (rather than
+  capturing) when the step is not capture-legal - fast-math off, the layer-debug
+  staging on - and a capture that fails after it started is reported instead of
+  being papered over, because it leaves the context unusable.
 - Tool calling is verified on the REAL weights
   (`test_xing_moe_selfcheck` "end-to-end tool round-trip", the same case nine
   other families run): the model emits its native markers as the control ids

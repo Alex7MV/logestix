@@ -140,6 +140,9 @@ struct XingSession {
     // memory. The host fills it with one 8-byte H2D copy before each step -
     // outside the graph, which is legal there.
     int *d_scalars = nullptr;
+    // The captured decode step, once recorded. Recorded on the first generated
+    // token and replayed for every one after it; see XingCaptureDecodeGraph.
+    cudaGraphExec_t graph_exec = nullptr;
     // Pinned host mirror of d_scalars (source of that copy).
     int *h_scalars = nullptr;
     lsx_nvfp4::LsxExpertPtrRow *d_rows_gate = nullptr;
@@ -212,6 +215,36 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
 // XingDecodeStep, and before every graph launch (never during a capture).
 cudaError_t XingSetStepScalars(XingSession &s, int pos, int token_id,
                                cudaStream_t stream);
+
+// Record the decode step into a CUDA graph and instantiate it into the session
+// (once; later calls are no-ops). A recorded step does not execute, so the caller
+// must launch it with XingLaunchDecodeGraph.
+//
+// Returns cudaErrorStreamCaptureUnsupported when the step is not capture-legal in
+// this configuration - nothing was started, nothing is broken, and the caller
+// should simply keep using the eager step (that is the legacy fast-math-off path,
+// not an error). Any other failure means a capture actually began and was
+// invalidated, which leaves the context unusable: the caller must report it rather
+// than continue.
+//
+// Legal only when nothing in the step allocates or synchronises, which the caller
+// guarantees: prefill has already run (so the FP16 embedding table and the routed
+// expert pointer tables exist), and LSX_TEST_XING_LAYER_DEBUG is off (its staging
+// does a blocking D2H readback). Refuses otherwise instead of capturing a step
+// that would fail later.
+cudaError_t XingCaptureDecodeGraph(const XingPinnedWeights &pw,
+                                   const XingDims &dims, XingSession &s,
+                                   const float *d_rc, const float *d_rs,
+                                   cudaStream_t stream,
+                                   int layers_override = -1);
+
+// True once XingCaptureDecodeGraph has produced a graph for this session.
+bool XingDecodeGraphReady(const XingSession &s);
+
+// Replay the captured step. The caller must have published this token's scalars
+// with XingSetStepScalars since the last launch - that copy is outside the graph
+// on purpose.
+cudaError_t XingLaunchDecodeGraph(XingSession &s, cudaStream_t stream);
 
 cudaError_t LaunchXingRopeQ(float *q, int heads, int qk_head_dim, int pairs,
                             const float *cos_t, const float *sin_t,

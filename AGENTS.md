@@ -240,10 +240,12 @@ procedure — `perf-tuning-a-model`.
   zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
   format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
   SelfCheck + FSI + CODE + DET all pass. Decode is still correctness-first:
-  113.6 t/s (perf) / 20.0 t/s (r3) at 2048 tokens against a 694 t/s memory
+  117.2 t/s (perf) / 20.1 t/s (r3) at 2048 tokens against a 694 t/s memory
   roofline (`tests/perf/perf_baselines.json`); the mHC and router kernels are
   were single-block by design (all three since parallelised: mHC, router,
-  attention, split-K attention, warp-Sinkhorn mHC, split collapse, split router)
+  attention, split-K attention, warp-Sinkhorn mHC, split collapse, split router,
+  CUDA-graph replay of the decode step - `LSX_XING_CUDA_GRAPH=0` for the legacy
+  per-token launch path)
   and the remaining costs are the per-MoE-layer routed-id
   D2H sync, the per-token host logits round trip and token-by-token prefill
   (`docs/OPEN_TASKS.md` D2).
