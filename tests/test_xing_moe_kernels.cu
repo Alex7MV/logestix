@@ -962,6 +962,111 @@ TEST_CASE("Xing attention matches the host reference at a 2k context",
     cudaStreamDestroy(stream);
 }
 
+// The dense decode GEMVs, at the shapes a Xing layer actually issues. They are
+// all shallow-K (3584 for the projections, 4096 for o, 9216 for down), which is
+// BELOW the neutral layer's warp-per-row floor of K >= 4096 - so every one of them
+// takes the sliced KP launch. This budget is what says whether that floor is right
+// for Xing, and it is measured per shape rather than inferred from gemma's.
+TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
+          "[xing][kernels][budget]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+#if defined(NDEBUG)
+    // The route under test is the production one, which needs both gates on.
+    lsxcommon::lsx_nvfp4::SetLsxTcFastMath(true);
+    lsxcommon::lsx_nvfp4::SetLsxSeq1Gemv(true);
+    struct Shape { int K; int N; const char *what; };
+    // K = reduction, N = output rows. One of each distinct shape a layer issues,
+    // plus the head, which is the single largest read of the step.
+    const Shape shapes[] = {
+        {3584, 768}, {768, 6144}, {3584, 576}, {512, 8192},
+        {4096, 3584}, {3584, 18432}, {9216, 3584}, {3584, 131072},
+    };
+    constexpr int kIters = 40;
+    constexpr size_t kFlushBytes = 128u << 20;  // > RTX 5090 L2 (96 MiB)
+    uint8_t *flush = nullptr;
+    REQUIRE(cudaMalloc(&flush, kFlushBytes) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+    double total_bytes = 0.0, total_us = 0.0;
+    double worst_gbps = 1e9;
+    const char *worst = nullptr;
+    for (const auto &sh : shapes)
+    {
+        std::vector<__half> hx(sh.K);
+        std::vector<uint8_t> hp(static_cast<size_t>(sh.K) * sh.N / 2),
+            hs(static_cast<size_t>(sh.K) * sh.N / 16);
+        for (int i = 0; i < sh.K; ++i)
+            hx[i] = __float2half(float((i % 13) - 6) * 0.25f);
+        for (size_t i = 0; i < hp.size(); ++i)
+            hp[i] = static_cast<uint8_t>((i * 29) & 0xFF);
+        for (size_t i = 0; i < hs.size(); ++i)
+            hs[i] = static_cast<uint8_t>(128 + (i % 48));
+        __half *dx, *dy;
+        uint8_t *dp, *ds;
+        REQUIRE(cudaMalloc(&dx, static_cast<size_t>(sh.K) * 2) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dp, hp.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&ds, hs.size()) == cudaSuccess);
+        REQUIRE(cudaMalloc(&dy, static_cast<size_t>(sh.N) * 2) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dx, hx.data(), static_cast<size_t>(sh.K) * 2,
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(dp, hp.data(), hp.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(cudaMemcpy(ds, hs.data(), hs.size(),
+                           cudaMemcpyHostToDevice) == cudaSuccess);
+        REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                    nullptr, dx, dp, ds, 0.125f, dy, sh.K, sh.N, false) ==
+                cudaSuccess);
+        REQUIRE(cudaDeviceSynchronize() == cudaSuccess);
+        // best-of-5 series: one series still catches a short-lived spike
+        double best_us = 1e18;
+        for (int series = 0; series < 5; ++series)
+        {
+            double series_us = 0.0;
+            for (int i = 0; i < kIters; ++i)
+            {
+                REQUIRE(cudaMemsetAsync(flush, 0, kFlushBytes) == cudaSuccess);
+                REQUIRE(cudaEventRecord(e0) == cudaSuccess);
+                REQUIRE(lsxcommon::lsx_nvfp4::RunLsxNvfp4GemmSeq1GemmV(
+                            nullptr, dx, dp, ds, 0.125f, dy, sh.K, sh.N, false) ==
+                        cudaSuccess);
+                REQUIRE(cudaEventRecord(e1) == cudaSuccess);
+                REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+                float ms = 0.0f;
+                REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+                series_us += static_cast<double>(ms) * 1000.0;
+            }
+            best_us = std::min(best_us, series_us);
+        }
+        const double shape_bytes =
+            static_cast<double>(hp.size() + hs.size()) * kIters;
+        const double gbps = shape_bytes / (best_us * 1e-6) / 1e9;
+        INFO(sh.what << " K=" << sh.K << " N=" << sh.N << " : " << gbps
+             << " GB/s");
+        if (gbps < worst_gbps)
+        {
+            worst_gbps = gbps;
+            worst = sh.what;
+        }
+        total_us += best_us;
+        total_bytes += shape_bytes;
+        cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
+    }
+    const double gbps = total_bytes / (total_us * 1e-6) / 1e9;
+    INFO("aggregate Xing dense-decode GEMV bandwidth = " << gbps << " GB/s");
+    kernel_budget::Require("xing.gemv.dense_decode_gbps", gbps,
+                           kernel_budget::Kind::kMin,
+                           "aggregate over the 8 dense decode shapes");
+    kernel_budget::Require("xing.gemv.dense_decode_worst_gbps", worst_gbps,
+                           kernel_budget::Kind::kMin,
+                           std::string("worst shape: ") + (worst ? worst : "?"));
+    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaFree(flush);
+#else
+    WARN("bandwidth budget is a Release-only gate");
+#endif
+}
+
 TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
           "[xing][kernels]")
 {
