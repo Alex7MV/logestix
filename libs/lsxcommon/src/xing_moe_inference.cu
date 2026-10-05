@@ -958,15 +958,13 @@ cudaError_t XingDecodeStep(const XingPinnedWeights &pw, const XingDims &dims,
         XingStageRms("kv_a", l, token_id, s.d_kv_latent, frozen::kKvAWidth,
                      stream);
         // kv_a_layernorm over the latent part only; the rope part passes through.
-        {
-            float *latent = s.d_norm;   // scratch of kv_lora floats
-            xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
-            s.d_kv_latent, ly.kv_a_ln, latent, nullptr, frozen::kKvLoraRank,
-                frozen::kRmsEps);
-            cudaMemcpyAsync(s.d_kv_latent, latent, frozen::kKvLoraRank * 4,
-                            cudaMemcpyDeviceToDevice, stream);
-        }
-        XING_CK(ToHalf(s.d_kv_latent, s.d_half2, frozen::kKvLoraRank, stream));
+        // In place, and it writes the FP16 copy the kv_b GEMV consumes in the same
+        // pass: this used to be a norm into scratch, a D2D memcpy of the normed
+        // latent back, and a separate ToHalf - three launches per layer to move
+        // 2 KiB, which is ~80 launches per token at this machine's launch floor.
+        xing_rmsnorm_kernel<<<1, kThreads, kThreads * sizeof(float), stream>>>(
+            s.d_kv_latent, ly.kv_a_ln, s.d_kv_latent, s.d_half2,
+            frozen::kKvLoraRank, frozen::kRmsEps);
         XING_CK(GvF32(ly.kv_b, s.d_half2, s.d_kv_b, stream));       // [heads*(nope+v)]
         XingStageRms("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);
         XingStageDump("kv_b", l, token_id, s.d_kv_b, frozen::kKvBWidth, stream);

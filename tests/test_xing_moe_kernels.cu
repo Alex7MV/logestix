@@ -979,8 +979,9 @@ TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
     // K = reduction, N = output rows. One of each distinct shape a layer issues,
     // plus the head, which is the single largest read of the step.
     const Shape shapes[] = {
-        {3584, 768}, {768, 6144}, {3584, 576}, {512, 8192},
-        {4096, 3584}, {3584, 18432}, {9216, 3584}, {3584, 131072},
+        {3584, 768, "q_a"},   {768, 6144, "q_b"},      {3584, 576, "kv_a"},
+        {512, 8192, "kv_b"},  {4096, 3584, "o"},       {3584, 18432, "gate_up"},
+        {9216, 3584, "down"}, {3584, 131072, "head"},
     };
     constexpr int kIters = 40;
     constexpr size_t kFlushBytes = 128u << 20;  // > RTX 5090 L2 (96 MiB)
@@ -992,6 +993,7 @@ TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
     double total_bytes = 0.0, total_us = 0.0;
     double worst_gbps = 1e9;
     const char *worst = nullptr;
+    std::string per_shape;
     for (const auto &sh : shapes)
     {
         std::vector<__half> hx(sh.K);
@@ -1042,8 +1044,12 @@ TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
         const double shape_bytes =
             static_cast<double>(hp.size() + hs.size()) * kIters;
         const double gbps = shape_bytes / (best_us * 1e-6) / 1e9;
-        INFO(sh.what << " K=" << sh.K << " N=" << sh.N << " : " << gbps
-             << " GB/s");
+        per_shape += std::string(sh.what) + " K=" + std::to_string(sh.K) +
+                     " N=" + std::to_string(sh.N) + ": " +
+                     std::to_string(static_cast<int>(gbps)) + " GB/s (" +
+                     std::to_string(best_us / kIters) + " us, floor " +
+                     std::to_string(shape_bytes / kIters / 1792e9 * 1e6) +
+                     " us)\n";
         if (gbps < worst_gbps)
         {
             worst_gbps = gbps;
@@ -1054,6 +1060,9 @@ TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
         cudaFree(dx); cudaFree(dp); cudaFree(ds); cudaFree(dy);
     }
     const double gbps = total_bytes / (total_us * 1e-6) / 1e9;
+    // The DRAM floor is what a shape could reach if it were purely bandwidth
+    // bound at this card's 1792 GB/s; the gap to it is the latency-bound part.
+    WARN("Xing dense decode GEMV, per shape (GB/s | us | floor):\n" << per_shape);
     INFO("aggregate Xing dense-decode GEMV bandwidth = " << gbps << " GB/s");
     kernel_budget::Require("xing.gemv.dense_decode_gbps", gbps,
                            kernel_budget::Kind::kMin,
