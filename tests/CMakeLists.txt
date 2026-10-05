@@ -2202,6 +2202,37 @@ target_compile_definitions(test_tokenizer PRIVATE
 )
 target_link_libraries(test_tokenizer PRIVATE lsxcommon Catch2::Catch2WithMain)
 
+# Device-side agreement for the KV geometry. Its own OBJECT library with explicit
+# include dirs, NOT lsxcommon at compile time: lsx_kv_cache.h is header-only and
+# constexpr, so nothing from the library is needed to compile, and linking
+# lsxcommon here would drag its private "-Xcompiler=/utf-8" CUDA option into this
+# target's own compile step (the duplicated-bare-/utf-8 nvcc misparse documented
+# above test_deepseek_moe_inference_kernels).
+add_library(test_kv_cache_layout_cu OBJECT test_kv_cache_layout_device.cu)
+set_target_properties(test_kv_cache_layout_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_kv_cache_layout_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --expt-relaxed-constexpr;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_kv_cache_layout_cu PRIVATE
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+)
+target_link_libraries(test_kv_cache_layout_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_kv_cache_layout test_kv_cache_layout.cpp $<TARGET_OBJECTS:test_kv_cache_layout_cu>)
+set_target_properties(test_kv_cache_layout PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_kv_cache_layout PRIVATE lsxcommon Catch2::Catch2WithMain)
+
+target_link_libraries(test_kv_cache_layout PRIVATE lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_kv_cache_layout COMMAND test_kv_cache_layout)
+set_tests_properties(test_kv_cache_layout PROPERTIES LABELS fast)
+
 if(WIN32)
     add_custom_command(TARGET test_tokenizer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
