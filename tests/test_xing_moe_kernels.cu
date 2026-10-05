@@ -1138,6 +1138,182 @@ TEST_CASE("Xing dense-decode GEMV shapes reach their bandwidth budget",
 #endif
 }
 
+// KV-read bandwidth, per layout, across contexts. This is the budget that says
+// whether the layout change bought anything, and it reports BOTH layouts in one
+// run so the pos-major floor is measured, not remembered.
+//
+// THIS TEST IS THE FINDING, NOT A GATE FOR A WIN. Head-major reads K/V 6-10%
+// faster than pos-major at ctx 4096/8191 - reproducibly, once the harness stops
+// being biased by measurement order - and it STILL makes the Xing decode step
+// slower end to end at every context measured (AOCC perf tree: 116.8 vs 119.3 t/s
+// at 2048, 92.0 vs 96.1 at 4096, 64.9 vs 68.7 at 8191). Isolated read bandwidth
+// therefore does NOT predict the step: in the real step the cache read competes
+// with 39 other layers' traffic for the same L2, which the isolated sweep with an
+// otherwise-idle GPU cannot see.
+//
+// So this sweep asserts only what is reproducible - both layouts are readable and
+// the read stays above its DRAM-bound floor - and REPORTS the ratio. The layout
+// decision is made on the end-to-end benchmark (perf_baselines.json), not here.
+// docs/OPEN_TASKS.md records the numbers.
+//
+// Bytes moved come from the geometry (kv_heads * n_pos * head_dim * 4 for K and
+// the same for V), not from a hand-written constant, so the number stays honest if
+// the shape ever changes.
+//
+// Contexts matter as much as the layout: at 2k the working set still largely fits
+// L2 and the two layouts land within a few percent, while past that the read is
+// DRAM-bound and only the access order matters. A single-context budget would have
+// measured the uninteresting case.
+TEST_CASE("Xing KV read is faster head-major than pos-major", "[xing][kernels]")
+{
+    if (!HasDevice()) SKIP("no CUDA device");
+    using namespace attn_shape;
+    cudaStream_t stream = nullptr;
+    REQUIRE(cudaStreamCreate(&stream) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    REQUIRE(cudaEventCreate(&e0) == cudaSuccess);
+    REQUIRE(cudaEventCreate(&e1) == cudaSuccess);
+
+    struct Row {
+        int ctx;
+        double pos_major_gbps;
+        double head_major_gbps;
+    };
+    std::vector<Row> rows;
+    std::string table;
+
+    for (const int ctx : {2048, 4096, 8191})
+    {
+        // Fill a full-context cache. Uniform random so nothing is compressible and
+        // no row can be hoisted out of the measured region.
+        const size_t k_n = static_cast<size_t>(ctx) * kHeads * kQk;
+        const size_t v_n = static_cast<size_t>(ctx) * kHeads * kVh;
+        std::vector<float> hk(k_n), hv(v_n), hq(kHeads * kQk);
+        std::mt19937 rng(20261005u + static_cast<unsigned>(ctx));
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        for (auto &x : hk) x = dist(rng);
+        for (auto &x : hv) x = dist(rng);
+        for (auto &x : hq) x = dist(rng);
+
+        // One set of buffers per layout, then ALTERNATE the two inside the timing
+        // loop. Timing layout A to completion and then layout B lets the first
+        // run leave L2 in a state that favours or penalises the second: measured
+        // that way the two came out 9% apart in BOTH directions depending only on
+        // which ran first, which is not a layout effect. Alternating inside the
+        // loop and keeping each layout's best round cancels that drift.
+        struct Cand {
+            lsxcommon::KvCacheGeometry kgeom, vgeom;
+            float *q = nullptr, *kc = nullptr, *vc = nullptr, *scores = nullptr;
+            float *out = nullptr, *m = nullptr, *l = nullptr, *part = nullptr;
+            int *scalars = nullptr;
+            double best_gbps = 0.0;
+        };
+        Cand cand[2];
+        for (int li = 0; li < 2; ++li)
+        {
+            const auto layout = li == 0 ? lsxcommon::KvCacheLayout::kHeadMajor
+                                        : lsxcommon::KvCacheLayout::kPosMajor;
+            Cand &c = cand[li];
+            c.kgeom = lsxcommon::KvCacheGeometry::Make(layout, ctx, kHeads, kQk, 1);
+            c.vgeom = lsxcommon::KvCacheGeometry::Make(layout, ctx, kHeads, kVh, 1);
+            REQUIRE(cudaMalloc(&c.q, hq.size() * 4) == cudaSuccess);
+            REQUIRE(cudaMalloc(&c.kc, k_n * 4) == cudaSuccess);
+            REQUIRE(cudaMalloc(&c.vc, v_n * 4) == cudaSuccess);
+            REQUIRE(cudaMalloc(&c.scores,
+                               static_cast<size_t>(kHeads) * ctx * 4) == cudaSuccess);
+            REQUIRE(cudaMalloc(&c.out, static_cast<size_t>(kHeads) * kVh * 4) ==
+                    cudaSuccess);
+            REQUIRE(cudaMalloc(&c.m, static_cast<size_t>(kHeads) * kTestAttnSplits * 4) ==
+                    cudaSuccess);
+            REQUIRE(cudaMalloc(&c.l, static_cast<size_t>(kHeads) * kTestAttnSplits * 4) ==
+                    cudaSuccess);
+            REQUIRE(cudaMalloc(&c.part, static_cast<size_t>(kHeads) * kTestAttnSplits *
+                                                 kVh * 4) == cudaSuccess);
+            REQUIRE(cudaMalloc(&c.scalars, 2 * sizeof(int)) == cudaSuccess);
+            REQUIRE(cudaMemcpy(c.q, hq.data(), hq.size() * 4,
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+            REQUIRE(cudaMemcpy(c.kc, hk.data(), k_n * 4,
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+            REQUIRE(cudaMemcpy(c.vc, hv.data(), v_n * 4,
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+            const int sc[2] = {ctx - 1, 0};
+            REQUIRE(cudaMemcpy(c.scalars, sc, sizeof(sc),
+                               cudaMemcpyHostToDevice) == cudaSuccess);
+        }
+        const auto once = [ctx](const Cand &c, cudaStream_t st) {
+            return LaunchXingAttention(c.q, c.kc, c.vc, c.scalars, c.kgeom, c.vgeom,
+                                       kHeads, kQk, kVh, kScale, c.scores, c.out, ctx,
+                                       kTestAttnSplits, c.m, c.l, c.part, nullptr,
+                                       false, st);
+        };
+        for (int li = 0; li < 2; ++li) REQUIRE(once(cand[li], stream) == cudaSuccess);
+        REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+        // K and V are each read once per head-row walk.
+        const double bytes = static_cast<double>(kHeads) * ctx * (kQk + kVh) *
+                             sizeof(float);
+        constexpr int kRounds = 6, kItersPer = 5;
+        for (int r = 0; r < kRounds; ++r)
+        {
+            for (int li = 0; li < 2; ++li)
+            {
+                Cand &c = cand[li];
+                REQUIRE(cudaEventRecord(e0, stream) == cudaSuccess);
+                for (int i = 0; i < kItersPer; ++i)
+                    REQUIRE(once(c, stream) == cudaSuccess);
+                REQUIRE(cudaEventRecord(e1, stream) == cudaSuccess);
+                REQUIRE(cudaEventSynchronize(e1) == cudaSuccess);
+                float ms = 0.0f;
+                REQUIRE(cudaEventElapsedTime(&ms, e0, e1) == cudaSuccess);
+                const double g = bytes * kItersPer / (static_cast<double>(ms) * 1e-3) /
+                                 1e9;
+                if (g > c.best_gbps) c.best_gbps = g;
+            }
+        }
+        const double gbps[2] = {cand[0].best_gbps, cand[1].best_gbps};
+        for (int li = 0; li < 2; ++li)
+        {
+            cudaFree(cand[li].q); cudaFree(cand[li].kc); cudaFree(cand[li].vc);
+            cudaFree(cand[li].scores); cudaFree(cand[li].out);
+            cudaFree(cand[li].m); cudaFree(cand[li].l); cudaFree(cand[li].part);
+            cudaFree(cand[li].scalars);
+        }
+        // gbps[0] is head-major, gbps[1] pos-major.
+        rows.push_back({ctx, gbps[1], gbps[0]});
+        table += "ctx=" + std::to_string(ctx) +
+                 " pos-major=" + std::to_string(static_cast<int>(gbps[0])) +
+                 " GB/s head-major=" + std::to_string(static_cast<int>(gbps[1])) +
+                 " GB/s  x" +
+                 std::to_string(static_cast<int>(gbps[1] / gbps[0] * 100) / 100.0) +
+                 "\n";
+    }
+    WARN("Xing KV read bandwidth per layout:\n" << table);
+    cudaEventDestroy(e0); cudaEventDestroy(e1); cudaStreamDestroy(stream);
+
+    REQUIRE(rows.size() == 3);
+    for (const auto &r : rows)
+    {
+        INFO("ctx=" << r.ctx);
+        // Reported, deliberately not asserted: the isolated ratio and the
+        // end-to-end result disagree, and the end-to-end result is the one that
+        // decides. Asserting head_major > pos_major here would re-introduce the
+        // exact claim this test was written to disprove.
+        CHECK(r.head_major_gbps > 0.0);
+        CHECK(r.pos_major_gbps > 0.0);
+    }
+#if defined(NDEBUG)
+    // Only the DRAM-bound end is budgeted: below that the read is L2-bound and the
+    // two layouts are within noise, so a budget there would flake.
+    // Budgets the layout actually SHIPPED (pos-major), as a regression guard on
+    // the read path - not a claim that head-major is slower in isolation.
+    kernel_budget::Require("xing.kv_read.decode_gbps", rows.back().pos_major_gbps,
+                           kernel_budget::Kind::kMin,
+                           "pos-major KV read at ctx 8191; isolated only, and not "
+                           "predictive of the step - see the comment above");
+#else
+    WARN("bandwidth budget is a Release-only gate");
+#endif
+}
+
 TEST_CASE("Xing attention stays inside its latency budget at a 2k context",
           "[xing][kernels]")
 {

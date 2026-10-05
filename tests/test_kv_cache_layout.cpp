@@ -123,9 +123,15 @@ TEST_CASE("a write at pos == capacity would cross into the next head",
 
 #include "lsxcommon/model.h"
 
-TEST_CASE("default config is maximum acceleration", "[kv_layout][fast]")
+// The default is pos-major, and that is a MEASURED choice, not a preference.
+// Head-major makes an isolated K/V read 6-10% faster at ctx 4096/8191, but the
+// Xing decode step is 2% slower at 2048, 4% at 4096 and 6% at 8191 with it - the
+// isolated read and the real step disagree because in the real step the cache read
+// competes with 39 other layers' traffic for the same L2. End-to-end wins.
+// See docs/OPEN_TASKS.md for the numbers.
+TEST_CASE("default config keeps the measured-faster layout", "[kv_layout][fast]")
 {
     lsxcommon::ModelInitConfig cfg;
     cfg.model_path = "unused";
-    CHECK(cfg.kv_cache_layout == lsxcommon::KvCacheLayout::kHeadMajor);
+    CHECK(cfg.kv_cache_layout == lsxcommon::KvCacheLayout::kPosMajor);
 }

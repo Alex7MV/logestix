@@ -311,19 +311,42 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   the collapse - FP64 stays off the wide path and the load overlaps the chain.
   Budget: `xing.mhc.decode` in `kernel_budgets.json` guards the current 12.5-13.0 us
   for proj+gates+collapse, so a regression here is visible immediately.
-- **Deferred to its own task (2026-10-05): the KV cache layout.** With the decode
-  step graph-replayed, the context-dependent cost is the only thing left that
-  scales. Measured on this branch: 141.6 / 132.5 / 117.2 t/s at 128 / 1024 /
-  2048 tokens, i.e. ~7.0 ms of fixed cost plus ~1.7 ms per 1000 cached positions.
-  Profiling 128 against 2048 shows attention is the ONLY kernel whose time grows
-  (0.81 -> 2.28 ms/token); everything else is flat. Isolated, the attention reads
-  its K/V at ~1364 GB/s while the context still fits L2 (pos 1024) and drops to
-  ~788/820 GB/s once it cannot (pos 4096/8191) - so it is L2-bandwidth-bound at
-  short context and DRAM-bound at long, and the layout is why: the cache is
-  `[pos][head][dim]`, so one head's dot product walks a 128 KiB stride per
-  position. A head-major `[head][pos][dim]` layout makes the per-head working set
-  contiguous and is the fix; it is a loader + kernel + parity exercise, not
-  arithmetic, and it is deliberately NOT started here.
+- **CLOSED, NEGATIVE (2026-10-05): the KV cache layout was measured and is NOT the
+  bottleneck.** The `[head][pos][dim]` layout was implemented on a branch
+  (`feat/kv-head-major-layout`) behind a neutral `ModelInitConfig::kv_cache_layout`
+  knob, and it does make an isolated K/V read faster - reproducibly 6-10% at ctx
+  4096/8191 (811 vs 744 GB/s), once the measurement harness stops being biased by
+  which layout runs first. It STILL makes the decode step slower end to end at every
+  context measured, on the AOCC perf tree:
+
+  | max-gen | pos-major | head-major |
+  |---|---|---|
+  | 2048 | **119.3 t/s** | 116.8 t/s |
+  | 4096 | **96.1 t/s** | 92.0 t/s |
+  | 8191 | **68.7 t/s** | 64.9 t/s |
+
+  So the inference this section was built on - "the layout is why" - is wrong. At
+  long context the pos-major read already sustains 744-817 GB/s; the gap to the
+  1792 GB/s DRAM peak is ACCESS GRANULARITY, not head/position order: a 256-thread
+  block has each thread walk a whole 192-float K row, and no permutation of head and
+  position fixes that. What would is cooperative tiling - load K/V into shared
+  memory with fully coalesced 128-byte-per-warp reads. And isolated read bandwidth
+  does not predict the step at all: with 39 other layers' traffic competing for the
+  same L2, the ranking inverts. Measure end to end or not at all.
+
+  Kept from the attempt, because they are reusable and correct: the neutral
+  `KvCacheGeometry` layer (three strides, not a tagged layout, so both layouts
+  coexist in one binary and stay bit-exact - `tests/test_kv_cache_layout.cpp`),
+  the `KvCacheLayout` knob with `IModel::KvLayout()` so "ignored" is observable, and
+  a bit-exact parity gate that runs a decode step under both layouts
+  (`tests/test_xing_kv_layout_parity.cpp`). The shipped default stays pos-major
+  because it measured faster; flipping it per family is now a cheap, safe,
+  reversible experiment rather than a rewrite.
+  Two pre-existing defects surfaced on the way and are fixed: the 2k attention
+  test's `splits=1` iteration compared the previous iteration's output and verified
+  nothing (`xing_attn_kernel` owns short contexts only - it returns immediately when
+  `n_pos > nthreads`), and `XingCopyLayerKV`'s host pitch was the whole row instead
+  of one head.
 - The baseline is recorded in `tests/perf/perf_baselines.json` (mode `perf`
   and `r3`); it is still an explicit **floor**, not a tuned number, so the perf
   guard treats a regression against it as a real signal.

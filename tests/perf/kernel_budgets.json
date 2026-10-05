@@ -3,6 +3,9 @@
     {"name": "xing.attention.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 78.4966, "observed_min": 57.008, "observed_max": 58.1456, "samples": 5, "date": "2026-10-04", "note": "split-K, 32 heads x 8 position chunks at pos=2047"},
     {"name": "xing.gemv.dense_decode_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 961.969, "observed_min": 1202.46, "observed_max": 1202.46, "samples": 1, "date": "2026-10-05", "note": "aggregate over the 8 dense decode shapes"},
     {"name": "xing.gemv.dense_decode_worst_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 150.009, "observed_min": 187.511, "observed_max": 187.511, "samples": 1, "date": "2026-10-05", "note": "worst shape: ?"},
+    {"name": "xing.kv_read.decode_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 700,
+     "observed_min": 721, "observed_max": 817,
+     "note": "pos-major KV read at ctx 8191, isolated. A REGRESSION guard on the read path, not a layout claim: head-major reads 6-10% faster in isolation (811 vs 744 GB/s) yet makes the decode step 2-6% slower end to end, so isolated read bandwidth does not predict the step. Budget tracks the layout actually shipped."},
     {"name": "xing.mhc.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 17.5576, "observed_min": 12.5344, "observed_max": 13.0056, "samples": 5, "date": "2026-10-04", "note": "3 launches, hidden=3584, hc_mult=4 (proj 24 blocks + warp-Sinkhorn gates + wide collapse)"},
     {"name": "xing.router.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 8.16264, "observed_min": 5.38848, "observed_max": 6.0464, "samples": 5, "date": "2026-10-04", "note": "projection one block per expert (64 blocks x 32 lanes) + top-k block; 64 experts x hidden 3584"}
   ]

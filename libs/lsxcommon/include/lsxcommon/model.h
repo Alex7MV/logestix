@@ -34,14 +34,20 @@ struct ModelInitConfig {
     // per-GPU perf policy resolved at engine init; kOn/kOff force the
     // numeric class (only consulted when fast_math == false).
     FastMathMode fast_math_mode = FastMathMode::kAuto;
-    // KV cache layout for families that keep one: [head][pos][dim] (default -
-    // contiguous per-head working set) or [pos][head][dim]. Read once at init
-    // and immutable afterwards: the strides are captured into the CUDA graph as
-    // kernel arguments, so mutating this after capture would replay with the
-    // stale value silently. Hybrid families whose recurrent state is not a KV
-    // cache may ignore it - IModel::KvLayout() is what makes "ignored"
-    // observable instead of a silent no-op.
-    KvCacheLayout kv_cache_layout = KvCacheLayout::kHeadMajor;
+    // KV cache layout for families that keep one: [pos][head][dim] (default) or
+    // [head][pos][dim]. Read once at init and immutable afterwards: the strides
+    // are captured into the CUDA graph as kernel arguments, so mutating this after
+    // capture would replay with the stale value silently. Hybrid families whose
+    // recurrent state is not a KV cache may ignore it - IModel::KvLayout() is what
+    // makes "ignored" observable instead of a silent no-op.
+    //
+    // pos-major is the default because it MEASURED faster end to end on Xing-4.0,
+    // even though head-major reads K/V 6-10% faster in isolation at long context:
+    // 119.3 vs 116.8 t/s at 2048, 96.1 vs 92.0 at 4096, 68.7 vs 64.9 at 8191. Both
+    // layouts stay reachable and both are exercised by a bit-exact parity test, so
+    // the decision stays revisable - but it is a decision, not an inherited
+    // default. Do not flip this per family without an end-to-end measurement.
+    KvCacheLayout kv_cache_layout = KvCacheLayout::kPosMajor;
 };
 
 // Effective routing mode: the legacy bool wins (true -> kOn); otherwise the
@@ -99,9 +105,8 @@ public:
     // (ModelInitConfig::kv_cache_layout), so a family that does not keep a KV
     // cache - or whose attention blocking cannot use the requested layout - has
     // to answer here anyway: silently claiming the requested layout would be a
-    // lie no test could catch. Default is head-major, the layout this repo
-    // converges on.
-    virtual KvCacheLayout KvLayout() const { return KvCacheLayout::kHeadMajor; }
+    // lie no test could catch. Default matches ModelInitConfig's.
+    virtual KvCacheLayout KvLayout() const { return KvCacheLayout::kPosMajor; }
     virtual ArrowTokenizerDb &Tokenizer() = 0;
 
     // Token bridge (Model Ingestion Protocol stage 4): frame a raw user

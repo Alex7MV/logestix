@@ -57,7 +57,7 @@ private:
     xing::XingDims dims_;
     // Set once at construction; the decode session's KV geometry is built from
     // it and never changes for the lifetime of this model.
-    KvCacheLayout kv_cache_layout_ = KvCacheLayout::kHeadMajor;
+    KvCacheLayout kv_cache_layout_ = KvCacheLayout::kPosMajor;
     // Per-request decode state (KV cache + four-stream scratch). Created and
     // destroyed INSIDE RunUnderResidencyLock, like every other family.
     std::unique_ptr<xing::XingSession> session_;
