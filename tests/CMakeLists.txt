@@ -2571,6 +2571,42 @@ target_link_libraries(test_http_server PRIVATE lsxnetwork httplib::httplib Catch
 add_test(NAME test_http_server COMMAND test_http_server)
 
 # ── CUDA inference kernels test ─────────────────────────────────────────
+# Model-neutral streaming-read ceiling probe. Its own OBJECT library with explicit
+# include dirs and no lsxcommon at compile time: it needs Catch2 and
+# test_kernel_budget.h only, and linking lsxcommon here would drag that target's
+# private "-Xcompiler=/utf-8" CUDA option into this compile step (the nvcc misparse
+# documented below test_deepseek_moe_inference_kernels). lsxcommon IS linked at the
+# final executable's link stage, where test_kernel_budget.h's ProbeGpuPerfProfile
+# symbol is actually needed.
+add_library(test_stream_read_ceiling_cu OBJECT test_stream_read_ceiling.cu)
+set_target_properties(test_stream_read_ceiling_cu PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_ARCHITECTURES OFF
+)
+target_compile_options(test_stream_read_ceiling_cu PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda;-std=c++20;
+    --expt-relaxed-constexpr;
+    --generate-code=arch=compute_120,code=sm_120;
+    --generate-code=arch=compute_121,code=sm_121;
+    $<$<PLATFORM_ID:Windows>:-Xcompiler=/utf-8>>)
+target_include_directories(test_stream_read_ceiling_cu PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${PROJECT_SOURCE_DIR}/libs/lsxcommon/include"
+    "${CMAKE_BINARY_DIR}/libs/lsxcommon/include"
+)
+target_link_libraries(test_stream_read_ceiling_cu PRIVATE Catch2::Catch2WithMain)
+
+add_executable(test_stream_read_ceiling)
+set_target_properties(test_stream_read_ceiling PROPERTIES LINKER_LANGUAGE CXX)
+target_link_libraries(test_stream_read_ceiling PRIVATE
+    test_stream_read_ceiling_cu lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_stream_read_ceiling COMMAND test_stream_read_ceiling)
+set_tests_properties(test_stream_read_ceiling PROPERTIES LABELS perf)
+set_tests_properties(test_stream_read_ceiling PROPERTIES TIMEOUT 600)
+# Skip-capable (no CUDA device -> SKIP in the test), so it needs the code, per
+# test_ctest_labels_guard.
+set_tests_properties(test_stream_read_ceiling PROPERTIES SKIP_RETURN_CODE 4)
+
 # Compiled as an OBJECT library (same pattern as lsxcommon_cu) rather than
 # passing the .cu file directly to add_executable(). Root cause found by
 # direct experimentation: when a CUDA-compiling target links (directly or

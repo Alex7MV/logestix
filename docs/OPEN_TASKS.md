@@ -334,6 +334,37 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   does not predict the step at all: with 39 other layers' traffic competing for the
   same L2, the ranking inverts. Measure end to end or not at all.
 
+- **The real bottleneck, measured (2026-10-05, same day).** With the layout question
+  settled, the cheap experiment that decides whether a tiling rewrite is worth
+  anything at all: read the SAME 335 MB with the canonical coalesced pattern
+  (float4, consecutive threads at consecutive addresses, grid-stride, full occupancy)
+  - `tests/test_stream_read_ceiling.cu`, budget `mem.stream_read_ceiling_gbps`.
+
+  | what | GB/s at ctx 8191 |
+  |---|---|
+  | plain coalesced read (94% of the 1792 GB/s spec peak) | **1687** |
+  | dense decode GEMV (math on the loaded data, `xing.gemv.dense_decode_gbps`) | 1202 |
+  | Xing attention KV read, pos-major | 744-817 |
+
+  So attention runs at **46-48% of what a plain read of the same bytes achieves**, and
+  a kernel that also does arithmetic on what it loads (the GEMV) reaches 71%. That is
+  a real 1.5-2.3x of headroom and it is NOT a hardware limit - it is the access
+  pattern, exactly as diagnosed: in the score phase a 256-thread block has each
+  thread walk a whole 192-float K row, so the warp issues 32 scattered 768-B streams
+  24 KB apart instead of one contiguous sweep. The V phase is already coalesced
+  (`group = tid / vh`, so 128 consecutive threads read 128 consecutive floats).
+
+  **So yes, cooperative tiling of K/V into shared memory is worth attempting** - it
+  targets the measured deficit rather than a guess. Two honest caveats: the ceiling
+  probe is read-only and compute-trivial, so 1687 is an upper bound attention can
+  never reach and 1202 (the GEMV) is the more realistic target; and tiling adds
+  shared-memory traffic, barriers and reuse pressure across 1280 blocks (40 layers x
+  32 heads), so it can cost occupancy. Measure end to end on the AOCC tree.
+  Note also that tiling and layout are COUPLED, and the layout verdict above does not
+  transfer: under a tile load a head's consecutive positions are contiguous in
+  head-major and strided in pos-major, so re-measure both layouts once tiling exists
+  (`cfg.kv_cache_layout` makes that a one-line experiment).
+
   Kept from the attempt, because they are reusable and correct: the neutral
   `KvCacheGeometry` layer (three strides, not a tagged layout, so both layouts
   coexist in one binary and stay bit-exact - `tests/test_kv_cache_layout.cpp`),
