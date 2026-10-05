@@ -836,7 +836,7 @@ inline lsxcommon::KvCacheGeometry TestVGeom(int capacity)
     return lsxcommon::KvCacheGeometry::Make(
         lsxcommon::KvCacheLayout::kHeadMajor, capacity, kHeads, kVh, 1);
 }
-constexpr int kTestAttnSplits = 8; // canonical 2048-token context
+constexpr int kTestAttnSplits = 4; // canonical 2048-token context
 constexpr float kScale = 0.14467962580268925f;  // mscale^2 / sqrt(192)
 
 struct Cache

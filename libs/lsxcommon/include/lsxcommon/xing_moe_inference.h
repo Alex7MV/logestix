@@ -66,10 +66,33 @@ XingDims XingDimsFromWeights(const XingPinnedWeights &pw);
 // latents — Xing4_0Attention materialises k_pass/value instead of absorbing
 // kv_b_proj into q/o, so this is [heads, nope+rope] K and [heads, v] V per
 // token, 40 KiB/token/layer (3.1 GiB at a 2048-token context).
-// Position chunks per head in the split-K attention. 8 x 32 = 256 blocks fills
-// the 170 SMs of the target part twice over at a 2k context; more splits only
-// add combine work once the chunks get shorter than a block.
-constexpr int kAttnSplits = 8;
+// Position chunks per head in the split-K attention.
+//
+// Measured, not guessed (RTX 5090, 170 SMs, 32 heads). The previous value 8 was
+// justified in a comment as "8 x 32 = 256 blocks fills the 170 SMs twice over,
+// more splits only add combine work" - and that is exactly backwards. Filling the
+// array twice means the second wave runs at half occupancy, which costs more than
+// the combine traffic it saves. The curve, KV read at ctx 8191 / attention at
+// pos 2047:
+//
+//   splits  blocks   GB/s     us
+//      2      64      688    52.7     under-filled
+//      3      96     1129    44.9     still under-filled
+//      4     128     1215    40.7     <- shipped
+//      5     160     1133    40.7
+//      6     192     1020    40.5     192 > 170: second wave
+//      8     256      867    43.1
+//
+// Two effects compete and cross at 4: parallelism wants at least one block per SM,
+// while per-block sequential MLP and the partials->combine traffic (heads*splits*
+// vh = 131 KB at 8, 65 KB at 4) both want FEWER, fatter blocks. "Fill the SM array"
+// is the wrong rule - 128 blocks beats 160.
+//
+// NUMERICS: splits sets the chunk boundaries, hence the reduction order, hence the
+// bits. This value is NOT bit-identical to 8. All four real-weight golden gates
+// (SelfCheck/FSI/CODE/DET) pass at kOff, but that is four prompts, not a proof of
+// parity with the source weights - see docs/OPEN_TASKS.md.
+constexpr int kAttnSplits = 4;
 
 struct XingSession {
     int capacity = 0;

@@ -400,6 +400,55 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   Tiling, for the record, is a long-context play: it only matters once the context
   exceeds L2 (>~4096 tokens here), where the K read is genuinely DRAM bound.
 
+- **The 36% tail was wave quantisation, not the exp (2026-10-05).** Probing the live
+  split-K kernel at pos 2047 by removing one read at a time (wrong results on
+  purpose, edits reverted):
+
+  | removed | time | phase cost |
+  |---|---|---|
+  | nothing | 42.90 us | - |
+  | the V read | 42.89 us | ~0 (0%) |
+  | the combine kernel | 40.84 us | 2.1 us (5%) |
+  | both reads | 15.58 us | K 27.3 us (64%), tail 15.6 us (36%) |
+
+  Two wrong guesses, both mine and both cheap to kill: `XingExpfGlibc` is NOT the
+  cost - swapping in hardware `__expf` saves 0.03 us - and V-phase vectorisation has
+  nothing in it, because at 2048 the whole 84 MB KV fits in L2 and V is already
+  free. Also: at 2048 attention is not bandwidth bound at all. The K read moves 50 MB
+  in 27.3 us = 1842 GB/s effective, ABOVE the 1687 GB/s DRAM ceiling, because it is
+  served from cache. The streaming ceiling is the right yardstick only past L2.
+
+  What the tail actually was: **wave quantisation.** `kAttnSplits` was 8, i.e.
+  32 heads x 8 = 256 blocks on 170 SMs, so the second wave runs at half occupancy.
+  The comment justifying 8 claimed the opposite ("fills the SMs twice over, more
+  splits only add combine work") and was simply wrong. Measured curve, KV read at
+  ctx 8191 / attention at pos 2047:
+
+  | splits | blocks | GB/s | us |
+  |---|---|---|---|
+  | 2 | 64 | 688 | 52.7 |
+  | 3 | 96 | 1129 | 44.9 |
+  | **4** | **128** | **1215** | **40.7** |
+  | 5 | 160 | 1133 | 40.7 |
+  | 6 | 192 | 1020 | 40.5 |
+  | 8 | 256 | 867 | 43.1 |
+
+  Two effects cross at 4: parallelism wants >= one block per SM, while per-block
+  sequential MLP and the partials->combine traffic (131 KB at splits=8, 65 KB at 4)
+  both want FEWER, fatter blocks. "Fill the SM array" is the wrong rule - 128 blocks
+  beats 160 - so do NOT make this `SMs / heads`; it would give 5 and lose 7% of the
+  read.
+
+  End to end (AOCC perf tree): 127.0 -> **129.3 t/s** at 2048, 77.3 -> **85.1 t/s** at
+  8191. Session total from `main`: 119.3 -> 129.3 (+8.5%) at 2048, 68.7 -> 85.1
+  (+23.9%) at 8191.
+
+  **NUMERICS WARNING:** `kAttnSplits` sets the chunk boundaries, hence the reduction
+  order, hence the bits. 4 is NOT bit-identical to 8. All four real-weight golden
+  gates pass at `kOff`, but that is four prompts, not a proof of source parity. If
+  strict `kOff` bit-parity with the source weights matters more than +10% at long
+  context, revert to 8 and keep the float4 change, which IS bit-identical.
+
   **So yes, cooperative tiling of K/V into shared memory is worth attempting - it
   targets the measured deficit rather than a guess. Two honest caveats: the ceiling
   probe is read-only and compute-trivial, so 1687 is an upper bound attention can

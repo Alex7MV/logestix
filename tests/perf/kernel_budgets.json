@@ -1,11 +1,11 @@
 {
   "budgets": [
-    {"name": "xing.attention.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 50.0, "observed_min": 42.896, "observed_max": 58.1456, "samples": 5, "date": "2026-10-04", "note": "split-K, 32 heads x 8 position chunks at pos=2047"},
+    {"name": "xing.attention.decode", "gpu_key": "rtx 5090", "kind": "max", "budget": 46.0, "observed_min": 40.63, "observed_max": 58.1456, "samples": 5, "date": "2026-10-04", "note": "split-K, 32 heads x 8 position chunks at pos=2047"},
     {"name": "xing.gemv.dense_decode_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 961.969, "observed_min": 1202.46, "observed_max": 1202.46, "samples": 1, "date": "2026-10-05", "note": "aggregate over the 8 dense decode shapes"},
     {"name": "xing.gemv.dense_decode_worst_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 150.009, "observed_min": 187.511, "observed_max": 187.511, "samples": 1, "date": "2026-10-05", "note": "worst shape: ?"},
-    {"name": "xing.kv_read.decode_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 800,
-     "observed_min": 848, "observed_max": 871,
-     "note": "pos-major KV read at ctx 8191, isolated, AFTER float4-vectorising the score phase (871 GB/s; was 745 with scalar loads). A REGRESSION guard, not a layout claim: head-major reads faster still in isolation yet makes the decode step slower end to end, so isolated bandwidth does not predict the step."},
+    {"name": "xing.kv_read.decode_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 1100,
+     "observed_min": 1211, "observed_max": 1215,
+     "note": "pos-major KV read at ctx 8191: 745 scalar loads -> 871 float4 score phase -> 1215 with kAttnSplits=4 instead of 8. kAttnSplits changes the reduction order, so these are not bit-comparable runs. A REGRESSION guard, not a layout claim: head-major reads faster still in isolation yet makes the decode step slower end to end, so isolated bandwidth does not predict the step."},
     {"name": "mem.stream_read_ceiling_gbps", "gpu_key": "rtx 5090", "kind": "min", "budget": 1500,
      "observed_min": 1687, "observed_max": 1688,
      "note": "float4 grid-stride read of a 335 MB buffer, 94% of the 1792 GB/s spec peak. A floor on the MEASUREMENT, not a perf claim: it is the reference point every KV-read bandwidth number is divided by, so a broken probe (throttling, wrong device, occupancy collapse) would silently make any ratio fiction."},
