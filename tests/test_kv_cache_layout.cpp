@@ -120,3 +120,12 @@ TEST_CASE("a write at pos == capacity would cross into the next head",
     CHECK(overflow == head4);
     CHECK(overflow < g.Elements());
 }
+
+#include "lsxcommon/model.h"
+
+TEST_CASE("default config is maximum acceleration", "[kv_layout][fast]")
+{
+    lsxcommon::ModelInitConfig cfg;
+    cfg.model_path = "unused";
+    CHECK(cfg.kv_cache_layout == lsxcommon::KvCacheLayout::kHeadMajor);
+}

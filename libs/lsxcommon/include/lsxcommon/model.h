@@ -14,6 +14,7 @@
 #include "lsxcommon/vram_estimate.h"   // VramProfile
 #include "lsxcommon/prompt_framing.h"  // prompt framing utilities
 #include "lsxcommon/fast_math_mode.h"  // FastMathMode
+#include "lsxcommon/lsx_kv_cache.h"    // KvCacheLayout / KvCacheGeometry
 #include "lsxcommon/token_stream.h"    // TokenChunk / TokenCallback / GenerationStream
 #include "lsxcommon/chat_conversation.h"  // ChatConversation / ToolCall
 #include "lsxcommon/tool_format.h"     // generic Hermes render/parse
@@ -33,6 +34,14 @@ struct ModelInitConfig {
     // per-GPU perf policy resolved at engine init; kOn/kOff force the
     // numeric class (only consulted when fast_math == false).
     FastMathMode fast_math_mode = FastMathMode::kAuto;
+    // KV cache layout for families that keep one: [head][pos][dim] (default -
+    // contiguous per-head working set) or [pos][head][dim]. Read once at init
+    // and immutable afterwards: the strides are captured into the CUDA graph as
+    // kernel arguments, so mutating this after capture would replay with the
+    // stale value silently. Hybrid families whose recurrent state is not a KV
+    // cache may ignore it - IModel::KvLayout() is what makes "ignored"
+    // observable instead of a silent no-op.
+    KvCacheLayout kv_cache_layout = KvCacheLayout::kHeadMajor;
 };
 
 // Effective routing mode: the legacy bool wins (true -> kOn); otherwise the
@@ -85,6 +94,14 @@ public:
     }
 
     virtual const std::string &Type() const = 0;
+
+    // The KV cache layout this instance actually uses. The knob is neutral
+    // (ModelInitConfig::kv_cache_layout), so a family that does not keep a KV
+    // cache - or whose attention blocking cannot use the requested layout - has
+    // to answer here anyway: silently claiming the requested layout would be a
+    // lie no test could catch. Default is head-major, the layout this repo
+    // converges on.
+    virtual KvCacheLayout KvLayout() const { return KvCacheLayout::kHeadMajor; }
     virtual ArrowTokenizerDb &Tokenizer() = 0;
 
     // Token bridge (Model Ingestion Protocol stage 4): frame a raw user

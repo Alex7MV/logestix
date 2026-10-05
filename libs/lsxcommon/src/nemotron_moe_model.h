@@ -39,6 +39,12 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // Already head-major by construction: its attention indexes
+    // (hk * cache_stride + t) * head_dim, so cfg.kv_cache_layout has nothing to
+    // switch here. Reported rather than assumed, so a test asking "what layout is
+    // this model using" gets the truth instead of the request echoed back.
+    KvCacheLayout KvLayout() const override { return KvCacheLayout::kHeadMajor; }
+
     // Tool/function-calling bridge (step 4b): Nemotron-3.5 uses the Qwen-style
     // ChatML XML call syntax (`<tool_call><function=…>`), but its own tool
     // declaration block; parse is shared with the Qwen codec.

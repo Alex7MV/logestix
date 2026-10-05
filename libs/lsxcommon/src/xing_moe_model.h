@@ -29,6 +29,10 @@ public:
 
     const std::string &Type() const override { return kType; }
 
+    // Reports what the session was actually built with, not what was requested:
+    // the allocation builds its geometry from cfg.kv_cache_layout.
+    KvCacheLayout KvLayout() const override { return kv_cache_layout_; }
+
     // Tool/function-calling bridge (step 4b): the checkpoint's own
     // <_system>/<_user>/<_bot> framing with <tool_call><param_key>…
     // (the zero-width-space marker is what upstream ships).
@@ -51,6 +55,9 @@ private:
 
     xing::XingPinnedWeights pw_;
     xing::XingDims dims_;
+    // Set once at construction; the decode session's KV geometry is built from
+    // it and never changes for the lifetime of this model.
+    KvCacheLayout kv_cache_layout_ = KvCacheLayout::kHeadMajor;
     // Per-request decode state (KV cache + four-stream scratch). Created and
     // destroyed INSIDE RunUnderResidencyLock, like every other family.
     std::unique_ptr<xing::XingSession> session_;

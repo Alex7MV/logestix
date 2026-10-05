@@ -49,6 +49,9 @@ int MsSince(std::chrono::steady_clock::time_point t0)
 
 XingMoeModel::XingMoeModel(ModelInitConfig cfg) : ModelBase(std::move(cfg))
 {
+    // Captured before cfg_ is moved into ModelBase; the decode session builds its
+    // KV geometry from this and never changes it afterwards.
+    kv_cache_layout_ = ModelBase::cfg_.kv_cache_layout;
 }
 
 void XingMoeModel::TeardownWeights()
