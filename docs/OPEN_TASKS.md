@@ -317,6 +317,40 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
 - Parity is unaffected: SelfCheck Paris and the FSI/CODE/DET gates pass at
   `kOff`, so this is pure throughput work.
 
+## F. Decode throughput ramp over a session (2026-10-05) — no ramp on Xing
+
+An operator's separate observation was that throughput sometimes *grows* during
+inference. Measured on the production numeric class (default per-GPU policy,
+`tests/test_xing_warmup_ramp.cpp`, host-timestamped token callback):
+
+| horizon | Q1 (first quarter) | median | Q4 (last quarter) | Q4/Q1 |
+|---|---|---|---|---|
+| max-gen 2048 | 147.1 t/s | - | 107.5 t/s | **0.73** |
+| max-gen 4096 | 142.0 t/s | - | 82.1 t/s | **0.58** |
+
+So on Xing-4.0 throughput **FALLS** by 27% (2048) and 42% (4096) across a session,
+and falls harder at the longer horizon. There is no warm-up ramp: the shape is the
+context effect, and Q1 sitting ABOVE the session average (147 vs 127 t/s at 2048) is
+why a single average hides a 27-42% spread.
+
+Two consequences worth keeping:
+
+1. **If a ramp was observed, it was a different family or configuration.** The most
+   likely mechanism is the opposite of what "ramp" suggests: Xing replays its decode
+   step from a CUDA graph, which removes per-step launch overhead, so Xing has little
+   warm-up to have. A family without graph replay would show more. Worth identifying
+   which family showed growth before concluding anything general.
+2. **An average over a long horizon is dominated by the slow tail.** "3-5% at the 4096
+   horizon" measured as one average is mostly a statement about the regime where the
+   KV read is past L2. That is the regime the float4 score-phase change already
+   improved (+12.5% at 8191), and it is where any further work should be aimed.
+
+Method notes, both learned the hard way: the measurement must run ONE horizon per
+process (two resident Xing instances need ~30 GiB and the second expert-slab
+allocation OOMs on a 32 GiB card, and destroying the first model does not return the
+memory within the process), and it must NOT pin `FastMathMode::kOff` — that measures
+the legacy bit-exact path at 20 t/s, a ramp that never happens in production.
+
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
 The lifecycle review closed every mechanical gap (streaming/abort, residency
