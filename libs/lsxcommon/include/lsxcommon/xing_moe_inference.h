@@ -68,31 +68,34 @@ XingDims XingDimsFromWeights(const XingPinnedWeights &pw);
 // token, 40 KiB/token/layer (3.1 GiB at a 2048-token context).
 // Position chunks per head in the split-K attention.
 //
-// Measured, not guessed (RTX 5090, 170 SMs, 32 heads). The previous value 8 was
-// justified in a comment as "8 x 32 = 256 blocks fills the 170 SMs twice over,
-// more splits only add combine work" - and that is exactly backwards. Filling the
-// array twice means the second wave runs at half occupancy, which costs more than
-// the combine traffic it saves. The curve, KV read at ctx 8191 / attention at
-// pos 2047:
+// 8, and it stays 8 because splits sets the chunk boundaries, hence the reduction
+// order, hence THE BITS. A project decision (2026-10-05) took bit-identity over
+// throughput: 4 is measurably faster and is NOT bit-identical, so it was reverted.
 //
-//   splits  blocks   GB/s     us
-//      2      64      688    52.7     under-filled
-//      3      96     1129    44.9     still under-filled
-//      4     128     1215    40.7     <- shipped
-//      5     160     1133    40.7
-//      6     192     1020    40.5     192 > 170: second wave
-//      8     256      867    43.1
+// Measured on the AOCC perf tree (RTX 5090, 170 SMs, 32 heads) - kept because the
+// number is worth having even though the value is not taken:
 //
-// Two effects compete and cross at 4: parallelism wants at least one block per SM,
-// while per-block sequential MLP and the partials->combine traffic (heads*splits*
-// vh = 131 KB at 8, 65 KB at 4) both want FEWER, fatter blocks. "Fill the SM array"
-// is the wrong rule - 128 blocks beats 160.
+//   splits  blocks   KV read GB/s @8191   attention us @2047
+//      2      64          688               52.7
+//      3      96         1129               44.9
+//      4     128         1215               40.7    <- fastest, REJECTED
+//      5     160         1133               40.7
+//      6     192         1020               40.5
+//      8     256          867               43.1    <- shipped
 //
-// NUMERICS: splits sets the chunk boundaries, hence the reduction order, hence the
-// bits. This value is NOT bit-identical to 8. All four real-weight golden gates
-// (SelfCheck/FSI/CODE/DET) pass at kOff, but that is four prompts, not a proof of
-// parity with the source weights - see docs/OPEN_TASKS.md.
-constexpr int kAttnSplits = 4;
+// So the tail is wave quantisation, not the exp: 8 x 32 = 256 blocks on 170 SMs runs
+// the second wave at half occupancy. An earlier comment here justified 8 as "fills
+// the SMs twice over, more splits only add combine work", which was exactly
+// backwards. Two effects cross at 4 - parallelism wants >= one block per SM, while
+// per-block sequential MLP and the partials->combine traffic (131 KB at 8, 65 KB at
+// 4) want fewer, fatter blocks - and "fill the SM array" is the wrong rule: 128
+// blocks beats 160.
+//
+// Taking splits=4 would have been +2% at 2048 and +10% at 8191. It was not taken.
+// If that trade is ever revisited, the cost is one constant and the numbers above
+// are the measurement to re-check against; nothing else has to change, because the
+// layout knob and the parity gate make the addressing independent of this choice.
+constexpr int kAttnSplits = 8;
 
 struct XingSession {
     int capacity = 0;

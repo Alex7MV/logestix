@@ -461,15 +461,36 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   beats 160 - so do NOT make this `SMs / heads`; it would give 5 and lose 7% of the
   read.
 
-  End to end (AOCC perf tree): 127.0 -> **129.3 t/s** at 2048, 77.3 -> **85.1 t/s** at
-  8191. Session total from `main`: 119.3 -> 129.3 (+8.5%) at 2048, 68.7 -> 85.1
-  (+23.9%) at 8191.
+  End to end at splits=4 was 129.3 t/s at 2048 and 85.1 at 8191; the shipped,
+  bit-identical configuration is 127.1 and 77.3 (see the rejection below).
 
-  **NUMERICS WARNING:** `kAttnSplits` sets the chunk boundaries, hence the reduction
-  order, hence the bits. 4 is NOT bit-identical to 8. All four real-weight golden
-  gates pass at `kOff`, but that is four prompts, not a proof of source parity. If
-  strict `kOff` bit-parity with the source weights matters more than +10% at long
-  context, revert to 8 and keep the float4 change, which IS bit-identical.
+  **REJECTED ON BIT-IDENTITY (project decision, 2026-10-05).** `kAttnSplits` sets the
+  chunk boundaries, hence the reduction order, hence the bits, and the project takes
+  bit-identity over throughput. **8 ships; 4 was reverted.** All four real-weight
+  golden gates passed at 4, but that is four prompts, not proof of source parity, and
+  the decision does not need proof to be the right one: "bit-identical" is a property
+  you can verify, "+10% at long context" is not.
+
+  What that costs, stated plainly: **129.3 -> 127.1 t/s at 2048 and 85.1 -> 77.3 t/s
+  at 8191.** The float4 change is untouched by this and IS bit-identical, so the
+  shipped session result stands at:
+
+  | | main | shipped (bit-identical) | with splits=4 (rejected) |
+  |---|---|---|---|
+  | E2E 2048 | 119.3 | **127.1 t/s** (+6.5%) | 129.3 |
+  | E2E 8191 | 68.7 | **77.3 t/s** (+12.5%) | 85.1 |
+  | attention @2k | 57.0 us | 42.8 us | 40.6 us |
+  | KV read @8191 | 745 GB/s | 875 GB/s | 1211 GB/s |
+
+  Revisiting costs one constant; the full curve is in the constant's comment and
+  above. Nothing else has to change - the layout knob and the bit-exact parity gate
+  make the addressing independent of the split count.
+
+  A related note for whoever reopens this: the softmax-tail work that would have come
+  next (register-resident `sc[]`, since each thread holds only 1-2 elements) is
+  ALSO numerics-visible - the sum order is the bits - so under this decision it is
+  out too. At pos 2047 the split is score phase 20.2 us / combine 1.8 us / rest 18.4
+  us, and the "rest" was never attributed between the V phase and the reductions.
 
   **So yes, cooperative tiling of K/V into shared memory is worth attempting - it
   targets the measured deficit rather than a guess. Two honest caveats: the ceiling
