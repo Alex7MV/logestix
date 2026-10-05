@@ -373,15 +373,43 @@ records the structural reason to expect the same win there: its own comment says
 single 128-deep FMA chain was the QK critical path, and its KV read is 26.5% of the
 decode wall at ctx 2048.
 
-CAUTION for the port: qwen and gemma accumulate with a plain `+=`, not `__fmaf_rn`,
-and the repo builds bit-exact TUs with `-fmad=false`. A vectorised version must keep
-the plain `+=` per element and the ascending d order, or it silently changes the
-contraction behaviour and stops being bit-identical. That constraint is invisible
-in the Xing port, which used explicit `__fadd_rn`/`__fmul_rn` throughout.
+**BLOCKED: the port is NOT bit-identical, and the obvious reason was not the reason.**
+qwen and gemma accumulate with a plain `+=`, not `__fmaf_rn`, and the repo builds
+bit-exact TUs with `-fmad=false`. The first thing tried was a vectorised dot that kept
+the plain `+=` per element and the ascending d order - and it still broke parity:
+`test_qwen_moe_{fsi,code,det}_selfcheck` all fail on Qwen3.5-35B-A3B with the change
+and all pass without it (verified by stashing). So "just keep the `+=` and the order"
+is NOT sufficient, which corrects the caution recorded above - it was a hypothesis,
+not a known-safe recipe.
 
-Not done here: an unmeasured kernel change is not a result. This is the audit and the
-port plan; the port itself wants its own TDD cycle with the real-weight gates and an
-E2E re-measurement per family.
+Not root-caused. The candidates that remain, in the order I would check them:
+1. **Alignment.** The 8-byte path assumes each K row starts 8-byte aligned because a
+   row offset is a multiple of `head_dim` halves. That holds only if `head_dim % 8 == 0`
+   for the model actually loaded; if it does not, the guard falls back to scalar and
+   the change is a no-op - so the fact that parity broke says the vector path WAS
+   taken, which makes an unaligned `reinterpret_cast<const __half2*>` worth ruling out
+   first by asserting the pointer alignment at runtime.
+2. **Contraction under the vector form.** `-fmad=false` forbids fusing `a += b*c`, but
+   it does not by itself forbid the compiler from changing how the 8-byte load feeds
+   the dependency chain. The scalar chain is 1 FMA deep per element; the vector form
+   has four independent products per iteration, and whether that stays bit-identical
+   is an empirical question, not a spec question.
+3. **Which kernel is actually live for these prompts.** SelfCheck uses short prompts,
+   where `splits` collapses to one chunk - so the golden gates may be exercising the
+   NON-split kernel, not the split one. Both were changed in the same commit, which
+   would confound the result.
+
+Until this is understood, **all six ports are blocked**, not just qwen's: the same
+`+=`-with-`-fmad=false` shape is what distinguishes these families from Xíng, and Xíng
+was safe only because it already used explicit `__fadd_rn`/`__fmul_rn` everywhere.
+
+The cheapest next step is not a fix but a narrowing experiment: port ONLY the split
+kernel (the long-context path the change is actually for), leave the non-split kernel
+scalar, and re-run the three gates. If they pass, the cause was item 3 and the port is
+viable for the path that matters; if they still fail, it is alignment or contraction.
+
+Not done here: an unmeasured kernel change is not a result, and neither is an
+unmeasured failure. This entry is the failure and the narrowing plan.
 
 ## E. Design decisions deferred (from the 2026-10-02 lifecycle review)
 
