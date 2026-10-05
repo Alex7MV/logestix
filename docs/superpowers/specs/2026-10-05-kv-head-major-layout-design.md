@@ -254,6 +254,47 @@ The honest TDD driver for the layout itself: the feature *is* the speed.
 5. L2 + L3 green.
 6. Full regression: fast 87/87 in **both** builds, Xing real-weight gates, E2E,
    baseline update.
+7. **Last commit on this branch** — protocol and guard (see below), so the skill
+   never references a header that does not exist yet.
+
+## Making the default stick
+
+The layout is decided once per family, when its attention kernel is written; every
+sibling variant then inherits it through the shared loader/kernels. That makes the
+ingestion protocol the only place the default can be set. Retrofitting later means
+re-editing the write path, the read path, the host readback and the debug dumps -
+exactly the seven touch points above.
+
+So the last commit on this branch amends **step 5** ("Low-level CUDA kernels") of
+`.opencode/skills/ingesting-a-model/SKILL.md`, beside the existing *stride invariant*
+bullet. It stays step 5 of 8: the protocol is cited in code as "Model Ingestion
+Protocol step N", so the step count is not negotiable, and this is a structural
+choice baked into kernel addressing rather than a tuning knob - not a phase-4 item.
+No bandwidth measurement is asked for at ingestion; that belongs to
+`perf-tuning-a-model`.
+
+The rule to record:
+
+> **KV layout:** default `kHeadMajor` via `KvCacheGeometry` from `lsx_kv_cache.h`.
+> Do not hand-roll index arithmetic. If your model's attention blocking is not
+> per-head (as in glm, one thread per head), do not copy head-major silently:
+> choose explicitly and record the reason in the passport.
+
+The last clause is the point of the edit: it turns a default into a reviewable
+decision and blocks cargo-culting head-major into a warp-of-heads structure, where it
+would be wrong.
+
+**Guard test.** `test_model_independence_guard.cpp` gains a static scan asserting that
+family attention kernels index their KV cache through `KvCacheGeometry` rather than
+hand-rolled `(t * heads + h) * dim`. Two deliberate exemptions, and the exemption list
+becomes the machine-readable record of who is exempt and why:
+
+- **nemotron** - already head-major by construction.
+- **glm** - one thread per head; a different coalescing trade-off, analysed separately.
+
+The families that adopt head-major in later commits drop off the exemption list; the
+families still on pos-major (if any remain) are the list's residue, which is the
+honest state of the migration at any point in time.
 
 ## Risks
 
