@@ -482,6 +482,48 @@ __global__ void xing_router_topk_kernel(
 // every position, so it must exclude itself where the split path owns the answer.
 // The condition is exactly the one the host used to pick the path with
 // (`used <= 1`), and it is uniform across the block.
+// Score dot product q . k_row, accumulating in ASCENDING i order so the result is
+// bit-identical to the scalar loop below it.
+//
+// The float4 form exists because the scalar loop was LATENCY bound, not sector
+// bound: it issued one 4-byte load per iteration over 192 iterations with a serial
+// FP accumulation, so a thread had one row in flight. Measured on this card, the
+// attention KV read sustains 744-817 GB/s where a plain float4 grid-stride read of
+// the same 335 MB reaches 1687 GB/s (mem.stream_read_ceiling_gbps) - a 2x gap that
+// vectorising the load addresses directly. Both forms walk i ascending and use the
+// same __fadd_rn/__fmul_rn, so they agree to the bit.
+//
+// Falls back to scalar when qk is not a multiple of 4. Row starts are always 16-B
+// aligned: a row offset is a multiple of head_dim in BOTH layouts, and cudaMalloc
+// returns 256-B aligned storage.
+__device__ __forceinline__ float XingDotRow(const float *__restrict__ qt,
+                                             const float *__restrict__ kt, int qk,
+                                             bool vec4)
+{
+    float acc = 0.0f;
+    if (vec4)
+    {
+        const float4 *q4 = reinterpret_cast<const float4 *>(qt);
+        const float4 *k4 = reinterpret_cast<const float4 *>(kt);
+        const int qk4 = qk >> 2;
+        for (int j = 0; j < qk4; ++j)
+        {
+            const float4 a = q4[j];
+            const float4 b = k4[j];
+            acc = __fadd_rn(acc, __fmul_rn(a.x, b.x));
+            acc = __fadd_rn(acc, __fmul_rn(a.y, b.y));
+            acc = __fadd_rn(acc, __fmul_rn(a.z, b.z));
+            acc = __fadd_rn(acc, __fmul_rn(a.w, b.w));
+        }
+    }
+    else
+    {
+        for (int i = 0; i < qk; ++i)
+            acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
+    }
+    return acc;
+}
+
 __global__ void xing_attn_kernel(const float *__restrict__ q,
                                  const float *__restrict__ kc,
                                  const float *__restrict__ vc,
@@ -528,13 +570,11 @@ __global__ void xing_attn_kernel(const float *__restrict__ q,
             sc[t] = __fmul_rn(a0, scale);
             sc[t + nthreads] = __fmul_rn(a1, scale);
         }
+        const bool vec4 = (qk & 3) == 0;
         for (; t < n_pos; t += nthreads)
         {
             const float *kt = kc + kgeom.Offset(0, h, t);
-            float acc = 0.0f;
-            for (int i = 0; i < qk; ++i)
-                acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
-            sc[t] = __fmul_rn(acc, scale);
+            sc[t] = __fmul_rn(XingDotRow(qt, kt, qk, vec4), scale);
         }
     }
 
@@ -642,13 +682,11 @@ __global__ void xing_attn_split_kernel(const float *__restrict__ q,
     float *sc = sm;
     const float *qt = q + static_cast<size_t>(h) * qk;
 
+    const bool vec4 = (qk & 3) == 0;
     for (int t = tid; t < count; t += nthreads)
     {
         const float *kt = kc + kgeom.Offset(0, h, begin + t);
-        float acc = 0.0f;
-        for (int i = 0; i < qk; ++i)
-            acc = __fadd_rn(__fmul_rn(qt[i], kt[i]), acc);
-        sc[t] = __fmul_rn(acc, scale);
+        sc[t] = __fmul_rn(XingDotRow(qt, kt, qk, vec4), scale);
     }
     float m = -INFINITY;
     for (int t = tid; t < count; t += nthreads) m = fmaxf(m, sc[t]);

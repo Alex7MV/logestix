@@ -354,7 +354,26 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
   24 KB apart instead of one contiguous sweep. The V phase is already coalesced
   (`group = tid / vh`, so 128 consecutive threads read 128 consecutive floats).
 
-  **So yes, cooperative tiling of K/V into shared memory is worth attempting** - it
+  **The ceiling is reachable without tiling: vectorise the load.** Before writing a
+  tiling kernel, the cheaper hypothesis was that the score phase was LATENCY bound
+  rather than sector bound - it issued one 4-byte load per iteration over 192
+  iterations with a serial FP accumulation, so a thread held a single K row in
+  flight, while sectors were already 100% consumed. Loading K as float4 fixed it:
+
+  | | KV read @8191 | attention @2k | E2E 2048 | E2E 8191 |
+  |---|---|---|---|---|
+  | scalar loads | 745 GB/s | 57.0 us | 119.3 t/s | 68.7 t/s |
+  | float4 loads | **871 GB/s** | **42.9 us** | **127.0 t/s** | **77.3 t/s** |
+
+  +17% on the isolated read, +25% on attention latency, +6.5% end to end at the
+  canonical 2048 and +12.5% at 8191 - bit-identical, since both forms walk i
+  ascending through the same __fadd_rn/__fmul_rn and the four real-weight golden
+  gates (SelfCheck/FSI/CODE/DET) pass unchanged. Half the ceiling gap went without
+  writing a tiling kernel. `splits=16` was tried and is WORSE (852 vs 871 GB/s):
+  smaller chunks cost more in partials and combine than the wave balance buys.
+  The V phase is still scalar - next candidate, same argument, not yet tried.
+
+  **So yes, cooperative tiling of K/V into shared memory is worth attempting - it
   targets the measured deficit rather than a guess. Two honest caveats: the ceiling
   probe is read-only and compute-trivial, so 1687 is an upper bound attention can
   never reach and 1202 (the GEMV) is the more realistic target; and tiling adds
