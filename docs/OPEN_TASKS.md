@@ -397,8 +397,30 @@ gigachat gated-norm + router, and the NVFP4 GEMV bandwidth floor.
      Note this is NOT a bandwidth problem, so the streaming ceiling says nothing
      about it and it needs its own measurement, not a bandwidth budget.
 
-  Tiling, for the record, is a long-context play: it only matters once the context
-  exceeds L2 (>~4096 tokens here), where the K read is genuinely DRAM bound.
+  **Tiling is a dead end - its premise was already removed by the float4 change.**
+  Re-probed at the new operating point (splits=4, pos 2047), the split is now:
+
+  | | time | share |
+  |---|---|---|
+  | K read | 20.20 us (50 MB -> **2492 GB/s**) | 50% |
+  | everything else | 20.43 us | 50% |
+
+  2492 GB/s is ~1.5x the 1687 GB/s DRAM ceiling, so the read is served from L2 and is
+  no longer the thing worth fixing. At ctx 8191 the whole KV read runs at 1215 GB/s,
+  which is the same rate the dense decode GEMVs achieve on this card (1202) - i.e.
+  attention is now at parity with a kernel that also does arithmetic on what it
+  loads, and the remaining gap to the read-only ceiling is the arithmetic, not the
+  access pattern. Cooperative tiling targets access granularity, so it has no target
+  left. Recorded rather than attempted.
+
+  What IS left at the canonical context is the other 50%: the online-softmax tail,
+  and it GREW from 13.5 us to 20.4 us when splits went 8 -> 4, because each block now
+  covers 512 positions instead of 256 and the reductions scale with it. That is the
+  other side of the same trade-off, and it is why splits=4 is only +2% at 2048 while
+  being +10% at 8191. Cutting the tail means restructuring the softmax - the max pass
+  re-reads `sc[]` from shared that the exp pass reads again, and a register-resident
+  variant is possible since each thread holds only 2 elements - but the sum order IS
+  the bits, so it is a numerics-visible change like kAttnSplits, not a free one.
 
 - **The 36% tail was wave quantisation, not the exp (2026-10-05).** Probing the live
   split-K kernel at pos 2047 by removing one read at a time (wrong results on
