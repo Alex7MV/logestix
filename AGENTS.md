@@ -240,7 +240,7 @@ procedure — `perf-tuning-a-model`.
   zero-width-space variants in `tokenizer_config.json` are not vocabulary pieces);
   format tag `logestix-xing-nvfp4`; converted with `lsxforge --xing`; real-weight
   SelfCheck + FSI + CODE + DET all pass. Decode is still correctness-first:
-  118.0 t/s (perf) / 20.1 t/s (r3) at 2048 tokens against a 694 t/s memory
+  119.1 t/s (perf) / 20.1 t/s (r3) at 2048 tokens against a 694 t/s memory
   roofline (`tests/perf/perf_baselines.json`); the mHC and router kernels are
   were single-block by design (all three since parallelised: mHC, router,
   attention, split-K attention, warp-Sinkhorn mHC, split collapse, split router,
