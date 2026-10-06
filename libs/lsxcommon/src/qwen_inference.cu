@@ -317,8 +317,9 @@ cudaError_t RunQwenFullAttnKernel(
 //
 // The load: TWO 4-byte __half2 loads per iteration replace four 2-byte loads - the
 // scalar loop held a single K row in flight per thread, which is what Xing's float4
-// change fixed for +6.5% end to end. qrow is deliberately left scalar (it is shared
-// across the block, so it is already hot in L1). Scalar fallback for hd % 8 != 0.
+// change fixed for +6.5% end to end. Scalar fallback for hd % 8 != 0. The guard
+// is % 8, not % 4, because the loop consumes k2[j] AND k2[j+1] with j stepping by 2:
+// an odd hd/4 would read one element past the row.
 //
 // SPLIT KERNEL ONLY, deliberately. Vectorising the non-split kernel as well BREAKS
 // parity (test_qwen_moe_{fsi,code,det}_selfcheck all fail on Qwen3.5-35B-A3B), even
@@ -334,16 +335,22 @@ __device__ __forceinline__ float QwenHalfDotRow(const __half *__restrict__ qrow,
     float dot = 0.0f;
     if ((hd & 7) == 0)
     {
+        // q is vectorised too, matching gemma. It is shared by every thread in the
+        // block so it is already hot in L1, which is why this is worth little - but
+        // four 2-byte loads per iteration become two, and the two helpers no longer
+        // disagree about what "vectorised" means.
         const __half2 *k2 = reinterpret_cast<const __half2 *>(krow);
+        const __half2 *q2 = reinterpret_cast<const __half2 *>(qrow);
         for (int j = 0; j < (hd >> 2); j += 2)
         {
             const float2 f0 = __half22float2(k2[j]);
             const float2 f1 = __half22float2(k2[j + 1]);
-            const int b = 4 * j;
-            dot += __half2float(qrow[b + 0]) * f0.x;
-            dot += __half2float(qrow[b + 1]) * f0.y;
-            dot += __half2float(qrow[b + 2]) * f1.x;
-            dot += __half2float(qrow[b + 3]) * f1.y;
+            const float2 g0 = __half22float2(q2[j]);
+            const float2 g1 = __half22float2(q2[j + 1]);
+            dot += g0.x * f0.x;
+            dot += g0.y * f0.y;
+            dot += g1.x * f1.x;
+            dot += g1.y * f1.y;
         }
         return dot;
     }

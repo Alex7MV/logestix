@@ -206,6 +206,16 @@ target_link_libraries(lsxcommon_glm_cu
 # qwen dense on). Shared kernels in lsx_kernels_*.cuh use explicit *_rn
 # intrinsics and are therefore flag-independent; DO NOT rely on contraction
 # in any new kernel.
+#
+# Concretely, for any kernel on an -fmad=TRUE object library: bit-identity of a
+# vectorised rewrite is EMPIRICAL, not structural. Rewriting `dot += a[i]*b[i]` as a
+# float4/__half2 loop that keeps the ascending order still relies on the compiler
+# contracting both forms the same way - nothing forbids otherwise. Either use explicit
+# __fadd_rn/__fmul_rn (flag-independent, like lsx_kernels_*.cuh and Xing's float4 dot),
+# or treat the real-weight golden gates as the arbiter and say so in the commit. Do NOT
+# write "this TU is -fmad=false" unless you have checked THIS target's options: the
+# comment here used to be the only place that said which way each library goes, and
+# two helpers claimed a flag their object libraries do not set.
 add_library(lsxcommon_qwen_cu OBJECT
     src/qwen_inference.cu
 )
