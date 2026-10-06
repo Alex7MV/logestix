@@ -434,12 +434,29 @@ remaining families do NOT have the pattern this port targets, and my audit infer
 So the real list was 3 families, not 6: qwen, gemma, gigachat. deepseek needs nothing
 of this kind, and mimo needs a different change entirely.
 
-**gigachat is implemented but NOT landed**: GigaChat3.5-432B-A28B is not on this host,
-so its golden gates SKIP and there is nothing to arbitrate bit-identity with. An
-unverifiable numerics change is not a result, so it is parked rather than committed.
-The port is three sites in `gigachat_moe_inference_attn.cu` (`attn_scores_kernel`, a
-float4 `GigachatDotRow` preserving plain `+=` and ascending `i`, with a scalar fallback
-for `qk % 4 != 0`) and it is ready to apply and verify wherever the model lives.
+**gigachat: bit-identical, and worth NOTHING.** The model WAS on this host — an earlier
+note said otherwise because the vault glob was case-sensitive and `*igachat*` does not
+match `GigaChat`. With the model found: SelfCheck Paris x3 passes and, since
+FSI/CODE/DET goldens were never captured for gigachat (they SKIP by design, unrelated to
+any change), bit-identity was proven by the SelfCheck `logits_hash` — **identical,
+`9b46473108d82b99`, base and ported**. So the port is correct.
+
+And it buys nothing:
+
+  GigaChat3.5-432B-A28B, AOCC perf tree, max-gen 2048
+    base 11.0  ->  ported 11.0 t/s
+
+Zero. The port is kept because it is bit-identical, strictly fewer load instructions
+and zero-risk, but it is **NOT counted as a win** and must not be cited as one. The
+reason is the same structural point as deepseek and mimo, one step further: gigachat's
+attention reads an MLA latent (kv_lora + rope), so the score dot is short, and at
+11 t/s the step is ~91 ms dominated by routed-expert GEMVs. The score phase is simply
+not where gigachat's time goes. This is the third family in a row where "the pattern
+looks right" did not predict the payoff — what predicted it was the fraction of decode
+wall the score phase actually occupies.
+
+Final port ledger: **qwen +4.8%, gemma +3.0%, gigachat 0%**. deepseek and mimo do not
+have the pattern; phi and granite already had it.
 
 The audit lesson: `grep -c half2` is not a classification. Two of the three families it
 flagged have a different blocking structure, and reading the loop shape - not the

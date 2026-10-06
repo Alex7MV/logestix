@@ -106,6 +106,42 @@ __global__ void write_cache_kernel(const float *__restrict__ kvb,
         vb[i] = kvb[h * kvw + nope + i];
 }
 
+// q . k_row over `qk` floats, ASCENDING i with a PLAIN `+=`.
+//
+// Ascending i with a plain `+=` keeps the per-element order identical to the scalar
+// form; that part is guaranteed.
+//
+// Bit-identity itself is EMPIRICAL, not flag-guaranteed - see the FMA policy note in
+// libs/lsxcommon/CMakeLists.txt. attn_scores_kernel is thread-per-position, so a thread
+// walked a whole qk-wide row with one row in flight: the latency-bound shape that
+// Xing's float4 dot fixed (+6.5%), qwen took (+4.8%) and gemma took (+3.0%). float4 per
+// iteration replaces four 4-byte loads with one 16-byte load.
+//
+// Needs qk % 4 == 0, which also makes the row 16-B aligned (a row offset is a multiple
+// of qk floats). Scalar otherwise.
+__device__ __forceinline__ float GigachatDotRow(const float *__restrict__ qt,
+                                                 const float *__restrict__ kt, int qk)
+{
+    float acc = 0.0f;
+    if ((qk & 3) == 0)
+    {
+        const float4 *q4 = reinterpret_cast<const float4 *>(qt);
+        const float4 *k4 = reinterpret_cast<const float4 *>(kt);
+        for (int j = 0; j < (qk >> 2); ++j)
+        {
+            const float4 b = k4[j];
+            const float4 a = q4[j];
+            acc += a.x * b.x;
+            acc += a.y * b.y;
+            acc += a.z * b.z;
+            acc += a.w * b.w;
+        }
+        return acc;
+    }
+    acc = GigachatDotRow(qt, kt, qk);
+    return acc;
+}
+
 __global__ void attn_scores_kernel(const float *__restrict__ q,
                                    const float *__restrict__ kc, int pos,
                                    int heads, int qk, float scale,
