@@ -794,7 +794,17 @@ Remaining, in order:
 requantizes through `quantize_tensor_gpu`; that costs ~11 % vs the source and is
 the accepted price of the pow2-only block scale.
 
-## N. Granite-4.2-30B tool round-trip regressed by the full-E4M3 encoder — **accepted 2026-10-06**
+## N. Granite-4.2-30B tool round-trip regressed by the full-E4M3 encoder — **resolved 2026-10-07**
+
+> **Resolution (2026-10-07).** Re-converting granite-4.2-30b after the E4M3FN
+> subnormal alignment (section L, 2026-10-07) restores the tool round-trip:
+> `test_granite_dense_selfcheck`'s real-weight tool case emits
+> `get_weather({"city":"Paris"})` and Paris SelfCheck / FSI / CODE / DET all
+> pass (8/8 granite targets green). The subnormal encoder changed the offline
+> block scales on tiny blocks (subnormal instead of clamped to the min normal),
+> which moved enough weight mass to flip this chaotic greedy decision back.
+> The historical analysis below is kept for the record; the section is no
+> longer an accepted RED.
 
 Re-converting granite-4.2-30b with the full unsigned-E4M3 block-scale encoder
 (section L) makes `test_granite_dense_selfcheck`'s end-to-end tool round-trip
