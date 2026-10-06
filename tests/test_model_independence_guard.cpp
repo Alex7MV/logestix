@@ -82,6 +82,8 @@ const std::vector<PassportRow> kPassports = {
      "lsxcommon::qwen_moe_36::frozen"},
     {"nemotron-3.5-lightning-30b-a3b", "nemotron_moe_constants.h",
      "lsxcommon::nemotron_moe::frozen"},
+    {"nemotron-3.5-lightning-30b-a3b-nvfp4", "nemotron_moe_nvfp4_constants.h",
+     "lsxcommon::nemotron_nvfp4::frozen"},
     {"gigachat3.5-432b-a28b-reasoning", "gigachat_moe_constants.h",
      "lsxcommon::gigachat::frozen"},
     {"ornith-1.5-35b-a3b", "ornith_moe_constants.h",
@@ -176,6 +178,7 @@ TEST_CASE("each passport defines its geometry in its own namespace or class",
         {"qwen_moe_exp_constants.h", "namespace frozen {"},
         {"qwen_moe_36_constants.h", "namespace frozen {"},
         {"nemotron_moe_constants.h", "namespace frozen {"},
+        {"nemotron_moe_nvfp4_constants.h", "namespace frozen {"},
         {"gigachat_moe_constants.h", "namespace frozen {"},
         {"ornith_moe_constants.h", "namespace frozen {"},
         {"qwen_dense_model.h", "static constexpr int kHiddenSize"},
@@ -291,6 +294,7 @@ TEST_CASE("every consumer model asserts its own fast-math policy per Infer",
         "deepseek_moe_model.cpp",   // deepseek-v4-flash (family-scoped toggle)
         "deepseek_moe_v41_model.cpp",  // deepseek-v4.1-flash
         "nemotron_moe_model.cpp",      // nemotron-3.5-lightning-30b-a3b
+        "nemotron_moe_nvfp4_model.cpp",  // nemotron-3.5-lightning-30b-a3b-nvfp4
         "gigachat_moe_model.cpp",      // gigachat3.5-432b-a28b-reasoning
         "ornith_moe_model.cpp",        // ornith-1.5-35b-a3b
         "granite_dense_model.cpp",     // granite-4.2-30b
@@ -383,6 +387,8 @@ TEST_CASE("every family model wires the shared lifecycle contract",
         {"granite-4.2-30b", {"granite_dense_model.cpp"}},
         {"phi-4", {"phi_dense_model.cpp"}},
         {"nemotron-3.5-lightning-30b-a3b", {"nemotron_moe_model.cpp"}},
+        {"nemotron-3.5-lightning-30b-a3b-nvfp4",
+         {"nemotron_moe_nvfp4_model.cpp", "nemotron_moe_model.cpp"}},
         {"gigachat3.5-432b-a28b-reasoning", {"gigachat_moe_model.cpp"}},
         {"mimo-v2.6-flash-rl", {"mimo_moe_model.cpp"}},
         {"alice-foundation-80b-a3b", {"alice_moe_model.cpp",

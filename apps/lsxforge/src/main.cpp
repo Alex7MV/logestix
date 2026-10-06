@@ -15,6 +15,7 @@
 #include "lsxcommon/xing_moe_convert.h"
 #include "lsxcommon/mimo_moe_convert.h"
 #include "lsxcommon/nemotron_moe_convert.h"
+#include "lsxcommon/nemotron_moe_nvfp4_convert.h"
 #include "lsxcommon/qwen_moe_convert.h"
 #include "lsxcommon/qwen_moe_36_convert.h"
 #include "lsxcommon/ornith_moe_convert.h"
@@ -58,6 +59,9 @@ ABSL_FLAG(bool, qwen38flashnext, false,
 ABSL_FLAG(bool, gemma4, false, "Gemma-4-26B-A4B conversion pipeline");
 ABSL_FLAG(bool, nemotron, false,
           "Nemotron-3.5-Lightning-30B-A3B (NemotronH hybrid) conversion pipeline");
+ABSL_FLAG(bool, nemotron_nvfp4, false,
+          "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 (pre-quantized "
+          "ModelOpt W4A16_NVFP4 source) conversion pipeline");
 ABSL_FLAG(bool, gigachat, false,
           "GigaChat3.5-432B-A28B-Reasoning (hybrid MLA+GDN+MoE) conversion pipeline");
 ABSL_FLAG(bool, glmflash, false,
@@ -122,6 +126,7 @@ int main(int argc, char* argv[]) {
     bool qwen38flashnext = absl::GetFlag(FLAGS_qwen38flashnext);
     bool gemma4 = absl::GetFlag(FLAGS_gemma4);
     bool nemotron = absl::GetFlag(FLAGS_nemotron);
+    bool nemotron_nvfp4 = absl::GetFlag(FLAGS_nemotron_nvfp4);
     bool gigachat = absl::GetFlag(FLAGS_gigachat);
     bool glmflash = absl::GetFlag(FLAGS_glmflash);
     bool granite = absl::GetFlag(FLAGS_granite);
@@ -153,6 +158,7 @@ int main(int argc, char* argv[]) {
     flags.qwen38flashnext = qwen38flashnext;
     flags.gemma4 = gemma4;
     flags.nemotron = nemotron;
+    flags.nemotron_nvfp4 = nemotron_nvfp4;
     flags.gigachat = gigachat;
     flags.glmflash = glmflash;
     flags.granite = granite;
@@ -404,6 +410,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         lsxcommon::log::info("Nemotron conversion complete");
+        lsxcommon::Core::Shutdown();
+        return 0;
+    }
+
+    case lsxforge::Pipeline::kNemotronNvfp4: {
+        lsxcommon::log::info(
+            "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 pipeline "
+            "(pre-quantized ModelOpt source -> unified logestix layout)");
+        auto st = lsxcommon::nemotron_nvfp4::ConvertNemotronNvfp4Model(
+            input_path, output_path);
+        if (!st.ok()) {
+            lsxcommon::log::error(absl::StrFormat(
+                "Nemotron-NVFP4 conversion failed: %s", st.ToString()));
+            lsxcommon::Core::Shutdown();
+            return 1;
+        }
+        lsxcommon::log::info("Nemotron-NVFP4 conversion complete");
         lsxcommon::Core::Shutdown();
         return 0;
     }

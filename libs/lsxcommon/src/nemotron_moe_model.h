@@ -1,15 +1,19 @@
 #pragma once
 
-// Nemotron-3.5-Lightning-30B-A3B model (kType "nemotron-3.5-lightning-30b-a3b").
-// Hybrid Mamba-2 + MoE + full-attention, standalone ModelBase subclass
-// (GlmV5Model / QwenMoeModelBase pattern). The frozen geometry passport is
-// compile-time locked (src/nemotron_moe_constants.h); Load cross-checks the
-// converted index against it and fails on mismatch.
+// Nemotron-3.5-Lightning-30B-A3B family: the BF16-distribution model
+// (kType "nemotron-3.5-lightning-30b-a3b") and the pre-quantized NVFP4
+// sibling (kType "nemotron-3.5-lightning-30b-a3b-nvfp4"), which reuse this
+// shared lifecycle + generation contour. Hybrid Mamba-2 + MoE + full-attention,
+// standalone ModelBase subclass (GlmV5Model / QwenMoeModelBase pattern). The
+// frozen geometry passport is compile-time locked per model (each leaf owns its
+// own constants header); the leaf's LoadAndValidateIndex cross-checks the
+// converted index against its OWN passport and fails on mismatch.
 //
-// Milestone: loader/model contour. Device kernels (Mamba-2 / attention / MoE)
-// and the layer pipeline land in the same protocol sequence; Infer opens its
-// own LsxFastMathScope (model-independence invariant) and is wired to the
-// pipeline driver once it exists.
+// The two distributions emit the SAME `logestix-nemotron-nvfp4` converted
+// layout, so the loader, expert cache, kernels, pipeline and tool codec are
+// shared verbatim; only the source-layout converter and the frozen passport
+// differ. `NemotronModelBase` owns everything shared; each leaf supplies its
+// kType, its index loader/validator and its per-call FastMathScope.
 
 #include <string>
 #include <vector>
@@ -23,23 +27,12 @@
 
 namespace lsxcommon {
 
-class NemotronHModel final : public ModelBase {
+// Shared Nemotron lifecycle + generation plumbing. Leaf models provide kType,
+// their own frozen-geometry gate (LoadAndValidateIndex) and an Infer that opens
+// LsxFastMathScope with the instance's own config before RunInferShared (model
+// independence invariant).
+class NemotronModelBase : public ModelBase {
 public:
-    static const std::string kType;  // "nemotron-3.5-lightning-30b-a3b"
-
-    explicit NemotronHModel(ModelInitConfig cfg);
-    ~NemotronHModel() override;
-
-    bool Load() override;
-    gpu::InferenceResult Infer(const ModelRequest &req) override;
-    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
-
-    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
-                             std::string_view raw_prompt,
-                             std::vector<int32_t> &out_ids) const override;
-
-    const std::string &Type() const override { return kType; }
-
     // Head-major by construction: its attention indexes
     // (hk * cache_stride + t) * head_dim, so cfg.kv_cache_layout has nothing to
     // switch here. Reported rather than assumed, so a test asking "what layout is
@@ -50,6 +43,13 @@ public:
     {
         return KvCacheLayout::kHeadMajor;
     }
+
+    bool Load() override;
+    gpu::InferenceResult SelfCheck(const ModelRequest &req) override;
+
+    bool BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                             std::string_view raw_prompt,
+                             std::vector<int32_t> &out_ids) const override;
 
     // Tool/function-calling bridge (step 4b): Nemotron-3.5 uses the Qwen-style
     // ChatML XML call syntax (`<tool_call><function=…>`), but its own tool
@@ -73,14 +73,41 @@ public:
         return expert_cache_;
     }
 
-private:
+protected:
+    explicit NemotronModelBase(ModelInitConfig cfg);
+
     void TeardownWeights() override;
-    bool ValidateGeometry(const nemotron_moe::NemotronIndex &idx) const;
+
+    // Loads <model_path>/logestix/model.index.json into `idx_` and validates it
+    // against the leaf's OWN frozen passport. Returns false and fills `error` on
+    // failure (the base logs it and tears the load down).
+    virtual bool LoadAndValidateIndex(std::string &error) = 0;
+
+    // Shared Infer body. The caller MUST have opened its own
+    // LsxFastMathScope(EffectiveFastMathMode(cfg_)) first (per-model policy).
+    gpu::InferenceResult RunInferShared(const ModelRequest &req);
 
     nemotron_moe::NemotronIndex idx_;
     nemotron_moe::NmWeights weights_;
     nemotron_moe::NmSession session_;
     nemotron_moe::NmExpertCache expert_cache_;
+};
+
+// BF16-distribution Nemotron-3.5-Lightning-30B-A3B (kType
+// "nemotron-3.5-lightning-30b-a3b").
+class NemotronHModel final : public NemotronModelBase {
+public:
+    static const std::string kType;  // "nemotron-3.5-lightning-30b-a3b"
+
+    explicit NemotronHModel(ModelInitConfig cfg);
+    ~NemotronHModel() override;
+
+    gpu::InferenceResult Infer(const ModelRequest &req) override;
+
+    const std::string &Type() const override { return kType; }
+
+protected:
+    bool LoadAndValidateIndex(std::string &error) override;
 };
 
 } // namespace lsxcommon

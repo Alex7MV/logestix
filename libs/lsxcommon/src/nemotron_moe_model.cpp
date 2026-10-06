@@ -20,37 +20,42 @@ namespace lsxcommon {
 
 const std::string NemotronHModel::kType = nemotron_moe::frozen::kType;
 
-NemotronHModel::NemotronHModel(ModelInitConfig cfg) : ModelBase(std::move(cfg))
+NemotronModelBase::NemotronModelBase(ModelInitConfig cfg)
+    : ModelBase(std::move(cfg))
 {
     // Synthetic fixtures may omit the tokenizer arrows.
     tokenizer_optional_ = true;
 }
 
+NemotronHModel::NemotronHModel(ModelInitConfig cfg)
+    : NemotronModelBase(std::move(cfg))
+{
+}
+
 NemotronHModel::~NemotronHModel() { Unload(); }
 
-bool NemotronHModel::ValidateGeometry(
-    const nemotron_moe::NemotronIndex &idx) const
+bool NemotronHModel::LoadAndValidateIndex(std::string &error)
 {
-    std::string why;
-    if (!nemotron_moe::ValidateNemotronGeometry(idx, why)) {
+    if (!nemotron_moe::LoadNemotronIndex(cfg_.model_path, idx_, error))
+        return false;
+    if (!nemotron_moe::ValidateNemotronGeometry(idx_, error)) {
         log::error(absl::StrFormat(
-            "[nemotron] frozen geometry mismatch: %s", why));
+            "[nemotron] frozen geometry mismatch: %s", error));
         return false;
     }
     return true;
 }
 
-bool NemotronHModel::Load()
+bool NemotronModelBase::Load()
 {
     if (loaded_) return true;
     if (!BeginLoad(cfg_.model_path)) return AbortLoad();
 
     std::string err;
-    if (!nemotron_moe::LoadNemotronIndex(cfg_.model_path, idx_, err)) {
+    if (!LoadAndValidateIndex(err)) {
         log::error(absl::StrFormat("[nemotron] index error: %s", err));
         return AbortLoad();
     }
-    if (!ValidateGeometry(idx_)) return AbortLoad();
     vram_ = idx_.vram;
 
     if (!EnsureContext()) return AbortLoad();
@@ -134,7 +139,7 @@ bool NemotronHModel::Load()
     return true;
 }
 
-void NemotronHModel::TeardownWeights()
+void NemotronModelBase::TeardownWeights()
 {
     nemotron_moe::FreeNmExpertCache(expert_cache_);
     session_.Free();
@@ -179,7 +184,14 @@ struct ScopedCudaEvents {
 
 gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
 {
+    // Model independence: this model's own kernel-routing policy for the
+    // duration of the call (see LsxFastMathScope in lsx_inference_nvfp4.h).
     lsx_nvfp4::LsxFastMathScope scope(EffectiveFastMathMode(cfg_));
+    return RunInferShared(req);
+}
+
+gpu::InferenceResult NemotronModelBase::RunInferShared(const ModelRequest &req)
+{
     return RunUnderResidencyLock([&] {
         gpu::InferenceResult r;
         if (!ValidateInferRequest(req, r)) return r;
@@ -273,7 +285,7 @@ gpu::InferenceResult NemotronHModel::Infer(const ModelRequest &req)
     });
 }
 
-gpu::InferenceResult NemotronHModel::SelfCheck(const ModelRequest &req)
+gpu::InferenceResult NemotronModelBase::SelfCheck(const ModelRequest &req)
 {
     // Unified Paris harness: the strict 1->2-token "Paris" contract plus the
     // cross-model `logits_hash` evidence and the LSX_SELFCHECK_EXPECT_HASH gate
@@ -283,9 +295,9 @@ gpu::InferenceResult NemotronHModel::SelfCheck(const ModelRequest &req)
     return runtime::RunParisSelfCheck(*this, req);
 }
 
-bool NemotronHModel::BuildPromptInputIds(const ArrowTokenizerDb &tok,
-                                         std::string_view raw_prompt,
-                                         std::vector<int32_t> &out_ids) const
+bool NemotronModelBase::BuildPromptInputIds(const ArrowTokenizerDb &tok,
+                                            std::string_view raw_prompt,
+                                            std::vector<int32_t> &out_ids) const
 {
     // Single-turn native frame, same shape as RenderNemotronConversation
     // emits for a one-message conversation (verified against the checkpoint's
@@ -421,8 +433,8 @@ std::string RenderToolDeclaration(const ToolSpec &t)
 
 } // namespace
 
-bool NemotronHModel::RenderNemotronConversation(const ChatConversation &conv,
-                                                std::string &out)
+bool NemotronModelBase::RenderNemotronConversation(const ChatConversation &conv,
+                                                   std::string &out)
 {
     out.clear();
     static const std::vector<std::string_view> kMarkers = {
@@ -512,7 +524,7 @@ bool NemotronHModel::RenderNemotronConversation(const ChatConversation &conv,
     return true;
 }
 
-bool NemotronHModel::BuildConversationInputIds(
+bool NemotronModelBase::BuildConversationInputIds(
     const ArrowTokenizerDb &tok, const ChatConversation &conv,
     std::vector<int32_t> &out_ids) const
 {
@@ -525,7 +537,7 @@ bool NemotronHModel::BuildConversationInputIds(
     return true;
 }
 
-bool NemotronHModel::ParseToolCalls(
+bool NemotronModelBase::ParseToolCalls(
     const ArrowTokenizerDb &tok, const std::vector<int32_t> &gen_tokens,
     std::vector<ToolCall> &out_calls) const
 {

@@ -3,18 +3,19 @@
 // src/nemotron_moe_nvfp4_dequant.h for the contract and the measured
 // justification.
 //
-// The one thing this file must never do is reuse the repo's runtime NVFP4
-// decoder (`nvfp4_codec.h::E4M3ScaleToFloat`) on the SOURCE block scales: that
-// helper reads the e4 exponent field only, while ModelOpt's W4A16_NVFP4 writes
-// a COMPLETE OCP E4M3 with all three mantissa bits in play. On the real tensor
-// backbone.layers.1.mixer.experts.0.down_proj that mistake costs ~30% relative
-// L2 on the expert weights, so the kernels below do the full E4M3 decode via
-// cuda_fp8 and only the CONVERTER's output (which goes through
-// quantize_tensor_gpu) is in the repo's pow2 flavor.
+// The source block scales are COMPLETE E4M3FN — all three mantissa bits, and
+// subnormal (e4 field 0) bytes on ~0.16% of the source blocks. The repo's
+// canonical codec (`nvfp4_codec.h::E4M3ScaleToFloat`, delegating to
+// `nvfp4_scale.h::E4m3ToFloat`) now decodes exactly that value table, so these
+// kernels use it directly instead of a private decode. The converter output
+// still goes through quantize_tensor_gpu, so the stored tree carries the
+// repo's own (E4M3FN) scales.
 #include "nemotron_moe_nvfp4_dequant.h"
 
+#include "nvfp4_codec.h"
+#include "lsx_kernels_quant.cuh"  // kernels::F8E4m3ToFloat (signed FP8 decode)
+
 #include <cuda_bf16.h>
-#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 
 #include <cstring>
@@ -24,26 +25,11 @@ namespace lsxcommon {
 namespace nemotron_nvfp4 {
 namespace {
 
-// E2M1 nibble decode. Bit-identical to nvfp4_codec.h::E2M1Value (the same
-// {0, .5, 1, 1.5, 2, 3, 4, 6} level table, sign in bit 3), re-expressed here so
-// this translation unit does not depend on the runtime decoder's E4M3 flavor.
-__host__ __device__ __forceinline__ float E2m1(int nib)
-{
-    constexpr float kLv[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
-    const float v = kLv[nib & 7];
-    return (nib & 8) ? -v : v;
-}
-
-// COMPLETE OCP E4M3FN decode (mantissa bits included), host side.
-float E4m3Full(uint8_t b)
-{
-    const float sign = (b >> 7) ? -1.0f : 1.0f;
-    const int e = (b >> 3) & 0xF;
-    const int m = b & 0x7;
-    if (e == 0) return sign * static_cast<float>(m) * 0.001953125f;  // m*2^-9
-    return sign * (1.0f + static_cast<float>(m) / 8.0f) *
-           static_cast<float>(1 << (e - 7));
-}
+// E2M1 nibble decode and the E4M3FN block-scale decode are the model-neutral
+// canonical codecs (single source in nvfp4_codec.h / nvfp4_scale.h); this TU
+// only composes them.
+using lsxcommon::gpu::nvfp4::E2M1Value;
+using lsxcommon::gpu::nvfp4::E4M3ScaleToFloat;
 
 __global__ void nvfp4_source_to_bf16_kernel(const uint8_t *__restrict__ packed,
                                             const uint8_t *__restrict__ bscale,
@@ -56,10 +42,8 @@ __global__ void nvfp4_source_to_bf16_kernel(const uint8_t *__restrict__ packed,
     // PTX cvt.rn.satfinite.e2m1x2.f32 order: even element -> LOW nibble.
     const uint8_t byte = packed[i >> 1];
     const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-    // Full E4M3, NOT the repo's pow2-only E4M3ScaleToFloat.
-    const float s = __half2float(__half(__nv_cvt_fp8_to_halfraw(
-        bscale[i >> 4], __NV_E4M3)));
-    out[i] = __float2bfloat16(E2m1(nib) * s * global);
+    const float s = E4M3ScaleToFloat(bscale[i >> 4]);
+    out[i] = __float2bfloat16(E2M1Value(nib) * s * global);
 }
 
 __global__ void fp8_source_to_bf16_kernel(const uint8_t *__restrict__ weight,
@@ -70,8 +54,7 @@ __global__ void fp8_source_to_bf16_kernel(const uint8_t *__restrict__ weight,
     const long long i = blockIdx.x * static_cast<long long>(blockDim.x) +
                         threadIdx.x;
     if (i >= numel) return;
-    const float v = __half2float(__half(__nv_cvt_fp8_to_halfraw(
-        weight[i], __NV_E4M3)));
+    const float v = lsxcommon::kernels::F8E4m3ToFloat(weight[i]);
     out[i] = __float2bfloat16(v * scale[0]);  // per-tensor FP8: ONE scalar
 }
 
@@ -129,7 +112,7 @@ void Nvfp4SourceToBf16Host(const Nvfp4SourceView &v,
     for (int64_t i = 0; i < numel; ++i) {
         const uint8_t byte = v.packed[i >> 1];
         const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
-        const float f = E2m1(nib) * E4m3Full(v.block_scale[i >> 4]) *
+        const float f = E2M1Value(nib) * E4M3ScaleToFloat(v.block_scale[i >> 4]) *
                         v.global_scale;
         dst[i] = __float2bfloat16(f);
     }
@@ -153,7 +136,8 @@ void Fp8SourceToBf16Host(const Fp8SourceView &v,
     out_bf16.resize(static_cast<size_t>(numel) * 2);
     auto *dst = reinterpret_cast<__nv_bfloat16 *>(out_bf16.data());
     for (int64_t i = 0; i < numel; ++i) {
-        const float f = E4m3Full(v.weight[i]) * v.weight_scale[0];
+        const float f =
+            lsxcommon::kernels::F8E4m3ToFloat(v.weight[i]) * v.weight_scale[0];
         dst[i] = __float2bfloat16(f);
     }
 }

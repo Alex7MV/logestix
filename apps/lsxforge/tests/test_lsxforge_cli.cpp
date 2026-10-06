@@ -66,6 +66,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         {"qwen38flashnext", Pipeline::kQwen38FlashNext},
         {"gemma4", Pipeline::kGemma4},
         {"nemotron", Pipeline::kNemotron},
+        {"nemotron_nvfp4", Pipeline::kNemotronNvfp4},
         {"gigachat", Pipeline::kGigachat},
         {"glmflash", Pipeline::kGlmFlash},
         {"granite", Pipeline::kGranite},
@@ -85,6 +86,7 @@ TEST_CASE("forge cli: every family flag maps to its own pipeline",
         else if (std::string(name) == "qwen38flashnext") f.qwen38flashnext = true;
         else if (std::string(name) == "gemma4") f.gemma4 = true;
         else if (std::string(name) == "nemotron") f.nemotron = true;
+        else if (std::string(name) == "nemotron_nvfp4") f.nemotron_nvfp4 = true;
         else if (std::string(name) == "gigachat") f.gigachat = true;
         else if (std::string(name) == "glmflash") f.glmflash = true;
         else if (std::string(name) == "granite") f.granite = true;

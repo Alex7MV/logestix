@@ -4,12 +4,11 @@
 // the mechanical guard against that ever happening.
 //
 // The load-bearing assertion of this suite is the codec one: the vault's NVFP4
-// block scales use the FULL E4M3 (mantissa bits set), while the repo's decoder
-// reads the e4 exponent field only. A converter that passed the scale bytes
-// through would decode a 0.73x-per-block scale error (~30% relative L2 on the
-// expert weights) and still "look" converted - so the test compares the
-// converter's dequantized-then-requantized output against a host reference that
-// uses the complete E4M3 decode.
+// block scales use the FULL E4M3FN value table (mantissa bits set, and
+// subnormal bytes on the tiny blocks). The repo's canonical decoder now
+// implements exactly that table, so the test compares the converter's
+// dequantized-then-requantized output against a host reference using the same
+// complete E4M3FN decode; the residual is the requantization noise.
 #include <catch2/catch_test_macros.hpp>
 
 #include "test_nemotron_moe_nvfp4_fixture.h"
@@ -39,9 +38,10 @@ std::string ReadFile(const fs::path &p)
     return ss.str();
 }
 
-// Complete OCP E4M3FN decode (mantissa bits INCLUDED) - the host mirror of the
-// converter's dequant kernel. Distinct from the repo's pow2-only
-// E4M3ScaleToFloat, which is exactly why this test needs its own copy.
+// Complete E4M3FN decode (mantissa bits AND subnormals) - the host mirror of
+// the converter's dequant kernel. It matches the repo's canonical
+// E4M3ScaleToFloat over the valid scale domain; kept local so the test does not
+// depend on the CUDA header.
 float E4m3FullToFloat(uint8_t b)
 {
     const float sign = (b >> 7) ? -1.0f : 1.0f;
@@ -272,9 +272,9 @@ TEST_CASE("nvfp4 converter dequantizes the source full-E4M3 block scales",
         const uint8_t byte = r.w3_packed[i / 2];
         const int nib = (i & 1) ? (byte >> 4) : (byte & 0xF);
         const uint8_t sb = r.w3_scales[i / 16];
-        const int e4 = (sb >> 3) & 0xF;
-        const float s = e4 == 0 ? 0.0f
-                                : std::pow(2.0f, static_cast<float>(e4 - 7));
+        // The runtime's E4M3ScaleToFloat now IS this complete E4M3FN decode
+        // (mantissa + subnormals), so the host reference is identical.
+        const float s = E4m3FullToFloat(sb);
         const float got = E2m1Value(nib) * s * r.w3_global_scale;
         const double d = static_cast<double>(got) - truth[i];
         num += d * d;

@@ -9,11 +9,13 @@
 //
 //   * `NemotronNvfp4ToBf16` — the vault's W4A16_NVFP4: U8 packed E2M1 nibbles
 //     + a FULL OCP E4M3 block scale per 16 + an F32 per-tensor weight_scale_2.
-//     The block scale carries MANTISSA bits; the repo's runtime decoder
-//     (`nvfp4_codec.h::E4M3ScaleToFloat`) reads the exponent field only. This
-//     kernel therefore uses the COMPLETE E4M3 decode, never that helper.
-//     Measured on the real tensor backbone.layers.1.mixer.experts.0.down_proj:
-//     a byte passthrough loses ~30% relative L2 on the expert weights.
+//     The block scale carries MANTISSA bits and, on ~0.16% of the source
+//     blocks, a SUBNORMAL exponent (e4 field 0). The repo's canonical codec
+//     (`nvfp4_scale.h::E4m3ToFloat` / `nvfp4_codec.h::E4M3ScaleToFloat`) now
+//     decodes the complete E4M3FN value table (normals + subnormals), so this
+//     kernel uses it directly — no private decode. (Before the 2026-10-06
+//     E4M3FN alignment a byte passthrough lost ~30% relative L2 on the expert
+//     weights because the runtime decoder dropped the scale mantissa.)
 //
 //   * `NemotronFp8ToBf16` — the vault's per-tensor FP8: F8_E4M3 weights + one
 //     SCALAR F32 weight_scale (shape []), plus an F32 input_scale for the

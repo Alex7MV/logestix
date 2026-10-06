@@ -597,6 +597,16 @@ parity stages and still have a hole in one of them.
 > Qwen3.5-9B (Paris selfcheck, CODE, DET pass). The remaining work is
 > operational: re-convert the vault families so the encoder change takes effect.
 > See `docs/superpowers/plans/2026-10-06-nvfp4-e4m3-rollout-report.md`.
+>
+> **Status update 2026-10-07: E4M3FN parity DONE (subnormals).** The decoder now
+> follows the complete E4M3FN table — `e4 == 0` is the **subnormal** range
+> `m*2^-9` (`0x00 -> 0`), bit-identical to `cuda_fp8`/`torch.float8_e4m3fn` over
+> `0x00..0x7F`; the encoder rounds RNE on the subnormal grid too, and the
+> Nemotron-NVFP4 dequant kernel now calls the canonical codec instead of a
+> private decode. Measured on the real vault: 2 995 063 of 1 886 631 936 source
+> scale bytes (~0.16 % of blocks) are positive subnormals (`0x01..0x07`), which
+> the earlier `e4 == 0 -> 0` reading silently zeroed. See
+> `NVIDIA_DOCS_NVFP4_MEMORY.md` §1.
 
 Surfaced by ingesting `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`, the first
 vault checkpoint whose weights are *already* NVFP4 (ModelOpt 0.44.0rc5,
@@ -645,9 +655,10 @@ only the encode side stops discarding information.
 - check the TC GEMM scale packing (`lsx_tc_gemm.cu`, the
   `repack_e8m0_ue4m3_kernel` path in `shared_experts.cu`) — the hardware already
   wants UE4M3, so this side should get *more* accurate, not less;
-- **pin the zero-scale semantics**: the zero test stays on the e4 FIELD
-  (`(byte >> 3) & 0xF == 0`), never the whole byte — see the regression note in
-  `NVIDIA_DOCS_NVFP4_MEMORY.md` §1;
+- **pin the zero-scale semantics**: the exact-zero test is `e4 == 0 AND
+  m == 0` — never the whole byte (the original bug) and never the bare exponent
+  field (which dropped the subnormals — see the 2026-10-07 note above). See the
+  regression note in `NVIDIA_DOCS_NVFP4_MEMORY.md` §1;
 - then re-measure: with a mantissa-aware decoder the converter can pass the source
   blocks straight through, and the ~11 % requantization loss for pre-quantized
   sources goes to zero.
@@ -664,6 +675,57 @@ already-ingested BF16 `nemotron-3.5-lightning-30b-a3b` (identical frozen geometr
 verified field-by-field; the only difference is that the source is *pre-quantized*).
 Design: `docs/superpowers/specs/2026-10-06-nemotron-3.5-lightning-nvfp4-ingestion-design.md`.
 The codec finding this surfaced is section **L** above.
+
+**Status update 2026-10-07: stages 3–8 landed and green; the real-weight
+SelfCheck is RED on a runtime bug in the shared Nemotron family (see below).**
+
+Landed since the note below: the `NemotronNvfp4Model` class on a refactored
+`NemotronModelBase` (shared lifecycle/generation contour), factory
+registration, the four guard registries, the `--nemotron_nvfp4` forge flag +
+CLI test, the `test_nemotron_moe_nvfp4_model` stage test, the
+selfcheck/fsi/code/det stage tests (SKIP 4; goldens declared debt) and
+`test_perf_baseline_nemotron_nvfp4`. `fast`/`convert` are green (the 3
+previously-red guard tests are now green). The 52-shard source was converted
+in place (`logestix/`, 18 GiB; 52 layers, 128 experts, 270 MTP tensors cut,
+12 FP8 KV scales dropped, 355 pinned tensors).
+
+**Real-weight validation is RED — but NOT the conversion.** The converted
+weights were verified numerically against the source, tensor class by tensor
+class (host reference, `torch.float8_e4m3fn` semantics):
+
+| class | check | result |
+|---|---|---|
+| routed expert up/down (NVFP4) | converted vs source dequant | rel L2 5.3% (NVFP4 grid) |
+| mamba in/out_proj (FP8→NVFP4) | converted vs source FP8 dequant | rel L2 9.4% |
+| attention q/k/v/o (BF16→NVFP4) | converted vs source BF16 | rel L2 9.4% |
+| lm_head (NVFP4→BF16) | converted vs source dequant | rel L2 0.19% (BF16) |
+| norms/conv/A_log/D/dt_bias/router/embeddings | raw byte compare | byte-identical |
+
+The block-scale codec is bit-identical to the source (see section L, and the
+2026-10-07 note). **The failure is in the shared Nemotron forward pass.** A
+`transformers` `NemotronHForCausalLM` reference (5.15.1, weights dequantized
+from the same source) produces, for the selfcheck prompt, top-5
+`[the, Paris, a, \n, one]` and greedy ` the city of Paris.`; the logestix model
+produces top-5 `[the, 1, France, …, a]` and **echoes the prompt**
+(` the capital of France…`). The first token coincidentally matches, so the
+SelfCheck (which only inspects the first 1–2 tokens) is not a sufficient gate.
+
+Two harness defects were found alongside the runtime bug (neither is the root
+cause): the selfcheck feeds `arrow_tokenizer_encode("The capital of France is")`
+which auto-prepends `BOS=1`, whereas the reference tokenizer adds none; and
+`BuildPromptInputIds` uses a bare `user\n…\nassistant\n<think>\n` frame while
+the checkpoint's `chat_template.jinja` uses `<|im_start|>…<|im_end|>` blocks
+(the conversation renderer is already correct). A candidate runtime deviation
+was also noted: `kDtMin=0.001` is applied in prefill but not decode, while the
+reference applies its `dt_limit` in both phases (`mamba2_selective_state_update`
+is not passed `dt_limit` and defaults to `(0, inf)`, the chunk scan uses
+`time_step_limit=(0, inf)`).
+
+Reference reproduction: `/tmp/opencode/nmv4_hf_ref3.py` (loads the source with
+`transformers` `ignore_mismatched_sizes`, dequantizes the NVFP4/FP8 weights on
+the GPU, runs greedy generation). Next step: bisect the logestix forward
+against this reference (layer/block-level), starting with the mamba state
+carry-over across the token-by-token prefill (`NemotronForwardToken`).
 
 **Status: stages 1–2 done and green; stage 3 half-landed; stages 3–8 still open.**
 Landed so far: converter + full-E4M3/FP8 dequant kernels

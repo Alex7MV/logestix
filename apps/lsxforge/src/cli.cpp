@@ -14,8 +14,9 @@ Resolution ResolvePipeline(const Flags &flags)
         flags.deepseek_nvfp4 || flags.deepseek_v41 || flags.glm ||
         flags.kimi || flags.qwen || flags.qwen35moe || flags.qwen36moe ||
         flags.ornith || flags.qwen38flashnext || flags.gemma4 ||
-        flags.nemotron || flags.gigachat || flags.glmflash || flags.granite ||
-        flags.phi || flags.mimo || flags.alice;
+        flags.nemotron || flags.nemotron_nvfp4 || flags.gigachat ||
+        flags.glmflash || flags.granite || flags.phi || flags.mimo ||
+        flags.alice;
 
     // --tokenizer supplies the source directory itself (main() assigns
     // input_path = FLAGS_tokenizer before doing any work).
@@ -56,6 +57,8 @@ Resolution ResolvePipeline(const Flags &flags)
             {"--alice", {Pipeline::kAlice, flags.alice}},
             {"--xing", {Pipeline::kXing, flags.xing}},
             {"--gemma4", {Pipeline::kGemma4, flags.gemma4}},
+            {"--nemotron_nvfp4",
+             {Pipeline::kNemotronNvfp4, flags.nemotron_nvfp4}},
             {"--nemotron", {Pipeline::kNemotron, flags.nemotron}},
             {"--gigachat", {Pipeline::kGigachat, flags.gigachat}},
             {"--mimo", {Pipeline::kMimo, flags.mimo}},

@@ -2175,6 +2175,15 @@ set_tests_properties(test_perf_baseline_nemotron PROPERTIES
 set_tests_properties(test_perf_baseline_nemotron
     PROPERTIES LABELS perf)
 
+add_test(NAME test_perf_baseline_nemotron_nvfp4
+         COMMAND test_perf_baseline "perf baseline: nemotron-3.5-lightning-30b-a3b-nvfp4")
+set_tests_properties(test_perf_baseline_nemotron_nvfp4 PROPERTIES
+    TIMEOUT 2400
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_PERF_VAULT_SUBDIR=NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+set_tests_properties(test_perf_baseline_nemotron_nvfp4
+    PROPERTIES LABELS perf)
+
 # GigaChat3.5 is expert-streamed on a single RTX 5090 (~3.3 t/s at 2048
 # tokens), and the baseline test measures both numeric modes per invocation.
 add_test(NAME test_perf_baseline_gigachat
@@ -5280,8 +5289,9 @@ add_test(NAME test_nemotron_moe_nvfp4_convert
          COMMAND test_nemotron_moe_nvfp4_convert)
 set_tests_properties(test_nemotron_moe_nvfp4_convert PROPERTIES
     TIMEOUT 120
-    LABELS convert
     ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+set_tests_properties(test_nemotron_moe_nvfp4_convert
+    PROPERTIES LABELS convert)
 
 # test_nemotron_moe_nvfp4_loader — the pre-quantized distribution's own frozen
 # passport: geometry, the stop SET, and the model-name cross-load guard.
@@ -5294,6 +5304,86 @@ target_include_directories(test_nemotron_moe_nvfp4_loader PRIVATE
 add_test(NAME test_nemotron_moe_nvfp4_loader
          COMMAND test_nemotron_moe_nvfp4_loader)
 set_tests_properties(test_nemotron_moe_nvfp4_loader PROPERTIES LABELS fast)
+
+# test_nemotron_moe_nvfp4_model — factory/Load/Infer/streaming for the
+# pre-quantized distribution's own model class (synthetic converted fixture).
+add_executable(test_nemotron_moe_nvfp4_model
+               test_nemotron_moe_nvfp4_model.cpp)
+target_compile_definitions(test_nemotron_moe_nvfp4_model PRIVATE
+    LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1)
+target_link_libraries(test_nemotron_moe_nvfp4_model PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_nvfp4_model PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+if(WIN32)
+    add_custom_command(TARGET test_nemotron_moe_nvfp4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_model>"
+    )
+    add_custom_command(TARGET test_nemotron_moe_nvfp4_model POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:arrow_cuda_shared>"
+            "$<TARGET_FILE_DIR:test_nemotron_moe_nvfp4_model>"
+    )
+endif()
+add_test(NAME test_nemotron_moe_nvfp4_model
+         COMMAND test_nemotron_moe_nvfp4_model)
+set_tests_properties(test_nemotron_moe_nvfp4_model PROPERTIES
+    ENVIRONMENT "LSX_TEST_ALLOW_SYNTHETIC_GEOMETRY=1")
+
+# test_nemotron_moe_nvfp4_selfcheck — real-weight Paris SelfCheck, SKIP 4 when
+# the converted tree is absent.
+add_executable(test_nemotron_moe_nvfp4_selfcheck
+               test_nemotron_moe_nvfp4_selfcheck.cpp)
+target_link_libraries(test_nemotron_moe_nvfp4_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+target_include_directories(test_nemotron_moe_nvfp4_selfcheck PRIVATE
+    ${PROJECT_SOURCE_DIR}/libs/lsxcommon/src)
+add_test(NAME test_nemotron_moe_nvfp4_selfcheck
+         COMMAND test_nemotron_moe_nvfp4_selfcheck)
+set_tests_properties(test_nemotron_moe_nvfp4_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+
+# test_nemotron_moe_nvfp4_fsi_selfcheck — the FSI parity gate (SKIP 4).
+add_executable(test_nemotron_moe_nvfp4_fsi_selfcheck
+               test_nemotron_moe_nvfp4_fsi_selfcheck.cpp)
+target_compile_definitions(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
+    LSX_FSI_GOLDEN_DIR="${LSX_FSI_GOLDEN_DIR_FWD}")
+target_link_libraries(test_nemotron_moe_nvfp4_fsi_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_nemotron_moe_nvfp4_fsi_selfcheck
+         COMMAND test_nemotron_moe_nvfp4_fsi_selfcheck)
+set_tests_properties(test_nemotron_moe_nvfp4_fsi_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+
+# test_nemotron_moe_nvfp4_code_selfcheck — the CODE parity gate (SKIP 4).
+add_executable(test_nemotron_moe_nvfp4_code_selfcheck
+               test_nemotron_moe_nvfp4_code_selfcheck.cpp)
+target_compile_definitions(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
+    LSX_CODE_GOLDEN_DIR="${LSX_CODE_GOLDEN_DIR_FWD}")
+target_link_libraries(test_nemotron_moe_nvfp4_code_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_nemotron_moe_nvfp4_code_selfcheck
+         COMMAND test_nemotron_moe_nvfp4_code_selfcheck)
+set_tests_properties(test_nemotron_moe_nvfp4_code_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
+
+# test_nemotron_moe_nvfp4_det_selfcheck — the DET parity gate (SKIP 4).
+add_executable(test_nemotron_moe_nvfp4_det_selfcheck
+               test_nemotron_moe_nvfp4_det_selfcheck.cpp)
+target_compile_definitions(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
+    LSX_DET_GOLDEN_DIR="${LSX_DET_GOLDEN_DIR_FWD}")
+target_link_libraries(test_nemotron_moe_nvfp4_det_selfcheck PRIVATE
+    lsxcommon Catch2::Catch2WithMain)
+add_test(NAME test_nemotron_moe_nvfp4_det_selfcheck
+         COMMAND test_nemotron_moe_nvfp4_det_selfcheck)
+set_tests_properties(test_nemotron_moe_nvfp4_det_selfcheck PROPERTIES
+    SKIP_RETURN_CODE 4
+    ENVIRONMENT "LSX_TEST_NEMOTRON_NVFP4_ROOT=/mnt/llm_models/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4")
 
 add_executable(test_nemotron_moe_loader test_nemotron_moe_loader.cpp)
 target_link_libraries(test_nemotron_moe_loader PRIVATE
@@ -5914,6 +6004,11 @@ set_tests_properties(
     test_kimi_moe_model
     test_kimi_moe_selfcheck
     test_kimi_moe_inference
+    test_nemotron_moe_nvfp4_model
+    test_nemotron_moe_nvfp4_selfcheck
+    test_nemotron_moe_nvfp4_fsi_selfcheck
+    test_nemotron_moe_nvfp4_code_selfcheck
+    test_nemotron_moe_nvfp4_det_selfcheck
     test_cuda_toolkit_guard
     PROPERTIES LABELS inference)
 

@@ -86,6 +86,10 @@ const PerfModel kNemotron = {
     "nemotron-3.5-lightning-30b-a3b",
     "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16", "The capital of France is",
     2048};
+const PerfModel kNemotronNvfp4 = {
+    "nemotron-3.5-lightning-30b-a3b-nvfp4",
+    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4", "The capital of France is",
+    2048};
 const PerfModel kGigachat = {
     "gigachat3.5-432b-a28b-reasoning", "GigaChat3.5-432B-A28B-Reasoning",
     "The capital of France is", 2048};
@@ -367,6 +371,11 @@ TEST_CASE("perf baseline: kimi-k2.7-code", "[perf]")
 TEST_CASE("perf baseline: nemotron-3.5-lightning-30b-a3b", "[perf]")
 {
     RunPerfModel(kNemotron);
+}
+
+TEST_CASE("perf baseline: nemotron-3.5-lightning-30b-a3b-nvfp4", "[perf]")
+{
+    RunPerfModel(kNemotronNvfp4);
 }
 
 TEST_CASE("perf baseline: qwen3.8-27b", "[perf]")

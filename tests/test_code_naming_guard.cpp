@@ -26,7 +26,7 @@ std::regex SchemeRegex()
 {
     const std::string fam    = "(?:glm|qwen|gemma|kimi|deepseek|nemotron|gigachat|ornith|granite|mimo|phi|alice|xing)";
     const std::string type   = "(?:moe|dense)";
-    const std::string var    = "(?:27b|flash|36|v41)";
+    const std::string var    = "(?:27b|flash|36|v41|nvfp4)";
     const std::string subsys = "(?:attn|csa|head|moe|pipeline|exp)";
     const std::string tail   =
         "(?:convert"
@@ -179,6 +179,18 @@ TEST_CASE("naming guard accepts nemotron_moe_* stems", "[naming][guard]")
     CHECK(m("nemotron_moe_inference_attn"));
     CHECK(m("nemotron_moe_kernels"));
     CHECK(m("nemotron_moe_device_math"));
+}
+
+TEST_CASE("naming guard accepts nemotron_moe_nvfp4_* stems", "[naming][guard]")
+{
+    auto m = [](const std::string &s) {
+        return std::regex_match(s, SchemeRegex());
+    };
+    CHECK(m("nemotron_moe_nvfp4_constants"));
+    CHECK(m("nemotron_moe_nvfp4_convert"));
+    CHECK(m("nemotron_moe_nvfp4_load"));
+    CHECK(m("nemotron_moe_nvfp4_dequant"));
+    CHECK(m("nemotron_moe_nvfp4_model"));
 }
 
 TEST_CASE("naming guard accepts granite_dense_* stems", "[naming][guard]")

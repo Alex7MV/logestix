@@ -14,6 +14,7 @@
 #include "glm_moe_model.h"
 #include "kimi_moe_model.h"
 #include "nemotron_moe_model.h"
+#include "nemotron_moe_nvfp4_model.h"
 #include "qwen_dense_model.h"
 #include "qwen_dense_27b_model.h"
 #include "qwen_moe_model.h"
@@ -39,6 +40,7 @@ void EnsureModelRegistry()
         LsxModelFactory::Register<Qwen38FlashNextModel>();
         LsxModelFactory::Register<Glm5NextFlashModel>();
         LsxModelFactory::Register<NemotronHModel>();
+        LsxModelFactory::Register<NemotronNvfp4Model>();
         LsxModelFactory::Register<GigaChat35Model>();
         LsxModelFactory::Register<Granite42_30BModel>();
         LsxModelFactory::Register<Phi4Model>();

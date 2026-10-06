@@ -249,6 +249,20 @@ const std::vector<SuiteSpec> &Suites()
           {"fsi", {"test_nemotron_moe_fsi_selfcheck"}},
           {"code", {"test_nemotron_moe_code_selfcheck"}}, {"perf", {"test_perf_baseline_nemotron"}},
           {"det", {"test_nemotron_moe_det_selfcheck"}}}},
+        // Pre-quantized ModelOpt sibling: same kernels/model contour as
+        // nemotron-3.5-lightning-30b-a3b, its own converter + frozen passport.
+        {"nemotron-3.5-lightning-30b-a3b-nvfp4",
+         {{"convert", {"test_nemotron_moe_nvfp4_convert"}},
+          {"load", {"test_nemotron_moe_nvfp4_loader"}},
+          {"model", {"test_nemotron_moe_nvfp4_model"}},
+          {"kernels",
+           {"test_nemotron_moe_kernels", "test_nemotron_moe_math",
+            "test_nemotron_session"}},
+          {"selfcheck", {"test_nemotron_moe_nvfp4_selfcheck"}},
+          {"fsi", {"test_nemotron_moe_nvfp4_fsi_selfcheck"}},
+          {"code", {"test_nemotron_moe_nvfp4_code_selfcheck"}},
+          {"perf", {"test_perf_baseline_nemotron_nvfp4"}},
+          {"det", {"test_nemotron_moe_nvfp4_det_selfcheck"}}}},
         {"gigachat3.5-432b-a28b-reasoning",
          {{"convert", {"test_gigachat_moe_convert"}},
           {"load",
@@ -718,6 +732,10 @@ TEST_CASE("suite guard: every suite row declares its tool-calling verdict",
         // a dedicated one; naming the target that actually carries it is what
         // the guard checks.
         {"nemotron-3.5-lightning-30b-a3b", {"test_nemotron_moe_model"}},
+        // The NVFP4 sibling reuses the parent's Qwen-style XML render/parse
+        // verbatim; its model target carries the same tool case.
+        {"nemotron-3.5-lightning-30b-a3b-nvfp4",
+         {"test_nemotron_moe_nvfp4_model"}},
         {"gigachat3.5-432b-a28b-reasoning", {"test_gigachat_tool_framing"}},
         {"mimo-v2.6-flash-rl", {"test_mimo_tool_framing"}},
         {"alice-foundation-80b-a3b", {"test_alice_tool_framing"}},
@@ -849,6 +867,12 @@ TEST_CASE("suite guard: every parity golden is present or declared as debt",
         "nemotron-3.5-lightning-30b-a3b:code",
         "nemotron-3.5-lightning-30b-a3b:det",
         "nemotron-3.5-lightning-30b-a3b:fsi",
+        // FSI/CODE/DET capture is unresolved for the pre-quantized source (HF
+        // transformers cannot load a ModelOpt checkpoint without
+        // compressed_tensors); declared debt, see docs/OPEN_TASKS.md section M.
+        "nemotron-3.5-lightning-30b-a3b-nvfp4:code",
+        "nemotron-3.5-lightning-30b-a3b-nvfp4:det",
+        "nemotron-3.5-lightning-30b-a3b-nvfp4:fsi",
         "ornith-1.5-35b-a3b:code",
         "ornith-1.5-35b-a3b:det",
         "ornith-1.5-35b-a3b:fsi",
